@@ -16,6 +16,28 @@ fn rejects_legacy_and_removed_platform_features() {
 }
 
 #[test]
+fn workspace_packages_do_not_expose_removed_runtime_features() {
+    let metadata = repo_metadata();
+    let offenders = metadata
+        .packages
+        .iter()
+        .flat_map(|package| {
+            ["irq", "multitask"].into_iter().filter_map(move |feature| {
+                package
+                    .features
+                    .contains_key(feature)
+                    .then(|| format!("{}/{}", package.name, feature))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "mandatory runtime capabilities must not remain Cargo features: {offenders:?}"
+    );
+}
+
+#[test]
 fn std_build_maps_arceos_features_to_ax_std_dependency() {
     let mut info = BuildInfo {
         features: vec![

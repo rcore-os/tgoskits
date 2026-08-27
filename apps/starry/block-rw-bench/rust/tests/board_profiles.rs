@@ -306,3 +306,10 @@ fn jl_profile_uses_the_linux_autologin_staging_path() {
         "JL Linux staging must use a path writable by its non-root automatic-login user"
     );
 }
+
+#[test]
+fn jl_profile_describes_the_ls2k1000_ahci_root_path() {
+    assert!(JL_LSGD2K10_PROFILE.contains("export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/sda'"));
+    assert!(JL_LSGD2K10_PROFILE.contains("export BLOCK_RW_BENCH_CONTROLLER='ls2k1000-ahci'"));
+    assert!(JL_LSGD2K10_PROFILE.contains("export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='4194304'"));
+}

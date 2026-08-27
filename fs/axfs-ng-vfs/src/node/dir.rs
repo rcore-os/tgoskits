@@ -642,7 +642,7 @@ impl DirNode {
         let src = self.lookup(src_name)?;
         let destination = match dst_dir.lookup(dst_name) {
             Ok(destination) => Some(destination),
-            Err(error) if error.canonicalize() == VfsError::NotFound => None,
+            Err(VfsError::NotFound) => None,
             Err(error) => return Err(error),
         };
         if options.no_replace() && destination.is_some() {
@@ -691,15 +691,13 @@ impl DirNode {
                 }
                 return Ok(val);
             }
-            Err(err) if err.canonicalize() == VfsError::NotFound && options.create => {}
+            Err(VfsError::NotFound) if options.create => {}
             Err(err) => return Err(err),
         }
         let (uid, gid) = options.user.unwrap_or((0, 0));
         let entry = match self.create_entry(name, options.node_type, options.permission, uid, gid) {
             Ok(entry) => entry,
-            Err(err) if !options.create_new && err.canonicalize() == VfsError::AlreadyExists => {
-                self.lookup(name)?
-            }
+            Err(VfsError::AlreadyExists) if !options.create_new => self.lookup(name)?,
             Err(err) => return Err(err),
         };
         Ok(entry)

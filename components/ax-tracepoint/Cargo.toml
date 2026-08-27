@@ -1,0 +1,22 @@
+[package]
+name = "ax-tracepoint"
+version = "0.6.0"
+edition.workspace = true
+authors.workspace = true
+license = "MIT"
+repository.workspace = true
+documentation = "https://docs.rs/ax-tracepoint"
+readme = "README.md"
+keywords = ["tracepoint", "kernel", "tracing", "no-std"]
+description = "A Rust crate for implementing tracepoints in operating systems."
+build = "build.rs"
+
+[dependencies]
+log.workspace = true
+lru = "0.18"
+paste = "1.0"
+thiserror.workspace = true
+tp-lexer = "0.5.5"
+
+[dev-dependencies]
+env_logger = "0.11"

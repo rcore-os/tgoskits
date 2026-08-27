@@ -61,6 +61,10 @@ impl DeviceArg {
     pub(super) fn drive(&self) -> Option<&str> {
         self.options.value("drive")
     }
+
+    pub(super) fn netdev(&self) -> Option<&str> {
+        self.options.value("netdev")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

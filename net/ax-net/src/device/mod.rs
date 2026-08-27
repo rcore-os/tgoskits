@@ -18,9 +18,8 @@
 //! router asks devices for a readiness poll set and performs `PollSet`
 //! register/wake operations after releasing the concrete device lock.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
-use axpoll::PollSet;
 use smoltcp::{
     storage::PacketBuffer,
     time::Instant,
@@ -56,7 +55,7 @@ pub struct ArpEntry {
 }
 
 /// Packet I/O endpoint behind the multi-device router.
-pub trait Device: Send + Sync {
+pub trait Device: Send {
     /// Human-readable device name used in logs and userspace queries.
     fn name(&self) -> &str;
 
@@ -73,7 +72,7 @@ pub trait Device: Send + Sync {
     ///
     /// Each call that returns a non-zero value MUST have enqueued exactly one
     /// IP packet into `buffer`. The return value is the L2 frame length of
-    /// that specific packet. The router RX worker relies on this 1:1
+    /// that specific packet. The protocol executor relies on this 1:1
     /// correspondence to pair frame lengths with dequeued packets in FIFO
     /// order.
     fn recv(
@@ -154,13 +153,62 @@ pub trait Device: Send + Sync {
     fn arp_entries(&self, _timestamp: Instant) -> Vec<ArpEntry> {
         Vec::new()
     }
+}
 
-    /// Returns the device readiness poll set when the device has a wake source.
-    ///
-    /// Interrupt-driven and out-of-band devices return a poll set. Pure-polling
-    /// devices should return `None`, or their wakers would sit on a poll set
-    /// that is never woken.
-    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
-        None
+#[cfg(test)]
+mod tests {
+    use smoltcp::wire::Ipv4Address;
+
+    use super::*;
+
+    struct DefaultDevice;
+
+    impl Device for DefaultDevice {
+        fn name(&self) -> &str {
+            "default-device"
+        }
+
+        fn recv(
+            &mut self,
+            _interface_id: InterfaceId,
+            _buffer: &mut PacketBuffer<InterfaceId>,
+            _timestamp: Instant,
+            _snoop: &mut dyn FnMut(&[u8]),
+        ) -> usize {
+            0
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
+            0
+        }
+    }
+
+    #[test]
+    fn device_defaults_report_no_deferred_work_or_readiness() {
+        let mut device = DefaultDevice;
+
+        assert_eq!(device.name(), "default-device");
+        assert!(device.drain_deferred_tx().is_empty());
+        assert!(device.drain_deferred_rx().is_empty());
+        assert_eq!(device.drain_deferred_tx_errors(), 0);
+        assert_eq!(device.drain_deferred_tx_drops(), 0);
+        assert_eq!(device.drain_deferred_rx_errors(), 0);
+        assert_eq!(device.drain_deferred_rx_drops(), 0);
+        assert!(device.arp_entries(Instant::from_millis(1)).is_empty());
+        device.set_ipv4_addr(Some(Ipv4Cidr::new(Ipv4Address::LOCALHOST, 8)));
+    }
+
+    #[test]
+    fn arp_entry_keeps_neighbor_metadata() {
+        let entry = ArpEntry {
+            ip_addr: [192, 168, 1, 1],
+            hw_type: 1,
+            flags: 2,
+            hw_addr: [1, 2, 3, 4, 5, 6],
+            device: String::from("eth0"),
+        };
+
+        assert_eq!(entry.ip_addr, [192, 168, 1, 1]);
+        assert_eq!(entry.device, "eth0");
     }
 }

@@ -65,7 +65,25 @@ struct IrqRoute {
 }
 
 static IRQ_DOMAINS: SpinLock<Vec<IrqDomain>> = SpinLock::new(Vec::new());
-static IRQ_ROUTES: SpinLock<Vec<IrqRoute>> = SpinLock::new(Vec::new());
+
+/// Global IRQ routes are resolved from hard-IRQ context.
+///
+/// Keep the IRQ-save policy at the field boundary so a future read-side call
+/// cannot accidentally reintroduce local interrupt re-entry while the route
+/// registry is locked.
+struct IrqRouteLock(SpinLock<Vec<IrqRoute>>);
+
+impl IrqRouteLock {
+    const fn new() -> Self {
+        Self(SpinLock::new(Vec::new()))
+    }
+
+    fn lock(&self) -> SpinLockIrqSaveGuard<'_, Vec<IrqRoute>> {
+        self.0.lock_irqsave()
+    }
+}
+
+static IRQ_ROUTES: IrqRouteLock = IrqRouteLock::new();
 
 fn irq_domains() -> RawSpinLockGuard<'static, Vec<IrqDomain>> {
     // SAFETY: callers preserve the legacy raw-lock contract and exclude local
@@ -74,7 +92,7 @@ fn irq_domains() -> RawSpinLockGuard<'static, Vec<IrqDomain>> {
 }
 
 fn irq_routes() -> SpinLockIrqSaveGuard<'static, Vec<IrqRoute>> {
-    IRQ_ROUTES.lock_irqsave()
+    IRQ_ROUTES.lock()
 }
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static X86_MSI_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
@@ -551,6 +569,8 @@ pub fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -740,6 +760,17 @@ mod tests {
             unmap_irq_route(parent_irq, leaf_irq),
             Err(IrqError::InvalidIrq)
         );
+    }
+
+    #[test]
+    fn irq_route_access_requires_irq_save_guard() {
+        let guard = IRQ_ROUTES.lock();
+        let irq_state = ax_sync::irq_save_and_disable();
+        // SAFETY: `irq_state` is restored exactly once on the same test thread.
+        unsafe { ax_sync::irq_restore(irq_state) };
+        drop(guard);
+
+        assert_eq!(irq_state, 0, "IRQ route access left IRQs enabled");
     }
 
     #[test]

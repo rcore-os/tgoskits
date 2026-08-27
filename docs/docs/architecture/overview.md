@@ -17,7 +17,7 @@ flowchart TD
         C4["文件系统组件<br/>axfs_crates axfs-ng-vfs rsext4"]
         C5["平台契约<br/>ax-plat percpu ..."]
         C6["虚拟化组件<br/>axvm axvm-types axvmconfig arch_vcpu axvisor_api"]
-        C7["基础工具<br/>axerrno axio ax-sync ax-lazyinit ..."]
+        C7["基础工具<br/>ax-io ax-sync ax-lazyinit ..."]
     end
 
     subgraph ArceOS["ArceOS"]
@@ -114,6 +114,12 @@ Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor，建立在 ArceOS
 网络栈能力收敛在 `net/ax-net`，对上提供 TCP、UDP、raw socket、DNS、DHCP、ARP、poll/waker 等统一 API，对下通过 `rd-net` 设备适配真实网卡。多网口方案保持单 `smoltcp::iface::Interface + SocketSet` 协议栈模型，通过接口 registry、路由表、设备队列和 net-poll worker 管理多个接口。
 
 → 详细设计见 [网络栈架构](./net/overview)
+
+## 文件系统架构
+
+文件系统由 `axfs-ng-vfs` 和 `ax-fs-ng` 共同组成。前者维护节点、目录项、路径位置和 namespace-local mount topology，后者提供文件句柄、页缓存、ext4/FAT、卷扫描、根盘选择以及 IRQ 驱动的多队列块运行时。ArceOS 注入页、DMA、IRQ、任务和时间能力，StarryOS 在公共 VFS 之上实现 Linux 文件 syscall 与伪文件系统。
+
+→ 详细设计见 [文件系统架构](./fs/overview)
 
 ## 核心层次
 

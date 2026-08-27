@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 /*
  * Focused StarryOS conformance test for the execve(2) family — execve() and
  * execveat(). fork() and wait4() appear only as scaffolding: each exec runs
@@ -19,6 +21,10 @@
 #include "test_framework.h"
 
 #include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdbool.h>
+#include <stdatomic.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -323,6 +329,166 @@ static void test_execveat_non_directory_dirfd_enotdir(void)
     close(fd);
 }
 
+/*
+ * Each payload string and the pointer vectors below are individually valid.
+ * Their aggregate is deliberately just over StarryOS's 2 MiB execve budget.
+ * The child uses a shell exit status that differs from the E2BIG sentinel, so
+ * a missing limit cannot accidentally look like a passing test.
+ */
+#define EXECVE_PAYLOAD_BYTES 8192
+#define EXECVE_LIMIT_PAYLOAD_COUNT 257
+
+static int execve_payload_status(size_t argv_payload_count, size_t envp_payload_count)
+{
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        char *payload = malloc(EXECVE_PAYLOAD_BYTES);
+        char **argv = calloc(argv_payload_count + 4, sizeof(*argv));
+        char **envp = calloc(envp_payload_count + 1, sizeof(*envp));
+        if (payload == NULL || argv == NULL || envp == NULL) {
+            _exit(125);
+        }
+
+        memset(payload, 'x', EXECVE_PAYLOAD_BYTES - 1);
+        payload[0] = 'X';
+        payload[1] = '=';
+        payload[EXECVE_PAYLOAD_BYTES - 1] = '\0';
+
+        argv[0] = "/bin/sh";
+        argv[1] = "-c";
+        argv[2] = "exit 42";
+        for (size_t i = 0; i < argv_payload_count; ++i) {
+            argv[i + 3] = payload;
+        }
+        for (size_t i = 0; i < envp_payload_count; ++i) {
+            envp[i] = payload;
+        }
+
+        execve("/bin/sh", argv, envp);
+        _exit(errno == E2BIG ? 0 : 1);
+    }
+
+    int status = 0;
+    return waitpid(pid, &status, 0) == pid && WIFEXITED(status)
+               ? WEXITSTATUS(status)
+               : -1;
+}
+
+static void test_execve_aggregate_argument_budget(void)
+{
+    CHECK(execve_payload_status(EXECVE_LIMIT_PAYLOAD_COUNT, 0) == 0,
+          "execve rejects aggregate argv bytes with E2BIG");
+    CHECK(execve_payload_status(0, EXECVE_LIMIT_PAYLOAD_COUNT) == 0,
+          "execve rejects aggregate envp bytes with E2BIG");
+    CHECK(execve_payload_status(EXECVE_LIMIT_PAYLOAD_COUNT / 2,
+                               EXECVE_LIMIT_PAYLOAD_COUNT / 2) == 0,
+          "execve applies one shared argv/envp byte budget");
+}
+
+#define EXEC_ASPACE_RACE_ROUNDS 32
+#define EXEC_ASPACE_RACE_THREADS 8
+
+struct exec_aspace_race {
+    atomic_uint ready_threads;
+    atomic_bool keep_running;
+    long online_cpus;
+};
+
+static void *exec_aspace_sibling(void *arg)
+{
+    struct exec_aspace_race *race = arg;
+    unsigned int sibling = atomic_fetch_add_explicit(
+        &race->ready_threads, 1, memory_order_release);
+
+    if (race->online_cpus > 1) {
+        cpu_set_t cpus;
+        CPU_ZERO(&cpus);
+        CPU_SET((int)(sibling % (unsigned int)race->online_cpus), &cpus);
+        (void)pthread_setaffinity_np(pthread_self(), sizeof(cpus), &cpus);
+    }
+
+    while (atomic_load_explicit(&race->keep_running, memory_order_acquire)) {
+        (void)syscall(SYS_gettid);
+        sched_yield();
+    }
+    return NULL;
+}
+
+/*
+ * A successful exec destroys every sibling thread. The retiring siblings may
+ * already be absent from the thread-group registry while still finishing
+ * their final kernel return on another CPU. Repeating this interleaving makes
+ * the page-table ownership boundary observable: the new image must run and
+ * exit cleanly every time, without an instruction-page-fault loop or hang.
+ */
+static void test_multithread_exec_keeps_retiring_page_table_roots_alive(void)
+{
+    int failed_round = -1;
+    int failed_status = 0;
+
+    for (int round = 0; round < EXEC_ASPACE_RACE_ROUNDS; ++round) {
+        pid_t pid = fork();
+        if (pid < 0) {
+            failed_round = round;
+            failed_status = errno;
+            break;
+        }
+        if (pid == 0) {
+            struct exec_aspace_race race;
+            pthread_t siblings[EXEC_ASPACE_RACE_THREADS];
+            atomic_init(&race.ready_threads, 0);
+            atomic_init(&race.keep_running, true);
+            race.online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+
+            int created = 0;
+            for (; created < EXEC_ASPACE_RACE_THREADS; ++created) {
+                if (pthread_create(&siblings[created], NULL,
+                                   exec_aspace_sibling, &race) != 0) {
+                    atomic_store_explicit(&race.keep_running, false,
+                                          memory_order_release);
+                    for (int i = 0; i < created; ++i) {
+                        pthread_join(siblings[i], NULL);
+                    }
+                    _exit(125);
+                }
+            }
+            while (atomic_load_explicit(&race.ready_threads,
+                                        memory_order_acquire)
+                   != EXEC_ASPACE_RACE_THREADS) {
+                sched_yield();
+            }
+
+            char *const argv[] = { "/bin/true", NULL };
+            syscall(SYS_execve, argv[0], argv, environ);
+
+            atomic_store_explicit(&race.keep_running, false,
+                                  memory_order_release);
+            for (int i = 0; i < created; ++i) {
+                pthread_join(siblings[i], NULL);
+            }
+            _exit(126);
+        }
+
+        int status = 0;
+        if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)
+            || WEXITSTATUS(status) != 0) {
+            failed_round = round;
+            failed_status = status;
+            break;
+        }
+    }
+
+    if (failed_round >= 0) {
+        fprintf(stderr, "multithread exec failed at round %d status=%d\n",
+                failed_round, failed_status);
+    }
+    CHECK(failed_round < 0,
+          "multithread exec keeps retiring siblings' page-table roots alive");
+}
+
 int main(void)
 {
     TEST_START("execve/execveat family semantics");
@@ -338,6 +504,8 @@ int main(void)
     test_execveat_memfd_sealed_exec();
     test_execveat_error_returns();
     test_execveat_non_directory_dirfd_enotdir();
+    test_execve_aggregate_argument_budget();
+    test_multithread_exec_keeps_retiring_page_table_roots_alive();
 
     TEST_DONE();
 }

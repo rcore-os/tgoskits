@@ -179,10 +179,10 @@ mod tests {
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use ax_errno::AxResult;
     use rsext4::Ext4ErrorKind;
 
     use super::*;
+    use crate::BlockResult;
 
     struct CapabilityDevice {
         read_only: bool,
@@ -224,22 +224,22 @@ mod tests {
             self.supports_fua
         }
 
-        fn read_block(&mut self, _block_id: u64, buf: &mut [u8]) -> AxResult {
+        fn read_block(&mut self, _block_id: u64, buf: &mut [u8]) -> BlockResult {
             buf.fill(0);
             Ok(())
         }
 
-        fn write_block(&mut self, _block_id: u64, _buf: &[u8]) -> AxResult {
+        fn write_block(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult {
             self.writes.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
-        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> AxResult {
+        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult {
             self.fua_writes.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
-        fn flush(&mut self) -> AxResult {
+        fn flush(&mut self) -> BlockResult {
             self.flushes.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }

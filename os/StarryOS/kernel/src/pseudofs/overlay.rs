@@ -749,7 +749,7 @@ impl DirNodeOps for OverlayDir {
         if options.no_replace() {
             match dst.lookup(dst_name) {
                 Ok(_) => return Err(VfsError::AlreadyExists),
-                Err(error) if error.canonicalize() == VfsError::NotFound => {}
+                Err(VfsError::NotFound) => {}
                 Err(error) => return Err(error),
             }
         }

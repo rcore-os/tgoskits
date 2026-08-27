@@ -1,17 +1,8 @@
 #![cfg(any(test, target_arch = "loongarch64", target_arch = "riscv64"))]
 
-#[cfg(any(test, target_arch = "loongarch64"))]
-use alloc::vec::Vec;
-#[cfg(any(test, target_arch = "loongarch64"))]
-use core::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-use rdif_intc::{AcpiGsiController, AcpiGsiRoute};
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-use crate::irq::IrqDomainId;
 #[cfg(any(test, target_arch = "riscv64"))]
 use crate::irq::{CPU_LOCAL_IRQ_DOMAIN, IrqSource};
+#[cfg(any(test, target_arch = "riscv64"))]
 use crate::irq::{HwIrq, IrqError, IrqId};
 
 #[cfg(any(test, target_arch = "loongarch64"))]
@@ -54,6 +45,59 @@ pub(super) const fn cpu_local_hwirq_is_runtime_irq(
     )
 }
 
+#[cfg(any(test, target_arch = "loongarch64"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PchPicFirmwareCount {
+    ExplicitInputCount(usize),
+    AcpiGsiRoutingSpan(usize),
+}
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PchPicInputCountSource {
+    HardwareId,
+    Explicit(usize),
+}
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+pub(super) const fn pch_pic_input_count_source(
+    firmware_count: PchPicFirmwareCount,
+) -> PchPicInputCountSource {
+    match firmware_count {
+        PchPicFirmwareCount::ExplicitInputCount(count) => PchPicInputCountSource::Explicit(count),
+        // BIO_PIC describes the GSI routing span, not the number of inputs
+        // implemented by the controller. The hardware ID is authoritative.
+        PchPicFirmwareCount::AcpiGsiRoutingSpan(_) => PchPicInputCountSource::HardwareId,
+    }
+}
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum CascadeTransitionError<E> {
+    Parent(E),
+    Local(E),
+    Rollback { local: E, rollback: E },
+}
+
+/// Applies one parent-first cascade transition without retaining either
+/// controller borrow across the other operation.
+#[cfg(any(test, target_arch = "loongarch64"))]
+pub(super) fn apply_parent_first_transition<E>(
+    enabled: bool,
+    mut set_parent: impl FnMut(bool) -> Result<(), E>,
+    set_local: impl FnOnce(bool) -> Result<(), E>,
+) -> Result<(), CascadeTransitionError<E>> {
+    set_parent(enabled).map_err(CascadeTransitionError::Parent)?;
+    let local = match set_local(enabled) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    match set_parent(!enabled) {
+        Ok(()) => Err(CascadeTransitionError::Local(local)),
+        Err(rollback) => Err(CascadeTransitionError::Rollback { local, rollback }),
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ExternalVectorResolveFailure {
@@ -69,11 +113,6 @@ pub(super) const fn external_vector_failure_policy(err: IrqError) -> ExternalVec
         ExternalVectorResolveFailure::Complete
     }
 }
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-const IRQ_ROUTE_VALID: u64 = 1 << 63;
-#[cfg(any(test, target_arch = "loongarch64"))]
-const PCH_PIC_CPU_ROUTE_SLOTS: usize = 256;
 
 #[cfg(any(test, target_arch = "riscv64"))]
 pub(crate) const RISCV_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
@@ -180,326 +219,83 @@ pub(crate) fn riscv_resolve_controller_line(
     }
 }
 
-#[cfg(any(test, target_arch = "loongarch64"))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RouteEntry {
-    input: usize,
-    irq: IrqId,
-}
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-pub(super) struct PchPicCpuInterface {
-    domain: IrqDomainId,
-    controller: AcpiGsiController,
-    controller_address: u64,
-    base_vector: usize,
-    vector_count: usize,
-    routes: [AtomicU64; PCH_PIC_CPU_ROUTE_SLOTS],
-}
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-impl PchPicCpuInterface {
-    pub(super) const fn new(
-        domain: IrqDomainId,
-        controller: AcpiGsiController,
-        controller_address: u64,
-        base_vector: usize,
-        vector_count: usize,
-    ) -> Self {
-        Self {
-            domain,
-            controller,
-            controller_address,
-            base_vector,
-            vector_count,
-            routes: [const { AtomicU64::new(0) }; PCH_PIC_CPU_ROUTE_SLOTS],
-        }
-    }
-
-    pub(super) fn remember_route(&self, route: &AcpiGsiRoute, irq: IrqId) -> Result<(), IrqError> {
-        if !self.supports_acpi_gsi(route) {
-            return Err(IrqError::Unsupported);
-        }
-        if irq.hwirq != HwIrq(u32::from(route.controller_input)) {
-            return Err(IrqError::InvalidIrq);
-        }
-
-        let input = usize::from(route.controller_input);
-        let encoded = encode_irq_id(irq);
-        let slot = &self.routes[input];
-        match slot.compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => Ok(()),
-            Err(existing) if existing == encoded => Ok(()),
-            Err(_) => Err(IrqError::Busy),
-        }
-    }
-
-    pub(super) fn irq_for_external_vector(&self, vector: usize) -> Option<IrqId> {
-        let input = self.input_for_vector(vector)?;
-        decode_irq_id(self.routes[input].load(Ordering::Acquire))
-            .or_else(|| Some(IrqId::new(self.domain, HwIrq(input as u32))))
-    }
-
-    fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
-        route.controller == self.controller
-            && route.controller_address == self.controller_address
-            && self.valid_input(usize::from(route.controller_input))
-    }
-
-    fn input_for_vector(&self, vector: usize) -> Option<usize> {
-        let input = vector.checked_sub(self.base_vector)?;
-        self.valid_input(input).then_some(input)
-    }
-
-    fn valid_input(&self, input: usize) -> bool {
-        input < self.vector_count && input < self.routes.len()
-    }
-}
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-fn encode_irq_id(irq: IrqId) -> u64 {
-    IRQ_ROUTE_VALID | ((u64::from(irq.domain.0)) << 32) | u64::from(irq.hwirq.0)
-}
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-fn decode_irq_id(encoded: u64) -> Option<IrqId> {
-    if encoded & IRQ_ROUTE_VALID == 0 {
-        return None;
-    }
-
-    let domain = IrqDomainId(((encoded >> 32) & u64::from(u16::MAX)) as u16);
-    let hwirq = HwIrq((encoded & u64::from(u32::MAX)) as u32);
-    Some(IrqId::new(domain, hwirq))
-}
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-pub(super) struct AcpiControllerRoutes {
-    controller: AcpiGsiController,
-    controller_address: u64,
-    base_vector: usize,
-    vector_count: usize,
-    routes: Vec<RouteEntry>,
-}
-
-#[cfg(any(test, target_arch = "loongarch64"))]
-impl AcpiControllerRoutes {
-    pub(super) const fn new(
-        controller: AcpiGsiController,
-        controller_address: u64,
-        base_vector: usize,
-        vector_count: usize,
-    ) -> Self {
-        Self {
-            controller,
-            controller_address,
-            base_vector,
-            vector_count,
-            routes: Vec::new(),
-        }
-    }
-
-    pub(super) const fn vector_count(&self) -> usize {
-        self.vector_count
-    }
-
-    pub(super) fn vector_for_input(&self, input: usize) -> Option<usize> {
-        (input < self.vector_count).then_some(self.base_vector + input)
-    }
-
-    pub(super) fn input_for_vector(&self, vector: usize) -> Option<usize> {
-        let input = vector.checked_sub(self.base_vector)?;
-        (input < self.vector_count).then_some(input)
-    }
-
-    pub(super) fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
-        route.controller == self.controller
-            && route.controller_address == self.controller_address
-            && usize::from(route.controller_input) < self.vector_count
-    }
-
-    pub(super) fn remember_route(
-        &mut self,
-        route: &AcpiGsiRoute,
-        irq: IrqId,
-    ) -> Result<(), IrqError> {
-        if !self.supports_acpi_gsi(route) {
-            return Err(IrqError::Unsupported);
-        }
-        if irq.hwirq != HwIrq(u32::from(route.controller_input)) {
-            return Err(IrqError::InvalidIrq);
-        }
-        if let Some(entry) = self
-            .routes
-            .iter()
-            .find(|entry| entry.input == usize::from(route.controller_input))
-        {
-            return if entry.irq == irq {
-                Ok(())
-            } else {
-                Err(IrqError::Busy)
-            };
-        }
-        self.routes.push(RouteEntry {
-            input: usize::from(route.controller_input),
-            irq,
-        });
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(super) fn irq_for_external_vector(&self, vector: usize) -> Option<IrqId> {
-        let input = self.input_for_vector(vector)?;
-        self.routes
-            .iter()
-            .find_map(|entry| (entry.input == input).then_some(entry.irq))
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use rdif_intc::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
-
     use super::*;
     use crate::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqDomainId, IrqError, IrqId, IrqSource};
 
-    fn acpi_route(gsi: u32, input: u8) -> AcpiGsiRoute {
-        AcpiGsiRoute {
-            gsi,
-            vector: rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + gsi as usize,
-            controller: AcpiGsiController::PchPic,
-            controller_id: 1,
-            controller_address: 0x1000_0000,
-            controller_input: input,
-            trigger: AcpiIrqTrigger::Level,
-            polarity: AcpiIrqPolarity::ActiveLow,
-        }
-    }
-
     #[test]
-    fn acpi_controller_reverse_route_uses_controller_input_not_acpi_vector() {
-        let mut routes = AcpiControllerRoutes::new(AcpiGsiController::PchPic, 0x1000_0000, 0, 64);
-        let route = acpi_route(82, 18);
-        let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
-
-        routes.remember_route(&route, irq).unwrap();
-
-        assert_eq!(routes.irq_for_external_vector(18), Some(irq));
-        assert_eq!(routes.irq_for_external_vector(route.vector), None);
-        assert_ne!(
-            routes.irq_for_external_vector(18),
-            Some(IrqId::new(IrqDomainId(42), HwIrq(82)))
+    fn acpi_routing_span_does_not_override_pch_hardware_input_count() {
+        assert_eq!(
+            pch_pic_input_count_source(PchPicFirmwareCount::AcpiGsiRoutingSpan(256)),
+            PchPicInputCountSource::HardwareId
+        );
+        assert_eq!(
+            pch_pic_input_count_source(PchPicFirmwareCount::ExplicitInputCount(32)),
+            PchPicInputCountSource::Explicit(32)
         );
     }
 
     #[test]
-    fn pch_pic_cpu_interface_resolves_external_vector_without_controller_device() {
-        let cpu_if = PchPicCpuInterface::new(
-            IrqId::new(IrqDomainId(42), HwIrq(0)).domain,
-            AcpiGsiController::PchPic,
-            0x1000_0000,
-            0,
-            64,
+    fn parent_first_cascade_transition_rolls_parent_back_after_local_failure() {
+        let calls = core::cell::RefCell::new(alloc::vec::Vec::new());
+
+        let result = apply_parent_first_transition(
+            true,
+            |enabled| {
+                calls.borrow_mut().push(("parent", enabled));
+                Ok::<_, u8>(())
+            },
+            |enabled| {
+                calls.borrow_mut().push(("local", enabled));
+                Err(7)
+            },
         );
-        let route = acpi_route(82, 18);
-        let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
 
-        cpu_if.remember_route(&route, irq).unwrap();
-
-        assert_eq!(cpu_if.irq_for_external_vector(18), Some(irq));
+        assert_eq!(result, Err(CascadeTransitionError::Local(7)));
         assert_eq!(
-            cpu_if.irq_for_external_vector(19),
-            Some(IrqId::new(IrqDomainId(42), HwIrq(19)))
+            *calls.borrow(),
+            alloc::vec![("parent", true), ("local", true), ("parent", false)]
         );
-        assert_eq!(cpu_if.irq_for_external_vector(route.vector), None);
     }
 
     #[test]
-    fn pch_pic_cpu_interface_rejects_out_of_range_input() {
-        let cpu_if = PchPicCpuInterface::new(
-            IrqId::new(IrqDomainId(42), HwIrq(0)).domain,
-            AcpiGsiController::PchPic,
-            0x1000_0000,
-            0,
-            64,
-        );
-        let route = AcpiGsiRoute {
-            controller_input: 64,
-            ..acpi_route(82, 18)
-        };
-        let irq = IrqId::new(IrqDomainId(42), HwIrq(64));
+    fn parent_first_cascade_transition_does_not_touch_local_after_parent_failure() {
+        let local_called = core::cell::Cell::new(false);
 
-        assert_eq!(
-            cpu_if.remember_route(&route, irq),
-            Err(IrqError::Unsupported)
+        let result = apply_parent_first_transition(
+            false,
+            |_| Err::<(), _>(3u8),
+            |_| {
+                local_called.set(true);
+                Ok(())
+            },
         );
-        assert_eq!(cpu_if.irq_for_external_vector(64), None);
+
+        assert_eq!(result, Err(CascadeTransitionError::Parent(3)));
+        assert!(!local_called.get());
     }
 
     #[test]
-    fn pch_pic_cpu_interface_does_not_store_acpi_vector_as_external_vector() {
-        let domain = IrqId::new(IrqDomainId(42), HwIrq(0)).domain;
-        let cpu_if =
-            PchPicCpuInterface::new(domain, AcpiGsiController::PchPic, 0x1000_0000, 16, 64);
-        let route = acpi_route(8, 18);
-        let irq = IrqId::new(domain, HwIrq(18));
+    fn parent_first_cascade_transition_reports_failed_rollback() {
+        let parent_calls = core::cell::Cell::new(0);
 
-        cpu_if.remember_route(&route, irq).unwrap();
-
-        assert_eq!(cpu_if.irq_for_external_vector(16 + 18), Some(irq));
-        assert_eq!(
-            cpu_if.irq_for_external_vector(route.vector),
-            Some(IrqId::new(domain, HwIrq((route.vector - 16) as u32)))
-        );
-        assert_ne!(cpu_if.irq_for_external_vector(route.vector), Some(irq));
-    }
-
-    #[test]
-    fn acpi_controller_acpi_route_keeps_hardware_vector_as_base_plus_input() {
-        let mut routes = AcpiControllerRoutes::new(AcpiGsiController::PchPic, 0x1000_0000, 0, 64);
-        let route = acpi_route(82, 18);
-        let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
-
-        routes.remember_route(&route, irq).unwrap();
-
-        assert_eq!(routes.vector_count(), 64);
-        assert_eq!(routes.vector_for_input(18), Some(18));
-        assert_eq!(routes.input_for_vector(18), Some(18));
-        assert_ne!(routes.vector_for_input(18), Some(route.vector));
-    }
-
-    #[test]
-    fn acpi_controller_route_rejects_unsupported_controller_and_collision() {
-        let mut routes = AcpiControllerRoutes::new(AcpiGsiController::PchPic, 0x1000_0000, 0, 64);
-        let route = acpi_route(82, 18);
-        let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
-
-        routes.remember_route(&route, irq).unwrap();
-
-        assert_eq!(
-            routes.remember_route(&route, IrqId::new(IrqDomainId(43), HwIrq(18))),
-            Err(IrqError::Busy)
-        );
-        assert_eq!(
-            routes.remember_route(&route, IrqId::new(IrqDomainId(42), HwIrq(19))),
-            Err(IrqError::InvalidIrq)
+        let result = apply_parent_first_transition(
+            true,
+            |_| {
+                let call = parent_calls.get();
+                parent_calls.set(call + 1);
+                if call == 0 { Ok(()) } else { Err(9u8) }
+            },
+            |_| Err(7u8),
         );
 
-        let unsupported = AcpiGsiRoute {
-            controller: AcpiGsiController::IoApic,
-            ..route
-        };
         assert_eq!(
-            routes.remember_route(&unsupported, irq),
-            Err(IrqError::Unsupported)
-        );
-
-        let out_of_input_range = AcpiGsiRoute {
-            controller_input: 64,
-            ..route
-        };
-        assert_eq!(
-            routes.remember_route(&out_of_input_range, irq),
-            Err(IrqError::Unsupported)
+            result,
+            Err(CascadeTransitionError::Rollback {
+                local: 7,
+                rollback: 9,
+            })
         );
     }
 

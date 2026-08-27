@@ -14,7 +14,6 @@ extern crate alloc;
 
 use core::{alloc::Layout, fmt, ptr::NonNull};
 
-use ax_errno::AxError;
 use strum::{IntoStaticStr, VariantArray};
 
 const PAGE_SIZE: usize = 0x1000;
@@ -103,38 +102,33 @@ impl fmt::Debug for Usages {
 }
 
 /// The error type used for allocation operations in `ax-alloc`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AllocError {
     /// Invalid size, alignment, or other input parameter.
+    #[error("invalid allocation parameter")]
     InvalidParam,
     /// The allocator has already been initialized.
+    #[error("allocator is already initialized")]
     AlreadyInitialized,
     /// A region overlaps with an existing managed region.
+    #[error("memory region overlaps an existing allocation region")]
     MemoryOverlap,
     /// Not enough memory is available to satisfy the request.
+    #[error("not enough memory")]
     NoMemory,
     /// Attempted to deallocate memory that was not allocated.
+    #[error("memory was not allocated by this allocator")]
     NotAllocated,
     /// The allocator has not been initialized.
+    #[error("allocator is not initialized")]
     NotInitialized,
     /// The requested address or entity was not found.
+    #[error("allocation was not found")]
     NotFound,
 }
 
 /// A [`Result`] alias with [`AllocError`] as the error type.
 pub type AllocResult<T = ()> = Result<T, AllocError>;
-
-impl From<AllocError> for AxError {
-    fn from(value: AllocError) -> Self {
-        match value {
-            AllocError::NoMemory => AxError::NoMemory,
-            AllocError::NotFound => AxError::NotFound,
-            AllocError::NotInitialized | AllocError::AlreadyInitialized => AxError::BadState,
-            AllocError::MemoryOverlap => AxError::AlreadyExists,
-            AllocError::InvalidParam | AllocError::NotAllocated => AxError::InvalidInput,
-        }
-    }
-}
 
 /// Unified allocator operations provided by all `ax-alloc` backends.
 pub trait AllocatorOps {

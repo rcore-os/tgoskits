@@ -3,29 +3,29 @@
 
 use core::ffi::{CStr, c_char};
 
-use ax_errno::{LinuxError, LinuxResult};
+use crate::{PosixError, PosixResult};
 
-pub fn char_ptr_to_str<'a>(str: *const c_char) -> LinuxResult<&'a str> {
+pub fn char_ptr_to_str<'a>(str: *const c_char) -> PosixResult<&'a str> {
     if str.is_null() {
-        Err(LinuxError::EFAULT)
+        Err(PosixError::EFAULT)
     } else {
         unsafe { CStr::from_ptr(str) }
             .to_str()
-            .map_err(|_| LinuxError::EINVAL)
+            .map_err(|_| PosixError::EINVAL)
     }
 }
 
-pub fn check_null_ptr<T>(ptr: *const T) -> LinuxResult {
+pub fn check_null_ptr<T>(ptr: *const T) -> PosixResult {
     if ptr.is_null() {
-        Err(LinuxError::EFAULT)
+        Err(PosixError::EFAULT)
     } else {
         Ok(())
     }
 }
 
-pub fn check_null_mut_ptr<T>(ptr: *mut T) -> LinuxResult {
+pub fn check_null_mut_ptr<T>(ptr: *mut T) -> PosixResult {
     if ptr.is_null() {
-        Err(LinuxError::EFAULT)
+        Err(PosixError::EFAULT)
     } else {
         Ok(())
     }
@@ -34,15 +34,15 @@ pub fn check_null_mut_ptr<T>(ptr: *mut T) -> LinuxResult {
 macro_rules! syscall_body {
     ($fn: ident, $($stmt: tt)*) => {{
         #[allow(clippy::redundant_closure_call)]
-        let res = (|| -> ax_errno::LinuxResult<_> { $($stmt)* })();
+        let res = (|| -> crate::PosixResult<_> { $($stmt)* })();
         match res {
-            Ok(_) | Err(ax_errno::LinuxError::EAGAIN) => debug!(concat!(stringify!($fn), " => {:?}"),  res),
+            Ok(_) | Err(crate::PosixError::EAGAIN) => debug!(concat!(stringify!($fn), " => {:?}"),  res),
             Err(_) => info!(concat!(stringify!($fn), " => {:?}"), res),
         }
         match res {
             Ok(v) => v as _,
             Err(e) => {
-                -e.code() as _
+                -e.errno().into_raw() as _
             }
         }
     }};
@@ -51,11 +51,11 @@ macro_rules! syscall_body {
 macro_rules! syscall_body_no_debug {
     ($($stmt: tt)*) => {{
         #[allow(clippy::redundant_closure_call)]
-        let res = (|| -> ax_errno::LinuxResult<_> { $($stmt)* })();
+        let res = (|| -> crate::PosixResult<_> { $($stmt)* })();
         match res {
             Ok(v) => v as _,
             Err(e) => {
-                -e.code() as _
+                -e.errno().into_raw() as _
             }
         }
     }};

@@ -7,9 +7,12 @@ keywords = ["os", "driver", "network"]
 license = "MIT"
 name = "rd-net"
 repository.workspace = true
-version = "0.2.4"
+version = "0.3.0"
 
 [dependencies]
 dma-api.workspace = true
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 rdif-eth.workspace = true
+
+[dev-dependencies]
+ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }

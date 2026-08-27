@@ -79,7 +79,7 @@ impl fmt::Debug for HctxStartError {
 }
 
 struct HctxState {
-    info: IrqMutex<QueueInfo>,
+    queue_info: IrqMutex<QueueInfoEpoch>,
     submission_channels: IrqMutex<Vec<Arc<BoundedChannel<Submission>>>>,
     notification: Arc<dyn BlockNotification>,
     lifecycle_notification: Arc<dyn BlockNotification>,
@@ -127,7 +127,7 @@ impl Hctx {
         };
         let notification = ops.notification();
         let state = Arc::new(HctxState {
-            info: IrqMutex::new(info),
+            queue_info: IrqMutex::new(QueueInfoEpoch::new(info)),
             submission_channels: IrqMutex::new(Vec::new()),
             notification,
             lifecycle_notification: ops.notification(),
@@ -190,7 +190,11 @@ impl Hctx {
     }
 
     pub(super) fn info(&self) -> QueueInfo {
-        *self.state.info.lock()
+        self.state.queue_info.lock().published()
+    }
+
+    pub(super) fn freeze_queue_info(&self) {
+        self.state.queue_info.lock().freeze();
     }
 
     pub(super) fn add_submission_channel(
@@ -209,6 +213,11 @@ impl Hctx {
             .push(Arc::clone(&channel));
         self.state.notification.notify();
         Ok(channel)
+    }
+
+    #[cfg(test)]
+    pub(super) fn submission_channel_count(&self) -> usize {
+        self.state.submission_channels.lock().len()
     }
 
     pub(super) fn irq_target(&self, source_id: usize) -> IrqTarget {
@@ -595,22 +604,64 @@ fn drain_latched_irqs(
 
 fn refresh_queue_info(queue: &dyn HardwareQueue, state: &HctxState) -> Result<(), BlkError> {
     let observed = queue.info();
-    let mut published = state.info.lock();
-    // Channel capacity and preallocated submission scratch are fixed when the
-    // hctx starts. Identification may shrink a conservatively provisioned
-    // queue to the device's negotiated depth, but it must never grow beyond
-    // that allocation or change the queue identity.
-    if !queue_info_fits_provisioned(*published, observed) {
-        return Err(BlkError::InvalidRequest);
-    }
-    *published = observed;
-    Ok(())
+    state.queue_info.lock().observe(observed)
 }
 
 fn queue_info_fits_provisioned(provisioned: QueueInfo, observed: QueueInfo) -> bool {
     observed.id == provisioned.id
+        && observed.limits.max_inflight > 0
+        && observed.limits.max_submit_batch > 0
         && observed.limits.max_inflight <= provisioned.limits.max_inflight
         && observed.limits.max_submit_batch <= provisioned.limits.max_submit_batch
+        && observed.limits.max_submit_batch <= observed.limits.max_inflight
+}
+
+struct QueueInfoEpoch {
+    published: QueueInfo,
+    provisioned_max_inflight: usize,
+    provisioned_max_submit_batch: usize,
+    frozen: bool,
+}
+
+impl QueueInfoEpoch {
+    const fn new(published: QueueInfo) -> Self {
+        Self {
+            provisioned_max_inflight: published.limits.max_inflight,
+            provisioned_max_submit_batch: published.limits.max_submit_batch,
+            published,
+            frozen: false,
+        }
+    }
+
+    const fn published(&self) -> QueueInfo {
+        self.published
+    }
+
+    fn observe(&mut self, observed: QueueInfo) -> Result<(), BlkError> {
+        if self.frozen {
+            if observed == self.published {
+                return Ok(());
+            }
+            return Err(BlkError::InvalidRequest);
+        }
+        let provisioned = QueueInfo {
+            limits: rdif_block::QueueLimits {
+                max_inflight: self.provisioned_max_inflight,
+                max_submit_batch: self.provisioned_max_submit_batch,
+                ..self.published.limits
+            },
+            ..self.published
+        };
+        if !queue_info_fits_provisioned(provisioned, observed) {
+            return Err(BlkError::InvalidRequest);
+        }
+        self.published = observed;
+        Ok(())
+    }
+
+    fn freeze(&mut self) {
+        self.frozen = true;
+    }
 }
 
 fn set_hctx_fatal(state: &HctxState, fatal_error: &mut Option<BlkError>, error: BlkError) {

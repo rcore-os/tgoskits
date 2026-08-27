@@ -273,27 +273,37 @@ pub struct IrqStatus {
 }
 
 /// IRQ framework errors.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum IrqError {
     /// Invalid IRQ number.
+    #[error("invalid IRQ number")]
     InvalidIrq,
     /// Invalid CPU id.
+    #[error("invalid CPU id")]
     InvalidCpu,
     /// The target CPU is offline.
+    #[error("target CPU is offline")]
     CpuOffline,
     /// A synchronous IRQ operation timed out.
+    #[error("IRQ operation timed out")]
     Timeout,
     /// IRQ line/action sharing rules reject the operation.
+    #[error("IRQ line is busy")]
     Busy,
     /// Allocation failed.
+    #[error("IRQ allocation failed")]
     NoMemory,
     /// The requested descriptor or action does not exist.
+    #[error("IRQ descriptor or action was not found")]
     NotFound,
     /// This operation is not legal from IRQ context.
+    #[error("operation is not legal from IRQ context")]
     InIrqContext,
     /// The platform adapter does not support this operation.
+    #[error("IRQ operation is not supported")]
     Unsupported,
     /// The platform controller reported an error.
+    #[error("interrupt controller failed")]
     Controller,
 }
 

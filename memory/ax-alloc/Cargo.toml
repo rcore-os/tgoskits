@@ -1,6 +1,6 @@
 [package]
 name = "ax-alloc"
-version = "0.8.15"
+version = "0.8.16"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -20,7 +20,6 @@ rustdoc-args = ["--cfg", "doc_cfg"]
 
 [dependencies]
 rlsf = "0.2"
-ax-errno.workspace = true
 ax-sync.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, optional = true }
@@ -30,3 +29,4 @@ buddy-slab-allocator = { workspace = true, optional = true }
 cfg-if.workspace = true
 log.workspace = true
 strum = { version = "0.27.2", default-features = false, features = ["derive"] }
+thiserror.workspace = true

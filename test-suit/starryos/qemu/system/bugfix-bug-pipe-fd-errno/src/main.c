@@ -11,7 +11,7 @@
  *   - fdatasync on pipe   → EINVAL
  *   - fadvise on pipe     → ESPIPE
  *
- * StarryOS bug: File::from_fd() returns AxError::BrokenPipe (EPIPE)
+ * StarryOS bug: File::from_fd() returned StarryError::BrokenPipe (EPIPE)
  * for all of these instead of the correct per-syscall errno.
  */
 #define _GNU_SOURCE

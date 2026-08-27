@@ -1,0 +1,23 @@
+schema_version = 3
+phase = "test"
+group = "Workspace"
+default_runner = "qcs"
+
+[[check]]
+id = "run-clippy"
+name = "Incremental Clippy"
+fetch_depth = "100"
+download_xtask_bin_artifact = true
+command = '''
+cargo xtask clippy --since "$SINCE_REF"
+'''
+
+[[check]]
+id = "test-with-std"
+name = "std tests"
+command = '''
+cargo xtask test
+'''
+pull_request_command = '''
+cargo xtask test --since "$SINCE_REF"
+'''

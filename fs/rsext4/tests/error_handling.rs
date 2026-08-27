@@ -1,7 +1,7 @@
 //! Error-path tests for filesystem operations.
 //!
-//! These tests intentionally exercise unusual or degraded scenarios and record
-//! the current behavior, even when the behavior is not yet fully strict.
+//! Every case fixes one observable result so an error-path regression cannot
+//! be reported as a passing test.
 
 use std::{cell::Cell, rc::Rc};
 
@@ -179,20 +179,17 @@ mod error_handling_tests {
             read_file(&mut jbd2_dev, &mut fs, "/error_test/test.txt").expect("read_file failed");
         assert_eq!(data, test_data.to_vec());
 
-        let _ = umount(fs, &mut jbd2_dev);
+        umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
-    /// Records behavior at several filesystem-size and filename-length boundaries
-    /// without over-constraining implementation-dependent cases.
+    /// Verifies filesystem-size and ext4 component-length boundaries.
     #[test]
     fn test_filesystem_boundaries() {
         // Probe mkfs behavior on a relatively small backing device.
         let small_device = ErrorMockDevice::new(20 * 1024 * 1024); // 20MB
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, small_device, true);
 
-        let result = mkfs(&mut jbd2_dev);
-        println!("mkfs on small device result: {:?}", result);
-        // Document current behavior rather than asserting a fixed policy.
+        mkfs(&mut jbd2_dev).expect("20 MiB filesystem must format successfully");
 
         // Repeat the rest of the checks on a normal-sized device.
         let normal_device = ErrorMockDevice::new(50 * 1024 * 1024); // 50MB
@@ -207,50 +204,24 @@ mod error_handling_tests {
 
         // Check the exact-name-limit case.
         let long_name = "a".repeat(rsext4::DIRNAME_LEN);
-        let _ = mkfile(
+        mkfile(
             &mut jbd2_dev,
             &mut fs,
-            &format!("/boundary/{}.txt", long_name),
+            &format!("/boundary/{long_name}"),
             Some(b"test"),
             None,
-        );
-        // And record the over-limit case, which may still be implementation-defined.
+        )
+        .expect("255-byte ext4 component must be accepted");
         let too_long_name = "a".repeat(rsext4::DIRNAME_LEN + 1);
-        let result = mkfile(
+        let error = mkfile(
             &mut jbd2_dev,
             &mut fs,
-            &format!("/boundary/{}.txt", too_long_name),
+            &format!("/boundary/{too_long_name}"),
             Some(b"test"),
             None,
-        );
-        println!("mkfile with long filename result: {:?}", result);
-
-        umount(fs, &mut jbd2_dev).expect("umount failed");
-    }
-
-    /// Records how the current path parser handles empty, root, duplicated, and
-    /// NUL-containing paths without forcing a stricter policy than implemented.
-    #[test]
-    fn test_invalid_paths() {
-        let device = ErrorMockDevice::new(100 * 1024 * 1024); // 100MB
-        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
-        mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
-
-        // Empty paths are recorded for documentation purposes.
-        let result = mkfile(&mut jbd2_dev, &mut fs, "", Some(b"test"), None);
-        println!("mkfile with empty path result: {:?}", result);
-
-        // Root-only paths are also documented rather than asserted.
-        let result = mkfile(&mut jbd2_dev, &mut fs, "/", Some(b"test"), None);
-        println!("mkfile with root path result: {:?}", result);
-
-        // Repeated separators may be normalized by the current implementation.
-        let _ = mkdir(&mut jbd2_dev, &mut fs, "//invalid//path//");
-
-        // ext4 only rejects a narrow set of characters, so keep this as observed behavior.
-        let _ = mkdir(&mut jbd2_dev, &mut fs, "/path/with\0null");
+        )
+        .expect_err("256-byte ext4 component must be rejected");
+        assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
@@ -324,6 +295,7 @@ mod error_handling_tests {
 
         // Create large files in a loop until allocation eventually stops succeeding.
         let mut file_count = 0;
+        let exhaustion_error;
         let file_size = 1024 * 1024; // 1 MiB per file.
         let large_data = vec![b'X'; file_size];
 
@@ -333,25 +305,29 @@ mod error_handling_tests {
 
             match result {
                 Ok(_) => file_count += 1,
-                Err(_) => break,
+                Err(error) => {
+                    exhaustion_error = error;
+                    break;
+                }
             }
 
             // Guard against an infinite loop if the device is larger than expected.
-            if file_count > 40 {
-                break;
-            }
+            assert!(
+                file_count <= 40,
+                "fixture must exhaust before its safety bound"
+            );
         }
 
         // At least one file should have been created before exhaustion.
         assert!(file_count > 0);
+        assert_eq!(exhaustion_error.kind(), Ext4ErrorKind::NoSpace);
 
         // The last successful file should still contain the full payload.
         let last_filename = format!("/exhaustion/file{}.dat", file_count - 1);
         let data = read_file(&mut jbd2_dev, &mut fs, &last_filename).expect("read_file failed");
         assert_eq!(data, large_data);
 
-        // Unmount may fail after exhaustion; the test only cares about data survival.
-        let _ = umount(fs, &mut jbd2_dev);
+        umount(fs, &mut jbd2_dev).expect("full filesystem must still unmount cleanly");
     }
 
     /// A device whose size does not end on a full block-group boundary must
@@ -382,53 +358,6 @@ mod error_handling_tests {
                 "partial-group padding bit {bit} should be marked allocated"
             );
         }
-
-        let _ = umount(fs, &mut jbd2_dev);
-    }
-
-    /// Simulates an abrupt drop of open handles and remounts the filesystem to
-    /// document current recovery behavior after an unclean shutdown.
-    #[test]
-    fn test_inconsistent_state_handling() {
-        let device = ErrorMockDevice::new(100 * 1024 * 1024); // 100MB
-        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
-        mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
-
-        mkdir(&mut jbd2_dev, &mut fs, "/state_test").expect("mkdir failed");
-
-        mkfile(
-            &mut jbd2_dev,
-            &mut fs,
-            "/state_test/consistent.txt",
-            Some(b"original data"),
-            None,
-        )
-        .expect("mkfile failed");
-
-        // Keep a handle open, write some data, then drop everything abruptly.
-        let mut file =
-            open(&mut jbd2_dev, &mut fs, "/state_test/consistent.txt", true).expect("open failed");
-
-        write_at(&mut jbd2_dev, &mut fs, &mut file, b"partial").expect("write_at failed");
-
-        drop(file);
-        drop(fs);
-
-        // A power cut destroys the in-memory running/checkpoint owners. Build
-        // a fresh JBD2 owner around the retained device bytes instead of
-        // silently replacing live journal state on the same mount object.
-        let device = jbd2_dev.into_inner();
-        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
-        // Remount and record what the filesystem reports for the file afterwards.
-        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
-
-        let data = read_file(&mut jbd2_dev, &mut fs, "/state_test/consistent.txt");
-
-        println!("File data after remount: {:?}", data);
-        // No strict assertion here; the purpose is to document current recovery semantics.
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }

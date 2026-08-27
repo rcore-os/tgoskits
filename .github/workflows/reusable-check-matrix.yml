@@ -1,0 +1,163 @@
+name: Reusable Check Matrix
+
+on:
+  workflow_call:
+    inputs:
+      matrix_json:
+        description: JSON matrix emitted by scripts/test/ci_plan.py.
+        required: true
+        type: string
+      fail_fast:
+        description: Cancel sibling matrix entries after a failure.
+        required: false
+        type: boolean
+        default: true
+      max_parallel:
+        description: Maximum number of matrix entries that may run concurrently.
+        required: false
+        type: number
+        default: 256
+      save_cache:
+        description: Allow rust-cache to save updated entries.
+        required: false
+        type: boolean
+        default: false
+      since_ref:
+        description: Base revision exposed to incremental check commands.
+        required: false
+        type: string
+        default: ""
+    secrets:
+      CLAW_API_KEY:
+        required: false
+
+jobs:
+  run:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: ${{ inputs.fail_fast }}
+      max-parallel: ${{ inputs.max_parallel }}
+      matrix: ${{ fromJSON(inputs.matrix_json) }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    container:
+      image: ${{ matrix.container_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ matrix.fetch_depth }}
+
+      - name: Preflight self-hosted host runner
+        if: contains(toJSON(matrix.runs_on), 'self-hosted')
+        env:
+          REQUIRE_KVM: ${{ matrix.require_kvm }}
+        run: |
+          set -euo pipefail
+          command -v rustc
+          command -v cargo
+          rustc -vV
+          cargo -V
+          if [ "${REQUIRE_KVM}" = "true" ]; then
+            test -r /dev/kvm && test -w /dev/kvm
+          fi
+
+      - name: Preflight container
+        if: matrix.container_preflight != 'none'
+        env:
+          CONTAINER_PREFLIGHT: ${{ matrix.container_preflight }}
+        run: |
+          set -euo pipefail
+          command -v git
+          git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --is-inside-work-tree
+          for emulator in \
+            qemu-aarch64-static \
+            qemu-riscv64-static \
+            qemu-loongarch64-static \
+            qemu-x86_64-static
+          do
+            command -v "${emulator}"
+          done
+          if [ "${CONTAINER_PREFLIGHT}" = "full" ]; then
+            for arch in aarch64 riscv64 x86_64 loongarch64; do
+              command -v "${arch}-linux-musl-cc"
+            done
+          fi
+
+      - name: Restore Rust cache
+        if: matrix.cache_key != ''
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.cache_key }}
+          save-if: ${{ inputs.save_cache }}
+
+      - name: Download tg-xtask binary artifact
+        if: matrix.download_xtask_bin_artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.xtask_bin_artifact_name }}
+          path: ${{ runner.temp }}/xtask-bin
+
+      - name: Restore tg-xtask binary artifact
+        if: matrix.download_xtask_bin_artifact
+        run: |
+          set -euo pipefail
+          artifact_path="${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar"
+          xtask_path="${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+          tar -xf "${artifact_path}" -C "${GITHUB_WORKSPACE}"
+          test -f "${xtask_path}"
+          chmod +x "${xtask_path}"
+          test -x "${xtask_path}"
+
+      - name: Show Rust version
+        run: rustc --version
+
+      - name: Run command
+        env:
+          STARRY_APK_REGION: ${{ matrix.apk_region }}
+          SINCE_REF: ${{ inputs.since_ref }}
+          CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+          REUSABLE_COMMAND: ${{ matrix.command }}
+          USE_XTASK_BIN: ${{ matrix.download_xtask_bin_artifact }}
+        run: |
+          set -eo pipefail
+
+          command_text="${REUSABLE_COMMAND}"
+          if [ "${USE_XTASK_BIN}" = "true" ] && [[ "${command_text}" != *$'\n'* ]]; then
+            if [[ "${command_text}" == "cargo xtask" || "${command_text}" == cargo\ xtask\ * ]]; then
+              command_text="target/debug/tg-xtask${command_text#cargo xtask}"
+            fi
+          fi
+
+          command_file="${RUNNER_TEMP}/reusable-command.sh"
+          printf '%s\n' "${command_text}" > "${command_file}"
+          if bash -e -o pipefail "${command_file}"; then
+            :
+          else
+            status=$?
+            echo "Command failed; resolved command:"
+            sed 's/^/+ /' "${command_file}"
+            exit "${status}"
+          fi
+
+      - name: Package tg-xtask binary artifact
+        if: success() && matrix.upload_xtask_bin_artifact
+        run: |
+          set -euo pipefail
+          test -x target/debug/tg-xtask
+          tar -cf "${RUNNER_TEMP}/tg-xtask-bin.tar" target/debug/tg-xtask
+
+      - name: Upload tg-xtask binary artifact
+        if: success() && matrix.upload_xtask_bin_artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.xtask_bin_artifact_name }}
+          path: ${{ runner.temp }}/tg-xtask-bin.tar
+          if-no-files-found: error
+          retention-days: 1

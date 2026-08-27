@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use core::mem::size_of;
 
-use axfs_ng_vfs::{DeviceId, VfsResult};
+use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 use bytemuck::AnyBitPattern;
 use crab_usb::{
     ProbedDevice,
@@ -167,33 +167,37 @@ pub(super) fn root_hub_snapshot(bus_num: u8, speed: Speed) -> UsbDeviceSnapshot 
 pub(super) fn read_usbdevfs_ctrltransfer(arg: usize) -> VfsResult<UsbdevfsCtrlTransfer> {
     (arg as *const UsbdevfsCtrlTransfer)
         .vm_read()
-        .map_err(Into::into)
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_bulktransfer(arg: usize) -> VfsResult<UsbdevfsBulkTransfer> {
     (arg as *const UsbdevfsBulkTransfer)
         .vm_read()
-        .map_err(Into::into)
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_setinterface(arg: usize) -> VfsResult<UsbdevfsSetInterface> {
     (arg as *const UsbdevfsSetInterface)
         .vm_read()
-        .map_err(Into::into)
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_ioctl(arg: usize) -> VfsResult<UsbdevfsIoctl> {
-    (arg as *const UsbdevfsIoctl).vm_read().map_err(Into::into)
+    (arg as *const UsbdevfsIoctl)
+        .vm_read()
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_disconnect_claim(arg: usize) -> VfsResult<UsbdevfsDisconnectClaim> {
     (arg as *const UsbdevfsDisconnectClaim)
         .vm_read()
-        .map_err(Into::into)
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn read_usbdevfs_u32(arg: usize) -> VfsResult<u32> {
-    (arg as *const u32).vm_read().map_err(Into::into)
+    (arg as *const u32)
+        .vm_read()
+        .map_err(|error| VfsError::from(crate::StarryError::from(error)))
 }
 
 pub(super) fn snapshot_probed_device(
@@ -318,29 +322,6 @@ fn root_hub_descriptor_blob(speed: Speed) -> Vec<u8> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn high_speed_root_hub_uses_usb2_linux_foundation_id() {
-        let snapshot = root_hub_snapshot(1, Speed::High);
-
-        assert_eq!(&snapshot.descriptor_blob[2..4], &0x0200u16.to_le_bytes());
-        assert_eq!(&snapshot.descriptor_blob[8..10], &0x1d6bu16.to_le_bytes());
-        assert_eq!(&snapshot.descriptor_blob[10..12], &0x0002u16.to_le_bytes());
-    }
-
-    #[test]
-    fn superspeed_root_hub_keeps_usb3_linux_foundation_id() {
-        let snapshot = root_hub_snapshot(1, Speed::SuperSpeedPlus);
-
-        assert_eq!(&snapshot.descriptor_blob[2..4], &0x0300u16.to_le_bytes());
-        assert_eq!(&snapshot.descriptor_blob[8..10], &0x1d6bu16.to_le_bytes());
-        assert_eq!(&snapshot.descriptor_blob[10..12], &0x0003u16.to_le_bytes());
-    }
-}
-
 fn endpoint_attributes(transfer_type: usb_if::descriptor::EndpointType) -> u8 {
     match transfer_type {
         usb_if::descriptor::EndpointType::Control => 0,
@@ -368,4 +349,27 @@ pub(super) fn parse_numeric_component(name: &str) -> Option<u8> {
 pub(super) fn usb_device_id(bus_num: u8, device_num: u8) -> DeviceId {
     let minor = ((bus_num.saturating_sub(1) as u32) * 128) + device_num.saturating_sub(1) as u32;
     DeviceId::new(USB_MAJOR, minor)
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn high_speed_root_hub_uses_usb2_linux_foundation_id() {
+        let snapshot = root_hub_snapshot(1, Speed::High);
+
+        assert_eq!(&snapshot.descriptor_blob[2..4], &0x0200u16.to_le_bytes());
+        assert_eq!(&snapshot.descriptor_blob[8..10], &0x1d6bu16.to_le_bytes());
+        assert_eq!(&snapshot.descriptor_blob[10..12], &0x0002u16.to_le_bytes());
+    }
+
+    #[test]
+    fn superspeed_root_hub_keeps_usb3_linux_foundation_id() {
+        let snapshot = root_hub_snapshot(1, Speed::SuperSpeedPlus);
+
+        assert_eq!(&snapshot.descriptor_blob[2..4], &0x0300u16.to_le_bytes());
+        assert_eq!(&snapshot.descriptor_blob[8..10], &0x1d6bu16.to_le_bytes());
+        assert_eq!(&snapshot.descriptor_blob[10..12], &0x0003u16.to_le_bytes());
+    }
 }

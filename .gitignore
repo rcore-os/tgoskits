@@ -55,6 +55,7 @@ __pycache__/
 .board*
 
 # Tooling artifacts
+.direnv/
 .codex
 .agents
 .image.toml

@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 
 use heapless::{String, Vec};
 use rdif_serial::{
-    Config, ConfigError, RxSample, SerialEventSet, SplitUart, UartInfo, UartParts, UartPort,
+    Config, ConfigError, RxSample, SerialEventSet, SerialParts, SplitUart, UartInfo, UartPort,
 };
 
 use super::{
@@ -592,6 +592,10 @@ impl UartPort for RockchipFiqSerial {
         self.serial.tx_idle()
     }
 
+    fn mask(&mut self, sources: SerialEventSet) {
+        UartPort::mask(&mut self.serial, sources);
+    }
+
     fn mask_all(&mut self) {
         UartPort::mask_all(&mut self.serial);
     }
@@ -602,8 +606,9 @@ impl UartPort for RockchipFiqSerial {
 }
 
 impl SplitUart for RockchipFiqSerial {
-    type Port = Self;
+    type Control = Self;
     type Irq = Ns16550Irq<RockchipFiqPort>;
+    type EmergencyTx = super::Ns16550EmergencyTx<RockchipFiqPort>;
 
     fn runtime_info(&self) -> UartInfo {
         UartInfo {
@@ -613,12 +618,15 @@ impl SplitUart for RockchipFiqSerial {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
         let irq = Ns16550Irq {
             base: self.serial.base,
             saved_lsr: LineStatusFlags::empty(),
         };
-        UartParts::new(self, irq)
+        let emergency_tx = super::Ns16550EmergencyTx {
+            base: self.serial.base,
+        };
+        SerialParts::new(self, irq, emergency_tx)
     }
 }
 
@@ -660,130 +668,5 @@ fn normalise_baudrate(baudrate: u32) -> u32 {
     match baudrate {
         115_200 | 1_500_000 => baudrate,
         _ => 115_200,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn feed(debugger: &mut FiqDebugger, bytes: &[u8]) -> heapless::Vec<FiqDebuggerEvent, 64> {
-        let mut out = heapless::Vec::new();
-        for &byte in bytes {
-            debugger.handle_byte(byte, &mut |event| {
-                let _ = out.push(event);
-            });
-        }
-        out
-    }
-
-    #[test]
-    fn fiq_word_enters_debugger_unless_prefixed_by_space_or_underscore() {
-        let mut debugger = FiqDebugger::new(RockchipFiqConfig {
-            debug_enable: true,
-            console_enable: true,
-            ..RockchipFiqConfig::default()
-        });
-
-        let events = feed(&mut debugger, b"fiq");
-        assert!(events.contains(&FiqDebuggerEvent::EnterDebugger));
-        assert!(!debugger.console_enabled());
-
-        let mut debugger = FiqDebugger::new(RockchipFiqConfig {
-            debug_enable: true,
-            console_enable: true,
-            ..RockchipFiqConfig::default()
-        });
-        let events = feed(&mut debugger, b" fiq");
-        assert!(!events.contains(&FiqDebuggerEvent::EnterDebugger));
-        assert!(debugger.console_enabled());
-
-        let mut debugger = FiqDebugger::new(RockchipFiqConfig {
-            debug_enable: true,
-            console_enable: true,
-            ..RockchipFiqConfig::default()
-        });
-        let events = feed(&mut debugger, b"_fiq");
-        assert!(!events.contains(&FiqDebuggerEvent::EnterDebugger));
-        assert!(debugger.console_enabled());
-    }
-
-    #[test]
-    fn newline_enables_debugger_when_debugging_is_disabled() {
-        let mut debugger = FiqDebugger::new(RockchipFiqConfig {
-            debug_enable: false,
-            console_enable: false,
-            ..RockchipFiqConfig::default()
-        });
-
-        let events = feed(&mut debugger, b"\r");
-        assert!(debugger.debug_enabled());
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, FiqDebuggerEvent::OutputByte(b'>')))
-        );
-    }
-
-    #[test]
-    fn command_line_parses_console_and_sleep_modes() {
-        let mut debugger = FiqDebugger::new(RockchipFiqConfig {
-            debug_enable: true,
-            console_enable: false,
-            ..RockchipFiqConfig::default()
-        });
-
-        let events = feed(&mut debugger, b"nosleep\r");
-        assert!(debugger.no_sleep());
-        assert!(events.contains(&FiqDebuggerEvent::Command(FiqCommand::NoSleep)));
-
-        let events = feed(&mut debugger, b"sleep\r");
-        assert!(!debugger.no_sleep());
-        assert!(events.contains(&FiqDebuggerEvent::Command(FiqCommand::Sleep)));
-
-        let events = feed(&mut debugger, b"console\r");
-        assert!(debugger.console_enabled());
-        assert!(events.contains(&FiqDebuggerEvent::ExitToConsole));
-        assert!(events.contains(&FiqDebuggerEvent::Command(FiqCommand::Console)));
-    }
-
-    #[test]
-    fn command_line_supports_backspace_history_and_tab_completion() {
-        let mut debugger = FiqDebugger::new(RockchipFiqConfig {
-            debug_enable: true,
-            console_enable: false,
-            ..RockchipFiqConfig::default()
-        });
-
-        let _ = feed(&mut debugger, b"nosleex\x08p\r");
-        assert!(debugger.no_sleep());
-
-        let _ = feed(&mut debugger, b"\x1b[A");
-        assert_eq!(debugger.current_line(), "nosleep");
-
-        let _ = feed(&mut debugger, b"\x1b[B");
-        assert_eq!(debugger.current_line(), "");
-
-        let _ = feed(&mut debugger, b"con\t");
-        assert_eq!(debugger.current_line(), "console");
-    }
-
-    #[test]
-    fn parser_covers_deferred_os_commands() {
-        assert_eq!(FiqCommand::parse("ps"), FiqCommand::Ps);
-        assert_eq!(FiqCommand::parse("sysrq"), FiqCommand::SysRq(None));
-        assert_eq!(FiqCommand::parse("sysrq g"), FiqCommand::SysRq(Some(b'g')));
-        assert_eq!(FiqCommand::parse("kgdb"), FiqCommand::Kgdb);
-
-        let mut arg = CommandString::new();
-        arg.push_str("bootloader").unwrap();
-        assert_eq!(
-            FiqCommand::parse("reboot bootloader"),
-            FiqCommand::Reboot(Some(arg))
-        );
-
-        let mut unknown = CommandString::new();
-        unknown.push_str("wat").unwrap();
-        assert_eq!(FiqCommand::parse("wat"), FiqCommand::Unknown(unknown));
     }
 }

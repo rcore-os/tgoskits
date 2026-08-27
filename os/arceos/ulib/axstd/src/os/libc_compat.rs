@@ -1,23 +1,21 @@
-#[cfg(feature = "multitask")]
-use alloc::boxed::Box;
 #[cfg(feature = "fs")]
 use alloc::string::{String, ToString};
-#[cfg(feature = "multitask")]
-use alloc::sync::Arc;
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
     ffi::{c_char, c_int, c_long, c_uint, c_void},
     mem::{align_of, size_of},
     ptr::{self, NonNull},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    time::Duration,
 };
-#[cfg(feature = "multitask")]
-use core::{sync::atomic::AtomicUsize, time::Duration};
 
-use ax_errno::LinuxError;
 use ax_lazyinit::LazyLock;
 use ax_runtime::sync::SpinLock as Mutex;
+use syscalls::Errno;
+
+#[cfg(feature = "fs")]
+use crate::error::api_error_to_errno;
 
 type SizeT = libc::size_t;
 type SSizeT = libc::ssize_t;
@@ -34,19 +32,12 @@ const FUTEX_WAKE: c_int = 1;
 const FUTEX_WAIT_BITSET: c_int = 9;
 const FUTEX_WAKE_BITSET: c_int = 10;
 const FUTEX_CMD_MASK: c_int = !(libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_CLOCK_REALTIME);
-#[cfg(feature = "multitask")]
 const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
-#[cfg(feature = "multitask")]
 const MAX_PTHREAD_KEYS: usize = 1024;
-#[cfg(feature = "multitask")]
 const PTHREAD_DESTRUCTOR_ITERATIONS: usize = 4;
-#[cfg(feature = "multitask")]
 const PTHREAD_COND_SIZE: usize = 48;
-#[cfg(feature = "multitask")]
 const PTHREAD_ATTR_SIZE: usize = 56;
-#[cfg(feature = "multitask")]
 const PTHREAD_ATTR_STACK_SIZE_OFFSET: usize = 8;
-#[cfg(feature = "multitask")]
 const DEFAULT_STACK_SIZE: usize = 2 * 1024 * 1024;
 #[cfg(feature = "fs")]
 const LINUX_DIRENT64_NAME_OFFSET: usize = 19;
@@ -147,7 +138,7 @@ fn ax_stat_to_libc_stat(src: AxStat) -> libc::stat {
 #[cfg(feature = "fs")]
 fn write_libc_stat(buf: *mut libc::stat, stat: AxStat) -> c_int {
     if buf.is_null() {
-        set_errno(LinuxError::EFAULT.code());
+        set_errno(Errno::EFAULT.into_raw());
         -1
     } else {
         unsafe { buf.write(ax_stat_to_libc_stat(stat)) };
@@ -164,13 +155,19 @@ fn stat_ret_to_libc(ret: c_int, stat: AxStat, buf: *mut libc::stat) -> c_int {
     }
 }
 
-fn fail(err: LinuxError) -> c_int {
-    set_errno(err as i32);
+fn fail(err: Errno) -> c_int {
+    set_errno(err.into_raw());
     -1
 }
 
 fn is_stdio_fd(fd: c_int) -> bool {
     matches!(fd, libc::STDOUT_FILENO | libc::STDERR_FILENO)
+}
+
+fn write_early_stdio_text(bytes: &[u8]) -> Result<(), Errno> {
+    ax_api::stdio::ax_console_write_bytes(bytes)
+        .map(|_| ())
+        .map_err(|_| Errno::EIO)
 }
 
 fn early_stdio_write(fd: c_int, buf: *const c_void, count: SizeT) -> Option<SSizeT> {
@@ -181,16 +178,19 @@ fn early_stdio_write(fd: c_int, buf: *const c_void, count: SizeT) -> Option<SSiz
         return Some(0);
     }
     if buf.is_null() && count != 0 {
-        set_errno(LinuxError::EFAULT as i32);
+        set_errno(Errno::EFAULT.into_raw());
         return Some(-1);
     }
     if count > isize::MAX as usize {
-        set_errno(LinuxError::EINVAL as i32);
+        set_errno(Errno::EINVAL.into_raw());
         return Some(-1);
     }
 
     let bytes = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), count) };
-    ax_hal::console::write_text_bytes(bytes);
+    if let Err(error) = write_early_stdio_text(bytes) {
+        set_errno(error.into_raw());
+        return Some(-1);
+    }
     Some(count as SSizeT)
 }
 
@@ -199,14 +199,14 @@ fn early_stdio_writev(fd: c_int, iov: *const libc::iovec, iocnt: c_int) -> Optio
         return None;
     }
     if !(0..=1024).contains(&iocnt) {
-        set_errno(LinuxError::EINVAL as i32);
+        set_errno(Errno::EINVAL.into_raw());
         return Some(-1);
     }
     if iocnt == 0 {
         return Some(0);
     }
     if iov.is_null() && iocnt != 0 {
-        set_errno(LinuxError::EFAULT as i32);
+        set_errno(Errno::EFAULT.into_raw());
         return Some(-1);
     }
 
@@ -217,20 +217,23 @@ fn early_stdio_writev(fd: c_int, iov: *const libc::iovec, iocnt: c_int) -> Optio
             continue;
         }
         if iov.iov_base.is_null() {
-            set_errno(LinuxError::EFAULT as i32);
+            set_errno(Errno::EFAULT.into_raw());
             return Some(-1);
         }
         let Some(next) = written.checked_add(iov.iov_len) else {
-            set_errno(LinuxError::EINVAL as i32);
+            set_errno(Errno::EINVAL.into_raw());
             return Some(-1);
         };
         if next > isize::MAX as usize {
-            set_errno(LinuxError::EINVAL as i32);
+            set_errno(Errno::EINVAL.into_raw());
             return Some(-1);
         }
 
         let bytes = unsafe { core::slice::from_raw_parts(iov.iov_base.cast::<u8>(), iov.iov_len) };
-        ax_hal::console::write_text_bytes(bytes);
+        if let Err(error) = write_early_stdio_text(bytes) {
+            set_errno(error.into_raw());
+            return Some(-1);
+        }
         written = next;
     }
     Some(written as SSizeT)
@@ -242,32 +245,32 @@ fn align_up_checked(addr: usize, align: usize) -> Option<usize> {
         .map(|value| value & !(align - 1))
 }
 
-fn alloc_with_alignment(size: SizeT, alignment: usize) -> Result<*mut c_void, LinuxError> {
+fn alloc_with_alignment(size: SizeT, alignment: usize) -> Result<*mut c_void, Errno> {
     if !alignment.is_power_of_two() {
-        return Err(LinuxError::EINVAL);
+        return Err(Errno::EINVAL);
     }
 
     let size = size.max(1);
     let alignment = alignment.max(MALLOC_ALIGN);
     let Some(extra) = size_of::<MemoryControlBlock>().checked_add(alignment - 1) else {
-        return Err(LinuxError::ENOMEM);
+        return Err(Errno::ENOMEM);
     };
     let Some(total) = size.checked_add(extra) else {
-        return Err(LinuxError::ENOMEM);
+        return Err(Errno::ENOMEM);
     };
-    let layout = Layout::from_size_align(total, CTRL_BLK_ALIGN).map_err(|_| LinuxError::EINVAL)?;
+    let layout = Layout::from_size_align(total, CTRL_BLK_ALIGN).map_err(|_| Errno::EINVAL)?;
     let ptr = ax_alloc::global_allocator()
         .alloc(layout)
-        .map_err(|_| LinuxError::ENOMEM)?;
+        .map_err(|_| Errno::ENOMEM)?;
 
     let base_addr = ptr.as_ptr() as usize;
     let Some(data_start) = base_addr.checked_add(size_of::<MemoryControlBlock>()) else {
         ax_alloc::global_allocator().dealloc(ptr, layout);
-        return Err(LinuxError::ENOMEM);
+        return Err(Errno::ENOMEM);
     };
     let Some(user_addr) = align_up_checked(data_start, alignment) else {
         ax_alloc::global_allocator().dealloc(ptr, layout);
-        return Err(LinuxError::ENOMEM);
+        return Err(Errno::ENOMEM);
     };
     let header_addr = user_addr - size_of::<MemoryControlBlock>();
     unsafe {
@@ -304,27 +307,10 @@ pub unsafe extern "C" fn __cxa_thread_atexit_impl(
     0
 }
 
-#[cfg(not(feature = "multitask"))]
-static CXA_THREAD_DTORS: Mutex<Vec<CxaThreadDtor>> = Mutex::new(Vec::new());
-
-#[cfg(not(feature = "multitask"))]
-fn push_cxa_thread_dtor(record: CxaThreadDtor) {
-    CXA_THREAD_DTORS.lock().push(record);
-}
-
-#[cfg(feature = "multitask")]
 fn push_cxa_thread_dtor(record: CxaThreadDtor) {
     pthread::push_cxa_thread_dtor(record);
 }
 
-#[cfg(not(feature = "multitask"))]
-fn run_cxa_thread_dtors() {
-    while let Some(record) = { CXA_THREAD_DTORS.lock().pop() } {
-        unsafe { (record.dtor)(record.arg) };
-    }
-}
-
-#[cfg(feature = "multitask")]
 fn run_cxa_thread_dtors() {
     pthread::run_cxa_thread_dtors();
 }
@@ -340,9 +326,7 @@ pub unsafe extern "C" fn strerror(e: c_int) -> *mut c_char {
     let err_str = if e == 0 {
         "Success"
     } else {
-        LinuxError::try_from(e)
-            .map(|err| err.as_str())
-            .unwrap_or("Unknown error")
+        Errno::new(e).description().unwrap_or("Unknown error")
     };
     unsafe {
         let buf = &raw mut STRERROR_BUF;
@@ -360,7 +344,7 @@ pub unsafe extern "C" fn strerror(e: c_int) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __xpg_strerror_r(errnum: c_int, buf: *mut c_char, buflen: SizeT) -> c_int {
     if buf.is_null() || buflen == 0 {
-        return LinuxError::ERANGE as c_int;
+        return Errno::ERANGE.into_raw();
     }
     let message = unsafe { strerror(errnum) };
     let mut len = unsafe { strlen(message) };
@@ -387,7 +371,7 @@ pub unsafe extern "C" fn getenv(_name: *const c_char) -> *mut c_char {
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn confstr(_name: c_int, _buf: *mut c_char, _len: SizeT) -> SizeT {
-    set_errno(LinuxError::EINVAL as i32);
+    set_errno(Errno::EINVAL.into_raw());
     0
 }
 
@@ -399,7 +383,7 @@ pub unsafe extern "C" fn malloc(size: SizeT) -> *mut c_void {
     match alloc_with_alignment(size, MALLOC_ALIGN) {
         Ok(ptr) => ptr,
         Err(err) => {
-            set_errno(err as i32);
+            set_errno(err.into_raw());
             ptr::null_mut()
         }
     }
@@ -415,7 +399,7 @@ pub unsafe extern "C" fn posix_memalign(
     size: SizeT,
 ) -> c_int {
     if memptr.is_null() || !alignment.is_power_of_two() || alignment < size_of::<*mut c_void>() {
-        return LinuxError::EINVAL as c_int;
+        return Errno::EINVAL.into_raw();
     }
     match alloc_with_alignment(size, alignment) {
         Ok(ptr) => {
@@ -424,7 +408,7 @@ pub unsafe extern "C" fn posix_memalign(
             }
             0
         }
-        Err(err) => err as c_int,
+        Err(err) => err.into_raw(),
     }
 }
 
@@ -434,7 +418,7 @@ pub unsafe extern "C" fn posix_memalign(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn calloc(nmemb: SizeT, size: SizeT) -> *mut c_void {
     let Some(total) = nmemb.checked_mul(size) else {
-        set_errno(LinuxError::ENOMEM as i32);
+        set_errno(Errno::ENOMEM.into_raw());
         return ptr::null_mut();
     };
     let ptr = unsafe { malloc(total) };
@@ -620,7 +604,7 @@ pub unsafe extern "C" fn sched_yield() -> c_int {
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pause() -> c_int {
-    fail(LinuxError::EINTR)
+    fail(Errno::EINTR)
 }
 
 /// # Safety
@@ -640,7 +624,7 @@ pub unsafe extern "C" fn sched_getaffinity(
     _cpusetsize: SizeT,
     _mask: *mut libc::cpu_set_t,
 ) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -690,7 +674,7 @@ pub unsafe extern "C" fn close(fd: c_int) -> c_int {
 #[cfg(not(feature = "fd"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn close(_fd: c_int) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -708,7 +692,7 @@ pub unsafe extern "C" fn dup(old_fd: c_int) -> c_int {
 #[cfg(not(feature = "fd"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dup(_old_fd: c_int) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -726,7 +710,7 @@ pub unsafe extern "C" fn dup2(old_fd: c_int, new_fd: c_int) -> c_int {
 #[cfg(not(feature = "fd"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dup2(_old_fd: c_int, _new_fd: c_int) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -735,7 +719,7 @@ pub unsafe extern "C" fn dup2(_old_fd: c_int, _new_fd: c_int) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> c_int {
     if old_fd == new_fd {
-        return fail(LinuxError::EINVAL);
+        return fail(Errno::EINVAL);
     }
     let new_fd = unsafe { dup2(old_fd, new_fd) };
     if new_fd >= 0 && flags & libc::O_CLOEXEC != 0 {
@@ -759,7 +743,7 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: usize) -> c_int {
 #[cfg(not(feature = "fd"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fcntl(_fd: c_int, _cmd: c_int, _arg: usize) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -781,7 +765,7 @@ pub unsafe extern "C" fn poll(
     _nfds: libc::nfds_t,
     _timeout: c_int,
 ) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -799,7 +783,7 @@ pub unsafe extern "C" fn epoll_create1(flags: c_int) -> c_int {
 #[cfg(not(feature = "fd"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn epoll_create1(_flags: c_int) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -827,7 +811,7 @@ pub unsafe extern "C" fn epoll_ctl(
     _fd: c_int,
     _event: *mut libc::epoll_event,
 ) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -855,7 +839,7 @@ pub unsafe extern "C" fn epoll_wait(
     _maxevents: c_int,
     _timeout: c_int,
 ) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -873,7 +857,7 @@ pub unsafe extern "C" fn eventfd(initval: c_uint, flags: c_int) -> c_int {
 #[cfg(not(feature = "fd"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn eventfd(_initval: c_uint, _flags: c_int) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -881,7 +865,7 @@ pub unsafe extern "C" fn eventfd(_initval: c_uint, _flags: c_int) -> c_int {
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn isatty(_fd: c_int) -> c_int {
-    fail(LinuxError::ENOTTY)
+    fail(Errno::ENOTTY)
 }
 
 /// # Safety
@@ -1008,22 +992,24 @@ pub unsafe extern "C" fn rename(old: *const c_char, new: *const c_char) -> c_int
 }
 
 #[cfg(feature = "fs")]
-fn path_from_c(path: *const c_char) -> Result<String, LinuxError> {
-    Ok(ax_posix_api::utils::char_ptr_to_str(path)?.to_string())
+fn path_from_c(path: *const c_char) -> Result<String, Errno> {
+    Ok(ax_posix_api::utils::char_ptr_to_str(path)
+        .map_err(ax_posix_api::PosixError::errno)?
+        .to_string())
 }
 
 #[cfg(feature = "fs")]
-fn resolve_at_path(dirfd: c_int, path: *const c_char) -> Result<String, LinuxError> {
+fn resolve_at_path(dirfd: c_int, path: *const c_char) -> Result<String, Errno> {
     let path = path_from_c(path)?;
     if path.starts_with('/') || dirfd == libc::AT_FDCWD {
         return Ok(path);
     }
     let paths = FD_PATHS.lock();
     let Some(parent) = paths.get(&dirfd) else {
-        return Err(LinuxError::EBADF);
+        return Err(Errno::EBADF);
     };
     if !parent.is_dir {
-        return Err(LinuxError::ENOTDIR);
+        return Err(Errno::ENOTDIR);
     }
     Ok(join_paths(&parent.path, &path))
 }
@@ -1063,11 +1049,11 @@ pub unsafe extern "C" fn unlink(path: *const c_char) -> c_int {
     };
     match ax_api::fs::ax_remove_file(&path) {
         Ok(()) => 0,
-        Err(err) if LinuxError::from(err) == LinuxError::EISDIR => ok_or_errno(
+        Err(err) if api_error_to_errno(err) == Errno::EISDIR => ok_or_errno(
             ax_api::fs::ax_remove_dir(&path)
-                .map_or_else(|err| -(LinuxError::from(err) as i32), |()| 0),
+                .map_or_else(|err| -api_error_to_errno(err).into_raw(), |()| 0),
         ),
-        Err(err) => fail(LinuxError::from(err)),
+        Err(err) => fail(api_error_to_errno(err)),
     }
 }
 
@@ -1084,12 +1070,12 @@ pub unsafe extern "C" fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_in
     if flags & libc::AT_REMOVEDIR != 0 {
         match ax_api::fs::ax_remove_dir(&path) {
             Ok(()) => 0,
-            Err(err) => fail(LinuxError::from(err)),
+            Err(err) => fail(api_error_to_errno(err)),
         }
     } else {
         match ax_api::fs::ax_remove_file(&path) {
             Ok(()) => 0,
-            Err(err) => fail(LinuxError::from(err)),
+            Err(err) => fail(api_error_to_errno(err)),
         }
     }
 }
@@ -1139,7 +1125,7 @@ pub unsafe extern "C" fn mkdir(path: *const c_char, _mode: ModeT) -> c_int {
     };
     match ax_api::fs::ax_create_dir(&path) {
         Ok(()) => 0,
-        Err(err) => fail(LinuxError::from(err)),
+        Err(err) => fail(api_error_to_errno(err)),
     }
 }
 
@@ -1169,7 +1155,7 @@ pub unsafe extern "C" fn rmdir(path: *const c_char) -> c_int {
     };
     match ax_api::fs::ax_remove_dir(&path) {
         Ok(()) => 0,
-        Err(err) => fail(LinuxError::from(err)),
+        Err(err) => fail(api_error_to_errno(err)),
     }
 }
 
@@ -1185,7 +1171,7 @@ pub unsafe extern "C" fn chdir(path: *const c_char) -> c_int {
     };
     match ax_api::fs::ax_set_current_dir(&path) {
         Ok(()) => 0,
-        Err(err) => fail(LinuxError::from(err)),
+        Err(err) => fail(api_error_to_errno(err)),
     }
 }
 
@@ -1227,7 +1213,7 @@ pub unsafe extern "C" fn fdopendir(fd: c_int) -> *mut libc::DIR {
     let entries = match read_dir_entries(fd) {
         Ok(entries) => entries,
         Err(err) => {
-            set_errno(err as i32);
+            set_errno(err.into_raw());
             FD_PATHS.lock().remove(&fd);
             return ptr::null_mut();
         }
@@ -1257,7 +1243,7 @@ pub unsafe extern "C" fn readdir(dirp: *mut libc::DIR) -> *mut libc::dirent {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn readdir64(dirp: *mut libc::DIR) -> *mut libc::dirent64 {
     if dirp.is_null() {
-        set_errno(LinuxError::EINVAL as i32);
+        set_errno(Errno::EINVAL.into_raw());
         return ptr::null_mut();
     }
     let stream = unsafe { &mut *dirp.cast::<DirStream>() };
@@ -1277,7 +1263,7 @@ pub unsafe extern "C" fn readdir64(dirp: *mut libc::DIR) -> *mut libc::dirent64 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dirfd(dirp: *mut libc::DIR) -> c_int {
     if dirp.is_null() {
-        return fail(LinuxError::EINVAL);
+        return fail(Errno::EINVAL);
     }
     unsafe { (*dirp.cast::<DirStream>()).fd }
 }
@@ -1289,7 +1275,7 @@ pub unsafe extern "C" fn dirfd(dirp: *mut libc::DIR) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn closedir(dirp: *mut libc::DIR) -> c_int {
     if dirp.is_null() {
-        return fail(LinuxError::EINVAL);
+        return fail(Errno::EINVAL);
     }
     let stream = unsafe { alloc::boxed::Box::from_raw(dirp.cast::<DirStream>()) };
     FD_PATHS.lock().remove(&stream.fd);
@@ -1297,13 +1283,13 @@ pub unsafe extern "C" fn closedir(dirp: *mut libc::DIR) -> c_int {
 }
 
 #[cfg(feature = "fs")]
-fn read_dir_entries(fd: c_int) -> Result<Vec<DirEntryBuf>, LinuxError> {
+fn read_dir_entries(fd: c_int) -> Result<Vec<DirEntryBuf>, Errno> {
     let mut entries = Vec::new();
     let mut buf = [0_u8; 4096];
     loop {
         let ret = unsafe { ax_posix_api::sys_getdents64(fd, buf.as_mut_ptr(), buf.len()) };
         if ret < 0 {
-            return Err(LinuxError::try_from((-ret) as i32).unwrap_or(LinuxError::EIO));
+            return Err(Errno::new((-ret) as i32));
         }
         if ret == 0 {
             return Ok(entries);
@@ -1313,7 +1299,7 @@ fn read_dir_entries(fd: c_int) -> Result<Vec<DirEntryBuf>, LinuxError> {
         while offset + LINUX_DIRENT64_NAME_OFFSET <= used {
             let reclen = u16::from_ne_bytes([buf[offset + 16], buf[offset + 17]]) as usize;
             if reclen == 0 || offset + reclen > used {
-                return Err(LinuxError::EIO);
+                return Err(Errno::EIO);
             }
             let d_type = buf[offset + 18];
             let name_start = offset + LINUX_DIRENT64_NAME_OFFSET;
@@ -1378,7 +1364,7 @@ pub unsafe extern "C" fn fchmod(_fd: c_int, _mode: ModeT) -> c_int {
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ftruncate(_fd: c_int, _length: OffT) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -1427,7 +1413,7 @@ pub unsafe extern "C" fn readlink(
     _buf: *mut c_char,
     _bufsiz: SizeT,
 ) -> SSizeT {
-    fail(LinuxError::EINVAL) as SSizeT
+    fail(Errno::EINVAL) as SSizeT
 }
 
 /// # Safety
@@ -1436,7 +1422,7 @@ pub unsafe extern "C" fn readlink(
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn symlink(_target: *const c_char, _linkpath: *const c_char) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -1445,7 +1431,7 @@ pub unsafe extern "C" fn symlink(_target: *const c_char, _linkpath: *const c_cha
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn link(_oldpath: *const c_char, _newpath: *const c_char) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 /// # Safety
@@ -1460,7 +1446,7 @@ pub unsafe extern "C" fn linkat(
     _newpath: *const c_char,
     _flags: c_int,
 ) -> c_int {
-    fail(LinuxError::ENOSYS)
+    fail(Errno::ENOSYS)
 }
 
 #[cfg(not(feature = "fs"))]
@@ -1485,51 +1471,51 @@ mod fs_stubs {
     }
 
     fs_stub! {
-        fn open(path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn open64(path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn lseek(fd: c_int, offset: OffT, whence: c_int) -> OffT => { fail(LinuxError::ENOSYS) as OffT }
-        fn lseek64(fd: c_int, offset: OffT, whence: c_int) -> OffT => { fail(LinuxError::ENOSYS) as OffT }
-        fn stat(path: *const c_char, buf: *mut libc::stat) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn stat64(path: *const c_char, buf: *mut libc::stat64) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn fstat(fd: c_int, buf: *mut libc::stat) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn fstat64(fd: c_int, buf: *mut libc::stat64) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn lstat(path: *const c_char, buf: *mut libc::stat) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn lstat64(path: *const c_char, buf: *mut libc::stat64) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn rename(old: *const c_char, new: *const c_char) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn unlink(path: *const c_char) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn openat64(dirfd: c_int, path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn mkdir(path: *const c_char, mode: ModeT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn mkdirat(dirfd: c_int, path: *const c_char, mode: ModeT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn rmdir(path: *const c_char) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn chdir(path: *const c_char) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn getdents64(fd: c_int, buf: *mut c_void, len: SizeT) -> SSizeT => { fail(LinuxError::ENOSYS) as SSizeT }
+        fn open(path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
+        fn open64(path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
+        fn lseek(fd: c_int, offset: OffT, whence: c_int) -> OffT => { fail(Errno::ENOSYS) as OffT }
+        fn lseek64(fd: c_int, offset: OffT, whence: c_int) -> OffT => { fail(Errno::ENOSYS) as OffT }
+        fn stat(path: *const c_char, buf: *mut libc::stat) -> c_int => { fail(Errno::ENOSYS) }
+        fn stat64(path: *const c_char, buf: *mut libc::stat64) -> c_int => { fail(Errno::ENOSYS) }
+        fn fstat(fd: c_int, buf: *mut libc::stat) -> c_int => { fail(Errno::ENOSYS) }
+        fn fstat64(fd: c_int, buf: *mut libc::stat64) -> c_int => { fail(Errno::ENOSYS) }
+        fn lstat(path: *const c_char, buf: *mut libc::stat) -> c_int => { fail(Errno::ENOSYS) }
+        fn lstat64(path: *const c_char, buf: *mut libc::stat64) -> c_int => { fail(Errno::ENOSYS) }
+        fn rename(old: *const c_char, new: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
+        fn unlink(path: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
+        fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int => { fail(Errno::ENOSYS) }
+        fn openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
+        fn openat64(dirfd: c_int, path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
+        fn mkdir(path: *const c_char, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
+        fn mkdirat(dirfd: c_int, path: *const c_char, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
+        fn rmdir(path: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
+        fn chdir(path: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
+        fn getdents64(fd: c_int, buf: *mut c_void, len: SizeT) -> SSizeT => { fail(Errno::ENOSYS) as SSizeT }
         fn fdopendir(fd: c_int) -> *mut libc::DIR => {
-            set_errno(LinuxError::ENOSYS as i32);
+            set_errno(Errno::ENOSYS.into_raw());
             ptr::null_mut()
         }
         fn readdir(dirp: *mut libc::DIR) -> *mut libc::dirent => {
-            set_errno(LinuxError::ENOSYS as i32);
+            set_errno(Errno::ENOSYS.into_raw());
             ptr::null_mut()
         }
         fn readdir64(dirp: *mut libc::DIR) -> *mut libc::dirent64 => {
-            set_errno(LinuxError::ENOSYS as i32);
+            set_errno(Errno::ENOSYS.into_raw());
             ptr::null_mut()
         }
-        fn dirfd(dirp: *mut libc::DIR) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn closedir(dirp: *mut libc::DIR) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn chmod(path: *const c_char, mode: ModeT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn fchmod(fd: c_int, mode: ModeT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn ftruncate(fd: c_int, length: OffT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn ftruncate64(fd: c_int, length: OffT) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn fsync(fd: c_int) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn fdatasync(fd: c_int) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn futimens(fd: c_int, times: *const libc::timespec) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: SizeT) -> SSizeT => { fail(LinuxError::ENOSYS) as SSizeT }
-        fn symlink(target: *const c_char, linkpath: *const c_char) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn link(oldpath: *const c_char, newpath: *const c_char) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn linkat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char, flags: c_int) -> c_int => { fail(LinuxError::ENOSYS) }
+        fn dirfd(dirp: *mut libc::DIR) -> c_int => { fail(Errno::ENOSYS) }
+        fn closedir(dirp: *mut libc::DIR) -> c_int => { fail(Errno::ENOSYS) }
+        fn chmod(path: *const c_char, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
+        fn fchmod(fd: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
+        fn ftruncate(fd: c_int, length: OffT) -> c_int => { fail(Errno::ENOSYS) }
+        fn ftruncate64(fd: c_int, length: OffT) -> c_int => { fail(Errno::ENOSYS) }
+        fn fsync(fd: c_int) -> c_int => { fail(Errno::ENOSYS) }
+        fn fdatasync(fd: c_int) -> c_int => { fail(Errno::ENOSYS) }
+        fn futimens(fd: c_int, times: *const libc::timespec) -> c_int => { fail(Errno::ENOSYS) }
+        fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: SizeT) -> SSizeT => { fail(Errno::ENOSYS) as SSizeT }
+        fn symlink(target: *const c_char, linkpath: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
+        fn link(oldpath: *const c_char, newpath: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
+        fn linkat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char, flags: c_int) -> c_int => { fail(Errno::ENOSYS) }
     }
 
     /// # Safety
@@ -1537,7 +1523,7 @@ mod fs_stubs {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn getcwd(_buf: *mut c_char, _size: SizeT) -> *mut c_char {
-        set_errno(LinuxError::ENOSYS as i32);
+        set_errno(Errno::ENOSYS.into_raw());
         ptr::null_mut()
     }
 
@@ -1546,7 +1532,7 @@ mod fs_stubs {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn opendir(_path: *const c_char) -> *mut libc::DIR {
-        set_errno(LinuxError::ENOSYS as i32);
+        set_errno(Errno::ENOSYS.into_raw());
         ptr::null_mut()
     }
 }
@@ -1581,7 +1567,7 @@ pub unsafe extern "C" fn clock_nanosleep(
     rem: *mut libc::timespec,
 ) -> c_int {
     if flags != 0 {
-        return LinuxError::ENOSYS as c_int;
+        return Errno::ENOSYS.into_raw();
     }
     if unsafe { nanosleep(req, rem) } == 0 {
         0
@@ -1604,7 +1590,7 @@ pub unsafe extern "C" fn sysconf(name: c_int) -> c_long {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn getrandom(buf: *mut c_void, buflen: SizeT, _flags: c_uint) -> SSizeT {
     if buf.is_null() && buflen > 0 {
-        return fail(LinuxError::EFAULT) as SSizeT;
+        return fail(Errno::EFAULT) as SSizeT;
     }
     fill_random(unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), buflen) });
     buflen as SSizeT
@@ -1688,7 +1674,7 @@ pub unsafe extern "C" fn mmap(
     _offset: OffT,
 ) -> *mut c_void {
     if len == 0 {
-        set_errno(LinuxError::EINVAL as i32);
+        set_errno(Errno::EINVAL.into_raw());
         return libc::MAP_FAILED;
     }
 
@@ -1725,7 +1711,7 @@ pub unsafe extern "C" fn mmap64(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn munmap(addr: *mut c_void, _len: SizeT) -> c_int {
     if addr.is_null() {
-        return fail(LinuxError::EINVAL);
+        return fail(Errno::EINVAL);
     }
     if MMAP_ALLOCS.lock().remove(&(addr as usize)).is_some() {
         unsafe { free(addr) };
@@ -1801,7 +1787,7 @@ pub unsafe extern "C" fn syscall(
             (unsafe { getdents64(a0 as c_int, a1 as *mut c_void, a2 as usize) }) as c_long
         }
         _ => {
-            set_errno(LinuxError::ENOSYS as i32);
+            set_errno(Errno::ENOSYS.into_raw());
             -1
         }
     }
@@ -1814,83 +1800,88 @@ unsafe fn futex_syscall(
     timeout: *const libc::timespec,
 ) -> c_int {
     if addr.is_null() {
-        return fail(LinuxError::EFAULT);
+        return fail(Errno::EFAULT);
     }
-    match op & FUTEX_CMD_MASK {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => unsafe { futex_wait(addr, expected, timeout) },
+    let command = op & FUTEX_CMD_MASK;
+    let realtime = op & libc::FUTEX_CLOCK_REALTIME != 0;
+    if realtime && command != FUTEX_WAIT_BITSET {
+        return fail(Errno::ENOSYS);
+    }
+
+    match command {
+        FUTEX_WAIT => unsafe {
+            futex_wait(addr, expected, timeout, super::futex::TimeoutMode::Relative)
+        },
+        FUTEX_WAIT_BITSET => unsafe {
+            let timeout_mode = if realtime {
+                super::futex::TimeoutMode::AbsoluteRealtime
+            } else {
+                super::futex::TimeoutMode::AbsoluteMonotonic
+            };
+            futex_wait(addr, expected, timeout, timeout_mode)
+        },
         FUTEX_WAKE | FUTEX_WAKE_BITSET => futex_wake(addr, expected),
-        _ => fail(LinuxError::ENOSYS),
+        _ => fail(Errno::ENOSYS),
     }
 }
 
-unsafe fn futex_wait(addr: *mut u32, expected: u32, timeout: *const libc::timespec) -> c_int {
-    #[cfg(not(feature = "multitask"))]
-    {
-        let _ = (addr, expected, timeout);
-        fail(LinuxError::ENOSYS)
-    }
-    #[cfg(feature = "multitask")]
-    {
-        if unsafe { addr.read_volatile() } != expected {
-            return fail(LinuxError::EAGAIN);
-        }
+unsafe fn futex_wait(
+    addr: *mut u32,
+    expected: u32,
+    timeout: *const libc::timespec,
+    timeout_mode: super::futex::TimeoutMode,
+) -> c_int {
+    let timeout = match super::futex::prepare_wait_timeout(
+        unsafe { addr.read_volatile() },
+        expected,
+        || unsafe { futex_timeout(timeout, timeout_mode) },
+    ) {
+        Ok(timeout) => timeout,
+        Err(super::futex::WaitError::ValueMismatch) => return fail(Errno::EAGAIN),
+        Err(super::futex::WaitError::InvalidTimeout) => return fail(Errno::EINVAL),
+    };
 
-        let key = addr as usize;
-        let wq = {
-            let mut map = FUTEX_QUEUES.lock();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(ax_api::task::AxWaitQueueHandle::new()))
-                .clone()
-        };
-        let timed_out = ax_api::task::ax_wait_queue_wait_until(
-            &wq,
-            || unsafe { addr.read_volatile() } != expected,
-            unsafe { futex_timeout(timeout) },
-        );
-        if timed_out {
-            fail(LinuxError::ETIMEDOUT)
-        } else {
-            0
-        }
-    }
+    let key = addr as usize;
+    let wq = {
+        let mut map = FUTEX_QUEUES.lock();
+        map.entry(key)
+            .or_insert_with(|| Arc::new(ax_api::task::AxWaitQueueHandle::new()))
+            .clone()
+    };
+    let timed_out = ax_api::task::ax_wait_queue_wait_until(
+        &wq,
+        || unsafe { addr.read_volatile() } != expected,
+        timeout,
+    );
+    if timed_out { fail(Errno::ETIMEDOUT) } else { 0 }
 }
 
 fn futex_wake(addr: *mut u32, count: u32) -> c_int {
-    #[cfg(not(feature = "multitask"))]
-    {
-        let _ = (addr, count);
-        fail(LinuxError::ENOSYS)
-    }
-    #[cfg(feature = "multitask")]
-    {
-        let Some(wq) = FUTEX_QUEUES.lock().get(&(addr as usize)).cloned() else {
-            return 0;
-        };
-        let count = if count == FUTEX_BITSET_MATCH_ANY {
-            u32::MAX
-        } else {
-            count
-        };
-        ax_api::task::ax_wait_queue_wake(&wq, count);
-        count.min(i32::MAX as u32) as c_int
-    }
+    let Some(wq) = FUTEX_QUEUES.lock().get(&(addr as usize)).cloned() else {
+        return 0;
+    };
+    let count = if count == FUTEX_BITSET_MATCH_ANY {
+        u32::MAX
+    } else {
+        count
+    };
+    ax_api::task::ax_wait_queue_wake(&wq, count);
+    count.min(i32::MAX as u32) as c_int
 }
 
-#[cfg(feature = "multitask")]
-unsafe fn futex_timeout(timeout: *const libc::timespec) -> Option<Duration> {
+unsafe fn futex_timeout(
+    timeout: *const libc::timespec,
+    mode: super::futex::TimeoutMode,
+) -> Result<Option<Duration>, super::futex::InvalidTimespec> {
     if timeout.is_null() {
-        return None;
+        return Ok(None);
     }
     let ts = unsafe { *timeout };
-    if ts.tv_sec < 0 || ts.tv_nsec < 0 {
-        return Some(Duration::ZERO);
-    }
-    let deadline = Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32);
-    let now = ax_hal::time::monotonic_time();
-    Some(deadline.saturating_sub(now))
+    let clocks =
+        super::futex::ClockSnapshot::new(ax_hal::time::monotonic_time(), ax_hal::time::wall_time());
+    super::futex::timeout_from_timespec(ts, mode, clocks).map(Some)
 }
 
-#[cfg(feature = "multitask")]
 static FUTEX_QUEUES: LazyLock<Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static MMAP_ALLOCS: LazyLock<Mutex<BTreeMap<usize, SizeT>>> =
@@ -1899,7 +1890,6 @@ static MMAP_ALLOCS: LazyLock<Mutex<BTreeMap<usize, SizeT>>> =
 static FD_PATHS: LazyLock<Mutex<BTreeMap<c_int, FdPath>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
-#[cfg(feature = "multitask")]
 mod pthread {
     use super::*;
 
@@ -2061,7 +2051,7 @@ mod pthread {
         _thread: libc::pthread_t,
         _attr: *mut libc::pthread_attr_t,
     ) -> c_int {
-        LinuxError::ENOSYS as c_int
+        Errno::ENOSYS.into_raw()
     }
 
     /// # Safety
@@ -2070,7 +2060,7 @@ mod pthread {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_attr_init(attr: *mut libc::pthread_attr_t) -> c_int {
         if attr.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         unsafe {
             ptr::write_bytes(attr.cast::<u8>(), 0, PTHREAD_ATTR_SIZE);
@@ -2097,7 +2087,7 @@ mod pthread {
         stack_size: *mut SizeT,
     ) -> c_int {
         if stack_addr.is_null() || stack_size.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         unsafe {
             stack_addr.write(ptr::null_mut());
@@ -2115,7 +2105,7 @@ mod pthread {
         guard_size: *mut SizeT,
     ) -> c_int {
         if guard_size.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         unsafe {
             guard_size.write(0);
@@ -2132,7 +2122,7 @@ mod pthread {
         stack_size: SizeT,
     ) -> c_int {
         if attr.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         unsafe { write_attr_stack_size(attr, stack_size) };
         0
@@ -2194,7 +2184,7 @@ mod pthread {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutexattr_init(attr: *mut libc::pthread_mutexattr_t) -> c_int {
         if attr.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         unsafe { ptr::write_bytes(attr.cast::<u8>(), 0, size_of::<libc::pthread_mutexattr_t>()) };
         0
@@ -2230,7 +2220,7 @@ mod pthread {
         _attr: *const libc::pthread_condattr_t,
     ) -> c_int {
         if cond.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         let id = NEXT_COND_ID.fetch_add(1, Ordering::Relaxed).max(1);
         unsafe {
@@ -2285,7 +2275,13 @@ mod pthread {
         mutex: *mut libc::pthread_mutex_t,
         abstime: *const libc::timespec,
     ) -> c_int {
-        unsafe { pthread_cond_wait_inner(cond, mutex, super::futex_timeout(abstime)) }
+        let timeout = match unsafe {
+            super::futex_timeout(abstime, super::super::futex::TimeoutMode::AbsoluteRealtime)
+        } {
+            Ok(Some(timeout)) => Some(timeout),
+            Ok(None) | Err(_) => return Errno::EINVAL.into_raw(),
+        };
+        unsafe { pthread_cond_wait_inner(cond, mutex, timeout) }
     }
 
     unsafe fn pthread_cond_wait_inner(
@@ -2294,7 +2290,7 @@ mod pthread {
         timeout: Option<Duration>,
     ) -> c_int {
         let Some(wq) = (unsafe { cond_wait_queue(cond) }) else {
-            return LinuxError::EINVAL as c_int;
+            return Errno::EINVAL.into_raw();
         };
         let unlock_ret = unsafe { pthread_mutex_unlock(mutex) };
         if unlock_ret != 0 {
@@ -2303,7 +2299,7 @@ mod pthread {
         let timed_out = ax_api::task::ax_wait_queue_wait(&wq, timeout);
         let lock_ret = unsafe { pthread_mutex_lock(mutex) };
         if timed_out {
-            LinuxError::ETIMEDOUT as c_int
+            Errno::ETIMEDOUT.into_raw()
         } else {
             lock_ret
         }
@@ -2315,7 +2311,7 @@ mod pthread {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_cond_destroy(cond: *mut libc::pthread_cond_t) -> c_int {
         if cond.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         let id = unsafe { ptr::read_unaligned(cond.cast::<usize>()) };
         CONDVARS.lock().remove(&id);
@@ -2328,7 +2324,7 @@ mod pthread {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_condattr_init(attr: *mut libc::pthread_condattr_t) -> c_int {
         if attr.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         unsafe { ptr::write_bytes(attr.cast::<u8>(), 0, size_of::<libc::pthread_condattr_t>()) };
         0
@@ -2381,7 +2377,7 @@ mod pthread {
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,
     ) -> c_int {
         if key.is_null() {
-            return LinuxError::EFAULT as c_int;
+            return Errno::EFAULT.into_raw();
         }
         let mut keys = KEY_SLOTS.lock();
         let index = if let Some((index, slot)) =
@@ -2391,7 +2387,7 @@ mod pthread {
             index
         } else {
             if keys.len() >= MAX_PTHREAD_KEYS {
-                return LinuxError::EAGAIN as c_int;
+                return Errno::EAGAIN.into_raw();
             }
             keys.push(Some(TlsKey { destructor }));
             keys.len() - 1
@@ -2407,7 +2403,7 @@ mod pthread {
     pub unsafe extern "C" fn pthread_key_delete(key: libc::pthread_key_t) -> c_int {
         let mut keys = KEY_SLOTS.lock();
         let Some(slot) = keys.get_mut(key as usize) else {
-            return LinuxError::EINVAL as c_int;
+            return Errno::EINVAL.into_raw();
         };
         *slot = None;
         for values in TLS_VALUES.lock().values_mut() {
@@ -2445,7 +2441,7 @@ mod pthread {
             .and_then(|slot| slot.as_ref())
             .is_none()
         {
-            return LinuxError::EINVAL as c_int;
+            return Errno::EINVAL.into_raw();
         }
         let mut tls_values = TLS_VALUES.lock();
         tls_values
@@ -2467,301 +2463,7 @@ mod pthread {
     }
 }
 
-#[cfg(feature = "multitask")]
 pub use pthread::*;
-
-#[cfg(not(feature = "multitask"))]
-mod pthread_stubs {
-    use super::*;
-
-    macro_rules! pthread_errno_stub {
-        ($(fn $name:ident($($arg:ident: $ty:ty),*) -> c_int;)*) => {
-            $(
-                /// # Safety
-                ///
-                /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn $name($($arg: $ty),*) -> c_int {
-                    let _ = ($($arg,)*);
-                    LinuxError::ENOSYS as c_int
-                }
-            )*
-        };
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[cfg(target_env = "musl")]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_self() -> libc::pthread_t {
-        ptr::dangling_mut::<c_void>().cast()
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/glibc ABI contract for this libc symbol.
-    #[cfg(not(target_env = "musl"))]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_self() -> libc::pthread_t {
-        1
-    }
-
-    pthread_errno_stub! {
-        fn pthread_create(
-            res: *mut libc::pthread_t,
-            attr: *const libc::pthread_attr_t,
-            start: extern "C" fn(*mut c_void) -> *mut c_void,
-            arg: *mut c_void
-        ) -> c_int;
-        fn pthread_join(thread: libc::pthread_t, retval: *mut *mut c_void) -> c_int;
-        fn pthread_getattr_np(thread: libc::pthread_t, attr: *mut libc::pthread_attr_t) -> c_int;
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_exit(_retval: *mut c_void) -> ! {
-        unsafe { exit(0) }
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_detach(_thread: libc::pthread_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_init(attr: *mut libc::pthread_attr_t) -> c_int {
-        if attr.is_null() {
-            return LinuxError::EFAULT as c_int;
-        }
-        unsafe { ptr::write_bytes(attr.cast::<u8>(), 0, size_of::<libc::pthread_attr_t>()) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_destroy(_attr: *mut libc::pthread_attr_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_getstack(
-        _attr: *const libc::pthread_attr_t,
-        stack_addr: *mut *mut c_void,
-        stack_size: *mut SizeT,
-    ) -> c_int {
-        if stack_addr.is_null() || stack_size.is_null() {
-            return LinuxError::EFAULT as c_int;
-        }
-        unsafe {
-            stack_addr.write(ptr::null_mut());
-            stack_size.write(0);
-        }
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_getguardsize(
-        _attr: *const libc::pthread_attr_t,
-        guard_size: *mut SizeT,
-    ) -> c_int {
-        if guard_size.is_null() {
-            return LinuxError::EFAULT as c_int;
-        }
-        unsafe { guard_size.write(0) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_setstacksize(
-        _attr: *mut libc::pthread_attr_t,
-        _stack_size: SizeT,
-    ) -> c_int {
-        0
-    }
-
-    pthread_errno_stub! {
-        fn pthread_mutex_init(
-            mutex: *mut libc::pthread_mutex_t,
-            attr: *const libc::pthread_mutexattr_t
-        ) -> c_int;
-        fn pthread_mutex_lock(mutex: *mut libc::pthread_mutex_t) -> c_int;
-        fn pthread_mutex_trylock(mutex: *mut libc::pthread_mutex_t) -> c_int;
-        fn pthread_mutex_unlock(mutex: *mut libc::pthread_mutex_t) -> c_int;
-        fn pthread_cond_wait(
-            cond: *mut libc::pthread_cond_t,
-            mutex: *mut libc::pthread_mutex_t
-        ) -> c_int;
-        fn pthread_cond_timedwait(
-            cond: *mut libc::pthread_cond_t,
-            mutex: *mut libc::pthread_mutex_t,
-            abstime: *const libc::timespec
-        ) -> c_int;
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_mutex_destroy(_mutex: *mut libc::pthread_mutex_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_mutexattr_init(attr: *mut libc::pthread_mutexattr_t) -> c_int {
-        if attr.is_null() {
-            return LinuxError::EFAULT as c_int;
-        }
-        unsafe { ptr::write_bytes(attr.cast::<u8>(), 0, size_of::<libc::pthread_mutexattr_t>()) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_mutexattr_settype(
-        _attr: *mut libc::pthread_mutexattr_t,
-        _ty: c_int,
-    ) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_mutexattr_destroy(
-        _attr: *mut libc::pthread_mutexattr_t,
-    ) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_cond_init(
-        cond: *mut libc::pthread_cond_t,
-        _attr: *const libc::pthread_condattr_t,
-    ) -> c_int {
-        if cond.is_null() {
-            return LinuxError::EFAULT as c_int;
-        }
-        unsafe { ptr::write_bytes(cond.cast::<u8>(), 0, size_of::<libc::pthread_cond_t>()) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_cond_signal(_cond: *mut libc::pthread_cond_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_cond_broadcast(_cond: *mut libc::pthread_cond_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_cond_destroy(_cond: *mut libc::pthread_cond_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_condattr_init(attr: *mut libc::pthread_condattr_t) -> c_int {
-        if attr.is_null() {
-            return LinuxError::EFAULT as c_int;
-        }
-        unsafe { ptr::write_bytes(attr.cast::<u8>(), 0, size_of::<libc::pthread_condattr_t>()) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_condattr_setclock(
-        _attr: *mut libc::pthread_condattr_t,
-        _clock: libc::clockid_t,
-    ) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_condattr_destroy(
-        _attr: *mut libc::pthread_condattr_t,
-    ) -> c_int {
-        0
-    }
-
-    pthread_errno_stub! {
-        fn pthread_key_create(
-            key: *mut libc::pthread_key_t,
-            destructor: Option<unsafe extern "C" fn(*mut c_void)>
-        ) -> c_int;
-        fn pthread_key_delete(key: libc::pthread_key_t) -> c_int;
-        fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void) -> c_int;
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_getspecific(_key: libc::pthread_key_t) -> *mut c_void {
-        ptr::null_mut()
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_setname_np(
-        _thread: libc::pthread_t,
-        _name: *const c_char,
-    ) -> c_int {
-        0
-    }
-}
-
-#[cfg(not(feature = "multitask"))]
-pub use pthread_stubs::*;
 
 #[cfg(feature = "net")]
 mod net {
@@ -2771,20 +2473,20 @@ mod net {
 
     const LINUX_SOCKET_FLAG_MASK: c_int = libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
 
-    fn linux_domain_to_ax(domain: c_int) -> Result<c_int, LinuxError> {
+    fn linux_domain_to_ax(domain: c_int) -> Result<c_int, Errno> {
         match domain {
             libc::AF_UNSPEC => Ok(ax_ctypes::AF_UNSPEC as c_int),
             libc::AF_INET => Ok(ax_ctypes::AF_INET as c_int),
             libc::AF_INET6 => Ok(ax_ctypes::AF_INET6 as c_int),
-            _ => Err(LinuxError::EAFNOSUPPORT),
+            _ => Err(Errno::EAFNOSUPPORT),
         }
     }
 
-    fn linux_socktype_to_ax(ty: c_int) -> Result<c_int, LinuxError> {
+    fn linux_socktype_to_ax(ty: c_int) -> Result<c_int, Errno> {
         match ty & !LINUX_SOCKET_FLAG_MASK {
             libc::SOCK_STREAM => Ok(ax_ctypes::SOCK_STREAM as c_int),
             libc::SOCK_DGRAM => Ok(ax_ctypes::SOCK_DGRAM as c_int),
-            _ => Err(LinuxError::EINVAL),
+            _ => Err(Errno::EINVAL),
         }
     }
 
@@ -2806,18 +2508,18 @@ mod net {
     unsafe fn linux_sockaddr_to_ax(
         addr: *const libc::sockaddr,
         len: libc::socklen_t,
-    ) -> Result<(ax_ctypes::sockaddr, ax_ctypes::socklen_t), LinuxError> {
+    ) -> Result<(ax_ctypes::sockaddr, ax_ctypes::socklen_t), Errno> {
         if addr.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(Errno::EFAULT);
         }
         if (len as usize) < size_of::<libc::sa_family_t>() {
-            return Err(LinuxError::EINVAL);
+            return Err(Errno::EINVAL);
         }
 
         match unsafe { (*addr).sa_family as c_int } {
             libc::AF_INET => {
                 if (len as usize) < size_of::<libc::sockaddr_in>() {
-                    return Err(LinuxError::EINVAL);
+                    return Err(Errno::EINVAL);
                 }
                 let src = unsafe { *(addr.cast::<libc::sockaddr_in>()) };
                 let ax_addr = ax_ctypes::sockaddr_in {
@@ -2833,7 +2535,7 @@ mod net {
                     size_of::<ax_ctypes::sockaddr>() as ax_ctypes::socklen_t,
                 ))
             }
-            _ => Err(LinuxError::EAFNOSUPPORT),
+            _ => Err(Errno::EAFNOSUPPORT),
         }
     }
 
@@ -2841,17 +2543,17 @@ mod net {
         src: &ax_ctypes::sockaddr,
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t,
-    ) -> Result<(), LinuxError> {
+    ) -> Result<(), Errno> {
         if addr.is_null() || addrlen.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(Errno::EFAULT);
         }
         if unsafe { *addrlen as usize } < size_of::<libc::sockaddr_in>() {
-            return Err(LinuxError::EINVAL);
+            return Err(Errno::EINVAL);
         }
 
         let src = unsafe { *(src as *const _ as *const ax_ctypes::sockaddr_in) };
         if src.sin_family != ax_ctypes::AF_INET as ax_ctypes::sa_family_t {
-            return Err(LinuxError::EAFNOSUPPORT);
+            return Err(Errno::EAFNOSUPPORT);
         }
 
         let dst = libc::sockaddr_in {
@@ -2873,7 +2575,7 @@ mod net {
         Ok(())
     }
 
-    fn linux_sockopt_to_ax(level: c_int, optname: c_int) -> Result<(c_int, c_int), LinuxError> {
+    fn linux_sockopt_to_ax(level: c_int, optname: c_int) -> Result<(c_int, c_int), Errno> {
         if level == libc::SOL_SOCKET {
             let optname: c_int = match optname {
                 libc::SO_REUSEADDR => ax_ctypes::SO_REUSEADDR as c_int,
@@ -2885,7 +2587,7 @@ mod net {
                 libc::SO_SNDTIMEO => ax_ctypes::SO_SNDTIMEO as c_int,
                 libc::SO_RCVTIMEO => ax_ctypes::SO_RCVTIMEO as c_int,
                 libc::SO_ERROR => ax_ctypes::SO_ERROR as c_int,
-                _ => return Err(LinuxError::ENOPROTOOPT),
+                _ => return Err(Errno::ENOPROTOOPT),
             };
             Ok((ax_ctypes::SOL_SOCKET as c_int, optname))
         } else {
@@ -2988,7 +2690,7 @@ mod net {
         flags: c_int,
     ) -> c_int {
         if flags & !LINUX_SOCKET_FLAG_MASK != 0 {
-            return fail(LinuxError::EINVAL);
+            return fail(Errno::EINVAL);
         }
         let new_fd = unsafe { accept(fd, addr, len) };
         if new_fd < 0 {
@@ -3152,7 +2854,7 @@ mod net {
         optlen: *mut libc::socklen_t,
     ) -> c_int {
         if optval.is_null() || optlen.is_null() {
-            return fail(LinuxError::EFAULT);
+            return fail(Errno::EFAULT);
         }
         if level == libc::SOL_SOCKET {
             match optname {
@@ -3182,13 +2884,13 @@ mod net {
                     let value: c_int = 64 * 1024;
                     unsafe { write_sockopt(optval, optlen, &value) }
                 }
-                _ => fail(LinuxError::ENOPROTOOPT),
+                _ => fail(Errno::ENOPROTOOPT),
             }
         } else if level == libc::IPPROTO_TCP && optname == libc::TCP_NODELAY {
             let value: c_int = 0;
             unsafe { write_sockopt(optval, optlen, &value) }
         } else {
-            fail(LinuxError::ENOPROTOOPT)
+            fail(Errno::ENOPROTOOPT)
         }
     }
 
@@ -3199,7 +2901,7 @@ mod net {
     ) -> c_int {
         let len = size_of::<T>();
         if unsafe { *optlen as usize } < len {
-            return fail(LinuxError::EINVAL);
+            return fail(Errno::EINVAL);
         }
         unsafe {
             ptr::copy_nonoverlapping(value as *const T as *const u8, optval.cast::<u8>(), len);
@@ -3215,7 +2917,7 @@ mod net {
     pub unsafe extern "C" fn ioctl(fd: c_int, cmd: c_int, argp: *mut c_void) -> c_int {
         if cmd as libc::c_ulong == libc::FIONBIO as libc::c_ulong {
             if argp.is_null() {
-                return fail(LinuxError::EFAULT);
+                return fail(Errno::EFAULT);
             }
             let nonblocking = unsafe { *(argp as *const c_int) } != 0;
             let flags = if nonblocking {
@@ -3225,7 +2927,7 @@ mod net {
             };
             unsafe { fcntl(fd, libc::F_SETFL, flags) }
         } else {
-            fail(LinuxError::EINVAL)
+            fail(Errno::EINVAL)
         }
     }
 
@@ -3289,27 +2991,27 @@ mod net_stubs {
     }
 
     fn fail_eai_system() -> c_int {
-        set_errno(LinuxError::ENOSYS as i32);
+        set_errno(Errno::ENOSYS.into_raw());
         libc::EAI_SYSTEM
     }
 
     net_stub! {
-        fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn bind(fd: c_int, addr: *const libc::sockaddr, len: libc::socklen_t) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn connect(fd: c_int, addr: *const libc::sockaddr, len: libc::socklen_t) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn listen(fd: c_int, backlog: c_int) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn accept(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn accept4(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t, flags: c_int) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn send(fd: c_int, buf: *const c_void, len: SizeT, flags: c_int) -> SSizeT => { fail(LinuxError::ENOSYS) as SSizeT }
-        fn sendto(fd: c_int, buf: *const c_void, len: SizeT, flags: c_int, addr: *const libc::sockaddr, addrlen: libc::socklen_t) -> SSizeT => { fail(LinuxError::ENOSYS) as SSizeT }
-        fn recv(fd: c_int, buf: *mut c_void, len: SizeT, flags: c_int) -> SSizeT => { fail(LinuxError::ENOSYS) as SSizeT }
-        fn recvfrom(fd: c_int, buf: *mut c_void, len: SizeT, flags: c_int, addr: *mut libc::sockaddr, addrlen: *mut libc::socklen_t) -> SSizeT => { fail(LinuxError::ENOSYS) as SSizeT }
-        fn shutdown(fd: c_int, how: c_int) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn getsockname(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn getpeername(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn setsockopt(fd: c_int, level: c_int, optname: c_int, optval: *const c_void, optlen: libc::socklen_t) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn getsockopt(fd: c_int, level: c_int, optname: c_int, optval: *mut c_void, optlen: *mut libc::socklen_t) -> c_int => { fail(LinuxError::ENOSYS) }
-        fn ioctl(fd: c_int, cmd: c_int, argp: *mut c_void) -> c_int => { fail(LinuxError::ENOSYS) }
+        fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int => { fail(Errno::ENOSYS) }
+        fn bind(fd: c_int, addr: *const libc::sockaddr, len: libc::socklen_t) -> c_int => { fail(Errno::ENOSYS) }
+        fn connect(fd: c_int, addr: *const libc::sockaddr, len: libc::socklen_t) -> c_int => { fail(Errno::ENOSYS) }
+        fn listen(fd: c_int, backlog: c_int) -> c_int => { fail(Errno::ENOSYS) }
+        fn accept(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t) -> c_int => { fail(Errno::ENOSYS) }
+        fn accept4(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t, flags: c_int) -> c_int => { fail(Errno::ENOSYS) }
+        fn send(fd: c_int, buf: *const c_void, len: SizeT, flags: c_int) -> SSizeT => { fail(Errno::ENOSYS) as SSizeT }
+        fn sendto(fd: c_int, buf: *const c_void, len: SizeT, flags: c_int, addr: *const libc::sockaddr, addrlen: libc::socklen_t) -> SSizeT => { fail(Errno::ENOSYS) as SSizeT }
+        fn recv(fd: c_int, buf: *mut c_void, len: SizeT, flags: c_int) -> SSizeT => { fail(Errno::ENOSYS) as SSizeT }
+        fn recvfrom(fd: c_int, buf: *mut c_void, len: SizeT, flags: c_int, addr: *mut libc::sockaddr, addrlen: *mut libc::socklen_t) -> SSizeT => { fail(Errno::ENOSYS) as SSizeT }
+        fn shutdown(fd: c_int, how: c_int) -> c_int => { fail(Errno::ENOSYS) }
+        fn getsockname(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t) -> c_int => { fail(Errno::ENOSYS) }
+        fn getpeername(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t) -> c_int => { fail(Errno::ENOSYS) }
+        fn setsockopt(fd: c_int, level: c_int, optname: c_int, optval: *const c_void, optlen: libc::socklen_t) -> c_int => { fail(Errno::ENOSYS) }
+        fn getsockopt(fd: c_int, level: c_int, optname: c_int, optval: *mut c_void, optlen: *mut libc::socklen_t) -> c_int => { fail(Errno::ENOSYS) }
+        fn ioctl(fd: c_int, cmd: c_int, argp: *mut c_void) -> c_int => { fail(Errno::ENOSYS) }
         fn getaddrinfo(node: *const c_char, service: *const c_char, hints: *const libc::addrinfo, res: *mut *mut libc::addrinfo) -> c_int => { fail_eai_system() }
     }
 

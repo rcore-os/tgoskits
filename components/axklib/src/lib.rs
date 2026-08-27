@@ -43,9 +43,8 @@
 
 extern crate alloc;
 
-use core::time::Duration;
+use core::{ptr::NonNull, time::Duration};
 
-pub use ax_errno::{AxError, AxResult};
 pub use ax_memory_addr::{PhysAddr, VirtAddr};
 pub use irq_framework::{
     AutoEnable as IrqAutoEnable, BoxedIrqHandler, ConcurrentBoxedIrqHandler, CpuId as IrqCpuId,
@@ -53,6 +52,9 @@ pub use irq_framework::{
     IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, ShareMode as IrqShareMode,
 };
 use trait_ffi::*;
+
+mod error;
+pub use error::{KlibError, KlibResult};
 
 /// Compatibility IRQ domain used while non-domainized callers migrate.
 pub const LEGACY_IRQ_DOMAIN: irq_framework::IrqDomainId = irq_framework::IrqDomainId(0);
@@ -83,19 +85,19 @@ pub fn IrqNumber(raw: usize) -> Result<IrqId, IrqError> {
     legacy_irq(raw)
 }
 
-/// Outcome of converting newly allocated coherent pages to an uncached mapping.
+/// Outcome of mapping newly allocated coherent pages through an uncached alias.
 #[must_use = "the outcome determines whether coherent pages can be reclaimed or must be quarantined"]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DmaCoherentMappingOutcome {
-    /// The mapping update and required cross-CPU synchronization completed.
-    Updated,
+    /// The non-null CPU alias and required cross-CPU synchronization completed.
+    Mapped(NonNull<u8>),
     /// The mapping transaction did not start, so the allocated pages remain safe to reclaim.
-    NotStarted(AxError),
-    /// The mapping transaction started but its final cross-CPU state cannot be proven.
+    NotStarted(KlibError),
+    /// The alias transaction started but its final cross-CPU state cannot be proven.
     ///
     /// Callers must quarantine the associated pages instead of returning them
     /// to the allocator.
-    StateUncertain(AxError),
+    StateUncertain(KlibError),
 }
 
 pub mod dma;
@@ -113,7 +115,7 @@ pub trait Klib {
     /// Returns:
     /// - `Ok(VirtAddr)` with the virtual address corresponding to the mapped
     ///   physical region on success.
-    /// - `Err(_)` with an `AxResult` error code on failure.
+    /// - `Err(_)` with a [`KlibError`] on failure.
     ///
     /// Notes:
     /// - The returned `VirtAddr` is page-aligned when the underlying mapping
@@ -121,34 +123,42 @@ pub trait Klib {
     /// - The actual mapping behavior is platform-specific; callers should
     ///   treat this as an allocation-like operation and ensure the mapping
     ///   is later cleaned up if the platform/ABI requires it.
-    fn mem_iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr>;
+    fn mem_iomap(addr: PhysAddr, size: usize) -> KlibResult<VirtAddr>;
 
     /// Translates a kernel virtual address to the corresponding physical address.
     fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr;
 
-    /// Converts newly allocated DMA-coherent pages to an uncached kernel mapping.
+    /// Maps newly allocated pages through an independent uncached kernel alias.
     ///
     /// This is not a general-purpose memory attribute switching API. Callers
     /// must only use it for pages that were just allocated for
     /// `alloc_coherent`, are page-owned by that allocation, and have not been
     /// exposed to another CPU, mapping, or device.
     ///
-    /// Implementations must perform the required cache maintenance, TLB
-    /// invalidation, and ordering barriers internally. They must return
+    /// The cacheable allocator mapping remains installed but must not be used
+    /// while the returned alias is owned by the coherent allocation. The DMA
+    /// address continues to refer to the original physical pages.
+    /// A successful mapping returns a non-null CPU pointer; numerical virtual
+    /// address zero is not a valid CPU mapping capability.
+    ///
+    /// Implementations must perform the required cache maintenance, create a
+    /// distinct virtual mapping, invalidate TLBs, and apply ordering barriers
+    /// internally. They must return
     /// [`DmaCoherentMappingOutcome::NotStarted`] only when no mapping update
     /// occurred and the pages remain safe to reclaim. Once an update may have
     /// started, failures must return
     /// [`DmaCoherentMappingOutcome::StateUncertain`] so callers quarantine the
     /// pages.
-    fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> DmaCoherentMappingOutcome;
+    fn mem_map_dma_coherent_uncached(addr: NonNull<u8>, size: usize) -> DmaCoherentMappingOutcome;
 
-    /// Restores DMA-coherent pages to a normal cacheable kernel mapping.
+    /// Removes an uncached alias created by
+    /// [`Klib::mem_map_dma_coherent_uncached`].
     ///
     /// The caller must ensure the device no longer owns or accesses the pages.
     /// Implementations must perform the required TLB invalidation and ordering
-    /// barriers internally before the pages are returned to the normal page
-    /// allocator.
-    fn mem_restore_dma_cached(addr: VirtAddr, size: usize) -> AxResult;
+    /// barriers internally before the original pages are returned to the page
+    /// allocator. On failure, callers quarantine both the alias and the pages.
+    fn mem_unmap_dma_coherent(addr: NonNull<u8>, size: usize) -> KlibResult;
 
     /// Cleans a CPU cache range before device ownership.
     fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
@@ -162,11 +172,13 @@ pub trait Klib {
     /// Allocates contiguous DMA pages.
     ///
     /// `dma_mask` is the device-visible address mask. Implementations should
-    /// use a DMA32-capable allocator when the mask requires it.
-    fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> AxResult<VirtAddr>;
+    /// use a DMA32-capable allocator when the mask requires it. A non-empty
+    /// allocation must return a non-null CPU pointer. A zero-page request may
+    /// return [`NonNull::dangling`] and must be a deallocation no-op.
+    fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> KlibResult<NonNull<u8>>;
 
     /// Releases pages previously allocated by [`Klib::dma_alloc_pages`].
-    fn dma_dealloc_pages(addr: VirtAddr, num_pages: usize);
+    fn dma_dealloc_pages(addr: NonNull<u8>, num_pages: usize);
 
     /// Busy-wait the current execution context for the provided duration.
     ///
@@ -184,29 +196,29 @@ pub trait Klib {
     fn time_try_init_epoch_offset(epoch_time_nanos: u64) -> bool;
 
     /// Enable or disable a domain-scoped platform IRQ.
-    fn irq_set_enable(irq: IrqId, enabled: bool) -> AxResult;
+    fn irq_set_enable(irq: IrqId, enabled: bool) -> KlibResult;
 
     /// Request a shared IRQ action and return its handle on success.
-    fn irq_request_shared(irq: IrqId, handler: BoxedIrqHandler) -> AxResult<IrqHandle>;
+    fn irq_request_shared(irq: IrqId, handler: BoxedIrqHandler) -> KlibResult<IrqHandle>;
 
     /// Request a shared IRQ action without enabling it.
-    fn irq_request_shared_disabled(irq: IrqId, handler: BoxedIrqHandler) -> AxResult<IrqHandle>;
+    fn irq_request_shared_disabled(irq: IrqId, handler: BoxedIrqHandler) -> KlibResult<IrqHandle>;
 
     /// Request a per-CPU IRQ action and return its handle on success.
     fn irq_request_percpu(
         irq: IrqId,
         cpus: IrqCpuMask,
         handler: ConcurrentBoxedIrqHandler,
-    ) -> AxResult<IrqHandle>;
+    ) -> KlibResult<IrqHandle>;
 
     /// Free an IRQ action previously returned by a request function.
-    fn irq_free(handle: IrqHandle) -> AxResult;
+    fn irq_free(handle: IrqHandle) -> KlibResult;
 
     /// Enable an IRQ action by handle.
-    fn irq_enable(handle: IrqHandle) -> AxResult;
+    fn irq_enable(handle: IrqHandle) -> KlibResult;
 
     /// Disable an IRQ action by handle.
-    fn irq_disable(handle: IrqHandle) -> AxResult;
+    fn irq_disable(handle: IrqHandle) -> KlibResult;
 
     /// Runs a raw thunk synchronously on the requested CPU.
     ///
@@ -230,13 +242,36 @@ pub trait Klib {
             Err(IrqError::Unsupported)
         }
     }
+
+    /// Resolves a firmware CPU id to the kernel's dense logical CPU index.
+    ///
+    /// Firmware ids are the identifiers the boot firmware and device tree use
+    /// for CPUs: the `reg` value of a `/cpus` child node on device-tree
+    /// platforms (the AArch64 MPIDR affinity value, a RISC-V hart id, ...).
+    /// The kernel — not the device tree — assigns logical CPU indices (the
+    /// boot hart becomes logical CPU 0, the remaining firmware ids follow in
+    /// firmware order), and per-CPU kernel state such as scheduler counters is
+    /// keyed by that index. Drivers that attribute per-logical-CPU data to
+    /// hardware resources must resolve ids through this mapping instead of
+    /// assuming a `/cpus` enumeration order.
+    ///
+    /// Returns `None` when the platform provides no such mapping or no online
+    /// CPU runs the given firmware id.
+    fn cpu_resolve_logical_index(_hardware_id: usize) -> Option<usize> {
+        None
+    }
+}
+
+/// Convenience re-exports for CPU topology queries.
+pub mod cpu {
+    pub use super::klib::cpu_resolve_logical_index as resolve_logical_index;
 }
 
 /// Convenience re-export for memory IO mapping.
 pub mod mem {
     pub use super::klib::{
-        mem_iomap as iomap, mem_make_dma_coherent_uncached as make_dma_coherent_uncached,
-        mem_restore_dma_cached as restore_dma_cached, mem_virt_to_phys as virt_to_phys,
+        mem_iomap as iomap, mem_map_dma_coherent_uncached as map_dma_coherent_uncached,
+        mem_unmap_dma_coherent as unmap_dma_coherent, mem_virt_to_phys as virt_to_phys,
     };
 }
 
@@ -266,7 +301,7 @@ pub mod irq {
     pub fn request_shared(
         irq: IrqId,
         handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
-    ) -> super::AxResult<IrqHandle> {
+    ) -> super::KlibResult<IrqHandle> {
         super::klib::irq_request_shared(irq, alloc::boxed::Box::new(handler))
     }
 
@@ -274,7 +309,7 @@ pub mod irq {
     pub fn request_shared_disabled(
         irq: IrqId,
         handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
-    ) -> super::AxResult<IrqHandle> {
+    ) -> super::KlibResult<IrqHandle> {
         super::klib::irq_request_shared_disabled(irq, alloc::boxed::Box::new(handler))
     }
 
@@ -283,7 +318,7 @@ pub mod irq {
         irq: IrqId,
         cpus: CpuMask,
         handler: impl Fn(IrqContext) -> IrqReturn + Send + Sync + 'static,
-    ) -> super::AxResult<IrqHandle> {
+    ) -> super::KlibResult<IrqHandle> {
         super::klib::irq_request_percpu(irq, cpus, alloc::boxed::Box::new(handler))
     }
 }

@@ -2028,7 +2028,6 @@ pub fn read_inode_data_into<B: BlockIo>(
         let available = target.len().saturating_sub(start);
         let to_read = core::cmp::min(dst.len(), available);
         dst[..to_read].copy_from_slice(&target[start..start + to_read]);
-        fs.touch_inode_atime_if_needed(device, inode_num)?;
         return Ok(to_read);
     }
 
@@ -2112,7 +2111,6 @@ pub fn read_inode_data_into<B: BlockIo>(
         }
     }
 
-    fs.touch_inode_atime_if_needed(device, inode_num)?;
     Ok(copied)
 }
 

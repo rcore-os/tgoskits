@@ -26,7 +26,7 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 8. For IRQ-driven devices, keep control, IRQ handler, and queue endpoints separate. The control endpoint owns startup/config/service operations; the IRQ endpoint synchronizes hardware events; queue endpoints submit/reclaim work using queue-local state.
 9. Move lifetime-sensitive IRQ handler endpoints into the registered IRQ callback when possible. Prefer `FnMut`/boxed callback ownership or an equivalent OS registration token over sharing the IRQ handler through `Arc<Mutex<_>>`.
 10. IRQ handlers should synchronize hardware events into queue-local completion state; queues should advance their own work without locking the IRQ handler or re-reading shared/destructive IRQ status.
-11. Make IRQ paths return stable events, normally `handle_irq(&mut self) -> Event` for an IRQ-owned endpoint or `handle_irq() -> Event` for stateless/raw event extractors. OS Glue decides whether to wake a thread, wake a future, schedule a worker, or set a pending flag.
+11. Make IRQ paths return stable events, normally `handle_irq(&mut self) -> Event` for an IRQ-owned endpoint or `handle_irq() -> Event` for stateless/raw event extractors. OS Glue decides how a non-network consumer continues. Network IRQ sources instead follow the fixed-CPU poll-group contract below; they may only activate their own owner executor.
 12. When IRQ and task paths share mutable driver state, look for an explicit exclusion protocol: task-side mutation masks the exact interrupt source before taking the lock, while IRQ only touches pre-registered stable state. Document the lifetime/safety contract; otherwise prefer atomics/pending bits plus a deferred worker.
 13. Validate the changed crate with formatting and targeted clippy before finishing.
 
@@ -106,6 +106,38 @@ pub struct DeviceParts {
 ```
 
 Register `irq` by moving it into the OS IRQ callback. Let task/worker code hold `control` and queue endpoints, not the IRQ handler itself.
+
+### Network poll-group contract
+
+An IRQ-driven network device must be consumed into `rdif_eth::NetDeviceParts`.
+Each `NetPollGroupParts` owns one mask/rearm domain, its RX/TX queues, a
+task-context `NetPollIrqControl`, and move-only `NetHardIrqEndpoint`s. The
+runtime assigns one `owner_cpu` to every physical IRQ-connected affinity domain
+and enforces:
+
+```text
+IRQ callback CPU == poll-group owner CPU == queue processing CPU
+```
+
+- Register every network action disabled, non-reentrantly, and with
+  `IrqAffinity::Fixed(owner_cpu)`. Shared actions for one physical `IrqId` must
+  agree on the same CPU; reject initialization otherwise.
+- Hard IRQ may only perform bounded mask/ack/status snapshot and publish the
+  target group. It must not allocate, touch DMA payload, call protocol code,
+  invoke an arbitrary waker, spin on a transport gate, or wake unrelated groups.
+- The fixed-CPU queue owner exclusively drains/refills DMA queues, applies
+  budgets, handles backpressure, and calls atomic `rearm_and_check()` after the
+  group is empty. A pending rearm result schedules the same group immediately.
+- `DmaBuffer` and submission errors remain move-only so ownership crosses the
+  queue/protocol SPSC rings exactly once.
+- SDIO nested sources move with the network parts. Controller CARD_INT status,
+  AIC FIFO draining, firmware commands, and Wi-Fi control transactions all run
+  in the same owner domain; control callers submit a transaction rather than
+  directly touching SDIO/MMIO.
+- Do not add `IrqAffinity::Any`, IRQ-to-remote-CPU continuation, OOB RX
+  callbacks, wake-all fanout, periodic device polling, kickers, or no-IRQ
+  fallback paths. Missing fixed routing, worker pinning, IRQ source, or atomic
+  mask/rearm support makes physical network initialization fail.
 
 When a driver intentionally shares registries or queue maps between task setup and IRQ completion paths, prefer an xHCI-style exclusion protocol over taking the same spinlock in IRQ: task context masks the same device interrupter/MSI source before mutation; IRQ context does not take that lock and only touches entries whose lifetime was established before interrupts were enabled. This avoids same-lock IRQ reentry deadlocks, but it does not make allocation, blocking, arbitrary wakers, or unrelated OS callbacks safe in hard IRQ.
 

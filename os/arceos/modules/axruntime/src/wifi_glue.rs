@@ -10,10 +10,9 @@
 //! where the OS already owns the `ax-task` / `ax-hal` runtime; keeping it here
 //! avoids an extra adapter crate per driver.
 
-use alloc::boxed::Box;
-use core::{future::poll_fn, time::Duration};
+use core::time::Duration;
 
-use aic8800::{PollFn, SendPollFn, TimedOut, WifiRuntime};
+use aic8800::WifiRuntime;
 use sdhci_cv1800::SdhciDelay;
 
 /// ArceOS-backed implementation of the Wi-Fi driver's runtime capabilities.
@@ -30,34 +29,6 @@ impl WifiRuntime for ArceosWifiRuntime {
 
     fn yield_now(&self) {
         ax_task::yield_now();
-    }
-
-    fn spawn_poll_task(&self, name: &str, mut poll: Box<SendPollFn>) {
-        ax_task::spawn_with_name(
-            move || {
-                ax_task::future::block_on(poll_fn(move |cx| poll(cx)));
-            },
-            name.into(),
-        );
-    }
-
-    fn block_until(&self, timeout_ms: Option<u64>, poll: &mut PollFn<'_>) -> Result<(), TimedOut> {
-        let fut = poll_fn(|cx| poll(cx));
-        match timeout_ms {
-            Some(ms) => {
-                match ax_task::future::block_on(ax_task::future::timeout(
-                    Some(Duration::from_millis(ms)),
-                    fut,
-                )) {
-                    Ok(()) => Ok(()),
-                    Err(_) => Err(TimedOut),
-                }
-            }
-            None => {
-                ax_task::future::block_on(fut);
-                Ok(())
-            }
-        }
     }
 }
 

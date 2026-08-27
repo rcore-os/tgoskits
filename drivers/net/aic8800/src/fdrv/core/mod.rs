@@ -4,12 +4,11 @@
 
 pub mod bus;
 pub mod init;
-pub mod pollset;
 pub mod sdio_transport;
 
 pub use bus::{
     BusState, CmdState, ConnectionState, RxState, STATUS_CONNECTED, STATUS_CONNECTING,
-    STATUS_DISCONNECTED, STATUS_FAILED, TxState, WifiBus, sdio1_irq_handler, set_global_bus,
+    STATUS_DISCONNECTED, STATUS_FAILED, TxState, WifiBus,
 };
 pub use init::*;
 pub use sdio_transport::SdioTransport;

@@ -13,9 +13,6 @@ pub use id::*;
 pub use interface::*;
 pub use rdif_base::{DriverGeneric, KError, io};
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 #[cfg(test)]
 mod tests {
     use super::*;

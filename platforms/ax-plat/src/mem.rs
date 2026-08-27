@@ -32,11 +32,13 @@ pub enum IomapDecision {
 }
 
 /// Platform error for an MMIO mapping request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum IomapError {
     /// The requested address range or attributes are invalid.
+    #[error("invalid I/O mapping request")]
     InvalidInput,
     /// The requested mapping attributes are not supported.
+    #[error("I/O mapping attributes are not supported")]
     Unsupported,
 }
 
@@ -49,6 +51,21 @@ pub enum DCacheOp {
     Invalidate,
     /// Clean and invalidate CPU cache lines for bidirectional ownership changes.
     CleanInvalidate,
+}
+
+/// Platform contract for cacheable Normal memory shared by CPUs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuSharedMemoryModel {
+    /// All online CPUs observe a coherent view of cacheable Normal memory.
+    ///
+    /// Standard Acquire/Release atomics and the platform IPI ordering contract
+    /// are sufficient for publishing CPU-owned queues. Per-message cache
+    /// maintenance is neither required nor permitted as a substitute for
+    /// synchronization.
+    Coherent,
+    /// The platform cannot provide the coherent memory model required by the
+    /// generic SMP runtime.
+    Unsupported,
 }
 
 bitflags::bitflags! {
@@ -170,6 +187,13 @@ impl PhysMemRegion {
 /// Physical memory interface.
 #[def_plat_interface]
 pub trait MemIf {
+    /// Returns the memory model provided for cacheable RAM shared by CPUs.
+    ///
+    /// Platforms must establish this contract before secondary CPUs enter the
+    /// generic runtime. [`CpuSharedMemoryModel::Unsupported`] restricts the
+    /// runtime to a single CPU; it does not request queue-local cache flushing.
+    fn cpu_shared_memory_model() -> CpuSharedMemoryModel;
+
     /// Returns all physical memory (RAM) ranges on the platform.
     ///
     /// All memory ranges except reserved ranges (including the kernel loaded
@@ -222,13 +246,13 @@ pub trait MemIf {
     /// Maintains a CPU data-cache range for non-coherent DMA ownership changes.
     fn dcache_range(op: DCacheOp, addr: VirtAddr, size: usize);
 
-    /// Prepares a cached range before the kernel remaps it as uncached for DMA.
-    fn dma_coherent_before_make_uncached(addr: VirtAddr, size: usize);
+    /// Prepares cached pages before the kernel creates an uncached DMA alias.
+    fn dma_coherent_before_map_uncached(addr: VirtAddr, size: usize);
 
-    /// Prepares an uncached DMA range before the kernel restores cached mappings.
-    fn dma_coherent_before_restore_cached(addr: VirtAddr, size: usize);
+    /// Orders accesses before the kernel removes an uncached DMA alias.
+    fn dma_coherent_before_unmap_uncached(addr: VirtAddr, size: usize);
 
-    /// Completes platform ordering after a DMA coherent mapping attribute update.
+    /// Completes platform ordering after a DMA coherent alias update.
     fn dma_coherent_after_mapping_update();
 }
 

@@ -44,12 +44,14 @@ pub const GOOD_OLD_INODE_SIZE: u16 = 128;
 /// Enables the multi-level cache stack for inode tables, data blocks, bitmaps,
 /// and group descriptors.
 pub const USE_MULTILEVEL_CACHE: bool = cfg!(feature = "USE_MULTILEVEL_CACHE");
-/// Maximum number of filesystem blocks retained by the journal-facing device cache.
-pub const BLOCKDEV_CACHE_MAX: usize = 64;
 /// Maximum number of inode-table cache entries.
 pub const INODE_CACHE_MAX: usize = 128;
 /// Maximum number of data-block cache entries.
-pub const DATABLOCK_CACHE_MAX: usize = 128;
+///
+/// Kept small for read-modify-write hot blocks and truncate-generation
+/// bookkeeping only; bulk read capacity is provided by the block-layer
+/// cache below this crate.
+pub const DATABLOCK_CACHE_MAX: usize = 32;
 /// Maximum number of bitmap cache entries.
 pub const BITMAP_CACHE_MAX: usize = 128;
 

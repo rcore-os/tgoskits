@@ -27,7 +27,7 @@ fn ret1_value(ctx: &ProbeContext) -> u64 {
     ctx.arg(1).unwrap()
 }
 
-// pub fn sys_getpid() -> AxResult<isize>;
+// pub fn sys_getpid() -> StarryResult<isize>;
 fn try_kret(ctx: RetProbeContext) -> Result<u32, u32> {
     let probe_context = ProbeContext::new(ctx.as_ptr());
     let ret0 = ctx.ret::<u64>();

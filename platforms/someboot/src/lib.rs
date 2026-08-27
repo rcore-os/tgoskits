@@ -37,6 +37,7 @@ pub(crate) mod consts;
 #[cfg(efi)]
 mod efi_stub;
 mod elf;
+mod entropy;
 mod entry;
 mod err;
 pub(crate) mod fdt;
@@ -44,14 +45,13 @@ pub mod irq;
 pub mod mem;
 pub mod power;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
 pub mod rtc;
 pub mod smp;
 pub mod timer;
 
 pub use acpi::rsdp_addr_phys;
 pub use cmdline::cmdline;
+pub use entropy::boot_entropy;
 pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};
 pub use page_table_generic::*;
 pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
@@ -124,14 +124,6 @@ pub trait ArchTrait {
     /// report `ALIVE`, and releases it into the OS entry path.
     fn kick_secondary_cpu(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
 
-    fn systimer_enable();
-    fn systimer_irq_enable();
-    fn systimer_irq_disable();
-    fn systimer_irq_is_enabled() -> bool;
-    /// Set the timer interval in ticks
-    fn systimer_set_interval(ticks: usize);
-    /// Acknowledge and clear the timer interrupt
-    fn systimer_ack();
     /// Get the timer frequency in Hz
     fn systimer_freq() -> usize;
     /// Get the current timer tick count
@@ -142,28 +134,88 @@ pub trait ArchTrait {
     fn irq_all_is_enabled() -> bool;
     fn irq_all_set_enable(enable: bool);
 
-    fn irq_is_enabled(irq: IrqId) -> bool;
-    fn irq_set_enable(irq: IrqId, enable: bool);
-
     fn dcache_range(op: DCacheOp, addr: usize, size: usize);
 
-    /// Prepare a cached virtual range before remapping it as uncached for DMA.
-    fn dma_coherent_before_make_uncached(addr: usize, size: usize) {
+    /// Prepare cached pages before creating an uncached DMA alias.
+    fn dma_coherent_before_map_uncached(addr: usize, size: usize) {
         Self::dcache_range(DCacheOp::CleanInvalidate, addr, size);
     }
 
-    /// Prepare an uncached DMA range before restoring it to cached mappings.
-    fn dma_coherent_before_restore_cached(_addr: usize, _size: usize) {}
+    /// Order accesses before removing an uncached DMA alias.
+    fn dma_coherent_before_unmap_uncached(_addr: usize, _size: usize) {}
 
-    /// Complete ordering after a DMA coherent mapping attribute update.
+    /// Complete ordering after a DMA coherent alias update.
     fn dma_coherent_after_mapping_update() {}
 
     /// EFI 入口点 - 从 EFI PE 入口跳转到内核
     ///
+    /// Returns `false` on architectures without EFI handoff.
+    ///
     /// # Safety
     /// `system_table` 必须是当前 EFI 固件提供的有效 `EFI_SYSTEM_TABLE` 指针，
     /// 并且调用者必须保证此调用符合对应架构的启动约定。
-    unsafe fn efi_enter_kernel(system_table: *const ::core::ffi::c_void) -> bool;
+    unsafe fn efi_enter_kernel(_system_table: *const ::core::ffi::c_void) -> bool {
+        false
+    }
+}
+
+/// System-timer arming capability for architectures whose timer is hardware
+/// independent of the interrupt controller (Arm generic timer, RISC-V SBI
+/// timer, LoongArch TCG).
+///
+/// The counter domain (`systimer_freq`/`systimer_tick`/`systimer_stability`)
+/// stays on [`ArchTrait`] because every architecture provides a counter. On
+/// x86_64 the system timer lives inside the local APIC, so somehal's
+/// interrupt-controller driver owns arming and the architecture simply does
+/// not implement this trait — the absent capability is the compile-time
+/// boundary, no conditional compilation is involved.
+///
+/// Primitives are implemented per architecture; the provided methods carry
+/// the common implementations and may be overridden (LoongArch overrides the
+/// per-line IRQ pair for its multi-line ECFG semantics).
+pub trait SystimerArch: ArchTrait {
+    /// The boot-level IRQ line of the system timer.
+    fn systimer_irq_id() -> IrqId;
+    fn systimer_enable();
+    fn systimer_irq_enable();
+    fn systimer_irq_disable();
+    fn systimer_irq_is_enabled() -> bool;
+    /// Set the timer interval in ticks.
+    fn systimer_set_interval(ticks: usize);
+
+    /// Acknowledge and clear the timer interrupt. Timers whose pending state
+    /// clears on re-arming keep this default.
+    fn systimer_ack() {}
+
+    /// Whether one boot-level IRQ line is enabled. The common implementation
+    /// knows only the system-timer line.
+    fn irq_is_enabled(irq: IrqId) -> bool {
+        irq == Self::systimer_irq_id() && Self::systimer_irq_is_enabled()
+    }
+
+    /// Enable or disable one boot-level IRQ line. The common implementation
+    /// controls only the system-timer line and ignores others.
+    fn irq_set_enable(irq: IrqId, enable: bool) {
+        if irq == Self::systimer_irq_id() {
+            if enable {
+                Self::systimer_irq_enable();
+            } else {
+                Self::systimer_irq_disable();
+            }
+        }
+    }
+
+    /// Arms a one-shot deadline `ticks` from now.
+    fn set_next_event_in_ticks(ticks: usize) {
+        Self::systimer_set_interval(ticks);
+    }
+
+    /// Configure the system timer with the desired interval.
+    fn set_next_event(interval: core::time::Duration) {
+        const NANOS_PER_SEC: u128 = 1_000_000_000;
+        let ticks = (interval.as_nanos() * Self::systimer_freq() as u128 / NANOS_PER_SEC) as usize;
+        Self::systimer_set_interval(ticks);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

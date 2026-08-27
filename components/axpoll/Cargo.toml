@@ -1,6 +1,6 @@
 [package]
 name = "axpoll"
-version = "0.5.4"
+version = "0.6.0"
 edition.workspace = true
 description = "A library for polling I/O events and waking up tasks."
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
@@ -9,24 +9,20 @@ documentation = "https://docs.rs/axpoll"
 license = "Apache-2.0"
 
 [features]
-axtest = ["dep:axtest"]
 default = []
+host-test = ["ax-sync/host-test"]
 
 [dependencies]
 ax-sync = { workspace = true }
 ax-lazyinit.workspace = true
-axtest = { workspace = true, optional = true }
 bitflags = { version = "2.10", default-features = false }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
-
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 tokio = { version = "1.37", features = [
     "rt-multi-thread",
     "macros",
@@ -34,3 +30,8 @@ tokio = { version = "1.37", features = [
     "sync",
 ] }
 futures = "0.3"
+
+[[test]]
+name = "std"
+path = "tests/std.rs"
+required-features = ["host-test"]

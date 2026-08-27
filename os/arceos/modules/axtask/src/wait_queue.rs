@@ -65,7 +65,6 @@ impl WaitQueue {
 
         // Try to cancel a timer event from timer lists.
         // Just mark task's current timer ticket ID as expired.
-        #[cfg(feature = "irq")]
         if _from_timer_list {
             curr.timer_ticket_expired();
             // Note:
@@ -112,7 +111,6 @@ impl WaitQueue {
 
     /// Blocks the current task and put it into the wait queue, until other tasks
     /// notify it, or the given duration has elapsed.
-    #[cfg(feature = "irq")]
     #[track_caller]
     pub fn wait_timeout(&self, dur: core::time::Duration) -> bool {
         crate::api::might_sleep();
@@ -148,7 +146,6 @@ impl WaitQueue {
     ///
     /// Note that even other tasks notify this task, it will not wake up until
     /// the above conditions are met.
-    #[cfg(feature = "irq")]
     #[track_caller]
     pub fn wait_timeout_until<F>(&self, dur: core::time::Duration, condition: F) -> bool
     where
@@ -275,17 +272,26 @@ fn unblock_one_task(task: AxTaskRef, resched: bool) {
     select_wake_run_queue::<PreemptIrqSaveState>(&task).unblock_task(task, resched)
 }
 
-#[cfg(axtest)]
-pub(crate) fn wait_queue_new_and_default_hold_for_test() -> bool {
-    // Test WaitQueue::new() and Default
-    let wq = WaitQueue::new();
-    let wq_default = WaitQueue::default();
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
 
-    // Both should create valid WaitQueue instances
-    // We can't easily test the internal state without locking,
-    // but we can verify the struct exists and can be created
-    let _wq_ref = &wq;
-    let _wq_default_ref = &wq_default;
+    fn wait_queue_new_and_default_hold_for_test() -> bool {
+        // Test WaitQueue::new() and Default
+        let wq = WaitQueue::new();
+        let wq_default = WaitQueue::default();
 
-    true
+        // Both should create valid WaitQueue instances
+        // We can't easily test the internal state without locking,
+        // but we can verify the struct exists and can be created
+        let _wq_ref = &wq;
+        let _wq_default_ref = &wq_default;
+
+        true
+    }
+
+    #[test]
+    fn wait_queue_new_and_default_hold() {
+        assert!(wait_queue_new_and_default_hold_for_test());
+    }
 }

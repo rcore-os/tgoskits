@@ -789,6 +789,66 @@ fn owned_remount_rejects_read_write_on_read_only_device() {
 }
 
 #[test]
+fn owned_read_only_read_does_not_update_atime() {
+    let mut filesystem = owned_test_filesystem();
+    let context = MutationContext::new(1000, 1001, 0, 0o022);
+    let file = filesystem
+        .create_regular_file(
+            context,
+            filesystem.root_inode(),
+            FileName::new(b"readonly-atime").expect("valid name"),
+            FilePermissions::new(0o644).expect("valid permissions"),
+        )
+        .expect("create file");
+    filesystem
+        .write_inode(context, file.number, 0, b"payload")
+        .expect("write file");
+    filesystem.sync().expect("sync file before remount");
+    let before = filesystem.inode(file.number).expect("inspect before read");
+
+    let read_only = MountOptions {
+        readonly: true,
+        ..filesystem.options()
+    };
+    filesystem.remount(read_only).expect("remount read-only");
+    let mut output = [0; 7];
+    assert_eq!(
+        filesystem
+            .read_inode(file.number, 0, &mut output)
+            .expect("read from read-only mount"),
+        output.len()
+    );
+    assert_eq!(&output, b"payload");
+    let after = filesystem.inode(file.number).expect("inspect after read");
+    assert_eq!(after.atime, before.atime);
+}
+
+#[test]
+fn owned_unmount_rejects_later_mutation_and_sync() {
+    let mut filesystem = owned_test_filesystem();
+    let context = MutationContext::new(1000, 1001, 0, 0o022);
+    let file = filesystem
+        .create_regular_file(
+            context,
+            filesystem.root_inode(),
+            FileName::new(b"unmounted-owner").expect("valid name"),
+            FilePermissions::new(0o644).expect("valid permissions"),
+        )
+        .expect("create file");
+
+    filesystem.unmount().expect("unmount filesystem");
+
+    let write_error = filesystem
+        .write_inode(context, file.number, 0, b"forbidden")
+        .expect_err("an unmounted owner must reject mutation");
+    assert_eq!(write_error.kind(), Ext4ErrorKind::Busy);
+    let sync_error = filesystem
+        .sync()
+        .expect_err("an unmounted owner must reject sync");
+    assert_eq!(sync_error.kind(), Ext4ErrorKind::Busy);
+}
+
+#[test]
 fn owned_rename_noreplace_preserves_both_entries() {
     let mut filesystem = owned_test_filesystem();
     let context = MutationContext::new(1000, 1001, 7, 0o022);

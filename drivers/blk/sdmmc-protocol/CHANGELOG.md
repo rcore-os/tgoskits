@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.5.0...sdmmc-protocol-v0.5.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.4...sdmmc-protocol-v0.5.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Fixed
+
+- *(sdmmc)* align Rockchip reset failure lifecycle ([#1987](https://github.com/rcore-os/tgoskits/pull/1987))
+
 ## [0.4.4](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.3...sdmmc-protocol-v0.4.4) - 2026-08-09
 
 ### Fixed

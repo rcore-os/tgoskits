@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 600" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net 运行时所有权与数据通道</title>
+  <desc id="desc">调用者只发布协议 generation；唯一协议执行器与固定 CPU 队列执行器通过有界 SPSC 连接，IRQ 回调和队列处理保持同核。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#41546b"/>
+    </marker>
+    <style>
+      .lane{fill:#f7f9fc;stroke:#8091a7;stroke-width:2}
+      .core{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}
+      .queue{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .device{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .exception{fill:#fff0f0;stroke:#bf4747;stroke-width:2;stroke-dasharray:7 5}
+      .label{font:600 20px sans-serif;fill:#213247}
+      .text{font:16px sans-serif;fill:#26384d}
+      .small{font:14px sans-serif;fill:#41546b}
+      .edge{fill:none;stroke:#41546b;stroke-width:2.2;marker-end:url(#arrow)}
+      .wake{fill:none;stroke:#7b5bb5;stroke-width:2.2;stroke-dasharray:7 5;marker-end:url(#arrow)}
+      .sync{fill:none;stroke:#bf4747;stroke-width:2.4;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect class="lane" x="30" y="35" width="310" height="520" rx="18"/>
+  <text class="label" x="55" y="72">调用者 / OS ABI</text>
+  <rect class="core" x="70" y="110" width="230" height="82" rx="12"/>
+  <text class="text" x="102" y="145">SocketOps / options</text>
+  <text class="small" x="102" y="170">send · recv · connect · poll</text>
+  <rect class="queue" x="70" y="245" width="230" height="82" rx="12"/>
+  <text class="text" x="112" y="280">request_poll()</text>
+  <text class="small" x="93" y="305">原子请求位 + WaitQueue</text>
+  <rect class="queue" x="70" y="405" width="230" height="92" rx="12"/>
+  <text class="text" x="94" y="440">UDP Drop / flush_egress</text>
+  <text class="small" x="92" y="466">发布 generation 并等待</text>
+  <text class="small" x="102" y="486">唯一 executor 完成</text>
+
+  <rect class="lane" x="405" y="35" width="310" height="520" rx="18"/>
+  <text class="label" x="430" y="72">串行协议核心</text>
+  <rect class="core" x="445" y="110" width="230" height="82" rx="12"/>
+  <text class="text" x="477" y="145">ProtocolExecutor</text>
+  <text class="small" x="470" y="170">requested / completed</text>
+  <rect class="core" x="445" y="245" width="230" height="110" rx="12"/>
+  <text class="text" x="503" y="280">SERVICE</text>
+  <text class="small" x="480" y="305">smoltcp Interface</text>
+  <text class="small" x="477" y="327">DHCP · orphan · DNS</text>
+  <rect class="queue" x="445" y="405" width="230" height="92" rx="12"/>
+  <text class="text" x="504" y="440">Router</text>
+  <text class="small" x="468" y="466">EthernetFramePort[]</text>
+
+  <rect class="lane" x="780" y="35" width="310" height="520" rx="18"/>
+  <text class="label" x="805" y="72">设备与 IRQ 域</text>
+  <rect class="device" x="820" y="110" width="230" height="82" rx="12"/>
+  <text class="text" x="855" y="145">net-queue-cpuN</text>
+  <text class="small" x="840" y="170">固定 owner · 无周期唤醒</text>
+  <rect class="device" x="820" y="245" width="230" height="110" rx="12"/>
+  <text class="text" x="877" y="280">NetPollGroup</text>
+  <text class="small" x="849" y="305">budget · backpressure</text>
+  <text class="small" x="850" y="327">DMA reclaim/refill/rearm</text>
+  <rect class="device" x="820" y="405" width="230" height="92" rx="12"/>
+  <text class="text" x="857" y="440">Fixed IRQ action</text>
+  <text class="small" x="842" y="466">mask/ack/snapshot 同核</text>
+
+  <path class="edge" d="M300 151 H445"/>
+  <path class="wake" d="M300 286 H390 Q420 286 420 220 V168 Q420 151 445 151"/>
+  <path class="edge" d="M560 192 V245"/>
+  <path class="edge" d="M560 355 V405"/>
+  <path class="edge" d="M675 451 H820"/>
+  <path class="edge" d="M820 300 H735 Q705 300 705 420 H675"/>
+  <path class="wake" d="M820 451 H745 Q725 451 725 200 H675"/>
+  <path class="wake" d="M300 451 H375 Q395 451 395 135 Q395 110 445 110"/>
+
+  <text class="small" x="315" y="140">读写 socket 状态</text>
+  <text class="small" x="684" y="442">有界 SPSC token</text>
+  <text class="small" x="716" y="190">group-local IRQ 唤醒</text>
+</svg>

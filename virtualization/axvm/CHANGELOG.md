@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axvm-v0.6.0...axvm-v0.6.1) - 2026-08-25
+
+### Added
+
+- *(axvisor)* add pause/resume VM lifecycle endpoints ([#2098](https://github.com/rcore-os/tgoskits/pull/2098))
+
+### Fixed
+
+- *(axvisor)* restore runtime counter builds and probe shutdown ([#2181](https://github.com/rcore-os/tgoskits/pull/2181))
+- *(axvm)* allow passthrough of non-console physical UARTs ([#2120](https://github.com/rcore-os/tgoskits/pull/2120))
+- *(axvm)* avoid machine lock during runtime notification ([#2168](https://github.com/rcore-os/tgoskits/pull/2168))
+- *(axvm)* avoid machine and wait queue lock inversion ([#2145](https://github.com/rcore-os/tgoskits/pull/2145))
+- *(x86)* preserve VMX MSRs and cancel dropped APIC timers ([#2133](https://github.com/rcore-os/tgoskits/pull/2133))
+
+### Other
+
+- *(axvm)* unify virtual device registration ([#2138](https://github.com/rcore-os/tgoskits/pull/2138))
+- *(axvm)* layer architecture capabilities ([#2121](https://github.com/rcore-os/tgoskits/pull/2121))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.26...axvm-v0.6.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(axvisor)* axum management HTTP control plane with VM lifecycle API ([#1909](https://github.com/rcore-os/tgoskits/pull/1909))
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+- *(axvisor)* Implement inter-VM communication (IVC) demo and protocol enhancements ([#1834](https://github.com/rcore-os/tgoskits/pull/1834))
+- *(axvirtio-blk)* add virtio-mmio block device core ([#1935](https://github.com/rcore-os/tgoskits/pull/1935))
+- *(axvisor)* add dual-guest virtio-net support ([#1927](https://github.com/rcore-os/tgoskits/pull/1927))
+
+### Fixed
+
+- *(console)* unify sleepable runtime console arbitration ([#2113](https://github.com/rcore-os/tgoskits/pull/2113))
+- *(x86_vcpu)* decode generic device MMIO of arbitrary width on NPF/EPT ([#2082](https://github.com/rcore-os/tgoskits/pull/2082))
+- *(riscv-vcpu)* [**breaking**] persist VSEIP while unbound ([#2090](https://github.com/rcore-os/tgoskits/pull/2090))
+- *(axdevice)* [**breaking**] bind device access to the issuing vCPU ([#2092](https://github.com/rcore-os/tgoskits/pull/2092))
+- *(axvm)* preserve LoongArch cascade IRQ ownership ([#2093](https://github.com/rcore-os/tgoskits/pull/2093))
+- *(axvisor)* avoid nested locks in vm show ([#2020](https://github.com/rcore-os/tgoskits/pull/2020))
+- *(axbuild)* lint host-test targets with clippy ([#2022](https://github.com/rcore-os/tgoskits/pull/2022))
+- *(arm-gic-driver)* handle implicit GICv2 uniprocessor targets ([#2007](https://github.com/rcore-os/tgoskits/pull/2007))
+- *(axvm)* preserve console device poll wakeups ([#1977](https://github.com/rcore-os/tgoskits/pull/1977))
+- *(axvm)* prevent dual guest startup and wake races ([#1966](https://github.com/rcore-os/tgoskits/pull/1966))
+- *(aarch64)* restore RK3588 guest cpufreq and SCMI support ([#1919](https://github.com/rcore-os/tgoskits/pull/1919))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+- *(axvm)* layer RISC-V SBI IPI routing ([#1920](https://github.com/rcore-os/tgoskits/pull/1920))
+- *(axvisor)* validate x86 OVMF ACPI on VMX and SVM ([#1931](https://github.com/rcore-os/tgoskits/pull/1931))
+
+### Fixed
+
+- Preserve somehal ownership of the LoongArch EIOINTC cascade IRQ.
+
 ## [0.5.26](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.25...axvm-v0.5.26) - 2026-08-09
 
 ### Added

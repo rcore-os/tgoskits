@@ -1,29 +1,16 @@
 #[track_caller]
 pub fn ax_sleep_until(deadline: crate::time::AxTimeValue) {
-    #[cfg(feature = "multitask")]
     ax_task::sleep_until(deadline);
-    #[cfg(not(feature = "multitask"))]
-    ax_hal::time::busy_wait_until(deadline);
 }
 
 #[track_caller]
 pub fn ax_yield_now() {
-    #[cfg(feature = "multitask")]
     ax_task::yield_now();
-    #[cfg(not(feature = "multitask"))]
-    if cfg!(feature = "irq") {
-        ax_hal::asm::wait_for_irqs();
-    } else {
-        core::hint::spin_loop();
-    }
 }
 
 #[track_caller]
-pub fn ax_exit(_exit_code: i32) -> ! {
-    #[cfg(feature = "multitask")]
-    ax_task::exit(_exit_code);
-    #[cfg(not(feature = "multitask"))]
-    crate::sys::ax_terminate();
+pub fn ax_exit(exit_code: i32) -> ! {
+    ax_task::exit(exit_code);
 }
 
 cfg_task! {
@@ -86,38 +73,27 @@ cfg_task! {
         task.inner.join()
     }
 
-    pub fn ax_set_current_priority(prio: isize) -> crate::AxResult {
+    pub fn ax_set_current_priority(prio: isize) -> crate::ApiResult {
         if ax_task::set_priority(prio) {
             Ok(())
         } else {
-            ax_errno::ax_err!(
-                BadState,
-                "ax_set_current_priority: failed to set task priority"
-            )
+            Err(crate::ApiError::PriorityUpdateFailed)
         }
     }
 
     #[track_caller]
-    pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::AxResult {
+    pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::ApiResult {
         if ax_task::set_current_affinity(cpumask) {
             Ok(())
         } else {
-            ax_errno::ax_err!(
-                BadState,
-                "ax_set_current_affinity: failed to set task affinity"
-            )
+            Err(crate::ApiError::AffinityUpdateFailed)
         }
     }
 
     #[track_caller]
     pub fn ax_wait_queue_wait(wq: &AxWaitQueueHandle, timeout: Option<Duration>) -> bool {
-        #[cfg(feature = "irq")]
         if let Some(dur) = timeout {
             return wq.0.wait_timeout(dur);
-        }
-
-        if timeout.is_some() {
-            ax_log::warn!("ax_wait_queue_wait: the `timeout` argument is ignored without the `irq` feature");
         }
         wq.0.wait();
         false
@@ -129,13 +105,8 @@ cfg_task! {
         until_condition: impl Fn() -> bool,
         timeout: Option<Duration>,
     ) -> bool {
-        #[cfg(feature = "irq")]
         if let Some(dur) = timeout {
             return wq.0.wait_timeout_until(dur, until_condition);
-        }
-
-        if timeout.is_some() {
-            ax_log::warn!("ax_wait_queue_wait_until: the `timeout` argument is ignored without the `irq` feature");
         }
         wq.0.wait_until(until_condition);
         false
@@ -159,4 +130,5 @@ cfg_task! {
     {
         wq.0.notify_one_with(true, func);
     }
+
 }

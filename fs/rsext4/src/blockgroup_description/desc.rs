@@ -125,7 +125,15 @@ impl Ext4GroupDesc {
             ext4_group_desc_csum16_zeroed(superblock, group_id, raw_record).ok_or_else(|| {
                 Ext4Error::corrupted().with_operation("group_descriptor:checksum_size")
             })?;
-        if expected != self.bg_checksum {
+        let stored = u16::from_le_bytes([
+            *raw_record.get(30).ok_or_else(|| {
+                Ext4Error::corrupted().with_operation("group_descriptor:checksum_size")
+            })?,
+            *raw_record.get(31).ok_or_else(|| {
+                Ext4Error::corrupted().with_operation("group_descriptor:checksum_size")
+            })?,
+        ]);
+        if stored != self.bg_checksum || expected != stored {
             return Err(Ext4Error::checksum());
         }
         Ok(())

@@ -16,5 +16,5 @@ pub mod fw;
 pub mod runtime;
 pub mod wireless;
 
-pub use runtime::{PollFn, SendPollFn, TimedOut, WifiRuntime, set_runtime};
+pub use runtime::{WifiRuntime, set_runtime};
 pub use wireless::probe;

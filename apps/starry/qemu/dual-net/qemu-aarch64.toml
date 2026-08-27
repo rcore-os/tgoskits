@@ -2,6 +2,8 @@ args = [
     "-nographic",
     "-m",
     "512M",
+    "-smp",
+    "4",
     "-cpu",
     "cortex-a53",
     "-device",

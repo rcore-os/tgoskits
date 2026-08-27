@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::common::FakeCargoRunner;
 use crate::clippy::{
-    check::{ClippyCheck, ClippyCheckKind, ClippyDepsMode},
+    check::{ClippyCheck, ClippyCheckKind},
     runner::run_clippy_checks,
 };
 
@@ -13,21 +13,18 @@ fn package_failures_abort_remaining_checks() {
         ClippyCheck {
             package: "alpha".into(),
             kind: ClippyCheckKind::Base,
-            deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
         },
         ClippyCheck {
             package: "alpha".into(),
             kind: ClippyCheckKind::Feature("feat-a".into()),
-            deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
         },
         ClippyCheck {
             package: "beta".into(),
             kind: ClippyCheckKind::Base,
-            deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
         },

@@ -3,7 +3,7 @@
 #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 pub mod dmabuf;
 pub mod epoll;
-#[cfg(axtest)]
+#[cfg(test)]
 mod epoll_axtest;
 mod epoll_file;
 mod epoll_topology;
@@ -25,10 +25,9 @@ pub mod signalfd;
 pub mod timerfd;
 mod wext;
 
-use alloc::{borrow::Cow, sync::Arc};
+use alloc::{borrow::Cow, collections::BTreeSet, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_task::{TaskState, current};
@@ -37,50 +36,11 @@ use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
-    O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx,
-    statx_timestamp,
+    O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_ATTR_MOUNT_ROOT,
+    STATX_BASIC_STATS, stat, statx, statx_timestamp,
 };
-use starry_process::Pid;
 
-#[cfg(axtest)]
-pub(crate) use self::epoll::epoll_event_matching_rules_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll::epoll_hup_does_not_synthesize_readable_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_axtest::{
-    concurrent_reverse_add_is_serialized_for_test, edge_callback_does_not_reenter_target_for_test,
-    edge_readiness_requires_a_new_notification_for_test,
-    level_aliases_rotate_in_linux_callback_order_for_test,
-};
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::epoll_arc_operations_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::epoll_edge_id_and_constants_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::epoll_edge_id_clone_copy_partial_eq_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::epoll_topology_direction_and_scan_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::epoll_topology_link_clone_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::epoll_topology_static_constants_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::epoll_topology_struct_and_methods_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::epoll_topology_vec_and_reserve_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_topology::push_topology_item_preserves_order_and_grows_capacity;
-#[cfg(axtest)]
-pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
 pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
-#[cfg(axtest)]
-pub(crate) use self::pipe::{
-    interrupted_pipe_write_preserves_partial_progress_for_test,
-    peer_close_with_multiple_readers_is_visible_for_test, pipe_linux_io_semantics_hold_for_test,
-    pipe_resize_rounding_and_state_rules_hold_for_test, resize_rejects_oversized_pipe_for_test,
-};
-#[cfg(axtest)]
-pub(crate) use self::wext::is_wext_ioctl_validation_rules_hold_for_test;
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,
@@ -91,9 +51,10 @@ pub use self::{
     pipe::Pipe,
 };
 use crate::{
+    StarryError, StarryResult,
     pseudofs::DeviceMmap,
     sync::RwLock,
-    task::{AX_FILE_LIMIT, AsThread, tasks},
+    task::{AX_FILE_LIMIT, AsThread, PidIdentityId, tasks},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -164,9 +125,11 @@ impl From<Kstat> for statx {
         // SAFETY: valid for statx
         let mut statx: statx = unsafe { core::mem::zeroed() };
         // We always populate the basic stats; Linux returns the same mask.
-        // `stx_attributes` is left zero — it reports FS-specific flags we do
-        // not track.
+        // Mount-root state is a VFS attribute, so every statx result advertises
+        // support for it. The syscall layer sets the value when it has a
+        // resolved filesystem location.
         statx.stx_mask = STATX_BASIC_STATS;
+        statx.stx_attributes_mask = STATX_ATTR_MOUNT_ROOT as u64;
         statx.stx_blksize = value.blksize as _;
         statx.stx_nlink = value.nlink as _;
         statx.stx_uid = value.uid as _;
@@ -211,38 +174,41 @@ pub trait FileLike: Pollable + DowncastSync {
     /// File types with count errors that take precedence over `EFAULT` can
     /// override this hook. The full write operation must repeat any invariant
     /// needed to remain correct for non-scalar callers.
-    fn validate_write_len(&self, _len: usize) -> AxResult {
+    fn validate_write_len(&self, _len: usize) -> StarryResult {
         Ok(())
     }
 
-    fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
-        Err(AxError::InvalidInput)
+    fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
+        Err(StarryError::InvalidInput)
     }
 
-    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::InvalidInput)
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
+        Err(StarryError::InvalidInput)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat::default())
     }
 
     fn path(&self) -> Cow<'_, str>;
 
-    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+    fn file_mmap(&self) -> StarryResult<(FileBackend, FileFlags)> {
         // man 2 mmap ENODEV: "The underlying filesystem of the specified file
         // does not support memory mapping." This is the right errno for fd
         // kinds that do not back onto a mappable file (directory, pipe,
         // socket, epoll, eventfd, etc.).
-        Err(AxError::NoSuchDevice)
+        Err(StarryError::NoSuchDevice)
     }
 
-    fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
-        Err(AxError::BadFileDescriptor)
+    fn device_mmap(&self, _offset: u64, _length: u64) -> StarryResult<DeviceMmap> {
+        // `None` is the typed probe result for an ordinary file: `sys_mmap`
+        // must continue through `file_mmap`. An error from an implementation
+        // that owns a device mapping is committed and must reach userspace.
+        Ok(DeviceMmap::None)
     }
 
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {
-        Err(AxError::NotATty)
+    fn ioctl(&self, _cmd: u32, _arg: usize) -> StarryResult<usize> {
+        Err(StarryError::NotATty)
     }
 
     fn open_flags(&self) -> u32 {
@@ -253,7 +219,7 @@ pub trait FileLike: Pollable + DowncastSync {
         false
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> AxResult {
+    fn set_nonblocking(&self, _nonblocking: bool) -> StarryResult {
         Ok(())
     }
 
@@ -265,16 +231,16 @@ pub trait FileLike: Pollable + DowncastSync {
         false
     }
 
-    fn set_async_mode(&self, _async_mode: bool) -> AxResult {
-        Err(AxError::NotATty)
+    fn set_async_mode(&self, _async_mode: bool) -> StarryResult {
+        Err(StarryError::NotATty)
     }
 
-    fn owner(&self) -> AxResult<i32> {
-        Err(AxError::NotATty)
+    fn owner(&self) -> StarryResult<i32> {
+        Err(StarryError::NotATty)
     }
 
-    fn set_owner(&self, _owner: i32) -> AxResult {
-        Err(AxError::NotATty)
+    fn set_owner(&self, _owner: i32) -> StarryResult {
+        Err(StarryError::NotATty)
     }
 
     /// (device, inode) identity used as the key for advisory file locks
@@ -292,11 +258,12 @@ pub trait FileLike: Pollable + DowncastSync {
         false
     }
 
-    fn set_append(&self, _append: bool) -> AxResult {
+    fn set_append(&self, _append: bool) -> StarryResult {
         Ok(())
     }
 
-    /// Per-close hook, invoked with the closing task's tgid whenever a file
+    /// Per-close hook, invoked with the closing process's stable identity
+    /// generation whenever a file
     /// descriptor referring to this object is dropped from an fd table -
     /// explicit `close`, `close_range`, `dup2`/`dup3` replacement, exec
     /// CLOEXEC, or process exit. This mirrors Linux `f_op->flush`
@@ -304,18 +271,18 @@ pub trait FileLike: Pollable + DowncastSync {
     /// rather than only on the last reference. The default is a no-op; POSIX
     /// message-queue descriptors override it to drop a matching `mq_notify`
     /// registration (`mqueue_flush_file`, ipc/mqueue.c:658).
-    fn on_close(&self, _owner: Pid) {}
+    fn on_close(&self, _owner: PidIdentityId) {}
 
-    fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
+    fn from_fd(fd: c_int) -> StarryResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
         get_file_like(fd)?
             .downcast_arc()
-            .map_err(|_| AxError::InvalidInput)
+            .map_err(|_| StarryError::InvalidInput)
     }
 
-    fn add_to_fd_table(self, cloexec: bool) -> AxResult<c_int>
+    fn add_to_fd_table(self, cloexec: bool) -> StarryResult<c_int>
     where
         Self: Sized + 'static,
     {
@@ -330,26 +297,209 @@ pub struct FileDescriptor {
     pub cloexec: bool,
 }
 
+/// Installed file descriptors owned by one shared file table.
+pub struct FileTable {
+    entries: FlattenObjects<FileDescriptor, AX_FILE_LIMIT>,
+    reserved: BTreeSet<usize>,
+}
+
+impl FileTable {
+    pub const fn new() -> Self {
+        Self {
+            entries: FlattenObjects::new(),
+            reserved: BTreeSet::new(),
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        self.entries.count() + self.reserved.len()
+    }
+
+    pub fn get(&self, fd: usize) -> Option<&FileDescriptor> {
+        self.entries.get(fd)
+    }
+
+    pub fn get_mut(&mut self, fd: usize) -> Option<&mut FileDescriptor> {
+        self.entries.get_mut(fd)
+    }
+
+    pub fn add(&mut self, descriptor: FileDescriptor) -> Result<usize, FileDescriptor> {
+        let Some(fd) = (0..AX_FILE_LIMIT)
+            .find(|fd| !self.entries.is_assigned(*fd) && !self.reserved.contains(fd))
+        else {
+            return Err(descriptor);
+        };
+        self.entries.add_at(fd, descriptor)
+    }
+
+    pub fn add_at(
+        &mut self,
+        fd: usize,
+        descriptor: FileDescriptor,
+    ) -> Result<usize, FileDescriptor> {
+        if self.reserved.contains(&fd) {
+            return Err(descriptor);
+        }
+        self.entries.add_at(fd, descriptor)
+    }
+
+    pub fn remove(&mut self, fd: usize) -> Option<FileDescriptor> {
+        self.entries.remove(fd)
+    }
+
+    pub fn ids(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.entries.ids()
+    }
+
+    pub fn last_id(&self) -> Option<usize> {
+        self.entries.ids().next_back()
+    }
+
+    pub(crate) fn is_reserved(&self, fd: usize) -> bool {
+        self.reserved.contains(&fd)
+    }
+
+    fn reserve(&mut self) -> Option<usize> {
+        let fd = (0..AX_FILE_LIMIT)
+            .find(|fd| !self.entries.is_assigned(*fd) && !self.reserved.contains(fd))?;
+        let inserted = self.reserved.insert(fd);
+        debug_assert!(inserted);
+        Some(fd)
+    }
+
+    fn install_reserved(
+        &mut self,
+        fd: usize,
+        descriptor: FileDescriptor,
+    ) -> Result<(), FileDescriptor> {
+        if !self.reserved.remove(&fd) {
+            return Err(descriptor);
+        }
+        self.entries.add_at(fd, descriptor).map(|_| ())
+    }
+
+    fn release_reserved(&mut self, fd: usize) {
+        assert!(
+            self.reserved.remove(&fd),
+            "releasing an unreserved file descriptor"
+        );
+    }
+}
+
+impl Clone for FileTable {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            // An in-flight syscall owns each reservation. A copied fd table
+            // inherits only descriptors that have reached install.
+            reserved: BTreeSet::new(),
+        }
+    }
+}
+
+impl Default for FileTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 scope_local::scope_local! {
     /// The current file descriptor table.
-    pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> = Arc::default();
+    pub static FD_TABLE: Arc<RwLock<FileTable>> = Arc::default();
 }
 
 /// Returns an owned reference to the file table of the active scope.
 ///
 /// The CPU pin is released after cloning the `Arc`, before callers acquire the
 /// table lock or run descriptor destructors.
-pub fn current_fd_table() -> Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> {
+pub fn current_fd_table() -> Arc<RwLock<FileTable>> {
     FD_TABLE.clone_current()
 }
 
+/// A file descriptor number prepared by a fallible syscall transaction.
+///
+/// Dropping it before [`PreparedFileDescriptor::install`] rolls the descriptor
+/// back from its originating table.
+pub struct PreparedFileDescriptor {
+    table: Arc<RwLock<FileTable>>,
+    fd: usize,
+    descriptor: Option<FileDescriptor>,
+}
+
+impl PreparedFileDescriptor {
+    fn prepare_in(
+        table: Arc<RwLock<FileTable>>,
+        descriptor: FileDescriptor,
+        max_entries: usize,
+    ) -> StarryResult<Self> {
+        let fd = {
+            let mut table = table.write();
+            if table.count() >= max_entries {
+                return Err(StarryError::TooManyOpenFiles);
+            }
+            table.reserve().ok_or(StarryError::TooManyOpenFiles)?
+        };
+        Ok(Self {
+            table,
+            fd,
+            descriptor: Some(descriptor),
+        })
+    }
+
+    pub const fn fd(&self) -> c_int {
+        self.fd as c_int
+    }
+
+    pub fn install(mut self) {
+        let descriptor = self
+            .descriptor
+            .take()
+            .expect("prepared descriptor installed twice");
+        let install = self.table.write().install_reserved(self.fd, descriptor);
+        if let Err(descriptor) = install {
+            // Keep descriptor destruction outside the preemption-disabling
+            // table lock even when an internal reservation invariant fails.
+            drop(descriptor);
+            panic!("prepared file descriptor lost its reservation before install");
+        }
+    }
+}
+
+impl Drop for PreparedFileDescriptor {
+    fn drop(&mut self) {
+        if let Some(descriptor) = self.descriptor.take() {
+            self.table.write().release_reserved(self.fd);
+            // File destructors may wake waiters, so the descriptor must drop
+            // after the preemption-disabling table guard is gone.
+            drop(descriptor);
+        }
+    }
+}
+
+/// Prepares a descriptor for a later transaction commit.
+pub fn prepare_file_like(
+    file: Arc<dyn FileLike>,
+    cloexec: bool,
+) -> StarryResult<PreparedFileDescriptor> {
+    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let table = current_fd_table();
+    PreparedFileDescriptor::prepare_in(
+        table,
+        FileDescriptor {
+            inner: file,
+            cloexec,
+        },
+        max_nofile as usize,
+    )
+}
+
 /// Get a file-like object by `fd`.
-pub fn get_file_like(fd: c_int) -> AxResult<Arc<dyn FileLike>> {
+pub fn get_file_like(fd: c_int) -> StarryResult<Arc<dyn FileLike>> {
     current_fd_table()
         .read()
         .get(fd as usize)
         .map(|fd| fd.inner.clone())
-        .ok_or(AxError::BadFileDescriptor)
+        .ok_or(StarryError::BadFileDescriptor)
 }
 
 /// Returns true iff `fd` was opened with `O_PATH`.
@@ -365,40 +515,40 @@ pub fn fd_is_path(fd: c_int) -> bool {
 }
 
 /// Add a file to the file descriptor table.
-pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
+pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> StarryResult<c_int> {
     let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     let fd_table = current_fd_table();
     let mut table = fd_table.write();
     if table.count() as u64 >= max_nofile {
-        return Err(AxError::TooManyOpenFiles);
+        return Err(StarryError::TooManyOpenFiles);
     }
     let fd = FileDescriptor { inner: f, cloexec };
-    Ok(table.add(fd).map_err(|_| AxError::TooManyOpenFiles)? as c_int)
+    Ok(table.add(fd).map_err(|_| StarryError::TooManyOpenFiles)? as c_int)
 }
 
 /// Close a file by `fd`.
-pub fn close_file_like(fd: c_int) -> AxResult {
+pub fn close_file_like(fd: c_int) -> StarryResult {
     let removed = current_fd_table().write().remove(fd as usize);
     if let Some(f) = removed {
         debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
         release_locks_on_close(f);
         return Ok(());
     }
-    Err(AxError::BadFileDescriptor)
+    Err(StarryError::BadFileDescriptor)
 }
 
 pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
     !fd_table_file_refs(file).is_empty()
 }
 
-pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(Pid, usize)> {
+pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(u32, usize)> {
     let mut refs = alloc::vec::Vec::new();
     for task in tasks() {
         if task.state() == TaskState::Exited {
             continue;
         }
         let thread = task.as_thread();
-        let pid = thread.proc_data.proc.pid();
+        let pid = thread.proc_data.proc.pid().get();
         let scope = thread.scope.read();
         let scoped_fd_table = FD_TABLE.scope(&scope);
         let table = scoped_fd_table.read();
@@ -436,16 +586,15 @@ fn notify_close_write(fd: &FileDescriptor) {
 /// `Weak` still alive, and sleep forever.
 pub fn release_locks_on_close(fd: FileDescriptor) {
     let key = fd.inner.inode_key();
+    let owner = current().as_thread().proc_data.identity().id();
     // Linux `filp_flush` runs `f_op->flush` on every fd-closing path (explicit
     // close, close_range, dup2/dup3 replacement, exec CLOEXEC, process exit),
     // all of which funnel through here. This is where an mq descriptor drops a
     // matching `mq_notify` registration (`mqueue_flush_file`).
-    fd.inner
-        .on_close(current().as_thread().proc_data.proc.pid());
+    fd.inner.on_close(owner);
     notify_close_write(&fd);
     if let Some(k) = key {
-        let pid = current().as_thread().proc_data.proc.pid();
-        crate::syscall::release_inode_posix_locks(pid, k);
+        crate::syscall::release_inode_posix_locks(owner, k);
         if !fd_tables_contain_file(&fd.inner) {
             crate::syscall::release_flock_lock(k, &fd.inner);
         }
@@ -497,12 +646,12 @@ pub fn close_all_fds() {
     }
 }
 
-pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
+pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
     assert_eq!(fd_table.count(), 0);
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let cx = fs_context.lock();
     let open = |options: &mut OpenOptions, flags| {
-        AxResult::Ok(Arc::new(File::new(
+        StarryResult::Ok(Arc::new(File::new(
             options.open(&cx, "/dev/console")?.into_file()?,
             flags,
         )))
@@ -515,19 +664,77 @@ pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -
             inner: tty_in,
             cloexec: false,
         })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
+        .map_err(|_| StarryError::TooManyOpenFiles)?;
     fd_table
         .add(FileDescriptor {
             inner: tty_out.clone(),
             cloexec: false,
         })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
+        .map_err(|_| StarryError::TooManyOpenFiles)?;
     fd_table
         .add(FileDescriptor {
             inner: tty_out,
             cloexec: false,
         })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
+        .map_err(|_| StarryError::TooManyOpenFiles)?;
 
     Ok(())
+}
+
+#[cfg(all(test, not(axtest)))]
+fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
+    fn descriptor() -> FileDescriptor {
+        let (read_end, _write_end) = Pipe::new();
+        FileDescriptor {
+            inner: Arc::new(read_end),
+            cloexec: true,
+        }
+    }
+
+    let table = Arc::new(RwLock::new(FileTable::new()));
+    let prepared =
+        PreparedFileDescriptor::prepare_in(table.clone(), descriptor(), AX_FILE_LIMIT).unwrap();
+    let reserved_fd = prepared.fd;
+    let hidden = table.read().get(reserved_fd).is_none();
+    let counted_against_limit =
+        PreparedFileDescriptor::prepare_in(table.clone(), descriptor(), 1).is_err();
+    let installed_descriptor = descriptor();
+    let Ok(installed_fd) = table.write().add(installed_descriptor) else {
+        return false;
+    };
+    let allocation_skipped_reservation = installed_fd != reserved_fd;
+    let cloned = table.read().clone();
+    let clone_excluded_reservation = cloned.get(reserved_fd).is_none()
+        && cloned.get(installed_fd).is_some()
+        && cloned.count() == 1;
+    drop(prepared);
+    let reused_descriptor = descriptor();
+    let Ok(reused_fd) = table.write().add(reused_descriptor) else {
+        return false;
+    };
+    let rollback_released_number = reused_fd == reserved_fd;
+
+    let install_table = Arc::new(RwLock::new(FileTable::new()));
+    let prepared =
+        PreparedFileDescriptor::prepare_in(install_table.clone(), descriptor(), AX_FILE_LIMIT)
+            .unwrap();
+    let installed_fd = prepared.fd;
+    prepared.install();
+    let install_made_visible = install_table.read().get(installed_fd).is_some();
+
+    hidden
+        && counted_against_limit
+        && allocation_skipped_reservation
+        && clone_excluded_reservation
+        && rollback_released_number
+        && install_made_visible
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn prepared_descriptor_stays_hidden_until_install() {
+        assert!(super::prepared_descriptor_stays_hidden_until_install_for_test());
+    }
 }

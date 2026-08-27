@@ -383,7 +383,7 @@ impl Drop for Inode {
 }
 
 fn xattr_not_found() -> VfsError {
-    VfsError::from(ax_errno::LinuxError::ENODATA).canonicalize()
+    VfsError::DataMissing
 }
 
 impl XattrOps for Inode {

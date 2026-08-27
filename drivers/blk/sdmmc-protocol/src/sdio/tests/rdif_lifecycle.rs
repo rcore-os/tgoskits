@@ -55,6 +55,31 @@ fn controller_teardown_is_idempotent_after_watchdog_shutdown() {
     );
 }
 
+#[test]
+fn ready_online_smp_repeats_info_without_reissuing_resources() {
+    let host = MockHost::new(Vec::new());
+    let config = BlockConfig::dma("sdmmc-test", 1, test_device_dma());
+    let mut controller = BlockDevice::new(SdioSdmmc::new(host), config);
+    let mut start = controller
+        .advance(ControllerEvent::Start { target_queues: 1 })
+        .unwrap();
+    assert_eq!(start.controller_state(), ControllerState::Ready);
+    assert_eq!(start.take_queues().len(), 1);
+    assert_eq!(start.take_irq_endpoints().len(), 1);
+    let expected_info = start.take_device_info().unwrap();
+
+    for _ in 0..2 {
+        let mut update = controller
+            .advance(ControllerEvent::OnlineSmp { target_queues: 1 })
+            .unwrap();
+
+        assert_eq!(update.controller_state(), ControllerState::Ready);
+        assert!(update.take_queues().is_empty());
+        assert!(update.take_irq_endpoints().is_empty());
+        assert_eq!(update.take_device_info(), Some(expected_info));
+    }
+}
+
 #[derive(Default)]
 struct AcceptedIds(Vec<RequestId>);
 

@@ -3,7 +3,6 @@ use core::{
     mem::size_of,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_task::current;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
@@ -13,20 +12,30 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    file::{Directory, File, get_file_like, memfd::Memfd, resolve_at},
+    Errno, StarryError, StarryResult,
+    file::{Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, resolve_at},
     mm::{UserPtr, vm_load_path_string},
     task::AsThread,
 };
 
 const FILE_HANDLE_BYTES: usize = size_of::<u64>() * 2;
+
 const FILE_HANDLE_TYPE_DEV_INO: i32 = 1;
+
 const MS_NOSUID: u32 = 1 << 1;
+
 const MS_NODEV: u32 = 1 << 2;
+
 const MS_NOEXEC: u32 = 1 << 3;
+
 const MS_NOATIME: u32 = 1 << 10;
+
 const MS_RELATIME: u32 = 1 << 21;
+
 const ST_RDONLY: u32 = 1;
+
 const ST_RELATIME: u32 = 1 << 12;
+
 #[repr(C)]
 pub struct FileHandleHeader {
     handle_bytes: u32,
@@ -37,7 +46,7 @@ pub struct FileHandleHeader {
 ///
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_stat(path: *const c_char, statbuf: *mut stat) -> AxResult<isize> {
+pub fn sys_stat(path: *const c_char, statbuf: *mut stat) -> StarryResult<isize> {
     use linux_raw_sys::general::AT_FDCWD;
 
     sys_fstatat(AT_FDCWD, path, statbuf, 0)
@@ -46,7 +55,7 @@ pub fn sys_stat(path: *const c_char, statbuf: *mut stat) -> AxResult<isize> {
 /// Get file metadata by `fd` and write into `statbuf`.
 ///
 /// Return 0 if success.
-pub fn sys_fstat(fd: i32, statbuf: *mut stat) -> AxResult<isize> {
+pub fn sys_fstat(fd: i32, statbuf: *mut stat) -> StarryResult<isize> {
     sys_fstatat(fd, core::ptr::null(), statbuf, AT_EMPTY_PATH)
 }
 
@@ -54,7 +63,7 @@ pub fn sys_fstat(fd: i32, statbuf: *mut stat) -> AxResult<isize> {
 ///
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_lstat(path: *const c_char, statbuf: *mut stat) -> AxResult<isize> {
+pub fn sys_lstat(path: *const c_char, statbuf: *mut stat) -> StarryResult<isize> {
     use linux_raw_sys::general::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
     sys_fstatat(AT_FDCWD, path, statbuf, AT_SYMLINK_NOFOLLOW)
@@ -65,12 +74,12 @@ pub fn sys_fstatat(
     path: *const c_char,
     statbuf: *mut stat,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     // man 2 fstatat: flags may contain AT_EMPTY_PATH, AT_NO_AUTOMOUNT,
     // AT_SYMLINK_NOFOLLOW. Any other bit is EINVAL.
     const FSTATAT_VALID: u32 = AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW;
     if flags & !FSTATAT_VALID != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let path = path.nullable().map(vm_load_path_string).transpose()?;
@@ -89,20 +98,20 @@ pub fn sys_statx(
     flags: u32,
     mask: u32,
     statxbuf: *mut statx,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     // man 2 statx: reject reserved mask bits and the invalid sync-type
     // combination FORCE_SYNC|DONT_SYNC. flags must fit within AT_* and the
     // sync-type field.
     if mask & STATX__RESERVED != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     const STATX_VALID_FLAGS: u32 =
         AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW | AT_STATX_SYNC_TYPE;
     if flags & !STATX_VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     // `statx()` uses pathname, dirfd, and flags to identify the target
     // file in one of the following ways:
@@ -134,13 +143,22 @@ pub fn sys_statx(
     let path = path.nullable().map(vm_load_path_string).transpose()?;
     debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
-    statxbuf.vm_write(resolve_at(dirfd, path.as_deref(), flags)?.stat()?.into())?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    let mut status: statx = resolved.stat()?.into();
+    if let ResolveAtResult::File(location) = &resolved {
+        status.stx_mask |= linux_raw_sys::general::STATX_MNT_ID;
+        status.stx_mnt_id = location.mountpoint().mount_id();
+        if location.is_root_of_mount() {
+            status.stx_attributes |= linux_raw_sys::general::STATX_ATTR_MOUNT_ROOT as u64;
+        }
+    }
+    statxbuf.vm_write(status)?;
 
     Ok(0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_access(path: *const c_char, mode: u32) -> AxResult<isize> {
+pub fn sys_access(path: *const c_char, mode: u32) -> StarryResult<isize> {
     use linux_raw_sys::general::AT_FDCWD;
 
     sys_faccessat2(AT_FDCWD, path, mode, 0)
@@ -149,14 +167,19 @@ pub fn sys_access(path: *const c_char, mode: u32) -> AxResult<isize> {
 // Note: AT_EACCESS is not explicitly handled. This is functionally correct
 // because fsuid/fsgid track euid/egid by default in our credential model,
 // so the real-ID vs effective-ID distinction AT_EACCESS controls is a no-op.
-pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) -> AxResult<isize> {
+pub fn sys_faccessat2(
+    dirfd: c_int,
+    path: *const c_char,
+    mode: u32,
+    flags: u32,
+) -> StarryResult<isize> {
     // man 2 access: mode is a mask of F_OK(0), R_OK, W_OK, and X_OK;
     // faccessat2 flags are limited to AT_EACCESS, AT_EMPTY_PATH, and
     // AT_SYMLINK_NOFOLLOW. Linux rejects invalid bits before path resolution.
     const FACCESSAT2_VALID_FLAGS: u32 = AT_EACCESS | AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
     const FACCESSAT2_VALID_MODE: u32 = R_OK | W_OK | X_OK;
     if mode & !FACCESSAT2_VALID_MODE != 0 || flags & !FACCESSAT2_VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let path = path.nullable().map(vm_load_path_string).transpose()?;
@@ -179,7 +202,7 @@ pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) 
                 | NodePermission::GROUP_EXEC.bits()
                 | NodePermission::OTHER_EXEC.bits();
             if perm_bits & any_exec == 0 {
-                return Err(AxError::PermissionDenied);
+                return Err(StarryError::PermissionDenied);
             }
         }
         return Ok(0);
@@ -200,19 +223,19 @@ pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) 
     };
 
     if (mode & R_OK != 0) && (effective_bits & 4 == 0) {
-        return Err(AxError::PermissionDenied);
+        return Err(StarryError::PermissionDenied);
     }
     if (mode & W_OK != 0) && (effective_bits & 2 == 0) {
-        return Err(AxError::PermissionDenied);
+        return Err(StarryError::PermissionDenied);
     }
     if (mode & X_OK != 0) && (effective_bits & 1 == 0) {
-        return Err(AxError::PermissionDenied);
+        return Err(StarryError::PermissionDenied);
     }
 
     Ok(0)
 }
 
-fn statfs(loc: &Location) -> AxResult<statfs> {
+fn statfs(loc: &Location) -> StarryResult<statfs> {
     let stat = loc.filesystem().stat()?;
     // FIXME: Zeroable
     let mut result: statfs = unsafe { core::mem::zeroed() };
@@ -245,7 +268,8 @@ fn statfs_mount_flags(loc: &Location) -> u32 {
     }
     statfs_flags
 }
-pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
+
+pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> StarryResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_statfs <= path: {path:?}");
 
@@ -259,7 +283,7 @@ pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
+pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> StarryResult<isize> {
     debug!("sys_fstatfs <= fd: {fd}");
 
     let file_like = get_file_like(fd)?;
@@ -270,7 +294,7 @@ pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
     } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
         memfd.inner().inner().location()
     } else {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     };
     buf.vm_write(statfs(location)?)?;
     Ok(0)
@@ -282,10 +306,10 @@ pub fn sys_name_to_handle_at(
     handle: *mut FileHandleHeader,
     mount_id: *mut c_int,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     const VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_FOLLOW;
     if flags & !VALID_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let path = path.nullable().map(vm_load_path_string).transpose()?;
@@ -298,14 +322,14 @@ pub fn sys_name_to_handle_at(
     };
     let loc = resolve_at(dirfd, path.as_deref(), resolve_flags)?
         .into_file()
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
     let stat = loc.metadata()?;
 
     let header = UserPtr::<FileHandleHeader>::from(handle).get_as_mut()?;
     let capacity = header.handle_bytes as usize;
     header.handle_bytes = FILE_HANDLE_BYTES as u32;
     if capacity < FILE_HANDLE_BYTES {
-        return Err(AxError::from(LinuxError::EOVERFLOW));
+        return Err(StarryError::from(Errno::EOVERFLOW));
     }
 
     header.handle_type = FILE_HANDLE_TYPE_DEV_INO;
@@ -314,17 +338,19 @@ pub fn sys_name_to_handle_at(
     bytes[size_of::<u64>()..].copy_from_slice(&stat.inode.to_ne_bytes());
     let data_ptr = (handle as usize)
         .checked_add(size_of::<FileHandleHeader>())
-        .ok_or(AxError::InvalidInput)? as *mut u8;
+        .ok_or(StarryError::InvalidInput)? as *mut u8;
     UserPtr::<u8>::from(data_ptr)
         .get_as_mut_slice(FILE_HANDLE_BYTES)?
         .copy_from_slice(&bytes);
 
-    (mount_id as *mut c_int).vm_write(loc.mountpoint().device() as c_int)?;
+    let resolved_mount_id = c_int::try_from(loc.mountpoint().mount_id())
+        .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;
+    (mount_id as *mut c_int).vm_write(resolved_mount_id)?;
     Ok(0)
 }
 
-#[cfg(axtest)]
-pub(crate) fn stat_flags_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn stat_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_SYMLINK_NOFOLLOW};
     // Test fstatat flag validation
     const FSTATAT_VALID: u32 = AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW;
@@ -332,16 +358,16 @@ pub(crate) fn stat_flags_validation_rules_hold_for_test() -> bool {
     let valid_flags = 0u32;
     assert!(valid_flags & !FSTATAT_VALID == 0);
 
-    let empty_path = AT_EMPTY_PATH as u32;
+    let empty_path = AT_EMPTY_PATH;
     assert!(empty_path & !FSTATAT_VALID == 0);
 
-    let no_automount = AT_NO_AUTOMOUNT as u32;
+    let no_automount = AT_NO_AUTOMOUNT;
     assert!(no_automount & !FSTATAT_VALID == 0);
 
-    let symlink_nofollow = AT_SYMLINK_NOFOLLOW as u32;
+    let symlink_nofollow = AT_SYMLINK_NOFOLLOW;
     assert!(symlink_nofollow & !FSTATAT_VALID == 0);
 
-    let all_valid = AT_EMPTY_PATH as u32 | AT_NO_AUTOMOUNT as u32 | AT_SYMLINK_NOFOLLOW as u32;
+    let all_valid = AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW;
     assert!(all_valid & !FSTATAT_VALID == 0);
 
     // Invalid flag should be detected
@@ -349,4 +375,12 @@ pub(crate) fn stat_flags_validation_rules_hold_for_test() -> bool {
     assert!(invalid_flags & !FSTATAT_VALID != 0);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn stat_flags_validation_rules_hold() {
+        assert!(super::stat_flags_validation_rules_hold_for_test());
+    }
 }

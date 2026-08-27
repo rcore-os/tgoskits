@@ -9,8 +9,35 @@ use axdevice_base::{
 };
 use axvm_types::InterruptTriggerMode;
 
-const EIOINTC_IRQ: usize = 3;
 const PCH_PIC_INPUT_COUNT: usize = 64;
+
+pub(crate) struct LoongArchPchPicOutputSink {
+    vm_id: usize,
+}
+
+impl LoongArchPchPicOutputSink {
+    pub(crate) const fn new(vm_id: usize) -> Self {
+        Self { vm_id }
+    }
+}
+
+impl axdevice::PchPicOutputSink for LoongArchPchPicOutputSink {
+    fn publish(&self, event: axdevice::PchPicOutputEvent) -> axdevice::DeviceManagerResult {
+        if !event.asserted {
+            trace!(
+                "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
+                self.vm_id, event.vector
+            );
+            return Ok(());
+        }
+        crate::runtime::vcpus::queue_interrupt(self.vm_id, 0, event.vector).map_err(|error| {
+            axdevice::DeviceManagerError::InvalidState {
+                operation: "publish LoongArch PCH-PIC output",
+                detail: std::format!("{error}"),
+            }
+        })
+    }
+}
 
 struct LoongArchPchPicIrqSink {
     vm_id: usize,
@@ -124,11 +151,32 @@ pub(crate) fn create_interrupt_domain(
 /// Register the platform IRQ injector for LoongArch dynamic hypervisor builds.
 pub(crate) fn register_platform_irq_injector() {
     ax_plat::irq::loongarch64_hv::register_virtual_irq_injector(inject_platform_irq);
-    set_irq_enabled(EIOINTC_IRQ, true);
+}
+
+/// Register all host IRQ routes prepared for one LoongArch guest.
+pub(crate) fn register_vm_guest_irq_routes(vm: &crate::AxVMRef) {
+    let vm_id = vm.id();
+    let routes = super::boot::get_guest_irq_routes(vm_id);
+    if routes.is_empty() {
+        let passthrough = vm.with_config(|config| !config.pass_through_devices().is_empty());
+        if passthrough {
+            warn!("VM[{vm_id}] has passthrough devices but no guest IRQ route was prepared");
+        }
+        return;
+    }
+
+    let vcpu_id = 0;
+    info!(
+        "Registering {} passthrough IRQ route(s) for VM[{vm_id}]",
+        routes.len()
+    );
+    for route in routes {
+        register_guest_irq_route(route.physical_irq, vm_id, vcpu_id, route.guest_vector);
+    }
 }
 
 /// Route a host physical IRQ to a LoongArch guest interrupt vector.
-pub fn register_guest_irq_route(
+fn register_guest_irq_route(
     physical_irq: usize,
     vm_id: usize,
     vcpu_id: usize,
@@ -143,33 +191,8 @@ pub fn register_guest_irq_route(
 }
 
 /// Remove all routed LoongArch guest IRQs owned by one VM.
-pub fn unregister_guest_irq_routes(vm_id: usize) {
+pub(crate) fn unregister_guest_irq_routes(vm_id: usize) {
     ax_plat::irq::loongarch64_hv::unregister_guest_irq_routes(vm_id);
-}
-
-fn set_irq_enabled(raw_irq: usize, enabled: bool) {
-    use ax_std::os::arceos::modules::ax_hal::irq::{self, IrqSource};
-
-    let gsi = match u32::try_from(raw_irq) {
-        Ok(gsi) => gsi,
-        Err(_) => {
-            warn!("failed to resolve LoongArch passthrough IRQ {raw_irq}: out of GSI range");
-            return;
-        }
-    };
-    let irq = match irq::resolve_irq_source(IrqSource::AcpiGsi(gsi)) {
-        Ok(irq) => irq,
-        Err(err) => {
-            warn!("failed to resolve LoongArch passthrough IRQ {raw_irq}: {err:?}");
-            return;
-        }
-    };
-    if let Err(err) = irq::set_enable(irq, enabled) {
-        warn!(
-            "failed to set LoongArch passthrough IRQ {raw_irq} ({irq:?}) enabled={enabled}: \
-             {err:?}"
-        );
-    }
 }
 
 fn inject_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize, physical_irq: usize) {

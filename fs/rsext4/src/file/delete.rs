@@ -86,14 +86,25 @@ fn truncate_legacy_indirect_mapping_before_free<B: BlockIo>(
     Ok(())
 }
 
+struct InodeOwnedBlocks {
+    data: Vec<AbsoluteBN>,
+    metadata: Vec<AbsoluteBN>,
+}
+
+impl InodeOwnedBlocks {
+    fn revoke_records(&self) -> usize {
+        self.metadata.len()
+    }
+}
+
 fn inode_owned_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
-) -> Ext4Result<Vec<AbsoluteBN>> {
+) -> Ext4Result<InodeOwnedBlocks> {
     ensure_inode_free_is_supported(fs, inode)?;
-    let mut used_blocks: Vec<AbsoluteBN> = if inode.uses_extents() {
+    let mut mapped_blocks: Vec<AbsoluteBN> = if inode.uses_extents() {
         resolve_inode_blocks(fs, block_dev, inode_num, inode)?
             .into_values()
             .collect()
@@ -101,14 +112,50 @@ fn inode_owned_blocks<B: BlockIo>(
         crate::indirect::collect_legacy_inode_ownership(fs, block_dev, inode_num, inode)?
             .into_data_blocks()
     };
-    if inode.uses_extents() {
-        used_blocks.extend(
-            ExtentTree::with_filesystem(inode, fs, inode_num).external_node_blocks(block_dev)?,
-        );
+    let mut metadata = if inode.uses_extents() {
+        ExtentTree::with_filesystem(inode, fs, inode_num).external_node_blocks(block_dev)?
+    } else {
+        Vec::new()
+    };
+
+    // Linux applies EXT4_FREE_BLOCKS_METADATA | EXT4_FREE_BLOCKS_FORGET to
+    // directory and non-inline symlink mappings. Their payload blocks carry
+    // filesystem structure and must be revoked just like external extent
+    // nodes before allocator reuse.
+    let mut data = if inode.is_dir() || inode.is_symlink() {
+        metadata.append(&mut mapped_blocks);
+        Vec::new()
+    } else {
+        mapped_blocks
+    };
+    data.sort_unstable();
+    data.dedup();
+    metadata.sort_unstable();
+    metadata.dedup();
+    if metadata
+        .iter()
+        .any(|block| data.binary_search(block).is_ok())
+    {
+        return Err(Ext4Error::corrupted().with_operation("inode:owned_block_kind_overlap"));
     }
-    used_blocks.sort_unstable();
-    used_blocks.dedup();
-    Ok(used_blocks)
+    Ok(InodeOwnedBlocks { data, metadata })
+}
+
+fn release_inode_owned_blocks<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    owned: InodeOwnedBlocks,
+) -> Ext4Result<()> {
+    for block in owned.data {
+        fs.datablock_cache.invalidate(block);
+        fs.free_block(block_dev, block)?;
+    }
+    for block in owned.metadata {
+        block_dev.forget_detached_metadata(block)?;
+        fs.datablock_cache.invalidate(block);
+        fs.free_block(block_dev, block)?;
+    }
+    Ok(())
 }
 
 fn reap_transaction_credits(
@@ -168,13 +215,11 @@ fn free_inode<B: BlockIo>(
     inode: &mut Ext4Inode,
 ) -> Ext4Result<()> {
     truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, inode)?;
-    let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, inode)?;
+    let owned_blocks = inode_owned_blocks(fs, block_dev, inode_num, inode)?;
 
     let updated_inode = fs.apply_inode_dtime(block_dev, inode_num, Ext4DtimeUpdate::SetNow)?;
 
-    for blk in used_blocks {
-        fs.free_block(block_dev, blk)?;
-    }
+    release_inode_owned_blocks(fs, block_dev, owned_blocks)?;
 
     *inode = updated_inode;
     inode.i_links_count = 0;
@@ -216,11 +261,14 @@ pub fn reap_unlinked_inode<B: BlockIo>(
     // crash after mapping removal simply resumes the final reap on mount.
     truncate_legacy_indirect_mapping_before_free(fs, block_dev, inode_num, &mut inode)?;
     let external_xattr = read_external_store(block_dev, fs, &inode)?;
+    let owned_blocks = inode_owned_blocks(fs, block_dev, inode_num, &mut inode)?;
     let credits = reap_transaction_credits(
         fs,
         &inode,
         external_xattr.is_some(),
-        external_store_revoke_records(external_xattr.as_ref()),
+        external_store_revoke_records(external_xattr.as_ref())
+            .checked_add(owned_blocks.revoke_records())
+            .ok_or_else(Ext4Error::overflow)?,
     )?;
     let counters_before = fs.group_counter_snapshot();
 
@@ -229,10 +277,7 @@ pub fn reap_unlinked_inode<B: BlockIo>(
             release_external_store(block_dev, fs, external_xattr)?;
             inode.set_file_acl(0)?;
         }
-        let used_blocks = inode_owned_blocks(fs, block_dev, inode_num, &mut inode)?;
-        for block in used_blocks {
-            fs.free_block(block_dev, block)?;
-        }
+        release_inode_owned_blocks(fs, block_dev, owned_blocks)?;
 
         // Keep i_dtime intact while the inode is on the orphan chain: it is
         // the next-inode pointer, not a wall-clock deletion time.

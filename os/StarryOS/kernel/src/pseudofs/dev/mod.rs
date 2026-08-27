@@ -36,8 +36,10 @@ pub mod tty;
 
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_jpu;
+
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_usb_camera;
+
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_vdec;
 
@@ -47,9 +49,8 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ax_errno::AxError;
 use ax_lazyinit::OnceLock;
-use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 
 use crate::sync::Mutex;
 
@@ -59,11 +60,12 @@ pub static ION_DEVICE: OnceLock<Arc<ion::IonDevice>> = OnceLock::new();
 pub use log::bind_dev_log;
 use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 
-use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
+use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFile, SimpleFs};
 
 const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
+
 static INITIAL_PTS_INSTANCE: OnceLock<Arc<tty::PtsInstance>> = OnceLock::new();
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
@@ -159,11 +161,11 @@ struct RootBlk;
 
 impl DeviceOps for RootBlk {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::Io)
+        Err(VfsError::Io)
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::Io)
+        Err(VfsError::Io)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -207,7 +209,7 @@ impl Random {
         }
     }
 
-    #[cfg(any(test, axtest))]
+    #[cfg(all(test, not(axtest)))]
     fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
         Self {
             state: Mutex::new(RandomState::new(seed)),
@@ -304,8 +306,8 @@ fn splitmix64(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-#[cfg(axtest)]
-pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn random_write_mixes_entropy_for_test() -> bool {
     let seed = *b"0123456789abcdef0123456789abcdef";
     let baseline = Random::new_with_seed_for_test(seed);
     let mixed = Random::new_with_seed_for_test(seed);
@@ -334,7 +336,7 @@ pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
         && fold_seed_word_xors_into_byte_indices()
 }
 
-#[cfg(axtest)]
+#[cfg(all(test, not(axtest)))]
 fn splitmix64_determinism_rules_hold() -> bool {
     // splitmix64 is a pure bijection: the same input always yields the same
     // 64-bit output (deterministic PRNG), and distinct inputs yield distinct
@@ -350,7 +352,7 @@ fn splitmix64_determinism_rules_hold() -> bool {
         && a != c
 }
 
-#[cfg(axtest)]
+#[cfg(all(test, not(axtest)))]
 fn fold_seed_word_xors_into_byte_indices() -> bool {
     // fold_seed_word XORs splitmix64(word) into seed[idx*4 % 32]. Repeatedly
     // folding the same word twice must cancel out (XOR is its own inverse).
@@ -381,7 +383,7 @@ impl DeviceOps for Full {
     }
 
     fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::StorageFull)
+        Err(VfsError::StorageFull)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -397,7 +399,7 @@ struct CpuDmaLatency;
 
 impl DeviceOps for CpuDmaLatency {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        Err(AxError::InvalidInput)
+        Err(VfsError::InvalidInput)
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
@@ -416,6 +418,15 @@ impl DeviceOps for CpuDmaLatency {
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     let pts_instance = initial_pts_instance(tty::DevPtsOptions::root());
+
+    // Linux environments conventionally expose descriptor paths through
+    // these links into procfs (proc_pid_fd(5)). Bash process substitution and
+    // the generated NixOS stage-2 initializer rely on the dynamic /dev/fd/N
+    // form before systemd can perform any additional /dev setup.
+    root.add("fd", descriptor_symlink(fs.clone(), "/proc/self/fd"));
+    root.add("stdin", descriptor_symlink(fs.clone(), "/proc/self/fd/0"));
+    root.add("stdout", descriptor_symlink(fs.clone(), "/proc/self/fd/1"));
+    root.add("stderr", descriptor_symlink(fs.clone(), "/proc/self/fd/2"));
     root.add(
         "null",
         Device::new(
@@ -809,31 +820,14 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     SimpleDir::new_maker(fs, Arc::new(root))
 }
 
-#[cfg(test)]
+fn descriptor_symlink(fs: Arc<SimpleFs>, target: &'static str) -> Arc<SimpleFile> {
+    SimpleFile::new(fs, NodeType::Symlink, move || Ok(target))
+}
+
+#[cfg(all(test, not(axtest)))]
 mod tests {
-    use super::{DeviceOps, Random};
-
     #[test]
-    fn random_write_mixes_entropy_into_stream() {
-        let seed = *b"0123456789abcdef0123456789abcdef";
-        let baseline = Random::new_with_seed_for_test(seed);
-        let mixed = Random::new_with_seed_for_test(seed);
-        let mut discarded = [0; 32];
-        let mut baseline_next = [0; 32];
-        let mut mixed_next = [0; 32];
-
-        assert_eq!(
-            baseline.read_at(&mut discarded, 0).unwrap(),
-            discarded.len()
-        );
-        assert_eq!(mixed.read_at(&mut discarded, 0).unwrap(), discarded.len());
-        assert_eq!(mixed.write_at(b"caller entropy", 0).unwrap(), 14);
-        assert_eq!(
-            baseline.read_at(&mut baseline_next, 0).unwrap(),
-            baseline_next.len()
-        );
-        assert_eq!(mixed.read_at(&mut mixed_next, 0).unwrap(), mixed_next.len());
-
-        assert_ne!(baseline_next, mixed_next);
+    fn random_write_mixes_entropy() {
+        assert!(super::random_write_mixes_entropy_for_test());
     }
 }

@@ -3,7 +3,7 @@ name = "ax-memory-addr"
 description = "Wrappers and helper functions for physical and virtual addresses"
 keywords = ["arceos", "address", "virtual-memory"]
 
-version = "0.6.11"
+version = "0.7.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>", "aarkegz <aarkegz@gmail.com>"]
@@ -11,10 +11,5 @@ categories = ["os", "memory-management", "no-std"]
 license = "Apache-2.0"
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 
 [features]
-axtest = ["dep:axtest"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

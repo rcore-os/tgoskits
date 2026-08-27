@@ -1,7 +1,6 @@
 //! Lock dependency graph, diagnostics, and runtime capability boundary.
 
 mod backend;
-#[cfg(feature = "multitask")]
 pub(crate) mod mutex;
 mod state;
 mod trace;

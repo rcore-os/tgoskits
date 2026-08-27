@@ -1,9 +1,9 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_errno::{AxError, AxResult};
 use linux_raw_sys::net::{SCM_RIGHTS, SOL_SOCKET, cmsghdr};
 
 use crate::{
+    StarryError, StarryResult,
     file::{FileLike, get_file_like},
     mm::{UserConstPtr, UserPtr},
 };
@@ -27,9 +27,9 @@ pub enum CMsg {
     Rights { fds: Vec<Arc<dyn FileLike>> },
 }
 impl CMsg {
-    pub fn parse(hdr: &cmsghdr) -> AxResult<Self> {
+    pub fn parse(hdr: &cmsghdr) -> StarryResult<Self> {
         if hdr.cmsg_len < size_of::<cmsghdr>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let data =
@@ -38,18 +38,18 @@ impl CMsg {
         Ok(match (hdr.cmsg_level as u32, hdr.cmsg_type as u32) {
             (SOL_SOCKET, SCM_RIGHTS) => {
                 if data.len() % size_of::<i32>() != 0 {
-                    return Err(AxError::InvalidInput);
+                    return Err(StarryError::InvalidInput);
                 }
                 // Linux caps a single SCM_RIGHTS at SCM_MAX_FD (253) fds;
                 // more fails with EINVAL (net/core/scm.c scm_fp_copy).
                 if data.len() / size_of::<i32>() > 253 {
-                    return Err(AxError::InvalidInput);
+                    return Err(StarryError::InvalidInput);
                 }
                 let mut fds = Vec::new();
                 for fd in data.as_chunks::<{ size_of::<i32>() }>().0 {
                     let fd = i32::from_ne_bytes(*fd);
                     if fd < 0 {
-                        return Err(AxError::BadFileDescriptor);
+                        return Err(StarryError::BadFileDescriptor);
                     }
                     let f = get_file_like(fd)?;
                     fds.push(f);
@@ -57,7 +57,7 @@ impl CMsg {
                 Self::Rights { fds }
             }
             _ => {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
         })
     }
@@ -99,8 +99,8 @@ impl<'a> CMsgBuilder<'a> {
         level: u32,
         ty: u32,
         body_len: usize,
-        body: impl FnOnce(&mut [u8]) -> AxResult<usize>,
-    ) -> AxResult<bool> {
+        body: impl FnOnce(&mut [u8]) -> StarryResult<usize>,
+    ) -> StarryResult<bool> {
         let Some(body_capacity) = self
             .capacity
             .checked_sub(self.written)
@@ -123,7 +123,7 @@ impl<'a> CMsgBuilder<'a> {
         debug_assert_eq!(written, body_len);
 
         let Some(cmsg_len) = size_of::<cmsghdr>().checked_add(body_len) else {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         };
         hdr.cmsg_len = cmsg_len;
         let cmsg_space = cmsg_align(cmsg_len);
@@ -133,8 +133,8 @@ impl<'a> CMsgBuilder<'a> {
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn cmsg_alignment_and_space_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn cmsg_alignment_and_space_rules_hold_for_test() -> bool {
     // cmsg_align: rounds up to alignment boundary (usize-aligned).
     let align = size_of::<usize>();
     assert!(cmsg_align(0) == 0);
@@ -151,11 +151,19 @@ pub(crate) fn cmsg_alignment_and_space_rules_hold_for_test() -> bool {
     // cmsg_space: returns Some(len + hdr_size) aligned, or None on overflow.
     let hdr_size = size_of::<cmsghdr>();
     let space0 = cmsg_space(0).unwrap();
-    assert!(space0 >= hdr_size && space0 % align == 0);
+    assert!(space0 >= hdr_size && space0.is_multiple_of(align));
 
     // Overflow case: very large len should return None.
     let overflow = cmsg_space(usize::MAX);
     assert!(overflow.is_none());
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn cmsg_alignment_and_space_rules_hold() {
+        assert!(super::cmsg_alignment_and_space_rules_hold_for_test());
+    }
 }

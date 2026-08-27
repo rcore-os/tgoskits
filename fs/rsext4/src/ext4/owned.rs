@@ -1232,13 +1232,19 @@ where
         offset: u64,
         output: &mut [u8],
     ) -> Ext4Result<usize> {
-        read_inode_data_into(
+        self.ensure_mounted("inode:read")?;
+        let copied = read_inode_data_into(
             &mut self.device,
             &mut self.filesystem,
             number,
             offset,
             output,
-        )
+        )?;
+        if copied != 0 && !self.options.readonly {
+            self.filesystem
+                .touch_inode_atime_if_needed(&mut self.device, number)?;
+        }
+        Ok(copied)
     }
 
     pub fn write_inode(
@@ -1306,6 +1312,7 @@ where
     }
 
     pub fn sync(&mut self) -> Ext4Result<()> {
+        self.ensure_mounted("sync:unmounted")?;
         if self.options.readonly {
             return self.device.flush();
         }
@@ -1357,6 +1364,7 @@ where
     /// rejected. Retrying an uncertain CLEAN write could overwrite a new MMP
     /// owner that claimed the device after observing the first write.
     pub fn unmount(&mut self) -> Ext4Result<()> {
+        self.ensure_mounted("unmount:unmounted")?;
         if self.options.readonly {
             self.filesystem
                 .finish_read_only_unmount(&mut self.services.observer);
@@ -1368,10 +1376,23 @@ where
     }
 
     fn ensure_writable(&self, operation: &'static str) -> Ext4Result<()> {
+        self.ensure_mounted(operation)?;
         if self.options.readonly {
             Err(Ext4Error::read_only().with_operation(operation))
         } else {
             self.filesystem.mmp.ensure_writable(operation)
+        }
+    }
+
+    fn ensure_mounted(&self, operation: &'static str) -> Ext4Result<()> {
+        if self.filesystem.mounted {
+            Ok(())
+        } else {
+            // A failed final MMP release is a terminal unmounted state, but
+            // the loss of ownership is only the consequence.  Keep reporting
+            // the latched I/O failure instead of hiding it behind EBUSY.
+            self.filesystem.mmp.ensure_writable(operation)?;
+            Err(Ext4Error::busy().with_operation(operation))
         }
     }
 

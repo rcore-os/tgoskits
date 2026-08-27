@@ -32,7 +32,6 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_lazyinit::LazyLock;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
 use ax_task::future::{block_on, poll_io};
@@ -44,6 +43,7 @@ use linux_raw_sys::{
 };
 
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
     sync::IrqMutex as Mutex,
     syscall::in_root_net_ns,
@@ -53,7 +53,6 @@ use crate::{
 /// Maximum number of queued receive messages per socket.  Matches
 /// libudev's default monitor buffer expectation (~32 messages × 4 KiB).
 const MAX_QUEUED: usize = 128;
-
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLM_F_MULTI: u16 = 2;
@@ -66,6 +65,7 @@ const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
 /// the controller and only the controller; family ID assignment for
 /// other families starts above this.
 const GENL_ID_CTRL: u16 = 0x10;
+
 const CTRL_CMD_NEWFAMILY: u8 = 1;
 const CTRL_CMD_GETFAMILY: u8 = 3;
 const CTRL_ATTR_FAMILY_ID: u16 = 1;
@@ -73,6 +73,7 @@ const CTRL_ATTR_FAMILY_NAME: u16 = 2;
 const CTRL_ATTR_VERSION: u16 = 3;
 const CTRL_ATTR_HDRSIZE: u16 = 4;
 const CTRL_ATTR_MAXATTR: u16 = 5;
+
 /// Linux's max length of a family name, including the NUL terminator.
 const GENL_NAMSIZ: usize = 16;
 const CTRL_VERSION: u32 = 2;
@@ -88,6 +89,7 @@ const RTM_GETROUTE: u16 = 26;
 
 const AF_UNSPEC: u8 = 0;
 const AF_INET: u8 = 2;
+
 const ARPHRD_ETHER: u16 = 1;
 const ARPHRD_LOOPBACK: u16 = 772;
 
@@ -124,7 +126,9 @@ const RT_SCOPE_HOST: u8 = 254;
 
 const RT_TABLE_UNSPEC: u8 = 0;
 const RT_TABLE_MAIN: u8 = 254;
+
 const RTPROT_BOOT: u8 = 3;
+
 const RTN_UNICAST: u8 = 1;
 
 #[repr(C)]
@@ -150,6 +154,7 @@ struct GenlMsgHdr {
 /// errno table.
 #[allow(non_upper_case_globals)]
 const libc_ENOENT: i32 = 2;
+
 #[allow(non_upper_case_globals)]
 const libc_EOPNOTSUPP: i32 = 95;
 
@@ -269,6 +274,7 @@ struct NetlinkState {
 
 pub struct NetlinkSocket {
     protocol: u32,
+    socket_type: u32,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
     state: Mutex<NetlinkState>,
@@ -282,9 +288,10 @@ static NETLINK_SOCKETS: LazyLock<Mutex<Vec<Weak<NetlinkSocket>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
-    pub fn new(protocol: u32) -> Arc<Self> {
+    pub fn new(protocol: u32, socket_type: u32) -> Arc<Self> {
         Arc::new(Self {
             protocol,
+            socket_type,
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
             state: Mutex::new(NetlinkState::default()),
@@ -292,19 +299,17 @@ impl NetlinkSocket {
         })
     }
 
-    pub fn bind(self: &Arc<Self>, addr: sockaddr_nl) -> AxResult {
+    pub fn bind(self: &Arc<Self>, addr: sockaddr_nl) -> StarryResult {
         if addr.nl_family as u32 != AF_NETLINK {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         {
             let mut state = self.state.lock();
             if state.addr.is_some() {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             state.addr = Some(addr);
         }
-        // Register self in the global broadcast registry so kernel-side
-        // `broadcast()` calls can reach this socket.
         NETLINK_SOCKETS.lock().push(Arc::downgrade(self));
         Ok(())
     }
@@ -330,36 +335,28 @@ impl NetlinkSocket {
     pub fn set_receive_buffer_size(&self, size: usize) {
         self.state.lock().receive_buffer_size = size;
     }
-
     pub fn set_passcred(&self, enabled: bool) {
         self.state.lock().passcred = enabled;
     }
-
     pub fn reuse_address(&self) -> bool {
         self.state.lock().reuse_address
     }
-
     pub fn set_reuse_address(&self, enabled: bool) {
         self.state.lock().reuse_address = enabled;
     }
-
-    #[allow(dead_code)]
     pub fn protocol(&self) -> u32 {
         self.protocol
     }
+    pub fn socket_type(&self) -> u32 {
+        self.socket_type
+    }
 
-    /// Enqueue a kernel-originated datagram into this socket's receive queue
-    /// and wake readers, exactly as [`broadcast`] does for a single socket.
-    /// Drops silently when the queue is full (Linux `netlink_unicast` under
-    /// buffer pressure). Used by `mq_notify(SIGEV_THREAD)` to hand the
-    /// notification cookie to the glibc/musl helper thread that reads this
-    /// netlink socket (`netlink_sendskb` in ipc/mqueue.c `__do_notify`).
+    /// Enqueue a kernel-originated datagram and wake readers.
     pub fn deliver_datagram(&self, payload: Vec<u8>) {
         let mut queue = self.queue.lock();
         if queue.len() < MAX_QUEUED {
             queue.push_back(payload);
             drop(queue);
-            // Datagram is queued before readers are woken.
             unsafe { self.poll_rx.wake(IoEvents::IN) };
         }
     }
@@ -369,7 +366,12 @@ impl NetlinkSocket {
         match state.addr {
             Some(addr) if addr.nl_pid != 0 => addr.nl_pid,
             _ => {
-                let pid = ax_task::current().as_thread().proc_data.proc.pid();
+                let task = ax_task::current();
+                let thread = task.as_thread();
+                let pid = crate::task::current_pid_view()
+                    .visible_number(&thread.proc_data.identity())
+                    .expect("current process is visible in its active PID namespace")
+                    .get();
                 state.addr = Some(sockaddr_nl {
                     nl_family: AF_NETLINK as _,
                     nl_pad: 0,
@@ -390,9 +392,9 @@ impl NetlinkSocket {
     /// — also returns `-ENOENT`. This matches what libnl-genl and
     /// `genl-ctrl-list` need to enumerate the controller and report
     /// "no other families" cleanly.
-    fn build_genl_response(&self, request: &[u8]) -> AxResult<Vec<u8>> {
+    fn build_genl_response(&self, request: &[u8]) -> StarryResult<Vec<u8>> {
         if request.len() < size_of::<NlMsgHdr>() + size_of::<GenlMsgHdr>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
         let genl = unsafe {
@@ -432,7 +434,6 @@ impl NetlinkSocket {
             push_nlmsg_error(&mut response, request, pid, -libc_ENOENT);
             return Ok(response);
         }
-
         let is_dump = want_name.is_none();
         push_ctrl_family(&mut response, header.seq, pid, is_dump);
         if is_dump {
@@ -441,9 +442,9 @@ impl NetlinkSocket {
         Ok(response)
     }
 
-    fn build_route_response(&self, request: &[u8]) -> AxResult<Vec<u8>> {
+    fn build_route_response(&self, request: &[u8]) -> StarryResult<Vec<u8>> {
         if request.len() < size_of::<NlMsgHdr>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
@@ -465,7 +466,12 @@ impl NetlinkSocket {
                     push_link_message(&mut response, header.seq, pid, &link);
                 }
                 if !matched && !is_dump_request(header.flags) && filter.has_selector() {
-                    push_nlmsg_error_from_ax(&mut response, request, pid, AxError::NoSuchDevice);
+                    push_nlmsg_error_from_ax(
+                        &mut response,
+                        request,
+                        pid,
+                        StarryError::NoSuchDevice,
+                    );
                     return Ok(response);
                 }
             }
@@ -483,7 +489,12 @@ impl NetlinkSocket {
                     push_addr_message(&mut response, header.seq, pid, &addr);
                 }
                 if !matched && !is_dump_request(header.flags) && filter.has_selector() {
-                    push_nlmsg_error_from_ax(&mut response, request, pid, AxError::NoSuchDevice);
+                    push_nlmsg_error_from_ax(
+                        &mut response,
+                        request,
+                        pid,
+                        StarryError::NoSuchDevice,
+                    );
                     return Ok(response);
                 }
             }
@@ -513,10 +524,7 @@ impl NetlinkSocket {
             RTM_NEWADDR => {
                 let error = match handle_newaddr_request(request) {
                     Ok(()) => 0,
-                    Err(err) => {
-                        let linux_err = LinuxError::from(err);
-                        -linux_err.code()
-                    }
+                    Err(err) => -err.linux_errno().into_raw(),
                 };
                 push_nlmsg_error(&mut response, request, pid, error);
                 return Ok(response);
@@ -527,11 +535,8 @@ impl NetlinkSocket {
                     // Linux reports EADDRNOTAVAIL when the requested address
                     // is not assigned; ax-net uses NotFound for that internal
                     // state so translate it explicitly for iproute2.
-                    Err(AxError::NotFound) => -LinuxError::EADDRNOTAVAIL.code(),
-                    Err(err) => {
-                        let linux_err = LinuxError::from(err);
-                        -linux_err.code()
-                    }
+                    Err(StarryError::NotFound) => -Errno::EADDRNOTAVAIL.into_raw(),
+                    Err(err) => -err.linux_errno().into_raw(),
                 };
                 push_nlmsg_error(&mut response, request, pid, error);
                 return Ok(response);
@@ -558,17 +563,17 @@ impl NetlinkSocket {
     /// `truncate` (MSG_TRUNC) is set, else the number of bytes copied;
     /// `truncated` is true when the datagram did not fit in `dst` (so the
     /// caller can raise MSG_TRUNC in `msg_flags`).
-    fn read_one(&self, dst: &mut IoDst, peek: bool, truncate: bool) -> AxResult<(usize, bool)> {
+    fn read_one(&self, dst: &mut IoDst, peek: bool, truncate: bool) -> StarryResult<(usize, bool)> {
         let msg = {
             let mut queue = self.queue.lock();
             if peek {
                 let Some(msg) = queue.front() else {
-                    return Err(AxError::WouldBlock);
+                    return Err(StarryError::WouldBlock);
                 };
                 msg.clone()
             } else {
                 let Some(msg) = queue.pop_front() else {
-                    return Err(AxError::WouldBlock);
+                    return Err(StarryError::WouldBlock);
                 };
                 msg
             }
@@ -622,7 +627,7 @@ impl NetlinkSocket {
         peek: bool,
         truncate: bool,
         dontwait: bool,
-    ) -> AxResult<(usize, bool)> {
+    ) -> StarryResult<(usize, bool)> {
         let non_blocking = self.nonblocking() || dontwait;
         block_on(poll_io(self, IoEvents::IN, non_blocking, || {
             self.read_one(dst, peek, truncate)
@@ -631,23 +636,23 @@ impl NetlinkSocket {
 }
 
 impl FileLike for NetlinkSocket {
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
         // Device ioctls (SIOCGIF*) are family-agnostic in Linux sock_ioctl, so a
         // netlink socket answers them too rather than returning ENOTTY.
         if let Some(result) = crate::file::net::device_ioctl(cmd, arg) {
             return result;
         }
-        Err(AxError::NotATty)
+        Err(StarryError::NotATty)
     }
 
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
             self.read_one(dst, false, false)
         }))
         .map(|(len, _)| len)
     }
 
-    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         let size = src.remaining().min(64 * 1024);
         let mut request = vec![0; size];
         let total = src.read(&mut request)?;
@@ -679,7 +684,7 @@ impl FileLike for NetlinkSocket {
         Ok(total)
     }
 
-    fn stat(&self) -> AxResult<crate::file::Kstat> {
+    fn stat(&self) -> StarryResult<crate::file::Kstat> {
         Ok(crate::file::Kstat {
             mode: S_IFSOCK | 0o777,
             blksize: 4096,
@@ -691,7 +696,7 @@ impl FileLike for NetlinkSocket {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn set_nonblocking(&self, non_blocking: bool) -> AxResult {
+    fn set_nonblocking(&self, non_blocking: bool) -> StarryResult {
         self.non_blocking.store(non_blocking, Ordering::Release);
         Ok(())
     }
@@ -942,19 +947,18 @@ fn push_nlmsg_error(out: &mut Vec<u8>, request_bytes: &[u8], pid: u32, error: i3
     out.extend_from_slice(&request_bytes[..req_len]);
 }
 
-fn push_nlmsg_error_from_ax(out: &mut Vec<u8>, request_bytes: &[u8], pid: u32, err: AxError) {
-    let linux_err = LinuxError::from(err);
-    push_nlmsg_error(out, request_bytes, pid, -linux_err.code());
+fn push_nlmsg_error_from_ax(out: &mut Vec<u8>, request_bytes: &[u8], pid: u32, err: StarryError) {
+    push_nlmsg_error(out, request_bytes, pid, -err.linux_errno().into_raw());
 }
 
-fn handle_newaddr_request(request: &[u8]) -> AxResult {
+fn handle_newaddr_request(request: &[u8]) -> StarryResult {
     if request.len() < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
     let msg_len = (header.len as usize).min(request.len());
     if msg_len < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let addr = unsafe {
         request
@@ -964,28 +968,28 @@ fn handle_newaddr_request(request: &[u8]) -> AxResult {
             .read_unaligned()
     };
     if addr.family != AF_INET {
-        return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+        return Err(StarryError::from(Errno::EAFNOSUPPORT));
     }
 
     let attrs = &request[size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>()..msg_len];
     let local = parse_ipv4_attr(attrs, IFA_LOCAL)
         .or_else(|| parse_ipv4_attr(attrs, IFA_ADDRESS))
-        .ok_or(AxError::InvalidInput)?;
-    ax_net::set_interface_ipv4(
+        .ok_or(StarryError::InvalidInput)?;
+    Ok(ax_net::set_interface_ipv4(
         InterfaceId::new(addr.index),
         Ipv4Addr::from(local),
         addr.prefix_len,
-    )
+    )?)
 }
 
-fn handle_deladdr_request(request: &[u8]) -> AxResult {
+fn handle_deladdr_request(request: &[u8]) -> StarryResult {
     if request.len() < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
     let msg_len = (header.len as usize).min(request.len());
     if msg_len < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let addr = unsafe {
         request
@@ -995,18 +999,18 @@ fn handle_deladdr_request(request: &[u8]) -> AxResult {
             .read_unaligned()
     };
     if addr.family != AF_INET {
-        return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+        return Err(StarryError::from(Errno::EAFNOSUPPORT));
     }
 
     let attrs = &request[size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>()..msg_len];
     let local = parse_ipv4_attr(attrs, IFA_LOCAL)
         .or_else(|| parse_ipv4_attr(attrs, IFA_ADDRESS))
-        .ok_or(AxError::InvalidInput)?;
-    ax_net::remove_interface_ipv4(
+        .ok_or(StarryError::InvalidInput)?;
+    Ok(ax_net::remove_interface_ipv4(
         InterfaceId::new(addr.index),
         Ipv4Addr::from(local),
         addr.prefix_len,
-    )
+    )?)
 }
 
 fn parse_ipv4_attr(mut buf: &[u8], ty: u16) -> Option<[u8; 4]> {
@@ -1055,16 +1059,16 @@ fn parse_addr_filter(request: &[u8]) -> AddrFilter {
     }
 }
 
-fn parse_route_request(request: &[u8]) -> AxResult<RtMsg> {
+fn parse_route_request(request: &[u8]) -> StarryResult<RtMsg> {
     if request.len() < size_of::<NlMsgHdr>() + size_of::<RtMsg>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     // SAFETY: The length check above covers a complete header, and
     // `read_unaligned` accepts the byte alignment of the request buffer.
     let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
     let msg_len = (header.len as usize).min(request.len());
     if msg_len < size_of::<NlMsgHdr>() + size_of::<RtMsg>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     // SAFETY: `msg_len` proves that the request contains a complete `RtMsg`
     // after the header, and `read_unaligned` accepts the buffer alignment.

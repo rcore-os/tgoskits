@@ -124,7 +124,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         );
     }
 
-    let mut vm_config = build_axvm_config(&vm_create_config);
+    let mut vm_config = build_axvm_config(&vm_create_config)?;
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
@@ -155,12 +155,9 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     vm.prepare()
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
 
-    // Keep the local `Arc` for architecture-specific post-registration setup.
     if !axvm::register_vm(vm.clone()) {
         bail!("register VM[{vm_id}]: a VM with this ID already exists");
     }
-    #[cfg(target_arch = "loongarch64")]
-    crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
 
     #[cfg(all(
         feature = "fs",
@@ -171,16 +168,15 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         )
     ))]
     if release_host_filesystem {
-        #[cfg(target_arch = "x86_64")]
-        axvm::host::x86::register_qemu_block_passthrough_irq(&vm)
-            .context("register x86 QEMU block passthrough IRQ route")?;
+        axvm::host::register_block_passthrough_irq(&vm)
+            .context("register host block passthrough IRQ route")?;
         HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
     }
 
     Ok(vm_id)
 }
 
-pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
+pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
     let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
     let serial_profile = machine.serial;
     let mut passthrough_devices = cfg.devices.unresolved_host_devices();
@@ -197,13 +193,9 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
         );
     }
     let mut virtual_device_catalog = axvm::ConfiguredDeviceCatalog::new();
-    virtual_device_catalog
-        .register(crate::virtio_blk::REGISTRATION)
-        .expect("the static virtio-blk model registration is valid and unique");
-    virtual_device_catalog
-        .register(crate::virtio_net::REGISTRATION)
-        .expect("the static virtio-net model registration is valid and unique");
-    AxVMConfig::new(AxVMConfigParams {
+    axvm::machine::register_devices(&mut virtual_device_catalog)
+        .context("register AxVM virtual-device models")?;
+    Ok(AxVMConfig::new(AxVMConfigParams {
         id: cfg.base.id,
         name: cfg.base.name.clone(),
         phys_cpu_ls: PhysCpuList::new(
@@ -236,8 +228,8 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
         serial_profile: Some(serial_profile),
         serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
         virtual_device_requests: cfg.devices.virtual_device_requests().to_vec(),
-        virtual_device_catalog: Some(alloc::sync::Arc::new(virtual_device_catalog)),
-    })
+        virtual_device_catalog: alloc::sync::Arc::new(virtual_device_catalog),
+    }))
 }
 
 fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &GuestConfig) {
@@ -335,7 +327,7 @@ mod tests {
             0x200000,
             VmMemMappingType::MapIdentical,
         ));
-        let mut vm_config = build_axvm_config(&crate_config);
+        let mut vm_config = build_axvm_config(&crate_config).unwrap();
 
         crate_config.kernel.memory_regions.push(memory_region(
             0x110000,

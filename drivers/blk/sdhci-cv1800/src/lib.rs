@@ -24,7 +24,7 @@ use alloc::sync::Arc;
 use core::ptr::{read_volatile, write_volatile};
 
 pub use runtime::{SdhciDelay, set_delay};
-use sdio_host::{SdioCardIrq, SdioHost, cccr::*, cmd::*, error::SdioError};
+use sdio_host::{SdioCardIrq, SdioHost, SdioIrqSource, cccr::*, cmd::*, error::SdioError};
 
 use crate::regs::*;
 
@@ -56,8 +56,8 @@ impl SdioCardIrq for CviCardIrqCtrl {
         irq::mask_card_irq_raw(self.base, true);
     }
 
-    fn unmask_card_irq(&self) {
-        irq::mask_card_irq_raw(self.base, false);
+    fn rearm_and_check_card_irq(&self) -> bool {
+        irq::rearm_card_irq_and_check(self.base)
     }
 }
 
@@ -67,6 +67,7 @@ pub struct CviSdhci {
     rca: u16,    // 相对卡地址
     vendor_id: u16,
     device_id: u16,
+    irq_source_taken: bool,
 }
 
 impl CviSdhci {
@@ -76,6 +77,7 @@ impl CviSdhci {
             rca: 0,
             vendor_id: 0,
             device_id: 0,
+            irq_source_taken: false,
         }
     }
 
@@ -536,14 +538,15 @@ impl CviSdhci {
         self.set_clock(400_000)
     }
 
-    /// 使能中断状态位 + CARD_INT 信号
+    /// Enables interrupt status observation while leaving every signal masked.
+    ///
+    /// The network runtime registers the move-only controller endpoint with a
+    /// fixed CPU before task context calls `SdioHost::enable_irq`.
     fn enable_interrupts_irq(&self) -> Result<(), SdioError> {
-        irq::irq_state_init(self.base);
         // Status Enable: 使能所有状态位 (用于 poll_int_status 轮询)
         self.write::<u16>(SDHCI_NORM_INT_STS_EN, NORM_INT_ENABLE_MASK);
         self.write::<u16>(SDHCI_ERR_INT_STS_EN, ERR_INT_ENABLE_MASK);
-        // Signal Enable: 仅使能 CARD_INT (ISR 只处理 CARD_INT)
-        irq::enable_irq_signals();
+        irq::disable_irq_signals(self.base);
         Ok(())
     }
 }
@@ -791,14 +794,24 @@ impl SdioHost for CviSdhci {
     }
 
     fn enable_irq(&self) {
-        irq::enable_irq_signals();
+        irq::enable_irq_signals(self.base);
     }
 
     fn disable_irq(&self) {
-        irq::disable_irq_signals();
+        irq::disable_irq_signals(self.base);
     }
 
     fn card_irq_ctrl(&self) -> Option<Arc<dyn SdioCardIrq>> {
         Some(Arc::new(CviCardIrqCtrl::new(self.base)))
+    }
+
+    fn take_irq_source(&mut self) -> Option<alloc::boxed::Box<dyn SdioIrqSource>> {
+        if self.irq_source_taken {
+            return None;
+        }
+        self.irq_source_taken = true;
+        Some(alloc::boxed::Box::new(irq::CviSdhciIrqSource::new(
+            self.base,
+        )))
     }
 }

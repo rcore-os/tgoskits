@@ -76,6 +76,10 @@ pub fn bootargs() -> Option<&'static str> {
     somehal::bootargs()
 }
 
+pub fn boot_entropy() -> Option<[u8; 32]> {
+    somehal::boot_entropy()
+}
+
 pub struct Kernel;
 
 impl KernelOp for Kernel {

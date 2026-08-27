@@ -572,7 +572,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if self.active_handle.is_some() || self.active_direct_handle.is_some() {
             return Err(Ext4Error::busy().with_operation("jbd2:commit_with_active_handle"));
         }
-        if self.inner.has_dirty_entries() {
+        if self.inner.has_unpublished_edit() {
             return Err(Ext4Error::busy().with_operation("jbd2:commit_with_unfinished_block_edit"));
         }
         let system = self.system.as_mut().ok_or_else(|| {
@@ -600,7 +600,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             // A journal update owns an immutable block copy before commit.
             // The guard above proves that no caller-owned mutable image can be
             // published while refreshing cache coherence.
-            self.inner.discard_cache();
+            self.inner.discard_held();
         }
         Ok(committed)
     }
@@ -610,7 +610,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         if !self.journal_use {
             return Ok(false);
         }
-        if self.inner.has_dirty_entries() {
+        if self.inner.has_unpublished_edit() {
             return Err(
                 Ext4Error::busy().with_operation("jbd2:checkpoint_with_unfinished_block_edit")
             );
@@ -633,7 +633,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             }
         };
         if checkpointed {
-            self.inner.discard_cache();
+            self.inner.discard_held();
         }
         Ok(checkpointed)
     }
@@ -866,7 +866,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
         // Replay owns the authoritative home images. A fresh mount has no
         // caller-owned mutable cache edit, so invalidation must never perform
         // writeback that could overwrite replayed data.
-        self.inner.discard_cache();
+        self.inner.discard_held();
         status
     }
 
@@ -1037,7 +1037,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 // A nested filesystem owner restores its cache snapshot after
                 // this return. Drop device-cache aliases dirtied by the failed
                 // scope so they cannot bypass the restored journal queue.
-                self.inner.discard_cache();
+                self.inner.discard_held();
                 Err(operation_error)
             }
         }
@@ -1104,7 +1104,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 // The active cache may contain buffers dirtied after journal
                 // write access was acquired. They must be discarded, never
                 // flushed to home locations from an aborted handle.
-                self.inner.discard_cache();
+                self.inner.discard_held();
                 Err(operation_error)
             }
         }
@@ -1427,8 +1427,13 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(Ext4Error::no_space().with_operation("jbd2:handle_credits"));
         }
 
-        let mut before = alloc::vec![0; self.inner.block_size() as usize];
-        self.inner.read_blocks(&mut before, block_id, 1)?;
+        let before = if let Some(held) = self.inner.clean_buffer_for_block(block_id) {
+            held.to_vec()
+        } else {
+            let mut before = alloc::vec![0; self.inner.block_size() as usize];
+            self.inner.read_blocks(&mut before, block_id, 1)?;
+            before
+        };
         self.active_direct_handle
             .as_mut()
             .ok_or_else(|| Ext4Error::corrupted().with_operation("jbd2:missing_direct_handle"))?
@@ -1438,7 +1443,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
     }
 
     fn restore_direct_handle(&mut self, handle: ActiveDirectHandle) -> Ext4Result<()> {
-        self.inner.discard_cache();
+        self.inner.discard_held();
         let mut first_error = None;
         for before in handle.before_images.into_iter().rev() {
             if let Err(error) = self.inner.write_blocks(&before.1, before.0, 1)
@@ -1447,7 +1452,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 first_error = Some(error);
             }
         }
-        self.inner.discard_cache();
+        self.inner.discard_held();
         first_error.map_or(Ok(()), Err)
     }
 
@@ -1459,23 +1464,30 @@ impl<B: BlockIo> Jbd2Dev<B> {
     ) -> Ext4Result<()> {
         self.ensure_not_aborted("jbd2:write_after_abort")?;
         if !self.journal_use || !is_metadata {
-            if is_metadata {
-                self.capture_direct_preimage(block_id)?;
-            }
             return self.inner.write_block(block_id);
         }
 
-        let new_buf = self.inner.buffer().to_vec().into_boxed_slice();
+        let new_buf = self
+            .inner
+            .buffer_for_block(block_id)?
+            .to_vec()
+            .into_boxed_slice();
         let updates = Jbd2Update(block_id, new_buf);
-        let transaction_capacity = self.journal_transaction_capacity()?;
+        let transaction_capacity = match self.journal_transaction_capacity() {
+            Ok(capacity) => capacity,
+            Err(error) => {
+                self.inner.discard_held();
+                return Err(error);
+            }
+        };
         if let Err(error) = self.enqueue_journal_update(updates, transaction_capacity) {
-            self.inner.discard_active();
+            self.inner.discard_held();
             return Err(error);
         }
         // The journal queue now owns the modified image. Keeping the same
         // buffer dirty in the generic device cache could write it to the home
         // block before commit.
-        self.inner.mark_active_clean(block_id);
+        self.inner.publish_journaled_block(block_id);
         Ok(())
     }
 
@@ -1491,7 +1503,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 .updates
                 .retain(|update| update.0 != block_id);
         }
-        self.inner.invalidate_block(block_id);
+        self.inner.discard_block(block_id);
     }
 
     /// Records a revoke after published metadata is detached.
@@ -1548,7 +1560,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 system.running_transaction.revoked_blocks.push(block_id);
             }
         }
-        self.inner.invalidate_block(block_id);
+        self.inner.discard_block(block_id);
         Ok(())
     }
 
@@ -1601,15 +1613,26 @@ impl<B: BlockIo> Jbd2Dev<B> {
         operation: impl FnOnce(&mut [u8]) -> Ext4Result<T>,
     ) -> Ext4Result<T> {
         self.read_block(block_id)?;
+        // Like ext4_journal_get_write_access(), direct mode acquires the
+        // rollback owner before the buffer becomes mutable. Capturing after
+        // `buffer_mut()` would either observe the new image or need an
+        // incoherent home-block reread.
+        if !self.journal_use
+            && is_metadata
+            && let Err(error) = self.capture_direct_preimage(block_id)
+        {
+            self.inner.discard_held();
+            return Err(error);
+        }
         let value = match operation(self.inner.buffer_mut()) {
             Ok(value) => value,
             Err(error) => {
-                self.inner.discard_active();
+                self.inner.discard_held();
                 return Err(error);
             }
         };
         if let Err(error) = self.write_block(block_id, is_metadata) {
-            self.inner.discard_active();
+            self.inner.discard_held();
             return Err(error);
         }
         Ok(value)
@@ -2301,7 +2324,7 @@ mod tests {
             Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush_and_fua(256), true);
         dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
             .expect("install checksummed journal");
-        dev.write_block(AbsoluteBN::new(10), true)
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
             .expect("queue metadata update");
 
         let first_error = dev
@@ -3571,7 +3594,7 @@ mod tests {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush(256), true);
         dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
             .expect("install small journal");
-        dev.write_block(AbsoluteBN::new(10), true)
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
             .expect("queue metadata update");
 
         let error = dev
@@ -3647,7 +3670,7 @@ mod tests {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         dev.set_journal_superblock(superblock, journal_start)
             .expect("install checksummed journal");
-        dev.write_block(AbsoluteBN::new(10), true)
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
             .expect("queue metadata update");
         dev.commit().expect("commit metadata update");
 
@@ -4172,7 +4195,7 @@ mod tests {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, device, true);
         dev.set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
             .expect("install checksummed journal");
-        dev.write_block(AbsoluteBN::new(10), true)
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
             .expect("queue metadata update");
 
         let first_error = match dev.umount_commit() {
@@ -4245,7 +4268,7 @@ mod tests {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush(256), true);
         dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
             .expect("install small journal");
-        dev.write_block(AbsoluteBN::new(10), true)
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
             .expect("queue metadata update");
 
         let first_error = dev
@@ -4305,7 +4328,7 @@ mod tests {
         let superblock = csum_v3_superblock();
         dev.set_journal_superblock(superblock, AbsoluteBN::new(128))
             .expect("install checksummed journal");
-        dev.write_block(AbsoluteBN::new(10), true)
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
             .expect("queue metadata update");
 
         let first_error = dev
@@ -4352,7 +4375,12 @@ mod tests {
         .expect("fill one transaction");
 
         let first_error = dev
-            .write_block(AbsoluteBN::new(10 + capacity as u64), true)
+            .write_blocks(
+                &vec![0x5a; BLOCK_SIZE],
+                AbsoluteBN::new(10 + capacity as u64),
+                1,
+                true,
+            )
             .expect_err("queue overflow must propagate the automatic commit failure");
         assert_eq!(first_error.kind(), crate::Ext4ErrorKind::Io);
 
@@ -4367,7 +4395,7 @@ mod tests {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
         dev.set_journal_superblock(small_journal_superblock(), AbsoluteBN::new(128))
             .expect("install small journal");
-        dev.write_block(AbsoluteBN::new(10), true)
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
             .expect("queue metadata update");
 
         let error = dev
@@ -5031,7 +5059,7 @@ mod tests {
         let mut dev = Jbd2Dev::initial_jbd2dev(0, inner, true);
         dev.set_journal_superblock(small_journal_superblock(), journal_superblock)
             .expect("install journal state");
-        dev.write_block(AbsoluteBN::new(10), true)
+        dev.write_blocks(&vec![0x5a; BLOCK_SIZE], AbsoluteBN::new(10), 1, true)
             .expect("queue metadata update");
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dev.umount_commit()));
@@ -5061,7 +5089,7 @@ mod tests {
             crate::Ext4ErrorKind::Busy
         );
 
-        dev.inner.discard_active();
+        dev.inner.discard_held();
         dev.umount_commit()
             .expect("discarding the unpublished edit keeps the journal usable");
     }

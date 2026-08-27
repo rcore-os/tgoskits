@@ -94,12 +94,12 @@ fn overlay_current_review_context(workspace_root: &Path, repo: &Path) -> anyhow:
     fs::copy(workspace_root.join("CLAUDE.md"), repo.join("CLAUDE.md"))
         .context("failed to copy current CLAUDE.md into review sandbox")?;
 
-    let guideline_destination = repo.join("book/guideline");
+    let guideline_destination = repo.join("docs/guideline");
     if guideline_destination.exists() {
         fs::remove_dir_all(&guideline_destination)?;
     }
     copy_tree(
-        &workspace_root.join("book/guideline"),
+        &workspace_root.join("docs/guideline"),
         &guideline_destination,
     )?;
 
@@ -193,6 +193,9 @@ fn clear_worktree(repo: &Path) -> anyhow::Result<()> {
             fs::remove_file(path)?;
         }
     }
+    // The next snapshot may reuse the same size, timestamp, and inode as the
+    // base file. Dropping the old index forces Git to hash the new contents.
+    git(repo, ["read-tree", "--empty"])?;
     Ok(())
 }
 
@@ -251,9 +254,9 @@ mod tests {
         let workspace = tempdir().unwrap();
         fs::write(workspace.path().join("AGENTS.md"), "current rules\n").unwrap();
         fs::write(workspace.path().join("CLAUDE.md"), "see AGENTS.md\n").unwrap();
-        fs::create_dir_all(workspace.path().join("book/guideline")).unwrap();
+        fs::create_dir_all(workspace.path().join("docs/guideline")).unwrap();
         fs::write(
-            workspace.path().join("book/guideline/code-quality.md"),
+            workspace.path().join("docs/guideline/code-quality.md"),
             "current guideline\n",
         )
         .unwrap();
@@ -343,6 +346,24 @@ mod tests {
                 .and_then(|entry| fs::read_to_string(entry.path()).ok())
                 .is_some_and(|text| text.contains("secret answer"))
         }));
+    }
+
+    #[test]
+    fn clear_worktree_drops_index_state_before_extracting_the_next_snapshot() {
+        let repo = tempdir().unwrap();
+        initialize_repo(repo.path()).unwrap();
+        fs::write(repo.path().join("tracked.txt"), "base snapshot\n").unwrap();
+        commit_all(repo.path(), "base").unwrap();
+
+        clear_worktree(repo.path()).unwrap();
+
+        let cached_paths = Command::new("git")
+            .current_dir(repo.path())
+            .args(["ls-files", "--cached"])
+            .output()
+            .unwrap();
+        assert!(cached_paths.status.success());
+        assert!(cached_paths.stdout.is_empty());
     }
 
     fn rev_parse(repo: &Path, revision: &str) -> String {

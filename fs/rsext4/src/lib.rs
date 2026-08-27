@@ -14,6 +14,8 @@ extern crate alloc;
 
 #[cfg(test)]
 extern crate std;
+#[cfg(test)]
+mod test_contracts;
 
 // Re-export shared configuration constants for external callers.
 // Re-export the most frequently used public APIs.
@@ -21,12 +23,11 @@ pub use api::{lseek, open, read_at, write_at};
 pub use blockdev::Jbd2Dev;
 pub use bmalloc::InodeNumber;
 pub use config::{
-    BITMAP_CACHE_MAX, BLOCK_SIZE, BLOCK_SIZE_U32, BLOCKDEV_CACHE_MAX, DATABLOCK_CACHE_MAX,
-    DEFAULT_FEATURE_COMPAT, DEFAULT_FEATURE_INCOMPAT, DEFAULT_FEATURE_RO_COMPAT,
-    DEFAULT_INODE_SIZE, DIRNAME_LEN, EXT4_MAJOR_VERSION, EXT4_MINOR_VERSION, EXT4_SUPER_MAGIC,
-    GOOD_OLD_INODE_SIZE, GROUP_DESC_SIZE, GROUP_DESC_SIZE_OLD, INODE_CACHE_MAX, LOG_BLOCK_SIZE,
-    MAX_BLOCK_SIZE, MIN_BLOCK_SIZE, RESERVED_GDT_BLOCKS, RESERVED_INODES, SUPERBLOCK_OFFSET,
-    SUPERBLOCK_SIZE,
+    BITMAP_CACHE_MAX, BLOCK_SIZE, BLOCK_SIZE_U32, DATABLOCK_CACHE_MAX, DEFAULT_FEATURE_COMPAT,
+    DEFAULT_FEATURE_INCOMPAT, DEFAULT_FEATURE_RO_COMPAT, DEFAULT_INODE_SIZE, DIRNAME_LEN,
+    EXT4_MAJOR_VERSION, EXT4_MINOR_VERSION, EXT4_SUPER_MAGIC, GOOD_OLD_INODE_SIZE, GROUP_DESC_SIZE,
+    GROUP_DESC_SIZE_OLD, INODE_CACHE_MAX, LOG_BLOCK_SIZE, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE,
+    RESERVED_GDT_BLOCKS, RESERVED_INODES, SUPERBLOCK_OFFSET, SUPERBLOCK_SIZE,
 };
 pub use dir::{FileName, mkdir, mkdir_with_owner};
 pub use disknode::{DeviceNumber, Ext4TimeSpec, Ext4Timestamp};
@@ -55,9 +56,6 @@ pub use runtime::{
 };
 
 pub mod api;
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for ext4 data structures and helpers.
-pub mod axtest;
 pub mod bitmap;
 pub mod blockdev;
 pub mod blockgroup_description;

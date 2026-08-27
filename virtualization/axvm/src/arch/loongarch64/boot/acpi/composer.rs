@@ -25,7 +25,14 @@ pub(in crate::arch::loongarch64::boot) fn build(
     let serial = serial_config(platform);
     let pci = pci_config(platform);
     let interrupt = interrupt_config(platform);
-    build_acpi(cpu_num, srat_regions, &serial, &pci, &interrupt)
+    build_acpi(
+        cpu_num,
+        srat_regions,
+        &serial,
+        &pci,
+        &interrupt,
+        &platform.configured_acpi_devices,
+    )
 }
 
 fn build_acpi(
@@ -34,6 +41,7 @@ fn build_acpi(
     serial: &LoongArchFwCfgSerialConfig,
     pci: &LoongArchFwCfgPciConfig,
     interrupt: &LoongArchFwCfgInterruptConfig,
+    configured_devices: &[ResolvedAcpiDevice],
 ) -> Result<FwCfgAcpiBlobs, AcpiBuildError> {
     let mut tables = Vec::new();
     let mut loader = AcpiLoaderPlan::new();
@@ -44,7 +52,7 @@ fn build_acpi(
     build_facs(&mut tables);
 
     let dsdt = tables.len() as u32;
-    build_dsdt(&mut tables, serial, pci);
+    build_dsdt(&mut tables, serial, pci, interrupt, configured_devices)?;
     add_table_checksum(&mut loader, dsdt as usize, table_len(&tables, dsdt))?;
 
     let fadt = tables.len() as u32;

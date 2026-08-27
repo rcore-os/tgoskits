@@ -1,12 +1,14 @@
 use core::{any::Any, slice};
 
-use ax_errno::AxError;
 use ax_memory_addr::{PhysAddrRange, VirtAddr};
 use ax_runtime::hal::mem::virt_to_phys;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use starry_vm::VmMutPtr;
 
-use crate::pseudofs::{DeviceMmap, DeviceOps};
+use crate::{
+    StarryError,
+    pseudofs::{DeviceMmap, DeviceOps},
+};
 
 // Types from https://github.com/Tangzh33/asterinas
 
@@ -132,95 +134,98 @@ impl DeviceOps for FrameBuffer {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
-        match cmd {
-            // FBIOGET_VSCREENINFO
-            0x4600 => {
-                let info = ax_display::framebuffer_info();
-                let line_length = (info.fb_size / info.height as usize) as u32;
-                let bpp = line_length / info.width;
-                (arg as *mut VarScreenInfo).vm_write(VarScreenInfo {
-                    xres: info.width,
-                    yres: info.height,
-                    xres_virtual: info.width,
-                    yres_virtual: info.height,
-                    xoffset: 0,
-                    yoffset: 0,
-                    bits_per_pixel: bpp * 8,
-                    grayscale: 0,
-                    red: FrameBufferBitfield {
-                        offset: 16,
-                        length: 8,
-                        msb_right: 0,
-                    },
-                    green: FrameBufferBitfield {
-                        offset: 8,
-                        length: 8,
-                        msb_right: 0,
-                    },
-                    blue: FrameBufferBitfield {
-                        offset: 0,
-                        length: 8,
-                        msb_right: 0,
-                    },
-                    transp: FrameBufferBitfield {
-                        offset: 24,
-                        length: 8,
-                        msb_right: 0,
-                    },
-                    nonstd: 0,
-                    activate: 0,
-                    height: 0,
-                    width: 0,
-                    accel_flags: 0,
-                    pixclock: 10000000 / info.width * 1000 / info.height,
-                    left_margin: (info.width / 8) & 0xf8,
-                    right_margin: 32,
-                    upper_margin: 16,
-                    lower_margin: 4,
-                    hsync_len: (info.width / 8) & 0xf8,
-                    vsync_len: 4,
-                    sync: 0,
-                    vmode: 0,
-                    rotate: 0,
-                    colorspace: 0,
-                    reserved: [0; 4],
-                })?;
-                Ok(0)
+        let operation = || -> crate::StarryResult<usize> {
+            match cmd {
+                // FBIOGET_VSCREENINFO
+                0x4600 => {
+                    let info = ax_display::framebuffer_info();
+                    let line_length = (info.fb_size / info.height as usize) as u32;
+                    let bpp = line_length / info.width;
+                    (arg as *mut VarScreenInfo).vm_write(VarScreenInfo {
+                        xres: info.width,
+                        yres: info.height,
+                        xres_virtual: info.width,
+                        yres_virtual: info.height,
+                        xoffset: 0,
+                        yoffset: 0,
+                        bits_per_pixel: bpp * 8,
+                        grayscale: 0,
+                        red: FrameBufferBitfield {
+                            offset: 16,
+                            length: 8,
+                            msb_right: 0,
+                        },
+                        green: FrameBufferBitfield {
+                            offset: 8,
+                            length: 8,
+                            msb_right: 0,
+                        },
+                        blue: FrameBufferBitfield {
+                            offset: 0,
+                            length: 8,
+                            msb_right: 0,
+                        },
+                        transp: FrameBufferBitfield {
+                            offset: 24,
+                            length: 8,
+                            msb_right: 0,
+                        },
+                        nonstd: 0,
+                        activate: 0,
+                        height: 0,
+                        width: 0,
+                        accel_flags: 0,
+                        pixclock: 10000000 / info.width * 1000 / info.height,
+                        left_margin: (info.width / 8) & 0xf8,
+                        right_margin: 32,
+                        upper_margin: 16,
+                        lower_margin: 4,
+                        hsync_len: (info.width / 8) & 0xf8,
+                        vsync_len: 4,
+                        sync: 0,
+                        vmode: 0,
+                        rotate: 0,
+                        colorspace: 0,
+                        reserved: [0; 4],
+                    })?;
+                    Ok(0)
+                }
+                // FBIOPUT_VSCREENINFO
+                0x4601 => Ok(0),
+                // FBIOGET_FSCREENINFO
+                0x4602 => {
+                    let info = ax_display::framebuffer_info();
+                    (arg as *mut FixScreenInfo).vm_write(FixScreenInfo {
+                        id: *b"Virtio Framebuf\0",
+                        smem_start: info.fb_base_vaddr as u64,
+                        smem_len: info.fb_size as u32,
+                        type_: 0,
+                        type_aux: 0,
+                        visual: 2, // FB_VISUAL_TRUECOLOR
+                        xpanstep: 0,
+                        ypanstep: 0,
+                        ywrapstep: 0,
+                        line_length: (info.fb_size / info.height as usize) as u32,
+                        mmio_start: 0,
+                        mmio_len: 0,
+                        accel: 0,
+                        capabilities: 0,
+                        reserved: [0; 2],
+                    })?;
+                    Ok(0)
+                }
+                // FBIOGETCMAP
+                0x4604 => Ok(0),
+                // FBIOPUTCMAP
+                0x4605 => Ok(0),
+                // FBIOPAN_DISPLAY
+                0x4606 => Err(StarryError::InvalidInput),
+                // FBIOBLANK
+                0x4611 => Err(StarryError::InvalidInput),
+                _ => Err(StarryError::NotATty),
             }
-            // FBIOPUT_VSCREENINFO
-            0x4601 => Ok(0),
-            // FBIOGET_FSCREENINFO
-            0x4602 => {
-                let info = ax_display::framebuffer_info();
-                (arg as *mut FixScreenInfo).vm_write(FixScreenInfo {
-                    id: *b"Virtio Framebuf\0",
-                    smem_start: info.fb_base_vaddr as u64,
-                    smem_len: info.fb_size as u32,
-                    type_: 0,
-                    type_aux: 0,
-                    visual: 2, // FB_VISUAL_TRUECOLOR
-                    xpanstep: 0,
-                    ypanstep: 0,
-                    ywrapstep: 0,
-                    line_length: (info.fb_size / info.height as usize) as u32,
-                    mmio_start: 0,
-                    mmio_len: 0,
-                    accel: 0,
-                    capabilities: 0,
-                    reserved: [0; 2],
-                })?;
-                Ok(0)
-            }
-            // FBIOGETCMAP
-            0x4604 => Ok(0),
-            // FBIOPUTCMAP
-            0x4605 => Ok(0),
-            // FBIOPAN_DISPLAY
-            0x4606 => Err(AxError::InvalidInput),
-            // FBIOBLANK
-            0x4611 => Err(AxError::InvalidInput),
-            _ => Err(AxError::NotATty),
-        }
+        };
+        operation().map_err(VfsError::from)
     }
 
     fn as_any(&self) -> &dyn Any {

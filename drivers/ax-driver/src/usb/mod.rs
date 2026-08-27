@@ -3,7 +3,9 @@ extern crate alloc;
 use core::time::Duration;
 
 use crab_usb::{EventHandler, USBHost, usb_if::Speed};
-use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
+use dma_api::{
+    DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+};
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
 use crate::{
@@ -110,8 +112,9 @@ impl DmaOp for UsbKernel {
         offset: usize,
         size: usize,
         direction: DmaDirection,
+        coherency: DmaCoherency,
     ) {
-        axklib::dma::op().sync_map_for_device(handle, offset, size, direction);
+        axklib::dma::op().sync_map_for_device(handle, offset, size, direction, coherency);
     }
 
     fn sync_map_for_cpu(
@@ -120,8 +123,9 @@ impl DmaOp for UsbKernel {
         offset: usize,
         size: usize,
         direction: DmaDirection,
+        coherency: DmaCoherency,
     ) {
-        axklib::dma::op().sync_map_for_cpu(handle, offset, size, direction);
+        axklib::dma::op().sync_map_for_cpu(handle, offset, size, direction, coherency);
     }
 }
 

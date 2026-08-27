@@ -1,10 +1,10 @@
 use alloc::{borrow::ToOwned, fmt, string::String};
 
-use ax_errno::AxResult;
 use ax_task::{TaskInner, TaskState};
 use starry_signal::Signo;
 
 use crate::{
+    StarryResult,
     mm::ProcessMemStats,
     task::{AsThread, task_cpu_time},
 };
@@ -71,7 +71,7 @@ pub struct TaskStat {
 
 impl TaskStat {
     /// Create a new [`TaskStat`] from a [`AxTaskRef`].
-    pub fn from_thread(task: &TaskInner) -> AxResult<Self> {
+    pub fn from_thread(task: &TaskInner) -> StarryResult<Self> {
         let thread = task.as_thread();
         let proc_data = &thread.proc_data;
         let proc = &proc_data.proc;
@@ -84,7 +84,7 @@ impl TaskStat {
             TaskState::Blocked => 'S',
             TaskState::Exited => 'Z',
         };
-        let ppid = proc.parent().map_or(0, |p| p.pid());
+        let ppid = proc.parent().map_or(0, |p| p.pid().get());
         let pgrp = proc.group().pgid();
         let session = proc.group().session().sid();
 
@@ -99,12 +99,12 @@ impl TaskStat {
         let mem = ProcessMemStats::collect(&proc_data.aspace().lock());
 
         Ok(Self {
-            pid,
+            pid: pid.get(),
             comm: comm.to_owned(),
             state,
             ppid,
-            pgrp,
-            session,
+            pgrp: pgrp.get(),
+            session: session.get(),
             utime,
             stime,
             cutime,

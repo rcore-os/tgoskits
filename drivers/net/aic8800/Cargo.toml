@@ -1,6 +1,6 @@
 [package]
 name = "aic8800"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 license = "Apache-2.0"
 repository.workspace = true
@@ -28,9 +28,6 @@ ax-sync = { workspace = true }
 log = { workspace = true }
 
 sdio-host = { workspace = true }
-sdhci-cv1800 = { workspace = true }
-
-atomic-waker = { workspace = true }
 
 rdif-eth = { workspace = true }
 rd-net = { workspace = true }
@@ -41,3 +38,6 @@ sha1 = { version = "0.10", default-features = false }
 digest = { version = "0.10", default-features = false }
 aes = { version = "0.8", default-features = false }
 pbkdf2 = { version = "0.12", default-features = false }
+
+[dev-dependencies]
+ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }

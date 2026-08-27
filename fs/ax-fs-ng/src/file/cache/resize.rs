@@ -1,6 +1,5 @@
 use alloc::vec::Vec;
 
-use ax_errno::LinuxError;
 use axfs_ng_vfs::{FileNode, FileRangeOperation, PreallocationMode, VfsError, VfsResult};
 
 use super::{CachedFile, PAGE_SIZE, PageCache};
@@ -17,9 +16,7 @@ struct PreparedPageWrite {
 impl CachedFile {
     /// Reserves backing storage and keeps the cached length coherent.
     pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| VfsError::from(LinuxError::EFBIG))?;
+        let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
         let file = self.inner.entry().as_file()?;
         let _io = self.shared.io_lock.lock();
         file.preallocate(offset, len, mode)?;
@@ -46,9 +43,7 @@ impl CachedFile {
         ) {
             return self.operate_shifted_range(offset, len, operation);
         }
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| VfsError::from(LinuxError::EFBIG))?;
+        let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
         let file = self.inner.entry().as_file()?;
 
         loop {
@@ -137,7 +132,7 @@ impl CachedFile {
                     .ok_or(VfsError::InvalidInput)?,
                 FileRangeOperation::InsertRange => observed_len
                     .checked_add(len)
-                    .ok_or_else(|| VfsError::from(LinuxError::EFBIG))?,
+                    .ok_or(VfsError::FileTooLarge)?,
                 _ => unreachable!(),
             };
             let affected_pages = self.cached_pages_from(start_page);

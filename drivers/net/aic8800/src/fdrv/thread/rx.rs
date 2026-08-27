@@ -1,8 +1,5 @@
-use alloc::{sync::Arc, vec, vec::Vec};
-use core::{
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    task::Poll,
-};
+use alloc::{vec, vec::Vec};
+use core::sync::atomic::Ordering;
 
 use log;
 
@@ -13,129 +10,12 @@ use crate::{
             BLOCK_COUNT_MASK, ETH_P_PAE, MAX_PKT_LEN, RX_ALIGNMENT, RX_HWHRD_LEN,
             SDIO_OTHER_INTERRUPT, SDIOWIFI_FUNC_BLOCKSIZE,
         },
-        core::bus::{BusState, WifiBus},
+        core::bus::WifiBus,
     },
 };
 
-pub static RX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// DIAG: kicker 唤醒次数,用于确诊 kicker 是否真在跑。
-#[cfg(debug_assertions)]
-static RX_KICK_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// 上层(StarryOS)注册的"收到数据帧"回调,存为 `fn()` 裸指针。
-///
-/// AIC8800 是 SDIO WiFi,RX 走自己的线程并独占 SDIO CARD_INT (IRQ#38),
-/// 不经过 ax_net 的以太网 IRQ 框架。因此数据帧入队后,需主动通知网络栈
-/// 来驱动一轮 poll(否则进来的 ARP/ICMP/数据包无人处理)。上层把此回调
-/// 设为 `ax_net::wake_net_task_irq`,反转依赖,避免本 crate 直接依赖网络栈。
-static RX_DATA_CALLBACK: AtomicUsize = AtomicUsize::new(0);
-
-/// 本批 RX 是否有数据帧入队(由 `build_and_enqueue_eth_frame` 置位,
-/// RX 线程处理完一批后读取并清除,据此决定是否驱动网络栈 poll)。
-static RX_DATA_PENDING: AtomicBool = AtomicBool::new(false);
-
-/// 注册"收到数据帧"回调(由 StarryOS 在注册 wlan0 后调用)。
-pub fn register_rx_data_callback(cb: fn()) {
-    RX_DATA_CALLBACK.store(cb as usize, Ordering::Release);
-}
-
-/// 若本批有数据帧入队且已注册回调,则调用回调驱动网络栈 poll。
-fn invoke_rx_data_callback() {
-    if !RX_DATA_PENDING.swap(false, Ordering::AcqRel) {
-        return;
-    }
-    let ptr = RX_DATA_CALLBACK.load(Ordering::Acquire);
-    if ptr != 0 {
-        // SAFETY: ptr 来自 register_rx_data_callback 存入的 `fn()`。
-        let cb: fn() = unsafe { core::mem::transmute(ptr) };
-        cb();
-    }
-}
-
 fn align_up(val: usize, align: usize) -> usize {
     (val + align - 1) & !(align - 1)
-}
-
-/// 启动 wifi-rx 线程
-pub fn start(bus: Arc<WifiBus>) {
-    log::debug!("[wifi-rx] thread starting");
-    // RX poll kicker 仅 DC/DW 启用(与 TX kicker 对称)。D80/8801 走 upstream/dev
-    // 的纯事件(ISR)驱动路径,不启动周期 kicker。
-    if bus.transport.is_dual_pipe() {
-        start_rx_poll_kicker(bus.clone());
-    }
-    crate::runtime::runtime().spawn_poll_task(
-        "wifi-rx",
-        alloc::boxed::Box::new(move |cx| {
-            // 检查总线状态
-            if *bus.state.lock() == BusState::Down {
-                return Poll::Ready(());
-            }
-
-            // 检查并清除 ISR 标志
-            if bus.rx.irq_pending.swap(false, Ordering::AcqRel) {
-                RX_WAKE_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-
-            // 处理所有待读数据（内部会 mask CARD_INT，但不 unmask）
-            process_rx_frames(&bus);
-
-            // 先注册 waker，再 unmask CARD_INT
-            // 这样 ISR 触发时 waker 已经就位，不会丢失唤醒
-            bus.rx.irq_waker.register(cx.waker());
-
-            // 关键：先 register waker，再 unmask CARD_INT
-            // 如果 ISR 在 unmask 后立即触发，waker 已经注册好了
-            bus.transport.unmask_card_irq();
-
-            // 若本批有数据帧入队,驱动网络栈处理(AP/STA 收包)。
-            invoke_rx_data_callback();
-
-            // 双重检查：如果 ISR 在 register 和 unmask 之间触发了
-            if bus.rx.irq_pending.swap(false, Ordering::AcqRel) {
-                process_rx_frames(&bus);
-                bus.transport.unmask_card_irq();
-                invoke_rx_data_callback();
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-
-            Poll::Pending
-        }),
-    );
-}
-
-/// 周期性唤醒 RX 线程去轮询 func2 的兜底任务。
-///
-/// 背景:RX 线程纯靠 waker 驱动,唤醒源只有 ISR(IRQ#38)和每次 TX。命令 CFM
-/// 因发命令时顺带 wake 而能收到;但异步到来的帧(如 STA WPA2 握手的 EAPOL M1)
-/// 没有 TX 触发,若 IRQ#38 不可靠,RX 线程会一直睡、帧烂在 func2 FIFO 没人读。
-/// 这里每 10ms 唤醒一次 RX,确保异步入站帧能被及时捞出。
-fn start_rx_poll_kicker(bus: Arc<WifiBus>) {
-    crate::runtime::runtime().spawn_poll_task(
-        "wifi-rx-kick",
-        alloc::boxed::Box::new(move |cx| {
-            if *bus.state.lock() == BusState::Down {
-                return Poll::Ready(());
-            }
-            // 唤醒 RX 线程去 poll func2(不自己做 SDIO,避免与 RX 线程争锁)
-            bus.rx.irq_waker.wake();
-            // 每 ~1s 打一次心跳(仅 trace):证明 kicker 活着
-            #[cfg(debug_assertions)]
-            {
-                let kicks = RX_KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                if kicks.is_multiple_of(100) {
-                    log::trace!("[RXKICK] alive kicks={}", kicks);
-                }
-            }
-            // 阻塞 sleep:本任务独占一个 ax_task 线程,只拖慢自己
-            crate::runtime::runtime().sleep_ms(10);
-            // 自唤醒,让 block_on 立即重新 poll,形成 10ms 周期循环
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }),
-    );
 }
 
 // ===== RX 帧读取处理 =====
@@ -168,6 +48,12 @@ fn read_block_count_with_retry(bus: &WifiBus, func: u8, other_int_retries: &mut 
             "[wifi-rx] SDIO_OTHER_INTERRUPT (0x{:02x}), re-read",
             intstatus
         );
+        if bus.transport.is_v3()
+            && let Err(error) = bus.transport.clear_v3_other_interrupt()
+        {
+            log::error!("[wifi-rx] clear V3 software interrupt failed: {error:?}");
+            return (0, false);
+        }
         return (0, true); // 继续重试
     }
 
@@ -191,13 +77,42 @@ fn read_block_count_with_retry(bus: &WifiBus, func: u8, other_int_retries: &mut 
 ///       if intstatus == 120:   byte mode -> data_len = reg[0x05] * 4
 ///       else:                  block mode -> data_len = (intstatus & 0x7F) * 512
 ///
-/// V2(8801)逻辑:data_len = (intstatus & 0x7F) * 512(intstatus<64 直接块模式,
-/// 这里统一按块数 ×512,与现有行为一致)。
-fn resolve_rx_data_len(bus: &WifiBus, intstatus: u8) -> usize {
-    if !bus.transport.is_v3() {
-        return (intstatus & BLOCK_COUNT_MASK) as usize * SDIOWIFI_FUNC_BLOCKSIZE;
+/// V2(8801/DC/DW)逻辑: `intstatus < 64` 是 block mode；其余值是
+/// byte-mode 哨兵，真实长度来自 byte-mode length register。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RxLengthEncoding {
+    Empty,
+    Blocks(u8),
+    ByteMode,
+}
+
+const fn classify_rx_length(is_v3: bool, intstatus: u8) -> RxLengthEncoding {
+    if intstatus == 0 {
+        return RxLengthEncoding::Empty;
+    }
+    if !is_v3 {
+        return if intstatus < 64 {
+            RxLengthEncoding::Blocks(intstatus)
+        } else {
+            RxLengthEncoding::ByteMode
+        };
     }
 
+    let intmaskf2 = intstatus | (1 << 3);
+    if intmaskf2 > 120 {
+        if intmaskf2 == 127 {
+            RxLengthEncoding::ByteMode
+        } else {
+            RxLengthEncoding::Blocks(intstatus & 0x07)
+        }
+    } else if intstatus == 120 {
+        RxLengthEncoding::ByteMode
+    } else {
+        RxLengthEncoding::Blocks(intstatus & BLOCK_COUNT_MASK)
+    }
+}
+
+fn resolve_rx_data_len(bus: &WifiBus, intstatus: u8) -> usize {
     let read_bytemode_len = || -> usize {
         match bus.transport.read_byte(1, bus.transport.bytemode_len_reg()) {
             // 厂商 aicwf_sdio_intr_get_len_bytemode:data_len = byte_len * 4
@@ -210,24 +125,10 @@ fn resolve_rx_data_len(bus: &WifiBus, intstatus: u8) -> usize {
         }
     };
 
-    // 厂商 aicwf_sdio.c D80 分支(LYU4662/aic8800-sdio-linux-1.0)逐字对应。
-    // 注意:block 模式下读完 0x04 必须立刻读 FIFO,中间不能插 CMD52;
-    // 只有 byte 模式(120/127 哨兵)才允许读一次 0x05。
-    let intmaskf2 = intstatus | (1 << 3);
-    if intmaskf2 > 120 {
-        // func2 队列
-        if intmaskf2 == 127 {
-            read_bytemode_len()
-        } else {
-            (intstatus & 0x07) as usize * SDIOWIFI_FUNC_BLOCKSIZE
-        }
-    } else {
-        // func1 队列
-        if intstatus == 120 {
-            read_bytemode_len()
-        } else {
-            (intstatus & 0x7F) as usize * SDIOWIFI_FUNC_BLOCKSIZE
-        }
+    match classify_rx_length(bus.transport.is_v3(), intstatus) {
+        RxLengthEncoding::Empty => 0,
+        RxLengthEncoding::Blocks(blocks) => blocks as usize * SDIOWIFI_FUNC_BLOCKSIZE,
+        RxLengthEncoding::ByteMode => read_bytemode_len(),
     }
 }
 
@@ -238,8 +139,9 @@ fn resolve_rx_data_len(bus: &WifiBus, intstatus: u8) -> usize {
 /// CMD53 传输 block 数量过多导致 SDHCI 控制器超时;最后不足 512 的尾段以 byte 模式读
 /// (底层 read_fifo 对非 512 对齐长度自动走 byte-mode CMD53)。
 ///
-/// `func`:DC 的 CFM/indication 邮箱在 func2,数据帧在 func1,需按队列读对应 func 的
-/// FIFO;8801/D80 命令与数据同在 func1。
+/// The vendor data path always reads the RX FIFO through function 1. V3 status
+/// encoding can identify a logical function-2 queue, but it does not change
+/// the physical SDIO function used by the FIFO command.
 fn read_fifo_data(bus: &WifiBus, func: u8, data_len: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; data_len];
     let mut offset = 0;
@@ -271,25 +173,21 @@ fn read_fifo_data(bus: &WifiBus, func: u8, data_len: usize) -> Option<Vec<u8>> {
 ///
 /// 注意：调用方负责在适当时候 unmask CARD_INT（不在本函数内 unmask），
 /// 以避免 unmask 和 waker 注册之间的竞态窗口。
-fn process_rx_frames(bus: &WifiBus) {
-    // ISR 只设 flag 不 mask，这里先 mask CARD_INT 防止重入
-    bus.transport.mask_card_irq();
-
-    // 排空 RX FIFO。DC/DW 是双管道:func2 是命令 CFM/indication 邮箱,func1 是数据
-    // 平面;两个 func 的 block_cnt 独立,需各自排空(EAPOL M1 等入站数据帧在 func1)。
-    // 8801/D80 命令与数据同在 func1,func2 不是独立邮箱——只排空 func1,避免对 func2
-    // 发无谓的 CMD52(cmd_func() 对 DC/DW=2,其余=1)。
-    if bus.transport.cmd_func() == 2 {
-        drain_func(bus, 2);
-    }
-    drain_func(bus, 1);
+pub fn process_rx_frames(bus: &WifiBus, budget: usize) -> usize {
+    bus.rx.irq_pending.store(false, Ordering::Release);
+    // All validated vendor ISR variants read status and the RX FIFO through
+    // function 1. Logical V3 function-2 queue bits are decoded by
+    // `classify_rx_length`; issuing CMD52/CMD53 against physical function 2
+    // here would diverge from the vendor clear/drain sequence.
+    drain_func(bus, 1, budget)
 }
 
 /// 排空指定 func 的 RX FIFO,读出所有待处理帧并分发。
-fn drain_func(bus: &WifiBus, func: u8) {
+fn drain_func(bus: &WifiBus, func: u8, budget: usize) -> usize {
     let mut other_int_retries = 0u32;
+    let mut processed = 0;
 
-    loop {
+    while processed < budget {
         // 在轮询循环中也检查 rx_irq_pending
         if bus.rx.irq_pending.swap(false, Ordering::AcqRel) {
             // ISR 触发了，继续读取（不 break）
@@ -324,8 +222,9 @@ fn drain_func(bus: &WifiBus, func: u8) {
             break;
         };
 
-        dispatch_frames(bus, &buf);
+        processed += dispatch_frames(bus, &buf, budget - processed);
     }
+    processed
 }
 
 // ===== DATA 帧处理辅助函数 =====
@@ -421,19 +320,18 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
                 send_auth_response(bus, sa);
             }
         }
-        // Assoc/Reassoc Req → 交给 AP worker 线程处理(ME_STA_ADD + Assoc Resp)
+        // Assoc/Reassoc Req → defer command work to the owner executor's AP step.
         0x0 | 0x2 if pkt_len >= 28 => {
             let cap = u16::from_le_bytes([mpdu[24], mpdu[25]]);
             log::debug!("[ap-rx] {} from {:02x?}: cap=0x{:04x}", subtype, sa, cap);
-            // 不能在 RX 线程做 ME_STA_ADD(send_cmd 会死锁)，整帧入队转给 AP worker
+            // Do not issue a blocking command inside the RX drain step.
             bus.ap
                 .assoc_queue
                 .lock()
                 .push_back(mpdu[..pkt_len].to_vec());
-            bus.ap.assoc_pollset.wake();
         }
         // Deauth(0xC)/Disassoc(0xA):STA 断开。从驱动注册表移除(使重连能完整重新
-        // 注册),并把该 STA 的 sta_idx 入队,交 AP worker 发 MM_STA_DEL_REQ 释放固件
+        // 注册),并把该 STA 的 sta_idx 入队,交 owner executor 发 MM_STA_DEL_REQ 释放固件
         // 槽位。否则固件继续占用旧 idx,下一个 STA 被分到更大 idx,而下行数据帧用全局
         // 单一 sta_idx 路由,非 0 槽位送不达 → 重连后 ping/SSH 不通。
         0xC | 0xA => {
@@ -454,7 +352,6 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
             };
             if let Some(idx) = removed_idx {
                 bus.ap.sta_del_queue.lock().push_back(idx);
-                bus.ap.assoc_pollset.wake();
             }
             log::info!(
                 "[ap-rx] {} from {:02x?} (removed_from_table={})",
@@ -588,7 +485,6 @@ fn process_eapol_frame(bus: &WifiBus, mpdu: &[u8], payload_start: usize, pkt_len
     let mut queue = bus.rx.eapol_queue.lock();
     queue.push_back(eapol);
     drop(queue);
-    bus.rx.eapol_pollset.wake();
 }
 
 /// 构造并发送以太网帧
@@ -628,9 +524,6 @@ fn build_and_enqueue_eth_frame(
     }
     queue.push_back(eth_frame);
     drop(queue);
-    bus.rx.data_pollset.wake();
-    // 标记本批有数据帧入队,RX 线程稍后会驱动网络栈 poll。
-    RX_DATA_PENDING.store(true, Ordering::Release);
 }
 
 /// 处理单个数据帧
@@ -734,7 +627,6 @@ fn process_cmd_rsp(bus: &WifiBus, msg_data: &[u8]) {
         let mut queue = bus.cmd.rsp_queue.lock();
         queue.push_back(msg_data.to_vec());
         drop(queue);
-        bus.cmd.rsp_pollset.wake();
     } else {
         log::debug!(
             "[wifi-rx] indication: msg_id=0x{:04x} (expected_cfm=0x{:04x}) -> ind_queue",
@@ -744,7 +636,6 @@ fn process_cmd_rsp(bus: &WifiBus, msg_data: &[u8]) {
         let mut queue = bus.tx.ind_queue.lock();
         queue.push_back(msg_data.to_vec());
         drop(queue);
-        bus.tx.ind_pollset.wake();
     }
 }
 
@@ -780,10 +671,11 @@ fn process_cfg_frame(bus: &WifiBus, msg_data: &[u8], cfg_subtype: u8) {
 // ===== 主分发函数 =====
 
 /// 解析 SDIO FIFO 中的聚合帧并按类型分发
-fn dispatch_frames(bus: &WifiBus, buf: &[u8]) {
+fn dispatch_frames(bus: &WifiBus, buf: &[u8], budget: usize) -> usize {
     let mut offset = 0;
+    let mut processed = 0;
 
-    while offset + 4 <= buf.len() {
+    while processed < budget && offset + 4 <= buf.len() {
         let pkt_len = u16::from_le_bytes([buf[offset], buf[offset + 1]]) as usize;
         if pkt_len == 0 || pkt_len > MAX_PKT_LEN as usize {
             break;
@@ -842,5 +734,31 @@ fn dispatch_frames(bus: &WifiBus, buf: &[u8]) {
 
             offset += advance;
         }
+        processed += 1;
+    }
+    processed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RxLengthEncoding, classify_rx_length};
+
+    #[test]
+    fn v2_status_switches_to_byte_mode_at_64() {
+        assert_eq!(classify_rx_length(false, 0), RxLengthEncoding::Empty);
+        assert_eq!(classify_rx_length(false, 1), RxLengthEncoding::Blocks(1));
+        assert_eq!(classify_rx_length(false, 63), RxLengthEncoding::Blocks(63));
+        assert_eq!(classify_rx_length(false, 64), RxLengthEncoding::ByteMode);
+        assert_eq!(classify_rx_length(false, 127), RxLengthEncoding::ByteMode);
+    }
+
+    #[test]
+    fn v3_status_preserves_vendor_queue_encoding() {
+        assert_eq!(classify_rx_length(true, 0), RxLengthEncoding::Empty);
+        assert_eq!(classify_rx_length(true, 112), RxLengthEncoding::Blocks(112));
+        assert_eq!(classify_rx_length(true, 119), RxLengthEncoding::ByteMode);
+        assert_eq!(classify_rx_length(true, 120), RxLengthEncoding::ByteMode);
+        assert_eq!(classify_rx_length(true, 121), RxLengthEncoding::Blocks(1));
+        assert_eq!(classify_rx_length(true, 127), RxLengthEncoding::ByteMode);
     }
 }

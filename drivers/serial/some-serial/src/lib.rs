@@ -54,13 +54,8 @@
 //! uart.write_byte(b'h');
 //! ```
 
-#[cfg(test)]
-extern crate std;
-
 pub mod ns16550;
 pub mod pl011;
-
-use core::fmt::Display;
 
 use bitflags::bitflags;
 
@@ -121,23 +116,13 @@ pub enum TransferError {
     Closed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
+#[error("transfer error after transferring {bytes_transferred} bytes: {kind}")]
 pub struct TransBytesError {
     pub bytes_transferred: usize,
+    #[source]
     pub kind: TransferError,
 }
-
-impl Display for TransBytesError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "transfer error after transferring {} bytes: {}",
-            self.bytes_transferred, self.kind
-        )
-    }
-}
-
-impl core::error::Error for TransBytesError {}
 
 // Runtime capability types are re-exported for concrete driver consumers.
 pub use rdif_serial::*;

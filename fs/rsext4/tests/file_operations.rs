@@ -952,6 +952,80 @@ mod file_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
+    #[test]
+    fn deleted_data_block_cache_does_not_survive_physical_block_reuse() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        let old_data = vec![0x2a; BLOCK_SIZE];
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/old-incarnation",
+            Some(&old_data),
+            None,
+        )
+        .expect("old file creation failed");
+        let old_inode = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/old-incarnation")
+            .unwrap()
+            .unwrap()
+            .0;
+        let old_extent = inspect_inode_extents(
+            &mut jbd2_dev,
+            &mut fs,
+            old_inode,
+            0,
+            BLOCK_SIZE as u64,
+            FileExtentTarget::Data,
+            1,
+        )
+        .unwrap()
+        .extents[0];
+
+        delete_file(&mut fs, &mut jbd2_dev, "/old-incarnation").expect("old file deletion failed");
+        let old_block = AbsoluteBN::new(old_extent.physical_start / BLOCK_SIZE as u64);
+        assert!(
+            fs.datablock_cache.get(old_block).is_none(),
+            "reaping an inode must discard the old physical-block incarnation"
+        );
+
+        let new_data = vec![0x51; BLOCK_SIZE];
+        mkfile(
+            &mut jbd2_dev,
+            &mut fs,
+            "/new-incarnation",
+            Some(&new_data),
+            None,
+        )
+        .expect("new file creation failed");
+        let new_inode = dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/new-incarnation")
+            .unwrap()
+            .unwrap()
+            .0;
+        let new_extent = inspect_inode_extents(
+            &mut jbd2_dev,
+            &mut fs,
+            new_inode,
+            0,
+            BLOCK_SIZE as u64,
+            FileExtentTarget::Data,
+            1,
+        )
+        .unwrap()
+        .extents[0];
+
+        assert_eq!(
+            new_extent.physical_start, old_extent.physical_start,
+            "fixture must exercise a reused physical block"
+        );
+        assert_eq!(
+            read_file(&mut jbd2_dev, &mut fs, "/new-incarnation").unwrap(),
+            new_data
+        );
+    }
+
     /// Verifies that a hard link publishes a second name for the same inode and
     /// persists the matching link count.
     #[test]

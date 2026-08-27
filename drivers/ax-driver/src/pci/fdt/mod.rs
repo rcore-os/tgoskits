@@ -12,7 +12,7 @@ use rdrive::{
     register::{FdtInfo, ProbeFdt},
 };
 
-use crate::BindingIrq;
+use crate::{BindingIrq, binding_resolver::dma_coherency_from_fdt};
 
 #[cfg(feature = "rk3588-pcie")]
 mod rk3588;
@@ -50,6 +50,10 @@ fn probe_generic_ecam(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_size = reg.size.unwrap_or(0x1000) as usize;
     let mut drv = new_driver_generic(mmio_base, mmio_size, axklib::mmio::op())
         .map_err(|e| OnProbeError::other(format!("failed to create PCIe controller: {e:?}")))?;
+    drv.set_dma_coherent(matches!(
+        dma_coherency_from_fdt(&info),
+        dma_api::DmaCoherency::Coherent
+    ));
 
     for range in node.ranges().unwrap_or_default() {
         debug!("pcie range {range:?}");
@@ -202,10 +206,7 @@ fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<BindingIrq, OnPr
             interrupt.interrupt_parent, info.address
         ))
     })?;
-    Ok(BindingIrq::fdt_interrupt_with_controller(
-        parent,
-        interrupt.parent_irq,
-    ))
+    crate::binding_resolver::binding_irq_from_fdt_interrupt(parent, interrupt.parent_irq)
 }
 
 fn pci_interrupt_map_entry(

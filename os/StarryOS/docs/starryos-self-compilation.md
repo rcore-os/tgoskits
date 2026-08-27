@@ -78,7 +78,7 @@ bitmap capacity exceeded: need 3145728 pages but CAP is 1048576
 ```rust
 // 将 fsopen/fspick/open_tree 从 sys_dummy_fd 改为返回 ENOSYS
 // mount(8) 收到 ENOSYS 后回退到传统 mount(2) 调用来挂载 tmpfs
-Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
+Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(StarryError::Unsupported),
 ```
 
 ### 4. 最终链接: _ex_table_end 未定义

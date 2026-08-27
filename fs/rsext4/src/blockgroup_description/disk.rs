@@ -139,7 +139,7 @@ impl DiskFormat for Ext4GroupDesc {
     }
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
+#[cfg(test)]
 pub(crate) fn block_group_desc_disk_format_rules_hold_for_test() -> bool {
     // DiskFormat for Ext4GroupDesc: disk_size should be 64
     assert!(<Ext4GroupDesc as DiskFormat>::disk_size() == 64);

@@ -2,7 +2,7 @@
 
 mod desc;
 mod disk;
-#[cfg(all(axtest, feature = "axtest"))]
+#[cfg(test)]
 pub(crate) use self::disk::block_group_desc_disk_format_rules_hold_for_test;
 mod stats;
 mod table;

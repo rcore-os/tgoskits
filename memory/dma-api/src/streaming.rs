@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
+use core::{marker::PhantomData, num::NonZeroUsize, ops::Range, ptr::NonNull};
 
 use crate::{DeviceDma, DmaDirection, DmaError, DmaMapHandle, DmaPod};
 
@@ -111,52 +111,26 @@ impl<T: DmaPod> StreamingMap<T> {
         vec
     }
 
-    pub fn sync_for_device(&self, offset: usize, size: usize) {
-        self.check_range(offset, size);
+    pub fn prepare_for_device(&self, range: Range<usize>) {
+        self.check_range(&range);
         self.device
-            .sync_map_for_device(&self.handle, offset, size, self.direction);
+            .sync_map_for_device(&self.handle, range.start, range.len(), self.direction);
     }
 
-    pub fn sync_for_cpu(&self, offset: usize, size: usize) {
-        self.check_range(offset, size);
+    pub fn complete_for_cpu(&self, range: Range<usize>) {
+        self.check_range(&range);
         self.device
-            .sync_map_for_cpu(&self.handle, offset, size, self.direction);
-    }
-
-    pub fn sync_for_device_all(&self) {
-        self.device
-            .sync_map_for_device(&self.handle, 0, self.handle.size(), self.direction);
-    }
-
-    pub fn sync_for_cpu_all(&self) {
-        self.device
-            .sync_map_for_cpu(&self.handle, 0, self.handle.size(), self.direction);
-    }
-
-    pub fn prepare_for_device(&self, offset: usize, size: usize) {
-        self.sync_for_device(offset, size);
-    }
-
-    pub fn prepare_for_device_all(&self) {
-        self.sync_for_device_all();
-    }
-
-    pub fn complete_for_cpu(&self, offset: usize, size: usize) {
-        self.sync_for_cpu(offset, size);
-    }
-
-    pub fn complete_for_cpu_all(&self) {
-        self.sync_for_cpu_all();
+            .sync_map_for_cpu(&self.handle, range.start, range.len(), self.direction);
     }
 
     pub fn write_for_device<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
         let ret = self.write_with_cpu(len, f);
-        self.prepare_for_device(0, len * core::mem::size_of::<T>());
+        self.prepare_for_device(0..len * core::mem::size_of::<T>());
         ret
     }
 
     pub fn read_from_device<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
-        self.complete_for_cpu(0, len * core::mem::size_of::<T>());
+        self.complete_for_cpu(0..len * core::mem::size_of::<T>());
         self.read_with_cpu(len, f)
     }
 
@@ -164,117 +138,14 @@ impl<T: DmaPod> StreamingMap<T> {
         self.handle.bounce_ptr()
     }
 
-    fn check_range(&self, offset: usize, size: usize) {
+    fn check_range(&self, range: &Range<usize>) {
         assert!(
-            offset <= self.bytes_len() && size <= self.bytes_len().saturating_sub(offset),
-            "range out of bounds, offset: {}, size: {}, bytes_len: {}",
-            offset,
-            size,
+            range.start <= range.end && range.end <= self.bytes_len(),
+            "range out of bounds, range: {:?}, bytes_len: {}",
+            range,
             self.bytes_len()
         );
     }
-}
-
-#[cfg(axtest)]
-pub(crate) fn streaming_struct_and_phantom_hold_for_test() -> bool {
-    // Verify StreamingMap struct exists with PhantomData marker
-    // We can't construct it without a real DeviceDma, but verify type properties
-
-    // Check that size_of::<T>() == 0 gives len() == 0
-    assert!(core::mem::size_of::<u8>() > 0);
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn streaming_direction_and_error_types_hold_for_test() -> bool {
-    // Test DmaDirection variants
-    use crate::DmaDirection;
-    let _to_device = DmaDirection::ToDevice;
-    let _from_device = DmaDirection::FromDevice;
-    let _bidirectional = DmaDirection::Bidirectional;
-
-    // Test DmaError variants
-    use crate::DmaError;
-    let _no_memory = DmaError::NoMemory;
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn streaming_struct_size_and_alignment_hold_for_test() -> bool {
-    // Test that StreamingMap has expected size properties
-    assert!(core::mem::size_of::<u8>() == 1);
-    assert!(core::mem::size_of::<u32>() == 4);
-    assert!(core::mem::size_of::<u64>() == 8);
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn streaming_all_error_variants_hold_for_test() -> bool {
-    // Test all DmaError variants
-    use crate::DmaError;
-
-    let _no_memory = DmaError::NoMemory;
-    let _null_pointer = DmaError::NullPointer;
-    let _zero_sized = DmaError::ZeroSizedBuffer;
-
-    // Verify they are different types
-    assert!(core::mem::size_of_val(&DmaError::NoMemory) > 0);
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn streaming_dma_pod_types_hold_for_test() -> bool {
-    // Test that common types satisfy DmaPod bounds
-    use core::mem;
-
-    // u8 is POD
-    assert!(mem::size_of::<u8>() == 1);
-    assert!(mem::align_of::<u8>() >= 1);
-
-    // u32 is POD
-    assert!(mem::size_of::<u32>() == 4);
-    assert!(mem::align_of::<u32>() >= 1);
-
-    // u64 is POD
-    assert!(mem::size_of::<u64>() == 8);
-    assert!(mem::align_of::<u64>() >= 1);
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn streaming_nonzero_and_phantom_hold_for_test() -> bool {
-    use core::{marker::PhantomData, num::NonZeroUsize};
-
-    // Test NonZeroUsize
-    let nz = NonZeroUsize::new(42).unwrap();
-    assert_eq!(nz.get(), 42);
-
-    // Test PhantomData
-    let _phantom: PhantomData<*mut u8> = PhantomData;
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn streaming_dma_direction_all_variants_hold_for_test() -> bool {
-    use crate::DmaDirection;
-
-    // Test all DmaDirection variants
-    let to_device = DmaDirection::ToDevice;
-    let from_device = DmaDirection::FromDevice;
-    let bidirectional = DmaDirection::Bidirectional;
-
-    // Verify they are different
-    assert!(core::mem::discriminant(&to_device) != core::mem::discriminant(&from_device));
-    assert!(core::mem::discriminant(&from_device) != core::mem::discriminant(&bidirectional));
-    assert!(core::mem::discriminant(&to_device) != core::mem::discriminant(&bidirectional));
-
-    true
 }
 
 impl<T: DmaPod> Drop for StreamingMap<T> {
@@ -282,5 +153,138 @@ impl<T: DmaPod> Drop for StreamingMap<T> {
         unsafe {
             self.device.unmap_streaming(self.handle);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn streaming_struct_and_phantom_hold_for_test() -> bool {
+        // Verify StreamingMap struct exists with PhantomData marker
+        // We can't construct it without a real DeviceDma, but verify type properties
+
+        // Check that size_of::<T>() == 0 gives len() == 0
+        assert!(core::mem::size_of::<u8>() > 0);
+
+        true
+    }
+
+    fn streaming_direction_and_error_types_hold_for_test() -> bool {
+        // Test DmaDirection variants
+        use crate::DmaDirection;
+        let _to_device = DmaDirection::ToDevice;
+        let _from_device = DmaDirection::FromDevice;
+        let _bidirectional = DmaDirection::Bidirectional;
+
+        // Test DmaError variants
+        use crate::DmaError;
+        let _no_memory = DmaError::NoMemory;
+
+        true
+    }
+
+    fn streaming_struct_size_and_alignment_hold_for_test() -> bool {
+        // Test that StreamingMap has expected size properties
+        assert!(core::mem::size_of::<u8>() == 1);
+        assert!(core::mem::size_of::<u32>() == 4);
+        assert!(core::mem::size_of::<u64>() == 8);
+
+        true
+    }
+
+    fn streaming_all_error_variants_hold_for_test() -> bool {
+        // Test all DmaError variants
+        use crate::DmaError;
+
+        let _no_memory = DmaError::NoMemory;
+        let _null_pointer = DmaError::NullPointer;
+        let _zero_sized = DmaError::ZeroSizedBuffer;
+
+        // Verify they are different types
+        assert!(core::mem::size_of_val(&DmaError::NoMemory) > 0);
+
+        true
+    }
+
+    fn streaming_dma_pod_types_hold_for_test() -> bool {
+        // Test that common types satisfy DmaPod bounds
+        use core::mem;
+
+        // u8 is POD
+        assert!(mem::size_of::<u8>() == 1);
+        assert!(mem::align_of::<u8>() >= 1);
+
+        // u32 is POD
+        assert!(mem::size_of::<u32>() == 4);
+        assert!(mem::align_of::<u32>() >= 1);
+
+        // u64 is POD
+        assert!(mem::size_of::<u64>() == 8);
+        assert!(mem::align_of::<u64>() >= 1);
+
+        true
+    }
+
+    fn streaming_nonzero_and_phantom_hold_for_test() -> bool {
+        use core::{marker::PhantomData, num::NonZeroUsize};
+
+        // Test NonZeroUsize
+        let nz = NonZeroUsize::new(42).unwrap();
+        assert_eq!(nz.get(), 42);
+
+        // Test PhantomData
+        let _phantom: PhantomData<*mut u8> = PhantomData;
+
+        true
+    }
+
+    fn streaming_dma_direction_all_variants_hold_for_test() -> bool {
+        use crate::DmaDirection;
+
+        // Test all DmaDirection variants
+        let to_device = DmaDirection::ToDevice;
+        let from_device = DmaDirection::FromDevice;
+        let bidirectional = DmaDirection::Bidirectional;
+
+        // Verify they are different
+        assert!(core::mem::discriminant(&to_device) != core::mem::discriminant(&from_device));
+        assert!(core::mem::discriminant(&from_device) != core::mem::discriminant(&bidirectional));
+        assert!(core::mem::discriminant(&to_device) != core::mem::discriminant(&bidirectional));
+
+        true
+    }
+
+    #[test]
+    fn streaming_struct_and_phantom_hold() {
+        assert!(streaming_struct_and_phantom_hold_for_test());
+    }
+
+    #[test]
+    fn streaming_direction_and_error_types_hold() {
+        assert!(streaming_direction_and_error_types_hold_for_test());
+    }
+
+    #[test]
+    fn streaming_struct_size_and_alignment_hold() {
+        assert!(streaming_struct_size_and_alignment_hold_for_test());
+    }
+
+    #[test]
+    fn streaming_all_error_variants_hold() {
+        assert!(streaming_all_error_variants_hold_for_test());
+    }
+
+    #[test]
+    fn streaming_dma_pod_types_hold() {
+        assert!(streaming_dma_pod_types_hold_for_test());
+    }
+
+    #[test]
+    fn streaming_nonzero_and_phantom_hold() {
+        assert!(streaming_nonzero_and_phantom_hold_for_test());
+    }
+
+    #[test]
+    fn streaming_dma_direction_all_variants_hold() {
+        assert!(streaming_dma_direction_all_variants_hold_for_test());
     }
 }

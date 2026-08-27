@@ -1,6 +1,6 @@
 [package]
 name = "starry-vm"
-version = "0.5.13"
+version = "0.5.14"
 edition.workspace = true
 authors = ["朝倉水希 <asakuramizu111@gmail.com>", "Mivik <mivikq@gmail.com>"]
 description = "Virtual memory management library for Starry OS"
@@ -12,17 +12,14 @@ license = "Apache-2.0"
 default = ["alloc"]
 alloc = []
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
-
 [dependencies]
-ax-errno = { workspace = true }
 bytemuck = { version = "1.24", features = [
     "align_offset",
     "const_zeroed",
     "zeroable_maybe_uninit",
 ] }
 extern-trait = { workspace = true }
+thiserror.workspace = true
 
 [dev-dependencies]
 bytemuck = { version = "1.24", features = ["derive"] }

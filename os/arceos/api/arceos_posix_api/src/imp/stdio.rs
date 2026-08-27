@@ -1,27 +1,15 @@
-use ax_errno::AxResult;
-use ax_io::{BufReader, prelude::*};
+use ax_io::{BufReader, IoResult, prelude::*};
 #[cfg(feature = "fd")]
-use {alloc::sync::Arc, ax_errno::LinuxError, ax_errno::LinuxResult, ax_io::PollState};
+use {crate::PosixError, crate::PosixResult, alloc::sync::Arc, ax_io::PollState};
 
 use crate::sync::Mutex;
 
-fn console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
-    let len = ax_hal::console::read_bytes(buf);
-    for c in &mut buf[..len] {
-        if *c == b'\r' {
-            *c = b'\n';
-        }
-    }
-    Ok(len)
+fn console_read_bytes(buf: &mut [u8]) -> IoResult<usize> {
+    Ok(ax_api::stdio::ax_console_read_bytes(buf)?)
 }
 
-fn console_write_bytes(buf: &[u8]) -> AxResult<usize> {
-    #[cfg(feature = "serial")]
-    if let Some(result) = ax_runtime::serial::write_active_console_text(buf) {
-        return result;
-    }
-    ax_hal::console::write_text_bytes(buf);
-    Ok(buf.len())
+fn console_write_bytes(buf: &[u8]) -> IoResult<usize> {
+    Ok(ax_api::stdio::ax_console_write_bytes(buf)?)
 }
 
 struct StdinRaw;
@@ -29,7 +17,7 @@ struct StdoutRaw;
 
 impl Read for StdinRaw {
     // Non-blocking read, returns number of bytes read.
-    fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
         let mut read_len = 0;
         while read_len < buf.len() {
             let len = console_read_bytes(buf[read_len..].as_mut())?;
@@ -43,11 +31,12 @@ impl Read for StdinRaw {
 }
 
 impl Write for StdoutRaw {
-    fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
         console_write_bytes(buf)
     }
 
-    fn flush(&mut self) -> AxResult {
+    fn flush(&mut self) -> IoResult {
+        ax_api::stdio::ax_console_flush()?;
         Ok(())
     }
 }
@@ -58,24 +47,24 @@ pub struct Stdin {
 
 impl Stdin {
     // Block until at least one byte is read.
-    fn read_blocked(&self, buf: &mut [u8]) -> AxResult<usize> {
+    fn read_blocked(&self, buf: &mut [u8]) -> IoResult<usize> {
         let read_len = self.inner.lock().read(buf)?;
         if buf.is_empty() || read_len > 0 {
             return Ok(read_len);
         }
-        // try again until we get something
+        // Sleep until the runtime RX worker publishes progress, then retry.
         loop {
+            ax_api::stdio::ax_console_wait_readable()?;
             let read_len = self.inner.lock().read(buf)?;
             if read_len > 0 {
                 return Ok(read_len);
             }
-            crate::sys_sched_yield();
         }
     }
 }
 
 impl Read for Stdin {
-    fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
         self.read_blocked(buf)
     }
 }
@@ -85,11 +74,11 @@ pub struct Stdout {
 }
 
 impl Write for Stdout {
-    fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
         self.inner.lock().write(buf)
     }
 
-    fn flush(&mut self) -> AxResult {
+    fn flush(&mut self) -> IoResult {
         self.inner.lock().flush()
     }
 }
@@ -111,15 +100,15 @@ pub fn stdout() -> Stdout {
 
 #[cfg(feature = "fd")]
 impl super::fd_ops::FileLike for Stdin {
-    fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, buf: &mut [u8]) -> PosixResult<usize> {
         Ok(self.read_blocked(buf)?)
     }
 
-    fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
-        Err(LinuxError::EPERM)
+    fn write(&self, _buf: &[u8]) -> PosixResult<usize> {
+        Err(PosixError::EPERM)
     }
 
-    fn stat(&self) -> LinuxResult<crate::ctypes::stat> {
+    fn stat(&self) -> PosixResult<crate::ctypes::stat> {
         let st_mode = 0o20000 | 0o440u32; // S_IFCHR | r--r-----
         Ok(crate::ctypes::stat {
             st_ino: 1,
@@ -133,7 +122,7 @@ impl super::fd_ops::FileLike for Stdin {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
+    fn poll(&self) -> PosixResult<PollState> {
         Ok(PollState {
             readable: true,
             writable: true,
@@ -141,22 +130,22 @@ impl super::fd_ops::FileLike for Stdin {
         })
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
+    fn set_nonblocking(&self, _nonblocking: bool) -> PosixResult {
         Ok(())
     }
 }
 
 #[cfg(feature = "fd")]
 impl super::fd_ops::FileLike for Stdout {
-    fn read(&self, _buf: &mut [u8]) -> LinuxResult<usize> {
-        Err(LinuxError::EPERM)
+    fn read(&self, _buf: &mut [u8]) -> PosixResult<usize> {
+        Err(PosixError::EPERM)
     }
 
-    fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, buf: &[u8]) -> PosixResult<usize> {
         Ok(self.inner.lock().write(buf)?)
     }
 
-    fn stat(&self) -> LinuxResult<crate::ctypes::stat> {
+    fn stat(&self) -> PosixResult<crate::ctypes::stat> {
         let st_mode = 0o20000 | 0o220u32; // S_IFCHR | -w--w----
         Ok(crate::ctypes::stat {
             st_ino: 1,
@@ -170,7 +159,7 @@ impl super::fd_ops::FileLike for Stdout {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
+    fn poll(&self) -> PosixResult<PollState> {
         Ok(PollState {
             readable: true,
             writable: true,
@@ -178,7 +167,7 @@ impl super::fd_ops::FileLike for Stdout {
         })
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
+    fn set_nonblocking(&self, _nonblocking: bool) -> PosixResult {
         Ok(())
     }
 }

@@ -1,43 +1,42 @@
 //! See Linux Documentation for details: <https://docs.kernel.org/trace/ftrace.html>
 mod control;
+mod registry;
 mod sched;
 mod trace;
 mod trace_pipe;
 
-use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
+use alloc::{
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     num::NonZero,
     ops::Deref,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_task::{IrqNotify, current};
+use ax_tracepoint::*;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
-use ktracepoint::*;
+pub use registry::KernelExtTracePoint;
 
 use crate::{
+    StarryError, StarryResult,
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
-    sync::{Mutex, NoPreemptMutex},
-    task::AsThread,
+    sync::Mutex,
+    task::{AsThread, PidIdentityId, TgidNumber},
 };
 
 /// Maximum number of trace records kept in the raw trace pipe ring buffer.
 const TRACE_RAW_PIPE_CAPACITY: usize = 4096;
 /// Maximum number of PID→cmdline entries in the command-line cache.
 const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
-
-// The registry entry is locked from the tracepoint fire path, which for
-// `sched:sched_switch` runs inside `axtask::switch_to` (IRQ off,
-// preemption disabled). A sleeping `Mutex` would trip the
-// "sleeping in atomic context" guard there, so this lock must be a
-// non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
-// uses for exactly this reason.
-pub type KernelExtTracePoint = Arc<NoPreemptMutex<ExtTracePoint<KernelTraceAux>>>;
 
 /// Look up a registered tracepoint by its numeric id (as found in
 /// `/sys/kernel/debug/tracing/events/<subsystem>/<event>/id`).
@@ -55,7 +54,7 @@ pub fn lookup_ext_tracepoint(id: u32) -> Option<KernelExtTracePoint> {
 /// initialized yet.
 pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
     for ext_tp in TRACE_STATE.ext_tracepoints.get()?.values() {
-        if ext_tp.lock().trace_point().name() == name {
+        if ext_tp.trace_point().name() == name {
             return Some(ext_tp.clone());
         }
     }
@@ -64,7 +63,7 @@ pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
 
 struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
-    raw_pipe: Mutex<TracePipeRaw>,
+    raw_pipe: Mutex<IdentityTracePipe>,
     pipe_event: PollSet,
     pipe_notify: IrqNotify,
     cmdline_cache: LazyInit<Mutex<TraceCmdLineCache>>,
@@ -75,7 +74,7 @@ impl TraceState {
     const fn new() -> Self {
         Self {
             point_map: LazyInit::new(),
-            raw_pipe: Mutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
+            raw_pipe: Mutex::new(IdentityTracePipe::new(TRACE_RAW_PIPE_CAPACITY)),
             pipe_event: PollSet::new(),
             pipe_notify: IrqNotify::new(),
             cmdline_cache: LazyInit::new(),
@@ -87,42 +86,169 @@ impl TraceState {
 static TRACE_STATE: TraceState = TraceState::new();
 static TRACE_PIPE_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
 
+/// One trace record with the stable task generation and comm captured at emit time.
+#[derive(Clone)]
+struct IdentityTraceRecord {
+    record: TracePipeRecord,
+    identity_id: PidIdentityId,
+    tgid: TgidNumber,
+    comm: String,
+}
+
+impl IdentityTraceRecord {
+    fn new(
+        timestamp: u64,
+        cpu_id: u32,
+        event: Vec<u8>,
+        identity_id: PidIdentityId,
+        tgid: TgidNumber,
+        comm: String,
+    ) -> Self {
+        Self {
+            record: TracePipeRecord::new(timestamp, cpu_id, event),
+            identity_id,
+            tgid,
+            comm,
+        }
+    }
+}
+
+trait IdentityTraceBuffer {
+    fn peek(&self) -> Option<&IdentityTraceRecord>;
+    fn pop(&mut self) -> Option<IdentityTraceRecord>;
+    fn is_empty(&self) -> bool;
+}
+
+struct IdentityTracePipe {
+    capacity: usize,
+    records: Vec<IdentityTraceRecord>,
+}
+
+impl IdentityTracePipe {
+    const fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            records: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, record: IdentityTraceRecord) {
+        if self.capacity == 0 {
+            return;
+        }
+        if self.records.len() == self.capacity {
+            self.records.remove(0);
+        }
+        self.records.push(record);
+    }
+
+    fn clear(&mut self) {
+        self.records.clear();
+    }
+
+    fn snapshot(&self) -> IdentityTraceSnapshot {
+        IdentityTraceSnapshot(self.records.clone())
+    }
+}
+
+impl IdentityTraceBuffer for IdentityTracePipe {
+    fn peek(&self) -> Option<&IdentityTraceRecord> {
+        self.records.first()
+    }
+
+    fn pop(&mut self) -> Option<IdentityTraceRecord> {
+        (!self.records.is_empty()).then(|| self.records.remove(0))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+struct IdentityTraceSnapshot(Vec<IdentityTraceRecord>);
+
+impl IdentityTraceSnapshot {
+    fn default_fmt_str(&self) -> String {
+        let show = "#
+#
+#                                _-----=> irqs-off/BH-disabled
+#                               / _----=> need-resched
+#                              | / _---=> hardirq/softirq
+#                              || / _--=> preempt-depth
+#                              ||| / _-=> migrate-disable
+#                              |||| /     delay
+#           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
+#              | |         |   |||||     |         |
+";
+        format!(
+            "# tracer: nop\n#\n# entries-in-buffer/entries-written: {}/{}   #P:32\n{}",
+            self.0.len(),
+            self.0.len(),
+            show
+        )
+    }
+}
+
+impl IdentityTraceBuffer for IdentityTraceSnapshot {
+    fn peek(&self) -> Option<&IdentityTraceRecord> {
+        self.0.first()
+    }
+
+    fn pop(&mut self) -> Option<IdentityTraceRecord> {
+        (!self.0.is_empty()).then(|| self.0.remove(0))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+fn current_comm() -> String {
+    let curr = current();
+    let exe_path = curr.as_thread().proc_data.exe_path.read();
+    exe_path
+        .split(' ')
+        .next()
+        .unwrap_or("unknown")
+        .split('/')
+        .next_back()
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 pub struct KernelTraceAux;
 
 impl KernelTraceOps for KernelTraceAux {
     fn current_pid() -> u32 {
         let curr = current();
         let proc_data = &curr.as_thread().proc_data;
-        proc_data.proc.pid()
+        proc_data.proc.pid().get()
     }
 
     fn trace_pipe_push_raw_record(buf: &[u8]) {
-        // log::debug!("trace_pipe_push_raw_record: {}", record.len());
-        TRACE_STATE.raw_pipe.lock().push_record(
+        let curr = current();
+        let identity = curr.as_thread().proc_data.identity();
+        TRACE_STATE.raw_pipe.lock().push(IdentityTraceRecord::new(
             monotonic_time_nanos(),
             this_cpu_id() as _,
             buf.to_vec(),
-        );
+            identity.id(),
+            curr.as_thread().proc_data.proc.pid_number(),
+            current_comm(),
+        ));
         TRACE_STATE.pipe_notify.notify_irq();
     }
 
-    fn trace_cmdline_push(pid: u32) {
-        let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
-        let exe_path = proc_data.exe_path.read();
-        let pname = exe_path
-            .split(' ')
-            .next()
-            .unwrap_or("unknown")
-            .split('/')
-            .next_back()
-            .unwrap_or("unknown");
-        TRACE_STATE.cmdline_cache.lock().insert(pid, pname);
-    }
-
-    fn write_kernel_text(addr: *mut core::ffi::c_void, data: &[u8]) {
-        crate::mm::write_kernel_text(VirtAddr::from_mut_ptr_of(addr), data)
-            .expect("Failed to write kernel text");
+    fn trace_cmdline_push(external_pid: u32) {
+        let tgid = current().as_thread().proc_data.proc.pid();
+        debug_assert_eq!(external_pid, tgid.get());
+        // `saved_cmdlines` is an external PID-number ABI and therefore keeps
+        // its numeric key. Historical trace records never consult this cache:
+        // they carry their own generation and emission-time command name.
+        TRACE_STATE
+            .cmdline_cache
+            .lock()
+            .insert(tgid.get(), &current_comm());
     }
 
     fn read_tracepoint_state<R>(id: u32, f: impl FnOnce(&ExtTracePoint<Self>) -> R) -> R {
@@ -131,7 +257,7 @@ impl KernelTraceOps for KernelTraceAux {
             .deref()
             .get(&id)
             .expect("Tracepoint not found");
-        f(ext_tp.lock().deref())
+        ext_tp.read(f)
     }
 
     fn write_tracepoint_state<R>(id: u32, f: impl FnOnce(&mut ExtTracePoint<Self>) -> R) -> R {
@@ -140,8 +266,7 @@ impl KernelTraceOps for KernelTraceAux {
             .deref()
             .get(&id)
             .expect("Tracepoint not found");
-        let mut ext_tp = ext_tp.lock();
-        f(&mut ext_tp)
+        ext_tp.update(f)
     }
 }
 
@@ -233,7 +358,7 @@ impl TextDrain {
 }
 
 fn common_trace_pipe_read(
-    trace_buf: &mut dyn TracePipeOps,
+    trace_buf: &mut dyn IdentityTraceBuffer,
     drain: &mut TextDrain,
     buf: &mut [u8],
 ) -> usize {
@@ -242,14 +367,23 @@ fn common_trace_pipe_read(
         return copy_len;
     }
 
-    let trace_cmdline_cache = TRACE_STATE.cmdline_cache.lock();
     loop {
         if let Some(record) = trace_buf.peek() {
-            let record_str = TraceEntryParser::parse::<KernelTraceAux>(
+            debug_assert_ne!(record.identity_id.get(), 0);
+            let mut record_cmdline = TraceCmdLineCache::new(NonZero::new(1).unwrap());
+            record_cmdline.insert(record.tgid.get(), &record.comm);
+            let record_str = match TraceEntryParser::parse::<KernelTraceAux>(
                 &TRACE_STATE.point_map,
-                &trace_cmdline_cache,
-                record,
-            );
+                &record_cmdline,
+                &record.record,
+            ) {
+                Ok(record) => record,
+                Err(error) => {
+                    warn!("discarding invalid trace record: {error}");
+                    trace_buf.pop();
+                    continue;
+                }
+            };
             if !drain.copy_record(record_str.as_bytes(), buf, &mut copy_len) {
                 break;
             }
@@ -266,13 +400,13 @@ fn common_trace_pipe_read(
 }
 
 /// Initialize registered tracepoints. This should be called after static keys are initialized, and before any tracepoint is hit.
-pub fn tracepoint_init() -> AxResult<()> {
+pub fn tracepoint_init() -> StarryResult<()> {
     let (tp_map, ext_tps) =
-        global_init_events::<KernelTraceAux>().map_err(|_| AxError::InvalidInput)?;
+        global_init_events::<KernelTraceAux>().map_err(|_| StarryError::InvalidInput)?;
 
     let ext_tps = ext_tps
         .into_iter()
-        .map(|ext_tp| (ext_tp.id(), Arc::new(NoPreemptMutex::new(ext_tp))))
+        .map(|ext_tp| (ext_tp.trace_point().id(), KernelExtTracePoint::new(ext_tp)))
         .collect::<BTreeMap<_, _>>();
 
     ax_println!("Initialized {} tracepoints", tp_map.len());
@@ -293,7 +427,7 @@ fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
     let mut subsystem = BTreeMap::new();
 
     for ext_tp in TRACE_STATE.ext_tracepoints.deref().values() {
-        let tp = ext_tp.lock().trace_point();
+        let tp = ext_tp.trace_point();
         let subsystem_name = tp.system();
         let event_name = tp.name();
 
@@ -404,4 +538,41 @@ pub fn init_tracing_dir(fs: Arc<SimpleFs>) -> DirMaker {
     });
     tracing_root.add("events", init_events(fs.clone()));
     SimpleDir::new_maker(fs, Arc::new(tracing_root))
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reused_pid_keeps_each_records_emission_generation_and_comm() {
+        let tgid = TgidNumber::try_from(7).unwrap();
+        let first_generation = PidIdentityId::try_from(1001).unwrap();
+        let second_generation = PidIdentityId::try_from(1002).unwrap();
+        let mut pipe = IdentityTracePipe::new(2);
+
+        pipe.push(IdentityTraceRecord::new(
+            1,
+            0,
+            Vec::new(),
+            first_generation,
+            tgid,
+            "first".to_string(),
+        ));
+        pipe.push(IdentityTraceRecord::new(
+            2,
+            0,
+            Vec::new(),
+            second_generation,
+            tgid,
+            "second".to_string(),
+        ));
+
+        let first = pipe.pop().unwrap();
+        let second = pipe.pop().unwrap();
+        assert_eq!(first.identity_id, first_generation);
+        assert_eq!(first.comm, "first");
+        assert_eq!(second.identity_id, second_generation);
+        assert_eq!(second.comm, "second");
+    }
 }

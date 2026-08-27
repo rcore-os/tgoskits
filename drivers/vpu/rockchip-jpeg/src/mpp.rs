@@ -96,15 +96,19 @@ pub struct RegOffset {
 }
 
 /// Errors from driving the MPP session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum MppError {
     /// The client type is not the JPEG decoder.
+    #[error("MPP client type {0} is not the JPEG decoder")]
     BadClientType(u32),
     /// `POLL_HW_FINISH` arrived before any register array was set.
+    #[error("MPP poll requested before registers were configured")]
     NoRegisters,
     /// A register address-slot fd could not be resolved to a physical address.
+    #[error("MPP dma-buf file descriptor {0} could not be resolved")]
     UnresolvedFd(u32),
     /// More address-offset fixups than supported.
+    #[error("MPP register offset table is full")]
     TooManyOffsets,
 }
 

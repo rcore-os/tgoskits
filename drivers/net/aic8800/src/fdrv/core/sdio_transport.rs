@@ -26,7 +26,7 @@ use crate::{
 /// 所有方法内部处理加锁和 trait 方法分派。
 pub struct SdioTransport {
     sdio: Arc<Mutex<dyn SdioHost>>,
-    card_irq: Option<Arc<dyn SdioCardIrq>>,
+    card_irq: Arc<dyn SdioCardIrq>,
     is_v3: bool,
     /// 命令/数据邮箱所在的 SDIO function。DC/DW = 2(真机实测 CFM 在 func2),
     /// 其余 = 1。RX 线程读 block_cnt/RD_FIFO、TX 线程写 WR_FIFO 都用它。
@@ -38,20 +38,25 @@ pub struct SdioTransport {
 
 impl SdioTransport {
     /// 从任意 SdioHost 实现创建 SdioTransport
-    pub fn new<H: SdioHost + 'static>(sdio: H, chip: ChipVariant) -> Arc<Self> {
-        let card_irq = sdio.card_irq_ctrl();
+    pub fn new<H: SdioHost + 'static>(
+        sdio: H,
+        chip: ChipVariant,
+    ) -> Result<Arc<Self>, &'static str> {
+        let card_irq = sdio
+            .card_irq_ctrl()
+            .ok_or("SDIO host does not support CARD_INT mask/rearm")?;
         let cmd_func = if matches!(chip, ChipVariant::Aic8800DC | ChipVariant::Aic8800DW) {
             2
         } else {
             1
         };
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             sdio: Arc::new(Mutex::new(sdio)),
             card_irq,
             is_v3: chip.is_v3(),
             cmd_func,
             chip,
-        })
+        }))
     }
 
     pub fn is_v3(&self) -> bool {
@@ -177,18 +182,23 @@ impl SdioTransport {
     /// 屏蔽 SDIO 卡中断（CARD_INT）
     ///
     /// 在 SDIO 总线操作（CMD52/CMD53）期间调用，防止 CARD_INT
-    /// 电平触发导致 ISR 重入。操作完成后调用 `unmask_card_irq()` 恢复。
+    /// 电平触发导致 ISR 重入。操作完成后由 poll owner 原子 rearm。
     pub(crate) fn mask_card_irq(&self) {
-        if let Some(ref ctrl) = self.card_irq {
-            ctrl.mask_card_irq();
-        }
+        self.card_irq.mask_card_irq();
     }
 
-    /// 恢复 SDIO 卡中断（CARD_INT）
-    pub(crate) fn unmask_card_irq(&self) {
-        if let Some(ref ctrl) = self.card_irq {
-            ctrl.unmask_card_irq();
+    /// 恢复 CARD_INT，并立即检查是否已经有卡中断挂起。
+    pub(crate) fn rearm_and_check_card_irq(&self) -> bool {
+        self.card_irq.rearm_and_check_card_irq()
+    }
+
+    /// Clears the V3 device-to-host software-interrupt source.
+    pub(crate) fn clear_v3_other_interrupt(&self) -> Result<(), sdio_host::error::SdioError> {
+        if !self.is_v3 {
+            return Ok(());
         }
+        let pending = self.read_byte(1, SDIOWIFI_SLEEP_REG_V3)?;
+        self.write_byte(1, SDIOWIFI_SLEEP_REG_V3, pending & !1)
     }
 
     /// 使能 SDHCI 中断信号

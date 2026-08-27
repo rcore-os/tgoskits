@@ -258,6 +258,70 @@ impl EmulatedIoApic {
     }
 }
 
+impl Default for EmulatedIoApic {
+    fn default() -> Self {
+        Self::new_default()
+    }
+}
+
+impl EmulatedIoApic {
+    /// Returns the IO APIC MMIO range.
+    pub fn address_range(&self) -> X86GuestPhysAddrRange {
+        X86GuestPhysAddrRange::new(
+            self.base,
+            X86GuestPhysAddr::from_usize(self.base.as_usize() + self.size),
+        )
+    }
+
+    /// Handles an IO APIC MMIO read.
+    pub fn handle_read(
+        &self,
+        addr: X86GuestPhysAddr,
+        width: X86AccessWidth,
+    ) -> X86VlapicResult<usize> {
+        if !matches!(width, X86AccessWidth::Dword | X86AccessWidth::Qword) {
+            return Err(X86VlapicError::Unsupported);
+        }
+
+        let offset = self.offset(addr);
+        let state = self.state.lock();
+        match offset {
+            IOREGSEL => Ok(state.selector as usize),
+            IOWIN => Ok(Self::read_selected_register(&state)? as usize),
+            _ => {
+                debug!("vIOAPIC read from unsupported offset {offset:#x}");
+                Ok(0)
+            }
+        }
+    }
+
+    /// Handles an IO APIC MMIO write.
+    pub fn handle_write(
+        &self,
+        addr: X86GuestPhysAddr,
+        width: X86AccessWidth,
+        val: usize,
+    ) -> X86VlapicResult {
+        if !matches!(width, X86AccessWidth::Dword | X86AccessWidth::Qword) {
+            return Err(X86VlapicError::Unsupported);
+        }
+
+        let offset = self.offset(addr);
+        let mut state = self.state.lock();
+        match offset {
+            IOREGSEL => {
+                state.selector = val as u32;
+                Ok(())
+            }
+            IOWIN => Self::write_selected_register(&mut state, val as u32),
+            _ => {
+                debug!("vIOAPIC write to unsupported offset {offset:#x} = {val:#x}");
+                Ok(())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,69 +395,5 @@ mod tests {
             ioapic.end_of_interrupt(0x34).and_then(|eoi| eoi.pending),
             None
         );
-    }
-}
-
-impl Default for EmulatedIoApic {
-    fn default() -> Self {
-        Self::new_default()
-    }
-}
-
-impl EmulatedIoApic {
-    /// Returns the IO APIC MMIO range.
-    pub fn address_range(&self) -> X86GuestPhysAddrRange {
-        X86GuestPhysAddrRange::new(
-            self.base,
-            X86GuestPhysAddr::from_usize(self.base.as_usize() + self.size),
-        )
-    }
-
-    /// Handles an IO APIC MMIO read.
-    pub fn handle_read(
-        &self,
-        addr: X86GuestPhysAddr,
-        width: X86AccessWidth,
-    ) -> X86VlapicResult<usize> {
-        if !matches!(width, X86AccessWidth::Dword | X86AccessWidth::Qword) {
-            return Err(X86VlapicError::Unsupported);
-        }
-
-        let offset = self.offset(addr);
-        let state = self.state.lock();
-        match offset {
-            IOREGSEL => Ok(state.selector as usize),
-            IOWIN => Ok(Self::read_selected_register(&state)? as usize),
-            _ => {
-                debug!("vIOAPIC read from unsupported offset {offset:#x}");
-                Ok(0)
-            }
-        }
-    }
-
-    /// Handles an IO APIC MMIO write.
-    pub fn handle_write(
-        &self,
-        addr: X86GuestPhysAddr,
-        width: X86AccessWidth,
-        val: usize,
-    ) -> X86VlapicResult {
-        if !matches!(width, X86AccessWidth::Dword | X86AccessWidth::Qword) {
-            return Err(X86VlapicError::Unsupported);
-        }
-
-        let offset = self.offset(addr);
-        let mut state = self.state.lock();
-        match offset {
-            IOREGSEL => {
-                state.selector = val as u32;
-                Ok(())
-            }
-            IOWIN => Self::write_selected_register(&mut state, val as u32),
-            _ => {
-                debug!("vIOAPIC write to unsupported offset {offset:#x} = {val:#x}");
-                Ok(())
-            }
-        }
     }
 }

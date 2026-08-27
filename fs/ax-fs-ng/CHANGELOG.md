@@ -9,30 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Route typed preallocation through cached/direct file backends and the ext4
-  inode-number adapter while keeping unsupported filesystems explicit.
-- Route typed zero-range and hole-punch requests through page-cache writeback,
-  invalidation, and the ext4 inode adapter.
-- Serialize collapse-range and insert-range mapping shifts with cached I/O,
-  write back and invalidate every page from the shift point, and retry when a
-  page enters the cache between protection and the final sleepable lock.
-- Route regular-file and directory extent inspection through the ext4 mount's
-  sleepable owner without exposing core disk structures, including typed
-  inline and external xattr mappings.
-- Route persistent user extended attributes through the ext4 mount's sleepable
-  owner and translate core domain errors at the adapter boundary.
+- Route typed ext4 preallocation, range mutation, extent inspection, and xattr
+  operations through the page-cache and inode adapters.
+- Propagate native block geometry, read-only, flush, and FUA capabilities
+  through the shared filesystem block cache.
 
 ### Fixed
 
-- Create ext4 symbolic links through one typed inode operation instead of
-  publishing an empty link and mutating its target afterward.
-- Enable the host `ax-sync` provider for `ax-fs-ng` tests after the sleepable
-  lock migration.
-- Move grouped block-controller ownership out of its IRQ-save mutex before
-  retry waits during shutdown, and exercise unit tests with the real host spin
-  provider so blocking under non-sleeping guards is detected.
-- Propagate native device read-only and flush capabilities through filesystem
-  block adapters instead of advertising writable durable I/O unconditionally.
+- Serialize collapse/insert range mapping shifts with cached I/O and invalidate
+  pages from the shift point after stable-length revalidation.
+- Send FUA writes directly through the block runtime after overlapping dirty
+  cache writeback, then refresh or invalidate shared cache state from the
+  completion result.
+- Keep unlinked inode page-cache lifetime out of the global reclaim registry.
+
+## [0.9.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.1...ax-fs-ng-v0.9.2) - 2026-08-25
+
+### Other
+
+- *(test)* consolidate Starry and ArceOS test suites ([#2173](https://github.com/rcore-os/tgoskits/pull/2173))
+
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.0...ax-fs-ng-v0.9.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-fs-ng)* release reclaim registry lock before file locks ([#2170](https://github.com/rcore-os/tgoskits/pull/2170))
+- *(starry)* keep parent traversal inside chroot ([#2037](https://github.com/rcore-os/tgoskits/pull/2037))
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.7...ax-fs-ng-v0.9.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Fixed
+
+- *(sdmmc)* align Rockchip reset failure lifecycle ([#1987](https://github.com/rcore-os/tgoskits/pull/1987))
+- *(rsext4)* propagate journal I/O failures without panicking ([#1967](https://github.com/rcore-os/tgoskits/pull/1967))
+- *(ax-std)* implement futimens for regular files ([#1950](https://github.com/rcore-os/tgoskits/pull/1950))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
 
 ## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.6...ax-fs-ng-v0.8.7) - 2026-08-09
 

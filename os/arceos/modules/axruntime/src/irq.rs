@@ -1,3 +1,4 @@
+#[cfg(feature = "net")]
 use alloc::string::String;
 
 #[cfg(any(
@@ -13,7 +14,9 @@ use ax_hal::irq::CPU_LOCAL_IRQ_DOMAIN;
     target_arch = "x86_64",
 ))]
 use ax_hal::irq::HwIrq;
-use ax_hal::irq::{IrqContext, IrqError, IrqHandle, IrqId, IrqReturn, IrqSource};
+#[cfg(feature = "net")]
+use ax_hal::irq::IrqHandle;
+use ax_hal::irq::{IrqError, IrqId, IrqSource};
 
 /// Resolves an explicitly legacy numeric IRQ without truncating it.
 pub fn resolve_legacy_irq(irq: usize) -> Result<IrqId, IrqError> {
@@ -103,49 +106,6 @@ pub fn resolve_percpu_irq(irq: usize) -> IrqId {
     resolve_legacy_irq(irq).expect("legacy per-CPU IRQ exceeds platform IRQ id width")
 }
 
-pub struct Registration {
-    name: String,
-    handle: Option<IrqHandle>,
-}
-
-impl Registration {
-    pub fn register_shared(
-        name: impl Into<String>,
-        irq: IrqId,
-        handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
-    ) -> Result<Self, IrqError> {
-        let name = name.into();
-        match ax_hal::irq::request_shared_irq(irq, handler) {
-            Ok(handle) => {
-                info!("registered {name} irq {:?}", handle.irq());
-                Ok(Self {
-                    name,
-                    handle: Some(handle),
-                })
-            }
-            Err(err) => {
-                warn!("failed to register {name} irq handler for irq {irq:?}: {err:?}");
-                Err(err)
-            }
-        }
-    }
-
-    pub fn handle(&self) -> Option<IrqHandle> {
-        self.handle
-    }
-}
-
-impl Drop for Registration {
-    fn drop(&mut self) {
-        let Some(handle) = self.handle.take() else {
-            return;
-        };
-        if let Err(err) = ax_hal::irq::free_irq(handle) {
-            warn!("failed to free {} irq handler: {err:?}", self.name);
-        }
-    }
-}
-
 #[cfg(feature = "net")]
 pub(crate) struct RuntimeNetIrqRegistrar;
 
@@ -153,45 +113,104 @@ pub(crate) struct RuntimeNetIrqRegistrar;
 pub(crate) static NET_IRQ_REGISTRAR: RuntimeNetIrqRegistrar = RuntimeNetIrqRegistrar;
 
 #[cfg(feature = "net")]
-impl ax_net::EthernetIrqRegistration for Registration {}
+struct RuntimeNetIrqRegistration {
+    name: String,
+    handle: IrqHandle,
+    owner_cpu: usize,
+}
 
 #[cfg(feature = "net")]
-fn map_net_irq_error(err: IrqError) -> ax_net::EthernetIrqRegistrationError {
-    match err {
-        IrqError::InvalidIrq | IrqError::InvalidCpu => {
-            ax_net::EthernetIrqRegistrationError::InvalidIrq
+impl ax_net::PinnedNetIrqRegistration for RuntimeNetIrqRegistration {
+    fn owner_cpu(&self) -> usize {
+        self.owner_cpu
+    }
+
+    fn enable(&self) -> Result<(), ax_net::PinnedNetIrqError> {
+        ax_hal::irq::enable_irq(self.handle).map_err(map_net_irq_error)
+    }
+
+    fn disable_and_synchronize(&self) -> Result<(), ax_net::PinnedNetIrqError> {
+        match ax_hal::irq::disable_irq(self.handle) {
+            Ok(()) | Err(IrqError::NotFound) => {}
+            Err(error) => return Err(map_net_irq_error(error)),
         }
-        IrqError::Busy | IrqError::InIrqContext => ax_net::EthernetIrqRegistrationError::Busy,
-        IrqError::Unsupported | IrqError::CpuOffline => {
-            ax_net::EthernetIrqRegistrationError::Unsupported
-        }
-        IrqError::NoMemory | IrqError::NotFound | IrqError::Timeout | IrqError::Controller => {
-            ax_net::EthernetIrqRegistrationError::Other
+        match ax_hal::irq::synchronize_irq(self.handle) {
+            Ok(()) | Err(IrqError::NotFound) => Ok(()),
+            Err(error) => Err(map_net_irq_error(error)),
         }
     }
 }
 
 #[cfg(feature = "net")]
-impl ax_net::EthernetIrqRegistrar for RuntimeNetIrqRegistrar {
-    fn register_shared(
+impl Drop for RuntimeNetIrqRegistration {
+    fn drop(&mut self) {
+        if let Err(error) = ax_hal::irq::free_irq(self.handle) {
+            warn!(
+                "failed to free network IRQ registration {}: {error:?}",
+                self.name
+            );
+        }
+    }
+}
+
+#[cfg(feature = "net")]
+fn map_net_irq_error(err: IrqError) -> ax_net::PinnedNetIrqError {
+    match err {
+        IrqError::InvalidIrq | IrqError::InvalidCpu => ax_net::PinnedNetIrqError::Invalid,
+        IrqError::Busy => ax_net::PinnedNetIrqError::AffinityConflict,
+        IrqError::Unsupported | IrqError::CpuOffline => ax_net::PinnedNetIrqError::Unsupported,
+        IrqError::NoMemory
+        | IrqError::NotFound
+        | IrqError::Timeout
+        | IrqError::Controller
+        | IrqError::InIrqContext => ax_net::PinnedNetIrqError::Other,
+    }
+}
+
+#[cfg(feature = "net")]
+impl ax_net::PinnedNetIrqRegistrar for RuntimeNetIrqRegistrar {
+    fn register(
         &self,
-        name: &str,
+        name: String,
         irq: IrqId,
-        action: ax_net::EthernetIrqAction,
-    ) -> Result<
-        alloc::boxed::Box<dyn ax_net::EthernetIrqRegistration>,
-        ax_net::EthernetIrqRegistrationError,
-    > {
+        owner_cpu: usize,
+        action: ax_net::PinnedNetIrqAction,
+    ) -> Result<alloc::boxed::Box<dyn ax_net::PinnedNetIrqRegistration>, ax_net::PinnedNetIrqError>
+    {
         let mut action = action;
-        let handler = move |_ctx| match action.run() {
-            ax_net::EthernetIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
-            ax_net::EthernetIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
-        };
-        Registration::register_shared(name, irq, handler)
-            .map(|registration| {
-                alloc::boxed::Box::new(registration)
-                    as alloc::boxed::Box<dyn ax_net::EthernetIrqRegistration>
-            })
-            .map_err(map_net_irq_error)
+        let request = ax_hal::irq::IrqRequest::new(move |_context| match action.run() {
+            ax_net::PinnedNetIrqOutcome::Unhandled => ax_hal::irq::IrqReturn::Unhandled,
+            ax_net::PinnedNetIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
+            ax_net::PinnedNetIrqOutcome::Wake => ax_hal::irq::IrqReturn::Wake,
+        })
+        .execution(ax_hal::irq::IrqExecution::NonReentrant)
+        .share_mode(ax_hal::irq::ShareMode::Shared)
+        .auto_enable(ax_hal::irq::AutoEnable::No)
+        .affinity(ax_hal::irq::IrqAffinity::Fixed(ax_hal::irq::CpuId(
+            owner_cpu,
+        )));
+        let handle = ax_hal::irq::request_irq(irq, request).map_err(map_net_irq_error)?;
+        info!("registered {name} IRQ {irq:?} on fixed CPU {owner_cpu}");
+        Ok(alloc::boxed::Box::new(RuntimeNetIrqRegistration {
+            name,
+            handle,
+            owner_cpu,
+        }))
+    }
+}
+
+#[cfg(all(test, feature = "net"))]
+mod tests {
+    #[test]
+    fn network_irq_registration_requires_an_explicit_fixed_owner_cpu() {
+        let source = include_str!("irq.rs");
+        let registrar = source
+            .split("impl ax_net::PinnedNetIrqRegistrar for RuntimeNetIrqRegistrar")
+            .nth(1)
+            .expect("network IRQ registrar implementation must exist");
+
+        assert!(registrar.contains("owner_cpu"));
+        assert!(registrar.contains("IrqAffinity::Fixed"));
+        assert!(!registrar.contains("IrqAffinity::Any"));
     }
 }

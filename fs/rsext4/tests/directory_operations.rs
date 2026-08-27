@@ -429,8 +429,7 @@ mod directory_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
-    /// Documents current directory error behavior, especially the difference
-    /// between explicit delete failures and implicit parent creation by `mkfile`.
+    /// Verifies recursive helper deletion and exact namespace errors.
     #[test]
     fn test_directory_error_handling() {
         let device = MockBlockDevice::new(100 * 1024 * 1024); // 100MB
@@ -439,23 +438,12 @@ mod directory_functional_tests {
         mkfs(&mut jbd2_dev).expect("mkfs failed");
         let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
-        // `mkfile` currently auto-creates missing parents instead of failing.
-        let result = mkfile(
-            &mut jbd2_dev,
-            &mut fs,
-            "/nonexistent/file.txt",
-            Some(b"data"),
-            None,
-        );
-        assert!(result.is_ok(), "mkfile should auto-create missing parents");
-
         // Removing a missing directory should fail with `ENOENT`.
         let err = delete_dir(&mut fs, &mut jbd2_dev, "/definitely-missing")
             .expect_err("missing directory should fail");
         assert_eq!(err.kind(), Ext4ErrorKind::NotFound);
 
-        // Non-empty directory deletion is implementation-defined here, so the test
-        // records behavior rather than requiring one strict outcome.
+        // `delete_dir` is the recursive core helper, not the VFS rmdir entry.
         test_mkdir(&mut jbd2_dev, &mut fs, "/nonempty").expect("mkdir failed");
         mkfile(
             &mut jbd2_dev,
@@ -466,16 +454,21 @@ mod directory_functional_tests {
         )
         .expect("mkfile failed");
 
-        let _ = delete_dir(&mut fs, &mut jbd2_dev, "/nonempty");
+        delete_dir(&mut fs, &mut jbd2_dev, "/nonempty")
+            .expect("recursive helper must remove a non-empty tree");
+        let error = read_file(&mut jbd2_dev, &mut fs, "/nonempty/file.txt")
+            .expect_err("removed tree must be unreachable");
+        assert_eq!(error.kind(), Ext4ErrorKind::NotFound);
 
-        // A follow-up create documents whether the directory remained available.
-        let _result = mkfile(
+        test_mkdir(&mut jbd2_dev, &mut fs, "/nonempty").expect("recreate directory");
+        mkfile(
             &mut jbd2_dev,
             &mut fs,
             "/nonempty/another_file.txt",
             Some(b"data"),
             None,
-        );
+        )
+        .expect("create below recreated directory");
         // Duplicate directory creation should still return `EEXIST`.
         test_mkdir(&mut jbd2_dev, &mut fs, "/duplicate").expect("mkdir failed");
         let result = test_mkdir(&mut jbd2_dev, &mut fs, "/duplicate");

@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition.workspace = true
-version = "0.5.24"
+version = "0.6.1"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 homepage = "https://github.com/arceos-hypervisor/axvisor"
@@ -24,6 +24,7 @@ include = [
 [[bin]]
 name = "axvisor"
 path = "src/main.rs"
+test = false
 
 [[bin]]
 name = "xtask"
@@ -37,6 +38,12 @@ path = "tests/axtest.rs"
 harness = false
 required-features = ["axtest", "fs"]
 
+[package.metadata.axtest]
+runtime = "axvisor"
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none-softfloat"]
+
 [features]
 default = []
 host-xtask = []
@@ -47,16 +54,38 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
+test-console-interleave = ["dep:ax-log"]
+test-console-atomic-output = ["ax-std/sched-rr"]
+# axum-based management HTTP server (see src/http/ for the Router).
+# Off by default. Replaces the hand-rolled pilot, which is intentionally not
+# carried forward.
+# axum-based management HTTP server. Pulls `ax-std/net` explicitly so the
+# ArceOS network stack (which probes the QEMU virtio-net NIC and backs the
+# tokio `TcpListener`) is enabled only when the control plane is built; a
+# non-HTTP build must not enable the network subsystem.
+http-axum = ["ax-std/net", "dep:axum", "dep:tokio", "dep:serde_json"]
+# Do not auto-boot the default VMs at startup; the HTTP control plane starts
+# and stops them on demand (VMs are created and stay in `Ready`).
+no-auto-start = []
 
 [dependencies]
 shlex.workspace = true
+axtest.workspace = true
+heapless.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
 anyhow.workspace = true
+ax-log = { workspace = true, optional = true }
 log = "0.4"
+axum = { version = "0.8", optional = true }
+serde_json = { version = "1", optional = true }
+# The runtime only enables the IO driver (`enable_io()`), so no `time` driver
+# and thus no `timerfd` syscall is needed. `rt` + `net` cover the manually
+# built current-thread runtime and `TcpListener`.
+tokio = { version = "1", optional = true, features = ["rt", "net"] }
 
 # System dependent modules provided by ArceOS.
 ax-api.workspace = true
@@ -65,8 +94,6 @@ ax-std = { workspace = true, default-features = false, features = [
   "fd",
   "ext-ld",
   "paging",
-  "irq",
-  "multitask",
   "task-ext",
   "smp",
   "hv",
@@ -74,23 +101,16 @@ ax-std = { workspace = true, default-features = false, features = [
   "std-compat",
 ] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
-# ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
+# ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "paging", "smp"] }
 axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
 axvm-types.workspace = true
-axdevice.workspace = true
-axdevice_base.workspace = true
-axvirtio-common.workspace = true
-axvirtio-blk.workspace = true
-axvirtio-net.workspace = true
-toml.workspace = true
 ax-driver = { workspace = true, optional = true }
 axbacktrace = { workspace = true, optional = true }
 
 [dev-dependencies]
-axtest.workspace = true
-ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axtest"] }
-ax-task = { workspace = true, features = ["axtest"] }
+axtest = { path = "../../components/axtest/axtest" }
+ax-hal = { path = "../arceos/modules/axhal" }
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

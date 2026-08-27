@@ -128,32 +128,6 @@ impl ListRegisterState {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::ListRegisterState;
-    use crate::{IntId, InterruptState, PpiId, Priority, TriggerMode};
-
-    #[test]
-    fn only_software_level_delivery_requests_eoi_maintenance() {
-        let intid = IntId::Ppi(PpiId::new(27).unwrap());
-        let level = ListRegisterState::new_software(
-            intid,
-            Priority::DEFAULT,
-            InterruptState::Pending,
-            TriggerMode::Level,
-        );
-        let edge = ListRegisterState::new_software(
-            intid,
-            Priority::DEFAULT,
-            InterruptState::Pending,
-            TriggerMode::Edge,
-        );
-
-        assert!(level.maintenance_on_eoi());
-        assert!(!edge.maintenance_on_eoi());
-    }
-}
-
 /// Complete ICH state saved for one vCPU.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CpuInterfaceState {
@@ -357,5 +331,31 @@ impl CpuInterfaceState {
         self.v2_active_stack
             .last()
             .map_or(Priority::new(0xff), |(_, priority)| *priority)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ListRegisterState;
+    use crate::{IntId, InterruptState, PpiId, Priority, TriggerMode};
+
+    #[test]
+    fn only_software_level_delivery_requests_eoi_maintenance() {
+        let intid = IntId::Ppi(PpiId::new(27).unwrap());
+        let level = ListRegisterState::new_software(
+            intid,
+            Priority::DEFAULT,
+            InterruptState::Pending,
+            TriggerMode::Level,
+        );
+        let edge = ListRegisterState::new_software(
+            intid,
+            Priority::DEFAULT,
+            InterruptState::Pending,
+            TriggerMode::Edge,
+        );
+
+        assert!(level.maintenance_on_eoi());
+        assert!(!edge.maintenance_on_eoi());
     }
 }

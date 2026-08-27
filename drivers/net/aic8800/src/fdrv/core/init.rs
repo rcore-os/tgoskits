@@ -3,7 +3,6 @@
 //! 包含驱动初始化相关函数
 
 use alloc::{vec, vec::Vec};
-use core::sync::atomic::Ordering;
 
 use log::{error, warn};
 use sdio_host::SdioHost;
@@ -21,11 +20,10 @@ use crate::{
     fdrv::{
         consts::*,
         core::{
-            bus::{BusState, IRQ_COUNT, WifiBus, set_global_bus},
+            bus::{BusState, WifiBus},
             sdio_transport::SdioTransport,
         },
         protocol::{DRV_TASK_ID, MM_SET_STACK_START_REQ, TASK_MM},
-        thread::{ap, rx, tx},
     },
 };
 
@@ -186,16 +184,14 @@ fn poll_for_response<H: SdioHost>(
             let f2_bc = sdio.read_byte(2, SDIOWIFI_BLOCK_CNT_REG).unwrap_or(0xEE);
             let f1_fc = sdio.read_byte(1, SDIOWIFI_FLOW_CTRL_REG).unwrap_or(0xEE);
             let f0_ip = sdio.read_byte(0, 0x05).unwrap_or(0xEE);
-            let irqc = IRQ_COUNT.load(Ordering::Relaxed);
             log::trace!(
                 "[DIAG] retry={} f1_bc=0x{:02x} f2_bc=0x{:02x} f1_fc(0x0a)=0x{:02x} \
-                 f0_intpend(0x05)=0x{:02x} irq#38={}",
+                 f0_intpend(0x05)=0x{:02x}",
                 retry,
                 f1_bc,
                 f2_bc,
                 f1_fc,
-                f0_ip,
-                irqc
+                f0_ip
             );
         }
 
@@ -461,12 +457,12 @@ fn drain_post_init_data<H: SdioHost>(sdio: &H, is_v3: bool, func: u8) {
     }
 }
 
-/// 使能中断（SDHCI CARD_INT 和 AIC8800 芯片端）
-fn enable_interrupts(bus: &WifiBus) -> Result<(), &'static str> {
+/// Arms the AIC chip source while leaving the SDHCI signal masked.
+///
+/// The fixed-CPU network runtime owns controller signal enable/rearm after its
+/// worker and physical IRQ registration are ready.
+fn arm_chip_interrupt(bus: &WifiBus) -> Result<(), &'static str> {
     let transport = &bus.transport;
-
-    // 使能 SDHCI CARD_INT 信号
-    transport.enable_irq();
 
     // 使能 AIC8800 芯片端 SDIO 中断
     if transport
@@ -476,20 +472,7 @@ fn enable_interrupts(bus: &WifiBus) -> Result<(), &'static str> {
         return Err("intr_config_reg write failed");
     }
 
-    // 验证 IRQ 触发
-    crate::runtime::runtime().sleep_ms(2);
-    let irq_cnt = IRQ_COUNT.load(Ordering::Relaxed);
-    log::debug!("[VERIFY-1] IRQ#38 triggered {} times", irq_cnt);
-
     Ok(())
-}
-
-/// 启动 RX/TX 线程
-fn start_driver_threads(bus: &alloc::sync::Arc<WifiBus>) {
-    *bus.state.lock() = BusState::Up;
-    rx::start(alloc::sync::Arc::clone(bus));
-    tx::start(alloc::sync::Arc::clone(bus));
-    ap::start(alloc::sync::Arc::clone(bus));
 }
 
 /// FDRV 初始化入口
@@ -589,16 +572,12 @@ pub fn init<H: SdioHost + 'static>(
     drain_post_init_data(&sdio, is_v3, func);
 
     // ---- Step 4: 创建 SdioTransport + WifiBus ----
-    let transport = SdioTransport::new(sdio, chip);
+    let transport = SdioTransport::new(sdio, chip)?;
     let bus = WifiBus::new(transport);
-    set_global_bus(&bus);
+    // ---- Step 5: arm the chip source; controller signal remains masked ----
+    arm_chip_interrupt(&bus)?;
+    *bus.state.lock() = BusState::Up;
 
-    // ---- Step 5: 使能中断 ----
-    enable_interrupts(&bus)?;
-
-    // ---- Step 6: 启动线程 ----
-    start_driver_threads(&bus);
-
-    log::debug!("[fdrv] AIC8800 FDRV initialized");
+    log::debug!("[fdrv] AIC8800 FDRV prepared for the network queue runtime");
     Ok(bus)
 }

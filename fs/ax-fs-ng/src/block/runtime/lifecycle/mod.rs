@@ -15,10 +15,9 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::OnceLock;
 use controller::{ControllerPort, run_controller};
-use device::CpuSubmissionChannel;
+use device::{CpuSubmissionChannel, DeviceInfoEpoch};
 use irq_framework::IrqId;
 #[cfg(any(feature = "ext4", feature = "fat"))]
 use rdif_block::RequestFlags;
@@ -39,9 +38,12 @@ use super::{
     },
     waiters::TaskWaiters,
 };
-use crate::os::{
-    BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
-    sync::IrqMutex, wall_time,
+use crate::{
+    BlockError, BlockResult,
+    os::{
+        BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
+        sync::IrqMutex, wall_time,
+    },
 };
 
 const CONTROLLER_CHANNEL_DEPTH: usize = 64;
@@ -503,7 +505,7 @@ impl Drop for BlockDeviceHandle {
 
 struct DeviceInner {
     name: String,
-    info: IrqMutex<DeviceInfo>,
+    device_info: IrqMutex<DeviceInfoEpoch>,
     max_io_queues: usize,
     irq_sources: Vec<BlockIrqSource>,
     hctxs: IrqMutex<Vec<Arc<Hctx>>>,
@@ -581,7 +583,7 @@ impl BlockDeviceHandle {
         });
         let inner = Arc::new(DeviceInner {
             name,
-            info: IrqMutex::new(info),
+            device_info: IrqMutex::new(DeviceInfoEpoch::new(info)),
             max_io_queues,
             irq_sources: irqs,
             hctxs: IrqMutex::new(Vec::new()),
@@ -649,7 +651,7 @@ impl BlockDeviceHandle {
     }
 
     pub fn device_info(&self) -> DeviceInfo {
-        *self.inner.info.lock()
+        self.inner.published_device_info()
     }
 
     #[cfg(feature = "ext4")]
@@ -718,7 +720,7 @@ impl BlockDeviceHandle {
             return Err(BatchSubmitError::new(BlkError::Io, requests));
         };
         let mut info = cpu_channel.hctx.info();
-        info.device = *self.inner.info.lock();
+        info.device = self.inner.published_device_info();
         let validation_error = requests
             .iter()
             .find_map(|request| validate_owned_request(info, request).err());
@@ -803,25 +805,25 @@ impl BlockDeviceHandle {
         Ok(group)
     }
 
-    pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> AxResult {
+    pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         io::read_blocks(self, block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> AxResult {
+    pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> BlockResult {
         io::write_blocks(self, block_id, buf)
     }
 
     #[cfg(feature = "ext4")]
-    pub(crate) fn write_blocks_fua(&self, block_id: u64, buf: &[u8]) -> AxResult {
+    pub(crate) fn write_blocks_fua(&self, block_id: u64, buf: &[u8]) -> BlockResult {
         if !self.supports_fua() {
-            return Err(AxError::Unsupported);
+            return Err(BlockError::Unsupported);
         }
         io::write_blocks_fua(self, block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    pub(crate) fn flush_blocks(&self) -> AxResult {
+    pub(crate) fn flush_blocks(&self) -> BlockResult {
         let request = OwnedRequest {
             op: RequestOp::Flush,
             lba: 0,
@@ -831,10 +833,10 @@ impl BlockDeviceHandle {
         };
         let completion = self
             .submit_owned(request)
-            .map_err(|error| map_blk_err_to_ax_err(error.error))?
+            .map_err(|error| BlockError::from(error.error))?
             .recv()
-            .map_err(map_blk_err_to_ax_err)?;
-        completion.result.map_err(map_blk_err_to_ax_err)
+            .map_err(BlockError::from)?;
+        completion.result.map_err(BlockError::from)
     }
 
     fn online_smp(&self) -> Result<(), BlkError> {
@@ -877,21 +879,19 @@ fn disable_registrations(registrations: &[Box<dyn BlockIrqRegistration>]) {
     }
 }
 
-/// Maps a portable block error at the filesystem integration boundary.
-pub fn map_blk_err_to_ax_err(error: BlkError) -> AxError {
-    match error {
-        BlkError::NotSupported => AxError::Unsupported,
-        BlkError::Retry => AxError::WouldBlock,
-        BlkError::NoMemory => AxError::NoMemory,
-        BlkError::InvalidBlockIndex(_) | BlkError::InvalidRequest => AxError::InvalidInput,
-        BlkError::TimedOut => AxError::TimedOut,
-        BlkError::Io | BlkError::Other(_) => AxError::Io,
+fn block_io_error(
+    stage: &'static str,
+    operation: RequestOp,
+    lba: u64,
+    source: BlkError,
+) -> BlockError {
+    warn!("block {operation:?} at LBA {lba} failed during {stage}: {source:?}");
+    BlockError::Device {
+        stage,
+        operation,
+        lba,
+        source,
     }
-}
-
-fn block_io_error(stage: &str, op: RequestOp, lba: u64, error: BlkError) -> AxError {
-    warn!("block {op:?} at LBA {lba} failed during {stage}: {error:?}");
-    map_blk_err_to_ax_err(error)
 }
 
 #[cfg(test)]

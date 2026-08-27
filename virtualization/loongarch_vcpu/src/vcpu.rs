@@ -3,6 +3,7 @@ use core::marker::PhantomData;
 use crate::{
     context_frame::LoongArchContextFrame,
     exception::{handle_exception_irq, handle_exception_sync},
+    guest_csr::GuestTimerRegistration,
     host::LoongArchHostOps,
     iocsr::{
         LoongArchIocsrStateRef, init_guest_iocsr, inject_enabled_pending_interrupt,
@@ -88,7 +89,7 @@ pub struct LoongArchVcpu<H: LoongArchHostOps> {
     vcpu_id: LoongArchVcpuId,
     cpu_id: usize,
     iocsr_state: LoongArchIocsrStateRef,
-    guest_timer_token: Option<usize>,
+    guest_timer: GuestTimerRegistration<H>,
     last_badi: usize,
     entry_logged: bool,
     host_translation_state: HostTranslationState,
@@ -128,7 +129,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             vcpu_id,
             cpu_id: config.cpu_id,
             iocsr_state: config.iocsr_state,
-            guest_timer_token: None,
+            guest_timer: GuestTimerRegistration::new(),
             last_badi: 0,
             entry_logged: false,
             host_translation_state: HostTranslationState::default(),
@@ -302,30 +303,6 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         self.ctx.gcsr_eentry != 0
             && self.ctx.gcsr_crmd & CSR_CRMD_IE != 0
             && self.ctx.gcsr_estat & self.ctx.gcsr_ectl & LOCAL_INTERRUPT_MASK != 0
-    }
-
-    pub fn idle_wait_timeout(&self) -> core::time::Duration {
-        const TIMER_ENABLE: usize = 1 << 0;
-        const TIMER_INIT_MASK: usize = !0x3;
-        const MIN_WAIT: core::time::Duration = core::time::Duration::from_micros(50);
-        const MAX_WAIT: core::time::Duration = core::time::Duration::from_millis(10);
-
-        if self.ctx.gcsr_ectl & (1usize << INT_TIMER) == 0 || self.ctx.gcsr_tcfg & TIMER_ENABLE == 0
-        {
-            return MAX_WAIT;
-        }
-
-        let ticks = if self.ctx.gcsr_tval == 0 {
-            self.ctx.gcsr_tcfg & TIMER_INIT_MASK
-        } else {
-            self.ctx.gcsr_tval
-        };
-        if ticks == 0 {
-            return MIN_WAIT;
-        }
-
-        let nanos = H::ticks_to_nanos(ticks as u64);
-        core::time::Duration::from_nanos(nanos).clamp(MIN_WAIT, MAX_WAIT)
     }
 
     fn init_hv(&mut self, config: LoongArchVCpuSetupConfig) {
@@ -508,9 +485,21 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
                 &mut self.ctx,
                 self.vm_id,
                 self.vcpu_id,
-                &mut self.guest_timer_token,
+                &mut self.guest_timer,
             ),
             TrapKind::Irq => handle_exception_irq(&mut self.ctx),
+        }
+    }
+}
+
+impl<H: LoongArchHostOps> Drop for LoongArchVcpu<H> {
+    fn drop(&mut self) {
+        if let Err(error) = self.guest_timer.cancel() {
+            log::warn!(
+                "failed to cancel LoongArch guest timer while dropping VM[{}] VCpu[{}]: {error:?}",
+                self.vm_id,
+                self.vcpu_id
+            );
         }
     }
 }

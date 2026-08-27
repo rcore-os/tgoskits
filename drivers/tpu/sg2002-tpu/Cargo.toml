@@ -1,6 +1,6 @@
 [package]
 name = "sg2002-tpu"
-version = "0.3.10"
+version = "0.4.0"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 license.workspace = true
@@ -10,9 +10,9 @@ categories = ["embedded", "hardware-support", "no-std"]
 keywords = ["sg2002", "cvitek", "tpu", "ion"]
 
 [dependencies]
-ax-errno = { workspace = true }
 ax-sync.workspace = true
 ax-memory-addr = { workspace = true }
 axklib.workspace = true
 dma-api.workspace = true
 log = "0.4"
+thiserror.workspace = true

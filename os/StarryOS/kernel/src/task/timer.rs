@@ -1,6 +1,10 @@
 //! Time management module.
 
-use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
+use alloc::{
+    borrow::ToOwned,
+    collections::binary_heap::BinaryHeap,
+    sync::{Arc, Weak},
+};
 use core::{mem, time::Duration};
 
 use ax_lazyinit::LazyLock;
@@ -10,13 +14,12 @@ use ax_task::{
     future::{block_on, timeout_at_wall},
 };
 use event_listener::{Event, listener};
-use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
 use crate::{
     sync::IrqMutex as Mutex,
-    task::{poll_process_timer, poll_timer},
+    task::{PidIdentity, poll_process_timer, poll_timer},
 };
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {
@@ -28,7 +31,7 @@ fn time_value_from_nanos(nanos: usize) -> TimeValue {
 #[derive(Debug, Clone)]
 pub enum AlarmTarget {
     Thread(WeakAxTaskRef),
-    Process(Pid),
+    Process(Weak<PidIdentity>),
 }
 
 struct Entry {
@@ -41,12 +44,15 @@ impl PartialEq for Entry {
         self.deadline == other.deadline
     }
 }
+
 impl Eq for Entry {}
+
 impl PartialOrd for Entry {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
+
 impl Ord for Entry {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         other.deadline.cmp(&self.deadline)
@@ -55,6 +61,7 @@ impl Ord for Entry {
 
 static ALARM_LIST: LazyLock<Mutex<BinaryHeap<Entry>>> =
     LazyLock::new(|| Mutex::new(BinaryHeap::new()));
+
 static EVENT_NEW_TIMER: LazyLock<Event> = LazyLock::new(Event::new);
 
 /// The type of interval timer.
@@ -116,6 +123,60 @@ impl ITimer {
             let deadline = wall_time() + Duration::from_nanos(self.remained_ns as u64);
             register_alarm(deadline);
         }
+    }
+}
+
+/// The process-wide `ITIMER_REAL` state shared by every thread.
+#[derive(Default)]
+pub(crate) struct ProcessRealTimer {
+    interval: TimeValue,
+    deadline: Option<TimeValue>,
+}
+
+impl ProcessRealTimer {
+    /// Replaces the timer and returns its previous interval and remaining time.
+    pub fn set(
+        &mut self,
+        identity: &Arc<PidIdentity>,
+        interval_ns: usize,
+        remaining_ns: usize,
+    ) -> (TimeValue, TimeValue) {
+        let old = self.get();
+        self.interval = TimeValue::from_nanos(interval_ns as u64);
+        self.deadline = (remaining_ns != 0).then(|| {
+            let deadline = wall_time() + TimeValue::from_nanos(remaining_ns as u64);
+            register_alarm_for(deadline, AlarmTarget::Process(Arc::downgrade(identity)));
+            deadline
+        });
+        old
+    }
+
+    /// Returns the timer interval and the time remaining before expiration.
+    pub fn get(&self) -> (TimeValue, TimeValue) {
+        let remaining = self
+            .deadline
+            .map(|deadline| deadline.saturating_sub(wall_time()))
+            .unwrap_or_default();
+        (self.interval, remaining)
+    }
+
+    /// Advances an expired timer and reports whether `SIGALRM` must be emitted.
+    pub fn poll_expired(&mut self, identity: &Arc<PidIdentity>) -> bool {
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        if wall_time() < deadline {
+            return false;
+        }
+
+        if self.interval.is_zero() {
+            self.deadline = None;
+        } else {
+            let deadline = wall_time() + self.interval;
+            self.deadline = Some(deadline);
+            register_alarm_for(deadline, AlarmTarget::Process(Arc::downgrade(identity)));
+        }
+        true
     }
 }
 
@@ -233,7 +294,7 @@ impl TimeManager {
             }
             TimerState::None => {}
         }
-        self.update_itimer(ITimerType::Real, itimer_delta, &emitter);
+        // `ITIMER_REAL` is process state and is polled separately.
         self.last_wall_ns = now_ns;
         // Sync tick baseline with poll baseline so the next tick() starts
         // from a clean slate.
@@ -306,8 +367,10 @@ async fn alarm_task() {
                         poll_timer(&task);
                     }
                 }
-                AlarmTarget::Process(pid) => {
-                    poll_process_timer(pid);
+                AlarmTarget::Process(identity) => {
+                    if let Some(identity) = identity.upgrade() {
+                        poll_process_timer(&identity);
+                    }
                 }
             }
         } else {
@@ -336,8 +399,8 @@ pub fn spawn_alarm_task() {
     );
 }
 
-#[cfg(axtest)]
-pub(crate) fn itimer_type_signo_and_time_conversion_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn itimer_type_signo_and_time_conversion_rules_hold_for_test() -> bool {
     // ITimerType::signo returns a Signo for each variant without panicking.
     let _real = ITimerType::Real.signo();
     let _virt = ITimerType::Virtual.signo();
@@ -349,4 +412,12 @@ pub(crate) fn itimer_type_signo_and_time_conversion_rules_hold_for_test() -> boo
     let _ = time_value_from_nanos(1000000000usize);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn itimer_type_signo_and_time_conversion_rules_hold() {
+        assert!(super::itimer_type_signo_and_time_conversion_rules_hold_for_test());
+    }
 }

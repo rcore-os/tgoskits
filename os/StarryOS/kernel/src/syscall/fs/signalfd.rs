@@ -1,10 +1,10 @@
-use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use starry_signal::SignalSet;
 use starry_vm::VmPtr;
 
 use crate::{
+    StarryError, StarryResult,
     file::{FileLike, add_file_like, signalfd::Signalfd},
     syscall::signal::check_sigset_size,
 };
@@ -43,10 +43,10 @@ pub fn sys_signalfd4(
     mask: *const SignalSet,
     sigsetsize: usize,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
-    let flags = SignalfdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+    let flags = SignalfdFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
 
     // Read the signal mask from user space before handling the request mode.
     let mask = unsafe { mask.vm_read_uninit()?.assume_init() };
@@ -67,20 +67,20 @@ pub fn sys_signalfd4(
     add_file_like(signalfd as _, flags.contains(SignalfdFlags::CLOEXEC)).map(|fd| fd as _)
 }
 
-#[cfg(axtest)]
-pub(crate) fn signalfd_flags_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn signalfd_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
     // Test SignalfdFlags validation
     let valid_flags = 0u32;
     assert!(SignalfdFlags::from_bits(valid_flags).is_some());
 
-    let cloexec_only = O_CLOEXEC as u32;
+    let cloexec_only = O_CLOEXEC;
     assert!(SignalfdFlags::from_bits(cloexec_only).is_some());
 
-    let nonblock_only = O_NONBLOCK as u32;
+    let nonblock_only = O_NONBLOCK;
     assert!(SignalfdFlags::from_bits(nonblock_only).is_some());
 
-    let all_valid = O_CLOEXEC as u32 | O_NONBLOCK as u32;
+    let all_valid = O_CLOEXEC | O_NONBLOCK;
     assert!(SignalfdFlags::from_bits(all_valid).is_some());
 
     // Invalid flag should return None
@@ -88,4 +88,12 @@ pub(crate) fn signalfd_flags_validation_rules_hold_for_test() -> bool {
     assert!(SignalfdFlags::from_bits(invalid_flags).is_none());
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn signalfd_flags_validation_rules_hold() {
+        assert!(super::signalfd_flags_validation_rules_hold_for_test());
+    }
 }

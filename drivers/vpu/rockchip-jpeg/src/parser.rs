@@ -23,27 +23,37 @@ pub const NUM_QUANT_TABLES: usize = 4;
 pub const NUM_HUFF_TABLES: usize = 2;
 
 /// Errors produced while parsing a JPEG header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ParseError {
     /// Ran off the end of the input.
+    #[error("JPEG header is truncated")]
     Truncated,
     /// Missing the start-of-image (`FFD8`) marker.
+    #[error("JPEG start-of-image marker is missing")]
     MissingSoi,
     /// A marker segment had an invalid length.
+    #[error("JPEG marker segment has an invalid length")]
     BadSegment,
     /// The frame is not baseline sequential (`SOF0`).
+    #[error("JPEG frame is not baseline sequential")]
     NotBaseline,
     /// Sample precision other than 8-bit.
+    #[error("JPEG sample precision is unsupported")]
     UnsupportedPrecision,
     /// More than [`MAX_COMPONENTS`] components.
+    #[error("JPEG frame has too many components")]
     TooManyComponents,
     /// A table id outside the supported range.
+    #[error("JPEG table identifier is out of range")]
     TableIdOutOfRange,
     /// No `SOF0` segment was seen before the scan.
+    #[error("JPEG frame header is missing")]
     MissingSof,
     /// No `SOS` segment was found.
+    #[error("JPEG scan header is missing")]
     MissingSos,
     /// The component sampling factors are not a supported subsampling.
+    #[error("JPEG component subsampling is unsupported")]
     UnsupportedSubsampling,
 }
 

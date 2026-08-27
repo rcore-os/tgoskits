@@ -9,23 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Add a required typed directory operation that creates a symbolic link with
-  its final target atomically.
-- Add a typed file preallocation capability with explicit extend-size and
-  keep-size modes.
-- Extend the file range capability with typed zero-range and hole-punch
-  operations while retaining the preallocation compatibility entry point.
-- Add typed collapse-range and insert-range operations without exposing
-  filesystem-specific extent structures through the VFS boundary.
-- Add typed extent-query target selection and bounded mapping DTOs for both
-  regular-file and directory nodes; unsupported xattr mappings stay explicit.
-- Add an optional inode-owned extended-attribute capability with typed
-  create/replace policy and read-only mount enforcement.
+- Add typed atomic symlink creation, preallocation and range mutation,
+  filesystem extent inspection, inode xattrs, and directory cursors/rename
+  options without exposing ext4 disk structures through the VFS boundary.
 
 ### Removed
 
-- Remove the file-level symbolic-link target setter and reject symbolic links
-  from the generic directory create API.
+- Remove the file-level symlink target setter; symlink target publication is
+  part of the directory create transaction.
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.6.0...axfs-ng-vfs-v0.6.1) - 2026-08-25
+
+### Fixed
+
+- *(axfs-ng-vfs)* replan unmount after topology changes ([#2150](https://github.com/rcore-os/tgoskits/pull/2150))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.8...axfs-ng-vfs-v0.6.0) - 2026-08-20
+
+### Added
+
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
 
 ## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.7...axfs-ng-vfs-v0.5.8) - 2026-08-09
 

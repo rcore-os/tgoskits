@@ -20,7 +20,9 @@ concurrency:
 jobs:
   release-plz-release:
     name: Release-plz release
-    if: ${{ github.repository == 'rcore-os/tgoskits' && (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev') }}
+    if: >-
+      github.repository == 'rcore-os/tgoskits' &&
+      (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -51,7 +53,9 @@ jobs:
 
   release-plz-pr:
     name: Release-plz PR
-    if: ${{ github.repository == 'rcore-os/tgoskits' && (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev') }}
+    if: >-
+      github.repository == 'rcore-os/tgoskits' &&
+      (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
     runs-on: ubuntu-latest
     permissions:
       contents: write

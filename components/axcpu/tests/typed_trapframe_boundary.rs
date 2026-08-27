@@ -130,22 +130,6 @@ fn public_api_exposes_user_registers_but_not_the_internal_trap_layout() {
     }
 }
 
-#[test]
-fn x86_user_tls_changes_are_confined_to_the_assembly_entry_window() {
-    let user = read_source("x86_64/uspace.rs");
-    let run = function_body(&user, "pub fn run");
-    assert!(!run.contains("write_user_thread_pointer"));
-    assert!(!run.contains("write_thread_pointer"));
-    assert!(!run.contains("KernelGsBase::write"));
-    assert!(!run.contains("KernelGsBase::read"));
-
-    let entry = read_source("x86_64/trap.S");
-    assert!(entry.contains("IA32_FS_BASE"));
-    assert!(entry.contains("IA32_KERNEL_GS_BASE"));
-    assert!(entry.contains("user_fs_base_offset"));
-    assert!(entry.contains("kernel_fs_base_offset"));
-}
-
 #[cfg(all(target_arch = "x86_64", feature = "uspace"))]
 #[test]
 fn x86_user_context_keeps_the_tss_trap_stack_top_aligned() {

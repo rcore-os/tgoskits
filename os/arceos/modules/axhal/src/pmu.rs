@@ -36,7 +36,6 @@ pub fn cpu_id_raw() -> Option<u64> {
 }
 
 /// Returns the platform IRQ id used for PMU overflows.
-#[cfg(feature = "irq")]
 pub fn irq() -> Result<crate::irq::IrqId, crate::irq::IrqError> {
     #[cfg(target_arch = "aarch64")]
     {

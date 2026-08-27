@@ -4,14 +4,16 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use ax_sync::SpinLock;
 
-use crate::{CgroupError, CgroupResult, ProcessId};
+use crate::{CgroupError, CgroupResult, ProcessId, pids::PidsState};
 
 static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(2);
 const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
+const PIDS_CONTROLLER: &[&str] = &["pids"];
+const NO_CONTROLLERS: &[&str] = &[];
 
 /// A stable node in the cgroup v2 hierarchy.
 pub struct CgroupNode {
@@ -20,6 +22,8 @@ pub struct CgroupNode {
     parent: Option<Weak<Self>>,
     children: SpinLock<BTreeMap<String, Arc<Self>>>,
     members: SpinLock<BTreeSet<ProcessId>>,
+    pids: PidsState,
+    pids_enabled_for_children: AtomicBool,
     pins: AtomicUsize,
 }
 
@@ -36,6 +40,8 @@ impl CgroupNode {
             parent: None,
             children: SpinLock::new(BTreeMap::new()),
             members: SpinLock::new(BTreeSet::new()),
+            pids: PidsState::new(),
+            pids_enabled_for_children: AtomicBool::new(false),
             pins: AtomicUsize::new(0),
         })
     }
@@ -55,6 +61,77 @@ impl CgroupNode {
         self.parent.as_ref().and_then(Weak::upgrade)
     }
 
+    /// Return controllers this cgroup may enable for its direct children.
+    pub fn available_controllers(&self) -> &'static [&'static str] {
+        if self.parent.is_none()
+            || self
+                .parent()
+                .is_some_and(|parent| parent.pids_enabled_for_children.load(Ordering::Acquire))
+        {
+            PIDS_CONTROLLER
+        } else {
+            NO_CONTROLLERS
+        }
+    }
+
+    /// Return controllers enabled for direct child cgroups.
+    pub fn enabled_subtree_controllers(&self) -> &'static [&'static str] {
+        if self.pids_enabled_for_children.load(Ordering::Acquire) {
+            PIDS_CONTROLLER
+        } else {
+            NO_CONTROLLERS
+        }
+    }
+
+    /// Enable pids for direct children.
+    ///
+    /// The first controller increment intentionally supports only `+pids`.
+    /// Other controller updates remain unsupported until their domain behavior
+    /// is implemented and independently validated.
+    pub fn write_subtree_control(&self, data: &str) -> CgroupResult<()> {
+        if data.trim() != "+pids" || !self.available_controllers().contains(&"pids") {
+            return Err(CgroupError::InvalidInput);
+        }
+        self.pids_enabled_for_children
+            .store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Return whether this non-root cgroup exposes pids interface files.
+    pub fn has_pids_interface(&self) -> bool {
+        self.parent.is_some() && self.available_controllers().contains(&"pids")
+    }
+
+    /// Render `pids.max`.
+    pub fn pids_max_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.maximum_text())
+    }
+
+    /// Render `pids.current`.
+    pub fn pids_current_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.current_text())
+    }
+
+    /// Render the lifetime high-water mark from `pids.peak`.
+    pub fn pids_peak_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.peak_text())
+    }
+
+    /// Render `pids.events`.
+    pub fn pids_events_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.events_text())
+    }
+
+    /// Update `pids.max`.
+    pub fn write_pids_max(&self, data: &str) -> CgroupResult<()> {
+        self.require_pids_interface()?;
+        self.pids.set_maximum(data)
+    }
+
     /// Create a direct child.
     pub fn create_child(self: &Arc<Self>, name: &str) -> CgroupResult<Arc<Self>> {
         if name.is_empty() || name == "." || name == ".." || name.contains('/') {
@@ -71,6 +148,8 @@ impl CgroupNode {
             parent: Some(Arc::downgrade(self)),
             children: SpinLock::new(BTreeMap::new()),
             members: SpinLock::new(BTreeSet::new()),
+            pids: PidsState::new(),
+            pids_enabled_for_children: AtomicBool::new(false),
             pins: AtomicUsize::new(0),
         });
         children.insert(name.to_string(), Arc::clone(&child));
@@ -128,12 +207,34 @@ impl CgroupNode {
         self.members.lock_irqsave().contains(&pid)
     }
 
+    pub(crate) fn try_charge_pids(&self) -> CgroupResult<()> {
+        self.pids.try_charge()
+    }
+
+    pub(crate) fn charge_pids_unchecked(&self, count: u64) {
+        self.pids.charge_unchecked(count);
+    }
+
+    pub(crate) fn uncharge_pids(&self, count: u64) {
+        self.pids.uncharge(count);
+    }
+
+    pub(crate) fn record_pids_max_event(&self) {
+        self.pids.record_max_event();
+    }
+
     /// Pin this node as a namespace or mounted hierarchy root.
     pub fn pin(self: &Arc<Self>) -> CgroupPin {
         self.pins.fetch_add(1, Ordering::AcqRel);
         CgroupPin {
             node: Arc::clone(self),
         }
+    }
+
+    fn require_pids_interface(&self) -> CgroupResult<()> {
+        self.has_pids_interface()
+            .then_some(())
+            .ok_or(CgroupError::NotFound)
     }
 }
 
@@ -224,6 +325,23 @@ mod tests {
         drop(pin);
         assert_eq!(root.remove_child("child"), Ok(()));
         assert_eq!(incidental_reference.name(), "child");
+    }
+
+    #[test]
+    fn exposes_pids_only_after_the_parent_enables_it() {
+        let root = CgroupNode::new_root();
+        let child = root.create_child("child").unwrap();
+
+        assert_eq!(root.available_controllers(), ["pids"]);
+        assert!(!child.has_pids_interface());
+        assert_eq!(child.pids_max_text(), Err(CgroupError::NotFound));
+        assert_eq!(child.pids_peak_text(), Err(CgroupError::NotFound));
+
+        root.write_subtree_control("+pids").unwrap();
+
+        assert!(child.has_pids_interface());
+        assert_eq!(child.pids_max_text(), Ok(String::from("max\n")));
+        assert_eq!(child.pids_peak_text(), Ok(String::from("0\n")));
     }
 
     #[test]

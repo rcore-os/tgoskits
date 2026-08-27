@@ -6,7 +6,6 @@ axaddrspace
 axbacktrace
 axdevice
 axdevice_base
-ax-errno
 axfs-ng-vfs
 axhvc
 ax-io
@@ -22,10 +21,11 @@ ax-linked-list-r4l
 riscv-h
 ax-riscv-plic
 riscv_vplic
+x86_vlapic
 rsext4
 scope-local
-starry-process
 starry-signal
+starry-kernel
 starry-vm
 ax-timer-list
 ax-alloc
@@ -34,6 +34,7 @@ ax-driver
 rdrive
 ax-hal
 ax-sync
+ax-mm
 ax-task
 ax-input
 ax-ipi
@@ -45,3 +46,9 @@ rockchip-jpeg
 rockchip-npu
 rockchip-rga
 dwmmc-host
+ax-fs-ng
+ahci-driver
+nvme-driver
+rdif-block
+sdmmc-protocol
+axbuild

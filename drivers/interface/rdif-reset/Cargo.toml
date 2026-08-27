@@ -1,6 +1,6 @@
 [package]
 name = "rdif-reset"
-version = "0.1.2"
+version = "0.2.0"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 repository.workspace = true
@@ -10,12 +10,7 @@ keywords = ["os", "driver"]
 categories = ["embedded", "no-std"]
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 rdif-base = { workspace = true }
 thiserror = { workspace = true }
 
 [features]
-axtest = ["dep:axtest"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

@@ -128,7 +128,7 @@ impl PicState {
         }
     }
 
-    fn pulse_irq(&mut self, irq: u8) -> Option<u8> {
+    fn claim_irq(&mut self, irq: u8) -> Option<PicInterruptClaim> {
         if irq < 8 {
             self.master.pulse(irq);
         } else if irq < 16 {
@@ -137,20 +137,79 @@ impl PicState {
         } else {
             return None;
         }
-        self.next_interrupt()
+        self.claim_pending_interrupt()
     }
 
-    fn next_interrupt(&mut self) -> Option<u8> {
+    fn claim_pending_interrupt(&mut self) -> Option<PicInterruptClaim> {
         let master_irq = self.master.pending_irq()?;
         if master_irq != CASCADE_IRQ {
-            return Some(self.master.acknowledge(master_irq));
+            let master_in_service = !self.master.auto_eoi;
+            return Some(PicInterruptClaim {
+                vector: self.master.acknowledge(master_irq),
+                irq: master_irq,
+                master_in_service,
+                slave_in_service: false,
+            });
         }
 
         let Some(slave_irq) = self.slave.pending_irq() else {
-            return Some(self.master.acknowledge(master_irq));
+            let master_in_service = !self.master.auto_eoi;
+            return Some(PicInterruptClaim {
+                vector: self.master.acknowledge(master_irq),
+                irq: master_irq,
+                master_in_service,
+                slave_in_service: false,
+            });
         };
+        let master_in_service = !self.master.auto_eoi;
+        let slave_in_service = !self.slave.auto_eoi;
         self.master.acknowledge(master_irq);
-        Some(self.slave.acknowledge(slave_irq))
+        Some(PicInterruptClaim {
+            vector: self.slave.acknowledge(slave_irq),
+            irq: slave_irq + 8,
+            master_in_service,
+            slave_in_service,
+        })
+    }
+
+    fn restore_interrupt(&mut self, claim: PicInterruptClaim) {
+        if claim.irq < 8 {
+            self.master.pulse(claim.irq);
+            if claim.master_in_service {
+                self.master.in_service &= !(1 << claim.irq);
+            }
+            return;
+        }
+
+        let slave_irq = claim.irq - 8;
+        self.slave.pulse(slave_irq);
+        self.master.pulse(CASCADE_IRQ);
+        if claim.slave_in_service {
+            self.slave.in_service &= !(1 << slave_irq);
+        }
+        if claim.master_in_service {
+            self.master.in_service &= !(1 << CASCADE_IRQ);
+        }
+    }
+}
+
+/// A pending legacy PIC interrupt removed from the IRR for delivery.
+///
+/// The claim can be restored when the runtime cannot publish its vector. It is
+/// intentionally neither [`Copy`] nor [`Clone`] so one claim cannot be restored
+/// more than once through safe code.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PicInterruptClaim {
+    vector: u8,
+    irq: u8,
+    master_in_service: bool,
+    slave_in_service: bool,
+}
+
+impl PicInterruptClaim {
+    /// Returns the guest-programmed interrupt vector owned by this claim.
+    pub const fn vector(&self) -> u8 {
+        self.vector
     }
 }
 
@@ -177,7 +236,30 @@ impl EmulatedPic {
 
     /// Latches an edge on one legacy IRQ and returns an immediately deliverable vector.
     pub fn pulse_irq(&self, irq: u8) -> Option<u8> {
-        self.state.lock().pulse_irq(irq)
+        self.claim_irq(irq).map(|claim| claim.vector())
+    }
+
+    /// Re-evaluates the latched requests after a guest PIC state change.
+    ///
+    /// In particular, an EOI or an interrupt-mask update can make an edge that
+    /// was already present in the IRR deliverable without another source edge.
+    pub fn next_interrupt(&self) -> Option<u8> {
+        self.claim_pending_interrupt().map(|claim| claim.vector())
+    }
+
+    /// Latches one legacy IRQ edge and claims an immediately deliverable interrupt.
+    pub fn claim_irq(&self, irq: u8) -> Option<PicInterruptClaim> {
+        self.state.lock().claim_irq(irq)
+    }
+
+    /// Claims a request that became deliverable after a guest PIC state change.
+    pub fn claim_pending_interrupt(&self) -> Option<PicInterruptClaim> {
+        self.state.lock().claim_pending_interrupt()
+    }
+
+    /// Restores a claimed interrupt after publication to the vCPU failed.
+    pub fn restore_interrupt(&self, claim: PicInterruptClaim) {
+        self.state.lock().restore_interrupt(claim);
     }
 
     /// Handles one byte-wide PIC port read.
@@ -245,6 +327,9 @@ mod tests {
         assert_eq!(pic.pulse_irq(0), Some(0x68));
         assert_eq!(pic.pulse_irq(0), None);
         write(&pic, MASTER_COMMAND, 0x20);
-        assert_eq!(pic.pulse_irq(0), Some(0x68));
+        let claim = pic.claim_pending_interrupt().unwrap();
+        assert_eq!(claim.vector(), 0x68);
+        pic.restore_interrupt(claim);
+        assert_eq!(pic.next_interrupt(), Some(0x68));
     }
 }

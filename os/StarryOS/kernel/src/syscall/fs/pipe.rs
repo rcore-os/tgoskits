@@ -1,11 +1,13 @@
 use core::ffi::c_int;
 
-use ax_errno::{AxError, AxResult};
 use bitflags::bitflags;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use starry_vm::VmMutPtr;
 
-use crate::file::{FileLike, Pipe, close_file_like};
+use crate::{
+    StarryError, StarryResult,
+    file::{FileLike, Pipe, close_file_like},
+};
 
 bitflags! {
     /// Flags for the `pipe2` syscall.
@@ -18,10 +20,10 @@ bitflags! {
     }
 }
 
-pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> AxResult<isize> {
+pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> StarryResult<isize> {
     let flags = PipeFlags::from_bits(flags).ok_or_else(|| {
         warn!("sys_pipe2 <= unrecognized flags: {flags}");
-        AxError::InvalidInput
+        StarryError::InvalidInput
     })?;
 
     let cloexec = flags.contains(PipeFlags::CLOEXEC);
@@ -49,20 +51,20 @@ pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-#[cfg(axtest)]
-pub(crate) fn pipe_flags_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn pipe_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
     // Test PipeFlags validation
     let valid_flags = 0u32;
     assert!(PipeFlags::from_bits(valid_flags).is_some());
 
-    let cloexec_only = O_CLOEXEC as u32;
+    let cloexec_only = O_CLOEXEC;
     assert!(PipeFlags::from_bits(cloexec_only).is_some());
 
-    let nonblock_only = O_NONBLOCK as u32;
+    let nonblock_only = O_NONBLOCK;
     assert!(PipeFlags::from_bits(nonblock_only).is_some());
 
-    let all_valid = O_CLOEXEC as u32 | O_NONBLOCK as u32;
+    let all_valid = O_CLOEXEC | O_NONBLOCK;
     assert!(PipeFlags::from_bits(all_valid).is_some());
 
     // Invalid flag should return None
@@ -70,4 +72,12 @@ pub(crate) fn pipe_flags_validation_rules_hold_for_test() -> bool {
     assert!(PipeFlags::from_bits(invalid_flags).is_none());
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn pipe_flags_validation_rules_hold() {
+        assert!(super::pipe_flags_validation_rules_hold_for_test());
+    }
 }

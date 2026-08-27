@@ -26,14 +26,19 @@ use crate::{
 };
 
 mod propagation;
+
 mod unmount;
 
 pub use unmount::*;
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static MOUNT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static PEER_GROUP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
+
 static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 /// Serializes mount-tree and propagation-graph mutations.
 ///
@@ -811,7 +816,11 @@ impl Location {
         let mut components = vec![];
         let mut cur = self.clone();
         loop {
-            cur.entry.collect_absolute_path(&mut components);
+            while !cur.is_root_of_mount() {
+                components.push(cur.entry.name().to_owned());
+                let parent = cur.entry.parent().ok_or(VfsError::InvalidInput)?;
+                cur = cur.wrap(parent);
+            }
             cur = match cur.mountpoint.location() {
                 Some(loc) => loc,
                 None => break,
@@ -941,7 +950,7 @@ impl Location {
                 return Ok(self.wrap(entry).resolve_mountpoint());
             }
             Ok(_) => {}
-            Err(err) if err.canonicalize() == VfsError::NotFound => {}
+            Err(VfsError::NotFound) => {}
             Err(err) => return Err(err),
         }
 
@@ -1145,7 +1154,10 @@ impl Location {
         assert!(self.entry.ptr_eq(&self.mountpoint.root));
 
         let plan = self.mountpoint.plan_unmount(UnmountKind::Normal)?;
-        self.commit_unmount(plan)
+        self.filesystem().flush()?;
+        self.mountpoint.commit_normal_after_flush(plan)?;
+        self.finish_unmount();
+        Ok(())
     }
 
     /// Flushes this mount once and commits an already admitted unmount plan.
@@ -1159,11 +1171,15 @@ impl Location {
         }
         self.filesystem().flush()?;
         plan.commit()?;
+        self.finish_unmount();
+        Ok(())
+    }
+
+    fn finish_unmount(&self) {
         self.mountpoint.clear_expired();
         if let Ok(directory) = self.entry.as_dir() {
             directory.forget();
         }
-        Ok(())
     }
 
     pub fn detach_mount(&self) -> VfsResult<()> {
@@ -1194,7 +1210,10 @@ impl FsPollable for Location {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::{String, ToString};
+    use alloc::{
+        boxed::Box,
+        string::{String, ToString},
+    };
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
@@ -1212,6 +1231,14 @@ mod tests {
     }
     struct SymlinkFile {
         target: String,
+    }
+    struct TopologyChangingFs {
+        self_ref: Weak<Self>,
+        topology_change: Box<dyn Fn() + Send + Sync>,
+        flushes: AtomicUsize,
+    }
+    struct TopologyChangingNode {
+        filesystem: Arc<TopologyChangingFs>,
     }
     struct LifetimeGuard(Arc<AtomicUsize>);
 
@@ -1252,6 +1279,32 @@ mod tests {
 
         fn stat(&self) -> VfsResult<StatFs> {
             Err(VfsError::InvalidInput)
+        }
+    }
+
+    impl FilesystemOps for TopologyChangingFs {
+        fn name(&self) -> &str {
+            "topology-changing"
+        }
+
+        fn root_dir(&self) -> DirEntry {
+            let filesystem = self
+                .self_ref
+                .upgrade()
+                .expect("test filesystem must remain alive");
+            let node: Arc<dyn DirNodeOps> = Arc::new(TopologyChangingNode { filesystem });
+            DirEntry::new_dir(|_| DirNode::new(node), Reference::root())
+        }
+
+        fn stat(&self) -> VfsResult<StatFs> {
+            Err(VfsError::InvalidInput)
+        }
+
+        fn flush(&self) -> VfsResult<()> {
+            if self.flushes.fetch_add(1, Ordering::AcqRel) == 0 {
+                (self.topology_change)();
+            }
+            Ok(())
         }
     }
 
@@ -1313,6 +1366,86 @@ mod tests {
         fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    impl NodeOps for TopologyChangingNode {
+        fn inode(&self) -> u64 {
+            0
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Err(VfsError::InvalidInput)
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Err(VfsError::InvalidInput)
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            self.filesystem.as_ref()
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl DirNodeOps for TopologyChangingNode {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
+            Err(VfsError::NotFound)
+        }
+
+        fn create(
+            &self,
+            _name: &str,
+            _node_type: NodeType,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
         fn rename(
             &self,
             _src: &str,
@@ -1558,6 +1691,86 @@ mod tests {
             "/complete-target"
         );
         assert_eq!(symlink_create_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unmount_replans_after_unrelated_topology_change_during_flush() {
+        let parent_fs = mock_filesystem();
+        let parent = Mountpoint::new_root(&parent_fs);
+        let parent_root = parent.root_location();
+        let target_entry = make_child_dir_entry(Some(parent_root.entry().clone()), "mount-target");
+        let target = Location::new(parent.clone(), target_entry.clone());
+        let unrelated_mount = Mountpoint::new_root(&parent_fs);
+        let filesystem_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(move || unrelated_mount.set_shared()),
+            flushes: AtomicUsize::new(0),
+        });
+        let mounted_fs = Filesystem::new(filesystem_ops.clone());
+        let mounted = target.mount(&mounted_fs).expect("mount succeeds");
+
+        mounted
+            .root_location()
+            .unmount()
+            .expect("unmount replans after unrelated topology changes");
+
+        assert_eq!(filesystem_ops.flushes.load(Ordering::Acquire), 1);
+        assert!(!parent.children.lock().contains_key(&target_entry.key()));
+    }
+
+    #[test]
+    fn unmount_rejects_a_replan_that_adds_an_unflushed_peer() {
+        let parent_fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&parent_fs);
+        let peer_parent = Mountpoint::new_root(&parent_fs);
+        source_parent.set_shared();
+
+        let source_parent_root = source_parent.root_location();
+        let source_entry =
+            make_child_dir_entry(Some(source_parent_root.entry().clone()), "mount-target");
+        let source_target = Location::new(source_parent.clone(), source_entry.clone());
+        let peer_parent_root = peer_parent.root_location();
+        let peer_entry =
+            make_child_dir_entry(Some(peer_parent_root.entry().clone()), "mount-target");
+        let peer_target = Location::new(peer_parent.clone(), peer_entry.clone());
+
+        let source_parent_for_flush = source_parent.clone();
+        let peer_parent_for_flush = peer_parent.clone();
+        let source_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(move || {
+                peer_parent_for_flush.join_shared_group(&source_parent_for_flush);
+            }),
+            flushes: AtomicUsize::new(0),
+        });
+        let peer_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(|| {}),
+            flushes: AtomicUsize::new(0),
+        });
+        let source_mount = source_target
+            .mount(&Filesystem::new(source_ops.clone()))
+            .expect("source mount succeeds");
+        let peer_mount = peer_target
+            .mount(&Filesystem::new(peer_ops.clone()))
+            .expect("peer mount succeeds");
+
+        assert_eq!(
+            source_mount.root_location().unmount(),
+            Err(VfsError::ResourceBusy)
+        );
+
+        assert_eq!(source_ops.flushes.load(Ordering::Acquire), 1);
+        assert_eq!(peer_ops.flushes.load(Ordering::Acquire), 0);
+        assert!(source_mount.location().is_some());
+        assert!(peer_mount.location().is_some());
+        assert!(
+            source_parent
+                .children
+                .lock()
+                .contains_key(&source_entry.key())
+        );
+        assert!(peer_parent.children.lock().contains_key(&peer_entry.key()));
     }
 
     /// The global root is unattached (its mount `location` is `None`), so the

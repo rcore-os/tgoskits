@@ -190,7 +190,7 @@ impl Inode {
 
     fn xattr_error(error: rsext4::Ext4Error) -> VfsError {
         if error.kind() == rsext4::Ext4ErrorKind::NotFound {
-            VfsError::from(ax_errno::LinuxError::ENODATA).canonicalize()
+            VfsError::DataMissing
         } else {
             into_vfs_err(error)
         }

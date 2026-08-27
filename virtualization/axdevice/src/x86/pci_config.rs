@@ -54,6 +54,19 @@ impl X86PciConfigDevice {
             }),
         }
     }
+
+    fn decode_access(access: &DeviceAccess) -> Result<(u16, usize), DeviceError> {
+        if access.bus() != BusKind::Port {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        let size = Self::access_size(access.width())?;
+        let port = u16::try_from(access.address()).map_err(|_| DeviceError::OutOfRange {
+            addr: access.address(),
+        })?;
+        Ok((port, size))
+    }
 }
 
 impl Default for X86PciConfigDevice {
@@ -71,65 +84,70 @@ impl Device for X86PciConfigDevice {
         &self.resources
     }
 
-    fn access(
-        &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Port {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
-        }
-        let size = Self::access_size(access.width)?;
-        let port = u16::try_from(access.addr)
-            .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        let (port, size) = Self::decode_access(access)?;
         let mut state = self.state.lock_irqsave();
 
         if (CONFIG_ADDRESS_PORT..CONFIG_DATA_PORT).contains(&port) {
             let offset = usize::from(port - CONFIG_ADDRESS_PORT);
             if offset + size > 4 {
-                return Err(DeviceError::OutOfRange { addr: access.addr });
-            }
-            if access.is_read {
-                return Ok(BusResponse::Read {
-                    value: read_bytes(&state.address.to_le_bytes(), offset, size),
+                return Err(DeviceError::OutOfRange {
+                    addr: access.address(),
                 });
             }
-            let mut address = state.address.to_le_bytes();
-            write_bytes(&mut address, offset, size, access.data, &[u8::MAX; 4]);
-            state.address = u32::from_le_bytes(address);
-            return Ok(BusResponse::Write);
+            return Ok(read_bytes(&state.address.to_le_bytes(), offset, size));
         }
 
         if (CONFIG_DATA_PORT..CONFIG_DATA_PORT + 4).contains(&port) {
             let data_offset = usize::from(port - CONFIG_DATA_PORT);
             let Some((bus, device, function, register)) = state.selection(data_offset, size) else {
-                return Ok(if access.is_read {
-                    BusResponse::Read {
-                        value: all_ones(size),
-                    }
-                } else {
-                    BusResponse::Write
-                });
+                return Ok(all_ones(size));
             };
             let Some(config) = state.function_mut(bus, device, function) else {
-                return Ok(if access.is_read {
-                    BusResponse::Read {
-                        value: all_ones(size),
-                    }
-                } else {
-                    BusResponse::Write
-                });
+                return Ok(all_ones(size));
             };
-            if access.is_read {
-                Ok(BusResponse::Read {
-                    value: config.read(register, size),
-                })
-            } else {
-                config.write(register, size, access.data);
-                Ok(BusResponse::Write)
-            }
+            Ok(config.read(register, size))
         } else {
-            Err(DeviceError::OutOfRange { addr: access.addr })
+            Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            })
+        }
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        let (port, size) = Self::decode_access(access)?;
+        let mut state = self.state.lock_irqsave();
+
+        if (CONFIG_ADDRESS_PORT..CONFIG_DATA_PORT).contains(&port) {
+            let offset = usize::from(port - CONFIG_ADDRESS_PORT);
+            if offset + size > 4 {
+                return Err(DeviceError::OutOfRange {
+                    addr: access.address(),
+                });
+            }
+            let mut address = state.address.to_le_bytes();
+            write_bytes(&mut address, offset, size, value, &[u8::MAX; 4]);
+            state.address = u32::from_le_bytes(address);
+            return Ok(());
+        }
+
+        if (CONFIG_DATA_PORT..CONFIG_DATA_PORT + 4).contains(&port) {
+            let data_offset = usize::from(port - CONFIG_DATA_PORT);
+            if let Some((bus, device, function, register)) = state.selection(data_offset, size)
+                && let Some(config) = state.function_mut(bus, device, function)
+            {
+                config.write(register, size, value);
+            }
+            Ok(())
+        } else {
+            Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            })
         }
     }
 }
@@ -236,13 +254,13 @@ fn all_ones(size: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use axdevice_base::{DeviceAccess, DeviceId};
+    use axdevice_base::{DeviceContext, DeviceId, DeviceVcpuId};
 
     use super::*;
 
     struct NoMemory;
 
-    impl DeviceAccess for NoMemory {
+    impl DeviceContext for NoMemory {
         fn device_id(&self) -> DeviceId {
             DeviceId::new(0)
         }
@@ -250,36 +268,21 @@ mod tests {
 
     fn write(device: &X86PciConfigDevice, port: u16, width: AccessWidth, value: u64) {
         device
-            .access(
-                &BusAccess {
-                    kind: BusKind::Port,
-                    is_read: false,
-                    addr: u64::from(port),
-                    width,
-                    data: value,
-                },
+            .write(
+                &DeviceAccess::new(DeviceVcpuId::new(0), BusKind::Port, u64::from(port), width),
+                value,
                 &mut NoMemory,
             )
             .unwrap();
     }
 
     fn read(device: &X86PciConfigDevice, port: u16, width: AccessWidth) -> u64 {
-        match device
-            .access(
-                &BusAccess {
-                    kind: BusKind::Port,
-                    is_read: true,
-                    addr: u64::from(port),
-                    width,
-                    data: 0,
-                },
+        device
+            .read(
+                &DeviceAccess::new(DeviceVcpuId::new(0), BusKind::Port, u64::from(port), width),
                 &mut NoMemory,
             )
             .unwrap()
-        {
-            BusResponse::Read { value } => value,
-            BusResponse::Write => unreachable!(),
-        }
     }
 
     #[test]

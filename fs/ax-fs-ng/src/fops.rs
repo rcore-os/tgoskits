@@ -1,13 +1,16 @@
 use alloc::{string::String, vec::Vec};
 use core::time::Duration;
 
-use ax_errno::{AxError, AxResult};
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{
     FileRangeOperation, Metadata, MetadataUpdate, NodePermission, NodeType, PreallocationMode,
+    VfsError, VfsResult,
 };
 
-use crate::highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context};
+use crate::{
+    highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context},
+    io_error_to_vfs_error,
+};
 
 pub type FileType = NodeType;
 pub type FilePerm = NodePermission;
@@ -184,7 +187,7 @@ pub struct File {
 }
 
 impl File {
-    pub fn open(path: &str, opts: &OpenOptions) -> AxResult<Self> {
+    pub fn open(path: &str, opts: &OpenOptions) -> VfsResult<Self> {
         let fs_context = current_fs_context();
         let inner = opts.to_core().open(&fs_context.lock(), path)?;
         Ok(Self {
@@ -192,45 +195,45 @@ impl File {
         })
     }
 
-    pub fn truncate(&self, size: u64) -> AxResult {
+    pub fn truncate(&self, size: u64) -> VfsResult {
         self.inner.set_len(size)?;
         Ok(())
     }
 
-    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> AxResult {
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult {
         self.inner.preallocate(offset, len, mode)
     }
 
-    pub fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> AxResult {
+    pub fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> VfsResult {
         self.inner.operate_range(offset, len, operation)
     }
 
-    pub fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
-        self.inner.read(buf)
+    pub fn read(&mut self, buf: &mut [u8]) -> VfsResult<usize> {
+        self.inner.read(buf).map_err(io_error_to_vfs_error)
     }
 
-    pub fn read_at(&self, offset: u64, buf: &mut [u8]) -> AxResult<usize> {
+    pub fn read_at(&self, offset: u64, buf: &mut [u8]) -> VfsResult<usize> {
         self.inner.read_at(buf, offset)
     }
 
-    pub fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
-        self.inner.write(buf)
+    pub fn write(&mut self, buf: &[u8]) -> VfsResult<usize> {
+        self.inner.write(buf).map_err(io_error_to_vfs_error)
     }
 
-    pub fn write_at(&self, offset: u64, buf: &[u8]) -> AxResult<usize> {
+    pub fn write_at(&self, offset: u64, buf: &[u8]) -> VfsResult<usize> {
         self.inner.write_at(buf, offset)
     }
 
-    pub fn flush(&self) -> AxResult {
+    pub fn flush(&self) -> VfsResult {
         self.inner.sync(false)?;
         Ok(())
     }
 
-    pub fn seek(&mut self, pos: SeekFrom) -> AxResult<u64> {
-        (&self.inner).seek(pos)
+    pub fn seek(&mut self, pos: SeekFrom) -> VfsResult<u64> {
+        (&self.inner).seek(pos).map_err(io_error_to_vfs_error)
     }
 
-    pub fn get_attr(&self) -> AxResult<FileAttr> {
+    pub fn get_attr(&self) -> VfsResult<FileAttr> {
         self.inner.location().metadata()
     }
 
@@ -239,7 +242,7 @@ impl File {
     /// # Errors
     ///
     /// Returns the underlying filesystem error when metadata cannot be updated.
-    pub fn set_times(&self, atime: Option<Duration>, mtime: Option<Duration>) -> AxResult {
+    pub fn set_times(&self, atime: Option<Duration>, mtime: Option<Duration>) -> VfsResult {
         self.inner.location().update_metadata(MetadataUpdate {
             atime,
             mtime,
@@ -255,7 +258,7 @@ pub struct Directory {
 }
 
 impl Directory {
-    pub fn open_dir(path: &str, opts: &OpenOptions) -> AxResult<Self> {
+    pub fn open_dir(path: &str, opts: &OpenOptions) -> VfsResult<Self> {
         if !opts.read
             || opts.write
             || opts.append
@@ -263,7 +266,7 @@ impl Directory {
             || opts.create
             || opts.create_new
         {
-            return Err(AxError::InvalidInput);
+            return Err(VfsError::InvalidInput);
         }
         let entries = {
             let fs_context = current_fs_context();
@@ -278,12 +281,12 @@ impl Directory {
                     next_offset: entry.offset,
                 });
             }
-            Ok::<_, AxError>(entries)
+            Ok::<_, VfsError>(entries)
         }?;
         Ok(Self { entries, cursor: 0 })
     }
 
-    pub fn read_dir(&mut self, dirents: &mut [DirEntry]) -> AxResult<usize> {
+    pub fn read_dir(&mut self, dirents: &mut [DirEntry]) -> VfsResult<usize> {
         let mut count = 0;
         for slot in dirents.iter_mut() {
             let Some(entry) = self.entries.get(self.cursor).cloned() else {
@@ -309,15 +312,17 @@ impl Directory {
     }
 
     /// Seeks the materialized directory view by its visible directory cookie.
-    pub fn seek(&mut self, pos: SeekFrom) -> AxResult<u64> {
+    pub fn seek(&mut self, pos: SeekFrom) -> VfsResult<u64> {
         let current = self.current_offset();
         let end = self.entries.last().map_or(0, DirEntry::next_offset);
         let target = match pos {
             SeekFrom::Start(offset) => offset,
             SeekFrom::Current(delta) => current
                 .checked_add_signed(delta)
-                .ok_or(AxError::InvalidInput)?,
-            SeekFrom::End(delta) => end.checked_add_signed(delta).ok_or(AxError::InvalidInput)?,
+                .ok_or(VfsError::InvalidInput)?,
+            SeekFrom::End(delta) => end
+                .checked_add_signed(delta)
+                .ok_or(VfsError::InvalidInput)?,
         };
         self.cursor = if target == 0 {
             0

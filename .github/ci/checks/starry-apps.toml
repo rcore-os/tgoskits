@@ -1,0 +1,73 @@
+schema_version = 3
+phase = "starry_apps"
+group = "Starry Apps"
+
+[[check]]
+id = "starry-apps-clippy-all"
+name = "Workspace · Full Clippy"
+cache_key = "starry-apps-clippy-all"
+container_preflight = "none"
+events = ["schedule"]
+enable_boolean_input = "run_clippy_all"
+command = '''
+cargo xtask clippy --all
+'''
+
+[[check]]
+id = "starry-app-smoke-x86-64"
+name = "QEMU x86_64 · App smoke"
+cache_key = "starry-apps-x86_64"
+apk_region = "us"
+container_preflight = "qemu-user"
+command = '''
+cargo xtask starry app qemu --all --arch x86_64
+'''
+
+[[check]]
+id = "starry-app-smoke-aarch64"
+name = "QEMU aarch64 · App smoke"
+cache_key = "starry-apps-aarch64"
+apk_region = "us"
+container_preflight = "qemu-user"
+command = '''
+cargo xtask starry app qemu --all --arch aarch64
+'''
+
+[[check]]
+id = "starry-app-smoke-riscv64"
+name = "QEMU riscv64 · App smoke"
+cache_key = "starry-apps-riscv64"
+apk_region = "us"
+container_preflight = "qemu-user"
+command = '''
+cargo xtask starry app qemu --all --arch riscv64
+'''
+
+[[check]]
+id = "starry-app-smoke-loongarch64"
+name = "QEMU loongarch64 · App smoke"
+cache_key = "starry-apps-loongarch64"
+apk_region = "us"
+container_preflight = "qemu-user"
+command = '''
+cargo xtask starry app qemu --all --arch loongarch64
+'''
+
+[[check]]
+id = "starry-nixos-x86-64-qemu"
+name = "QEMU x86_64 · NixOS Stage-2"
+runner = "ubuntu-host"
+timeout_minutes = 45
+container_preflight = "none"
+command = '''
+docker run --rm \
+  --env NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false' \
+  --volume "$PWD:/workspace" \
+  --workdir /workspace \
+  docker.io/nixos/nix:2.33.1 \
+  sh -lc '
+    git config --global --add safe.directory /workspace
+    nix develop --accept-flake-config -c \
+      cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
+  '
+'''

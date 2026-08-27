@@ -63,7 +63,7 @@ pub(super) fn run_analyzer(args: AnalyzerRun<'_>) -> anyhow::Result<()> {
         command.arg("--no-demangle");
     }
     if let Some(focus) = args.focus {
-        command.arg("--focus").arg(focus);
+        command.arg_option_value("--focus", focus.as_ref());
     }
     command.arg("--stats").arg(args.resolve_stats);
     if let Some(depth_summary) = args.depth_summary {

@@ -195,7 +195,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
     host.set_reset_hook(RockchipSdhciResetHook { resets });
     host.set_timer(&HOST_TIMER);
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     let config = rockchip_sdhci_rdif_config(0, &dma);
     host.configure_dma(dma).map_err(|err| {
         OnProbeError::other(alloc::format!(
@@ -391,9 +395,12 @@ mod tests {
         let limits = sdmmc_protocol::rdif::config::queue_limits(&config);
 
         assert_eq!(limits.max_blocks_per_request, sdhci_host::ADMA2_MAX_BLOCKS);
-        assert_eq!(limits.max_segment_size, sdhci_host::ADMA2_MAX_TRANSFER_SIZE);
         assert_eq!(
-            limits.segment_boundary,
+            limits.dma.constraints().max_segment_size,
+            Some(sdhci_host::ADMA2_MAX_TRANSFER_SIZE)
+        );
+        assert_eq!(
+            limits.dma.constraints().boundary,
             Some(sdhci_host::DWC_MSHC_ADMA_BOUNDARY)
         );
         assert_eq!(limits.max_segments, 1);
@@ -505,7 +512,14 @@ mod tests {
     }
 
     fn test_dma() -> dma_api::DeviceDma {
-        dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA)
+        dma_api::DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u32::MAX as u64),
+            ),
+            &TEST_DMA,
+        )
     }
 
     struct TestDma;

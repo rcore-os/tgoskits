@@ -18,10 +18,13 @@ const RK3588_NPU_CLOCK_NAME: &str = "clk_npu";
 // Highest RK3588 NPU OPP that needs no more than the firmware-provided 750 mV.
 const RK3588_NPU_FIXED_RATE_HZ: u64 = 800_000_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error("Rockchip NPU is unavailable or the requested object was not found")]
     NotFound,
+    #[error("Rockchip NPU is busy")]
     Busy,
+    #[error("Rockchip NPU request contains invalid data")]
     InvalidData,
 }
 
@@ -60,7 +63,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         base_regs.push(unsafe { iomap(start, size)?.add(offset) });
     }
 
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(&info),
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     let npu = Rknpu::new(&base_regs, config, dma);
     plat_dev.register(npu);
     info!("NPU registered successfully");

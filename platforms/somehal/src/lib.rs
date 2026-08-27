@@ -9,7 +9,12 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+#[cfg(test)]
+extern crate std;
+
 mod boot_console;
+#[cfg(not(target_arch = "x86_64"))]
+pub mod boot_timer;
 pub mod cache;
 pub(crate) mod common;
 pub mod cpu;
@@ -25,10 +30,19 @@ pub use page_table_generic::{PagingError, PagingResult};
 pub use platform::platform_name;
 pub use setup::KernelOp;
 pub use someboot::{
-    bootargs, console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys, smp, timer,
+    boot_entropy, bootargs, console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys,
+    smp,
 };
 pub use somehal_macros::somehal_secondary_entry as secondary_entry;
 
+#[cfg(target_arch = "x86_64")]
+pub use crate::arch::timer;
+// The system-timer surface differs by where the timer lives: on x86_64 it is
+// inside the local APIC and armed by the interrupt-controller driver in
+// `arch::x86_64::timer`; other architectures arm it through someboot's
+// `SystimerArch` capability.
+#[cfg(not(target_arch = "x86_64"))]
+pub use crate::boot_timer as timer;
 use crate::common::PlatOp;
 
 #[cfg(target_arch = "loongarch64")]
@@ -96,5 +110,16 @@ fn secondary_entry() -> ! {
     unsafe { __somehal_secondary(meta) };
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
+#[cfg(test)]
+mod host_link_symbols {
+    // somehal host tests never execute the someboot entry path. These symbols
+    // only satisfy linker-script references retained through the platform API.
+    #[unsafe(no_mangle)]
+    static STACK_SIZE: usize = 0;
+    #[unsafe(no_mangle)]
+    static PAGE_SIZE: usize = 0;
+    #[unsafe(no_mangle)]
+    static __PERCPU_TEMPLATE_ALIGN_START: usize = 0;
+    #[unsafe(no_mangle)]
+    static __PERCPU_TEMPLATE_ALIGN_END: usize = 0;
+}

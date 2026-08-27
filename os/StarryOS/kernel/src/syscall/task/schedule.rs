@@ -1,6 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::{self, time::TimeValue};
 use ax_task::{
     AxCpuMask, current,
@@ -14,9 +13,11 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use crate::{
+    StarryError, StarryResult,
     task::{
-        AsThread, Cred, ProcessData, get_process_data, get_process_group, get_task, is_zombie_pid,
-        processes,
+        AsThread, Cred, PgidNumber, ProcessData, TgidNumber, TidNumber, current_pid_view,
+        get_task_by_number, get_user_process_data_by_number, get_user_task_by_number,
+        is_user_zombie_process, processes,
     },
     time::TimeValueLike,
 };
@@ -27,24 +28,24 @@ struct SchedParam {
     sched_priority: i32,
 }
 
-pub fn sys_sched_yield() -> AxResult<isize> {
+pub fn sys_sched_yield() -> StarryResult<isize> {
     ax_task::yield_now();
     Ok(0)
 }
 
-fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> (AxResult<()>, TimeValue) {
+fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> (StarryResult<()>, TimeValue) {
     debug!("sleep_impl <= {dur:?}");
 
     let start = clock();
 
     // TODO: currently ignoring concrete clock type
-    let result = block_on(interruptible(sleep(dur))).map_err(AxError::from);
+    let result = block_on(interruptible(sleep(dur))).map_err(StarryError::from);
 
     (result, clock() - start)
 }
 
 /// Sleep some nanoseconds
-pub fn sys_nanosleep(req: *const timespec, rem: *mut timespec) -> AxResult<isize> {
+pub fn sys_nanosleep(req: *const timespec, rem: *mut timespec) -> StarryResult<isize> {
     // FIXME: AnyBitPattern
     let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
     debug!("sys_nanosleep <= req: {req:?}");
@@ -69,13 +70,13 @@ pub fn sys_clock_nanosleep(
     flags: u32,
     req: *const timespec,
     rem: *mut timespec,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let clock = match clock_id as u32 {
         CLOCK_REALTIME => hal::time::wall_time,
         CLOCK_MONOTONIC => hal::time::monotonic_time,
         _ => {
             warn!("Unsupported clock_id: {clock_id}");
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     };
 
@@ -106,12 +107,16 @@ pub fn sys_clock_nanosleep(
     }
 }
 
-pub fn sys_sched_getaffinity(pid: i32, cpusetsize: usize, user_mask: *mut u8) -> AxResult<isize> {
+pub fn sys_sched_getaffinity(
+    pid: i32,
+    cpusetsize: usize,
+    user_mask: *mut u8,
+) -> StarryResult<isize> {
     if cpusetsize * 8 < hal::cpu_num() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
-    let task = get_task_by_sched_pid(pid)?;
+    let task = SchedulerTarget::try_from(pid)?.resolve()?;
     let mask = task.cpumask();
     let mask_bytes = mask.as_bytes();
 
@@ -120,13 +125,12 @@ pub fn sys_sched_getaffinity(pid: i32, cpusetsize: usize, user_mask: *mut u8) ->
     Ok(mask_bytes.len() as _)
 }
 
-pub fn check_sched_permission(pid: i32) -> AxResult<()> {
+fn check_sched_permission(task: &ax_task::AxTaskRef) -> StarryResult<()> {
     let caller = current().as_thread().cred();
-    let task = get_task_by_sched_pid(pid)?;
     if task.id() == current().id() {
         return Ok(());
     }
-    let target_proc = get_process_data(pid as u32)?;
+    let target_proc = task.as_thread().proc_data.clone();
     let target_cred = process_cred(&target_proc)?;
     if caller.has_cap_sys_nice()
         || caller.euid == target_cred.uid
@@ -134,13 +138,17 @@ pub fn check_sched_permission(pid: i32) -> AxResult<()> {
     {
         Ok(())
     } else {
-        Err(AxError::OperationNotPermitted)
+        Err(StarryError::OperationNotPermitted)
     }
 }
 
-pub fn sys_sched_setaffinity(pid: i32, cpusetsize: usize, user_mask: *const u8) -> AxResult<isize> {
-    check_sched_permission(pid)?;
-    let task = get_task_by_sched_pid(pid)?;
+pub fn sys_sched_setaffinity(
+    pid: i32,
+    cpusetsize: usize,
+    user_mask: *const u8,
+) -> StarryResult<isize> {
+    let task = SchedulerTarget::try_from(pid)?.resolve()?;
+    check_sched_permission(&task)?;
     let size = cpusetsize.min(hal::cpu_num().div_ceil(8));
     let user_mask = vm_load(user_mask, size)?;
     let mut cpu_mask = AxCpuMask::new();
@@ -152,7 +160,7 @@ pub fn sys_sched_setaffinity(pid: i32, cpusetsize: usize, user_mask: *const u8) 
     }
 
     if cpu_mask.is_empty() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if task.id() == current().id() {
         ax_task::set_current_affinity(cpu_mask);
@@ -164,48 +172,67 @@ pub fn sys_sched_setaffinity(pid: i32, cpusetsize: usize, user_mask: *const u8) 
     Ok(0)
 }
 
-fn get_task_by_sched_pid(pid: i32) -> AxResult<ax_task::AxTaskRef> {
-    if pid < 0 {
-        return Err(AxError::InvalidInput);
-    }
-    get_task(pid as _)
+enum SchedulerTarget {
+    Current,
+    Thread(TidNumber),
 }
 
-pub fn sys_sched_getscheduler(_pid: i32) -> AxResult<isize> {
-    let task = get_task_by_sched_pid(_pid)?;
+impl SchedulerTarget {
+    fn resolve(self) -> StarryResult<ax_task::AxTaskRef> {
+        match self {
+            Self::Current => Ok(current().clone()),
+            Self::Thread(tid) => get_user_task_by_number(tid),
+        }
+    }
+}
+
+impl TryFrom<i32> for SchedulerTarget {
+    type Error = StarryError;
+
+    fn try_from(pid: i32) -> Result<Self, Self::Error> {
+        match pid {
+            ..0 => Err(StarryError::InvalidInput),
+            0 => Ok(Self::Current),
+            1.. => Ok(Self::Thread(TidNumber::try_from(pid as u32)?)),
+        }
+    }
+}
+
+pub fn sys_sched_getscheduler(pid: i32) -> StarryResult<isize> {
+    let task = SchedulerTarget::try_from(pid)?.resolve()?;
     Ok(task.sched_policy() as isize)
 }
 
-pub fn sys_sched_setscheduler(_pid: i32, _policy: i32, _param: *const ()) -> AxResult<isize> {
-    check_sched_permission(_pid)?;
-    let task = get_task_by_sched_pid(_pid)?;
+pub fn sys_sched_setscheduler(pid: i32, policy: i32, param: *const ()) -> StarryResult<isize> {
+    let task = SchedulerTarget::try_from(pid)?.resolve()?;
+    check_sched_permission(&task)?;
     let caller = current().as_thread().cred();
-    if _param.is_null() {
-        return Err(AxError::InvalidInput);
+    if param.is_null() {
+        return Err(StarryError::InvalidInput);
     }
-    let user_param = vm_load::<SchedParam>(_param.cast(), 1)?;
+    let user_param = vm_load::<SchedParam>(param.cast(), 1)?;
     let user_param = user_param[0];
-    let mut policy = _policy as u32;
+    let mut policy = policy as u32;
     const SCHED_RESET_ON_FORK: u32 = 0x40000000;
     let _reset_on_fork = (policy & SCHED_RESET_ON_FORK) != 0;
     policy &= !SCHED_RESET_ON_FORK;
     let prio = user_param.sched_priority;
     match policy {
         SCHED_NORMAL | SCHED_FIFO | SCHED_RR | SCHED_BATCH | SCHED_IDLE => {}
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     }
     match policy {
         SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE => {
             if prio != 0 {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
         }
         SCHED_FIFO | SCHED_RR => {
             if !(1..=99).contains(&prio) {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             if !caller.has_cap_sys_nice() {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
         }
         _ => unreachable!(),
@@ -215,18 +242,18 @@ pub fn sys_sched_setscheduler(_pid: i32, _policy: i32, _param: *const ()) -> AxR
     Ok(0)
 }
 
-pub fn sys_sched_getparam(_pid: i32, _param: *mut ()) -> AxResult<isize> {
-    let task = get_task_by_sched_pid(_pid)?;
-    if _param.is_null() {
-        return Err(AxError::InvalidInput);
+pub fn sys_sched_getparam(pid: i32, param: *mut ()) -> StarryResult<isize> {
+    let task = SchedulerTarget::try_from(pid)?.resolve()?;
+    if param.is_null() {
+        return Err(StarryError::InvalidInput);
     }
-    let param = SchedParam {
+    let sched_param = SchedParam {
         sched_priority: task.sched_priority(),
     };
-    let ptr = _param as *mut SchedParam;
+    let ptr = param as *mut SchedParam;
     unsafe {
         let bytes = core::slice::from_raw_parts(
-            &param as *const SchedParam as *const u8,
+            &sched_param as *const SchedParam as *const u8,
             core::mem::size_of::<SchedParam>(),
         );
         vm_write_slice(ptr as *mut u8, bytes)?;
@@ -234,72 +261,108 @@ pub fn sys_sched_getparam(_pid: i32, _param: *mut ()) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
-    debug!("sys_getpriority <= which: {which}, who: {who}");
+enum PrioritySelector {
+    CurrentProcess,
+    Process(TgidNumber),
+    CurrentProcessGroup,
+    ProcessGroup(PgidNumber),
+    CurrentUser,
+    User(u32),
+}
 
-    match which {
-        PRIO_PROCESS => match get_process_data(who) {
-            Ok(proc) => Ok(raw_priority(proc.nice())),
-            Err(AxError::NoSuchProcess) if who != 0 && is_zombie_pid(who) => Ok(20),
-            Err(err) => Err(err),
-        },
-        PRIO_PGRP => {
-            let pgid = if who == 0 {
-                current().as_thread().proc_data.proc.group().pgid()
-            } else {
-                get_process_group(who)?.pgid()
-            };
-            min_priority_for_processes(
-                processes()
-                    .into_iter()
-                    .filter(|proc| proc.proc.group().pgid() == pgid),
-            )
+impl PrioritySelector {
+    fn parse(which: u32, who: u32) -> StarryResult<Self> {
+        match (which, who) {
+            (PRIO_PROCESS, 0) => Ok(Self::CurrentProcess),
+            (PRIO_PROCESS, _) => Ok(Self::Process(TgidNumber::try_from(who)?)),
+            (PRIO_PGRP, 0) => Ok(Self::CurrentProcessGroup),
+            (PRIO_PGRP, _) => Ok(Self::ProcessGroup(PgidNumber::try_from(who)?)),
+            (PRIO_USER, 0) => Ok(Self::CurrentUser),
+            (PRIO_USER, _) => Ok(Self::User(who)),
+            _ => Err(StarryError::InvalidInput),
         }
-        PRIO_USER => {
-            let uid = if who == 0 {
-                current().as_thread().cred().uid
-            } else {
-                who
-            };
-            min_priority_for_processes(processes_for_uid(uid).into_iter())
-        }
-        _ => Err(AxError::InvalidInput),
     }
 }
 
-pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> AxResult<isize> {
+pub fn sys_getpriority(which: u32, who: u32) -> StarryResult<isize> {
+    debug!("sys_getpriority <= which: {which}, who: {who}");
+
+    match PrioritySelector::parse(which, who)? {
+        PrioritySelector::CurrentProcess => {
+            Ok(raw_priority(current().as_thread().proc_data.nice()))
+        }
+        PrioritySelector::Process(tgid) => match get_user_process_data_by_number(tgid) {
+            Ok(proc) => Ok(raw_priority(proc.nice())),
+            Err(StarryError::NoSuchProcess) if is_user_zombie_process(tgid) => Ok(20),
+            Err(err) => Err(err),
+        },
+        PrioritySelector::CurrentProcessGroup => {
+            let group = current().as_thread().proc_data.proc.group();
+            min_priority_for_processes(
+                processes()
+                    .into_iter()
+                    .filter(|proc| Arc::ptr_eq(&proc.proc.group(), &group)),
+            )
+        }
+        PrioritySelector::ProcessGroup(pgid) => {
+            let group = current_pid_view().resolve_group(pgid)?;
+            min_priority_for_processes(
+                processes()
+                    .into_iter()
+                    .filter(|proc| Arc::ptr_eq(&proc.proc.group(), &group)),
+            )
+        }
+        PrioritySelector::CurrentUser => min_priority_for_processes(
+            processes_for_uid(current().as_thread().cred().uid).into_iter(),
+        ),
+        PrioritySelector::User(uid) => {
+            min_priority_for_processes(processes_for_uid(uid).into_iter())
+        }
+    }
+}
+
+pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> StarryResult<isize> {
     debug!("sys_setpriority <= which: {which}, who: {who}, prio: {prio}");
 
     let nice = prio.clamp(-20, 19);
-    match which {
-        PRIO_PROCESS => {
-            let proc = get_process_data(who)?;
+    match PrioritySelector::parse(which, who)? {
+        PrioritySelector::CurrentProcess => {
+            let proc = current().as_thread().proc_data.clone();
             check_setpriority_permission(&proc, nice)?;
             proc.set_nice(nice);
             Ok(0)
         }
-        PRIO_PGRP => {
-            let pgid = if who == 0 {
-                current().as_thread().proc_data.proc.group().pgid()
-            } else {
-                get_process_group(who)?.pgid()
-            };
+        PrioritySelector::Process(tgid) => {
+            let proc = get_user_process_data_by_number(tgid)?;
+            check_setpriority_permission(&proc, nice)?;
+            proc.set_nice(nice);
+            Ok(0)
+        }
+        PrioritySelector::CurrentProcessGroup => {
+            let group = current().as_thread().proc_data.proc.group();
             set_priority_for_processes(
                 processes()
                     .into_iter()
-                    .filter(|proc| proc.proc.group().pgid() == pgid),
+                    .filter(|proc| Arc::ptr_eq(&proc.proc.group(), &group)),
                 nice,
             )
         }
-        PRIO_USER => {
-            let uid = if who == 0 {
-                current().as_thread().cred().uid
-            } else {
-                who
-            };
+        PrioritySelector::ProcessGroup(pgid) => {
+            let group = current_pid_view().resolve_group(pgid)?;
+            set_priority_for_processes(
+                processes()
+                    .into_iter()
+                    .filter(|proc| Arc::ptr_eq(&proc.proc.group(), &group)),
+                nice,
+            )
+        }
+        PrioritySelector::CurrentUser => set_priority_for_processes(
+            processes_for_uid(current().as_thread().cred().uid).into_iter(),
+            nice,
+        ),
+        PrioritySelector::User(uid) => {
             set_priority_for_processes(processes_for_uid(uid).into_iter(), nice)
         }
-        _ => Err(AxError::InvalidInput),
     }
 }
 
@@ -309,12 +372,12 @@ fn raw_priority(nice: i32) -> isize {
 
 fn min_priority_for_processes(
     procs: impl Iterator<Item = alloc::sync::Arc<ProcessData>>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     procs
         .map(|proc| proc.nice())
         .min()
         .map(raw_priority)
-        .ok_or(AxError::NoSuchProcess)
+        .ok_or(StarryError::NoSuchProcess)
 }
 
 fn processes_for_uid(uid: u32) -> Vec<Arc<ProcessData>> {
@@ -328,22 +391,22 @@ fn processes_for_uid(uid: u32) -> Vec<Arc<ProcessData>> {
         .collect()
 }
 
-fn process_cred(proc: &ProcessData) -> AxResult<Arc<Cred>> {
+fn process_cred(proc: &ProcessData) -> StarryResult<Arc<Cred>> {
     for tid in proc.proc.threads() {
-        if let Ok(task) = get_task(tid)
+        if let Ok(task) = get_task_by_number(tid)
             && let Some(thread) = task.try_as_thread()
         {
             return Ok(thread.cred());
         }
     }
-    Err(AxError::NoSuchProcess)
+    Err(StarryError::NoSuchProcess)
 }
 
 fn setpriority_cred_matches(caller: &Cred, target: &Cred) -> bool {
     caller.euid == target.uid || caller.euid == target.euid
 }
 
-fn check_setpriority_permission(proc: &ProcessData, nice: i32) -> AxResult<()> {
+fn check_setpriority_permission(proc: &ProcessData, nice: i32) -> StarryResult<()> {
     let caller = current().as_thread().cred();
     if caller.has_cap_sys_nice() {
         return Ok(());
@@ -351,10 +414,10 @@ fn check_setpriority_permission(proc: &ProcessData, nice: i32) -> AxResult<()> {
 
     let target = process_cred(proc)?;
     if !setpriority_cred_matches(&caller, &target) {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
     if nice < proc.nice() {
-        return Err(AxError::PermissionDenied);
+        return Err(StarryError::PermissionDenied);
     }
     Ok(())
 }
@@ -362,10 +425,10 @@ fn check_setpriority_permission(proc: &ProcessData, nice: i32) -> AxResult<()> {
 fn set_priority_for_processes(
     procs: impl Iterator<Item = alloc::sync::Arc<ProcessData>>,
     nice: i32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let procs: Vec<_> = procs.collect();
     if procs.is_empty() {
-        return Err(AxError::NoSuchProcess);
+        return Err(StarryError::NoSuchProcess);
     }
     for proc in &procs {
         check_setpriority_permission(proc, nice)?;
@@ -376,22 +439,21 @@ fn set_priority_for_processes(
     Ok(0)
 }
 
-#[cfg(axtest)]
-pub(crate) fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLOCK_MONOTONIC, CLOCK_REALTIME, SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL,
         SCHED_RR,
     };
 
     // Test clock_nanosleep clock_id validation
-    let valid_clocks = [CLOCK_REALTIME as u32, CLOCK_MONOTONIC as u32];
+    let valid_clocks = [CLOCK_REALTIME, CLOCK_MONOTONIC];
 
     for &clock in &valid_clocks {
-        assert!(clock == CLOCK_REALTIME as u32 || clock == CLOCK_MONOTONIC as u32);
+        assert!(clock == CLOCK_REALTIME || clock == CLOCK_MONOTONIC);
     }
 
-    // Invalid clock ID
-    assert!(999u32 != CLOCK_REALTIME as u32 && 999u32 != CLOCK_MONOTONIC as u32);
+    assert!(!valid_clocks.contains(&999u32));
 
     // Test valid scheduler policies
     let valid_policies = [SCHED_NORMAL, SCHED_FIFO, SCHED_RR, SCHED_BATCH, SCHED_IDLE];
@@ -399,4 +461,12 @@ pub(crate) fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool 
     assert!(valid_policies.contains(&SCHED_NORMAL));
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn schedule_clock_and_sched_validation_rules_hold() {
+        assert!(super::schedule_clock_and_sched_validation_rules_hold_for_test());
+    }
 }

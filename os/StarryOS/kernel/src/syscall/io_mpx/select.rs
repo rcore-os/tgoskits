@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 use core::{fmt, time::Duration};
 
-use ax_errno::{AxError, AxResult};
 use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use bitmaps::Bitmap;
@@ -13,6 +12,7 @@ use starry_signal::SignalSet;
 
 use super::FdPollSet;
 use crate::{
+    StarryError, StarryResult,
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
     task::with_blocked_signals,
@@ -57,9 +57,9 @@ fn do_select(
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: Option<Duration>,
     sigmask: UserConstPtr<SignalSetWithSize>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if nfds > __FD_SETSIZE {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let sigmask = if let Some(sigmask) = nullable!(sigmask.get_as_ref())? {
         check_sigset_size(sigmask.sigsetsize)?;
@@ -91,7 +91,7 @@ fn do_select(
     for fd in fd_bitmap.into_iter() {
         let f = fd_table
             .get(fd)
-            .ok_or(AxError::BadFileDescriptor)?
+            .ok_or(StarryError::BadFileDescriptor)?
             .inner
             .clone();
         let mut events = IoEvents::empty();
@@ -146,7 +146,7 @@ fn do_select(
                     return Ok(res as _);
                 }
 
-                Err(AxError::WouldBlock)
+                Err(StarryError::WouldBlock)
             }),
         ));
         match result {
@@ -169,7 +169,7 @@ pub fn sys_select(
     writefds: UserPtr<__kernel_fd_set>,
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timeval>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     do_select(
         nfds,
         readfds,
@@ -196,7 +196,7 @@ pub fn sys_pselect6(
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSetWithSize>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     do_select(
         nfds,
         readfds,
@@ -209,20 +209,28 @@ pub fn sys_pselect6(
     )
 }
 
-#[cfg(axtest)]
-pub(crate) fn select_fd_set_and_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn select_fd_set_and_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::__FD_SETSIZE;
 
     // Test nfds validation: must be <= __FD_SETSIZE
     let valid_nfds = 1024u32;
-    assert!(valid_nfds <= __FD_SETSIZE as u32);
+    assert!(valid_nfds <= __FD_SETSIZE);
 
-    let max_nfds = __FD_SETSIZE as u32;
-    assert!(max_nfds <= __FD_SETSIZE as u32);
+    let max_nfds = __FD_SETSIZE;
+    assert!(max_nfds <= __FD_SETSIZE);
 
     // Invalid: nfds > __FD_SETSIZE
-    let invalid_nfds = (__FD_SETSIZE + 1) as u32;
-    assert!(invalid_nfds > __FD_SETSIZE as u32);
+    let invalid_nfds = __FD_SETSIZE + 1;
+    assert!(invalid_nfds > __FD_SETSIZE);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn select_fd_set_and_validation_rules_hold() {
+        assert!(super::select_fd_set_and_validation_rules_hold_for_test());
+    }
 }

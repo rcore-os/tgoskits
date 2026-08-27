@@ -64,6 +64,17 @@ pub struct IpcPerm {
     pub unused1: c_long,
 }
 
+impl IpcPerm {
+    /// Applies the fields that Linux permits userspace to change via IPC_SET.
+    fn update_from_user(&mut self, requested: &Self) {
+        const PERMISSION_BITS: __kernel_mode_t = 0o777;
+
+        self.uid = requested.uid;
+        self.gid = requested.gid;
+        self.mode = (self.mode & !PERMISSION_BITS) | (requested.mode & PERMISSION_BITS);
+    }
+}
+
 // add a helper function to check IPC permissions
 fn has_ipc_permission(perm: &IpcPerm, current_uid: u32, current_gid: u32, is_write: bool) -> bool {
     // root user has all permissions
@@ -80,12 +91,13 @@ fn has_ipc_permission(perm: &IpcPerm, current_uid: u32, current_gid: u32, is_wri
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
-    // Test IPC constants
-    assert!(IPC_PRIVATE == 0);
-    assert!(IPC_CREAT == 0o1000);
-    assert!(IPC_EXCL == 0o2000);
+#[cfg(all(test, not(axtest)))]
+fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
+    const {
+        assert!(IPC_PRIVATE == 0);
+        assert!(IPC_CREAT == 0o1000);
+        assert!(IPC_EXCL == 0o2000);
+    }
 
     // Test has_ipc_permission logic
     let perm = IpcPerm {
@@ -136,4 +148,12 @@ pub(crate) fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
     assert!(!has_ipc_permission(&perm_readonly, 1000, 1000, true));
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn ipc_permission_and_constants_rules_hold() {
+        assert!(super::ipc_permission_and_constants_rules_hold_for_test());
+    }
 }

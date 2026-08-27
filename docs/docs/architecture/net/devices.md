@@ -5,769 +5,239 @@ sidebar_label: "多设备实现"
 
 # 多设备实现
 
-`ax-net` 使用 **single smoltcp Interface + Router as Device** 的数据面结构。smoltcp 只看到一个 `phy::Device`，这个虚拟设备在内部聚合 loopback、Ethernet 和运行期注册的静态设备，并通过共享路由表把 TX packet 分发到真实出接口。
+`ax-net` 采用 **single smoltcp Interface + Router as Device + queue-level poll
+runtime**。smoltcp 只看到一个 IP medium `Router`；每个物理设备在启动时消费一次，
+拆成 queue/control/IRQ parts。独立 IRQ affinity domain 可以在不同 CPU 上并行处理
+DMA，协议状态仍由一个固定 CPU executor 串行推进。
 
-核心源码：
+完整状态机、Linux v7.1 对照和失败回滚见[队列级 NAPI 运行时](queue-napi-runtime.md)。
 
-| 源码 | 职责 |
+## 1. 源码与所有权
+
+| 源码 | 所有权 |
 | --- | --- |
-| `router.rs` | `Router` 虚拟设备、route dispatch、bounded queue、loopback 快速路径、RX/TX worker |
-| `device/mod.rs` | 内部 `Device` trait、ARP entry 对外模型 |
-| `device/ethernet.rs` | Ethernet 帧封装/解析、ARP、IRQ/OOB readiness |
-| `device/loopback.rs` | `lo` 接口占位设备，真实回环由 Router 快速路径完成 |
-| `device/driver.rs` | `rd-net` 到 `EthernetDriver` 的适配 |
-| `service.rs` | `Service::poll()` 调度 Router、smoltcp、DHCP、orphan |
-| `lib.rs` | net-poll worker、`request_poll()`、设备注册入口 |
+| `drivers/interface/rdif-eth` | portable `NetDeviceParts`、queue/IRQ/control trait、move-only `DmaBuffer` |
+| `drivers/net/rd-net` | 校验 parts、建立 DMA pool、生成 `PreparedNetDevice` |
+| `queue_runtime/` | affinity domain、fixed-CPU executor、SPSC、budget、backpressure、IRQ lease |
+| `poll_runtime.rs` | protocol `requested/completed` generation |
+| `device/ethernet.rs` | Ethernet frame、ARP、neighbor、pending frame |
+| `router.rs` | 多接口 route dispatch、loopback、smoltcp `Device` |
+| `service.rs` | 唯一 smoltcp `Interface`、DHCP、控制面提交 |
 
-## 设计边界
+运行期不保存可再次拆分的完整 driver handle。IRQ callback 不持有 RX/TX queue；
+protocol executor 不借用硬件 queue；调用者也不能直接借用 Wi-Fi SDIO control。
 
-多设备层的核心是 `Router`——它实现 smoltcp 的 `phy::Device` trait，对协议核心暴露 `Medium::Ip` 层的单一虚拟设备，内部聚合 loopback 和多个 Ethernet 设备。smoltcp 只通过 `Router::receive()`/`transmit()` 读写 IP packet，不感知真实网卡数量。每个 packet 携带 ingress `InterfaceId` 元数据，用于 TCP SYN snoop、DHCP 分发和诊断。
+## 2. Consumable device parts
 
-TX 方向由 `Router::dispatch()` 在每次 `Service::poll()` 周期中执行：解析 smoltcp 输出的 IP 包头，通过共享 `RouteTable` 的 `select_route_for_source()` 选择出接口和 next hop。Loopback 目的地址走直接注入快速路径（`inject_loopback_rx_direct()`），在同一 poll 周期内完成 TX→RX 回环；Ethernet 设备的 packet 推入 per-device 有界 TX queue，由专用 TX worker 调用 `Device::send()` 发出。
-
-设备 worker（`device_rx_worker`/`device_tx_worker`）只和有界队列交互，不进入 `Service` 或 `SocketSet` 锁。RX worker 从硬件读取 packet 后推入共享 `RouterQueues::rx`，并调用 `request_poll()` 唤醒 net-poll worker；TX worker 从 per-device TX queue 取出 packet 调用设备发送。这种隔离确保硬件收发延迟不阻塞协议核心，协议核心锁也不阻塞设备收发。
-
-典型关系如下：
-
-```mermaid
-flowchart TB
-    Service["Service::poll()"] --> Router["Router as smoltcp Device"]
-    Service --> Smol["smoltcp Interface + SocketSet"]
-
-    subgraph RouterState["Router state"]
-        RxBuf["rx_buffer"]
-        TxBuf["tx_buffer"]
-        Routes["SharedRouteTable"]
-        Devices["Vec<DeviceHandle>"]
-        RxQueue["shared bounded RX queue"]
-    end
-
-    Router --> RxBuf
-    Router --> TxBuf
-    Router --> Routes
-    Router --> Devices
-    Devices --> RxQueue
-
-    DevRx["per-device RX worker"] --> RxQueue
-    TxBuf --> Dispatch["Router::dispatch()"]
-    Dispatch --> Loopback["loopback direct injection"]
-    Dispatch --> DevTx["per-device TX queue"]
-    DevTx --> TxWorker["per-device TX worker"]
-    TxWorker --> Device["EthernetDevice / driver"]
-    Device --> DevRx
-```
-
-## 设备抽象层
-
-设备抽象层把硬件细节限制在 `device/*`，Router 只处理完整 IP packet 和 next-hop IP。这样 Ethernet、loopback、OOB Wi-Fi 等设备可以共享同一个 smoltcp 协议核心。
-
-### Device Trait
-
-内部 `Device` trait 是 Router 与具体设备之间的能力边界：
+portable driver 实现唯一入口：
 
 ```rust
-pub trait Device: Send + Sync {
-    fn name(&self) -> &str;
+pub trait NetDevice: DriverGeneric + Send + 'static {
+    fn into_parts(self: Box<Self>) -> Result<NetDeviceParts, NetError>;
+}
 
-    fn recv(
-        &mut self,
-        interface_id: InterfaceId,
-        buffer: &mut PacketBuffer<InterfaceId>,
-        timestamp: Instant,
-        snoop: &mut dyn FnMut(&[u8]),
-    ) -> bool;
-
-    fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool;
-
-    fn set_ipv4_addr(&mut self, _addr: Option<Ipv4Cidr>) {}
-
-    fn arp_entries(&self, _timestamp: Instant) -> Vec<ArpEntry> {
-        Vec::new()
-    }
-
-    fn wake_rx(&self) {}
-
-    /// Returns the device readiness poll set when the device has a wake source.
-    ///
-    /// The router uses this to register the global [`NET_POLL_DEVICE_WAKER`]
-    /// and to publish readiness to the per-device worker path. Pure-polling
-    /// devices should return `None`.
-    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
-        None
-    }
+pub struct NetDeviceParts {
+    pub info: NetDeviceInfo,
+    pub control: Box<dyn NetControlEndpoint>,
+    pub wifi_control: Option<Box<dyn WifiControl>>,
+    pub poll_groups: Vec<NetPollGroupParts>,
 }
 ```
 
-约束：
+`NetPollGroupParts` 表示一个不可拆分的 IRQ mask/rearm 域：
 
-- `recv()` 输出完整 IP packet，不输出 Ethernet frame。
-- `send()` 输入完整 IP packet 和已选好的 `next_hop`。
-- route lookup、source address selection、TCP/UDP/raw 分发都在设备层之上完成。
-- 设备只负责链路层封装、邻居解析、硬件 RX/TX 和 readiness。
+- typed `NetPollGroupId`；
+- 一个或多个 `NetQueuePairParts`；
+- owner-task 使用的 `NetPollIrqControl`；
+- 可选的 move-only `NetOwnerStartup`；
+- 一个或多个带 `NetIrqSourceId` 的 move-only `NetHardIrqEndpoint`。
 
-### LoopbackDevice
+只有具有独立 physical source 和独立 rearm 的硬件 queue 才能形成不同 group。当前
+生产 backend 都发布 queue-0 group；接口已经允许多 group，但不虚构 virtio/fxmac
+硬件多队列支持。
 
-`LoopbackDevice` 是 `lo` 的控制面占位设备：
+## 3. DMA token 与 queue contract
 
-```rust
-pub struct LoopbackDevice;
-
-impl Device for LoopbackDevice {
-    fn name(&self) -> &str {
-        "lo"
-    }
-
-    fn recv(...) -> bool {
-        false
-    }
-
-    fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
-        true
-    }
-
-    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
-        None
-    }
-}
-```
-
-真实 loopback 数据路径不走 `LoopbackDevice::send()/recv()`，而是在 `Router::dispatch()` 中直接把 smoltcp TX buffer 的 packet 注入 `Router.rx_buffer`。保留这个设备对象是为了让控制面、路由表和 Linux ifindex 能把 `lo` 作为普通接口处理。
-
-### EthernetDevice
-
-`EthernetDevice` 是主要真实设备实现：
-
-```rust
-pub struct EthernetDevice {
-    name: String,
-    inner: Arc<EthernetIrqState>,
-    neighbors: HashMap<IpAddress, Neighbor>,
-    pending_neighbors: HashMap<IpAddress, PendingNeighbor>,
-    ip: Option<Ipv4Cidr>,
-    pending_packets: PacketBuffer<'static, IpAddress>,
-}
-```
-
-职责：
-
-- 从 `EthernetDriver::receive()` 读取 Ethernet frame。
-- 解析 ARP 和 IPv4。
-- 把 IPv4 payload 上交为完整 IP packet。
-- 根据 next hop 做 ARP/neighbor lookup。
-- 封装 Ethernet frame 并通过 driver 发送。
-- 导出 `/proc/net/arp` 所需的 ARP entry。
-
-### RdNetDriver
-
-`RdNetDriver` 是 `rd-net` 设备到 `EthernetDriver` trait 的适配层。它持有 `rd_net::TxQueue`、`rd_net::RxQueue` 和一个很小的 `pending_rx` 预取队列。Router 不直接依赖 `rd-net` 类型，只依赖内部 `Device` trait。
+`DmaBuffer` 不实现 `Clone`/`Copy`。它从 pool 分配后只能处于以下一个位置：
 
 ```text
-rd_net::Net
-  -> RdNetDriver
-  -> EthernetDriver trait
-  -> EthernetDevice
-  -> Router DeviceHandle
+RX pool -> hardware RX -> RxCompletion -> RX-ready SPSC
+        -> protocol frame read -> recycle SPSC -> hardware RX
+
+TX pool -> TX-free SPSC -> protocol fills -> TX-ready SPSC
+        -> hardware TX -> completion reclaim -> TX-free SPSC
 ```
 
-适配策略：
+`ITxQueue::submit()` 和 `IRxQueue::submit()/recycle()` 失败时，typed
+`SubmitError` 必须归还原 token。runtime 对 `Retry`/`LinkDown` 保留 token；若本轮没有
+RX reclaim 等可观察进展，则完成本轮 poll、rearm IRQ 并等待未来硬件或 task 事件，不能
+在 IRQ 保持关闭时立即自调度。只有 reclaim 已释放 descriptor 时，RX refill 才立即重试。
+其它错误可以归还 free ring 或使 group 失败，但不能丢失 DMA ownership。
 
-- RX：`rd_net::RxQueue::receive()` 返回的 packet 被复制到 `VecRxBuffer`，放入 `pending_rx` 或直接交给 `EthernetDevice`。`RX_PREFETCH_TARGET = 1`，只预取一个 packet，避免形成新的缓存层。
-- TX：`alloc_tx_buffer(size)` 返回 `VecTxBuffer`，实际长度为 `max(size, ETH_ZLEN)`，保证 Ethernet 最小帧长 60 字节。
-- IRQ：`handle_irq()` 调用底层 irq handler 后尝试预取 RX packet，并根据结果返回 `NetIrqEvents::RX_READY`、`RX_ERROR` 或 `SPURIOUS`。
-- 错误：`rd_net::NetError::Retry` 映射为 `NetDeviceError::Again`，`NoMemory` / `NotSupported` 保留语义，link down 或其它错误映射为 `Io`。
+非一致 DMA 平台的 CPU/device sync 在 `DmaBuffer` 的 read/write 与 driver submit/reclaim
+边界完成。跨 CPU 只 move token，不共享可变 payload reference。
 
-这个适配层仍然是 copy-based 的。它的目标是隔离 `rd-net` ownership 模型，而不是提供端到端 zero-copy。后续如果要做 zero-copy，需要同时改造 `rd-net` buffer ownership、`EthernetDevice` frame 封装和 smoltcp token 生命周期。
+## 4. IRQ affinity domain
 
-## Router as MultiDevice
+builder 先把每个 endpoint source ID 解析为 physical `IrqId`。共享同一 IRQ 的 group
+通过并查集合并为一个 affinity domain，再按稳定顺序分配在线 CPU。
 
-`Router` 是 smoltcp `phy::Device` 的实现，也是单协议核心和多设备数据面之间的适配器。它不是传统意义上只维护 route table 的 router，而是一个 MultiDevice adapter。
-
-### 核心结构
-
-```rust
-pub struct Router {
-    rx_buffer: PacketBuffer,
-    tx_buffer: PacketBuffer,
-    queues: Arc<RouterQueues>,
-    devices: Vec<Arc<DeviceHandle>>,
-    table: SharedRouteTable,
-}
-```
-
-字段语义：
-
-- `rx_buffer`：smoltcp-facing RX packet buffer，由 `Router::receive()` 消费。
-- `tx_buffer`：smoltcp-facing TX packet buffer，由 `TxToken::consume()` 写入。
-- `queues.rx`：所有非 loopback 设备 worker 共享的有界 RX 队列。
-- `devices`：Router 内部设备索引空间，和公开 `InterfaceId` 分离。
-- `table`：与控制面共享的 route table。
-
-### DeviceHandle
-
-每个真实设备对应一个 `DeviceHandle`：
-
-```rust
-struct DeviceHandle {
-    interface_id: InterfaceId,
-    name: String,
-    inner: Arc<Mutex<Box<dyn Device>>>,
-    rx_queue: Arc<BoundedPacketQueue<RxPacket>>,
-    tx_queue: Arc<BoundedPacketQueue<TxPacket>>,
-    rx_wake: Arc<WaitQueue>,
-    tx_wake: Arc<WaitQueue>,
-    rx_waker: Waker,
-}
-```
-
-RX queue 是所有设备共享的，因为 smoltcp 只能从一个 `Router.rx_buffer` 获取 packet；TX queue 是每设备独立的，因为 dispatch 已经决定了出接口。
-
-`Router::send_on_device()` 允许调用方绕过路由表直接向指定设备发送 packet（如 DHCP 广播包）。该路径只用于控制面的协议辅助（DHCP client/server），不暴露给 socket 路径。
-
-### smoltcp Device 实现
-
-Router 对 smoltcp 暴露 `Medium::Ip`，即 smoltcp 看到的是 IP packet 设备，而不是 Ethernet frame 设备：
-
-```rust
-impl smoltcp::phy::Device for Router {
-    type RxToken<'a> = RxToken<'a>;
-    type TxToken<'a> = TxToken<'a>;
-
-    fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        if self.rx_buffer.is_empty() || self.tx_buffer.is_full() {
-            None
-        } else {
-            let (interface_id, packet) = self.rx_buffer.dequeue().unwrap();
-            Some((RxToken { interface_id, packet }, TxToken(&mut self.tx_buffer)))
-        }
-    }
-
-    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        if self.tx_buffer.is_full() {
-            None
-        } else {
-            Some(TxToken(&mut self.tx_buffer))
-        }
-    }
-
-    fn capabilities(&self) -> DeviceCapabilities {
-        let mut caps = DeviceCapabilities::default();
-        caps.medium = Medium::Ip;
-        caps.max_transmission_unit = STANDARD_MTU;
-        caps.max_burst_size = Some(SOCKET_BUFFER_SIZE);
-        caps
-    }
-}
-```
-
-ingress `InterfaceId` 在 `Router::poll()` 阶段用于 TCP SYN snoop、DHCP 分发和后续诊断；进入 smoltcp `RxToken` 后只作为 Router 内部元数据保留，smoltcp 本身仍只消费 IP packet。`TxToken` 写入时先使用内部占位接口 ID，真实出接口由 `Router::dispatch()` 解析 IP header 后按 route table 决定。
-
-## 队列与 Buffer
-
-队列层的目标是有界、低分配和清晰所有权：设备 worker 不持有 `Router` 本体，Router 不直接阻塞在硬件收发上。
-
-### BoundedPacketQueue
-
-`BoundedPacketQueue<T>` 是 Router 和设备 worker 之间的有界 FIFO：
-
-```rust
-struct BoundedPacketQueue<T> {
-    inner: Mutex<VecDeque<T>>,
-    capacity: usize,
-    len: AtomicUsize,
-}
-```
-
-语义：
-
-- `push()` 满时返回 `Err(packet)`，调用方丢包并记录 warning。
-- `pop()` 空时返回 `None`。
-- `is_empty()` 只读原子 `len`，用于 worker wait predicate。
-- 共享 RX queue 容量由 `DEVICE_RX_QUEUE_SIZE` 控制；per-device TX queue 容量由 `DEVICE_TX_QUEUE_SIZE` 控制。
-
-### QueuedPacket
-
-队列中保存的是固定大小 packet buffer，而不是每包堆分配：
-
-```rust
-struct QueuedPacket {
-    bytes: [u8; STANDARD_MTU],
-    len: usize,
-}
-```
-
-`QueuedPacket::new(packet)` 会拒绝超过 `STANDARD_MTU` 的 packet。这个设计牺牲了端到端 zero-copy，但给出了明确内存上限，并避免早期 loopback 队列路径中的 `to_vec()` 分配。
-
-### RX/TX Packet
-
-```rust
-struct RxPacket {
-    interface_id: InterfaceId,
-    bytes: QueuedPacket,
-}
-
-struct TxPacket {
-    next_hop: IpAddress,
-    bytes: QueuedPacket,
-}
-```
-
-RX 需要保存 ingress `InterfaceId`，用于 DHCP 分发、诊断和后续扩展；TX 保存的是 route table 已经选择好的 next hop。
-
-## 数据路径
-
-数据路径分为设备 RX、smoltcp poll、TX dispatch 和 loopback 快速路径。所有路径都围绕 `Service::poll()` 批量推进。
-端到端的内存所有权、拷贝次数、队列满行为和预算估算见[内存与队列](memory.md)。
-
-### RX Path
-
-RX worker 从真实设备获取 packet，写入共享 RX queue：
+硬性不变量：
 
 ```text
-EthernetDriver RX
-  -> EthernetDevice::recv()
-  -> device_rx_worker local PacketBuffer
-  -> shared RouterQueues.rx
-  -> request_poll()
+IRQ callback CPU == group poll CPU == owner_cpu
 ```
 
-`Router::poll()` 在协议核心线程中把共享 RX queue drain 到 smoltcp-facing `rx_buffer`：
+注册顺序：
 
-```rust
-pub fn poll(
-    &mut self,
-    _timestamp: Instant,
-    sockets: &mut SocketSet<'_>,
-    mut snoop: impl FnMut(InterfaceId, &[u8]),
-) -> bool {
-    let mut moved_rx = false;
-    while !self.rx_buffer.is_full() {
-        let Some(packet) = self.queues.rx.pop() else {
-            break;
-        };
-        let bytes = packet.bytes.as_slice();
-        snoop_tcp_packet(bytes, sockets);
-        snoop(packet.interface_id, bytes);
-        let Ok(dst) = self.rx_buffer.enqueue(bytes.len(), packet.interface_id) else {
-            break;
-        };
-        dst.copy_from_slice(bytes);
-        moved_rx = true;
-    }
-    moved_rx || !self.queues.rx.is_empty()
-}
-```
+1. 构造全部 group state、DMA pool、SPSC 和 per-CPU executor。
+2. executor 设置 `AxCpuMask::one_shot(owner_cpu)`，yield 后回报 affinity-ready。
+3. registrar 以 `NonReentrant + AutoEnable::No + Fixed(owner_cpu)` 注册 action。
+4. owner worker 执行 one-shot startup；AIC 固件/FDRV 初始化只允许发生在这里。
+5. owner worker initial refill 并执行第一次 `rearm_and_check()`。
+6. enable 全部 registration；startup Wi-Fi transaction 成功后才发布 service。
 
-`snoop_tcp_packet()` 在 smoltcp 消费 packet 前识别 TCP SYN，为 listen socket 预创建 child；`snoop(interface_id, bytes)` 用于 DHCP client/server 等按 ingress 接口分发的控制协议。
+shared action affinity 冲突、fixed route 不支持、worker pin 失败或 registration 返回的
+CPU 不一致都会使整个物理网络初始化失败。没有 `Any` affinity、远程 IRQ continuation、
+无 IRQ 路径或周期 poll fallback。
 
-### TX Path
+## 5. Hard IRQ 与 group 状态机
 
-smoltcp 发送 packet 时只写入 `tx_buffer`，随后由 Router dispatch：
+hard endpoint 只能做 bounded mask/ack/status snapshot，返回：
+
+- `Spurious`：共享 IRQ 不属于本 endpoint；
+- `Schedule(snapshot)`：有真实 queue work；
+- `ProbeDeferred`：例如 virtio transport gate 正被 task owner 使用，需要同 CPU 稍后探测。
+
+IRQ 不能分配、访问 DMA payload、调用 smoltcp、调用任意 waker或在 transport gate 上
+自旋。
+
+每个 group 的原子状态为：
 
 ```text
-smoltcp socket
-  -> TxToken::consume()
-  -> Router.tx_buffer
-  -> Router::dispatch()
-  -> route lookup by dst + source
-  -> loopback direct RX or per-device TX queue
+IDLE -> SCHEDULED -> POLLING -> IDLE
+                    |    ^
+                    + MISSED
+any state -> DISABLED
 ```
 
-dispatch 规则：
-
-- IPv4 limited broadcast：复制到所有非 loopback 设备。
-- IPv4/IPv6 单播：使用 `select_route_for_source(dst, src)`，确保源地址和出接口一致。
-- IPv6 multicast：Router 层会发往非 loopback 设备；完整 Ethernet IPv6/NDP 不在当前设备层完成范围。
-- 无 route：记录 warning 并丢弃该 packet。
-
-普通设备 TX 进入对应设备的 TX queue：
-
-```rust
-fn enqueue_tx(&self, next_hop: IpAddress, packet: &[u8]) -> bool {
-    let Some(bytes) = QueuedPacket::new(packet) else {
-        return false;
-    };
-    if self.tx_queue.push(TxPacket { next_hop, bytes }).is_err() {
-        return false;
-    }
-    self.tx_wake.notify_one(true);
-    true
-}
-```
-
-TX worker 再调用具体设备：
-
-```rust
-fn device_tx_worker(device: Arc<DeviceHandle>) {
-    loop {
-        if let Some(packet) = device.tx_queue.pop() {
-            let poll_next =
-                device.inner.lock().send(packet.next_hop, packet.bytes.as_slice(), now());
-            if poll_next {
-                crate::request_poll();
-            }
-        } else {
-            device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
-        }
-    }
-}
-```
-
-### Loopback Fast Path
-
-loopback TX 不经过设备 worker，也不进入共享 RX queue。dispatch 选中 `InterfaceId::LOOPBACK` 后直接注入 smoltcp-facing RX buffer：
-
-```rust
-fn inject_loopback_rx_direct(
-    rx_buffer: &mut PacketBuffer,
-    dst_addr: IpAddress,
-    packet: &[u8],
-    sockets: &mut SocketSet<'_>,
-) -> bool {
-    snoop_tcp_packet(packet, sockets);
-    let Ok(dst) = rx_buffer.enqueue(packet.len(), InterfaceId::LOOPBACK) else {
-        warn!("Loopback: RX buffer full, dropping packet to {}", dst_addr);
-        return false;
-    };
-    dst.copy_from_slice(packet);
-    true
-}
-```
-
-这个路径减少了一次队列 hop 和一次 packet 临时分配，并允许 loopback TCP SYN 在同一个 `Service::poll()` 周期内触发 child socket 预创建。
-
-`send_on_device()` 的 loopback 分支仍使用 `inject_loopback_rx()` 写入共享 RX queue，主要用于指定设备发送的控制面 packet；普通 socket TX loopback 走 direct injection。
-
-## Worker 与唤醒
-
-设备 worker 是多设备层和硬件之间的异步边界。worker 不访问 `SocketSet`，也不进入 `Service`。
-
-### Worker 启动
-
-Router 为每个非 loopback 设备启动 RX/TX worker：
-
-```rust
-pub fn start_tx_workers(&self) {
-    for dev in 0..self.devices.len() {
-        self.start_device_tx_worker(dev);
-    }
-}
-
-fn start_device_tx_worker(&self, dev: usize) {
-    let Some(device) = self.devices.get(dev) else {
-        return;
-    };
-    if device.interface_id == InterfaceId::LOOPBACK {
-        return;
-    }
-    ax_task::spawn_with_name(move || device_tx_worker(device), name);
-}
-```
-
-运行期新增静态设备时，`register_static_device()` 会调用 `router.start_device_workers(dev)`，走同一套 worker 模型。
-
-### RX Worker
-
-RX worker 持有设备锁调用 `Device::recv()`，然后把 packet 转成 `RxPacket` 推入共享 RX queue：
-
-```rust
-fn device_rx_worker(device: Arc<DeviceHandle>) {
-    let mut rx_buffer = PacketBuffer::new(
-        vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
-        vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
-    );
-
-    loop {
-        let mut received = false;
-        {
-            let mut device_inner = device.inner.lock();
-            let mut snoop = |_packet: &[u8]| {};
-            while !rx_buffer.is_full()
-                && device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop)
-            {
-                received = true;
-            }
-        }
+首次 publish 才通知 executor；scheduled/polling 中的新事件只置 `MISSED`。poll owner
+结束时用 CAS：观察到 `MISSED` 则回到 `SCHEDULED`；否则先变 `IDLE`，再执行硬件
+`rearm_and_check()`。rearm 窗口发现 pending 会立即重新 schedule。
 
-        while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
-            let Some(bytes) = QueuedPacket::new(packet) else {
-                continue;
-            };
-            if device.rx_queue.push(RxPacket { interface_id, bytes }).is_err() {
-                break;
-            }
-            crate::request_poll();
-            received = true;
-        }
-
-        if !received {
-            device.inner.lock().register_waker(&device.rx_waker);
-            device.rx_wake.wait();
-        }
-    }
-}
-```
-
-### Waker 注册
-
-Router 提供两类 waker 注册：
-
-```rust
-pub fn register_device_waker(&self, waker: &Waker) {
-    for device in &self.devices {
-        device.inner.lock().register_waker(&device.rx_waker);
-        device.inner.lock().register_waker(waker);
-    }
-}
-
-pub fn register_waker(&self, binding: DeviceBinding, waker: &Waker) {
-    for device in &self.devices {
-        if binding.bound_if.is_none_or(|id| id == device.interface_id) {
-            device.inner.lock().register_waker(&device.rx_waker);
-            device.inner.lock().register_waker(waker);
-        }
-    }
-}
-```
+`DISABLED` 是吸收态。poll completion 使用 CAS，不能把 concurrent disable 重新写成
+scheduled。
 
-`register_device_waker()` 用于 net-poll worker 的全局设备 readiness；`register_waker(binding, waker)` 用于 socket readiness，只向 `SO_BINDTODEVICE` 或本地地址绑定允许的接口注册。
-
-## Ethernet 链路层
-
-Ethernet 设备在 IP packet 与真实 Ethernet frame 之间转换，并维护 ARP/neighbor 状态。
-
-### RX 处理
-
-`EthernetDevice::recv()` 的入站流程：
-
-1. 从 `EthernetDriver::receive()` 读取一帧。
-2. 解析 `EthernetFrame`。
-3. ARP frame：更新 neighbor 表、处理 gratuitous request/reply、释放 pending packet。
-4. IPv4 frame：校验链路层目标，取出 IP payload，写入 Router 提供的 packet buffer。
-5. 其他协议：忽略或记录。
-
-`recv()` 输出给 Router 的始终是 IP packet，而不是 Ethernet frame。
-
-### TX 处理
-
-`EthernetDevice::send(next_hop, packet)` 的出站流程：
-
-1. 查询 `neighbors`。
-2. 命中：封装 Ethernet frame 并发送。
-3. 未命中但已有 pending ARP：把 packet 放入 `pending_packets`。
-4. 未命中且需要重试：发送 ARP request，记录 `pending_neighbors`。
-
-关键参数：
-
-- neighbor TTL：300 秒。
-- ARP retry：1 秒。
-- pending packet buffer：有界。
-
-### IRQ 与 OOB RX
-
-Ethernet 支持两种 RX readiness 模式：
-
-- IRQ 模式：`EthernetIrqRegistrar` 注册硬件 IRQ action，IRQ 到来后 action 持有驱动提供的 `EthernetIrqHandler` 调用 `handle_irq()`，`ethernet_irq_outcome()` 将 `RX_READY`/`RX_ERROR`/`TX_DONE` 转成 `wake_net_task_irq()`；随后 `net-poll` worker 通过 `wake_all_devices()` 唤醒设备 poll set 和 RX worker。
-- OOB RX 模式：用于 SDIO Wi-Fi 等设备，RX 就绪由设备外部线程调用 `wake_net_task_irq()`，唤醒 `net-poll` worker；`register_device_waker()` 同时把设备 readiness poll set 连接到设备 RX worker，使 `{ifname}-rx` worker 重新检查设备。
-
-`register_waker()` 只在存在 IRQ registration 或 OOB RX wake source 时注册：
-
-```rust
-fn register_waker(&self, waker: &Waker) {
-    if self.inner.irq_registration.get().is_some() || self.inner.oob_rx {
-        self.inner.poll_ready.register(waker);
-    }
-}
-```
-
-实际源码通过 `Device::readiness_poll()` 返回 `Option<Arc<PollSet>>` 表达这个条件：只有已注册 IRQ handler 或 `oob_rx = true` 的设备才返回 poll set。纯 polling 设备如果没有 wake source，不能把 waker 挂在永远不会被唤醒的 `poll_ready` 上。
-
-## Service Poll 集成
-
-`Service::poll()` 是 Router、smoltcp 和网络控制协议的汇合点。设备 worker 只负责把 packet 放入队列，真正协议推进由 net-poll worker 调用 `Service::poll()` 完成。
-
-### Poll 顺序
-
-```rust
-pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
-    let timestamp = now();
-    // 1. router.poll(): drain device RX queue into smoltcp-facing rx_buffer
-    // 2. process DHCP client/server snoop events
-    // 3. iface.poll(timestamp, &mut router, sockets)
-    // 4. DHCP client timers and sends
-    // 5. orphan TCP reaping
-    // 6. router.dispatch(): route smoltcp TX packets to devices or loopback
-}
-```
-
-关键顺序：
-
-- `router.poll()` 必须在 `iface.poll()` 前执行，让 smoltcp 能消费新 RX packet。
-- DHCP client/server snoop 发生在 packet 进入 smoltcp 前，保留 ingress `InterfaceId`。
-- orphan reaper 在持有 `SocketSet` 的 poll 上下文中运行，但删除列表在 orphan 锁外执行。
-- `router.dispatch()` 在 smoltcp poll 后执行，把本轮产生的 TX packet 交给真实设备。
-
-### net-poll Worker
-
-socket 和设备路径都只调用轻量 `request_poll()`：
-
-```rust
-pub fn request_poll() {
-    publish_poll_request(&NET_POLL_REQUESTED, || {
-        NET_POLL_WAKE.notify_one(true);
-    });
-}
-```
-
-重复 `request_poll()` 会被 pending 标志合并，只有 `false -> true` 的第一次请求真正唤醒 worker。
+## 6. Budget 与 backpressure
 
-设备 readiness 通过两类 waker 分流：
-
-- `NET_POLL_DEVICE_WAKER`：全局设备 waker，用于告诉 net-poll worker 有协议栈工作需要推进。
-- `register_waker(binding, waker)`：socket readiness waker，只注册到 `DeviceBinding` 允许的接口，避免绑定到 `eth1` 的 socket 被 `eth0` 的 readiness 无意义唤醒。
-
-专用 net-poll worker 独占调用 `poll_until_idle()`：
-
-```rust
-fn poll_until_idle() {
-    POLL_AGAIN.store(true, Ordering::Release);
-    loop {
-        if POLLING_INTERFACES
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
-            .is_err()
-        {
-            return;
-        }
+一个 group poll 按顺序处理：
 
-        while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
-        }
-        POLLING_INTERFACES.store(false, Ordering::Release);
-        if !POLL_AGAIN.load(Ordering::Acquire) {
-            return;
-        }
-    }
-}
-```
+1. RX recycle；
+2. RX reclaim；
+3. TX completion；
+4. TX submission。
 
-这个模型保持应用线程、设备 worker 和协议核心驱动线程分离。socket 热路径不会同步执行完整 smoltcp poll，设备 worker 也不会进入 socket set。
+四类各最多 64 项，每 CPU executor round 最多 256 项。任一子预算用尽、CPU round
+用尽、`MISSED` 或硬件仍有工作时，group 保持 IRQ 关闭并重新排队。
 
-## 与控制协议的交界
+四条 SPSC ring 都预分配且有界：
 
-设备文档只描述控制协议进入数据面的交界，协议状态机细节放在对应文档中。
+- RX-ready 满：queue owner 保留 `pending_rx`；
+- recycle submit retry：保留 `pending_rx_recycle`；
+- TX-free 满：保留 `pending_tx_free`；
+- TX submit retry：保留 `pending_tx`。
 
-### DHCP Client/Server
+blocked group 不 busy-wait，也不等待 timer。protocol owner 消费/释放空间时调用
+group-local task schedule；只有目标 group 被精准激活。
 
-DHCP client 和 DHCP server 都依赖 Router RX snoop 拿到 ingress `InterfaceId`：
+## 7. Protocol frame port 与 Router
 
-```text
-device RX
-  -> Router::poll()
-  -> snoop(interface_id, packet)
-  -> DHCP client/server packet classifier
-```
+`QueueFramePort` 位于 protocol owner 一侧。RX 时它从 RX-ready ring 取
+`RxCompletion`，读取 frame 后把 token 放入 recycle ring；TX 时从 spare/free ring 取
+token、写入 Ethernet frame、move 到 TX-ready ring。
 
-DHCP client ACK 会通过 `NetworkStateUpdate` 更新 smoltcp address list、控制面接口快照、DNS 和 route table。DHCP server 的 Offer/Ack 使用 `Router::send_on_device(dev, next_hop, packet, timestamp)` 从指定接口发出。
+`EthernetDevice` 在 frame port 上完成：
 
-#### DHCP Client
+- Ethernet header 解析/封装；
+- IPv4 与 ARP 过滤；
+- neighbor cache 与 300 秒 TTL；
+- ARP retry 与有界 pending packet；
+- L2 byte/packet/error/drop 统计。
 
-DHCP client 属于 `Service` 状态，每个启用 DHCP 的 Ethernet 接口对应一个 `DhcpState`。`Router::poll()` 在把 packet 放入 smoltcp RX buffer 前先做 snoop，DHCP UDP packet 会按 ingress `InterfaceId` 分发给对应 `DhcpState`：
+`Router` 对 smoltcp 暴露 `Medium::Ip`。RX packet 携带 ingress `InterfaceId`，用于
+DHCP/TCP SYN snoop 与 cmsg metadata；TX 根据目标、source address、最长前缀和 metric
+选择 frame port。loopback 直接注入 protocol RX buffer，不经过物理 queue。
 
-```text
-Ethernet RX frame
-  -> EthernetDevice strips Ethernet/ARP
-  -> Router::poll(packet, ingress_if)
-  -> DhcpState::process_packet(ingress_if, packet)
-  -> optional DhcpEvent
-```
+## 8. 唯一 protocol executor
 
-`Configured` 事件提交以下状态：
+queue executor 只在 frame/token 到达时调用 `request_poll()`。`ProtocolPollRuntime`
+增加 requested generation 并唤醒固定 CPU `net-protocol` task；只有该任务可以持有
+`Service`/`SocketSet` 并调用 smoltcp poll。
 
-- smoltcp `Interface` 的 IPv4 address list。
-- `NetControl` 中的接口 IPv4/gateway snapshot。
-- DHCP DNS entries。
-- 该接口的 connected route 和 default route。
+同步 egress flush 同样只 request 并等待自己的 completed generation，调用线程不会
+成为第二个 poll owner。request 与 completion 竞争时，worker 清除 scheduled 后再次
+比较 generation，确保新请求至少再运行一轮。
 
-`Deconfigured` 事件清理同一接口的 DHCP 地址、DNS 和 IPv4 route。这样某个接口 DHCP NAK 不会影响其它接口的静态地址或 DHCP 状态。
+## 9. Wi-Fi/SDIO specialization
 
-#### DHCP Server
+AIC probe 只识别 chip variant 并把 SDHCI controller source move 到 hard endpoint，
+不执行固件/FDRV I/O。owner startup 在固定 CPU 创建 bus；top half 只识别并 mask
+CARD_INT，owner CPU 负责 FIFO drain、TX、firmware command completion、AP event 与
+rearm。SDHCI task rearm 在 unmask 后立即读 CARD_INT status，若 level 已挂起则重新
+mask 并返回 pending。
 
-内置 DHCP server 用于 SoftAP 或运行期注册的静态服务接口。它不是通用企业 DHCP server，而是一个轻量的 per-interface server：
+Wi-Fi startup/reconfigure 使用有界 owner control queue。executor quiesce group 后才
+执行 SDIO/MMIO control，完成后 rearm，再让 protocol owner更新 STA DHCP 或 SoftAP
+static/DHCP-server state。
 
-```rust
-pub struct DhcpServer {
-    interface_id: InterfaceId,
-    dev: usize,
-    server_ip: Ipv4Address,
-    client_ip: Ipv4Address,
-    mac: EthernetAddress,
-    enabled: bool,
-}
-```
+当前 variant policy：
 
-设计语义：
+- AIC8801：V2 block/byte status；function-1 FIFO；
+- AIC8800D80/D80X2：V3 queue encoding、software IRQ bit 清源、function-1 FIFO；
+- AIC8800DC/DW：本地 vendor source 与旧实现的 command/FIFO function ownership
+  冲突，probe fail-closed。
 
-- 只处理进入 `interface_id` 对应接口的 DHCP packet。
-- 主要响应 Discover 和 Request，生成 Offer/Ack。
-- server IP 来自 SoftAP/静态接口地址，client IP 来自 `NetConfig::dhcp_server_client_ip`。
-- 使用固定轻量 lease 时间 `LEASE_SECS = 86400`，不维护复杂租约池。
-- 发送不经过 smoltcp socket，而是直接通过 `Router::send_on_device(dev, next_hop, packet, timestamp)` 从绑定设备发出。
-- 不参与 DHCP client 状态机，也不会更新控制面地址；它服务的是对端客户端。
+任何 variant 都没有 OOB callback、独立 RX/TX task 或 kicker。
 
-这个边界避免 DHCP server 和 DHCP client 争抢同一个 UDP socket，也让 SoftAP 设备即使不依赖外部 DHCP 服务也能给对端分配一个简单地址。
+## 10. Driver group mapping
 
-### ARP Entries
+| Driver | 当前 group | hard endpoint | task owner/rearm |
+| --- | --- | --- | --- |
+| virtio-net | queue 0 RX/TX | 仅真实 `QUEUE_INTERRUPT`；gate 竞争为 `ProbeDeferred` | callback disable + 非消费 `peek_used` double-check；reclaim 才消费 completion |
+| E1000 | queue 0 RX/TX | ICR snapshot/mask | descriptor drain 后恢复 IMS 并复查 |
+| RTL8125 | queue 0 RX/TX | status gate/ack/mask | deferred refill、completion、pending status 复查 |
+| FXMAC | queue 0 | status snapshot；gate 竞争 deferred | owner drain/rearm |
+| Loongson GMAC | queue 0 | DMA status snapshot/mask | RX restart、ACK/rearm |
+| AIC/SDHCI | queue 0 | nested CARD_INT mask/status | FIFO/command/TX + controller/chip rearm/shutdown |
 
-`arp_entries()` 从所有设备收集邻居表快照：
+## 11. Lifecycle 与回滚
 
-```rust
-pub fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
-    let mut entries = Vec::new();
-    for device in &self.devices {
-        entries.extend(device.inner.lock().arp_entries(timestamp));
-    }
-    entries
-}
-```
+builder 的失败路径按发布顺序反向执行：拒绝新 Wi-Fi request、disable/synchronize IRQ
+lease。同步成功时通知 executor stop，由 owner CPU quiesce 并执行 driver `shutdown()`，
+然后 join；同步失败时发送 `QUARANTINE`，保留完整 callback、executor、control 与
+backing graph，不再并发触碰驱动硬件。
+只有 shutdown 证明硬件已不能访问 backing 时才 drop queue token 与 device parts；无法
+证明时隔离完整 executor ownership graph。`NetworkQueueRuntime::Drop` 保持同一顺序。
+service 只有在 builder 完整成功后进入全局 `OnceLock`，因此不存在半发布接口。
 
-Ethernet 设备返回 ARP entry，loopback 返回空列表。
+物理设备要求完整 IRQ、fixed affinity、mask/rearm 和 worker pin。无物理 NIC 时可以
+启动 loopback-only；发现物理设备但能力不完整时必须失败，不能把 loopback 成功当作
+物理网络成功。
 
-## 并发边界
+## 12. 可观测不变量
 
-多设备层的并发边界以“worker 不进入协议核心，协议核心不阻塞硬件”为原则。
+每个 group 暴露测试态 `NetQueueStats`：IRQ、schedule、MISSED、poll batch、budget
+exhaustion、spurious、probe deferred、rearm race、owner CPU、last IRQ CPU、last poll
+CPU 与 remote wake。
 
-### 锁顺序
+验收断言：
 
-典型路径：
+- `last_irq_cpu == last_poll_cpu == owner_cpu`；
+- `irq_to_poll_remote_wake == 0`；
+- 一个 IRQ 不改变无关 group 的 schedule/wake；
+- idle queue executor 没有周期唤醒；
+- burst 在 IRQ mask 期间按预算合并，drain/rearm 后才重开；
+- stop 后 group 拒绝新 schedule，DMA token 不重复、不泄漏。
 
-```text
-net-poll path:
-  SERVICE -> SOCKET_SET -> Router -> RouteTable/device queues
-
-device RX worker:
-  DeviceHandle.inner -> Device::recv -> shared RX queue -> request_poll()
-
-device TX worker:
-  per-device TX queue -> DeviceHandle.inner -> Device::send
-
-socket readiness:
-  GeneralOptions -> Service::register_waker -> Router::register_waker -> Device::register_waker
-```
-
-禁止的反向路径：
-
-- 设备 worker 持设备锁进入 `Service` 或 `SocketSet`。
-- socket 热路径直接调用完整 interface poll。
-- Router dispatch 持 route table 锁时执行阻塞设备发送。
-- loopback 普通 TX 重新绕到设备队列。
-
-### 性能边界
-
-该设计优先保证简洁和有界资源：
-
-- 单 smoltcp `Interface` 保持 socket handle、wildcard listen 和动态 route 的一致性。
-- per-device worker 解耦硬件收发和协议核心。
-- 有界队列防止网络热路径无界增长。
-- `QueuedPacket` 避免每包堆分配。
-- loopback direct injection 避免额外 queue hop。
-
-不承诺端到端 zero-copy。若后续要继续降低复制，需要同时调整 `rd-net` buffer ownership、smoltcp token 和 Router queue 的 packet 生命周期。
+CPU hotplug、运行时新增/删除 NIC、RPS/RFS/GRO、busy-poll、协议状态分片和真实
+virtio/fxmac 多硬件队列不在当前范围。

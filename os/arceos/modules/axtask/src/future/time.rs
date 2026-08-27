@@ -1,35 +1,38 @@
 use alloc::collections::BTreeMap;
 use core::{
-    fmt,
     pin::Pin,
     task::{Context, Poll, Waker},
     time::Duration,
 };
 
-use ax_errno::AxError;
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
 use futures_util::{FutureExt, select_biased};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct TimerKey {
+pub(crate) struct TimerKey {
     deadline: TimeValue,
     key: u64,
 }
 
-struct TimerRuntime {
+pub(crate) struct TimerRuntime {
     key: u64,
     wheel: BTreeMap<TimerKey, Waker>,
+    // Once IRQ processing publishes the due head to the timer worker, the
+    // logical queue must stop advertising it to the physical clockevent.
+    // The worker owns clearing this state after its bounded drain pass.
+    due_work_published: bool,
 }
 
 impl TimerRuntime {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         TimerRuntime {
             key: 0,
             wheel: BTreeMap::new(),
+            due_work_published: false,
         }
     }
 
-    fn add(&mut self, deadline: TimeValue) -> Option<TimerKey> {
+    pub(crate) fn add(&mut self, deadline: TimeValue) -> Option<TimerKey> {
         if deadline <= monotonic_time() {
             return None;
         }
@@ -44,7 +47,7 @@ impl TimerRuntime {
         Some(key)
     }
 
-    fn poll(&mut self, key: &TimerKey, cx: &mut Context<'_>) -> Poll<()> {
+    pub(crate) fn poll(&mut self, key: &TimerKey, cx: &mut Context<'_>) -> Poll<()> {
         if let Some(w) = self.wheel.get_mut(key) {
             *w = cx.waker().clone();
             Poll::Pending
@@ -53,77 +56,84 @@ impl TimerRuntime {
         }
     }
 
-    fn cancel(&mut self, key: &TimerKey) {
+    pub(crate) fn cancel(&mut self, key: &TimerKey) {
         self.wheel.remove(key);
     }
 
-    #[cfg(feature = "irq")]
-    fn next_deadline(&self) -> Option<TimeValue> {
+    pub(crate) fn next_deadline(&self) -> Option<TimeValue> {
+        if self.due_work_published {
+            return None;
+        }
         self.wheel.keys().next().map(|key| key.deadline)
     }
 
-    fn wake(&mut self) {
-        if self.wheel.is_empty() {
-            return;
-        }
+    pub(crate) fn publish_due_work(&mut self, now: TimeValue) -> bool {
+        self.due_work_published |= self
+            .wheel
+            .keys()
+            .next()
+            .is_some_and(|key| key.deadline <= now);
+        self.due_work_published
+    }
 
-        let now = monotonic_time();
+    pub(crate) fn finish_due_work(&mut self, now: TimeValue) -> bool {
+        self.due_work_published = self
+            .wheel
+            .keys()
+            .next()
+            .is_some_and(|key| key.deadline <= now);
+        self.due_work_published
+    }
 
-        let pending = self.wheel.split_off(&TimerKey {
-            deadline: now,
-            key: u64::MAX,
-        });
-
-        let expired = core::mem::replace(&mut self.wheel, pending);
-        for (_, w) in expired {
-            w.wake();
-        }
+    pub(crate) fn expire_one(&mut self, now: TimeValue) -> Option<Waker> {
+        let key = self
+            .wheel
+            .first_key_value()
+            .and_then(|(key, _)| (key.deadline <= now).then_some(*key))?;
+        self.wheel.remove(&key)
     }
 }
 
-percpu_static! {
-    TIMER_RUNTIME: TimerRuntime = TimerRuntime::new(),
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FutureTimerHandle {
+    owner_cpu: usize,
+    key: TimerKey,
 }
 
-#[allow(dead_code)]
-pub(crate) fn check_timer_events() {
-    with_current(TimerRuntime::wake);
-}
-
-#[cfg(feature = "irq")]
-pub(crate) fn next_timer_deadline() -> Option<TimeValue> {
-    with_current(|r| r.next_deadline())
-}
-
-fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
-    let _g = crate::sync::PreemptIrqSaveGuard::new();
-    // SAFETY: the guard excludes migration, IRQ/re-entry, and conflicting
-    // access for the complete non-escaping mutable borrow.
-    unsafe {
-        ax_hal::percpu::with_cpu_pin(|pin| {
-            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
-                TIMER_RUNTIME.with_current_mut(exclusive, f)
-            })
-        })
+impl FutureTimerHandle {
+    pub(crate) const fn new(owner_cpu: usize, key: TimerKey) -> Self {
+        Self { owner_cpu, key }
     }
-    .expect("timer runtime access requires an installed CPU-local area")
+
+    pub(crate) const fn owner_cpu(self) -> usize {
+        self.owner_cpu
+    }
+
+    pub(crate) const fn key(self) -> TimerKey {
+        self.key
+    }
+
+    #[cfg(test)]
+    const fn new_for_test(owner_cpu: usize, key: TimerKey) -> Self {
+        Self::new(owner_cpu, key)
+    }
 }
 
 /// Future returned by `sleep` and `sleep_until`.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct TimerFuture(TimerKey);
+pub struct TimerFuture(FutureTimerHandle);
 
 impl Future for TimerFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        with_current(|r| r.poll(&self.0, cx))
+        crate::timers::poll_future_timer(self.0, cx)
     }
 }
 
 impl Drop for TimerFuture {
     fn drop(&mut self) {
-        with_current(|r| r.cancel(&self.0));
+        crate::timers::cancel_future_timer(self.0);
     }
 }
 
@@ -134,31 +144,15 @@ pub async fn sleep(duration: Duration) {
 
 /// Waits until the monotonic `deadline` is reached.
 pub async fn sleep_until(deadline: TimeValue) {
-    let key = with_current(|r| r.add(deadline));
-    if let Some(key) = key {
-        #[cfg(feature = "irq")]
-        crate::timers::maybe_reprogram_timer(deadline);
-        TimerFuture(key).await;
+    if let Some(handle) = crate::timers::register_future_timer(deadline) {
+        TimerFuture(handle).await;
     }
 }
 
 /// Error returned by [`timeout`] and [`timeout_at`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("task deadline elapsed")]
 pub struct Elapsed(());
-
-impl fmt::Display for Elapsed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "deadline elapsed")
-    }
-}
-
-impl core::error::Error for Elapsed {}
-
-impl From<Elapsed> for AxError {
-    fn from(_: Elapsed) -> Self {
-        AxError::TimedOut
-    }
-}
 
 /// Requires a `Future` to complete before the specified duration has elapsed.
 pub async fn timeout<F: IntoFuture>(
@@ -204,5 +198,85 @@ fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
         now_mono
             .checked_add(deadline - now_wall)
             .unwrap_or(TimeValue::MAX)
+    }
+}
+
+#[cfg(test)]
+mod timer_regression_tests {
+    use super::*;
+
+    fn poll_registered_timer_for_test(
+        runtimes: [&mut TimerRuntime; 2],
+        _current_cpu: usize,
+        handle: &FutureTimerHandle,
+        context: &mut Context<'_>,
+    ) -> Poll<()> {
+        runtimes[handle.owner_cpu()].poll(&handle.key(), context)
+    }
+
+    fn cancel_registered_timer_for_test(
+        runtimes: [&mut TimerRuntime; 2],
+        _current_cpu: usize,
+        handle: &FutureTimerHandle,
+    ) {
+        runtimes[handle.owner_cpu()].cancel(&handle.key());
+    }
+
+    #[test]
+    fn future_timer_poll_uses_the_registration_cpu_after_migration() {
+        let deadline = monotonic_time() + Duration::from_secs(60);
+        let mut owner = TimerRuntime::new();
+        let mut current = TimerRuntime::new();
+        let key = owner.add(deadline).expect("future timer must be pending");
+        let handle = FutureTimerHandle::new_for_test(0, key);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        let result =
+            poll_registered_timer_for_test([&mut owner, &mut current], 1, &handle, &mut context);
+
+        assert_eq!(result, Poll::Pending);
+        assert!(owner.wheel.contains_key(&key));
+        assert!(current.wheel.is_empty());
+    }
+
+    #[test]
+    fn future_timer_drop_cancels_the_registration_cpu_after_migration() {
+        let deadline = monotonic_time() + Duration::from_secs(60);
+        let mut owner = TimerRuntime::new();
+        let mut current = TimerRuntime::new();
+        let key = owner.add(deadline).expect("future timer must be pending");
+        let handle = FutureTimerHandle::new_for_test(0, key);
+
+        cancel_registered_timer_for_test([&mut owner, &mut current], 1, &handle);
+
+        assert!(owner.wheel.is_empty());
+        assert!(current.wheel.is_empty());
+    }
+
+    #[test]
+    fn due_future_work_is_not_republished_as_a_clockevent_deadline() {
+        let mut runtime = TimerRuntime::new();
+        let deadline = monotonic_time() + Duration::from_secs(60);
+        runtime.add(deadline).expect("future timer must be pending");
+
+        assert!(runtime.publish_due_work(deadline));
+        assert_eq!(runtime.next_deadline(), None);
+    }
+
+    #[test]
+    fn future_deadline_is_republished_after_the_due_pass_finishes() {
+        let mut runtime = TimerRuntime::new();
+        let deadline = monotonic_time() + Duration::from_secs(60);
+        let later_deadline = deadline + Duration::from_secs(1);
+        runtime.add(deadline).expect("future timer must be pending");
+        runtime
+            .add(later_deadline)
+            .expect("later future timer must be pending");
+
+        assert!(runtime.publish_due_work(deadline));
+        assert!(runtime.expire_one(deadline).is_some());
+        assert!(!runtime.finish_due_work(deadline));
+        assert_eq!(runtime.next_deadline(), Some(later_deadline));
     }
 }

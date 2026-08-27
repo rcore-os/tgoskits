@@ -42,6 +42,7 @@ impl ServiceKey for RiscvPlicRuntimeKey {
 /// threshold, and level state. The deferred kick bitmap carries only the
 /// identity of vCPUs that must re-evaluate that state.
 pub(crate) struct RiscvPlicRuntime {
+    vm_id: usize,
     vplic: Arc<VPlicGlobal>,
     sink: Arc<RiscvPlicWiredSink>,
     inputs: IrqSafeMutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
@@ -85,6 +86,7 @@ impl RiscvPlicRuntime {
             physical_target_cpu,
         )?;
         Ok(Arc::new(Self {
+            vm_id,
             vplic,
             sink,
             inputs: IrqSafeMutex::new(BTreeMap::new()),
@@ -265,33 +267,72 @@ impl Device for RiscvPlicDevice {
         self.runtime.vplic.resources()
     }
 
-    fn access(
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        let value = self
+            .runtime
+            .vplic
+            .read_register(
+                GuestPhysAddr::from_usize(access.address() as usize),
+                access.width(),
+            )
+            .map(|value| value as u64)?;
+        self.publish_vseip(access)?;
+        Ok(value)
+    }
+
+    fn write(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
-        let addr = GuestPhysAddr::from_usize(access.addr as usize);
-        if access.is_read {
-            self.runtime
-                .vplic
-                .read_register(addr, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-        } else {
-            let completion = self.runtime.vplic.write_register_with_completion(
-                addr,
-                access.width,
-                access.data as usize,
-            )?;
-            if let Some(completion) = completion {
-                self.runtime.physical.complete_source(completion.source());
-            }
-            Ok(BusResponse::Write)
+        let completion = self.runtime.vplic.write_register_with_completion(
+            GuestPhysAddr::from_usize(access.address() as usize),
+            access.width(),
+            value as usize,
+        )?;
+        if let Some(completion) = completion {
+            self.runtime.physical.complete_source(completion.source());
         }
+        self.publish_vseip(access)?;
+        Ok(())
+    }
+}
+
+impl RiscvPlicDevice {
+    fn publish_vseip(&self, access: &DeviceAccess) -> DeviceResult {
+        let vcpu_id = access.source_vcpu().as_usize();
+        let asserted = self
+            .runtime
+            .vcpu_has_deliverable_irq(vcpu_id)
+            .map_err(vplic_device_error)?;
+        let vm = crate::get_vm_by_id(self.runtime.vm_id).ok_or_else(|| DeviceError::Backend {
+            operation: "publish vPLIC VSEIP after device access",
+            detail: std::format!("VM[{}] is not registered", self.runtime.vm_id),
+        })?;
+        let vcpu = vm.vcpu(vcpu_id).ok_or_else(|| DeviceError::Backend {
+            operation: "publish vPLIC VSEIP after device access",
+            detail: std::format!("RISC-V vCPU {vcpu_id} is not registered"),
+        })?;
+        vcpu.get_arch_vcpu().set_vseip_level(asserted);
+        Ok(())
+    }
+}
+
+fn vplic_device_error(error: AxVmError) -> DeviceError {
+    DeviceError::Backend {
+        operation: "publish vPLIC VSEIP after device access",
+        detail: std::format!("{error}"),
     }
 }
 
@@ -302,6 +343,20 @@ impl DeviceModel for RiscvPlicFactory {
             self.length as u64,
             1,
             ResourceRequest::Fixed(self.base as u64),
+        )
+    }
+
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::interfaces(
+            Some(std::vec![FdtContributionSpec::InterruptController {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                node: FdtNodeSpec::new("plic")
+                    .with_compatible("riscv,plic0")
+                    .with_register(
+                        ResourceSlot::new("registers").expect("static PLIC slot is valid"),
+                    ),
+            }]),
+            None,
         )
     }
 

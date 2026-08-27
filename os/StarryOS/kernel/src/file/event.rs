@@ -4,11 +4,13 @@ use core::{
     task::Context,
 };
 
-use ax_errno::AxError;
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    StarryError, StarryResult,
+    file::{FileLike, IoDst, IoSrc},
+};
 
 pub struct EventFd {
     count: AtomicU64,
@@ -33,16 +35,16 @@ impl EventFd {
 }
 
 impl FileLike for EventFd {
-    fn validate_write_len(&self, len: usize) -> ax_io::Result {
+    fn validate_write_len(&self, len: usize) -> StarryResult {
         if len != size_of::<u64>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         Ok(())
     }
 
-    fn read(&self, dst: &mut IoDst) -> ax_io::Result<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < size_of::<u64>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
@@ -64,21 +66,21 @@ impl FileLike for EventFd {
                     unsafe { self.poll_tx.wake(IoEvents::OUT) };
                     Ok(size_of::<u64>())
                 }
-                Err(_) => Err(AxError::WouldBlock),
+                Err(_) => Err(StarryError::WouldBlock),
             }
         }))
     }
 
-    fn write(&self, src: &mut IoSrc) -> ax_io::Result<usize> {
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         if src.remaining() < size_of::<u64>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let mut value = [0; size_of::<u64>()];
         src.read(&mut value)?;
         let value = u64::from_ne_bytes(value);
         if value == u64::MAX {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
@@ -97,7 +99,7 @@ impl FileLike for EventFd {
                     unsafe { self.poll_rx.wake(IoEvents::IN) };
                     Ok(size_of::<u64>())
                 }
-                Err(_) => Err(AxError::WouldBlock),
+                Err(_) => Err(StarryError::WouldBlock),
             }
         }))
     }
@@ -106,7 +108,7 @@ impl FileLike for EventFd {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn set_nonblocking(&self, non_blocking: bool) -> ax_io::Result {
+    fn set_nonblocking(&self, non_blocking: bool) -> StarryResult {
         self.non_blocking.store(non_blocking, Ordering::Release);
         Ok(())
     }

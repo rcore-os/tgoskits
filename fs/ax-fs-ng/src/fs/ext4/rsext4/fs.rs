@@ -20,6 +20,7 @@ use super::{
 };
 use crate::{
     block::{BlockRegion, FsBlockDevice},
+    block_error_to_vfs_error,
     os::{
         BlockNotification, BlockThread, runtime_ops,
         sync::{IrqMutex, SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
@@ -84,6 +85,15 @@ impl InodeLifetimeTracker {
         }
     }
 
+    fn claim_pending_reap(&mut self) -> Option<ReapClaim> {
+        let inode =
+            self.zero_link.iter().copied().find(|inode| {
+                !self.live_refs.contains_key(inode) && !self.reaping.contains(inode)
+            })?;
+        self.reaping.insert(inode);
+        Some(ReapClaim(inode))
+    }
+
     fn has_pending_reaps(&self) -> bool {
         !self.zero_link.is_empty()
     }
@@ -113,6 +123,10 @@ impl Ext4State {
 
     fn has_pending_reaps(&self) -> bool {
         self.lifetimes.has_pending_reaps()
+    }
+
+    fn claim_pending_reap(&mut self) -> Option<ReapClaim> {
+        self.lifetimes.claim_pending_reap()
     }
 }
 
@@ -224,6 +238,13 @@ impl Ext4Filesystem {
     }
 
     fn shutdown_filesystem(&self) -> VfsResult<()> {
+        loop {
+            let claim = self.inner.lock().claim_pending_reap();
+            let Some(claim) = claim else {
+                break;
+            };
+            self.reap(claim)?;
+        }
         if self.inner.lock().has_pending_reaps() {
             return Err(into_vfs_err(rsext4::Ext4Error::busy()));
         }
@@ -245,10 +266,10 @@ impl Ext4Filesystem {
         if self.mmp_worker.thread.lock().is_some() {
             return Ok(());
         }
-        let runtime = runtime_ops().map_err(|error| VfsError::from(error).canonicalize())?;
+        let runtime = runtime_ops().map_err(block_error_to_vfs_error)?;
         let notification = runtime.notification();
         if self.self_ref.upgrade().is_none() {
-            return Err(VfsError::from(ax_errno::AxError::BadState).canonicalize());
+            return Err(VfsError::BadState);
         }
         let worker_fs = self.self_ref.clone();
         let worker_notification = Arc::clone(&notification);
@@ -263,7 +284,7 @@ impl Ext4Filesystem {
                     run_mmp_worker(worker_fs, worker_notification, stopping);
                 }),
             )
-            .map_err(|error| VfsError::from(error).canonicalize())?;
+            .map_err(block_error_to_vfs_error)?;
 
         *self.mmp_worker.notification.lock() = Some(notification);
         *self.mmp_worker.thread.lock() = Some(thread);
@@ -332,13 +353,13 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
 
-    use ax_errno::{AxError, AxResult};
     use rsext4::{
         EXT4_SUPER_MAGIC, MkfsOptions, SUPERBLOCK_OFFSET, SUPERBLOCK_SIZE, endian::DiskFormat,
         superblock::Ext4Superblock,
     };
 
     use super::*;
+    use crate::{BlockError, BlockResult};
 
     const TEST_DEVICE_BYTES: usize = 64 * 1024 * 1024;
     const TEST_SECTOR_BYTES: usize = 512;
@@ -378,38 +399,44 @@ mod tests {
             false
         }
 
-        fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+        fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
             let start = usize::try_from(block_id)
-                .map_err(|_| AxError::InvalidInput)?
+                .map_err(|_| BlockError::InvalidRequest)?
                 .checked_mul(TEST_SECTOR_BYTES)
-                .ok_or(AxError::InvalidInput)?;
-            let end = start.checked_add(buf.len()).ok_or(AxError::InvalidInput)?;
+                .ok_or(BlockError::InvalidRequest)?;
+            let end = start
+                .checked_add(buf.len())
+                .ok_or(BlockError::InvalidRequest)?;
             let storage = self.storage.lock().unwrap();
-            let source = storage.get(start..end).ok_or(AxError::InvalidInput)?;
+            let source = storage.get(start..end).ok_or(BlockError::InvalidRequest)?;
             buf.copy_from_slice(source);
             Ok(())
         }
 
-        fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+        fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
             if self.read_only {
-                return Err(AxError::ReadOnlyFilesystem);
+                return Err(BlockError::Io);
             }
             let start = usize::try_from(block_id)
-                .map_err(|_| AxError::InvalidInput)?
+                .map_err(|_| BlockError::InvalidRequest)?
                 .checked_mul(TEST_SECTOR_BYTES)
-                .ok_or(AxError::InvalidInput)?;
-            let end = start.checked_add(buf.len()).ok_or(AxError::InvalidInput)?;
+                .ok_or(BlockError::InvalidRequest)?;
+            let end = start
+                .checked_add(buf.len())
+                .ok_or(BlockError::InvalidRequest)?;
             let mut storage = self.storage.lock().unwrap();
-            let target = storage.get_mut(start..end).ok_or(AxError::InvalidInput)?;
+            let target = storage
+                .get_mut(start..end)
+                .ok_or(BlockError::InvalidRequest)?;
             target.copy_from_slice(buf);
             Ok(())
         }
 
-        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> AxResult {
-            Err(AxError::Unsupported)
+        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult {
+            Err(BlockError::Unsupported)
         }
 
-        fn flush(&mut self) -> AxResult {
+        fn flush(&mut self) -> BlockResult {
             self.flushes.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -486,7 +513,7 @@ mod tests {
 
         tracker.finish_reap(claim, false);
         let retry = tracker
-            .claim_if_ready(inode)
+            .claim_pending_reap()
             .expect("failed reap must remain retryable");
         tracker.finish_reap(retry, true);
         assert!(!tracker.has_pending_reaps());
