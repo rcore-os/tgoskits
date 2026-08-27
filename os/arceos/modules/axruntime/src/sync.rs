@@ -1,8 +1,7 @@
 //! Native ArceOS lock facade and `ax-sync` bridge provider.
-use core::sync::atomic::AtomicU64;
 use core::{
     panic::Location,
-    sync::atomic::{AtomicBool, AtomicUsize},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize},
 };
 
 pub use ax_task::sync::api::*;

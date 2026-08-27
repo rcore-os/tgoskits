@@ -16,15 +16,13 @@ pub fn sys_sched_yield() -> c_int {
 
 /// Get current thread ID.
 pub fn sys_getpid() -> c_int {
-    syscall_body!(sys_getpid,
-        {
-            let id = ax_runtime::task::current_thread_id().map_err(|error| {
-                warn!("failed to read current task identity: {error}");
-                crate::PosixError::EAGAIN
-            })?;
-            Ok(id.as_u64() as c_int)
-        }
-    )
+    syscall_body!(sys_getpid, {
+        let id = ax_runtime::task::current_thread_id().map_err(|error| {
+            warn!("failed to read current task identity: {error}");
+            crate::PosixError::EAGAIN
+        })?;
+        Ok(id.as_u64() as c_int)
+    })
 }
 
 /// Exit current task

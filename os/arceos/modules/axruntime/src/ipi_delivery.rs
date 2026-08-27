@@ -35,12 +35,9 @@ fn local_scheduler_work_pending() -> bool {
 #[cfg(feature = "ipi")]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
-    dispatch_scheduler_doorbell(
-        local_scheduler_work_pending,
-        || {
-            let _self_serviced = crate::guard::publish_local_scheduler_work();
-        },
-    );
+    dispatch_scheduler_doorbell(local_scheduler_work_pending, || {
+        let _self_serviced = crate::guard::publish_local_scheduler_work();
+    });
     ax_ipi::drain_hard_calls()
         .unwrap_or_else(|error| panic!("failed to continue hard-call draining: {error:?}"));
     ax_hal::irq::IrqReturn::Handled
@@ -49,12 +46,9 @@ pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqRetu
 #[cfg(all(feature = "wake-ipi", not(feature = "ipi")))]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
-    dispatch_scheduler_doorbell(
-        local_scheduler_work_pending,
-        || {
-            let _self_serviced = crate::guard::publish_local_scheduler_work();
-        },
-    );
+    dispatch_scheduler_doorbell(local_scheduler_work_pending, || {
+        let _self_serviced = crate::guard::publish_local_scheduler_work();
+    });
     ax_hal::irq::IrqReturn::Handled
 }
 

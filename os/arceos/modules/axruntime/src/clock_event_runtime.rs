@@ -271,9 +271,7 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
                 periodic_interval_nanos(),
             );
         }
-        firing.finish(
-            outcome,
-        );
+        firing.finish(outcome);
         ax_hal::irq::IrqReturn::Handled
     })
 }

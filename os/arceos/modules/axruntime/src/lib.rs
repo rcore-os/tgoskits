@@ -68,7 +68,6 @@ pub mod host_test {
 mod clock_event;
 
 mod clock_event_runtime;
-mod raw_console;
 pub mod console;
 mod devices;
 pub mod emergency_console;
@@ -78,6 +77,7 @@ mod interrupt_bootstrap;
 #[cfg(any(feature = "ipi", feature = "wake-ipi", test))]
 mod ipi_delivery;
 pub mod irq;
+mod raw_console;
 mod registers;
 pub mod serial;
 pub mod sync;

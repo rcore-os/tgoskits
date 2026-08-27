@@ -1,8 +1,7 @@
 //! CPU-local implementation of the lock context runtime.
 
 mod state;
-use state::SchedulerBatonState;
-use state::{RuntimeGuardState, RuntimeIrqState, RuntimePreemptState};
+use state::{RuntimeGuardState, RuntimeIrqState, RuntimePreemptState, SchedulerBatonState};
 
 /// Installs the one process-wide user-return boundary probe.
 ///
