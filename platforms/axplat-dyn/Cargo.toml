@@ -10,9 +10,8 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["smp", "irq" ]
+default = ["smp"]
 smp = ["ax-plat/smp"]
-irq = ["ax-plat/irq"]
 rtc = []
 efi = ["somehal/efi"]
 fp-simd = ["ax-cpu/fp-simd"]

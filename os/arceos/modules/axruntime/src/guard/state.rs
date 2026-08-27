@@ -18,7 +18,6 @@ impl RuntimeIrqState {
         }
     }
 
-    #[cfg(any(feature = "fs", feature = "multitask", test))]
     pub(super) const fn is_clear(self) -> bool {
         self.depth == 0
     }
@@ -33,11 +32,8 @@ pub(super) struct RuntimePreemptState {
 pub(super) enum SchedulerBatonState {
     /// The final pending preemption depth was converted under IRQ exclusion,
     /// but ax-task has not entered its scheduler frame yet.
-    #[cfg(any(feature = "multitask", test))]
     PreemptEntry,
-    #[cfg(any(feature = "multitask", test))]
     Active,
-    #[cfg(any(feature = "multitask", test))]
     Transferred,
     Finished,
 }
@@ -49,27 +45,18 @@ impl RuntimePreemptState {
         }
     }
 
-    #[cfg(any(feature = "fs", feature = "multitask", test))]
     pub(super) const fn is_clear(self) -> bool {
         matches!(self.scheduler_baton, SchedulerBatonState::Finished)
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) const fn has_one_scheduler_frame(self) -> bool {
         !matches!(self.scheduler_baton, SchedulerBatonState::Finished)
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) const fn has_active_scheduler_baton(self) -> bool {
         matches!(self.scheduler_baton, SchedulerBatonState::Active)
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) const fn has_preempt_entry_baton(self) -> bool {
         matches!(self.scheduler_baton, SchedulerBatonState::PreemptEntry)
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn claim_scheduler(&mut self) -> bool {
         if !matches!(self.scheduler_baton, SchedulerBatonState::Finished) {
             return false;
@@ -77,8 +64,6 @@ impl RuntimePreemptState {
         self.scheduler_baton = SchedulerBatonState::Active;
         true
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn claim_preempt_entry(&mut self) -> bool {
         if !matches!(self.scheduler_baton, SchedulerBatonState::Finished) {
             return false;
@@ -86,8 +71,6 @@ impl RuntimePreemptState {
         self.scheduler_baton = SchedulerBatonState::PreemptEntry;
         true
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn enter_preclaimed_scheduler(&mut self) -> bool {
         if !self.has_preempt_entry_baton() {
             return false;
@@ -95,8 +78,6 @@ impl RuntimePreemptState {
         self.scheduler_baton = SchedulerBatonState::Active;
         true
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn transfer_scheduler_baton(&mut self) {
         assert!(
             self.has_active_scheduler_baton(),
@@ -104,8 +85,6 @@ impl RuntimePreemptState {
         );
         self.scheduler_baton = SchedulerBatonState::Transferred;
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn finish_scheduler_baton(&mut self) {
         assert!(
             self.has_one_scheduler_frame(),
@@ -122,8 +101,6 @@ impl RuntimeGuardState {
             preempt: RuntimePreemptState::new(),
         }
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn enter_irq(&mut self, outer_irqs_enabled: bool) {
         if self.irq.depth == 0 {
             self.irq.outer_irqs_enabled = outer_irqs_enabled;
@@ -134,8 +111,6 @@ impl RuntimeGuardState {
             .checked_add(1)
             .expect("runtime IRQ guard nesting overflow");
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn exit_irq(&mut self, owner: &'static str) -> bool {
         assert!(
             self.irq.depth > 0,
@@ -148,8 +123,6 @@ impl RuntimeGuardState {
         }
         restore_irqs
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn claim_irq_exit_scheduler(&mut self, preempt_depth: u32) -> bool {
         if self.irq.depth != 1
             || !self.irq.outer_irqs_enabled
@@ -162,32 +135,22 @@ impl RuntimeGuardState {
         self.preempt.claim_scheduler()
     }
 
-    #[cfg(any(test, all(feature = "multitask", not(feature = "host-test"))))]
+    #[cfg(any(test, not(feature = "host-test")))]
     pub(super) const fn local_scheduler_work_is_self_serviced(self, preempt_depth: u32) -> bool {
         !self.irq.is_clear() && (self.irq.outer_irqs_enabled || preempt_depth != 0)
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) const fn owns_cpu_context(self) -> bool {
         !self.irq.is_clear() || self.preempt.has_one_scheduler_frame()
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn claim_task_scheduler(&mut self, preempt_depth: u32) -> bool {
         self.irq.is_clear() && preempt_depth == 0 && self.preempt.claim_scheduler()
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn claim_preempt_exit_scheduler(&mut self, preempt_depth: u32) -> bool {
         self.irq.is_clear() && preempt_depth == 1 && self.preempt.claim_preempt_entry()
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn enter_preclaimed_scheduler(&mut self, preempt_depth: u32) -> bool {
         self.irq.is_clear() && preempt_depth == 0 && self.preempt.enter_preclaimed_scheduler()
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn exit_scheduler_preempt(&mut self, owner: &'static str) {
         assert!(
             self.irq.is_clear(),
@@ -201,8 +164,6 @@ impl RuntimeGuardState {
         );
         self.preempt.finish_scheduler_baton();
     }
-
-    #[cfg(any(feature = "multitask", test))]
     pub(super) fn transfer_scheduler_preempt(&mut self) {
         assert!(
             self.irq.is_clear(),

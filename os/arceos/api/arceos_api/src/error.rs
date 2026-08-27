@@ -3,9 +3,7 @@ use ax_fs_ng::VfsError;
 use ax_io::IoError;
 #[cfg(feature = "net")]
 use ax_net::NetError;
-#[cfg(all(feature = "irq", feature = "multitask"))]
 use ax_runtime::RuntimeError;
-#[cfg(feature = "multitask")]
 use ax_runtime::task::TaskError;
 
 /// Errors owned by the public ArceOS API facade.
@@ -20,11 +18,9 @@ pub enum ApiError {
     #[error(transparent)]
     Net(#[from] NetError),
     /// A runtime-owned console operation failed.
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     /// A scheduler operation failed in the task domain.
-    #[cfg(feature = "multitask")]
     #[error(transparent)]
     Task(#[from] TaskError),
     /// A public API argument is outside its accepted domain.
@@ -51,9 +47,7 @@ impl From<ApiError> for IoError {
             ApiError::Vfs(error) => vfs_error_to_io_error(error),
             #[cfg(feature = "net")]
             ApiError::Net(error) => error.into(),
-            #[cfg(all(feature = "irq", feature = "multitask"))]
             ApiError::Runtime(error) => runtime_error_to_io_error(error),
-            #[cfg(feature = "multitask")]
             ApiError::Task(error) => task_error_to_io_error(error),
             ApiError::InvalidInput => Self::InvalidInput,
             ApiError::OperationNotSupported => Self::OperationNotSupported,
@@ -61,8 +55,6 @@ impl From<ApiError> for IoError {
         }
     }
 }
-
-#[cfg(feature = "multitask")]
 fn task_error_to_io_error(error: TaskError) -> IoError {
     match error {
         TaskError::InvalidConfiguration
@@ -139,7 +131,6 @@ fn vfs_error_to_io_error(error: VfsError) -> IoError {
     }
 }
 
-#[cfg(all(feature = "irq", feature = "multitask"))]
 fn runtime_error_to_io_error(error: RuntimeError) -> IoError {
     match error {
         RuntimeError::ConsoleFailedClosed => IoError::BadState,

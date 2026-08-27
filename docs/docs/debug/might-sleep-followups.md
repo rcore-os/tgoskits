@@ -78,14 +78,14 @@ Starry 用户内存访问和 page fault slow path。核心调度入口通过
 
 - 在 `platforms/ax-plat/src/irq.rs` 暴露 `in_irq_context()`，返回当前 CPU 的 `IN_IRQ_CONTEXT` 状态。
 - 在 `os/arceos/modules/axhal/src/irq.rs` re-export 该接口，保持 task runtime 只依赖 `ax-hal` 边界。
-- 在 runtime 的 schedule-context 校验路径中纳入
-  `ax_hal::irq::in_irq_context()`。
+- 在新 `components/ax-task` 的 schedule-context 校验路径中纳入必选的
+  `ax_hal::irq::in_irq_context()` runtime capability。
 - `might_sleep()` panic 信息同步打印显式 IRQ context。
 - 不用 `NoPreempt` 语义替代 IRQ context；`NoPreempt` 只是当前 IRQ handler 外层实现细节。
 
 讨论点：
 
-- 是否需要为非 `irq` feature 提供恒为 `false` 的 stub，还是只在调用侧 `cfg(feature = "irq")`。
+- IRQ 已是平台与任务运行时的基础能力，不再保留恒为 `false` 的 no-IRQ stub。
 - VM exit 转发 IRQ、IPI handler、timer IRQ 的覆盖范围验证仍需后续 QEMU 回归覆盖。
 
 完成标准：

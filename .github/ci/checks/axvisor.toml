@@ -158,7 +158,8 @@ id = "test-axloader-http-smoke"
 impact_packages = ["axloader"]
 name = "UEFI x86_64 · AxLoader HTTP boot"
 runner = "kvm-intel"
-timeout_minutes = 25
+# Cold runners may spend most of the original 45-minute budget on checkout and builds.
+timeout_minutes = 90
 command = '''
 rustup target add x86_64-unknown-uefi
 cargo xtask axloader test qemu --target x86_64-unknown-uefi
@@ -169,12 +170,12 @@ id = "test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx"
 impact_targets = ["axvisor:x86_64"]
 name = "VMX x86_64 · Direct + MP fallback + OVMF ACPI"
 runner = "kvm-intel"
-timeout_minutes = 45
+timeout_minutes = 90
 command = '''
 cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
-cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 '''
 
 [[check.suite]]
@@ -239,15 +240,16 @@ id = "test-axvisor-self-hosted-board-asus-nuc15crh-linux"
 impact_targets = ["axvisor:x86_64"]
 name = "Board ASUS NUC15CRH · Linux guest"
 runner = "board"
-timeout_minutes = 20
+timeout_minutes = 45
+download_xtask_bin_artifact = true
 command = '''
 mkdir -p tmp
-cargo xtask image pull qemu-x86_64 --extract-dir tmp
-cargo xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir tmp
+target/debug/tg-xtask image pull qemu-x86_64 --extract-dir tmp
+target/debug/tg-xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir tmp
 gzip -dc \
   tmp/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz \
   > tmp/initramfs-x86_64-busybox.cpio
-cargo xtask axvisor test board --board asus-nuc15crh-linux
+target/debug/tg-xtask axvisor test board --board asus-nuc15crh-linux
 '''
 
 [[check.suite]]

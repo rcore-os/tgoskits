@@ -2,8 +2,6 @@ package = "arceos-axtest-sg2002-usb-msc"
 target = "riscv64gc-unknown-none-elf"
 features = [
   "ax-std",
-  "irq",
-  "multitask",
   "paging",
   "ax-std/std-compat",
   "axplat-dyn/thead-mae",

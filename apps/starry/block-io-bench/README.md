@@ -39,25 +39,45 @@ wrapper into a managed Alpine rootfs. The wrapper runs several benchmark rounds
 and prints machine-readable log lines:
 
 ```text
-BLOCK_BENCH_CONFIG path=/root/block-io-bench-app rounds=5 bytes=4194304 block_bytes=4096 fsync=1 io_model=buffered-file write_scope=write-syscalls cache_drop=none diskstats_device=nvme0n1
+BLOCK_BENCH_CONFIG path=/root/block-io-bench-app rounds=5 bytes=4194304 block_bytes=4096 fsync=1 io_model=buffered-file write_scope=write-syscalls cache_drop=none verification=bytewise+checksum coherence=truncate-rewrite-cross-fd diskstats_device=nvme0n1
 BLOCK_BENCH_DISKSTATS round=0 phase=write device=nvme0n1 reads=... sectors_read=... writes=... sectors_written=...
 BLOCK_BENCH_DISKSTATS round=0 phase=fsync device=nvme0n1 reads=... sectors_read=... writes=... sectors_written=...
 BLOCK_BENCH_ROUND op=write round=0 bytes=4194304 elapsed_us=... mib_s=... checksum=...
 BLOCK_BENCH_ROUND op=fsync round=0 bytes=4194304 elapsed_us=... mib_s=... checksum=...
 BLOCK_BENCH_ROUND op=read round=0 bytes=4194304 elapsed_us=... mib_s=... checksum=...
+BLOCK_BENCH_VERIFY round=0 phase=initial-read expected_checksum=... actual_checksum=... status=pass
+BLOCK_BENCH_VERIFY round=0 phase=truncate-rewrite-cross-fd generation=32 expected_checksum=... actual_checksum=... status=pass
+BLOCK_BENCH_ROUND op=coherence-rewrite round=0 bytes=4194304 elapsed_us=... mib_s=... checksum=...
+BLOCK_BENCH_ROUND op=coherence-read round=0 bytes=4194304 elapsed_us=... mib_s=... checksum=...
 BLOCK_BENCH_RESULT op=write round=5 bytes=4194304 elapsed_us=... mib_s=... checksum=...
 BLOCK_BENCH_RESULT op=fsync round=5 bytes=4194304 elapsed_us=... mib_s=... checksum=...
 BLOCK_BENCH_RESULT op=read round=5 bytes=4194304 elapsed_us=... mib_s=... checksum=...
+BLOCK_BENCH_RESULT op=coherence-rewrite round=5 bytes=4194304 elapsed_us=... mib_s=... checksum=...
+BLOCK_BENCH_RESULT op=coherence-read round=5 bytes=4194304 elapsed_us=... mib_s=... checksum=...
 BLOCK_BENCH_APP_PASSED
 ```
 
-The `BLOCK_BENCH_RESULT` lines report the median elapsed time across all rounds.
+The `BLOCK_BENCH_RESULT` lines report the median elapsed time across all rounds;
+their checksum is the verified checksum from the round that supplied that
+median sample.
 `write` measures buffered write syscalls and `fsync` measures durability
-separately. The helper does not explicitly drop caches before `read`, but that
-does not imply a cache hit: `BLOCK_BENCH_DISKSTATS` identifies which phase
-actually reached the block runtime. Linux and StarryOS results must only be
-compared when their request/sector deltas describe the same I/O. The default
-workload uses five rounds, a 4 MiB file per round, and 4 KiB I/O blocks.
+separately. Every read is checked byte-for-byte against the deterministic write
+pattern, and the expected and observed checksums must also match before the app
+can print its pass marker.
+
+Each round then keeps a read-only file descriptor open while another descriptor
+truncates the same inode and rewrites all blocks in reverse order with a new
+generation. After the optional `fsync`, the original descriptor must observe
+the new size and contents. The `coherence-rewrite` and `coherence-read` medians
+therefore measure a repeatable cross-descriptor cache-coherence workload while
+the `BLOCK_BENCH_VERIFY` lines turn stale reads, lost writes, incorrect truncate
+state, and block-order corruption into hard failures.
+
+The helper does not explicitly drop caches before `read`, but that does not
+imply a cache hit: `BLOCK_BENCH_DISKSTATS` identifies which phase actually
+reached the block runtime. Linux and StarryOS results must only be compared when
+their request/sector deltas describe the same I/O. The default workload uses
+five rounds, a 4 MiB file per round, and 4 KiB I/O blocks.
 Override these from the QEMU shell environment when needed:
 
 ```sh

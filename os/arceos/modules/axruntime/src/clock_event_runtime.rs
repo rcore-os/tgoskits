@@ -4,14 +4,10 @@
 //! inside one local-IRQ exclusion window. The physical timer has no remote
 //! mutable endpoint; remote producers publish scheduler deadlines through
 //! ax-task and let the owning CPU reconcile them here.
-
-#[cfg(feature = "irq")]
 pub(crate) fn monotonic_now() -> ax_task::runtime::MonotonicInstant {
     ax_task::runtime::MonotonicInstant::from_nanos(ax_hal::time::monotonic_time_nanos())
         .expect("platform monotonic clock exceeded the signed ktime domain")
 }
-
-#[cfg(feature = "irq")]
 fn periodic_interval_nanos() -> u64 {
     // This is the periodic wakeup source for an active CPU, not a task-switch
     // latency bound. Linux-style NOHZ idle explicitly stops this clockevent.
@@ -19,13 +15,9 @@ fn periodic_interval_nanos() -> u64 {
     assert_ne!(interval, 0, "scheduler tick interval must be non-zero");
     interval
 }
-
-#[cfg(feature = "irq")]
 #[ax_percpu::def_percpu]
 static LOCAL_CLOCK_EVENT: crate::clock_event::LocalClockEvent =
     crate::clock_event::LocalClockEvent::offline();
-
-#[cfg(feature = "irq")]
 fn with_local_clock_event_mut<R>(
     operation: impl for<'value> FnOnce(&'value mut crate::clock_event::LocalClockEvent) -> R,
 ) -> R {
@@ -45,8 +37,6 @@ fn with_local_clock_event_mut<R>(
     }
     .unwrap_or_else(|error| panic!("clockevent CPU-local state is invalid: {error}"))
 }
-
-#[cfg(feature = "irq")]
 fn apply_clock_event_action(action: crate::clock_event::ClockEventAction) {
     match action {
         crate::clock_event::ClockEventAction::None => {}
@@ -59,8 +49,6 @@ fn apply_clock_event_action(action: crate::clock_event::ClockEventAction) {
         }
     }
 }
-
-#[cfg(feature = "irq")]
 pub(crate) fn take_current_clock_event_offline() {
     run_clock_event_transaction(
         crate::sync::IrqSaveGuard::new,
@@ -73,8 +61,6 @@ pub(crate) fn take_current_clock_event_offline() {
         apply_clock_event_action,
     );
 }
-
-#[cfg(feature = "irq")]
 fn run_clock_event_transaction<R, Action, Guard>(
     acquire_irq: impl FnOnce() -> Guard,
     access: impl FnOnce() -> (R, Action),
@@ -86,8 +72,6 @@ fn run_clock_event_transaction<R, Action, Guard>(
         result
     })
 }
-
-#[cfg(feature = "irq")]
 fn run_clock_event_irq_scope<R, Guard>(
     acquire_irq: impl FnOnce() -> Guard,
     service: impl FnOnce() -> R,
@@ -99,8 +83,6 @@ fn run_clock_event_irq_scope<R, Guard>(
     drop(irq_guard);
     result
 }
-
-#[cfg(all(feature = "irq", feature = "multitask"))]
 fn commit_local_clock_event<R>(
     operation: impl for<'value> FnOnce(
         &'value mut crate::clock_event::LocalClockEvent,
@@ -112,21 +94,14 @@ fn commit_local_clock_event<R>(
         apply_clock_event_action,
     )
 }
-
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub(crate) fn enable_irqs_after_scheduler_online(_online: crate::task::PublishedCpuOnline) {
     ax_hal::asm::enable_irqs();
 }
-
-#[cfg(feature = "irq")]
 #[must_use = "a claimed clockevent firing transaction must be finished"]
 struct ClockEventFiringTransaction {
     token: crate::clock_event::ClockEventFiringToken,
-    #[cfg(feature = "multitask")]
     periodic_tick: bool,
 }
-
-#[cfg(feature = "irq")]
 impl ClockEventFiringTransaction {
     fn begin(
         now: ax_task::runtime::MonotonicInstant,
@@ -148,42 +123,29 @@ impl ClockEventFiringTransaction {
         let periodic_tick = with_local_clock_event_mut(|clockevent| {
             clockevent.advance_periodic(now, periodic_interval_nanos())
         });
-        #[cfg(not(feature = "multitask"))]
-        let _ = periodic_tick;
         Ok(Self {
             token,
-            #[cfg(feature = "multitask")]
             periodic_tick,
         })
     }
 
-    fn finish(self, #[cfg(feature = "multitask")] outcome: ax_task::TaskClockEventOutcome) {
+    fn finish(self, outcome: ax_task::TaskClockEventOutcome) {
         let token = self.token;
         let action = with_local_clock_event_mut(|clockevent| {
-            #[cfg(feature = "multitask")]
             let _ = clockevent
                 .publish_scheduler(outcome.update().generation(), outcome.update().deadline());
-            #[cfg(feature = "multitask")]
             let rearm = crate::clock_event::ClockEventRearm::Deferred;
-            #[cfg(not(feature = "multitask"))]
-            let rearm = crate::clock_event::ClockEventRearm::Immediate;
             clockevent.finish_firing(token, rearm)
         });
         apply_clock_event_action(action);
     }
-
-    #[cfg(feature = "multitask")]
     const fn periodic_tick(&self) -> bool {
         self.periodic_tick
     }
-
-    #[cfg(feature = "multitask")]
     const fn scheduler_deadline_elapsed(&self) -> bool {
         self.token.scheduler_deadline_elapsed()
     }
 }
-
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub(crate) fn local_clock_event_has_immediate_work(
     now: ax_task::runtime::MonotonicInstant,
 ) -> bool {
@@ -194,13 +156,9 @@ pub(crate) fn local_clock_event_has_immediate_work(
         )
     })
 }
-
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub(crate) fn stop_current_scheduler_tick_for_idle() {
     commit_local_clock_event(|clockevent| ((), clockevent.stop_scheduler_tick_for_idle()));
 }
-
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub(crate) fn restart_current_scheduler_tick_after_idle(now: ax_task::runtime::MonotonicInstant) {
     commit_local_clock_event(|clockevent| {
         (
@@ -209,8 +167,6 @@ pub(crate) fn restart_current_scheduler_tick_after_idle(now: ax_task::runtime::M
         )
     });
 }
-
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::SchedulerDeadlineUpdate) {
     commit_local_clock_event(|clockevent| {
         (
@@ -221,7 +177,6 @@ pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::Schedul
 }
 
 /// Completes Linux-style deferred hrtimer rearm before local IRQ restoration.
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub(crate) fn finish_deferred_rearm() {
     assert!(
         !ax_hal::asm::irqs_enabled(),
@@ -230,8 +185,6 @@ pub(crate) fn finish_deferred_rearm() {
     let action = with_local_clock_event_mut(|clockevent| clockevent.finish_deferred_rearm());
     apply_clock_event_action(action);
 }
-
-#[cfg(feature = "irq")]
 pub(crate) fn init_timer() {
     run_clock_event_transaction(
         crate::sync::IrqSaveGuard::new,
@@ -244,8 +197,6 @@ pub(crate) fn init_timer() {
         apply_clock_event_action,
     );
 }
-
-#[cfg(any(feature = "irq", test))]
 pub(crate) fn initial_periodic_deadline(
     now: ax_task::runtime::MonotonicInstant,
     interval_ns: u64,
@@ -261,8 +212,6 @@ pub(crate) fn initial_periodic_deadline(
     );
     crate::clock_event::ClockDeadline::from_monotonic(deadline)
 }
-
-#[cfg(any(feature = "irq", test))]
 pub(crate) fn next_periodic_deadline(
     deadline: crate::clock_event::ClockDeadline,
     now: ax_task::runtime::MonotonicInstant,
@@ -292,8 +241,6 @@ pub(crate) fn next_periodic_deadline(
     );
     next
 }
-
-#[cfg(feature = "irq")]
 pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     run_clock_event_irq_scope(crate::sync::IrqSaveGuard::new, || {
         let _ = ctx;
@@ -311,17 +258,13 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
         // nested scheduler-clock publication for this complete stamp.
         unsafe { ax_hal::time::scheduler_clock_tick() }
             .expect("current CPU scheduler clock must be online before timer IRQs");
-        #[cfg(feature = "multitask")]
         let now = monotonic_now();
-        #[cfg(feature = "multitask")]
         let scheduler_tick = match (firing.periodic_tick(), firing.scheduler_deadline_elapsed()) {
             (false, _) => ax_task::SchedulerTickStatus::NotElapsed,
             (true, false) => ax_task::SchedulerTickStatus::Elapsed,
             (true, true) => ax_task::SchedulerTickStatus::ElapsedWithSchedulerDeadline,
         };
-        #[cfg(feature = "multitask")]
         let outcome = crate::task::on_clock_event(now, scheduler_tick);
-        #[cfg(feature = "multitask")]
         if firing.periodic_tick() {
             crate::task::publish_scheduler_tick(
                 outcome.scheduler_tick_stamp(),
@@ -329,7 +272,6 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
             );
         }
         firing.finish(
-            #[cfg(feature = "multitask")]
             outcome,
         );
         ax_hal::irq::IrqReturn::Handled
@@ -338,7 +280,6 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "irq")]
     use core::cell::Cell;
 
     fn instant(nanos: u64) -> ax_task::runtime::MonotonicInstant {
@@ -348,21 +289,15 @@ mod tests {
     fn deadline(nanos: u64) -> crate::clock_event::ClockDeadline {
         crate::clock_event::ClockDeadline::from_nanos(nanos).unwrap()
     }
-
-    #[cfg(feature = "irq")]
     struct TestIrqGuard<'state> {
         irq_enabled: &'state Cell<bool>,
         restore_enabled: bool,
     }
-
-    #[cfg(feature = "irq")]
     impl Drop for TestIrqGuard<'_> {
         fn drop(&mut self) {
             self.irq_enabled.set(self.restore_enabled);
         }
     }
-
-    #[cfg(feature = "irq")]
     #[test]
     fn clockevent_transaction_holds_irq_exclusion_through_hardware_commit() {
         let irq_enabled = Cell::new(true);
@@ -407,8 +342,6 @@ mod tests {
         assert!(hardware_committed.get());
         assert!(irq_enabled.get(), "the caller's IRQ state must be restored");
     }
-
-    #[cfg(feature = "irq")]
     #[test]
     fn timer_irq_scope_establishes_local_irq_exclusion() {
         let irq_enabled = Cell::new(true);
@@ -433,8 +366,6 @@ mod tests {
         assert!(handled);
         assert!(irq_enabled.get(), "the caller's IRQ state must be restored");
     }
-
-    #[cfg(feature = "irq")]
     #[test]
     fn stale_edge_without_a_logical_owner_does_not_guess_hardware_state() {
         let mut clockevent = crate::clock_event::LocalClockEvent::offline();
@@ -443,8 +374,6 @@ mod tests {
             crate::clock_event::ClockEventIrqClaim::Ignored
         );
     }
-
-    #[cfg(feature = "irq")]
     #[test]
     fn scheduler_tick_interval_honors_build_configuration() {
         let configured_milliseconds = option_env!("AX_SCHEDULER_TICK_MS")

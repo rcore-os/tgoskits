@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -14,6 +15,8 @@
 #define DEFAULT_BLOCK_BYTES (4ULL * 1024ULL)
 #define DEFAULT_ROUNDS 5U
 #define MAX_ROUNDS 32U
+#define FNV1A_OFFSET_BASIS 14695981039346656037ULL
+#define FNV1A_PRIME 1099511628211ULL
 
 struct bench_config {
     const char *base_path;
@@ -25,11 +28,18 @@ struct bench_config {
 
 struct bench_sample {
     uint64_t elapsed_us;
+    uint64_t checksum;
 };
 
 struct write_sample {
     uint64_t write_us;
     uint64_t fsync_us;
+};
+
+struct coherence_sample {
+    uint64_t rewrite_us;
+    uint64_t read_us;
+    uint64_t checksum;
 };
 
 struct disk_counters {
@@ -230,12 +240,28 @@ static void fill_buffer(uint8_t *buf, size_t len, unsigned round, uint64_t offse
     }
 }
 
-static uint64_t checksum_buffer(const uint8_t *buf, size_t len) {
-    uint64_t sum = 0;
+static void verify_buffer(const uint8_t *buf, size_t len, unsigned generation, uint64_t offset,
+                          const char *phase) {
     for (size_t i = 0; i < len; i++) {
-        sum += buf[i];
+        uint8_t expected =
+            (uint8_t)(((offset + i) * 131ULL + (uint64_t)generation * 17ULL) & 0xffU);
+        if (buf[i] != expected) {
+            fprintf(stderr,
+                    "BLOCK_BENCH_MISMATCH phase=%s generation=%u offset=%llu expected=%u "
+                    "actual=%u\n",
+                    phase, generation, (unsigned long long)(offset + i), (unsigned)expected,
+                    (unsigned)buf[i]);
+            exit(1);
+        }
     }
-    return sum;
+}
+
+static uint64_t checksum_update(uint64_t checksum, const uint8_t *buf, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        checksum ^= buf[i];
+        checksum *= FNV1A_PRIME;
+    }
+    return checksum;
 }
 
 static void checked_write_all(int fd, const uint8_t *buf, size_t len) {
@@ -267,6 +293,13 @@ static void checked_read_all(int fd, uint8_t *buf, size_t len) {
             exit(1);
         }
         done += (size_t)ret;
+    }
+}
+
+static void checked_seek(int fd, uint64_t offset) {
+    if (offset > (uint64_t)INT64_MAX || lseek(fd, (off_t)offset, SEEK_SET) < 0) {
+        perror("lseek");
+        exit(1);
     }
 }
 
@@ -310,7 +343,7 @@ static void bench_path(char *path, size_t len, const char *base_path, unsigned r
 
 static struct write_sample run_write_round(const struct bench_config *config, uint8_t *buf,
                                            unsigned round, const char *path,
-                                           const struct disk_probe *probe) {
+                                           const struct disk_probe *probe, uint64_t *checksum) {
     int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0644);
     if (fd < 0) {
         perror("open write");
@@ -327,8 +360,10 @@ static struct write_sample run_write_round(const struct bench_config *config, ui
         read_disk_counters(probe->device, &before_write);
     }
     uint64_t write_start = now_us();
+    *checksum = FNV1A_OFFSET_BASIS;
     for (uint64_t done = 0; done < config->bytes; done += config->block_bytes) {
         fill_buffer(buf, config->block_bytes, round, done);
+        *checksum = checksum_update(*checksum, buf, config->block_bytes);
         checked_write_all(fd, buf, config->block_bytes);
     }
     uint64_t write_end = now_us();
@@ -363,7 +398,7 @@ static struct write_sample run_write_round(const struct bench_config *config, ui
 }
 
 static uint64_t run_read_round(const struct bench_config *config, uint8_t *buf, unsigned round,
-                               const char *path, uint64_t *checksum,
+                               const char *path, uint64_t expected_checksum, uint64_t *checksum,
                                const struct disk_probe *probe) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -380,9 +415,11 @@ static uint64_t run_read_round(const struct bench_config *config, uint8_t *buf, 
         read_disk_counters(probe->device, &before_read);
     }
     uint64_t start = now_us();
+    *checksum = FNV1A_OFFSET_BASIS;
     for (uint64_t done = 0; done < config->bytes; done += config->block_bytes) {
         checked_read_all(fd, buf, config->block_bytes);
-        *checksum += checksum_buffer(buf, config->block_bytes);
+        verify_buffer(buf, config->block_bytes, round, done, "initial-read");
+        *checksum = checksum_update(*checksum, buf, config->block_bytes);
     }
     uint64_t end = now_us();
     if (probe->available) {
@@ -394,7 +431,121 @@ static uint64_t run_read_round(const struct bench_config *config, uint8_t *buf, 
         exit(1);
     }
     print_disk_delta(probe, round, "read", &before_read, &after_read);
+    if (*checksum != expected_checksum) {
+        fprintf(stderr,
+                "BLOCK_BENCH_MISMATCH phase=initial-checksum round=%u expected=%llu actual=%llu\n",
+                round, (unsigned long long)expected_checksum, (unsigned long long)*checksum);
+        exit(1);
+    }
+    printf("BLOCK_BENCH_VERIFY round=%u phase=initial-read expected_checksum=%llu "
+           "actual_checksum=%llu status=pass\n",
+           round, (unsigned long long)expected_checksum, (unsigned long long)*checksum);
+    fflush(stdout);
     return end - start;
+}
+
+static struct coherence_sample run_coherence_round(const struct bench_config *config,
+                                                   uint8_t *buf, unsigned round,
+                                                   const char *path,
+                                                   const struct disk_probe *probe) {
+    unsigned generation = round + MAX_ROUNDS;
+    int observer = open(path, O_RDONLY);
+    if (observer < 0) {
+        perror("open coherence observer");
+        exit(1);
+    }
+    int writer = open(path, O_WRONLY | O_TRUNC);
+    if (writer < 0) {
+        perror("open coherence writer");
+        exit(1);
+    }
+
+    printf("BLOCK_BENCH_PROGRESS phase=coherence-rewrite round=%u path=%s\n", round, path);
+    fflush(stdout);
+    struct disk_counters before_rewrite = {0};
+    struct disk_counters after_rewrite = {0};
+    struct disk_counters after_read = {0};
+    if (probe->available) {
+        read_disk_counters(probe->device, &before_rewrite);
+    }
+
+    uint64_t expected_checksum = FNV1A_OFFSET_BASIS;
+    for (uint64_t done = 0; done < config->bytes; done += config->block_bytes) {
+        fill_buffer(buf, config->block_bytes, generation, done);
+        expected_checksum = checksum_update(expected_checksum, buf, config->block_bytes);
+    }
+    uint64_t rewrite_start = now_us();
+    for (uint64_t remaining = config->bytes; remaining != 0;
+         remaining -= config->block_bytes) {
+        uint64_t offset = remaining - config->block_bytes;
+        fill_buffer(buf, config->block_bytes, generation, offset);
+        checked_seek(writer, offset);
+        checked_write_all(writer, buf, config->block_bytes);
+    }
+    if (config->fsync_enabled && fsync(writer) != 0) {
+        perror("fsync coherence writer");
+        exit(1);
+    }
+    uint64_t rewrite_end = now_us();
+    if (close(writer) != 0) {
+        perror("close coherence writer");
+        exit(1);
+    }
+    if (probe->available) {
+        read_disk_counters(probe->device, &after_rewrite);
+    }
+
+    struct stat metadata;
+    if (fstat(observer, &metadata) != 0) {
+        perror("fstat coherence observer");
+        exit(1);
+    }
+    if (metadata.st_size < 0 || (uint64_t)metadata.st_size != config->bytes) {
+        fprintf(stderr,
+                "BLOCK_BENCH_MISMATCH phase=coherence-size round=%u expected=%llu actual=%lld\n",
+                round, (unsigned long long)config->bytes, (long long)metadata.st_size);
+        exit(1);
+    }
+
+    printf("BLOCK_BENCH_PROGRESS phase=coherence-read round=%u path=%s\n", round, path);
+    fflush(stdout);
+    checked_seek(observer, 0);
+    uint64_t actual_checksum = FNV1A_OFFSET_BASIS;
+    uint64_t read_start = now_us();
+    for (uint64_t done = 0; done < config->bytes; done += config->block_bytes) {
+        checked_read_all(observer, buf, config->block_bytes);
+        verify_buffer(buf, config->block_bytes, generation, done, "coherence-read");
+        actual_checksum = checksum_update(actual_checksum, buf, config->block_bytes);
+    }
+    uint64_t read_end = now_us();
+    if (close(observer) != 0) {
+        perror("close coherence observer");
+        exit(1);
+    }
+    if (probe->available) {
+        read_disk_counters(probe->device, &after_read);
+    }
+    print_disk_delta(probe, round, "coherence-rewrite", &before_rewrite, &after_rewrite);
+    print_disk_delta(probe, round, "coherence-read", &after_rewrite, &after_read);
+
+    if (actual_checksum != expected_checksum) {
+        fprintf(stderr,
+                "BLOCK_BENCH_MISMATCH phase=coherence-checksum round=%u expected=%llu "
+                "actual=%llu\n",
+                round, (unsigned long long)expected_checksum, (unsigned long long)actual_checksum);
+        exit(1);
+    }
+    printf("BLOCK_BENCH_VERIFY round=%u phase=truncate-rewrite-cross-fd generation=%u "
+           "expected_checksum=%llu actual_checksum=%llu status=pass\n",
+           round, generation, (unsigned long long)expected_checksum,
+           (unsigned long long)actual_checksum);
+    fflush(stdout);
+
+    return (struct coherence_sample){
+        .rewrite_us = rewrite_end - rewrite_start,
+        .read_us = read_end - read_start,
+        .checksum = actual_checksum,
+    };
 }
 
 int main(int argc, char **argv) {
@@ -408,6 +559,7 @@ int main(int argc, char **argv) {
     struct disk_probe probe = discover_root_disk();
     printf("BLOCK_BENCH_CONFIG path=%s rounds=%u bytes=%llu block_bytes=%zu fsync=%d "
            "io_model=buffered-file write_scope=write-syscalls cache_drop=none "
+           "verification=bytewise+checksum coherence=truncate-rewrite-cross-fd "
            "diskstats_device=%s\n",
            config.base_path, config.rounds, (unsigned long long)config.bytes, config.block_bytes,
            config.fsync_enabled, probe.available ? probe.device : "unresolved");
@@ -416,40 +568,63 @@ int main(int argc, char **argv) {
     struct bench_sample write_samples[MAX_ROUNDS];
     struct bench_sample fsync_samples[MAX_ROUNDS];
     struct bench_sample read_samples[MAX_ROUNDS];
-    uint64_t checksum = 0;
-
+    struct bench_sample coherence_rewrite_samples[MAX_ROUNDS];
+    struct bench_sample coherence_read_samples[MAX_ROUNDS];
     for (unsigned round = 0; round < config.rounds; round++) {
         char path[256];
         bench_path(path, sizeof(path), config.base_path, round);
         unlink(path);
 
-        struct write_sample write = run_write_round(&config, buf, round, path, &probe);
-        write_samples[round].elapsed_us = write.write_us;
-        fsync_samples[round].elapsed_us = write.fsync_us;
-        print_speed("BLOCK_BENCH_ROUND", "write", round, config.bytes, write.write_us, checksum);
+        uint64_t expected_checksum = 0;
+        struct write_sample write =
+            run_write_round(&config, buf, round, path, &probe, &expected_checksum);
+        write_samples[round] = (struct bench_sample){write.write_us, expected_checksum};
+        fsync_samples[round] = (struct bench_sample){write.fsync_us, expected_checksum};
+        print_speed("BLOCK_BENCH_ROUND", "write", round, config.bytes, write.write_us,
+                    expected_checksum);
         if (config.fsync_enabled) {
             print_speed("BLOCK_BENCH_ROUND", "fsync", round, config.bytes, write.fsync_us,
-                        checksum);
+                        expected_checksum);
         }
 
-        uint64_t read_us = run_read_round(&config, buf, round, path, &checksum, &probe);
-        read_samples[round].elapsed_us = read_us;
-        print_speed("BLOCK_BENCH_ROUND", "read", round, config.bytes, read_us, checksum);
+        uint64_t read_checksum = 0;
+        uint64_t read_us = run_read_round(&config, buf, round, path, expected_checksum,
+                                          &read_checksum, &probe);
+        read_samples[round] = (struct bench_sample){read_us, read_checksum};
+        print_speed("BLOCK_BENCH_ROUND", "read", round, config.bytes, read_us, read_checksum);
 
+        struct coherence_sample coherence =
+            run_coherence_round(&config, buf, round, path, &probe);
+        coherence_rewrite_samples[round] =
+            (struct bench_sample){coherence.rewrite_us, coherence.checksum};
+        coherence_read_samples[round] =
+            (struct bench_sample){coherence.read_us, coherence.checksum};
+        print_speed("BLOCK_BENCH_ROUND", "coherence-rewrite", round, config.bytes,
+                    coherence.rewrite_us, coherence.checksum);
+        print_speed("BLOCK_BENCH_ROUND", "coherence-read", round, config.bytes,
+                    coherence.read_us, coherence.checksum);
         unlink(path);
     }
 
     struct bench_sample write_median = median_sample(write_samples, config.rounds);
     struct bench_sample read_median = median_sample(read_samples, config.rounds);
     print_speed("BLOCK_BENCH_RESULT", "write", config.rounds, config.bytes,
-                write_median.elapsed_us, checksum);
+                write_median.elapsed_us, write_median.checksum);
     if (config.fsync_enabled) {
         struct bench_sample fsync_median = median_sample(fsync_samples, config.rounds);
         print_speed("BLOCK_BENCH_RESULT", "fsync", config.rounds, config.bytes,
-                    fsync_median.elapsed_us, checksum);
+                    fsync_median.elapsed_us, fsync_median.checksum);
     }
     print_speed("BLOCK_BENCH_RESULT", "read", config.rounds, config.bytes,
-                read_median.elapsed_us, checksum);
+                read_median.elapsed_us, read_median.checksum);
+    struct bench_sample coherence_rewrite_median =
+        median_sample(coherence_rewrite_samples, config.rounds);
+    struct bench_sample coherence_read_median =
+        median_sample(coherence_read_samples, config.rounds);
+    print_speed("BLOCK_BENCH_RESULT", "coherence-rewrite", config.rounds, config.bytes,
+                coherence_rewrite_median.elapsed_us, coherence_rewrite_median.checksum);
+    print_speed("BLOCK_BENCH_RESULT", "coherence-read", config.rounds, config.bytes,
+                coherence_read_median.elapsed_us, coherence_read_median.checksum);
 
     free(buf);
     return 0;

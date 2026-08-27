@@ -33,7 +33,6 @@ pub(crate) enum ClockEventPhase {
     Armed,
     Firing,
     /// An expired physical edge remains owned until IRQ-return rearm.
-    #[cfg(feature = "multitask")]
     Deferred,
 }
 
@@ -50,10 +49,9 @@ pub(crate) enum ClockEventAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ClockEventRearm {
     /// Reconcile the next edge in the firing transaction itself.
-    #[cfg(any(test, not(feature = "multitask")))]
+    #[cfg(test)]
     Immediate,
     /// Transfer rearm to the IRQ-return or scheduler-tail transaction.
-    #[cfg(feature = "multitask")]
     Deferred,
 }
 
@@ -62,17 +60,13 @@ pub(crate) enum ClockEventRearm {
 pub(crate) struct ClockEventFiringToken {
     cpu_epoch: u64,
     quiesce: ClockEventAction,
-    #[cfg(feature = "multitask")]
     scheduler_deadline_elapsed: bool,
 }
 
 impl ClockEventFiringToken {
-    #[cfg(feature = "irq")]
     pub(crate) const fn quiesce_action(&self) -> ClockEventAction {
         self.quiesce
     }
-
-    #[cfg(feature = "multitask")]
     pub(crate) const fn scheduler_deadline_elapsed(&self) -> bool {
         self.scheduler_deadline_elapsed
     }
@@ -104,9 +98,7 @@ enum ClockEventDeviceState {
 pub(crate) struct LocalClockEvent {
     phase: ClockEventPhase,
     cpu_epoch: u64,
-    #[cfg(feature = "multitask")]
     scheduler_generation: u64,
-    #[cfg(feature = "multitask")]
     scheduler_deadline: Option<ClockDeadline>,
     scheduler_tick: SchedulerTickState,
     armed_deadline: Option<ClockDeadline>,
@@ -118,9 +110,7 @@ impl LocalClockEvent {
         Self {
             phase: ClockEventPhase::Offline,
             cpu_epoch: 0,
-            #[cfg(feature = "multitask")]
             scheduler_generation: 0,
-            #[cfg(feature = "multitask")]
             scheduler_deadline: None,
             scheduler_tick: SchedulerTickState::Stopped { resume_from: None },
             armed_deadline: None,
@@ -141,7 +131,6 @@ impl LocalClockEvent {
     }
 
     /// Stops the periodic scheduler tick before the owner CPU commits idle.
-    #[cfg(feature = "multitask")]
     pub(crate) fn stop_scheduler_tick_for_idle(&mut self) -> ClockEventAction {
         assert!(!matches!(
             self.phase,
@@ -157,7 +146,6 @@ impl LocalClockEvent {
     }
 
     /// Restarts the scheduler tick after idle work becomes runnable.
-    #[cfg(feature = "multitask")]
     pub(crate) fn restart_scheduler_tick_after_idle(
         &mut self,
         now: MonotonicInstant,
@@ -193,7 +181,6 @@ impl LocalClockEvent {
         let must_stop = self.device_state == ClockEventDeviceState::Started;
         self.advance_cpu_epoch();
         self.phase = ClockEventPhase::Offline;
-        #[cfg(feature = "multitask")]
         {
             self.scheduler_deadline = None;
         }
@@ -206,8 +193,6 @@ impl LocalClockEvent {
             ClockEventAction::None
         }
     }
-
-    #[cfg(feature = "multitask")]
     pub(crate) fn publish_scheduler(
         &mut self,
         generation: u64,
@@ -228,13 +213,10 @@ impl LocalClockEvent {
     /// clock; an early or stale hardware edge therefore completes normally
     /// and reprograms the still-earliest absolute deadline exactly once.
     pub(crate) fn claim_irq(&mut self, now: MonotonicInstant) -> ClockEventIrqClaim {
-        #[cfg(not(feature = "multitask"))]
-        let _ = now;
         match self.phase {
             ClockEventPhase::Offline | ClockEventPhase::Idle | ClockEventPhase::Firing => {
                 return ClockEventIrqClaim::Ignored;
             }
-            #[cfg(feature = "multitask")]
             ClockEventPhase::Deferred => {
                 return ClockEventIrqClaim::Ignored;
             }
@@ -254,7 +236,6 @@ impl LocalClockEvent {
         ClockEventIrqClaim::Firing(ClockEventFiringToken {
             cpu_epoch: self.cpu_epoch,
             quiesce: ClockEventAction::Stop,
-            #[cfg(feature = "multitask")]
             scheduler_deadline_elapsed: self
                 .scheduler_deadline
                 .is_some_and(|deadline| now.reached(deadline.as_monotonic())),
@@ -291,12 +272,11 @@ impl LocalClockEvent {
             "clockevent finish requires a firing transaction"
         );
         match rearm {
-            #[cfg(any(test, not(feature = "multitask")))]
+            #[cfg(test)]
             ClockEventRearm::Immediate => {
                 self.phase = ClockEventPhase::Idle;
                 self.reconcile_arm()
             }
-            #[cfg(feature = "multitask")]
             ClockEventRearm::Deferred => {
                 // Match Linux's TIF_HRTIMER_REARM transaction: the expired
                 // comparator has left the active base while IRQs stay
@@ -309,7 +289,6 @@ impl LocalClockEvent {
     }
 
     /// Completes a deferred firing transaction before local IRQs are enabled.
-    #[cfg(feature = "multitask")]
     pub(crate) fn finish_deferred_rearm(&mut self) -> ClockEventAction {
         if self.phase != ClockEventPhase::Deferred {
             return ClockEventAction::None;
@@ -328,12 +307,12 @@ impl LocalClockEvent {
         self.cpu_epoch
     }
 
-    #[cfg(all(test, feature = "multitask"))]
+    #[cfg(test)]
     pub(crate) const fn scheduler_generation(&self) -> u64 {
         self.scheduler_generation
     }
 
-    #[cfg(all(test, feature = "multitask"))]
+    #[cfg(test)]
     pub(crate) const fn scheduler_deadline(&self) -> Option<ClockDeadline> {
         self.scheduler_deadline
     }
@@ -342,33 +321,21 @@ impl LocalClockEvent {
     pub(crate) const fn armed_deadline(&self) -> Option<ClockDeadline> {
         self.armed_deadline
     }
-
-    #[cfg(feature = "multitask")]
     pub(crate) fn has_immediate_work(&self, now: MonotonicInstant) -> bool {
         self.selected_deadline()
             .is_some_and(|deadline| now.reached(deadline.as_monotonic()))
     }
 
     fn selected_deadline(&self) -> Option<ClockDeadline> {
-        #[cfg(feature = "multitask")]
-        {
-            let scheduler_tick = match self.scheduler_tick {
-                SchedulerTickState::Running { next } => Some(next),
-                SchedulerTickState::Stopped { .. } => None,
-            };
-            match (scheduler_tick, self.scheduler_deadline) {
-                (Some(periodic), Some(task)) => Some(periodic.min(task)),
-                (Some(periodic), None) => Some(periodic),
-                (None, Some(task)) => Some(task),
-                (None, None) => None,
-            }
-        }
-        #[cfg(not(feature = "multitask"))]
-        {
-            match self.scheduler_tick {
-                SchedulerTickState::Running { next } => Some(next),
-                SchedulerTickState::Stopped { .. } => None,
-            }
+        let scheduler_tick = match self.scheduler_tick {
+            SchedulerTickState::Running { next } => Some(next),
+            SchedulerTickState::Stopped { .. } => None,
+        };
+        match (scheduler_tick, self.scheduler_deadline) {
+            (Some(periodic), Some(task)) => Some(periodic.min(task)),
+            (Some(periodic), None) => Some(periodic),
+            (None, Some(task)) => Some(task),
+            (None, None) => None,
         }
     }
 
@@ -377,7 +344,6 @@ impl LocalClockEvent {
             ClockEventPhase::Offline | ClockEventPhase::Firing => {
                 return ClockEventAction::None;
             }
-            #[cfg(feature = "multitask")]
             ClockEventPhase::Deferred => return ClockEventAction::None,
             ClockEventPhase::Idle | ClockEventPhase::Armed => {}
         }
@@ -439,7 +405,7 @@ impl LocalClockEvent {
     }
 }
 
-#[cfg(all(test, not(feature = "multitask")))]
+#[cfg(test)]
 mod single_task_tests {
     use ax_task::runtime::MonotonicInstant;
 
@@ -492,7 +458,7 @@ mod single_task_tests {
     }
 }
 
-#[cfg(all(test, feature = "multitask"))]
+#[cfg(test)]
 mod tests {
     use ax_task::runtime::{MonotonicDeadline, MonotonicInstant};
 

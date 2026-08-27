@@ -42,8 +42,6 @@ const fn nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> u64 {
         ticks as u64
     }
 }
-
-#[cfg(any(feature = "irq", test))]
 const fn deadline_nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> u64 {
     if frequency_hz == 0 {
         return 0;
@@ -57,8 +55,6 @@ const fn deadline_nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> 
         ticks as u64
     }
 }
-
-#[cfg(any(feature = "irq", test))]
 fn oneshot_interval_ticks(deadline_ns: u64, current_ticks: u64, frequency_hz: u64) -> usize {
     let deadline_ticks = deadline_nanos_to_ticks_at_frequency(deadline_ns, frequency_hz);
     let delta = deadline_ticks.saturating_sub(current_ticks).max(1);
@@ -68,8 +64,6 @@ fn oneshot_interval_ticks(deadline_ns: u64, current_ticks: u64, frequency_hz: u6
         delta as usize
     }
 }
-
-#[cfg(any(feature = "irq", test))]
 fn program_oneshot(
     deadline_ns: u64,
     current_ticks: u64,
@@ -79,8 +73,6 @@ fn program_oneshot(
     let interval = oneshot_interval_ticks(deadline_ns, current_ticks, frequency_hz);
     program_interval(interval);
 }
-
-#[cfg(any(feature = "irq", test))]
 fn resume_oneshot(
     deadline_ns: u64,
     current_ticks: u64,
@@ -158,7 +150,6 @@ impl ax_plat::time::TimeIf for GenericTimer {
         }
     }
     /// Returns the IRQ number for the timer interrupt.
-    #[cfg(feature = "irq")]
     fn irq_num() -> ax_plat::irq::IrqId {
         somehal::irq::systick_irq()
     }
@@ -166,7 +157,6 @@ impl ax_plat::time::TimeIf for GenericTimer {
     ///
     /// A timer interrupt will be triggered at the specified monotonic time
     /// deadline (in nanoseconds).
-    #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64) {
         let current_ticks = somehal::timer::ticks() as u64;
         let frequency_hz = somehal::timer::freq() as u64;
@@ -177,8 +167,6 @@ impl ax_plat::time::TimeIf for GenericTimer {
             somehal::timer::set_next_event_in_ticks,
         );
     }
-
-    #[cfg(feature = "irq")]
     fn resume_oneshot_timer(deadline_ns: u64) {
         let current_ticks = somehal::timer::ticks() as u64;
         let frequency_hz = somehal::timer::freq() as u64;
@@ -189,8 +177,6 @@ impl ax_plat::time::TimeIf for GenericTimer {
             somehal::timer::resume_oneshot_in_ticks,
         );
     }
-
-    #[cfg(feature = "irq")]
     fn cancel_oneshot_timer() {
         somehal::timer::cancel_oneshot();
     }

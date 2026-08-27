@@ -123,13 +123,8 @@ fn sleepable_external_consumers_enable_only_the_sleep_abi() {
         "lockdep = [\"axfs-ng-vfs/lockdep\"]",
     );
     let posix_manifest = workspace.join("os/arceos/api/arceos_posix_api/Cargo.toml");
-    assert_contains(
-        &posix_manifest,
-        "fs = [\"multitask\", \"dep:ax-fs-ng\", \"fd\"]",
-    );
-    assert_contains(
-        &posix_manifest,
-        "net = [\"multitask\", \"dep:ax-net\", \"fd\"]",
-    );
-    assert_contains(&posix_manifest, "epoll = [\"multitask\", \"fd\"]");
+    assert_contains(&posix_manifest, "fs = [\"dep:ax-fs-ng\", \"fd\"]");
+    assert_contains(&posix_manifest, "net = [\"dep:ax-net\", \"fd\"]");
+    assert_contains(&posix_manifest, "epoll = [\"fd\"]");
+    assert_not_contains(&posix_manifest, "multitask");
 }

@@ -122,7 +122,6 @@ pub use scheduler_events::timer_irq_count;
 pub use scheduler_events::{
     QperfRuntimeSchedulerMetricsSnapshot, qperf_runtime_scheduler_metrics_snapshot,
 };
-#[cfg(feature = "irq")]
 pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
 
 /// Drains scheduler work and leaves IRQs disabled for atomic userspace entry.

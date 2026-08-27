@@ -73,24 +73,36 @@ pub(super) fn write_blocks(
     let mut plan = transfer_plan(info, block_id, buffer.len(), RequestOp::Write)?.peekable();
     let window_limit = submission_window_limit(info);
     let mut pending = VecDeque::with_capacity(SOFTWARE_PIPELINE_WINDOWS);
+    let mut first_error = None;
 
     while plan.peek().is_some() || !pending.is_empty() {
-        while pending.len() < SOFTWARE_PIPELINE_WINDOWS && plan.peek().is_some() {
-            pending.push_back(submit_write_window(
-                device,
-                info,
-                take_window(&mut plan, window_limit)?,
-                buffer,
-            )?);
+        while first_error.is_none()
+            && pending.len() < SOFTWARE_PIPELINE_WINDOWS
+            && plan.peek().is_some()
+        {
+            let window = take_window(&mut plan, window_limit)
+                .and_then(|chunks| submit_write_window(device, info, chunks, buffer));
+            match window {
+                Ok(window) => pending.push_back(window),
+                Err(error) => first_error = Some(error),
+            }
         }
-        let window = pending.pop_front().ok_or(BlockError::InvalidState)?;
+        let Some(window) = pending.pop_front() else {
+            break;
+        };
         let first_lba = window.chunks[0].lba;
-        let completions = window.completions.recv().map_err(|error| {
-            block_io_error("receive window", RequestOp::Write, first_lba, error)
-        })?;
-        complete_write_window(&window.chunks, completions)?;
+        let result = window
+            .completions
+            .recv()
+            .map_err(|error| block_io_error("receive window", RequestOp::Write, first_lba, error))
+            .and_then(|completions| complete_write_window(&window.chunks, completions));
+        if let Err(error) = result
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 fn submit_read_window(

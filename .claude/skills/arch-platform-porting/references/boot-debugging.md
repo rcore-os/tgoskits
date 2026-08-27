@@ -152,6 +152,12 @@ execution and then fail only on traps or vCPU exits, so it is not a valid fallba
 
 ## AArch64 Axvisor EL2 Checks
 
+- When `arm_vcpu` replaces the live pCPU's `VBAR_EL2`, publish the current-EL host IRQ handler
+  first, write `VBAR_EL2`, execute `ISB`, then update `HCR_EL2` and execute another `ISB`.
+  Otherwise an exception can observe a vector/handler/control-register combination that was never
+  intended to be live. A current-EL synchronous panic must report at least `ESR_EL2`, `FAR_EL2`,
+  `ELR_EL2`, `SPSR_EL2`, and `HCR_EL2` so an intermittent host translation fault can be traced to
+  the first invalid access instead of being classified from the syndrome alone.
 - The Axvisor `hv` feature chain must select `ax-cpu/arm-el2` only for AArch64. Keep the chain
   `ax-hal/hv` -> `axplat-dyn/hv` -> `somehal/hv`; `somehal`'s AArch64-only optional `ax-cpu`
   dependency owns the `arm-el2` edge. A successful AArch64 compile does not prove that the EL2

@@ -1,7 +1,6 @@
 use ax_alloc::AllocError;
 #[cfg(feature = "paging")]
 use ax_hal::cache::TlbShootdownError;
-#[cfg(feature = "irq")]
 use ax_hal::irq::IrqError;
 #[cfg(feature = "paging")]
 use ax_mm::MmError;
@@ -9,10 +8,7 @@ use ax_mm::MmError;
 use axfs_ng_vfs::VfsError;
 #[cfg(feature = "paging")]
 use axklib::KlibError;
-#[cfg(all(feature = "irq", feature = "multitask"))]
 use rdif_serial::ConfigError;
-
-#[cfg(feature = "multitask")]
 use crate::task::TaskError;
 
 /// Errors owned by the ArceOS runtime layer.
@@ -27,7 +23,6 @@ pub enum RuntimeError {
     #[error(transparent)]
     TlbShootdown(#[from] TlbShootdownError),
     /// Interrupt discovery or registration failed.
-    #[cfg(feature = "irq")]
     #[error(transparent)]
     Irq(#[from] IrqError),
     /// Runtime-owned storage allocation failed.
@@ -38,23 +33,18 @@ pub enum RuntimeError {
     #[error(transparent)]
     Vfs(#[from] VfsError),
     /// The scheduler rejected a runtime-owned task operation.
-    #[cfg(feature = "multitask")]
     #[error(transparent)]
     Task(#[from] TaskError),
     /// A UART rejected its requested configuration.
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
     SerialConfig(#[from] ConfigError),
     /// A platform console ownership transition was requested out of order.
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
     ConsoleHandoff(#[from] ax_hal::console::ConsoleHandoffError),
     /// Another serial runtime already owns console log routing.
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error("another serial runtime already owns console routing")]
     SerialConsoleBusy,
     /// The runtime console handoff failed after early ownership was revoked.
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error("runtime console failed closed")]
     ConsoleFailedClosed,
     /// A serial operation requires a running port.
@@ -98,7 +88,6 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
             TlbShootdownError::Timeout => KlibError::TimedOut,
             TlbShootdownError::Platform => KlibError::Io,
         },
-        #[cfg(feature = "irq")]
         RuntimeError::Irq(error) => match error {
             IrqError::InvalidIrq | IrqError::InvalidCpu => KlibError::InvalidInput,
             IrqError::CpuOffline | IrqError::Unsupported => KlibError::Unsupported,
@@ -119,9 +108,7 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
             VfsError::Unsupported | VfsError::OperationNotSupported => KlibError::Unsupported,
             _ => KlibError::Io,
         },
-        #[cfg(feature = "multitask")]
         RuntimeError::Task(error) => task_error_to_klib_error(error),
-        #[cfg(all(feature = "irq", feature = "multitask"))]
         RuntimeError::SerialConfig(error) => match error {
             ConfigError::InvalidBaudrate
             | ConfigError::UnsupportedDataBits
@@ -130,11 +117,8 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
             ConfigError::Timeout => KlibError::TimedOut,
             ConfigError::RegisterError => KlibError::Io,
         },
-        #[cfg(all(feature = "irq", feature = "multitask"))]
         RuntimeError::ConsoleHandoff(_) => KlibError::BadState,
-        #[cfg(all(feature = "irq", feature = "multitask"))]
         RuntimeError::SerialConsoleBusy => KlibError::ResourceBusy,
-        #[cfg(all(feature = "irq", feature = "multitask"))]
         RuntimeError::ConsoleFailedClosed => KlibError::BadState,
         RuntimeError::SerialNotStarted => KlibError::BadState,
         RuntimeError::SerialControlBusy => KlibError::ResourceBusy,
@@ -144,7 +128,7 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
     }
 }
 
-#[cfg(all(feature = "paging", feature = "multitask"))]
+#[cfg(feature = "paging")]
 fn task_error_to_klib_error(error: TaskError) -> KlibError {
     use ax_task::runtime::RuntimeStatus;
 

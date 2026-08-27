@@ -1,39 +1,23 @@
 #[track_caller]
 pub fn ax_sleep_until(deadline: crate::time::AxTimeValue) {
-    #[cfg(feature = "multitask")]
     ax_runtime::task::sleep_until(
         u64::try_from(deadline.as_nanos())
             .ok()
             .and_then(ax_runtime::task::MonotonicDeadline::from_nanos)
             .expect("absolute sleep deadline exceeds the kernel monotonic time domain"),
     );
-    #[cfg(not(feature = "multitask"))]
-    ax_hal::time::busy_wait_until(deadline);
 }
 
 #[track_caller]
 pub fn ax_yield_now() {
-    #[cfg(feature = "multitask")]
     if let Err(error) = ax_runtime::task::yield_current_cpu() {
         panic!("ax_yield_now failed at a scheduler safe point: {error}");
-    }
-    #[cfg(not(feature = "multitask"))]
-    if cfg!(feature = "irq") {
-        ax_hal::asm::wait_for_irqs();
-    } else {
-        core::hint::spin_loop();
     }
 }
 
 #[track_caller]
 pub fn ax_exit(exit_code: i32) -> ! {
-    #[cfg(feature = "multitask")]
     ax_runtime::task::exit_current(exit_code);
-    #[cfg(not(feature = "multitask"))]
-    {
-        let _ = exit_code;
-        crate::sys::ax_terminate();
-    }
 }
 
 cfg_task! {
@@ -140,14 +124,10 @@ cfg_task! {
 
     #[track_caller]
     pub fn ax_wait_queue_wait(wq: &AxWaitQueueHandle, timeout: Option<Duration>) -> bool {
-        #[cfg(feature = "irq")]
         if let Some(dur) = timeout {
             return wq.0.wait_timeout(dur);
         }
 
-        if timeout.is_some() {
-            ax_log::warn!("ax_wait_queue_wait: the `timeout` argument is ignored without the `irq` feature");
-        }
         wq.0.wait();
         false
     }
@@ -158,14 +138,10 @@ cfg_task! {
         until_condition: impl Fn() -> bool,
         timeout: Option<Duration>,
     ) -> bool {
-        #[cfg(feature = "irq")]
         if let Some(dur) = timeout {
             return wq.0.wait_timeout_until(dur, until_condition);
         }
 
-        if timeout.is_some() {
-            ax_log::warn!("ax_wait_queue_wait_until: the `timeout` argument is ignored without the `irq` feature");
-        }
         wq.0.wait_until(until_condition);
         false
     }
@@ -180,24 +156,13 @@ cfg_task! {
         deadline: Duration,
         until_condition: impl Fn() -> bool,
     ) -> bool {
-        #[cfg(feature = "irq")]
-        return wq.0.wait_until_deadline(
+        wq.0.wait_until_deadline(
             u64::try_from(deadline.as_nanos())
                 .ok()
                 .and_then(ax_runtime::task::MonotonicDeadline::from_nanos)
                 .expect("wait deadline exceeds the kernel monotonic time domain"),
             until_condition,
-        );
-
-        #[cfg(not(feature = "irq"))]
-        {
-            let _ = deadline;
-            ax_log::warn!(
-                "ax_wait_queue_wait_until_deadline: the deadline is ignored without the `irq` feature"
-            );
-            wq.0.wait_until(until_condition);
-            false
-        }
+        )
     }
 
     pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32) -> usize {

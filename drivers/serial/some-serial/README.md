@@ -2,7 +2,6 @@
 
 [![Crates.io](https://img.shields.io/crates/v/some-serial.svg)](https://crates.io/crates/some-serial)
 [![Documentation](https://docs.rs/some-serial/badge.svg)](https://docs.rs/some-serial)
-[![Test CI](https://github.com/drivercraft/some-serial/actions/workflows/test.yml/badge.svg)](https://github.com/drivercraft/some-serial/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
 一个为嵌入式和裸机环境设计的 **统一串口驱动集合**，提供多种常见串口硬件的高性能、可靠驱动实现。
@@ -24,7 +23,6 @@
 - 🛡️ **无标准库设计** (`no_std`) - 适用于裸机和嵌入式系统
 - 📦 **模块化架构** - 每个驱动独立模块，按需选择
 - 🔒 **类型安全** - 使用 Rust 类型系统确保内存安全
-- 🧪 **全面测试** - 包含完整的测试套件，覆盖各种使用场景
 
 ### 驱动功能特性
 
@@ -157,7 +155,7 @@ let mut irq = parts.irq;
 let emergency_gate = UartRegisterGate::new(parts.emergency_tx);
 control.startup(&Config::new().baudrate(115200)).unwrap();
 
-// IRQ callback 只从驱动取得固定容量值报告，再发布到预分配队列。
+// IRQ callback 取得固定容量值报告，再发布到预分配队列。
 if let Some(report) = irq.handle() {
     for sample in report.rx.as_slice() {
         // 将 sample 放入预分配的有界 SPSC 队列；满时只记溢出状态。
@@ -167,9 +165,9 @@ if let Some(report) = irq.handle() {
     control.rearm(report.event.rearm);
 }
 
-// panic 路径只能在取得 OS runtime 的非阻塞寄存器 gate 后调用。
+// panic 路径只能在永久取得 emergency ownership 后访问寄存器。
 let _written = emergency_gate
-    .try_enter()
+    .try_begin_emergency()
     .map_or(0, |access| access.try_write(b"panic\n"));
 ```
 
@@ -252,31 +250,6 @@ let event = uart.poll_status();
 let can_write = event.tx_ready();
 ```
 
-## 测试
-
-这个库包含了一个全面的测试套件，使用 `bare-test` 框架在裸机环境中运行。
-
-### 运行测试
-
-```bash
-# 安装 ostool 用于裸机测试
-cargo install ostool
-
-# 运行测试
-cargo test --test test --  --show-output
-# 真机测试
-cargo test --test test --  --show-output --uboot
-```
-
-### 测试覆盖
-
-- **基础回环测试** - 验证基本的发送/接收功能
-- **资源管理测试** - 验证 RAII 和资源生命周期
-- **配置测试** - 验证各种配置选项
-- **中断测试** - 验证中断功能和掩码控制
-- **压力测试** - 高频数据传输测试
-- **多模式测试** - 不同数据模式的测试
-
 ## 性能特性
 
 - **低延迟** - 直接硬件寄存器访问
@@ -302,9 +275,8 @@ cargo test --test test --  --show-output --uboot
 1. **创建驱动模块**：在 `src/` 目录下创建新的驱动文件
 2. **拆分运行时端点**：驱动实现 `SplitUart`，数据面实现 `UartPort`，中断面实现
    `UartIrq`，紧急输出面实现 `UartEmergencyTx`
-3. **添加测试**：为新驱动编写完整的测试套件
-4. **更新文档**：在 README 中添加驱动说明和使用示例
-5. **提交 PR**：详细描述新驱动的功能和使用方法
+3. **更新文档**：在 README 中添加驱动说明和使用示例
+4. **提交 PR**：详细描述新驱动的功能和使用方法
 
 ### 参考实现
 
@@ -327,7 +299,6 @@ impl SplitUart for NewDriver {
 
 - [ARM PL011 Technical Reference Manual](https://developer.arm.com/documentation/ddi0183/g/) - PL011 硬件规格
 - [rdif-serial](https://github.com/rdif-rs/rdif-serial) - 统一串口接口抽象
-- [bare-test](https://github.com/bare-test/bare-test) - 裸机测试框架
 
 ### 硬件参考
 
@@ -349,7 +320,6 @@ impl SplitUart for NewDriver {
   - ✅ 支持 FIFO、中断、回环等完整功能
 - ✅ 基于 rdif-serial 的统一接口抽象
 - ✅ 中断驱动通信和 FIFO 功能
-- ✅ 全面测试套件和文档
 - ✅ **性能优化和类型安全改进**
 - 🏗️ 模块化架构，支持多平台驱动选择
 

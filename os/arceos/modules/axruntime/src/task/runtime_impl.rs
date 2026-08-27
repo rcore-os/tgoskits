@@ -98,7 +98,6 @@ impl_task_runtime! {
             if cpu != unsafe { Self::current_cpu_id() } {
                 return RuntimeStatus::InvalidArgument;
             }
-            #[cfg(feature = "irq")]
             crate::clock_event_runtime::init_timer();
             RuntimeStatus::Success
         }
@@ -109,7 +108,6 @@ impl_task_runtime! {
             if cpu != unsafe { Self::current_cpu_id() } {
                 return RuntimeStatus::InvalidArgument;
             }
-            #[cfg(feature = "irq")]
             crate::clock_event_runtime::take_current_clock_event_offline();
             release_current_active_address_space();
             RuntimeStatus::Success
@@ -240,19 +238,9 @@ impl_task_runtime! {
             {
                 false
             }
-            #[cfg(all(
-                not(any(test, feature = "host-test")),
-                feature = "irq"
-            ))]
+            #[cfg(not(any(test, feature = "host-test")))]
             {
                 ax_hal::irq::in_irq_context()
-            }
-            #[cfg(all(
-                not(any(test, feature = "host-test")),
-                not(feature = "irq")
-            ))]
-            {
-                false
             }
         }
 
@@ -292,7 +280,6 @@ impl_task_runtime! {
         }
 
         fn idle_exit_restart_scheduler_tick() {
-            #[cfg(all(feature = "irq", feature = "multitask"))]
             crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(
                 crate::clock_event_runtime::monotonic_now(),
             );
@@ -475,7 +462,7 @@ impl_task_runtime! {
                     membarrier_ipi_refresh_run_queue
                 }
             };
-            #[cfg(all(feature = "irq", feature = "ipi"))]
+            #[cfg(feature = "ipi")]
             {
                 // SAFETY: both callbacks are fixed, allocation-free hard-IRQ
                 // operations and carry no argument lifetime.
@@ -488,7 +475,7 @@ impl_task_runtime! {
                     Err(_) => RuntimeStatus::Platform,
                 }
             }
-            #[cfg(not(all(feature = "irq", feature = "ipi")))]
+            #[cfg(not(feature = "ipi"))]
             {
                 // A UP runtime executes the same hard-call ABI locally. SMP
                 // membarrier requires the explicit `ipi` capability.

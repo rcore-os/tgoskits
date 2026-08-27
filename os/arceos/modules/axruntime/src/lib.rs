@@ -20,14 +20,13 @@
 //! # Cargo Features
 //!
 //! - `paging`: Enable page table manipulation support.
-//! - `irq`: Enable interrupt handling support.
-//! - `multitask`: Enable multi-threading support.
 //! - `smp`: Enable SMP (symmetric multiprocessing) support.
 //! - `fs`: Enable filesystem support.
 //! - `net`: Enable networking support.
 //! - `display`: Enable graphics support.
 //!
-//! All the features are optional and disabled by default.
+//!
+//! Interrupt handling and task scheduling are mandatory runtime capabilities.
 
 #![feature(extern_item_impls)]
 #![cfg_attr(not(test), no_std)]
@@ -56,7 +55,6 @@ mod mp;
 mod boot_memory;
 mod bootstrap;
 mod guard;
-#[cfg(feature = "multitask")]
 mod irq_time;
 #[cfg(feature = "paging")]
 mod kernel_mapping;
@@ -67,36 +65,25 @@ mod klib;
 pub mod host_test {
     pub use crate::klib::{HostIomapOverride, try_install_iomap_override};
 }
-
-#[cfg(any(feature = "irq", test))]
 mod clock_event;
-#[cfg(any(feature = "irq", feature = "multitask", test))]
-mod clock_event_runtime;
-#[cfg(all(feature = "irq", feature = "multitask"))]
-mod raw_console;
 
-#[cfg(all(feature = "irq", feature = "multitask"))]
+mod clock_event_runtime;
+mod raw_console;
 pub mod console;
 mod devices;
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub mod emergency_console;
 mod error;
 mod fs;
-#[cfg(feature = "irq")]
 mod interrupt_bootstrap;
 #[cfg(any(feature = "ipi", feature = "wake-ipi", test))]
 mod ipi_delivery;
-#[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub mod serial;
 pub mod sync;
 
 /// Task-backed synchronization primitives used by ArceOS runtime consumers.
 pub use sync::{Mutex, MutexGuard, PiMutex, PiMutexGuard, SpinLock, SpinRwLock};
-
-#[cfg(feature = "multitask")]
 pub mod task;
 
 #[cfg(all(feature = "net", feature = "fs"))]
@@ -113,11 +100,9 @@ pub use error::{RuntimeError, RuntimeResult};
 /// Fatal paths must bypass this task-context transaction and use the
 /// emergency console plus [`ax_hal::power::system_off`] directly.
 pub fn terminate() -> ! {
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     if let Ok(output) = console::output() {
         let _ = output.drain();
     }
-    #[cfg(feature = "irq")]
     clock_event_runtime::take_current_clock_event_offline();
     ax_hal::power::system_off()
 }
@@ -166,13 +151,9 @@ impl ax_log::LogIf for LogIfImpl {
         meta: ax_log::RecordMeta,
         args: core::fmt::Arguments<'_>,
     ) -> ax_log::PublishStatus {
-        #[cfg(not(all(feature = "irq", feature = "multitask")))]
-        let _ = meta;
-        #[cfg(all(feature = "irq", feature = "multitask"))]
         if let Some(status) = serial::try_publish_record(meta, args) {
             return status;
         }
-        #[cfg(all(feature = "irq", feature = "multitask"))]
         if let Some(status) = console::try_publish_without_runtime(args) {
             return status;
         }
@@ -185,16 +166,7 @@ impl ax_log::LogIf for LogIfImpl {
     }
 
     fn emergency_write(args: core::fmt::Arguments<'_>) -> usize {
-        #[cfg(all(feature = "irq", feature = "multitask"))]
-        {
-            return emergency_console::write_fmt(args);
-        }
-        #[cfg(not(all(feature = "irq", feature = "multitask")))]
-        {
-            let mut writer = PlatformConsoleWriter::default();
-            let _ = core::fmt::write(&mut writer, args);
-            writer.written
-        }
+        emergency_console::write_fmt(args)
     }
 }
 

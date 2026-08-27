@@ -292,6 +292,46 @@ fn x86_halt_action() -> VcpuRunAction {
     }
 }
 
+pub(crate) fn publish_pic_interrupt_after_write(vm: &AxVM, vcpu_id: X86VcpuId) -> AxVmResult {
+    let devices = vm.get_devices()?;
+    let Ok(pic) = devices.services().require::<X86PicServiceKey>() else {
+        return Ok(());
+    };
+    let Some(claim) = pic.claim_pending_interrupt() else {
+        return Ok(());
+    };
+    dispatch_pic_claim(pic.as_ref(), claim, |vector| {
+        dispatch_x86_interrupt(vm, vcpu_id, vector, InterruptTriggerMode::EdgeTriggered)
+    })
+}
+
+fn dispatch_pic_claim<E>(
+    pic: &dyn X86PicDeviceOps,
+    claim: PicInterruptClaim,
+    dispatch: impl FnOnce(u8) -> Result<(), E>,
+) -> Result<(), E> {
+    let vector = claim.vector();
+    dispatch(vector).inspect_err(|_| pic.restore_interrupt(claim))
+}
+
+fn dispatch_x86_interrupt(
+    vm: &AxVM,
+    vcpu_id: X86VcpuId,
+    vector: u8,
+    trigger: InterruptTriggerMode,
+) -> AxVmResult {
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return ax_err!(BadState, "VM does not accept virtual interrupts");
+    }
+    vm.runtime_handle()?.dispatch_vcpu_interrupt(
+        vcpu_id,
+        PendingVcpuInterrupt {
+            id: VirtualInterruptId(vector.into()),
+            trigger,
+        },
+    )
+}
+
 pub(crate) struct AxvmX86HostOps;
 
 impl X86VlapicHostOps for AxvmX86HostOps {
@@ -378,8 +418,14 @@ impl X86VlapicHostOps for AxvmX86HostOps {
             let pic = devices.services().require::<X86PicServiceKey>().ok();
             let ioapic = devices.services().require::<X86InterruptDomainKey>().ok();
 
-            route_pit_irq(
-                || pic.as_ref().and_then(|pic| pic.pulse_irq(0)),
+            route_pit_claim(
+                || pic.as_ref().and_then(|pic| pic.claim_irq(0)),
+                PicInterruptClaim::vector,
+                |claim| {
+                    pic.as_ref()
+                        .expect("a PIC claim must retain its originating controller")
+                        .restore_interrupt(claim)
+                },
                 || ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(0)),
                 |vector, trigger| dispatch_pit_interrupt(vm, vcpu_id, vector, trigger),
             )
@@ -388,22 +434,41 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     }
 }
 
+#[cfg(test)]
 fn route_pit_irq(
     pulse_pic: impl FnOnce() -> Option<u8>,
+    assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
+    inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+) -> X86VlapicResult {
+    route_pit_claim(
+        pulse_pic,
+        |vector| *vector,
+        |_vector| {},
+        assert_ioapic,
+        inject,
+    )
+}
+
+fn route_pit_claim<C>(
+    claim_pic: impl FnOnce() -> Option<C>,
+    pic_vector: impl FnOnce(&C) -> u8,
+    restore_pic: impl FnOnce(C),
     assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
     mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
 ) -> X86VlapicResult {
     // KVM fans GSI 0 out to both in-kernel irqchips. Each controller owns its
     // mask/in-service state and independently decides whether this edge is
     // currently deliverable.
-    let pic_interrupt = pulse_pic();
+    let pic_claim = claim_pic();
     let ioapic_interrupt = assert_ioapic();
     let mut first_error = None;
 
-    if let Some(vector) = pic_interrupt
-        && let Err(error) = inject(vector, InterruptTriggerMode::EdgeTriggered)
-    {
-        first_error = Some(error);
+    if let Some(claim) = pic_claim {
+        let vector = pic_vector(&claim);
+        if let Err(error) = inject(vector, InterruptTriggerMode::EdgeTriggered) {
+            restore_pic(claim);
+            first_error = Some(error);
+        }
     }
     if let Some(interrupt) = ioapic_interrupt {
         let trigger = if interrupt.level_triggered {
@@ -419,45 +484,6 @@ fn route_pit_irq(
     }
 
     first_error.map_or(Ok(()), Err)
-}
-
-fn publish_pending_pic_interrupt<E>(
-    next_interrupt: impl FnOnce() -> Option<u8>,
-    mut inject: impl FnMut(u8) -> Result<(), E>,
-) -> Result<(), E> {
-    if let Some(vector) = next_interrupt() {
-        inject(vector)?;
-    }
-    Ok(())
-}
-
-pub(crate) fn publish_pic_interrupt_after_write(vm: &AxVM, vcpu_id: X86VcpuId) -> AxVmResult {
-    let devices = vm.get_devices()?;
-    let Ok(pic) = devices.services().require::<X86PicServiceKey>() else {
-        return Ok(());
-    };
-    publish_pending_pic_interrupt(
-        || pic.next_interrupt(),
-        |vector| dispatch_x86_interrupt(vm, vcpu_id, vector, InterruptTriggerMode::EdgeTriggered),
-    )
-}
-
-fn dispatch_x86_interrupt(
-    vm: &AxVM,
-    vcpu_id: X86VcpuId,
-    vector: u8,
-    trigger: InterruptTriggerMode,
-) -> AxVmResult {
-    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
-        return ax_err!(BadState, "VM does not accept virtual interrupts");
-    }
-    vm.runtime_handle()?.dispatch_vcpu_interrupt(
-        vcpu_id,
-        PendingVcpuInterrupt {
-            id: VirtualInterruptId(vector.into()),
-            trigger,
-        },
-    )
 }
 
 fn dispatch_pit_interrupt(
@@ -1288,19 +1314,19 @@ mod tests {
     }
 
     #[test]
-    fn pic_write_republishes_an_already_latched_interrupt() {
-        let injected = Cell::new(None);
+    fn failed_pic_dispatch_restores_the_claim() {
+        let restored = Cell::new(None);
 
-        publish_pending_pic_interrupt(
+        let result = route_pit_claim(
             || Some(0x68),
-            |vector| {
-                injected.set(Some(vector));
-                Ok::<(), X86VlapicError>(())
-            },
-        )
-        .unwrap();
+            |vector| *vector,
+            |claim| restored.set(Some(claim)),
+            || None,
+            |_vector, _trigger| Err(X86VlapicError::BadState),
+        );
 
-        assert_eq!(injected.get(), Some(0x68));
+        assert_eq!(result, Err(X86VlapicError::BadState));
+        assert_eq!(restored.get(), Some(0x68));
     }
 
     #[test]

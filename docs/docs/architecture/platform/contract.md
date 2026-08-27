@@ -18,7 +18,6 @@ extern crate alloc;
 
 pub mod console;
 pub mod init;
-#[cfg(feature = "irq")]
 pub mod irq;
 pub mod mem;
 pub mod percpu;
@@ -32,7 +31,8 @@ pub use ax_plat_macros::main;
 pub use ax_plat_macros::secondary_main;
 ```
 
-两个 feature：`smp`（多核，依赖 `ax-sync/smp`）、`irq`（接入 `irq-framework` + `rdif-intc`）。
+平台只保留 `smp` 等具有独立语义的可选 feature。IRQ framework、timer IRQ 与
+`rdif-intc` 是每个平台必须实现和依赖的基础契约。
 
 ## 接口集合（trait 全签名）
 
@@ -42,9 +42,9 @@ pub use ax_plat_macros::secondary_main;
 | --- | --- | --- |
 | `PlatformInfoIf` | `platform.rs` | `fn platform_name() -> &'static str` |
 | `InitIf` | `init.rs` | `init_early`、`init_later`，以及 `smp` feature 下的 `_secondary` 变种 |
-| `ConsoleIf` | `console.rs` | `write_bytes`、`read_bytes`、`device_id`、`claim_runtime_output`，以及 `irq` feature 下的 IRQ 系列 |
+| `ConsoleIf` | `console.rs` | `write_bytes`、`read_bytes`、`device_id`、`claim_runtime_output`，以及始终存在的 IRQ 系列；具体 console 可返回无硬件 IRQ |
 | `MemIf` | `mem.rs` | `phys_ram_ranges`、`reserved_phys_ram_ranges`、`mmio_ranges`、`phys_to_virt`、`virt_to_phys`、`kernel_aspace` |
-| `TimeIf` | `time.rs` | `current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`epochoffset_nanos`，`irq` 下还有 `irq_num`/`set_oneshot_timer` |
+| `TimeIf` | `time.rs` | `current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`epochoffset_nanos`、`irq_num`、`set_oneshot_timer` |
 | `PowerIf` | `power.rs` | `system_off`、`system_reset`、`cpu_num`，`smp` 下同步 `cpu_boot(cpu_id, stack_top_paddr)`；动态平台内部可轮询 someboot 的非阻塞启动 handle |
 | `IrqIf` | `irq.rs` | `set_enable`、`set_affinity`、`handle`、`send_ipi`、`ipi_irq`、`resolve_source`、`resolve_percpu` |
 | `LoongArchHvIrqIf` | `irq/loongarch64_hv.rs` | 虚拟中断注入 / guest IRQ 路由（仅 LoongArch hypervisor） |
@@ -207,6 +207,6 @@ AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
 
 - 平台 crate 实现的是链接期全局接口，不是运行时插件。`ax-crate-interface` 只为每个 `*If` trait 保留一个实现槽。
 - `axplat-dyn` 与另一个外部平台同时进入最终链接时，会因为重复实现 `ax-plat` crate-interface 符号而失败。
-- `smp`、`irq`、`hv`、`uspace` 等能力 feature 必须同时满足平台实现和上层 runtime 的需求。例如 `axplat-dyn` 的 `hv` feature 会开启 `somehal/hv`，再由 `somehal` 的 AArch64 目标依赖选择 `ax-cpu/arm-el2`，避免影响其他架构。
+- IRQ 和多任务调度是基础能力，不通过 feature 传播；平台必须提供 trap dispatch、timer IRQ 和本地 IRQ enable 契约。`smp`、`hv`、`uspace` 等独立能力 feature 仍必须同时满足平台实现和上层 runtime 的需求。例如 `axplat-dyn` 的 `hv` feature 会开启 `somehal/hv`，再由 `somehal` 的 AArch64 目标依赖选择 `ax-cpu/arm-el2`，避免影响其他架构。
 - `AX_PLATFORM_CRATE` 只决定 `ax-hal` 生成哪个 crate 标识符；Cargo 仍需要通过 `ax-hal` 自己的 feature/依赖把该 crate 放进依赖图。
 - `unsafe extern "Rust"` 入口符号的调用方必须确保 `cpu_id`、`arg` 语义与平台宏文档一致：`arg` 通常是 bootloader 传下来的 device tree blob 地址。

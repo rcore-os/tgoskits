@@ -21,6 +21,7 @@ ax-linked-list-r4l
 riscv-h
 ax-riscv-plic
 riscv_vplic
+x86_vlapic
 rsext4
 scope-local
 starry-signal

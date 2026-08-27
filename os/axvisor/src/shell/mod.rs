@@ -15,26 +15,28 @@
 use std::io::prelude::*;
 use std::string::ToString;
 
-fn submit_shell_format(args: core::fmt::Arguments<'_>, newline: bool) {
-    let mut output = std::fmt::format(args);
-    if newline {
-        output.push('\n');
-    }
+fn submit_shell_fragment(args: core::fmt::Arguments<'_>) {
+    let output = axvisor::shell_support::format_fragment(args);
+    crate::guest_console::submit_host_bytes(output.as_bytes());
+}
+
+fn submit_shell_line(args: core::fmt::Arguments<'_>) {
+    let output = axvisor::shell_support::format_line(args);
     crate::guest_console::submit_host_bytes(output.as_bytes());
 }
 
 macro_rules! print {
     ($($arg:tt)*) => {
-        crate::shell::submit_shell_format(format_args!($($arg)*), false)
+        crate::shell::submit_shell_fragment(format_args!($($arg)*))
     };
 }
 
 macro_rules! println {
     () => {
-        crate::shell::submit_shell_format(format_args!(""), true)
+        crate::shell::submit_shell_line(format_args!(""))
     };
     ($($arg:tt)*) => {
-        crate::shell::submit_shell_format(format_args!($($arg)*), true)
+        crate::shell::submit_shell_line(format_args!($($arg)*))
     };
 }
 

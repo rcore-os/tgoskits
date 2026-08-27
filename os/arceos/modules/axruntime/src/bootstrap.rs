@@ -32,7 +32,6 @@ fn runtime_page_fault_handler(
 /// `sched_init()` before it starts device initcalls. Keep the same ordering at
 /// this boundary: once platform late-init starts, task identity and scheduler
 /// CPU-local state must already have one authoritative owner.
-#[cfg(any(feature = "multitask", test))]
 pub(super) fn initialize_scheduler_before_platform<E>(
     initialize_scheduler: impl FnOnce() -> Result<(), E>,
     initialize_platform: impl FnOnce(),
@@ -47,12 +46,8 @@ fn initialize_primary_platform(cpu_id: usize, arg: usize) {
     ax_hal::init_later(cpu_id, arg);
     if rdrive::is_initialized() {
         crate::registers::append_linker_registers();
-        #[cfg(feature = "irq")]
         ax_hal::irq::init_boot_irqs(cpu_id)
             .unwrap_or_else(|error| panic!("failed to initialize boot IRQs: {error:?}"));
-        #[cfg(not(feature = "irq"))]
-        rdrive::probe_pre_kernel()
-            .unwrap_or_else(|error| panic!("failed to run pre-kernel driver probes: {error:?}"));
     } else {
         warn!("rdrive is not initialized; skip pre-kernel driver probe");
     }
@@ -116,11 +111,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     crate::boot_memory::init_allocator();
 
-    #[cfg(all(feature = "tls", feature = "multitask"))]
+    #[cfg(feature = "tls")]
     crate::task::initialize_early_bootstrap_tls()
         .expect("failed to initialize primary bootstrap TLS");
-    #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    init_tls();
 
     let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
 
@@ -157,24 +150,18 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_mm::init_memory_management();
         ax_hal::trap::set_page_fault_handler(runtime_page_fault_handler);
     }
-
-    #[cfg(feature = "multitask")]
     initialize_scheduler_before_platform(
         || crate::task::initialize_primary(cpu_id),
         || initialize_primary_platform(cpu_id, arg),
     )
     .expect("failed to initialize primary task scheduler");
-    #[cfg(not(feature = "multitask"))]
-    initialize_primary_platform(cpu_id, arg);
 
     #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     {
         ax_ipi::init();
-        #[cfg(all(feature = "irq", feature = "ipi"))]
+        #[cfg(feature = "ipi")]
         ax_hal::irq::set_run_on_cpu_sync(crate::ipi_delivery::run_on_cpu_sync);
     }
-
-    #[cfg(feature = "irq")]
     {
         info!("Initialize interrupt handlers...");
         crate::interrupt_bootstrap::init_current_cpu();
@@ -183,27 +170,13 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     // Linux enables the local IPI endpoint before publishing the CPU online to
     // the scheduler. Once scheduler work is visible, any safe point may need a
     // physical self-doorbell, including the bootstrap scheduling pass below.
-    #[cfg(all(feature = "irq", any(feature = "ipi", feature = "wake-ipi")))]
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     ax_ipi::mark_current_cpu_ready();
-
-    #[cfg(feature = "multitask")]
     let online_cpu =
         crate::task::publish_current_cpu_online().expect("failed to publish primary scheduler CPU");
-
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     crate::task::start_current_ktimer_service().expect("failed to create primary ktimer service");
-
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     crate::clock_event_runtime::enable_irqs_after_scheduler_online(online_cpu);
-    #[cfg(all(feature = "irq", not(feature = "multitask")))]
-    ax_hal::asm::enable_irqs();
-    #[cfg(all(feature = "multitask", not(feature = "irq")))]
-    let _ = online_cpu;
-
-    #[cfg(feature = "multitask")]
     crate::guard::release_bootstrap_preemption();
-
-    #[cfg(feature = "multitask")]
     crate::task::start_deferred_task_work_service()
         .expect("failed to start deferred scheduler task-work service");
 
@@ -216,11 +189,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     crate::wifi_glue::install_runtime();
 
     crate::devices::probe_all_devices();
-
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     crate::serial::init(cpu_id);
-
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     match crate::console::activate_before_smp() {
         crate::console::ConsoleActivation::Active {
             runtime_index,
@@ -266,7 +235,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    #[cfg(all(feature = "irq", any(feature = "ipi", feature = "wake-ipi")))]
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     ax_ipi::wait_for_all_cpus_ready();
 
     #[cfg(all(feature = "smp", feature = "ipi"))]
@@ -309,14 +278,4 @@ mod tests {
             ]
         );
     }
-}
-
-#[cfg(all(feature = "tls", not(feature = "multitask")))]
-pub(crate) fn init_tls() {
-    let main_tls = ax_hal::tls::TlsArea::alloc();
-    let kernel_tls = ax_hal::context::KernelTlsBase::new(main_tls.tls_ptr() as usize);
-    // SAFETY: the boot CPU owns this newly allocated TLS area and no task can
-    // observe its thread pointer before initialization completes.
-    unsafe { ax_hal::asm::write_thread_pointer(kernel_tls) };
-    core::mem::forget(main_tls);
 }

@@ -72,7 +72,6 @@ pub trait TimeIf {
     fn epochoffset_nanos() -> u64;
 
     /// Returns the IRQ number for the timer interrupt.
-    #[cfg(feature = "irq")]
     fn irq_num() -> irq_framework::IrqId;
 
     /// Set a one-shot timer.
@@ -82,7 +81,6 @@ pub trait TimeIf {
     /// elapsed or sub-resolution deadline must be clamped to the device's
     /// minimum non-zero delta before the method returns. Implementations must
     /// not silently leave the previous event armed.
-    #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64);
 
     /// Returns a stopped one-shot timer to its active state and programs it.
@@ -91,14 +89,12 @@ pub trait TimeIf {
     /// Edge devices may need to unmask before programming a minimum delta;
     /// level devices may need to replace an expired comparator before unmask
     /// so controller EOI cannot latch the old level again.
-    #[cfg(feature = "irq")]
     fn resume_oneshot_timer(deadline_ns: u64);
 
     /// Stops the current CPU's one-shot timer until it is programmed again.
     ///
     /// The interrupt source must become unobservable and its comparator must
     /// be discarded so a later resume cannot inherit a stale event.
-    #[cfg(feature = "irq")]
     fn cancel_oneshot_timer();
 }
 

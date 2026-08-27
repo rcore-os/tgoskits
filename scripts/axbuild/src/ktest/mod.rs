@@ -749,11 +749,6 @@ fn prepare_ktest_cargo(
     }
     if matches!(runtime, KtestRuntime::Arceos | KtestRuntime::Board) {
         ensure_feature(cargo, "ax-std/arceos");
-        // Cargo integration tests are independent ArceOS applications. Keep
-        // the sleep-lock provider available for crates that exercise
-        // `ax-sync/sleep`; otherwise the ax-runtime `MutexOps` implementation
-        // is not compiled into the test artifact.
-        ensure_feature(cargo, "ax-std/multitask");
     }
     crate::build::append_cargo_rustflags(cargo, AXTEST_RUSTFLAGS);
     if coverage {

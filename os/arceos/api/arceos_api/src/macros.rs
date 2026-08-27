@@ -102,5 +102,5 @@ macro_rules! cfg_display {
 }
 
 macro_rules! cfg_task {
-    ($($item:item)*) => { _cfg_common!{ "multitask" $($item)* } }
+    ($($item:item)*) => { $($item)* }
 }

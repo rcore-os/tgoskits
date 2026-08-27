@@ -41,9 +41,9 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfi
 }];
 
 const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
-    name: "host-test+irq",
+    name: "host-test",
     no_default_features: false,
-    features: &["host-test", "irq"],
+    features: &["host-test"],
     name_filter: None,
     expected_tests: &[
         "boot::tests::boot_entropy_is_unavailable_without_firmware",

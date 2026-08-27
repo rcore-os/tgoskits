@@ -27,16 +27,12 @@ smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
 
-# Interrupts
-irq = ["ax-posix-api/irq", "ax-runtime/irq"]
-
 # Memory
 alloc = ["ax-posix-api/alloc"]
 paging = ["ax-runtime/paging"]
 tls = ["alloc", "ax-runtime/tls"]
 
-# Multi-task
-multitask = ["ax-posix-api/multitask", "ax-runtime/multitask"]
+# Scheduler diagnostics
 lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
 stack-protector = ["ax-runtime/stack-protector"]
 

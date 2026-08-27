@@ -132,8 +132,6 @@ fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeC
 
         #[cfg(feature = "fs")]
         pub const TASK_STACK_SIZE: usize = #task_stack_size;
-
-        #[cfg(feature = "irq")]
         pub const SCHEDULER_TICK_INTERVAL_NANOS: u64 = #scheduler_tick_interval_nanos;
     }
     .to_string()
@@ -269,7 +267,6 @@ mod tests {
                 "pub const CPU_CAPACITY: usize = 16usize;\n",
                 "#[cfg(feature = \"fs\")]\n",
                 "pub const TASK_STACK_SIZE: usize = 262144usize;\n",
-                "#[cfg(feature = \"irq\")]\n",
                 "pub const SCHEDULER_TICK_INTERVAL_NANOS: u64 = 10000000u64;\n",
             ))
         );

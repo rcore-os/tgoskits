@@ -6,6 +6,13 @@ use crate::BlockResult;
 
 pub mod runtime;
 
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub(crate) mod cache;
+
+#[cfg(any(feature = "ext4", feature = "fat"))]
+use cache::BufferedBlockDevice;
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub use cache::sync_all_block_caches;
 use runtime::BlockDeviceHandle;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,6 +191,113 @@ impl FsBlockDevice for NativeHandleBlockDevice {
 
 pub(crate) fn boxed_native_handle_block_device(
     handle: Arc<BlockDeviceHandle>,
-) -> Box<dyn FsBlockDevice> {
-    Box::new(NativeHandleBlockDevice::new(handle))
+) -> BlockResult<Box<dyn FsBlockDevice>> {
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    if let Some(cached) = cached_block_device(handle.clone())? {
+        return Ok(cached);
+    }
+    // Also the fallback when the cache cannot wrap a malformed geometry,
+    // and the only path when no filesystem consumer is enabled.
+    Ok(Box::new(NativeHandleBlockDevice::new(handle)))
+}
+
+/// Wraps the device in its shared cache tree, keyed by the handle's
+/// address. The wrapper keeps its own `Arc` clone alive, so the key stays
+/// valid as long as any cached consumer of the device exists.
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn cached_block_device(
+    handle: Arc<BlockDeviceHandle>,
+) -> BlockResult<Option<Box<dyn FsBlockDevice>>> {
+    let device_key = Arc::as_ptr(&handle) as usize;
+    let endpoint = Box::new(NativeHandleBlockDevice::new(handle.clone()));
+    cached_block_device_from_parts(device_key, endpoint, NativeHandleBlockDevice::new(handle))
+}
+
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn cached_block_device_from_parts<T: FsBlockDevice + 'static>(
+    device_key: usize,
+    endpoint: Box<dyn FsBlockDevice>,
+    inner: T,
+) -> BlockResult<Option<Box<dyn FsBlockDevice>>> {
+    resolve_cache_creation(BufferedBlockDevice::with_device_key(
+        device_key, endpoint, inner,
+    ))
+    .map(|cached| cached.map(|buffered| Box::new(buffered) as Box<dyn FsBlockDevice>))
+}
+
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn resolve_cache_creation<T>(result: BlockResult<T>) -> BlockResult<Option<T>> {
+    match result {
+        Ok(cached) => Ok(Some(cached)),
+        Err(BlockError::InvalidRequest) => {
+            error!("block cache geometry is invalid, using uncached device");
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(all(test, any(feature = "ext4", feature = "fat")))]
+mod tests {
+    use super::*;
+
+    struct TestBlockDevice {
+        block_size: usize,
+    }
+
+    impl FsBlockDevice for TestBlockDevice {
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn num_blocks(&self) -> u64 {
+            64
+        }
+
+        fn block_size(&self) -> usize {
+            self.block_size
+        }
+
+        fn read_block(&mut self, _block_id: u64, _buf: &mut [u8]) -> BlockResult {
+            unreachable!("cache construction must not issue IO")
+        }
+
+        fn write_block(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult {
+            unreachable!("cache construction must not issue IO")
+        }
+
+        fn flush(&mut self) -> BlockResult {
+            unreachable!("cache construction must not issue IO")
+        }
+    }
+
+    fn test_device(block_size: usize) -> TestBlockDevice {
+        TestBlockDevice { block_size }
+    }
+
+    #[test]
+    fn cache_allocation_failure_is_not_downgraded_to_uncached_io() {
+        let device_key = usize::MAX - 1;
+        cache::fail_registry_reserve_for_key_for_test(device_key);
+
+        let result = cached_block_device_from_parts(
+            device_key,
+            Box::new(test_device(512)),
+            test_device(512),
+        );
+
+        assert!(matches!(result, Err(BlockError::NoMemory)));
+        assert!(!cache::registry_contains_key_for_test(device_key));
+    }
+
+    #[test]
+    fn malformed_cache_geometry_keeps_the_uncached_fallback() {
+        let result = cached_block_device_from_parts(
+            usize::MAX - 2,
+            Box::new(test_device(1000)),
+            test_device(1000),
+        );
+
+        assert!(matches!(result, Ok(None)));
+    }
 }

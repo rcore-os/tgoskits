@@ -1,8 +1,6 @@
 //! CPU-local implementation of the lock context runtime.
 
 mod state;
-
-#[cfg(any(feature = "multitask", test))]
 use state::SchedulerBatonState;
 use state::{RuntimeGuardState, RuntimeIrqState, RuntimePreemptState};
 
@@ -32,8 +30,6 @@ pub(crate) fn assert_boot_preemption_held() {
         "boot current must retain PREEMPT_DISABLED until scheduler publication"
     );
 }
-
-#[cfg(feature = "multitask")]
 pub(crate) fn release_bootstrap_preemption() {
     let state = read_state();
     assert!(state.irq.is_clear() && state.preempt.is_clear());
@@ -66,7 +62,6 @@ pub(crate) fn release_bootstrap_preemption() {
 /// On success, the caller must enter `ax_hal::cpu::uspace::UserContext::run`
 /// immediately. Its architecture return instruction restores the saved user
 /// IRQ state, matching Linux's final IRQ-off `exit_to_user_mode_loop()` check.
-#[cfg(feature = "multitask")]
 pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
     if !ax_hal::asm::irqs_enabled() || in_hard_irq() {
         return Err(ax_task::TaskError::UnsafeContext);
@@ -97,7 +92,6 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
 }
 
 /// Validates a public scheduler entry before it can publish task state.
-#[cfg(feature = "multitask")]
 pub(crate) fn validate_schedule_context(
     _origin: ax_task::runtime::RuntimeScheduleOrigin,
 ) -> ax_task::runtime::RuntimeStatus {
@@ -126,7 +120,6 @@ pub(crate) fn validate_schedule_context(
 }
 
 /// Validates an owner-only CpuLocal access against the fixed CPU guard state.
-#[cfg(feature = "multitask")]
 pub(crate) fn validate_owner_cpu_context() -> ax_task::runtime::RuntimeStatus {
     use ax_task::runtime::RuntimeStatus;
 
@@ -153,7 +146,6 @@ pub(crate) fn in_atomic_context() -> bool {
     if !ax_hal::asm::irqs_enabled() {
         return true;
     }
-    #[cfg(feature = "irq")]
     if ax_hal::irq::in_irq_context() {
         return true;
     }
@@ -165,16 +157,12 @@ pub(crate) fn in_atomic_context() -> bool {
     ax_hal::asm::enable_irqs();
     guarded
 }
-
-#[cfg(feature = "multitask")]
 pub(crate) fn enter_irq() {
     let outer_irqs_enabled = ax_hal::asm::irqs_enabled();
     ax_hal::asm::disable_irqs();
 
     with_guard_state_mut(|state| state.enter_irq(outer_irqs_enabled));
 }
-
-#[cfg(feature = "multitask")]
 pub(crate) fn exit_irq(owner: &'static str) {
     let (must_schedule, restore_irqs) = with_guard_state_mut(|state| {
         let needs_reschedule = state.irq.depth == 1 && {
@@ -210,7 +198,7 @@ pub(crate) fn exit_irq(owner: &'static str) {
     }
 }
 
-#[cfg(all(feature = "multitask", not(any(test, feature = "host-test"))))]
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn publish_local_scheduler_work() -> bool {
     assert!(
         !ax_hal::asm::irqs_enabled(),
@@ -222,15 +210,12 @@ pub(crate) fn publish_local_scheduler_work() -> bool {
 }
 
 #[cfg(all(
-    feature = "multitask",
     any(test, feature = "host-test"),
     any(feature = "ipi", feature = "wake-ipi")
 ))]
 pub(crate) const fn publish_local_scheduler_work() -> bool {
     false
 }
-
-#[cfg(feature = "multitask")]
 pub(crate) fn finish_initial_context_switch() {
     assert_eq!(
         current_preempt_depth(),
@@ -242,22 +227,18 @@ pub(crate) fn finish_initial_context_switch() {
         "initial scheduler frame",
     );
 }
-
-#[cfg(any(feature = "multitask", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PreemptExitOrigin {
     Task,
     IrqReturn,
 }
-
-#[cfg(any(feature = "multitask", test))]
 impl PreemptExitOrigin {
     const fn is_irq_return(self) -> bool {
         matches!(self, Self::IrqReturn)
     }
 }
 
-#[cfg(all(feature = "multitask", not(test)))]
+#[cfg(not(test))]
 fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToken) {
     let irq_return = origin.is_irq_return();
     assert!(
@@ -328,7 +309,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
 /// local IRQs disabled. Reusing that ownership matches Linux rq locking: one
 /// outer rq/IRQ transaction covers its internal task-state locks, so those
 /// locks must not repeatedly mutate the suspended task's preemption word.
-#[cfg(all(feature = "multitask", not(any(test, feature = "host-test"))))]
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn enter_lock_preempt() -> Option<cpu_local::PreemptionToken> {
     if !ax_hal::asm::irqs_enabled() && read_state().owns_cpu_context() {
         return None;
@@ -337,32 +318,30 @@ pub(crate) fn enter_lock_preempt() -> Option<cpu_local::PreemptionToken> {
     Some(token)
 }
 
-#[cfg(all(feature = "multitask", any(test, feature = "host-test")))]
+#[cfg(any(test, feature = "host-test"))]
 pub(crate) const fn enter_lock_preempt() -> Option<cpu_local::PreemptionToken> {
     None
 }
 
-#[cfg(all(feature = "multitask", not(test)))]
+#[cfg(not(test))]
 pub(crate) fn exit_preempt(token: cpu_local::PreemptionToken) {
     exit_lock_preempt(PreemptExitOrigin::Task, token);
 }
 
-#[cfg(all(feature = "multitask", test))]
+#[cfg(test)]
 pub(crate) fn exit_preempt(_token: cpu_local::PreemptionToken) {
     panic!("unit-test runtime cannot exit an unowned preemption guard")
 }
 
-#[cfg(all(feature = "multitask", not(test)))]
+#[cfg(not(test))]
 pub(crate) fn exit_preempt_from_irq_return(token: cpu_local::PreemptionToken) {
     exit_lock_preempt(PreemptExitOrigin::IrqReturn, token);
 }
 
-#[cfg(all(feature = "multitask", test))]
+#[cfg(test)]
 pub(crate) fn exit_preempt_from_irq_return(_token: cpu_local::PreemptionToken) {
     panic!("unit-test runtime cannot exit an unowned IRQ-return guard")
 }
-
-#[cfg(any(feature = "multitask", test))]
 /// Checks only context constraints after the selected preemption word returned
 /// `FinalPending`; that transition is already the reschedule observation.
 fn preempt_exit_needs_schedule(
@@ -378,8 +357,6 @@ fn preempt_exit_needs_schedule(
         && (origin.is_irq_return() || irqs_were_enabled)
         && !in_hard_irq()
 }
-
-#[cfg(any(feature = "multitask", test))]
 fn irq_guard_exit_needs_schedule(
     state: &RuntimeGuardState,
     preempt_depth: u32,
@@ -393,8 +370,6 @@ fn irq_guard_exit_needs_schedule(
         && !in_hard_irq()
         && needs_reschedule()
 }
-
-#[cfg(feature = "multitask")]
 pub(crate) fn enter_scheduler_frame_guard(
     _origin: ax_task::runtime::RuntimeScheduleOrigin,
     entry: ax_task::runtime::RuntimeSchedulerEntry,
@@ -431,15 +406,11 @@ pub(crate) fn enter_scheduler_frame_guard(
     }
     RuntimeStatus::Success
 }
-
-#[cfg(feature = "multitask")]
 pub(crate) fn exit_scheduler_frame_guard(
     return_to: ax_task::runtime::RuntimeSchedulerReturn,
 ) -> bool {
     exit_scheduler_frame_guard_inner(return_to, "resumed scheduler frame")
 }
-
-#[cfg(feature = "multitask")]
 fn exit_scheduler_frame_guard_inner(
     return_to: ax_task::runtime::RuntimeSchedulerReturn,
     owner: &'static str,
@@ -459,7 +430,6 @@ fn exit_scheduler_frame_guard_inner(
     };
     publish_preemption_pending(needs_reschedule);
     with_guard_state_mut(|state| state.exit_scheduler_preempt(owner));
-    #[cfg(feature = "irq")]
     crate::clock_event_runtime::finish_deferred_rearm();
     match return_to {
         RuntimeSchedulerReturn::Task => {
@@ -471,7 +441,6 @@ fn exit_scheduler_frame_guard_inner(
 }
 
 /// Verifies the fixed CPU-local baton immediately before the raw switch.
-#[cfg(feature = "multitask")]
 pub(crate) fn assert_scheduler_switch_baton() {
     assert!(
         !ax_hal::asm::irqs_enabled(),
@@ -485,7 +454,6 @@ pub(crate) fn assert_scheduler_switch_baton() {
 }
 
 /// Commits the scheduler baton to the raw context-switch continuation.
-#[cfg(feature = "multitask")]
 pub(crate) fn transfer_scheduler_switch_baton() {
     assert!(
         !ax_hal::asm::irqs_enabled(),
@@ -493,31 +461,13 @@ pub(crate) fn transfer_scheduler_switch_baton() {
     );
     with_guard_state_mut(RuntimeGuardState::transfer_scheduler_preempt);
 }
-
-#[cfg(feature = "multitask")]
 fn in_hard_irq() -> bool {
-    #[cfg(feature = "irq")]
-    {
-        ax_hal::irq::in_irq_context()
-    }
-    #[cfg(not(feature = "irq"))]
-    {
-        false
-    }
+    ax_hal::irq::in_irq_context()
 }
-
-#[cfg(feature = "multitask")]
 fn in_hard_irq_pinned() -> bool {
-    #[cfg(feature = "irq")]
-    {
-        // SAFETY: every caller has already disabled raw local IRQs or owns the
-        // scheduler baton, which prevents migration across this observation.
-        unsafe { ax_hal::irq::in_irq_context_pinned() }
-    }
-    #[cfg(not(feature = "irq"))]
-    {
-        false
-    }
+    // SAFETY: every caller has already disabled raw local IRQs or owns the
+    // scheduler baton, which prevents migration across this observation.
+    unsafe { ax_hal::irq::in_irq_context_pinned() }
 }
 
 fn read_state() -> RuntimeGuardState {
@@ -530,8 +480,6 @@ fn current_preempt_depth() -> u32 {
         .unwrap_or_else(|error| panic!("architecture preemption state is invalid: {error}"))
         .depth()
 }
-
-#[cfg(feature = "multitask")]
 fn publish_preemption_pending(pending: bool) {
     with_current_cpu_pin(|pin| {
         if pending {
@@ -563,8 +511,6 @@ fn with_current_cpu_pin<R>(
 fn with_guard_state<R>(operation: impl for<'value> FnOnce(&'value RuntimeGuardState) -> R) -> R {
     with_current_cpu_pin(|pin| RUNTIME_GUARD_STATE.with_current(pin, operation))
 }
-
-#[cfg(feature = "multitask")]
 fn with_guard_state_mut<R>(
     operation: impl for<'value> FnOnce(&'value mut RuntimeGuardState) -> R,
 ) -> R {

@@ -33,23 +33,12 @@ fn adapt_display_device(
     ax_display::ErasedDisplayDevice::new(display)
 }
 
-#[cfg(all(feature = "display", feature = "irq"))]
+#[cfg(feature = "display")]
 fn resolve_display_irq(
     _name: &str,
     irq: Option<ax_driver::BindingIrq>,
 ) -> Result<Option<irq_framework::IrqId>, irq_framework::IrqError> {
     irq.map(crate::irq::resolve_binding_irq).transpose()
-}
-
-#[cfg(all(feature = "display", not(feature = "irq")))]
-fn resolve_display_irq(
-    name: &str,
-    irq: Option<ax_driver::BindingIrq>,
-) -> Result<Option<irq_framework::IrqId>, core::convert::Infallible> {
-    if irq.is_some() {
-        warn!("display device {name} has an IRQ binding but IRQ support is disabled");
-    }
-    Ok(None)
 }
 
 #[cfg(feature = "input")]
@@ -76,23 +65,12 @@ fn adapt_input_device(taken: ax_driver::input::TakenInputDevice) -> ax_input::Er
     ))
 }
 
-#[cfg(all(feature = "input", feature = "irq"))]
+#[cfg(feature = "input")]
 fn resolve_input_irq(
     _name: &str,
     irq: Option<ax_driver::BindingIrq>,
 ) -> Result<Option<irq_framework::IrqId>, irq_framework::IrqError> {
     irq.map(crate::irq::resolve_binding_irq).transpose()
-}
-
-#[cfg(all(feature = "input", not(feature = "irq")))]
-fn resolve_input_irq(
-    name: &str,
-    irq: Option<ax_driver::BindingIrq>,
-) -> Result<Option<irq_framework::IrqId>, core::convert::Infallible> {
-    if irq.is_some() {
-        warn!("input device {name} has an IRQ binding but IRQ support is disabled");
-    }
-    Ok(None)
 }
 
 #[cfg(feature = "net")]

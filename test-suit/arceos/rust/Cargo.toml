@@ -10,27 +10,27 @@ std = []
 # Every kernel test reaches ax-std through this feature, so it owns the ArceOS
 # baseline instead of relying on axbuild to add it for the selected test case.
 ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
-memtest = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask"]
-task-runtime = ["ax-std", "ax-std/multitask"]
+memtest = ["ax-std", "dep:rand", "ax-std/alloc"]
+task-runtime = ["ax-std"]
 task-yield = ["task-runtime"]
 sched-rr = ["task-runtime", "ax-std/alloc"]
 sched-cfs = ["task-runtime", "ax-std/alloc"]
 task-affinity = ["task-runtime"]
-task-fair-idle-pull = ["task-runtime", "ax-std/alloc", "ax-std/irq"]
-task-fair-wake-idle-sibling = ["task-runtime", "ax-std/irq"]
-task-wait-queue = ["task-runtime", "ax-std/irq"]
-task-wait-queue-remote-wake = ["task-runtime", "ax-std/irq", "ax-std/ipi"]
-task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/irq", "ax-std/ipi"]
-task-irq = ["task-runtime", "ax-std/irq"]
-task-kernel-timer = ["task-runtime", "ax-std/irq"]
+task-fair-idle-pull = ["task-runtime", "ax-std/alloc"]
+task-fair-wake-idle-sibling = ["task-runtime"]
+task-wait-queue = ["task-runtime"]
+task-wait-queue-remote-wake = ["task-runtime", "ax-std/ipi"]
+task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/ipi"]
+task-irq = ["task-runtime"]
+task-kernel-timer = ["task-runtime"]
 task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
-task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc", "ax-std/irq"]
+task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc"]
 task-pi-mutex = ["task-runtime"]
 task-preempt-guard = ["task-runtime"]
 task-priority = ["task-runtime", "ax-std/alloc"]
 task-rt-policy = ["task-runtime", "ax-std/alloc"]
-task-sleep = ["task-runtime", "ax-std/irq"]
-task-smp-online = ["task-runtime", "ax-std/irq", "ax-std/ipi"]
+task-sleep = ["task-runtime"]
+task-smp-online = ["task-runtime", "ax-std/ipi"]
 task-stack-guard-page = ["task-runtime", "ax-std/paging", "ax-std/stack-guard-page"]
 net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
@@ -40,13 +40,13 @@ display-basic = ["ax-std", "ax-driver/virtio-gpu", "dep:embedded-graphics", "ax-
 eventfd-epoll = ["ax-std", "ax-std/fd"]
 exception-breakpoint = ["ax-std"]
 exception-page-fault = ["ax-std", "ax-std/paging"]
-lockdep-baseline = ["ax-std", "dep:axfs-ng-vfs", "ax-std/alloc", "ax-std/multitask"]
+futex-errno-order = ["ax-std", "dep:libc"]
+lockdep-baseline = ["ax-std", "dep:axfs-ng-vfs", "ax-std/alloc"]
 lockdep-detect = [
     "ax-std",
     "dep:axfs-ng-vfs",
     "axfs-ng-vfs/lockdep",
     "ax-std/alloc",
-    "ax-std/multitask",
     "ax-std/lockdep",
 ]
 # `task-irq` needs the preemptive round-robin runtime. Cargo features are
@@ -76,6 +76,7 @@ all = [
     "display-basic",
     "eventfd-epoll",
     "exception-breakpoint",
+    "futex-errno-order",
     "lockdep-baseline",
 ]
 
@@ -86,4 +87,5 @@ ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
+libc = { workspace = true, optional = true }
 rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }

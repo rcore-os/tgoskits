@@ -1,6 +1,4 @@
 use core::ptr::NonNull;
-
-#[cfg(feature = "multitask")]
 use ax_hal::paging::MappingFlags;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
@@ -10,8 +8,6 @@ pub(crate) enum MappingTransactionError {
     NotStarted(RuntimeError),
     StateUncertain(RuntimeError),
 }
-
-#[cfg(feature = "multitask")]
 pub(crate) fn protect_kernel_range(
     start: VirtAddr,
     size: usize,

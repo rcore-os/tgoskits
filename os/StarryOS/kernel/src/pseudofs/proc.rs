@@ -3028,9 +3028,6 @@ mod tests {
             }
         }
 
-        assert!(
-            line_count >= 2,
-            "expected at least 2 lines, got {line_count}"
-        );
+        assert_eq!(line_count, 3, "expected two headers and one data row");
     }
 }

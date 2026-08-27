@@ -37,6 +37,8 @@ pub mod display;
 pub mod exception;
 #[cfg(all(feature = "fs-basic", feature = "ax-std"))]
 pub mod fs;
+#[cfg(all(feature = "futex-errno-order", feature = "ax-std"))]
+pub mod futex;
 #[cfg(all(feature = "eventfd-epoll", feature = "ax-std"))]
 pub mod io_mpx;
 #[cfg(all(
@@ -112,6 +114,7 @@ test_runner!(
     exception::page_fault::run
 );
 test_runner!("fs-basic", run_fs_basic, fs::basic::run);
+test_runner!("futex-errno-order", run_futex_errno_order, futex::run);
 test_runner!(
     "lockdep-baseline",
     run_lockdep_baseline,
@@ -212,6 +215,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "fs-basic")]
     TestCase::new("fs-basic", "bounded filesystem operations", run_fs_basic),
+    #[cfg(feature = "futex-errno-order")]
+    TestCase::new(
+        "futex-errno-order",
+        "futex value mismatch error precedence",
+        run_futex_errno_order,
+    ),
     #[cfg(feature = "lockdep-baseline")]
     TestCase::new(
         "lockdep-baseline",

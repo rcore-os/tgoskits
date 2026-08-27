@@ -63,26 +63,20 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
 
-    #[cfg(all(feature = "tls", feature = "multitask"))]
+    #[cfg(feature = "tls")]
     crate::task::initialize_early_bootstrap_tls()
         .expect("failed to initialize secondary bootstrap TLS");
-    #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    super::bootstrap::init_tls();
 
     ENTERED_CPUS.fetch_add(1, Ordering::Release);
     info!("Secondary CPU {cpu_id} started.");
 
     #[cfg(feature = "paging")]
     ax_mm::init_memory_management_secondary();
-
-    #[cfg(feature = "multitask")]
     super::bootstrap::initialize_scheduler_before_platform(
         || crate::task::initialize_secondary(cpu_id),
         || ax_hal::init_later_secondary(cpu_id),
     )
     .expect("failed to initialize secondary task scheduler");
-    #[cfg(not(feature = "multitask"))]
-    ax_hal::init_later_secondary(cpu_id);
 
     #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     ax_ipi::init();
@@ -90,40 +84,26 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // Bring up local IRQ/IPI delivery before publishing INITED_CPUS so the
     // primary cannot enter user-visible init while remote CPUs still lack SGI
     // handlers or pending per-CPU IRQ enables.
-    #[cfg(feature = "irq")]
     super::interrupt_bootstrap::init_cpu(cpu_id);
 
     // Complete architecture-local IPI readiness before the scheduler exposes
     // this CPU as a target. A scheduler safe point after publication may rearm
     // a physical self-doorbell even while bootstrap preemption is still held.
-    #[cfg(all(feature = "irq", any(feature = "ipi", feature = "wake-ipi")))]
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     {
         ax_hal::asm::flush_tlb(None);
         ax_ipi::mark_current_cpu_ready();
     }
-
-    #[cfg(feature = "multitask")]
     let online_cpu = crate::task::publish_current_cpu_online()
         .expect("failed to publish secondary scheduler CPU");
-
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     crate::task::start_current_ktimer_service().expect("failed to create secondary ktimer service");
-
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     super::clock_event_runtime::enable_irqs_after_scheduler_online(online_cpu);
-    #[cfg(all(feature = "irq", not(feature = "multitask")))]
-    ax_hal::asm::enable_irqs();
-    #[cfg(all(feature = "multitask", not(feature = "irq")))]
-    let _ = online_cpu;
-
-    #[cfg(feature = "multitask")]
     crate::guard::release_bootstrap_preemption();
 
     // Publishing a log record is safe as soon as the per-CPU area exists, but
     // waking the owner worker may select a run queue or send an IPI. Publish
     // that separate capability only after this CPU has completed every
     // scheduler, IRQ, and IPI prerequisite compiled into this runtime.
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     super::serial::mark_log_wake_ready(cpu_id);
 
     info!("Secondary CPU {cpu_id:x} init OK.");
@@ -132,13 +112,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     while !super::is_init_ok() {
         core::hint::spin_loop();
     }
-
-    #[cfg(feature = "multitask")]
     crate::task::run_idle();
-    #[cfg(not(feature = "multitask"))]
-    loop {
-        ax_hal::asm::wait_for_irqs();
-    }
 }
 
 #[cfg(test)]

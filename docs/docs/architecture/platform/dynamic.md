@@ -24,7 +24,6 @@ dynamic  = true
 | feature | 默认 | 启用的能力 |
 | --- | --- | --- |
 | `smp` | ✓ | 多核 boot；转发到 `ax-plat/smp` |
-| `irq` | ✓ | IRQ 接口；转发到 `ax-plat/irq` |
 | `rtc` | ✗ | LoongArch RTC epoch offset 初始化 |
 | `efi` | ✗ | `somehal/efi` → UEFI 启动路径 |
 | `fp-simd` | ✗ | `ax-cpu/fp-simd`，aarch64/loongarch64 启用 FP/SIMD |
@@ -52,7 +51,6 @@ mod console;
 pub mod drivers;
 mod generic_timer;
 mod init;
-#[cfg(feature = "irq")]
 mod irq;
 mod mem;
 mod platform;
@@ -61,15 +59,13 @@ mod power;
 pub use boot::{boot_stack_bounds, bootargs};
 pub use generic_timer::try_init_epoch_offset;
 
-#[cfg(feature = "irq")]
 pub fn enable_timer_irq() { somehal::timer::irq_enable(); }
 
-#[cfg(feature = "irq")]
 pub fn ipi_irq() -> ax_plat::irq::IrqId { somehal::irq::ipi_irq() }
-
-#[cfg(all(feature = "irq", target_arch = "riscv64", feature = "hv"))]
-pub use irq::register_virtual_irq_injector;
 ```
+
+IRQ 是动态平台的基础契约，不再出现在 feature 表中。四个真实架构后端都必须
+提供 interrupt controller、timer IRQ、dispatch 与 EOI 能力。
 
 注意：`extern crate ax_driver as _` 与 `extern crate somehal` 只是为了把它们拉入依赖图，并不在 `axplat-dyn` 内直接调用。
 

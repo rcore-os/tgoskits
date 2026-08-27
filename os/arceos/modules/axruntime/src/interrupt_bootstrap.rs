@@ -25,7 +25,4 @@ pub(crate) fn init_cpu(cpu_id: usize) {
         )
         .expect("failed to register IPI IRQ handler");
     }
-
-    #[cfg(not(feature = "multitask"))]
-    crate::clock_event_runtime::init_timer();
 }

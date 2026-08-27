@@ -1,6 +1,4 @@
 //! Native ArceOS lock facade and `ax-sync` bridge provider.
-
-#[cfg(feature = "multitask")]
 use core::sync::atomic::AtomicU64;
 use core::{
     panic::Location,
@@ -10,46 +8,25 @@ use core::{
 pub use ax_task::sync::api::*;
 
 fn context_preempt_enter() -> usize {
-    #[cfg(feature = "multitask")]
-    {
-        crate::guard::enter_lock_preempt().map_or(0, cpu_local::PreemptionToken::into_raw)
-    }
-    #[cfg(not(feature = "multitask"))]
-    {
-        0
-    }
+    crate::guard::enter_lock_preempt().map_or(0, cpu_local::PreemptionToken::into_raw)
 }
 
 unsafe fn context_preempt_exit(state: usize) {
     if state == 0 {
         return;
     }
-    #[cfg(feature = "multitask")]
-    {
-        let token = unsafe { cpu_local::PreemptionToken::from_raw(state) }
-            .expect("a live synchronization guard must retain its preemption owner");
-        crate::guard::exit_preempt(token);
-    }
-    #[cfg(not(feature = "multitask"))]
-    unreachable!("a uniprocessor runtime cannot own a preemption token");
+    let token = unsafe { cpu_local::PreemptionToken::from_raw(state) }
+        .expect("a live synchronization guard must retain its preemption owner");
+    crate::guard::exit_preempt(token);
 }
 
 unsafe fn context_preempt_exit_irq_return(state: usize) {
-    #[cfg(feature = "multitask")]
-    {
-        if state != 0 {
-            let token = unsafe { cpu_local::PreemptionToken::from_raw(state) }
-                .expect("an IRQ-return guard must retain its preemption owner");
-            crate::guard::exit_preempt_from_irq_return(token);
-        }
-        #[cfg(feature = "irq")]
-        crate::clock_event_runtime::finish_deferred_rearm();
+    if state != 0 {
+        let token = unsafe { cpu_local::PreemptionToken::from_raw(state) }
+            .expect("an IRQ-return guard must retain its preemption owner");
+        crate::guard::exit_preempt_from_irq_return(token);
     }
-    #[cfg(not(feature = "multitask"))]
-    assert_eq!(
-        state, 0,
-        "a uniprocessor runtime cannot own an IRQ-return preemption token"
-    );
+    crate::clock_event_runtime::finish_deferred_rearm();
 }
 
 fn context_irq_save_and_disable() -> usize {
@@ -67,12 +44,10 @@ unsafe fn context_irq_restore(state: usize) {
 }
 
 fn context_hardirq_enter() {
-    #[cfg(feature = "multitask")]
     crate::irq_time::enter();
 }
 
 fn context_hardirq_exit() {
-    #[cfg(feature = "multitask")]
     crate::irq_time::exit();
 }
 
@@ -245,11 +220,7 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
         ax_task::sync::bridge::rwlock_force_read_decrement(state, lock_addr, context);
     }
 }
-
-#[cfg(feature = "multitask")]
 struct RuntimeMutexOps;
-
-#[cfg(feature = "multitask")]
 fn into_task_pi_storage(
     storage: &ax_sync::interface::PiMutexStorage,
 ) -> ax_task::sync::bridge::PiMutexStorage<'_> {
@@ -260,8 +231,6 @@ fn into_task_pi_storage(
         wait_words: storage.wait_storage(),
     }
 }
-
-#[cfg(feature = "multitask")]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::interface::MutexOps for RuntimeMutexOps {
     fn acquire(

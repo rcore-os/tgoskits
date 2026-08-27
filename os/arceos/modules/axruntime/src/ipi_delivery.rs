@@ -1,6 +1,6 @@
 //! Shared IPI transport for scheduler doorbells and synchronous hard calls.
 
-#[cfg(all(feature = "irq", feature = "ipi"))]
+#[cfg(feature = "ipi")]
 pub(crate) unsafe fn run_on_cpu_sync(
     cpu: usize,
     f: unsafe fn(*mut ()),
@@ -21,7 +21,7 @@ fn dispatch_scheduler_doorbell(
     }
 }
 
-#[cfg(all(feature = "multitask", any(feature = "ipi", feature = "wake-ipi")))]
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 fn local_scheduler_work_pending() -> bool {
     let pending = crate::task::current_cpu_needs_resched()
         .expect("IPI delivery requires an online scheduler CPU");
@@ -32,25 +32,13 @@ fn local_scheduler_work_pending() -> bool {
     pending
 }
 
-#[cfg(all(feature = "irq", feature = "ipi"))]
+#[cfg(feature = "ipi")]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
     dispatch_scheduler_doorbell(
+        local_scheduler_work_pending,
         || {
-            #[cfg(feature = "multitask")]
-            {
-                local_scheduler_work_pending()
-            }
-            #[cfg(not(feature = "multitask"))]
-            {
-                false
-            }
-        },
-        || {
-            #[cfg(feature = "multitask")]
-            {
-                let _self_serviced = crate::guard::publish_local_scheduler_work();
-            }
+            let _self_serviced = crate::guard::publish_local_scheduler_work();
         },
     );
     ax_ipi::drain_hard_calls()
@@ -58,25 +46,13 @@ pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqRetu
     ax_hal::irq::IrqReturn::Handled
 }
 
-#[cfg(all(feature = "irq", feature = "wake-ipi", not(feature = "ipi")))]
+#[cfg(all(feature = "wake-ipi", not(feature = "ipi")))]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
     dispatch_scheduler_doorbell(
+        local_scheduler_work_pending,
         || {
-            #[cfg(feature = "multitask")]
-            {
-                local_scheduler_work_pending()
-            }
-            #[cfg(not(feature = "multitask"))]
-            {
-                false
-            }
-        },
-        || {
-            #[cfg(feature = "multitask")]
-            {
-                let _self_serviced = crate::guard::publish_local_scheduler_work();
-            }
+            let _self_serviced = crate::guard::publish_local_scheduler_work();
         },
     );
     ax_hal::irq::IrqReturn::Handled

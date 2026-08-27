@@ -8,7 +8,6 @@ pub use ax_plat::time::{
     scheduler_clock_stability, scheduler_clock_tick, shutdown_scheduler_clock, ticks_to_nanos,
     wall_time, wall_time_nanos,
 };
-#[cfg(feature = "irq")]
 pub use ax_plat::time::{cancel_oneshot_timer, irq_num, resume_oneshot_timer, set_oneshot_timer};
 
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {

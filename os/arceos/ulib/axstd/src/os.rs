@@ -87,7 +87,6 @@ pub mod arceos {
     }
 
     /// OS-independent task scheduler types and ArceOS runtime operations.
-    #[cfg(feature = "multitask")]
     pub mod task {
         pub use ax_runtime::task::*;
     }
@@ -95,6 +94,9 @@ pub mod arceos {
 
 #[cfg(feature = "std-compat")]
 pub mod libc_compat;
+
+#[cfg(any(feature = "std-compat", all(test, feature = "host-test")))]
+mod futex;
 
 #[cfg(all(test, feature = "host-test"))]
 mod tests {

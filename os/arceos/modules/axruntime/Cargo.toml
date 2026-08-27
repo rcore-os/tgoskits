@@ -13,8 +13,6 @@ default = []
 ext-ld = []
 std-compat = []
 host-test = [
-  "irq",
-  "multitask",
   "ax-hal/host-test",
   "ax-ipi?/host-test",
   "ax-sync/host-test",
@@ -22,35 +20,23 @@ host-test = [
   "ax-percpu/host-test",
   "cpu-local/host-test",
 ]
-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi"]
+ipi = ["dep:ax-ipi", "ax-hal/ipi"]
 # Scheduler-only users still share ax-ipi's typed, coalescible physical edge;
 # logical pending state remains in ax-task.
-wake-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi"]
-irq = [
-  "paging",
-  "ax-hal/irq",
-  "dep:rdif-intc",
-  "ax-driver/irq",
-]
-multitask = [
-  "irq",
-  "ax-sync/sleep",
-]
-qperf-metrics = ["multitask", "ax-task/qperf-metrics"]
+wake-ipi = ["dep:ax-ipi", "ax-hal/ipi"]
+qperf-metrics = ["ax-task/qperf-metrics"]
 fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
 uspace = ["ax-hal/uspace"]
-lockdep = ["multitask", "ax-task/lockdep", "ax-fs-ng?/lockdep"]
-stack-guard-page = ["ipi", "multitask", "paging"]
+lockdep = ["ax-task/lockdep", "ax-fs-ng?/lockdep"]
+stack-guard-page = ["ipi", "paging"]
 stack-protector = []
 tls = ["ax-hal/tls"]
 
 display = ["paging", "dep:ax-display", "ax-driver/display"]
 fs = [
-  "irq",
-  "multitask",
   "paging",
   "dep:ax-fs-ng",
   "ax-fs-ng/vfs",
@@ -62,8 +48,6 @@ ext4fs = ["fs", "ax-fs-ng/ext4"]
 fatfs = ["fs", "ax-fs-ng/fat"]
 input = ["paging", "dep:ax-input", "ax-driver/input"]
 net = [
-  "irq",
-  "multitask",
   "paging",
   "dep:ax-net",
   "dep:rd-net",
@@ -99,7 +83,7 @@ ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
 ax-percpu.workspace = true
 ax-plat = {workspace = true}
-ax-sync.workspace = true
+ax-sync = { workspace = true, features = ["sleep"] }
 ax-task.workspace = true
 cpu-local.workspace = true
 axbacktrace = {workspace = true}
@@ -113,7 +97,7 @@ dma-api.workspace = true
 indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
-rdif-intc = { workspace = true, optional = true }
+rdif-intc.workspace = true
 rdif-serial.workspace = true
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
