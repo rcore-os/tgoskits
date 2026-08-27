@@ -7,12 +7,13 @@ use core::{
 };
 
 use ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys};
-use axfs_ng_vfs::{DeviceId, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
 use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion};
+use bytemuck::AnyBitPattern;
+use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    mm::UserPtr,
     pseudofs::{Device, DeviceOps, DirMapping, SimpleFs},
     sync::Mutex,
 };
@@ -30,7 +31,7 @@ const IVC_SUBSCRIBE_CHANNEL: u32 = 0x4050_0002;
 const IVC_UNSUBSCRIBE_CHANNEL: u32 = 0x4050_0003;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AnyBitPattern)]
 struct IvcPublishArg {
     channel_key: u64,
     channel_size: u64,
@@ -38,7 +39,7 @@ struct IvcPublishArg {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AnyBitPattern)]
 struct IvcSubscribeArg {
     target_publisher_id: u64,
     channel_key: u64,
@@ -74,7 +75,13 @@ impl AxivcRegistry {
             return Err(VfsError::InvalidInput);
         }
 
-        let region = shared_page_mut(shm_base_gpa, shm_size)?;
+        let region = match shared_page_mut(shm_base_gpa, shm_size) {
+            Ok(region) => region,
+            Err(err) => {
+                let _ = ivc::unpublish_channel(arg.channel_key as usize);
+                return Err(err);
+            }
+        };
         region.initialize();
         region.publish_header_volatile();
         let region: &'static IvcRegion = region;
@@ -126,27 +133,30 @@ impl AxivcRegistry {
         let shm_base_gpa = shm_base_gpa.read();
         let shm_size = shm_size.read();
         if shm_size < core::mem::size_of::<IvcRegion>() {
-            let _ = ivc::unsubscribe_channel(
-                arg.target_publisher_id as usize,
-                arg.channel_key as usize,
-            );
+            unsubscribe_hvc(arg);
             return Err(VfsError::InvalidInput);
         }
 
-        let region = shared_page_ref(shm_base_gpa, shm_size)?;
-        wait_for_region_ready(
+        let region = match shared_page_ref(shm_base_gpa, shm_size) {
+            Ok(region) => region,
+            Err(err) => {
+                unsubscribe_hvc(arg);
+                return Err(err);
+            }
+        };
+        if let Err(err) = wait_for_region_ready(
             region,
             arg.target_publisher_id as usize,
             arg.channel_key as usize,
-        )?;
+        ) {
+            unsubscribe_hvc(arg);
+            return Err(err);
+        }
         let (producer, consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
 
         let mut inner = self.inner.lock();
         if inner.subscriber_exists(arg.target_publisher_id as usize, arg.channel_key) {
-            let _ = ivc::unsubscribe_channel(
-                arg.target_publisher_id as usize,
-                arg.channel_key as usize,
-            );
+            unsubscribe_hvc(arg);
             return Err(VfsError::InvalidInput);
         }
         let Some(index) = inner.insert_subscriber(ChannelState {
@@ -157,10 +167,7 @@ impl AxivcRegistry {
             consumer,
             sequence: AtomicU64::new(1),
         }) else {
-            let _ = ivc::unsubscribe_channel(
-                arg.target_publisher_id as usize,
-                arg.channel_key as usize,
-            );
+            unsubscribe_hvc(arg);
             return Err(VfsError::NoMemory);
         };
         write_device_name(
@@ -324,23 +331,54 @@ impl DeviceOps for AxivcManager {
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             IVC_PUBLISH_CHANNEL => {
-                let user_arg = UserPtr::<IvcPublishArg>::from(arg).get_as_mut()?;
-                self.registry.publish(user_arg)?;
+                let user_arg = arg as *mut IvcPublishArg;
+                let mut publish_arg = user_arg.vm_read().map_err(vm_error)?;
+                self.registry.publish(&mut publish_arg)?;
+                if let Err(err) = user_arg.vm_write(publish_arg) {
+                    warn!(
+                        "axivc: publish ioctl writeback failed key={:#x}",
+                        publish_arg.channel_key
+                    );
+                    let _ = self.registry.unpublish(&publish_arg);
+                    return Err(vm_error(err));
+                }
+                info!(
+                    "axivc: publish ioctl complete key={:#x} device={}",
+                    publish_arg.channel_key,
+                    device_name_for_log(&publish_arg.device_name)
+                );
                 Ok(0)
             }
             IVC_UNPUBLISH_CHANNEL => {
-                let user_arg = UserPtr::<IvcPublishArg>::from(arg).get_as_mut()?;
-                self.registry.unpublish(user_arg)?;
+                let user_arg = (arg as *const IvcPublishArg).vm_read().map_err(vm_error)?;
+                self.registry.unpublish(&user_arg)?;
                 Ok(0)
             }
             IVC_SUBSCRIBE_CHANNEL => {
-                let user_arg = UserPtr::<IvcSubscribeArg>::from(arg).get_as_mut()?;
-                self.registry.subscribe(user_arg)?;
+                let user_arg = arg as *mut IvcSubscribeArg;
+                let mut subscribe_arg = user_arg.vm_read().map_err(vm_error)?;
+                self.registry.subscribe(&mut subscribe_arg)?;
+                if let Err(err) = user_arg.vm_write(subscribe_arg) {
+                    warn!(
+                        "axivc: subscribe ioctl writeback failed publisher={} key={:#x}",
+                        subscribe_arg.target_publisher_id, subscribe_arg.channel_key
+                    );
+                    let _ = self.registry.unsubscribe(&subscribe_arg);
+                    return Err(vm_error(err));
+                }
+                info!(
+                    "axivc: subscribe ioctl complete publisher={} key={:#x} device={}",
+                    subscribe_arg.target_publisher_id,
+                    subscribe_arg.channel_key,
+                    device_name_for_log(&subscribe_arg.device_name)
+                );
                 Ok(0)
             }
             IVC_UNSUBSCRIBE_CHANNEL => {
-                let user_arg = UserPtr::<IvcSubscribeArg>::from(arg).get_as_mut()?;
-                self.registry.unsubscribe(user_arg)?;
+                let user_arg = (arg as *const IvcSubscribeArg)
+                    .vm_read()
+                    .map_err(vm_error)?;
+                self.registry.unsubscribe(&user_arg)?;
                 Ok(0)
             }
             _ => Err(VfsError::NotATty),
@@ -380,7 +418,9 @@ impl DeviceOps for AxivcChannel {
         };
 
         let len = message.len().min(buf.len());
+        let record_len = IVC_SLOT_PAYLOAD_SIZE.min(buf.len());
         buf[..len].copy_from_slice(&payload[..len]);
+        buf[len..record_len].fill(0);
         if matches!(self.role, ChannelRole::Subscriber) {
             notify_peer(state, self.role_name());
         }
@@ -392,7 +432,7 @@ impl DeviceOps for AxivcChannel {
             message.kind(),
             len
         );
-        Ok(len)
+        Ok(record_len)
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
@@ -427,6 +467,10 @@ impl DeviceOps for AxivcChannel {
             buf.len()
         );
         Ok(buf.len())
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::BLOCKING | NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -500,6 +544,15 @@ fn channel_device_path(role: ChannelRole, index: usize) -> String {
     }
 }
 
+fn device_name_for_log(buf: &[u8; 64]) -> &str {
+    let end = buf.iter().position(|&byte| byte == 0).unwrap_or(buf.len());
+    core::str::from_utf8(&buf[..end]).unwrap_or("<nonutf8>")
+}
+
+fn unsubscribe_hvc(arg: &IvcSubscribeArg) {
+    let _ = ivc::unsubscribe_channel(arg.target_publisher_id as usize, arg.channel_key as usize);
+}
+
 fn notify_peer(state: &ChannelState, role_name: &str) {
     let Some(target_vm_id) = state.notify_target_vm_id else {
         return;
@@ -514,6 +567,10 @@ fn notify_peer(state: &ChannelState, role_name: &str) {
 
 fn hvc_error(_err: ivc::IvcHyperCallError) -> VfsError {
     VfsError::Io
+}
+
+fn vm_error(_err: starry_vm::VmError) -> VfsError {
+    VfsError::BadAddress
 }
 
 fn ring_error(err: axivc::IvcRingError) -> VfsError {
