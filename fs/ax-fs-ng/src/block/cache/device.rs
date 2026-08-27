@@ -17,7 +17,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::address_space::{BlockAddressSpace, FolioGeometry};
-use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex};
+use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::Mutex};
 
 /// The shared per-device cache tree and its global-writeback endpoint.
 ///
@@ -29,8 +29,8 @@ use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex}
 pub(crate) struct BlockCacheShared {
     device_key: usize,
     consumers: AtomicUsize,
-    state: SleepMutex<BlockAddressSpace>,
-    endpoint: SleepMutex<Box<dyn FsBlockDevice>>,
+    state: Mutex<BlockAddressSpace>,
+    endpoint: Mutex<Box<dyn FsBlockDevice>>,
 }
 
 impl BlockCacheShared {
@@ -42,8 +42,8 @@ impl BlockCacheShared {
         Self {
             device_key,
             consumers: AtomicUsize::new(0),
-            state: SleepMutex::new(BlockAddressSpace::new(geometry)),
-            endpoint: SleepMutex::new(endpoint),
+            state: Mutex::new(BlockAddressSpace::new(geometry)),
+            endpoint: Mutex::new(endpoint),
         }
     }
 

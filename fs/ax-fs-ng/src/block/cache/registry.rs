@@ -27,7 +27,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use ax_lazyinit::LazyLock;
 
 use super::{address_space::FolioGeometry, device::BlockCacheShared};
-use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex as Mutex};
+use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::Mutex};
 
 struct DeviceCacheEntry {
     device_key: usize,
