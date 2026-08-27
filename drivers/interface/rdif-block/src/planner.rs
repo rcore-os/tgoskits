@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn transfer_planner_rejects_invalid_physical_block_geometry() {
-        let limits = QueueLimits::simple(512, u64::MAX);
+        let limits = queue_limits(1, 1, 512);
         let caps = test_runtime_caps();
 
         for physical_block_size in [0, 256, 4096] {

@@ -35,21 +35,6 @@ impl DeviceInfo {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::DeviceInfo;
-
-    #[test]
-    fn physical_block_size_defaults_to_the_logical_block_size() {
-        let default_geometry = DeviceInfo::new(16, 512);
-        let native_geometry = default_geometry.with_physical_block_size(4096);
-
-        assert_eq!(default_geometry.physical_block_size, 512);
-        assert_eq!(native_geometry.logical_block_size, 512);
-        assert_eq!(native_geometry.physical_block_size, 4096);
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueLimits {
     /// Complete DMA identity and constraints of the physical device served by this queue.
@@ -100,6 +85,16 @@ mod tests {
     use dma_api::{DmaCoherency, DmaDomainId};
 
     use super::*;
+
+    #[test]
+    fn physical_block_size_defaults_to_the_logical_block_size() {
+        let default_geometry = DeviceInfo::new(16, 512);
+        let native_geometry = default_geometry.with_physical_block_size(4096);
+
+        assert_eq!(default_geometry.physical_block_size, 512);
+        assert_eq!(native_geometry.logical_block_size, 512);
+        assert_eq!(native_geometry.physical_block_size, 4096);
+    }
 
     #[test]
     fn simple_limits_preserve_stricter_device_constraints() {
