@@ -51,5 +51,19 @@ int bench_process_handoff(const struct bench_config *config,
 int bench_absolute_timer(const struct bench_config *config,
                          enum bench_policy policy,
                          struct latency_result *result);
+int bench_clock_pair(const struct bench_config *config,
+                     enum bench_policy policy, struct latency_result *result);
+int bench_futex_wait_mismatch(const struct bench_config *config,
+                              enum bench_policy policy,
+                              struct latency_result *result);
+int bench_futex_wake_empty(const struct bench_config *config,
+                           enum bench_policy policy,
+                           struct latency_result *result);
+int bench_yield_no_peer(const struct bench_config *config,
+                        enum bench_policy policy,
+                        struct latency_result *result);
+int bench_yield_handoff(const struct bench_config *config,
+                        enum bench_policy policy,
+                        struct latency_result *result);
 
 #endif

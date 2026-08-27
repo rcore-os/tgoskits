@@ -55,8 +55,10 @@ trap 'rm -rf "$build_dir"' EXIT
     -pthread \
     -static \
     "$app_dir/main.c" \
+    "$app_dir/baseline.c" \
     "$app_dir/handoff.c" \
     "$app_dir/timer.c" \
+    "$app_dir/yield.c" \
     "$app_dir/stats.c" \
     -lm \
     -o "$build_dir/wakeup-latency-bench"

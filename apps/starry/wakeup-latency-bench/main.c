@@ -28,6 +28,12 @@ enum bench_case {
     BENCH_CASE_THREAD_FUTEX_CROSS_CPU,
     BENCH_CASE_PROCESS_FUTEX_CROSS_CPU,
     BENCH_CASE_ABSOLUTE_TIMER_SAME_CPU,
+    BENCH_CASE_CLOCK_PAIR,
+    BENCH_CASE_FUTEX_WAIT_MISMATCH,
+    BENCH_CASE_FUTEX_WAKE_EMPTY,
+    BENCH_CASE_SCHED_YIELD_NO_PEER,
+    BENCH_CASE_SCHED_YIELD_HANDOFF,
+    BENCH_CASE_SCHEDULER_BASELINES,
 };
 
 struct bench_selection {
@@ -41,7 +47,9 @@ static void print_usage(const char *program)
     fprintf(stderr,
             "usage: %s [--policy all|other|fifo] "
             "[--case all|thread_futex_same_cpu|thread_futex_cross_cpu|"
-            "process_futex_cross_cpu|absolute_timer_same_cpu]\n",
+            "process_futex_cross_cpu|absolute_timer_same_cpu|clock_pair|"
+            "futex_wait_mismatch|futex_wake_empty|sched_yield_no_peer|"
+            "sched_yield_handoff|scheduler_baselines]\n",
             program);
 }
 
@@ -74,6 +82,18 @@ static int parse_case(const char *value, struct bench_selection *selection)
         selection->bench_case = BENCH_CASE_PROCESS_FUTEX_CROSS_CPU;
     } else if (strcmp(value, "absolute_timer_same_cpu") == 0) {
         selection->bench_case = BENCH_CASE_ABSOLUTE_TIMER_SAME_CPU;
+    } else if (strcmp(value, "clock_pair") == 0) {
+        selection->bench_case = BENCH_CASE_CLOCK_PAIR;
+    } else if (strcmp(value, "futex_wait_mismatch") == 0) {
+        selection->bench_case = BENCH_CASE_FUTEX_WAIT_MISMATCH;
+    } else if (strcmp(value, "futex_wake_empty") == 0) {
+        selection->bench_case = BENCH_CASE_FUTEX_WAKE_EMPTY;
+    } else if (strcmp(value, "sched_yield_no_peer") == 0) {
+        selection->bench_case = BENCH_CASE_SCHED_YIELD_NO_PEER;
+    } else if (strcmp(value, "sched_yield_handoff") == 0) {
+        selection->bench_case = BENCH_CASE_SCHED_YIELD_HANDOFF;
+    } else if (strcmp(value, "scheduler_baselines") == 0) {
+        selection->bench_case = BENCH_CASE_SCHEDULER_BASELINES;
     } else {
         return -1;
     }
@@ -131,6 +151,13 @@ static int case_selected(const struct bench_selection *selection,
            selection->bench_case == bench_case;
 }
 
+static int scheduler_case_selected(const struct bench_selection *selection,
+                                   enum bench_case bench_case)
+{
+    return case_selected(selection, bench_case) ||
+           selection->bench_case == BENCH_CASE_SCHEDULER_BASELINES;
+}
+
 static void print_case_marker(const char *phase, const char *case_name,
                               enum bench_policy policy)
 {
@@ -169,6 +196,30 @@ static int finish_result(struct latency_result *result)
     bench_print_result(result);
     bench_release_result(result);
     return 0;
+}
+
+typedef int (*syscall_baseline_fn)(const struct bench_config *,
+                                   enum bench_policy,
+                                   struct latency_result *);
+
+static int run_latency_case(enum bench_policy policy, const char *case_name,
+                            syscall_baseline_fn benchmark)
+{
+    int error = configure_current(policy, DEFAULT_CONFIG.sender_cpu);
+    if (error != 0) {
+        errno = error;
+        perror("configure syscall baseline");
+        return -1;
+    }
+
+    struct latency_result result;
+    print_case_marker("START", case_name, policy);
+    if (benchmark(&DEFAULT_CONFIG, policy, &result) != 0) {
+        perror(case_name);
+        return -1;
+    }
+    print_case_marker("DONE", case_name, policy);
+    return finish_result(&result);
 }
 
 static int run_benchmark(const struct bench_selection *selection)
@@ -304,6 +355,37 @@ static int run_benchmark(const struct bench_selection *selection)
             if (finish_result(&timer) != 0) {
                 return 1;
             }
+        }
+
+        if (case_selected(selection, BENCH_CASE_CLOCK_PAIR) &&
+            run_latency_case(policy, "clock_pair", bench_clock_pair) != 0) {
+            return 1;
+        }
+
+        if (case_selected(selection, BENCH_CASE_FUTEX_WAIT_MISMATCH) &&
+            run_latency_case(policy, "futex_wait_mismatch",
+                             bench_futex_wait_mismatch) != 0) {
+            return 1;
+        }
+
+        if (case_selected(selection, BENCH_CASE_FUTEX_WAKE_EMPTY) &&
+            run_latency_case(policy, "futex_wake_empty",
+                             bench_futex_wake_empty) != 0) {
+            return 1;
+        }
+
+        if (scheduler_case_selected(selection,
+                                    BENCH_CASE_SCHED_YIELD_NO_PEER) &&
+            run_latency_case(policy, "sched_yield_no_peer",
+                             bench_yield_no_peer) != 0) {
+            return 1;
+        }
+
+        if (scheduler_case_selected(selection,
+                                    BENCH_CASE_SCHED_YIELD_HANDOFF) &&
+            run_latency_case(policy, "sched_yield_handoff",
+                             bench_yield_handoff) != 0) {
+            return 1;
         }
     }
 
