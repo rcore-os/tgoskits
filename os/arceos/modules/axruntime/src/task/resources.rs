@@ -8,6 +8,7 @@ use ax_task::runtime::{
     RuntimeHandleResult, RuntimeStatus, StackHandle, StackRequest, TlsHandle, TlsRequest,
 };
 
+#[cfg(feature = "paging")]
 use super::PAGE_SIZE;
 
 pub(super) struct RuntimeStack {
