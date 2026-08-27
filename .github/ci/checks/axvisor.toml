@@ -34,6 +34,12 @@ echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 echo "==> axvisor aarch64 browser console"
 cargo xtask axvisor test qemu --arch aarch64 --test-case browser-console
+echo "==> pull IVC Message V1 image"
+export TGOS_IMAGE_DOWNLOAD_DIR="$PWD/tmp/ivc-images"
+export TGOS_IMAGE_EXTRACT_DIR="$PWD/tmp/axbuild/rootfs"
+cargo xtask image pull \
+  --registry "https://raw.githubusercontent.com/baitwo02/tgosimages/4ae69e079f0d2a39b2f5d1b210cc093ffc5bad07/registry/ivc-message-v1-3ce6ae8a.toml" \
+  "rootfs-aarch64-alpine-ivc-message-v1.img:0.0.12-ivc-message-v1-3ce6ae8a"
 echo "==> axvisor aarch64 IVC"
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
 '''
