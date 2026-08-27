@@ -49,6 +49,9 @@ pub struct Builder {
     name: Option<String>,
     // The size of the stack for the spawned thread in bytes
     stack_size: Option<usize>,
+    // The scheduling priority for the spawned thread. `None` means the
+    // scheduler default. See `ax_spawn_with_priority` for priority semantics.
+    priority: Option<isize>,
 }
 
 impl Builder {
@@ -58,6 +61,7 @@ impl Builder {
         Builder {
             name: None,
             stack_size: None,
+            priority: None,
         }
     }
 
@@ -70,6 +74,19 @@ impl Builder {
     /// Sets the size of the stack (in bytes) for the new thread.
     pub fn stack_size(mut self, size: usize) -> Builder {
         self.stack_size = Some(size);
+        self
+    }
+
+    /// Sets the scheduling priority for the new thread.
+    ///
+    /// The priority is applied before the thread enters the ready queue, so the
+    /// scheduler enqueues it with the correct priority key from the start. The
+    /// semantics depend on the underlying scheduler:
+    /// - **CFS**: nice value (lower = higher priority).
+    /// - **RT**: higher numbers mean higher priority (FreeRTOS convention).
+    /// - **FIFO/RR**: priorities are not supported; the value is silently ignored.
+    pub fn priority(mut self, prio: isize) -> Builder {
+        self.priority = Some(prio);
         self
     }
 
@@ -97,6 +114,7 @@ impl Builder {
     {
         let name = self.name.unwrap_or_default();
         let stack_size = self.stack_size.unwrap_or(ax_api::config::TASK_STACK_SIZE);
+        let priority = self.priority;
 
         let my_packet = Arc::new(Packet {
             result: UnsafeCell::new(None),
@@ -113,7 +131,10 @@ impl Builder {
             drop(their_packet);
         };
 
-        let task = api::ax_spawn(main, name, stack_size);
+        let task = match priority {
+            Some(prio) => api::ax_spawn_with_priority(main, name, stack_size, prio),
+            None => api::ax_spawn(main, name, stack_size),
+        };
         Ok(JoinHandle {
             thread: Thread::from_id(task.id()),
             native: task,

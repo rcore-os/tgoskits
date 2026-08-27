@@ -59,6 +59,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(feature = "sched-cfs")] {
         pub(crate) type AxTask = ax_sched::CFSTask<TaskInner>;
         pub(crate) type Scheduler = ax_sched::CFScheduler<TaskInner>;
+    } else if #[cfg(feature = "sched-rt")] {
+        pub(crate) type AxTask = ax_sched::RTTask<TaskInner>;
+        pub(crate) type Scheduler = ax_sched::RTScheduler<TaskInner>;
     } else {
         // If no scheduler features are set, use FIFO as the default.
         pub(crate) type AxTask = ax_sched::FifoTask<TaskInner>;
@@ -316,15 +319,73 @@ where
     spawn_with_name(f, String::new())
 }
 
+/// Spawns a new task with the given priority.
+///
+/// The priority is applied *before* the task enters the ready queue, so the
+/// scheduler enqueues it with the correct priority key from the start. This
+/// avoids the race where a task is briefly runnable at the default priority
+/// before [`set_priority`] can adjust it.
+///
+/// The semantics of the priority value depend on the underlying scheduler:
+/// - **CFS**: nice value ranging from -20 to 19 (lower = higher priority).
+/// - **RT**: priority where higher numbers mean higher priority (FreeRTOS
+///   convention).
+/// - **FIFO/RR**: priorities are not supported; the value is silently ignored.
+///
+/// Returns the task reference.
+///
+/// [`set_priority`]: set_priority
+pub fn spawn_with_priority<F>(prio: isize, f: F) -> AxTaskRef
+where
+    F: FnOnce() + Send + 'static,
+{
+    spawn_task_with_priority(
+        TaskInner::new(f, String::new(), default_task_stack_size()),
+        prio,
+    )
+}
+
+/// Spawns a new task with the given priority and the full task descriptor.
+///
+/// This is the priority-aware variant of [`spawn_task`]: it converts the
+/// [`TaskInner`] into a reference, sets the priority on the scheduler entity,
+/// and only then enqueues it. See [`spawn_with_priority`] for the priority
+/// semantics.
+///
+/// Returns the task reference.
+pub fn spawn_task_with_priority(task: TaskInner, prio: isize) -> AxTaskRef {
+    let task_ref = task.into_arc();
+    register_task(&task_ref);
+    let mut rq = select_run_queue::<NoPreemptIrqSave>(&task_ref);
+    // Set the priority before adding the task so it enters the ready queue
+    // with the correct priority key, avoiding a remove-and-reinsert dance.
+    // The return value is intentionally ignored: FIFO/RR schedulers do not
+    // support priorities and report `false`, which is not an error here.
+    rq.set_task_priority(&task_ref, prio);
+    rq.add_task(task_ref.clone());
+    task_ref
+}
+
+/// Spawns a new task with the given parameters and priority.
+///
+/// This is the priority-aware variant of [`spawn_raw`]. See
+/// [`spawn_with_priority`] for the priority semantics.
+///
+/// Returns the task reference.
+pub fn spawn_raw_with_priority<F>(f: F, name: String, stack_size: usize, prio: isize) -> AxTaskRef
+where
+    F: FnOnce() + Send + 'static,
+{
+    spawn_task_with_priority(TaskInner::new(f, name, stack_size), prio)
+}
+
 /// Set the priority for current task.
 ///
-/// The range of the priority is dependent on the underlying scheduler. For
-/// example, in the [CFS] scheduler, the priority is the nice value, ranging from
-/// -20 to 19.
+/// The semantics of the priority value depend on the underlying scheduler:
+/// - **CFS**: nice value ranging from -20 to 19 (lower = higher priority).
+/// - **RT**: priority where higher numbers mean higher priority (FreeRTOS convention).
 ///
 /// Returns `true` if the priority is set successfully.
-///
-/// [CFS]: https://en.wikipedia.org/wiki/Completely_Fair_Scheduler
 pub fn set_priority(prio: isize) -> bool {
     current_run_queue::<PreemptIrqSaveState>().set_current_priority(prio)
 }

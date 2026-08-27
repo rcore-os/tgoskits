@@ -81,6 +81,33 @@ cfg_task! {
         }
     }
 
+    /// Spawns a new task with the given priority.
+    ///
+    /// The priority is applied before the task enters the ready queue, so the
+    /// scheduler enqueues it with the correct priority key from the start.
+    /// This avoids the race where a task is briefly runnable at the default
+    /// priority before `ax_set_current_priority` can adjust it.
+    ///
+    /// The priority semantics depend on the underlying scheduler:
+    /// - **CFS**: nice value (lower = higher priority).
+    /// - **RT**: higher numbers mean higher priority (FreeRTOS convention).
+    /// - **FIFO/RR**: priorities are not supported; the value is silently ignored.
+    pub fn ax_spawn_with_priority<F>(
+        f: F,
+        name: alloc::string::String,
+        stack_size: usize,
+        prio: isize,
+    ) -> AxTaskHandle
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let inner = ax_task::spawn_raw_with_priority(f, name, stack_size, prio);
+        AxTaskHandle {
+            id: inner.id().as_u64(),
+            inner,
+        }
+    }
+
     #[track_caller]
     pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32 {
         task.inner.join()
