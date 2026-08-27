@@ -2321,7 +2321,8 @@ EA-inode value、ACL/security/trusted policy 与 external deletion power-cut rep
 最终验收以最新 `dev` 的 `c8a7962f4` 为基线，在同一 x86_64 主机、同一 nightly、
 QEMU 10.1.0、8 vCPU、512 MiB、NVMe snapshot rootfs 上运行双方共有的
 `apps/starry/block-io-bench`。每次 guest 运行内部执行 5 轮 4 MiB/4 KiB workload；
-双方各独立启动 3 次 guest。下表先取每次内部 5 轮中位数，再取 3 次 guest 的中位数。
+重构数据对应 `bb0f0a57a1`，双方各独立启动 3 次 guest。下表先取每次内部 5 轮中位数，
+再取 3 次 guest 的中位数。
 全部 30 个 correctness phase 均通过 bytewise、checksum 与跨 fd truncate/rewrite 校验。
 原始每次中位数保存在
 `docs/design/data/rsext4-perf/2026-08-27-starry-block-io-bench-dev-vs-refactor.csv`。
@@ -2352,4 +2353,5 @@ durability boundary；p95 没有回退，不能通过删减持久化顺序换取
 `fs/ext4/file.c:130-148,302-323` 进入 generic file read/write，`fs/ext4/fsync.c:167-187`
 先等待 file page cache writeback，再提交 ext4 journal。因此本 PR 不在 rsext4 内重建第二套
 inode/page-offset cache；后续若继续收敛上述两项，应在 ax-fs-ng shared cache 与 VFS page cache
-边界处理，而不是扩大 rsext4 `DataBlockCache`。
+边界处理，而不是扩大 rsext4 `DataBlockCache`。该边界的后续工作已登记为
+[#2206](https://github.com/rcore-os/tgoskits/issues/2206)。
