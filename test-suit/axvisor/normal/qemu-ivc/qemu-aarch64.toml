@@ -44,7 +44,8 @@ shell_prefix = "axvisor:/$"
     shell_cmd = "vm console 2"
 
 [[shell_check_steps]]
+# Match only after the Linux guest validates every Message V1 exchange and
+# successfully tears down its endpoint and manager.
 success_regex = [
-    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?linux ivc recv 5/5: hello from arceos publisher\\s*$",
     "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?linux ivc demo pass\\s*$",
 ]
