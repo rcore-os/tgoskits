@@ -36,8 +36,9 @@ MMIO 与 PCI feature 要分开表达，例如 `virtio-gpu-mmio` 与 `virtio-gpu-
 | `vsock` | `rdif-vsock`、vsock OS glue |
 | `pci` | PCIe controller、PCI endpoint 枚举 |
 | `pinctrl` | `rdif-pinctrl` |
-| `irq` | IRQ binding resolver |
 | `serial` | `rdif-serial`、`some-serial` |
+
+IRQ binding resolver 是 driver/runtime 基础能力，不再由 `ax-driver/irq` 选择。
 
 VirtIO feature 组合能力边界和 PCI transport：
 

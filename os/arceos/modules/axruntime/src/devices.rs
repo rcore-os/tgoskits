@@ -33,23 +33,12 @@ fn adapt_display_device(
     ax_display::ErasedDisplayDevice::new(display)
 }
 
-#[cfg(all(feature = "display", feature = "irq"))]
+#[cfg(feature = "display")]
 fn resolve_display_irq(
     _name: &str,
     irq: Option<ax_driver::BindingIrq>,
 ) -> Result<Option<irq_framework::IrqId>, irq_framework::IrqError> {
     irq.map(crate::irq::resolve_binding_irq).transpose()
-}
-
-#[cfg(all(feature = "display", not(feature = "irq")))]
-fn resolve_display_irq(
-    name: &str,
-    irq: Option<ax_driver::BindingIrq>,
-) -> Result<Option<irq_framework::IrqId>, core::convert::Infallible> {
-    if irq.is_some() {
-        warn!("display device {name} has an IRQ binding but IRQ support is disabled");
-    }
-    Ok(None)
 }
 
 #[cfg(feature = "input")]
@@ -76,23 +65,12 @@ fn adapt_input_device(taken: ax_driver::input::TakenInputDevice) -> ax_input::Er
     ))
 }
 
-#[cfg(all(feature = "input", feature = "irq"))]
+#[cfg(feature = "input")]
 fn resolve_input_irq(
     _name: &str,
     irq: Option<ax_driver::BindingIrq>,
 ) -> Result<Option<irq_framework::IrqId>, irq_framework::IrqError> {
     irq.map(crate::irq::resolve_binding_irq).transpose()
-}
-
-#[cfg(all(feature = "input", not(feature = "irq")))]
-fn resolve_input_irq(
-    name: &str,
-    irq: Option<ax_driver::BindingIrq>,
-) -> Result<Option<irq_framework::IrqId>, core::convert::Infallible> {
-    if irq.is_some() {
-        warn!("input device {name} has an IRQ binding but IRQ support is disabled");
-    }
-    Ok(None)
 }
 
 #[cfg(feature = "net")]
@@ -105,33 +83,19 @@ pub(crate) fn init_net() {
         return;
     }
 
-    #[cfg(not(feature = "irq"))]
-    {
-        if rdrive::get_list::<ax_driver::net::PlatformNetDevice>()
-            .next()
-            .is_some()
-        {
-            panic!("physical network devices require interrupt support");
-        }
+    let devices = collect_net_devices();
+    if devices.is_empty() {
         ax_net::init_network(None, alloc::vec::Vec::new(), config);
+        return;
     }
-
-    #[cfg(feature = "irq")]
-    {
-        let devices = collect_net_devices();
-        if devices.is_empty() {
-            ax_net::init_network(None, alloc::vec::Vec::new(), config);
-            return;
-        }
-        let (runtime, ports) = ax_net::NetworkRuntimeBuilder::new(
-            devices,
-            &crate::irq::NET_IRQ_REGISTRAR,
-            ax_hal::cpu_num(),
-        )
-        .build()
-        .unwrap_or_else(|error| panic!("failed to initialize network queue runtime: {error}"));
-        ax_net::init_network(Some(runtime), ports, config);
-    }
+    let (runtime, ports) = ax_net::NetworkRuntimeBuilder::new(
+        devices,
+        &crate::irq::NET_IRQ_REGISTRAR,
+        ax_hal::cpu_num(),
+    )
+    .build()
+    .unwrap_or_else(|error| panic!("failed to initialize network queue runtime: {error}"));
+    ax_net::init_network(Some(runtime), ports, config);
 }
 
 #[cfg(all(feature = "net", feature = "fs"))]
@@ -149,7 +113,7 @@ fn parse_network_config() -> ax_net::NetworkConfig {
     ax_net::NetworkConfig::default()
 }
 
-#[cfg(all(feature = "net", feature = "irq"))]
+#[cfg(feature = "net")]
 fn collect_net_devices() -> alloc::vec::Vec<ax_net::NetworkDeviceInput> {
     let mut devices = alloc::vec::Vec::new();
     for device in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {

@@ -21,9 +21,12 @@ cargo xtask clippy --package axbuild
 外部平台应在自己的 workspace 和本地 `ax-hal` 增加对应 package / optional dependency / feature，然后再运行：
 
 ```bash
-cargo check -p axplat-myplat --features irq,smp
-AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat,irq,smp
+cargo check -p axplat-myplat --features smp
+AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat,smp
 ```
+
+外部平台即使只运行单核配置，也必须实现 IRQ framework、timer IRQ 与 dispatcher；
+没有设备 IRQ 是合法的设备状态，不等于平台可以省略 IRQ 能力。
 
 如果修改了具体平台 crate，还应对该 crate 运行 targeted clippy：
 

@@ -8,13 +8,6 @@ pub use core::sync::atomic;
 
 pub use ax_runtime::sync::{dump_lockdep_trace, set_lockdep_trace_enabled};
 
-#[cfg(feature = "multitask")]
 mod mutex;
 
-#[cfg(not(feature = "multitask"))]
-#[cfg_attr(doc, doc(cfg(not(feature = "multitask"))))]
-pub use ax_runtime::sync::{SpinLock as Mutex, SpinLockGuard as MutexGuard};
-
-#[cfg(feature = "multitask")]
-#[cfg_attr(doc, doc(cfg(feature = "multitask")))]
 pub use self::mutex::{Mutex, MutexGuard}; // never used in IRQ context

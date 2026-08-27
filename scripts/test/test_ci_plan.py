@@ -512,6 +512,24 @@ command = "true"
             self.assertNotIn("cargo xtask ktest qemu --workspace", command)
             self.assertEqual(rows[check_id]["cache_key"], "")
 
+    def test_asus_nuc_board_reuses_xtask_artifact_and_preserves_timeout(
+        self,
+    ) -> None:
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
+        )
+        asus_nuc = rows["test-axvisor-self-hosted-board-asus-nuc15crh-linux"]
+
+        self.assertEqual(asus_nuc["timeout_minutes"], 45)
+        self.assertTrue(asus_nuc["download_xtask_bin_artifact"])
+        self.assertNotIn("cargo xtask", asus_nuc["command"])
+        self.assertEqual(asus_nuc["command"].count("target/debug/tg-xtask"), 3)
+        self.assertIn(
+            "target/debug/tg-xtask axvisor test board "
+            "--board asus-nuc15crh-linux",
+            asus_nuc["command"],
+        )
+
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,
     ) -> None:

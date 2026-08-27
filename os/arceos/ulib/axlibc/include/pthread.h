@@ -47,8 +47,6 @@ typedef void *pthread_t;
 #define PTHREAD_CANCELED ((void *)-1)
 #define SIGCANCEL        33
 
-#ifdef AX_CONFIG_MULTITASK
-
 _Noreturn void pthread_exit(void *);
 pthread_t pthread_self(void);
 
@@ -78,7 +76,5 @@ int pthread_attr_init(pthread_attr_t *__attr);
 int pthread_attr_getstacksize(const pthread_attr_t *__restrict__ __attr,
                               size_t *__restrict__ __stacksize);
 int pthread_attr_setstacksize(pthread_attr_t *__attr, size_t __stacksize);
-
-#endif // AX_CONFIG_MULTITASK
 
 #endif // _PTHREAD_H

@@ -71,8 +71,8 @@ vmalloc/vmap 虚拟区间，在栈边界保留未映射页面。guard page 只�
 6. 释放栈时必须恢复或正确处理 guard page 生命周期，避免把仍不可访问的
    direct-map 页面还给普通 allocator。
 
-这个方案通过独立 feature `stack-guard-page` 控制。它依赖 `multitask`、
-paging 和内存管理能力，而不是无条件进入所有 multitask 构建。
+这个方案通过独立 feature `stack-guard-page` 控制。多任务调度是基础能力；该
+feature 额外依赖 paging 和内存管理能力，而不是无条件进入所有构建。
 
 `stack-guard-page` 当前是 opt-in hardening feature，默认不启用。常规
 ArceOS / StarryOS 构建和普通回归测试默认仍只覆盖未启用 guard page 的行为；

@@ -23,6 +23,7 @@ bitflags = "2.10"
 cfg-if = { workspace = true }
 chrono = { workspace = true }
 dma-api = { workspace = true }
+hashbrown = "0.16"
 intrusive-collections = "0.9"
 irq-framework = { workspace = true }
 log = { workspace = true }

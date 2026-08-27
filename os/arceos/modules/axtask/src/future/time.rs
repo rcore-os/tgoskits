@@ -20,7 +20,6 @@ pub(crate) struct TimerRuntime {
     // Once IRQ processing publishes the due head to the timer worker, the
     // logical queue must stop advertising it to the physical clockevent.
     // The worker owns clearing this state after its bounded drain pass.
-    #[cfg(feature = "irq")]
     due_work_published: bool,
 }
 
@@ -29,7 +28,6 @@ impl TimerRuntime {
         TimerRuntime {
             key: 0,
             wheel: BTreeMap::new(),
-            #[cfg(feature = "irq")]
             due_work_published: false,
         }
     }
@@ -62,7 +60,6 @@ impl TimerRuntime {
         self.wheel.remove(key);
     }
 
-    #[cfg(feature = "irq")]
     pub(crate) fn next_deadline(&self) -> Option<TimeValue> {
         if self.due_work_published {
             return None;
@@ -70,7 +67,6 @@ impl TimerRuntime {
         self.wheel.keys().next().map(|key| key.deadline)
     }
 
-    #[cfg(feature = "irq")]
     pub(crate) fn publish_due_work(&mut self, now: TimeValue) -> bool {
         self.due_work_published |= self
             .wheel
@@ -80,7 +76,6 @@ impl TimerRuntime {
         self.due_work_published
     }
 
-    #[cfg(feature = "irq")]
     pub(crate) fn finish_due_work(&mut self, now: TimeValue) -> bool {
         self.due_work_published = self
             .wheel
@@ -90,7 +85,6 @@ impl TimerRuntime {
         self.due_work_published
     }
 
-    #[cfg(feature = "irq")]
     pub(crate) fn expire_one(&mut self, now: TimeValue) -> Option<Waker> {
         let key = self
             .wheel
@@ -100,34 +94,12 @@ impl TimerRuntime {
     }
 }
 
-#[cfg(not(feature = "irq"))]
-percpu_static! {
-    FUTURE_TIMER_RUNTIME: TimerRuntime = TimerRuntime::new(),
-}
-
-#[cfg(not(feature = "irq"))]
-fn with_current_timer_runtime<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
-    let _guard = crate::sync::PreemptIrqSaveGuard::new();
-    // SAFETY: the guard prevents migration and IRQ/re-entry for the complete
-    // non-escaping mutable borrow.
-    unsafe {
-        ax_hal::percpu::with_cpu_pin(|pin| {
-            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
-                FUTURE_TIMER_RUNTIME.with_current_mut(exclusive, f)
-            })
-        })
-    }
-    .expect("future timer access requires an installed CPU-local area")
-}
-
-#[cfg(feature = "irq")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FutureTimerHandle {
     owner_cpu: usize,
     key: TimerKey,
 }
 
-#[cfg(feature = "irq")]
 impl FutureTimerHandle {
     pub(crate) const fn new(owner_cpu: usize, key: TimerKey) -> Self {
         Self { owner_cpu, key }
@@ -149,10 +121,8 @@ impl FutureTimerHandle {
 
 /// Future returned by `sleep` and `sleep_until`.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-#[cfg(feature = "irq")]
 pub struct TimerFuture(FutureTimerHandle);
 
-#[cfg(feature = "irq")]
 impl Future for TimerFuture {
     type Output = ();
 
@@ -161,31 +131,9 @@ impl Future for TimerFuture {
     }
 }
 
-#[cfg(feature = "irq")]
 impl Drop for TimerFuture {
     fn drop(&mut self) {
         crate::timers::cancel_future_timer(self.0);
-    }
-}
-
-/// Future returned by `sleep` and `sleep_until` when no timer IRQ is available.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-#[cfg(not(feature = "irq"))]
-pub struct TimerFuture(TimerKey);
-
-#[cfg(not(feature = "irq"))]
-impl Future for TimerFuture {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        with_current_timer_runtime(|runtime| runtime.poll(&self.0, cx))
-    }
-}
-
-#[cfg(not(feature = "irq"))]
-impl Drop for TimerFuture {
-    fn drop(&mut self) {
-        with_current_timer_runtime(|runtime| runtime.cancel(&self.0));
     }
 }
 
@@ -196,14 +144,8 @@ pub async fn sleep(duration: Duration) {
 
 /// Waits until the monotonic `deadline` is reached.
 pub async fn sleep_until(deadline: TimeValue) {
-    #[cfg(feature = "irq")]
     if let Some(handle) = crate::timers::register_future_timer(deadline) {
         TimerFuture(handle).await;
-    }
-
-    #[cfg(not(feature = "irq"))]
-    if let Some(key) = with_current_timer_runtime(|runtime| runtime.add(deadline)) {
-        TimerFuture(key).await;
     }
 }
 
@@ -259,7 +201,7 @@ fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
     }
 }
 
-#[cfg(all(test, feature = "irq"))]
+#[cfg(test)]
 mod timer_regression_tests {
     use super::*;
 

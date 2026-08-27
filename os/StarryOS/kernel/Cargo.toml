@@ -97,7 +97,6 @@ k230-kpu = ["ax-hal/xuantie-c9xx", "dep:k230-kpu"]
 vsock = ["ax-runtime/vsock"]
 dynamic_debug = ["ipi"]
 sg2002 = [
-    "ax-runtime/irq",
     "ax-driver/usb",
     "dep:rdif-pwm",
     "dep:sg2002-tpu",
@@ -141,15 +140,12 @@ ax-driver = { workspace = true, features = ["usb"] }
 axklib.workspace = true
 axplat-dyn.workspace = true
 ax-runtime = { workspace = true, features = [
-    "irq",
     "uspace",
-    "multitask",
     "rtc",
     "ext4fs",
     "net",
 ] }
 ax-task = { workspace = true, features = [
-    "multitask",
     "task-ext",
     "tracepoint-hooks",
     "sched-rr",
@@ -240,8 +236,6 @@ ax-std = { path = "../../arceos/ulib/axstd", default-features = false, features 
     "fd",
     "ext-ld",
     "fs",
-    "multitask",
-    "irq",
 ] }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]

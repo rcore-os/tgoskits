@@ -177,7 +177,7 @@ mod tests {
     use crate::task::{PidReservation, PidReservationKind, Tid};
     #[test]
     fn reaping_releases_process_owned_group_and_session_roles() {
-        let namespace = crate::task::new_test_pid_namespace();
+        let namespace = ROOT_PID_NS.clone();
         let identity = PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader)
             .unwrap()
             .publish()

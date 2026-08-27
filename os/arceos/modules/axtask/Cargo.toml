@@ -18,25 +18,11 @@ targets = [
 [features]
 default = []
 
-irq = ["ax-hal/irq", "dep:ax-timer-list"]
-ipi = ["irq", "ax-hal/ipi", "dep:ax-ipi"]
-multitask = [
-  "dep:axpoll",
-  "dep:ax-sched",
-  "dep:ax-cpumask",
-  "dep:ax-crate-interface",
-  "dep:futures-util",
-  "dep:ax-lazyinit",
-  "dep:ax-memory-addr",
-  "dep:ax-percpu",
-]
-preempt = ["irq"]
+ipi = ["ax-hal/ipi", "dep:ax-ipi"]
+preempt = []
 smp = []
-stack-guard-page = ["multitask", "dep:ax-alloc", "dep:ax-mm", "ax-hal/paging"]
-lockdep = [
-  "multitask",
-  "dep:axpanic",
-]
+stack-guard-page = ["dep:ax-alloc", "dep:ax-mm", "ax-hal/paging"]
+lockdep = ["dep:axpanic"]
 lock-api = ["dep:lock_api"]
 task-ext = ["dep:extern-trait"]
 tls = ["ax-hal/tls"]
@@ -45,35 +31,35 @@ tls = ["ax-hal/tls"]
 # that another crate (e.g. starry-kernel) must implement; otherwise the link
 # step will fail with an unresolved symbol. Pure ArceOS unikernels leave this
 # off and pay no cost.
-tracepoint-hooks = ["multitask"]
+tracepoint-hooks = []
 uspace = ["ax-hal/uspace"]
 
-sched-cfs = ["multitask", "preempt"]
-sched-rr = ["multitask", "preempt"]
+sched-cfs = ["preempt"]
+sched-rr = ["preempt"]
 
 host-test = [
   "ax-hal/host-test",
-  "ax-percpu?/host-test",
+  "ax-percpu/host-test",
 ]
 test = ["host-test"]
 
 [dependencies]
 ax-alloc = {workspace = true, optional = true}
-ax-cpumask = { workspace = true, optional = true }
-ax-crate-interface = {workspace = true, optional = true}
+ax-cpumask.workspace = true
+ax-crate-interface.workspace = true
 ax-hal.workspace = true
 ax-ipi = {workspace = true, optional = true}
-ax-lazyinit = {workspace = true, optional = true}
-ax-memory-addr = {workspace = true, optional = true}
+ax-lazyinit.workspace = true
+ax-memory-addr.workspace = true
 ax-mm = {workspace = true, optional = true}
-ax-percpu = {workspace = true, optional = true}
+ax-percpu.workspace = true
 axpanic = {workspace = true, optional = true}
-ax-sched = { workspace = true, optional = true }
-ax-timer-list = {workspace = true, optional = true}
-axpoll = {workspace = true, optional = true}
+ax-sched.workspace = true
+ax-timer-list.workspace = true
+axpoll.workspace = true
 cfg-if.workspace = true
 extern-trait = { workspace = true, optional = true }
-futures-util = {version = "0.3", default-features = false, optional = true, features = [
+futures-util = {version = "0.3", default-features = false, features = [
   "alloc",
   "async-await-macro",
 ]}

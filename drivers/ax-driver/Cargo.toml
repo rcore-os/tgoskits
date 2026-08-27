@@ -14,7 +14,6 @@ name = "ax_driver"
 default = []
 host-test = ["ax-sync?/host-test"]
 
-irq = []
 pci = ["dep:ax-sync", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
 
 block = ["dep:ax-sync", "dep:rdif-block"]

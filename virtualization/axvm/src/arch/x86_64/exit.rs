@@ -66,6 +66,7 @@ pub(crate) fn handle_io_write(
     );
     vm.try_write_device(&access, exit.data)
         .map_err(|error| AxVmError::device("write guest I/O port", error))?;
+    publish_pic_interrupt_if_needed(vm, vcpu.id(), exit.port)?;
     Ok(BoundVcpuExit::Continue)
 }
 
@@ -101,11 +102,23 @@ pub(crate) fn handle_io_string(
             let value = u64::from_le_bytes(bytes);
             vm.try_write_device(&access, value)
                 .map_err(|error| AxVmError::device("write guest string I/O port", error))?;
+            publish_pic_interrupt_if_needed(vm, vcpu.id(), port)?;
         }
     }
 
     vcpu.get_arch_vcpu().complete_port_io_string(exit)?;
     Ok(BoundVcpuExit::Continue)
+}
+
+fn publish_pic_interrupt_if_needed(vm: &crate::AxVM, vcpu_id: usize, port: Port) -> AxVmResult {
+    let port = x86_vlapic::X86Port::new(port.number());
+    if EmulatedPic::port_ranges()
+        .iter()
+        .any(|range| range.contains(port))
+    {
+        super::publish_pic_interrupt_after_write(vm, vcpu_id)?;
+    }
+    Ok(())
 }
 
 fn unmapped_port_value(width: AccessWidth) -> usize {

@@ -1,13 +1,19 @@
-//! Multi-block cached block device wrapper.
+//! Held-buffer block device wrapper.
 //!
-//! Wraps a [`BlockDevice`] with a fixed-size LRU cache (clock algorithm)
-//! of `CACHE_ENTRIES` blocks (4 blocks = 16 KiB with 4 KiB blocks).
-//! Each cache hit eliminates one QEMU virtio round-trip, which is the
-//! dominant cost on virtualized block devices.
+//! Wraps a [`BlockDevice`] with one held 4 KiB block — the buffer that
+//! backs the read-modify-write pattern used throughout rsext4, exposed
+//! through [`buffer()`] / [`buffer_mut()`].
 //!
-//! The active (most recently accessed) entry exposes its buffer through
-//! [`buffer()`] / [`buffer_mut()`] for the read-modify-write pattern
-//! used throughout rsext4.
+//! The held block was previously the active entry of a four-entry clock
+//! cache. The extra entries were retired once the shared block-layer
+//! cache below this crate began serving misses: larger private caches
+//! (≥5 entries) were known to keep stale metadata across journal replay
+//! (EUCLEAN checksum failures), and 2–4 bought nothing once a miss
+//! stopped reaching the device. Metadata capacity now lives in the
+//! block-layer cache; only the held buffer remains here.
+//!
+//! [`buffer()`]: BlockDev::buffer
+//! [`buffer_mut()`]: BlockDev::buffer_mut
 
 use super::{buffer::BlockBuffer, traits::BlockDevice};
 use crate::{
@@ -15,21 +21,12 @@ use crate::{
     error::{Ext4Error, Ext4Result},
 };
 
-/// Number of cached blocks. 4 blocks × 4 KiB = 16 KiB cache.
-///
-/// Limited to 4 entries: larger caches (≥5) cause stale metadata blocks to
-/// persist across journal replay and mount operations, triggering EUCLEAN
-/// checksum failures and subtract-overflow panics in CRC integrity tests.
-const CACHE_ENTRIES: usize = 4;
-
-/// One cache line: a 4 KiB data buffer plus housekeeping.
+/// One held cache line: a 4 KiB data buffer plus housekeeping.
 struct CacheLine {
-    /// The physical block number, or `None` if the slot is unused.
+    /// The physical block number, or `None` if no block is held.
     block_id: Option<AbsoluteBN>,
-    /// Whether the in-cache data differs from the on-disk copy.
+    /// Whether the held data differs from the on-disk copy.
     dirty: bool,
-    /// Clock eviction reference bit.
-    referenced: bool,
     /// The 4 KiB block buffer.
     buffer: BlockBuffer,
 }
@@ -39,35 +36,23 @@ impl CacheLine {
         Self {
             block_id: None,
             dirty: false,
-            referenced: false,
             buffer: BlockBuffer::new(),
         }
     }
-
-    fn is_empty(&self) -> bool {
-        self.block_id.is_none()
-    }
 }
 
-/// Multi-block cached block device wrapper used internally by the journal proxy.
+/// Held-buffer block device wrapper used internally by the journal proxy.
 pub(super) struct BlockDev<B: BlockDevice> {
     dev: B,
-    /// The cache lines.
-    entries: [CacheLine; CACHE_ENTRIES],
-    /// Index of the most recently accessed (active) entry.
-    active: usize,
-    /// Clock hand for the second-chance eviction policy.
-    clock: usize,
+    held: CacheLine,
 }
 
 impl<B: BlockDevice> BlockDev<B> {
-    /// Creates a new cached block device wrapper.
+    /// Creates a held-buffer block device wrapper.
     pub fn new(dev: B) -> Self {
         Self {
             dev,
-            entries: core::array::from_fn(|_| CacheLine::new()),
-            active: 0,
-            clock: 0,
+            held: CacheLine::new(),
         }
     }
 
@@ -75,72 +60,37 @@ impl<B: BlockDevice> BlockDev<B> {
         self.dev
     }
 
-    /// Creates a cached block device wrapper with a caller-provided buffer.
-    pub fn _with_buffer(dev: B, buffer: BlockBuffer) -> Ext4Result<Self> {
-        if buffer.len() < 512 {
-            return Err(Ext4Error::buffer_too_small(buffer.len(), 512));
-        }
-
-        let mut slf = Self::new(dev);
-        slf.entries[0].buffer = buffer;
-        Ok(slf)
-    }
-
-    /// Opens the underlying device.
-    pub fn _open(&mut self) -> Ext4Result<()> {
-        self.dev.open()
-    }
-
-    /// Flushes pending state and closes the underlying device.
-    pub fn _close(&mut self) -> Ext4Result<()> {
-        self.flush()?;
-        self.dev.close()
-    }
-
-    /// Reads one block into the cache and makes it the active entry.
+    /// Reads one block into the held buffer.
     ///
-    /// On a cache hit the active entry is updated with no device I/O.
-    /// On a miss the least recently used (clock) entry is recycled;
-    /// if it is dirty it is flushed first.
+    /// On a hit no device I/O happens; the read is served by the
+    /// block-layer cache beneath this wrapper. On a miss any pending
+    /// modification of the previously held block is written back first.
     pub fn read_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
-        // Cache hit — just mark referenced and make active.
-        for (i, entry) in self.entries.iter_mut().enumerate() {
-            if !entry.is_empty() && entry.block_id == Some(block_id) {
-                entry.referenced = true;
-                self.active = i;
-                return Ok(());
-            }
+        if self.held.block_id == Some(block_id) {
+            return Ok(());
         }
-
-        // Cache miss — find a victim via clock.
-        let idx = self.clock_evict()?;
-
-        // Read into the victim slot and make it the active entry.
+        self.flush_held()?;
         self.dev
-            .read(self.entries[idx].buffer.as_mut_slice(), block_id, 1)?;
-        self.entries[idx].block_id = Some(block_id);
-        self.entries[idx].dirty = false;
-        self.entries[idx].referenced = true;
-        self.active = idx;
+            .read(self.held.buffer.as_mut_slice(), block_id, 1)?;
+        self.held.block_id = Some(block_id);
+        self.held.dirty = false;
         Ok(())
     }
 
-    /// Writes the active buffer to the target block and marks it as the
-    /// active entry.
+    /// Writes the held buffer to the target block and keeps it held as
+    /// the clean copy of that block.
     pub fn write_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
         if self.dev.is_readonly() {
             return Err(Ext4Error::read_only());
         }
-
-        let active = &mut self.entries[self.active];
-        self.dev.write(active.buffer.as_slice(), block_id, 1)?;
-        active.block_id = Some(block_id);
-        active.dirty = false;
-        active.referenced = true;
+        self.dev.write(self.held.buffer.as_slice(), block_id, 1)?;
+        self.held.block_id = Some(block_id);
+        self.held.dirty = false;
         Ok(())
     }
 
-    /// Reads `count` blocks directly into `buffer` (bypasses the cache).
+    /// Reads `count` blocks directly into `buffer` (bypasses the held
+    /// block).
     pub fn read_blocks(
         &mut self,
         buffer: &mut [u8],
@@ -157,7 +107,8 @@ impl<B: BlockDevice> BlockDev<B> {
         self.dev.read(buffer, block_id, count)
     }
 
-    /// Writes `count` blocks directly from `buffer` (bypasses the cache).
+    /// Writes `count` blocks directly from `buffer` (bypasses the held
+    /// block, whose contents are refreshed if it overlaps the range).
     pub fn write_blocks(
         &mut self,
         buffer: &[u8],
@@ -177,17 +128,15 @@ impl<B: BlockDevice> BlockDev<B> {
 
         self.dev.write(buffer, block_id, count)?;
 
-        for off in 0..count {
-            let target = block_id.checked_add(off)?;
-            for entry in self.entries.iter_mut() {
-                if !entry.is_empty() && entry.block_id == Some(target) {
+        if let Some(held) = self.held.block_id {
+            for off in 0..count {
+                if held == block_id.checked_add(off)? {
                     let start = off as usize * block_size;
-                    entry
+                    self.held
                         .buffer
                         .as_mut_slice()
                         .copy_from_slice(&buffer[start..start + block_size]);
-                    entry.dirty = false;
-                    entry.referenced = true;
+                    self.held.dirty = false;
                     break;
                 }
             }
@@ -196,74 +145,83 @@ impl<B: BlockDevice> BlockDev<B> {
         Ok(())
     }
 
-    /// Returns the active buffer (read-only view of the last accessed block).
+    /// Returns the held buffer (read-only view of the last accessed
+    /// block).
     pub fn buffer(&self) -> &[u8] {
-        self.entries[self.active].buffer.as_slice()
+        self.held.buffer.as_slice()
     }
 
-    /// Returns the active buffer as mutable and marks the entry dirty.
+    /// Returns the held buffer as mutable and marks it dirty.
     pub fn buffer_mut(&mut self) -> &mut [u8] {
-        self.entries[self.active].dirty = true;
-        self.entries[self.active].buffer.as_mut_slice()
+        self.held.dirty = true;
+        self.held.buffer.as_mut_slice()
     }
 
-    /// Flushes dirty cached blocks, then invalidates all entries.
-    ///
-    /// Dirty entries are flushed first so metadata modifications made
-    /// via [`buffer_mut`] are never silently discarded.
-    pub fn invalidate_cache(&mut self) -> Ext4Result<()> {
-        for entry in self.entries.iter_mut() {
-            if entry.dirty && !entry.is_empty() {
-                let bid = entry.block_id.unwrap();
-                self.dev.write(entry.buffer.as_slice(), bid, 1)?;
-                entry.dirty = false;
-            }
-            entry.block_id = None;
-            entry.referenced = false;
+    /// Returns whether `block_id` is already backed by the held buffer.
+    pub(crate) fn holds_block(&self, block_id: AbsoluteBN) -> bool {
+        self.held.block_id == Some(block_id)
+    }
+
+    /// Returns the dirty held block so the journal can retain writeback ownership.
+    pub(crate) fn dirty_held_block_id(&self) -> Option<AbsoluteBN> {
+        if self.held.dirty {
+            self.held.block_id
+        } else {
+            None
         }
-        self.active = 0;
-        self.clock = 0;
+    }
+
+    /// Writes back the held block if dirty, then drops it.
+    ///
+    /// Dirty data is flushed first so modifications made via
+    /// [`buffer_mut`] are never silently discarded.
+    pub fn invalidate_cache(&mut self) -> Ext4Result<()> {
+        self.flush_held()?;
+        self.held.block_id = None;
         Ok(())
     }
 
-    /// Replaces cached block contents without writing to the device.
+    /// Replaces the held block contents without writing to the device.
     pub(crate) fn cache_clean_block(
         &mut self,
         block_id: AbsoluteBN,
         data: &[u8; crate::config::BLOCK_SIZE],
     ) -> Ext4Result<()> {
-        // Reuse an existing slot for this block, or pick a victim.
-        for (i, entry) in self.entries.iter_mut().enumerate() {
-            if !entry.is_empty() && entry.block_id == Some(block_id) {
-                entry.buffer.as_mut_slice().copy_from_slice(data);
-                entry.dirty = false;
-                entry.referenced = true;
-                self.active = i;
-                return Ok(());
-            }
-        }
-
-        // Not found — allocate a fresh slot via clock.
-        let idx = self.clock_evict()?;
-        self.entries[idx]
-            .buffer
-            .as_mut_slice()
-            .copy_from_slice(data);
-        self.entries[idx].block_id = Some(block_id);
-        self.entries[idx].dirty = false;
-        self.entries[idx].referenced = true;
+        // A dirty held block reaches the device before it is replaced.
+        self.flush_held()?;
+        self.held.buffer.as_mut_slice().copy_from_slice(data);
+        self.held.block_id = Some(block_id);
+        self.held.dirty = false;
         Ok(())
     }
 
-    /// Flushes all dirty cached blocks and the underlying device.
-    pub fn flush(&mut self) -> Ext4Result<()> {
-        for entry in self.entries.iter_mut() {
-            if entry.dirty && !entry.is_empty() {
-                self.dev
-                    .write(entry.buffer.as_slice(), entry.block_id.unwrap(), 1)?;
-                entry.dirty = false;
-            }
+    /// Transfers ownership of a dirty held block to the journal queue.
+    ///
+    /// The queue owns the pending snapshot of the same buffer, so a later
+    /// held-buffer miss must not write the block to its home location before
+    /// the journal transaction commits. A later edit transfers ownership again
+    /// after the journal refreshes that snapshot.
+    pub(crate) fn acknowledge_journaled_block(&mut self, block_id: AbsoluteBN) {
+        if self.held.block_id == Some(block_id) {
+            self.held.dirty = false;
         }
+    }
+
+    /// Refreshes an overlapping held block from a journaled bulk update.
+    pub(crate) fn acknowledge_journaled_block_with(
+        &mut self,
+        block_id: AbsoluteBN,
+        data: &[u8; crate::config::BLOCK_SIZE],
+    ) {
+        if self.held.block_id == Some(block_id) {
+            self.held.buffer.as_mut_slice().copy_from_slice(data);
+            self.held.dirty = false;
+        }
+    }
+
+    /// Writes back the held block if dirty, then flushes the device.
+    pub fn flush(&mut self) -> Ext4Result<()> {
+        self.flush_held()?;
         self.dev.flush()
     }
 
@@ -287,56 +245,21 @@ impl<B: BlockDevice> BlockDev<B> {
         &mut self.dev
     }
 
-    // ─── clock eviction ────────────────────────────────────────────
-
-    /// Finds a cache slot to reuse via the clock (second-chance) algorithm.
-    ///
-    /// Dirty victims are flushed before the slot is returned.  Returns
-    /// the index of the newly-allocated slot (which is also set as the
-    /// active entry).  The caller must fill the buffer.
-    fn clock_evict(&mut self) -> Ext4Result<usize> {
-        for _ in 0..(CACHE_ENTRIES * 2) {
-            let idx = self.clock;
-            self.clock = (self.clock + 1) % CACHE_ENTRIES;
-
-            // Borrow entries[idx] via index to avoid holding a ref across
-            // the potential write below.
-            if self.entries[idx].is_empty() {
-                self.active = idx;
-                return Ok(idx);
+    /// Writes the held block back to the device when it carries pending
+    /// modifications.
+    fn flush_held(&mut self) -> Ext4Result<()> {
+        if self.held.dirty {
+            let Some(block_id) = self.held.block_id else {
+                // A dirty line always has a block: `buffer_mut` is only
+                // reachable after `read_block`/`write_block` set one.
+                return Ok(());
+            };
+            if self.dev.is_readonly() {
+                return Err(Ext4Error::read_only());
             }
-
-            if self.entries[idx].referenced {
-                self.entries[idx].referenced = false;
-                continue;
-            }
-
-            // Unreferenced — flush if dirty, then recycle.
-            if self.entries[idx].dirty {
-                let bid = self.entries[idx].block_id.unwrap();
-                self.dev
-                    .write(self.entries[idx].buffer.as_slice(), bid, 1)?;
-                self.entries[idx].dirty = false;
-            }
-
-            self.entries[idx].block_id = None;
-            self.entries[idx].referenced = false;
-            self.active = idx;
-            return Ok(idx);
+            self.dev.write(self.held.buffer.as_slice(), block_id, 1)?;
+            self.held.dirty = false;
         }
-
-        // All entries referenced — fall back to the current clock slot.
-        let idx = self.clock;
-        self.clock = (self.clock + 1) % CACHE_ENTRIES;
-        if self.entries[idx].dirty {
-            let bid = self.entries[idx].block_id.unwrap();
-            self.dev
-                .write(self.entries[idx].buffer.as_slice(), bid, 1)?;
-            self.entries[idx].dirty = false;
-        }
-        self.entries[idx].block_id = None;
-        self.entries[idx].referenced = false;
-        self.active = idx;
-        Ok(idx)
+        Ok(())
     }
 }

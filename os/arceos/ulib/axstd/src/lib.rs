@@ -10,13 +10,13 @@
 //!     - `smp`: Enable SMP (symmetric multiprocessing) support.
 //!     - `fp-simd`: Enable floating point and SIMD support.
 //! - Interrupts:
-//!     - `irq`: Enable interrupt handling support.
+//!     - Interrupt handling is always available.
 //! - Memory
 //!     - `alloc`: Enable dynamic memory allocation.
 //!     - `paging`: Enable page table manipulation.
 //!     - `tls`: Enable thread-local storage.
 //! - Task management
-//!     - `multitask`: Enable multi-threading support.
+//!     - Multi-threading and timer-driven scheduling are always available.
 //!     - `sched-rr`: Use the Round-robin preemptive scheduler.
 //!     - `sched-cfs`: Use the Completely Fair Scheduler (CFS) preemptive scheduler.
 //! - Upperlayer stacks

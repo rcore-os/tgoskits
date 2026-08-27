@@ -28,7 +28,7 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
     if RECLAIM_IN_PROGRESS.swap(true, Ordering::AcqRel) {
         return 0;
     }
-    let _guard = ReclaimGuard;
+    let guard = ReclaimGuard;
 
     let mut reclaimed = 0;
     let target = num_pages.max(16) * 2;
@@ -61,6 +61,18 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
         if reclaimed >= target {
             break;
         }
+    }
+    drop(guard);
+
+    // The remaining quota goes to the block-layer cache trees; like the
+    // page cache above, only clean folios are reclaimable here.
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    if reclaimed < target {
+        let freed = crate::block::cache::reclaim_clean_folios(target - reclaimed);
+        if freed > 0 {
+            debug!("page_cache_reclaim: evicted {freed} clean block-cache folios");
+        }
+        reclaimed += freed;
     }
 
     if reclaimed > 0 {

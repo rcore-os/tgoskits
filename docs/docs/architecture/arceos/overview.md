@@ -69,10 +69,12 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 
 ### 必选模块
 
-无论应用选择哪些 feature，以下三个模块始终参与编译。它们构成了 ArceOS 的最小可运行骨架：能启动、能访问平台抽象、能输出日志。
+无论应用选择哪些 feature，以下模块始终参与编译。它们构成 ArceOS 的基础运行时：能启动、处理中断和定时器、调度任务、同步并输出日志。
 
 - `ax-runtime`：启动与初始化总控。
 - `ax-hal`：统一硬件抽象层。
+- `ax-task`：任务、调度、等待队列与 timer。
+- `ax-sync`：任务态同步原语。
 - `ax-log`：日志输出与格式化。
 
 ### 可选模块
@@ -83,8 +85,6 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | --- | --- | --- |
 | `ax-alloc` | `alloc` | 全局内存分配器（支持 TLSF、buddy-slab 等策略） |
 | `ax-mm` | `paging` | 地址空间与页表管理 |
-| `ax-task` | `multitask`、`smp` | 任务创建、调度（FIFO/RR/CFS）、sleep、wait queue |
-| `ax-sync` | `multitask` | mutex、信号量等同步原语 |
 | `ax-driver` | `ax-driver` | 设备探测与驱动初始化（virtio、AHCI、SDMMC 等） |
 | `ax-fs` | `fs` | 文件系统（FAT、ramfs、ext4） |
 | `ax-fs-ng` | `fs-ng` | 下一代文件系统（FAT、ext4，带 LRU 缓存） |
@@ -128,7 +128,7 @@ flowchart TD
     axstdAxfeat["ax-std or ax-runtime: 暴露统一 feature 开关"]
     runtimeGate["ax-runtime: 根据 feature 选择模块"]
     memPath["MemoryPath: alloc paging -> ax-alloc ax-mm"]
-    taskPath["TaskPath: multitask smp -> ax-task ax-sync"]
+    taskPath["TaskPath: baseline task/sync; optional smp and scheduler policy"]
     ioPath["IoPath: fs net display -> ax-driver + ax-fs ax-net ax-display"]
     platformInit["PlatformInit: ax-hal init_early/init_later"]
     finalImage["FinalImage: 编译得到目标镜像"]
@@ -149,15 +149,23 @@ flowchart TD
 
 ```toml
 [features]
-alloc = ["dep:ax-alloc"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
-multitask = ["ax-task/multitask"]
-smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
-irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
-fs = ["ax-driver", "dep:ax-fs"]
-net = ["ax-driver", "dep:ax-net"]
-display = ["ax-driver", "dep:ax-display"]
+smp = ["ax-hal/smp", "ax-task/smp"]
+fs = [
+  "paging",
+  "dep:ax-fs-ng",
+  "ax-fs-ng/vfs",
+  "dep:axfs-ng-vfs",
+  "dep:rdif-block",
+  "ax-driver/block",
+]
+net = ["paging", "dep:ax-net", "dep:rd-net", "ax-driver/net"]
+display = ["paging", "dep:ax-display", "ax-driver/display"]
 ```
+
+IRQ 与多任务不在映射表中：平台 IRQ framework、公共 dispatcher、per-CPU timer、
+任务调度和同步能力都是固定依赖。`smp`、`preempt`、调度算法、`ipi` 等仍保留
+各自独立的配置语义。
 
 DMA 是必编译基础能力：`dma-api` 提供 owned DMA 类型和约束检查，`axklib`
 提供平台 allocator/cache glue。设备驱动仍由各自 feature 选择；未启用
@@ -198,7 +206,7 @@ sequenceDiagram
 
 ### 任务与调度模型
 
-`ax-task` 是 ArceOS 并发模型的核心。`multitask` 打开前后，模块会走完全不同的实现路径；调度算法由 `multitask`、`sched-rr`、`sched-cfs` 等 feature 选择。
+`ax-task` 是 ArceOS 并发模型的核心，并且始终使用完整多任务实现。调度算法由默认策略、`sched-rr`、`sched-cfs` 等 feature 选择；不再存在单任务 busy-wait 或固定 PID 的兼容路径。
 
 ```mermaid
 stateDiagram-v2
@@ -214,7 +222,7 @@ stateDiagram-v2
 
 ## 启动流程
 
-ArceOS 的主入口位于 `ax_runtime::rust_main()`，从平台引导代码跳入后，按固定顺序建立运行时环境：先初始化 HAL 和日志，再建立内存和设备，接着启动调度器和 SMP，最后调用应用 `main()`。流程虽然固定，但每一步是否实际执行取决于对应 feature 是否启用。
+ArceOS 的主入口位于 `ax_runtime::rust_main()`，从平台引导代码跳入后，按固定顺序建立运行时环境。IRQ 与调度步骤无条件执行；内存、设备服务和 SMP 仍按各自能力配置。
 
 ```mermaid
 flowchart TD
@@ -224,11 +232,13 @@ flowchart TD
     allocInit["AllocInit: 初始化全局分配器"]
     backtraceInit["BacktraceInit: 初始化回溯范围"]
     mmInit["MmInit: 初始化地址空间与页表"]
-    deviceInit["DeviceInit: init_later + 驱动探测"]
-    serviceInit["ServiceInit: 文件系统 网络 显示 输入"]
+    platformInit["PlatformInit: init_later + boot IRQ probe"]
     taskInit["TaskInit: 初始化调度器"]
+    irqInit["IrqInit: dispatcher + per-CPU timer + enable"]
+    deviceInit["DeviceInit: 驱动探测"]
+    consoleInit["ConsoleInit: serial probe + handoff"]
+    serviceInit["ServiceInit: 文件系统 网络 显示 输入"]
     smpInit["SmpInit: 启动从核"]
-    irqInit["IrqInit: 注册定时器和中断处理"]
     ctorInit["CtorInit: 调用全局构造器"]
     appMain["AppMain: 调用应用 main"]
     shutdown["Shutdown: exit 或 system_off"]
@@ -238,22 +248,27 @@ flowchart TD
     logBanner --> allocInit
     allocInit --> backtraceInit
     backtraceInit --> mmInit
-    mmInit --> deviceInit
-    deviceInit --> serviceInit
-    serviceInit --> taskInit
-    taskInit --> smpInit
-    smpInit --> irqInit
-    irqInit --> ctorInit
+    mmInit --> platformInit
+    platformInit --> taskInit
+    taskInit --> irqInit
+    irqInit --> deviceInit
+    deviceInit --> consoleInit
+    consoleInit --> serviceInit
+    serviceInit --> smpInit
+    smpInit --> ctorInit
     ctorInit --> appMain
     appMain --> shutdown
 ```
 
-启动流程虽固定，但每一步是否执行取决于 feature：
+启动流程中的基础契约固定，只有独立子系统按 feature 选择：
 
 - 没有 `alloc` → 不初始化全局堆
 - 没有 `paging` → 不进入 `ax-mm::init_memory_management()`
-- 没有 `multitask` → 不初始化调度器，`main()` 返回后直接 `system_off()`
 - 没有 `fs`、`net`、`display` → 相应子系统不会初始化
+
+平台 boot IRQ probe、调度器、公共 IRQ dispatcher、per-CPU timer 注册和本地 IRQ
+enable 始终先于设备 probe；console handoff 始终先于 SMP。任何基础阶段失败都保持
+原有 panic/fail-close 语义，不回退到 no-IRQ 或单任务实现。
 
 ## 模块交互主线
 

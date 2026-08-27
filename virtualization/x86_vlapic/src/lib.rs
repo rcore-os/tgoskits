@@ -62,7 +62,7 @@ pub use self::{
         X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     },
     vioapic::{EmulatedIoApic, IoApicEoi, IoApicInterrupt},
-    vpic::EmulatedPic,
+    vpic::{EmulatedPic, PicInterruptClaim},
 };
 
 impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {

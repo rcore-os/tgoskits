@@ -10,7 +10,6 @@ extern crate ax_plat_macros;
 pub mod console;
 pub mod cpu;
 pub mod init;
-#[cfg(feature = "irq")]
 pub mod irq;
 pub mod mem;
 pub mod percpu;

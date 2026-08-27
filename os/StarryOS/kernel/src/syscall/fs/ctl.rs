@@ -891,15 +891,54 @@ pub fn sys_renameat2(
     Ok(0)
 }
 
+fn run_sync_stages<PageSync, RootSync, BlockSync>(
+    page_sync: PageSync,
+    root_sync: RootSync,
+    block_sync: BlockSync,
+) -> StarryResult<isize>
+where
+    PageSync: FnOnce() -> StarryResult<()>,
+    RootSync: FnOnce() -> StarryResult<()>,
+    BlockSync: FnOnce() -> StarryResult<()>,
+{
+    if let Err(error) = page_sync() {
+        warn!("sync(2) page-cache writeback failed: {error:?}");
+    }
+    if let Err(error) = root_sync() {
+        warn!("sync(2) root-filesystem writeback failed: {error:?}");
+    }
+    if let Err(error) = block_sync() {
+        warn!("sync(2) block-cache writeback failed: {error:?}");
+    }
+    // Linux sync(2) is a best-effort global operation and always reports
+    // success; writeback errors are observed through other durability APIs.
+    Ok(0)
+}
+
 pub fn sys_sync() -> StarryResult<isize> {
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
     // Write back ax-fs-ng page cache first, then flush filesystem metadata.
-    sync_all_cached_files(false)?;
-    ax_fs_ng::vfs::current_fs_context()
-        .lock()
-        .root_dir()
-        .sync(false)?;
-    Ok(0)
+    run_sync_stages(
+        || {
+            sync_all_cached_files(false)?;
+            Ok(())
+        },
+        || {
+            ax_fs_ng::vfs::current_fs_context()
+                .lock()
+                .root_dir()
+                .sync(false)?;
+            Ok(())
+        },
+        || {
+            // The root sync above only reaches the root filesystem's device path;
+            // write back block-cache dirt of every device (other partitions) and
+            // issue their flush barriers.
+            #[cfg(any(feature = "ext4", feature = "fat"))]
+            ax_fs_ng::sync_all_block_caches()?;
+            Ok(())
+        },
+    )
 }
 
 pub fn sys_syncfs(fd: c_int) -> StarryResult<isize> {
@@ -916,8 +955,45 @@ pub fn sys_syncfs(fd: c_int) -> StarryResult<isize> {
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
+    use core::cell::Cell;
+
+    use super::*;
+
     #[test]
     fn ctl_ioctl_constants_hold() {
-        assert!(super::ctl_ioctl_constants_hold_for_test());
+        assert!(ctl_ioctl_constants_hold_for_test());
+    }
+
+    #[test]
+    fn sync_attempts_every_stage_and_returns_success() {
+        let page_called = Cell::new(false);
+        let root_called = Cell::new(false);
+        let block_called = Cell::new(false);
+
+        let result = run_sync_stages(
+            || {
+                page_called.set(true);
+                Err(StarryError::Io)
+            },
+            || {
+                root_called.set(true);
+                Err(StarryError::ReadOnlyFilesystem)
+            },
+            || {
+                block_called.set(true);
+                Err(StarryError::NoMemory)
+            },
+        );
+
+        assert!(page_called.get());
+        assert!(
+            root_called.get(),
+            "root sync was skipped after a page-cache error"
+        );
+        assert!(
+            block_called.get(),
+            "global block-cache sync was skipped after an earlier error"
+        );
+        assert!(matches!(result, Ok(0)));
     }
 }

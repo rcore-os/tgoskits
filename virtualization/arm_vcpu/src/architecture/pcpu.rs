@@ -17,7 +17,10 @@ use core::mem;
 use aarch64_cpu::registers::*;
 
 use super::host::ArmHostOps;
-use crate::ArmVcpuResult;
+use crate::{
+    ArmVcpuResult,
+    enable::{EL2_ENABLE_STEPS, El2EnableStep},
+};
 
 /// Per-CPU AArch64 virtualization state.
 #[repr(C)]
@@ -61,15 +64,22 @@ impl ArmPerCpu {
         // Todo: take care of `preemption`
         self.original_vbar_el2 = VBAR_EL2.get();
 
-        // Set current `VBAR_EL2` to `exception_vector_base_vcpu`
-        // defined in this crate.
-        VBAR_EL2.set(exception_vector_base_vcpu as *const () as usize as _);
-
-        HCR_EL2.modify(
-            HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
-        );
-
-        super::host::install_current_el_irq_handler::<H>();
+        for step in EL2_ENABLE_STEPS {
+            match step {
+                El2EnableStep::InstallCurrentElIrqHandler => {
+                    super::host::install_current_el_irq_handler::<H>();
+                }
+                El2EnableStep::InstallExceptionVector => {
+                    VBAR_EL2.set(exception_vector_base_vcpu as *const () as usize as _);
+                }
+                El2EnableStep::SynchronizeContext => synchronize_context(),
+                El2EnableStep::EnableVirtualization => HCR_EL2.modify(
+                    HCR_EL2::VM::Enable
+                        + HCR_EL2::RW::EL1IsAarch64
+                        + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
+                ),
+            }
+        }
 
         // Note that `ICH_HCR_EL2` is not the same as `HCR_EL2`.
         //
@@ -112,5 +122,13 @@ impl ArmPerCpu {
     /// Returns the architectural counter frequency recorded on this CPU.
     pub const fn timer_frequency_hz(&self) -> u64 {
         self.timer_frequency_hz
+    }
+}
+
+fn synchronize_context() {
+    // SAFETY: `isb` only synchronizes subsequent instruction execution on the
+    // current CPU after the system-register updates performed here.
+    unsafe {
+        core::arch::asm!("isb", options(nostack, preserves_flags));
     }
 }

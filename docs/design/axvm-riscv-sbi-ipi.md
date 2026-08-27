@@ -109,6 +109,23 @@ guest target 公开 F/D 扩展，因此 HS-level `sstatus.FS` 的 reset 值为 `
 host/guest status 交换边界被污染；guest 内稍后出现浮点 illegal instruction，则需要检查
 guest ISA 与 reset FS 状态是否一致。两类问题都不能通过复制当前 host CSR 位来规避。
 
+## Sstc timer 所有权
+
+启用 `sstc` 时，`riscv_vcpu` 在 vCPU bind 阶段保存当前 hart 的完整 `henvcfg`，只为
+guest 执行窗口设置 `henvcfg.STCE`，并通过回读拒绝不支持该位的 hart。unbind 先保存并
+禁用 vCPU 自有的 `vstimecmp`，再恢复原始 host `henvcfg`。重复 bind/unbind 在触碰 live
+CSR 前返回 `BadState`，避免错误上下文覆盖 host 配置。
+
+Guest SBI timer 和 trapped `stimecmp` 写入只更新 vCPU 保存的 compare 以及当前绑定的
+`vstimecmp`；它们不调用 host SBI timer，也不修改物理 `sie.STIE`。因此 supervisor timer
+trap 始终作为 host external interrupt 返回，由 host IRQ/runtime 的 clockevent owner 处理，
+不会被转换为 guest VSTIP。未启用 `sstc` 时 timer programming 返回 `Unsupported`；未来若
+支持软件模拟，必须通过独立 runtime timer capability 注入，而不能借用 scheduler 的物理
+comparator。
+
+该边界通过 `riscv_vcpu` 的跨架构测试覆盖保存状态，通过 Axvisor RISC-V smoke 在真实
+H/Sstc 环境验证 guest timer 工作，并确认 host 调度器仍能收到 timer interrupt。
+
 ## 验证与回滚
 
 回归只保留 `linux-smp3-ipi.toml`，删除不再提供额外覆盖的 RISC-V QEMU 单核配置。三核

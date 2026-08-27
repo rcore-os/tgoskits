@@ -19,6 +19,7 @@ fn read_blocks_queues_the_next_bounded_window_before_waiting() {
             counters: Arc::clone(&counters),
             next_id: 0,
             pending: Vec::new(),
+            fail_next_drain: false,
         }),
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
@@ -99,5 +100,99 @@ fn read_blocks_queues_the_next_bounded_window_before_waiting() {
             .is_ok()
     );
     read_thread.join().unwrap();
+    assert_eq!(handle.shutdown(), 1);
+}
+
+#[test]
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn write_blocks_drains_submitted_windows_before_returning_error() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    install_dma_op(&TEST_DMA_OP);
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+
+    let counters = Arc::new(BatchingQueueCounters::default());
+    let controller = BatchingReadController {
+        queue: Some(BatchingReadQueue {
+            counters: Arc::clone(&counters),
+            next_id: 0,
+            pending: Vec::new(),
+            fail_next_drain: true,
+        }),
+    };
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(13));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "batching-write-error",
+        [BlockIrqSource { source_id: 0, irq }],
+        Box::new(controller),
+    ))
+    .unwrap();
+
+    let writer = Arc::clone(&handle);
+    let (result_tx, result_rx) = mpsc::channel();
+    let write_thread = thread::spawn(move || {
+        let buffer = vec![0x42; 8 * 512];
+        result_tx.send(writer.write_blocks(0, &buffer)).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while counters.submitted.load(Ordering::Acquire) < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "first write window was not submitted"
+        );
+        thread::yield_now();
+    }
+    while handle
+        .inner
+        .cpu_channels
+        .lock()
+        .iter()
+        .map(|channel| channel.channel.queued_len())
+        .sum::<usize>()
+        < 4
+    {
+        assert!(
+            Instant::now() < deadline,
+            "second write window was not queued"
+        );
+        thread::yield_now();
+    }
+
+    assert_eq!(
+        TEST_IRQ_REGISTRAR.run_registered_action(),
+        BlockIrqOutcome::Wake
+    );
+    while counters.submitted.load(Ordering::Acquire) < 8 {
+        assert!(
+            Instant::now() < deadline,
+            "second write window was not submitted"
+        );
+        thread::yield_now();
+    }
+    assert!(
+        result_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "write returned while an already submitted window was still in flight"
+    );
+
+    assert_eq!(
+        TEST_IRQ_REGISTRAR.run_registered_action(),
+        BlockIrqOutcome::Wake
+    );
+    assert!(matches!(
+        result_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        Err(BlockError::Device {
+            stage: "complete window",
+            operation: RequestOp::Write,
+            lba: 0,
+            source: BlkError::Io,
+        })
+    ));
+    write_thread.join().unwrap();
     assert_eq!(handle.shutdown(), 1);
 }
