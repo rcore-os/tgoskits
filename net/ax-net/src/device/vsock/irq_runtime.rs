@@ -124,7 +124,7 @@ impl VsockIrqRuntime {
         };
 
         control.command.store(COMMAND_START, Ordering::Release);
-        control.notify.notify_from_task();
+        control.notify.notify();
         wait_status(&control.startup_status);
         if control.startup_status.load(Ordering::Acquire) != STATUS_READY {
             let synchronized = release_registration(registration);
@@ -183,12 +183,8 @@ impl VsockWorkerNotification {
         }
     }
 
-    fn notify_from_irq(&self) {
+    fn notify(&self) {
         let _ = self.event.notify();
-    }
-
-    fn notify_from_task(&self) {
-        let _ = self.event.notify_from_task();
     }
 
     fn wait(&self, waiter: &IrqWorkerWaiter) {
@@ -221,13 +217,13 @@ impl VsockWorkerControl {
 
     fn schedule_irq(&self) {
         if !self.scheduled.swap(true, Ordering::AcqRel) {
-            self.notify.notify_from_irq();
+            self.notify.notify();
         }
     }
 
     fn schedule_task(&self) {
         if !self.scheduled.swap(true, Ordering::AcqRel) {
-            self.notify.notify_from_task();
+            self.notify.notify();
         }
     }
 
@@ -248,13 +244,13 @@ fn vsock_worker_main(
         control
             .affinity_status
             .store(STATUS_FAILED, Ordering::Release);
-        control.notify.notify_from_task();
+        control.notify.notify();
         return;
     }
     control
         .affinity_status
         .store(STATUS_READY, Ordering::Release);
-    control.notify.notify_from_task();
+    control.notify.notify();
 
     while control.command.load(Ordering::Acquire) == COMMAND_WAIT {
         control.notify.wait(&waiter);
@@ -276,7 +272,7 @@ fn vsock_worker_main(
         },
         Ordering::Release,
     );
-    control.notify.notify_from_task();
+    control.notify.notify();
     if !initialized {
         wait_for_cleanup(&control, &waiter);
         release_worker_resources(worker, irq_control, &control);
@@ -356,7 +352,7 @@ fn stop_worker(
         },
         Ordering::Release,
     );
-    control.notify.notify_from_task();
+    control.notify.notify();
     if let Err(error) = worker.join() {
         warn!("failed to join vsock IRQ worker: {error}");
     }

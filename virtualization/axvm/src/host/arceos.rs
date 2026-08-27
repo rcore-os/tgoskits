@@ -230,12 +230,8 @@ impl ArceOsIrqNotification {
         }
     }
 
-    pub(crate) fn notify_from_irq(&self) {
+    pub(crate) fn notify(&self) {
         let _result = self.event.notify();
-    }
-
-    pub(crate) fn notify_from_task(&self) {
-        let _result = self.event.notify_from_task();
     }
 
     pub(crate) fn wait(&self) {

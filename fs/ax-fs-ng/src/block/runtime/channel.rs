@@ -262,10 +262,6 @@ mod tests {
             self.publish();
         }
 
-        fn notify_from_irq(&self) {
-            self.publish();
-        }
-
         #[track_caller]
         fn wait(&self) {
             *self.entered_wait.lock().unwrap() += 1;

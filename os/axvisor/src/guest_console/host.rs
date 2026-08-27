@@ -236,7 +236,7 @@ impl HostOutput {
         drop(transaction_queue);
         drop(queue);
         if submitted {
-            self.ready.notify_from_task();
+            self.ready.notify();
         }
     }
 

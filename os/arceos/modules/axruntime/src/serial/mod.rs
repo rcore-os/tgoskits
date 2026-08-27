@@ -129,12 +129,8 @@ impl RuntimeIrqBridge {
         }
     }
 
-    fn notify_from_irq(&self) {
-        self.worker_signal.notify_from_irq();
-    }
-
-    fn notify_from_task(&self) {
-        self.worker_signal.notify_from_task();
+    fn notify(&self) {
+        self.worker_signal.notify();
     }
 
     fn take_register_retry(&self) -> bool {
@@ -194,7 +190,7 @@ fn try_enter_irq_registers<'a, E: ?Sized>(
         // fixed worker; it polls status and restores normal source ownership
         // after the bounded emergency transaction releases the gate.
         bridge.register_retry.store(true, Ordering::Release);
-        bridge.notify_from_irq();
+        bridge.notify();
     }
     guard
 }
@@ -378,15 +374,16 @@ impl SerialRuntimeHandle {
 
     pub fn start(&self, config: Config) -> RuntimeResult {
         self.shared.lifecycle.ensure_available()?;
-        self.shared.control.submit(ControlOp::Start(config), || {
-            self.shared.bridge.notify_from_task()
-        })
+        self.shared
+            .control
+            .submit(ControlOp::Start(config), || self.shared.bridge.notify())
     }
 
     pub fn shutdown(&self) -> RuntimeResult {
-        let result = self.shared.control.submit(ControlOp::Shutdown, || {
-            self.shared.bridge.notify_from_task()
-        });
+        let result = self
+            .shared
+            .control
+            .submit(ControlOp::Shutdown, || self.shared.bridge.notify());
         if result.is_ok() {
             deactivate_console(&self.shared);
         }
@@ -420,7 +417,7 @@ impl SerialRuntimeHandle {
         self.shared
             .control
             .submit(ControlOp::AdoptFirmwareConsole, || {
-                self.shared.bridge.notify_from_task()
+                self.shared.bridge.notify()
             })
     }
 
@@ -465,7 +462,7 @@ impl SerialRuntimeHandle {
             let _ = self.shutdown();
             return Err(error.into());
         }
-        self.shared.bridge.notify_from_task();
+        self.shared.bridge.notify();
         Ok(())
     }
 }
@@ -485,7 +482,7 @@ impl SerialTxSender {
         let accepted = self
             .shared
             .ingress
-            .try_write(bytes, || self.shared.bridge.notify_from_task());
+            .try_write(bytes, || self.shared.bridge.notify());
         if accepted == 0 {
             Err(RuntimeError::WouldBlock)
         } else {
@@ -509,7 +506,7 @@ impl SerialTxSender {
         self.write_all_with(bytes, |shared, remaining| {
             shared
                 .ingress
-                .try_write(remaining, || shared.bridge.notify_from_task())
+                .try_write(remaining, || shared.bridge.notify())
         })
     }
 
@@ -522,7 +519,7 @@ impl SerialTxSender {
         self.write_all_with(bytes, |shared, remaining| {
             shared
                 .ingress
-                .try_write_text(remaining, || shared.bridge.notify_from_task())
+                .try_write_text(remaining, || shared.bridge.notify())
         })
     }
 
@@ -553,7 +550,7 @@ pub(crate) struct SerialOutputBarrier {
 impl SerialOutputBarrier {
     fn new(shared: Arc<RuntimeShared>) -> Self {
         shared.log_barriers.fetch_add(1, Ordering::AcqRel);
-        shared.bridge.notify_from_task();
+        shared.bridge.notify();
         Self { shared }
     }
 
@@ -563,7 +560,7 @@ impl SerialOutputBarrier {
         self.shared.ensure_started()?;
         self.shared
             .control
-            .submit_drain(|| self.shared.bridge.notify_from_task())
+            .submit_drain(|| self.shared.bridge.notify())
     }
 
     /// Applies configuration before allowing worker log extraction to resume.
@@ -571,16 +568,14 @@ impl SerialOutputBarrier {
         self.shared.ensure_started()?;
         self.shared
             .control
-            .submit(ControlOp::SetConfig(config), || {
-                self.shared.bridge.notify_from_task()
-            })
+            .submit(ControlOp::SetConfig(config), || self.shared.bridge.notify())
     }
 }
 
 impl Drop for SerialOutputBarrier {
     fn drop(&mut self) {
         self.shared.log_barriers.fetch_sub(1, Ordering::AcqRel);
-        self.shared.bridge.notify_from_task();
+        self.shared.bridge.notify();
     }
 }
 
@@ -656,7 +651,7 @@ impl Drop for SerialLogSubscription {
             *available = Some(consumer);
         }
         self.shared.console_progress.notify_all();
-        self.shared.bridge.notify_from_task();
+        self.shared.bridge.notify();
     }
 }
 
@@ -711,9 +706,9 @@ impl SerialTaskOutput {
     pub fn discard_pending(&self) -> RuntimeResult {
         let _output = self.shared.tty_output_lock.lock();
         self.shared.ensure_started()?;
-        self.shared.control.submit(ControlOp::DiscardTx, || {
-            self.shared.bridge.notify_from_task()
-        })
+        self.shared
+            .control
+            .submit(ControlOp::DiscardTx, || self.shared.bridge.notify())
     }
 
     pub fn reconfigure(
@@ -746,7 +741,7 @@ impl SerialRxSubscription {
             .lock()
             .as_mut()
             .map_or(0, |consumer| consumer.drain(out));
-        notify_drained_space(count, || self.shared.bridge.notify_from_task());
+        notify_drained_space(count, || self.shared.bridge.notify());
         count
     }
 
@@ -771,9 +766,10 @@ impl SerialRxSubscription {
     pub fn discard_pending(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
         self.clear_pending();
-        let result = self.shared.control.submit(ControlOp::DiscardRx, || {
-            self.shared.bridge.notify_from_task()
-        });
+        let result = self
+            .shared
+            .control
+            .submit(ControlOp::DiscardRx, || self.shared.bridge.notify());
         self.clear_pending();
         result
     }
@@ -806,7 +802,7 @@ impl SerialRxSubscription {
         if let Some(consumer) = self.consumer.lock().as_mut() {
             consumer.clear();
         }
-        self.shared.bridge.notify_from_task();
+        self.shared.bridge.notify();
     }
 }
 
@@ -959,7 +955,7 @@ fn build_runtime(
                 mask_deferred_irq_rx(&mut *irq, event);
                 callback_stats.handled_irq(event);
                 callback_bridge.latch.publish(event);
-                callback_bridge.notify_from_irq();
+                callback_bridge.notify();
                 ax_hal::irq::IrqReturn::Handled
             }),
             primary_cpu,
@@ -1093,10 +1089,10 @@ pub(crate) fn try_publish_record(
         log_wake_ready,
     ) {
         RecordWakeContext::Interrupt => {
-            runtime.shared.bridge.notify_from_irq();
+            runtime.shared.bridge.notify();
         }
         RecordWakeContext::Task => {
-            runtime.shared.bridge.notify_from_task();
+            runtime.shared.bridge.notify();
         }
         RecordWakeContext::None => {}
     }
@@ -1231,7 +1227,7 @@ fn deactivate_console(shared: &RuntimeShared) {
         .is_ok()
     {
         shared.log_mailbox.release(shared.index);
-        shared.bridge.notify_from_task();
+        shared.bridge.notify();
     }
 }
 
@@ -1449,7 +1445,7 @@ mod tests {
     fn serial_work_is_coalesced_by_the_irq_doorbell() {
         let bridge = RuntimeIrqBridge::new();
 
-        bridge.notify_from_irq();
+        bridge.notify();
 
         assert!(bridge.worker_signal.is_pending());
     }

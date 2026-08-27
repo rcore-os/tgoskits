@@ -157,7 +157,7 @@ fn handle_raw_input_irq(
     published |= drain_raw_input(producer, runtime, ax_hal::console::read_bytes);
 
     if published || runtime.overflow.load(Ordering::Acquire) {
-        runtime.worker_signal.notify_from_irq();
+        runtime.worker_signal.notify();
     }
     ax_hal::irq::IrqReturn::Handled
 }

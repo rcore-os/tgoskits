@@ -374,7 +374,7 @@ impl ExecutorLease {
             },
             Ordering::Release,
         );
-        self.control.notify.notify_from_task();
+        self.control.notify.notify();
     }
 }
 
@@ -423,14 +423,14 @@ pub(super) fn queue_executor_main(
         control
             .affinity_status
             .store(STATUS_FAILED, Ordering::Release);
-        control.notify.notify_from_task();
+        control.notify.notify();
         quarantine_executor_resources(groups, wifi);
         return;
     }
     control
         .affinity_status
         .store(STATUS_READY, Ordering::Release);
-    control.notify.notify_from_task();
+    control.notify.notify();
 
     while control.command.load(Ordering::Acquire) == COMMAND_WAIT {
         control.notify.wait(&waiter);
@@ -451,7 +451,7 @@ pub(super) fn queue_executor_main(
         },
         Ordering::Release,
     );
-    control.notify.notify_from_task();
+    control.notify.notify();
     if !initialized {
         let irq_synchronized = wait_for_cleanup_command(&control, &waiter);
         release_executor_resources(groups, wifi, irq_synchronized);

@@ -237,7 +237,7 @@ impl PhysicalIrqBridge {
 
     fn stop_worker(&self) -> AxVmResult {
         self.shared.stopping.store(true, Ordering::Release);
-        self.shared.notify.notify_from_task();
+        self.shared.notify.notify();
         let worker = self.worker.lock_unpoisoned().take();
         worker
             .map_or(Ok(0), crate::host::task::join_thread)
@@ -325,7 +325,7 @@ impl PhysicalSourceBinding {
         {
             return false;
         }
-        self.shared.notify.notify_from_irq();
+        self.shared.notify.notify();
         true
     }
 

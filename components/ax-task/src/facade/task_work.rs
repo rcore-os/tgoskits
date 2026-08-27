@@ -118,41 +118,20 @@ pub(super) fn service_task_work_pass(
     }
 }
 
-/// Detaches one IRQ waiter and acquires the end of every in-flight notification.
+/// Detaches one IRQ waiter and waits out any in-flight notification claim.
 ///
-/// Linux PREEMPT_RT waits for non-hard irq-work completion through a sleepable
-/// completion edge. The IRQ cell follows the same ownership rule: a waiter
-/// that observes `Notifying` prepares a generation-checked scheduler park, and
-/// the notifier publishes `Draining` before issuing the completion wake. Only
-/// the hard notifier remains bounded and non-sleeping.
+/// Linux PREEMPT_RT owns hard irq-work completion through the BUSY claim: the
+/// executor clears it as its final access, and `irq_work_sync()` on the hard
+/// path busy-waits for that clear. The IRQ cell follows the same rule: the
+/// notifier's `Notifying` claim covers every access to the registration and
+/// its wake payload and publishes `Detached` last, so this quiesce step only
+/// waits for that publication before storage may be reused.
 ///
-/// Callers must invoke this in task context before reusing or releasing storage
-/// reachable through the matching [`IrqWaitRegistration`]. Hard-IRQ teardown
-/// must instead move the token or its drain state to a task-context worker.
+/// Callers must invoke this in task context before reusing or releasing
+/// storage reachable through the matching [`IrqWaitRegistration`]. Hard-IRQ
+/// teardown must instead move the token to a task-context worker.
 pub fn quiesce_irq_wait(token: IrqWaitToken<'_>) -> Result<(), TaskError> {
     validate_task_context()?;
-    let mut drain = token.detach();
-    loop {
-        if drain.is_quiescent() {
-            drain
-                .try_finish()
-                .expect("a quiescent IRQ wait drain must finish");
-            return Ok(());
-        }
-
-        let park = match begin_current_park()? {
-            CurrentParkStart::Notified => continue,
-            CurrentParkStart::Prepared(park) => park,
-        };
-        match drain.try_finish() {
-            Ok(()) => {
-                park.cancel()?;
-                return Ok(());
-            }
-            Err(in_flight) => {
-                drain = in_flight;
-                let _resume = park.commit()?;
-            }
-        }
-    }
+    token.detach().finish();
+    Ok(())
 }

@@ -66,11 +66,7 @@ impl RuntimeNotification {
         }
     }
 
-    fn publish_from_task(&self) {
-        let _result = self.event.notify_from_task();
-    }
-
-    fn publish_from_irq(&self) {
+    fn publish(&self) {
         let _result = self.event.notify();
     }
 
@@ -105,11 +101,7 @@ impl RuntimeNotification {
 
 impl BlockNotification for RuntimeNotification {
     fn notify(&self) {
-        self.publish_from_task();
-    }
-
-    fn notify_from_irq(&self) {
-        self.publish_from_irq();
+        self.publish();
     }
 
     #[track_caller]

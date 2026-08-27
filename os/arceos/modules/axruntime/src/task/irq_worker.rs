@@ -20,14 +20,10 @@ impl FixedIrqWorkerSignal {
         }
     }
 
-    /// Publishes work from hard IRQ without entering task-owned wait queues.
-    pub fn notify_from_irq(&self) {
+    /// Publishes work from task or hard IRQ context without entering
+    /// task-owned wait queues.
+    pub fn notify(&self) {
         let _result = self.doorbell.notify();
-    }
-
-    /// Publishes work from task or deferred context.
-    pub fn notify_from_task(&self) {
-        let _result = self.doorbell.notify_from_task();
     }
 
     /// Consumes one coalesced notification on the signal's fixed worker.

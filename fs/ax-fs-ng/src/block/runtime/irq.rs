@@ -237,7 +237,7 @@ fn publish_device_event(
         }
         let control_bits = if control_deferred { 0 } else { control.bits() };
         target.latch.publish(true, control_bits);
-        target.notification.notify_from_irq();
+        target.notification.notify();
         activated = true;
         control_deferred |= control_bits != 0;
     }
@@ -278,7 +278,7 @@ impl ControllerIrqTarget {
 
     fn publish_from_irq(&self, needs_rearm: bool, control_bits: u64) {
         self.latch.publish(needs_rearm, control_bits);
-        self.notification.notify_from_irq();
+        self.notification.notify();
     }
 
     pub(super) fn publish_from_task(&self, needs_rearm: bool, control_bits: u64) {
@@ -427,10 +427,6 @@ mod tests {
 
     impl BlockNotification for TestNotification {
         fn notify(&self) {
-            self.irq_notifications.fetch_add(1, Ordering::AcqRel);
-        }
-
-        fn notify_from_irq(&self) {
             self.irq_notifications.fetch_add(1, Ordering::AcqRel);
         }
 

@@ -10,11 +10,9 @@ use crate::{BlockError, BlockResult};
 
 /// Wait/notify object created and owned by the block runtime.
 pub trait BlockNotification: Send + Sync + 'static {
-    /// Publishes work from normal task context.
+    /// Publishes work from task or hard IRQ context without allocation or
+    /// sleeping.
     fn notify(&self);
-
-    /// Publishes work from hard IRQ context without allocation or sleeping.
-    fn notify_from_irq(&self);
 
     /// Blocks until a notification is pending and consumes that notification.
     #[track_caller]
@@ -154,10 +152,6 @@ mod tests {
 
     impl BlockNotification for TestNotification {
         fn notify(&self) {
-            self.publish();
-        }
-
-        fn notify_from_irq(&self) {
             self.publish();
         }
 

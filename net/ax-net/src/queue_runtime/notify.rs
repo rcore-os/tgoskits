@@ -14,12 +14,8 @@ impl QueueNotification {
         }
     }
 
-    pub(super) fn notify_from_irq(&self) {
+    pub(super) fn notify(&self) {
         let _result = self.event.notify();
-    }
-
-    pub(super) fn notify_from_task(&self) {
-        let _result = self.event.notify_from_task();
     }
 
     pub(super) fn wait(&self, waiter: &IrqWorkerWaiter) {

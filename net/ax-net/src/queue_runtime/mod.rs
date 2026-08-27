@@ -114,7 +114,7 @@ impl WifiControlQueue {
                 completion: Arc::clone(&completion),
             });
         }
-        notify.notify_from_task();
+        notify.notify();
         completion.wait()
     }
 
@@ -297,7 +297,7 @@ impl Drop for NetworkQueueRuntime {
     fn drop(&mut self) {
         for handle in self.wifi_handles.iter().rev() {
             handle.queue.stop();
-            handle.notify.notify_from_task();
+            handle.notify.notify();
         }
         let registrations = core::mem::take(&mut self.registrations);
         let irq_synchronized = release_registrations(registrations);
@@ -582,7 +582,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 .control
                 .command
                 .store(COMMAND_START, Ordering::Release);
-            executor.control.notify.notify_from_task();
+            executor.control.notify.notify();
         }
         for executor in &executors {
             wait_status(&executor.control.startup_status);

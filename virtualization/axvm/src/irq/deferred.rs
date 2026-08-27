@@ -60,7 +60,7 @@ impl DeferredVcpuKick {
         drop(worker);
         self.worker_started.store(true, Ordering::Release);
         if self.pending_vcpus.load(Ordering::Acquire) != 0 {
-            self.notify.notify_from_task();
+            self.notify.notify();
         }
         Ok(())
     }
@@ -81,7 +81,7 @@ impl DeferredVcpuKick {
         };
         self.pending_vcpus.fetch_or(bit, Ordering::Release);
         if self.worker_started.load(Ordering::Acquire) {
-            self.notify.notify_from_irq();
+            self.notify.notify();
         }
         Ok(())
     }
@@ -90,7 +90,7 @@ impl DeferredVcpuKick {
     pub(crate) fn stop(&self) -> AxVmResult {
         self.worker_started.store(false, Ordering::Release);
         self.stopping.store(true, Ordering::Release);
-        self.notify.notify_from_task();
+        self.notify.notify();
         let worker = self.worker.lock_unpoisoned().take();
         let join_result = worker.map_or(Ok(0), crate::host::task::join_thread);
         self.pending_vcpus.store(0, Ordering::Release);

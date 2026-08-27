@@ -2,11 +2,20 @@
 //!
 //! Multi-waiter events should target a fixed service thread through this cell;
 //! that thread performs any wait-queue fan-out in ordinary task context.
+//!
+//! The registration lifecycle follows Linux v7.1 `irq_work` ownership: the
+//! `Notifying` phase is the executor's `IRQ_WORK_BUSY` claim. It covers the
+//! direct wake, the cell-sentinel cleanup, and every other access to the
+//! registration and its wake payload, and the release publication back to
+//! `Detached` is the notifier's final action. A waiter that observes
+//! `Detached` for its generation owns the registration and its wake payload
+//! again, exactly like `irq_work_sync()` observing a cleared BUSY bit.
 
 use alloc::sync::Arc;
 use core::{
+    hint::spin_loop,
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
 use crate::ThreadWakeHandle;
@@ -22,7 +31,6 @@ enum RegistrationPhase {
     Detached  = 0,
     Attached  = 1,
     Notifying = 2,
-    Draining  = 3,
 }
 
 const fn registration_state(generation: u64, phase: RegistrationPhase) -> u64 {
@@ -67,7 +75,6 @@ fn registration_phase(state: u64) -> RegistrationPhase {
         0 => RegistrationPhase::Detached,
         1 => RegistrationPhase::Attached,
         2 => RegistrationPhase::Notifying,
-        3 => RegistrationPhase::Draining,
         _ => unreachable!("registration phase exceeds its bit mask"),
     }
 }
@@ -77,19 +84,10 @@ enum IrqWaitWake {
     Thread(ThreadWakeHandle),
 }
 
-#[derive(Clone, Copy)]
-enum WakeContext {
-    HardIrq,
-    Task,
-}
-
 impl IrqWaitWake {
-    fn wake(&self, context: WakeContext) -> crate::WakeResult {
+    fn wake(&self) -> crate::WakeResult {
         match self {
-            Self::Thread(wake) => match context {
-                WakeContext::HardIrq => wake.wake(),
-                WakeContext::Task => wake.wake_from_task(),
-            },
+            Self::Thread(wake) => wake.wake(),
         }
     }
 }
@@ -99,7 +97,6 @@ impl IrqWaitWake {
 struct IrqWaitNode {
     wake: IrqWaitWake,
     state: AtomicU64,
-    drain_wake_requested: AtomicBool,
 }
 
 impl IrqWaitNode {
@@ -107,7 +104,6 @@ impl IrqWaitNode {
         Self {
             wake,
             state: AtomicU64::new(registration_state(0, RegistrationPhase::Detached)),
-            drain_wake_requested: AtomicBool::new(false),
         }
     }
 
@@ -164,18 +160,23 @@ impl IrqWaitNode {
         generation
     }
 
-    fn finish_notification(&self, generation: u64, context: WakeContext) {
+    /// Releases the notification claim as the notifier's final node access.
+    ///
+    /// Linux `irq_work_single()` clears `IRQ_WORK_BUSY` only after the whole
+    /// callback has returned, and `irq_work_sync()` treats that clear as the
+    /// executor's last access to the work item. This transition carries the
+    /// same contract: a waiter that observes `Detached` for its generation
+    /// may reuse the registration and its wake payload because no notifier
+    /// touches them afterwards.
+    fn finish_notification(&self, generation: u64) {
         self.state
             .compare_exchange(
                 registration_state(generation, RegistrationPhase::Notifying),
-                registration_state(generation, RegistrationPhase::Draining),
+                registration_state(generation, RegistrationPhase::Detached),
                 Ordering::Release,
                 Ordering::Acquire,
             )
             .expect("IRQ wait notification generation changed while in flight");
-        if self.drain_wake_requested.swap(false, Ordering::AcqRel) {
-            let _ = self.wake.wake(context);
-        }
     }
 
     fn is_attached(&self, generation: u64) -> bool {
@@ -186,43 +187,7 @@ impl IrqWaitNode {
     fn is_quiescent(&self, generation: u64) -> bool {
         let state = self.state.load(Ordering::Acquire);
         registration_generation(state) != generation
-            || matches!(
-                registration_phase(state),
-                RegistrationPhase::Detached | RegistrationPhase::Draining
-            )
-    }
-
-    fn finish_drain(&self, generation: u64) -> bool {
-        let mut state = self.state.load(Ordering::Acquire);
-        loop {
-            if registration_generation(state) != generation {
-                return true;
-            }
-            match registration_phase(state) {
-                RegistrationPhase::Detached => return true,
-                RegistrationPhase::Attached | RegistrationPhase::Notifying => return false,
-                RegistrationPhase::Draining => {
-                    match self.state.compare_exchange_weak(
-                        state,
-                        registration_state(generation, RegistrationPhase::Detached),
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ) {
-                        Ok(_) => return true,
-                        Err(observed) => state = observed,
-                    }
-                }
-            }
-        }
-    }
-
-    fn request_drain_wake(&self, generation: u64) {
-        debug_assert_eq!(
-            registration_generation(self.state.load(Ordering::Acquire)),
-            generation,
-            "only the active IRQ wait generation may request its drain wake"
-        );
-        self.drain_wake_requested.store(true, Ordering::Release);
+            || registration_phase(state) == RegistrationPhase::Detached
     }
 }
 
@@ -252,12 +217,8 @@ pub struct IrqWaitRegistration {
 impl IrqWaitRegistration {
     /// Creates a detached registration reusable across one-shot waits.
     pub fn new(wake: ThreadWakeHandle) -> Self {
-        Self::from_wake(IrqWaitWake::Thread(wake))
-    }
-
-    fn from_wake(wake: IrqWaitWake) -> Self {
         Self {
-            node: Arc::new(IrqWaitNode::new(wake)),
+            node: Arc::new(IrqWaitNode::new(IrqWaitWake::Thread(wake))),
         }
     }
 }
@@ -284,7 +245,8 @@ impl IrqWaitToken<'_> {
     /// Returns whether the cell still owns this generation.
     ///
     /// Once this becomes false, a waiter may safely avoid sleeping. It does not
-    /// imply that an IRQ notifier has finished reading the wake payload.
+    /// imply that an IRQ notifier has finished reading the wake payload; only
+    /// the drain returned by [`Self::detach`] publishes that guarantee.
     pub fn is_attached(&self) -> bool {
         self.registration.is_attached(self.generation)
     }
@@ -292,9 +254,9 @@ impl IrqWaitToken<'_> {
     /// Stops publication of this generation and enters its drain lifetime.
     ///
     /// This operation never waits. If a notifier already removed the waiter,
-    /// the returned drain observes that notifier until its direct wake and cell
-    /// ownership publication have both finished. Task context may poll the
-    /// drain; hard-IRQ teardown must defer it to a task worker.
+    /// the returned drain observes that notifier until it publishes its claim
+    /// release; [`IrqWaitDrain::finish`] performs that bounded wait. Hard-IRQ
+    /// teardown must defer the drain to a task-context worker.
     pub fn detach(self) -> IrqWaitDrain {
         let cell = self.cell;
         cell.detach(self)
@@ -315,12 +277,12 @@ impl core::fmt::Debug for IrqWaitToken<'_> {
     }
 }
 
-/// Revoked IRQ registration waiting for its in-flight notification transaction.
+/// Revoked IRQ registration waiting out an in-flight notification claim.
 ///
-/// A drain no longer retains the cell: publication admission for its generation
-/// is already closed. It retains the reference-owned node until the hard-IRQ
-/// reader has left the trusted direct-wake operation and completed the cell's
-/// notification ownership transition.
+/// A drain never writes registration state. The notifier's `Notifying` claim
+/// covers every access to the node and its wake payload, and publishes
+/// `Detached` as its final action, so this type only needs to observe that
+/// publication before the registration may be reused.
 #[must_use = "an IRQ wait drain must finish before registration storage is reused"]
 pub struct IrqWaitDrain {
     registration: Arc<IrqWaitNode>,
@@ -328,30 +290,21 @@ pub struct IrqWaitDrain {
 }
 
 impl IrqWaitDrain {
-    /// Returns whether the notifier grace period has completed.
+    /// Reports whether the in-flight notifier has published its release.
     pub fn is_quiescent(&self) -> bool {
         self.registration.is_quiescent(self.generation)
     }
 
-    /// Consumes a completed drain, or requests a completion wake and returns it
-    /// while an IRQ notification is in flight.
+    /// Waits until the in-flight notifier has published its release.
     ///
-    /// This method never waits. A caller that receives the drain back must use
-    /// a generation-checked task park before retrying. Hard-IRQ paths must
-    /// defer reclamation instead.
-    pub fn try_finish(self) -> Result<(), Self> {
-        if self.registration.finish_drain(self.generation) {
-            Ok(())
-        } else {
-            self.registration.request_drain_wake(self.generation);
-            if self.registration.finish_drain(self.generation) {
-                self.registration
-                    .drain_wake_requested
-                    .store(false, Ordering::Release);
-                Ok(())
-            } else {
-                Err(self)
-            }
+    /// Every notifier section runs in hard IRQ or with preemption disabled,
+    /// so the claim always ends in bounded time. This is Linux's hard-path
+    /// `irq_work_sync()` shape (`while (irq_work_is_busy(work)) cpu_relax();`):
+    /// a park would require exactly the post-release completion wake that the
+    /// `Notifying`-covers-everything ownership rule removes.
+    pub fn finish(self) {
+        while !self.is_quiescent() {
+            spin_loop();
         }
     }
 }
@@ -381,7 +334,7 @@ pub enum IrqRegisterResult<'cell> {
     /// The task may abort its park once the token is detached, but it must
     /// quiesce the token before reusing the registration or wake payload.
     NotificationInFlight(IrqWaitToken<'cell>),
-    /// Another waiter is registered, or this registration is still draining.
+    /// Another waiter is registered, or this registration is still in use.
     Occupied,
 }
 
@@ -514,11 +467,21 @@ impl IrqWaitCell {
     /// the sticky pending state and may retain one harmless extra service pass
     /// after waking the displaced waiter. It never scans a wait queue or
     /// allocates.
+    ///
+    /// The whole claim-to-release section runs non-preemptible, mirroring
+    /// Linux's irq_work execution boundary: hard IRQ context is inherently
+    /// non-preemptible, and ordinary task context enters a preemption scope,
+    /// matching how `irq_workd` disables migration around the claim. This
+    /// bounds how long a draining waiter can observe a `Notifying` claim.
     pub fn notify(&self) -> IrqNotifyResult {
-        self.notify_with_context(WakeContext::HardIrq)
+        // SAFETY-free context probe: the runtime hook only reports the current
+        // interrupt state; the preemption scope below never nests into it.
+        let _preempt =
+            (!crate::runtime::task_runtime::in_hard_irq()).then(crate::lock::PreemptScope::enter);
+        self.notify_claimed()
     }
 
-    fn notify_with_context(&self, context: WakeContext) -> IrqNotifyResult {
+    fn notify_claimed(&self) -> IrqNotifyResult {
         let pending = pending_waiter();
         let notifying = notifying_waiter();
         let notifying_pending = notifying_pending_waiter();
@@ -579,13 +542,9 @@ impl IrqWaitCell {
                     // SAFETY: the successful CAS transferred the cell-owned
                     // raw reference to this notifier.
                     let registration = unsafe { take_cell_owner(waiter) };
-                    let (generation, result) = Self::wake_registration(&registration, context);
-                    // The direct wake may make the service thread runnable
-                    // immediately. Keep its registration in Notifying until
-                    // the cell sentinel is gone, so quiescence is the single
-                    // edge after which that thread may register again.
+                    let (generation, result) = Self::wake_registration(&registration);
                     self.finish_notification(result);
-                    registration.finish_notification(generation, context);
+                    registration.finish_notification(generation);
                     return Self::notification_result(result);
                 }
                 Err(current) => observed = current,
@@ -602,28 +561,9 @@ impl IrqWaitCell {
         // SAFETY: swap transferred the displaced cell-owned raw reference to
         // this notifier; null and the sentinel were rejected above.
         let registration = unsafe { take_cell_owner(waiter) };
-        let (generation, result) = Self::wake_registration(&registration, context);
-        registration.finish_notification(generation, context);
+        let (generation, result) = Self::wake_registration(&registration);
+        registration.finish_notification(generation);
         Self::notification_result(result)
-    }
-
-    /// Wakes the sole registered thread from ordinary task context.
-    ///
-    /// This preserves the same pending and registration lifetime protocol as
-    /// [`Self::notify`], while allowing the scheduler to activate a same-CPU
-    /// waiter directly. Callers must not invoke it from hard IRQ context.
-    pub fn notify_from_task(&self) -> IrqNotifyResult {
-        assert!(
-            !crate::runtime::task_runtime::in_hard_irq(),
-            "task IRQ-cell notification is not valid in hard IRQ context"
-        );
-        // Linux keeps the waiter metadata owner non-preemptible until the
-        // wake callback and wake-queue publication are both complete. Without
-        // the same boundary here, a same-CPU direct wake can run the waiter
-        // while this registration is still `Notifying`; that waiter then spins
-        // in its drain path waiting for the notifier it just preempted.
-        let _preempt = crate::lock::PreemptScope::enter();
-        self.notify_with_context(WakeContext::Task)
     }
 
     /// Reports whether an IRQ is coalesced for the next registration.
@@ -634,12 +574,9 @@ impl IrqWaitCell {
         )
     }
 
-    fn wake_registration(
-        registration: &IrqWaitNode,
-        context: WakeContext,
-    ) -> (u64, crate::WakeResult) {
+    fn wake_registration(registration: &IrqWaitNode) -> (u64, crate::WakeResult) {
         let generation = registration.begin_notification();
-        let result = registration.wake.wake(context);
+        let result = registration.wake.wake();
         (generation, result)
     }
 
@@ -731,10 +668,9 @@ mod loom_tests {
     const DETACHED_GENERATION_1: usize = 1 << 2;
     const ATTACHED_GENERATION_1: usize = DETACHED_GENERATION_1 | 1;
     const NOTIFYING_GENERATION_1: usize = DETACHED_GENERATION_1 | 2;
-    const DRAINING_GENERATION_1: usize = DETACHED_GENERATION_1 | 3;
-    const ATTACHED_GENERATION_2: usize = (2 << 2) | 1;
-    const NOTIFYING_GENERATION_2: usize = (2 << 2) | 2;
-    const DRAINING_GENERATION_2: usize = (2 << 2) | 3;
+    const DETACHED_GENERATION_2: usize = 2 << 2;
+    const ATTACHED_GENERATION_2: usize = DETACHED_GENERATION_2 | 1;
+    const NOTIFYING_GENERATION_2: usize = DETACHED_GENERATION_2 | 2;
 
     fn model_register_notify_winner() {
         loom::model(|| {
@@ -848,10 +784,12 @@ mod loom_tests {
                                     )
                                     .unwrap();
                                 wakes.fetch_add(1, Ordering::Release);
+                                // finish_notification(): the release is the
+                                // notifier's final node access.
                                 registration
                                     .compare_exchange(
                                         NOTIFYING_GENERATION_1,
-                                        DRAINING_GENERATION_1,
+                                        DETACHED_GENERATION_1,
                                         Ordering::Release,
                                         Ordering::Acquire,
                                     )
@@ -866,12 +804,6 @@ mod loom_tests {
 
             register.join().unwrap();
             notify.join().unwrap();
-            let _ = registration.compare_exchange(
-                DRAINING_GENERATION_1,
-                DETACHED_GENERATION_1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
             assert_eq!(
                 wakes.load(Ordering::Acquire) + synchronous_consumes.load(Ordering::Acquire),
                 1
@@ -881,7 +813,7 @@ mod loom_tests {
         });
     }
 
-    fn model_generation_drain_closes_pointer_aba() {
+    fn model_generation_release_closes_pointer_aba() {
         loom::model(|| {
             let waiter = Arc::new(AtomicUsize::new(WAITER));
             let registration = Arc::new(AtomicUsize::new(ATTACHED_GENERATION_1));
@@ -894,17 +826,17 @@ mod loom_tests {
                         .compare_exchange(WAITER, EMPTY, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok()
                     {
-                        let (attached, notifying, draining) =
+                        let (attached, notifying, detached) =
                             match registration.load(Ordering::Acquire) {
                                 ATTACHED_GENERATION_1 => (
                                     ATTACHED_GENERATION_1,
                                     NOTIFYING_GENERATION_1,
-                                    DRAINING_GENERATION_1,
+                                    DETACHED_GENERATION_1,
                                 ),
                                 ATTACHED_GENERATION_2 => (
                                     ATTACHED_GENERATION_2,
                                     NOTIFYING_GENERATION_2,
-                                    DRAINING_GENERATION_2,
+                                    DETACHED_GENERATION_2,
                                 ),
                                 state => panic!("IRQ removed a waiter in invalid state {state}"),
                             };
@@ -920,7 +852,7 @@ mod loom_tests {
                         registration
                             .compare_exchange(
                                 notifying,
-                                draining,
+                                detached,
                                 Ordering::Release,
                                 Ordering::Acquire,
                             )
@@ -932,6 +864,9 @@ mod loom_tests {
                 let waiter = Arc::clone(&waiter);
                 let registration = Arc::clone(&registration);
                 thread::spawn(move || {
+                    // detach(): removing the cell publication proves the
+                    // registration is still `Attached` for this generation,
+                    // so the cancel cannot observe a reused registration.
                     let observed = registration.load(Ordering::Acquire);
                     thread::yield_now();
                     if observed == ATTACHED_GENERATION_1
@@ -948,61 +883,118 @@ mod loom_tests {
                             )
                             .unwrap();
                     }
-                    let _ = registration.compare_exchange(
-                        DRAINING_GENERATION_1,
-                        DETACHED_GENERATION_1,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    );
+                    // The drain only observes the notifier's release; it
+                    // never writes registration state itself.
+                    while registration.load(Ordering::Acquire) == NOTIFYING_GENERATION_1 {
+                        thread::yield_now();
+                    }
+                    // Registration reuse happens strictly after the drain
+                    // finishes, on the same owner thread.
+                    if registration
+                        .compare_exchange(
+                            DETACHED_GENERATION_1,
+                            ATTACHED_GENERATION_2,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        waiter
+                            .compare_exchange(EMPTY, WAITER, Ordering::Release, Ordering::Acquire)
+                            .unwrap();
+                    }
                 })
             };
 
-            if registration
-                .compare_exchange(
-                    DETACHED_GENERATION_1,
-                    ATTACHED_GENERATION_2,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                waiter
-                    .compare_exchange(EMPTY, WAITER, Ordering::Release, Ordering::Acquire)
-                    .unwrap();
-            }
-
             notifier.join().unwrap();
             old_owner.join().unwrap();
-            let _ = registration.compare_exchange(
-                DRAINING_GENERATION_1,
-                DETACHED_GENERATION_1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-            if registration
-                .compare_exchange(
-                    DETACHED_GENERATION_1,
-                    ATTACHED_GENERATION_2,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                waiter
-                    .compare_exchange(EMPTY, WAITER, Ordering::Release, Ordering::Acquire)
-                    .unwrap();
-            }
             match registration.load(Ordering::Acquire) {
                 ATTACHED_GENERATION_2 => assert_eq!(waiter.load(Ordering::Acquire), WAITER),
-                DRAINING_GENERATION_2 => assert_eq!(waiter.load(Ordering::Acquire), EMPTY),
-                state => panic!("new generation ended in invalid state {state}"),
+                DETACHED_GENERATION_1 => assert_eq!(waiter.load(Ordering::Acquire), EMPTY),
+                state => panic!("registration ended in invalid state {state}"),
             }
         });
     }
 
+    /// Guards the Linux v7.1 `irq_work` ownership rule: the executor must not
+    /// touch the work item after publishing that it is no longer busy.
+    ///
+    /// The ghost `payload_epoch` stands in for the reusable
+    /// `ThreadWakeHandle` payload: the waiter may re-arm it (advance the
+    /// epoch) only after observing the notifier's release publication
+    /// (`Detached`, or a newer generation). Because the notifier reads the
+    /// payload strictly before publishing that release, no interleaving can
+    /// hand the payload to a new generation underneath an in-flight read.
+    fn model_notification_owns_payload_until_release_publication() {
+        loom::model(|| {
+            let slot = Arc::new(AtomicUsize::new(WAITER));
+            let registration = Arc::new(AtomicUsize::new(ATTACHED_GENERATION_1));
+            let payload_epoch = Arc::new(AtomicUsize::new(1));
+
+            let notifier = {
+                let slot = Arc::clone(&slot);
+                let registration = Arc::clone(&registration);
+                let payload_epoch = Arc::clone(&payload_epoch);
+                thread::spawn(move || {
+                    // notify(): claim the published waiter out of the cell.
+                    slot.compare_exchange(WAITER, EMPTY, Ordering::AcqRel, Ordering::Acquire)
+                        .unwrap();
+                    // begin_notification(): ATTACHED -> NOTIFIING (BUSY).
+                    registration
+                        .compare_exchange(
+                            ATTACHED_GENERATION_1,
+                            NOTIFYING_GENERATION_1,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .unwrap();
+                    // The direct wake reads its generation-owned payload while
+                    // the claim is held.
+                    assert_eq!(
+                        payload_epoch.load(Ordering::Acquire),
+                        1,
+                        "the direct wake must read its own generation's payload"
+                    );
+                    // finish_notification(): publishes Detached as the final
+                    // node access; the notifier touches nothing afterwards.
+                    registration
+                        .compare_exchange(
+                            NOTIFYING_GENERATION_1,
+                            DETACHED_GENERATION_1,
+                            Ordering::Release,
+                            Ordering::Acquire,
+                        )
+                        .unwrap();
+                })
+            };
+            let waiter = {
+                let registration = Arc::clone(&registration);
+                let payload_epoch = Arc::clone(&payload_epoch);
+                thread::spawn(move || {
+                    // quiesce_irq_wait(): reuse is permitted only after the
+                    // release publication is observed.
+                    while registration.load(Ordering::Acquire) == NOTIFYING_GENERATION_1 {
+                        thread::yield_now();
+                    }
+                    if registration.load(Ordering::Acquire) == DETACHED_GENERATION_1 {
+                        payload_epoch.store(2, Ordering::Release);
+                    }
+                })
+            };
+
+            notifier.join().unwrap();
+            waiter.join().unwrap();
+        });
+    }
+
     #[test]
-    fn registration_notify_and_generation_drain_are_race_safe() {
+    fn notification_owns_payload_until_release_publication() {
+        model_notification_owns_payload_until_release_publication();
+    }
+
+    #[test]
+    fn registration_notify_and_generation_release_are_race_safe() {
         model_register_notify_winner();
-        model_generation_drain_closes_pointer_aba();
+        model_generation_release_closes_pointer_aba();
     }
 }

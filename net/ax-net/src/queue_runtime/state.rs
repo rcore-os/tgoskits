@@ -110,7 +110,7 @@ impl PollGroupState {
             return;
         }
         if self.publish_schedule() {
-            self.notify.notify_from_irq();
+            self.notify.notify();
         }
     }
 
@@ -121,7 +121,7 @@ impl PollGroupState {
         // POLLING|MISSED rather than a fresh IDLE->SCHEDULED transition, but
         // the sleeping owner still needs a precise wakeup.
         if !self.is_disabled() {
-            self.notify.notify_from_task();
+            self.notify.notify();
         }
     }
 
@@ -234,7 +234,7 @@ impl PollGroupState {
 
     pub(super) fn disable(&self) {
         self.state.store(STATE_DISABLED, Ordering::Release);
-        self.notify.notify_from_task();
+        self.notify.notify();
     }
 
     pub(super) fn is_disabled(&self) -> bool {
