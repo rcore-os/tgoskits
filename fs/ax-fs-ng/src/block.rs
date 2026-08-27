@@ -276,7 +276,7 @@ impl FsBlockDevice for NativeHandleBlockDevice {
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
-        if self.is_read_only() {
+        if self.handle.device_info().read_only {
             return Err(BlockError::Unsupported);
         }
         self.handle.write_blocks(block_id, buf)

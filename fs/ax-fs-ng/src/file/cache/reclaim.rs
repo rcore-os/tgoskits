@@ -93,6 +93,7 @@ pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
 ///
 /// The removed `Arc` is dropped only after releasing the registry spin lock:
 /// destroying a cached file can take its sleepable page-cache lock.
+#[cfg(feature = "ext4")]
 pub(super) fn release_unlinked_cached_file(file: &Arc<CachedFileShared>) {
     let removed = {
         let mut registry = GLOBAL_CACHED_FILES.write();
