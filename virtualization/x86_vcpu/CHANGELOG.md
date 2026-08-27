@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.6.1...x86_vcpu-v0.6.2) - 2026-08-27
+
+### Other
+
+- *(axvm)* unify host timer ownership ([#2190](https://github.com/rcore-os/tgoskits/pull/2190))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.6.0...x86_vcpu-v0.6.1) - 2026-08-25
 
 ### Fixed

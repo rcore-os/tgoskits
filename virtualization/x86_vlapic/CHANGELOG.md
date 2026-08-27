@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.5.2...x86_vlapic-v0.5.3) - 2026-08-27
+
+### Fixed
+
+- *(virtualization)* port isolated interrupt controller fixes ([#2199](https://github.com/rcore-os/tgoskits/pull/2199))
+
+### Other
+
+- *(axvm)* unify host timer ownership ([#2190](https://github.com/rcore-os/tgoskits/pull/2190))
+
 ## [0.5.2](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.5.1...x86_vlapic-v0.5.2) - 2026-08-25
 
 ### Fixed

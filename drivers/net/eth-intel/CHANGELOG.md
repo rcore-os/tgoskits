@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/eth-intel-v0.2.0...eth-intel-v0.2.1) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/eth-intel-v0.1.13...eth-intel-v0.2.0) - 2026-08-20
 
 ### Added
