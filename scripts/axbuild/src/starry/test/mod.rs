@@ -2,6 +2,7 @@ mod args;
 mod assets;
 mod board;
 mod board_assets;
+mod nixos;
 mod qemu_discovery;
 mod qemu_run;
 mod suite;
@@ -11,7 +12,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use args::{ArgsTest, ArgsTestBoard, ArgsTestQemu, TestCommand};
+pub use args::{ArgsTest, ArgsTestBoard, ArgsTestNixos, ArgsTestQemu, TestCommand};
 pub(crate) use assets::starry_case_asset_config;
 pub(crate) use board::collect_board_test_groups;
 pub(in crate::starry) use board_assets::{
@@ -41,6 +42,7 @@ pub(super) async fn test(starry: &mut Starry, args: ArgsTest) -> anyhow::Result<
     match args.command {
         TestCommand::Qemu(args) => starry.test_qemu(args).await,
         TestCommand::Board(args) => starry.test_board(args).await,
+        TestCommand::Nixos(args) => nixos::run(starry, args).await,
     }
 }
 

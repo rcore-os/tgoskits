@@ -15,6 +15,10 @@ fn parse(args: impl IntoIterator<Item = &'static str>) -> Command {
     Cli::try_parse_from(args).unwrap().command
 }
 
+fn try_parse(args: impl IntoIterator<Item = &'static str>) -> Result<Command, clap::Error> {
+    Cli::try_parse_from(args).map(|cli| cli.command)
+}
+
 #[test]
 fn command_parses_test_qemu() {
     match parse(["starry", "test", "qemu", "--target", "x86_64"]) {
@@ -167,6 +171,54 @@ fn command_parses_test_qemu_with_target() {
         },
         _ => panic!("expected test command"),
     }
+}
+
+#[test]
+fn command_parses_test_nixos_list() {
+    match parse(["starry", "test", "nixos", "--list"]) {
+        Command::Test(args) => match args.command {
+            TestCommand::Nixos(args) => {
+                assert!(args.list);
+                assert_eq!(args.arch, None);
+                assert_eq!(args.test_case, None);
+            }
+            _ => panic!("expected nixos test command"),
+        },
+        _ => panic!("expected test command"),
+    }
+}
+
+#[test]
+fn command_parses_test_nixos_boot() {
+    match parse(["starry", "test", "nixos", "--arch", "x86_64", "-c", "boot"]) {
+        Command::Test(args) => match args.command {
+            TestCommand::Nixos(args) => {
+                assert!(!args.list);
+                assert_eq!(args.arch.as_deref(), Some("x86_64"));
+                assert_eq!(args.test_case.as_deref(), Some("boot"));
+            }
+            _ => panic!("expected nixos test command"),
+        },
+        _ => panic!("expected test command"),
+    }
+}
+
+#[test]
+fn command_rejects_test_nixos_without_case_selection() {
+    assert!(try_parse(["starry", "test", "nixos"]).is_err());
+    assert!(try_parse(["starry", "test", "nixos", "--arch", "x86_64"]).is_err());
+    assert!(try_parse(["starry", "test", "nixos", "-c", "boot"]).is_err());
+}
+
+#[test]
+fn command_rejects_unknown_nixos_case_and_architecture() {
+    assert!(try_parse(["starry", "test", "nixos", "--arch", "aarch64", "-c", "boot",]).is_err());
+    assert!(
+        try_parse([
+            "starry", "test", "nixos", "--arch", "x86_64", "-c", "unknown",
+        ])
+        .is_err()
+    );
 }
 
 #[test]
