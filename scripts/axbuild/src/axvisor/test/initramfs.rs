@@ -600,9 +600,9 @@ fn write_padding(writer: &mut impl Write, written: usize) -> anyhow::Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io::Read, path::Path};
     #[cfg(unix)]
     use std::process::Command;
+    use std::{fs, io::Read, path::Path};
 
     use flate2::read::GzDecoder;
     use ostool::run::qemu::QemuConfig;
