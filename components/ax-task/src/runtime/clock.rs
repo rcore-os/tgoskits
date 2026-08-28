@@ -94,6 +94,8 @@ impl MonotonicDeadline {
 pub struct RqClockSample {
     clock: crate::SchedulerTimestamp,
     hardirq_time_ns: u64,
+    frequency_capacity: u32,
+    cpu_capacity: u32,
 }
 
 impl RqClockSample {
@@ -102,7 +104,36 @@ impl RqClockSample {
         Self {
             clock,
             hardirq_time_ns,
+            frequency_capacity: 1_024,
+            cpu_capacity: 1_024,
         }
+    }
+
+    /// Adds Linux scheduler-capacity scaling for the sampled CPU.
+    ///
+    /// Both scales use `SCHED_CAPACITY_SCALE == 1024`. The current ArceOS
+    /// runtime uses the full-capacity default on fixed-frequency homogeneous
+    /// systems; a platform with frequency invariance can publish narrower
+    /// values through this constructor.
+    pub const fn with_capacity_scales(
+        clock: crate::SchedulerTimestamp,
+        hardirq_time_ns: u64,
+        frequency_capacity: u32,
+        cpu_capacity: u32,
+    ) -> Option<Self> {
+        if frequency_capacity == 0
+            || frequency_capacity > 1_024
+            || cpu_capacity == 0
+            || cpu_capacity > 1_024
+        {
+            return None;
+        }
+        Some(Self {
+            clock,
+            hardirq_time_ns,
+            frequency_capacity,
+            cpu_capacity,
+        })
     }
 
     /// Returns the corrected scheduler-clock value.
@@ -113,6 +144,16 @@ impl RqClockSample {
     /// Returns cumulative hard-interrupt time for the target CPU.
     pub const fn hardirq_time_ns(self) -> u64 {
         self.hardirq_time_ns
+    }
+
+    /// Returns Linux `arch_scale_freq_capacity()` units.
+    pub const fn frequency_capacity(self) -> u32 {
+        self.frequency_capacity
+    }
+
+    /// Returns Linux `arch_scale_cpu_capacity()` units.
+    pub const fn cpu_capacity(self) -> u32 {
+        self.cpu_capacity
     }
 }
 

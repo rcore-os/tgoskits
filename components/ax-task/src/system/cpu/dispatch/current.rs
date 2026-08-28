@@ -292,10 +292,15 @@ impl CurrentDispatch {
     /// Absolute Deadline release/deadline events live in `rq->clock` and are
     /// retained by the linked DL entity. They must never be compared with this
     /// `rq->clock_task` duration.
-    pub(crate) fn runtime_timer_delta_for(entity: &SchedulingEntity) -> Option<u64> {
+    pub(crate) fn runtime_timer_delta_for(
+        entity: &SchedulingEntity,
+        irq_util_avg: u32,
+    ) -> Option<u64> {
         match entity {
             SchedulingEntity::KernelStop => None,
-            SchedulingEntity::Fair(fair) => Some(fair.runtime_timer_delta_ns()),
+            SchedulingEntity::Fair(fair) => {
+                Some(fair.finish_runtime_deadline_delta_ns(irq_util_avg))
+            }
             SchedulingEntity::Fifo => None,
             SchedulingEntity::RoundRobin {
                 remaining_quantum_ns,

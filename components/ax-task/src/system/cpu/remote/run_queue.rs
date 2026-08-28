@@ -657,7 +657,11 @@ impl CpuRunQueueState {
             .linked_current_entity(current.thread())
             .or_else(|| current.owned_scheduling_entity_ref())
             .expect("current dispatch must have one rq-owned scheduling entity");
-        CurrentDispatch::runtime_timer_delta_for(entity)
+        let irq_util_avg = self
+            .clock
+            .snapshot()
+            .map_or(0, RunQueueClockSnapshot::irq_util_avg);
+        CurrentDispatch::runtime_timer_delta_for(entity, irq_util_avg)
     }
 
     /// Returns whether the current entity contributes a runtime clockevent.
@@ -677,7 +681,11 @@ impl CpuRunQueueState {
         let current_entity = self
             .current_scheduling_entity()
             .expect("current dispatch must have one rq-owned scheduling entity");
-        if CurrentDispatch::runtime_timer_delta_for(current_entity).is_none() {
+        let irq_util_avg = self
+            .clock
+            .snapshot()
+            .map_or(0, RunQueueClockSnapshot::irq_util_avg);
+        if CurrentDispatch::runtime_timer_delta_for(current_entity, irq_util_avg).is_none() {
             return false;
         }
         current_entity.fair().is_none_or(|_| self.has_fair())

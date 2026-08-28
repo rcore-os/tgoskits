@@ -1,5 +1,9 @@
 //! Runqueue-owned scheduler clock state.
 
+mod pelt;
+
+use pelt::IrqPelt;
+
 use crate::{SchedulerTimestamp, runtime::RqClockSample};
 
 /// One scheduler-clock sample accepted under the owning runqueue lock.
@@ -11,6 +15,7 @@ use crate::{SchedulerTimestamp, runtime::RqClockSample};
 pub(crate) struct RunQueueClockSnapshot {
     wall: SchedulerTimestamp,
     task: SchedulerTimestamp,
+    irq_util_avg: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,6 +44,10 @@ impl RunQueueClockSnapshot {
     pub(crate) const fn task(self) -> RqTaskTime {
         RqTaskTime(self.task)
     }
+
+    pub(crate) const fn irq_util_avg(self) -> u32 {
+        self.irq_util_avg
+    }
 }
 
 /// Cached scheduler clock serialized by one CPU runqueue lock.
@@ -51,6 +60,7 @@ pub(crate) struct RunQueueClock {
     wall: Option<SchedulerTimestamp>,
     task: Option<SchedulerTimestamp>,
     prev_irq_time_ns: u64,
+    irq_pelt: IrqPelt,
 }
 
 impl RunQueueClock {
@@ -59,6 +69,7 @@ impl RunQueueClock {
             wall: None,
             task: None,
             prev_irq_time_ns: 0,
+            irq_pelt: IrqPelt::new(),
         }
     }
 
@@ -68,9 +79,16 @@ impl RunQueueClock {
             self.wall = Some(source);
             self.task = Some(source);
             self.prev_irq_time_ns = sample.hardirq_time_ns();
+            self.irq_pelt.update(
+                source.as_nanos(),
+                0,
+                sample.frequency_capacity(),
+                sample.cpu_capacity(),
+            );
             return RunQueueClockSnapshot {
                 wall: source,
                 task: source,
+                irq_util_avg: self.irq_pelt.util_avg(),
             };
         };
 
@@ -78,7 +96,11 @@ impl RunQueueClock {
         // sample leaves both rq clocks and the IRQ accounting cursor intact.
         let delta = source.as_nanos().wrapping_sub(wall.as_nanos());
         if (delta as i64) < 0 {
-            return RunQueueClockSnapshot { wall, task };
+            return RunQueueClockSnapshot {
+                wall,
+                task,
+                irq_util_avg: self.irq_pelt.util_avg(),
+            };
         }
 
         let irq_delta = sample
@@ -88,9 +110,19 @@ impl RunQueueClock {
         self.prev_irq_time_ns = self.prev_irq_time_ns.wrapping_add(irq_delta);
         let wall = wall.advance(delta);
         let task = task.advance(delta - irq_delta);
+        self.irq_pelt.update(
+            wall.as_nanos(),
+            irq_delta,
+            sample.frequency_capacity(),
+            sample.cpu_capacity(),
+        );
         self.wall = Some(wall);
         self.task = Some(task);
-        RunQueueClockSnapshot { wall, task }
+        RunQueueClockSnapshot {
+            wall,
+            task,
+            irq_util_avg: self.irq_pelt.util_avg(),
+        }
     }
 
     /// Returns the last sample accepted by the runqueue owner.
@@ -102,6 +134,7 @@ impl RunQueueClock {
         Some(RunQueueClockSnapshot {
             wall: self.wall?,
             task: self.task?,
+            irq_util_avg: self.irq_pelt.util_avg(),
         })
     }
 }
@@ -157,6 +190,23 @@ mod tests {
 
         assert_eq!(snapshot.wall().as_nanos(), 160);
         assert_eq!(snapshot.task().as_nanos(), 140);
+    }
+
+    #[test]
+    fn runqueue_clock_publishes_owner_updated_irq_utilization() {
+        const PELT_PERIOD_NS: u64 = 1 << 20;
+
+        let mut clock = RunQueueClock::new();
+        clock.update(RqClockSample::new(SchedulerTimestamp::from_nanos(0), 0));
+        let snapshot = clock.update(RqClockSample::new(
+            SchedulerTimestamp::from_nanos(PELT_PERIOD_NS),
+            PELT_PERIOD_NS,
+        ));
+
+        assert_eq!(snapshot.wall().as_nanos(), PELT_PERIOD_NS);
+        assert_eq!(snapshot.task().as_nanos(), 0);
+        assert_eq!(snapshot.irq_util_avg(), 21);
+        assert_eq!(clock.snapshot(), Some(snapshot));
     }
 
     #[test]

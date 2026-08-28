@@ -5,7 +5,6 @@ use crate::{FairMode, Nice, TaskError};
 const BASE_WEIGHT: u64 = 1024;
 const MAX_VIRTUAL_DELTA: u64 = i64::MAX as u64;
 const MIN_HRTICK_DELTA_NS: u64 = 10_000;
-
 /// Returns the signed modular distance from `reference` to `value`.
 ///
 /// Linux compares EEVDF virtual time as `(s64)(a - b)`. Keeping every active
@@ -552,16 +551,38 @@ impl FairEntity {
     ///
     /// `vprot` only protects run-to-parity selection. Linux programs hrtick at
     /// `deadline - vruntime`; shortening protection after an enqueue must not
-    /// create an earlier physical timer deadline.
-    pub(crate) fn runtime_timer_delta_ns(self) -> u64 {
-        let delta_ns = self.remaining_request_ns;
-        if delta_ns == 0 {
-            0
-        } else {
-            delta_ns.max(MIN_HRTICK_DELTA_NS)
-        }
+    /// create an earlier physical timer deadline. The returned value is the
+    /// unscaled physical service represented by that virtual deadline. The
+    /// final physical delay retains Linux `hrtick_start()`'s 10 us floor.
+    pub(crate) fn runtime_deadline_delta_ns(self) -> u64 {
+        let virtual_delta = self.virtual_deadline.wrapping_sub(self.vruntime);
+        ((u128::from(self.load_weight()) * u128::from(virtual_delta)) / u128::from(BASE_WEIGHT))
+            .min(u128::from(u64::MAX)) as u64
     }
 
+    pub(crate) fn finish_runtime_deadline_delta_ns(self, irq_util_avg: u32) -> u64 {
+        finish_hrtick_delta_ns(self.runtime_deadline_delta_ns(), irq_util_avg)
+    }
+}
+
+fn finish_hrtick_delta_ns(delta_ns: u64, irq_util_avg: u32) -> u64 {
+    if delta_ns == 0 {
+        0
+    } else {
+        debug_assert!(irq_util_avg < BASE_WEIGHT as u32);
+        let scaled_delta = if irq_util_avg == 0 {
+            delta_ns
+        } else {
+            let scale = u128::from(BASE_WEIGHT) * u128::from(BASE_WEIGHT)
+                / u128::from(BASE_WEIGHT - u64::from(irq_util_avg));
+            (u128::from(delta_ns) * scale / u128::from(BASE_WEIGHT)).min(u128::from(u64::MAX))
+                as u64
+        };
+        scaled_delta.max(MIN_HRTICK_DELTA_NS)
+    }
+}
+
+impl FairEntity {
     /// Reports whether the active request has no service left.
     pub(crate) const fn request_exhausted(self) -> bool {
         self.remaining_request_ns == 0
@@ -655,10 +676,10 @@ mod tests {
         entity.set_slice_protection(Some(25_000));
 
         assert!(entity.slice_is_protected());
-        assert_eq!(entity.runtime_timer_delta_ns(), 100_000);
+        assert_eq!(entity.finish_runtime_deadline_delta_ns(0), 100_000);
         entity.charge(25_000, 0);
         assert!(!entity.slice_is_protected());
-        assert_eq!(entity.runtime_timer_delta_ns(), 75_000);
+        assert_eq!(entity.finish_runtime_deadline_delta_ns(0), 75_000);
     }
 
     #[test]
@@ -668,17 +689,33 @@ mod tests {
         entity.set_slice_protection(Some(25_000));
 
         assert_eq!(
-            entity.runtime_timer_delta_ns(),
+            entity.finish_runtime_deadline_delta_ns(0),
             100_000,
             "Linux hrtick expires at the EEVDF request deadline, not vprot"
         );
     }
 
     #[test]
-    fn fair_hrtick_never_arms_below_the_linux_minimum() {
+    fn fair_hrtick_clamps_a_sub_ten_microsecond_deadline_like_linux() {
         let entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1, 0);
 
-        assert_eq!(entity.runtime_timer_delta_ns(), 10_000);
+        assert_eq!(entity.finish_runtime_deadline_delta_ns(0), 10_000);
+    }
+
+    #[test]
+    fn fair_hrtick_converts_the_virtual_deadline_back_to_physical_time() {
+        let entity = FairEntity::new(Nice::new(-5).unwrap(), FairMode::Normal, 10_013, 0);
+
+        assert_eq!(entity.virtual_deadline(), 3_285);
+        assert_eq!(entity.runtime_deadline_delta_ns(), 10_012);
+        assert_eq!(entity.finish_runtime_deadline_delta_ns(0), 10_012);
+    }
+
+    #[test]
+    fn fair_hrtick_compensates_for_irq_utilization_after_weight_conversion() {
+        let entity = FairEntity::new(Nice::new(-5).unwrap(), FairMode::Normal, 10_013, 0);
+
+        assert_eq!(entity.finish_runtime_deadline_delta_ns(256), 13_346);
     }
 
     #[test]
