@@ -4192,6 +4192,36 @@ Linux 的约 3.36 倍；结合此前 task-lock 获取仅约 0.8k cycles 的 prob
 语义不是主要性能根因。后续继续分解每个真实 block/wake 中的 owner-rq settle、Fair delayed
 dequeue/pick、switch handoff 与 wake activation 固定成本，不回退本检查点。
 
+### 2026-08-29 周期 tick 原子移动 Fair lazy reschedule
+
+Linux v7.1 `__resched_curr()` 在普通 `TIF_NEED_RESCHED` 已存在时不再留下新的
+`TIF_NEED_RESCHED_LAZY`；`__schedule()` 完成一次实际选择后，
+`clear_tsk_need_resched()` 又以同一个 atomic-and-not 同时清除 ordinary 与 lazy 两个线程标志。
+旧 ax-task 的周期 tick promotion 只对请求字执行 `fetch_or(REQUEST_PREEMPT)`，没有消费被提升的
+`REQUEST_PREEMPT_LAZY`。随后的 Immediate 入口只清除 ordinary 位，旧 lazy 仍可在下一 tick 再次
+提升，或者被后续显式 `All` 调度入口当成新原因重复消费。这不是新的 Fair 请求，而是同一逻辑原因
+残留在两个请求类别中。
+
+确定性纯算法回归先发布一个 Lazy 请求，执行周期 tick promotion，再让 Immediate 调度入口 claim；
+旧实现稳定在后续 `All` claim 仍取得 preemption reason 的断言上失败。修复让 promotion 用一个
+AcqRel CAS 线性化地把已观察到的 Lazy 原子移动为 Immediate，同时保留 owner-work 与其他协议位；
+竞争发布发生在线性化点前时被当前 ordinary pass 覆盖，发生在该 pass claim 之后时则成为下一次
+独立 lazy 请求。相同回归随后转绿。测试源码和提交没有引入 host fake `TaskRuntime`；现有 host unit
+链接仍缺两个 runtime provider 符号，本地只用 `/tmp` 最小链接垫片执行这一纯 atomic 断言。
+
+相同未插桩 Starry process/20、true `-smp 1`、默认 tick 五轮为
+1.323/1.495/1.293/1.325/1.351 s，中位数 1.325 s；相对上一检查点 1.331 s 名义改善约 0.45%，
+仍为 Linux v7.1 PREEMPT_RT 0.396 s 的约 3.35 倍。同一代码和工作量把周期 tick 改为 1 s 后五轮为
+1.228/1.256/1.372/1.294/1.358 s，中位数 1.294 s，比默认 tick 低约 2.3%。因此该修复消除了一个
+确定的重复调度语义，但不是主性能根因；1 s tick 也再次证明 hackbench 进展不依赖 10 ms 周期 tick，
+默认周期 IRQ/抢占路径仍带来可测固定成本。按完成规则保留 Linux 语义对齐，后续继续检查每次默认
+clockevent 触发的 accounting、deadline derivation 与无效 scheduler entry，而不把 1 s 配置作为
+正式性能优化。
+
+质量验证中，ax-task 纯算法单元测试 104/104 通过；x86_64 ArceOS Rust QEMU
+`task-fair-wake-idle-sibling` 1/1 通过；`cargo xtask clippy --package ax-task` 的 5 个
+目标/特性组合以及 rustfmt、`git diff --check` 均通过。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

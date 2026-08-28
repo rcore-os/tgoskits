@@ -151,6 +151,28 @@ impl SchedulerRequestState {
         }
     }
 
+    fn promote_lazy(&self) -> bool {
+        let mut observed = self.request.load(Ordering::Acquire);
+        loop {
+            if observed & REQUEST_PREEMPT_LAZY == 0 {
+                return false;
+            }
+            // The tick turns the observed lazy reason into an ordinary one.
+            // Keeping both bits would let the ordinary scheduling pass clear
+            // only its own class and later consume the same reason again.
+            let promoted = (observed | REQUEST_PREEMPT) & !REQUEST_PREEMPT_LAZY;
+            match self.request.compare_exchange_weak(
+                observed,
+                promoted,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(updated) => observed = updated,
+            }
+        }
+    }
+
     fn defer_park_preemption(&self, request: SchedulerRequestClaim) {
         let mut deferred = 0;
         if request.immediate_preempt_requested() {
@@ -398,14 +420,7 @@ impl CpuRemote {
     /// The caller is the target CPU's timer owner, so no physical delivery is
     /// needed; IRQ return observes the newly published ordinary request.
     pub(crate) fn promote_lazy_reschedule(&self) -> bool {
-        let request = self.scheduler_request.request.load(Ordering::Acquire);
-        if request & REQUEST_PREEMPT_LAZY == 0 {
-            return false;
-        }
-        self.scheduler_request
-            .request
-            .fetch_or(REQUEST_PREEMPT, Ordering::AcqRel);
-        true
+        self.scheduler_request.promote_lazy()
     }
 
     pub(crate) fn finish_scheduler_request(&self) {
@@ -497,6 +512,22 @@ mod tests {
         assert_ne!(
             request.request.load(Ordering::Acquire) & REQUEST_PREEMPT_LAZY,
             0
+        );
+    }
+
+    #[test]
+    fn periodic_tick_moves_lazy_request_into_ordinary_class() {
+        let request = SchedulerRequestState::new();
+        assert!(request.publish(REQUEST_PREEMPT_LAZY).is_some());
+        assert!(request.promote_lazy());
+
+        let claim = request.claim(SchedulerRequestScope::Immediate);
+        assert!(claim.immediate_preempt_requested());
+        assert!(
+            !request
+                .claim(SchedulerRequestScope::All)
+                .preemption_requested(),
+            "the ordinary scheduling pass must consume the lazy reason promoted by this tick"
         );
     }
 
