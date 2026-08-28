@@ -123,6 +123,9 @@ impl CachedFile {
         operation: FileRangeOperation,
     ) -> VfsResult<()> {
         let file = self.inner.entry().as_file()?;
+        let _discard = super::DiscardTransitionGuard::try_enter(&self.shared.discard_transition)
+            .ok_or(VfsError::ResourceBusy)?;
+        self.retry_discarded_pages(file)?;
         let start_page = offset / PAGE_SIZE as u64;
         loop {
             let observed_len = self.shared.len();
@@ -176,7 +179,12 @@ impl CachedFile {
                     .collect::<Vec<_>>()
             };
             drop(io);
-            self.notify_discarded_pages(file, discarded)?;
+            if let Err((error, discarded)) = self.notify_discarded_pages(file, discarded) {
+                // The backing range and logical length are already committed.
+                // Keep the removed frames owned until every stale mapping is
+                // invalidated instead of reporting a rollback that did not occur.
+                self.retain_discarded_pages(error, discarded);
+            }
             return Ok(());
         }
     }

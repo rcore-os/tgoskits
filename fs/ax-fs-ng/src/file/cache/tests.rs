@@ -497,6 +497,45 @@ fn shifted_range_retries_when_a_page_is_cached_after_the_initial_snapshot() {
 }
 
 #[test]
+fn shifted_range_retains_discarded_page_until_listener_confirmation() {
+    with_test_page_provider(true, |provider| {
+        let backing = Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE * 2]));
+        let cached = reopen_cached_file(backing);
+        cached.with_page_or_insert(1, |_, _| Ok(())).unwrap();
+
+        let confirm = Arc::new(AtomicBool::new(false));
+        let confirm_listener = Arc::clone(&confirm);
+        cached.add_evict_listener(move |page_number, _| {
+            assert_eq!(page_number, 1);
+            confirm_listener.load(Ordering::Acquire)
+        });
+
+        assert_eq!(
+            cached.operate_range(
+                PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+                FileRangeOperation::InsertRange,
+            ),
+            Ok(()),
+            "the backing range operation is committed before mapping invalidation"
+        );
+        assert_eq!(
+            provider.dealloc_count(),
+            0,
+            "an unconfirmed shifted mapping must keep the old frame alive"
+        );
+
+        confirm.store(true, Ordering::Release);
+        cached.set_len(cached.len()).unwrap();
+        assert_eq!(
+            provider.dealloc_count(),
+            1,
+            "the retained frame must be released exactly once after confirmation"
+        );
+    });
+}
+
+#[test]
 fn truncate_retains_discarded_page_until_listener_confirmation() {
     with_test_page_provider(true, |provider| {
         let backing = Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE * 2]));
