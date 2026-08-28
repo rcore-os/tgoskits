@@ -254,6 +254,63 @@ impl TaskSystem {
         }
     }
 
+    /// Lets the selected Linux-style ILB coordinate one Fair pull for every
+    /// CPU still published in the root-domain idle mask.
+    ///
+    /// The coordinator only reserves target-owned request nodes and publishes
+    /// them to source owners. Source and target runqueues remain private to
+    /// their owners; a failed or stale request ends this NOHZ pass instead of
+    /// kicking the target into an immediate retry loop.
+    pub(super) fn request_fair_nohz_idle_pulls(&self) -> bool {
+        let mut requested = false;
+        for (index, target_remote) in self.cpu_remotes.iter().enumerate() {
+            let target = CpuId::new(index as u32);
+            if !self.root_domain.fair_nohz_idle_target(target)
+                || !target_remote.accepts_placement()
+                || !target_remote.is_scheduler_ready()
+            {
+                continue;
+            }
+            requested |= self.request_fair_nohz_idle_pull(target, target_remote);
+        }
+        requested
+    }
+
+    fn request_fair_nohz_idle_pull(&self, target: CpuId, target_remote: &CpuRemote) -> bool {
+        let reservation = match target_remote.begin_idle_pull() {
+            IdlePullReservation::Started(reservation) => reservation,
+            IdlePullReservation::AlreadyPending => return true,
+            IdlePullReservation::Busy => return false,
+        };
+        if !self.root_domain.fair_nohz_idle_target(target)
+            || !target_remote.accepts_placement()
+            || !target_remote.is_scheduler_ready()
+        {
+            target_remote.cancel_idle_pull(reservation);
+            return false;
+        }
+        let Some(source) = self
+            .root_domain
+            .find_unvisited_fair_idle_pull_source(target)
+        else {
+            target_remote.cancel_idle_pull(reservation);
+            return false;
+        };
+        let Some(source_remote) = self.cpu_remote(source) else {
+            target_remote.cancel_idle_pull(reservation);
+            return false;
+        };
+        let message =
+            InboxMessage::balance_request(source, target, reservation, SchedulingClass::Fair);
+        match source_remote.publish_owner_control(target_remote.balance_request_node(), message) {
+            PublishResult::Published => true,
+            PublishResult::AlreadyPending | PublishResult::WrongKind => {
+                target_remote.cancel_idle_pull(reservation);
+                false
+            }
+        }
+    }
+
     /// Pushes one queued thread from an overloaded owner to the least loaded CPU.
     ///
     /// Selection and dequeue happen only on `cpu`; the target receives an

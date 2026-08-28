@@ -373,16 +373,15 @@ impl TaskSystem {
         }
         let idle = cpu.remote().idle_thread() == Some(next);
         let idle_pull_pending = idle
-            && ((cpu.idle_pull_pending()
-                // Linux `sched_balance_newidle()` skips the pass when the root
-                // domain has no overloaded source. Keep the one-shot armed so
-                // a later source publication can drive the real pull.
-                && self.root_domain.has_idle_pull_source())
-                // Linux keeps `NOHZ_BALANCE_KICK` separate from idle-mask
-                // membership. A consumed or empty new-idle pass must not make
-                // a later remote kick disappear.
-                || self.root_domain.fair_balance_kick_pending(cpu.owner()));
-        if idle_pull_pending || cpu.fair_balance_pending() {
+            && cpu.idle_pull_pending()
+            // Linux `sched_balance_newidle()` skips the pass when the root
+            // domain has no overloaded source. Keep the one-shot armed so a
+            // later source publication can drive the real pull.
+            && self.root_domain.has_idle_pull_source();
+        if idle_pull_pending
+            || cpu.fair_balance_pending()
+            || self.root_domain.fair_nohz_balancer_pending(cpu.owner())
+        {
             return true;
         }
         rt_deadline_balance_work_pending(self.root_domain.push_target_pending(cpu.owner()))
@@ -397,14 +396,18 @@ impl TaskSystem {
         let class_pull_required = idle
             && (self.root_domain.cpu_has_rt_deadline_overload(cpu.owner())
                 || self.root_domain.push_target_pending(cpu.owner()));
-        let nohz_pull_required = idle && self.root_domain.take_fair_balance_kick(cpu.owner());
-        let idle_pull_required = idle
-            && (cpu.as_mut().take_idle_pull_pending() || nohz_pull_required || class_pull_required);
+        let idle_pull_required =
+            idle && (cpu.as_mut().take_idle_pull_pending() || class_pull_required);
+        let fair_nohz_claim = self.root_domain.claim_fair_nohz_balancer(cpu.owner());
         let push_claim = self.root_domain.claim_rt_deadline_push(cpu.owner());
+        let mut fair_nohz_serviced = false;
         let balance = (|| -> Result<(Option<ThreadId>, Option<ThreadId>), TaskError> {
             if idle {
                 if idle_pull_required {
                     let _requested = self.request_idle_pull(cpu.as_mut())?;
+                }
+                if fair_nohz_claim.is_some() {
+                    fair_nohz_serviced = self.request_fair_nohz_idle_pulls();
                 }
                 let fair = self.balance_fair(cpu.as_mut())?;
                 Ok((None, fair))
@@ -420,12 +423,19 @@ impl TaskSystem {
         let (pushed, fair) = match balance {
             Ok(outcome) => outcome,
             Err(error) => {
+                if let Some(claim) = fair_nohz_claim {
+                    self.root_domain.finish_fair_nohz_balancer(claim, false);
+                }
                 if let Some(claim) = push_claim {
                     self.root_domain.finish_rt_deadline_push(claim, false);
                 }
                 return Err(error);
             }
         };
+        if let Some(claim) = fair_nohz_claim {
+            self.root_domain
+                .finish_fair_nohz_balancer(claim, fair_nohz_serviced);
+        }
         if let Some(claim) = push_claim {
             self.root_domain
                 .finish_rt_deadline_push(claim, pushed.is_some());
@@ -450,6 +460,7 @@ impl TaskSystem {
         }
         self.ensure_owner_cpu_online(&cpu)?;
         let source = cpu.owner();
+        self.root_domain.kick_fair_nohz_balance_if_source(source);
         let source_demand = cpu.remote().placement_demand();
         let result = {
             let lower_load_target_seen =

@@ -1,12 +1,16 @@
 //! Linux-style root-domain topology, priority indexes, and Deadline bandwidth ownership.
 
+mod fair_nohz;
 mod rt_bandwidth;
 
 use core::{
     cmp::Reverse,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
+
+use fair_nohz::RootDomainFairNoHz;
+pub(in crate::system::task_system) use fair_nohz::RootDomainFairNoHzClaim;
 
 use super::*;
 use crate::{DEADLINE_UTILIZATION_SCALE, RootRtBandwidth, RtPriority, lock::PreemptTicketGuard};
@@ -31,100 +35,6 @@ pub(super) struct RootDomain {
     runqueues: Vec<Arc<CpuRemote>>,
     rt_bandwidth: Arc<RootRtBandwidth>,
     deadline_max_bw_scaled: u64,
-}
-
-/// Linux `nohz.idle_cpus_mask` and the Fair sources which can feed it.
-///
-/// Source and target publication use sequential consistency deliberately. A
-/// source becoming pushable and a CPU selecting idle form a two-sided wakeup
-/// handshake: whichever publication is second must observe the first and
-/// either kick the idle owner or run new-idle balance locally. Acquire/Release
-/// on two independent atomics would permit both sides to observe the old state.
-#[derive(Debug)]
-struct RootDomainFairNoHz {
-    pushable_sources: Vec<AtomicBool>,
-    idle_targets: Vec<AtomicBool>,
-    balance_kicks: Vec<AtomicBool>,
-    #[cfg(test)]
-    source_publication_writes: Vec<AtomicUsize>,
-}
-
-impl RootDomainFairNoHz {
-    fn new(cpu_count: usize) -> Self {
-        Self {
-            pushable_sources: (0..cpu_count).map(|_| AtomicBool::new(false)).collect(),
-            idle_targets: (0..cpu_count).map(|_| AtomicBool::new(false)).collect(),
-            balance_kicks: (0..cpu_count).map(|_| AtomicBool::new(false)).collect(),
-            #[cfg(test)]
-            source_publication_writes: (0..cpu_count).map(|_| AtomicUsize::new(0)).collect(),
-        }
-    }
-
-    fn publish_source(&self, cpu: CpuId, pushable: bool) -> bool {
-        let source = &self.pushable_sources[cpu.as_usize()];
-        // The rq owner is the sole online writer of its source bit. CPU
-        // offline publication runs only after that owner is quiescent, so an
-        // unordered load can filter unchanged commits without weakening the
-        // SeqCst source/idle-target handshake on a real edge.
-        if source.load(Ordering::Relaxed) == pushable {
-            return false;
-        }
-        #[cfg(test)]
-        self.source_publication_writes[cpu.as_usize()].fetch_add(1, Ordering::Relaxed);
-        source.store(pushable, Ordering::SeqCst);
-        pushable
-    }
-
-    #[cfg(test)]
-    fn source_publication_writes(&self, cpu: CpuId) -> usize {
-        self.source_publication_writes[cpu.as_usize()].load(Ordering::Relaxed)
-    }
-
-    fn publish_idle_target(&self, cpu: CpuId, idle: bool) {
-        // The owning scheduler is the sole writer of its own idle-target bit,
-        // so an unordered load filters unchanged publications. The store keeps
-        // the SeqCst NOHZ handshake: a racing Fair source must observe an
-        // idle-entry publication together with the armed one-shot pull.
-        if self.idle_targets[cpu.as_usize()].load(Ordering::Relaxed) == idle {
-            return;
-        }
-        self.idle_targets[cpu.as_usize()].store(idle, Ordering::SeqCst);
-        // Linux consumes NOHZ_BALANCE_KICK only when the target services the
-        // balance pass (`nohz_idle_balance()`/`nohz_run_idle_balance()`).
-        // Withdrawing idle membership must not erase a pending kick: the
-        // source's physical notification was already spent, so clearing here
-        // would lose the balance pass until the next source transition.
-    }
-
-    fn is_idle_target(&self, cpu: CpuId) -> bool {
-        self.idle_targets[cpu.as_usize()].load(Ordering::SeqCst)
-    }
-
-    /// Publishes Linux's per-CPU `NOHZ_BALANCE_KICK` independently from idle
-    /// membership. The first publisher owns the physical notification; later
-    /// publishers coalesce into the same owner-consumed balance pass.
-    fn request_balance_kick(&self, cpu: CpuId) -> bool {
-        !self.balance_kicks[cpu.as_usize()].swap(true, Ordering::SeqCst)
-    }
-
-    fn balance_kick_pending(&self, cpu: CpuId) -> bool {
-        self.balance_kicks[cpu.as_usize()].load(Ordering::SeqCst)
-    }
-
-    fn take_balance_kick(&self, cpu: CpuId) -> bool {
-        self.balance_kicks[cpu.as_usize()].swap(false, Ordering::SeqCst)
-    }
-
-    fn has_source(&self, runqueues: &[Arc<CpuRemote>]) -> bool {
-        self.pushable_sources
-            .iter()
-            .zip(runqueues)
-            .any(|(published, remote)| {
-                published.load(Ordering::SeqCst)
-                    && remote.accepts_placement()
-                    && remote.is_scheduler_ready()
-            })
-    }
 }
 
 /// Linux `rto_mask`/`dlo_mask` and their publication counts.
@@ -295,7 +205,7 @@ impl RootDomain {
         self.priority.publish_offline(cpu);
         self.overload.publish(cpu, false, false);
         self.fair_nohz.publish_source(cpu, false);
-        self.fair_nohz.publish_idle_target(cpu, false);
+        self.publish_fair_idle_target(cpu, false);
     }
 
     /// Publishes whether this owner selected its dedicated idle thread.
@@ -305,7 +215,10 @@ impl RootDomain {
     /// source transition observes this bit and supplies the other half of the
     /// lossless NOHZ kick handshake.
     pub(super) fn publish_fair_idle_target(&self, cpu: CpuId, idle: bool) {
-        self.fair_nohz.publish_idle_target(cpu, idle);
+        let target = self
+            .fair_nohz
+            .publish_idle_target(cpu, idle, |target| self.fair_nohz_accepts_balancer(target));
+        self.deliver_fair_nohz_balancer(target);
     }
 
     pub(super) fn cpu_has_overload(&self, cpu: CpuId, class: SchedulingClass) -> bool {
@@ -322,38 +235,72 @@ impl RootDomain {
             || self.fair_nohz.has_source(&self.runqueues)
     }
 
-    pub(super) fn fair_balance_kick_pending(&self, cpu: CpuId) -> bool {
-        self.fair_nohz.balance_kick_pending(cpu)
+    pub(super) fn fair_nohz_balancer_pending(&self, cpu: CpuId) -> bool {
+        self.fair_nohz.balancer_pending(cpu)
     }
 
-    pub(super) fn take_fair_balance_kick(&self, cpu: CpuId) -> bool {
-        self.fair_nohz.take_balance_kick(cpu)
+    pub(super) fn claim_fair_nohz_balancer(&self, cpu: CpuId) -> Option<RootDomainFairNoHzClaim> {
+        self.fair_nohz.claim_balancer(cpu)
     }
 
-    /// Mirrors Linux `nohz_balancer_kick()` with one coalesced kick per idle
-    /// owner.
+    pub(super) fn finish_fair_nohz_balancer(&self, claim: RootDomainFairNoHzClaim, serviced: bool) {
+        let target = self.fair_nohz.finish_balancer(
+            claim,
+            serviced,
+            self.fair_nohz.has_source(&self.runqueues),
+            |target| self.fair_nohz_accepts_balancer(target),
+        );
+        self.deliver_fair_nohz_balancer(target);
+    }
+
+    pub(super) fn fair_nohz_idle_target(&self, cpu: CpuId) -> bool {
+        self.fair_nohz.is_idle_target(cpu)
+    }
+
+    /// Mirrors the periodic `nohz_balancer_kick()` decision on a busy rq.
     ///
-    /// Linux's selected ILB can balance on behalf of every CPU in the NOHZ
-    /// idle mask. Here each idle CPU must remain its own pull initiator so it
-    /// can publish a request to the source owner without remotely locking or
-    /// mutating either runqueue. Notify every published idle owner, while each
-    /// target bit coalesces repeated source transitions into one balance pass.
+    /// A source edge supplies the first kick. While the source remains
+    /// pushable, its ordinary Fair balance deadline supplies later generations
+    /// just as Linux re-evaluates `nohz.next_balance` on subsequent busy ticks.
+    pub(super) fn kick_fair_nohz_balance_if_source(&self, source: CpuId) {
+        if self.fair_nohz.is_source(source) {
+            self.kick_fair_idle_balancer(source);
+        }
+    }
+
+    /// Mirrors Linux `nohz_balancer_kick()` with one root-domain ILB owner.
+    ///
+    /// Source edges merge into one generation while the selected idle owner
+    /// coordinates pulls for the complete idle mask. This preserves the
+    /// owner-mediated rq boundary without broadcasting scheduler IPIs.
     fn kick_fair_idle_balancer(&self, source: CpuId) {
-        for (index, remote) in self.runqueues.iter().enumerate() {
-            let target = CpuId::new(index as u32);
-            if target == source
-                || !self.fair_nohz.is_idle_target(target)
-                || !remote.accepts_placement()
-                || !remote.is_scheduler_ready()
+        self.fair_nohz.request_idle_balance(
+            source,
+            |target| self.fair_nohz_accepts_balancer(target),
+            |target| self.deliver_fair_nohz_balancer(Some(target)),
+        );
+    }
+
+    fn fair_nohz_accepts_balancer(&self, target: CpuId) -> bool {
+        self.runqueues
+            .get(target.as_usize())
+            .is_some_and(|remote| remote.accepts_placement() && remote.is_scheduler_ready())
+    }
+
+    fn deliver_fair_nohz_balancer(&self, mut target: Option<CpuId>) {
+        while let Some(balancer) = target {
+            if self
+                .runqueues
+                .get(balancer.as_usize())
+                .is_some_and(|remote| remote.kick_scheduler_work())
             {
-                continue;
+                return;
             }
-            if !self.fair_nohz.request_balance_kick(target) {
-                continue;
-            }
-            if !remote.kick_scheduler_work() {
-                let _cancelled = self.fair_nohz.take_balance_kick(target);
-            }
+            target = self
+                .fair_nohz
+                .retarget_failed_delivery(balancer, |candidate| {
+                    self.fair_nohz_accepts_balancer(candidate)
+                });
         }
     }
 
@@ -386,13 +333,25 @@ impl RootDomain {
         target: CpuId,
         visited: &CpuSet,
     ) -> Option<CpuId> {
+        self.find_fair_idle_pull_source_by(target, |source| !visited.contains(source))
+    }
+
+    pub(super) fn find_unvisited_fair_idle_pull_source(&self, target: CpuId) -> Option<CpuId> {
+        self.find_fair_idle_pull_source_by(target, |_| true)
+    }
+
+    fn find_fair_idle_pull_source_by(
+        &self,
+        target: CpuId,
+        mut accepts_source: impl FnMut(CpuId) -> bool,
+    ) -> Option<CpuId> {
         self.runqueues
             .iter()
             .enumerate()
             .filter_map(|(index, remote)| {
                 let source = CpuId::new(index as u32);
                 if source == target
-                    || visited.contains(source)
+                    || !accepts_source(source)
                     || !remote.accepts_placement()
                     || !remote.is_scheduler_ready()
                 {
@@ -938,36 +897,5 @@ impl Deref for RootDomainGuard<'_> {
 
     fn deref(&self) -> &Self::Target {
         &self.state
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn withdrawing_idle_membership_keeps_a_pending_balance_kick() {
-        let nohz = RootDomainFairNoHz::new(2);
-        let owner = CpuId::new(0);
-        nohz.publish_idle_target(owner, true);
-        assert!(nohz.request_balance_kick(owner));
-        // The owner leaves idle before servicing the kick. Linux consumes
-        // NOHZ_BALANCE_KICK only when the balance pass actually runs.
-        nohz.publish_idle_target(owner, false);
-        assert!(!nohz.is_idle_target(owner));
-        assert!(nohz.balance_kick_pending(owner));
-        assert!(nohz.take_balance_kick(owner));
-        assert!(!nohz.balance_kick_pending(owner));
-    }
-
-    #[test]
-    fn unchanged_fair_source_does_not_republish_the_seqcst_edge() {
-        let nohz = RootDomainFairNoHz::new(1);
-        let owner = CpuId::new(0);
-
-        assert!(nohz.publish_source(owner, true));
-        assert_eq!(nohz.source_publication_writes(owner), 1);
-        assert!(!nohz.publish_source(owner, true));
-        assert_eq!(nohz.source_publication_writes(owner), 1);
     }
 }
