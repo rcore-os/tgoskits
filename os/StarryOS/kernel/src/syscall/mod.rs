@@ -166,7 +166,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::sync => sys_sync(),
         Sysno::syncfs => sys_syncfs(uctx.arg0() as _),
 
-        // xattr stubs — rsext4 has no extended attributes, return empty/ENODATA/EOPNOTSUPP
+        // Extended attributes: syscall policy delegates persistent storage to VFS capabilities.
         Sysno::listxattr => sys_listxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::llistxattr => sys_llistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::flistxattr => sys_flistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -720,7 +720,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::capget => sys_capget(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(uctx.arg0() as _),
-        Sysno::personality => sys_personality(uctx.arg0()),
+        Sysno::personality => sys_personality(uctx.arg0() as _),
         Sysno::setreuid => sys_setreuid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setregid => sys_setregid(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setresuid => sys_setresuid(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -1072,30 +1072,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn task_clone_validation_rules_hold_for_test() -> bool {
-    task::clone_validation_rules_hold_for_test()
-}
-
-#[cfg(test)]
-pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
-    task::capability_data_conversion_rules_hold_for_test()
-}
-
-#[cfg(axtest)]
-pub(crate) fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
-    // fd_ops is re-exported via `pub use self::fs::*`, so the helper is
-    // accessible directly through the fs module.
-    fs::pipe_size_rounding_and_rejection_rules_hold_for_test()
-}
-
-#[cfg(test)]
-pub(crate) fn membarrier_validation_rules_hold_for_test() -> bool {
-    sync::membarrier_validation_rules_hold_for_test()
-}
-
-#[cfg(test)]
-pub(crate) fn syscall_signal_restart_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn syscall_signal_restart_rules_hold_for_test() -> bool {
     use syscalls::Sysno;
 
     assert!(syscall_allows_signal_restart(Sysno::read as usize));
@@ -1117,15 +1095,10 @@ pub(crate) fn syscall_signal_restart_rules_hold_for_test() -> bool {
     true
 }
 
-#[cfg(test)]
-pub(crate) use self::ipc::ipc_permission_and_constants_rules_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::kmod::kmod_flags_validation_rules_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::resources::resources_rlimit_validation_rules_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::signal::signal_sigset_and_signo_validation_rules_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::sys::sys_constants_and_validation_rules_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::time::time_clock_id_validation_rules_hold_for_test;
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn syscall_signal_restart_rules_hold() {
+        assert!(super::syscall_signal_restart_rules_hold_for_test());
+    }
+}

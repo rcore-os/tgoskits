@@ -27,6 +27,17 @@ use crate::config::AxVMConfig;
 type NodeCache = BTreeMap<String, Vec<NodeId>>;
 type PhandleMap = BTreeMap<u32, (String, BTreeMap<String, u32>)>;
 
+/// Returns whether a passthrough selector includes the node at `node_path`.
+///
+/// A selector includes both the node named by the selector and its descendants,
+/// but not a similarly prefixed sibling such as `/peripherals-extra`.
+pub(crate) fn selector_includes_path(selector: &str, node_path: &str) -> bool {
+    selector == node_path
+        || node_path
+            .strip_prefix(selector)
+            .is_some_and(|suffix| selector == "/" || suffix.starts_with('/'))
+}
+
 /// Return all passthrough device paths, including descendants and phandle dependencies.
 pub fn find_all_passthrough_devices(vm_cfg: &AxVMConfig, fdt: &Fdt) -> Vec<String> {
     let initial_device_count = vm_cfg.pass_through_devices().len();

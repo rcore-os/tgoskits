@@ -120,8 +120,8 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isi
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn mincore_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn mincore_validation_rules_hold_for_test() -> bool {
     use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
     // Test mincore validation logic
     // Page-aligned address should pass alignment check
@@ -150,4 +150,12 @@ pub(crate) fn mincore_validation_rules_hold_for_test() -> bool {
     assert!(page_count == 1);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn mincore_validation_rules_hold() {
+        assert!(super::mincore_validation_rules_hold_for_test());
+    }
 }

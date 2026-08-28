@@ -462,9 +462,8 @@ impl Process {
         Self::new(identity, Some(self.clone()))
     }
 
-    /// Creates an isolated process for kernel axtests without replacing init.
-    #[cfg(any(test, axtest))]
-    pub(crate) fn new_for_axtest(identity: Arc<PidIdentity>) -> Arc<Process> {
+    #[cfg(test)]
+    pub(super) fn new_isolated_for_test(identity: Arc<PidIdentity>) -> Arc<Process> {
         Self::new_group_member(identity, None)
     }
 }
@@ -478,7 +477,7 @@ pub fn init_proc() -> Arc<Process> {
     INIT_PROC.get().unwrap().clone()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     extern crate std;
 

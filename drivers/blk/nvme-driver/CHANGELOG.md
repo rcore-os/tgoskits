@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.8.0...nvme-driver-v0.8.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.5...nvme-driver-v0.8.0) - 2026-08-20
 
 ### Added

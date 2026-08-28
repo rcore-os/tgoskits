@@ -2,7 +2,7 @@ extern crate std;
 
 use core::ptr::NonNull;
 
-use sdio_host2::{BusWidth, ClockSpeed, ProgressCause, RequestProgress, SignalVoltage};
+use sdmmc_host::{BusWidth, ClockSpeed, SignalVoltage};
 use tock_registers::interfaces::{Readable, Writeable};
 
 use super::*;
@@ -19,6 +19,14 @@ impl<const N: usize> FakeMmio<N> {
     fn base(&mut self) -> NonNull<u8> {
         NonNull::new(self.0.as_mut_ptr()).unwrap()
     }
+
+    fn read_u32(&self, offset: usize) -> u32 {
+        unsafe { core::ptr::read_unaligned(self.0.as_ptr().add(offset).cast()) }
+    }
+
+    fn write_u32(&mut self, offset: usize, value: u32) {
+        unsafe { core::ptr::write_unaligned(self.0.as_mut_ptr().add(offset).cast(), value) };
+    }
 }
 
 fn new_host<'a>(
@@ -30,21 +38,37 @@ fn new_host<'a>(
     unsafe { Cv181xSdhci::new(mmio, config) }
 }
 
-fn complete_register_bus_op(
-    host: &mut Cv181xSdhci,
-    request: &mut BusRequest,
-) -> Result<(), sdio_host2::Error> {
-    assert!(matches!(
-        sdio_host2::SdioHost::advance_bus_op(host, request, ProgressCause::Submitted).unwrap(),
-        RequestProgress::RegisterPending { .. }
-    ));
-    match sdio_host2::SdioHost::advance_bus_op(host, request, ProgressCause::RegisterRetry).unwrap()
-    {
-        RequestProgress::Complete(result) => result,
-        RequestProgress::WaitingForIrq | RequestProgress::RegisterPending { .. } => {
-            panic!("test register bus op should complete on retry")
-        }
+#[test]
+fn sdio1_soc_setup_programs_pinmux_pull_clock_reset_and_card_detect() {
+    let mut core = FakeMmio::<0x400>::new();
+    let mut syscon = FakeMmio::<0x2000>::new();
+    let mut crg = FakeMmio::<0x1000>::new();
+    let mut rtcsys_ctrl = FakeMmio::<0x1000>::new();
+    let mut rtcsys_io = FakeMmio::<0x1000>::new();
+    for offset in [0x10d0, 0x10d4, 0x10d8, 0x10dc, 0x10e0, 0x10e4] {
+        syscon.write_u32(offset, 0xffff_ffff);
     }
+    crg.write_u32(0x30, u32::MAX);
+    rtcsys_ctrl.write_u32(0x1c, u32::MAX);
+    rtcsys_ctrl.write_u32(0x30, u32::MAX);
+
+    let host = Cv181xMmio::new(core.base(), syscon.base());
+    Cv181xSdio1Mmio::new(host, crg.base(), rtcsys_ctrl.base(), rtcsys_io.base()).initialize();
+
+    for offset in [0x10d0, 0x10d4, 0x10d8, 0x10dc, 0x10e0, 0x10e4] {
+        assert_eq!(syscon.read_u32(offset) & 0x7, 0);
+    }
+    for index in 0..20 {
+        assert_eq!(rtcsys_io.read_u32(0x88 + index * 4), 0x1111_1111);
+    }
+    assert_eq!(
+        crg.read_u32(0) & ((1 << 21) | (1 << 22) | (1 << 23)),
+        (1 << 21) | (1 << 22) | (1 << 23)
+    );
+    assert_eq!(crg.read_u32(0x30) & (1 << 7), 0);
+    assert_ne!(rtcsys_ctrl.read_u32(0x18) & (1 << 2), 0);
+    assert_eq!(rtcsys_ctrl.read_u32(0x1c) & 0xf, 0);
+    assert_ne!(syscon.read_u32(0x294) & ((1 << 8) | (1 << 9)), 0);
 }
 
 #[test]
@@ -132,18 +156,34 @@ fn bus_width_limit_rejects_width_above_board_wiring() {
         },
     );
 
-    let mut request = unsafe {
-        sdio_host2::SdioHost::submit_bus_op(
+    let result = unsafe {
+        sdmmc_host::SdMmcHost::submit_bus_op(
             &mut host,
-            sdio_host2::BusOp::SetBusWidth(BusWidth::Bit4),
+            sdmmc_host::BusOp::SetBusWidth(BusWidth::Bit4),
         )
-    }
-    .unwrap();
+    };
 
-    assert_eq!(
-        complete_register_bus_op(&mut host, &mut request),
-        Err(sdio_host2::Error::Unsupported)
-    );
+    assert!(matches!(result, Err(sdmmc_host::Error::Unsupported)));
+}
+
+#[test]
+fn clock_bus_request_cannot_bypass_an_active_transaction() {
+    let mut core = FakeMmio::new();
+    let mut syscon = FakeMmio::new();
+    let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
+    let transaction = sdmmc_host::Transaction::command(sdmmc_protocol::cmd::CMD0);
+    let _active =
+        unsafe { sdmmc_host::SdMmcHost::submit_transaction(&mut host, transaction) }.unwrap();
+
+    assert!(matches!(
+        unsafe {
+            sdmmc_host::SdMmcHost::submit_bus_op(
+                &mut host,
+                sdmmc_host::BusOp::SetClock(ClockSpeed::Identification),
+            )
+        },
+        Err(sdmmc_host::Error::Busy)
+    ));
 }
 
 #[test]
@@ -161,21 +201,17 @@ fn no_1v8_rejects_uhs_clock_and_voltage_paths() {
 
     assert_eq!(
         host.set_clock_speed(ClockSpeed::Sdr50),
-        Err(sdio_host2::Error::Unsupported)
+        Err(sdmmc_host::Error::Unsupported)
     );
 
-    let mut request = unsafe {
-        sdio_host2::SdioHost::submit_bus_op(
+    let result = unsafe {
+        sdmmc_host::SdMmcHost::submit_bus_op(
             &mut host,
-            sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V180),
+            sdmmc_host::BusOp::SetSignalVoltage(SignalVoltage::V180),
         )
-    }
-    .unwrap();
+    };
 
-    assert_eq!(
-        complete_register_bus_op(&mut host, &mut request),
-        Err(sdio_host2::Error::Unsupported)
-    );
+    assert!(matches!(result, Err(sdmmc_host::Error::Unsupported)));
 }
 
 #[test]
@@ -189,8 +225,9 @@ fn high_speed_mode_sets_host_timing_even_when_clock_is_capped() {
     let mmio = Cv181xMmio::new(core.base(), syscon.base());
     let registers = mmio.core_registers();
     assert!(registers.host_control1.is_set(HOST_CONTROL1::HIGH_SPEED));
-    assert_eq!(
-        registers.host_control2.read(HOST_CONTROL2::UHS_MODE),
-        HOST_CTRL2_UHS_SDR25
+    assert!(
+        registers
+            .host_control2
+            .matches_all(HOST_CONTROL2::UHS_MODE::SDR25)
     );
 }

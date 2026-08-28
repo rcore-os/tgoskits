@@ -180,7 +180,7 @@ impl NsProxy {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     extern crate std;
 

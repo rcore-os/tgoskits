@@ -15,7 +15,7 @@ use crate::{
 mod poll;
 pub use poll::*;
 
-mod time;
+pub(crate) mod time;
 pub use time::*;
 
 /// Errors owned by task waiting and notification operations.
@@ -31,7 +31,6 @@ pub enum TaskError {
     #[error("task operation would block")]
     WouldBlock,
     /// An IRQ operation used by a task-owned waker failed.
-    #[cfg(feature = "irq")]
     #[error(transparent)]
     Irq(#[from] ax_hal::irq::IrqError),
 }

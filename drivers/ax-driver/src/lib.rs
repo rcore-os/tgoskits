@@ -45,6 +45,8 @@ model_register!(
 
 mod binding_info;
 mod binding_resolver;
+#[cfg(any(feature = "cv181x-sdhci", feature = "aic8800-wifi"))]
+mod cv181x;
 pub mod error;
 mod irq_binding;
 pub mod mmio;
@@ -107,6 +109,7 @@ pub mod cpufreq {
     #[cfg(feature = "rk3588-cpufreq")]
     pub use crate::soc::rockchip::cpufreq::{
         calibrate_cluster, calibrate_wanted, governor_period_ms, governor_poll, governor_wanted,
+        log_frequency_readout,
     };
 
     /// Feature-off stub: no governor, so the kernel never spawns its task.
@@ -130,6 +133,9 @@ pub mod cpufreq {
     /// Feature-off stub.
     #[cfg(not(feature = "rk3588-cpufreq"))]
     pub fn calibrate_cluster(_cluster_idx: usize, _intended_cpu: usize) {}
+    /// Feature-off stub: no clock code ran, so there is nothing to report.
+    #[cfg(not(feature = "rk3588-cpufreq"))]
+    pub fn log_frequency_readout() {}
 }
 
 #[cfg(feature = "pci")]

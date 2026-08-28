@@ -97,7 +97,7 @@ mod tests {
 
     use super::*;
     use crate::architecture::{
-        Architecture, BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform,
+        Architecture, BootImagePlatform, GuestBootPlatform, MachinePlatform,
     };
 
     struct RecordingVcpu {
@@ -209,7 +209,6 @@ mod tests {
     }
     impl<const SUCCESS_REGISTER: usize> GuestBootPlatform for RecordingArch<SUCCESS_REGISTER> {}
     impl<const SUCCESS_REGISTER: usize> BootImagePlatform for RecordingArch<SUCCESS_REGISTER> {}
-    impl<const SUCCESS_REGISTER: usize> HostTimePlatform for RecordingArch<SUCCESS_REGISTER> {}
     impl<const SUCCESS_REGISTER: usize> Architecture for RecordingArch<SUCCESS_REGISTER> {}
 
     impl CpuUpOps for RecordingArch<0> {}

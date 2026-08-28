@@ -1,6 +1,7 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 use core::{
-    sync::atomic::{AtomicUsize, Ordering},
+    fmt,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -18,7 +19,7 @@ use crate::{
         INT_TIMER, LOCAL_INTERRUPT_MASK, TIMER_BIT, advance_guest_pc, decode_interrupt_vector,
         extract_field, get_badi, get_guest_pc,
     },
-    types::{LoongArchVcpuId, LoongArchVmExit, LoongArchVmId},
+    types::{LoongArchVcpuId, LoongArchVcpuResult, LoongArchVmExit, LoongArchVmId},
 };
 
 const CPUCFG2_CRYPTO: usize = 1 << 9;
@@ -69,6 +70,73 @@ const DEFAULT_TLB_PAGE_SHIFT: usize = 12;
 
 static IDLE_EXIT_LOGS: AtomicUsize = AtomicUsize::new(0);
 static GUEST_TIMER_LOGS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) struct GuestTimerRegistration<H: LoongArchHostOps> {
+    handle: Option<H::TimerHandle>,
+    next_generation: u64,
+    active_generation: Arc<AtomicU64>,
+}
+
+impl<H: LoongArchHostOps> fmt::Debug for GuestTimerRegistration<H> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GuestTimerRegistration")
+            .field("armed", &self.handle.is_some())
+            .field("next_generation", &self.next_generation)
+            .field(
+                "active_generation",
+                &self.active_generation.load(Ordering::Relaxed),
+            )
+            .finish()
+    }
+}
+
+impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
+    pub(crate) fn new() -> Self {
+        Self {
+            handle: None,
+            next_generation: 0,
+            active_generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn next_generation(&mut self) -> LoongArchVcpuResult<u64> {
+        self.next_generation = self
+            .next_generation
+            .checked_add(1)
+            .ok_or(crate::types::LoongArchVcpuError::TimerUnavailable)?;
+        Ok(self.next_generation)
+    }
+
+    pub(crate) fn cancel(&mut self) -> LoongArchVcpuResult {
+        let active = self.active_generation.swap(0, Ordering::AcqRel);
+        let Some(handle) = self.handle else {
+            return Ok(());
+        };
+        // A callback that already claimed this generation owns its completion
+        // and has made the handle stale. Otherwise invalidate before
+        // cancelling so a claimed-but-not-run callback cannot publish an
+        // obsolete guest interrupt.
+        if active == 0 {
+            self.handle = None;
+            return Ok(());
+        }
+        if let Err(error) = H::cancel_timer(handle) {
+            // Cancellation did not consume the registration. Restore both
+            // pieces of logical ownership so callers and Drop can retry.
+            self.active_generation.store(active, Ordering::Release);
+            return Err(error);
+        }
+        self.handle = None;
+        Ok(())
+    }
+}
+
+fn claim_guest_timer_generation(active_generation: &AtomicU64, generation: u64) -> bool {
+    active_generation
+        .compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
 
 fn guest_exception_vector_size(ctx: &LoongArchContextFrame) -> usize {
     let vs = ecfg_vs_value_from(ctx.gcsr_ectl);
@@ -156,15 +224,15 @@ pub(crate) fn emulate_csrx<H: LoongArchHostOps>(
     ins: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) -> LoongArchVmExit {
+    guest_timer: &mut GuestTimerRegistration<H>,
+) -> LoongArchVcpuResult<LoongArchVmExit> {
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
     let csr = extract_field(ins, 10, 14);
 
-    emulate_guest_csr::<H>(ctx, rd, rj, csr, vm_id, vcpu_id, guest_timer_token);
+    emulate_guest_csr::<H>(ctx, rd, rj, csr, vm_id, vcpu_id, guest_timer)?;
     advance_guest_pc(ctx);
-    LoongArchVmExit::Nothing
+    Ok(LoongArchVmExit::Nothing)
 }
 
 /// Timer CSR numbers (matching GCSR encoding in LoongArch LVZ).
@@ -243,8 +311,8 @@ fn write_guest_csr<H: LoongArchHostOps>(
     value: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) {
+    guest_timer: &mut GuestTimerRegistration<H>,
+) -> LoongArchVcpuResult {
     match csr {
         CSR_CRMD => ctx.gcsr_crmd = value,
         CSR_PRMD => ctx.gcsr_prmd = value,
@@ -292,7 +360,7 @@ fn write_guest_csr<H: LoongArchHostOps>(
         0x3f => ctx.gcsr_save15 = value,
         CSR_TID => ctx.gcsr_tid = value,
         CSR_TCFG | CSR_TVAL | CSR_TICLR => {
-            write_guest_timer_csr::<H>(ctx, csr, value, vm_id, vcpu_id, guest_timer_token)
+            write_guest_timer_csr::<H>(ctx, csr, value, vm_id, vcpu_id, guest_timer)?
         }
         CSR_LLBCTL => ctx.gcsr_llbctl = value,
         CSR_TLBRENTRY => ctx.gcsr_tlbrentry = value,
@@ -313,6 +381,7 @@ fn write_guest_csr<H: LoongArchHostOps>(
             value
         ),
     }
+    Ok(())
 }
 
 fn guest_timer_periodic(ctx: &LoongArchContextFrame) -> bool {
@@ -323,22 +392,16 @@ fn guest_timer_init_ticks(ctx: &LoongArchContextFrame) -> u64 {
     guest_tcfg_initval(ctx.gcsr_tcfg) as u64
 }
 
-fn cancel_guest_timer<H: LoongArchHostOps>(guest_timer_token: &mut Option<usize>) {
-    if let Some(token) = guest_timer_token.take() {
-        H::cancel_timer(token);
-    }
-}
-
 fn register_guest_timer<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) {
-    cancel_guest_timer::<H>(guest_timer_token);
+    guest_timer: &mut GuestTimerRegistration<H>,
+) -> LoongArchVcpuResult {
+    guest_timer.cancel()?;
 
     if !guest_tcfg_enabled(ctx.gcsr_tcfg) {
-        return;
+        return Ok(());
     }
 
     let init_ticks = guest_timer_init_ticks(ctx);
@@ -352,7 +415,7 @@ fn register_guest_timer<H: LoongArchHostOps>(
                 ctx.gcsr_estat
             );
         }
-        return;
+        return Ok(());
     }
 
     ctx.gcsr_tval = init_ticks as usize;
@@ -367,11 +430,29 @@ fn register_guest_timer<H: LoongArchHostOps>(
             deadline_ns
         );
     }
-    let token = H::register_timer(
+    let generation = guest_timer.next_generation()?;
+    guest_timer
+        .active_generation
+        .store(generation, Ordering::Release);
+    let active_generation = Arc::clone(&guest_timer.active_generation);
+    let registration = H::register_timer(
         Duration::from_nanos(deadline_ns),
-        Box::new(move |_| H::inject_interrupt(vm_id, vcpu_id, INT_TIMER)),
+        Box::new(move |_| {
+            if claim_guest_timer_generation(&active_generation, generation) {
+                H::inject_interrupt(vm_id, vcpu_id, INT_TIMER);
+            }
+        }),
     );
-    *guest_timer_token = Some(token);
+    let handle = registration.inspect_err(|_| {
+        let _ = guest_timer.active_generation.compare_exchange(
+            generation,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    })?;
+    guest_timer.handle = Some(handle);
+    Ok(())
 }
 
 fn write_guest_timer_csr<H: LoongArchHostOps>(
@@ -380,12 +461,16 @@ fn write_guest_timer_csr<H: LoongArchHostOps>(
     value: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) {
+    guest_timer: &mut GuestTimerRegistration<H>,
+) -> LoongArchVcpuResult {
     match csr {
         CSR_TCFG => {
             ctx.gcsr_tcfg = value;
-            register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer_token);
+            if let Err(error) = register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer) {
+                ctx.gcsr_tcfg &= !guest_tcfg_enable_mask();
+                ctx.gcsr_tval = 0;
+                return Err(error);
+            }
         }
         CSR_TVAL => {
             ctx.gcsr_tval = value;
@@ -405,15 +490,21 @@ fn write_guest_timer_csr<H: LoongArchHostOps>(
                     );
                 }
                 if guest_timer_periodic(ctx) {
-                    register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer_token);
+                    if let Err(error) = register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer)
+                    {
+                        ctx.gcsr_tcfg &= !guest_tcfg_enable_mask();
+                        ctx.gcsr_tval = 0;
+                        return Err(error);
+                    }
                 } else {
                     ctx.gcsr_tcfg &= !guest_tcfg_enable_mask();
-                    cancel_guest_timer::<H>(guest_timer_token);
+                    guest_timer.cancel()?;
                 }
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn emulate_guest_csr<H: LoongArchHostOps>(
@@ -423,8 +514,8 @@ fn emulate_guest_csr<H: LoongArchHostOps>(
     csr: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) {
+    guest_timer: &mut GuestTimerRegistration<H>,
+) -> LoongArchVcpuResult {
     let old_value = read_guest_csr(ctx, csr);
     let mut return_value = old_value;
 
@@ -436,10 +527,11 @@ fn emulate_guest_csr<H: LoongArchHostOps>(
             return_value &= mask;
             (old_value & !mask) | (ctx.x[rd] & mask)
         };
-        write_guest_csr::<H>(ctx, csr, new_value, vm_id, vcpu_id, guest_timer_token);
+        write_guest_csr::<H>(ctx, csr, new_value, vm_id, vcpu_id, guest_timer)?;
     }
 
     ctx.set_gpr(rd, return_value);
+    Ok(())
 }
 
 pub(crate) fn emulate_cacop(ctx: &mut LoongArchContextFrame, _ins: usize) -> LoongArchVmExit {
@@ -489,4 +581,151 @@ pub(crate) fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> Loong
     }
     advance_guest_pc(ctx);
     LoongArchVmExit::Idle
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::boxed::Box;
+    use core::{sync::atomic::AtomicUsize, time::Duration};
+
+    use super::*;
+    use crate::{LoongArchHostPhysAddr, LoongArchHostVirtAddr};
+
+    static CANCELS: AtomicUsize = AtomicUsize::new(0);
+    static FAIL_ONCE_CANCELS: AtomicUsize = AtomicUsize::new(0);
+    static CANCEL_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestHost;
+
+    struct FailOnceCancelHost;
+
+    impl LoongArchHostOps for TestHost {
+        type TimerHandle = u64;
+
+        fn virt_to_phys(vaddr: LoongArchHostVirtAddr) -> LoongArchHostPhysAddr {
+            LoongArchHostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            0
+        }
+
+        fn ticks_to_nanos(ticks: u64) -> u64 {
+            ticks
+        }
+
+        fn register_timer(
+            _deadline: Duration,
+            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) -> LoongArchVcpuResult<Self::TimerHandle> {
+            Ok(1)
+        }
+
+        fn cancel_timer(_handle: Self::TimerHandle) -> LoongArchVcpuResult {
+            CANCELS.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) {}
+    }
+
+    impl LoongArchHostOps for FailOnceCancelHost {
+        type TimerHandle = u64;
+
+        fn virt_to_phys(vaddr: LoongArchHostVirtAddr) -> LoongArchHostPhysAddr {
+            LoongArchHostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            0
+        }
+
+        fn ticks_to_nanos(ticks: u64) -> u64 {
+            ticks
+        }
+
+        fn register_timer(
+            _deadline: Duration,
+            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) -> LoongArchVcpuResult<Self::TimerHandle> {
+            Ok(1)
+        }
+
+        fn cancel_timer(_handle: Self::TimerHandle) -> LoongArchVcpuResult {
+            FAIL_ONCE_CANCELS.fetch_add(1, Ordering::Relaxed);
+            if CANCEL_FAILURES
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |failures| {
+                    failures.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(crate::types::LoongArchVcpuError::TimerUnavailable);
+            }
+            Ok(())
+        }
+
+        fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) {}
+    }
+
+    #[test]
+    fn cancelled_generation_cannot_inject_after_rearm() {
+        let mut timer = GuestTimerRegistration::<TestHost>::new();
+        let old_generation = timer.next_generation().unwrap();
+        timer
+            .active_generation
+            .store(old_generation, Ordering::Release);
+        timer.handle = Some(1);
+        timer.cancel().unwrap();
+
+        let new_generation = timer.next_generation().unwrap();
+        timer
+            .active_generation
+            .store(new_generation, Ordering::Release);
+        assert!(!claim_guest_timer_generation(
+            &timer.active_generation,
+            old_generation
+        ));
+        assert!(claim_guest_timer_generation(
+            &timer.active_generation,
+            new_generation
+        ));
+    }
+
+    #[test]
+    fn completed_generation_does_not_cancel_a_stale_host_handle() {
+        CANCELS.store(0, Ordering::Relaxed);
+        let mut timer = GuestTimerRegistration::<TestHost>::new();
+        let generation = timer.next_generation().unwrap();
+        timer.active_generation.store(generation, Ordering::Release);
+        timer.handle = Some(1);
+        assert!(claim_guest_timer_generation(
+            &timer.active_generation,
+            generation
+        ));
+
+        timer.cancel().unwrap();
+        assert_eq!(CANCELS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn failed_cancel_preserves_registration_for_retry() {
+        FAIL_ONCE_CANCELS.store(0, Ordering::Relaxed);
+        CANCEL_FAILURES.store(1, Ordering::Relaxed);
+        let mut timer = GuestTimerRegistration::<FailOnceCancelHost>::new();
+        let generation = timer.next_generation().unwrap();
+        timer.active_generation.store(generation, Ordering::Release);
+        timer.handle = Some(1);
+
+        assert_eq!(
+            timer.cancel(),
+            Err(crate::types::LoongArchVcpuError::TimerUnavailable)
+        );
+        assert_eq!(timer.handle, Some(1));
+        assert_eq!(timer.active_generation.load(Ordering::Acquire), generation);
+        assert_eq!(FAIL_ONCE_CANCELS.load(Ordering::Relaxed), 1);
+
+        timer.cancel().unwrap();
+        assert_eq!(timer.handle, None);
+        assert_eq!(FAIL_ONCE_CANCELS.load(Ordering::Relaxed), 2);
+    }
 }

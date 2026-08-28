@@ -1,7 +1,108 @@
-use super::{delete::remove_inodeentry_from_parentdir, *};
+use super::*;
+use crate::{
+    bmalloc::BGIndex,
+    cache::bitmap::CacheKey,
+    dir::{FileName, LinkEntryRequest, insert_dir_entry_raw},
+};
 
-/// Create a hard link.
-pub fn link<B: BlockDevice>(
+// Linux reserves EXT4_DATA_TRANS_BLOCKS + EXT4_INDEX_EXTRA_TRANS_BLOCKS + 1
+// for ext4_link(). On an extent filesystem without quota this is 24 + 12 + 1.
+// Quota is not yet accepted for writable mounts by this core.
+const HARD_LINK_TRANSACTION_CREDITS: usize = 37;
+
+/// Creates a hard link below an already resolved parent directory.
+pub(crate) fn link_inode_at<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    request: LinkEntryRequest<'_>,
+) -> Ext4Result<Ext4Inode> {
+    fs.with_metadata_transaction(block_dev, HARD_LINK_TRANSACTION_CREDITS, |fs, block_dev| {
+        link_inode_at_in_transaction(fs, block_dev, request)
+    })
+}
+
+fn link_inode_at_in_transaction<B: BlockIo>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    request: LinkEntryRequest<'_>,
+) -> Ext4Result<Ext4Inode> {
+    if request.name.is_reserved() {
+        return Err(Ext4Error::invalid_input());
+    }
+    let target_inode = fs.get_inode_by_num(block_dev, request.target)?;
+    if target_inode.i_links_count == 0 {
+        return Err(Ext4Error::not_found().with_operation("link:unlinked_inode"));
+    }
+    if target_inode.is_dir() {
+        return Err(Ext4Error::permission_denied());
+    }
+    let file_type = directory_entry_type_for_mode(target_inode.i_mode)
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("link:inode_type"))?;
+    let new_links = target_inode.incremented_links_count(false)?;
+
+    let mut parent_inode = fs.get_inode_by_num(block_dev, request.parent)?;
+    if !parent_inode.is_dir() {
+        return Err(Ext4Error::not_dir());
+    }
+    match find_named_entry_in_parent(
+        fs,
+        block_dev,
+        request.parent,
+        &parent_inode,
+        request.name.as_bytes(),
+    ) {
+        Ok(_) => return Err(Ext4Error::already_exists()),
+        Err(error) if error.kind() == Ext4ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let free_blocks_before = fs
+        .group_descs
+        .iter()
+        .map(|descriptor| descriptor.free_blocks_count())
+        .collect::<Vec<_>>();
+
+    fs.set_inode_links_count(block_dev, request.target, new_links)?;
+    insert_dir_entry_raw(
+        fs,
+        block_dev,
+        request.parent,
+        &mut parent_inode,
+        request.target,
+        request.name,
+        file_type,
+    )?;
+
+    // Multi-level caches defer inode-table writeback. Publish both inode
+    // records before ending the handle so target nlink/ctime, parent times,
+    // and the directory entry cannot be split across transactions.
+    fs.inodetable_cache.flush(block_dev, request.target)?;
+    fs.inodetable_cache.flush(block_dev, request.parent)?;
+
+    let allocated_groups = fs
+        .group_descs
+        .iter()
+        .zip(&free_blocks_before)
+        .enumerate()
+        .filter_map(|(index, (descriptor, before))| {
+            (descriptor.free_blocks_count() < *before).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    for index in &allocated_groups {
+        let group = BGIndex::new(u32::try_from(*index).map_err(|_| Ext4Error::overflow())?);
+        fs.bitmap_cache
+            .flush(block_dev, &CacheKey::new_block(group))?;
+        fs.sync_group_descriptor(block_dev, group)?;
+    }
+    if !allocated_groups.is_empty() {
+        fs.sync_superblock(block_dev)?;
+    }
+
+    fs.get_inode_by_num(block_dev, request.target)
+}
+
+/// Create a hard link through the legacy path API.
+pub fn link<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     link_path: &str,
@@ -9,128 +110,30 @@ pub fn link<B: BlockDevice>(
 ) -> Ext4Result<()> {
     let link_norm = normalize_path(link_path);
     let linked_norm = normalize_path(linked_path);
+    let (target, _) =
+        get_file_inode(fs, block_dev, &linked_norm)?.ok_or_else(Ext4Error::not_found)?;
 
-    // Resolve the target inode first.
-    let (target_ino, target_inode) = match get_file_inode(fs, block_dev, &linked_norm) {
-        Ok(Some(v)) => v,
-        Ok(None) => return Err(Ext4Error::not_found()),
-        Err(e) => return Err(e),
-    };
-
-    // Hard-linking directories is rejected.
-    if target_inode.is_dir() {
-        return Err(Ext4Error::permission_denied());
-    }
-
-    // Destination entry must not already exist.
-    if get_file_inode(fs, block_dev, &link_norm)
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return Err(Ext4Error::already_exists());
-    }
-
-    // The destination parent directory must exist and be a directory.
-    let (parent_path, child_name) = if let Some(pos) = link_norm.rfind('/') {
-        let parent = if pos == 0 {
+    let (parent_path, child_name) = if let Some(position) = link_norm.rfind('/') {
+        let parent = if position == 0 {
             "/".to_string()
         } else {
-            link_norm[..pos].to_string()
+            link_norm[..position].to_string()
         };
-        let child = link_norm[pos + 1..].to_string();
-        (parent, child)
+        (parent, link_norm[position + 1..].to_string())
     } else {
         ("/".to_string(), link_norm)
     };
-    let (parent_ino, mut parent_inode) = match get_inode_with_num(fs, block_dev, &parent_path)
-        .ok()
-        .flatten()
-    {
-        Some(v) => v,
-        None => return Err(Ext4Error::not_found()),
-    };
-    if !parent_inode.is_dir() {
-        return Err(Ext4Error::not_dir());
-    }
-
-    // Reuse the source entry's file type when possible so the new directory
-    // entry matches existing metadata.
-    let (linked_parent_path, linked_child_name) = if let Some(pos) = linked_norm.rfind('/') {
-        let parent = if pos == 0 {
-            "/".to_string()
-        } else {
-            linked_norm[..pos].to_string()
-        };
-        let child = linked_norm[pos + 1..].to_string();
-        (parent, child)
-    } else {
-        ("/".to_string(), linked_norm.clone())
-    };
-
-    let mut copied_ft: Option<u8> = None;
-    if let Some((_lpino, mut lp_inode)) = get_inode_with_num(fs, block_dev, &linked_parent_path)
-        .ok()
-        .flatten()
-        && let Ok(blocks) = resolve_inode_blocks(fs, block_dev, &mut lp_inode)
-    {
-        for &phys in blocks.values() {
-            let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let data = &cached.data[..BLOCK_SIZE];
-            let iter = DirEntryIterator::new(data);
-            for (entry, _) in iter {
-                if entry.inode == 0 {
-                    continue;
-                }
-                if entry.name == linked_child_name.as_bytes() {
-                    copied_ft = Some(entry.file_type);
-                    break;
-                }
-            }
-            if copied_ft.is_some() {
-                break;
-            }
-        }
-    }
-
-    let file_type = copied_ft.unwrap_or_else(|| {
-        if target_inode.is_file() {
-            Ext4DirEntry2::EXT4_FT_REG_FILE
-        } else if target_inode.is_symlink() {
-            Ext4DirEntry2::EXT4_FT_SYMLINK
-        } else {
-            Ext4DirEntry2::EXT4_FT_UNKNOWN
-        }
-    });
-
-    // `insert_dir_entry` recalculates name length and record length for the new
-    // entry automatically.
-    if insert_dir_entry(
+    let name = FileName::new(child_name.as_bytes())?;
+    let (parent, _) =
+        get_inode_with_num(fs, block_dev, &parent_path)?.ok_or_else(Ext4Error::not_found)?;
+    link_inode_at(
         fs,
         block_dev,
-        parent_ino,
-        &mut parent_inode,
-        target_ino,
-        &child_name,
-        file_type,
-    )
-    .is_err()
-    {
-        return Err(Ext4Error::corrupted());
-    }
-
-    // Update the target link count and roll back the inserted entry on failure.
-    let new_links = target_inode.i_links_count.saturating_add(1);
-    if fs
-        .set_inode_links_count(block_dev, target_ino, new_links)
-        .is_err()
-    {
-        let _ = remove_inodeentry_from_parentdir(fs, block_dev, &parent_path, &child_name);
-        return Err(Ext4Error::corrupted());
-    }
-
+        LinkEntryRequest {
+            parent,
+            name,
+            target,
+        },
+    )?;
     Ok(())
 }

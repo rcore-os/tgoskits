@@ -29,17 +29,7 @@ pub mod os;
 pub mod root;
 pub mod volume;
 
-/// White-box checks used only by the Cargo axtest integration target.
-#[cfg(all(axtest, feature = "axtest"))]
-#[doc(hidden)]
-pub mod axtest_support {
-    /// Checks block-IRQ outcomes and readiness conversion.
-    pub fn block_irq_outcome_and_ready_hold_for_test() -> bool {
-        super::os::block_irq_outcome_and_ready_hold_for_test()
-    }
-}
-
-#[cfg(feature = "fat")]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) use error::block_error_to_vfs_error;
 pub use error::{BlockError, BlockResult};
 pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};
@@ -51,6 +41,8 @@ fn register_mounted_filesystem(fs: Filesystem) {
     MOUNTED_FILESYSTEMS.lock().push(fs);
 }
 
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub use block::sync_all_block_caches;
 pub use block::{
     BlockRegion,
     runtime::{

@@ -13,6 +13,8 @@ extern crate log;
 extern crate std;
 
 mod boot_console;
+#[cfg(not(target_arch = "x86_64"))]
+pub mod boot_timer;
 pub mod cache;
 pub(crate) mod common;
 pub mod cpu;
@@ -29,10 +31,18 @@ pub use platform::platform_name;
 pub use setup::KernelOp;
 pub use someboot::{
     boot_entropy, bootargs, console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys,
-    smp, timer,
+    smp,
 };
 pub use somehal_macros::somehal_secondary_entry as secondary_entry;
 
+#[cfg(target_arch = "x86_64")]
+pub use crate::arch::timer;
+// The system-timer surface differs by where the timer lives: on x86_64 it is
+// inside the local APIC and armed by the interrupt-controller driver in
+// `arch::x86_64::timer`; other architectures arm it through someboot's
+// `SystimerArch` capability.
+#[cfg(not(target_arch = "x86_64"))]
+pub use crate::boot_timer as timer;
 use crate::common::PlatOp;
 
 #[cfg(target_arch = "loongarch64")]

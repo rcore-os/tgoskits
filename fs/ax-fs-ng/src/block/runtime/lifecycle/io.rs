@@ -65,6 +65,25 @@ pub(super) fn write_blocks(
     block_id: u64,
     buffer: &[u8],
 ) -> BlockResult {
+    write_blocks_with_flags(device, block_id, buffer, RequestFlags::NONE)
+}
+
+#[cfg(feature = "ext4")]
+pub(super) fn write_blocks_fua(
+    device: &BlockDeviceHandle,
+    block_id: u64,
+    buffer: &[u8],
+) -> BlockResult {
+    write_blocks_with_flags(device, block_id, buffer, RequestFlags::FUA)
+}
+
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn write_blocks_with_flags(
+    device: &BlockDeviceHandle,
+    block_id: u64,
+    buffer: &[u8],
+    flags: RequestFlags,
+) -> BlockResult {
     if buffer.is_empty() {
         return Ok(());
     }
@@ -73,24 +92,36 @@ pub(super) fn write_blocks(
     let mut plan = transfer_plan(info, block_id, buffer.len(), RequestOp::Write)?.peekable();
     let window_limit = submission_window_limit(info);
     let mut pending = VecDeque::with_capacity(SOFTWARE_PIPELINE_WINDOWS);
+    let mut first_error = None;
 
     while plan.peek().is_some() || !pending.is_empty() {
-        while pending.len() < SOFTWARE_PIPELINE_WINDOWS && plan.peek().is_some() {
-            pending.push_back(submit_write_window(
-                device,
-                info,
-                take_window(&mut plan, window_limit)?,
-                buffer,
-            )?);
+        while first_error.is_none()
+            && pending.len() < SOFTWARE_PIPELINE_WINDOWS
+            && plan.peek().is_some()
+        {
+            let window = take_window(&mut plan, window_limit)
+                .and_then(|chunks| submit_write_window(device, info, chunks, buffer, flags));
+            match window {
+                Ok(window) => pending.push_back(window),
+                Err(error) => first_error = Some(error),
+            }
         }
-        let window = pending.pop_front().ok_or(BlockError::InvalidState)?;
+        let Some(window) = pending.pop_front() else {
+            break;
+        };
         let first_lba = window.chunks[0].lba;
-        let completions = window.completions.recv().map_err(|error| {
-            block_io_error("receive window", RequestOp::Write, first_lba, error)
-        })?;
-        complete_write_window(&window.chunks, completions)?;
+        let result = window
+            .completions
+            .recv()
+            .map_err(|error| block_io_error("receive window", RequestOp::Write, first_lba, error))
+            .and_then(|completions| complete_write_window(&window.chunks, completions));
+        if let Err(error) = result
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 fn submit_read_window(
@@ -115,9 +146,10 @@ fn submit_write_window(
     info: QueueInfo,
     chunks: Vec<TransferChunk>,
     buffer: &[u8],
+    flags: RequestFlags,
 ) -> Result<WriteWindow, BlockError> {
     let first_lba = chunks[0].lba;
-    let requests = prepare_write_requests(info, &chunks, buffer)?;
+    let requests = prepare_write_requests(info, &chunks, buffer, flags)?;
     let completions = device.submit_batch_owned(requests).map_err(|error| {
         block_io_error("submit window", RequestOp::Write, first_lba, error.error)
     })?;
@@ -196,6 +228,7 @@ fn prepare_write_requests(
     info: QueueInfo,
     chunks: &[TransferChunk],
     buffer: &[u8],
+    flags: RequestFlags,
 ) -> Result<OwnedRequestBatch, BlockError> {
     let mut requests = OwnedRequestBatch::with_capacity(chunks.len());
     for chunk in chunks {
@@ -207,7 +240,7 @@ fn prepare_write_requests(
             lba: chunk.lba,
             block_count: chunk.block_count,
             data: Some(data),
-            flags: RequestFlags::NONE,
+            flags,
         });
     }
     Ok(requests)

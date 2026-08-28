@@ -1,44 +1,11 @@
 use std::{
-    env,
-    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
-    sync::{LazyLock, Mutex},
 };
 
 use tempfile::tempdir;
 
 use super::*;
-
-static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-struct TempEnvVar {
-    key: &'static str,
-    original: Option<OsString>,
-}
-
-impl TempEnvVar {
-    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-        let original = env::var_os(key);
-        unsafe {
-            env::set_var(key, value);
-        }
-        Self { key, original }
-    }
-}
-
-impl Drop for TempEnvVar {
-    fn drop(&mut self) {
-        match self.original.as_ref() {
-            Some(value) => unsafe {
-                env::set_var(self.key, value);
-            },
-            None => unsafe {
-                env::remove_var(self.key);
-            },
-        }
-    }
-}
 
 fn write_board(axvisor_dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = axvisor_dir
@@ -627,8 +594,6 @@ log = "Info"
 
 #[test]
 fn load_cargo_config_applies_stack_protector_from_makefile_features() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
-    let _features = TempEnvVar::set("FEATURES", "stack-protector");
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
     fs::write(
@@ -640,18 +605,21 @@ log = "Info"
     )
     .unwrap();
 
-    let cargo = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "x86_64".to_string(),
-        target: "x86_64-unknown-none".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
+    let cargo = load_cargo_config_with_makefile_features(
+        &ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        },
+        &["stack-protector".to_string()],
+    )
     .unwrap();
 
     assert!(
@@ -661,6 +629,19 @@ log = "Info"
     );
     let config = fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
     assert!(config.contains(r#""-Zstack-protector=strong""#));
+}
+
+#[test]
+fn makefile_feature_tests_do_not_mutate_process_environment() {
+    let source = include_str!("tests.rs");
+    let set_var = ["env", "::set_var("].concat();
+    let remove_var = ["env", "::remove_var("].concat();
+
+    assert!(
+        !source.contains(&set_var) && !source.contains(&remove_var),
+        "Axvisor build tests must pass makefile features explicitly instead of mutating the \
+         process environment observed by parallel tests"
+    );
 }
 
 #[test]

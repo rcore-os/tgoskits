@@ -646,7 +646,7 @@ pub fn sys_waitid(
     )))?
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use super::*;
 
@@ -668,10 +668,11 @@ mod tests {
             WaitSelector::try_from(-2),
             Ok(WaitSelector::ProcessGroup(pgid)) if pgid.get() == 2
         ));
-        assert!(matches!(
-            WaitSelector::try_from(i32::MIN),
-            Err(StarryError::NoSuchProcess)
-        ));
+        let error = match WaitSelector::try_from(i32::MIN) {
+            Ok(_) => panic!("i32::MIN must not identify a process group"),
+            Err(error) => error,
+        };
+        assert_eq!(error.linux_errno(), Errno::ESRCH);
     }
 
     #[test]

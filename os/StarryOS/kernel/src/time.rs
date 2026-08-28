@@ -130,8 +130,8 @@ impl TimeValueLike for __kernel_sock_timeval {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn time_value_conversion_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn time_value_conversion_rules_hold_for_test() -> bool {
     let tv = TimeValue::new(5, 123_456_789);
     let ts = timespec::from_time_value(tv);
     let kernel_ts = __kernel_timespec::from_time_value(tv);
@@ -181,4 +181,25 @@ pub(crate) fn time_value_conversion_rules_hold_for_test() -> bool {
         })
         .try_into_time_value()
         .is_err()
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use linux_raw_sys::general::__kernel_timespec;
+
+    use super::*;
+
+    #[test]
+    fn time_value_conversion_rules_hold() {
+        assert!(time_value_conversion_rules_hold_for_test());
+    }
+
+    #[test]
+    fn timespec_rejects_invalid_nanoseconds() {
+        let invalid = __kernel_timespec {
+            tv_sec: 0,
+            tv_nsec: 1_000_000_000,
+        };
+        assert!(invalid.try_into_time_value().is_err());
+    }
 }

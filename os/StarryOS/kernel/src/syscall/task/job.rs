@@ -116,8 +116,8 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> StarryResult<isize> {
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn job_setpgid_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn job_setpgid_validation_rules_hold_for_test() -> bool {
     // Test sys_setpgid validation: negative pid or pgid should fail
     // The function checks: if pid < 0 || pgid < 0 return Err(InvalidInput)
 
@@ -141,3 +141,11 @@ pub(crate) fn job_setpgid_validation_rules_hold_for_test() -> bool {
 }
 
 // TODO: job control
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn job_setpgid_validation_rules_hold() {
+        assert!(super::job_setpgid_validation_rules_hold_for_test());
+    }
+}

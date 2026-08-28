@@ -118,10 +118,6 @@ fn plan_devices(
             std::sync::Arc::new(super::cmos::X86CmosModel::new(low_memory_size)),
         ),
         DeviceNodeSpec::virtual_device(
-            DeviceNodeId::new("pci-config")?,
-            std::sync::Arc::new(super::pci_config::X86PciConfigModel),
-        ),
-        DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("acpi-pm-timer")?,
             std::sync::Arc::new(super::acpi_pm_timer::X86AcpiPmTimerModel),
         )
@@ -143,11 +139,12 @@ fn plan_devices(
         &controller_id,
         axdevice_base::InterruptControllerId::new(0),
     )?;
-    Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
+    Ok(SimpleVmPlan::new(VmDevicePlan::with_pci_host_for_vm(
         config,
         nodes,
         &[],
         super::resource_pools::create(config)?,
+        super::pci_config::provider()?,
     )?))
 }
 

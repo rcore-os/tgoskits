@@ -602,3 +602,103 @@ fn narrow_dma_capability(dma: &DeviceDma, hba_mask: u64) -> DeviceDma {
         max_segment_size: Some(max_segment_size),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    struct UnusedDmaOp;
+
+    impl dma_api::DmaOp for UnusedDmaOp {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: dma_api::DmaConstraints,
+            _layout: core::alloc::Layout,
+        ) -> Option<dma_api::DmaAllocHandle> {
+            panic!("idempotent OnlineSmp must not allocate DMA")
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: dma_api::DmaAllocHandle) {
+            panic!("idempotent OnlineSmp must not release DMA")
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: dma_api::DmaConstraints,
+            _layout: core::alloc::Layout,
+        ) -> Option<dma_api::DmaAllocHandle> {
+            panic!("idempotent OnlineSmp must not allocate coherent DMA")
+        }
+
+        unsafe fn dealloc_coherent(
+            &self,
+            _handle: dma_api::DmaAllocHandle,
+        ) -> Result<(), dma_api::DmaError> {
+            panic!("idempotent OnlineSmp must not release coherent DMA")
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: dma_api::DmaConstraints,
+            _addr: core::ptr::NonNull<u8>,
+            _size: core::num::NonZeroUsize,
+            _direction: dma_api::DmaDirection,
+        ) -> Result<dma_api::DmaMapHandle, dma_api::DmaError> {
+            panic!("idempotent OnlineSmp must not map DMA")
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: dma_api::DmaMapHandle) {
+            panic!("idempotent OnlineSmp must not unmap DMA")
+        }
+    }
+
+    fn test_dma() -> DeviceDma {
+        static OP: UnusedDmaOp = UnusedDmaOp;
+        DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::Coherent,
+                dma_api::DmaConstraints::new(u64::MAX),
+            ),
+            &OP,
+        )
+    }
+
+    #[test]
+    fn ready_online_smp_repeats_info_without_reissuing_resources() {
+        let mut words = vec![0_u32; 0x180 / core::mem::size_of::<u32>()];
+        let hba = HbaRegisters::from_words(&mut words);
+        let port = hba.port(0).unwrap();
+        let mut controller = AhciPortController::new(
+            String::from("ahci-test"),
+            port,
+            test_dma(),
+            Arc::new(AtomicU32::new(0)),
+            PortCapabilities {
+                command_slots: 1,
+                ncq: false,
+                spin_up: false,
+            },
+            NcqPolicy::Disabled,
+        );
+        controller.state = PortLifecycle::Ready;
+        let expected_info = controller.device_info();
+
+        for _ in 0..2 {
+            let mut update = controller
+                .advance(ControllerEvent::OnlineSmp { target_queues: 1 })
+                .unwrap();
+
+            assert_eq!(update.controller_state(), ControllerState::Ready);
+            assert!(update.take_queues().is_empty());
+            assert!(update.take_irq_endpoints().is_empty());
+            assert_eq!(update.take_device_info(), Some(expected_info));
+        }
+    }
+}

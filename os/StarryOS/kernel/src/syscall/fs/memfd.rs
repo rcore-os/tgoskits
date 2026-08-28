@@ -155,25 +155,25 @@ pub fn memfd_checks_before_write_at(
     memfd_check_write_seal(file_like)
 }
 
-#[cfg(test)]
-pub(crate) fn memfd_flags_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn memfd_flags_validation_rules_hold_for_test() -> bool {
     // Test memfd_create flag validation
     let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
 
     let flags = 0u32;
     assert!(flags & !valid_flags == 0 && flags & MFD_HUGETLB == 0);
 
-    let cloexec_only = MFD_CLOEXEC as u32;
+    let cloexec_only = MFD_CLOEXEC;
     assert!(cloexec_only & !valid_flags == 0 && cloexec_only & MFD_HUGETLB == 0);
 
-    let allow_sealing_only = MFD_ALLOW_SEALING as u32;
+    let allow_sealing_only = MFD_ALLOW_SEALING;
     assert!(allow_sealing_only & !valid_flags == 0 && allow_sealing_only & MFD_HUGETLB == 0);
 
     let all_valid = valid_flags;
     assert!(all_valid & !valid_flags == 0 && all_valid & MFD_HUGETLB == 0);
 
     // MFD_HUGETLB should be rejected
-    let huge_tlb = MFD_HUGETLB as u32;
+    let huge_tlb = MFD_HUGETLB;
     assert!(huge_tlb & MFD_HUGETLB != 0);
 
     // Invalid flag should be detected
@@ -181,4 +181,12 @@ pub(crate) fn memfd_flags_validation_rules_hold_for_test() -> bool {
     assert!(invalid_flags & !valid_flags != 0);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn memfd_flags_validation_rules_hold() {
+        assert!(super::memfd_flags_validation_rules_hold_for_test());
+    }
 }

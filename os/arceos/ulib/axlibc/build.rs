@@ -11,7 +11,7 @@ fn main() {
             .derive_default(true)
             .size_t_is_usize(false)
             .use_core();
-        for feature in ["MULTITASK", "SMP", "LOCKDEP"] {
+        for feature in ["SMP", "LOCKDEP"] {
             println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{feature}");
             if std::env::var_os(format!("CARGO_FEATURE_{feature}")).is_some() {
                 builder = builder.clang_arg(format!("-DAX_CONFIG_{feature}"));

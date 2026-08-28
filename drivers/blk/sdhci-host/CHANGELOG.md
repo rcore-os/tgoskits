@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.5.0...sdhci-host-v0.5.1) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.4...sdhci-host-v0.5.0) - 2026-08-20
 
 ### Added
@@ -42,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split host2 transaction ownership from bus-operation state machines, and
   split DMA request lifecycle from FIFO progress and descriptor policy.
 - Move controller, DMA, and crate tests out of production modules.
-- Make the `SdioIrqHost` capability enable and disable the physical SDHCI
+- Make the `SdMmcIrqHost` capability enable and disable the physical SDHCI
   signal masks instead of inheriting the no-op default implementation.
 - Use only preallocated 32-bit, 64-bit, or v4 ADMA2 descriptors and enforce
   DMA mask, alignment, descriptor-count, and 128 MiB boundary limits.

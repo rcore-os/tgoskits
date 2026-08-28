@@ -8,7 +8,10 @@ use crate::*;
 pub const X86_PAGE_SIZE_4K: usize = 0x1000;
 
 /// Host operations required by x86 vLAPIC and PIT emulation.
-pub trait X86VlapicHostOps {
+pub trait X86VlapicHostOps: 'static {
+    /// Stable handle for one host timer registration.
+    type TimerHandle: Copy + Send + 'static;
+
     /// Allocate one host frame.
     fn alloc_frame() -> Option<X86HostPhysAddr>;
 
@@ -25,10 +28,13 @@ pub trait X86VlapicHostOps {
     fn current_time_nanos() -> u64;
 
     /// Register a timer callback for an absolute host deadline in nanoseconds.
-    fn register_timer(deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize>;
+    fn register_timer(
+        deadline_nanos: u64,
+        callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle>;
 
     /// Cancel a timer callback.
-    fn cancel_timer(token: usize);
+    fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult;
 
     /// Return the current VM ID.
     fn current_vm_id() -> X86VmId;
@@ -111,12 +117,12 @@ pub(crate) fn current_time_nanos<H: X86VlapicHostOps>() -> u64 {
 pub(crate) fn register_timer<H: X86VlapicHostOps>(
     deadline_nanos: u64,
     callback: X86TimerCallback,
-) -> Option<usize> {
+) -> X86VlapicResult<H::TimerHandle> {
     H::register_timer(deadline_nanos, callback)
 }
 
-pub(crate) fn cancel_timer<H: X86VlapicHostOps>(token: usize) {
-    H::cancel_timer(token);
+pub(crate) fn cancel_timer<H: X86VlapicHostOps>(handle: H::TimerHandle) -> X86VlapicResult {
+    H::cancel_timer(handle)
 }
 
 pub(crate) fn current_vm_vcpu_num<H: X86VlapicHostOps>() -> usize {

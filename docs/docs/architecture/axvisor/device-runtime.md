@@ -74,9 +74,9 @@ AxVM 不把 `AxVM` 整体暴露给设备。设备在 bundle 中声明 grant；ru
 | 架构或子系统 | service / consumer | 用途 |
 | --- | --- | --- |
 | AArch64 | `Aarch64VgicRuntimeKey` | prepare 时给每个 vCPU attach vGIC 与 timer PPI；start/last-vCPU-exit 时 activate/deactivate assigned SPI 路径 |
-| RISC-V | `RiscvPlicRuntimeKey` | start/last-vCPU-exit 激活或停用物理 IRQ backing；MMIO 后及每次 guest run 前同步 vPLIC 的可投递状态到 `VSEIP` |
+| RISC-V | `RiscvPlicRuntimeKey` | start/last-vCPU-exit 激活或停用物理 IRQ backing；guest run 前同步 vPLIC 的可投递状态到 `VSEIP`，MMIO 访问后的同步由 vPLIC `Device` 自身完成 |
 | x86_64 | PIC、PIT、IOAPIC/interrupt-domain services | legacy PIC 查询、PIT 到期注入、IOAPIC 路由与 EOI 后重投递；设备图仍提供默认 `VirtualInterruptController` |
-| LoongArch64 | `PchPicOutputPortKey` | PCH-PIC MMIO 写和外部 IRQ 后排出 controller event，向架构中断输入发布结果 |
+| LoongArch64 | `PchPicOutputPortKey` | 外部 IRQ 路径操作 PCH-PIC 输入；PCH-PIC `Device` 通过构建时注入的 typed output sink 发布寄存器访问产生的 controller event |
 | IVC | `IvcApertureAllocatorKey`、`IvcNotifyEndpointKey` | runtime IVC API 分配 guest aperture、建立/撤销共享绑定并通知 subscriber；IVC service 不要求存在一个可直接访问的 `Device` |
 
 AArch64 的默认 controller 从 vGIC service 的 core 取得；其他三种架构从 sealed runtime 中按 controller ID 取得。Machine resources 单独保存这个 trait object，供通用 `pulse_interrupt()` 等 VM API 使用，而架构专属路径仍从 typed service 读取更丰富的能力。
@@ -135,12 +135,12 @@ x86 进入设备 runtime 的退出分为 scalar/string PIO、direct MMIO 和 MSR
 
 ### 4.3 RISC-V
 
-backend 直接报告的 `MmioRead/Write` 使用 strict handler；读写完成后同步 vPLIC `VSEIP`，miss 直接转成 `AxVmError`。同步通过 `set_vseip_level()` 同时更新 vCPU 的保存状态；vCPU 暂未 bound 时状态仍会保留，下一次载入前无需依赖当时的宿主执行上下文重新推断。
+backend 直接报告的 `MmioRead/Write` 使用通用 strict handler；handler 只调用 `DeviceRuntime::try_read/try_write`。vPLIC 的 `Device::read/write` 在成功访问后通过自身 runtime 发布 `VSEIP`，架构 exit 不识别设备类型，也不执行第二段具体设备后处理。同步通过 `set_vseip_level()` 同时更新 vCPU 的保存状态；vCPU 暂未 bound 时状态仍会保留，下一次载入前无需依赖当时的宿主执行上下文重新推断。
 
 对 `NestedPageFault`，AxVM 依次执行：
 
 1. 请 vCPU backend 解码这次 fault；若得到 MMIO 读写，调用 `try_handle_mmio_*()`；
-2. 命中设备时完成寄存器访问、同步 vPLIC `VSEIP` 并 `Continue`；
+2. 命中设备时由 dyn `Device::read/write` 完成寄存器访问及设备内部发布动作，然后 `Continue`；
 3. 未解码或设备 miss 时尝试 `handle_nested_page_fault()` 的 stage-2 路径；
 4. stage-2 仍未处理时记录地址和 access flags 的 warning，返回无 stop 原因的 `Complete`。
 
@@ -148,7 +148,7 @@ backend 直接报告的 `MmioRead/Write` 使用 strict handler；读写完成后
 
 ### 4.4 LoongArch64
 
-LoongArch64 的 direct MMIO 也使用 strict handler；MMIO 写成功后还会排出 PCH-PIC 事件。未命中即报错。
+LoongArch64 的 direct MMIO 也只使用通用 strict handler。PCH-PIC 构建结果包装了同一个 `Arc<dyn Device>` 接口，并在其成功读写后通过 typed output sink 排出 controller event；exit handler 不再调用 PCH-PIC 具体函数。未命中即报错。
 
 `NestedPageFault` 的顺序与 RISC-V 相同：先让 backend 解码并用 `try_handle_mmio_*()` 尝试设备，再尝试 stage-2，最后 warning + `Complete`。LoongArch 不在 miss 时伪造读值，也不把 direct MMIO 写静默丢弃。未知的其他 VM-exit 返回明确的 `Unsupported`。
 

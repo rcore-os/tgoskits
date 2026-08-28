@@ -14,7 +14,11 @@ pub(crate) fn default_host() -> &'static arceos::ArceOsHost {
 }
 
 pub(crate) use paging::PagingHandler;
-pub(crate) use traits::{HostCpu, HostMemory, HostPlatform, HostTime};
+#[cfg(target_arch = "aarch64")]
+pub(crate) use traits::HostHardTimerAction;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use traits::HostTimerAction;
+pub(crate) use traits::{HostCpu, HostMemory, HostPlatform, HostTime, HostTimer};
 
 /// Physical host-CPU information required by an AxVM application.
 pub mod cpu {

@@ -74,22 +74,32 @@ pub fn register_block_irq(
 
 /// Returns whether an IRQ registrar is installed.
 pub fn has_irq_registrar() -> bool {
-    IRQ_READY.load(Ordering::Acquire)
+    irq_registrar_ready(&IRQ_READY)
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn block_irq_outcome_and_ready_hold_for_test() -> bool {
-    // Test BlockIrqOutcome variants
-    let handled = BlockIrqOutcome::Handled;
-    let wake = BlockIrqOutcome::Wake;
+fn irq_registrar_ready(ready: &AtomicBool) -> bool {
+    ready.load(Ordering::Acquire)
+}
 
-    assert!(handled != wake);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Test Clone, Copy, Debug, Eq, PartialEq
-    let _cloned = handled;
+    #[test]
+    fn block_irq_outcomes_keep_handled_and_wake_distinct() {
+        let handled = BlockIrqOutcome::Handled;
+        let copied = handled;
 
-    // Test has_irq_registrar returns false initially (no registrar set)
-    assert!(!has_irq_registrar());
+        assert_eq!(copied, BlockIrqOutcome::Handled);
+        assert_ne!(handled, BlockIrqOutcome::Wake);
+    }
 
-    true
+    #[test]
+    fn irq_registrar_readiness_starts_unpublished() {
+        let ready = AtomicBool::new(false);
+
+        assert!(!irq_registrar_ready(&ready));
+        ready.store(true, Ordering::Release);
+        assert!(irq_registrar_ready(&ready));
+    }
 }

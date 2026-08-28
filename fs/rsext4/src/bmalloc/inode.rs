@@ -1,5 +1,3 @@
-use log::error;
-
 use super::*;
 use crate::error::{Ext4Error, Ext4Result};
 
@@ -45,7 +43,7 @@ impl InodeAllocator {
 
         // Find the first free inode slot that is eligible for allocation.
         let inode_in_group = self
-            .find_free_inode(&bitmap)?
+            .find_free_inode(&bitmap, group_idx)?
             .ok_or(Ext4Error::no_space())?;
 
         // Mark the inode as allocated in the bitmap.
@@ -86,13 +84,13 @@ impl InodeAllocator {
         if let Some(resu) = bitmap.is_allocated(inode_in_group.raw()) {
             return Ok(resu);
         }
-        error!("bitmap allocated check failed!");
+
         Err(Ext4Error::invalid_input())
     }
 
     /// Find the first free inode in a bitmap.
-    fn find_free_inode(&self, bitmap: &InodeBitmap) -> Ext4Result<Option<u32>> {
-        let start_idx = if self.first_inode > 0 {
+    fn find_free_inode(&self, bitmap: &InodeBitmap, group_idx: BGIndex) -> Ext4Result<Option<u32>> {
+        let start_idx = if group_idx == BGIndex::new(0) && self.first_inode > 0 {
             self.first_inode - 1 // Example: first_ino = 11 starts the scan from index 10.
         } else {
             0
@@ -152,6 +150,28 @@ mod tests {
         let alloc = result.unwrap();
         assert_eq!(alloc.group_idx, BGIndex::new(0));
         assert!(alloc.inode_in_group.raw() >= 10); // Reserved inodes must be skipped.
+    }
+
+    #[test]
+    fn non_first_group_does_not_skip_reserved_inode_range() {
+        let sb = Ext4Superblock {
+            s_inodes_per_group: 16,
+            s_first_ino: 11,
+            ..Default::default()
+        };
+        let allocator = InodeAllocator::new(&sb);
+        let mut bitmap_data = vec![0u8; 2];
+        let group_desc = Ext4GroupDesc {
+            bg_free_inodes_count_lo: 16,
+            ..Default::default()
+        };
+
+        let alloc = allocator
+            .alloc_inode_in_group(&mut bitmap_data, BGIndex::new(1), &group_desc)
+            .unwrap();
+
+        assert_eq!(alloc.inode_in_group, RelativeInodeIndex::new(0));
+        assert_eq!(alloc.global_inode, InodeNumber::new(17).unwrap());
     }
 
     #[test]

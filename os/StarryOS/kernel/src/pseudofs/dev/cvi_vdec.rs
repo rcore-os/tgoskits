@@ -520,7 +520,7 @@ fn same_frame(left: &VideoFrameInfo, right: &VideoFrameInfo) -> bool {
         && left.frame.private_data == right.frame.private_data
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use super::*;
 

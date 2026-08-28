@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: true
+      max_parallel:
+        description: Maximum number of matrix entries that may run concurrently.
+        required: false
+        type: number
+        default: 256
       save_cache:
         description: Allow rust-cache to save updated entries.
         required: false
@@ -31,6 +36,7 @@ jobs:
     name: ${{ matrix.name }}
     strategy:
       fail-fast: ${{ inputs.fail_fast }}
+      max-parallel: ${{ inputs.max_parallel }}
       matrix: ${{ fromJSON(inputs.matrix_json) }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: ${{ matrix.timeout_minutes }}

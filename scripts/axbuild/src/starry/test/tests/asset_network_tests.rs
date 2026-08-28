@@ -199,6 +199,12 @@ fn dual_net_qemu_case_exercises_two_interfaces_and_parallel_fetches() {
                 config_path.display()
             );
         }
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-smp" && pair[1] == "4"),
+            "{} must exercise the dual-NIC path on four CPUs",
+            config_path.display()
+        );
         assert_eq!(
             config.get("shell_init_cmd").and_then(toml::Value::as_str),
             Some("/usr/bin/dual-net-tests.sh")

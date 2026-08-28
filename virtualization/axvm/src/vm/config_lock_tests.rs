@@ -168,3 +168,23 @@ fn with_config_remains_available_without_machine_resources() {
         );
     }
 }
+
+#[test]
+fn runtime_handle_returns_without_machine_lock() {
+    let runtime = Arc::new(VmRuntimeHandle::new());
+    let vm = test_vm_with_machine(
+        7,
+        Machine::Stopping {
+            resources: None,
+            runtime: Some(runtime),
+            reason: StopReason::Clean,
+        },
+    );
+
+    let runtime = vm.runtime_handle().unwrap();
+    assert!(
+        vm.machine.try_lock().is_some(),
+        "runtime handle access must not retain the machine lock"
+    );
+    runtime.notify_all();
+}

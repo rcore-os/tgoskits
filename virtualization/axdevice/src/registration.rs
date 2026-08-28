@@ -89,6 +89,12 @@ pub struct DeviceBundle {
     pub(crate) lifecycle: Vec<Arc<dyn DeviceLifecycle>>,
     pub(crate) services: DeviceServices,
     pub(crate) planned: PlannedBundleResources,
+    pub(crate) pci_function: Option<BundlePciFunction>,
+}
+
+pub(crate) struct BundlePciFunction {
+    pub(crate) device_index: usize,
+    pub(crate) function: Arc<dyn PciFunction>,
 }
 
 impl DeviceBundle {
@@ -105,6 +111,7 @@ impl DeviceBundle {
             lifecycle: Vec::new(),
             services: DeviceServices::new(),
             planned: PlannedBundleResources::new(),
+            pci_function: None,
         }
     }
 
@@ -131,6 +138,26 @@ impl DeviceBundle {
         let index = self.devices.len();
         self.devices.push(device);
         index
+    }
+
+    /// Adds one device as this graph node's resolved PCI function.
+    pub fn add_pci_function(
+        &mut self,
+        function: Arc<dyn PciFunction>,
+    ) -> DeviceManagerResult<usize> {
+        if self.pci_function.is_some() {
+            return Err(DeviceManagerError::ResourceConflict {
+                operation: "declare bundled PCI function",
+                detail: "a device bundle may bind at most one PCI function".into(),
+            });
+        }
+        let device: Arc<dyn Device> = function.clone();
+        let device_index = self.add_device(device);
+        self.pci_function = Some(BundlePciFunction {
+            device_index,
+            function,
+        });
+        Ok(device_index)
     }
 
     /// Grants guest-memory access to an already-added bundle-local device.

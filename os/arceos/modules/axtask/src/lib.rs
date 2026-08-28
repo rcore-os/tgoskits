@@ -6,19 +6,16 @@
 //!
 //! # Cargo Features
 //!
-//! - `multitask`: Enable multi-task support. If it's enabled, complex task
-//!   management and scheduling is used, as well as more task-related APIs.
-//!   Otherwise, only a few APIs with naive implementation is available.
-//! - `irq`: Interrupts are enabled. If this feature is enabled, timer-based
-//!   APIs can be used, such as [`sleep`], [`sleep_until`], and
-//!   [`WaitQueue::wait_timeout`].
+//! Multi-task scheduling and interrupt handling are mandatory runtime
+//! capabilities. Timer-based APIs such as [`sleep`], [`sleep_until`], and
+//! [`WaitQueue::wait_timeout`] are always available.
 //! - `preempt`: Enable preemptive scheduling.
 //! - FIFO cooperative scheduler is the default when no scheduler feature is
 //!   selected.
 //! - `sched-rr`: Use the [Round-robin preemptive scheduler][2]. It also enables
-//!   the `multitask` and `preempt` features if it is enabled.
+//!   the `preempt` feature.
 //! - `sched-cfs`: Use the [Completely Fair Scheduler][3]. It also enables the
-//!   the `multitask` and `preempt` features if it is enabled.
+//!   `preempt` feature.
 //! - `host-test`: Use host-safe fallbacks for unit tests.
 //!
 //! [1]: ax_sched::FifoScheduler
@@ -59,80 +56,36 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     }
 }
 
-#[cfg(feature = "multitask")]
 mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "multitask")] {
-        #[macro_use]
-        extern crate log;
-        extern crate alloc;
+#[macro_use]
+extern crate log;
+extern crate alloc;
 
-        #[macro_use]
-        mod run_queue;
-        mod interrupt;
-        mod task;
-        mod api;
-        #[doc(hidden)]
-        pub mod runtime_preempt;
-        #[cfg(feature = "lockdep")]
-        mod lockdep;
-        #[cfg(feature = "tracepoint-hooks")]
-        mod sched_tracepoint;
-        #[cfg(feature = "irq")]
-        mod irq_notify;
-        mod wait_queue;
-
-        #[cfg(feature = "irq")]
-        mod timers;
-
-        #[cfg(feature = "multitask")]
-        pub mod future;
-
-        #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
-        pub use self::api::*;
-        #[cfg(feature = "irq")]
-        pub use self::irq_notify::IrqNotify;
-        pub use self::api::{sleep, sleep_until, yield_now};
-        #[cfg(feature = "tracepoint-hooks")]
-        pub use self::sched_tracepoint::SchedTracepoint;
-        #[cfg(all(feature = "smp", feature = "ipi"))]
-        pub use self::run_queue::handle_ipi_reschedule;
-    } else {
-        mod api_s;
-        pub use self::api_s::{sleep, sleep_until, yield_now};
-    }
-}
-
-/// Runtime checks that require a bound ArceOS CPU-local area.
-#[cfg(all(axtest, feature = "multitask"))]
+#[macro_use]
+mod run_queue;
+mod api;
+mod interrupt;
+mod irq_notify;
+#[cfg(feature = "lockdep")]
+mod lockdep;
 #[doc(hidden)]
-pub mod axtest_support {
-    /// Checks the live atomic-context query and target stack configuration.
-    #[cfg(feature = "axtest")]
-    pub fn atomic_context_and_stack_configuration_hold() -> bool {
-        super::api::axtask_api_atomic_context_structs_hold_for_test()
-    }
+pub mod runtime_preempt;
+#[cfg(feature = "tracepoint-hooks")]
+mod sched_tracepoint;
+mod task;
+mod timers;
+mod wait_queue;
 
-    /// Marks the current task for a deterministic preemption safe-point test.
-    #[cfg(feature = "preempt")]
-    pub fn request_current_preemption() {
-        super::api::request_current_preemption_for_test();
-    }
+pub mod future;
 
-    /// Records that the current task consumed its first-entry scheduler frame.
-    ///
-    /// This hook remains available without the `preempt` feature because the
-    /// runtime completes the first-entry scheduler handoff for every multitask
-    /// axtest configuration, including non-preemptive workspace consumers.
-    pub fn record_initial_scheduler_frame_consumed() {
-        super::api::record_initial_scheduler_frame_consumed_for_test();
-    }
-
-    /// Reports whether the current task consumed its first-entry scheduler frame.
-    pub fn initial_scheduler_frame_consumed() -> bool {
-        super::api::initial_scheduler_frame_consumed_for_test()
-    }
-}
+#[cfg(all(feature = "smp", feature = "ipi"))]
+pub use self::run_queue::handle_ipi_reschedule;
+#[cfg(feature = "tracepoint-hooks")]
+pub use self::sched_tracepoint::SchedTracepoint;
+pub use self::{
+    api::{sleep, sleep_until, yield_now, *},
+    irq_notify::IrqNotify,
+};

@@ -316,6 +316,111 @@ class CiImpactTests(unittest.TestCase):
         self.assertTrue(impact.full)
         load_metadata.assert_not_called()
 
+    def test_cargo_lock_does_not_expand_a_resolved_package_change(self) -> None:
+        ci_owned_manifest = (
+            self.workspace_root / "apps/arceos/virtio-blk-test/Cargo.toml"
+        )
+        ci_owned_manifest.parent.mkdir(parents=True, exist_ok=True)
+        ci_owned_manifest.write_text("[package]\n", encoding="utf-8")
+
+        with (
+            mock.patch.object(
+                ci_impact,
+                "changed_paths_since",
+                return_value=[
+                    Path("Cargo.lock"),
+                    Path("apps/arceos/virtio-blk-test/Cargo.toml"),
+                    Path("virtualization/arm-vcpu/src/lib.rs"),
+                ],
+            ),
+            mock.patch.object(
+                ci_impact,
+                "load_metadata_by_arch",
+                return_value=self.metadata_by_arch,
+            ) as load_metadata,
+        ):
+            impact = ci_impact.analyze_pull_request(self.workspace_root, "base")
+
+        self.assertFalse(impact.full)
+        self.assertEqual(impact.changed_packages, ("arm-vcpu",))
+        self.assertEqual(impact.affected_oses, ("axvisor",))
+        self.assertEqual(
+            impact.input_selections,
+            ("axvisor:qemu:aarch64",),
+        )
+        self.assertNotIn("starry:aarch64", impact.targets)
+        load_metadata.assert_called_once_with(self.workspace_root)
+
+    def test_cargo_lock_only_still_falls_back_to_full(self) -> None:
+        with (
+            mock.patch.object(
+                ci_impact,
+                "changed_paths_since",
+                return_value=[Path("Cargo.lock")],
+            ),
+            mock.patch.object(ci_impact, "load_metadata_by_arch") as load_metadata,
+        ):
+            impact = ci_impact.analyze_pull_request(self.workspace_root, "base")
+
+        self.assertTrue(impact.full)
+        self.assertIn("Cargo.lock", impact.reason)
+        load_metadata.assert_not_called()
+
+    def test_cargo_lock_does_not_break_exclusive_test_suite_routing(self) -> None:
+        impact = ci_impact.analyze_changed_paths(
+            self.workspace_root,
+            [
+                Path("Cargo.lock"),
+                Path("test-suit/starryos/qemu/system/qemu-aarch64.toml"),
+            ],
+            {},
+        )
+
+        self.assertFalse(impact.full)
+        self.assertTrue(impact.exclusive)
+        self.assertEqual(
+            impact.test_suite_paths,
+            ("test-suit/starryos/qemu/system/qemu-aarch64.toml",),
+        )
+
+    def test_cargo_lock_with_precise_input_skips_metadata_loading(self) -> None:
+        with (
+            mock.patch.object(
+                ci_impact,
+                "changed_paths_since",
+                return_value=[
+                    Path("Cargo.lock"),
+                    Path("os/axvisor/configs/qemu/aarch64.toml"),
+                ],
+            ),
+            mock.patch.object(ci_impact, "load_metadata_by_arch") as load_metadata,
+        ):
+            impact = ci_impact.analyze_pull_request(self.workspace_root, "base")
+
+        self.assertFalse(impact.full)
+        self.assertEqual(
+            impact.input_selections,
+            ("axvisor:qemu:aarch64",),
+        )
+        load_metadata.assert_not_called()
+
+    def test_cargo_lock_with_only_ignored_paths_still_falls_back_to_full(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(
+                ci_impact,
+                "changed_paths_since",
+                return_value=[Path("Cargo.lock"), Path("README.md")],
+            ),
+            mock.patch.object(ci_impact, "load_metadata_by_arch") as load_metadata,
+        ):
+            impact = ci_impact.analyze_pull_request(self.workspace_root, "base")
+
+        self.assertTrue(impact.full)
+        self.assertEqual(impact.ignored_markdown, ("README.md",))
+        load_metadata.assert_not_called()
+
     def test_summary_reports_selected_and_skipped_checks(self) -> None:
         impact = ci_impact.CiImpact(
             full=False,
@@ -343,7 +448,6 @@ class CiImpactTests(unittest.TestCase):
         for changed_path in (
             "unknown/input.bin",
             "Cargo.toml",
-            "Cargo.lock",
             ".cargo/config.toml",
             "scripts/axbuild/src/lib.rs",
             "scripts/test/ci_plan.py",

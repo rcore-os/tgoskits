@@ -128,8 +128,8 @@ impl Default for ProcessVmStat {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn process_vm_stat_watermarks_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn process_vm_stat_watermarks_hold_for_test() -> bool {
     let parent = ProcessVmStat::new();
     parent.on_map(3);
     parent.on_map(2);
@@ -148,8 +148,8 @@ pub(crate) fn process_vm_stat_watermarks_hold_for_test() -> bool {
         && parent.peak_rss_pages() == 0
 }
 
-#[cfg(test)]
-pub(crate) fn process_vm_stat_edge_cases_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn process_vm_stat_edge_cases_hold_for_test() -> bool {
     // Initial state: all zeros.
     let stat = ProcessVmStat::new();
     let init_ok = stat.vss_pages() == 0 && stat.peak_vss_pages() == 0 && stat.peak_rss_pages() == 0;
@@ -184,4 +184,17 @@ pub(crate) fn process_vm_stat_edge_cases_hold_for_test() -> bool {
         child.vss_pages() == 0 && child.peak_vss_pages() == 0 && child.peak_rss_pages() == 0;
 
     init_ok && after_map && after_more && after_unmap && after_over && peaks_stable && from_empty
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn process_vm_stat_watermarks_hold() {
+        assert!(super::process_vm_stat_watermarks_hold_for_test());
+    }
+
+    #[test]
+    fn process_vm_stat_edge_cases_hold() {
+        assert!(super::process_vm_stat_edge_cases_hold_for_test());
+    }
 }

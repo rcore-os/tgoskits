@@ -1,16 +1,16 @@
-//! CV181x Host2 and IRQ capability adapters.
+//! CV181x SD/MMC host and IRQ capability adapters.
 
 use dma_api::DeviceDma;
 use sdhci_host::Sdhci;
-use sdio_host2::{ClockHz, ProgressCause, RequestProgress, SignalVoltage};
-use sdmmc_protocol::sdio::host::SdioIrqHost;
+use sdmmc_host::{ClockHz, ProgressCause, RequestProgress, SignalVoltage};
+use sdmmc_protocol::sdio::host::SdMmcIrqHost;
 
 use super::*;
-use crate::platform::*;
 
-impl SdioIrqHost for Cv181xSdhci {
+impl SdMmcIrqHost for Cv181xSdhci {
     type Event = sdhci_host::Event;
     type IrqHandle = sdhci_host::SdhciIrqHandle;
+    type CardIrq = sdhci_host::SdhciCardIrqHandle;
 
     fn completion_irq_enabled(&self) -> bool {
         self.inner.completion_irq_enabled()
@@ -26,65 +26,79 @@ impl SdioIrqHost for Cv181xSdhci {
         Ok(())
     }
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        self.inner.irq_endpoint()
+    fn into_parts(self) -> sdmmc_host::HostParts<Self, Self::IrqHandle, Self::CardIrq> {
+        let Cv181xSdhci {
+            inner,
+            mmio,
+            config,
+        } = self;
+        let parts = <Sdhci as SdMmcIrqHost>::into_parts(inner);
+        sdmmc_host::HostParts {
+            bus: Cv181xSdhci {
+                inner: parts.bus,
+                mmio,
+                config,
+            },
+            irq: parts.irq,
+            card_irq: parts.card_irq,
+        }
     }
 
     fn device_dma(&self) -> Result<&DeviceDma, ProtocolError> {
-        <Sdhci as SdioIrqHost>::device_dma(&self.inner)
+        <Sdhci as SdMmcIrqHost>::device_dma(&self.inner)
     }
 
     fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::HostProgressWait {
-        <Sdhci as SdioIrqHost>::progress_wait_kind(&self.inner)
+        <Sdhci as SdMmcIrqHost>::progress_wait_kind(&self.inner)
     }
 }
 
-impl sdio_host2::SdioHost for Cv181xSdhci {
+impl sdmmc_host::SdMmcHost for Cv181xSdhci {
     type TransactionRequest<'a>
-        = <Sdhci as sdio_host2::SdioHost>::TransactionRequest<'a>
+        = <Sdhci as sdmmc_host::SdMmcHost>::TransactionRequest<'a>
     where
         Self: 'a;
     type BusRequest = BusRequest;
 
     unsafe fn submit_transaction<'a>(
         &mut self,
-        transaction: sdio_host2::Transaction<'a>,
-    ) -> Result<Self::TransactionRequest<'a>, sdio_host2::Error>
+        transaction: sdmmc_host::Transaction<'a>,
+    ) -> Result<Self::TransactionRequest<'a>, sdmmc_host::Error>
     where
         Self: 'a,
     {
-        unsafe { sdio_host2::SdioHost::submit_transaction(&mut self.inner, transaction) }
+        unsafe { sdmmc_host::SdMmcHost::submit_transaction(&mut self.inner, transaction) }
     }
 
     unsafe fn submit_transaction_owned<'a>(
         &mut self,
-        transaction: sdio_host2::Transaction<'a>,
-    ) -> Result<Self::TransactionRequest<'a>, sdio_host2::SubmitTransactionError<'a>>
+        transaction: sdmmc_host::Transaction<'a>,
+    ) -> Result<Self::TransactionRequest<'a>, sdmmc_host::SubmitTransactionError<'a>>
     where
         Self: 'a,
     {
-        unsafe { sdio_host2::SdioHost::submit_transaction_owned(&mut self.inner, transaction) }
+        unsafe { sdmmc_host::SdMmcHost::submit_transaction_owned(&mut self.inner, transaction) }
     }
 
     fn advance_transaction<'a>(
         &mut self,
         request: &mut Self::TransactionRequest<'a>,
         cause: ProgressCause,
-    ) -> Result<RequestProgress<sdio_host2::RawResponse>, sdio_host2::AdvanceRequestError>
+    ) -> Result<RequestProgress<sdmmc_host::RawResponse>, sdmmc_host::AdvanceRequestError>
     where
         Self: 'a,
     {
-        sdio_host2::SdioHost::advance_transaction(&mut self.inner, request, cause)
+        sdmmc_host::SdMmcHost::advance_transaction(&mut self.inner, request, cause)
     }
 
     fn abort_transaction<'a>(
         &mut self,
         request: &mut Self::TransactionRequest<'a>,
-    ) -> Result<(), sdio_host2::Error>
+    ) -> Result<(), sdmmc_host::Error>
     where
         Self: 'a,
     {
-        sdio_host2::SdioHost::abort_transaction(&mut self.inner, request)
+        sdmmc_host::SdMmcHost::abort_transaction(&mut self.inner, request)
     }
 
     fn take_completed_dma<'a>(
@@ -94,46 +108,46 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
     where
         Self: 'a,
     {
-        sdio_host2::SdioHost::take_completed_dma(&mut self.inner, request)
+        sdmmc_host::SdMmcHost::take_completed_dma(&mut self.inner, request)
     }
 
     unsafe fn submit_bus_op(
         &mut self,
-        op: sdio_host2::BusOp,
-    ) -> Result<Self::BusRequest, sdio_host2::Error> {
+        op: sdmmc_host::BusOp,
+    ) -> Result<Self::BusRequest, sdmmc_host::Error> {
         match op {
-            sdio_host2::BusOp::PowerOn => {
-                let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
+            sdmmc_host::BusOp::PowerOn => {
+                let request = unsafe { sdmmc_host::SdMmcHost::submit_bus_op(&mut self.inner, op)? };
                 Ok(BusRequest::inner(request, AfterBusOp::PowerOn))
             }
-            sdio_host2::BusOp::PowerOff => {
-                self.configure_sd_power_off();
-                let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
-                Ok(BusRequest::inner(request, AfterBusOp::None))
+            sdmmc_host::BusOp::PowerOff => {
+                let request = unsafe { sdmmc_host::SdMmcHost::submit_bus_op(&mut self.inner, op)? };
+                Ok(BusRequest::inner(request, AfterBusOp::PowerOff))
             }
-            sdio_host2::BusOp::ResetAll => {
-                let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
+            sdmmc_host::BusOp::ResetAll => {
+                let request = unsafe { sdmmc_host::SdMmcHost::submit_bus_op(&mut self.inner, op)? };
                 Ok(BusRequest::inner(request, AfterBusOp::ResetAll))
             }
-            sdio_host2::BusOp::SetClock(speed) => {
-                Ok(BusRequest::ready(self.set_clock_speed(speed)))
+            sdmmc_host::BusOp::SetClock(speed) => {
+                let request = unsafe { sdmmc_host::SdMmcHost::submit_bus_op(&mut self.inner, op)? };
+                Ok(BusRequest::inner(request, AfterBusOp::SetClock(speed)))
             }
-            sdio_host2::BusOp::SetClockHz(ClockHz(hz)) => Ok(BusRequest::ready(
-                self.program_clock(hz, hz > DEFAULT_MAX_FREQUENCY_HZ, HOST_CTRL2_UHS_SDR12),
-            )),
-            sdio_host2::BusOp::SetBusWidth(width) if !self.config.supports_bus_width(width) => {
-                Ok(BusRequest::ready(Err(sdio_host2::Error::Unsupported)))
+            sdmmc_host::BusOp::SetClockHz(ClockHz(hz)) => {
+                let request = unsafe { sdmmc_host::SdMmcHost::submit_bus_op(&mut self.inner, op)? };
+                Ok(BusRequest::inner(request, AfterBusOp::SetClockHz(hz)))
             }
-            sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V180) if self.config.no_1v8 => {
-                Ok(BusRequest::ready(Err(sdio_host2::Error::Unsupported)))
+            sdmmc_host::BusOp::SetBusWidth(width) if !self.config.supports_bus_width(width) => {
+                Err(sdmmc_host::Error::Unsupported)
             }
-            sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V330) => {
-                self.restore_3v3_power();
-                let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
-                Ok(BusRequest::inner(request, AfterBusOp::None))
+            sdmmc_host::BusOp::SetSignalVoltage(SignalVoltage::V180) if self.config.no_1v8 => {
+                Err(sdmmc_host::Error::Unsupported)
+            }
+            sdmmc_host::BusOp::SetSignalVoltage(SignalVoltage::V330) => {
+                let request = unsafe { sdmmc_host::SdMmcHost::submit_bus_op(&mut self.inner, op)? };
+                Ok(BusRequest::inner(request, AfterBusOp::Restore3v3))
             }
             _ => {
-                let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
+                let request = unsafe { sdmmc_host::SdMmcHost::submit_bus_op(&mut self.inner, op)? };
                 Ok(BusRequest::inner(request, AfterBusOp::None))
             }
         }
@@ -143,24 +157,12 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
         &mut self,
         bus_request: &mut Self::BusRequest,
         cause: ProgressCause,
-    ) -> Result<RequestProgress<()>, sdio_host2::AdvanceRequestError> {
+    ) -> Result<RequestProgress<()>, sdmmc_host::AdvanceRequestError> {
         match &mut bus_request.state {
-            BusRequestState::Ready(result) => {
-                if cause == ProgressCause::Submitted {
-                    return Ok(RequestProgress::RegisterPending {
-                        retry_after: core::time::Duration::from_micros(1),
-                    });
-                }
-                let result = result
-                    .take()
-                    .ok_or(sdio_host2::AdvanceRequestError::AlreadyCompleted)?;
-                bus_request.state = BusRequestState::Done;
-                Ok(RequestProgress::Complete(result))
-            }
             BusRequestState::Inner {
                 request: inner,
                 after,
-            } => match sdio_host2::SdioHost::advance_bus_op(&mut self.inner, inner, cause)? {
+            } => match sdmmc_host::SdMmcHost::advance_bus_op(&mut self.inner, inner, cause)? {
                 RequestProgress::WaitingForIrq => Ok(RequestProgress::WaitingForIrq),
                 RequestProgress::RegisterPending { retry_after } => {
                     Ok(RequestProgress::RegisterPending { retry_after })
@@ -171,26 +173,26 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
                     Ok(RequestProgress::Complete(result))
                 }
             },
-            BusRequestState::Done => Err(sdio_host2::AdvanceRequestError::AlreadyCompleted),
+            BusRequestState::Done => Err(sdmmc_host::AdvanceRequestError::AlreadyCompleted),
         }
     }
 
     fn abort_bus_op(
         &mut self,
         bus_request: &mut Self::BusRequest,
-    ) -> Result<(), sdio_host2::Error> {
+    ) -> Result<(), sdmmc_host::Error> {
         let result = match &mut bus_request.state {
             BusRequestState::Inner { request: inner, .. } => {
-                sdio_host2::SdioHost::abort_bus_op(&mut self.inner, inner)
+                sdmmc_host::SdMmcHost::abort_bus_op(&mut self.inner, inner)
             }
-            BusRequestState::Ready(_) | BusRequestState::Done => Ok(()),
+            BusRequestState::Done => Ok(()),
         };
         bus_request.state = BusRequestState::Done;
         result
     }
 
     fn now_ms(&self) -> Option<u64> {
-        sdio_host2::SdioHost::now_ms(&self.inner)
+        sdmmc_host::SdMmcHost::now_ms(&self.inner)
     }
 }
 
@@ -199,13 +201,7 @@ pub struct BusRequest {
 }
 
 impl BusRequest {
-    fn ready(result: Result<(), sdio_host2::Error>) -> Self {
-        Self {
-            state: BusRequestState::Ready(Some(result)),
-        }
-    }
-
-    fn inner(request: <Sdhci as sdio_host2::SdioHost>::BusRequest, after: AfterBusOp) -> Self {
+    fn inner(request: <Sdhci as sdmmc_host::SdMmcHost>::BusRequest, after: AfterBusOp) -> Self {
         Self {
             state: BusRequestState::Inner { request, after },
         }
@@ -213,9 +209,8 @@ impl BusRequest {
 }
 
 enum BusRequestState {
-    Ready(Option<Result<(), sdio_host2::Error>>),
     Inner {
-        request: <Sdhci as sdio_host2::SdioHost>::BusRequest,
+        request: <Sdhci as sdmmc_host::SdMmcHost>::BusRequest,
         after: AfterBusOp,
     },
     Done,
@@ -225,5 +220,9 @@ enum BusRequestState {
 pub(super) enum AfterBusOp {
     None,
     PowerOn,
+    PowerOff,
     ResetAll,
+    Restore3v3,
+    SetClock(sdmmc_host::ClockSpeed),
+    SetClockHz(u32),
 }

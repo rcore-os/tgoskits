@@ -18,9 +18,8 @@
 //! router asks devices for a readiness poll set and performs `PollSet`
 //! register/wake operations after releasing the concrete device lock.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
-use axpoll::PollSet;
 use smoltcp::{
     storage::PacketBuffer,
     time::Instant,
@@ -56,7 +55,7 @@ pub struct ArpEntry {
 }
 
 /// Packet I/O endpoint behind the multi-device router.
-pub trait Device: Send + Sync {
+pub trait Device: Send {
     /// Human-readable device name used in logs and userspace queries.
     fn name(&self) -> &str;
 
@@ -73,7 +72,7 @@ pub trait Device: Send + Sync {
     ///
     /// Each call that returns a non-zero value MUST have enqueued exactly one
     /// IP packet into `buffer`. The return value is the L2 frame length of
-    /// that specific packet. The router RX worker relies on this 1:1
+    /// that specific packet. The protocol executor relies on this 1:1
     /// correspondence to pair frame lengths with dequeued packets in FIFO
     /// order.
     fn recv(
@@ -154,15 +153,6 @@ pub trait Device: Send + Sync {
     fn arp_entries(&self, _timestamp: Instant) -> Vec<ArpEntry> {
         Vec::new()
     }
-
-    /// Returns the device readiness poll set when the device has a wake source.
-    ///
-    /// Interrupt-driven and out-of-band devices return a poll set. Pure-polling
-    /// devices should return `None`, or their wakers would sit on a poll set
-    /// that is never woken.
-    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -205,7 +195,6 @@ mod tests {
         assert_eq!(device.drain_deferred_rx_errors(), 0);
         assert_eq!(device.drain_deferred_rx_drops(), 0);
         assert!(device.arp_entries(Instant::from_millis(1)).is_empty());
-        assert!(device.readiness_poll().is_none());
         device.set_ipv4_addr(Some(Ipv4Cidr::new(Ipv4Address::LOCALHOST, 8)));
     }
 

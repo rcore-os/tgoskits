@@ -20,14 +20,13 @@
 //! # Cargo Features
 //!
 //! - `paging`: Enable page table manipulation support.
-//! - `irq`: Enable interrupt handling support.
-//! - `multitask`: Enable multi-threading support.
 //! - `smp`: Enable SMP (symmetric multiprocessing) support.
 //! - `fs`: Enable filesystem support.
 //! - `net`: Enable networking support.
 //! - `display`: Enable graphics support.
 //!
-//! All the features are optional and disabled by default.
+//! Interrupt handling and multi-task scheduling are mandatory runtime
+//! capabilities. The listed features are optional and disabled by default.
 
 #![feature(extern_item_impls)]
 #![cfg_attr(not(test), no_std)]
@@ -50,33 +49,25 @@ mod stack_protector;
 #[cfg(feature = "smp")]
 mod mp;
 
+mod clock_event;
 #[cfg(feature = "paging")]
 mod kernel_mapping;
 mod klib;
-#[cfg(feature = "multitask")]
 mod preempt;
-#[cfg(all(feature = "irq", feature = "multitask"))]
 mod raw_console;
 
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub mod console;
 mod devices;
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub mod emergency_console;
 mod error;
 mod fs;
-#[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
-#[cfg(all(feature = "irq", feature = "multitask"))]
 pub mod serial;
 pub mod sync;
 
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
-
-#[cfg(feature = "aic8800-wifi")]
-mod wifi_glue;
 
 pub use ax_hal as hal;
 pub use error::{RuntimeError, RuntimeResult};
@@ -86,7 +77,6 @@ pub use error::{RuntimeError, RuntimeResult};
 /// Fatal paths must bypass this task-context transaction and use the
 /// emergency console plus [`ax_hal::power::system_off`] directly.
 pub fn terminate() -> ! {
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     if let Ok(output) = console::output() {
         let _ = output.drain();
     }
@@ -107,7 +97,6 @@ pub(crate) fn runtime_default_task_stack_size() -> usize {
     build_info::TASK_STACK_SIZE
 }
 
-#[cfg(feature = "irq")]
 fn ticks_per_sec() -> u64 {
     build_info::TICKS_PER_SEC as u64
 }
@@ -156,13 +145,9 @@ impl ax_log::LogIf for LogIfImpl {
         meta: ax_log::RecordMeta,
         args: core::fmt::Arguments<'_>,
     ) -> ax_log::PublishStatus {
-        #[cfg(not(all(feature = "irq", feature = "multitask")))]
-        let _ = meta;
-        #[cfg(all(feature = "irq", feature = "multitask"))]
         if let Some(status) = serial::try_publish_record(meta, args) {
             return status;
         }
-        #[cfg(all(feature = "irq", feature = "multitask"))]
         if let Some(status) = console::try_publish_without_runtime(args) {
             return status;
         }
@@ -175,16 +160,7 @@ impl ax_log::LogIf for LogIfImpl {
     }
 
     fn emergency_write(args: core::fmt::Arguments<'_>) -> usize {
-        #[cfg(all(feature = "irq", feature = "multitask"))]
-        {
-            return emergency_console::write_fmt(args);
-        }
-        #[cfg(not(all(feature = "irq", feature = "multitask")))]
-        {
-            let mut writer = PlatformConsoleWriter::default();
-            let _ = core::fmt::write(&mut writer, args);
-            writer.written
-        }
+        emergency_console::write_fmt(args)
     }
 }
 
@@ -307,49 +283,28 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     ax_hal::init_later(cpu_id, arg);
     if rdrive::is_initialized() {
         registers::append_linker_registers();
-        #[cfg(feature = "irq")]
         ax_hal::irq::init_boot_irqs(cpu_id)
             .unwrap_or_else(|err| panic!("failed to initialize boot IRQs: {err:?}"));
-        #[cfg(not(feature = "irq"))]
-        rdrive::probe_pre_kernel()
-            .unwrap_or_else(|err| panic!("failed to run pre-kernel driver probes: {err:?}"));
     } else {
         warn!("rdrive is not initialized; skip pre-kernel driver probe");
     }
 
-    #[cfg(feature = "multitask")]
-    {
-        ax_task::init_scheduler();
-        preempt::release_bootstrap();
-    }
+    ax_task::init_scheduler();
+    preempt::release_bootstrap();
 
     #[cfg(feature = "ipi")]
     {
         ax_ipi::init();
-        #[cfg(feature = "irq")]
         ax_hal::irq::set_run_on_cpu_sync(ax_ipi_run_on_cpu_sync);
     }
 
-    #[cfg(feature = "irq")]
-    {
-        info!("Initialize interrupt handlers...");
-        init_interrupt();
-    }
-
-    // Install the ArceOS runtime glue into the OS-independent Wi-Fi driver
-    // cores (aic8800 / sdhci-cv1800) *before* probing, since the FDT probe
-    // brings the chip up and that needs timing/task capabilities. The cores
-    // declare no ArceOS dependency themselves; this is the adapter layer (see
-    // `wifi_glue`).
-    #[cfg(feature = "aic8800-wifi")]
-    wifi_glue::install_runtime();
+    info!("Initialize interrupt handlers...");
+    init_interrupt();
 
     devices::probe_all_devices();
 
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     serial::init(cpu_id);
 
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     match console::activate_before_smp() {
         console::ConsoleActivation::Active {
             runtime_index,
@@ -377,20 +332,11 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "input")]
     devices::init_input();
 
-    #[cfg(feature = "net")]
-    devices::init_net();
-
     #[cfg(feature = "vsock")]
     devices::init_vsock();
 
     #[cfg(feature = "smp")]
     self::mp::start_secondary_cpus(cpu_id);
-
-    #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    {
-        info!("Initialize thread local storage...");
-        init_tls();
-    }
 
     ax_ctor_bare::call_ctors();
 
@@ -401,11 +347,18 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    #[cfg(all(feature = "irq", feature = "ipi"))]
+    #[cfg(feature = "ipi")]
     ax_ipi::wait_for_all_cpus_ready();
 
     #[cfg(all(feature = "smp", feature = "ipi"))]
     fs::online_smp();
+
+    // Queue-level network IRQ ownership is selected from the complete online
+    // CPU set.  Every target scheduler, IRQ CPU state, and synchronous IPI
+    // route must therefore be ready before fixed-affinity workers handshake
+    // and physical IRQ actions are registered.
+    #[cfg(feature = "net")]
+    devices::init_net();
 
     ax_app_entry();
     terminate();
@@ -458,7 +411,6 @@ fn init_allocator() {
     }
 }
 
-#[cfg(feature = "irq")]
 fn init_interrupt() {
     init_percpu_irq(ax_hal::percpu::this_cpu_id());
 
@@ -472,7 +424,6 @@ fn init_interrupt() {
     }
 }
 
-#[cfg(feature = "irq")]
 pub(crate) fn init_percpu_irq(cpu_id: usize) {
     ax_hal::irq::cpu_online(cpu_id).expect("failed to mark CPU online for IRQ framework");
     ax_hal::irq::init_common_irq_handler();
@@ -490,7 +441,7 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
     init_timer();
 }
 
-#[cfg(all(feature = "irq", feature = "ipi"))]
+#[cfg(feature = "ipi")]
 unsafe fn ax_ipi_run_on_cpu_sync(
     cpu: usize,
     f: unsafe fn(*mut ()),
@@ -499,16 +450,16 @@ unsafe fn ax_ipi_run_on_cpu_sync(
     unsafe { ax_ipi::call_on_cpu(ax_hal::irq::CpuId(cpu), f, arg) }
 }
 
-#[cfg(feature = "irq")]
 fn periodic_interval_nanos() -> u64 {
     ax_hal::time::NANOS_PER_SEC / ticks_per_sec()
 }
 
-#[cfg(feature = "irq")]
 #[ax_percpu::def_percpu]
 static NEXT_PERIODIC_DEADLINE_NANOS: u64 = 0;
 
-#[cfg(feature = "irq")]
+#[ax_percpu::def_percpu]
+static LOCAL_CLOCK_EVENT: clock_event::LocalClockEvent = clock_event::LocalClockEvent::offline();
+
 fn with_periodic_deadline<R>(
     operation: impl for<'scope> FnOnce(&ax_percpu::CpuPin<'scope>) -> R,
 ) -> R {
@@ -519,18 +470,36 @@ fn with_periodic_deadline<R>(
         .unwrap_or_else(|error| panic!("timer CPU-local state is invalid: {error}"))
 }
 
-#[cfg(feature = "irq")]
+fn with_local_clock_event<R>(
+    operation: impl for<'exclusive> FnOnce(&ax_percpu::ExclusiveCpu<'exclusive>) -> R,
+) -> R {
+    // SAFETY: callers exclude migration and local IRQ re-entry for the whole
+    // transaction. The per-CPU area is installed before runtime entry.
+    unsafe { ax_percpu::with_cpu_pin(|pin| ax_percpu::with_exclusive_cpu(pin, operation)) }
+        .unwrap_or_else(|error| panic!("clockevent CPU-local state is invalid: {error}"))
+}
+
+fn commit_clock_event_action(action: clock_event::ClockEventAction) {
+    if let clock_event::ClockEventAction::Program(deadline) = action {
+        ax_hal::time::set_oneshot_timer(deadline);
+    }
+}
+
 fn init_timer() {
-    ax_hal::time::enable_timer_irq();
+    ax_task::init_timer_service();
     let now_ns = ax_hal::time::monotonic_time_nanos();
     with_periodic_deadline(|pin| {
         NEXT_PERIODIC_DEADLINE_NANOS
             .write_current(pin, now_ns.saturating_add(periodic_interval_nanos()));
     });
-    program_next_timer();
+    let deadline = next_timer_deadline();
+    let action = with_local_clock_event(|exclusive| {
+        LOCAL_CLOCK_EVENT.with_current_mut(exclusive, |event| event.online(deadline))
+    });
+    commit_clock_event_action(action);
+    ax_hal::time::enable_timer_irq();
 }
 
-#[cfg(feature = "irq")]
 fn advance_periodic_timer(now_ns: u64) -> bool {
     let mut deadline = with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
     if deadline == 0 {
@@ -554,47 +523,112 @@ fn advance_periodic_timer(now_ns: u64) -> bool {
     true
 }
 
-#[cfg(feature = "irq")]
-fn program_next_timer() {
-    let mut deadline = with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
-    if deadline == 0 {
-        let now_ns = ax_hal::time::monotonic_time_nanos();
-        deadline = now_ns.saturating_add(periodic_interval_nanos());
-        with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, deadline));
-    }
-    #[cfg(feature = "multitask")]
-    let task_deadline = ax_task::next_timer_deadline_nanos();
-    #[cfg(feature = "multitask")]
-    if let Some(task_deadline) = task_deadline {
-        deadline = core::cmp::min(deadline, task_deadline);
-    }
-
-    ax_hal::time::set_oneshot_timer(deadline);
-    #[cfg(feature = "multitask")]
-    ax_task::note_programmed_timer_deadline_nanos(deadline);
+fn select_timer_deadline(
+    periodic_deadline_nanos: u64,
+    task_deadline_nanos: Option<u64>,
+    now_nanos: u64,
+    periodic_interval_nanos: u64,
+) -> (u64, u64) {
+    debug_assert_ne!(periodic_interval_nanos, 0);
+    let periodic_deadline_nanos = if periodic_deadline_nanos <= now_nanos {
+        let elapsed_intervals = (now_nanos - periodic_deadline_nanos) / periodic_interval_nanos;
+        periodic_deadline_nanos.saturating_add(
+            periodic_interval_nanos.saturating_mul(elapsed_intervals.saturating_add(1)),
+        )
+    } else {
+        periodic_deadline_nanos
+    };
+    // A still-expired logical deadline means the bounded IRQ pass left work
+    // behind. Publish a fresh edge so the hardware backend can apply its
+    // minimum delta and continue draining without waiting for the next tick.
+    let selected_deadline_nanos = task_deadline_nanos.map_or(periodic_deadline_nanos, |deadline| {
+        let deadline = if deadline <= now_nanos {
+            now_nanos.saturating_add(1)
+        } else {
+            deadline
+        };
+        core::cmp::min(periodic_deadline_nanos, deadline)
+    });
+    (periodic_deadline_nanos, selected_deadline_nanos)
 }
 
-#[cfg(feature = "irq")]
+fn next_timer_deadline() -> u64 {
+    let mut periodic_deadline =
+        with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
+    if periodic_deadline == 0 {
+        let now_ns = ax_hal::time::monotonic_time_nanos();
+        periodic_deadline = now_ns.saturating_add(periodic_interval_nanos());
+        with_periodic_deadline(|pin| {
+            NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, periodic_deadline)
+        });
+    }
+    let task_deadline = ax_task::next_timer_deadline_nanos();
+    let now_nanos = ax_hal::time::monotonic_time_nanos();
+    let (next_periodic_deadline, deadline) = select_timer_deadline(
+        periodic_deadline,
+        task_deadline,
+        now_nanos,
+        periodic_interval_nanos(),
+    );
+    if next_periodic_deadline != periodic_deadline {
+        // Timer callbacks and scheduler work can outlive the periodic deadline
+        // selected at IRQ entry. Coalesce those ticks before rearming so the
+        // hardware comparator is not programmed with an already elapsed value.
+        with_periodic_deadline(|pin| {
+            NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, next_periodic_deadline)
+        });
+    }
+
+    deadline
+}
+
+struct ClockEventControlImpl;
+
+#[ax_crate_interface::impl_interface]
+impl ax_task::ClockEventControl for ClockEventControlImpl {
+    fn request_local_reprogram(deadline_nanos: u64) {
+        let _guard = ax_task::sync::PreemptIrqSaveGuard::new();
+        let action = with_local_clock_event(|exclusive| {
+            LOCAL_CLOCK_EVENT
+                .with_current_mut(exclusive, |event| event.request_earlier(deadline_nanos))
+        });
+        commit_clock_event_action(action);
+    }
+}
+
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     let _ = ctx;
+    let token = with_local_clock_event(|exclusive| {
+        LOCAL_CLOCK_EVENT.with_current_mut(exclusive, |event| event.claim_irq())
+    });
     // SAFETY: the local timer IRQ excludes migration and nested local
     // scheduler-clock publication for this complete stamp.
     unsafe { ax_hal::time::scheduler_clock_tick() }
         .expect("current CPU scheduler clock must be online before timer IRQs");
-    #[cfg(feature = "multitask")]
     let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
-    #[cfg(not(feature = "multitask"))]
-    let _ = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
-    #[cfg(feature = "multitask")]
     ax_task::on_timer_irq(scheduler_tick);
-    program_next_timer();
+    let deadline = next_timer_deadline();
+    let action = with_local_clock_event(|exclusive| {
+        LOCAL_CLOCK_EVENT.with_current_mut(exclusive, |event| match token {
+            Some(token) => event.finish_irq(token, Some(deadline)),
+            None => event.request_earlier(deadline),
+        })
+    });
+    trace!(
+        "clockevent IRQ CPU {}: token={token:?}, scheduler_tick={}, next_deadline={}, \
+         action={action:?}",
+        ax_hal::percpu::this_cpu_id(),
+        scheduler_tick,
+        deadline
+    );
+    commit_clock_event_action(action);
     ax_hal::irq::IrqReturn::Handled
 }
 
-#[cfg(all(feature = "irq", feature = "ipi"))]
+#[cfg(feature = "ipi")]
 fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
-    #[cfg(all(feature = "multitask", feature = "smp"))]
+    #[cfg(feature = "smp")]
     ax_task::handle_ipi_reschedule();
     ax_ipi::drain_hard_calls()
         .unwrap_or_else(|error| panic!("failed to continue hard-call draining: {error:?}"));
@@ -602,21 +636,34 @@ fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_hal::irq::IrqReturn::Handled
 }
 
-#[cfg(all(feature = "irq", feature = "wake-ipi", not(feature = "ipi")))]
+#[cfg(all(feature = "wake-ipi", not(feature = "ipi")))]
 fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_hal::irq::IrqReturn::Handled
 }
 
-#[cfg(all(feature = "tls", not(feature = "multitask")))]
-fn init_tls() {
-    let main_tls = ax_hal::tls::TlsArea::alloc();
-    let kernel_tls = ax_hal::context::KernelTlsBase::new(main_tls.tls_ptr() as usize);
-    unsafe { ax_hal::asm::write_thread_pointer(kernel_tls) };
-    core::mem::forget(main_tls);
-}
-
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timer_programming_catches_up_after_a_slow_irq() {
+        let (periodic, selected) = super::select_timer_deadline(100, None, 150, 10);
+        assert_eq!(periodic, 160);
+        assert_eq!(selected, 160);
+    }
+
+    #[test]
+    fn timer_programming_keeps_an_earlier_task_deadline() {
+        let (periodic, selected) = super::select_timer_deadline(100, Some(155), 150, 10);
+        assert_eq!(periodic, 160);
+        assert_eq!(selected, 155);
+    }
+
+    #[test]
+    fn timer_programming_advances_an_expired_budget_limited_deadline() {
+        let (periodic, selected) = super::select_timer_deadline(100, Some(1), 150, 10);
+        assert_eq!(periodic, 160);
+        assert_eq!(selected, 151);
+    }
+
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
         crate::fs::init(Some("root=/dev/nvme0n1"));

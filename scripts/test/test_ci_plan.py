@@ -121,6 +121,17 @@ class CiPlanTests(unittest.TestCase):
         self.assertFalse(plan["starry_required"])
         self.assertFalse(plan["axvisor_required"])
 
+    def test_incremental_clippy_uses_bounded_history_without_changing_other_checks(
+        self,
+    ) -> None:
+        plan = ci_plan.build_main_plan(self.upstream)
+        static_rows = self.assert_unique_ids(plan["static_matrix"]["include"])
+        test_rows = self.assert_unique_ids(main_test_rows(plan))
+
+        self.assertEqual(test_rows["run-clippy"]["fetch_depth"], "100")
+        self.assertEqual(static_rows["check-formatting"]["fetch_depth"], "1")
+        self.assertEqual(test_rows["test-with-std"]["fetch_depth"], "1")
+
     def test_pull_request_impact_package_selects_standalone_check(self) -> None:
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
@@ -484,7 +495,7 @@ command = "true"
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
 
-    def test_arceos_qemu_jobs_run_same_arch_axtests_serially(self) -> None:
+    def test_arceos_qemu_jobs_run_suites_without_workspace_axtests(self) -> None:
         plan = ci_plan.build_main_plan(self.upstream)
         rows = {row["id"]: row for row in plan["arceos_matrix"]["include"]}
         expected_arches = {
@@ -497,16 +508,27 @@ command = "true"
         for check_id, arch in expected_arches.items():
             command = rows[check_id]["command"]
             arceos_command = f"cargo xtask arceos test qemu --arch {arch}"
-            axtest_command = (
-                "cargo xtask ktest qemu --workspace --exclude starry-kernel "
-                f"--exclude axvisor --arch {arch}"
-            )
             self.assertIn(arceos_command, command)
-            self.assertIn(axtest_command, command)
-            self.assertLess(
-                command.index(arceos_command), command.index(axtest_command)
-            )
+            self.assertNotIn("cargo xtask ktest qemu --workspace", command)
             self.assertEqual(rows[check_id]["cache_key"], "")
+
+    def test_asus_nuc_board_reuses_xtask_artifact_and_preserves_timeout(
+        self,
+    ) -> None:
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
+        )
+        asus_nuc = rows["test-axvisor-self-hosted-board-asus-nuc15crh-linux"]
+
+        self.assertEqual(asus_nuc["timeout_minutes"], 45)
+        self.assertTrue(asus_nuc["download_xtask_bin_artifact"])
+        self.assertNotIn("cargo xtask", asus_nuc["command"])
+        self.assertEqual(asus_nuc["command"].count("target/debug/tg-xtask"), 3)
+        self.assertIn(
+            "target/debug/tg-xtask axvisor test board "
+            "--board asus-nuc15crh-linux",
+            asus_nuc["command"],
+        )
 
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,
@@ -544,7 +566,7 @@ command = "true"
         self.assertFalse(static_rows["check-formatting"]["download_xtask_bin_artifact"])
         clippy = test_rows["run-clippy"]
         self.assertEqual(clippy["runs_on"], ["ubuntu-latest"])
-        self.assertEqual(clippy["fetch_depth"], "0")
+        self.assertEqual(clippy["fetch_depth"], "100")
         self.assertTrue(clippy["download_xtask_bin_artifact"])
 
     def test_starry_apps_schedule_and_manual_selection(self) -> None:

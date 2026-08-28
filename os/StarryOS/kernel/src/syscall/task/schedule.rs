@@ -439,22 +439,21 @@ fn set_priority_for_processes(
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLOCK_MONOTONIC, CLOCK_REALTIME, SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL,
         SCHED_RR,
     };
 
     // Test clock_nanosleep clock_id validation
-    let valid_clocks = [CLOCK_REALTIME as u32, CLOCK_MONOTONIC as u32];
+    let valid_clocks = [CLOCK_REALTIME, CLOCK_MONOTONIC];
 
     for &clock in &valid_clocks {
-        assert!(clock == CLOCK_REALTIME as u32 || clock == CLOCK_MONOTONIC as u32);
+        assert!(clock == CLOCK_REALTIME || clock == CLOCK_MONOTONIC);
     }
 
-    // Invalid clock ID
-    assert!(999u32 != CLOCK_REALTIME as u32 && 999u32 != CLOCK_MONOTONIC as u32);
+    assert!(!valid_clocks.contains(&999u32));
 
     // Test valid scheduler policies
     let valid_policies = [SCHED_NORMAL, SCHED_FIFO, SCHED_RR, SCHED_BATCH, SCHED_IDLE];
@@ -462,4 +461,12 @@ pub(crate) fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool 
     assert!(valid_policies.contains(&SCHED_NORMAL));
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn schedule_clock_and_sched_validation_rules_hold() {
+        assert!(super::schedule_clock_and_sched_validation_rules_hold_for_test());
+    }
 }

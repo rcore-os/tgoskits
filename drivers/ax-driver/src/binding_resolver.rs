@@ -216,7 +216,7 @@ pub fn binding_irq_from_named_fdt_interrupt(
     Ok(Some(binding_irq_from_fdt_interrupt(
         controller,
         interrupt.specifier.clone(),
-    )))
+    )?))
 }
 
 pub fn binding_info_from_acpi(info: &AcpiInfo<'_>) -> Result<BindingInfo, OnProbeError> {
@@ -232,6 +232,19 @@ pub fn binding_info_from_acpi_route(
     Ok(BindingInfo::with_binding_irq(route.map(BindingIrq::from)))
 }
 
+pub(crate) fn binding_irq_from_fdt_interrupt(
+    controller: DeviceId,
+    cells: impl Into<Vec<u32>>,
+) -> Result<BindingIrq, OnProbeError> {
+    rdrive::get::<rdif_intc::Intc>(controller).map_err(|error| {
+        OnProbeError::other(format!(
+            "FDT interrupt parent {controller:?} is not an available interrupt-controller \
+             provider: {error:?}"
+        ))
+    })?;
+    Ok(BindingIrq::fdt_interrupt_with_controller(controller, cells))
+}
+
 fn resolve_fdt_irq(info: &FdtInfo<'_>) -> Result<Option<BindingIrq>, OnProbeError> {
     let Some(interrupt) = info.interrupts().into_iter().next() else {
         return Ok(None);
@@ -244,15 +257,10 @@ fn resolve_fdt_irq(info: &FdtInfo<'_>) -> Result<Option<BindingIrq>, OnProbeErro
                 interrupt.interrupt_parent
             ))
         })?;
-
     Ok(Some(binding_irq_from_fdt_interrupt(
         controller,
         interrupt.specifier,
-    )))
-}
-
-fn binding_irq_from_fdt_interrupt(controller: DeviceId, cells: impl Into<Vec<u32>>) -> BindingIrq {
-    BindingIrq::fdt_interrupt_with_controller(controller, cells)
+    )?))
 }
 
 #[cfg(feature = "pci")]

@@ -151,11 +151,6 @@ fn vm_error_to_io_error(error: VmError) -> IoError {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn vm_error_to_io_error_preserves_length_for_test() -> bool {
-    vm_error_to_io_error(VmError::TooLong) == IoError::NameTooLong
-}
-
 impl IoBuf for IoVectorBufIo {
     fn remaining(&self) -> usize {
         self.inner.len
@@ -168,7 +163,7 @@ impl IoBufMut for IoVectorBufIo {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use super::*;
 

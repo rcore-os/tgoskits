@@ -20,7 +20,7 @@ use rdrive::{
     register::{FdtInfo, ProbeFdt},
 };
 use sdhci_host::{Sdhci, rdif as sdhci_rdif};
-use sdmmc_protocol::sdio::{card::SdioSdmmc, init::CardInitPreference};
+use sdmmc_protocol::sdio::{SdMmcIrqHost, init::CardInitPreference};
 
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
@@ -69,8 +69,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
 
     info!("k230-sdhci: defer protocol initialization to IRQ-driven hctx");
-    let card = SdioSdmmc::new(host);
-    let dev = sdhci_rdif::initializing_device(card, config, card_init_preference(info));
+    let dev =
+        sdhci_rdif::initializing_device(host.into_parts(), config, card_init_preference(info));
     let irq = probe.register_block(dev)?;
     info!("k230-sdhci block device registered irq={:?}", irq);
     Ok(())

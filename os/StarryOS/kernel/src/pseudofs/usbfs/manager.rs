@@ -1487,7 +1487,7 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
     (initialized_hosts, irq_slots)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use core::cell::Cell;
 

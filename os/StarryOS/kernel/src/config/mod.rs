@@ -21,3 +21,22 @@ cfg_if::cfg_if! {
         compile_error!("Unsupported architecture");
     }
 }
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_stack_layout_is_inside_user_space() {
+        const {
+            assert!(USER_SPACE_BASE < USER_STACK_TOP);
+            assert!(USER_STACK_SIZE > 0);
+            assert!(USER_STACK_TOP <= USER_SPACE_BASE + USER_SPACE_SIZE);
+        }
+    }
+
+    #[test]
+    fn signal_trampoline_is_page_aligned() {
+        assert_eq!(SIGNAL_TRAMPOLINE & 0xfff, 0);
+    }
+}

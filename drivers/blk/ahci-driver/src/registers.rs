@@ -246,7 +246,7 @@ impl HbaRegisters {
     }
 
     #[cfg(test)]
-    fn from_words(words: &mut [u32]) -> Self {
+    pub(super) fn from_words(words: &mut [u32]) -> Self {
         let raw = unsafe {
             MmioRaw::new(
                 0usize.into(),

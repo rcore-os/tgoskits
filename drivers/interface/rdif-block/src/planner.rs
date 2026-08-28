@@ -187,6 +187,7 @@ fn planned_transfer_size(
     caps: TransferRuntimeCaps,
 ) -> Result<usize, BlkError> {
     let block_size = device.logical_block_size;
+    let physical_block_size = device.physical_block_size.max(block_size);
     let max_segments = limits.max_segments.min(caps.max_segments);
     let max_segment_size = limits
         .dma
@@ -194,6 +195,7 @@ fn planned_transfer_size(
         .max_segment_size
         .unwrap_or(usize::MAX);
     if block_size == 0
+        || !physical_block_size.is_power_of_two()
         || limits.max_blocks_per_request == 0
         || max_segments == 0
         || max_segment_size == 0
@@ -471,6 +473,27 @@ mod tests {
                     max_transfer_bytes: 511,
                     max_segments: 1,
                 },
+            )
+            .unwrap_err(),
+            BlkError::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn transfer_planner_rejects_invalid_physical_block_geometry() {
+        let limits = queue_limits(1, 1, 512);
+        let caps = test_runtime_caps();
+
+        for physical_block_size in [0, 256, 4096] {
+            let device = DeviceInfo::new(64, 512).with_physical_block_size(physical_block_size);
+            TransferPlanner::new(device, limits, caps)
+                .expect("missing or smaller physical blocks normalize to the logical size");
+        }
+        assert_eq!(
+            TransferPlanner::new(
+                DeviceInfo::new(64, 512).with_physical_block_size(1536),
+                limits,
+                caps,
             )
             .unwrap_err(),
             BlkError::InvalidRequest

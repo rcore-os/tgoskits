@@ -102,8 +102,8 @@ pub fn sys_timerfd_gettime(fd: i32, curr_value: *mut __kernel_itimerspec) -> Sta
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn timerfd_timespec_conversion_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn timerfd_timespec_conversion_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::__kernel_timespec;
     // Test timespec_to_duration validation
     let valid_ts = __kernel_timespec {
@@ -145,4 +145,12 @@ pub(crate) fn timerfd_timespec_conversion_rules_hold_for_test() -> bool {
     assert!(ts.tv_nsec == 123_456_789);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn timerfd_timespec_conversion_rules_hold() {
+        assert!(super::timerfd_timespec_conversion_rules_hold_for_test());
+    }
 }

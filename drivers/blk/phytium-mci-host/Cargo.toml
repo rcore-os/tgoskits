@@ -1,6 +1,6 @@
 [package]
 name = "phytium-mci-host"
-version = "0.4.0"
+version = "0.4.1"
 repository.workspace = true
 edition = "2024"
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
 sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
-sdio-host2.workspace = true
+sdmmc-host.workspace = true
 bitfield-struct = "0.11"
 volatile = { version = "0.6", features = ["derive"] }
 log.workspace = true

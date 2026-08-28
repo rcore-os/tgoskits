@@ -1,6 +1,6 @@
 [package]
 name = "ax-hal"
-version = "0.6.0"
+version = "0.6.2"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -8,14 +8,9 @@ description = "ArceOS hardware abstraction layer, provides unified APIs for plat
 license.workspace = true
 
 [features]
-axtest = ["irq"]
 smp = [
     "axplat-dyn/smp",
     "ax-plat/smp",
-]
-irq = [
-    "ax-plat/irq",
-    "axplat-dyn/irq",
 ]
 fp-simd = [
     "ax-cpu/fp-simd",
@@ -43,7 +38,7 @@ host-test = [
 ]
 
 default = []
-ipi = ["irq"]
+ipi = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
@@ -65,22 +60,3 @@ thiserror.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
-
-[[test]]
-name = "axtest"
-path = "tests/axtest.rs"
-harness = false
-required-features = ["axtest"]
-
-[dev-dependencies.axtest]
-path = "../../../../components/axtest/axtest"
-
-[dev-dependencies.ax-std]
-path = "../../ulib/axstd"
-features = ["default"]
-
-[dev-dependencies.ax-hal]
-path = "."

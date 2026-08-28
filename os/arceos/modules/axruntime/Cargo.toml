@@ -5,10 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.11.0"
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+version = "0.11.3"
 
 [features]
 default = []
@@ -18,36 +15,26 @@ std-compat = []
 host-test = [
   "ax-hal/host-test",
   "ax-ipi?/host-test",
-  "ax-percpu?/host-test",
+  "ax-percpu/host-test",
   "ax-task/host-test",
   "cpu-local/host-test",
 ]
-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
+ipi = ["dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
-wake-ipi = ["irq", "ax-hal/ipi"]
-irq = [
-  "ax-hal/irq",
-  "ax-task/irq",
-  "dep:ax-percpu",
-  "dep:rdif-intc",
-  "ax-driver/irq",
-]
-multitask = ["ax-task/multitask", "ax-sync/sleep"]
+wake-ipi = ["ax-hal/ipi"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task/smp"]
 uspace = ["ax-hal/uspace", "ax-task/uspace"]
-lockdep = ["multitask", "ax-task/lockdep", "ax-fs-ng?/lockdep"]
-stack-guard-page = ["ipi", "multitask", "paging", "ax-task/stack-guard-page"]
+lockdep = ["ax-task/lockdep", "ax-fs-ng?/lockdep"]
+stack-guard-page = ["ipi", "paging", "ax-task/stack-guard-page"]
 stack-protector = []
 tls = ["ax-hal/tls", "ax-task/tls"]
 
 display = ["paging", "dep:ax-display", "ax-driver/display"]
 fs = [
-  "irq",
-  "multitask",
   "paging",
   "dep:ax-fs-ng",
   "ax-fs-ng/vfs",
@@ -59,26 +46,20 @@ ext4fs = ["fs", "ax-fs-ng/ext4"]
 fatfs = ["fs", "ax-fs-ng/fat"]
 input = ["paging", "dep:ax-input", "ax-driver/input"]
 net = [
-  "irq",
-  "multitask",
   "paging",
   "dep:ax-net",
   "dep:rd-net",
   "ax-driver/net",
 ]
-# SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
-# the ArceOS runtime glue (the driver cores are OS-independent) before probing.
+# SG2002 AIC8800 SoftAP Wi-Fi. The fixed-CPU network runtime supplies explicit
+# IRQ notifications and monotonic timestamps to the portable driver parts.
 aic8800-wifi = [
   "net",
   "ax-driver/aic8800-wifi",
-  "dep:aic8800",
-  "dep:sdhci-cv1800",
 ]
 vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 
 [dependencies]
-aic8800 = {workspace = true, optional = true}
-sdhci-cv1800 = {workspace = true, optional = true}
 ax-alloc = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
@@ -94,9 +75,9 @@ ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
 ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
-ax-percpu = {workspace = true, optional = true}
+ax-percpu.workspace = true
 ax-plat = {workspace = true}
-ax-sync.workspace = true
+ax-sync = { workspace = true, features = ["sleep"] }
 ax-task = {workspace = true, features = ["lock-api"]}
 cpu-local.workspace = true
 axbacktrace = {workspace = true}
@@ -109,7 +90,7 @@ dma-api.workspace = true
 indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
-rdif-intc = { workspace = true, optional = true }
+rdif-intc.workspace = true
 rdif-serial.workspace = true
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true

@@ -457,8 +457,8 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> Star
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn signal_sigset_size_and_signo_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn signal_sigset_size_and_signo_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
 
     use starry_signal::SignalSet;
@@ -481,8 +481,8 @@ pub(crate) fn signal_sigset_size_and_signo_validation_rules_hold_for_test() -> b
     ok && too_small && too_big && zero && valid_signo && valid_signo2 && zero_signo && overflow
 }
 
-#[cfg(test)]
-pub(crate) fn signal_sigset_and_signo_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn signal_sigset_and_signo_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
 
     use starry_signal::SignalSet;
@@ -501,4 +501,17 @@ pub(crate) fn signal_sigset_and_signo_validation_rules_hold_for_test() -> bool {
     assert!(parse_signo(255).is_err()); // Out of range
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn signal_sigset_size_and_signo_validation_rules_hold() {
+        assert!(super::signal_sigset_size_and_signo_validation_rules_hold_for_test());
+    }
+
+    #[test]
+    fn signal_sigset_and_signo_validation_rules_hold() {
+        assert!(super::signal_sigset_and_signo_validation_rules_hold_for_test());
+    }
 }

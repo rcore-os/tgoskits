@@ -210,7 +210,7 @@ impl Random {
         }
     }
 
-    #[cfg(axtest)]
+    #[cfg(all(test, not(axtest)))]
     fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
         Self {
             state: Mutex::new(RandomState::new(seed)),
@@ -307,8 +307,8 @@ fn splitmix64(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-#[cfg(axtest)]
-pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn random_write_mixes_entropy_for_test() -> bool {
     let seed = *b"0123456789abcdef0123456789abcdef";
     let baseline = Random::new_with_seed_for_test(seed);
     let mixed = Random::new_with_seed_for_test(seed);
@@ -337,12 +337,7 @@ pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
         && fold_seed_word_xors_into_byte_indices()
 }
 
-#[cfg(axtest)]
-pub(crate) fn kmsg_reports_no_readiness_without_read_side_for_test() -> bool {
-    kmsg::reports_no_readiness_without_read_side_for_test()
-}
-
-#[cfg(axtest)]
+#[cfg(all(test, not(axtest)))]
 fn splitmix64_determinism_rules_hold() -> bool {
     // splitmix64 is a pure bijection: the same input always yields the same
     // 64-bit output (deterministic PRNG), and distinct inputs yield distinct
@@ -358,7 +353,7 @@ fn splitmix64_determinism_rules_hold() -> bool {
         && a != c
 }
 
-#[cfg(axtest)]
+#[cfg(all(test, not(axtest)))]
 fn fold_seed_word_xors_into_byte_indices() -> bool {
     // fold_seed_word XORs splitmix64(word) into seed[idx*4 % 32]. Repeatedly
     // folding the same word twice must cancel out (XOR is its own inverse).
@@ -830,4 +825,12 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
 fn descriptor_symlink(fs: Arc<SimpleFs>, target: &'static str) -> Arc<SimpleFile> {
     SimpleFile::new(fs, NodeType::Symlink, move || Ok(target))
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn random_write_mixes_entropy() {
+        assert!(super::random_write_mixes_entropy_for_test());
+    }
 }

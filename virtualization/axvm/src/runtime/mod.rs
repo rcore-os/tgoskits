@@ -116,10 +116,14 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
 pub fn notify_vm(vm_id: usize) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
     let vcpu_num = vm.vcpu_num();
-    vm.with_runtime(|runtime| {
-        notify_runtime_for_device_poll(runtime, vcpu_num);
-        Ok(())
-    })
+    // `WaitQueue::wait_until` evaluates the vCPU wake predicate while it
+    // holds both the wait-queue and run-queue locks. That predicate may read
+    // the VM lifecycle state and therefore lock `vm.machine`. Never retain
+    // `vm.machine` while notifying the same wait queue, or the notifier and a
+    // vCPU entering WFI can deadlock in opposite lock order.
+    let runtime = vm.runtime_handle()?;
+    notify_runtime_for_device_poll(&runtime, vcpu_num);
+    Ok(())
 }
 
 fn notify_runtime_for_device_poll(runtime: &crate::vm::VmRuntimeHandle, vcpu_num: usize) {
@@ -182,6 +186,20 @@ pub(crate) fn wait_until_vcpu_entered(
         BadState,
         "vCPU task did not enter the guest before request-stop"
     )
+}
+
+/// Pause a running VM.
+///
+/// `vm.pause()` flips the status to `Paused` synchronously; the running vCPUs
+/// observe the flag at their next run-loop iteration and park in the
+/// suspend-wait (`!suspending()`), so the guest actually suspends
+/// asynchronously. The notify wakes any vCPU parked in a WFI/event wait so it
+/// can reach that check.
+pub fn pause_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    vm.pause()?;
+    vcpus::notify_all_vcpus(vm_id);
+    Ok(())
 }
 
 pub fn resume_vm(vm_id: usize) -> AxVmResult {

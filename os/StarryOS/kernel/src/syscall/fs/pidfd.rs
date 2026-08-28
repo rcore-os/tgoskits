@@ -228,8 +228,8 @@ pub fn sys_pidfd_send_signal(
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn pidfd_flags_and_signal_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn pidfd_flags_and_signal_validation_rules_hold_for_test() -> bool {
     // Test PidFdFlags validation
     let valid_flags = 0u32;
     assert!(PidFdFlags::from_bits(valid_flags).is_some());
@@ -254,4 +254,12 @@ pub(crate) fn pidfd_flags_and_signal_validation_rules_hold_for_test() -> bool {
     assert!(parse_signo(255).is_err()); // Out of range
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn pidfd_flags_and_signal_validation_rules_hold() {
+        assert!(super::pidfd_flags_and_signal_validation_rules_hold_for_test());
+    }
 }

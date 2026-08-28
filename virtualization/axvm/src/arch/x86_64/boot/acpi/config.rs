@@ -7,8 +7,10 @@ use std::{
 };
 
 use axdevice::*;
+use axdevice_base::InterruptControllerId;
 
 use super::serial::*;
+use crate::arch::x86_64::pci_config::{PCI_HOST_NODE, host_key as x86_pci_host_key};
 
 /// Guest processor/APIC identities.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,6 +21,7 @@ pub(super) struct X86CpuPlan {
 /// Local and I/O APIC firmware description.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct X86InterruptPlan {
+    pub(super) controller: InterruptControllerId,
     pub(super) local_apic_base: u32,
     pub(super) io_apic_base: u32,
     pub(super) io_apic_id: u8,
@@ -76,6 +79,7 @@ pub(crate) struct X86FirmwarePlan {
     pub(super) pci: X86PciPlan,
     pub(super) power: X86PowerPlan,
     pub(super) resources: X86FirmwareResources,
+    pub(super) configured_devices: Vec<crate::boot::acpi::ResolvedAcpiDevice>,
 }
 
 impl X86FirmwarePlan {
@@ -83,6 +87,12 @@ impl X86FirmwarePlan {
         graph: &ResolvedDeviceGraph,
         cpu_count: usize,
     ) -> Result<Self, X86FirmwarePlanError> {
+        let firmware = crate::boot::acpi::resolve_acpi_firmware(graph).map_err(|error| {
+            DeviceManagerError::InvalidConfig {
+                operation: "resolve x86 ACPI firmware contributions",
+                detail: format!("{error}"),
+            }
+        })?;
         let apic_ids = (0..cpu_count)
             .map(|id| {
                 u8::try_from(id).map_err(|_| X86FirmwarePlanError::InvalidValue {
@@ -98,27 +108,62 @@ impl X86FirmwarePlan {
             });
         }
 
-        let ioapic = resources_for_node(graph, "ioapic")?;
-        let fw_cfg = resources_for_node(graph, "fw-cfg")?;
-        let pm_timer = resources_for_node(graph, "acpi-pm-timer")?;
-        let (io_apic_base, io_apic_size) = ioapic.mmio(&ResourceSlot::new("registers")?)?;
+        let serials = x86_serial_plans(graph)?;
+        let specials = resolve_x86_specials(&firmware.specials, &serials)?;
+        let pci_topology =
+            graph
+                .pci_topology(&x86_pci_host_key())
+                .ok_or(X86FirmwarePlanError::MissingDevice {
+                    node_id: PCI_HOST_NODE,
+                })?;
+        let pci_aperture = pci_topology.memory_aperture();
+        let pci_size = pci_aperture
+            .end
+            .checked_sub(pci_aperture.start)
+            .ok_or_else(|| X86FirmwarePlanError::InvalidValue {
+                field: "PCI memory aperture",
+                value: "empty or reversed".into(),
+            })?;
+        if specials.pci_memory != (pci_aperture.start, pci_size) {
+            return Err(X86FirmwarePlanError::InvalidValue {
+                field: "PCI firmware/runtime aperture",
+                value: "ACPI contribution differs from resolved PCI topology".into(),
+            });
+        }
+        let pci_memory_end =
+            pci_aperture
+                .end
+                .checked_sub(1)
+                .ok_or_else(|| X86FirmwarePlanError::InvalidValue {
+                    field: "PCI memory aperture",
+                    value: "cannot encode inclusive end".into(),
+                })?;
+        let pci_memory_start =
+            u32::try_from(pci_aperture.start).map_err(|_| X86FirmwarePlanError::InvalidValue {
+                field: "PCI memory aperture start",
+                value: format!("{:#x}", pci_aperture.start),
+            })?;
+        let pci_memory_end =
+            u32::try_from(pci_memory_end).map_err(|_| X86FirmwarePlanError::InvalidValue {
+                field: "PCI memory aperture end",
+                value: format!("{pci_memory_end:#x}"),
+            })?;
+        let (io_apic_base, io_apic_size) = specials.ioapic;
         if io_apic_size == 0 {
             return Err(X86FirmwarePlanError::InvalidValue {
                 field: "I/O APIC window size",
                 value: "0".into(),
             });
         }
-        let serials = x86_serial_plans(graph)?;
-        let (fw_cfg_selector_base, fw_cfg_selector_size) =
-            fw_cfg.pio(&ResourceSlot::new("selector-data")?)?;
-        let (fw_cfg_dma_base, fw_cfg_dma_size) = fw_cfg.pio(&ResourceSlot::new("dma")?)?;
-        let (pm_timer_base, pm_timer_window_size) =
-            pm_timer.pio(&ResourceSlot::new("registers")?)?;
-        let sci = pm_timer.wired_irq(&ResourceSlot::new("sci")?)?;
+        let (fw_cfg_selector_base, fw_cfg_selector_size) = specials.fw_cfg[0];
+        let (fw_cfg_dma_base, fw_cfg_dma_size) = specials.fw_cfg[1];
+        let (pm_timer_base, pm_timer_window_size) = specials.pm_timer;
+        let sci = specials.sci;
 
         Ok(Self {
             cpus: X86CpuPlan { apic_ids },
             interrupts: X86InterruptPlan {
+                controller: specials.controller,
                 local_apic_base: u32::try_from(x86_vcpu::X86_LOCAL_APIC_GPA).map_err(|_| {
                     X86FirmwarePlanError::InvalidValue {
                         field: "local APIC address",
@@ -144,18 +189,18 @@ impl X86FirmwarePlan {
                         cacheable: true,
                     },
                     X86PciMemoryWindow {
-                        start: 0xc000_0000,
-                        end: 0xfebf_ffff,
+                        start: pci_memory_start,
+                        end: pci_memory_end,
                         cacheable: false,
                     },
                 ],
                 intx_gsis: [16, 17, 18, 19],
             },
             power: X86PowerPlan {
-                sci_irq: u16::try_from(sci.input().value()).map_err(|_| {
+                sci_irq: u16::try_from(sci.input).map_err(|_| {
                     X86FirmwarePlanError::InvalidValue {
                         field: "ACPI SCI",
-                        value: sci.input().value().to_string(),
+                        value: sci.input.to_string(),
                     }
                 })?,
                 pm1_event: resolved_pm_register(
@@ -187,6 +232,7 @@ impl X86FirmwarePlan {
                 fw_cfg_dma_base,
                 fw_cfg_dma_size,
             },
+            configured_devices: firmware.devices,
         })
     }
 
@@ -218,6 +264,253 @@ impl X86FirmwarePlan {
             })?;
         Ok((base, size))
     }
+}
+
+struct ResolvedX86Specials {
+    controller: InterruptControllerId,
+    ioapic: (u64, u64),
+    fw_cfg: [(u16, u16); 2],
+    pm_timer: (u16, u16),
+    sci: crate::boot::acpi::ResolvedAcpiInterrupt,
+    pci_memory: (u64, u64),
+}
+
+fn resolve_x86_specials(
+    specials: &[crate::boot::acpi::ResolvedAcpiSpecial],
+    serials: &[X86SerialPlan],
+) -> Result<ResolvedX86Specials, X86FirmwarePlanError> {
+    use crate::boot::acpi::{ResolvedAcpiRegister, ResolvedAcpiSpecialKind};
+
+    let ioapic = named_special(specials, "IOAP", "I/O APIC")?;
+    let ResolvedAcpiSpecialKind::InterruptController(controller) = ioapic.kind else {
+        return invalid_special_kind(ioapic, "interrupt controller");
+    };
+    let [
+        ResolvedAcpiRegister::Mmio {
+            base: ioapic_base,
+            size: ioapic_size,
+        },
+    ] = ioapic.registers.as_slice()
+    else {
+        return invalid_special_shape(ioapic, "exactly one MMIO register window");
+    };
+    if ioapic.hid.is_some() || !ioapic.interrupts.is_empty() || !ioapic.properties.is_empty() {
+        return invalid_special_shape(ioapic, "an I/O APIC table contribution without properties");
+    }
+
+    let pic = named_special(specials, "PIC0", "legacy PIC")?;
+    if !matches!(
+        pic.kind,
+        ResolvedAcpiSpecialKind::InterruptController(id) if id == controller
+    ) || pic.hid.as_deref() != Some("PNP0000")
+        || !all_pio_registers(pic, 2)
+        || !pic.interrupts.is_empty()
+        || !pic.properties.is_empty()
+    {
+        return invalid_special_shape(pic, "PNP0000 interrupt controller with two PIO windows");
+    }
+
+    let pit = named_special(specials, "PIT0", "legacy PIT")?;
+    if pit.kind != ResolvedAcpiSpecialKind::Timer
+        || pit.hid.as_deref() != Some("PNP0100")
+        || !all_pio_registers(pit, 2)
+        || !pit.interrupts.is_empty()
+        || !pit.properties.is_empty()
+    {
+        return invalid_special_shape(pit, "PNP0100 timer with two PIO windows");
+    }
+
+    let pm_timer = named_special(specials, "PMTM", "ACPI PM timer")?;
+    let [
+        ResolvedAcpiRegister::Pio {
+            base: pm_timer_base,
+            size: pm_timer_size,
+        },
+    ] = pm_timer.registers.as_slice()
+    else {
+        return invalid_special_shape(pm_timer, "exactly one PIO register window");
+    };
+    let [sci] = pm_timer.interrupts.as_slice() else {
+        return invalid_special_shape(pm_timer, "exactly one SCI interrupt");
+    };
+    if pm_timer.kind != ResolvedAcpiSpecialKind::Timer
+        || pm_timer.hid.as_deref() != Some("ACPI0008")
+        || sci.controller != controller
+        || !pm_timer.properties.is_empty()
+    {
+        return invalid_special_shape(
+            pm_timer,
+            "ACPI0008 timer connected to the I/O APIC controller",
+        );
+    }
+
+    let pci = named_special(specials, "PCI0", "PCI host bridge")?;
+    let [
+        ResolvedAcpiRegister::Pio { .. },
+        ResolvedAcpiRegister::Mmio {
+            base: pci_memory_base,
+            size: pci_memory_size,
+        },
+    ] = pci.registers.as_slice()
+    else {
+        return invalid_special_shape(pci, "one CF8/CFC PIO window and one memory aperture");
+    };
+    if pci.kind != ResolvedAcpiSpecialKind::PciHostBridge
+        || pci.hid.as_deref() != Some("PNP0A03")
+        || !pci.interrupts.is_empty()
+        || !pci.properties.is_empty()
+    {
+        return invalid_special_shape(pci, "PNP0A03 bridge with CF8/CFC and memory aperture");
+    }
+
+    let fw_cfg = named_special(specials, "FWCF", "fw_cfg transport")?;
+    let [
+        ResolvedAcpiRegister::Pio {
+            base: selector_base,
+            size: selector_size,
+        },
+        ResolvedAcpiRegister::Pio {
+            base: dma_base,
+            size: dma_size,
+        },
+    ] = fw_cfg.registers.as_slice()
+    else {
+        return invalid_special_shape(fw_cfg, "selector/data and DMA PIO windows");
+    };
+    if fw_cfg.kind != ResolvedAcpiSpecialKind::FirmwareTransport
+        || fw_cfg.hid.as_deref() != Some("QEMU0002")
+        || !fw_cfg.interrupts.is_empty()
+        || !fw_cfg.properties.is_empty()
+    {
+        return invalid_special_shape(fw_cfg, "QEMU0002 firmware transport");
+    }
+
+    validate_console_specials(specials, serials, controller)?;
+    let expected_specials =
+        6usize
+            .checked_add(serials.len())
+            .ok_or_else(|| X86FirmwarePlanError::InvalidValue {
+                field: "x86 ACPI special contribution count",
+                value: "overflow".into(),
+            })?;
+    if specials.len() != expected_specials {
+        return Err(X86FirmwarePlanError::InvalidValue {
+            field: "x86 ACPI special contributions",
+            value: format!(
+                "expected {expected_specials} consumed contributions, found {}",
+                specials.len()
+            ),
+        });
+    }
+
+    Ok(ResolvedX86Specials {
+        controller,
+        ioapic: (*ioapic_base, *ioapic_size),
+        fw_cfg: [(*selector_base, *selector_size), (*dma_base, *dma_size)],
+        pm_timer: (*pm_timer_base, *pm_timer_size),
+        sci: *sci,
+        pci_memory: (*pci_memory_base, *pci_memory_size),
+    })
+}
+
+fn validate_console_specials(
+    specials: &[crate::boot::acpi::ResolvedAcpiSpecial],
+    serials: &[X86SerialPlan],
+    controller: InterruptControllerId,
+) -> Result<(), X86FirmwarePlanError> {
+    use crate::boot::acpi::{ResolvedAcpiProperty, ResolvedAcpiRegister, ResolvedAcpiSpecialKind};
+
+    for serial in serials {
+        let console = specials
+            .iter()
+            .find(|special| {
+                special.id == serial.id && special.kind == ResolvedAcpiSpecialKind::Console
+            })
+            .ok_or(X86FirmwarePlanError::MissingContribution {
+                contribution: "console",
+            })?;
+        let register_matches = match (console.registers.as_slice(), serial.registers) {
+            (
+                [ResolvedAcpiRegister::Pio { base, size }],
+                X86SerialRegisters::Port {
+                    base: expected_base,
+                    size: expected_size,
+                },
+            ) => (*base, *size) == (expected_base, expected_size),
+            (
+                [ResolvedAcpiRegister::Mmio { base, size }],
+                X86SerialRegisters::Mmio {
+                    base: expected_base,
+                    size: expected_size,
+                },
+            ) => (*base, *size) == (u64::from(expected_base), u64::from(expected_size)),
+            _ => false,
+        };
+        let [interrupt] = console.interrupts.as_slice() else {
+            return invalid_special_shape(console, "exactly one console interrupt");
+        };
+        if !register_matches
+            || interrupt.controller != controller
+            || interrupt.input != serial.irq
+            || console.hid.as_deref() != Some(serial.hid.as_str())
+            || !matches!(
+                console.properties.as_slice(),
+                [ResolvedAcpiProperty::U32(name, clock_hz)]
+                    if name == "clock-frequency" && *clock_hz == serial.clock_hz
+            )
+        {
+            return invalid_special_shape(
+                console,
+                "registers and interrupt matching the resolved serial runtime",
+            );
+        }
+    }
+    Ok(())
+}
+
+fn named_special<'a>(
+    specials: &'a [crate::boot::acpi::ResolvedAcpiSpecial],
+    name: &str,
+    contribution: &'static str,
+) -> Result<&'a crate::boot::acpi::ResolvedAcpiSpecial, X86FirmwarePlanError> {
+    let mut matches = specials.iter().filter(|special| special.name == name);
+    let special = matches
+        .next()
+        .ok_or(X86FirmwarePlanError::MissingContribution { contribution })?;
+    if matches.next().is_some() {
+        return Err(X86FirmwarePlanError::InvalidValue {
+            field: "x86 ACPI contribution name",
+            value: format!("duplicate '{name}'"),
+        });
+    }
+    Ok(special)
+}
+
+fn all_pio_registers(special: &crate::boot::acpi::ResolvedAcpiSpecial, count: usize) -> bool {
+    special.registers.len() == count
+        && special.registers.iter().all(|register| {
+            matches!(
+                register,
+                crate::boot::acpi::ResolvedAcpiRegister::Pio { .. }
+            )
+        })
+}
+
+fn invalid_special_kind<T>(
+    special: &crate::boot::acpi::ResolvedAcpiSpecial,
+    expected: &'static str,
+) -> Result<T, X86FirmwarePlanError> {
+    invalid_special_shape(special, expected)
+}
+
+fn invalid_special_shape<T>(
+    special: &crate::boot::acpi::ResolvedAcpiSpecial,
+    expected: &'static str,
+) -> Result<T, X86FirmwarePlanError> {
+    Err(X86FirmwarePlanError::InvalidValue {
+        field: "x86 ACPI special contribution",
+        value: format!("{} ({}) must be {expected}", special.id, special.name),
+    })
 }
 
 fn resolved_pm_register(
@@ -255,22 +548,13 @@ fn resolved_pm_register(
     Ok(X86AcpiIoRegisterPlan { port, length })
 }
 
-fn resources_for_node<'a>(
-    graph: &'a ResolvedDeviceGraph,
-    node_id: &'static str,
-) -> Result<&'a ResolvedDeviceResources, X86FirmwarePlanError> {
-    let node = graph
-        .nodes()
-        .find(|node| node.id().as_str() == node_id)
-        .ok_or(X86FirmwarePlanError::MissingDevice { node_id })?;
-    graph.resources_for(node.id()).map_err(Into::into)
-}
-
 /// Failure to derive firmware facts from the sealed device graph.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum X86FirmwarePlanError {
     #[error("resolved x86 graph has no '{node_id}' node")]
     MissingDevice { node_id: &'static str },
+    #[error("resolved x86 graph has no {contribution} firmware contribution")]
+    MissingContribution { contribution: &'static str },
     #[error("invalid {field}: {value}")]
     InvalidValue { field: &'static str, value: String },
     #[error(transparent)]
@@ -284,6 +568,7 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
             apic_ids: (0..cpu_count).collect(),
         },
         interrupts: X86InterruptPlan {
+            controller: InterruptControllerId::new(0),
             local_apic_base: 0xfee0_0000,
             io_apic_base: 0xfec0_0000,
             io_apic_id: 1,
@@ -323,6 +608,7 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
         },
         resources: X86FirmwareResources {
             serials: std::vec![X86SerialPlan {
+                id: "console0".into(),
                 name: "COM1".into(),
                 namespace_path: None,
                 hid: "PNP0501".into(),
@@ -339,5 +625,6 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
             fw_cfg_dma_base: 0x514,
             fw_cfg_dma_size: 8,
         },
+        configured_devices: Vec::new(),
     }
 }

@@ -75,7 +75,7 @@ fn futex_wake_op_arg(raw_op: u32, encoded_op: u32) -> i32 {
     oparg
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 fn apply_futex_wake_op(old_value: u32, raw_op: u32, oparg: i32) -> StarryResult<u32> {
     let op = raw_op & !FUTEX_OP_OPARG_SHIFT;
     let new_value = match op {
@@ -412,8 +412,8 @@ pub fn sys_set_robust_list(head: *const robust_list_head, size: usize) -> Starry
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn futex_op_and_compare_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn futex_op_and_compare_rules_hold_for_test() -> bool {
     // sign_extend_12: sign-extends a 12-bit value.
     assert!(sign_extend_12(0x000) == 0);
     assert!(sign_extend_12(0x7FF) == 2047); // max positive
@@ -438,14 +438,22 @@ pub(crate) fn futex_op_and_compare_rules_hold_for_test() -> bool {
     assert!(apply_futex_wake_op(0, 0xFFFF, 0).is_err()); // unsupported op
 
     // compare_futex_wake_op: compares old_value with cmparg.
-    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_EQ, 5).unwrap() == true);
-    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_EQ, 6).unwrap() == false);
-    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_NE, 6).unwrap() == true);
-    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_LT, 10).unwrap() == true);
-    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_LE, 5).unwrap() == true);
-    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_GT, 3).unwrap() == true);
-    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_GE, 5).unwrap() == true);
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_EQ, 5).unwrap());
+    assert!(!compare_futex_wake_op(5, FUTEX_OP_CMP_EQ, 6).unwrap());
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_NE, 6).unwrap());
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_LT, 10).unwrap());
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_LE, 5).unwrap());
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_GT, 3).unwrap());
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_GE, 5).unwrap());
     assert!(compare_futex_wake_op(0, 0xFFFF, 0).is_err()); // unsupported cmp
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn futex_op_and_compare_rules_hold() {
+        assert!(super::futex_op_and_compare_rules_hold_for_test());
+    }
 }

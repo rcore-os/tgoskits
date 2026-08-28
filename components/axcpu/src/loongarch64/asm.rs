@@ -145,9 +145,9 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 /// Makes a page-table entry installed by the local page-fault handler visible
 /// before retrying the faulting instruction.
 ///
-/// The software refill path may cache a non-readable and non-executable
-/// placeholder for a missing page-table level. Invalidate that local entry so
-/// the retry refills from the newly installed PTE.
+/// The software refill path may cache an invalid entry for a missing page-table
+/// level. Invalidate that local entry so the retry refills from the newly
+/// installed PTE.
 #[inline]
 pub fn update_mmu_cache(vaddr: VirtAddr) {
     flush_tlb(Some(vaddr));

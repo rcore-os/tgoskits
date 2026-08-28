@@ -79,20 +79,6 @@ pub fn update_mmu_cache(vaddr: VirtAddr) {
     update_mmu_cache_with(vaddr, ax_cpu::asm::update_mmu_cache);
 }
 
-#[cfg(axtest)]
-/// Verifies page alignment at the local page-fault completion boundary.
-pub fn update_mmu_cache_alignment_for_test() -> bool {
-    use core::cell::Cell;
-
-    let calls = Cell::new(0);
-    let observed = Cell::new(VirtAddr::from(0));
-    update_mmu_cache_with(VirtAddr::from(0x4567), |vaddr| {
-        calls.set(calls.get() + 1);
-        observed.set(vaddr);
-    });
-    calls.get() == 1 && observed.get() == VirtAddr::from(0x4000)
-}
-
 /// Flushes the TLB entries covering a virtual-address range on all available CPUs.
 pub fn flush_tlb_range_all_cpus(start: VirtAddr, size: usize) -> Result<(), TlbShootdownError> {
     #[cfg(feature = "ipi")]
@@ -145,14 +131,7 @@ impl TlbShootdown for AxHalTlbShootdown {
     }
 
     fn cpu_online(&self, cpu_id: usize) -> bool {
-        #[cfg(feature = "irq")]
-        {
-            crate::irq::is_cpu_online(cpu_id)
-        }
-        #[cfg(not(feature = "irq"))]
-        {
-            cpu_id < crate::cpu_num()
-        }
+        crate::irq::is_cpu_online(cpu_id)
     }
 
     fn flush_remote(
@@ -286,6 +265,20 @@ mod tests {
     use core::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn local_mmu_cache_update_aligns_the_fault_address_once() {
+        let calls = Cell::new(0);
+        let observed = Cell::new(VirtAddr::from(0));
+
+        update_mmu_cache_with(VirtAddr::from(0x4567), |vaddr| {
+            calls.set(calls.get() + 1);
+            observed.set(vaddr);
+        });
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(observed.get(), VirtAddr::from(0x4000));
+    }
 
     struct ModelShootdown {
         online: [bool; 3],

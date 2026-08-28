@@ -622,8 +622,12 @@ pub fn sys_setfsgid(fsgid: u32) -> StarryResult<isize> {
     Ok(prev_fsgid as isize)
 }
 
-pub fn sys_getgroups(size: usize, list: *mut u32) -> StarryResult<isize> {
+pub fn sys_getgroups(size: i32, list: *mut u32) -> StarryResult<isize> {
     debug!("sys_getgroups <= size: {size}");
+    if size < 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    let size = size as usize;
     let cred = current().as_thread().cred();
     let ngroups = cred.groups.len();
     if size == 0 {
@@ -1067,8 +1071,8 @@ pub fn sys_riscv_hwprobe(
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
     // uid_valid: NOCHG (u32::MAX) is invalid, everything else is valid.
     uid_valid(0)
         && uid_valid(1)
@@ -1079,7 +1083,7 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
     // validate_syslog_read_args: null buf or negative len is invalid.
     && validate_syslog_read_args(core::ptr::null_mut(), 0).is_err()
     && validate_syslog_read_args(core::ptr::null_mut::<c_char>(), 100).is_err()
-    && validate_syslog_read_args(0x1 as *mut c_char, 0).is_ok()  // non-null, len=0 is ok
+    && validate_syslog_read_args(core::ptr::dangling_mut::<c_char>(), 0).is_ok()  // non-null, len=0 is ok
     && {
         let mut dummy: c_char = 0;
         let ptr: *mut c_char = &mut dummy;
@@ -1088,32 +1092,43 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn sys_constants_and_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn sys_constants_and_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM};
 
-    // Test NOCHG sentinel value
-    assert!(NOCHG == u32::MAX);
+    const {
+        assert!(NOCHG == u32::MAX);
+        assert!(SECCOMP_SET_MODE_STRICT == 0);
+        assert!(SECCOMP_SET_MODE_FILTER == 1);
+        assert!(SECCOMP_GET_ACTION_AVAIL == 2);
+
+        assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_TSYNC != 0);
+        assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_LOG != 0);
+        assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_SPEC_ALLOW != 0);
+        assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_TSYNC_ESRCH != 0);
+    }
 
     // Test getrandom flags
     let valid_flags = 0u32;
-    assert!(valid_flags & !(GRND_NONBLOCK as u32 | GRND_INSECURE as u32 | GRND_RANDOM as u32) == 0);
+    assert!(valid_flags & !(GRND_NONBLOCK | GRND_INSECURE | GRND_RANDOM) == 0);
 
-    let nonblock_only = GRND_NONBLOCK as u32;
+    let nonblock_only = GRND_NONBLOCK;
     assert!(
-        nonblock_only & !(GRND_NONBLOCK as u32 | GRND_INSECURE as u32 | GRND_RANDOM as u32) == 0
+        nonblock_only & !(GRND_NONBLOCK | GRND_INSECURE | GRND_RANDOM) == 0
     );
 
-    // Test seccomp constants
-    assert!(SECCOMP_SET_MODE_STRICT == 0);
-    assert!(SECCOMP_SET_MODE_FILTER == 1);
-    assert!(SECCOMP_GET_ACTION_AVAIL == 2);
-
-    // Test seccomp filter flags
-    assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_TSYNC != 0);
-    assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_LOG != 0);
-    assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_SPEC_ALLOW != 0);
-    assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_TSYNC_ESRCH != 0);
-
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn uid_valid_and_syslog_validation_rules_hold() {
+        assert!(super::uid_valid_and_syslog_validation_rules_hold_for_test());
+    }
+
+    #[test]
+    fn sys_constants_and_validation_rules_hold() {
+        assert!(super::sys_constants_and_validation_rules_hold_for_test());
+    }
 }

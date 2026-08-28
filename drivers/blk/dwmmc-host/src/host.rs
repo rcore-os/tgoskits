@@ -4,10 +4,10 @@
 //! This module owns the register block and implements reset, clock
 //! programming, IDMAC setup, and bus-width selection. Higher-level command
 //! issue lives in [`crate::command`]; the IDMAC data transfer state machine
-//! lives in [`crate::dma`]; the [`SdioHost`] wiring
+//! lives in [`crate::dma`]; the [`SdMmcHost`] wiring
 //! lives in [`crate::lib`].
 //!
-//! [`SdioHost`]: sdmmc_protocol::sdio::SdioHost
+//! [`SdMmcHost`]: sdmmc_protocol::sdio::SdMmcHost
 
 use alloc::{boxed::Box, sync::Arc};
 use core::{
@@ -49,7 +49,7 @@ pub(crate) struct PendingData {
 
 /// DesignWare Mobile Storage Host Controller backend.
 ///
-/// Implements [`sdmmc_protocol::sdio::SdioHost`] using the internal DMAC
+/// Implements [`sdmmc_protocol::sdio::SdMmcHost`] using the internal DMAC
 /// (IDMAC) state machine.
 ///
 /// # Safety
@@ -284,7 +284,7 @@ impl DwMmc {
 
     /// Tell the driver the reference clock fed to the controller, in Hz.
     ///
-    /// The clock divider in [`set_clock`](sdmmc_protocol::sdio::SdioHost::set_clock)
+    /// The clock divider in [`set_clock`](sdmmc_protocol::sdio::SdMmcHost::set_clock)
     /// is computed from this value: `divider = ceil(ref_clock_hz /
     /// (2 * target_hz))`. If the reference is left at `0` the driver
     /// falls back to a 1:1 passthrough (CLKDIV = 0) and assumes the

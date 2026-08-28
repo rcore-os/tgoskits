@@ -88,7 +88,7 @@ impl fmt::Debug for ProcessGroup {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     extern crate std;
 

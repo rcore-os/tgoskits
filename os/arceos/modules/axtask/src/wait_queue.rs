@@ -65,7 +65,6 @@ impl WaitQueue {
 
         // Try to cancel a timer event from timer lists.
         // Just mark task's current timer ticket ID as expired.
-        #[cfg(feature = "irq")]
         if _from_timer_list {
             curr.timer_ticket_expired();
             // Note:
@@ -112,7 +111,6 @@ impl WaitQueue {
 
     /// Blocks the current task and put it into the wait queue, until other tasks
     /// notify it, or the given duration has elapsed.
-    #[cfg(feature = "irq")]
     #[track_caller]
     pub fn wait_timeout(&self, dur: core::time::Duration) -> bool {
         crate::api::might_sleep();
@@ -148,7 +146,6 @@ impl WaitQueue {
     ///
     /// Note that even other tasks notify this task, it will not wake up until
     /// the above conditions are met.
-    #[cfg(feature = "irq")]
     #[track_caller]
     pub fn wait_timeout_until<F>(&self, dur: core::time::Duration, condition: F) -> bool
     where

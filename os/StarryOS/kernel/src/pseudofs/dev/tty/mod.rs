@@ -25,19 +25,6 @@ use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
 pub(crate) use self::pts::{DevPtsMount, DevPtsOptions, PtsInstance};
-#[cfg(axtest)]
-pub(crate) use self::pty::pty_preserves_mouse_escape_reports_for_test;
-#[cfg(axtest)]
-pub(crate) use self::terminal::ldisc::axtest_support::{
-    canonical_echo_can_be_flushed_before_input_is_returned,
-    canonical_echo_is_batched_after_input_progress,
-    canonical_input_progress_does_not_wait_for_echo_writer,
-    canonical_large_echo_exceeding_sync_limit_is_queued,
-    canonical_long_line_drain_continues_past_buf_size, canonical_small_echo_respects_sync_limit,
-    injected_input_is_readable_immediately, passive_read_drains_source_before_reporting_peer_eof,
-    passive_read_preserves_input_across_partially_full_ring_buffer,
-    synchronous_echo_backpressure_queues_unsent_suffix,
-};
 use self::terminal::{
     Terminal, WindowSize,
     ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, write_output_bytes},
@@ -449,7 +436,7 @@ impl DeviceOps for CurrentTty {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use alloc::{sync::Arc, vec, vec::Vec};
 

@@ -574,8 +574,8 @@ pub fn perf_event_output(
         .write_event(data)
 }
 
-#[cfg(axtest)]
-pub(crate) fn control_callback_runs_preemptible_for_test() -> bool {
+#[cfg(all(test, axtest))]
+fn control_callback_runs_preemptible_for_test() -> bool {
     #[derive(Debug)]
     struct YieldingControl;
 
@@ -661,5 +661,14 @@ impl Drop for BPFJitMemory {
         guard
             .unmap(self.pages, self.num_pages * PAGE_SIZE_4K)
             .expect("failed to unmap BPF JIT memory");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn control_callback_runs_preemptible() {
+        assert!(super::control_callback_runs_preemptible_for_test());
     }
 }

@@ -269,8 +269,8 @@ impl PosixTimerTable {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn posix_timer_clock_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn posix_timer_clock_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
         CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
@@ -303,4 +303,12 @@ pub(crate) fn posix_timer_clock_validation_rules_hold_for_test() -> bool {
         && unknown
         && valid_known
         && invalid_unknown
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn posix_timer_clock_validation_rules_hold() {
+        assert!(super::posix_timer_clock_validation_rules_hold_for_test());
+    }
 }

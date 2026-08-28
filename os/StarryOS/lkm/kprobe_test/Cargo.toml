@@ -12,7 +12,7 @@ publish = false
 [dependencies]
 ax-driver.workspace = true
 ax-hal.workspace = true
-ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
+ax-runtime = { workspace = true, features = ["ext-ld"] }
 axplat-dyn = { workspace = true, optional = true }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 ax-std = { workspace = true, default-features = false, features = [
@@ -20,8 +20,6 @@ ax-std = { workspace = true, default-features = false, features = [
   "fd",
   "ext-ld",
   "fs",
-  "multitask",
-  "irq",
 ] }
 ax-log.workspace = true
 
@@ -31,7 +29,6 @@ kprobe.workspace = true
 [features]
 default = []
 qemu = [
-  "ax-runtime/irq",
   "ax-runtime/rtc",
   "ax-runtime/display",
   "starry-kernel/input",

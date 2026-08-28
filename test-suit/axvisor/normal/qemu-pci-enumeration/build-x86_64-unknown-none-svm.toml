@@ -1,0 +1,11 @@
+features = [
+    "vpci-test-device",
+]
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = [
+    "test-suit/axvisor/normal/qemu-pci-enumeration/x86-linux-pci-enumeration.toml",
+]
+
+[env]
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-pci-enumeration/initramfs-x86_64.cpio.gz"

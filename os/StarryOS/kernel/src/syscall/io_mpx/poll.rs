@@ -27,11 +27,15 @@ use crate::{
 
 fn check_nfds_limit(nfds: usize) -> StarryResult<()> {
     let nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
-    if nfds as u64 > nofile {
+    if !nfds_within_limit(nfds, nofile) {
         Err(StarryError::InvalidInput)
     } else {
         Ok(())
     }
+}
+
+fn nfds_within_limit(nfds: usize, nofile: u64) -> bool {
+    nfds as u64 <= nofile
 }
 
 fn read_poll_fds(fds: UserPtr<pollfd>, nfds: usize) -> StarryResult<Vec<pollfd>> {
@@ -193,18 +197,21 @@ pub fn sys_ppoll(
     res
 }
 
-#[cfg(test)]
-pub(crate) fn poll_nfds_validation_rules_hold_for_test() -> bool {
-    // Test nfds validation logic
-    // nfds must be <= RLIMIT_NOFILE current limit
-    let valid_nfds = 0usize;
-    assert!(valid_nfds as u64 <= u64::MAX); // Always valid
+#[cfg(all(test, not(axtest)))]
+fn poll_nfds_validation_rules_hold_for_test() -> bool {
+    assert!(nfds_within_limit(0, 0));
+    assert!(nfds_within_limit(1024, 1024));
+    assert!(!nfds_within_limit(1025, 1024));
 
-    let small_nfds = 1024usize;
-    assert!(small_nfds as u64 <= u64::MAX);
-
-    // POLLNVAL constant check
-    assert!(POLLNVAL != 0);
+    const { assert!(POLLNVAL != 0) }
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn poll_nfds_validation_rules_hold() {
+        assert!(super::poll_nfds_validation_rules_hold_for_test());
+    }
 }

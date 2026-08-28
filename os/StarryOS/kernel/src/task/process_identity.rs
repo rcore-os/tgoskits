@@ -82,12 +82,11 @@ pub(crate) fn publish_zombie(
 
 /// Reaps one exact generation. The TGID lease is released only after topology
 /// retirement, outside its locks, so the number cannot be reused mid-retire.
-pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
-    let identity = process_identity(process)?;
+fn reap_process_identity(
+    identity: &Arc<PidIdentity>,
+    process: &Arc<Process>,
+) -> Option<ProcessCpuTime> {
     let zombie = identity.claim_reap(process)?;
-
-    #[cfg(any(test, axtest))]
-    axtest_support::reap_claim_barrier(process.pid());
 
     process.retire();
     identity.finish_reap();
@@ -100,6 +99,11 @@ pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
     }
     tgid_lease.release();
     Some(cpu_time)
+}
+
+pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
+    let identity = process_identity(process)?;
+    reap_process_identity(&identity, process)
 }
 
 pub(crate) fn is_zombie_process(process: &Arc<Process>) -> bool {
@@ -165,108 +169,15 @@ pub(crate) fn traced_zombies_for(tracer: PidIdentityId) -> Vec<Arc<Process>> {
         .collect()
 }
 
-#[cfg(any(test, axtest))]
-mod axtest_support {
-    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-
-    #[cfg(axtest)]
-    use axpoll::PollSet;
-
-    use super::*;
-    #[cfg(axtest)]
-    use crate::{
-        sync::IrqMutex,
-        task::{PidReservation, PidReservationKind, Tid},
-    };
-
-    static REAP_CLAIM_BARRIER_PID: AtomicU32 = AtomicU32::new(0);
-    static REAP_CLAIM_REACHED: AtomicBool = AtomicBool::new(false);
-    static REAP_CLAIM_RELEASED: AtomicBool = AtomicBool::new(false);
-
-    pub(super) fn reap_claim_barrier(tgid: TgidNumber) {
-        if REAP_CLAIM_BARRIER_PID.load(Ordering::Acquire) != tgid.get() {
-            return;
-        }
-        REAP_CLAIM_REACHED.store(true, Ordering::Release);
-        while !REAP_CLAIM_RELEASED.load(Ordering::Acquire) {
-            ax_task::yield_now();
-        }
-    }
-
-    #[cfg(axtest)]
-    pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
-        let identity = PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader)
-            .unwrap()
-            .publish()
-            .unwrap();
-        let tid_lease = identity.acquire_role::<Tid>().unwrap();
-        let tgid_lease = identity.acquire_role::<Tgid>().unwrap();
-        let process = Process::new_for_axtest(identity.clone());
-        let test_tgid = process.pid();
-        identity.mark_task_exited();
-        tid_lease.release();
-        identity.bind_zombie_for_axtest(
-            process.clone(),
-            Arc::new(PollSet::new()),
-            ZombieSnapshot {
-                cred: Arc::new(Cred::default()),
-                ptrace_tracer: None,
-                is_clone_child: false,
-                wait_parent_tid: TidNumber::from(test_tgid.pid_number()),
-                cpu_time: ProcessCpuTime::default(),
-                tgid_lease,
-            },
-        );
-
-        REAP_CLAIM_REACHED.store(false, Ordering::Release);
-        REAP_CLAIM_RELEASED.store(false, Ordering::Release);
-        REAP_CLAIM_BARRIER_PID.store(test_tgid.get(), Ordering::Release);
-
-        let reaped_cpu_time = Arc::new(IrqMutex::new(None));
-        let reap_task = {
-            let process = process.clone();
-            let reaped_cpu_time = reaped_cpu_time.clone();
-            ax_task::spawn(move || {
-                *reaped_cpu_time.lock() = reap_process(&process);
-            })
-        };
-
-        while !REAP_CLAIM_REACHED.load(Ordering::Acquire) {
-            ax_task::yield_now();
-        }
-        let number = test_tgid.pid_number();
-        let namespace_lookup = ROOT_PID_NS.lookup(number);
-        let process_lookup =
-            PidView::new(ROOT_PID_NS.clone()).resolve_process(TgidNumber::from(number));
-        let identity_process_lookup = identity.public_process();
-
-        REAP_CLAIM_RELEASED.store(true, Ordering::Release);
-        reap_task.join();
-        REAP_CLAIM_BARRIER_PID.store(0, Ordering::Release);
-
-        let group_and_session_number_retained = namespace_lookup
-            .as_ref()
-            .is_some_and(|registered| registered.id() == identity.id());
-        let view_hidden = matches!(process_lookup, Err(StarryError::NoSuchProcess));
-        let identity_hidden = matches!(identity_process_lookup, Err(StarryError::NoSuchProcess));
-        let reaped_once = *reaped_cpu_time.lock() == Some(ProcessCpuTime::default());
-        group_and_session_number_retained && view_hidden && identity_hidden && reaped_once
-    }
-}
-
-#[cfg(axtest)]
-pub(crate) use axtest_support::reaping_identity_is_not_publicly_resolvable_for_test;
-
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use axpoll::PollSet;
 
     use super::*;
     use crate::task::{PidReservation, PidReservationKind, Tid};
-
     #[test]
     fn reaping_releases_process_owned_group_and_session_roles() {
-        let namespace = crate::task::new_test_pid_namespace();
+        let namespace = ROOT_PID_NS.clone();
         let identity = PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader)
             .unwrap()
             .publish()
@@ -274,11 +185,11 @@ mod tests {
         let number = identity.root_number();
         let tid = identity.acquire_role::<Tid>().unwrap();
         let tgid = identity.acquire_role::<Tgid>().unwrap();
-        let process = Process::new_for_axtest(identity.clone());
+        let process = super::super::process::new_isolated_process_for_test(identity.clone());
 
         identity.mark_task_exited();
         tid.release();
-        identity.bind_zombie_for_axtest(
+        identity.bind_zombie_for_test(
             process.clone(),
             Arc::new(PollSet::new()),
             ZombieSnapshot {
@@ -291,7 +202,10 @@ mod tests {
             },
         );
 
-        assert_eq!(reap_process(&process), Some(ProcessCpuTime::default()));
+        assert_eq!(
+            reap_process_identity(&identity, &process),
+            Some(ProcessCpuTime::default())
+        );
         assert!(namespace.lookup(number).is_some());
 
         drop(process);

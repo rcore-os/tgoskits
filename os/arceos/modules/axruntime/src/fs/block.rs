@@ -18,6 +18,10 @@ struct RuntimeTimeProvider;
 
 impl BlockTimeProvider for RuntimeTimeProvider {
     fn wall_time(&self) -> Duration {
+        ax_hal::time::wall_time()
+    }
+
+    fn monotonic_time(&self) -> Duration {
         ax_hal::time::monotonic_time()
     }
 }
@@ -129,16 +133,13 @@ impl BlockRuntimeOps for RuntimeTaskOps {
     }
 }
 
-#[cfg(feature = "irq")]
 struct RuntimeBlockIrqRegistrar;
 
-#[cfg(feature = "irq")]
 struct RuntimeBlockIrqRegistration {
     name: String,
     handle: ax_hal::irq::IrqHandle,
 }
 
-#[cfg(feature = "irq")]
 impl BlockIrqRegistration for RuntimeBlockIrqRegistration {
     fn enable(&self) -> BlockResult {
         ax_hal::irq::enable_irq(self.handle)?;
@@ -157,7 +158,6 @@ impl BlockIrqRegistration for RuntimeBlockIrqRegistration {
     }
 }
 
-#[cfg(feature = "irq")]
 impl Drop for RuntimeBlockIrqRegistration {
     fn drop(&mut self) {
         if let Err(error) = ax_hal::irq::free_irq(self.handle) {
@@ -169,7 +169,6 @@ impl Drop for RuntimeBlockIrqRegistration {
     }
 }
 
-#[cfg(feature = "irq")]
 impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
     fn register(
         &self,
@@ -195,7 +194,6 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
 static TIME_PROVIDER: RuntimeTimeProvider = RuntimeTimeProvider;
 static PAGE_PROVIDER: RuntimePageProvider = RuntimePageProvider;
 static TASK_OPS: RuntimeTaskOps = RuntimeTaskOps;
-#[cfg(feature = "irq")]
 static IRQ_REGISTRAR: RuntimeBlockIrqRegistrar = RuntimeBlockIrqRegistrar;
 
 pub(super) fn init(bootargs: Option<&str>) {
@@ -206,6 +204,7 @@ pub(super) fn init(bootargs: Option<&str>) {
         &TASK_OPS,
         axklib::dma::op(),
         irq_registrar(),
+        None,
     );
     ax_fs_ng::root::init_root_from_rdif_sources(
         take_rdif_block_devices(),
@@ -222,14 +221,8 @@ pub(super) fn online_smp() {
     }
 }
 
-#[cfg(feature = "irq")]
 fn irq_registrar() -> Option<&'static dyn BlockIrqRegistrar> {
     Some(&IRQ_REGISTRAR)
-}
-
-#[cfg(not(feature = "irq"))]
-fn irq_registrar() -> Option<&'static dyn BlockIrqRegistrar> {
-    None
 }
 
 fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
@@ -254,7 +247,6 @@ fn take_rdif_block_groups() -> Vec<RdifBlockGroup> {
         .collect()
 }
 
-#[cfg(feature = "irq")]
 fn resolve_block_irqs(bindings: Vec<ax_driver::BindingIrqBinding>) -> Vec<BlockIrqSource> {
     bindings
         .into_iter()
@@ -267,12 +259,6 @@ fn resolve_block_irqs(bindings: Vec<ax_driver::BindingIrqBinding>) -> Vec<BlockI
         .collect()
 }
 
-#[cfg(not(feature = "irq"))]
-fn resolve_block_irqs(_bindings: Vec<ax_driver::BindingIrqBinding>) -> Vec<BlockIrqSource> {
-    Vec::new()
-}
-
-#[cfg(feature = "irq")]
 fn resolve_block_irq(irq: ax_driver::BindingIrq) -> Option<irq_framework::IrqId> {
     match crate::irq::resolve_binding_irq(irq) {
         Ok(id) => Some(id),

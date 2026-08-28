@@ -3,9 +3,9 @@ use core::any::Any;
 
 use ax_cgroup::{CgroupError, CgroupNode};
 use axfs_ng_vfs::{
-    DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, Filesystem, FilesystemOps, Location,
-    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
-    WeakDirEntry,
+    DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, Filesystem,
+    FilesystemOps, Location, Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType,
+    Reference, RenameOptions, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -21,6 +21,7 @@ enum CgroupFileKind {
     SubtreeControl,
     PidsMax,
     PidsCurrent,
+    PidsPeak,
     PidsEvents,
 }
 
@@ -32,6 +33,7 @@ impl CgroupFileKind {
             "cgroup.subtree_control" => Some(Self::SubtreeControl),
             "pids.max" => Some(Self::PidsMax),
             "pids.current" => Some(Self::PidsCurrent),
+            "pids.peak" => Some(Self::PidsPeak),
             "pids.events" => Some(Self::PidsEvents),
             _ => None,
         }
@@ -44,30 +46,34 @@ impl CgroupFileKind {
             Self::SubtreeControl => "cgroup.subtree_control",
             Self::PidsMax => "pids.max",
             Self::PidsCurrent => "pids.current",
+            Self::PidsPeak => "pids.peak",
             Self::PidsEvents => "pids.events",
         }
     }
 
     fn permission(self) -> NodePermission {
         let mode = match self {
-            Self::Controllers | Self::PidsCurrent | Self::PidsEvents => 0o444,
+            Self::Controllers | Self::PidsCurrent | Self::PidsPeak | Self::PidsEvents => 0o444,
             Self::Procs | Self::SubtreeControl | Self::PidsMax => 0o644,
         };
         NodePermission::from_bits_truncate(mode)
     }
 
     fn is_available(self, cgroup: &CgroupNode) -> bool {
-        !matches!(self, Self::PidsMax | Self::PidsCurrent | Self::PidsEvents)
-            || cgroup.has_pids_interface()
+        !matches!(
+            self,
+            Self::PidsMax | Self::PidsCurrent | Self::PidsPeak | Self::PidsEvents
+        ) || cgroup.has_pids_interface()
     }
 }
 
-const CGROUP_FILES: [CgroupFileKind; 6] = [
+const CGROUP_FILES: [CgroupFileKind; 7] = [
     CgroupFileKind::Controllers,
     CgroupFileKind::Procs,
     CgroupFileKind::SubtreeControl,
     CgroupFileKind::PidsMax,
     CgroupFileKind::PidsCurrent,
+    CgroupFileKind::PidsPeak,
     CgroupFileKind::PidsEvents,
 ];
 
@@ -90,6 +96,7 @@ impl CgroupFile {
             CgroupFileKind::PidsCurrent => {
                 crate::cgroup::pids_current_text(&self.cgroup)?.into_bytes()
             }
+            CgroupFileKind::PidsPeak => crate::cgroup::pids_peak_text(&self.cgroup)?.into_bytes(),
             CgroupFileKind::PidsEvents => {
                 crate::cgroup::pids_events_text(&self.cgroup)?.into_bytes()
             }
@@ -121,7 +128,7 @@ impl DirectRwFsFileOps for CgroupFile {
                 crate::cgroup::write_subtree_control(&self.cgroup, buf)?
             }
             CgroupFileKind::PidsMax => crate::cgroup::write_pids_max(&self.cgroup, buf)?,
-            CgroupFileKind::PidsCurrent | CgroupFileKind::PidsEvents => {
+            CgroupFileKind::PidsCurrent | CgroupFileKind::PidsPeak | CgroupFileKind::PidsEvents => {
                 return Err(VfsError::OperationNotPermitted);
             }
         }
@@ -203,7 +210,7 @@ impl NodeOps for CgroupDir {
 }
 
 impl DirNodeOps for CgroupDir {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut names = Vec::new();
         names.push(DOT.to_string());
         names.push(DOTDOT.to_string());
@@ -217,7 +224,7 @@ impl DirNodeOps for CgroupDir {
         let this_entry = self.this_entry()?;
         let this_dir = this_entry.as_dir()?;
         let mut count = 0;
-        for (i, name) in names.iter().enumerate().skip(offset as usize) {
+        for (i, name) in names.iter().enumerate().skip(cursor.offset() as usize) {
             let metadata = match name.as_str() {
                 DOT => this_entry.metadata(),
                 DOTDOT => this_entry
@@ -225,7 +232,12 @@ impl DirNodeOps for CgroupDir {
                     .map_or_else(|| this_entry.metadata(), |parent| parent.metadata()),
                 other => this_dir.lookup(other)?.metadata(),
             }?;
-            if !sink.accept(name, metadata.inode, metadata.node_type, i as u64 + 1) {
+            if !sink.accept(
+                name.as_bytes(),
+                metadata.inode,
+                metadata.node_type,
+                DirectoryCursor::new(i as u64 + 1),
+            ) {
                 break;
             }
             count += 1;
@@ -275,6 +287,17 @@ impl DirNodeOps for CgroupDir {
         Ok(self.child_dir_entry(name, child))
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::OperationNotPermitted)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         Err(VfsError::OperationNotPermitted)
     }
@@ -288,7 +311,13 @@ impl DirNodeOps for CgroupDir {
             .map_err(cgroup_error_to_vfs_error)
     }
 
-    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        _src_name: &str,
+        _dst_dir: &DirNode,
+        _dst_name: &str,
+        _options: RenameOptions,
+    ) -> VfsResult<()> {
         Err(VfsError::OperationNotPermitted)
     }
 }

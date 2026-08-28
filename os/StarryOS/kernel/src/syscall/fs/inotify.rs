@@ -46,20 +46,20 @@ pub fn sys_inotify_rm_watch(fd: c_int, wd: c_int) -> StarryResult<isize> {
     inotify.rm_watch(wd).map(|()| 0)
 }
 
-#[cfg(test)]
-pub(crate) fn inotify_flags_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn inotify_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{IN_CLOEXEC, IN_NONBLOCK};
     // Test inotify_init1 flag validation
     let valid_flags = 0u32;
     assert!(valid_flags & !(IN_CLOEXEC | IN_NONBLOCK) == 0);
 
-    let cloexec_only = IN_CLOEXEC as u32;
+    let cloexec_only = IN_CLOEXEC;
     assert!(cloexec_only & !(IN_CLOEXEC | IN_NONBLOCK) == 0);
 
-    let nonblock_only = IN_NONBLOCK as u32;
+    let nonblock_only = IN_NONBLOCK;
     assert!(nonblock_only & !(IN_CLOEXEC | IN_NONBLOCK) == 0);
 
-    let all_valid = IN_CLOEXEC as u32 | IN_NONBLOCK as u32;
+    let all_valid = IN_CLOEXEC | IN_NONBLOCK;
     assert!(all_valid & !(IN_CLOEXEC | IN_NONBLOCK) == 0);
 
     // Invalid flag should be detected
@@ -67,4 +67,12 @@ pub(crate) fn inotify_flags_validation_rules_hold_for_test() -> bool {
     assert!(invalid_flags & !(IN_CLOEXEC | IN_NONBLOCK) != 0);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn inotify_flags_validation_rules_hold() {
+        assert!(super::inotify_flags_validation_rules_hold_for_test());
+    }
 }

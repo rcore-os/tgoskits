@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, string::String};
 
 use axdevice_base::*;
-use x86_vlapic::{EmulatedPic, X86Port};
+use x86_vlapic::{EmulatedPic, PicInterruptClaim, X86Port};
 
 use super::{X86PicDeviceOps, port_resource, x86_access_width};
 
@@ -35,8 +35,16 @@ impl Default for X86PicDevice {
 }
 
 impl X86PicDeviceOps for X86PicDevice {
-    fn pulse_irq(&self, irq: u8) -> Option<u8> {
-        self.inner.pulse_irq(irq)
+    fn claim_irq(&self, irq: u8) -> Option<PicInterruptClaim> {
+        self.inner.claim_irq(irq)
+    }
+
+    fn claim_pending_interrupt(&self) -> Option<PicInterruptClaim> {
+        self.inner.claim_pending_interrupt()
+    }
+
+    fn restore_interrupt(&self, claim: PicInterruptClaim) {
+        self.inner.restore_interrupt(claim);
     }
 }
 

@@ -606,8 +606,8 @@ pub fn zap_thread(tid: TidNumber) -> StarryResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn decode_wait_status_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn decode_wait_status_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
 
     // Normal exit: raw & 0x7f == 0 → (CLD_EXITED, exit_value).
@@ -632,4 +632,12 @@ pub(crate) fn decode_wait_status_rules_hold_for_test() -> bool {
     assert!(code == CLD_DUMPED as i32 && status == 9);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn decode_wait_status_rules_hold() {
+        assert!(super::decode_wait_status_rules_hold_for_test());
+    }
 }

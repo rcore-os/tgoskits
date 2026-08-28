@@ -1,0 +1,36 @@
+args = [
+    "-no-user-config",
+    "-display",
+    "none",
+    "-serial",
+    "stdio",
+    "-monitor",
+    "none",
+    "-cpu",
+    "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority",
+    "-machine",
+    "q35,smbus=off,usb=off,graphics=off",
+    "-smp",
+    "2",
+    "-accel",
+    "kvm",
+    "-m",
+    "1G",
+    "-net",
+    "none",
+    "-vga",
+    "none",
+]
+timeout = 600
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)page fault",
+    "(?i)vm exit failure",
+    "(?i)failed to initialize guest VM",
+    "(?m)^AXVISOR_X86_VPCI_ENUMERATION_FAILED\\s*$",
+    "(?m)^AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN\\s*$",
+]
+success_regex = ["(?m)^AXVISOR_X86_VPCI_ENUMERATION_PASSED\\s*$"]
+to_bin = true
+uefi = true

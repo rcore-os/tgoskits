@@ -89,8 +89,8 @@ pub fn sys_rseq(addr: *mut u8, len: usize, flags: u32, sig: u32) -> Result<isize
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn rseq_validation_rejects_invalid_arguments_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn rseq_validation_rejects_invalid_arguments_for_test() -> bool {
     matches!(
         validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0),
         Err(StarryError::InvalidInput)
@@ -109,8 +109,8 @@ pub(crate) fn rseq_validation_rejects_invalid_arguments_for_test() -> bool {
     )
 }
 
-#[cfg(test)]
-pub(crate) fn rseq_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn rseq_validation_rules_hold_for_test() -> bool {
     // Test validate_rseq_args validation logic
     // Null address should fail
     let result = validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0);
@@ -140,9 +140,12 @@ pub(crate) fn rseq_validation_rules_hold_for_test() -> bool {
     true
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
-    use super::{RSEQ_AREA_SIZE, RSEQ_FLAG_UNREGISTER, validate_rseq_args};
+    use super::{
+        RSEQ_AREA_SIZE, RSEQ_FLAG_UNREGISTER, rseq_validation_rejects_invalid_arguments_for_test,
+        rseq_validation_rules_hold_for_test, validate_rseq_args,
+    };
     use crate::StarryError;
 
     #[test]
@@ -184,5 +187,15 @@ mod tests {
     fn validate_rseq_args_accepts_aligned_addr() {
         let ptr = 0x1000 as *mut u8;
         assert_eq!(validate_rseq_args(ptr, RSEQ_AREA_SIZE, 0).unwrap(), 0x1000);
+    }
+
+    #[test]
+    fn rseq_validation_rejects_invalid_arguments() {
+        assert!(rseq_validation_rejects_invalid_arguments_for_test());
+    }
+
+    #[test]
+    fn rseq_validation_rules_hold() {
+        assert!(rseq_validation_rules_hold_for_test());
     }
 }

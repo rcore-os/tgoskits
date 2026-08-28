@@ -6,22 +6,25 @@ use alloc::{
 };
 use core::{
     ffi::{c_char, c_int},
-    mem::offset_of,
+    mem::{offset_of, size_of},
     time::Duration,
 };
 
 use ax_fs_ng::vfs::{FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
-use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, VfsError, path::Path};
+use axfs_ng_vfs::{
+    DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, NodePermission, NodeType,
+    RenameOptions, VfsError, path::Path,
+};
 use linux_raw_sys::{
     general::*,
-    ioctl::{FIOASYNC, FIONBIO},
+    ioctl::{FIOASYNC, FIONBIO, FS_IOC_FIEMAP},
 };
-use starry_vm::{VmPtr, vm_write_slice};
+use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
-    StarryError, StarryResult,
+    Errno, StarryError, StarryResult,
     file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::{vm_load_path_string, vm_load_string},
     task::AsThread,
@@ -34,8 +37,49 @@ use crate::{
 pub const FIOCLEX: u32 = 0x5451;
 pub const FIONCLEX: u32 = 0x5450;
 
+// These values are architecture-independent Linux FIEMAP UAPI flags. Keep
+// them at the syscall boundary because linux-raw-sys does not generate the
+// fiemap.h constants for every architecture (including LoongArch64).
+const FIEMAP_FLAG_SYNC: u32 = 0x0000_0001;
+const FIEMAP_FLAG_XATTR: u32 = 0x0000_0002;
+const FIEMAP_FLAG_CACHE: u32 = 0x0000_0004;
+const FIEMAP_FLAGS_COMPAT: u32 = FIEMAP_FLAG_SYNC | FIEMAP_FLAG_XATTR;
+const FIEMAP_EXTENT_LAST: u32 = 0x0000_0001;
+const FIEMAP_EXTENT_NOT_ALIGNED: u32 = 0x0000_0100;
+const FIEMAP_EXTENT_DATA_INLINE: u32 = 0x0000_0200;
+const FIEMAP_EXTENT_UNWRITTEN: u32 = 0x0000_0800;
+const FIEMAP_EXTENT_MERGED: u32 = 0x0000_1000;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::AnyBitPattern)]
+struct FiemapHeader {
+    start: u64,
+    length: u64,
+    flags: u32,
+    mapped_extents: u32,
+    extent_count: u32,
+    reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FiemapExtent {
+    logical: u64,
+    physical: u64,
+    length: u64,
+    reserved64: [u64; 2],
+    flags: u32,
+    reserved: [u32; 3],
+}
+
+const _: () = {
+    assert!(size_of::<FiemapHeader>() == 32);
+    assert!(size_of::<FiemapExtent>() == 56);
+    assert!(offset_of!(FiemapExtent, flags) == 40);
+};
+
 #[cfg(test)]
-pub(crate) fn ctl_ioctl_constants_hold_for_test() -> bool {
+fn ctl_ioctl_constants_hold_for_test() -> bool {
     // Verify ioctl command constants
     assert!(FIOCLEX == 0x5451);
     assert!(FIONCLEX == 0x5450);
@@ -44,7 +88,15 @@ pub(crate) fn ctl_ioctl_constants_hold_for_test() -> bool {
     use linux_raw_sys::ioctl::{FIOASYNC, FIONBIO};
     assert!(FIONBIO == 0x5421);
     assert!(FIOASYNC == 0x5452);
-
+    assert!(FIEMAP_FLAG_SYNC == 0x0000_0001);
+    assert!(FIEMAP_FLAG_XATTR == 0x0000_0002);
+    assert!(FIEMAP_FLAG_CACHE == 0x0000_0004);
+    assert!(FIEMAP_FLAGS_COMPAT == 0x0000_0003);
+    assert!(FIEMAP_EXTENT_LAST == 0x0000_0001);
+    assert!(FIEMAP_EXTENT_NOT_ALIGNED == 0x0000_0100);
+    assert!(FIEMAP_EXTENT_DATA_INLINE == 0x0000_0200);
+    assert!(FIEMAP_EXTENT_UNWRITTEN == 0x0000_0800);
+    assert!(FIEMAP_EXTENT_MERGED == 0x0000_1000);
     true
 }
 
@@ -71,6 +123,9 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> StarryResult<isize> {
         f.set_async_mode(val != 0)?;
         return Ok(0);
     }
+    if cmd == FS_IOC_FIEMAP {
+        return ioctl_fiemap(fd, arg).map(|()| 0);
+    }
     // FIOCLEX/FIONCLEX are fd-table operations (close-on-exec), not device commands —
     // handle them here so any fd (not just ttys) accepts them, as Linux does. Without
     // this, curses/CPython (glances) hit "Unsupported ioctl command".
@@ -94,6 +149,114 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> StarryResult<isize> {
                 debug!("ioctl {cmd} on non-tty fd {fd} -> ENOTTY (probe)");
             }
         })
+}
+
+fn ioctl_fiemap(fd: i32, arg: usize) -> StarryResult<()> {
+    let (file, directory) = match crate::file::File::from_fd(fd) {
+        Ok(file) => (Some(file), None),
+        Err(StarryError::IsADirectory) => (None, Some(Directory::from_fd(fd)?)),
+        Err(StarryError::InvalidInput) => return Err(StarryError::OperationNotSupported),
+        Err(error) => return Err(error),
+    };
+    let header_ptr = arg as *mut FiemapHeader;
+    let mut header = header_ptr.vm_read()?;
+    if header.extent_count > u32::MAX / size_of::<FiemapExtent>() as u32 {
+        return Err(StarryError::InvalidInput);
+    }
+
+    // ext4 consumes CACHE before generic compatibility checking. rsext4 has no
+    // separate extent-status cache; this query warms its checked metadata cache.
+    header.flags &= !FIEMAP_FLAG_CACHE;
+    let incompatible = header.flags & !(FIEMAP_FLAGS_COMPAT | FIEMAP_FLAG_SYNC);
+    let mut result: StarryResult<_> = if incompatible != 0 {
+        header.flags = incompatible;
+        Err(StarryError::from(Errno::EBADR))
+    } else {
+        (|| -> StarryResult<_> {
+            if header.flags & FIEMAP_FLAG_SYNC != 0 {
+                if let Some(file) = &file {
+                    file.inner().sync(false)?;
+                } else if let Some(directory) = &directory {
+                    directory.inner().sync(false)?;
+                }
+            }
+            let target = if header.flags & FIEMAP_FLAG_XATTR != 0 {
+                header.flags &= !FIEMAP_FLAG_XATTR;
+                FileExtentTarget::ExtendedAttributes
+            } else {
+                FileExtentTarget::Data
+            };
+            let mappings = if let Some(file) = &file {
+                file.inner().map_extents(
+                    header.start,
+                    header.length,
+                    target,
+                    header.extent_count as usize,
+                )?
+            } else {
+                directory
+                    .as_ref()
+                    .ok_or(StarryError::OperationNotSupported)?
+                    .inner()
+                    .entry()
+                    .as_dir()?
+                    .inner()
+                    .map_extents(
+                        header.start,
+                        header.length,
+                        target,
+                        header.extent_count as usize,
+                    )?
+            };
+            Ok(mappings)
+        })()
+    };
+
+    let mut copied = 0u32;
+    if let Ok(mappings) = &result {
+        if header.extent_count == 0 {
+            copied = u32::try_from(mappings.mapped_extents)
+                .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;
+        } else {
+            let extent_address = arg
+                .checked_add(size_of::<FiemapHeader>())
+                .ok_or(StarryError::BadAddress)?;
+            for (index, mapping) in mappings.extents.iter().enumerate() {
+                let mut flags = 0;
+                if mapping.state == axfs_ng_vfs::FileExtentState::Unwritten {
+                    flags |= FIEMAP_EXTENT_UNWRITTEN;
+                }
+                if mapping.state == axfs_ng_vfs::FileExtentState::Inline {
+                    flags |= FIEMAP_EXTENT_DATA_INLINE | FIEMAP_EXTENT_NOT_ALIGNED;
+                }
+                if mapping.merged {
+                    flags |= FIEMAP_EXTENT_MERGED;
+                }
+                if mappings.complete && index + 1 == mappings.extents.len() {
+                    flags |= FIEMAP_EXTENT_LAST;
+                }
+                let extent = FiemapExtent {
+                    logical: mapping.logical_start,
+                    physical: mapping.physical_start,
+                    length: mapping.length,
+                    flags,
+                    ..Default::default()
+                };
+                let byte_offset = index
+                    .checked_mul(size_of::<FiemapExtent>())
+                    .and_then(|offset| extent_address.checked_add(offset))
+                    .ok_or(StarryError::BadAddress)?;
+                if let Err(error) = (byte_offset as *mut FiemapExtent).vm_write(extent) {
+                    result = Err(error.into());
+                    break;
+                }
+                copied += 1;
+            }
+        }
+    }
+    header.mapped_extents = copied;
+    header_ptr.vm_write(header)?;
+    result.map(|_| ())
 }
 
 #[ddebug::named]
@@ -336,20 +499,29 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: u32) -> StarryResult<isize> {
     // kernel memory. A bad fd must return EBADF rather than consume `len` bytes.
     let dir = Directory::from_fd(fd)?;
     let mut buffer = DirBuffer::new((len as usize).min(GETDENTS_BUFFER_SIZE));
-    let mut dir_offset = dir.offset.lock();
+    let mut position = dir.position.lock();
+    let mut next_cursor = position.cursor;
+    if position.read_state.is_none() {
+        position.read_state = Some(dir.inner().open_directory_read_state()?);
+    }
 
     let mut has_remaining = false;
 
-    dir.inner()
-        .read_dir(*dir_offset, &mut |name: &str, ino, node_type, offset| {
+    dir.inner().read_dir_with_state(
+        position
+            .read_state
+            .as_deref_mut()
+            .ok_or(StarryError::BadState)?,
+        next_cursor,
+        &mut |name: &[u8], ino, node_type, cursor: DirectoryCursor| {
             has_remaining = true;
-            if !buffer.write_entry(ino, offset as _, node_type, name.as_bytes()) {
+            if !buffer.write_entry(ino, cursor.offset() as _, node_type, name) {
                 return false;
             }
-            *dir_offset = offset;
+            next_cursor = cursor;
             true
-        })?;
-    drop(dir_offset);
+        },
+    )?;
 
     if has_remaining && buffer.offset == 0 {
         return Err(StarryError::InvalidInput);
@@ -358,6 +530,7 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: u32) -> StarryResult<isize> {
     // The rest of the bounded scratch buffer is not part of this getdents
     // result and must not overwrite bytes beyond the returned record stream.
     vm_write_slice(buf, &buffer.buf[..buffer.offset])?;
+    position.cursor = next_cursor;
 
     Ok(buffer.offset as _)
 }
@@ -850,7 +1023,8 @@ pub fn sys_renameat(
     sys_renameat2(old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
-// Rename a path, currently supporting Linux RENAME_NOREPLACE.
+// Rename a path with Linux renameat2 flag validation. Filesystems reject
+// individually unsupported operations at their typed capability boundary.
 pub fn sys_renameat2(
     old_dirfd: i32,
     old_path: *const c_char,
@@ -858,10 +1032,18 @@ pub fn sys_renameat2(
     new_path: *const c_char,
     flags: u32,
 ) -> StarryResult<isize> {
-    const RENAMEAT2_SUPPORTED_FLAGS: u32 = RENAME_NOREPLACE;
+    const RENAMEAT2_SUPPORTED_FLAGS: u32 = RENAME_NOREPLACE | RENAME_EXCHANGE | RENAME_WHITEOUT;
     if flags & !RENAMEAT2_SUPPORTED_FLAGS != 0 {
         return Err(StarryError::InvalidInput);
     }
+    let options = match flags {
+        0 => RenameOptions::REPLACE,
+        RENAME_NOREPLACE => RenameOptions::NO_REPLACE,
+        RENAME_EXCHANGE => RenameOptions::EXCHANGE,
+        RENAME_WHITEOUT => RenameOptions::WHITEOUT,
+        value if value == RENAME_NOREPLACE | RENAME_WHITEOUT => RenameOptions::WHITEOUT_NO_REPLACE,
+        _ => return Err(StarryError::InvalidInput),
+    };
 
     let old_path = vm_load_path_string(old_path)?;
     let new_path = vm_load_path_string(new_path)?;
@@ -887,19 +1069,58 @@ pub fn sys_renameat2(
     }
 
     // Propagate the filesystem errno directly to match renameat2 callers.
-    old_dir.rename(&old_name, &new_dir, &new_name)?;
+    old_dir.rename_with_options(&old_name, &new_dir, &new_name, options)?;
+    Ok(0)
+}
+
+fn run_sync_stages<PageSync, RootSync, BlockSync>(
+    page_sync: PageSync,
+    root_sync: RootSync,
+    block_sync: BlockSync,
+) -> StarryResult<isize>
+where
+    PageSync: FnOnce() -> StarryResult<()>,
+    RootSync: FnOnce() -> StarryResult<()>,
+    BlockSync: FnOnce() -> StarryResult<()>,
+{
+    if let Err(error) = page_sync() {
+        warn!("sync(2) page-cache writeback failed: {error:?}");
+    }
+    if let Err(error) = root_sync() {
+        warn!("sync(2) root-filesystem writeback failed: {error:?}");
+    }
+    if let Err(error) = block_sync() {
+        warn!("sync(2) block-cache writeback failed: {error:?}");
+    }
+    // Linux sync(2) is a best-effort global operation and always reports
+    // success; writeback errors are observed through other durability APIs.
     Ok(0)
 }
 
 pub fn sys_sync() -> StarryResult<isize> {
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
     // Write back ax-fs-ng page cache first, then flush filesystem metadata.
-    sync_all_cached_files(false)?;
-    ax_fs_ng::vfs::current_fs_context()
-        .lock()
-        .root_dir()
-        .sync(false)?;
-    Ok(0)
+    run_sync_stages(
+        || {
+            sync_all_cached_files(false)?;
+            Ok(())
+        },
+        || {
+            ax_fs_ng::vfs::current_fs_context()
+                .lock()
+                .root_dir()
+                .sync(false)?;
+            Ok(())
+        },
+        || {
+            // The root sync above only reaches the root filesystem's device path;
+            // write back block-cache dirt of every device (other partitions) and
+            // issue their flush barriers.
+            #[cfg(any(feature = "ext4", feature = "fat"))]
+            ax_fs_ng::sync_all_block_caches()?;
+            Ok(())
+        },
+    )
 }
 
 pub fn sys_syncfs(fd: c_int) -> StarryResult<isize> {
@@ -912,4 +1133,49 @@ pub fn sys_syncfs(fd: c_int) -> StarryResult<isize> {
         d.inner().filesystem().flush()?;
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn ctl_ioctl_constants_hold() {
+        assert!(ctl_ioctl_constants_hold_for_test());
+    }
+
+    #[test]
+    fn sync_attempts_every_stage_and_returns_success() {
+        let page_called = Cell::new(false);
+        let root_called = Cell::new(false);
+        let block_called = Cell::new(false);
+
+        let result = run_sync_stages(
+            || {
+                page_called.set(true);
+                Err(StarryError::Io)
+            },
+            || {
+                root_called.set(true);
+                Err(StarryError::ReadOnlyFilesystem)
+            },
+            || {
+                block_called.set(true);
+                Err(StarryError::NoMemory)
+            },
+        );
+
+        assert!(page_called.get());
+        assert!(
+            root_called.get(),
+            "root sync was skipped after a page-cache error"
+        );
+        assert!(
+            block_called.get(),
+            "global block-cache sync was skipped after an earlier error"
+        );
+        assert!(matches!(result, Ok(0)));
+    }
 }

@@ -61,7 +61,7 @@ fn main() {
     assert_eq!(write_fault_address, UNMAPPED_ADDRESS);
 
     std::println!("LOONGARCH_UNALIGNED_FIXUP_OK");
-    ax_hal::power::system_off();
+    std::process::exit(0);
 }
 
 #[cfg(not(feature = "ax-std"))]

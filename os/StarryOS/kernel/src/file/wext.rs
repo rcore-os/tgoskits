@@ -222,28 +222,24 @@ fn commit(ifname: &str) -> StarryResult<usize> {
     match mode {
         StagedMode::Station => {
             let ssid = pending.ssid.ok_or(StarryError::InvalidInput)?;
-            let ssid = core::str::from_utf8(&ssid).map_err(|_| StarryError::InvalidInput)?;
+            let ssid = String::from_utf8(ssid).map_err(|_| StarryError::InvalidInput)?;
             let password = pending.passphrase.unwrap_or_default();
-            ax_net::reconfigure_wifi(
-                ifname,
-                ax_net::WifiMode::Station {
-                    ssid,
-                    password: &password,
-                },
-            )?;
+            ax_net::reconfigure_wifi(ifname, ax_net::WifiTransaction::connect(ssid, password))?;
         }
         StagedMode::AccessPoint => {
             let ssid = pending.ssid.ok_or(StarryError::InvalidInput)?;
             let channel = pending.channel.unwrap_or(AP_CHANNEL_DEFAULT);
             ax_net::reconfigure_wifi(
                 ifname,
-                ax_net::WifiMode::AccessPoint {
-                    ssid: &ssid,
+                ax_net::WifiTransaction::open_access_point(
+                    ssid,
                     channel,
-                    ip: AP_SERVER_IP,
-                    prefix_len: AP_PREFIX_LEN,
-                    dhcp_client_ip: Some(AP_CLIENT_IP),
-                },
+                    ax_net::WifiLinkPolicy {
+                        ip: AP_SERVER_IP,
+                        prefix_len: AP_PREFIX_LEN,
+                        dhcp_server_client_ip: Some(AP_CLIENT_IP),
+                    },
+                ),
             )?;
         }
     }
@@ -258,8 +254,8 @@ fn _write_iwreq_data(arg: usize, data: &[u8]) -> StarryResult<()> {
     Ok(vm_write_slice((arg + IWREQ_DATA_OFFSET) as *mut u8, data)?)
 }
 
-#[cfg(test)]
-pub(crate) fn is_wext_ioctl_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn is_wext_ioctl_validation_rules_hold_for_test() -> bool {
     // is_wext_ioctl: returns true only for the 5 handled WE ioctl commands.
     let valid_cmds = [
         SIOCSIWCOMMIT,
@@ -277,4 +273,12 @@ pub(crate) fn is_wext_ioctl_validation_rules_hold_for_test() -> bool {
         && !is_wext_ioctl(SIOCSIWCOMMIT - 1);
 
     all_valid && invalid
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn is_wext_ioctl_validation_rules_hold() {
+        assert!(super::is_wext_ioctl_validation_rules_hold_for_test());
+    }
 }

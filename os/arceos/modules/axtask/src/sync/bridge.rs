@@ -3,11 +3,9 @@
 //! This module is public only because the provider lives in another crate.
 //! OS consumers must use [`crate::sync`] or `ax-runtime::sync` instead.
 
-#[cfg(feature = "multitask")]
-use core::sync::atomic::AtomicU64;
 use core::{
     panic::Location,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use super::{GuardState, IrqSaveState, PreemptIrqSaveState, PreemptState};
@@ -54,7 +52,6 @@ pub struct RwLockAcquireRequest<'a> {
 }
 
 /// Complete sleepable-mutex acquisition request from the runtime provider.
-#[cfg(feature = "multitask")]
 pub struct MutexAcquireRequest<'a> {
     pub wait_queue: &'a AtomicPtr<()>,
     pub owner_id: &'a AtomicU64,
@@ -555,21 +552,18 @@ pub fn rwlock_force_read_decrement(state: &AtomicUsize, lock_addr: usize, _conte
     }
 }
 
-#[cfg(feature = "multitask")]
 fn current_task_id() -> u64 {
     let id = super::mutex::runtime_current_task_id();
     assert_ne!(id, 0, "task runtime returned reserved owner id 0");
     id
 }
 
-#[cfg(feature = "multitask")]
 struct PendingMutexAcquire<'a> {
     owner_id: &'a AtomicU64,
     wait_queue: &'a AtomicPtr<()>,
     acquired: bool,
 }
 
-#[cfg(feature = "multitask")]
 impl Drop for PendingMutexAcquire<'_> {
     fn drop(&mut self) {
         if self.acquired {
@@ -580,7 +574,6 @@ impl Drop for PendingMutexAcquire<'_> {
 }
 
 /// Performs a complete sleepable mutex acquisition transaction.
-#[cfg(feature = "multitask")]
 pub fn mutex_acquire(request: MutexAcquireRequest<'_>) -> bool {
     if !request.is_try {
         super::mutex::runtime_might_sleep(request.caller);
@@ -634,7 +627,6 @@ pub fn mutex_acquire(request: MutexAcquireRequest<'_>) -> bool {
 }
 
 /// Releases a sleepable mutex after validating task ownership.
-#[cfg(feature = "multitask")]
 pub fn mutex_release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize) {
     let owner = owner_id.load(Ordering::Acquire);
     let current = current_task_id();
@@ -648,25 +640,21 @@ pub fn mutex_release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr
 }
 
 /// Releases a deliberately leaked sleepable mutex guard.
-#[cfg(feature = "multitask")]
 pub fn mutex_force_release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr: usize) {
     mutex_release(wait_queue, owner_id, lock_addr);
 }
 
 /// Returns whether the current task owns a sleepable mutex.
-#[cfg(feature = "multitask")]
 pub fn mutex_is_owned_by_current(owner_id: &AtomicU64) -> bool {
     owner_id.load(Ordering::Acquire) == current_task_id()
 }
 
 /// Returns whether a sleepable mutex has an owner.
-#[cfg(feature = "multitask")]
 pub fn mutex_is_locked(owner_id: &AtomicU64) -> bool {
     owner_id.load(Ordering::Acquire) != 0
 }
 
 /// Validates and destroys an opaque mutex wait queue.
-#[cfg(feature = "multitask")]
 pub fn mutex_drop_wait_queue(wait_queue: *mut ()) {
     super::mutex::runtime_drop_wait_queue(wait_queue);
 }

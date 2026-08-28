@@ -8,7 +8,7 @@ use super::{
     ARCEOS_RUST_ALL_FEATURE, ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE,
     ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE, ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE,
     ARCEOS_RUST_LOCKDEP_DETECT_FEATURE, ARCEOS_RUST_QEMU_FEATURES,
-    ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
+    ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE, ARCEOS_RUST_STANDALONE_FEATURES,
     assets::test_build_args,
     discovery::discover_rust_qemu_cases,
     runner::run_prepared_qemu_groups,
@@ -296,7 +296,11 @@ pub(super) fn rust_qemu_features_for_run(
 ) -> anyhow::Result<Vec<&'static str>> {
     match selected_case {
         Some(_) => rust_qemu_features_for_list(selected_case, allow_missing_selected_case),
-        None => Ok(vec![ARCEOS_RUST_ALL_FEATURE]),
+        None => {
+            let mut features = vec![ARCEOS_RUST_ALL_FEATURE];
+            features.extend_from_slice(ARCEOS_RUST_STANDALONE_FEATURES);
+            Ok(features)
+        }
     }
 }
 
@@ -329,7 +333,8 @@ mod tests {
     use super::*;
     use crate::{
         arceos::test::{
-            ARCEOS_RUST_TEST_PACKAGE, discovery::arceos_test_suit_case_qemu_config_path,
+            ARCEOS_RUST_TASK_IRQ_FEATURE, ARCEOS_RUST_TEST_PACKAGE,
+            discovery::arceos_test_suit_case_qemu_config_path,
         },
         test::case::TestQemuCase,
     };
@@ -343,9 +348,12 @@ mod tests {
     }
 
     #[test]
-    fn arceos_rust_default_run_selects_all_feature_only() {
+    fn arceos_rust_default_run_selects_bulk_and_standalone_features() {
         let features = rust_qemu_features_for_run(None, false).unwrap();
-        assert_eq!(features, vec![ARCEOS_RUST_ALL_FEATURE]);
+        assert_eq!(
+            features,
+            vec![ARCEOS_RUST_ALL_FEATURE, ARCEOS_RUST_TASK_IRQ_FEATURE]
+        );
     }
 
     #[test]

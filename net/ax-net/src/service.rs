@@ -32,7 +32,7 @@
 //! # Correct Patterns
 //!
 //! ```ignore
-//! // ✓ Lightweight trigger: socket paths request the dedicated worker.
+//! // ✓ Lightweight trigger: socket paths request the unique protocol executor.
 //! fn socket_operation() {
 //!     request_poll()
 //! }
@@ -84,7 +84,7 @@ use crate::{
         InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
     },
     consts::STANDARD_MTU,
-    device::{ArpEntry, EthernetDevice},
+    device::ArpEntry,
     dhcp_server::{DhcpServer, parse_dhcp_packet},
     router::{NetDevStats, RouteDecision, Router, SharedRouteTable},
 };
@@ -263,33 +263,6 @@ impl NetControl {
         self.routes
             .write()
             .replace_ipv4_rules_for_interface(update.interface_id, routes);
-    }
-
-    fn add_interface(&self, interface: NetInterface, routes: Vec<crate::router::Rule>) {
-        self.routes
-            .write()
-            .replace_ipv4_rules_for_interface(interface.id, routes);
-        self.state.write().interfaces.push(interface);
-    }
-
-    fn allocate_interface_id(&self) -> InterfaceId {
-        let state = self.state.read();
-        let next = state
-            .interfaces
-            .iter()
-            .map(|interface| interface.id.get())
-            .max()
-            .unwrap_or(InterfaceId::LOOPBACK.get())
-            .saturating_add(1);
-        InterfaceId::new(next)
-    }
-
-    fn contains_interface_name(&self, name: &str) -> bool {
-        self.state
-            .read()
-            .interfaces
-            .iter()
-            .any(|interface| interface.name == name)
     }
 }
 
@@ -538,45 +511,6 @@ impl Service {
         }
     }
 
-    pub fn register_static_device(
-        &mut self,
-        name: String,
-        dev: EthernetDevice,
-        mac: EthernetAddress,
-        cidr: Ipv4Cidr,
-    ) -> usize {
-        if self.control.contains_interface_name(&name) {
-            panic!("interface name conflict: {}", name);
-        }
-
-        let interface_id = self.control.allocate_interface_id();
-        let metric = 100;
-        let dev = self.router.add_device(interface_id, Box::new(dev));
-        let routes = self
-            .router
-            .ipv4_rules(dev, interface_id, metric, Some(cidr), None);
-        Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
-        self.control.add_interface(
-            NetInterface {
-                id: interface_id,
-                name,
-                kind: InterfaceKind::Ethernet,
-                mac: Some(mac),
-                ipv4: Some(cidr),
-                gateway: None,
-                mtu: STANDARD_MTU,
-                metric,
-                flags: InterfaceFlags::UP
-                    | InterfaceFlags::RUNNING
-                    | InterfaceFlags::BROADCAST
-                    | InterfaceFlags::MULTICAST,
-            },
-            routes,
-        );
-        self.router.start_device_workers(dev);
-        dev
-    }
-
     pub fn enable_dhcp(
         &mut self,
         interface_id: InterfaceId,
@@ -618,11 +552,6 @@ impl Service {
             subnet_mask,
         ));
         info!("dev {dev}: DHCP server enabled (lease {client_ip})");
-    }
-
-    /// Finds the router device index for an interface name such as `wlan0`.
-    pub fn device_index(&self, name: &str) -> Option<usize> {
-        self.router.device_index(name)
     }
 
     /// Assigns a static IPv4 address to an interface at runtime.
@@ -778,6 +707,33 @@ impl Service {
 
         self.enable_dhcp(interface.id, dev, interface.name, mac, interface.metric);
         info!("dev {dev}: reconfigured as STA, DHCP client enabled");
+    }
+
+    /// Removes the protocol configuration after a wireless disconnect.
+    pub fn reconfigure_as_disconnected(&mut self, dev: usize) {
+        let Some(interface) = self.interface_for_dev(dev) else {
+            warn!("dev {dev}: cannot disconnect unknown wireless device");
+            return;
+        };
+        if self
+            .dhcp_server
+            .as_ref()
+            .is_some_and(|server| server.dev == dev)
+        {
+            self.dhcp_server = None;
+        }
+        self.dhcp.retain(|state| state.dev != dev);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id: interface.id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: None,
+            gateway: None,
+            dns_source: DnsSource::Static,
+            dns_servers: Vec::new(),
+        });
+        info!("dev {dev}: wireless link disconnected");
     }
 
     /// Returns true once DHCP has produced at least one usable interface.
@@ -989,10 +945,6 @@ impl Service {
         self.router.net_dev_stats()
     }
 
-    pub fn wake_all_devices(&self) {
-        self.router.wake_all_devices();
-    }
-
     pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {
         let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
 
@@ -1016,10 +968,6 @@ impl Service {
         }
 
         self.router.register_waker(binding, waker);
-    }
-
-    pub fn register_device_waker(&mut self, waker: &Waker) {
-        self.router.register_device_waker(waker);
     }
 }
 

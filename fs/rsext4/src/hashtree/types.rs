@@ -3,15 +3,17 @@
 use alloc::vec::Vec;
 
 use crate::{
-    bmalloc::AbsoluteBN,
-    entries::{Ext4DirEntryInfo, Ext4DxEntry},
+    bmalloc::{AbsoluteBN, InodeNumber},
+    entries::Ext4DxEntry,
 };
 
 /// Result returned by hash tree lookups.
 #[derive(Debug)]
 pub struct HashTreeSearchResult {
-    /// Matched directory entry.
-    pub entry: Ext4DirEntryInfo<'static>,
+    /// Inode referenced by the matched directory entry.
+    pub inode: InodeNumber,
+    /// On-disk directory entry type.
+    pub file_type: u8,
     /// Physical block that contains the entry.
     pub block_num: AbsoluteBN,
     /// Offset inside the containing block.
@@ -28,13 +30,5 @@ pub enum HashTreeNode {
         entries: Vec<Ext4DxEntry>,
     },
     /// Internal index node.
-    Internal {
-        entries: Vec<Ext4DxEntry>,
-        level: u32,
-    },
-    /// Leaf node carrying directory entries.
-    Leaf {
-        block_num: AbsoluteBN,
-        entries: Vec<Ext4DirEntryInfo<'static>>,
-    },
+    Internal { entries: Vec<Ext4DxEntry> },
 }

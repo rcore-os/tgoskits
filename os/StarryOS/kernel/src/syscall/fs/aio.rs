@@ -1500,8 +1500,8 @@ pub fn sys_io_cancel(
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn aio_iocb_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn aio_iocb_validation_rules_hold_for_test() -> bool {
     // validate_iocb_common: rejects non-zero reserved2 and invalid flags.
     let valid_iocb = Iocb {
         data: 0,
@@ -1550,4 +1550,12 @@ pub(crate) fn aio_iocb_validation_rules_hold_for_test() -> bool {
             ok.flags = IOCB_FLAG_RESFD | IOCB_FLAG_IOPRIO;
             validate_iocb_common(&ok).is_ok()
         }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn aio_iocb_validation_rules_hold() {
+        assert!(super::aio_iocb_validation_rules_hold_for_test());
+    }
 }

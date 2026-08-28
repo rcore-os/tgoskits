@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.10...ax-task-v0.6.11) - 2026-08-27
+
+### Added
+
+- *(ax-fs-ng)* add shared block cache between block and filesystem layers ([#2171](https://github.com/rcore-os/tgoskits/pull/2171))
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+- *(axvm)* unify host timer ownership ([#2190](https://github.com/rcore-os/tgoskits/pull/2190))
+
+## [0.6.10](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.9...ax-task-v0.6.10) - 2026-08-25
+
+### Other
+
+- *(test)* consolidate Starry and ArceOS test suites ([#2173](https://github.com/rcore-os/tgoskits/pull/2173))
+
+## [0.6.9](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.8...ax-task-v0.6.9) - 2026-08-25
+
+### Fixed
+
+- *(runtime)* prevent QEMU timer and exec stalls ([#2130](https://github.com/rcore-os/tgoskits/pull/2130))
+
+### Other
+
+- *(axvm)* unify virtual device registration ([#2138](https://github.com/rcore-os/tgoskits/pull/2138))
+
 ## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.7...ax-task-v0.6.8) - 2026-08-20
 
 ### Fixed

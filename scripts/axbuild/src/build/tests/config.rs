@@ -43,6 +43,20 @@ pub(super) fn declares_removed_platform_feature(content: &str) -> bool {
         .any(is_removed_platform_feature)
 }
 
+pub(super) fn declares_removed_runtime_feature(content: &str) -> bool {
+    let Ok(table) = toml::from_str::<toml::Table>(content) else {
+        return false;
+    };
+    let Some(features) = table.get("features").and_then(|value| value.as_array()) else {
+        return false;
+    };
+
+    features
+        .iter()
+        .filter_map(|feature| feature.as_str())
+        .any(|feature| matches!(feature.rsplit('/').next(), Some("irq" | "multitask")))
+}
+
 fn is_removed_platform_feature(feature: &str) -> bool {
     ax_hal_platform_feature_name(feature, None).is_some_and(|platform| platform != "plat-dyn")
 }
@@ -55,9 +69,21 @@ fn declares_removed_platform_feature_ignores_removed_ax_driver_feature() {
     assert!(!declares_removed_platform_feature(&content));
 }
 
-pub(super) fn checked_in_build_config_roots(workspace: &Path) -> [PathBuf; 4] {
+#[test]
+fn declares_removed_runtime_feature_recognizes_bare_and_prefixed_inputs() {
+    for feature in ["irq", "ax-runtime/irq", "multitask", "ax-std/multitask"] {
+        let content = format!("features = [\"{feature}\"]\n");
+        assert!(declares_removed_runtime_feature(&content), "{feature}");
+    }
+    assert!(!declares_removed_runtime_feature(
+        "features = [\"task-irq\", \"debug-might-sleep-irq\"]\n"
+    ));
+}
+
+pub(super) fn checked_in_build_config_roots(workspace: &Path) -> [PathBuf; 5] {
     [
         workspace.join("apps"),
+        workspace.join("os/arceos/configs"),
         workspace.join("os/StarryOS/configs/board"),
         workspace.join("os/axvisor/configs/board"),
         workspace.join("test-suit"),

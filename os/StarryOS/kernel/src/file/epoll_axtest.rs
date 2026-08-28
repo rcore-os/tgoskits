@@ -1,23 +1,30 @@
 //! Deterministic concurrency hooks for epoll kernel tests.
 
-use alloc::{borrow::Cow, sync::Arc, task::Wake};
-use core::{
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::{Context, Waker},
-};
+use alloc::sync::Arc;
+#[cfg(all(test, not(axtest)))]
+use alloc::{borrow::Cow, task::Wake};
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(all(test, not(axtest)))]
+use core::task::{Context, Waker};
 
+#[cfg(all(test, axtest))]
+use core::sync::atomic::AtomicUsize;
+
+#[cfg(all(test, not(axtest)))]
 use axpoll::{IoEvents, PollSet, Pollable};
 
-use super::{
-    FileLike,
-    epoll::{Epoll, EpollFlags},
-};
+use super::epoll::Epoll;
+#[cfg(all(test, not(axtest)))]
+use super::{FileLike, epoll::EpollFlags};
 use crate::{StarryError, sync::IrqMutex};
 
+#[cfg(all(test, axtest))]
 static EPOLL_ADD_TEST_BARRIER_ENABLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(all(test, axtest))]
 static EPOLL_ADD_TEST_BARRIER_ARRIVALS: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(all(test, axtest))]
 pub(super) fn epoll_add_test_barrier() {
     if !EPOLL_ADD_TEST_BARRIER_ENABLED.load(Ordering::Acquire) {
         return;
@@ -29,7 +36,8 @@ pub(super) fn epoll_add_test_barrier() {
     }
 }
 
-pub(crate) fn concurrent_reverse_add_is_serialized_for_test() -> bool {
+#[cfg(all(test, axtest))]
+fn concurrent_reverse_add_is_serialized_for_test() -> bool {
     let left = Arc::new(Epoll::new());
     let right = Arc::new(Epoll::new());
     let results = Arc::new(IrqMutex::new([None, None]));
@@ -65,11 +73,13 @@ pub(crate) fn concurrent_reverse_add_is_serialized_for_test() -> bool {
     )
 }
 
+#[cfg(all(test, not(axtest)))]
 struct ReadyFile {
     ready: AtomicBool,
     poll_waiters: PollSet,
 }
 
+#[cfg(all(test, not(axtest)))]
 impl ReadyFile {
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -84,12 +94,14 @@ impl ReadyFile {
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 impl FileLike for ReadyFile {
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-ready-file]".into()
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 impl Pollable for ReadyFile {
     fn poll(&self) -> IoEvents {
         if self.ready.load(Ordering::Acquire) {
@@ -104,6 +116,7 @@ impl Pollable for ReadyFile {
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 struct CallbackBoundaryFile {
     ready: AtomicBool,
     waking: AtomicBool,
@@ -111,6 +124,7 @@ struct CallbackBoundaryFile {
     poll_waiters: PollSet,
 }
 
+#[cfg(all(test, not(axtest)))]
 impl CallbackBoundaryFile {
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -139,12 +153,14 @@ impl CallbackBoundaryFile {
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 impl FileLike for CallbackBoundaryFile {
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-callback-boundary-file]".into()
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 impl Pollable for CallbackBoundaryFile {
     fn poll(&self) -> IoEvents {
         self.record_callback_reentry();
@@ -161,12 +177,14 @@ impl Pollable for CallbackBoundaryFile {
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 struct EpollWaiter {
     epoll: Arc<Epoll>,
     result_index: usize,
     results: Arc<IrqMutex<[Option<u64>; 2]>>,
 }
 
+#[cfg(all(test, not(axtest)))]
 impl EpollWaiter {
     fn collect_one(&self) {
         let mut user_data = None;
@@ -180,6 +198,7 @@ impl EpollWaiter {
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 impl Wake for EpollWaiter {
     fn wake(self: Arc<Self>) {
         self.collect_one();
@@ -190,7 +209,8 @@ impl Wake for EpollWaiter {
     }
 }
 
-pub(crate) fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
     let epoll = Arc::new(Epoll::new());
     let target = ReadyFile::new();
     let target_file: Arc<dyn FileLike> = target.clone();
@@ -218,7 +238,8 @@ pub(crate) fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
     results.lock().as_slice() == [Some(0x22), Some(0x11)]
 }
 
-pub(crate) fn edge_readiness_requires_a_new_notification_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn edge_readiness_requires_a_new_notification_for_test() -> bool {
     let epoll = Epoll::new();
     let target = ReadyFile::new();
     let target_file: Arc<dyn FileLike> = target.clone();
@@ -238,7 +259,8 @@ pub(crate) fn edge_readiness_requires_a_new_notification_for_test() -> bool {
         && matches!(after_new_notification, Ok((1, Some(0x33))))
 }
 
-pub(crate) fn edge_callback_does_not_reenter_target_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn edge_callback_does_not_reenter_target_for_test() -> bool {
     let epoll = Epoll::new();
     let target = CallbackBoundaryFile::new();
     let target_file: Arc<dyn FileLike> = target.clone();
@@ -252,7 +274,8 @@ pub(crate) fn edge_callback_does_not_reenter_target_for_test() -> bool {
     !target.callback_reentered_file()
 }
 
-pub(crate) fn level_callback_does_not_reenter_target_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn level_callback_does_not_reenter_target_for_test() -> bool {
     let epoll = Epoll::new();
     let target = CallbackBoundaryFile::new();
     let target_file: Arc<dyn FileLike> = target.clone();
@@ -266,6 +289,7 @@ pub(crate) fn level_callback_does_not_reenter_target_for_test() -> bool {
     !target.callback_reentered_file()
 }
 
+#[cfg(all(test, not(axtest)))]
 fn collect_one_event(epoll: &Epoll) -> Result<(usize, Option<u64>), StarryError> {
     let mut user_data = None;
     let count = epoll.poll_events_with(1, |_index, event| {
@@ -275,10 +299,12 @@ fn collect_one_event(epoll: &Epoll) -> Result<(usize, Option<u64>), StarryError>
     Ok((count, user_data))
 }
 
+#[cfg(all(test, not(axtest)))]
 struct ReadyDuringRegisterFile {
     ready: AtomicBool,
 }
 
+#[cfg(all(test, not(axtest)))]
 impl ReadyDuringRegisterFile {
     fn new() -> Self {
         Self {
@@ -291,12 +317,14 @@ impl ReadyDuringRegisterFile {
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 impl FileLike for ReadyDuringRegisterFile {
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-rearm-race]".into()
     }
 }
 
+#[cfg(all(test, not(axtest)))]
 impl Pollable for ReadyDuringRegisterFile {
     fn poll(&self) -> IoEvents {
         if self.ready.load(Ordering::Acquire) {
@@ -315,7 +343,8 @@ impl Pollable for ReadyDuringRegisterFile {
     }
 }
 
-pub(crate) fn epoll_requeues_readiness_observed_during_rearm_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn epoll_requeues_readiness_observed_during_rearm_for_test() -> bool {
     let epoll = Epoll::new();
     let file = Arc::new(ReadyDuringRegisterFile::new());
     let file_like: Arc<dyn FileLike> = file.clone();
@@ -348,4 +377,43 @@ pub(crate) fn epoll_requeues_readiness_observed_during_rearm_for_test() -> bool 
                         && IoEvents::from_bits_retain(event.events).contains(IoEvents::IN)
                 })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn concurrent_reverse_add_is_serialized() {
+        assert!(super::concurrent_reverse_add_is_serialized_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn level_aliases_rotate_in_linux_callback_order() {
+        assert!(super::level_aliases_rotate_in_linux_callback_order_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn edge_readiness_requires_a_new_notification() {
+        assert!(super::edge_readiness_requires_a_new_notification_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn edge_callback_does_not_reenter_target() {
+        assert!(super::edge_callback_does_not_reenter_target_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn level_callback_does_not_reenter_target() {
+        assert!(super::level_callback_does_not_reenter_target_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn requeues_readiness_observed_during_rearm() {
+        assert!(super::epoll_requeues_readiness_observed_during_rearm_for_test());
+    }
 }

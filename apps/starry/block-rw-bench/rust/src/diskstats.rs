@@ -64,8 +64,7 @@ impl DiskstatsProbe {
             .map(|(before, after)| after.delta_since(before))
         else {
             println!(
-                "block-rw-bench: case={case} phase={phase} diskstats_device={} \
-                 status=unavailable",
+                "block-rw-bench: case={case} phase={phase} diskstats_device={} status=unavailable",
                 self.device.as_deref().unwrap_or("unresolved")
             );
             return;
@@ -145,6 +144,9 @@ mod tests {
             diskstats_device("/dev/mmcblk0p2", "/dev/mmcblk0").as_deref(),
             Some("mmcblk0")
         );
-        assert_eq!(diskstats_device("PARTLABEL=rootfs", "PARTLABEL=rootfs"), None);
+        assert_eq!(
+            diskstats_device("PARTLABEL=rootfs", "PARTLABEL=rootfs"),
+            None
+        );
     }
 }

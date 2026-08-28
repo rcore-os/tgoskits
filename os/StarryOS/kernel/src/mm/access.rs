@@ -724,8 +724,8 @@ fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
 }
 
-#[cfg(test)]
-pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn user_pointer_metadata_rules_hold_for_test() -> bool {
     let user_base = USER_SPACE_BASE;
     let user_end = USER_SPACE_BASE + USER_SPACE_SIZE;
     let ptr = UserPtr::<u32>::from(user_base);
@@ -769,13 +769,34 @@ pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(test, not(axtest)))]
     use alloc::vec::Vec;
+    #[cfg(all(test, not(axtest)))]
     use core::{mem::MaybeUninit, ptr::NonNull};
 
+    #[cfg(all(test, not(axtest)))]
     use starry_vm::{VmMutPtr, VmPtr, vm_load};
 
     use super::*;
 
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn user_pointer_metadata_rules_hold() {
+        assert!(user_pointer_metadata_rules_hold_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn nofault_user_read_recovers_unmapped_address() {
+        // SAFETY: the address is aligned and belongs to the configured user
+        // range. It is intentionally unmapped to exercise exception fixup.
+        assert!(matches!(
+            unsafe { user_read_u32(USER_SPACE_BASE as *const u32) },
+            Err(UserAccessError::Fault)
+        ));
+    }
+
+    #[cfg(all(test, not(axtest)))]
     #[test]
     fn vm_pointer_access_rejects_unmapped_addresses() {
         let null_ptr = core::ptr::null::<u32>();
@@ -787,6 +808,7 @@ mod tests {
         assert_eq!(dangling.vm_write(42), Err(VmError::AccessDenied));
     }
 
+    #[cfg(all(test, not(axtest)))]
     #[test]
     fn vm_slice_access_rejects_invalid_user_ranges() {
         let mut one_byte = [MaybeUninit::<u8>::uninit()];
@@ -802,6 +824,7 @@ mod tests {
         assert_eq!(vm_read_slice(core::ptr::null::<u8>(), &mut []), Ok(()));
     }
 
+    #[cfg(all(test, not(axtest)))]
     #[test]
     fn vm_alloc_helpers_validate_inputs_before_copying() {
         let mut unaligned = [0_u16; 2];

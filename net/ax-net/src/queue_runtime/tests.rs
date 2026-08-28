@@ -1,0 +1,528 @@
+use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull, sync::atomic::AtomicUsize};
+use std::{
+    alloc::{alloc_zeroed, dealloc},
+    sync::Mutex as StdMutex,
+};
+
+use irq_framework::{HwIrq, IrqDomainId};
+use rd_net::{
+    DmaBuffer, NetControlEndpoint, NetDeviceInfo, PreparedNetDevice, RxCompletion,
+    dma_api::{
+        DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
+        DmaDomainId, DmaError, DmaMapHandle, DmaOp,
+    },
+};
+
+use super::*;
+use crate::device::NetDeviceError;
+
+struct DropProbe(Arc<AtomicUsize>);
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+struct DroppingControl(Arc<AtomicUsize>);
+
+impl Drop for DroppingControl {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl NetControlEndpoint for DroppingControl {
+    fn mac_address(&mut self) -> Result<[u8; 6], NetError> {
+        Ok([0; 6])
+    }
+}
+
+struct UnexpectedRegistrar;
+
+impl PinnedNetIrqRegistrar for UnexpectedRegistrar {
+    fn register(
+        &self,
+        _name: String,
+        _irq: IrqId,
+        _owner_cpu: usize,
+        _action: PinnedNetIrqAction,
+    ) -> Result<Box<dyn PinnedNetIrqRegistration>, PinnedNetIrqError> {
+        panic!("zero-CPU topology must fail before IRQ registration")
+    }
+}
+
+struct TestDma;
+
+impl TestDma {
+    unsafe fn allocate(layout: Layout) -> Option<DmaAllocHandle> {
+        let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+        Some(unsafe {
+            DmaAllocHandle::new(ptr, ptr, (ptr.as_ptr() as usize as u64).into(), layout)
+        })
+    }
+}
+
+impl DmaOp for TestDma {
+    fn page_size(&self) -> usize {
+        4096
+    }
+
+    unsafe fn alloc_contiguous(
+        &self,
+        _constraints: DmaConstraints,
+        layout: Layout,
+    ) -> Option<DmaAllocHandle> {
+        unsafe { Self::allocate(layout) }
+    }
+
+    unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+    }
+
+    unsafe fn alloc_coherent(
+        &self,
+        _constraints: DmaConstraints,
+        layout: Layout,
+    ) -> Option<DmaAllocHandle> {
+        unsafe { Self::allocate(layout) }
+    }
+
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        Ok(())
+    }
+
+    unsafe fn map_streaming(
+        &self,
+        _constraints: DmaConstraints,
+        addr: NonNull<u8>,
+        size: NonZeroUsize,
+        _direction: DmaDirection,
+    ) -> Result<DmaMapHandle, DmaError> {
+        let layout = Layout::from_size_align(size.get(), 1)?;
+        Ok(
+            unsafe {
+                DmaMapHandle::new(addr, (addr.as_ptr() as usize as u64).into(), layout, None)
+            },
+        )
+    }
+
+    unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+}
+
+static TEST_DMA: TestDma = TestDma;
+
+fn dma_buffer(capacity: usize, len: usize) -> DmaBuffer {
+    let device = DeviceDma::new(
+        DmaDeviceInfo::new(
+            DmaDomainId::Direct,
+            DmaCoherency::Coherent,
+            DmaConstraints::new(u64::MAX),
+        ),
+        &TEST_DMA,
+    );
+    let pool = device.contiguous_buffer_pool(
+        Layout::from_size_align(capacity, 64).unwrap(),
+        DmaDirection::Bidirectional,
+        1,
+    );
+    DmaBuffer::new(pool.alloc().unwrap(), len)
+        .unwrap_or_else(|_| panic!("test DMA token length exceeds its allocation"))
+}
+
+struct RecordingRegistration {
+    id: usize,
+    order: Arc<StdMutex<Vec<usize>>>,
+}
+
+impl PinnedNetIrqRegistration for RecordingRegistration {
+    fn owner_cpu(&self) -> usize {
+        0
+    }
+
+    fn enable(&self) -> Result<(), PinnedNetIrqError> {
+        Ok(())
+    }
+
+    fn disable_and_synchronize(&self) -> Result<(), PinnedNetIrqError> {
+        self.order.lock().unwrap().push(self.id);
+        Ok(())
+    }
+}
+
+struct FailingRegistration {
+    drops: Arc<AtomicUsize>,
+}
+
+impl Drop for FailingRegistration {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl PinnedNetIrqRegistration for FailingRegistration {
+    fn owner_cpu(&self) -> usize {
+        0
+    }
+
+    fn enable(&self) -> Result<(), PinnedNetIrqError> {
+        Ok(())
+    }
+
+    fn disable_and_synchronize(&self) -> Result<(), PinnedNetIrqError> {
+        Err(PinnedNetIrqError::Other)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ModelOperation {
+    Publish,
+    Rearm,
+    FinishMore,
+    Disable,
+}
+
+fn irq(line: u32) -> IrqId {
+    IrqId::new(IrqDomainId(1), HwIrq(line))
+}
+
+#[test]
+fn spsc_ring_is_bounded_and_preserves_move_order() {
+    let (mut producer, mut consumer) = spsc_ring(2);
+    assert!(producer.push(10).is_ok());
+    assert!(producer.push(20).is_ok());
+    assert_eq!(producer.push(30), Err(30));
+    assert_eq!(consumer.pop(), Some(10));
+    assert_eq!(consumer.pop(), Some(20));
+    assert_eq!(consumer.pop(), None);
+}
+
+#[test]
+fn failed_initialization_unwinds_irq_leases_in_reverse_order() {
+    let order = Arc::new(StdMutex::new(Vec::new()));
+    let registrations = (0..3)
+        .map(|id| {
+            Box::new(RecordingRegistration {
+                id,
+                order: Arc::clone(&order),
+            }) as Box<dyn PinnedNetIrqRegistration>
+        })
+        .collect::<Vec<_>>();
+
+    assert!(disable_registrations(&registrations));
+    assert_eq!(*order.lock().unwrap(), vec![2, 1, 0]);
+}
+
+#[test]
+fn unsynchronized_irq_registration_is_quarantined() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let registrations = vec![Box::new(FailingRegistration {
+        drops: Arc::clone(&drops),
+    }) as Box<dyn PinnedNetIrqRegistration>];
+
+    assert!(!release_registrations(registrations));
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn unsynchronized_irq_quarantines_runtime_side_control_ownership() {
+    let drops = Arc::new(AtomicUsize::new(0));
+
+    release_runtime_side_resources(DropProbe(Arc::clone(&drops)), false);
+
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    release_runtime_side_resources(DropProbe(Arc::clone(&drops)), true);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn spsc_ring_drops_each_move_only_token_exactly_once() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (mut producer, consumer) = spsc_ring(1);
+    assert!(producer.push(DropProbe(Arc::clone(&drops))).is_ok());
+    let rejected = match producer.push(DropProbe(Arc::clone(&drops))) {
+        Err(token) => token,
+        Ok(()) => panic!("full ring must return ownership to the producer"),
+    };
+    drop(rejected);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+
+    drop(producer);
+    drop(consumer);
+    assert_eq!(drops.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn unconfirmed_dma_shutdown_quarantines_hardware_visible_backing() {
+    let drops = Arc::new(AtomicUsize::new(0));
+
+    release_or_quarantine(DropProbe(Arc::clone(&drops)), false);
+
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    release_or_quarantine(DropProbe(Arc::clone(&drops)), true);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn driver_backing_requires_both_irq_and_dma_shutdown_proofs() {
+    assert!(backing_can_be_released(true, true));
+    assert!(!backing_can_be_released(false, true));
+    assert!(!backing_can_be_released(true, false));
+    assert!(!backing_can_be_released(false, false));
+}
+
+#[test]
+fn startup_failure_waits_for_an_explicit_cleanup_command() {
+    assert_eq!(requested_irq_synchronization(COMMAND_WAIT), None);
+    assert_eq!(requested_irq_synchronization(COMMAND_START), None);
+    assert_eq!(requested_irq_synchronization(COMMAND_STOP), Some(true));
+    assert_eq!(
+        requested_irq_synchronization(COMMAND_QUARANTINE),
+        Some(false)
+    );
+}
+
+#[test]
+fn zero_cpu_topology_quarantines_prepared_device_ownership() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let input = NetworkDeviceInput {
+        name: String::from("quarantine-test"),
+        device: PreparedNetDevice {
+            info: NetDeviceInfo::new("quarantine-test", [0; 6]),
+            control: Box::new(DroppingControl(Arc::clone(&drops))),
+            wifi_control: None,
+            poll_groups: Vec::new(),
+        },
+        irq_sources: Vec::new(),
+    };
+
+    let result = NetworkRuntimeBuilder::new(vec![input], &UnexpectedRegistrar, 0).build();
+
+    assert!(matches!(result, Err(NetworkRuntimeError::InvalidTopology)));
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn oversized_rx_frame_recycles_token_and_next_frame_remains_receivable() {
+    let (mut rx_ready_tx, rx_ready_rx) = spsc_ring(2);
+    let (mut rx_recycle_tx, mut rx_recycle_rx) = spsc_ring(1);
+    let (tx_ready_tx, _tx_ready_rx) = spsc_ring(1);
+    let (_tx_free_tx, tx_free_rx) = spsc_ring(1);
+    let oversized = dma_buffer(4096, 4096);
+    let oversized_bus_addr = oversized.bus_addr();
+    let valid = dma_buffer(4096, 64);
+    let valid_bus_addr = valid.bus_addr();
+    let occupied = dma_buffer(4096, 64);
+    let occupied_bus_addr = occupied.bus_addr();
+
+    rx_ready_tx
+        .push(RxCompletion {
+            buffer: oversized,
+            packet_len: 2049,
+        })
+        .unwrap();
+    rx_ready_tx
+        .push(RxCompletion {
+            buffer: valid,
+            packet_len: 64,
+        })
+        .unwrap();
+    rx_recycle_tx.push(occupied).unwrap();
+
+    let shared = Arc::new(group_state(STATE_IDLE));
+    let mut port = ProtocolGroupPort {
+        rx_ready: rx_ready_rx,
+        rx_recycle: rx_recycle_tx,
+        tx_ready: tx_ready_tx,
+        tx_free: tx_free_rx,
+        pending_recycle: Vec::with_capacity(2),
+        tx_spares: Vec::new(),
+        shared,
+    };
+
+    assert!(matches!(port.receive(), Err(NetDeviceError::InvalidParam)));
+    assert_eq!(port.pending_recycle.len(), 1);
+    assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), occupied_bus_addr);
+
+    let frame = port
+        .receive()
+        .expect("a malformed frame must not consume the next completion");
+    assert_eq!(frame.packet_len(), 64);
+    assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), oversized_bus_addr);
+
+    port.flush_recycle();
+    assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), valid_bus_addr);
+    assert!(port.pending_recycle.is_empty());
+
+    let invalid_length = dma_buffer(2048, 2048);
+    let invalid_length_bus_addr = invalid_length.bus_addr();
+    rx_ready_tx
+        .push(RxCompletion {
+            buffer: invalid_length,
+            packet_len: 2049,
+        })
+        .unwrap();
+    assert!(matches!(port.receive(), Err(NetDeviceError::Io)));
+    assert_eq!(
+        rx_recycle_rx.pop().unwrap().bus_addr(),
+        invalid_length_bus_addr
+    );
+}
+
+fn group_state(initial: u8) -> PollGroupState {
+    let state = PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new()));
+    state.state.store(initial, Ordering::Release);
+    state
+}
+
+fn apply_model_operation(state: &PollGroupState, operation: ModelOperation) {
+    match operation {
+        ModelOperation::Publish => state.schedule_task(),
+        ModelOperation::Rearm => {
+            let _ = state.begin_rearm();
+        }
+        ModelOperation::FinishMore => state.finish_more(),
+        ModelOperation::Disable => state.disable(),
+    }
+}
+
+#[test]
+fn shared_irq_groups_are_assigned_to_the_same_cpu() {
+    let owners = assign_affinity_domains(&[vec![irq(4)], vec![irq(4)], vec![irq(5)]], 4);
+    assert_eq!(owners[0], owners[1]);
+    assert_ne!(owners[0], owners[2]);
+}
+
+#[test]
+fn affinity_domains_merge_transitively_through_shared_sources() {
+    let owners = assign_affinity_domains(
+        &[
+            vec![irq(1)],
+            vec![irq(1), irq(2)],
+            vec![irq(2)],
+            vec![irq(3)],
+        ],
+        4,
+    );
+    assert_eq!(owners[0], owners[1]);
+    assert_eq!(owners[1], owners[2]);
+    assert_ne!(owners[2], owners[3]);
+}
+
+#[test]
+fn independent_sources_can_use_different_cpus() {
+    let owners = assign_affinity_domains(&[vec![irq(1)], vec![irq(2)]], 4);
+    assert_eq!(owners, vec![0, 1]);
+}
+
+#[test]
+fn missed_event_survives_poll_completion() {
+    let notify = Arc::new(ax_task::IrqNotify::new());
+    let state = PollGroupState::new(0, notify);
+    state.activate(false);
+    state.schedule_task();
+    state.state.store(STATE_POLLING, Ordering::Release);
+    state.schedule_task();
+    assert!(!state.begin_rearm());
+    assert_eq!(
+        state.state.load(Ordering::Acquire) & STATE_MASK,
+        STATE_SCHEDULED
+    );
+}
+
+#[test]
+fn rearm_window_is_linearizable_in_both_event_orders() {
+    for operations in [
+        [ModelOperation::Publish, ModelOperation::Rearm],
+        [ModelOperation::Rearm, ModelOperation::Publish],
+    ] {
+        let state = group_state(STATE_POLLING);
+        for operation in operations {
+            apply_model_operation(&state, operation);
+        }
+        assert_eq!(
+            state.state.load(Ordering::Acquire) & STATE_MASK,
+            STATE_SCHEDULED
+        );
+    }
+}
+
+#[test]
+fn disabled_group_cannot_be_resurrected_by_any_completion_order() {
+    let permutations = [
+        [
+            ModelOperation::Publish,
+            ModelOperation::FinishMore,
+            ModelOperation::Disable,
+        ],
+        [
+            ModelOperation::Publish,
+            ModelOperation::Disable,
+            ModelOperation::FinishMore,
+        ],
+        [
+            ModelOperation::FinishMore,
+            ModelOperation::Publish,
+            ModelOperation::Disable,
+        ],
+        [
+            ModelOperation::FinishMore,
+            ModelOperation::Disable,
+            ModelOperation::Publish,
+        ],
+        [
+            ModelOperation::Disable,
+            ModelOperation::Publish,
+            ModelOperation::FinishMore,
+        ],
+        [
+            ModelOperation::Disable,
+            ModelOperation::FinishMore,
+            ModelOperation::Publish,
+        ],
+    ];
+
+    for operations in permutations {
+        let state = group_state(STATE_POLLING);
+        for operation in operations {
+            apply_model_operation(&state, operation);
+        }
+        assert_eq!(
+            state.state.load(Ordering::Acquire) & STATE_MASK,
+            STATE_DISABLED
+        );
+    }
+}
+
+#[test]
+fn queue_budget_only_reports_a_nonzero_exact_exhaustion() {
+    assert!(!budget_was_exhausted(0, 0));
+    assert!(!budget_was_exhausted(63, 64));
+    assert!(budget_was_exhausted(64, 64));
+}
+
+#[test]
+fn hardware_retry_rearms_instead_of_immediately_rescheduling() {
+    assert!(matches!(
+        hardware_retry_outcome(0),
+        GroupPollOutcome::Idle(0)
+    ));
+    assert!(waits_for_hardware_event(&NetError::Retry));
+    assert!(waits_for_hardware_event(&NetError::LinkDown));
+    assert!(!waits_for_hardware_event(&NetError::NotSupported));
+    assert!(matches!(
+        rx_refill_retry_outcome(0, 0),
+        GroupPollOutcome::Idle(0)
+    ));
+    assert!(matches!(
+        rx_refill_retry_outcome(1, 1),
+        GroupPollOutcome::More(1)
+    ));
+}
+
+#[test]
+fn protocol_owner_uses_the_least_loaded_cpu() {
+    assert_eq!(select_protocol_owner(&[0, 0, 1], 4), 2);
+    assert_eq!(select_protocol_owner(&[0, 1, 2, 3], 4), 0);
+}

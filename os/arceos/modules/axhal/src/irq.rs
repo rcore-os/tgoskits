@@ -49,17 +49,42 @@ fn with_observed_irq_entry<T>(
     dispatch: impl FnOnce() -> T,
     after_preempt_release: impl FnOnce(),
 ) -> T {
+    with_irq_entry_contract(
+        prepare,
+        dispatch,
+        after_preempt_release,
+        crate::asm::irqs_enabled,
+        ax_sync::IrqSaveGuard::new,
+        ax_sync::PreemptGuard::new,
+        |guard| guard.finish_irq_return(),
+    )
+}
+
+fn with_irq_entry_contract<T, IrqGuard, PreemptGuard>(
+    prepare: impl FnOnce(),
+    dispatch: impl FnOnce() -> T,
+    after_preempt_release: impl FnOnce(),
+    irqs_enabled: impl Fn() -> bool,
+    save_irqs: impl FnOnce() -> IrqGuard,
+    disable_preemption: impl FnOnce() -> PreemptGuard,
+    finish_preemption: impl FnOnce(PreemptGuard),
+) -> T {
     // Keep IRQs disabled until the preemption guard has handed any pending
     // reschedule back to the IRQ-return path. Hardware traps already enter in
     // this state; IrqSave also covers deferred VM-exit dispatchers.
-    let irq_guard = ax_sync::IrqSaveGuard::new();
+    let caller_irqs_enabled = irqs_enabled();
+    let irq_guard = save_irqs();
+    debug_assert!(!irqs_enabled());
     prepare();
-    let preempt_guard = ax_sync::PreemptGuard::new();
+    let preempt_guard = disable_preemption();
     let result = dispatch();
+    debug_assert!(!irqs_enabled());
 
-    preempt_guard.finish_irq_return(); // rescheduling may occur before the IRQ-return boundary.
+    finish_preemption(preempt_guard); // rescheduling may occur before the IRQ-return boundary.
+    debug_assert!(!irqs_enabled());
     after_preempt_release();
     drop(irq_guard);
+    debug_assert_eq!(irqs_enabled(), caller_irqs_enabled);
     result
 }
 
@@ -72,25 +97,55 @@ pub fn init_common_irq_handler() {
     let _ = set_irq_handler(handle_irq);
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) struct IrqEntryStateObservation {
-    pub(crate) dispatch_irqs_enabled: bool,
-    pub(crate) after_preempt_release_irqs_enabled: bool,
-    pub(crate) return_irqs_enabled: bool,
-}
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn observe_irq_entry_state_for_test() -> IrqEntryStateObservation {
-    let mut after_preempt_release_irqs_enabled = false;
-    let dispatch_irqs_enabled = with_observed_irq_entry(
-        || {},
-        crate::asm::irqs_enabled,
-        || after_preempt_release_irqs_enabled = crate::asm::irqs_enabled(),
-    );
+    use super::*;
 
-    IrqEntryStateObservation {
-        dispatch_irqs_enabled,
-        after_preempt_release_irqs_enabled,
-        return_irqs_enabled: crate::asm::irqs_enabled(),
+    struct ModelIrqGuard<'a> {
+        irqs_enabled: &'a Cell<bool>,
+        restore_to: bool,
+    }
+
+    impl Drop for ModelIrqGuard<'_> {
+        fn drop(&mut self) {
+            self.irqs_enabled.set(self.restore_to);
+        }
+    }
+
+    fn observe_irq_entry_state(caller_irqs_enabled: bool) -> (bool, bool, bool) {
+        let irqs_enabled = Cell::new(caller_irqs_enabled);
+        let mut after_preempt_release_irqs_enabled = false;
+        let dispatch_irqs_enabled = with_irq_entry_contract(
+            || {},
+            || irqs_enabled.get(),
+            || after_preempt_release_irqs_enabled = irqs_enabled.get(),
+            || irqs_enabled.get(),
+            || {
+                let restore_to = irqs_enabled.replace(false);
+                ModelIrqGuard {
+                    irqs_enabled: &irqs_enabled,
+                    restore_to,
+                }
+            },
+            || (),
+            |()| {},
+        );
+        (
+            dispatch_irqs_enabled,
+            after_preempt_release_irqs_enabled,
+            irqs_enabled.get(),
+        )
+    }
+
+    #[test]
+    fn irq_entry_preserves_enabled_caller_state() {
+        assert_eq!(observe_irq_entry_state(true), (false, false, true));
+    }
+
+    #[test]
+    fn irq_entry_preserves_disabled_caller_state() {
+        assert_eq!(observe_irq_entry_state(false), (false, false, false));
     }
 }

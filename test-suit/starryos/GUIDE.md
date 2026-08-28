@@ -535,7 +535,7 @@ cargo xtask starry board \
 
 两条路径都必须进入 `root@starry:/root #` 并打印独立的
 `STARRY_ROCK4D_BOOT_OK` 成功行。RK3576 的固件、PSCI、CPU 拓扑和 CRU/PMU
-检查点见 `.claude/skills/arch-platform-porting/references/boot-debugging.md`。
+检查点见 `.agents/skills/arch-platform-porting/references/boot-debugging.md`。
 
 `board-aka-00-sg2002/usb2-libuvc-init` 提供静态交叉编译固定版本上游 libuvc 的
 C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。AKA-00-SG2002 当前没有

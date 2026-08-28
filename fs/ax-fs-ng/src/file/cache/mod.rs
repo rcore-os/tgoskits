@@ -9,7 +9,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloc::{collections::BTreeMap, sync::Weak};
 use core::{
     num::NonZeroUsize,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_io::prelude::*;
@@ -55,6 +55,7 @@ struct CachedFileShared {
     evict_listeners: Mutex<LinkedList<EvictListenerAdapter>>,
     backing: Option<FileNode>,
     len: AtomicU64,
+    unlinked: AtomicBool,
 }
 
 impl CachedFileShared {
@@ -67,6 +68,7 @@ impl CachedFileShared {
             evict_listeners: Mutex::new(LinkedList::default()),
             backing: Some(backing),
             len: AtomicU64::new(len),
+            unlinked: AtomicBool::new(false),
         }
     }
 
@@ -77,6 +79,7 @@ impl CachedFileShared {
             evict_listeners: Mutex::new(LinkedList::default()),
             backing: None,
             len: AtomicU64::new(len),
+            unlinked: AtomicBool::new(false),
         }
     }
 
@@ -105,6 +108,11 @@ impl CachedFileShared {
         self.backing.as_ref().ok_or(VfsError::InvalidInput)
     }
 
+    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    fn mark_unlinked(&self) {
+        self.unlinked.store(true, Ordering::Release);
+    }
+
     #[cfg(test)]
     fn invoke_writeback_protect_for_test(&self, pns: &[u32]) -> VfsResult<()> {
         self.protect_dirty_pages_before_writeback(pns)
@@ -123,6 +131,17 @@ impl CachedFileShared {
     #[cfg(test)]
     fn page_cache_lock_is_free_for_test(&self) -> bool {
         self.page_cache.try_lock().is_some()
+    }
+}
+
+impl Drop for CachedFileShared {
+    fn drop(&mut self) {
+        if !self.unlinked.load(Ordering::Acquire) {
+            return;
+        }
+        for (_, page) in self.page_cache.lock().iter_mut() {
+            page.dirty = false;
+        }
     }
 }
 
@@ -663,9 +682,17 @@ fn insert_inode_cached_file(key: CachedFileKey, shared: &Arc<CachedFileShared>) 
 #[cfg(feature = "ext4")]
 pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64) {
     if filesystem.name() == "ext4" {
-        CACHED_FILE_BY_INODE
+        let cached = CACHED_FILE_BY_INODE
             .lock()
-            .remove(&(filesystem_key(filesystem), inode));
+            .remove(&(filesystem_key(filesystem), inode))
+            .and_then(|cached| cached.upgrade());
+        #[cfg(feature = "vfs")]
+        if let Some(cached) = cached {
+            cached.mark_unlinked();
+            reclaim::release_unlinked_cached_file(&cached);
+        }
+        #[cfg(not(feature = "vfs"))]
+        let _ = cached;
     }
 }
 

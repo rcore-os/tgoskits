@@ -209,20 +209,28 @@ pub fn sys_pselect6(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn select_fd_set_and_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn select_fd_set_and_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::__FD_SETSIZE;
 
     // Test nfds validation: must be <= __FD_SETSIZE
     let valid_nfds = 1024u32;
-    assert!(valid_nfds <= __FD_SETSIZE as u32);
+    assert!(valid_nfds <= __FD_SETSIZE);
 
-    let max_nfds = __FD_SETSIZE as u32;
-    assert!(max_nfds <= __FD_SETSIZE as u32);
+    let max_nfds = __FD_SETSIZE;
+    assert!(max_nfds <= __FD_SETSIZE);
 
     // Invalid: nfds > __FD_SETSIZE
-    let invalid_nfds = (__FD_SETSIZE + 1) as u32;
-    assert!(invalid_nfds > __FD_SETSIZE as u32);
+    let invalid_nfds = __FD_SETSIZE + 1;
+    assert!(invalid_nfds > __FD_SETSIZE);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn select_fd_set_and_validation_rules_hold() {
+        assert!(super::select_fd_set_and_validation_rules_hold_for_test());
+    }
 }

@@ -1,9 +1,7 @@
 //! Architecture preemption adapter and scheduler safe-point frame.
 
-#[cfg(feature = "irq")]
 use core::sync::atomic::{AtomicU8, Ordering};
 
-#[cfg(feature = "irq")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 enum SchedulerBatonState {
@@ -21,7 +19,6 @@ enum PreemptionExitOrigin {
     IrqReturn,
 }
 
-#[cfg(feature = "irq")]
 #[ax_percpu::def_percpu]
 static SCHEDULER_BATON: AtomicU8 = AtomicU8::new(SchedulerBatonState::Finished as u8);
 
@@ -71,14 +68,10 @@ impl ax_task::runtime_preempt::RuntimePreemption for RuntimePreemptionOps {
             .unwrap_or_else(|error| panic!("initial preemption handoff is invalid: {error}"));
         publish_current_preemption_pending();
         finish_initial_scheduler_baton();
-        #[cfg(axtest)]
-        {
-            assert!(
-                !ax_hal::asm::irqs_enabled(),
-                "first-entry scheduler frame must finish before IRQ enable"
-            );
-            ax_task::axtest_support::record_initial_scheduler_frame_consumed();
-        }
+        debug_assert!(
+            !ax_hal::asm::irqs_enabled(),
+            "first-entry scheduler frame must finish before IRQ enable"
+        );
     }
 }
 
@@ -134,7 +127,6 @@ const fn preemption_exit_should_schedule(
     matches!(origin, PreemptionExitOrigin::IrqReturn) || irqs_were_enabled
 }
 
-#[cfg(feature = "irq")]
 fn claim_preempt_scheduler_entry() {
     debug_assert!(!ax_hal::asm::irqs_enabled());
     transition_scheduler_baton(
@@ -146,12 +138,6 @@ fn claim_preempt_scheduler_entry() {
     );
 }
 
-#[cfg(not(feature = "irq"))]
-fn claim_preempt_scheduler_entry() {
-    unreachable!("pending preemption requires the runtime IRQ capability");
-}
-
-#[cfg(feature = "irq")]
 fn enter_scheduler_frame() {
     debug_assert!(!ax_hal::asm::irqs_enabled());
     transition_scheduler_baton(
@@ -165,12 +151,6 @@ fn enter_scheduler_frame() {
     );
 }
 
-#[cfg(not(feature = "irq"))]
-fn enter_scheduler_frame() {
-    unreachable!("scheduler frame requires the runtime IRQ capability");
-}
-
-#[cfg(feature = "irq")]
 fn transfer_scheduler_frame() {
     debug_assert!(!ax_hal::asm::irqs_enabled());
     transition_scheduler_baton(
@@ -179,12 +159,6 @@ fn transfer_scheduler_frame() {
     );
 }
 
-#[cfg(not(feature = "irq"))]
-fn transfer_scheduler_frame() {
-    unreachable!("scheduler frame requires the runtime IRQ capability");
-}
-
-#[cfg(feature = "irq")]
 fn finish_scheduler_frame(result: ax_task::runtime_preempt::SchedulerFrameResult) {
     use ax_task::runtime_preempt::SchedulerFrameResult;
 
@@ -201,12 +175,6 @@ fn finish_scheduler_frame(result: ax_task::runtime_preempt::SchedulerFrameResult
     }
 }
 
-#[cfg(not(feature = "irq"))]
-fn finish_scheduler_frame(_result: ax_task::runtime_preempt::SchedulerFrameResult) {
-    unreachable!("scheduler frame requires the runtime IRQ capability");
-}
-
-#[cfg(feature = "irq")]
 fn finish_initial_scheduler_baton() {
     finish_scheduler_baton(
         SchedulerBatonState::Transferred,
@@ -214,12 +182,6 @@ fn finish_initial_scheduler_baton() {
     );
 }
 
-#[cfg(not(feature = "irq"))]
-fn finish_initial_scheduler_baton() {
-    unreachable!("scheduler frame requires the runtime IRQ capability");
-}
-
-#[cfg(feature = "irq")]
 fn finish_unused_preempt_scheduler_entry() {
     debug_assert!(!ax_hal::asm::irqs_enabled());
     publish_current_preemption_pending();
@@ -237,12 +199,6 @@ fn finish_unused_preempt_scheduler_entry() {
     });
 }
 
-#[cfg(not(feature = "irq"))]
-fn finish_unused_preempt_scheduler_entry() {
-    unreachable!("pending preemption requires the runtime IRQ capability");
-}
-
-#[cfg(feature = "irq")]
 fn finish_scheduler_baton(expected: SchedulerBatonState, owner: &'static str) {
     transition_scheduler_baton(
         |state| (state == expected).then_some(SchedulerBatonState::Finished),
@@ -250,7 +206,6 @@ fn finish_scheduler_baton(expected: SchedulerBatonState, owner: &'static str) {
     );
 }
 
-#[cfg(feature = "irq")]
 fn transition_scheduler_baton(
     transition: impl FnOnce(SchedulerBatonState) -> Option<SchedulerBatonState>,
     invariant: &'static str,
@@ -258,7 +213,6 @@ fn transition_scheduler_baton(
     with_scheduler_baton(|baton| transition_scheduler_baton_value(baton, transition, invariant));
 }
 
-#[cfg(feature = "irq")]
 fn transition_scheduler_baton_value(
     baton: &AtomicU8,
     transition: impl FnOnce(SchedulerBatonState) -> Option<SchedulerBatonState>,
@@ -280,12 +234,10 @@ fn transition_scheduler_baton_value(
     );
 }
 
-#[cfg(feature = "irq")]
 fn scheduler_baton_state(baton: &AtomicU8) -> SchedulerBatonState {
     SchedulerBatonState::from_raw(baton.load(Ordering::Relaxed))
 }
 
-#[cfg(feature = "irq")]
 impl SchedulerBatonState {
     fn from_raw(raw: u8) -> Self {
         match raw {
@@ -298,7 +250,6 @@ impl SchedulerBatonState {
     }
 }
 
-#[cfg(feature = "irq")]
 fn with_scheduler_baton<R>(operation: impl FnOnce(&AtomicU8) -> R) -> R {
     with_cpu_pin(|pin| SCHEDULER_BATON.with_current(pin, operation))
 }
@@ -322,7 +273,7 @@ fn with_cpu_pin<R>(operation: impl for<'scope> FnOnce(&cpu_local::CpuPin<'scope>
         .unwrap_or_else(|error| panic!("runtime CPU-local state is invalid: {error}"))
 }
 
-#[cfg(all(test, feature = "irq"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

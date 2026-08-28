@@ -1,64 +1,75 @@
 use axfs_ng_vfs::{NodeType, VfsError};
-use rsext4::{Ext4Error, entries::Ext4DirEntry2};
+use rsext4::{DirectoryEntryType, Ext4Error, Ext4ErrorKind};
 
 pub fn into_vfs_err(err: Ext4Error) -> VfsError {
-    match err.code {
-        rsext4::error::Errno::ENOENT => VfsError::NotFound,
-        rsext4::error::Errno::EEXIST => VfsError::AlreadyExists,
-        rsext4::error::Errno::EISDIR => VfsError::IsADirectory,
-        rsext4::error::Errno::ENOTDIR => VfsError::NotADirectory,
-        rsext4::error::Errno::ENOTEMPTY => VfsError::DirectoryNotEmpty,
-        rsext4::error::Errno::EACCES => VfsError::PermissionDenied,
-        rsext4::error::Errno::EINVAL => VfsError::InvalidInput,
-        rsext4::error::Errno::EFBIG => VfsError::FileTooLarge,
-        rsext4::error::Errno::ENOSPC => VfsError::StorageFull,
-        rsext4::error::Errno::EROFS => VfsError::ReadOnlyFilesystem,
-        rsext4::error::Errno::EBUSY => VfsError::ResourceBusy,
-        rsext4::error::Errno::EBADF => VfsError::BadFileDescriptor,
-        rsext4::error::Errno::ENAMETOOLONG => VfsError::NameTooLong,
-        rsext4::error::Errno::ELOOP => VfsError::FilesystemLoop,
-        rsext4::error::Errno::ENOMEM => VfsError::NoMemory,
-        rsext4::error::Errno::EPERM => VfsError::OperationNotPermitted,
-        _ => VfsError::Io,
+    match err.kind() {
+        Ext4ErrorKind::NotFound => VfsError::NotFound,
+        Ext4ErrorKind::AlreadyExists => VfsError::AlreadyExists,
+        Ext4ErrorKind::IsDirectory => VfsError::IsADirectory,
+        Ext4ErrorKind::NotDirectory => VfsError::NotADirectory,
+        Ext4ErrorKind::NotEmpty => VfsError::DirectoryNotEmpty,
+        Ext4ErrorKind::PermissionDenied => VfsError::PermissionDenied,
+        Ext4ErrorKind::InvalidInput
+        | Ext4ErrorKind::BadSuperblock
+        | Ext4ErrorKind::InvalidMagic => VfsError::InvalidInput,
+        Ext4ErrorKind::NoSpace => VfsError::StorageFull,
+        Ext4ErrorKind::ReadOnly => VfsError::ReadOnlyFilesystem,
+        Ext4ErrorKind::Busy => VfsError::ResourceBusy,
+        Ext4ErrorKind::BadFileDescriptor => VfsError::BadFileDescriptor,
+        Ext4ErrorKind::FileTooLarge => VfsError::FileTooLarge,
+        Ext4ErrorKind::Overflow => VfsError::ValueOverflow,
+        Ext4ErrorKind::Timeout => VfsError::TimedOut,
+        Ext4ErrorKind::Unsupported
+        | Ext4ErrorKind::UnsupportedFeature
+        | Ext4ErrorKind::UnsupportedCapability => VfsError::OperationNotSupported,
+        Ext4ErrorKind::Corrupted | Ext4ErrorKind::ChecksumMismatch => VfsError::FilesystemCorrupted,
+        Ext4ErrorKind::QuotaExceeded => VfsError::QuotaExceeded,
+        Ext4ErrorKind::TooManyLinks => VfsError::TooManyLinks,
+        Ext4ErrorKind::Io | Ext4ErrorKind::JournalAborted => VfsError::Io,
     }
 }
 
-pub fn dir_entry_type_to_vfs(file_type: u8) -> NodeType {
+pub fn directory_entry_type_to_vfs(file_type: DirectoryEntryType) -> NodeType {
     match file_type {
-        Ext4DirEntry2::EXT4_FT_REG_FILE => NodeType::RegularFile,
-        Ext4DirEntry2::EXT4_FT_DIR => NodeType::Directory,
-        Ext4DirEntry2::EXT4_FT_CHRDEV => NodeType::CharacterDevice,
-        Ext4DirEntry2::EXT4_FT_BLKDEV => NodeType::BlockDevice,
-        Ext4DirEntry2::EXT4_FT_FIFO => NodeType::Fifo,
-        Ext4DirEntry2::EXT4_FT_SOCK => NodeType::Socket,
-        Ext4DirEntry2::EXT4_FT_SYMLINK => NodeType::Symlink,
-        _ => NodeType::Unknown,
+        DirectoryEntryType::Unknown => NodeType::Unknown,
+        DirectoryEntryType::RegularFile => NodeType::RegularFile,
+        DirectoryEntryType::Directory => NodeType::Directory,
+        DirectoryEntryType::CharacterDevice => NodeType::CharacterDevice,
+        DirectoryEntryType::BlockDevice => NodeType::BlockDevice,
+        DirectoryEntryType::Fifo => NodeType::Fifo,
+        DirectoryEntryType::Socket => NodeType::Socket,
+        DirectoryEntryType::Symlink => NodeType::Symlink,
     }
 }
 
-pub fn inode_to_vfs_type(i_mode: u16) -> NodeType {
-    use rsext4::disknode::Ext4Inode;
-    match i_mode & Ext4Inode::S_IFMT {
-        Ext4Inode::S_IFDIR => NodeType::Directory,
-        Ext4Inode::S_IFREG => NodeType::RegularFile,
-        Ext4Inode::S_IFLNK => NodeType::Symlink,
-        Ext4Inode::S_IFCHR => NodeType::CharacterDevice,
-        Ext4Inode::S_IFBLK => NodeType::BlockDevice,
-        Ext4Inode::S_IFIFO => NodeType::Fifo,
-        Ext4Inode::S_IFSOCK => NodeType::Socket,
-        _ => NodeType::Unknown,
-    }
-}
+#[cfg(test)]
+mod tests {
+    use rsext4::{Ext4Error, Ext4ErrorKind, FeatureSet};
 
-pub fn vfs_type_to_dir_entry(ty: NodeType) -> Option<u8> {
-    Some(match ty {
-        NodeType::RegularFile => Ext4DirEntry2::EXT4_FT_REG_FILE,
-        NodeType::Directory => Ext4DirEntry2::EXT4_FT_DIR,
-        NodeType::CharacterDevice => Ext4DirEntry2::EXT4_FT_CHRDEV,
-        NodeType::BlockDevice => Ext4DirEntry2::EXT4_FT_BLKDEV,
-        NodeType::Fifo => Ext4DirEntry2::EXT4_FT_FIFO,
-        NodeType::Socket => Ext4DirEntry2::EXT4_FT_SOCK,
-        NodeType::Symlink => Ext4DirEntry2::EXT4_FT_SYMLINK,
-        NodeType::Unknown => return None,
-    })
+    use super::*;
+
+    #[test]
+    fn domain_errors_are_translated_only_at_the_vfs_boundary() {
+        assert_eq!(
+            into_vfs_err(Ext4Error::unsupported_feature(
+                FeatureSet::Incompatible,
+                0x8000_0000,
+            )),
+            VfsError::OperationNotSupported,
+        );
+        assert_eq!(
+            into_vfs_err(Ext4Error::checksum()),
+            VfsError::FilesystemCorrupted,
+        );
+        assert_eq!(into_vfs_err(Ext4Error::overflow()), VfsError::ValueOverflow,);
+        assert_eq!(into_vfs_err(Ext4Error::journal_aborted()), VfsError::Io,);
+        assert_eq!(
+            into_vfs_err(Ext4Error::too_many_links()),
+            VfsError::TooManyLinks,
+        );
+        assert_eq!(
+            into_vfs_err(Ext4Error::new(Ext4ErrorKind::QuotaExceeded)),
+            VfsError::QuotaExceeded,
+        );
+    }
 }

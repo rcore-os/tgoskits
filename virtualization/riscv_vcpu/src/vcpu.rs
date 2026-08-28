@@ -20,6 +20,8 @@ use riscv_decode::{
     types::{IType, SType},
 };
 #[cfg(feature = "sstc")]
+use riscv_h::register::henvcfg;
+#[cfg(feature = "sstc")]
 use riscv_h::register::vstimecmp;
 use riscv_h::register::{
     hgeie, hie, hstatus, htimedelta, hvip,
@@ -65,6 +67,30 @@ const SYSTEM_OPCODE: u32 = 0x73;
 #[cfg(feature = "sstc")]
 const CSR_STIMECMP: u16 = 0x14d;
 
+fn initial_guest_sstatus() -> sstatus::Sstatus {
+    let mut status = sstatus::Sstatus::from_bits(0);
+    status.set_sie(false);
+    status.set_spie(false);
+    status.set_spp(sstatus::SPP::Supervisor);
+    // The vCPU target exposes F/D, so HS must permit guest floating-point
+    // instructions. The guest still owns its architectural FS via `vsstatus`.
+    status.set_fs(sstatus::FS::Initial);
+    status
+}
+
+fn initial_guest_hstatus() -> hstatus::Hstatus {
+    let mut status = hstatus::Hstatus::from_bits(0);
+    status.set_spv(true);
+    status.set_vsxl(hstatus::VsxlValues::Vsxl64);
+    // HS accesses performed on behalf of the guest use VS supervisor
+    // privilege until a guest trap updates SPVP.
+    status.set_spvp(true);
+    status.set_vtvm(false);
+    status.set_vtw(false);
+    status.set_vtsr(false);
+    status
+}
+
 #[inline]
 fn instr_is_pseudo(ins: u32) -> bool {
     ins == TINST_PSEUDO_STORE || ins == TINST_PSEUDO_LOAD
@@ -75,6 +101,8 @@ pub struct RiscvVcpu<H: RiscvHostOps> {
     regs: VmCpuRegisters,
     sbi: RISCVVCpuSbi,
     bound: bool,
+    #[cfg(feature = "sstc")]
+    host_henvcfg: usize,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -124,6 +152,8 @@ impl<H: RiscvHostOps> Default for RiscvVcpu<H> {
             regs: VmCpuRegisters::default(),
             sbi: RISCVVCpuSbi::default(),
             bound: false,
+            #[cfg(feature = "sstc")]
+            host_henvcfg: 0,
             _host: PhantomData,
         }
     }
@@ -147,34 +177,18 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             regs,
             sbi: RISCVVCpuSbi::default(),
             bound: false,
+            #[cfg(feature = "sstc")]
+            host_henvcfg: 0,
             _host: PhantomData,
         })
     }
 
     /// Completes architecture-specific setup.
     pub fn setup(&mut self, _config: ()) -> RiscvVcpuResult {
-        // Set sstatus.
-        let mut sstatus = sstatus::read();
-        sstatus.set_sie(false);
-        sstatus.set_spie(false);
-        sstatus.set_spp(sstatus::SPP::Supervisor);
-        self.regs.guest_regs.sstatus = sstatus.bits();
-
-        // Set hstatus.
-        let mut hstatus = hstatus::read();
-        hstatus.set_spv(true);
-        hstatus.set_vsxl(hstatus::VsxlValues::Vsxl64);
-        // Set SPVP bit in order to accessing VS-mode memory from HS-mode.
-        hstatus.set_spvp(true);
-        // Let the guest execute its normal supervisor instructions without
-        // spuriously trapping them back to the hypervisor.
-        hstatus.set_vtvm(false);
-        hstatus.set_vtw(false);
-        hstatus.set_vtsr(false);
-        unsafe {
-            hstatus.write();
-        }
-        self.regs.guest_regs.hstatus = hstatus.bits();
+        // Setup only constructs guest-owned reset state. `_run_guest` owns the
+        // live host/guest CSR swap at the assembly entry/exit boundary.
+        self.regs.guest_regs.sstatus = initial_guest_sstatus().bits();
+        self.regs.guest_regs.hstatus = initial_guest_hstatus().bits();
 
         let mut hie = hie::Hie::from_bits(0);
         hie.set_vssie(true);
@@ -243,6 +257,21 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Binds the vCPU to the current physical CPU.
     pub fn bind(&mut self) -> RiscvVcpuResult {
+        if self.bound {
+            return Err(RiscvVcpuError::BadState);
+        }
+        #[cfg(feature = "sstc")]
+        {
+            let host_henvcfg = henvcfg::read();
+            let mut guest_henvcfg = host_henvcfg;
+            guest_henvcfg.set_stce(true);
+            unsafe { guest_henvcfg.write() };
+            if !henvcfg::read().stce() {
+                unsafe { host_henvcfg.write() };
+                return Err(RiscvVcpuError::Unsupported);
+            }
+            self.host_henvcfg = host_henvcfg.bits();
+        }
         // Load the vCPU's CSRs from the stored state.
         unsafe {
             let vsatp = Vsatp::from_bits(self.regs.vs_csrs.vsatp);
@@ -285,6 +314,9 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Unbinds the vCPU from the current physical CPU.
     pub fn unbind(&mut self) -> RiscvVcpuResult {
+        if !self.bound {
+            return Err(RiscvVcpuError::BadState);
+        }
         self.sbi.pmu.backend_unbind();
         // Store the vCPU's CSRs to the stored state.
         unsafe {
@@ -317,6 +349,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             vstimecmp::write(usize::MAX);
             core::arch::asm!("csrw hgatp, x0");
             core::arch::riscv64::hfence_gvma_all();
+            #[cfg(feature = "sstc")]
+            henvcfg::Henvcfg::from_bits(self.host_henvcfg).write();
         }
         self.bound = false;
         Ok(())
@@ -435,23 +469,24 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 }
 
 impl<H: RiscvHostOps> RiscvVcpu<H> {
+    #[cfg(feature = "sstc")]
     #[inline]
     fn program_guest_timer(&mut self, deadline: usize) -> RiscvVcpuResult {
-        #[cfg(feature = "sstc")]
-        {
-            self.regs.vs_csrs.vstimecmp = deadline;
-        }
-        sbi_rt::set_timer(deadline as u64);
+        self.regs.vs_csrs.vstimecmp = deadline;
         self.set_virtual_interrupt_pending(S_TIMER, false)?;
         unsafe {
             // The guest has consumed the current VS timer event and programmed
-            // a new deadline, so clear the injected VS timer pending bit and
-            // re-arm HS timer delivery for the next expiration.
-            #[cfg(feature = "sstc")]
+            // a new deadline. Sstc uses the vCPU-owned compare register and
+            // never reprograms the host clockevent.
             vstimecmp::write(deadline);
-            sie::set_stimer();
         }
         Ok(())
+    }
+
+    #[cfg(not(feature = "sstc"))]
+    #[inline]
+    fn program_guest_timer(&mut self, _deadline: usize) -> RiscvVcpuResult {
+        Err(RiscvVcpuError::Unsupported)
     }
 
     /// Gets one of the vCPU's general purpose registers.
@@ -818,14 +853,9 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 Ok(RiscvVmExit::Nothing)
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
-            Trap::Interrupt(Interrupt::SupervisorTimer) => {
-                // Forward the elapsed timer to VS and stop taking the same HS
-                // timer interrupt repeatedly until software programs a new one.
-                self.inject_interrupt(S_TIMER)?;
-                unsafe { sie::clear_stimer() };
-
-                Ok(RiscvVmExit::Nothing)
-            }
+            Trap::Interrupt(Interrupt::SupervisorTimer) => Ok(RiscvVmExit::ExternalInterrupt {
+                vector: S_TIMER as _,
+            }),
             Trap::Interrupt(Interrupt::SupervisorSoft) => {
                 // Host IPIs and scheduler wakeups use SSIP. Route them through
                 // the host IRQ path so it can acknowledge SSIP before the vCPU
@@ -979,9 +1009,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
         if let Some(new_value) = new_value {
             // Linux is using the advertised `sstc` path (`csrw stimecmp,...`).
-            // We currently emulate that CSR access rather than exposing direct
-            // hardware STCE, so this path must also program the underlying HS
-            // timer instead of only updating saved VS state.
+            // Keep the saved vCPU state synchronized with the hardware compare
+            // without borrowing the host supervisor timer.
             self.program_guest_timer(new_value)?;
         }
 
@@ -1236,6 +1265,28 @@ mod tests {
         fn virt_to_phys(_vaddr: RiscvHostVirtAddr) -> RiscvHostPhysAddr {
             RiscvHostPhysAddr::from_usize(0)
         }
+    }
+
+    #[test]
+    fn setup_constructs_guest_status_without_accessing_host_csrs() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+
+        vcpu.setup(()).unwrap();
+
+        let sstatus = sstatus::Sstatus::from_bits(vcpu.regs.guest_regs.sstatus);
+        assert!(!sstatus.sie());
+        assert!(!sstatus.spie());
+        assert_eq!(sstatus.spp(), sstatus::SPP::Supervisor);
+        assert_eq!(sstatus.fs(), sstatus::FS::Initial);
+
+        let hstatus = hstatus::Hstatus::from_bits(vcpu.regs.guest_regs.hstatus);
+        let expected_hstatus = (2 << 32) | (1 << 8) | (1 << 7);
+        assert_eq!(hstatus.bits(), expected_hstatus);
+        assert!(hstatus.spv());
+        assert!(hstatus.spvp());
+        assert!(!hstatus.vtvm());
+        assert!(!hstatus.vtw());
+        assert!(!hstatus.vtsr());
     }
 
     #[test]

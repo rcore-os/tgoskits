@@ -13,7 +13,7 @@ use super::cases::BenchCase;
 
 const REVIEW_CONTRACT: &str = include_str!("../../../agent-review-bench/reviewer.md");
 const REVIEW_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/review.schema.json");
-const REVIEW_SKILL_PATH: &str = ".claude/skills/review-single-pr/SKILL.md";
+const REVIEW_SKILL_PATH: &str = ".agents/skills/review-single-pr/SKILL.md";
 
 pub(super) struct ReviewSandbox {
     _root: TempDir,
@@ -193,6 +193,9 @@ fn clear_worktree(repo: &Path) -> anyhow::Result<()> {
             fs::remove_file(path)?;
         }
     }
+    // The next snapshot may reuse the same size, timestamp, and inode as the
+    // base file. Dropping the old index forces Git to hash the new contents.
+    git(repo, ["read-tree", "--empty"])?;
     Ok(())
 }
 
@@ -257,11 +260,11 @@ mod tests {
             "current guideline\n",
         )
         .unwrap();
-        fs::create_dir_all(workspace.path().join(".claude/skills/review-single-pr")).unwrap();
+        fs::create_dir_all(workspace.path().join(".agents/skills/review-single-pr")).unwrap();
         fs::write(
             workspace
                 .path()
-                .join(".claude/skills/review-single-pr/SKILL.md"),
+                .join(".agents/skills/review-single-pr/SKILL.md"),
             "current review skill\n",
         )
         .unwrap();
@@ -343,6 +346,24 @@ mod tests {
                 .and_then(|entry| fs::read_to_string(entry.path()).ok())
                 .is_some_and(|text| text.contains("secret answer"))
         }));
+    }
+
+    #[test]
+    fn clear_worktree_drops_index_state_before_extracting_the_next_snapshot() {
+        let repo = tempdir().unwrap();
+        initialize_repo(repo.path()).unwrap();
+        fs::write(repo.path().join("tracked.txt"), "base snapshot\n").unwrap();
+        commit_all(repo.path(), "base").unwrap();
+
+        clear_worktree(repo.path()).unwrap();
+
+        let cached_paths = Command::new("git")
+            .current_dir(repo.path())
+            .args(["ls-files", "--cached"])
+            .output()
+            .unwrap();
+        assert!(cached_paths.status.success());
+        assert!(cached_paths.stdout.is_empty());
     }
 
     fn rev_parse(repo: &Path, revision: &str) -> String {

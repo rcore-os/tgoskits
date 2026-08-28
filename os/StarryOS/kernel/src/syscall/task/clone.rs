@@ -689,8 +689,8 @@ pub fn sys_vfork(uctx: &UserContext) -> StarryResult<isize> {
     sys_clone(uctx, flags, 0, 0, 0, 0)
 }
 
-#[cfg(test)]
-pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn clone_validation_rules_hold_for_test() -> bool {
     let parent_signal_allowed = CloneArgs {
         flags: CloneFlags::PARENT,
         exit_signal: SIGCHLD as u64,
@@ -749,9 +749,7 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     }
     .validate()
     .is_ok();
-    // Cover the remaining validation arms to keep the full state machine under
-    // axtest coverage (the host `#[cfg(test)]` mod below mirrors these but does
-    // not execute during the kernel coverage run).
+    // Cover the remaining validation arms in the host unit suite.
     let thread_without_vm_sighand_rejected = CloneArgs {
         flags: CloneFlags::THREAD,
         ..Default::default()
@@ -812,11 +810,11 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
         && thread_valid
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use linux_raw_sys::general::SIGCHLD;
 
-    use super::{CloneArgs, CloneFlags};
+    use super::{CloneArgs, CloneFlags, clone_validation_rules_hold_for_test};
 
     #[test]
     fn clone_parent_allows_nonzero_exit_signal() {
@@ -884,5 +882,10 @@ mod tests {
         assert!(args.validate_cgroup_target(true).is_ok());
 
         assert!(CloneArgs::default().validate_cgroup_target(true).is_err());
+    }
+
+    #[test]
+    fn clone_validation_rules_hold() {
+        assert!(clone_validation_rules_hold_for_test());
     }
 }

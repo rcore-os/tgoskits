@@ -593,7 +593,7 @@ pub struct DrmModeGetBlob {
     pub data: u64,
 }
 
-#[cfg(all(test, feature = "rknpu"))]
+#[cfg(all(test, not(axtest), feature = "rknpu"))]
 mod tests {
     use super::*;
 

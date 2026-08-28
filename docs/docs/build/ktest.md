@@ -7,6 +7,11 @@ sidebar_label: "内核测试"
 
 `cargo xtask ktest` 为 workspace 中声明为 `harness = false` 的 Cargo `[[test]]` target 提供统一的 QEMU 和板卡执行路径。它不是 host 端的 `cargo test`：测试目标会作为 ArceOS、StarryOS 或 Axvisor 内核镜像构建，并在目标运行环境输出 axtest 标记。只有依赖目标架构、内核运行时、真实设备或板卡的测例才使用 axtest；可在宿主确定性运行的算法、状态机、格式化和参数校验测试统一使用普通 `#[test]`。完整契约见仓库文档 `docs/design/axtest-cargo-integration.md`。
 
+axtest target 由拥有完整运行时的上层 consumer（例如 `starry-kernel`、Axvisor）或专用板卡
+测试包持有。`ax-runtime`、`ax-hal`、`ax-task`、`axbacktrace`、`ax-fs-ng` 等启动依赖库不
+单独创建 target：其私有纯逻辑使用 std 单元测试，需要真实 ArceOS 的行为放入
+`test-suit/arceos/rust`，并且只调用生产公开 API。
+
 ## 1. 运行接口
 
 `qemu` 从 Cargo metadata 建立 workspace 执行计划；`board` 显式选择一个 package 和 test target。两种模式都只接收明确的 `harness = false` target，避免误把 host 测试当作内核测试执行。
@@ -41,7 +46,8 @@ cargo xtask ktest board -p <PACKAGE> --test <TARGET> -b <BOARD>
 
 创建 target 前必须先确认标准 Rust harness 或项目已有的 host-test adapter 无法表达被测
 语义。同一 crate 的纯逻辑部分应留在 unit/integration `#[test]` 中，仅把实际需要 QEMU 或
-板卡的部分放入以下 target。
+板卡的部分放入以下 target。源码单元测试放在实现文件末尾；Cargo `tests/` 下的集成测试
+只能验证公开 API，不得为它们公开内部表示或增加测试状态注入接口。
 
 axbuild 从 `cargo metadata` 和 package `Cargo.toml` 读取 target。package 必须在
 `[dev-dependencies]` 中通过相对 path 直接依赖 workspace `axtest`，可选 target 必须是
@@ -106,7 +112,8 @@ StarryOS 会准备其 managed rootfs；Axvisor 会准备当前 arch 的 managed 
 - 成功：`AXTEST_SUITE_OK`
 - 失败：`panicked at`、`AXTEST_SUITE_FAIL`、`AXTEST_CASE .* status=fail`
 
-因此 test target 应在完成时输出相应 axtest 成功标记。
+因此 test target 应在完成时输出相应 axtest 成功标记。Starry kernel 的 target 只负责
+启动共享内部 root 中的源码内 `#[axtest]` case；它不提供集中测试 façade。
 
 覆盖率产物按 `<package>-<test>-<target>` 隔离；`--out-fmt html` 会为每个执行单元生成并打印独立报告路径。覆盖率运行还必须到达 `AXTEST_COVERAGE_DONE`。
 

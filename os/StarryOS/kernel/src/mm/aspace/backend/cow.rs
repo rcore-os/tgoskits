@@ -113,8 +113,8 @@ fn cow_file_max_read(
     cow_file_max_read_len(file_len, file_end, file_read_offset, available)
 }
 
-#[cfg(axtest)]
-pub(crate) fn private_mmap_eof_check_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn private_mmap_eof_check_for_test() -> bool {
     matches!(
         cow_file_max_read_len(4096, None, 4096, 4096),
         Err(StarryError::BadAddress)
@@ -813,8 +813,8 @@ impl Backend {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
     // Zero-length file without an explicit end rejects any offset (offset 0 is
     // already >= file_len 0).
     matches!(cow_file_max_read_len(0, None, 0, 4096), Err(StarryError::BadAddress))
@@ -838,7 +838,7 @@ pub(crate) fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
         && matches!(cow_file_max_read_len(8192, Some(4096), 4096, 4096), Ok(0))
 }
 
-#[cfg(axtest)]
+#[cfg(all(test, axtest))]
 fn cow_clone_map_failure_restores_resources() -> bool {
     let start = VirtAddr::from(0x4000_0000);
     let second_page = start + PAGE_SIZE_4K;
@@ -951,7 +951,28 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         && second_frame_count == Some(FrameTableRefCount::INITIAL_CNT)
 }
 
-#[cfg(axtest)]
-pub(crate) fn cow_clone_failure_rollback_rules_hold_for_test() -> bool {
+#[cfg(all(test, axtest))]
+fn cow_clone_failure_rollback_rules_hold_for_test() -> bool {
     cow_clone_map_failure_restores_resources()
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn private_mmap_rejects_fault_at_file_eof() {
+        assert!(super::private_mmap_eof_check_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn cow_file_max_read_len_boundary_rules_hold() {
+        assert!(super::cow_file_max_read_len_boundary_rules_hold_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn cow_clone_failure_rollback_rules_hold() {
+        assert!(super::cow_clone_failure_rollback_rules_hold_for_test());
+    }
 }

@@ -17,7 +17,7 @@ use core::{
 
 use ax_lazyinit::OnceLock;
 use controller::{ControllerPort, run_controller};
-use device::CpuSubmissionChannel;
+use device::{CpuSubmissionChannel, DeviceInfoEpoch};
 use irq_framework::IrqId;
 #[cfg(any(feature = "ext4", feature = "fat"))]
 use rdif_block::RequestFlags;
@@ -343,10 +343,13 @@ impl BlockGroupHandle {
         if self.stopped.swap(true, Ordering::AcqRel) {
             return 0;
         }
+        // Teardown has exclusive ownership after publishing `stopped`. Move
+        // the controller out so retry waits never retain an IRQ-save guard.
+        let mut controller = self.controller.lock().take();
         for member in &self.members {
             member.inner.prepare_group_shutdown();
         }
-        if let Some(controller) = self.controller.lock().as_deref_mut() {
+        if let Some(controller) = controller.as_deref_mut() {
             let _ = drive_group_transition(
                 controller,
                 GroupControllerEvent::QuiesceIrqs,
@@ -360,7 +363,7 @@ impl BlockGroupHandle {
         for member in &self.members {
             member.shutdown();
         }
-        if let Some(mut controller) = self.controller.lock().take()
+        if let Some(mut controller) = controller
             && let Err(error) = drive_group_transition(
                 &mut *controller,
                 GroupControllerEvent::Shutdown,
@@ -502,7 +505,7 @@ impl Drop for BlockDeviceHandle {
 
 struct DeviceInner {
     name: String,
-    info: IrqMutex<DeviceInfo>,
+    device_info: IrqMutex<DeviceInfoEpoch>,
     max_io_queues: usize,
     irq_sources: Vec<BlockIrqSource>,
     hctxs: IrqMutex<Vec<Arc<Hctx>>>,
@@ -580,7 +583,7 @@ impl BlockDeviceHandle {
         });
         let inner = Arc::new(DeviceInner {
             name,
-            info: IrqMutex::new(info),
+            device_info: IrqMutex::new(DeviceInfoEpoch::new(info)),
             max_io_queues,
             irq_sources: irqs,
             hctxs: IrqMutex::new(Vec::new()),
@@ -648,7 +651,29 @@ impl BlockDeviceHandle {
     }
 
     pub fn device_info(&self) -> DeviceInfo {
-        *self.inner.info.lock()
+        self.inner.published_device_info()
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn supports_flush(&self) -> bool {
+        let queues = self.inner.hctxs.lock();
+        !queues.is_empty()
+            && queues
+                .iter()
+                .all(|queue| queue.info().limits.supports_flush)
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn supports_fua(&self) -> bool {
+        let queues = self.inner.hctxs.lock();
+        !queues.is_empty()
+            && queues.iter().all(|queue| {
+                queue
+                    .info()
+                    .limits
+                    .supported_flags
+                    .contains(RequestFlags::FUA)
+            })
     }
 
     /// Enqueues one DMA-owning request on the current CPU software channel.
@@ -695,7 +720,7 @@ impl BlockDeviceHandle {
             return Err(BatchSubmitError::new(BlkError::Io, requests));
         };
         let mut info = cpu_channel.hctx.info();
-        info.device = *self.inner.info.lock();
+        info.device = self.inner.published_device_info();
         let validation_error = requests
             .iter()
             .find_map(|request| validate_owned_request(info, request).err());
@@ -787,6 +812,14 @@ impl BlockDeviceHandle {
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> BlockResult {
         io::write_blocks(self, block_id, buf)
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn write_blocks_fua(&self, block_id: u64, buf: &[u8]) -> BlockResult {
+        if !self.supports_fua() {
+            return Err(BlockError::Unsupported);
+        }
+        io::write_blocks_fua(self, block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]

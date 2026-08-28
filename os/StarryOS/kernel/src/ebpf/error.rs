@@ -21,8 +21,8 @@ impl<T> BpfResultExt<T> for kbpf_basic::BpfResult<T> {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn bpf_error_adapter_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn bpf_error_adapter_rules_hold_for_test() -> bool {
     // Known Errno codes map through; unknown values fall back to EINVAL.
     let r1: StarryError = bpf_error_to_starry(kbpf_basic::BpfError::ENOMEM);
     let r1_matches = r1.linux_errno() == crate::Errno::ENOMEM;
@@ -44,8 +44,8 @@ pub(crate) fn bpf_error_adapter_rules_hold_for_test() -> bool {
     r1_matches && r2_matches && ok_ok && err_is_perm
 }
 
-#[cfg(test)]
-pub(crate) fn bpf_error_more_variants_and_edge_cases_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn bpf_error_more_variants_and_edge_cases_hold_for_test() -> bool {
     // Test more BpfError variants mapping through the Starry adapter.
     let e2big: StarryError = bpf_error_to_starry(kbpf_basic::BpfError::E2BIG);
     assert_eq!(e2big.linux_errno(), crate::Errno::E2BIG);
@@ -80,4 +80,17 @@ pub(crate) fn bpf_error_more_variants_and_edge_cases_hold_for_test() -> bool {
     assert_eq!(nosys.linux_errno(), crate::Errno::ENOSYS);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn bpf_error_adapter_rules_hold() {
+        assert!(super::bpf_error_adapter_rules_hold_for_test());
+    }
+
+    #[test]
+    fn bpf_error_more_variants_and_edge_cases_hold() {
+        assert!(super::bpf_error_more_variants_and_edge_cases_hold_for_test());
+    }
 }

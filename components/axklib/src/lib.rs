@@ -242,6 +242,29 @@ pub trait Klib {
             Err(IrqError::Unsupported)
         }
     }
+
+    /// Resolves a firmware CPU id to the kernel's dense logical CPU index.
+    ///
+    /// Firmware ids are the identifiers the boot firmware and device tree use
+    /// for CPUs: the `reg` value of a `/cpus` child node on device-tree
+    /// platforms (the AArch64 MPIDR affinity value, a RISC-V hart id, ...).
+    /// The kernel — not the device tree — assigns logical CPU indices (the
+    /// boot hart becomes logical CPU 0, the remaining firmware ids follow in
+    /// firmware order), and per-CPU kernel state such as scheduler counters is
+    /// keyed by that index. Drivers that attribute per-logical-CPU data to
+    /// hardware resources must resolve ids through this mapping instead of
+    /// assuming a `/cpus` enumeration order.
+    ///
+    /// Returns `None` when the platform provides no such mapping or no online
+    /// CPU runs the given firmware id.
+    fn cpu_resolve_logical_index(_hardware_id: usize) -> Option<usize> {
+        None
+    }
+}
+
+/// Convenience re-exports for CPU topology queries.
+pub mod cpu {
+    pub use super::klib::cpu_resolve_logical_index as resolve_logical_index;
 }
 
 /// Convenience re-export for memory IO mapping.

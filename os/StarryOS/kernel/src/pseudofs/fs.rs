@@ -180,8 +180,8 @@ impl NodeOps for SimpleFsNode {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn dummy_stat_fs_fields_match_expected_defaults_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn dummy_stat_fs_fields_match_expected_defaults_for_test() -> bool {
     let stat = dummy_stat_fs(0xdead_beef);
     stat.fs_type == 0xdead_beef
         && stat.block_size == 512
@@ -192,4 +192,12 @@ pub(crate) fn dummy_stat_fs_fields_match_expected_defaults_for_test() -> bool {
         && stat.free_file_count == 0
         && stat.fragment_size == 0
         && stat.mount_flags == 0
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn dummy_stat_fs_fields_match_expected_defaults() {
+        assert!(super::dummy_stat_fs_fields_match_expected_defaults_for_test());
+    }
 }

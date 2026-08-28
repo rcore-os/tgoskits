@@ -40,6 +40,8 @@ pub fn init(args: &[String], envs: &[String]) {
     } else {
         spawn_cpufreq_governor();
     }
+    // Read-only cluster frequency snapshot for CPU-bound workload triage.
+    ax_driver::cpufreq::log_frequency_readout();
     pseudofs::usbfs::start_event_pump();
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);

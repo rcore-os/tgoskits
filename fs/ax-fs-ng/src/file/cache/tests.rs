@@ -8,8 +8,9 @@ use core::{
 use std::sync::Mutex as StdMutex;
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata,
-    MetadataUpdate, Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs,
+    DeviceId, DirEntry, FileNodeOps, FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents,
+    FsPollable, Metadata, MetadataUpdate, Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType,
+    Reference, StatFs,
 };
 
 use super::*;
@@ -171,8 +172,32 @@ impl FileNodeOps for CacheTestFile {
         Ok(())
     }
 
-    fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-        Err(VfsError::InvalidInput)
+    fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> VfsResult<()> {
+        let offset = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
+        let len = usize::try_from(len).map_err(|_| VfsError::InvalidInput)?;
+        let end = offset.checked_add(len).ok_or(VfsError::InvalidInput)?;
+        let mut state = self.state.lock().unwrap();
+        match operation {
+            FileRangeOperation::CollapseRange if end < state.logical_len => {
+                state.physical_data.drain(offset..end);
+                state.logical_len -= len;
+                Ok(())
+            }
+            FileRangeOperation::InsertRange if offset < state.logical_len => {
+                state
+                    .physical_data
+                    .splice(offset..offset, core::iter::repeat_n(0, len));
+                state.logical_len = state
+                    .logical_len
+                    .checked_add(len)
+                    .ok_or(VfsError::InvalidInput)?;
+                Ok(())
+            }
+            FileRangeOperation::CollapseRange | FileRangeOperation::InsertRange => {
+                Err(VfsError::InvalidInput)
+            }
+            _ => Err(VfsError::OperationNotSupported),
+        }
     }
 }
 
@@ -411,5 +436,55 @@ fn truncate_notifies_discard_listeners_without_cached_file_locks() {
 
         cached.set_len(PAGE_SIZE as u64).unwrap();
         assert!(observed_unlocked.load(Ordering::Acquire));
+    });
+}
+
+#[test]
+fn shifted_range_retries_when_a_page_is_cached_after_the_initial_snapshot() {
+    with_test_page_provider(true, |_| {
+        let mut original = vec![0; PAGE_SIZE * 3];
+        for (index, page) in original
+            .as_chunks_mut::<PAGE_SIZE>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            page.fill(index as u8 + 1);
+        }
+        let backing = Arc::new(CacheTestFile::new(original));
+        let cached = reopen_cached_file(backing);
+        assert_eq!(
+            cached.write_at(&[2][..], PAGE_SIZE as u64).unwrap(),
+            1,
+            "page one must be dirty so writeback protection opens the race window"
+        );
+
+        let racing_handle = cached.clone();
+        cached.add_page_listener(
+            |_, _| true,
+            move |page_number| {
+                page_number != 1 || racing_handle.with_page_or_insert(2, |_, _| Ok(())).is_ok()
+            },
+        );
+
+        cached
+            .operate_range(
+                PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+                FileRangeOperation::InsertRange,
+            )
+            .unwrap();
+
+        let mut shifted_page = vec![0; PAGE_SIZE];
+        assert_eq!(
+            cached
+                .read_at(shifted_page.as_mut_slice(), (2 * PAGE_SIZE) as u64)
+                .unwrap(),
+            PAGE_SIZE
+        );
+        assert!(
+            shifted_page.iter().all(|byte| *byte == 2),
+            "the page cached during writeback protection must be invalidated after the shift"
+        );
     });
 }

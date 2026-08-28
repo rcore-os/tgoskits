@@ -141,16 +141,11 @@ int main(void)
         printf("  INFO | MemFree unavailable; skipping delta-bound assertion\n");
     }
 
-    /* 清理: 释放映射并删除磁盘文件 (rootfs 在同一 boot 内跨测例持久) */
-    for (int i = 0; i < N_FILES; i++) {
-        if (g_maps[i])
-            munmap(g_maps[i], PAGE);
-    }
-    for (int i = 0; i < N_FILES; i++) {
-        snprintf(path, sizeof path, DIR "/f%04d.dat", i);
-        unlink(path);
-    }
-    rmdir(DIR);
+    /* This unique fixture directory lives on a QEMU rootfs drive with discard
+     * snapshot policy. Process exit releases all retained mappings, and QEMU
+     * snapshot teardown discards the directory entries in bulk. Per-file
+     * cleanup would measure 1400 filesystem syscalls instead of the page-cache
+     * allocation invariant under test. */
 
     TEST_DONE();
 }

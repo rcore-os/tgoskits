@@ -3,7 +3,7 @@
 #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 pub mod dmabuf;
 pub mod epoll;
-#[cfg(axtest)]
+#[cfg(test)]
 mod epoll_axtest;
 mod epoll_file;
 mod epoll_topology;
@@ -40,47 +40,7 @@ use linux_raw_sys::general::{
     STATX_BASIC_STATS, stat, statx, statx_timestamp,
 };
 
-#[cfg(test)]
-pub(crate) use self::epoll::epoll_event_matching_rules_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll::epoll_hup_does_not_synthesize_readable_for_test;
-#[cfg(axtest)]
-pub(crate) use self::epoll_axtest::{
-    concurrent_reverse_add_is_serialized_for_test, edge_callback_does_not_reenter_target_for_test,
-    edge_readiness_requires_a_new_notification_for_test,
-    epoll_requeues_readiness_observed_during_rearm_for_test,
-    level_aliases_rotate_in_linux_callback_order_for_test,
-    level_callback_does_not_reenter_target_for_test,
-};
-#[cfg(test)]
-pub(crate) use self::epoll_topology::epoll_arc_operations_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::epoll_topology::epoll_edge_id_and_constants_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::epoll_topology::epoll_edge_id_clone_copy_partial_eq_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::epoll_topology::epoll_topology_direction_and_scan_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::epoll_topology::epoll_topology_link_clone_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::epoll_topology::epoll_topology_static_constants_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::epoll_topology::epoll_topology_struct_and_methods_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::epoll_topology::epoll_topology_vec_and_reserve_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::epoll_topology::push_topology_item_preserves_order_and_grows_capacity;
-#[cfg(test)]
-pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
 pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
-#[cfg(axtest)]
-pub(crate) use self::pipe::{
-    interrupted_pipe_write_preserves_partial_progress_for_test,
-    peer_close_with_multiple_readers_is_visible_for_test, pipe_linux_io_semantics_hold_for_test,
-    pipe_resize_rounding_and_state_rules_hold_for_test, resize_rejects_oversized_pipe_for_test,
-};
-#[cfg(test)]
-pub(crate) use self::wext::is_wext_ioctl_validation_rules_hold_for_test;
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,
@@ -721,8 +681,8 @@ pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
     Ok(())
 }
 
-#[cfg(axtest)]
-pub(crate) fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
     fn descriptor() -> FileDescriptor {
         let (read_end, _write_end) = Pipe::new();
         FileDescriptor {
@@ -734,7 +694,7 @@ pub(crate) fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool 
     let table = Arc::new(RwLock::new(FileTable::new()));
     let prepared =
         PreparedFileDescriptor::prepare_in(table.clone(), descriptor(), AX_FILE_LIMIT).unwrap();
-    let reserved_fd = prepared.fd as usize;
+    let reserved_fd = prepared.fd;
     let hidden = table.read().get(reserved_fd).is_none();
     let counted_against_limit =
         PreparedFileDescriptor::prepare_in(table.clone(), descriptor(), 1).is_err();
@@ -758,7 +718,7 @@ pub(crate) fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool 
     let prepared =
         PreparedFileDescriptor::prepare_in(install_table.clone(), descriptor(), AX_FILE_LIMIT)
             .unwrap();
-    let installed_fd = prepared.fd as usize;
+    let installed_fd = prepared.fd;
     prepared.install();
     let install_made_visible = install_table.read().get(installed_fd).is_some();
 
@@ -768,4 +728,13 @@ pub(crate) fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool 
         && clone_excluded_reservation
         && rollback_released_number
         && install_made_visible
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn prepared_descriptor_stays_hidden_until_install() {
+        assert!(super::prepared_descriptor_stays_hidden_until_install_for_test());
+    }
 }

@@ -248,12 +248,15 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> StarryResult<isize> {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn bpf_unknown_command_is_invalid_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn bpf_unknown_command_is_invalid_for_test() -> bool {
     matches!(sys_bpf(u64::MAX, 0, 0), Err(StarryError::InvalidInput))
 }
 
-#[cfg(test)]
-pub(crate) use self::error::bpf_error_adapter_rules_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::error::bpf_error_more_variants_and_edge_cases_hold_for_test;
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn bpf_unknown_command_is_invalid() {
+        assert!(super::bpf_unknown_command_is_invalid_for_test());
+    }
+}

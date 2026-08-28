@@ -7,11 +7,15 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-eth"
 repository.workspace = true
-version = "0.4.0"
+version = "0.4.1"
 
 [dependencies]
 dma-api = { workspace = true }
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
+dma-api = { workspace = true, features = ["pool"] }
 
 [features]

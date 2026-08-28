@@ -65,6 +65,7 @@ impl Starry {
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
+        let write_policy = args.resolved_rootfs_write_policy();
         let request = self.prepare_request(
             (&args.build).into(),
             args.qemu_config,
@@ -73,9 +74,9 @@ impl Starry {
         )?;
         self.ensure_default_build_config_for_request(&request, "qemu")?;
         if let Some(rootfs) = args.rootfs {
-            rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
+            rootfs::qemu_with_explicit_rootfs(self, request, rootfs, write_policy).await
         } else {
-            self.run_qemu_request(request).await
+            self.run_qemu_request(request, write_policy).await
         }
     }
 
@@ -240,7 +241,13 @@ impl Starry {
         )?;
 
         let Some(test_case) = app::app_qemu_test_case(&case, app.case_dir.clone()) else {
-            return rootfs::qemu_with_explicit_rootfs(self, request, case.rootfs_path).await;
+            return rootfs::qemu_with_explicit_rootfs(
+                self,
+                request,
+                case.rootfs_path,
+                case.rootfs_write_policy,
+            )
+            .await;
         };
         if app.prebuild_path.is_some()
             && test_case.test_commands.is_empty()
@@ -561,8 +568,12 @@ impl Starry {
             .await
     }
 
-    async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
-        rootfs::qemu(self, request).await
+    async fn run_qemu_request(
+        &mut self,
+        request: ResolvedStarryRequest,
+        write_policy: rootfs::RootfsWritePolicy,
+    ) -> anyhow::Result<()> {
+        rootfs::qemu(self, request, write_policy).await
     }
 
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
@@ -617,7 +628,8 @@ impl Starry {
                     None,
                     SnapshotPersistence::Store,
                 )?;
-                self.run_qemu_request(request).await
+                self.run_qemu_request(request, rootfs::RootfsWritePolicy::Discard)
+                    .await
             }
         }
     }

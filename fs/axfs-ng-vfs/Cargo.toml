@@ -1,6 +1,6 @@
 [package]
 name = "axfs-ng-vfs"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Virtual filesystem layer for ArceOS"
@@ -24,7 +24,7 @@ smallvec = "1.15"
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-sync = { path = "../../os/arceos/modules/axsync" }
+ax-sync = { workspace = true, features = ["host-test"] }
 
 [[test]]
 name = "std"

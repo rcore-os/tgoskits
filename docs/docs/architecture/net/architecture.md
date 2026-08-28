@@ -12,7 +12,8 @@ sidebar_label: "总体架构"
 - **单协议栈核心**：所有 IP socket 共享一个 smoltcp `Interface` 和一个全局 `SocketSet`。
 - **多设备适配层**：`Router` 对 smoltcp 暴露一个 `phy::Device`，内部聚合 loopback 和多个 Ethernet 设备。
 - **控制面与数据面分离**：接口 registry、路由表和 DNS registry 独立于收发路径，可返回只读快照。
-- **串行 poll ownership**：普通 socket 热路径只请求 poll，`net-poll` worker 通常持有 opportunistic 所有权；UDP close 前的同步 egress flush 可申请 required 所有权，但任一时刻仍只有一个推进者。
+- **唯一协议 owner**：普通 socket、设备 RX 与同步 flush 都只发布 generation；固定 CPU 的 `ProtocolExecutor` 是唯一能调用 smoltcp poll 的任务。
+- **队列级 IRQ runtime**：每个物理 IRQ affinity domain 绑定一个 CPU；hard callback、queue poll、DMA reclaim/refill 与 rearm 同核执行。
 - **兼容 POSIX/Linux socket 语义**：支持 bind/listen/connect/accept、poll readiness、`SO_BINDTODEVICE`、TCP orphan teardown、Unix domain socket 和可选 vsock。
 
 开篇列表概括了单协议核心、多设备适配、控制面分离和统一 socket 语义四个基本约束。核心设计章节将这些约束落到 `Service`、`Router`、`NetControl` 与 `SocketSet` 的具体关系上。
@@ -35,11 +36,11 @@ sidebar_label: "总体架构"
 
 ### 1.1 总体拓扑
 
-总体拓扑强调 `ax-net` 只有一个 smoltcp 协议核心，而 `Router` 在其下聚合 loopback 和多个 Ethernet 设备。图中的纵向层次同时标出 `NetControl`、`Service` 与设备 Worker 的所有权边界，便于判断新增功能应该进入公共 API、控制面还是数据面。
+总体拓扑强调 `ax-net` 只有一个 smoltcp 协议核心，而 `Router` 在其下聚合 loopback 和多个 Ethernet 设备。真实设备在协议核心下方拆成固定 CPU queue executor 与 frame/token SPSC 边界。
 
 ![ax-net 总体架构](images/network-architecture.svg)
 
-图中最重要的约束是 `Service` 只有一个，而 Router 与设备 Worker 可以扩展到多个接口。组件分层会在这一拓扑基础上进一步说明每层的源码所有者和对外边界。
+图中最重要的约束是 `Service` 和 protocol executor 各只有一个，而独立 IRQ domain 可以在不同 CPU 上并行 drain。组件分层会在这一拓扑基础上进一步说明每层的源码所有者和对外边界。
 
 ### 1.2 组件分层
 
@@ -51,8 +52,9 @@ sidebar_label: "总体架构"
 | Control plane | 接口 registry、路由决策、DNS 来源、运行期配置提交 | `service.rs`, `config.rs`, `router.rs` | [控制面](control.md) |
 | Single protocol core | 一个 smoltcp `Interface`、全局 `SocketSet`、socket backend、DHCP、orphan 回收、poll 调度 | `service.rs`, `wrapper.rs`, `tcp.rs`, `udp.rs`, `listen_table.rs`, `orphan.rs` | 本文、[Socket 系统](sockets.md) |
 | Multi-device Router | smoltcp `Device` 适配、TX 路由、RX 汇聚、loopback 快速路径 | `router.rs` | [多设备实现](devices.md) |
-| Device layer | Ethernet 封装/解封装、ARP、IRQ/OOB RX、rd-net 适配 | `device/` | [多设备实现](devices.md) |
-| Locking and concurrency | 全局锁顺序、设备/协议核心解耦、原子状态和 waker 协调 | `lib.rs`, `service.rs`, `router.rs` | [锁与并发](locks.md) |
+| Queue runtime | affinity domain、fixed-CPU executor、SPSC、budget、MISSED、IRQ lifecycle | `queue_runtime/`, `poll_runtime.rs` | [队列级 NAPI](queue-napi-runtime.md) |
+| Device layer | Ethernet 封装/解封装、ARP、consumable `rd-net` parts | `device/`, `rd-net`, `rdif-eth` | [多设备实现](devices.md) |
+| Locking and concurrency | 单协议 owner、同核 IRQ/queue owner、原子状态与 generation 协调 | `lib.rs`, `queue_runtime/`, `service.rs`, `router.rs` | [锁与并发](locks.md) |
 | Configuration | 静态网络配置、DHCP、MTU、缓冲区、feature | `config.rs`, `consts.rs`, `Cargo.toml` | [配置参考](configuration.md) |
 | Integration and tests | OS 集成、启动流程、测试范围 | `ax-runtime`, `starry-kernel`, `ax-api` | [集成](integration.md), [测试](testing.md) |
 
@@ -67,7 +69,7 @@ TCP/IP 分层映射用于区分 smoltcp 已提供的协议能力和 `ax-net` 在
 | 应用层 | `SocketOps`, `Socket`, `Configurable` | socket API、options、poll readiness、地址类型统一 |
 | 传输层 | smoltcp TCP/UDP/raw socket + `tcp.rs`/`udp.rs`/`raw.rs` | TCP 状态机、UDP datagram、raw packet、端口仲裁和 Linux 语义补齐 |
 | 网络层 | smoltcp `Interface`, `Router`, `RouteTable`, DHCP/DNS 辅助 | IP packet 处理、路由、接口地址、DHCP client/server、DNS 查询 |
-| 链路层 | `EthernetDevice`, `LoopbackDevice`, `RdNetDriver` | Ethernet frame、ARP、IRQ/OOB RX、rd-net 驱动适配 |
+| 链路层 | `EthernetDevice`, `LoopbackDevice`, `QueueFramePort` | Ethernet frame、ARP、move-only DMA token、poll-group 驱动适配 |
 
 smoltcp 负责 TCP/IP 协议核心；`ax-net` 负责多接口、多设备、设备生命周期、socket 兼容语义和 OS 集成。
 
@@ -77,12 +79,12 @@ Public API 是上层 OS 模块进入 `ax-net` 的边界，主要定义在 `lib.r
 
 | API 类别 | 代表接口 | 架构作用 |
 | --- | --- | --- |
-| 初始化 | `init_network()`、`init_vsock()` | 建立 `Service`、`Router`、`NetControl`、设备 worker 和 net-poll worker；vsock 取传入列表最后一个设备 |
+| 初始化 | `NetworkRuntimeBuilder::build()`、`init_network()`、`init_vsock()` | 原子建立 fixed-CPU queue runtime、唯一 protocol executor、`Service`/`Router`/`NetControl`；vsock 独立初始化 |
 | 接口查询 | `interfaces()`、`interface_by_name()`、`ipv4_config()`、`default_routes()`、`arp_entries()`、`net_dev_stats()` | 从控制面或设备层返回只读快照 |
 | 运行期地址 | `set_interface_ipv4()`、`remove_interface_ipv4()` | 静态配置或精确删除单个接口 IPv4，并同步 connected route；不配置 gateway |
 | DNS | `dns_servers()`、`dns_query()`、`dns_query_timeout()` | 读取 DNS registry，并通过临时 smoltcp DNS socket 查询 |
 | Socket facade | `TcpSocket`、`UdpSocket`、`RawSocket`、`UnixSocket`、`VsockSocket` | 为 syscall/POSIX 层提供统一 socket backend |
-| Poll 触发 | `request_poll()`、内部 `flush_egress()` | 普通路径唤醒 net-poll worker；UDP close 通过 required ownership 同步排空 |
+| Poll 触发 | `request_poll()`、内部 `flush_egress()` | 普通路径发布 generation；同步 flush 等待同一 protocol executor 完成该 generation |
 | Socket options | `GetSocketOption`、`SetSocketOption`、`Configurable` | 覆盖通用 `SO_*`、`TCP_*`、`IP_*` 选项 |
 
 Public API 的职责是做边界收敛：上层不需要知道某个 socket 是否由 smoltcp、Unix transport 或 vsock transport 实现，也不需要直接操作 `Service`、`Router` 或 `SocketSet`。具体 API 列表见 [API 参考](api.md)。
@@ -164,32 +166,32 @@ IP socket 共享 smoltcp `SocketSet`，但 Linux/POSIX 语义由 `ax-net` 自己
 
 Unix domain socket 和 vsock 不走 smoltcp IP 层，但通过同一个 public socket facade 暴露给上层。细节见[Socket 系统](sockets.md)。
 
-### 4.2 串行轮询所有权
+### 4.2 唯一协议执行器
 
-`PollOwnership` 的原子状态保证 smoltcp 的 `Interface::poll()` 在任一时刻只有一个推进者。常规路径由 `net-poll` worker 申请 `Opportunistic` 所有权；socket 操作和 DNS 等路径调用 `request_poll()` 触发唤醒。唯一有意保留的同步例外是 UDP `Drop`：它调用 `flush_egress()`，等待 `Required` 所有权后排空 socket 待发队列，再移除 socket，保证最后一个 datagram 已进入 Router/设备路径。
+`ProtocolPollRuntime` 用 `requested/completed` generation 表达工作发布与完成。socket 操作、DNS、queue RX/TX completion 和同步 flush 都只能增加 request generation；固定在选定 CPU 上的 `ProtocolExecutor` 是唯一调用 `Service::poll()` 与 `Interface::poll()` 的任务。`flush_egress()` 等待自己的 generation 完成，调用线程不会临时取得协议所有权。
 
 ```mermaid
 sequenceDiagram
     participant App as socket caller
     participant Wake as request_poll()
-    participant Worker as net-poll / flush owner
+    participant Worker as ProtocolExecutor
     participant Service as Service::poll()
     participant Smol as smoltcp Interface
 
     App->>Wake: send/recv/connect/accept needs progress
-    Wake->>Worker: notify NET_POLL_WAKE
-    Worker->>Worker: CAS PollOwnership
-    Worker->>Service: poll_until_idle(ownership)
+    Wake->>Worker: publish requested generation
+    Worker->>Worker: observe target generation
+    Worker->>Service: poll until idle
     Service->>Smol: Interface::poll()
     Service->>Service: DHCP/orphan/TX dispatch
     Smol-->>App: readiness waker wakes blocked caller
 ```
 
-这个模型避免多个线程同时推进协议栈，也保证 TCP 重传、keepalive、DHCP 和设备收包不会依赖某个应用线程继续运行。UDP 同步 flush 期间，常规 worker 的 opportunistic 申请会失败并退出该轮，而不是并发 poll。
+这个模型避免多个线程同时推进协议栈，也保证 TCP 重传、keepalive、DHCP 和设备收包不会依赖某个应用线程继续运行。新 request 与 completion 竞争时，worker 在清除 scheduled 后再次比较 generation，确保至少再执行一轮。
 
 ![调用者、协议核心与设备线程的所有权边界](images/runtime-ownership.svg)
 
-实线表示 packet 或状态访问，虚线表示仅提交唤醒，红色同步路径则是 UDP close 前 required ownership 的例外。所有路径最终仍由同一 `PollOwnership` 串行化，因此多设备 Worker 不会并发进入 smoltcp。
+实线表示 packet 或状态访问，虚线表示 generation 请求。同步 flush 只是等待 completion，不再是第二种 poll owner；queue executor 也永远不进入 smoltcp。
 
 ## 5. 多设备路由器
 
@@ -199,12 +201,12 @@ sequenceDiagram
 | --- | --- |
 | `Router.rx_buffer` | smoltcp 从这里取 RX IP packet |
 | `Router.tx_buffer` | smoltcp 把待发送 IP packet 写到这里 |
-| `RouterQueues::rx` | 所有 Ethernet RX worker 共享的有界 RX 队列；暂满时 worker 保留本地批次并重试 |
-| `DeviceHandle.tx_queue` | 每个真实设备独立的有界 TX 队列 |
+| `ProtocolGroupPort` | protocol owner 一侧的 RX/recycle/TX/free SPSC endpoints |
+| `QueueGroupExecutor` | owner CPU 一侧的 queue、pending token、budget 与 rearm 状态 |
 | `RouteTable` | TX dispatch 的出接口和 next-hop 决策依据 |
-| loopback fast path | 回环包直接写入 `rx_buffer`，不经过设备 worker |
+| loopback fast path | 回环包直接写入 `rx_buffer`，不经过硬件 queue domain |
 
-`Router::poll()` 负责把设备 RX 队列推进到 smoltcp RX buffer；`Router::dispatch()` 负责把 smoltcp TX buffer 中的包按路由分发到 loopback 或真实设备。更细的 worker、队列和 ARP 行为见[多设备实现](devices.md)。
+`Router::poll()` 从 protocol-owned frame port 推进 RX；`Router::dispatch()` 把 smoltcp TX buffer 按路由送到 loopback 或目标 frame port。真实 DMA token 只在 queue/protocol SPSC 上 move，不进入 Router 的共享扫描队列。更细的 queue、预算和 ARP 行为见[多设备实现](devices.md)。
 从驱动 buffer 到用户 buffer、从用户 buffer 到驱动 TX buffer 的完整内存链路见[内存与队列](memory.md)。
 
 ## 6. 设备层
@@ -214,11 +216,11 @@ sequenceDiagram
 | 设备类型 | 主要源码 | 作用 |
 | --- | --- | --- |
 | `LoopbackDevice` | `device/loopback.rs` | 零状态占位；真实回环数据路径由 `Router` 快速路径完成 |
-| `EthernetDevice` | `device/ethernet.rs` | Ethernet frame 解析/封装、ARP neighbor 表、pending packet、IRQ/OOB RX |
-| `RdNetDriver` | `device/driver.rs` | 将 `rd-net` RX/TX queue 适配为 `EthernetDriver` |
+| `EthernetDevice` | `device/ethernet.rs` | Ethernet frame 解析/封装、ARP neighbor 表和 pending packet |
+| `QueueFramePort` | `queue_runtime/` | 将 poll-group SPSC frame/token 边界适配为 protocol device |
 | `VsockDevice` | `device/vsock.rs` | 可选 vsock 设备注册和事件入口 |
 
-这一层是协议栈和硬件驱动框架的能力边界。`ax-net` 不直接依赖 FDT、PCI、MMIO、DMA 或平台 IRQ ABI，而是通过 `EthernetDriver`、`EthernetIrqRegistrar` 和 OOB RX 通知机制接入实际设备。
+这一层是协议栈和硬件驱动框架的能力边界。`ax-net` 不直接依赖 FDT、PCI 或 MMIO，而是消费 `NetDeviceParts`，再通过 `PinnedNetIrqRegistrar` 以 `Fixed(owner_cpu)` 注册 move-only hard endpoint。DMA queue、task rearm 和 control endpoint 保持显式分离。
 
 ## 7. 数据面流程
 
@@ -226,13 +228,14 @@ sequenceDiagram
 
 ### 7.1 RX 路径
 
-RX 路径从 NIC 的二层帧开始，经 `EthernetDevice::recv()` 解封装后进入共享 `RouterQueues::rx`，再由持有 `PollOwnership` 的线程写入 `Router.rx_buffer`。以下流程图突出设备并行接收与协议核心串行消费之间的队列边界，以及 DHCP/TCP SYN snoop 发生的位置。
+RX 路径从 NIC queue 开始：同核 queue owner 在 IRQ 关闭期间按预算 reclaim，将 move-only completion 推入该 group 的 RX SPSC；唯一 protocol owner 复制出 Ethernet frame、归还 recycle token，再由 `EthernetDevice::recv()` 解封装到 `Router.rx_buffer`。
 
 ```mermaid
 flowchart LR
-    Hw["NIC / rd-net RX"] --> Eth["EthernetDevice::recv()"]
+    Hw["NIC / rd-net RX"] --> Queue["fixed-CPU queue poll"]
+    Queue --> RxQ["RX completion SPSC"]
+    RxQ --> Eth["EthernetDevice::recv()"]
     Eth --> Arp["ARP / Ethernet 解封装"]
-    Arp --> RxQ["RouterQueues::rx"]
     RxQ --> RouterPoll["Router::poll()"]
     RouterPoll --> Snoop["DHCP / TCP SYN snoop"]
     Snoop --> RxBuf["Router.rx_buffer"]
@@ -241,11 +244,11 @@ flowchart LR
     Sock --> App["recv()/accept()/poll()"]
 ```
 
-RX worker 只负责从真实设备取包并推入共享 RX 队列。每轮最多取 16 包；共享队列暂满时，尚未入队的包留在 worker 的本地批次中，yield 后重试，而不是立即计为丢包。协议处理发生在 `Service::poll()` 内：先由 `Router::poll()` 把 RX 队列 drain 到 `rx_buffer`，再由 smoltcp `Interface::poll()` 交付给 TCP/UDP/raw socket。
+每组 RX reclaim 预算为 64，每 CPU executor round 总预算为 256。RX ring 满时 completion 保留在 owner 的 `pending_rx`，IRQ 保持关闭；protocol owner 释放 ring 空间后精准激活该 group。协议处理发生在 `Service::poll()` 内，再由 smoltcp 交付给 TCP/UDP/raw socket。
 
 ### 7.2 TX 路径
 
-TX 路径由 socket buffer 中的待发数据触发，smoltcp 生成 IP packet 后先写入 `Router.tx_buffer`，随后 `Router::dispatch()` 按共享路由表选择 loopback 或具体 Ethernet 设备。流程中的 per-device TX queue 隔离协议推进和可能阻塞的驱动发送，因此 socket 热路径不直接持有设备锁。
+TX 路径由 socket buffer 中的待发数据触发，smoltcp 生成 IP packet 后先写入 `Router.tx_buffer`，随后 `Router::dispatch()` 按共享路由表选择 loopback 或具体 frame port。protocol owner 从 TX free ring 取得 token、写入 frame 并 move 到 TX-ready ring；目标 queue owner 才能提交硬件并 reclaim completion。
 
 ```mermaid
 flowchart LR
@@ -255,13 +258,13 @@ flowchart LR
     TxBuf --> Dispatch["Router::dispatch()"]
     Dispatch --> Route["RouteTable select_route_for_source()"]
     Route --> Loop["loopback: direct rx_buffer injection"]
-    Route --> TxQ["Ethernet: per-device TX queue"]
-    TxQ --> Eth["EthernetDevice::send()"]
+    Route --> Eth["EthernetDevice::send() / ARP"]
     Eth --> Arp["ARP / next-hop MAC"]
-    Arp --> Hw["rd-net TX / NIC"]
+    Arp --> TxQ["TX-ready SPSC"]
+    TxQ --> Hw["fixed-CPU submit / NIC"]
 ```
 
-普通 Ethernet 发送会进入设备 TX worker，由 `EthernetDevice` 完成 ARP 和 Ethernet frame 封装。loopback 不走外部设备队列：`Router::dispatch()` 选中 `InterfaceId::LOOPBACK` 时直接把 IP packet 注入 `rx_buffer`，因此本机回环连接可在同一个 poll 周期内继续推进。
+普通 Ethernet 发送由 `EthernetDevice` 完成 ARP 和 frame 封装，再通过有界 SPSC 交给 queue owner。submit 失败的 typed error 必须归还原 token；TX completion 也通过 free ring 归还。loopback 不走外部 queue，仍可在同一个 protocol poll 周期内继续推进。
 
 ### 7.3 控制协议
 

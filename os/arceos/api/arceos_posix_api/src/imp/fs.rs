@@ -287,21 +287,17 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
         let mut dir_buf = DirBuffer::new(out);
 
-        let mut entries: [ax_fs_ng::fops::DirEntry; 16] =
-            core::array::from_fn(|_| ax_fs_ng::fops::DirEntry::default());
-        loop {
-            let nr = dir.read_dir(&mut entries)?;
-            if nr == 0 {
-                break;
+        while let Some(entry) = dir.peek_dir_entry() {
+            let d_type = file_type_to_d_type(entry.entry_type());
+            if !dir_buf.write_entry(
+                entry.inode(),
+                entry.next_offset() as i64,
+                d_type,
+                entry.name_as_bytes(),
+            ) {
+                return Ok(dir_buf.used_len() as ctypes::ssize_t);
             }
-
-            for entry in entries.iter().take(nr) {
-                let d_type = file_type_to_d_type(entry.entry_type());
-                // Linux style: d_ino, d_off both present
-                if !dir_buf.write_entry(1, 0, d_type, entry.name_as_bytes()) {
-                    return Ok(dir_buf.used_len() as ctypes::ssize_t);
-                }
-            }
+            dir.advance_dir_entry();
         }
 
         Ok(dir_buf.used_len() as ctypes::ssize_t)
@@ -315,13 +311,21 @@ pub fn sys_lseek(fd: c_int, offset: ctypes::off_t, whence: c_int) -> ctypes::off
     debug!("sys_lseek <= {fd} {offset} {whence}");
     syscall_body!(sys_lseek, {
         let pos = match whence {
-            0 => SeekFrom::Start(offset as _),
+            0 => {
+                if offset < 0 {
+                    return Err(PosixError::EINVAL);
+                }
+                SeekFrom::Start(offset as _)
+            }
             1 => SeekFrom::Current(offset as _),
             2 => SeekFrom::End(offset as _),
             _ => return Err(PosixError::EINVAL),
         };
-        let off = File::from_fd(fd)?.inner.lock().seek(pos)?;
-        Ok(off)
+        if let Ok(file) = File::from_fd(fd) {
+            return Ok(file.inner.lock().seek(pos)?);
+        }
+        let dir = Directory::from_fd(fd)?;
+        Ok(dir.inner.lock().seek(pos)?)
     })
 }
 

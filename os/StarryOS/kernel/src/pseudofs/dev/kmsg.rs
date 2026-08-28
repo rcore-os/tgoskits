@@ -98,9 +98,17 @@ impl Pollable for Kmsg {
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
-#[cfg(axtest)]
-pub(super) fn reports_no_readiness_without_read_side_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn reports_no_readiness_without_read_side_for_test() -> bool {
     let kmsg = Kmsg;
     kmsg.as_pollable()
         .is_some_and(|pollable| pollable.poll().is_empty())
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn reports_no_readiness_without_read_side() {
+        assert!(super::reports_no_readiness_without_read_side_for_test());
+    }
 }

@@ -150,6 +150,18 @@ lifecycle states"（vm/mod.rs:179）。它随 `start_with` 创建、随 `take_st
 teardown 回收，`Ready`/`Failed`/`Destroyed` 一律不携带。`reset()` 的"旧 runtime teardown"
 即走 `stop_and_join_runtime(Forced)` + `take_stopped_runtime`。
 
+**观察性计数器（VM 级聚合，非 per-vCPU）**：`VmRuntimeHandle` 持有一对 VM 级单调计数器
+`guest_entry_count` / `guest_park_count`（vm/mod.rs:192/207，均 `AtomicU64`），由 VM 内
+**所有** vCPU task 共享递增，不是每个 vCPU 各一份：
+- `guest_entry_count`：仅在 `run_vcpu` **成功返回后**由 vCPU run loop 调用 `inc_guest_entry`
+  （vcpus.rs:560 附近）递增；`Err` 分支（bind/`before_vcpu_run`/`vcpu.run()`/退出处理失败、
+  guest 从未运行）**不**递增。reset 重建 runtime 时归零。
+- `guest_park_count`：仅当 vCPU 在 suspend wait 的等待条件中真正 park（持锁、入队前发布，
+  vcpus.rs 的 `wait_for` 闭包内 `inc_guest_park`）时递增；resume 抢跑使 vCPU 从未 park，则不递增。
+- 语义边界：两者都是 VM 级聚合弱信号——证明"至少一个 vCPU 有进展"，**不是**"全部 vCPU/设备/
+  timer 已 quiesce"的强保证，也**不是**暂停完成确认 API（与 lifecycle.md §3 `pause()` 无确认 API
+  一致）。HTTP 控制面用它们区分"真实重入/真实 park"与"仅状态翻转"，但不应据此断言执行面已静默。
+
 **`pending_interrupts` 随 runtime 生死：** `queue_interrupt`（runtime 层**内部接口**，
 `pub(crate)`，vcpus.rs:86，由 crate 内设备模拟/中断控制器经 manager.rs:79-81 的 `inject_interrupt`
 调用，**非 `AxVM` 公共 API**）只在 VM 处于 `Running`/`Paused` 时接受新中断（vcpus.rs:89，否则

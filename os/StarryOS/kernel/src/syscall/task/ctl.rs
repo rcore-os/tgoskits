@@ -234,12 +234,12 @@ pub fn sys_umask(mask: u32) -> StarryResult<isize> {
     Ok(old as isize)
 }
 
-pub fn sys_personality(persona: usize) -> StarryResult<isize> {
+pub fn sys_personality(persona: u32) -> StarryResult<isize> {
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
     let old = proc_data.personality();
-    if persona as u32 != PERSONALITY_GET {
-        proc_data.replace_personality(persona);
+    if persona != PERSONALITY_GET {
+        proc_data.replace_personality(persona as usize);
     }
     Ok(old as isize)
 }
@@ -632,8 +632,8 @@ pub fn sys_prctl(
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn mempolicy_validation_rules_hold_for_test() -> bool {
     matches!(parse_mempolicy_mode(MPOL_DEFAULT), Ok(MPOL_DEFAULT))
         && matches!(
             parse_mempolicy_mode(MPOL_BIND | MPOL_F_STATIC_NODES),
@@ -726,8 +726,8 @@ pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
         && sys_mbind(0x1000, 4096, 99, core::ptr::null(), 0, 0).is_err()
 }
 
-#[cfg(test)]
-pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn capability_data_conversion_rules_hold_for_test() -> bool {
     use alloc::sync::Arc;
 
     // cap_bit: rejects out-of-range cap numbers, returns the correct bit otherwise.
@@ -768,4 +768,17 @@ pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
                 && data[0].inheritable == 0x9abc_def0
                 && data[1].inheritable == 0x1234_5678
         }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn mempolicy_validation_rules_hold() {
+        assert!(super::mempolicy_validation_rules_hold_for_test());
+    }
+
+    #[test]
+    fn capability_data_conversion_rules_hold() {
+        assert!(super::capability_data_conversion_rules_hold_for_test());
+    }
 }

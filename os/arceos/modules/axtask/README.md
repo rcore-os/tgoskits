@@ -11,12 +11,12 @@ by cargo features.
 
 ## Features
 
-- `multitask`: Enable multi-task support with complex scheduling and more task-related APIs.
-- `irq`: Enable timer-based APIs such as `sleep`, `sleep_until`, and `WaitQueue::wait_timeout`.
+- Multi-task scheduling, IRQ handling, and timer-based APIs such as `sleep`,
+  `sleep_until`, and `WaitQueue::wait_timeout` are always available.
 - `preempt`: Enable preemptive scheduling.
 - FIFO cooperative scheduler is the default when no scheduler feature is selected.
-- `sched-rr`: Use the Round-robin preemptive scheduler (enables `multitask` and `preempt`).
-- `sched-cfs`: Use the Completely Fair Scheduler (enables `multitask` and `preempt`).
+- `sched-rr`: Use the Round-robin preemptive scheduler (enables `preempt`).
+- `sched-cfs`: Use the Completely Fair Scheduler (enables `preempt`).
 - `tls`: Enable kernel space thread-local storage support.
 - `smp`: Enable SMP (symmetric multiprocessing) support.
 

@@ -6,9 +6,9 @@
 use std::cell::Cell;
 
 use rsext4::{
-    bmalloc::AbsoluteBN,
     disknode::Ext4Inode,
     error::{Ext4Error, Ext4Result},
+    loopfile::get_file_inode,
     superblock::Ext4Superblock,
     *,
 };
@@ -32,13 +32,13 @@ impl TimedBlockDevice {
     }
 }
 
-impl BlockDevice for TimedBlockDevice {
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        let start = block_id.as_usize()? * self.block_size as usize;
+impl BlockIo for TimedBlockDevice {
+    fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.len() / self.block_size as usize) as u64,
             ));
         }
@@ -46,12 +46,12 @@ impl BlockDevice for TimedBlockDevice {
         Ok(())
     }
 
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        let start = block_id.as_usize()? * self.block_size as usize;
+    fn write(&mut self, buffer: &[u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.len() / self.block_size as usize) as u64,
             ));
         }
@@ -59,23 +59,29 @@ impl BlockDevice for TimedBlockDevice {
         Ok(())
     }
 
-    fn open(&mut self) -> Ext4Result<()> {
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(self.block_size, {
+            (self.data.len() / self.block_size as usize) as u64
+        })
+    }
+
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
+
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
+        }
+    }
+
+    fn flush(&mut self) -> rsext4::Ext4Result<()> {
         Ok(())
     }
+}
 
-    fn close(&mut self) -> Ext4Result<()> {
-        Ok(())
-    }
-
-    fn total_blocks(&self) -> u64 {
-        (self.data.len() / self.block_size as usize) as u64
-    }
-
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+impl rsext4::Clock for TimedBlockDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))
@@ -87,7 +93,7 @@ fn setup_fs() -> (Jbd2Dev<TimedBlockDevice>, Ext4FileSystem) {
     let device = TimedBlockDevice::new(100 * 1024 * 1024);
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
     mkfs(&mut jbd2_dev).expect("mkfs failed");
-    let fs = mount(&mut jbd2_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
     (jbd2_dev, fs)
 }
 
@@ -97,7 +103,11 @@ fn lookup_inode(
     fs: &mut Ext4FileSystem,
     path: &str,
 ) -> Ext4Inode {
-    find_file(fs, dev, path).expect("inode not found")
+    fs.find_file(dev, path).expect("inode not found")
+}
+
+fn inode_version(inode: &Ext4Inode) -> u64 {
+    (u64::from(inode.i_version_hi) << 32) | u64::from(inode.l_i_version)
 }
 
 #[test]
@@ -133,8 +143,10 @@ fn test_create_delete_and_reallocate_inode_updates_dtime() {
     assert_eq!(link_inode.i_dtime, 0);
     assert!(link_inode.crtime_ts(INODE_SIZE).is_some());
 
-    let file = open(&mut dev, &mut fs, "/meta/file", false).expect("open failed");
-    let deleted_ino = file.inode_num;
+    let deleted_ino = get_file_inode(&mut fs, &mut dev, "/meta/file")
+        .expect("lookup failed")
+        .expect("file missing")
+        .0;
     delete_file(&mut fs, &mut dev, "/meta/file").expect("delete failed");
 
     let deleted_inode = fs
@@ -170,8 +182,7 @@ fn test_read_write_truncate_and_noatime_update_expected_timestamps() {
     let before = lookup_inode(&mut dev, &mut fs, "/rw/file");
     let before_atime = before.atime_ts(INODE_SIZE);
 
-    let mut file = open(&mut dev, &mut fs, "/rw/file", false).expect("open failed");
-    let data = read_at(&mut dev, &mut fs, &mut file, 5).expect("read_at failed");
+    let data = read_file(&mut dev, &mut fs, "/rw/file").expect("read failed");
     assert_eq!(data, b"hello");
 
     let after_read = lookup_inode(&mut dev, &mut fs, "/rw/file");
@@ -190,8 +201,7 @@ fn test_read_write_truncate_and_noatime_update_expected_timestamps() {
     assert_eq!(after_flags.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
 
     let atime_before_noatime_read = after_flags.atime_ts(INODE_SIZE);
-    let mut noatime_file = open(&mut dev, &mut fs, "/rw/file", false).expect("open failed");
-    read_at(&mut dev, &mut fs, &mut noatime_file, 5).expect("read_at failed");
+    read_file(&mut dev, &mut fs, "/rw/file").expect("read failed");
     let after_noatime_read = lookup_inode(&mut dev, &mut fs, "/rw/file");
     assert_eq!(
         after_noatime_read.atime_ts(INODE_SIZE),
@@ -310,6 +320,7 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
         parent_after_create.ctime_ts(INODE_SIZE).sec
             > parent_before_create.ctime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&parent_after_create) > inode_version(&parent_before_create));
 
     let parent_before_link = parent_after_create;
     link(&mut fs, &mut dev, "/parent/file.link", "/parent/file").expect("link failed");
@@ -317,34 +328,53 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
     assert!(
         parent_after_link.mtime_ts(INODE_SIZE).sec > parent_before_link.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&parent_after_link) > inode_version(&parent_before_link));
 
     let parent_before_unlink = parent_after_link;
-    unlink(&mut fs, &mut dev, "/parent/file.link").expect("unlink failed");
+    let _ = unlink(&mut fs, &mut dev, "/parent/file.link").expect("unlink failed");
     let parent_after_unlink = lookup_inode(&mut dev, &mut fs, "/parent");
     assert!(
         parent_after_unlink.mtime_ts(INODE_SIZE).sec
             > parent_before_unlink.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&parent_after_unlink) > inode_version(&parent_before_unlink));
 
     let parent_before_rename = parent_after_unlink;
-    rename(&mut dev, &mut fs, "/parent/file", "/parent/file2").expect("rename failed");
+    let _ = rename(
+        &mut dev,
+        &mut fs,
+        "/parent/file",
+        "/parent/file2",
+        RenameOptions::REPLACE,
+    )
+    .expect("rename failed");
     let parent_after_rename = lookup_inode(&mut dev, &mut fs, "/parent");
     assert!(
         parent_after_rename.mtime_ts(INODE_SIZE).sec
             > parent_before_rename.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&parent_after_rename) > inode_version(&parent_before_rename));
 
     let old_parent_before_move = parent_after_rename;
     let new_parent_before_move = lookup_inode(&mut dev, &mut fs, "/other");
-    mv(&mut fs, &mut dev, "/parent/file2", "/other/file2").expect("mv failed");
+    let _ = rename(
+        &mut dev,
+        &mut fs,
+        "/parent/file2",
+        "/other/file2",
+        RenameOptions::NO_REPLACE,
+    )
+    .expect("move failed");
     let old_parent_after_move = lookup_inode(&mut dev, &mut fs, "/parent");
     let new_parent_after_move = lookup_inode(&mut dev, &mut fs, "/other");
     assert!(
         old_parent_after_move.mtime_ts(INODE_SIZE).sec
             > old_parent_before_move.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&old_parent_after_move) > inode_version(&old_parent_before_move));
     assert!(
         new_parent_after_move.mtime_ts(INODE_SIZE).sec
             > new_parent_before_move.mtime_ts(INODE_SIZE).sec
     );
+    assert!(inode_version(&new_parent_after_move) > inode_version(&new_parent_before_move));
 }

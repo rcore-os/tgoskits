@@ -10,10 +10,8 @@ default = []
 arceos = [
   "dep:ax-mm",
   "dep:ax-std",
-  "ax-std/irq",
   "ax-std/paging",
   "ax-std/alloc",
-  "ax-std/multitask",
   "ax-std/sched-rr",
 ]
 

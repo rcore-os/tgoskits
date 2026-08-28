@@ -11,13 +11,12 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.29"
+version = "0.5.31"
 
 [features]
 default = []
 nixos = []
 qemu = [
-  "ax-runtime/irq",
   "ax-runtime/rtc",
   "ax-runtime/display",
   "starry-kernel/input",
@@ -45,10 +44,12 @@ stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 [[bin]]
 name = "starryos"
 path = "src/main.rs"
+test = false
 
 [[bin]]
 name = "xtask"
 path = "xtask/main.rs"
+test = false
 
 [dependencies]
 # Starry is a freestanding PIE. Keep host `std` compatibility and kernel TLS
@@ -64,7 +65,7 @@ ax-std = { workspace = true, default-features = false, features = [
 ] }
 ax-driver.workspace = true
 ax-hal.workspace = true
-ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
+ax-runtime = { workspace = true, features = ["ext-ld"] }
 axplat-dyn.workspace = true
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 

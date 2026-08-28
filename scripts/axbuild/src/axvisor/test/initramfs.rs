@@ -21,7 +21,12 @@ use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::re
 const OUTPUT_ENV: &str = "AXVISOR_TEST_BUSYBOX_INITRAMFS";
 const OVMF_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
 const BUSYBOX_PATH: &str = "/bin/busybox";
-const INIT_SCRIPT: &[u8] = br#"#!/bin/busybox sh
+// These bounds are the fixed Q35 guest aperture used by the x86 AxVM provider;
+// the end bound is exclusive.
+// Keep them synchronized with `virtualization/axvm/src/arch/x86_64/pci_config.rs`.
+const X86_PCI_MEMORY_APERTURE_START: &str = "0xc0000000";
+const X86_PCI_MEMORY_APERTURE_END: &str = "0xd0000000";
+const INIT_SCRIPT_TEMPLATE: &str = r#"#!/bin/busybox sh
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 /bin/busybox mount -t proc proc /proc 2>/dev/null || true
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null || true
@@ -62,10 +67,60 @@ run_x86_acpi_check() {
   fi
 }
 
+__AXVISOR_PCI_BAR_VALIDATOR__
+__AXVISOR_PCI_CAPABILITY_VALIDATOR__
+
+run_pci_enumeration_check() {
+  success_marker=$1
+  failed=0
+  # The managed rootfs images ship no pciutils, so this check consumes the
+  # kernel-published sysfs PCI state directly (the same source `lspci` reads).
+  bdf=""
+  count=0
+  for dev in /sys/bus/pci/devices/*; do
+    [ -d "$dev" ] || continue
+    vendor=$(/bin/busybox cat "$dev/vendor")
+    device=$(/bin/busybox cat "$dev/device")
+    class=$(/bin/busybox cat "$dev/class")
+    if [ "$vendor" = "0x1af4" ] && [ "$device" = "0x1110" ] && [ "$class" = "0x050000" ]; then
+      bdf=${dev##*/}
+      count=$((count + 1))
+    fi
+  done
+  echo "guest kernel: $(/bin/busybox uname -r)"
+  if [ "$count" -ne 1 ]; then
+    echo "expected exactly one 0500:1af4:1110 function, found $count"
+    failed=1
+  else
+    endpoint=/sys/bus/pci/devices/$bdf
+    if [ -L "$endpoint/driver" ]; then
+      echo "vPCI endpoint unexpectedly bound to a driver"
+      failed=1
+    fi
+    # The kernel publishes `resource` entries as bare hex columns; tolerate an
+    # optional 0x prefix and turn malformed input into an explicit failure so
+    # the case reports FAILED instead of dying inside arithmetic.
+    resource_line=$(/bin/busybox sed -n '3p' "$endpoint/resource")
+    if ! validate_pci_bar_resource "$resource_line" __AXVISOR_PCI_MEMORY_APERTURE_START__ __AXVISOR_PCI_MEMORY_APERTURE_END__; then
+      failed=1
+      echo "BAR2 is not a valid 64 KiB memory resource"
+    fi
+    if ! validate_pci_capabilities "$endpoint/config"; then
+      failed=1
+    fi
+    fi
+  if [ "$failed" -ne 0 ]; then
+    echo AXVISOR_X86_VPCI_ENUMERATION_FAILED
+  else
+    echo "$success_marker"
+  fi
+}
+
 cmdline=$(/bin/busybox cat /proc/cmdline)
 case "$cmdline" in
   *axvisor.acpi_case=direct*) run_x86_acpi_check AXVISOR_X86_DIRECT_ACPI_PASSED; exec /bin/busybox sh -i ;;
   *axvisor.acpi_case=ovmf*) run_x86_acpi_check AXVISOR_X86_OVMF_ACPI_PASSED; exec /bin/busybox sh -i ;;
+  *axvisor.pci_case=enumeration*) run_pci_enumeration_check AXVISOR_X86_VPCI_ENUMERATION_PASSED; exec /bin/busybox sh -i ;;
   *axvisor.acpi_case=off*)
     if [ -d /sys/firmware/acpi/tables ]; then
       echo AXVISOR_X86_ACPI_FAILED
@@ -79,6 +134,7 @@ case "$cmdline" in
   *axvisor.timer_case=gicv3*) success_marker=AXVISOR_GICV3_TIMER_STRESS_PASSED; require_its=0 ;;
   *) echo AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN; exec /bin/busybox sh -i ;;
 esac
+
 
 start=$(/bin/busybox date +%s)
 last=$start
@@ -111,6 +167,171 @@ fi
 
 exec /bin/busybox sh -i
 "#;
+
+const PCI_BAR_VALIDATOR: &str = r#"validate_pci_bar_resource() {
+  resource_line=$1
+  aperture_start=$2
+  aperture_end=$3
+  aperture_start=${aperture_start#0x}
+  aperture_end=${aperture_end#0x}
+  set -- $resource_line
+  if [ $# -lt 3 ]; then
+    echo "BAR2 resource entry is missing or unreadable"
+    return 1
+  fi
+  v1=${1#0x}
+  v2=${2#0x}
+  v3=${3#0x}
+  case "$v1$v2$v3$aperture_start$aperture_end" in
+    *[!0-9a-fA-F]*)
+      echo "BAR2 resource entry is malformed: $resource_line"
+      return 1
+      ;;
+  esac
+  bar_start=$((0x$v1))
+  bar_end=$((0x$v2))
+  bar_flags=$((0x$v3))
+  echo "vPCI endpoint BAR2 [$bar_start-$bar_end] flags $bar_flags"
+  if [ "$bar_end" -lt "$bar_start" ]; then
+    echo "BAR2 resource range is inverted"
+    return 1
+  fi
+  if [ "$bar_start" -eq 0 ]; then
+    echo "BAR2 has an unassigned base address"
+    return 1
+  fi
+  aperture_start=$((0x$aperture_start))
+  aperture_end=$((0x$aperture_end))
+  if [ "$bar_start" -lt "$aperture_start" ] || [ "$bar_end" -ge "$aperture_end" ]; then
+    echo "BAR2 is outside the PCI memory aperture"
+    return 1
+  fi
+  bar_size=$((bar_end - bar_start + 1))
+  if [ "$bar_size" -ne 65536 ]; then
+    echo "BAR2 is not a 64 KiB memory resource"
+    return 1
+  fi
+  if [ $((bar_flags & 0x200)) -eq 0 ]; then
+    echo "BAR2 is not a memory resource"
+    return 1
+  fi
+  if [ $((bar_flags & 0x2000)) -ne 0 ]; then
+    echo "BAR2 unexpectedly prefetchable"
+    return 1
+  fi
+  if [ $((bar_flags & 0x100000)) -ne 0 ]; then
+    echo "BAR2 unexpectedly uses a 64-bit memory resource"
+    return 1
+  fi
+  if [ $((bar_flags & 0x20000000)) -ne 0 ]; then
+    echo "BAR2 has an unassigned resource flag"
+    return 1
+  fi
+  return 0
+}
+"#;
+
+const PCI_CAPABILITY_VALIDATOR: &str = r#"validate_pci_capabilities() {
+  config_path=$1
+  if [ ! -r "$config_path" ]; then
+    echo "PCI configuration space is missing or unreadable"
+    return 1
+  fi
+  read_config_byte() {
+    bytes=$(/bin/od -An -tx1 -j "$2" -N 1 "$1" 2>/dev/null) || return 1
+    set -- $bytes
+    if [ $# -ne 1 ]; then
+      return 1
+    fi
+    value=${1#0x}
+    case "$value" in
+      ''|*[!0-9a-fA-F]*) return 1 ;;
+    esac
+    printf '%s\n' "$value"
+  }
+
+  status_low=$(read_config_byte "$config_path" 6) || {
+    echo "PCI status register is unreadable"
+    return 1
+  }
+  if [ $((0x$status_low & 0x10)) -eq 0 ]; then
+    return 0
+  fi
+
+  pointer_hex=$(read_config_byte "$config_path" 52) || {
+    echo "PCI capability pointer is unreadable"
+    return 1
+  }
+  pointer=$((0x$pointer_hex))
+  if [ "$pointer" -eq 0 ]; then
+    echo "PCI capability list is missing its first entry"
+    return 1
+  fi
+  visited=:
+  iteration=0
+  while [ "$pointer" -ne 0 ] && [ "$iteration" -lt 48 ]; do
+    case ":$visited:" in
+      *":$pointer:"*)
+        echo "PCI capability list contains a cycle"
+        return 1
+        ;;
+    esac
+    visited="$visited:$pointer"
+    if [ "$pointer" -lt 64 ] || [ "$pointer" -gt 252 ] || [ $((pointer % 4)) -ne 0 ]; then
+      echo "PCI capability pointer is invalid: $pointer"
+      return 1
+    fi
+    capability_hex=$(read_config_byte "$config_path" "$pointer") || {
+      echo "PCI capability ID is unreadable"
+      return 1
+    }
+    capability=$((0x$capability_hex))
+    if [ "$capability" -eq 5 ] || [ "$capability" -eq 17 ]; then
+      echo "vPCI endpoint unexpectedly advertises MSI/MSI-X"
+      return 1
+    fi
+    if [ "$capability" -eq 0 ]; then
+      echo "PCI capability ID is invalid"
+      return 1
+    fi
+    next_offset=$((pointer + 1))
+    next_hex=$(read_config_byte "$config_path" "$next_offset") || {
+      echo "PCI capability next pointer is unreadable"
+      return 1
+    }
+    pointer=$((0x$next_hex))
+    if [ "$pointer" -ne 0 ] &&
+       { [ "$pointer" -lt 64 ] || [ "$pointer" -gt 252 ] || [ $((pointer % 4)) -ne 0 ]; }; then
+      echo "PCI capability next pointer is invalid: $pointer"
+      return 1
+    fi
+    iteration=$((iteration + 1))
+  done
+  if [ "$pointer" -ne 0 ]; then
+    echo "PCI capability list is too long"
+    return 1
+  fi
+  return 0
+}
+"#;
+
+fn init_script() -> Vec<u8> {
+    INIT_SCRIPT_TEMPLATE
+        .replace("__AXVISOR_PCI_BAR_VALIDATOR__", PCI_BAR_VALIDATOR)
+        .replace(
+            "__AXVISOR_PCI_CAPABILITY_VALIDATOR__",
+            PCI_CAPABILITY_VALIDATOR,
+        )
+        .replace(
+            "__AXVISOR_PCI_MEMORY_APERTURE_START__",
+            X86_PCI_MEMORY_APERTURE_START,
+        )
+        .replace(
+            "__AXVISOR_PCI_MEMORY_APERTURE_END__",
+            X86_PCI_MEMORY_APERTURE_END,
+        )
+        .into_bytes()
+}
 
 pub(super) async fn prepare_configured_busybox_initramfs(
     request: &ResolvedAxvisorRequest,
@@ -218,6 +439,7 @@ fn build_busybox_initramfs(
     loader_path: &str,
     loader: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
+    let init_script = init_script();
     let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
     {
         let mut archive = NewcArchive::new(&mut encoder);
@@ -237,8 +459,10 @@ fn build_busybox_initramfs(
 
         archive.append_regular("bin/busybox", busybox)?;
         archive.append_regular(loader_archive_path, loader)?;
-        archive.append_regular("init", INIT_SCRIPT)?;
-        for applet in ["cat", "date", "dmesg", "grep", "mount", "sh", "sleep"] {
+        archive.append_regular("init", &init_script)?;
+        for applet in [
+            "cat", "date", "dmesg", "grep", "mount", "od", "sed", "sh", "sleep",
+        ] {
             archive.append_symlink(&format!("bin/{applet}"), "busybox")?;
         }
         archive.finish()?;
@@ -342,7 +566,11 @@ fn write_padding(writer: &mut impl Write, written: usize) -> anyhow::Result<()> 
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::fs;
     use std::io::Read;
+    #[cfg(unix)]
+    use std::process::Command;
 
     use flate2::read::GzDecoder;
     use tempfile::tempdir;
@@ -376,6 +604,24 @@ mod tests {
         let init = entries.get("init").unwrap();
         assert!(init.starts_with(b"#!/bin/busybox sh"));
         assert!(
+            init.windows(b"validate_pci_bar_resource".len())
+                .any(|window| window == b"validate_pci_bar_resource")
+        );
+        assert!(
+            init.windows(b"validate_pci_capabilities".len())
+                .any(|window| window == b"validate_pci_capabilities")
+        );
+        assert!(
+            !init
+                .windows(b"__AXVISOR_PCI_MEMORY_APERTURE_START__".len())
+                .any(|window| window == b"__AXVISOR_PCI_MEMORY_APERTURE_START__")
+        );
+        assert!(
+            !init
+                .windows(b"__AXVISOR_PCI_CAPABILITY_VALIDATOR__".len())
+                .any(|window| window == b"__AXVISOR_PCI_CAPABILITY_VALIDATOR__")
+        );
+        assert!(
             init.windows(b"AXVISOR_GICV2_TIMER_STRESS_PASSED".len())
                 .any(|window| window == b"AXVISOR_GICV2_TIMER_STRESS_PASSED")
         );
@@ -395,9 +641,193 @@ mod tests {
             init.windows(b"AXVISOR_X86_OVMF_ACPI_PASSED".len())
                 .any(|window| window == b"AXVISOR_X86_OVMF_ACPI_PASSED")
         );
-        for applet in ["cat", "date", "dmesg", "grep", "mount", "sh", "sleep"] {
+        assert!(
+            init.windows(b"AXVISOR_X86_VPCI_ENUMERATION_PASSED".len())
+                .any(|window| window == b"AXVISOR_X86_VPCI_ENUMERATION_PASSED")
+        );
+        assert!(
+            init.windows(b"AXVISOR_X86_VPCI_ENUMERATION_FAILED".len())
+                .any(|window| window == b"AXVISOR_X86_VPCI_ENUMERATION_FAILED")
+        );
+        for applet in [
+            "cat", "date", "dmesg", "grep", "mount", "od", "sed", "sh", "sleep",
+        ] {
             assert_eq!(entries.get(&format!("bin/{applet}")).unwrap(), b"busybox");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_bar_validator_rejects_unassigned_zero_based_resource() {
+        let output = run_pci_bar_validator(
+            "0000000000000000 000000000000ffff 00000200",
+            X86_PCI_MEMORY_APERTURE_START,
+            X86_PCI_MEMORY_APERTURE_END,
+        );
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_bar_validator_rejects_resource_outside_aperture() {
+        let output = run_pci_bar_validator(
+            "00000000b0000000 00000000b000ffff 00000200",
+            X86_PCI_MEMORY_APERTURE_START,
+            X86_PCI_MEMORY_APERTURE_END,
+        );
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_bar_validator_rejects_unassigned_resource_flag() {
+        let output = run_pci_bar_validator(
+            "00000000c0000000 00000000c000ffff 20000200",
+            X86_PCI_MEMORY_APERTURE_START,
+            X86_PCI_MEMORY_APERTURE_END,
+        );
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_bar_validator_rejects_64_bit_memory_resource() {
+        let output = run_pci_bar_validator(
+            "00000000c0000000 00000000c000ffff 00100200",
+            X86_PCI_MEMORY_APERTURE_START,
+            X86_PCI_MEMORY_APERTURE_END,
+        );
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_bar_validator_accepts_assigned_resource_inside_aperture() {
+        let output = run_pci_bar_validator(
+            "00000000c0000000 00000000c000ffff 00000200",
+            X86_PCI_MEMORY_APERTURE_START,
+            X86_PCI_MEMORY_APERTURE_END,
+        );
+        assert!(output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_capability_validator_rejects_msi_capability() {
+        let mut config = vec![0; 256];
+        config[0x06] = 0x10;
+        config[0x34] = 0x40;
+        config[0x40] = 0x05;
+        let output = run_pci_capability_validator(&config);
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_capability_validator_rejects_msix_capability() {
+        let mut config = vec![0; 256];
+        config[0x06] = 0x10;
+        config[0x34] = 0x40;
+        config[0x40] = 0x11;
+        let output = run_pci_capability_validator(&config);
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_capability_validator_rejects_msi_after_another_capability() {
+        let mut config = vec![0; 256];
+        config[0x06] = 0x10;
+        config[0x34] = 0x40;
+        config[0x40] = 0x01;
+        config[0x41] = 0x44;
+        config[0x44] = 0x05;
+        let output = run_pci_capability_validator(&config);
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_capability_validator_rejects_invalid_capability_pointer() {
+        let mut config = vec![0; 256];
+        config[0x06] = 0x10;
+        config[0x34] = 0x42;
+        let output = run_pci_capability_validator(&config);
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_capability_validator_rejects_capability_cycle() {
+        let mut config = vec![0; 256];
+        config[0x06] = 0x10;
+        config[0x34] = 0x40;
+        config[0x40] = 0x01;
+        config[0x41] = 0x40;
+        let output = run_pci_capability_validator(&config);
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_capability_validator_accepts_config_without_capability_list() {
+        let output = run_pci_capability_validator(&[0; 256]);
+        assert!(output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_capability_validator_accepts_a_non_msi_capability_list() {
+        let mut config = vec![0; 256];
+        config[0x06] = 0x10;
+        config[0x34] = 0x40;
+        config[0x40] = 0x01;
+        let output = run_pci_capability_validator(&config);
+        assert!(output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pci_capability_validator_rejects_missing_first_capability() {
+        let mut config = vec![0; 256];
+        config[0x06] = 0x10;
+        let output = run_pci_capability_validator(&config);
+        assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    fn run_pci_bar_validator(
+        resource_line: &str,
+        aperture_start: &str,
+        aperture_end: &str,
+    ) -> std::process::Output {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "{PCI_BAR_VALIDATOR}\nvalidate_pci_bar_resource \"$1\" \"$2\" \"$3\""
+            ))
+            .arg("pci-bar-test")
+            .arg(resource_line)
+            .arg(aperture_start)
+            .arg(aperture_end)
+            .output()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn run_pci_capability_validator(config: &[u8]) -> std::process::Output {
+        let directory = tempdir().unwrap();
+        let config_path = directory.path().join("config");
+        fs::write(&config_path, config).unwrap();
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "{PCI_CAPABILITY_VALIDATOR}\nvalidate_pci_capabilities \"$1\""
+            ))
+            .arg("pci-capability-test")
+            .arg(config_path)
+            .output()
+            .unwrap()
     }
 
     fn parse_newc_entries(archive: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {

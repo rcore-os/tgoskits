@@ -464,8 +464,8 @@ fn current_sample_ids(observer: PidNamespaceId) -> (Option<TgidNumber>, Option<T
     (pid, tid)
 }
 
-#[cfg(axtest)]
-pub(crate) fn kernel_task_sample_ids_are_empty_for_test() -> bool {
+#[cfg(all(test, axtest))]
+fn kernel_task_sample_ids_are_empty_for_test() -> bool {
     let (pid, tid) = current_sample_ids(crate::task::ROOT_PID_NS.id());
     pid.is_none() && tid.is_none()
 }
@@ -666,4 +666,13 @@ pub unsafe fn ring_write_process(ring_vaddr: usize, ring_len: usize, record: &[u
     // SAFETY: caller upholds the ring liveness contract; IRQs are masked so the
     // overflow handler cannot race this write on the current core.
     unsafe { ring_write(ring_vaddr, ring_len, record) };
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(test, axtest, target_arch = "aarch64"))]
+    #[axtest::axtest]
+    fn kernel_task_sample_ids_are_empty() {
+        assert!(super::kernel_task_sample_ids_are_empty_for_test());
+    }
 }

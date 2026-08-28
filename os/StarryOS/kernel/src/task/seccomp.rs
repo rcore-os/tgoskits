@@ -449,8 +449,8 @@ pub fn seccomp_errno(errno: u16) -> usize {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn seccomp_filter_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn seccomp_filter_rules_hold_for_test() -> bool {
     let allow = SockFilter {
         code: BPF_RET,
         jt: 0,
@@ -630,8 +630,8 @@ pub(crate) fn seccomp_filter_rules_hold_for_test() -> bool {
         && seccomp_errno(13) == (-13i32 as usize)
 }
 
-#[cfg(test)]
-pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn seccomp_filter_construction_rules_hold_for_test() -> bool {
     use alloc::vec;
 
     // Empty instruction list is rejected.
@@ -668,8 +668,8 @@ pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
         .is_err()
 }
 
-#[cfg(test)]
-pub(crate) fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
     // action_to_decision: converts raw seccomp return to decision.
     assert!(matches!(
         action_to_decision(SECCOMP_RET_ALLOW),
@@ -722,35 +722,56 @@ pub(crate) fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
     true
 }
 
-#[cfg(test)]
-pub(crate) fn seccomp_bpf_constants_hold_for_test() -> bool {
-    // BPF limits
-    assert!(BPF_MAXINSNS == 4096);
-    assert!(BPF_MEMWORDS == 16);
+#[cfg(all(test, not(axtest)))]
+fn seccomp_bpf_constants_hold_for_test() -> bool {
+    const {
+        assert!(BPF_MAXINSNS == 4096);
+        assert!(BPF_MEMWORDS == 16);
 
-    // BPF class constants
-    assert!(BPF_CLASS_MASK == 0x07);
-    assert!(BPF_LD == 0x00);
-    assert!(BPF_LDX == 0x01);
-    assert!(BPF_ST == 0x02);
-    assert!(BPF_STX == 0x03);
-    assert!(BPF_ALU == 0x04);
-    assert!(BPF_JMP == 0x05);
-    assert!(BPF_RET == 0x06);
-    assert!(BPF_MISC == 0x07);
+        assert!(BPF_CLASS_MASK == 0x07);
+        assert!(BPF_LD == 0x00);
+        assert!(BPF_LDX == 0x01);
+        assert!(BPF_ST == 0x02);
+        assert!(BPF_STX == 0x03);
+        assert!(BPF_ALU == 0x04);
+        assert!(BPF_JMP == 0x05);
+        assert!(BPF_RET == 0x06);
+        assert!(BPF_MISC == 0x07);
 
-    // BPF size constants
-    assert!(BPF_SIZE_MASK == 0x18);
-    assert!(BPF_W == 0x00);
-    assert!(BPF_H == 0x08);
-    assert!(BPF_B == 0x10);
+        assert!(BPF_SIZE_MASK == 0x18);
+        assert!(BPF_W == 0x00);
+        assert!(BPF_H == 0x08);
+        assert!(BPF_B == 0x10);
 
-    // BPF mode constants
-    assert!(BPF_MODE_MASK == 0xe0);
-    assert!(BPF_IMM == 0x00);
-    assert!(BPF_ABS == 0x20);
-    assert!(BPF_MEM == 0x60);
-    assert!(BPF_LEN == 0x80);
+        assert!(BPF_MODE_MASK == 0xe0);
+        assert!(BPF_IMM == 0x00);
+        assert!(BPF_ABS == 0x20);
+        assert!(BPF_MEM == 0x60);
+        assert!(BPF_LEN == 0x80);
+    }
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn seccomp_filter_rules_hold() {
+        assert!(super::seccomp_filter_rules_hold_for_test());
+    }
+
+    #[test]
+    fn seccomp_filter_construction_rules_hold() {
+        assert!(super::seccomp_filter_construction_rules_hold_for_test());
+    }
+
+    #[test]
+    fn seccomp_action_and_precedence_rules_hold() {
+        assert!(super::seccomp_action_and_precedence_rules_hold_for_test());
+    }
+
+    #[test]
+    fn seccomp_bpf_constants_hold() {
+        assert!(super::seccomp_bpf_constants_hold_for_test());
+    }
 }

@@ -32,6 +32,17 @@ AxVM trait、错误转换、设备策略和运行时 IRQ 处理都位于 AxVM �
 riscv_vcpu = "0.5"
 ```
 
+# Timer 所有权
+
+`sstc` feature 要求宿主 hart 实现 Sstc extension。每次加载 vCPU 时启用
+`henvcfg.STCE` 并恢复该 vCPU 所有的 `vstimecmp`；卸载时先禁用 guest compare，
+再恢复宿主原有的 `henvcfg`。Guest deadline 不会重编程宿主 supervisor
+clockevent，宿主 timer trap 始终由宿主 IRQ/runtime 路径处理。
+
+未启用 `sstc` 时，guest timer programming 明确返回 `Unsupported`。若需要支持这类
+配置，应先通过独立的任务/runtime timer service 提供 software timer backend，不能借用
+宿主 scheduler 的物理 clockevent。
+
 # 公共 API
 
 - `RiscvVcpu<H>` / `RiscvVCpu<H>` / `RISCVVCpu<H>`

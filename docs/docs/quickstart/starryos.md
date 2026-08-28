@@ -129,7 +129,7 @@ LS2K1000 启动链路由早期引导、动态平台、中断控制器、设备�
 | --- | --- | --- | --- |
 | 早期启动 | `someboot` | `platforms/someboot/src/arch/loongarch64/` | 解析 U-Boot 传入的 FDT，建立页表并启动 SMP |
 | CPU 与动态平台 | `ax-cpu`、`axplat-dyn`、`ax-hal` | `components/axcpu/src/loongarch64/`、`platforms/axplat-dyn/` | 提供 LoongArch64 上下文、陷阱和动态平台接口 |
-| 中断控制器 | `somehal`、`rdif-intc`、`irq-framework` | `platforms/somehal/src/arch/loongarch64/liointc.rs` | 探测并驱动 LS2K1000 LIOINTC |
+| 中断控制器 | `loongarch-intc-driver`、`somehal`、`rdif-intc`、`irq-framework` | `drivers/intc/loongarch-intc-driver/`；`platforms/somehal/src/arch/loongarch64/` | OS 无关 crate 驱动 EIOINTC、PCH-PIC 与 LIOINTC；`somehal` 负责 FDT/ACPI、映射、domain、注册和级联 |
 | 驱动发现 | `rdrive`、`ax-driver` | `drivers/ax-driver/` | 根据 FDT 探测并注册板载设备 |
 | 用户地址空间 | `starry-kernel` | `starry-kernel` feature `loongarch64-low-va` | 使用符合 2K1000 40-bit VA 限制的用户地址布局 |
 | 串口 | `ax-driver`、`some-serial`、`rdif-serial` | `ax-driver` feature `serial`；`drivers/ax-driver/src/serial/ns16550.rs` | 驱动 NS16550，并注册运行期 `ttyS0` |
@@ -138,7 +138,7 @@ LS2K1000 启动链路由早期引导、动态平台、中断控制器、设备�
 | 网络 | `ax-driver`、`rd-net`、`ax-net` | `ax-driver` feature `ls2k1000-gmac`；`drivers/ax-driver/src/net/loongson_gmac.rs` | 驱动板载 GMAC 并注册 `eth0` |
 | 根文件系统 | `ax-fs-ng`、`rsext4` | — | 扫描 SATA 分区并挂载 ext4 rootfs |
 
-板卡配置位于 `os/StarryOS/configs/board/ls2k1000.toml`。LS2K1000 AHCI 的 FDT/MMIO、寄存器状态机、owned-DMA 队列和最小 IRQ top-half 位于 `drivers/ax-driver/src/block/ahci/`。LIOINTC 实现在 `somehal`；GMAC、RTC 和 NS16550 的 FDT 适配也位于 `ax-driver`。
+板卡配置位于 `os/StarryOS/configs/board/ls2k1000.toml`。LS2K1000 AHCI 的 FDT/MMIO、寄存器状态机、owned-DMA 队列和最小 IRQ top-half 位于 `drivers/ax-driver/src/block/ahci/`。EIOINTC、PCH-PIC 与 LIOINTC 的寄存器核心位于 `loongarch-intc-driver`，`somehal` 只保留平台 glue；GMAC、RTC 和 NS16550 的 FDT 适配也位于 `ax-driver`。
 
 #### 3.1.2 构建镜像
 
@@ -212,7 +212,29 @@ saveenv
 run boot_starry
 ```
 
-仓库目前也没有 `ls2k1000-board.toml` 或 `test-suit/starryos/board-ls2k1000`，所以 `cargo starry board` 和 `cargo starry test board` 还不是 2K1000 的维护入口。普通 QEMU 同样没有 LS2K1000/2K1000 machine，无法覆盖 LIOINTC、AHCI 和 GMAC 实板路径。因此 `qemu-loongarch64` 只能验证 LoongArch64 通用路径，不能替代上面的手工物理板验证。
+仓库提供 JL-LSGD2K10（LS2K1000）板卡配置和 Starry test-suit。写盘测试会复用 Linux ext4 rootfs，因此测试前后都必须正常启动 Linux，确认能够进入 shell 且没有 `UNEXPECTED INCONSISTENCY`、目录损坏或要求人工 fsck 的错误。先取得串口会话并检查 Linux：
+
+```bash
+cargo xtask board connect -b JL-LSGD2K10
+```
+
+然后运行启动与真实 AHCI IRQ 写测：
+
+```bash
+cargo xtask starry test board --board jl-lsgd2k10
+cargo xtask starry app board -t block-rw-bench \
+  --board-config board-jl-lsgd2k10.toml -b JL-LSGD2K10
+```
+
+启动用例必须输出 `STARRY_JL_LSGD2K10_BOOT_OK`，写测必须输出 `JL_LSGD2K10_BLOCK_RW_BENCH_PASSED`。LS2K1000 AHCI 没有 polling fallback，因此后一个标志同时覆盖真实 LIOINTC 中断链。写测结束后再次正常启动 Linux并检查 ext4；若发现损坏，应保存串口日志、释放板卡租约并停止验证，不得把 OrangePi-5-Plus 专用的 U-Boot `fsckfix` 流程套到 JL-LSGD2K10。
+
+若静态 musl 程序在 `__malloc_allzerop` 内访问低地址失败，不应在 axstd 或应用中
+补同名接口。该符号是 musl mallocng 的内部实现；应先用同一 ELF 对照 QEMU、板端
+Linux 与板端 StarryOS，并检查 LoongArch TLB refill 是否把空目录项正确转换为
+全零无效 EntryLo。仓库的 `qemu/system/test-calloc-mallocng` 同时检查匿名页首次
+写入和静态 musl `calloc`。
+
+普通 QEMU 没有 LS2K1000/2K1000 machine，不能覆盖 LIOINTC、AHCI 和 GMAC 实板路径；`qemu-loongarch64` 只验证 LoongArch64 通用 EIOINTC/PCH-PIC 路径，不能替代上述板卡验证。
 
 ### 3.2 LicheeRV-Nano-SG2002
 

@@ -48,8 +48,16 @@ pub enum FutexAccessError {
 /// Page population is therefore performed by `fault_in` only after the locked
 /// transaction has aborted without queue side effects.
 pub fn retry_futex_nofault<T>(
+    operation: impl FnMut() -> Result<T, FutexAccessError>,
+    fault_in: impl FnMut() -> StarryResult<()>,
+) -> StarryResult<T> {
+    retry_futex_nofault_with(operation, fault_in, ax_task::yield_now)
+}
+
+fn retry_futex_nofault_with<T>(
     mut operation: impl FnMut() -> Result<T, FutexAccessError>,
     mut fault_in: impl FnMut() -> StarryResult<()>,
+    mut retry: impl FnMut(),
 ) -> StarryResult<T> {
     loop {
         match operation() {
@@ -58,7 +66,7 @@ pub fn retry_futex_nofault<T>(
             Err(FutexAccessError::Retry) => {}
             Err(FutexAccessError::Operation(error)) => return Err(error),
         }
-        ax_task::yield_now();
+        retry();
     }
 }
 
@@ -679,87 +687,6 @@ impl Drop for FutexGuard<'_> {
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn futex_nofault_failure_is_transactional_for_test() -> bool {
-    use core::{cell::Cell, task::Context};
-
-    let wait_queue = WaitQueue::new();
-    let mut wait = alloc::boxed::Box::pin(WaitIfFuture {
-        queue: &wait_queue,
-        bitset: u32::MAX,
-        cleanup: None,
-        condition: Some(|| Err(FutexAccessError::Fault)),
-        state: None,
-    });
-    let mut context = Context::from_waker(Waker::noop());
-    if !matches!(
-        wait.as_mut().poll(&mut context),
-        Poll::Ready(Err(FutexAccessError::Fault))
-    ) || !wait_queue.is_empty()
-    {
-        return false;
-    }
-
-    let source = WaitQueue::new();
-    let target = WaitQueue::new();
-    let state = Arc::new(WaiterState::new(None));
-    source.inner.lock().queue.push_back(Waiter {
-        waker: Waker::noop().clone(),
-        bitset: u32::MAX,
-        state: state.clone(),
-    });
-
-    if !matches!(
-        source.wake_op(1, &target, 1, || Err(FutexAccessError::Fault)),
-        Err(FutexAccessError::Fault)
-    ) || source.inner.lock().queue.len() != 1
-        || state.woken.load(AtomicOrdering::SeqCst)
-    {
-        return false;
-    }
-
-    let target_cleanup = FutexWaitCleanup {
-        table: Arc::new(FutexTable::new()),
-        key: 0x2000,
-    };
-    if !matches!(
-        source.wake_requeue_if(1, u32::MAX, 1, target_cleanup, &target, || {
-            Err(FutexAccessError::Retry)
-        }),
-        Err(FutexAccessError::Retry)
-    ) || source.inner.lock().queue.len() != 1
-        || !target.is_empty()
-        || state.woken.load(AtomicOrdering::SeqCst)
-    {
-        return false;
-    }
-
-    let attempts = Cell::new(0);
-    let fault_in_unlocked = Cell::new(false);
-    let result = retry_futex_nofault(
-        || {
-            attempts.set(attempts.get() + 1);
-            if attempts.get() == 1 {
-                source.wake_op(0, &target, 0, || Err(FutexAccessError::Fault))
-            } else {
-                source.wake_op(0, &target, 0, || Ok(false))
-            }
-        },
-        || {
-            let source_unlocked = !unsafe { source.inner.raw() }.is_owned_by_current();
-            let target_unlocked = !unsafe { target.inner.raw() }.is_owned_by_current();
-            fault_in_unlocked.set(source_unlocked && target_unlocked);
-            Ok(())
-        },
-    );
-
-    matches!(result, Ok(0))
-        && attempts.get() == 2
-        && fault_in_unlocked.get()
-        && source.inner.lock().queue.len() == 1
-        && !state.woken.load(AtomicOrdering::SeqCst)
-}
-
 struct FutexTables {
     map: BTreeMap<usize, Arc<FutexTable>>,
     operations: usize,
@@ -805,5 +732,87 @@ pub fn futex_table_for_process(proc_data: &ProcessData, key: &FutexKey) -> Arc<F
             };
             SHARED_FUTEX_TABLES.lock().get_or_insert(ptr)
         }
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use alloc::boxed::Box;
+    use core::{cell::Cell, task::Context};
+
+    use super::*;
+
+    #[test]
+    fn nofault_failure_is_transactional() {
+        let wait_queue = WaitQueue::new();
+        let mut wait = Box::pin(WaitIfFuture {
+            queue: &wait_queue,
+            bitset: u32::MAX,
+            cleanup: None,
+            condition: Some(|| Err(FutexAccessError::Fault)),
+            state: None,
+        });
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            wait.as_mut().poll(&mut context),
+            Poll::Ready(Err(FutexAccessError::Fault))
+        ));
+        assert!(wait_queue.is_empty());
+
+        let source = WaitQueue::new();
+        let target = WaitQueue::new();
+        let state = Arc::new(WaiterState::new(None));
+        source.inner.lock().queue.push_back(Waiter {
+            waker: Waker::noop().clone(),
+            bitset: u32::MAX,
+            state: state.clone(),
+        });
+
+        assert!(matches!(
+            source.wake_op(1, &target, 1, || Err(FutexAccessError::Fault)),
+            Err(FutexAccessError::Fault)
+        ));
+        assert_eq!(source.inner.lock().queue.len(), 1);
+        assert!(!state.woken.load(AtomicOrdering::SeqCst));
+
+        let target_cleanup = FutexWaitCleanup {
+            table: Arc::new(FutexTable::new()),
+            key: 0x2000,
+        };
+        assert!(matches!(
+            source.wake_requeue_if(1, u32::MAX, 1, target_cleanup, &target, || {
+                Err(FutexAccessError::Retry)
+            }),
+            Err(FutexAccessError::Retry)
+        ));
+        assert_eq!(source.inner.lock().queue.len(), 1);
+        assert!(target.is_empty());
+        assert!(!state.woken.load(AtomicOrdering::SeqCst));
+
+        let attempts = Cell::new(0);
+        let fault_in_unlocked = Cell::new(false);
+        let result = retry_futex_nofault_with(
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    source.wake_op(0, &target, 0, || Err(FutexAccessError::Fault))
+                } else {
+                    source.wake_op(0, &target, 0, || Ok(false))
+                }
+            },
+            || {
+                let source_unlocked = !unsafe { source.inner.raw() }.is_owned_by_current();
+                let target_unlocked = !unsafe { target.inner.raw() }.is_owned_by_current();
+                fault_in_unlocked.set(source_unlocked && target_unlocked);
+                Ok(())
+            },
+            || {},
+        );
+
+        assert!(matches!(result, Ok(0)));
+        assert_eq!(attempts.get(), 2);
+        assert!(fault_in_unlocked.get());
+        assert_eq!(source.inner.lock().queue.len(), 1);
+        assert!(!state.woken.load(AtomicOrdering::SeqCst));
     }
 }

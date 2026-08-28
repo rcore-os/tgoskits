@@ -279,9 +279,10 @@ impl TryFrom<usize> for ProcessVmTarget {
     }
 }
 
-pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
+pub fn sys_ptrace(request: isize, pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
     info!("sys_ptrace <= request: {request}, pid: {pid}, addr: {addr:#x}, data: {data:#x}");
 
+    let request = u32::try_from(request).map_err(|_| StarryError::from(Errno::EIO))?;
     let target = || PtraceTarget::try_from(pid);
     match request {
         PTRACE_TRACEME => ptrace_traceme(),

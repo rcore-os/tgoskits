@@ -223,8 +223,8 @@ impl ProcessMemStats {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
     // Heap is classified as Data (writable, non-stack, non-exec).
     matches!(
         classify_vma(HEAP_VMA_NAME, MappingFlags::READ | MappingFlags::WRITE, VirtAddr::from(0)),
@@ -309,7 +309,7 @@ pub(crate) fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use super::*;
 
@@ -455,5 +455,10 @@ mod tests {
         assert!(stats.resident_pages <= stats.vss_pages);
         assert_eq!(stats.rss_pages(), 30);
         assert_eq!(stats.vsize_bytes(), 42 * PAGE_SIZE_4K as u64);
+    }
+
+    #[test]
+    fn stats_classify_and_accumulate_rules_hold() {
+        assert!(stats_classify_and_accumulate_rules_hold_for_test());
     }
 }

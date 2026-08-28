@@ -177,7 +177,7 @@ impl FileLike for DmaBufFile {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     extern crate std;
 

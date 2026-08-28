@@ -34,7 +34,7 @@ impl PtyReader {
 
 impl TtyRead for PtyReader {
     fn read(&mut self, buf: &mut [u8]) -> usize {
-        self.0.lock().pop_slice(buf)
+        read_pty_buffer(&mut self.0.lock(), buf)
     }
 
     fn discard_input(&mut self) -> crate::StarryResult<()> {
@@ -80,7 +80,7 @@ impl TtyWrite for PtyWriter {
     }
 
     fn try_write(&self, buf: &[u8]) -> usize {
-        let read = self.0.lock().push_slice(buf);
+        let read = write_pty_buffer(&mut self.0.lock(), buf);
         // PTY bytes are committed before waking the peer reader.
         unsafe { self.2.wake(IoEvents::IN) };
         read
@@ -101,6 +101,14 @@ impl TtyWrite for PtyWriter {
         self.3.store(true, Ordering::Release);
         unsafe { self.2.wake(IoEvents::IN) };
     }
+}
+
+fn read_pty_buffer(consumer: &mut Cons<Buffer>, buf: &mut [u8]) -> usize {
+    consumer.pop_slice(buf)
+}
+
+fn write_pty_buffer(producer: &mut Prod<Buffer>, buf: &[u8]) -> usize {
+    producer.push_slice(buf)
 }
 
 pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
@@ -151,22 +159,26 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
     (master, slave)
 }
 
-#[cfg(axtest)]
-pub(crate) fn pty_preserves_mouse_escape_reports_for_test() -> bool {
-    use axpoll::{IoEvents, Pollable};
-
-    use crate::pseudofs::DeviceOps;
-
-    let (master, slave) = create_pty_pair();
+#[cfg(all(test, not(axtest)))]
+fn pty_preserves_mouse_escape_reports_for_test() -> bool {
+    let buffer = Arc::new(HeapRb::new(PTY_BUF_SIZE));
+    let mut producer = Prod::new(buffer.clone());
+    let mut consumer = Cons::new(buffer);
     let report = b"\x1b[<0;1;1M";
 
-    if slave.write_at(report, 0) != Ok(report.len()) || !master.poll().contains(IoEvents::IN) {
+    if write_pty_buffer(&mut producer, report) != report.len() {
         return false;
     }
 
     let mut buf = [0; 16];
-    let Ok(read) = master.read_at(&mut buf, 0) else {
-        return false;
-    };
+    let read = read_pty_buffer(&mut consumer, &mut buf);
     &buf[..read] == report
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn pty_preserves_mouse_escape_reports() {
+        assert!(super::pty_preserves_mouse_escape_reports_for_test());
+    }
 }

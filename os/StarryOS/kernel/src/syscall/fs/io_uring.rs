@@ -275,8 +275,8 @@ pub fn sys_io_uring_register(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn io_uring_round_ring_entries_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn io_uring_round_ring_entries_rules_hold_for_test() -> bool {
     // Test round_ring_entries function
     // Zero should fail
     assert!(round_ring_entries(0, 4096, false).is_err());
@@ -297,4 +297,12 @@ pub(crate) fn io_uring_round_ring_entries_rules_hold_for_test() -> bool {
     assert!(round_ring_entries(8192, 4096, true).unwrap() == 4096);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn io_uring_round_ring_entries_rules_hold() {
+        assert!(super::io_uring_round_ring_entries_rules_hold_for_test());
+    }
 }

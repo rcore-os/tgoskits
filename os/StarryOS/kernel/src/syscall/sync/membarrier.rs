@@ -75,8 +75,8 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> StarryResult<isize>
     }
 }
 
-#[cfg(test)]
-pub(crate) fn membarrier_query_and_global_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn membarrier_query_and_global_rules_hold_for_test() -> bool {
     matches!(
         sys_membarrier(MEMBARRIER_CMD_QUERY, 0, 0),
         Ok(value) if value == SUPPORTED_COMMANDS as isize
@@ -85,4 +85,12 @@ pub(crate) fn membarrier_query_and_global_rules_hold_for_test() -> bool {
         Err(StarryError::InvalidInput)
     ) && matches!(sys_membarrier(-1, 0, 0), Err(StarryError::InvalidInput))
         && matches!(sys_membarrier(MEMBARRIER_CMD_GLOBAL, 0, 0), Ok(0))
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn membarrier_query_and_global_rules_hold() {
+        assert!(super::membarrier_query_and_global_rules_hold_for_test());
+    }
 }

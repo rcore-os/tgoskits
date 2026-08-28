@@ -21,11 +21,11 @@ sidebar_label: "控制面"
 
 ## 1. 设计边界
 
-控制面是 `NetControl` 持有的只读状态层，通过 `ax_sync::SpinRwLock` 保护接口 registry、DNS registry 和共享路由表。它的查询接口（`interfaces()`、`select_route()`、`dns_servers()` 等）只持读锁、返回快照，不进入 `Service` 或 `SocketSet` 锁，也不接触设备收发队列。协议状态机推进、包收发和 socket payload 读写全部由数据面的 `Service::poll()` 和设备 worker 在独立的锁层级中完成。
+控制面是 `NetControl` 持有的只读状态层，通过 `ax_sync::SpinRwLock` 保护接口 registry、DNS registry 和共享路由表。它的查询接口（`interfaces()`、`select_route()`、`dns_servers()` 等）只持读锁、返回快照，不进入 `Service` 或 `SocketSet` 锁，也不接触设备收发队列。协议状态机、路由和 socket payload 只由唯一 protocol executor 推进；IRQ、DMA 与硬件 queue 只由对应 owner CPU 的 queue executor 推进。
 
-### 1.1 无线控制面句柄
+### 1.1 无线控制事务
 
-`WIFI_CONTROLS` 是一个全局 `Mutex<Vec<(String, rd_net::WifiControlHandle)>>`，存储无线设备的控制面句柄。当无线设备注册时，runtime 在 driver 的 `WifiControlHandle` 被消费进数据面 `EthernetDriver` 之前捕获一份，按接口名索引。这允许 StarryOS wireless-extensions ioctl 或类似的运行时管理接口通过名称找到对应设备的 `WifiControl`，在不需要持有 `Service` 或 `SocketSet` 锁的情况下完成模式切换。
+`WIFI_INTERFACES` 只保存接口名、设备序号、MAC 和 `WifiRuntimeHandle`。真正的 owned `WifiControl` 被固定 CPU 的 queue executor 独占。StarryOS wireless-extensions ioctl 调用 `reconfigure_wifi()` 时只提交一个有界 `WifiTransaction` 并等待结果；executor quiesce 所属 group、等待 `POLLING` 退出、在 owner CPU 执行 SDIO/MMIO 控制操作、重建 queue 状态并 rearm。任意调用 CPU 都不能直接取得控制 endpoint。
 
 ### 1.2 状态来源与消费者
 
@@ -33,23 +33,26 @@ sidebar_label: "控制面"
 
 ![ax-net 控制面状态来源与消费者](images/control-plane-architecture.svg)
 
-控制面状态有四类写入路径：`init_network()` 构造初始状态；DHCP ACK/NAK 通过 `commit_interface_update()` 原子替换某接口的地址、DNS 和路由规则；`register_device_with_config()` 运行期新增静态 IPv4 设备；`reconfigure_wifi()` 在 STA/AP 模式切换时更新对应接口 IPv4/DHCP 角色。除初始构造外，这些路径都在 `Service` 锁内同步更新 smoltcp IP address list、`NetControl` 快照和 `RouteTable`，避免数据面与查询面看到不一致状态。
+控制面状态有四类写入路径：`init_network()` 构造初始状态；DHCP ACK/NAK 通过 `commit_interface_update()` 原子替换某接口的地址、DNS 和路由规则；运行期 IPv4 API 修改已有接口地址；`reconfigure_wifi()` 在 owner-CPU transaction 成功后更新对应接口 IPv4/DHCP 角色。物理 NIC 集合只能在启动时一次性提交，不支持运行期新增或删除。除初始构造外，这些路径都在 `Service` 锁内同步更新 smoltcp IP address list、`NetControl` 快照和 `RouteTable`，避免数据面与查询面看到不一致状态。
 
 `SharedRouteTable`（`Arc<RwLock<RouteTable>>`）同时被 `NetControl`（查询侧）和 `Router`（TX dispatch 侧）持有，两者指向同一实例。控制面通过 `select_route_with_binding()` 提供 socket 级别的路由查询；`Router::dispatch()` 通过 `select_route_for_source()` 做实际发包时的出接口选择。两者共享同一套路由规则，但查询时机和过滤条件不同。
 
 ## 2. 初始化流程
 
-`init_network()` 是启动阶段控制面状态的构造入口。它按固定顺序构建 loopback、Ethernet 接口、静态地址、DNS registry 和共享路由表，然后把所有状态提交给 `NetControl` 和 `Service`。运行期新增设备和 Wi-Fi 模式切换会在同一套 `NetControl`/`RouteTable` 上追加或替换状态。
+`NetworkRuntimeBuilder` 先消费全部设备 parts、建立 affinity domain、等待 queue executor pin 就绪并以 fixed affinity 注册/rearm IRQ；`init_network()` 随后构建 loopback、Ethernet 接口、静态地址、DNS registry 和共享路由表，最后发布 `NetControl`/`Service` 并启动唯一 protocol executor。运行期只允许更新已有接口状态和执行 Wi-Fi transaction，不允许新增物理设备。
 
 ```mermaid
 sequenceDiagram
     participant Runtime as ax-runtime
+    participant Builder as NetworkRuntimeBuilder
     participant Lib as init_network()
     participant Router as Router
     participant Control as NetControl
     participant Service as Service
 
-    Runtime->>Lib: init_network(net_devs, NetworkConfig)
+    Runtime->>Builder: build(all devices, fixed IRQ registrar)
+    Builder-->>Runtime: queue_runtime + frame_ports
+    Runtime->>Lib: init_network(queue_runtime, frame_ports, config)
 
     Note over Lib: 1. 创建 loopback
     Lib->>Router: add_device(LOOPBACK, LoopbackDevice)
@@ -71,9 +74,11 @@ sequenceDiagram
     Lib->>Service: Service::new(router, control.clone())
     Lib->>Service: iface.update_ip_addrs(lo_ip + static_ips)
 
-    Note over Lib: 4. 注册全局单例
+    Note over Lib: 4. 原子发布协议状态
     Lib->>Lib: NET_CONTROL.call_once(control)
     Lib->>Lib: SERVICE.call_once(Mutex(service))
+
+    Lib->>Lib: start_protocol_executor(owner_cpu)
 
     Note over Lib: 5. DHCP bootstrap
     opt DHCP enabled
@@ -87,7 +92,7 @@ sequenceDiagram
 关键点：
 
 - `routes` 是 `Arc<RwLock<RouteTable>>`，`Router` 和 `NetControl` 共享同一实例。
-- `NetControl` 先于 `SERVICE` 初始化，确保 `get_control()` 在 poll worker 启动前可用。
+- `NetControl` 和 `SERVICE` 在 protocol executor 启动前发布；queue executor 已完成 affinity-ready 与 IRQ rearm。
 - DHCP bootstrap 只要求任一 DHCP 接口配置成功即返回，避免断网卡阻塞启动。
 
 初始化要点列表说明路由表共享和全局发布顺序是控制面一致性的基础，DHCP 等动态状态在此之后才能安全提交。数据模型章节将这些约束落实到接口 ID、快照、registry 和 DNS entry。
@@ -192,7 +197,7 @@ impl NetInterface {
 }
 ```
 
-这里特意返回快照，是为了让查询方不持有内部锁，也不依赖接口状态长期不变。DHCP 更新、动态设备注册或后续 link state 更新都可能改变快照内容。
+这里特意返回快照，是为了让查询方不持有内部锁，也不依赖接口状态长期不变。DHCP、运行期地址 API、Wi-Fi transaction 或后续 link state 更新都可能改变快照内容。
 
 ### 3.3 控制面状态
 
@@ -490,7 +495,7 @@ pub fn select_route_for_source(
 
 ## 5. 状态更新
 
-动态状态更新来自 DHCP、运行期 IPv4 地址 API、Wi-Fi 模式切换和设备注册。更新必须同时覆盖 smoltcp `Interface` 地址、控制面接口快照、DNS registry 和 route table，避免外部查询和数据面发送路径看到不一致的网络状态。
+动态状态更新来自 DHCP、运行期 IPv4 地址 API 和 Wi-Fi transaction。更新必须同时覆盖 smoltcp `Interface` 地址、控制面接口快照、DNS registry 和 route table，避免外部查询和数据面发送路径看到不一致的网络状态；设备注册不是运行期操作。
 
 ### 5.1 路由规则更新
 
@@ -777,61 +782,27 @@ pub fn device_binding(&self) -> DeviceBinding {
 影响范围：
 
 - `select_route_with_binding()` 只允许匹配接口的 route。
-- `register_waker(binding, waker)` 先在设备锁内取得匹配接口的 `readiness_poll()`，释放设备锁后再注册 waker；没有 IRQ/OOB readiness source 的设备依靠 RX worker 的 10 ms 兜底轮询。
+- `register_waker(binding, waker)` 把 socket readiness 等待注册到唯一 protocol state；设备事件先经目标 poll group 和 protocol generation 推进，不直接把 driver waker 暴露给 socket。
 - `SO_BINDTODEVICE` 设置后，socket 不应被无关设备 readiness 唤醒。
 
-设备绑定影响列表说明约束贯穿选路和 readiness，但不会修改全局接口状态。运行期设备注册属于另一类控制面写入，需要新增接口、地址、路由和 Worker，而不是复用 socket 绑定状态。
+设备绑定影响列表说明约束贯穿选路和 readiness，但不会修改全局接口状态。物理设备只在启动 builder 中一次性发布；运行期控制面写入只改变已存在接口的地址/link policy。
 
-## 7. 运行期设备注册
+## 7. 运行期 Wi-Fi 控制提交
 
-启动时注册的 NIC 和运行期新增的静态设备都通过同一套接口 registry、smoltcp address list 和 route table 更新路径进入协议栈。控制面因此不是只读配置表，而是网络状态变化的提交点。
+控制面不提供运行时新增物理设备的入口。所有 NIC/Wi-Fi 先由
+`NetworkRuntimeBuilder` 原子发布，接口 registry、smoltcp address list 与 route table
+在 service 可见前已经一致。运行期 `reconfigure_wifi()` 只改变已存在 Wi-Fi 接口：
 
+1. 调用者提交 owned `WifiTransaction`，不借用 driver control handle。
+2. fixed-CPU queue executor quiesce 该 group，在 owner CPU 执行 firmware/SDIO 操作，
+   然后 `rearm_and_check()`。
+3. transaction 成功后，唯一 protocol executor 调用 `Service` 的 STA/AP/disconnected
+   状态提交方法。
 
-
-控制面也服务于运行时静态设备注册，例如 Wi-Fi SoftAP：
-
-```rust
-pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
-    let mac = EthernetAddress(dev.mac_address());
-    let server_ip = Ipv4Address::new(config.ip[0], config.ip[1], config.ip[2], config.ip[3]);
-    let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
-    let eth_dev = if config.dedicated_poll {
-        EthernetDevice::new_oob_rx(config.name.clone(), dev, Some(cidr))
-    } else {
-        EthernetDevice::new(config.name.clone(), dev, Some(cidr))
-    };
-    let dev_idx = get_service().register_static_device(config.name.clone(), eth_dev, mac, cidr);
-    // 可选启用 DHCP server...
-    request_poll();
-}
-```
-
-`Service::register_static_device()` 会：
-
-```rust
-pub fn register_static_device(
-    &mut self,
-    name: String,
-    dev: EthernetDevice,
-    mac: EthernetAddress,
-    cidr: Ipv4Cidr,
-) -> usize {
-    let interface_id = self.control.allocate_interface_id();
-    let metric = 100;
-    let dev = self.router.add_device(interface_id, Box::new(dev));
-    let routes = self
-        .router
-        .ipv4_rules(dev, interface_id, metric, Some(cidr), None);
-    Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
-    self.control.add_interface(/* NetInterface */, routes);
-    self.router.start_device_workers(dev);
-    dev
-}
-```
-
-这条路径说明控制面不是仅启动时静态表；它也能接收运行期新增接口，并把新接口加入 registry、route table 和 smoltcp address list。
-
-Wi-Fi 模式切换复用同一提交边界。`Service` 的 `reconfigure_as_ap()` 将设备转为 SoftAP 模式并可选启用 DHCP 服务器，而 `reconfigure_as_sta()` 会清理 AP 状态并恢复 DHCP client，因此两种方向都必须同步协议地址、控制面快照和路由规则。
+`Service::reconfigure_as_ap()` 将接口转为 SoftAP 并可选启用 DHCP server，
+`reconfigure_as_sta()` 清理 AP 状态并恢复 DHCP client，
+`reconfigure_as_disconnected()` 则清除 link-dependent 地址。三条路径都同步协议地址、
+控制面快照和路由规则。
 
 ```rust
 pub fn reconfigure_as_ap(
@@ -868,18 +839,18 @@ pub fn reconfigure_as_sta(&mut self, dev: usize, mac: EthernetAddress) {
 }
 ```
 
-这两个方法都是 `Service` 持有锁时调用的，保证 smoltcp IP address list、`NetControl` 状态和 `RouteTable` 原子更新。
+这些方法都是唯一 protocol executor 持有 `Service` 锁时调用的，保证 smoltcp IP address list、`NetControl` 状态和 `RouteTable` 原子更新。
 
 ## 8. 并发边界
 
-控制面锁只保护接口、DNS 和路由状态，不保护设备收发队列，也不推进 smoltcp poll。数据面 worker、socket 热路径和 DHCP commit 通过固定锁顺序进入控制面，避免设备锁与协议核心锁互相反向嵌套。
+控制面锁只保护接口、DNS 和路由状态，不保护硬件 queue，也不在调用者线程推进 smoltcp poll。queue executor、socket 热路径和 DHCP commit 通过 ownership 边界进入控制面，避免硬件 owner 与协议核心锁互相反向嵌套。
 
 控制面锁边界由查询和提交路径的不同所有权决定。维护 `NetControl.state`、`SharedRouteTable` 或 DHCP commit 时，需要遵循以下约束，才能避免设备锁与协议核心锁之间形成反向嵌套：
 
 - 只读查询只持 `NetControl.state.read()`，返回快照后释放锁。
 - 路由查询同时读取 `state` 和 `routes`，不进入设备锁。
 - DHCP commit 在 `Service` 锁内更新 smoltcp IP list，然后进入 `NetControl` 写锁提交接口/DNS/route 状态。
-- 设备 worker 持有设备锁时不得反向进入 `Service` 或 `SocketSet`。
+- queue executor 不进入 `Service` 或 `SocketSet`；它只发布 protocol generation。
 
 典型路径可以分开理解：
 

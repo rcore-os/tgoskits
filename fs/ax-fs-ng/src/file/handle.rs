@@ -6,7 +6,10 @@ use core::{
 };
 
 use ax_io::{SeekFrom, prelude::*};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, NodeFlags, VfsError, VfsResult, path::Path};
+use axfs_ng_vfs::{
+    FileExtentMap, FileExtentTarget, FileRangeOperation, FsIoEvents, FsPollable, Location,
+    NodeFlags, PreallocationMode, VfsError, VfsResult, path::Path,
+};
 
 use super::{
     cache::CachedFile,
@@ -181,6 +184,38 @@ impl FileBackend {
             Self::Direct(loc) => loc.entry().as_file()?.set_len(len),
         }
     }
+
+    /// Reserves backing storage for a byte range.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Applies a storage or mapping operation to a byte range.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
+        match self {
+            Self::Cached(cached) => cached.operate_range(offset, len, operation),
+            Self::Direct(loc) => loc.entry().as_file()?.operate_range(offset, len, operation),
+        }
+    }
+
+    /// Queries the backing filesystem's allocated extent mappings.
+    pub fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        self.location()
+            .entry()
+            .as_file()?
+            .map_extents(offset, len, target, extent_limit)
+    }
 }
 
 /// Provides `std::fs::File`-like interface.
@@ -297,6 +332,34 @@ impl File {
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
         self.access(FileFlags::WRITE)?.set_len(len)
+    }
+
+    /// Reserves backing storage for a byte range.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Applies a storage or mapping operation to a byte range.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
+        self.access(FileFlags::WRITE)?
+            .operate_range(offset, len, operation)
+    }
+
+    /// Queries allocated file-to-device mappings without changing file state.
+    pub fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        self.access(FileFlags::empty())?
+            .map_extents(offset, len, target, extent_limit)
     }
 
     /// Attempts to sync OS-internal file content and metadata to disk.
@@ -585,10 +648,6 @@ mod tests {
         }
 
         fn set_len(&self, _len: u64) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }

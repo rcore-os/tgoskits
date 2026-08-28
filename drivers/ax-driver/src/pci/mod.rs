@@ -573,7 +573,6 @@ mod tests {
         unmask_intx_passthrough_command,
     };
     use crate::{BindingIrq, BindingIrqSource};
-
     #[test]
     fn x86_64_legacy_line_uses_dynamic_ioapic_base() {
         assert_eq!(legacy_line_to_irq_for_platform(9, true), 0x39);

@@ -4,13 +4,16 @@ use core::{
     task::Context,
 };
 
-use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
-use axfs_ng_vfs::{NodePermission, NodeType};
+use axfs_ng_vfs::{
+    DirectoryCursor, FileRangeOperation, NodePermission, NodeType, PreallocationMode,
+};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
-    __kernel_off_t, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
+    __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
+    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
@@ -72,29 +75,6 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
     {
         pos_l
     }
-}
-
-// Writes zero-filled chunks into the file over the requested byte range.
-fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> StarryResult<()> {
-    const ZERO_CHUNK_SIZE: usize = 64 * 1024;
-
-    let zeroes = vec![0; ZERO_CHUNK_SIZE];
-    let mut remaining = len;
-    while remaining > 0 {
-        let chunk = remaining.min(ZERO_CHUNK_SIZE as u64) as usize;
-        let mut written = 0;
-        while written < chunk {
-            let n = file.write_at(&zeroes[written..chunk], offset)?;
-            if n == 0 {
-                return Err(StarryError::WriteZero);
-            }
-            written += n;
-            offset += n as u64;
-            remaining -= n as u64;
-        }
-    }
-
-    Ok(())
 }
 
 struct DummyFd;
@@ -197,19 +177,26 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
     }
 
     if let Ok(d) = any_file.downcast_arc::<Directory>() {
-        let mut off = d.offset.lock();
+        let mut position = d.position.lock();
         let new_pos = match pos {
             SeekFrom::Start(pos) => pos,
             SeekFrom::End(delta) => d
                 .inner()
-                .len()?
+                .directory_end_cursor()?
+                .offset()
                 .checked_add_signed(delta)
                 .ok_or(StarryError::InvalidInput)?,
-            SeekFrom::Current(delta) => off
+            SeekFrom::Current(delta) => position
+                .cursor
+                .offset()
                 .checked_add_signed(delta)
                 .ok_or(StarryError::InvalidInput)?,
         };
-        *off = new_pos;
+        if new_pos > i64::MAX as u64 {
+            return Err(StarryError::InvalidInput);
+        }
+        position.cursor = DirectoryCursor::new(new_pos);
+        position.read_state = None;
         return Ok(new_pos as _);
     }
 
@@ -283,23 +270,24 @@ pub fn sys_fallocate(
     len: __kernel_off_t,
 ) -> StarryResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
-    // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
-    // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
-    let f = file_or_espipe_write(fd)?;
+    // Linux resolves the descriptor before entering vfs_fallocate, but range
+    // and mode checks precede write access and inode-type checks after that.
     let f_like = get_file_like(fd)?;
-    memfd_check_write_seal(&f_like)?;
-
-    let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
-    let operation = mode & !FALLOC_FL_KEEP_SIZE;
-    let supported_mode = operation == 0 && !keep_size
-        || operation == FALLOC_FL_ZERO_RANGE
-        || operation == FALLOC_FL_PUNCH_HOLE && keep_size;
-    if !supported_mode {
-        return Err(StarryError::OperationNotSupported);
-    }
     if offset < 0 || len <= 0 {
         return Err(StarryError::InvalidInput);
     }
+    let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
+    let operation = mode & !FALLOC_FL_KEEP_SIZE;
+    let supported_mode = operation == 0
+        || operation == FALLOC_FL_ZERO_RANGE
+        || operation == FALLOC_FL_PUNCH_HOLE && keep_size
+        || operation == FALLOC_FL_COLLAPSE_RANGE && !keep_size
+        || operation == FALLOC_FL_INSERT_RANGE && !keep_size;
+    if !supported_mode {
+        return Err(StarryError::OperationNotSupported);
+    }
+    let f = file_or_espipe_write(fd)?;
+    memfd_check_write_seal(&f_like)?;
     let end = (offset as u64)
         .checked_add(len as u64)
         .ok_or(StarryError::from(Errno::EFBIG))?;
@@ -325,29 +313,59 @@ pub fn sys_fallocate(
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
     let old_len = file.location().len()?;
-    let new_len = if keep_size { old_len } else { old_len.max(end) };
+    let new_len = match operation {
+        FALLOC_FL_COLLAPSE_RANGE => old_len
+            .checked_sub(len as u64)
+            .ok_or(StarryError::InvalidInput)?,
+        FALLOC_FL_INSERT_RANGE => old_len
+            .checked_add(len as u64)
+            .ok_or(StarryError::from(Errno::EFBIG))?,
+        _ if keep_size => old_len,
+        _ => old_len.max(end),
+    };
+    if new_len > u32::MAX as u64 * 4096 {
+        return Err(StarryError::from(Errno::EFBIG));
+    }
     memfd_check_resize_seals(&f_like, old_len, new_len)?;
 
     match operation {
         0 => {
-            if new_len != old_len {
-                file.set_len(new_len)?;
+            if Memfd::from_fd(fd).is_ok() {
+                if keep_size {
+                    return Err(StarryError::OperationNotSupported);
+                }
+                if new_len != old_len {
+                    file.set_len(new_len)?;
+                }
+            } else {
+                let mode = if keep_size {
+                    PreallocationMode::KeepSize
+                } else {
+                    PreallocationMode::ExtendSize
+                };
+                file.preallocate(offset as u64, len as u64, mode)?;
             }
         }
         FALLOC_FL_ZERO_RANGE => {
-            if new_len != old_len {
-                file.set_len(new_len)?;
-            }
-            let zero_end = old_len.min(end);
-            if (offset as u64) < zero_end {
-                write_zero_range(file, offset as u64, zero_end - offset as u64)?;
-            }
+            let mode = if keep_size {
+                PreallocationMode::KeepSize
+            } else {
+                PreallocationMode::ExtendSize
+            };
+            file.operate_range(
+                offset as u64,
+                len as u64,
+                FileRangeOperation::ZeroRange(mode),
+            )?;
         }
         FALLOC_FL_PUNCH_HOLE => {
-            let zero_end = old_len.min(end);
-            if (offset as u64) < zero_end {
-                write_zero_range(file, offset as u64, zero_end - offset as u64)?;
-            }
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::PunchHole)?;
+        }
+        FALLOC_FL_COLLAPSE_RANGE => {
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::CollapseRange)?;
+        }
+        FALLOC_FL_INSERT_RANGE => {
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::InsertRange)?;
         }
         _ => unreachable!(),
     }
@@ -1082,16 +1100,16 @@ pub fn sys_splice(
     isize::try_from(n).map_err(|_| StarryError::InvalidInput)
 }
 
-#[cfg(test)]
-pub(crate) fn io_rwf_flags_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn io_rwf_flags_validation_rules_hold_for_test() -> bool {
     // validate_rwf_flags: only flags==0 is accepted.
     validate_rwf_flags(0).is_ok()
         && validate_rwf_flags(1).is_err()
         && validate_rwf_flags(u32::MAX).is_err()
 }
 
-#[cfg(test)]
-pub(crate) fn io_offset_from_hilo_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn io_offset_from_hilo_rules_hold_for_test() -> bool {
     // Test offset_from_hilo function
     // On 64-bit, offset_from_hilo should return pos_l directly
     let result = offset_from_hilo(1000, 0);
@@ -1101,4 +1119,17 @@ pub(crate) fn io_offset_from_hilo_rules_hold_for_test() -> bool {
     assert!(neg_result == -1);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn io_rwf_flags_validation_rules_hold() {
+        assert!(super::io_rwf_flags_validation_rules_hold_for_test());
+    }
+
+    #[test]
+    fn io_offset_from_hilo_rules_hold() {
+        assert!(super::io_offset_from_hilo_rules_hold_for_test());
+    }
 }

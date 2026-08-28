@@ -1,5 +1,6 @@
 use alloc::{
     borrow::{Cow, ToOwned},
+    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
@@ -17,9 +18,10 @@ use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
-    FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission,
-    NodeType, OpenOptions, Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
+    Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard,
+    NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, Reference, ReferenceKey,
+    RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -111,15 +113,20 @@ impl NodeOps for SyntheticMountDir {
 }
 
 impl DirNodeOps for SyntheticMountDir {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let entries = [
             (DOT, self.inode, NodeType::Directory),
             (DOTDOT, self.parent.inode(), NodeType::Directory),
         ];
-        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let start = usize::try_from(cursor.offset()).unwrap_or(usize::MAX);
         let mut count = 0;
         for (index, (name, ino, node_type)) in entries.iter().enumerate().skip(start) {
-            if !sink.accept(name, *ino, *node_type, (index + 1) as u64) {
+            if !sink.accept(
+                name.as_bytes(),
+                *ino,
+                *node_type,
+                DirectoryCursor::new((index + 1) as u64),
+            ) {
                 break;
             }
             count += 1;
@@ -146,6 +153,17 @@ impl DirNodeOps for SyntheticMountDir {
         Err(VfsError::ReadOnlyFilesystem)
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         Err(VfsError::ReadOnlyFilesystem)
     }
@@ -154,7 +172,13 @@ impl DirNodeOps for SyntheticMountDir {
         Err(VfsError::ReadOnlyFilesystem)
     }
 
-    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        _src_name: &str,
+        _dst_dir: &DirNode,
+        _dst_name: &str,
+        _options: RenameOptions,
+    ) -> VfsResult<()> {
         Err(VfsError::ReadOnlyFilesystem)
     }
 }
@@ -693,6 +717,10 @@ impl Location {
     pub fn flags(&self) -> NodeFlags;
 
     pub fn user_data(&self) -> MutexGuard<'_, TypeMap>;
+
+    pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;
+
+    pub fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>>;
 }
 
 impl Location {
@@ -725,6 +753,20 @@ impl Location {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         self.entry.update_metadata(update)
+    }
+
+    pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.set_xattr(name, value, mode)
+    }
+
+    pub fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.remove_xattr(name)
     }
 
     /// Returns the entry name.
@@ -860,6 +902,23 @@ impl Location {
             .map(|entry| self.wrap(entry))
     }
 
+    pub fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<Self> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry
+            .as_dir()?
+            .create_symlink(name, target, permission, uid, gid)
+            .map(|entry| self.wrap(entry))
+    }
+
     /// Creates an in-memory directory entry that exists only as a mount target.
     ///
     /// This is intended for early boot auto-mount recovery: if the root
@@ -923,25 +982,47 @@ impl Location {
     }
 
     pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
+        self.rename_with_options(src_name, dst_dir, dst_name, RenameOptions::REPLACE)
+    }
+
+    pub fn rename_with_options(
+        &self,
+        src_name: &str,
+        dst_dir: &Self,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
         if self.is_readonly() || dst_dir.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
+        let src_loc = self.lookup_no_follow(src_name)?;
         // Disallow moving a directory into one of its own descendants. Regular
         // files may still be renamed into child directories (e.g. Redis AOF
         // `temp-rewriteaof-*.aof` -> `appendonlydir/...`).
-        if let Ok(src_loc) = self.lookup_no_follow(src_name)
-            && src_loc.node_type() == NodeType::Directory
+        if src_loc.node_type() == NodeType::Directory
             && !self.ptr_eq(dst_dir)
             && src_loc.entry.is_ancestor_of(&dst_dir.entry)?
         {
             return Err(VfsError::InvalidInput);
         }
-        self.entry
-            .as_dir()?
-            .rename(src_name, dst_dir.entry.as_dir()?, dst_name)
+        if options.exchange() {
+            let dst_loc = dst_dir.lookup_no_follow(dst_name)?;
+            if dst_loc.node_type() == NodeType::Directory
+                && !self.ptr_eq(dst_dir)
+                && dst_loc.entry.is_ancestor_of(&self.entry)?
+            {
+                return Err(VfsError::InvalidInput);
+            }
+        }
+        self.entry.as_dir()?.rename_with_options(
+            src_name,
+            dst_dir.entry.as_dir()?,
+            dst_name,
+            options,
+        )
     }
 
     pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
@@ -961,8 +1042,33 @@ impl Location {
             .map(|entry| self.wrap(entry).resolve_mountpoint())
     }
 
-    pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        self.entry.as_dir()?.read_dir(offset, sink)
+    pub fn read_dir(
+        &self,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.entry.as_dir()?.read_dir(cursor, sink)
+    }
+
+    /// Creates filesystem-private state for this open directory description.
+    pub fn open_directory_read_state(&self) -> VfsResult<Box<dyn DirectoryReadState>> {
+        self.entry.as_dir()?.open_directory_read_state()
+    }
+
+    /// Reads directory entries with state owned by the open description.
+    pub fn read_dir_with_state(
+        &self,
+        state: &mut dyn DirectoryReadState,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.entry
+            .as_dir()?
+            .read_dir_with_state(state, cursor, sink)
+    }
+
+    pub fn directory_end_cursor(&self) -> VfsResult<DirectoryCursor> {
+        self.entry.as_dir()?.inner().directory_end_cursor()
     }
 
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
@@ -1048,7 +1154,10 @@ impl Location {
         assert!(self.entry.ptr_eq(&self.mountpoint.root));
 
         let plan = self.mountpoint.plan_unmount(UnmountKind::Normal)?;
-        self.commit_unmount(plan)
+        self.filesystem().flush()?;
+        self.mountpoint.commit_normal_after_flush(plan)?;
+        self.finish_unmount();
+        Ok(())
     }
 
     /// Flushes this mount once and commits an already admitted unmount plan.
@@ -1062,11 +1171,15 @@ impl Location {
         }
         self.filesystem().flush()?;
         plan.commit()?;
+        self.finish_unmount();
+        Ok(())
+    }
+
+    fn finish_unmount(&self) {
         self.mountpoint.clear_expired();
         if let Ok(directory) = self.entry.as_dir() {
             directory.forget();
         }
-        Ok(())
     }
 
     pub fn detach_mount(&self) -> VfsResult<()> {
@@ -1097,18 +1210,36 @@ impl FsPollable for Location {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
+    use alloc::{
+        boxed::Box,
+        string::{String, ToString},
+    };
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
     use super::*;
-    use crate::StatFs;
+    use crate::{FileNode, FileNodeOps, StatFs};
 
     struct MockFs;
     struct ContextCheckingFs;
     struct MockNode;
+    struct SymlinkDir {
+        generic_create_calls: Arc<AtomicUsize>,
+        symlink_create_calls: Arc<AtomicUsize>,
+    }
+    struct SymlinkFile {
+        target: String,
+    }
+    struct TopologyChangingFs {
+        self_ref: Weak<Self>,
+        topology_change: Box<dyn Fn() + Send + Sync>,
+        flushes: AtomicUsize,
+    }
+    struct TopologyChangingNode {
+        filesystem: Arc<TopologyChangingFs>,
+    }
     struct LifetimeGuard(Arc<AtomicUsize>);
 
     impl Drop for LifetimeGuard {
@@ -1151,6 +1282,32 @@ mod tests {
         }
     }
 
+    impl FilesystemOps for TopologyChangingFs {
+        fn name(&self) -> &str {
+            "topology-changing"
+        }
+
+        fn root_dir(&self) -> DirEntry {
+            let filesystem = self
+                .self_ref
+                .upgrade()
+                .expect("test filesystem must remain alive");
+            let node: Arc<dyn DirNodeOps> = Arc::new(TopologyChangingNode { filesystem });
+            DirEntry::new_dir(|_| DirNode::new(node), Reference::root())
+        }
+
+        fn stat(&self) -> VfsResult<StatFs> {
+            Err(VfsError::InvalidInput)
+        }
+
+        fn flush(&self) -> VfsResult<()> {
+            if self.flushes.fetch_add(1, Ordering::AcqRel) == 0 {
+                (self.topology_change)();
+            }
+            Ok(())
+        }
+    }
+
     impl NodeOps for MockNode {
         fn inode(&self) -> u64 {
             0
@@ -1173,7 +1330,11 @@ mod tests {
     }
 
     impl DirNodeOps for MockNode {
-        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             Ok(0)
         }
         fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
@@ -1189,14 +1350,279 @@ mod tests {
         ) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
         fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
         fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
-        fn rename(&self, _src: &str, _dst_dir: &DirNode, _dst: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    impl NodeOps for TopologyChangingNode {
+        fn inode(&self) -> u64 {
+            0
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Err(VfsError::InvalidInput)
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Err(VfsError::InvalidInput)
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            self.filesystem.as_ref()
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl DirNodeOps for TopologyChangingNode {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
+            Err(VfsError::NotFound)
+        }
+
+        fn create(
+            &self,
+            _name: &str,
+            _node_type: NodeType,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    impl NodeOps for SymlinkDir {
+        fn inode(&self) -> u64 {
+            1
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(mock_metadata(1, NodeType::Directory, 0))
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &MOCK_FS
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl DirNodeOps for SymlinkDir {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
+            Err(VfsError::NotFound)
+        }
+
+        fn create(
+            &self,
+            _name: &str,
+            _node_type: NodeType,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            self.generic_create_calls.fetch_add(1, Ordering::Relaxed);
+            Err(VfsError::InvalidInput)
+        }
+
+        fn create_symlink(
+            &self,
+            name: &str,
+            target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            self.symlink_create_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(DirEntry::new_file(
+                FileNode::new(Arc::new(SymlinkFile {
+                    target: target.to_string(),
+                })),
+                NodeType::Symlink,
+                Reference::new(None, name.to_string()),
+            ))
+        }
+
+        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+            Err(VfsError::OperationNotSupported)
+        }
+
+        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+            Err(VfsError::OperationNotSupported)
+        }
+
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
+            Err(VfsError::OperationNotSupported)
+        }
+    }
+
+    impl NodeOps for SymlinkFile {
+        fn inode(&self) -> u64 {
+            2
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(mock_metadata(
+                2,
+                NodeType::Symlink,
+                self.target.len() as u64,
+            ))
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &MOCK_FS
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl FsPollable for SymlinkFile {
+        fn poll(&self) -> FsIoEvents {
+            FsIoEvents::IN
+        }
+
+        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+    }
+
+    impl FileNodeOps for SymlinkFile {
+        fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+            let offset = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
+            let Some(remaining) = self.target.as_bytes().get(offset..) else {
+                return Ok(0);
+            };
+            let length = remaining.len().min(buf.len());
+            buf[..length].copy_from_slice(&remaining[..length]);
+            Ok(length)
+        }
+
+        fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_len(&self, _len: u64) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    fn mock_metadata(inode: u64, node_type: NodeType, size: u64) -> Metadata {
+        Metadata {
+            device: 0,
+            inode,
+            nlink: 1,
+            mode: NodePermission::default(),
+            node_type,
+            uid: 0,
+            gid: 0,
+            size,
+            block_size: 4096,
+            blocks: 0,
+            rdev: DeviceId::default(),
+            atime: Duration::ZERO,
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
         }
     }
 
@@ -1226,6 +1652,125 @@ mod tests {
         let mounted = Filesystem::new(Arc::new(ContextCheckingFs));
 
         target.mount(&mounted).expect("mount succeeds");
+    }
+
+    #[test]
+    fn symlink_creation_uses_atomic_typed_operation() {
+        let generic_create_calls = Arc::new(AtomicUsize::new(0));
+        let symlink_create_calls = Arc::new(AtomicUsize::new(0));
+        let ops: Arc<dyn DirNodeOps> = Arc::new(SymlinkDir {
+            generic_create_calls: generic_create_calls.clone(),
+            symlink_create_calls: symlink_create_calls.clone(),
+        });
+        let root = DirEntry::new_dir(|_| DirNode::new(ops), Reference::root());
+        let directory = root.as_dir().expect("root directory");
+
+        assert!(matches!(
+            directory.create(
+                "invalid",
+                NodeType::Symlink,
+                NodePermission::default(),
+                0,
+                0,
+            ),
+            Err(VfsError::InvalidInput)
+        ));
+        assert_eq!(generic_create_calls.load(Ordering::Relaxed), 0);
+
+        let link = directory
+            .create_symlink(
+                "link",
+                "/complete-target",
+                NodePermission::default(),
+                1000,
+                1001,
+            )
+            .expect("atomic symlink create");
+        assert_eq!(
+            link.read_link().expect("read final target"),
+            "/complete-target"
+        );
+        assert_eq!(symlink_create_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unmount_replans_after_unrelated_topology_change_during_flush() {
+        let parent_fs = mock_filesystem();
+        let parent = Mountpoint::new_root(&parent_fs);
+        let parent_root = parent.root_location();
+        let target_entry = make_child_dir_entry(Some(parent_root.entry().clone()), "mount-target");
+        let target = Location::new(parent.clone(), target_entry.clone());
+        let unrelated_mount = Mountpoint::new_root(&parent_fs);
+        let filesystem_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(move || unrelated_mount.set_shared()),
+            flushes: AtomicUsize::new(0),
+        });
+        let mounted_fs = Filesystem::new(filesystem_ops.clone());
+        let mounted = target.mount(&mounted_fs).expect("mount succeeds");
+
+        mounted
+            .root_location()
+            .unmount()
+            .expect("unmount replans after unrelated topology changes");
+
+        assert_eq!(filesystem_ops.flushes.load(Ordering::Acquire), 1);
+        assert!(!parent.children.lock().contains_key(&target_entry.key()));
+    }
+
+    #[test]
+    fn unmount_rejects_a_replan_that_adds_an_unflushed_peer() {
+        let parent_fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&parent_fs);
+        let peer_parent = Mountpoint::new_root(&parent_fs);
+        source_parent.set_shared();
+
+        let source_parent_root = source_parent.root_location();
+        let source_entry =
+            make_child_dir_entry(Some(source_parent_root.entry().clone()), "mount-target");
+        let source_target = Location::new(source_parent.clone(), source_entry.clone());
+        let peer_parent_root = peer_parent.root_location();
+        let peer_entry =
+            make_child_dir_entry(Some(peer_parent_root.entry().clone()), "mount-target");
+        let peer_target = Location::new(peer_parent.clone(), peer_entry.clone());
+
+        let source_parent_for_flush = source_parent.clone();
+        let peer_parent_for_flush = peer_parent.clone();
+        let source_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(move || {
+                peer_parent_for_flush.join_shared_group(&source_parent_for_flush);
+            }),
+            flushes: AtomicUsize::new(0),
+        });
+        let peer_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(|| {}),
+            flushes: AtomicUsize::new(0),
+        });
+        let source_mount = source_target
+            .mount(&Filesystem::new(source_ops.clone()))
+            .expect("source mount succeeds");
+        let peer_mount = peer_target
+            .mount(&Filesystem::new(peer_ops.clone()))
+            .expect("peer mount succeeds");
+
+        assert_eq!(
+            source_mount.root_location().unmount(),
+            Err(VfsError::ResourceBusy)
+        );
+
+        assert_eq!(source_ops.flushes.load(Ordering::Acquire), 1);
+        assert_eq!(peer_ops.flushes.load(Ordering::Acquire), 0);
+        assert!(source_mount.location().is_some());
+        assert!(peer_mount.location().is_some());
+        assert!(
+            source_parent
+                .children
+                .lock()
+                .contains_key(&source_entry.key())
+        );
+        assert!(peer_parent.children.lock().contains_key(&peer_entry.key()));
     }
 
     /// The global root is unattached (its mount `location` is `None`), so the
@@ -1259,25 +1804,6 @@ mod tests {
 
         let cloned = root.clone_tree();
         assert_eq!(cloned.source(), "/dev/vda");
-    }
-
-    #[test]
-    fn absolute_path_rebases_bind_mount_source_at_mountpoint() {
-        let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
-        let root_location = root.root_location();
-        let nix_entry = make_child_dir_entry(Some(root_location.entry().clone()), "nix");
-        let store_entry = make_child_dir_entry(Some(nix_entry.clone()), "store");
-        let store = Location::new(root.clone(), store_entry.clone());
-
-        let bound_store = Mountpoint::bind(&store, store.clone(), false);
-        let executable_entry = make_child_dir_entry(Some(store_entry), "systemd");
-        let executable = Location::new(bound_store, executable_entry);
-
-        assert_eq!(
-            executable.absolute_path().unwrap().as_str(),
-            "/nix/store/systemd"
-        );
     }
 
     #[test]

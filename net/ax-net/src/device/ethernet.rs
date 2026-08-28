@@ -2,8 +2,8 @@
 //!
 //! The adapter translates between the generic ax-net device contract and
 //! Ethernet NIC drivers. It owns neighbor discovery state, emits Ethernet/ARP
-//! frames, feeds IP packets into the router RX buffer, and exposes readiness
-//! through IRQ or out-of-band wakeups.
+//! frames and feeds IP packets into the router RX buffer. Hardware readiness is
+//! owned below this adapter by fixed-CPU queue executors.
 //!
 //! # Responsibilities
 //!
@@ -12,7 +12,7 @@
 //!   to the router's RX packet buffer.
 //! - Buffer a bounded number of packets while ARP resolution for a next hop is
 //!   pending.
-//! - Bridge platform IRQ registration into device-worker wakeups.
+//! - Consume and publish frames through the protocol-side SPSC port.
 //!
 //! # Non-Responsibilities
 //!
@@ -20,12 +20,9 @@
 //! and does not inspect TCP/UDP socket state. Route selection is performed by
 //! the router before Ethernet sees the packet.
 
-use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, string::String, vec, vec::Vec};
 
-use ax_sync::SpinLock;
-use axpoll::PollSet;
 use hashbrown::HashMap;
-use irq_framework::IrqId;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
     time::{Duration, Instant},
@@ -38,74 +35,10 @@ use smoltcp::{
 use crate::{
     config::InterfaceId,
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::{
-        ArpEntry, Device, ETH_ZLEN, EthernetDriver, EthernetIrqHandler, NetDeviceError,
-        NetIrqEvents,
-    },
+    device::{ArpEntry, Device, ETH_ZLEN, EthernetFramePort, ProtocolEthernetFrame},
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
-
-pub trait EthernetIrqRegistration: Send + Sync {}
-
-/// Opaque action installed into a platform IRQ registrar.
-pub struct EthernetIrqAction {
-    handler: Box<dyn FnMut() -> EthernetIrqOutcome + Send>,
-}
-
-impl EthernetIrqAction {
-    pub fn new(handler: impl FnMut() -> EthernetIrqOutcome + Send + 'static) -> Self {
-        Self {
-            handler: Box::new(handler),
-        }
-    }
-
-    /// Runs the IRQ action.
-    pub fn run(&mut self) -> EthernetIrqOutcome {
-        (self.handler)()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EthernetIrqOutcome {
-    /// IRQ was handled and no network worker wakeup is needed.
-    Handled,
-    /// IRQ indicates network progress; wake the poll path.
-    Wake,
-}
-
-/// Platform hook used by Ethernet devices that expose a shared IRQ line.
-pub trait EthernetIrqRegistrar: Send + Sync {
-    fn register_shared(
-        &self,
-        name: &str,
-        irq: IrqId,
-        action: EthernetIrqAction,
-    ) -> Result<Box<dyn EthernetIrqRegistration>, EthernetIrqRegistrationError>;
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum EthernetIrqRegistrationError {
-    /// The IRQ number is invalid for this platform.
-    #[error("invalid Ethernet IRQ")]
-    InvalidIrq,
-    /// The IRQ line cannot be shared or is already occupied.
-    #[error("Ethernet IRQ is busy")]
-    Busy,
-    /// IRQ registration is not supported on this platform.
-    #[error("Ethernet IRQ registration is not supported")]
-    Unsupported,
-    /// Other platform-specific registration failure.
-    #[error("Ethernet IRQ registration failed")]
-    Other,
-}
-
-static ETHERNET_IRQ_REGISTRAR: ax_lazyinit::OnceLock<&'static dyn EthernetIrqRegistrar> =
-    ax_lazyinit::OnceLock::new();
-
-pub fn set_ethernet_irq_registrar(registrar: &'static dyn EthernetIrqRegistrar) {
-    ETHERNET_IRQ_REGISTRAR.call_once(|| registrar);
-}
 
 struct Neighbor {
     hardware_address: EthernetAddress,
@@ -116,21 +49,9 @@ struct PendingNeighbor {
     requested_at: Instant,
 }
 
-struct EthernetIrqState {
-    irq: Option<IrqId>,
-    irq_registration: ax_lazyinit::OnceLock<Box<dyn EthernetIrqRegistration>>,
-    /// RX readiness is delivered out-of-band (outside the ethernet IRQ
-    /// framework) via the device readiness poll set, e.g. an SDIO Wi-Fi chip
-    /// that owns its own card interrupt and pokes the stack through
-    /// `wake_net_task_irq`.
-    oob_rx: bool,
-    driver: SpinLock<Box<dyn EthernetDriver>>,
-    poll_ready: Arc<PollSet>,
-}
-
 pub struct EthernetDevice {
     name: String,
-    inner: Arc<EthernetIrqState>,
+    inner: Box<dyn EthernetFramePort>,
     neighbors: HashMap<IpAddress, Neighbor>,
     pending_neighbors: HashMap<IpAddress, PendingNeighbor>,
     ip: Option<Ipv4Cidr>,
@@ -138,42 +59,30 @@ pub struct EthernetDevice {
     pending_packets: PacketBuffer<'static, IpAddress>,
     /// Individual L2 frame lengths of packets transmitted on a side path
     /// during ARP resolution (inside `recv()`/`process_arp()`). Drained by
-    /// the router's RX worker via [`Device::drain_deferred_tx`].
+    /// the protocol executor via [`Device::drain_deferred_tx`].
     deferred_tx_frame_lens: Vec<usize>,
     /// Individual L2 frame lengths of non-IP frames (ARP) received during
     /// `recv()`. These frames are processed internally and never enqueued
     /// into the IP buffer, but must still count toward RX statistics.
-    /// Drained by the router's RX worker via [`Device::drain_deferred_rx`].
+    /// Drained by the protocol executor via [`Device::drain_deferred_rx`].
     deferred_rx_frame_lens: Vec<usize>,
     /// Count of TX errors accumulated during device operations (buffer
     /// allocation failures, transmit hardware errors). Drained by the
-    /// router's workers via [`Device::drain_deferred_tx_errors`].
+    /// protocol executor via [`Device::drain_deferred_tx_errors`].
     deferred_tx_errors: u64,
     /// Count of TX drops accumulated during device operations (pending
-    /// buffer overflow, enqueue failure). Drained by the router's workers
+    /// buffer overflow, enqueue failure). Drained by the protocol executor
     /// via [`Device::drain_deferred_tx_drops`].
     deferred_tx_drops: u64,
     /// Count of RX errors accumulated during device operations (driver
-    /// receive errors, malformed frames). Drained by the router's workers
+    /// receive errors, malformed frames). Drained by the protocol executor
     /// via [`Device::drain_deferred_rx_errors`].
     deferred_rx_errors: u64,
     /// Count of RX drops accumulated during device operations (frames with
     /// unsupported EtherType that were successfully received at L2 but
-    /// cannot be processed by the stack). Drained by the router's workers
+    /// cannot be processed by the stack). Drained by the protocol executor
     /// via [`Device::drain_deferred_rx_drops`].
     deferred_rx_drops: u64,
-}
-
-fn handle_owned_ethernet_irq(handler: &mut dyn EthernetIrqHandler) -> EthernetIrqOutcome {
-    ethernet_irq_outcome(handler.handle_irq())
-}
-
-fn ethernet_irq_outcome(events: NetIrqEvents) -> EthernetIrqOutcome {
-    if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
-        crate::wake_net_task_irq();
-        return EthernetIrqOutcome::Wake;
-    }
-    EthernetIrqOutcome::Handled
 }
 
 impl EthernetDevice {
@@ -186,35 +95,8 @@ impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(300);
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
-    /// Creates an Ethernet adapter driven by the shared IRQ/poll path.
-    pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
-        Self::new_inner(name, inner, ip, false)
-    }
-
-    /// Like [`new`](Self::new) but for a device whose RX readiness arrives
-    /// out-of-band (via [`Device::wake_rx`]) rather than through the ethernet
-    /// IRQ framework. Such a device has no IRQ registration, so `register_waker`
-    /// must still arm `poll_ready` for it.
-    pub fn new_oob_rx(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
-        Self::new_inner(name, inner, ip, true)
-    }
-
-    fn new_inner(
-        name: String,
-        mut inner: Box<dyn EthernetDriver>,
-        ip: Option<Ipv4Cidr>,
-        oob_rx: bool,
-    ) -> Self {
-        let irq = inner.irq_id();
-        let registrar = irq.and_then(|_| ETHERNET_IRQ_REGISTRAR.get().copied());
-        let irq_handler = registrar.and_then(|_| inner.take_irq_handler());
-        let inner = Arc::new(EthernetIrqState {
-            irq,
-            irq_registration: ax_lazyinit::OnceLock::new(),
-            oob_rx,
-            driver: SpinLock::new(inner),
-            poll_ready: Arc::new(PollSet::new()),
-        });
+    /// Creates the protocol-side adapter for an IRQ-backed queue pipeline.
+    pub fn new(name: String, inner: Box<dyn EthernetFramePort>, ip: Option<Ipv4Cidr>) -> Self {
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
             vec![
@@ -223,37 +105,6 @@ impl EthernetDevice {
                     * ETHERNET_MAX_PENDING_PACKETS
             ],
         );
-        if let Some(irq) = inner.irq {
-            if let Some(registrar) = registrar {
-                if let Some(mut irq_handler) = irq_handler {
-                    let action = EthernetIrqAction::new(move || {
-                        handle_owned_ethernet_irq(&mut *irq_handler)
-                    });
-                    match registrar.register_shared(&name, irq, action) {
-                        Ok(registration) => {
-                            inner.irq_registration.call_once(|| registration);
-                            inner.driver.lock_irqsave().enable_irq();
-                        }
-                        Err(err) => {
-                            warn!(
-                                "failed to register ethernet irq handler for {name} irq {irq:?}: \
-                                 {err:?}"
-                            );
-                        }
-                    }
-                } else {
-                    warn!(
-                        "skip ethernet irq registration for {name} irq {irq:?}: driver did not \
-                         provide an owned IRQ handler"
-                    );
-                }
-            } else {
-                warn!(
-                    "ethernet irq registrar is not installed for {name} irq {irq:?}; use polling"
-                );
-            }
-        }
-
         Self {
             name,
             inner,
@@ -273,7 +124,7 @@ impl EthernetDevice {
 
     #[inline]
     fn hardware_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.driver.lock_irqsave().mac_address())
+        EthernetAddress(self.inner.mac_address())
     }
 
     /// Builds an Ethernet frame around `size` bytes of payload written by `f`,
@@ -281,7 +132,7 @@ impl EthernetDevice {
     /// (including padding to [`ETH_ZLEN`], excluding FCS) on success, or 0 on
     /// failure.
     fn send_to<F>(
-        inner: &mut dyn EthernetDriver,
+        inner: &mut dyn EthernetFramePort,
         dst: EthernetAddress,
         size: usize,
         f: F,
@@ -290,15 +141,6 @@ impl EthernetDevice {
     where
         F: FnOnce(&mut [u8]),
     {
-        if let Err(err) = inner.recycle_tx_buffers() {
-            warn!(
-                "{}: recycle_tx_buffers failed: {:?}",
-                inner.device_name(),
-                err
-            );
-            return 0;
-        }
-
         let repr = EthernetRepr {
             src_addr: EthernetAddress(inner.mac_address()),
             dst_addr: dst,
@@ -311,7 +153,7 @@ impl EthernetDevice {
         // FCS, aligned with Linux /proc/net/dev semantics.
         let wire_len = total_frame_len.max(ETH_ZLEN);
 
-        let mut tx_buf = match inner.alloc_tx_buffer(total_frame_len) {
+        let mut tx_buf = match ProtocolEthernetFrame::new(total_frame_len) {
             Ok(buf) => buf,
             Err(err) => {
                 warn!("{}: alloc_tx_buffer failed: {:?}", inner.device_name(), err);
@@ -326,7 +168,7 @@ impl EthernetDevice {
             tx_buf.packet_len(),
             tx_buf.packet()
         );
-        if let Err(err) = inner.transmit(&mut *tx_buf) {
+        if let Err(err) = inner.transmit(&tx_buf) {
             warn!("{}: transmit failed: {:?}", inner.device_name(), err);
             0
         } else {
@@ -417,9 +259,8 @@ impl EthernetDevice {
             target_protocol_addr: target_ipv4,
         };
 
-        let mut inner = self.inner.driver.lock_irqsave();
         let arp_frame_len = Self::send_to(
-            &mut **inner,
+            &mut *self.inner,
             EthernetAddress::BROADCAST,
             arp_repr.buffer_len(),
             |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
@@ -434,7 +275,7 @@ impl EthernetDevice {
             return false;
         }
         // ARP requests are successfully transmitted L2 frames — record
-        // their length so the router RX worker can count them in TX stats.
+        // their length so the protocol executor can count them in TX stats.
         self.deferred_tx_frame_lens.push(arp_frame_len);
 
         self.pending_neighbors.insert(
@@ -510,16 +351,15 @@ impl EthernetDevice {
                     target_protocol_addr: source_protocol_addr,
                 };
 
-                let mut inner = self.inner.driver.lock_irqsave();
                 let arp_frame_len = Self::send_to(
-                    &mut **inner,
+                    &mut *self.inner,
                     source_hardware_addr,
                     response.buffer_len(),
                     |buf| response.emit(&mut ArpPacket::new_unchecked(buf)),
                     EthernetProtocol::Arp,
                 );
                 // ARP replies are successfully transmitted L2 frames — record
-                // their length so the router RX worker can count them in TX stats.
+                // their length so the protocol executor can count them in TX stats.
                 if arp_frame_len > 0 {
                     self.deferred_tx_frame_lens.push(arp_frame_len);
                 } else {
@@ -561,14 +401,13 @@ impl EthernetDevice {
 
                 match action {
                     Action::Send(mac, payload) => {
-                        let mut inner = self.inner.driver.lock_irqsave();
                         info!(
                             "{}: sending pending IPv4 packet to {} via {}",
                             self.name, next_hop, mac
                         );
                         let payload_len = payload.len();
                         let frame_len = Self::send_to(
-                            &mut **inner,
+                            &mut *self.inner,
                             mac,
                             payload_len,
                             |b| b.copy_from_slice(&payload),
@@ -620,17 +459,14 @@ impl Device for EthernetDevice {
         snoop: &mut dyn FnMut(&[u8]),
     ) -> usize {
         loop {
-            let mut rx_buf = {
-                let mut inner = self.inner.driver.lock_irqsave();
-                match inner.receive() {
-                    Ok(buf) => buf,
-                    Err(err) => {
-                        if !matches!(err, NetDeviceError::Again) {
-                            warn!("receive failed: {:?}", err);
-                            self.deferred_rx_errors += 1;
-                        }
-                        return 0;
+            let rx_buf = match self.inner.receive() {
+                Ok(buf) => buf,
+                Err(err) => {
+                    if !matches!(err, crate::device::NetDeviceError::Again) {
+                        warn!("receive failed: {:?}", err);
+                        self.deferred_rx_errors += 1;
                     }
+                    return 0;
                 }
             };
             trace!(
@@ -641,15 +477,6 @@ impl Device for EthernetDevice {
 
             let frame_len =
                 self.handle_frame(rx_buf.packet(), interface_id, buffer, timestamp, snoop);
-            if let Err(err) = self
-                .inner
-                .driver
-                .lock_irqsave()
-                .recycle_rx_buffer(&mut *rx_buf)
-            {
-                warn!("recycle_rx_buffer failed: {:?}", err);
-                self.deferred_rx_errors += 1;
-            }
             if frame_len > 0 {
                 return frame_len;
             }
@@ -660,9 +487,8 @@ impl Device for EthernetDevice {
         let is_subnet_broadcast =
             self.ip.and_then(|ip| ip.broadcast()).map(IpAddress::Ipv4) == Some(next_hop);
         if next_hop.is_broadcast() || is_subnet_broadcast {
-            let mut inner = self.inner.driver.lock_irqsave();
             let frame_len = Self::send_to(
-                &mut **inner,
+                &mut *self.inner,
                 EthernetAddress::BROADCAST,
                 packet.len(),
                 |buf| buf.copy_from_slice(packet),
@@ -676,9 +502,8 @@ impl Device for EthernetDevice {
 
         let need_request = match self.neighbors.get(&next_hop) {
             Some(neighbor) if neighbor.expires_at > timestamp => {
-                let mut inner = self.inner.driver.lock_irqsave();
                 let frame_len = Self::send_to(
-                    &mut **inner,
+                    &mut *self.inner,
                     neighbor.hardware_address,
                     packet.len(),
                     |buf| buf.copy_from_slice(packet),
@@ -759,7 +584,7 @@ impl Device for EthernetDevice {
         // are completed link-layer events. Per Linux rtnl_link_stats64,
         // interface counters are cumulative and survive routine interface
         // operations such as an IPv4 reconfiguration, so an IP context change
-        // must not retract counts that the RX worker has not drained yet.
+        // must not retract counts that the protocol executor has not drained yet.
         // Neighbor/pending state above is IP-context specific and is cleared.
     }
 
@@ -783,17 +608,6 @@ impl Device for EthernetDevice {
             })
             .collect()
     }
-
-    fn readiness_poll(&self) -> Option<Arc<PollSet>> {
-        // Only expose the poll set when there is a wake source: either an IRQ
-        // registration or out-of-band RX. A pure-polling device with neither
-        // must not register here, or its waker would never be woken.
-        if self.inner.irq_registration.get().is_some() || self.inner.oob_rx {
-            Some(self.inner.poll_ready.clone())
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -805,54 +619,18 @@ mod ethernet_counter_tests {
     use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 
     use super::*;
-    use crate::device::{NetDeviceResult, NetRxBuffer, NetTxBuffer};
+    use crate::device::{NetDeviceError, NetDeviceResult};
 
-    #[test]
-    fn ethernet_irq_registration_errors_have_domain_messages() {
-        assert_eq!(
-            alloc::format!("{}", EthernetIrqRegistrationError::Busy),
-            "Ethernet IRQ is busy"
-        );
-    }
+    // ── Mock protocol-port infrastructure ──────────────────────────────
 
-    // ── Mock driver infrastructure ─────────────────────────────────────
-
-    struct MockRxBuffer {
-        packet: Vec<u8>,
-    }
-
-    impl NetRxBuffer for MockRxBuffer {
-        fn packet(&self) -> &[u8] {
-            &self.packet
-        }
-    }
-
-    struct MockTxBuffer {
-        packet: Vec<u8>,
-    }
-
-    impl NetTxBuffer for MockTxBuffer {
-        fn packet(&self) -> &[u8] {
-            &self.packet
-        }
-
-        fn packet_mut(&mut self) -> &mut [u8] {
-            &mut self.packet
-        }
-
-        fn packet_len(&self) -> usize {
-            self.packet.len()
-        }
-    }
-
-    /// Minimal mock EthernetDriver for testing EthernetDevice ARP paths.
+    /// Minimal protocol frame port for testing EthernetDevice ARP paths.
     struct MockEthernetDriver {
         mac: [u8; 6],
         /// Pre-canned frames returned by `receive()` in FIFO order.
         rx_frames: VecDeque<Vec<u8>>,
         /// Frames transmitted through `transmit()`, captured for inspection.
         tx_frames: Vec<Vec<u8>>,
-        /// When set, `alloc_tx_buffer` returns an error.
+        /// When set, frame publication returns an error.
         tx_alloc_fail: bool,
     }
 
@@ -871,54 +649,28 @@ mod ethernet_counter_tests {
         }
     }
 
-    impl EthernetDriver for MockEthernetDriver {
+    impl EthernetFramePort for MockEthernetDriver {
         fn device_name(&self) -> &str {
             "mock"
         }
-
-        fn irq_id(&self) -> Option<IrqId> {
-            None
-        }
-
-        fn enable_irq(&mut self) {}
-
-        fn disable_irq(&mut self) {}
 
         fn mac_address(&self) -> [u8; 6] {
             self.mac
         }
 
-        fn alloc_tx_buffer(&mut self, size: usize) -> NetDeviceResult<Box<dyn NetTxBuffer>> {
+        fn transmit(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
             if self.tx_alloc_fail {
                 return Err(NetDeviceError::Again);
             }
-            Ok(Box::new(MockTxBuffer {
-                packet: alloc::vec![0; size],
-            }))
-        }
-
-        fn recycle_tx_buffers(&mut self) -> NetDeviceResult {
+            self.tx_frames.push(frame.packet().to_vec());
             Ok(())
         }
 
-        fn transmit(&mut self, tx_buf: &mut dyn NetTxBuffer) -> NetDeviceResult {
-            self.tx_frames.push(tx_buf.packet().to_vec());
-            Ok(())
-        }
-
-        fn receive(&mut self) -> NetDeviceResult<Box<dyn NetRxBuffer>> {
+        fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame> {
             self.rx_frames
                 .pop_front()
-                .map(|packet| Box::new(MockRxBuffer { packet }) as Box<dyn NetRxBuffer>)
+                .map(|packet| ProtocolEthernetFrame::copy_from_slice(&packet).unwrap())
                 .ok_or(NetDeviceError::Again)
-        }
-
-        fn recycle_rx_buffer(&mut self, _rx_buf: &mut dyn NetRxBuffer) -> NetDeviceResult {
-            Ok(())
-        }
-
-        fn handle_irq(&mut self) -> NetIrqEvents {
-            NetIrqEvents::empty()
         }
     }
 
@@ -1135,9 +887,9 @@ mod ethernet_counter_tests {
     /// Verifies that set_ipv4_addr() does NOT clear deferred TX/RX frame
     /// length accumulators. Per Linux rtnl_link_stats64, tx_packets counts
     /// frames successfully transmitted to the device, and IP reconfiguration
-    /// cannot retract those events. If the RX worker has not yet drained
+    /// cannot retract those events. If the protocol executor has not yet drained
     /// deferred_tx_frame_lens after a successful ARP TX, those lengths must
-    /// still be available after set_ipv4_addr() so the worker can count them.
+    /// still be available after set_ipv4_addr() so the protocol executor can count them.
     #[test]
     fn set_ipv4_addr_preserves_undrained_frame_lens() {
         let mock = MockEthernetDriver::new(DEV_MAC);
@@ -1153,7 +905,7 @@ mod ethernet_counter_tests {
         assert_eq!(tx_lens_before.len(), 1);
         assert_eq!(tx_lens_before[0], 60); // ARP request padded to ETH_ZLEN
 
-        // Simulate another ARP request before the worker drains.
+        // Simulate another ARP request before the protocol executor drains.
         let result = device.send(
             IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 99)),
             &[0u8; 64],
@@ -1167,7 +919,7 @@ mod ethernet_counter_tests {
         // Runtime reconfigures the IPv4 address (e.g., DHCP renew).
         device.set_ipv4_addr(Some(Ipv4Cidr::new(Ipv4Address::new(10, 0, 0, 99), 24)));
 
-        // The undrained ARP TX length must still be present so the RX worker
+        // The undrained ARP TX length must still be present so the protocol executor
         // can drain and count it. Clearing it here would permanently lose the
         // tx_packets/tx_bytes for an event that already succeeded.
         let tx_lens_after = device.drain_deferred_tx();
@@ -1262,7 +1014,7 @@ mod ethernet_counter_tests {
 
     // ── Integration: combined ARP + IP recv/drain cycle ────────────────
 
-    /// Simulates the router RX worker's inner loop: recv IP frames, drain
+    /// Simulates one protocol-executor drain cycle: receive IP frames, drain
     /// deferred TX (ARP replies/requests), and drain deferred RX (received
     /// ARP frames). Verifies that all three counting paths produce correct
     /// byte counts in a single combined cycle.

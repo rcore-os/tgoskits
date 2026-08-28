@@ -44,6 +44,7 @@ use std::{
 use anyhow::{Context, bail};
 
 use super::types::AxvisorHttpProbeConfig;
+use crate::support::process::retry_text_file_busy;
 
 /// Poll interval while waiting for the probe asset to exit.
 const PROBE_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -63,6 +64,12 @@ pub(crate) fn run(
 ) -> anyhow::Result<()> {
     let script = case_dir.join(&config.probe_script);
     ensure_probe_asset(&script)?;
+    if stop.load(Ordering::Acquire) {
+        bail!(
+            "probe asset {} was not started because the case had already stopped",
+            script.display()
+        );
+    }
     println!(
         "  host http probe: running probe asset {}",
         script.display()
@@ -102,7 +109,8 @@ fn spawn_probe_asset(
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
 ) -> anyhow::Result<Child> {
-    Command::new(script)
+    let mut command = Command::new(script);
+    command
         .env("AXVISOR_HTTP_BASE", format!("http://{addr}"))
         .env(
             "AXVISOR_HTTP_TOKEN",
@@ -119,8 +127,8 @@ fn spawn_probe_asset(
         )
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
+        .stderr(Stdio::inherit());
+    retry_text_file_busy(|| command.spawn())
         .with_context(|| format!("failed to spawn probe asset {}", script.display()))
 }
 
@@ -143,10 +151,35 @@ fn wait_probe_asset(child: &mut Child, stop: &AtomicBool) -> Option<ExitStatus> 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    #[cfg(unix)]
+    use std::{fs, time::Instant};
 
     use serde::Deserialize;
 
     use super::{super::types::DEFAULT_PROBE_SCRIPT, *};
+
+    fn fixture_dir() -> tempfile::TempDir {
+        #[cfg(unix)]
+        {
+            // Some CI runners mount their system temporary directory with
+            // `noexec`. Probe fixtures are deliberately executable, so keep
+            // them below the workspace build directory instead.
+            let root = std::env::current_dir()
+                .unwrap()
+                .join("target")
+                .join("axbuild-http-probe-fixtures");
+            fs::create_dir_all(&root).unwrap();
+            tempfile::Builder::new()
+                .prefix("probe-")
+                .tempdir_in(root)
+                .unwrap()
+        }
+
+        #[cfg(not(unix))]
+        {
+            tempfile::tempdir().unwrap()
+        }
+    }
 
     fn test_config(probe_script: PathBuf) -> AxvisorHttpProbeConfig {
         AxvisorHttpProbeConfig {
@@ -188,6 +221,18 @@ mod tests {
         path
     }
 
+    /// Write an executable probe asset that records startup and then blocks.
+    #[cfg(unix)]
+    fn write_blocking_fixture_probe(dir: &Path, name: &str) -> PathBuf {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let path = dir.join(name);
+        let script =
+            "#!/bin/sh\nprintf started > \"$AXVISOR_HTTP_CASE_DIR/started.txt\"\nexec sleep 30\n";
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
     #[test]
     fn probe_script_defaults_to_http_probe_py() {
         let config = parse_probe_section("[host_http_probe]\ntoken = \"t\"\n");
@@ -200,10 +245,21 @@ mod tests {
         assert_eq!(config.probe_script, PathBuf::from("custom_probe.sh"));
     }
 
+    #[test]
+    fn probe_asset_spawn_uses_the_text_file_busy_retry_boundary() {
+        let source = include_str!("http_probe.rs");
+        let retry_spawn = ["retry_text_file_busy", "(|| command.spawn())"].concat();
+
+        assert!(
+            source.contains(&retry_spawn),
+            "directly executed probe assets must retry the transient ETXTBSY publication window"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn run_executes_the_case_probe_asset_with_env() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         let probe = write_fixture_probe(dir.path(), "http_probe.py", 0);
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
@@ -224,18 +280,21 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_propagates_nonzero_probe_exit() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         write_fixture_probe(dir.path(), "http_probe.py", 1);
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
         let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
-        assert!(error.to_string().contains("exited with code 1"));
+        assert!(
+            error.to_string().contains("exited with code 1"),
+            "unexpected probe error: {error:#}"
+        );
     }
 
     #[test]
     fn run_rejects_a_missing_probe_asset() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -246,14 +305,50 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_kills_the_probe_asset_when_stop_is_requested() {
-        let dir = tempfile::tempdir().unwrap();
-        write_fixture_probe(dir.path(), "http_probe.py", 0);
+        let dir = fixture_dir();
+        write_blocking_fixture_probe(dir.path(), "http_probe.py");
         let config = test_config(PathBuf::from("http_probe.py"));
-        // The case is already over before the asset even starts.
+        let case_dir = dir.path().to_path_buf();
+        let started = case_dir.join("started.txt");
+        let stop = Arc::new(AtomicBool::new(false));
+        let run_stop = stop.clone();
+        let probe_thread =
+            thread::spawn(move || run("127.0.0.1:12345", &config, &case_dir, run_stop));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !started.is_file() {
+            assert!(
+                Instant::now() < deadline,
+                "probe asset did not start before the test deadline"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, Ordering::Release);
+
+        let error = probe_thread.join().unwrap().unwrap_err();
+        assert!(
+            error.to_string().contains("was killed"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_does_not_spawn_probe_when_stop_was_already_requested() {
+        let dir = fixture_dir();
+        let probe = dir.path().join("http_probe.py");
+        std::fs::write(&probe, "#!/bin/sh\nexit 0\n").unwrap();
+        let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(true));
 
         let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
-        assert!(error.to_string().contains("was killed"));
+
+        assert!(
+            error
+                .to_string()
+                .contains("was not started because the case had already stopped"),
+            "unexpected error: {error:#}"
+        );
     }
 
     /// The generic mechanism must execute the actual case asset: the

@@ -7,8 +7,7 @@ fn std_build_only_propagates_selected_features() {
     fs::write(
         &app_manifest,
         "[package]\nname = \"std-app\"\nversion = \"0.1.0\"\nedition = \
-         \"2024\"\n\n[package.metadata.axstd]\nfeatures = [\"multitask\", \"net\", \
-         \"log-level-debug\"]\n",
+         \"2024\"\n\n[package.metadata.axstd]\nfeatures = [\"net\", \"log-level-debug\"]\n",
     )
     .unwrap();
 
@@ -23,7 +22,6 @@ fn std_build_only_propagates_selected_features() {
         &[],
         &[
             "dns".to_string(),
-            "multitask".to_string(),
             "net".to_string(),
             "std-compat".to_string(),
         ],

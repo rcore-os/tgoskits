@@ -687,8 +687,8 @@ pub fn sys_setsockopt(
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn net_opt_normalization_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn net_opt_normalization_rules_hold_for_test() -> bool {
     // normalize_ip_tos: strips ECN bits (lower 2 bits masked)
     assert!(normalize_ip_tos(0x00) == 0x00); // No TOS, no ECN
     assert!(normalize_ip_tos(0xFF) == 0xFC); // Full TOS, ECN stripped
@@ -708,12 +708,19 @@ pub(crate) fn net_opt_normalization_rules_hold_for_test() -> bool {
     assert!(normalize_ipv6_tclass(256).is_err());
     assert!(normalize_ipv6_tclass(-2).is_err());
 
-    // IP_TOS_ECN_MASK constant check
-    assert!(IP_TOS_ECN_MASK == 0x03);
-
-    // Protocol constants
-    assert!(PROTO_TCP == 6);
-    assert!(PROTO_IP == 0);
+    const {
+        assert!(IP_TOS_ECN_MASK == 0x03);
+        assert!(PROTO_TCP == 6);
+        assert!(PROTO_IP == 0);
+    }
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn net_opt_normalization_rules_hold() {
+        assert!(super::net_opt_normalization_rules_hold_for_test());
+    }
 }

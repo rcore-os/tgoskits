@@ -51,7 +51,6 @@ pub(crate) fn read_mmio_value<V: VmArchVcpuOps>(
 #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
 pub(crate) fn finish_external_interrupt(vector: usize) {
     crate::host::arceos::dispatch_host_irq(vector);
-    crate::check_timer_events();
 }
 
 pub(crate) fn try_read_mmio_value<V: VmArchVcpuOps>(

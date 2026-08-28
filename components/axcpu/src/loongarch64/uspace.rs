@@ -98,13 +98,9 @@ impl UserContext {
             }
             Trap::Exception(Exception::PagePrivilegeIllegal) => {
                 // The CPU reports only a privilege mismatch here, not whether
-                // the original access was a load, store, or fetch. An unmapped
-                // user access can also arrive here after the low-level TLB
-                // refill path installs a non-user placeholder entry. Treat it
-                // as a user page fault so the VM layer can populate a lazy user
-                // mapping or reject a real permission violation. The common
-                // page-fault completion path synchronizes the installed PTE
-                // through `update_mmu_cache` before retrying user mode.
+                // the original access was a load, store, or fetch. Treat it as
+                // a user page fault so the VM layer can reject the permission
+                // violation without guessing an access type.
                 ReturnReason::PageFault(va!(badv), PageFaultFlags::USER)
             }
             Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo {

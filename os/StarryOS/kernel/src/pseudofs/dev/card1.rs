@@ -754,57 +754,6 @@ unsafe fn drm_copy_field(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use ax_memory_addr::PhysAddrRange;
-
-    use super::*;
-
-    #[test]
-    fn prime_export_honors_cloexec_flag() {
-        assert!(prime_fd_cloexec(linux_raw_sys::general::O_CLOEXEC as u32));
-        assert!(!prime_fd_cloexec(0));
-    }
-
-    #[test]
-    fn mem_map_offset_decodes_to_handle() {
-        assert_eq!(map_handle_from_offset(0x1000), Some(1));
-        assert_eq!(map_handle_from_offset(0x2000), Some(2));
-        assert_eq!(map_handle_from_offset(0), None);
-        assert_eq!(map_handle_from_offset(0x1001), None);
-    }
-
-    #[test]
-    fn exported_buffer_reports_physical_device_mmap() {
-        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable, Arc::new(()));
-
-        assert!(
-            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::PhysicalCached(actual, Some(_)) if actual == range)
-        );
-    }
-
-    #[test]
-    fn exported_buffer_defaults_to_uncached_device_mmap() {
-        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range, GemCachePolicy::NonCacheable, Arc::new(()));
-
-        assert!(
-            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
-        );
-    }
-
-    #[test]
-    fn exported_buffer_maps_write_combine_as_uncached_without_wc_pte_support() {
-        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range, GemCachePolicy::WriteCombine, Arc::new(()));
-
-        assert!(
-            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
-        );
-    }
-}
-
 /// Sets the DRM version information for the device
 pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
     let data = unsafe { &mut *(data.as_mut_ptr() as *mut DrmVersion) };
@@ -870,4 +819,55 @@ pub fn drm_get_unique(data: &mut [u8]) -> VfsResult<()> {
     unique_data.unique_len = 0;
 
     Ok(())
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use ax_memory_addr::PhysAddrRange;
+
+    use super::*;
+
+    #[test]
+    fn prime_export_honors_cloexec_flag() {
+        assert!(prime_fd_cloexec(linux_raw_sys::general::O_CLOEXEC as u32));
+        assert!(!prime_fd_cloexec(0));
+    }
+
+    #[test]
+    fn mem_map_offset_decodes_to_handle() {
+        assert_eq!(map_handle_from_offset(0x1000), Some(1));
+        assert_eq!(map_handle_from_offset(0x2000), Some(2));
+        assert_eq!(map_handle_from_offset(0), None);
+        assert_eq!(map_handle_from_offset(0x1001), None);
+    }
+
+    #[test]
+    fn exported_buffer_reports_physical_device_mmap() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable, Arc::new(()));
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::PhysicalCached(actual, Some(_)) if actual == range)
+        );
+    }
+
+    #[test]
+    fn exported_buffer_defaults_to_uncached_device_mmap() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::NonCacheable, Arc::new(()));
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
+        );
+    }
+
+    #[test]
+    fn exported_buffer_maps_write_combine_as_uncached_without_wc_pte_support() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::WriteCombine, Arc::new(()));
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
+        );
+    }
 }

@@ -439,7 +439,6 @@ pub(crate) fn prepare_acquire_with_snapshot_nested_mode(
     )
 }
 
-#[cfg(feature = "multitask")]
 pub(crate) fn prepare_acquire_with_snapshot_nested_with_sleep(
     map: &LockdepMap,
     lock_kind: &'static str,

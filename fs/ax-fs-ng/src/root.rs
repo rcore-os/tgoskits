@@ -190,7 +190,8 @@ pub fn init_root(
     bootargs: Option<&str>,
 ) {
     let root_spec = RootSpec::parse_bootargs(bootargs);
-    let mut disks = collect_disks(block_devs);
+    let mut disks = collect_disks(block_devs)
+        .unwrap_or_else(|error| panic!("failed to initialize block cache: {error:?}"));
     let candidates = collect_root_candidates(&disks);
     let (selected_disk_index, selected_partition) = select_root_candidate(&candidates, &root_spec)
         .unwrap_or_else(|| panic!("failed to determine root device from available block devices"));
@@ -297,12 +298,12 @@ pub fn init_root_from_rdif_sources(
 
 fn collect_disks(
     block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
-) -> Vec<DiscoveredDisk> {
+) -> crate::BlockResult<Vec<DiscoveredDisk>> {
     let mut disks = Vec::new();
 
     for (disk_index, dev) in block_devs.into_iter().enumerate() {
         let handle = dev.clone();
-        let mut dev = boxed_native_handle_block_device(dev);
+        let mut dev = boxed_native_handle_block_device(dev)?;
         let device_name = dev.name().to_string();
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
@@ -325,7 +326,7 @@ fn collect_disks(
         }
     }
 
-    disks
+    Ok(disks)
 }
 
 fn collect_partitions(
@@ -807,9 +808,9 @@ mod tests {
     use core::{any::Any, time::Duration};
 
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-        FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-        Reference, StatFs, VfsResult, WeakDirEntry,
+        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
+        FileNodeOps, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate,
+        NodeFlags, NodeOps, Reference, RenameOptions, StatFs, VfsResult, WeakDirEntry,
     };
     use rdif_block::{
         BatchSubmitResult, BlkError, BlockController, CompletionSink, ControllerEvent,
@@ -967,7 +968,11 @@ mod tests {
     }
 
     impl DirNodeOps for ReadonlyDir {
-        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             Ok(0)
         }
 
@@ -1017,6 +1022,17 @@ mod tests {
             Err(VfsError::ReadOnlyFilesystem)
         }
 
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
         fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
@@ -1025,7 +1041,13 @@ mod tests {
             Err(VfsError::ReadOnlyFilesystem)
         }
 
-        fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src_name: &str,
+            _dst_dir: &DirNode,
+            _dst_name: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }
@@ -1093,10 +1115,6 @@ mod tests {
         }
 
         fn set_len(&self, _len: u64) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }
@@ -1208,6 +1226,26 @@ mod tests {
             512
         }
 
+        #[cfg(feature = "ext4")]
+        fn physical_block_size(&self) -> usize {
+            512
+        }
+
+        #[cfg(feature = "ext4")]
+        fn is_read_only(&self) -> bool {
+            false
+        }
+
+        #[cfg(feature = "ext4")]
+        fn supports_flush(&self) -> bool {
+            true
+        }
+
+        #[cfg(feature = "ext4")]
+        fn supports_fua(&self) -> bool {
+            false
+        }
+
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
             if self.remaining_failures > 0 {
                 self.remaining_failures -= 1;
@@ -1239,6 +1277,11 @@ mod tests {
                 .ok_or(BlockError::InvalidRequest)?;
             target.copy_from_slice(buf);
             Ok(())
+        }
+
+        #[cfg(feature = "ext4")]
+        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult {
+            Err(BlockError::Unsupported)
         }
 
         #[cfg(any(feature = "ext4", feature = "fat"))]

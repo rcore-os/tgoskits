@@ -427,7 +427,7 @@ impl TtyWrite for SerialWriter {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     #[test]
     fn zero_hardware_baudrate_uses_runtime_default() {

@@ -202,6 +202,8 @@ impl-simple-traits = { version = "0.3", path = "components/crate_interface/test_
 impl-weak-partial = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-partial" }
 impl-weak-traits = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-traits" }
 arm-gic-driver = { version = "0.17", path = "drivers/intc/arm-gic-driver" }
+loongarch-intc-driver = { version = "0.1", path = "drivers/intc/loongarch-intc-driver" }
+x86-apic-driver = { version = "0.1", path = "drivers/intc/x86-apic-driver" }
 enumerate = { version = "0.1", path = "drivers/examples/enumerate" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }
 loongarch_vcpu = { version = "0.5", path = "virtualization/loongarch_vcpu" }
@@ -245,9 +247,7 @@ rdrive = { version = "0.24", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.8", path = "fs/rsext4" }
 scope-local = { version = "0.5", path = "components/scope-local" }
-sdio-host = { version = "0.1", package = "sdio-host-cv1800", path = "drivers/blk/sdio-host" }
-sdio-host2 = { version = "0.1", path = "drivers/blk/sdio-host2" }
-sdhci-cv1800 = { version = "0.1", path = "drivers/blk/sdhci-cv1800" }
+sdmmc-host = { version = "0.1", path = "drivers/blk/sdmmc-host" }
 aic8800 = { version = "0.2", path = "drivers/net/aic8800" }
 crab-usb = { version = "0.11", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1", path = "drivers/usb/usb-device/uvc" }
@@ -326,5 +326,6 @@ sg200x-jpu = { version = "0.1", path = "drivers/vpu/sg200x-jpu" }
 syscalls = { version = "0.8.1", default-features = false }
 bcm2835-sdhci = "0.1.1-preview.1"
 x86 = "0.52"
+x2apic = "0.5"
 kmod-tools = "0.3"
 kprobe = "0.6"

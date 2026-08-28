@@ -29,19 +29,24 @@ preempt/per-CPU 运行时状态、内核任务调度、真实块设备/文件系
 测试，一律使用普通 `#[test]`，通过 `cargo test` 或 `cargo xtask test` 运行。
 
 迁移时先判断测试实际依赖的能力，而不是机械地把全部 `src/axtest.rs` 搬入 `tests/`。
-同一 crate 可以同时拥有标准测试与一个 axtest target；若 host-test 能以项目已有的正式
-adapter 安装所需上下文，则仍属于标准测试，不应仅为复用旧入口而启动 QEMU。不得新增
-只为让测试通过而模拟内核全局状态的临时 fake runtime。
+上层内核、hypervisor 或板卡测试包可以同时拥有标准测试与一个 axtest target；若
+host-test 能以项目已有的正式 adapter 安装所需上下文，则仍属于标准测试，不应仅为复用
+旧入口而启动 QEMU。axtest 启动依赖链上的库本身不拥有 axtest target：纯逻辑留在所属
+源码文件末尾，依赖真实 ArceOS 调度、IRQ、SMP 或目标架构的行为由
+`test-suit/arceos/rust` 通过生产公开 API 覆盖。不得新增只为让测试通过而模拟内核全局
+状态的临时 fake runtime。
 
 标准测试继续遵守 Cargo/Rust 的测试边界：验证私有规则的单元测试放在所属实现源文件
 末尾的 `#[cfg(test)] mod tests` 中，测试 helper 保持在该私有模块内；从 crate 外部验证
 公开 API、feature 组合或链接契约的集成测试放在 `tests/`。不得为了让标准测试跨模块
-转调而新增公开 `*_for_test` facade。只有 `harness = false` 的目标运行时测试允许通过
-`cfg(axtest)` 下最小的 `axtest_support` facade 跨越 Cargo test bin 边界。
+转调而新增公开 `*_for_test` facade。目标运行时测试也只调用已有生产公开 API，或作为
+上层 consumer 的源码内私有 `#[axtest]` 模块直接测试其实现；不得新增公开、
+`doc(hidden)` 或 `pub(crate)` 的 `axtest_support` 转发层和测试状态注入接口。
 
 ## Manifest 契约
 
-确认测试确实需要 QEMU/板卡后，crate 使用以下模板：
+确认测试确实需要 QEMU/板卡、且 package 是拥有运行时的上层 consumer 或板卡测试包后，
+使用以下模板：
 
 ```toml
 [features]
@@ -72,8 +77,9 @@ workspace `axtest` package 的依赖，避免传递依赖造成误选。
 声明了该依赖却没有 `harness = false` 的 `[[test]]` 属于 manifest 错误。workspace 扫描对
 未声明者静默跳过；显式 `-p` 选择未声明者时返回错误。
 
-测试优先只使用 crate 公共 API。确需 white-box 能力时，生产 crate 可在 `cfg(axtest)` 下
-提供最小且 `doc(hidden)` 的 `axtest_support` facade。测试不得用
+外部 test target 只使用 crate 公共 API。确需验证上层 consumer 私有内核状态时，测试应
+放在对应实现文件末尾的 `#[cfg(all(test, axtest))]` 模块，由专用 runner 与普通 `lib.rs`
+共享同一个内部 crate root；runner 只负责启动和收集 descriptor。测试不得用
 `#[path = "../src/..."]` 复制生产模块，也不得为了测试直接公开内部表示。
 
 ## 运行时所有权
@@ -149,18 +155,14 @@ coverage/<package>-<test>-<target>-html/index.html
 
 ## CI 与迁移
 
-ArceOS 的四个 QEMU 架构 job 保留原 Rust/C suite 命令，并在同一 job 中追加一次：
-
-```bash
-cargo xtask ktest qemu --workspace \
-  --exclude starry-kernel --exclude axvisor --arch <arch>
-```
-
-单个 ktest 调用按稳定计划串行启动 QEMU，从而把同架构 ArceOS axtest 放在一起。StarryOS
-和 Axvisor 保留各自运行时验收；self-hosted CI 的 `cache_key` 继续为空字符串。
+ArceOS 的四个 QEMU 架构 job 运行 Rust/C suites。启动依赖库原先需要真实运行时的 case
+迁入 Rust suite 后，不再追加 workspace 级 ktest；这避免为每个底层库重复启动同一套
+ArceOS。StarryOS、Axvisor 和 SG2002 板卡测试包保留各自专属 axtest 验收；self-hosted CI
+的 `cache_key` 继续为空字符串。
 
 迁移时先把可在宿主运行的部分改为普通 `#[test]`，只有剩余的目标运行时测试才移入
-`tests/axtest.rs`；大型测试可在 `tests/axtest/` 下拆模块，但默认仍只暴露一个 test bin。
+`tests/axtest.rs`。Starry kernel 的白盒 case 位于所属实现文件末尾，由
+`src/axtest_kernel.rs` 的单一 target 共享内部 root；该 runner 不包含测试 façade。
 StarryOS/Axvisor 聚合 bin 不再通过 feature、dev-dependency 或 link-only import 捎带其他
 crate descriptor。SG2002 测试标记为 `board` runtime。
 

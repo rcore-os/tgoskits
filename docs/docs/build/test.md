@@ -5,7 +5,7 @@ sidebar_label: "Std 白名单测试"
 
 # Std 白名单测试
 
-`cargo xtask test` 是 axbuild 在 host 端执行的 Rust std 测试入口。它不是 `cargo test --workspace`：TGOSKits workspace 中混合了大量 `#![no_std]` 内核 crate，它们无法在标准 `cargo test` 环境下运行；盲目全量测试会因平台/特性不兼容大面积失败。本命令只对一份**显式维护的白名单**中的 crate 逐一执行 `cargo test -p <package>`，确保这些已知能在 host 环境通过测试的 crate（如纯算法库、工具库、无硬件依赖的组件）保持回归覆盖。
+`cargo xtask test` 是 axbuild 在 host 端执行的 Rust std 测试入口。它不是 `cargo test --workspace`：TGOSKits workspace 中混合了大量 `#![no_std]` 内核 crate，它们无法在标准 `cargo test` 环境下运行；盲目全量测试会因平台/特性不兼容大面积失败。本命令只测试一份**显式维护的白名单**，普通 package 执行 `cargo test -p <package>`，需要 host adapter 的 package 执行仓库定义的固定 feature profile。这样纯算法库以及可通过正式 host 边界测试的内核组件都能保持回归覆盖。
 
 ## 1. 白名单边界
 
@@ -37,7 +37,7 @@ flowchart TB
 
     subgraph Run["逐包执行"]
         LOOP["遍历 packages"]
-        ARGS["cargo test -p <pkg>"]
+        ARGS["默认命令或固定 feature profile"]
         STATUS["run_cargo_status<br/>捕获退出码"]
         OK["ok: <pkg>"]
         FAIL["failed: <pkg>"]
@@ -77,7 +77,7 @@ scope-local
 ...
 ```
 
-当前白名单包含约 45 个 crate，覆盖架构寄存器、I/O 抽象、锁原语、内存地址、文件系统、调度器、中断框架等可在 host 端独立测试的组件。
+当前白名单覆盖架构寄存器、I/O 抽象、锁原语、内存地址、文件系统、调度器、中断框架以及 Starry kernel 等可在 host 端测试的组件。
 
 ### 3.1 解析校验
 
@@ -99,20 +99,24 @@ CSV 文件首行可能包含 UTF-8 BOM（`\u{feff}`），常见于 Windows 编�
 
 ## 4. 测试执行
 
-`run_std_test_command` 是 CLI 入口（`Commands::Test` → `test::std::run_std_test_command()`）。加载白名单后，`run_std_tests` 对每个包依次执行 `cargo test -p <package>`：
+`run_std_test_command` 是 CLI 入口（`Commands::Test` → `test::std::run_std_test_command()`）。加载白名单后，`run_std_tests` 对普通 package 执行默认命令；对需要特定正式 host adapter 的 package 执行静态定义的 profile。例如：
 
-```rust
-fn cargo_test_args(package: &str) -> Vec<String> {
-    vec!["test".into(), "-p".into(), package.into()]
-}
+```text
+cargo test -p starry-kernel
+cargo test -p ax-fs-ng
+cargo test -p ax-hal --features host-test
+cargo test -p ax-task --features host-test
 ```
+
+`ax-hal` 等关键 profile 先用同一参数追加 `-- --list`，并把发现到的测试名与静态预期集合
+精确比较。这样 feature 改名或 cfg 漂移导致的“命令成功但实际运行 0 个关键测试”会直接失败。
 
 关键设计决策：
 
 | 决策 | 说明 |
 |------|------|
 | **非 fail-fast** | 单包失败不中断后续包，所有包都会跑完，最终汇总全部失败 |
-| **无 feature 展开** | 不做 `--no-default-features` 或 feature 矩阵展开（与 [Clippy](./clippy) 的 feature × target 矩阵不同） |
+| **固定 feature profile** | 只运行源码中逐 package 声明的 host profile，不展开任意 feature 矩阵 |
 | **无 target 指定** | 使用 host 默认 target，不交叉编译 |
 | **继承进程环境** | `cargo test` 继承当前进程的全部环境变量 |
 
@@ -137,7 +141,7 @@ failed: memory_addr
 
 ### 4.2 运行约束
 
-白名单测试固定使用 host target，不展开 feature，也不会因一个 package 失败提前停止。这个约束使输出能够一次性覆盖所有白名单成员。
+白名单测试固定使用 host target，不展开未声明的 feature 组合，也不会因一个 package 失败提前停止。`--since <REF>` 可根据 Cargo 依赖图只选取受影响的白名单成员；增量分析失败时会明确回退到完整白名单。
 
 ## 5. 结果汇总
 
@@ -156,19 +160,24 @@ failed: memory_addr
 
 ```rust
 trait CargoRunner {
-    fn run_test(&mut self, workspace_root: &Path, package: &str) -> anyhow::Result<bool>;
+    fn run(
+        &mut self,
+        workspace_root: &Path,
+        invocation: &CargoTestInvocation,
+    ) -> anyhow::Result<CargoRunOutput>;
 }
 ```
 
-生产代码使用 `ProcessCargoRunner`（实际调用 `cargo` 子进程），测试代码使用 `FakeCargoRunner`（按预设的 `HashMap<package, success>` 返回结果）。`std.rs` 的 `#[cfg(test)] mod tests` 覆盖：
+生产代码使用 `ProcessCargoRunner`（实际调用 `cargo` 子进程），测试代码使用 `FakeCargoRunner`（按完整 invocation 返回预设结果）。`std.rs` 的 `#[cfg(test)] mod tests` 覆盖：
 
 - CSV 解析：合法格式、空行、空文件、非法表头、未知包、重复包
-- 执行器：多包部分失败时正确收集全部失败包名、全部通过时返回空失败列表
+- 执行器：多包失败汇总、固定 feature profile、预期测试发现和零测试拒绝
+- 增量选择：保持白名单顺序、无受影响 package，以及失败时全量回退
 - workspace 集成：`workspace_package_name_extraction_reads_current_workspace` 确认能正确读取当前 workspace 的包名
 
 ## 7. 白名单维护
 
-白名单不是静态的——随着 workspace 演进，新的可测 crate 需要加入，不再适用的需要移除。审计与更新流程由 `update-std-tests` 技能封装（`.claude/skills/update-std-tests/SKILL.md`）：
+白名单不是静态的——随着 workspace 演进，新的可测 crate 需要加入，不再适用的需要移除。审计与更新流程由 `update-std-tests` 技能封装（`.agents/skills/update-std-tests/SKILL.md`）：
 
 - 比较 workspace packages 与 CSV，列出"在 workspace 中但不在 CSV"的候选（可能需要加入）
 - 列出"在 CSV 中但不在 workspace"的条目（必须移除，否则校验报错）
@@ -187,11 +196,14 @@ trait CargoRunner {
 
 ## 9. 命令示例
 
-该命令没有运行参数；它读取固定 CSV 并输出每个 package 的进度和最终汇总。
+默认命令读取完整 CSV 并输出每个 package 的进度和最终汇总；`--since` 可用于本地增量验证。
 
 ```bash
 # 运行白名单中所有 crate 的 std 测试（CI 默认）
 cargo xtask test
+
+# 只运行自指定 ref 以来受影响的白名单 package
+cargo xtask test --since origin/dev
 ```
 
-无任何参数。要新增或移除白名单条目，直接编辑 `scripts/test/std_crates.csv`（或在 review 中按 `update-std-tests` 技能的流程核对）。
+要新增或移除白名单条目，编辑 `scripts/test/std_crates.csv`，并按 `update-std-tests` 技能流程验证对应默认命令或固定 profile。

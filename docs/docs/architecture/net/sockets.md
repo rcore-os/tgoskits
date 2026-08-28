@@ -28,7 +28,7 @@ sidebar_label: "Socket 系统"
 
 socket 层通过 `SocketOps` trait 和 `Socket` 枚举把系统调用语义映射到协议栈内部对象。它将 AF_INET、AF_UNIX、AF_VSOCK 的地址统一为 `SocketAddrEx`，将 `bind/connect/listen/accept/send/recv/shutdown` 统一为 trait 方法，并通过 `GeneralOptions` 维护 `O_NONBLOCK`、`SO_REUSEADDR`/`SO_REUSEPORT`、超时、`IP_MTU_DISCOVER` 和 `SO_BINDTODEVICE` 等通用选项。
 
-IP 类 socket（TCP/UDP/raw）持有 smoltcp `SocketHandle`，注册到全局 `SocketSetWrapper`。socket 层补齐 smoltcp 不直接提供的 POSIX 语义——TCP accept queue（`ListenTable`）、UDP wildcard bind 冲突（`udp_binds` side table）、raw connected-peer 过滤。出接口选择由控制面 `NetControl` 在 bind/connect 时决策，实际发包由 `Router::dispatch()` 在 net-poll worker 中完成；socket 操作本身不同步推进 `Interface::poll()`，只调用 `request_poll()` 请求 worker 推进。
+IP 类 socket（TCP/UDP/raw）持有 smoltcp `SocketHandle`，注册到全局 `SocketSetWrapper`。socket 层补齐 smoltcp 不直接提供的 POSIX 语义——TCP accept queue（`ListenTable`）、UDP wildcard bind 冲突（`udp_binds` side table）、raw connected-peer 过滤。出接口选择由控制面 `NetControl` 在 bind/connect 时决策，实际发包由 `Router::dispatch()` 在唯一 protocol executor 中完成；socket 操作本身不同步推进 `Interface::poll()`，只调用 `request_poll()` 发布 protocol generation。
 
 Unix domain socket 和 vsock 不经过 smoltcp，各自维护独立的 transport、namespace 和连接状态，但共享 `SocketOps`/`Configurable`/`Pollable` 入口，向上层呈现一致的 socket facade。
 
@@ -211,7 +211,7 @@ pub(crate) struct SocketSetWrapper<'a> {
 统一 `SocketSet` 的意义：
 
 - TCP/UDP/raw 共享同一 handle 空间。
-- net-poll worker 可以一次性推进所有 IP socket。
+- 唯一 protocol executor 可以一次性推进所有 IP socket。
 - TCP listen table 和 orphan reaper 可以通过 handle 操作 child socket。
 - 不需要为每个接口复制 socket set，wildcard listen 和动态 route 选择保持简单。
 
@@ -714,11 +714,11 @@ poll 频率自适应：有事件时降低 sleep interval，长时间 idle 时逐
 
 ## 7. 轮询唤醒
 
-socket 阻塞语义基于 `Pollable` + `poll_io()`。应用线程通常只注册 waker 并等待 readiness；协议栈推进由 net-poll worker 或本地 transport 自己的 poll set 完成。UDP drop 的同步 egress flush 会暂时申请 `Required` poll ownership，是生命周期路径上的例外。
+socket 阻塞语义基于 `Pollable` + `poll_io()`。应用线程通常只注册 waker 并等待 readiness；IP 协议栈由唯一 protocol executor 推进，本地 transport 使用自己的 poll set。UDP drop 的同步 egress flush 只发布 generation 并等待该 generation 完成，调用线程不会取得 smoltcp ownership。
 
 ### 7.1 通用轮询辅助
 
-`GeneralOptions` 提供 send/recv 两类阻塞辅助，把 nonblocking、timeout、信号中断和 `PollSet` 注册收敛为各 backend 可复用的等待规则。helper 只协调用户线程何时重试操作，不负责推进 smoltcp；IP socket 仍需通过 `request_poll()` 唤醒专用 Worker。
+`GeneralOptions` 提供 send/recv 两类阻塞辅助，把 nonblocking、timeout、信号中断和 `PollSet` 注册收敛为各 backend 可复用的等待规则。helper 只协调用户线程何时重试操作，不负责推进 smoltcp；IP socket 仍需通过 `request_poll()` 激活唯一 protocol executor。
 
 ```rust
 pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
@@ -751,7 +751,7 @@ pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
 
 ### 7.2 IP Socket 就绪状态
 
-TCP/UDP/raw 的 `poll()` 都会先 `request_poll()`，表示需要专用 net-poll worker 推进 smoltcp：
+TCP/UDP/raw 的 `poll()` 都会先 `request_poll()`，表示 protocol executor 需要消费一个新的 generation：
 
 ```rust
 impl Pollable for UdpSocket {
@@ -770,12 +770,12 @@ impl Pollable for UdpSocket {
 }
 ```
 
-注册 waker 时分两层：
+注册 readiness 时分两层：
 
 - 向 smoltcp socket 注册 recv/send waker，等待协议 socket buffer 状态变化。
-- 通过 `GeneralOptions::register_waker()` 向匹配 `DeviceBinding` 的设备注册 waker，等待设备 RX 触发下一轮 net-poll。
+- `GeneralOptions::register_waker()` 注册协议 deadline 并发布 generation；真实设备 IRQ 直接精准调度对应 poll group，queue executor 在发布 RX ring 后再请求协议推进。
 
-两层 waker 分别观察协议 buffer 和设备 readiness，避免 socket 只等待其中一侧而错过进展。下面的入口把设备绑定一起交给 `Service`，使显式绑定的 socket 不会被无关网卡事件反复唤醒。
+socket waker 观察协议 buffer，queue IRQ 路径观察硬件 work，两者通过 SPSC ring 和 generation 汇合。`DeviceBinding` 只参与路由选择；无关网卡 IRQ 不会唤醒该 socket 对应的硬件 group。
 
 ```rust
 pub fn register_waker(&self, waker: &Waker) {
@@ -787,7 +787,7 @@ TCP listener 还有额外 accept waker：`ListenTable::register_accept_waker()` 
 
 ### 7.3 本地传输就绪状态
 
-Unix/vsock 不调用 `request_poll()`。它们的 `Pollable` 由 transport 内部 `PollSet`、channel 或 connection manager 状态驱动。这样 AF_UNIX/AF_VSOCK 的等待路径不会依赖 IP net-poll worker。
+Unix/vsock 不调用 `request_poll()`。它们的 `Pollable` 由 transport 内部 `PollSet`、channel 或 connection manager 状态驱动。这样 AF_UNIX/AF_VSOCK 的等待路径不会依赖 IP protocol executor。
 
 ## 8. 生命周期清理
 
@@ -806,7 +806,7 @@ TcpSocket::drop
        SOCKET_SET.remove(handle)
 ```
 
-这样 FIN、LAST-ACK、TIME-WAIT 等状态仍由 net-poll worker 推进，避免应用对象释放后协议状态被过早销毁。
+这样 FIN、LAST-ACK、TIME-WAIT 等状态仍由 protocol executor 推进，避免应用对象释放后协议状态被过早销毁。
 
 ### 8.2 UDP 与 Raw 清理
 
@@ -850,14 +850,14 @@ pub fn unlisten(&self, listen_endpoint: IpListenEndpoint) {
 
 ## 9. 并发边界
 
-socket 层并发边界围绕三类锁：`SERVICE`、`SOCKET_SET.inner`、协议 side table。原则是 socket 操作只在必要范围内持锁，并通过 `request_poll()` 交给 net-poll worker 推进协议核心。
+socket 层并发边界围绕三类锁：`SERVICE`、`SOCKET_SET.inner`、协议 side table。原则是 socket 操作只在必要范围内持锁，并通过 `request_poll()` 交给 protocol executor 推进协议核心。
 
 ### 9.1 锁顺序
 
 Socket 层锁顺序从全局 `SocketSet` 向协议专属 side table 和单 socket 局部状态单向展开，用户数据复制应尽量放在释放全局锁之后。以下典型路径用于检查 bind、listen、accept、UDP 复用和本地 transport 是否引入反向获取。
 
 ```text
-net-poll path:
+protocol executor path:
   SERVICE -> SOCKET_SET.inner -> smoltcp sockets
 
 TCP listen/accept path:
@@ -883,10 +883,10 @@ control-assisted bind/send path:
 
 ### 9.2 热路径原则
 
-TCP、UDP 与 Raw Socket 的 send、connect 和 recv 热路径只修改局部或 smoltcp socket 状态、注册 readiness，并提交轻量轮询请求。完整协议推进留给 `net-poll` Worker，使调用者不会在持有 socket 局部锁时同步进入 `Service::poll()`。
+TCP、UDP 与 Raw Socket 的 send、connect 和 recv 热路径只修改局部或 smoltcp socket 状态、注册 readiness，并提交轻量 generation 请求。完整协议推进留给唯一 protocol executor，使调用者不会在持有 socket 局部锁时同步进入 `Service::poll()`。
 
 1. 操作对应 smoltcp socket 或本地 socket 状态。
-2. 调用 `request_poll()` 请求专用 net-poll worker 推进协议栈。
+2. 调用 `request_poll()` 发布由唯一 protocol executor 消费的 generation。
 3. 在 `WouldBlock` 时通过 `Pollable::register()` 注册 waker 并让出当前任务。
 
 这个模型保持应用线程和协议栈驱动线程分离，避免 socket 调用者临时成为 smoltcp interface owner。

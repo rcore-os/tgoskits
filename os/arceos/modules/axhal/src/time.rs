@@ -3,14 +3,12 @@
 pub use ax_plat::time::{
     Duration, MICROS_PER_SEC, MILLIS_PER_SEC, NANOS_PER_MICROS, NANOS_PER_MILLIS, NANOS_PER_SEC,
     SchedulerClockError, SchedulerClockStability, TimeValue, busy_wait, busy_wait_until,
-    current_ticks, epochoffset_nanos, init_scheduler_clock, monotonic_time, monotonic_time_nanos,
-    nanos_to_ticks, scheduler_clock_source, scheduler_clock_stability, scheduler_clock_tick,
-    shutdown_scheduler_clock, ticks_to_nanos, wall_time, wall_time_nanos,
+    current_ticks, epochoffset_nanos, init_scheduler_clock, irq_num, monotonic_time,
+    monotonic_time_nanos, nanos_to_ticks, scheduler_clock_source, scheduler_clock_stability,
+    scheduler_clock_tick, set_oneshot_timer, shutdown_scheduler_clock, ticks_to_nanos, wall_time,
+    wall_time_nanos,
 };
-#[cfg(feature = "irq")]
-pub use ax_plat::time::{irq_num, set_oneshot_timer};
 
-#[cfg(feature = "irq")]
 pub fn enable_timer_irq() {
     #[cfg(any(test, feature = "host-test"))]
     {}

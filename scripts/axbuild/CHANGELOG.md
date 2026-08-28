@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.5.2...axbuild-v0.5.3) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
+## [0.5.2](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.5.1...axbuild-v0.5.2) - 2026-08-25
+
+### Fixed
+
+- *(ci)* stabilize recent dev test failures ([#2189](https://github.com/rcore-os/tgoskits/pull/2189))
+- *(ax-driver)* attribute RK3588 governor busy by FDT cpu topology ([#2165](https://github.com/rcore-os/tgoskits/pull/2165))
+
+### Other
+
+- *(test)* consolidate Starry and ArceOS test suites ([#2173](https://github.com/rcore-os/tgoskits/pull/2173))
+
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.5.0...axbuild-v0.5.1) - 2026-08-25
+
+### Fixed
+
+- *(axbuild)* use executable probe test fixtures ([#2183](https://github.com/rcore-os/tgoskits/pull/2183))
+- *(axvisor)* restore runtime counter builds and probe shutdown ([#2181](https://github.com/rcore-os/tgoskits/pull/2181))
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+- *(axbuild)* unify qperf support contracts ([#2123](https://github.com/rcore-os/tgoskits/pull/2123))
+- *(axbuild)* narrow clippy for workspace dependency changes ([#2134](https://github.com/rcore-os/tgoskits/pull/2134))
+
+### Other
+
+- FDT IRQ binding validation ([#2062](https://github.com/rcore-os/tgoskits/pull/2062))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.23...axbuild-v0.5.0) - 2026-08-20
 
 ### Added

@@ -101,7 +101,7 @@ runtime 自身的终态：即使它仍出现在已发现设备表中，per-port 
 register gate 转为 terminal ownership、mask device-local source；fail-close 返回后 normal
 worker 和 IRQ endpoint 都无法重新取得寄存器，不依赖 watchdog 或延时清理任务。
 
-当 runtime 同时具备 `irq + multitask` 时，公共层自动在 scheduler、IRQ、设备探测和 serial
+IRQ 与多任务是 runtime 基础能力。公共层在 scheduler、IRQ、设备探测和 serial
 worker 就绪后、但在第一个 AP 启动前尝试接管，不再要求 OS 配置 `serial` 或
 `runtime-console` feature。firmware 给出硬件 `DeviceId` 时只接受精确匹配；只有
 `NotSpecified` 才按统一 `ttyS` 编号回退到 `ttyS0`。若没有探测到匹配的 runtime UART，
@@ -280,10 +280,9 @@ sleepable lock，因为日志既可能来自 hard IRQ，也可能来自尚未执
 平台同步写更强的 drain 保证。已经进入 `Preparing` 后失败的 `FailedClosed` 后端不会走
 这条 fallback，也不会重新访问 early UART。
 
-console 不再有独立 Cargo feature。`ax-runtime` 在同时启用既有 `irq` 和 `multitask`
-能力时编译多 UART runtime、紧急端点与任务态 console；probe 后有匹配设备才接管，否则
-公共任务态 output 自动使用 HAL，input 仅在 HAL 能提供 IRQ-backed sleep 时可用。无调度器
-或无 IRQ 的最小 ArceOS 构建不会创建 owner worker，也保持原始 HAL 路径。
+console 不再有独立 Cargo feature。`ax-runtime` 始终编译多 UART runtime、紧急端点与
+任务态 console；probe 后有匹配设备才接管，否则公共 output 使用 HAL raw output，task
+input 返回 unsupported。平台 IRQ 框架始终存在，但设备没有独立硬件 IRQ 仍是合法状态。
 
 ArceOS 的 `ax-api`、`ax-posix-api` 和 `ax-std` 共享唯一 input lease；空输入通过
 `wait_readable` 睡眠，不再 `yield_now` 轮询，stdout `flush` 等待真实 UART idle。

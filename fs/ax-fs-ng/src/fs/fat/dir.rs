@@ -2,8 +2,9 @@ use alloc::{string::String, sync::Arc};
 use core::{any::Any, mem, ops::Deref, time::Duration};
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FilesystemOps, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
+    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference,
+    RenameOptions, VfsError, VfsResult, WeakDirEntry,
 };
 
 use super::{
@@ -107,14 +108,14 @@ impl NodeOps for FatDirNode {
 }
 
 impl DirNodeOps for FatDirNode {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut fs = self.fs.lock();
         let dir = self.inner.borrow(&fs);
         let this_entry = self.this.upgrade().unwrap();
         let dir_node = this_entry.as_dir()?;
 
         let mut count = 0;
-        for entry in dir.iter().skip(offset as usize) {
+        for entry in dir.iter().skip(cursor.offset() as usize) {
             let entry = entry.map_err(into_vfs_err)?;
             let name = entry.file_name().to_ascii_lowercase();
             let node_type = if entry.is_file() {
@@ -130,7 +131,12 @@ impl DirNodeOps for FatDirNode {
                 dir_node.insert_cache(name.clone(), entry);
                 inode
             };
-            if !sink.accept(&name, inode, node_type, offset + count + 1) {
+            if !sink.accept(
+                name.as_bytes(),
+                inode,
+                node_type,
+                DirectoryCursor::new(cursor.offset() + count + 1),
+            ) {
                 break;
             }
             count += 1;
@@ -182,6 +188,17 @@ impl DirNodeOps for FatDirNode {
         }
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::OperationNotSupported)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         //  EPERM  The filesystem containing oldpath and newpath does not
         //         support the creation of hard links.
@@ -208,18 +225,30 @@ impl DirNodeOps for FatDirNode {
         dir.remove(name).map_err(into_vfs_err)
     }
 
-    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
+        if options.exchange() || options.whiteout() {
+            return Err(VfsError::OperationNotSupported);
+        }
         let fs = self.fs.lock();
         let dst_dir: Arc<Self> = dst_dir.downcast().map_err(|_| VfsError::InvalidInput)?;
 
         let dir = self.inner.borrow(&fs);
 
-        // The default implementation throws EEXIST if dst exists, so we need to
-        // handle it
-        match dst_dir.inner.borrow(&fs).remove(dst_name) {
-            Ok(_) => {}
-            Err(fatfs::Error::NotFound) => {}
-            Err(err) => return Err(into_vfs_err(err)),
+        if !options.no_replace() {
+            // fatfs rename rejects an existing destination, so ordinary rename
+            // removes it while NOREPLACE leaves the final check to fatfs under
+            // the same filesystem lock.
+            match dst_dir.inner.borrow(&fs).remove(dst_name) {
+                Ok(_) => {}
+                Err(fatfs::Error::NotFound) => {}
+                Err(err) => return Err(into_vfs_err(err)),
+            }
         }
 
         dir.rename(src_name, dst_dir.inner.borrow(&fs), dst_name)

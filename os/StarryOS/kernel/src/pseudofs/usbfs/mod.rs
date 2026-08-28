@@ -262,7 +262,7 @@ struct SubmittedUrb {
 
 enum SubmittedUrbTransfer {
     Live(manager::SubmittedTransfer),
-    #[cfg(test)]
+    #[cfg(all(test, not(axtest)))]
     Test(tests::TestSubmittedTransfer),
 }
 
@@ -270,7 +270,7 @@ impl SubmittedUrb {
     fn queue_key(&self) -> Option<manager::SubmittedTransferQueue> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => Some(transfer.queue_key()),
-            #[cfg(test)]
+            #[cfg(all(test, not(axtest)))]
             SubmittedUrbTransfer::Test(_) => None,
         }
     }
@@ -278,7 +278,7 @@ impl SubmittedUrb {
     fn try_reclaim(&self) -> StarryResult<Option<TransferCompletion>> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.try_reclaim(),
-            #[cfg(test)]
+            #[cfg(all(test, not(axtest)))]
             SubmittedUrbTransfer::Test(transfer) => transfer.try_reclaim(),
         }
     }
@@ -286,7 +286,7 @@ impl SubmittedUrb {
     fn poll_reclaim(&self, cx: &mut Context<'_>) -> Poll<StarryResult<TransferCompletion>> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.poll_reclaim(cx),
-            #[cfg(test)]
+            #[cfg(all(test, not(axtest)))]
             SubmittedUrbTransfer::Test(_) => Poll::Pending,
         }
     }
@@ -294,7 +294,7 @@ impl SubmittedUrb {
     fn cancel(&self) -> StarryResult<()> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.cancel(),
-            #[cfg(test)]
+            #[cfg(all(test, not(axtest)))]
             SubmittedUrbTransfer::Test(_) => Ok(()),
         }
     }
@@ -1675,7 +1675,7 @@ fn write_iso_packet_descs(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     extern crate std;
 

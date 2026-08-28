@@ -54,12 +54,11 @@ sidebar_label: "检查机制总览"
 - `platforms/ax-plat/src/irq.rs`
 - `os/StarryOS/kernel/src/mm/access.rs`
 
-默认 CI 的 `Test with std` job 会通过 `cargo xtask test` 运行两组 `ax-task`
-专项 host profile：`host-test,multitask` 覆盖未启用 IRQ feature 时的基础行为，
-`host-test,multitask,preempt,lockdep` 覆盖 preempt-disabled 与 held-lock 诊断。
-每组 profile 都先用 `--list` 校验预期的 `might_sleep` 测试集合，再只执行
-`might_sleep` 过滤项，避免完整 `preempt+lockdep` host suite 的既有不稳定路径。
-这部分覆盖不经过 QEMU 或真实 IRQ handler；显式 IRQ context 的 QEMU 回归仍是后续工作。
+默认 CI 的 `Test with std` job 会通过 `cargo xtask test` 运行 `ax-task` 的
+`host-test` profile，并精确校验 task 初始化、timer 与 `might_sleep` 测试确实被发现；
+`ax-hal` 的 `host-test` profile 同样校验 IRQ entry 测试集合。IRQ 与多任务调度已是
+基础能力，不再维护 no-IRQ 或单任务 host profile。host-test dummy 不代表真实平台；
+真实 IRQ context 的 QEMU 回归仍由对应系统测试覆盖。
 
 后续改进方向：
 
@@ -106,7 +105,7 @@ task stack canary 用来发现任务栈溢出或栈底被破坏。
 
 启用 `stack canary` 后，任务栈底会写入固定 magic 值。每次任务切换时，调度器检查上一个任务的 canary 是否仍完整；如果 magic 被覆盖，说明栈可能已经越界或被破坏，系统会 panic 并打印任务名、栈范围和期望 magic。
 
-当前 `ax-task` 的 `multitask` feature 会启用 `stack canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
+`ax-task` 的基础多任务实现会启用 `stack canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
 
 `stack-guard-page` 当前是 opt-in hardening feature，默认构建和普通回归测试不会启用。ArceOS Rust 应用通常通过 `ax-std/stack-guard-page` 手动启用；StarryOS 应通过 `starry-kernel/stack-guard-page` 启用，以同时打开 Starry fault handler 中的 guard page 诊断路径和底层 `ax-runtime/stack-guard-page`。项目 xtask/axbuild 流程可使用 `FEATURES=...` 注入这些 feature。
 
@@ -254,8 +253,6 @@ held-lock stack。lock class 与 lock instance 仍分别表示锁顺序关系和
 
 ## CI 默认启用边界
 
-这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`might_sleep` 与 task stack canary 在默认 CI 的 `multitask` 构建中启用。此外，默认 std job 会运行上述两组 `ax-task` 专项 host profile，其中诊断 profile 显式启用 `lockdep`，但只执行经过发现校验的 `might_sleep` 过滤测试。
-
-需要注意的是，`might_sleep` 与 task stack canary 并不是对所有单线程 ArceOS 测试包无条件启用。它们覆盖 StarryOS、Axvisor 以及多数 ArceOS QEMU 测试，但不覆盖未启用 `multitask` 的单线程测试包。
+这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`might_sleep`、task stack canary、IRQ entry 和 timer 由合并后的 host profile 校验测试发现与执行。所有 ArceOS、StarryOS 与 Axvisor 构建都具备多任务和 IRQ 基础能力。
 
 `lockdep` 由于运行时开销、诊断输出和行为侵入性更强，当前仍不作为 runtime 或完整测试套件的全局默认 feature；默认 CI 仅在专项 host profile 和专门回归用例中显式启用。

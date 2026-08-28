@@ -276,8 +276,8 @@ impl Default for Cred {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn credential_capability_rules_hold_for_test() -> bool {
     let root = Cred::root();
     let mut unprivileged = Cred::unprivileged(1000, 100);
     let old_root = root.clone();
@@ -368,4 +368,12 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
         && unprivileged.in_group(200)
         && unprivileged.in_group(10)
         && !unprivileged.in_group(30)
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn credential_capability_rules_hold() {
+        assert!(super::credential_capability_rules_hold_for_test());
+    }
 }

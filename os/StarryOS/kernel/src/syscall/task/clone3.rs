@@ -123,8 +123,8 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> StarryRes
     clone_args.do_clone_in_cgroup(uctx, requested_cgroup)
 }
 
-#[cfg(test)]
-pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn clone3_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLONE_DETACHED, CLONE_NEWPID, CLONE_PARENT, CLONE_THREAD, SIGCHLD,
     };
@@ -226,11 +226,11 @@ pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
         && auxiliary_fields_propagate
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use linux_raw_sys::general::{CLONE_PARENT, CLONE_THREAD, SIGCHLD};
 
-    use super::{Clone3Args, CloneArgs};
+    use super::{Clone3Args, CloneArgs, clone3_validation_rules_hold_for_test};
 
     #[test]
     fn clone3_parent_rejects_nonzero_exit_signal() {
@@ -252,5 +252,10 @@ mod tests {
         };
 
         assert!(CloneArgs::try_from(args).is_err());
+    }
+
+    #[test]
+    fn clone3_validation_rules_hold() {
+        assert!(clone3_validation_rules_hold_for_test());
     }
 }

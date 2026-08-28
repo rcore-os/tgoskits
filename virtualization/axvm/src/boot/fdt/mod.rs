@@ -2,6 +2,14 @@
 
 use std::vec::Vec;
 
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64",
+    test
+))]
+pub(crate) mod device;
+
 #[cfg(test)]
 #[doc(hidden)]
 pub mod core;

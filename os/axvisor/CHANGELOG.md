@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.6.1...axvisor-v0.6.2) - 2026-08-27
+
+### Fixed
+
+- *(axvisor)* emit CRLF from shell output ([#2195](https://github.com/rcore-os/tgoskits/pull/2195))
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.6.0...axvisor-v0.6.1) - 2026-08-25
+
+### Added
+
+- *(axvisor)* add pause/resume VM lifecycle endpoints ([#2098](https://github.com/rcore-os/tgoskits/pull/2098))
+
+### Fixed
+
+- *(axvisor)* enable rockchip-dwmmc on OrangePi 5 Plus ([#2164](https://github.com/rcore-os/tgoskits/pull/2164))
+
+### Other
+
+- *(axvm)* unify virtual device registration ([#2138](https://github.com/rcore-os/tgoskits/pull/2138))
+- *(axvm)* layer architecture capabilities ([#2121](https://github.com/rcore-os/tgoskits/pull/2121))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.24...axvisor-v0.6.0) - 2026-08-20
 
 ### Added

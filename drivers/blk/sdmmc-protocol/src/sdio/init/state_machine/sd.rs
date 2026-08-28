@@ -1,14 +1,14 @@
 use super::*;
 
-impl<H: SdioIrqHost> SdioSdmmc<H> {
+impl<H: SdMmcIrqHost> SdMmcCard<H> {
     pub(super) fn advance_sd_speed_setup(
         &mut self,
-        request: &mut SdioInitRequest<H>,
+        request: &mut SdMmcInitRequest<H>,
         cause: ProgressCause,
     ) -> Result<OperationProgress<CardInfo>, Error> {
         match request.state {
-            SdioInitState::PrepareSdSpeed => self.submit_sd_speed_check(request),
-            SdioInitState::PollSdSwitchFunctionCheck => {
+            SdMmcInitState::PrepareSdSpeed => self.submit_sd_speed_check(request),
+            SdMmcInitState::PollSdSwitchFunctionCheck => {
                 let switch_request = request
                     .switch_function_request
                     .as_mut()
@@ -32,12 +32,12 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                     Err(err) => {
                         let _ = finish_switch_function(request)?;
                         warn!("sdio: SD speed selection skipped ({:?})", err);
-                        request.state = SdioInitState::Complete;
+                        request.state = SdMmcInitState::Complete;
                         Ok(OperationProgress::Pending)
                     }
                 }
             }
-            SdioInitState::PollSdVoltageSwitch => {
+            SdMmcInitState::PollSdVoltageSwitch => {
                 let cmd = request
                     .command_request
                     .as_mut()
@@ -49,11 +49,11 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                         request.command_request = None;
                         match self
                             .host
-                            .submit_bus_op(SdioBusOp::SwitchVoltage(SignalVoltage::V180))
+                            .submit_bus_op(SdMmcBusOp::SwitchVoltage(SignalVoltage::V180))
                         {
                             Ok(bus_request) => {
                                 request.bus_request = Some(bus_request);
-                                request.state = SdioInitState::PollSdSignalVoltage;
+                                request.state = SdMmcInitState::PollSdSignalVoltage;
                                 Ok(OperationProgress::Pending)
                             }
                             Err(err) => {
@@ -71,7 +71,7 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                     }
                 }
             }
-            SdioInitState::PollSdSignalVoltage => {
+            SdMmcInitState::PollSdSignalVoltage => {
                 let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
                 match self.advance_init_bus_op(request, cause) {
                     Ok(OperationProgress::Pending) => Ok(OperationProgress::Pending),
@@ -85,7 +85,7 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                     }
                 }
             }
-            SdioInitState::PollSdSetAccessMode => {
+            SdMmcInitState::PollSdSetAccessMode => {
                 let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
                 let switch_request = request
                     .switch_function_request
@@ -99,10 +99,10 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                             warn!("sdio: SD {} failed (function mismatch)", mode.name());
                             submit_next_sd_access_mode(self, request, status)
                         } else {
-                            match self.host.submit_bus_op(SdioBusOp::SetClock(mode.clock())) {
+                            match self.host.submit_bus_op(SdMmcBusOp::SetClock(mode.clock())) {
                                 Ok(bus_request) => {
                                     request.bus_request = Some(bus_request);
-                                    request.state = SdioInitState::PollSdClock;
+                                    request.state = SdMmcInitState::PollSdClock;
                                     Ok(OperationProgress::Pending)
                                 }
                                 Err(err) => {
@@ -119,20 +119,20 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                     }
                 }
             }
-            SdioInitState::PollSdClock => {
+            SdMmcInitState::PollSdClock => {
                 let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
                 match self.advance_init_bus_op(request, cause) {
                     Ok(OperationProgress::Pending) => Ok(OperationProgress::Pending),
                     Ok(OperationProgress::Complete(())) => {
                         if matches!(mode, SdAccessMode::Sdr50 | SdAccessMode::Sdr104) {
                             let block_size = self.sd_tuning_block_size()?;
-                            match self.host.submit_bus_op(SdioBusOp::ExecuteTuning {
+                            match self.host.submit_bus_op(SdMmcBusOp::ExecuteTuning {
                                 cmd_index: 19,
                                 block_size,
                             }) {
                                 Ok(bus_request) => {
                                     request.bus_request = Some(bus_request);
-                                    request.state = SdioInitState::PollSdTuning;
+                                    request.state = SdMmcInitState::PollSdTuning;
                                     Ok(OperationProgress::Pending)
                                 }
                                 Err(err) => {
@@ -144,7 +144,7 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                         } else {
                             let status_request = self.submit_status()?;
                             request.status_request = Some(status_request);
-                            request.state = SdioInitState::PollSdStatus;
+                            request.state = SdMmcInitState::PollSdStatus;
                             Ok(OperationProgress::Pending)
                         }
                     }
@@ -155,14 +155,14 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                     }
                 }
             }
-            SdioInitState::PollSdTuning => {
+            SdMmcInitState::PollSdTuning => {
                 let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
                 match self.advance_init_bus_op(request, cause) {
                     Ok(OperationProgress::Pending) => Ok(OperationProgress::Pending),
                     Ok(OperationProgress::Complete(())) => {
                         let status_request = self.submit_status()?;
                         request.status_request = Some(status_request);
-                        request.state = SdioInitState::PollSdStatus;
+                        request.state = SdMmcInitState::PollSdStatus;
                         Ok(OperationProgress::Pending)
                     }
                     Err(err) => {
@@ -172,7 +172,7 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                     }
                 }
             }
-            SdioInitState::PollSdStatus => {
+            SdMmcInitState::PollSdStatus => {
                 let mode = request.current_access_mode.ok_or(Error::InvalidArgument)?;
                 let status_request = request
                     .status_request
@@ -183,7 +183,7 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                     OperationProgress::Complete(CardState::Transfer) => {
                         request.status_request = None;
                         info!("sdio: SD speed selected {:?}", mode.clock());
-                        request.state = SdioInitState::Complete;
+                        request.state = SdMmcInitState::Complete;
                         Ok(OperationProgress::Pending)
                     }
                     OperationProgress::Complete(_) => {
@@ -200,17 +200,17 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
 
     fn submit_sd_speed_check(
         &mut self,
-        request: &mut SdioInitRequest<H>,
+        request: &mut SdMmcInitRequest<H>,
     ) -> Result<OperationProgress<CardInfo>, Error> {
         match submit_switch_function_owned(
             self,
             request,
             &crate::cmd::cmd6_sd_access_mode(false, 0),
-            SdioInitState::PollSdSwitchFunctionCheck,
+            SdMmcInitState::PollSdSwitchFunctionCheck,
         ) {
             Err(Error::UnsupportedCommand) => {
                 warn!("sdio: host does not support SD CMD6; staying at default speed");
-                request.state = SdioInitState::Complete;
+                request.state = SdMmcInitState::Complete;
                 Ok(OperationProgress::Pending)
             }
             result => result,

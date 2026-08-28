@@ -24,7 +24,7 @@ use bitflags::bitflags;
 use hashbrown::HashMap;
 use linux_raw_sys::general::{EPOLLET, EPOLLEXCLUSIVE, EPOLLONESHOT, epoll_event};
 
-#[cfg(axtest)]
+#[cfg(all(test, axtest))]
 use super::epoll_axtest::epoll_add_test_barrier;
 use super::epoll_topology::{
     EpollTopology, EpollTopologyLink, commit_nested_link, detach_nested_link, lock_epoll_topology,
@@ -140,7 +140,7 @@ impl EntryKey {
         self.file.upgrade()
     }
 
-    #[cfg(axtest)]
+    #[cfg(test)]
     fn for_test(fd: i32, file: &Arc<dyn FileLike>) -> Self {
         Self {
             fd,
@@ -726,7 +726,7 @@ impl Epoll {
             .and_then(|file| file.downcast_arc::<Epoll>().ok())
             .map(|epoll| Arc::clone(&epoll.inner));
 
-        #[cfg(axtest)]
+        #[cfg(all(test, axtest))]
         epoll_add_test_barrier();
 
         // Lock order for topology mutation is global topology mutex, then one
@@ -782,7 +782,7 @@ impl Epoll {
         Ok(())
     }
 
-    #[cfg(axtest)]
+    #[cfg(all(test, axtest))]
     pub(super) fn add_nested_for_test(&self, fd: i32, target: Arc<Epoll>) -> StarryResult<()> {
         let target: Arc<dyn FileLike> = target;
         self.add_interest(
@@ -795,7 +795,7 @@ impl Epoll {
         )
     }
 
-    #[cfg(axtest)]
+    #[cfg(all(test, not(axtest)))]
     pub(super) fn add_file_for_test(
         &self,
         fd: i32,
@@ -983,8 +983,8 @@ impl Epoll {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn epoll_event_matching_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn epoll_event_matching_rules_hold_for_test() -> bool {
     use axpoll::IoEvents as E;
 
     // No overlap between current and interested (and no ALWAYS_POLL bits in
@@ -1031,9 +1031,24 @@ pub(crate) fn epoll_event_matching_rules_hold_for_test() -> bool {
         && !TriggerMode::OneShot { fired: true }.is_enabled()
 }
 
-#[cfg(axtest)]
-pub(crate) fn epoll_hup_does_not_synthesize_readable_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn epoll_hup_does_not_synthesize_readable_for_test() -> bool {
     let matched = match_ready_events(IoEvents::HUP, IoEvents::IN);
 
     matched.bits() == IoEvents::HUP.bits()
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn epoll_event_matching_rules_hold() {
+        assert!(super::epoll_event_matching_rules_hold_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn epoll_hup_does_not_synthesize_readable() {
+        assert!(super::epoll_hup_does_not_synthesize_readable_for_test());
+    }
 }

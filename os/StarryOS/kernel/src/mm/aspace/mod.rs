@@ -35,12 +35,6 @@ fn complete_page_fault_with(
 mod accounting;
 mod backend;
 
-#[cfg(test)]
-pub(crate) use self::accounting::accounting_edge_cases_and_snapshot_rules_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::accounting::accounting_rss_kind_debug_and_default_hold_for_test;
-#[cfg(test)]
-pub(crate) use self::accounting::rss_kind_and_accounting_rules_hold_for_test;
 pub use self::{
     accounting::{CloneMapAccounting, MemoryAccounting, RssAccountingGuard},
     backend::*,
@@ -749,8 +743,8 @@ impl AddrSpace {
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn page_fault_completion_updates_only_success_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn page_fault_completion_updates_only_success_for_test() -> bool {
     use core::cell::Cell;
 
     let calls = Cell::new(0);
@@ -798,5 +792,14 @@ impl fmt::Debug for AddrSpace {
 impl Drop for AddrSpace {
     fn drop(&mut self) {
         self.clear();
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn page_fault_completion_updates_only_success() {
+        assert!(super::page_fault_completion_updates_only_success_for_test());
     }
 }

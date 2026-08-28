@@ -1,0 +1,29 @@
+[package]
+name = "loongarch-intc-driver"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "OS-independent drivers for LoongArch EIOINTC, PCH-PIC, and LIOINTC controllers."
+authors = ["周睿 <zrufo747@outlook.com>"]
+repository.workspace = true
+keywords = ["loongarch", "driver", "interrupt-controller", "no-std"]
+categories = ["embedded", "no-std", "hardware-support"]
+
+[lib]
+doctest = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+[features]
+rdif = ["dep:rdif-intc"]
+
+[dependencies]
+mmio-api.workspace = true
+rdif-intc = { workspace = true, optional = true }
+thiserror.workspace = true
+tock-registers.workspace = true
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+loongArch64 = "0.2"

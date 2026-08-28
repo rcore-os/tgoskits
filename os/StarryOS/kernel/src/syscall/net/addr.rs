@@ -352,8 +352,8 @@ impl SocketAddrExt for SocketAddrEx {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn net_addr_conversion_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn net_addr_conversion_rules_hold_for_test() -> bool {
     use core::net::{Ipv4Addr, SocketAddrV4};
 
     // Test socket_addr_v4_to_mapped_v6 conversion
@@ -369,4 +369,12 @@ pub(crate) fn net_addr_conversion_rules_hold_for_test() -> bool {
     assert!(localhost_v6.port() == 80);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn net_addr_conversion_rules_hold() {
+        assert!(super::net_addr_conversion_rules_hold_for_test());
+    }
 }

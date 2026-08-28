@@ -16,8 +16,8 @@
 //!   plus the [`spi::SpiSdmmc`] driver for SPI-mode SD cards. Includes a
 //!   thin [`spi::SpiDeviceWrapper`] adapter for `embedded-hal` 1.0
 //!   `SpiDevice<u8>` implementations.
-//! - [`sdio`] *(feature `sdio`)*: a [`sdio::SdioHost`] trait that abstracts
-//!   a host controller and the [`sdio::SdioSdmmc`] driver that drives it
+//! - [`sdio`] *(feature `sdio`)*: a [`sdio::SdMmcHost`] trait that abstracts
+//!   a host controller and the [`sdio::SdMmcCard`] driver that drives it
 //!   through card initialization, block I/O and bus-speed selection.
 //! - [`rdif`] *(feature `rdif`)*: a [`rdif::BlockDevice`] bridge that exposes
 //!   an SDIO-backed card through `rdif-block` queues.

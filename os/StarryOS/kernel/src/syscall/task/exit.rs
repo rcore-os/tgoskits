@@ -10,8 +10,8 @@ pub fn sys_exit_group(exit_code: i32) -> StarryResult<isize> {
     Ok(0)
 }
 
-#[cfg(test)]
-pub(crate) fn exit_code_encoding_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn exit_code_encoding_rules_hold_for_test() -> bool {
     // Test exit code encoding: sys_exit shifts left by 8
     let exit_code = 42i32;
     let encoded = exit_code << 8;
@@ -28,4 +28,12 @@ pub(crate) fn exit_code_encoding_rules_hold_for_test() -> bool {
     assert!(encoded_max == 0xFF00);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn exit_code_encoding_rules_hold() {
+        assert!(super::exit_code_encoding_rules_hold_for_test());
+    }
 }

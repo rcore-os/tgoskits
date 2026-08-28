@@ -421,43 +421,6 @@ pub fn tracepoint_init() -> StarryResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod identity_trace_tests {
-    use super::*;
-
-    #[test]
-    fn reused_pid_keeps_each_records_emission_generation_and_comm() {
-        let tgid = TgidNumber::try_from(7).unwrap();
-        let first_generation = PidIdentityId::try_from(1001).unwrap();
-        let second_generation = PidIdentityId::try_from(1002).unwrap();
-        let mut pipe = IdentityTracePipe::new(2);
-
-        pipe.push(IdentityTraceRecord::new(
-            1,
-            0,
-            Vec::new(),
-            first_generation,
-            tgid,
-            "first".to_string(),
-        ));
-        pipe.push(IdentityTraceRecord::new(
-            2,
-            0,
-            Vec::new(),
-            second_generation,
-            tgid,
-            "second".to_string(),
-        ));
-
-        let first = pipe.pop().unwrap();
-        let second = pipe.pop().unwrap();
-        assert_eq!(first.identity_id, first_generation);
-        assert_eq!(first.comm, "first");
-        assert_eq!(second.identity_id, second_generation);
-        assert_eq!(second.comm, "second");
-    }
-}
-
 /// Initialize events directory in debugfs
 fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
     let mut events_root = DirMapping::new();
@@ -575,4 +538,41 @@ pub fn init_tracing_dir(fs: Arc<SimpleFs>) -> DirMaker {
     });
     tracing_root.add("events", init_events(fs.clone()));
     SimpleDir::new_maker(fs, Arc::new(tracing_root))
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reused_pid_keeps_each_records_emission_generation_and_comm() {
+        let tgid = TgidNumber::try_from(7).unwrap();
+        let first_generation = PidIdentityId::try_from(1001).unwrap();
+        let second_generation = PidIdentityId::try_from(1002).unwrap();
+        let mut pipe = IdentityTracePipe::new(2);
+
+        pipe.push(IdentityTraceRecord::new(
+            1,
+            0,
+            Vec::new(),
+            first_generation,
+            tgid,
+            "first".to_string(),
+        ));
+        pipe.push(IdentityTraceRecord::new(
+            2,
+            0,
+            Vec::new(),
+            second_generation,
+            tgid,
+            "second".to_string(),
+        ));
+
+        let first = pipe.pop().unwrap();
+        let second = pipe.pop().unwrap();
+        assert_eq!(first.identity_id, first_generation);
+        assert_eq!(first.comm, "first");
+        assert_eq!(second.identity_id, second_generation);
+        assert_eq!(second.comm, "second");
+    }
 }

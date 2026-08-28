@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, string::ToString, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc};
 use core::{
     ffi::c_int,
     hint::likely,
@@ -9,7 +9,9 @@ use core::{
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
 use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{
+    DirectoryCursor, DirectoryReadState, FsIoEvents, FsPollable, Location, Metadata, NodeFlags,
+};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
@@ -302,7 +304,10 @@ impl Pollable for File {
 /// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
     inner: Location,
-    pub offset: Mutex<u64>,
+    // Serialize the complete getdents/lseek transition for one open file
+    // description. This is a sleepable mutex because filesystem reads may
+    // block; dup/fork share the Directory and therefore this position.
+    pub(crate) position: Mutex<DirectoryPosition>,
     /// Original open flags (used by fd_is_path / sys_fchmodat to detect
     /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
     /// must reject fchmod just like O_PATH on a regular file).
@@ -312,11 +317,19 @@ pub struct Directory {
     detached_mount_handle: bool,
 }
 
+pub(crate) struct DirectoryPosition {
+    pub(crate) cursor: DirectoryCursor,
+    pub(crate) read_state: Option<Box<dyn DirectoryReadState>>,
+}
+
 impl Directory {
     pub fn new(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: Mutex::new(0),
+            position: Mutex::new(DirectoryPosition {
+                cursor: DirectoryCursor::START,
+                read_state: None,
+            }),
             open_flags,
             detached_mount_handle: false,
         }
@@ -325,7 +338,10 @@ impl Directory {
     pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: Mutex::new(0),
+            position: Mutex::new(DirectoryPosition {
+                cursor: DirectoryCursor::START,
+                read_state: None,
+            }),
             open_flags,
             detached_mount_handle: true,
         }
@@ -383,8 +399,8 @@ impl Pollable for Directory {
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
-#[cfg(test)]
-pub(crate) fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
     use core::time::Duration;
 
     use axfs_ng_vfs::{DeviceId, Metadata};
@@ -420,4 +436,12 @@ pub(crate) fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
         && kstat.blocks == 8
         // mode should have type bits (S_IFREG=0100000) OR'd with 0644.
         && (kstat.mode >> 12) == (axfs_ng_vfs::NodeType::RegularFile as u32)
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn metadata_to_kstat_conversion_rules_hold() {
+        assert!(super::metadata_to_kstat_conversion_rules_hold_for_test());
+    }
 }

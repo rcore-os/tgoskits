@@ -1,21 +1,16 @@
-//! Public API compatibility tests for corrected misspellings.
-//!
-//! These tests intentionally call the old misspelled public entry points from
-//! outside the crate. They keep the compatibility wrappers compiled and verify
-//! that each old name behaves like its corrected counterpart.
+//! Behavioral regressions for the corrected public API names.
 
 use std::{cell::Cell, collections::BTreeMap};
 
 use rsext4::{
     bmalloc::AbsoluteBN,
     cache::bitmap::CacheKey,
-    dir::{normalize_path, split_paren_child_and_translatevalid},
+    dir::normalize_path,
     disknode::{Ext4Extent, Ext4Inode},
     error::{Ext4Error, Ext4Result},
-    ext4::{BlcokGroupLayout, BlockGroupLayout, file_entry_exisr, file_entry_exist},
     extents_tree::{ExtentNode, ExtentTree},
-    loopfile::{resolve_inode_block_allextend, resolve_inode_blocks},
-    tool::{calc_group_layout, cloc_group_layout},
+    loopfile::resolve_inode_blocks,
+    tool::calc_group_layout,
     *,
 };
 
@@ -38,46 +33,38 @@ impl CompatBlockDevice {
     }
 }
 
-impl BlockDevice for CompatBlockDevice {
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+impl BlockIo for CompatBlockDevice {
+    fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, count: u32) -> Ext4Result<()> {
         let required = self.block_size as usize * count as usize;
         if buffer.len() < required {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required));
         }
-        let start = block_id.as_usize()? * self.block_size as usize;
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + required;
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
-                self.total_blocks(),
+                sector.to_u32()?,
+                self.geometry().block_count,
             ));
         }
         buffer[..required].copy_from_slice(&self.data[start..end]);
         Ok(())
     }
 
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, count: u32) -> Ext4Result<()> {
+    fn write(&mut self, buffer: &[u8], sector: rsext4::SectorId, count: u32) -> Ext4Result<()> {
         let required = self.block_size as usize * count as usize;
         if buffer.len() < required {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required));
         }
-        let start = block_id.as_usize()? * self.block_size as usize;
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + required;
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
-                self.total_blocks(),
+                sector.to_u32()?,
+                self.geometry().block_count,
             ));
         }
         self.data[start..end].copy_from_slice(&buffer[..required]);
-        Ok(())
-    }
-
-    fn open(&mut self) -> Ext4Result<()> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Ext4Result<()> {
         Ok(())
     }
 
@@ -86,15 +73,25 @@ impl BlockDevice for CompatBlockDevice {
         Ok(())
     }
 
-    fn total_blocks(&self) -> u64 {
-        (self.data.len() / self.block_size as usize) as u64
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(self.block_size, {
+            (self.data.len() / self.block_size as usize) as u64
+        })
     }
 
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
 
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
+        }
+    }
+}
+
+impl rsext4::Clock for CompatBlockDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))
@@ -105,7 +102,7 @@ fn setup_fs(total_blocks: u64) -> (Jbd2Dev<CompatBlockDevice>, Ext4FileSystem) {
     let device = CompatBlockDevice::new(total_blocks);
     let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
     mkfs(&mut jbd2_dev).expect("mkfs failed");
-    let fs = mount(&mut jbd2_dev).expect("mount failed");
+    let fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
     (jbd2_dev, fs)
 }
 
@@ -155,6 +152,7 @@ fn bitmap_block_is_allocated(
 }
 
 fn collect_extents(
+    fs: &Ext4FileSystem,
     inode: &mut Ext4Inode,
     dev: &mut Jbd2Dev<CompatBlockDevice>,
 ) -> Vec<(u32, u32, u64)> {
@@ -184,44 +182,27 @@ fn collect_extents(
     }
 
     let mut out = Vec::new();
-    let tree = ExtentTree::new(inode);
-    if let Some(root) = tree.load_root_from_inode() {
+    let tree = ExtentTree::with_filesystem(inode, fs, fs.root_inode);
+    if let Ok(root) = tree.load_root_from_inode() {
         walk(dev, &root, &mut out);
     }
     out.sort_unstable();
     out
 }
 
-fn build_mapped_inode(fs: &mut Ext4FileSystem, dev: &mut Jbd2Dev<CompatBlockDevice>) -> Ext4Inode {
+fn build_mapped_inode(
+    fs: &mut Ext4FileSystem,
+    dev: &mut Jbd2Dev<CompatBlockDevice>,
+) -> (Ext4Inode, AbsoluteBN, AbsoluteBN) {
     let mut inode = new_extent_inode();
     let first = alloc_contiguous(fs, dev, 2);
     let second = alloc_contiguous(fs, dev, 1);
-    let mut tree = ExtentTree::new(&mut inode);
+    let mut tree = ExtentTree::with_filesystem(&mut inode, fs, fs.root_inode);
     tree.insert_extent(fs, Ext4Extent::new(0, first.raw(), 2), dev)
         .expect("insert first extent");
     tree.insert_extent(fs, Ext4Extent::new(4, second.raw(), 1), dev)
         .expect("insert second extent");
-    inode
-}
-
-fn assert_layout_eq(left: BlockGroupLayout, right: BlcokGroupLayout) {
-    assert_eq!(left.group_start_block, right.group_start_block);
-    assert_eq!(
-        left.group_blcok_bitmap_startblocks,
-        right.group_blcok_bitmap_startblocks
-    );
-    assert_eq!(
-        left.group_inode_bitmap_startblocks,
-        right.group_inode_bitmap_startblocks
-    );
-    assert_eq!(
-        left.group_inode_table_startblocks,
-        right.group_inode_table_startblocks
-    );
-    assert_eq!(
-        left.metadata_blocks_in_group,
-        right.metadata_blocks_in_group
-    );
+    (inode, first, second)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -231,124 +212,129 @@ struct RemovedExtentObservation {
 }
 
 #[test]
-fn cantflush_matches_flush_on_cached_block_device() {
+fn flush_persists_cached_block_device_writes() {
     let payload = vec![0x5a; BLOCK_SIZE];
-    let mut new_dev = Jbd2Dev::initial_jbd2dev(0, CompatBlockDevice::new(16), false);
-    let mut old_dev = Jbd2Dev::initial_jbd2dev(0, CompatBlockDevice::new(16), false);
+    let mut dev = Jbd2Dev::initial_jbd2dev(0, CompatBlockDevice::new(16), false);
 
-    new_dev
-        .write_blocks(&payload, AbsoluteBN::new(3), 1, false)
-        .expect("write through new device");
-    old_dev
-        .write_blocks(&payload, AbsoluteBN::new(3), 1, false)
-        .expect("write through old device");
+    dev.write_blocks(&payload, AbsoluteBN::new(3), 1, false)
+        .expect("write through cached device");
+    dev.flush().expect("flush cached device");
 
-    new_dev.flush().expect("flush through corrected API");
-    old_dev
-        .cantflush()
-        .expect("flush through compatibility API");
-
-    let new_inner = new_dev.into_inner();
-    let old_inner = old_dev.into_inner();
-    assert_eq!(new_inner.flush_count, old_inner.flush_count);
-    assert_eq!(new_inner.data, old_inner.data);
+    let inner = dev.into_inner();
+    assert_eq!(inner.flush_count, 1);
+    assert_eq!(&inner.data[3 * BLOCK_SIZE..4 * BLOCK_SIZE], &payload);
 }
 
 #[test]
-fn file_entry_exisr_matches_file_entry_exist() {
+fn path_exists_resolves_existing_and_missing_paths() {
     let (mut dev, mut fs) = setup_fs(16 * 1024);
     mkfile(&mut dev, &mut fs, "/compat/file", Some(b"hello"), None).expect("create file");
 
-    for path in ["/", "/compat/file", "/compat/missing"] {
-        let corrected = file_entry_exist(&mut fs, &mut dev, path);
-        let compatible = file_entry_exisr(&mut fs, &mut dev, path);
-        assert_eq!(
-            corrected.map_err(|err| err.code),
-            compatible.map_err(|err| err.code),
-            "path {path}"
-        );
-    }
+    assert!(fs.path_exists(&mut dev, "/").expect("resolve root"));
+    assert!(
+        fs.path_exists(&mut dev, "/compat/file")
+            .expect("resolve file")
+    );
+    assert!(
+        !fs.path_exists(&mut dev, "/compat/missing")
+            .expect("resolve missing path")
+    );
 }
 
 #[test]
-fn split_paren_child_and_translatevalid_matches_normalize_path() {
-    for path in ["/", "//a///b/", "a//b//", "///"] {
-        assert_eq!(
-            normalize_path(path),
-            split_paren_child_and_translatevalid(path),
-            "path {path}"
-        );
-    }
+fn normalize_path_collapses_separators_and_trims_trailing_slashes() {
+    assert_eq!(normalize_path("/"), "/");
+    assert_eq!(normalize_path("//a///b/"), "/a/b");
+    assert_eq!(normalize_path("a//b//"), "a/b");
+    assert_eq!(normalize_path("///"), "/");
 }
 
 #[test]
-fn cloc_group_layout_matches_calc_group_layout() {
+fn calc_group_layout_handles_primary_sparse_super_and_regular_groups() {
     let (_, fs) = setup_fs(16 * 1024);
     let sb = &fs.superblock;
     let inode_table_blocks =
         (sb.s_inodes_per_group * sb.s_inode_size as u32).div_ceil(BLOCK_SIZE as u32);
+    let calculate = |gid| {
+        calc_group_layout(
+            gid,
+            sb,
+            sb.s_blocks_per_group,
+            inode_table_blocks,
+            fs.group_descs[0].block_bitmap() as u32,
+            fs.group_descs[0].inode_bitmap() as u32,
+            fs.group_descs[0].inode_table() as u32,
+            1,
+        )
+    };
 
-    for gid in [0, 1, 2, 3, 5, 7, 11] {
-        let corrected = calc_group_layout(
-            gid,
-            sb,
-            sb.s_blocks_per_group,
-            inode_table_blocks,
-            fs.group_descs[0].block_bitmap() as u32,
-            fs.group_descs[0].inode_bitmap() as u32,
-            fs.group_descs[0].inode_table() as u32,
-            1,
-        );
-        let compatible = cloc_group_layout(
-            gid,
-            sb,
-            sb.s_blocks_per_group,
-            inode_table_blocks,
-            fs.group_descs[0].block_bitmap() as u32,
-            fs.group_descs[0].inode_bitmap() as u32,
-            fs.group_descs[0].inode_table() as u32,
-            1,
-        );
-        assert_layout_eq(corrected, compatible);
-    }
+    let primary = calculate(0);
+    assert_eq!(primary.group_start_block, u64::from(sb.s_first_data_block));
+    assert_eq!(
+        primary.group_block_bitmap_start_block,
+        fs.group_descs[0].block_bitmap()
+    );
+    assert_eq!(
+        primary.group_inode_bitmap_start_block,
+        fs.group_descs[0].inode_bitmap()
+    );
+    assert_eq!(
+        primary.group_inode_table_start_block,
+        fs.group_descs[0].inode_table()
+    );
+
+    let backup = calculate(1);
+    let backup_start = u64::from(sb.s_first_data_block) + u64::from(sb.s_blocks_per_group);
+    assert_eq!(backup.group_start_block, backup_start);
+    assert_eq!(backup.group_block_bitmap_start_block, backup_start + 2);
+    assert_eq!(backup.group_inode_bitmap_start_block, backup_start + 3);
+    assert_eq!(backup.group_inode_table_start_block, backup_start + 4);
+    assert_eq!(backup.metadata_blocks_in_group, inode_table_blocks + 4);
+
+    let regular = calculate(2);
+    let regular_start = u64::from(sb.s_first_data_block) + 2 * u64::from(sb.s_blocks_per_group);
+    assert_eq!(regular.group_start_block, regular_start);
+    assert_eq!(regular.group_block_bitmap_start_block, regular_start);
+    assert_eq!(regular.group_inode_bitmap_start_block, regular_start + 1);
+    assert_eq!(regular.group_inode_table_start_block, regular_start + 2);
+    assert_eq!(regular.metadata_blocks_in_group, inode_table_blocks + 2);
 }
 
 #[test]
-fn resolve_inode_block_allextend_matches_resolve_inode_blocks() {
+fn resolve_inode_blocks_returns_all_initialized_extent_mappings() {
     let (mut dev, mut fs) = setup_fs(16 * 1024);
-    let inode = build_mapped_inode(&mut fs, &mut dev);
-    let mut corrected_inode = inode;
-    let mut compatible_inode = inode;
+    let (mut inode, first, second) = build_mapped_inode(&mut fs, &mut dev);
 
-    let corrected = resolve_inode_blocks(&mut fs, &mut dev, &mut corrected_inode)
-        .expect("resolve through corrected API");
-    let compatible = resolve_inode_block_allextend(&mut fs, &mut dev, &mut compatible_inode)
-        .expect("resolve through compatibility API");
+    let inode_num = fs.root_inode;
+    let resolved = resolve_inode_blocks(&mut fs, &mut dev, inode_num, &mut inode)
+        .expect("resolve initialized mappings");
 
-    assert_eq!(corrected, compatible);
-    assert_eq!(corrected.len(), 3);
+    assert_eq!(resolved.len(), 3);
+    assert_eq!(resolved.get(&0), Some(&first));
+    assert_eq!(
+        resolved.get(&1),
+        Some(&first.checked_add(1).expect("first + 1"))
+    );
+    assert_eq!(resolved.get(&4), Some(&second));
 }
 
 #[test]
-fn remove_extend_matches_remove_extent() {
-    fn run_with(
-        remove: impl FnOnce(
-            &mut ExtentTree<'_>,
-            &mut Ext4FileSystem,
-            Ext4Extent,
-            &mut Jbd2Dev<CompatBlockDevice>,
-        ) -> Ext4Result<()>,
-    ) -> RemovedExtentObservation {
+fn remove_extent_updates_tree_and_bitmap() {
+    fn run() -> (RemovedExtentObservation, AbsoluteBN) {
         let (mut dev, mut fs) = setup_fs(32 * 1024);
         let mut inode = new_extent_inode();
         let base = alloc_contiguous(&mut fs, &mut dev, 4);
         let inserted = Ext4Extent::new(0, base.raw(), 4);
-        ExtentTree::new(&mut inode)
+        ExtentTree::with_filesystem(&mut inode, &fs, fs.root_inode)
             .insert_extent(&mut fs, inserted, &mut dev)
             .expect("insert extent");
+        inode
+            .set_blocks_count(4 * (BLOCK_SIZE as u64 / 512), BLOCK_SIZE as u32, true)
+            .expect("account inserted data blocks");
 
         let deleted = Ext4Extent::new(1, 0, 2);
-        remove(&mut ExtentTree::new(&mut inode), &mut fs, deleted, &mut dev)
+        ExtentTree::with_filesystem(&mut inode, &fs, fs.root_inode)
+            .remove_extent(&mut fs, deleted, &mut dev)
             .expect("remove extent");
 
         let allocated = [
@@ -366,14 +352,40 @@ fn remove_extend_matches_remove_extent() {
         })
         .collect();
 
-        RemovedExtentObservation {
-            extents: collect_extents(&mut inode, &mut dev),
-            allocated_blocks: allocated,
-        }
+        (
+            RemovedExtentObservation {
+                extents: collect_extents(&fs, &mut inode, &mut dev),
+                allocated_blocks: allocated,
+            },
+            base,
+        )
     }
 
-    let corrected = run_with(|tree, fs, extent, dev| tree.remove_extent(fs, extent, dev));
-    let compatible = run_with(|tree, fs, extent, dev| tree.remove_extend(fs, extent, dev));
-
-    assert_eq!(corrected, compatible);
+    let (observation, base) = run();
+    assert_eq!(
+        observation.extents,
+        vec![
+            (0, 1, base.raw()),
+            (3, 1, base.checked_add(3).expect("base + 3").raw()),
+        ]
+    );
+    assert_eq!(observation.allocated_blocks.get(&base.raw()), Some(&true));
+    assert_eq!(
+        observation
+            .allocated_blocks
+            .get(&base.checked_add(1).expect("base + 1").raw()),
+        Some(&false)
+    );
+    assert_eq!(
+        observation
+            .allocated_blocks
+            .get(&base.checked_add(2).expect("base + 2").raw()),
+        Some(&false)
+    );
+    assert_eq!(
+        observation
+            .allocated_blocks
+            .get(&base.checked_add(3).expect("base + 3").raw()),
+        Some(&true)
+    );
 }

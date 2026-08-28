@@ -36,6 +36,7 @@ mod fw_cfg;
 mod graph;
 mod interrupt;
 mod model;
+mod pci;
 // Keep the LoongArch-only implementation out of other production targets, but
 // compile its unit tests on the host so output-port behavior is covered by CI.
 #[cfg(any(target_arch = "loongarch64", test))]
@@ -73,9 +74,19 @@ pub use interrupt::{ControllerRegistration, InterruptRegistrationError};
 // not part of the architecture-neutral framework core.
 pub use loongarch_pch_pic::{
     LoongArchInterruptDomainFactory, LoongArchPchPic, LoongArchPchPicFactory, PchPicOutputEvent,
-    PchPicOutputPort, PchPicOutputPortKey,
+    PchPicOutputPort, PchPicOutputPortKey, PchPicOutputSink,
 };
-pub use model::{DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel};
+pub use model::{
+    AcpiContributionSpec, AcpiDeviceSpec, DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel,
+    FdtContributionSpec, FdtNodeSpec,
+};
+pub use pci::{
+    ConfigOffset, PciBarAccess, PciBarIndex, PciBarRoute, PciBdf, PciClass, PciEndpointIdentity,
+    PciError, PciFunction, PciFunctionRequirement, PciFunctionSpec, PciHostKey, PciHostProvider,
+    PciMemoryBar, PciResult, PciRootBinding, PciRootBindingKey, PciRootState, PciSegment,
+    ResolvedPciBar, ResolvedPciFunction, ResolvedPciTopology,
+};
+pub(crate) use pci::{PciTopologyBuilder, all_ones, read_bytes};
 pub use registration::{
     DeviceBundle, DeviceLifecycle, DeviceRegistration, DmaPollableDeviceOps, PollableDeviceOps,
 };
@@ -94,10 +105,10 @@ pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 // Reusable x86 device models and narrow typed services. These are target-gated
 // device packages, not part of the architecture-neutral framework core.
 pub use x86::{
-    X86AcpiPmTimerDevice, X86CmosDevice, X86InterruptDomainKey, X86InterruptDomainOps,
-    X86IoApicDevice, X86IoApicDeviceOps, X86IoApicServiceKey, X86MonotonicNanos,
-    X86PciConfigDevice, X86PicDevice, X86PicDeviceOps, X86PicServiceKey, X86PitDevice,
-    X86PitDeviceOps, X86PitServiceKey,
+    PciMemoryApertureDevice, PciRootLifecycle, X86AcpiPmTimerDevice, X86CmosDevice,
+    X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDevice, X86IoApicDeviceOps,
+    X86IoApicServiceKey, X86MonotonicNanos, X86PciConfigFrontend, X86PicDevice, X86PicDeviceOps,
+    X86PicServiceKey, X86PitDevice,
 };
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;

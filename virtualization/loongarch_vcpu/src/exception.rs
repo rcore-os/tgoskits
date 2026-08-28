@@ -9,8 +9,8 @@ use crate::{
         direct_map_guest_addr_to_gpa, get_refill_access_flags, should_inject_guest_virtual_fault,
     },
     guest_csr::{
-        emulate_cacop, emulate_cpucfg, emulate_csrx, emulate_idle, inject_guest_regular_exception,
-        inject_guest_tlb_refill,
+        GuestTimerRegistration, emulate_cacop, emulate_cpucfg, emulate_csrx, emulate_idle,
+        inject_guest_regular_exception, inject_guest_tlb_refill,
     },
     host::LoongArchHostOps,
     host_cpu::ack_host_timer_interrupt,
@@ -54,8 +54,8 @@ fn emulate_gspr<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) -> LoongArchVmExit {
+    guest_timer: &mut GuestTimerRegistration<H>,
+) -> LoongArchVcpuResult<LoongArchVmExit> {
     let ins = get_badi(ctx) as u32 as usize;
     const OPCODE_CPUCFG: usize = 0b0000000000000000011011;
     const OPCODE_CPUCFG_LEN: usize = 22;
@@ -96,19 +96,19 @@ fn emulate_gspr<H: LoongArchHostOps>(
     }
 
     if matches(OPCODE_CPUCFG, OPCODE_CPUCFG_LEN) {
-        return emulate_cpucfg(ctx, ins);
+        return Ok(emulate_cpucfg(ctx, ins));
     }
     if matches(OPCODE_CACOP, OPCODE_CACOP_LEN) {
-        return emulate_cacop(ctx, ins);
+        return Ok(emulate_cacop(ctx, ins));
     }
     if matches(OPCODE_IDLE, OPCODE_IDLE_LEN) {
-        return emulate_idle(ctx, ins);
+        return Ok(emulate_idle(ctx, ins));
     }
     if matches(OPCODE_CSRX, OPCODE_CSRX_LEN) {
-        return emulate_csrx::<H>(ctx, ins, vm_id, vcpu_id, guest_timer_token);
+        return emulate_csrx::<H>(ctx, ins, vm_id, vcpu_id, guest_timer);
     }
     if matches(OPCODE_IOCSR, OPCODE_IOCSR_LEN) {
-        return emulate_iocsr::<H>(state, ctx, ins, vm_id, vcpu_id);
+        return Ok(emulate_iocsr::<H>(state, ctx, ins, vm_id, vcpu_id));
     }
 
     panic!(
@@ -118,12 +118,12 @@ fn emulate_gspr<H: LoongArchHostOps>(
     );
 }
 
-pub fn handle_exception_sync<H: LoongArchHostOps>(
+pub(crate) fn handle_exception_sync<H: LoongArchHostOps>(
     iocsr_state: &LoongArchIocsrState,
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
+    guest_timer: &mut GuestTimerRegistration<H>,
 ) -> LoongArchVcpuResult<LoongArchVmExit> {
     let ecode = get_exception_code(ctx);
     let esubcode = get_exception_subcode(ctx);
@@ -205,13 +205,7 @@ pub fn handle_exception_sync<H: LoongArchHostOps>(
             advance_guest_pc(ctx);
             Ok(LoongArchVmExit::Hypercall { nr, args })
         }
-        ECODE_GSPR => Ok(emulate_gspr::<H>(
-            iocsr_state,
-            ctx,
-            vm_id,
-            vcpu_id,
-            guest_timer_token,
-        )),
+        ECODE_GSPR => emulate_gspr::<H>(iocsr_state, ctx, vm_id, vcpu_id, guest_timer),
         ECODE_PIL | ECODE_PIS | ECODE_PIF | ECODE_PME | ECODE_PNR | ECODE_PNX | ECODE_PPI => {
             let badv = get_badv(ctx);
             if should_inject_guest_virtual_fault(ctx, badv, false) {
@@ -299,7 +293,7 @@ pub fn handle_exception_irq(
             ctx.gcsr_era
         );
 
-        // Host timer exits drive the scheduler and Axvisor timer wheel. Do not
+        // Host timer exits drive the scheduler and the shared host clockevent. Do not
         // translate every host tick into a guest timer interrupt: doing so can
         // interrupt Linux before it has initialized its guest exception state.
         if vector == INT_TIMER {

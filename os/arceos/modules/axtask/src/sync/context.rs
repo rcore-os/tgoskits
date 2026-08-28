@@ -341,26 +341,17 @@ mod imp {
 mod imp {
     #[inline(always)]
     pub(super) fn disable_preempt() -> usize {
-        #[cfg(feature = "multitask")]
-        return crate::disable_preempt();
-        #[cfg(not(feature = "multitask"))]
-        0
+        crate::disable_preempt()
     }
 
     #[inline(always)]
     pub(super) fn enable_preempt(state: usize) {
-        #[cfg(feature = "multitask")]
         crate::enable_preempt(state);
-        #[cfg(not(feature = "multitask"))]
-        let _ = state;
     }
 
     #[inline(always)]
     pub(super) fn enable_preempt_from_irq_return(state: usize) {
-        #[cfg(feature = "multitask")]
         crate::enable_preempt_from_irq_return(state);
-        #[cfg(not(feature = "multitask"))]
-        let _ = state;
     }
 
     #[inline(always)]

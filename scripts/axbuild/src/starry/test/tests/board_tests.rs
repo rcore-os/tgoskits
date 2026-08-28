@@ -157,3 +157,35 @@ fn sg2002_repository_dtbs_declare_noncoherent_dma() {
         );
     }
 }
+
+#[test]
+fn sg2002_board_cases_select_the_repository_dtb() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let groups = discover_board_test_groups(&workspace_root, None, Some("aka-00-sg2002"))
+        .expect("repository SG2002 board cases must be discoverable");
+    let expected_dtb = "os/StarryOS/configs/board/aka-00-sg2002.dtb";
+
+    assert_eq!(groups.len(), 3, "all public SG2002 board cases must run");
+    for group in groups {
+        let config = fs::read_to_string(&group.board_test_config_path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read {}: {err}",
+                group.board_test_config_path.display()
+            )
+        });
+        let config: toml::Value = toml::from_str(&config).unwrap_or_else(|err| {
+            panic!(
+                "failed to parse {}: {err}",
+                group.board_test_config_path.display()
+            )
+        });
+
+        assert_eq!(
+            config.get("dtb_file").and_then(toml::Value::as_str),
+            Some(expected_dtb),
+            "{}/{} must use the repository DTB",
+            group.name,
+            group.board_name
+        );
+    }
+}

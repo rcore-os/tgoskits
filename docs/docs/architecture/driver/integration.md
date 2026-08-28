@@ -62,7 +62,7 @@ ArceOS 的 `ax-runtime` 是驱动框架的主要消费者：
 | --- | --- |
 | `ax-runtime` init_later | 调用 `rdrive::init()`、`register_append()`、`probe_pre_kernel()` |
 | `ax-runtime` devices init | 调用 `rdrive::probe_all(false)`，初始化领域 service |
-| `ax-runtime` IRQ | 将 platform IRQ 注册能力适配为 `ax_net::EthernetIrqRegistrar` 等 |
+| `ax-runtime` IRQ | 将 platform IRQ 注册能力适配为仅接受固定 CPU 的 `ax_net::PinnedNetIrqRegistrar`，并由网络 builder 原子注册/回滚所有 queue source |
 | `ax-fs` / `ax-fs-ng` | 通过 block volume service 消费块设备 |
 | `ax-net` | 通过 net interface service 消费网卡 |
 

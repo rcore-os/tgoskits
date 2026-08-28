@@ -172,6 +172,36 @@ fn incremental_selection_checks_changed_packages_and_affected_os_roots_only() {
 }
 
 #[test]
+fn incremental_selection_for_x86_apic_change_omits_unrelated_workspace_packages() {
+    let selected = incremental_clippy_selections(
+        vec![
+            "someboot".into(),
+            "somehal".into(),
+            "x86-apic-driver".into(),
+        ],
+        vec![
+            "ax-std".into(),
+            "someboot".into(),
+            "somehal".into(),
+            "starryos".into(),
+            "unrelated".into(),
+            "x86-apic-driver".into(),
+        ],
+    );
+
+    assert_eq!(
+        selected,
+        vec![
+            "someboot".to_string(),
+            "somehal".into(),
+            "x86-apic-driver".into(),
+            "ax-std".into(),
+            "starryos".into(),
+        ]
+    );
+}
+
+#[test]
 fn incremental_selection_adds_only_affected_os_root() {
     let selected = incremental_clippy_selections(
         vec!["alpha".into()],
@@ -421,7 +451,7 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
     let checks = expand(&[pkg(
         "ax-hal",
         "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("irq", &[])],
+        &[("fp-simd", &[])],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
     )]);
 
@@ -433,10 +463,13 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
     };
 
     assert!(has_feature_on_target(
-        "irq",
+        "fp-simd",
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
+    assert!(has_feature_on_target(
+        "fp-simd",
+        "riscv64gc-unknown-none-elf"
+    ));
 }
 
 #[test]
@@ -444,12 +477,12 @@ fn ax_hal_target_only_features_are_skipped_for_host_clippy() {
     let checks = expand(&[pkg(
         "ax-hal",
         "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("irq", &[])],
+        &[("fp-simd", &[])],
         None,
     )]);
 
     assert!(checks.iter().any(|check| {
-        matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "irq")
+        matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "fp-simd")
     }));
 }
 
@@ -458,7 +491,7 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
     let checks = expand(&[pkg(
         "platform-forwarder",
         "platform-forwarder 0.1.0 (path+file:///tmp/platform-forwarder)",
-        &[("irq", &["ax-hal/irq"])],
+        &[("fp-simd", &["ax-hal/fp-simd"])],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
     )]);
 
@@ -470,10 +503,13 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
     };
 
     assert!(has_feature_on_target(
-        "irq",
+        "fp-simd",
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
+    assert!(has_feature_on_target(
+        "fp-simd",
+        "riscv64gc-unknown-none-elf"
+    ));
 }
 
 #[test]

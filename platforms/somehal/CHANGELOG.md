@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2](https://github.com/rcore-os/tgoskits/compare/somehal-v0.9.1...somehal-v0.9.2) - 2026-08-27
+
+### Added
+
+- *(loongarch-intc-driver)* extract OS-independent interrupt controllers ([#2174](https://github.com/rcore-os/tgoskits/pull/2174))
+
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/somehal-v0.9.0...somehal-v0.9.1) - 2026-08-25
+
+### Other
+
+- *(x86-apic-driver)* extract x86 interrupt controllers with rdif-intc support ([#2118](https://github.com/rcore-os/tgoskits/pull/2118))
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/somehal-v0.8.3...somehal-v0.9.0) - 2026-08-20
 
 ### Added

@@ -11,15 +11,15 @@ sidebar_label: "系统集成"
 
 | 源码 | 集成职责 |
 | --- | --- |
-| `os/arceos/modules/axruntime/src/devices.rs` | runtime 侧设备收集、IRQ 注册、`init_network()`、动态 Wi-Fi/SoftAP 注册、vsock 初始化 |
-| `os/arceos/modules/axruntime/src/irq.rs` | 将 platform IRQ 注册能力适配为 `ax_net::EthernetIrqRegistrar` |
+| `os/arceos/modules/axruntime/src/devices.rs` | 一次性消费全部物理设备、准备 DMA/IRQ source、构造 `NetworkRuntimeBuilder`、`init_network()`、vsock 初始化 |
+| `os/arceos/modules/axruntime/src/irq.rs` | 将 platform IRQ 注册能力适配为 fixed-affinity `PinnedNetIrqRegistrar` |
 | `os/arceos/modules/axruntime/src/unix_ns.rs` | 将 ArceOS 文件系统命名空间适配为 Unix socket namespace |
 | `os/StarryOS/kernel/src/file/net.rs` | Linux `ifreq`/`SIOCGIF*`/`FIONREAD` 等网络 ioctl 适配 |
 | `os/StarryOS/kernel/src/file/packet.rs` | `AF_PACKET`、`sockaddr_ll`、packet socket ioctl 和模拟 ARP reply |
 | `os/StarryOS/kernel/src/file/netlink.rs` | `RTM_GETLINK/GETADDR/GETROUTE` 查询和 IPv4 `RTM_NEWADDR/DELADDR` 更新 |
 | `os/StarryOS/kernel/src/syscall/net/opt.rs` | `getsockopt()`/`setsockopt()`，包括 `SO_BINDTODEVICE` |
 | `os/StarryOS/kernel/src/pseudofs/proc.rs` | `/proc/net/arp`、`/proc/net/dev` 等 procfs 视图 |
-| `net/ax-net/src/lib.rs` | `init_network()`、`register_device_with_config()`、`init_vsock()`、public facade |
+| `net/ax-net/src/lib.rs` | `init_network()`、唯一 protocol executor、Wi-Fi transaction、`init_vsock()`、public facade |
 | `net/ax-net/src/config.rs` | `NetworkConfig`、`InterfaceInfo`、`InterfaceId`、`DeviceBinding` 等跨系统数据模型 |
 
 源码表表明设备初始化、Linux ABI 和网络状态分别由不同模块维护，跨系统修改应沿公共 API 连接，而不是共享内部锁或对象。集成模型将在这些代码锚点基础上展示三类调用方进入 `ax-net` 的不同路径。
@@ -34,7 +34,7 @@ sidebar_label: "系统集成"
 
 | 层级 | 负责 | 不负责 |
 | --- | --- | --- |
-| runtime / platform | 收集设备、注册 IRQ、传入结构化配置、注册动态设备 | 维护路由表、解析 Linux socket ABI、直接访问 `SocketSet` |
+| runtime / platform | 一次性收集设备与 source binding、固定 CPU 注册 IRQ、传入结构化配置 | 维护路由表、运行时追加物理设备、解析 Linux socket ABI、直接访问 `SocketSet` |
 | `ax-net` | 接口 registry、路由、DNS、socket、协议栈 poll、多设备 dataplane | 平台设备发现、Linux `ifreq` 编解码、虚拟机管理策略 |
 | StarryOS | Linux syscall 参数校验、ABI 结构体编解码、namespace 可见性过滤 | 复制第二套路由表、直接驱动 smoltcp、固定假设 `eth0` |
 | Axvisor | 功能启用后经 `ax-std/net` 使用 ArceOS 网络 API | 直接构造或维护 `ax-net` 控制面 |
@@ -43,41 +43,45 @@ sidebar_label: "系统集成"
 
 ## 2. ArceOS Runtime
 
-ArceOS runtime 负责把平台发现、驱动能力、IRQ 注册和文件系统命名空间转换为 `ax-net` 可消费的输入。它不保存接口或路由副本；静态 NIC、动态 Wi-Fi 和 vsock 分别通过明确入口交给对应网络运行时，并由后者拥有后续状态。
+ArceOS runtime 负责把平台发现、驱动 parts、物理 IRQ binding 和文件系统命名空间转换为 `ax-net` 可消费的输入。它不保存接口或路由副本；所有物理 Ethernet/Wi-Fi 在启动阶段一次性移交，vsock 使用独立入口。
 
 ### 2.1 初始化入口
 
-`ax-runtime` 的设备初始化是普通 Ethernet 进入 `ax-net` 的主要入口，它先注入 IRQ 与 Unix namespace 能力，再收集 driver 并调用 `init_network()`。动态设备在全局服务建立后走追加路径，因此静态和动态流程共享状态边界，但不能颠倒发布顺序。
+`ax-runtime` 的设备初始化是物理网卡进入 `ax-net` 的唯一入口。它先注册 Unix namespace，消费全部 `TakenNetDevice`，解析每个 typed IRQ source，准备 DMA，再构造 queue runtime。只有 builder 全部成功后才发布 protocol service。
 
 ```rust
 // os/arceos/modules/axruntime/src/devices.rs, 简化示意
-ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
 register_unix_namespace();
 
 let config = parse_network_config();
-let (nics, wireless) = collect_net_devices();
-
-ax_net::init_network(nics, config);
-register_wireless_devices(wireless);
+let devices = collect_net_devices();
+let (runtime, ports) = ax_net::NetworkRuntimeBuilder::new(
+    devices,
+    &crate::irq::NET_IRQ_REGISTRAR,
+    ax_hal::cpu_num(),
+).build()?;
+ax_net::init_network(Some(runtime), ports, config);
 ```
 
 这条路径完成三件事：
 
-- 将 runtime 发现的 Ethernet 设备包装成 `ax_net::EthernetDriver`。
+- 将 runtime 发现的设备消费为 `PreparedNetDevice`，并把 source ID 精确解析为物理 `IrqId`。
 - 将结构化 `NetworkConfig` 交给 `ax-net`，由 `ax-net` 创建 `lo`、Ethernet 接口、路由、DHCP 状态和 DNS registry。
-- 在主网络栈初始化后注册需要独立控制面的 Wi-Fi/SoftAP 设备。
+- 在 worker pin、disabled IRQ registration、owner startup、initial refill/rearm 和 startup Wi-Fi transaction 全部成功后发布 service。
 
 `parse_network_config()` 当前直接返回 `NetworkConfig::default()`，尚未接入系统配置。因此启动时所有未显式匹配的普通 NIC 都采用 `ax-net` 默认策略：`eth{order}`、metric 100、DHCP、无静态 fallback DNS。该函数是未来接入接口地址/DNS/metric 的预留转换点，不应把它描述成已经生效的配置解析器。
 
 ### 2.2 IRQ 适配
 
-`ax-net` 的 Ethernet 设备只依赖抽象的 `EthernetIrqRegistrar`。runtime 侧通过 `set_ethernet_irq_registrar()` 注入平台 IRQ 注册能力：
+`RuntimeNetIrqRegistrar` 只接受显式 `owner_cpu`。每个 action 使用
+`NonReentrant + AutoEnable::No + IrqAffinity::Fixed(owner_cpu)` 注册，并返回记录
+CPU 的 move-only lease。shared `IrqId` affinity 不一致、fixed routing 不可用或
+registration 返回错误时，builder 反向 mask/synchronize 并拒绝发布。同步成功才让固定核
+worker 执行 driver shutdown；同步失败则把 callback lease 与 executor backing 整体隔离。
 
-```rust
-ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
-```
-
-有 IRQ 的 driver 通过 `take_irq_handler()` 将独立 endpoint 移交给 platform action。IRQ callback 不获取正常 RX/TX 所用的 driver `SpinLock`，只确认/汇总事件并调用 `wake_net_task_irq()`；没有独立 handler 或注册失败时由 RX worker 10 ms 兜底轮询。IRQ 上下文不进入 smoltcp poll。
+hard callback 只调用对应 `NetHardIrqEndpoint::handle_irq()`，将
+`Spurious/Schedule/ProbeDeferred` 发布给同 CPU group state。它不进入 smoltcp、不
+扫描其它设备、不访问 DMA payload，也没有 no-IRQ 或周期轮询兜底。
 
 ### 2.3 Unix 命名空间
 
@@ -89,22 +93,15 @@ ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 
 该适配层只处理 pathname socket 与 VFS namespace 的关系；Unix socket 的连接、收发、poll 和生命周期仍位于 `ax-net`。
 
-### 2.4 动态 Wi-Fi 与 SoftAP
+### 2.4 Wi-Fi 与 SoftAP
 
-带 `wifi_control()` 的设备会走动态注册路径。runtime 从驱动读取 link policy，并把 OOB RX 唤醒函数设置为 `ax_net::wake_net_task_irq`：
-
-```rust
-ctrl.set_rx_wake(ax_net::wake_net_task_irq);
-let policy = ctrl.link_policy();
-```
-
-随后 runtime 构造 `NetConfig` 并调用：
-
-```rust
-ax_net::register_device_with_config(driver, config);
-```
-
-这条路径适合 SoftAP 或运行期新增的静态地址设备。`ax-net` 会分配新的 `InterfaceId`，创建路由规则，更新 smoltcp IP address list，启动设备 worker，并可按配置启用 DHCP server。
+Wi-Fi 与有线设备走同一个 all-at-once builder。AIC probe 只识别 variant 并提取 IRQ
+source，固件与 FDRV 初始化经 `NetOwnerStartup` 在 worker pin、disabled IRQ registration
+之后由 owner CPU 执行。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
+group 的 owner CPU；startup transaction 只在 IRQ enable 完成后执行，service 尚未发布。运行期
+`reconfigure_wifi(ifname, WifiTransaction)` 进入有界 control queue：owner 先
+quiesce group，在同 CPU 执行 SDIO/MMIO 控制，再 rearm，最后由 protocol owner
+提交 STA DHCP 或 SoftAP 静态地址/DHCP server 状态。启动后不支持新增物理 Wi-Fi。
 
 ### 2.5 Vsock
 
@@ -257,11 +254,11 @@ StarryOS 的 rtnetlink 与 procfs 都应从 `ax-net` 的接口、路由、ARP �
 
 ### 6.2 线程轮询边界
 
-平台 IRQ、设备 Worker 和 socket 调用者承担不同执行职责，只有获得 `PollOwnership` 的路径可以推进 smoltcp 协议核心。下面的边界要求用于避免 hard IRQ 获取普通锁、设备线程进入全局协议锁，或 StarryOS syscall 绕过统一轮询调度。
+平台 IRQ、queue executor、protocol executor 和 socket 调用者承担不同执行职责。只有唯一 protocol executor 可以推进 smoltcp；下面的边界用于避免 hard IRQ 获取普通锁、queue owner 进入全局协议锁，或 StarryOS syscall 绕过 generation 调度。
 
-- runtime IRQ 和设备 worker 可以唤醒网络栈，但不直接调用 smoltcp poll。
-- 普通 socket 热路径只请求 poll；UDP close 会通过 `flush_egress()` 取得 required ownership 后同步排空。
-- `PollOwnership` 保证 `Service::poll()`、smoltcp `Interface::poll()` 和 `SocketSet` 处理串行；常规 owner 是 `net-poll` worker。
+- runtime IRQ 只激活目标 group 的同 CPU queue executor；queue executor 不调用 smoltcp poll。
+- 普通 socket 热路径只发布 generation；`flush_egress()` 等待 generation completion，不取得 protocol ownership。
+- `ProtocolPollRuntime` 保证 `Service::poll()`、smoltcp `Interface::poll()` 和 `SocketSet` 只由固定 CPU `net-protocol` task 串行处理。
 - StarryOS syscall 层不应持有 Linux ABI 锁后再进入设备锁。
 
 线程列表将 IRQ 和 Worker 限制为通知或 packet 搬运者，只有轮询所有权持有者进入 smoltcp。接口标识则保证这些异步路径和用户 ABI 引用同一个设备身份。

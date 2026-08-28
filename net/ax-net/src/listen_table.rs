@@ -371,7 +371,7 @@ impl ListenTable {
         };
         // The child has been queued before waking accept waiters. The
         // socket-set/service locks are still held by the caller, so defer
-        // the actual PollSet wake to the net worker outer loop.
+        // the actual PollSet wake to the protocol executor outer loop.
         crate::defer_poll_wake(wake_poll, IoEvents::IN);
     }
 }

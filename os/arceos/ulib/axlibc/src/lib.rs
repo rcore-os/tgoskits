@@ -6,12 +6,12 @@
 //!     - `smp`: Enable SMP (symmetric multiprocessing) support.
 //!     - `fp-simd`: Enable floating point and SIMD support.
 //! - Interrupts:
-//!     - `irq`: Enable interrupt handling support.
+//!     - Interrupt handling is always available.
 //! - Memory
 //!     - `alloc`: Enable dynamic memory allocation.
 //!     - `tls`: Enable thread-local storage.
 //! - Task management
-//!     - `multitask`: Enable multi-threading support.
+//!     - Multi-threading and timer-driven scheduling are always available.
 //! - Upperlayer stacks
 //!     - `fs`: Enable file system support.
 //!     - `net`: Enable networking support.
@@ -59,7 +59,6 @@ mod malloc;
 mod net;
 #[cfg(feature = "pipe")]
 mod pipe;
-#[cfg(feature = "multitask")]
 mod pthread;
 #[cfg(feature = "alloc")]
 mod strftime;
@@ -95,10 +94,6 @@ pub use self::net::{
 };
 #[cfg(feature = "pipe")]
 pub use self::pipe::pipe;
-#[cfg(feature = "multitask")]
-pub use self::pthread::{pthread_create, pthread_exit, pthread_join, pthread_self};
-#[cfg(feature = "multitask")]
-pub use self::pthread::{pthread_mutex_init, pthread_mutex_lock, pthread_mutex_unlock};
 #[cfg(feature = "alloc")]
 pub use self::strftime::strftime;
 #[cfg(feature = "fp-simd")]
@@ -107,6 +102,10 @@ pub use self::{
     errno::strerror,
     io::{read, writev},
     mktime::mktime,
+    pthread::{
+        pthread_create, pthread_exit, pthread_join, pthread_mutex_init, pthread_mutex_lock,
+        pthread_mutex_unlock, pthread_self,
+    },
     rand::{rand, random, srand},
     resource::{getrlimit, setrlimit},
     setjmp::{longjmp, setjmp},

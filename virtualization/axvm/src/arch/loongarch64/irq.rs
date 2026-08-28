@@ -11,6 +11,34 @@ use axvm_types::InterruptTriggerMode;
 
 const PCH_PIC_INPUT_COUNT: usize = 64;
 
+pub(crate) struct LoongArchPchPicOutputSink {
+    vm_id: usize,
+}
+
+impl LoongArchPchPicOutputSink {
+    pub(crate) const fn new(vm_id: usize) -> Self {
+        Self { vm_id }
+    }
+}
+
+impl axdevice::PchPicOutputSink for LoongArchPchPicOutputSink {
+    fn publish(&self, event: axdevice::PchPicOutputEvent) -> axdevice::DeviceManagerResult {
+        if !event.asserted {
+            trace!(
+                "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
+                self.vm_id, event.vector
+            );
+            return Ok(());
+        }
+        crate::runtime::vcpus::queue_interrupt(self.vm_id, 0, event.vector).map_err(|error| {
+            axdevice::DeviceManagerError::InvalidState {
+                operation: "publish LoongArch PCH-PIC output",
+                detail: std::format!("{error}"),
+            }
+        })
+    }
+}
+
 struct LoongArchPchPicIrqSink {
     vm_id: usize,
     pic: Arc<axdevice::LoongArchPchPic>,

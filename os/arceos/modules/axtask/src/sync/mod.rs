@@ -10,7 +10,6 @@ pub mod bridge;
 mod context;
 #[cfg(feature = "lockdep")]
 mod lockdep;
-#[cfg(feature = "multitask")]
 mod mutex;
 mod spin;
 

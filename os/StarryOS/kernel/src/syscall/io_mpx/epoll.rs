@@ -261,8 +261,8 @@ pub fn sys_epoll_pwait2(
     do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
 }
 
-#[cfg(test)]
-pub(crate) fn epoll_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn epoll_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
 
     use linux_raw_sys::general::{EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
@@ -278,7 +278,15 @@ pub(crate) fn epoll_validation_rules_hold_for_test() -> bool {
     }
 
     // Test EPOLL_CLOEXEC flag
-    assert!(EPOLL_CLOEXEC != 0);
+    const { assert!(EPOLL_CLOEXEC != 0) }
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn epoll_validation_rules_hold() {
+        assert!(super::epoll_validation_rules_hold_for_test());
+    }
 }

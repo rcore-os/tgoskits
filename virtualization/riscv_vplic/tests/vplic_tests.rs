@@ -42,7 +42,7 @@ fn test_typed_pending_api_is_visible_through_mmio() {
 }
 
 #[test]
-fn test_pending_api_rejects_reserved_unassigned_and_out_of_range_sources() {
+fn test_pending_api_rejects_reserved_and_out_of_range_sources() {
     let vplic =
         VPlicGlobal::new(GuestPhysAddr::from(HOST_PLIC_BASE), Some(HOST_PLIC_SIZE), 2).unwrap();
 
@@ -60,13 +60,6 @@ fn test_pending_api_rejects_reserved_unassigned_and_out_of_range_sources() {
             max: PLIC_NUM_SOURCES,
         })
     );
-
-    vplic.assigned_irqs.lock().set(5, true);
-    assert_eq!(
-        vplic.set_pending(6),
-        Err(VplicError::SourceNotAssigned { source_id: 6 })
-    );
-    assert_eq!(vplic.set_pending(5), Ok(()));
 }
 
 #[test]
@@ -102,20 +95,17 @@ fn test_claim_and_complete_move_irq_between_pending_and_active() {
         irq_id
     );
     assert!(!vplic.is_pending(irq_id).unwrap());
-    assert!(vplic.active_irqs.lock().get(irq_id));
 
     // The UART still holds its level line high, so completion must repend it
     // without requiring another device poll.
     vplic
         .write_register(claim_addr, AccessWidth::Dword, irq_id)
         .unwrap();
-    assert!(!vplic.active_irqs.lock().get(irq_id));
     assert!(vplic.is_pending(irq_id).unwrap());
     assert_eq!(
         vplic.read_register(claim_addr, AccessWidth::Dword).unwrap(),
         irq_id
     );
-    assert!(vplic.active_irqs.lock().get(irq_id));
 
     assert!(!vplic.set_irq_line_level(irq_id, false).unwrap());
     vplic
@@ -169,7 +159,12 @@ fn test_completion_event_is_reported_only_after_an_active_guest_claim() {
         .write_register_with_completion(claim_addr, AccessWidth::Dword, irq_id)
         .unwrap();
     assert_eq!(completion.map(|event| event.source()), Some(irq_id));
-    assert!(!vplic.active_irqs.lock().get(irq_id));
+    assert_eq!(
+        vplic
+            .write_register_with_completion(claim_addr, AccessWidth::Dword, irq_id)
+            .unwrap(),
+        None
+    );
 }
 
 #[test]

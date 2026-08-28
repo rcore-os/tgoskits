@@ -258,6 +258,36 @@ fn starry_system_runner_keeps_slow_case_timeouts_explicit() {
 }
 
 #[test]
+fn pagecache_cap_cleanup_uses_disposable_qemu_rootfs() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source_path =
+        workspace_root.join("test-suit/starryos/qemu/system/syscall-test-pagecache-cap/src/main.c");
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+
+    assert!(
+        source.contains("g_maps[i] = m;")
+            && source.contains("#define DIR \"/root/pgcachecap\"")
+            && !source.contains("munmap(")
+            && !source.contains("unlink(")
+            && !source.contains("rmdir("),
+        "{} must retain its mappings in a unique directory and avoid one cleanup syscall per \
+         fixture",
+        source_path.display()
+    );
+
+    let qemu_run_path = workspace_root.join("scripts/axbuild/src/starry/test/qemu_run.rs");
+    let qemu_run = fs::read_to_string(&qemu_run_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", qemu_run_path.display()));
+    assert!(
+        qemu_run.contains("write_policy: rootfs::RootfsWritePolicy::Discard"),
+        "{} must discard guest writes after each QEMU case so pagecache-cap can leave its unique \
+         fixture directory to snapshot teardown",
+        qemu_run_path.display()
+    );
+}
+
+#[test]
 fn starry_system_runner_bounds_namespace_cleanup_and_covers_raw_waiters() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let runner_path =

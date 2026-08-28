@@ -121,8 +121,8 @@ pub fn sys_arch_prctl(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn thread_arch_prctl_code_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn thread_arch_prctl_code_rules_hold_for_test() -> bool {
     // Test ArchPrctlCode enum values
     #[cfg(target_arch = "x86_64")]
     {
@@ -141,4 +141,12 @@ pub(crate) fn thread_arch_prctl_code_rules_hold_for_test() -> bool {
     }
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn thread_arch_prctl_code_rules_hold() {
+        assert!(super::thread_arch_prctl_code_rules_hold_for_test());
+    }
 }

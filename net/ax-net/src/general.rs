@@ -11,8 +11,8 @@
 //! The helpers in this module bridge poll-based readiness with synchronous
 //! socket operations. They should only wait on protocol-specific pollers and
 //! must not drive the smoltcp interface directly. Progress is requested through
-//! the net-poll worker so application threads do not become temporary protocol
-//! stack owners.
+//! the unique protocol executor so application threads do not become temporary
+//! protocol stack owners.
 
 use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
@@ -210,7 +210,8 @@ impl GeneralOptions {
         Ok(())
     }
 
-    /// Registers a waker with the service/device path for the bound interface.
+    /// Publishes protocol work and registers any protocol deadline for this
+    /// socket. Queue IRQs independently schedule their exact poll group.
     pub fn register_waker(&self, waker: &Waker) {
         get_service().register_waker(self.device_binding(), waker);
     }

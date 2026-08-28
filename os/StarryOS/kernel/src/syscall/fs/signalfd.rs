@@ -67,20 +67,20 @@ pub fn sys_signalfd4(
     add_file_like(signalfd as _, flags.contains(SignalfdFlags::CLOEXEC)).map(|fd| fd as _)
 }
 
-#[cfg(test)]
-pub(crate) fn signalfd_flags_validation_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn signalfd_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
     // Test SignalfdFlags validation
     let valid_flags = 0u32;
     assert!(SignalfdFlags::from_bits(valid_flags).is_some());
 
-    let cloexec_only = O_CLOEXEC as u32;
+    let cloexec_only = O_CLOEXEC;
     assert!(SignalfdFlags::from_bits(cloexec_only).is_some());
 
-    let nonblock_only = O_NONBLOCK as u32;
+    let nonblock_only = O_NONBLOCK;
     assert!(SignalfdFlags::from_bits(nonblock_only).is_some());
 
-    let all_valid = O_CLOEXEC as u32 | O_NONBLOCK as u32;
+    let all_valid = O_CLOEXEC | O_NONBLOCK;
     assert!(SignalfdFlags::from_bits(all_valid).is_some());
 
     // Invalid flag should return None
@@ -88,4 +88,12 @@ pub(crate) fn signalfd_flags_validation_rules_hold_for_test() -> bool {
     assert!(SignalfdFlags::from_bits(invalid_flags).is_none());
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn signalfd_flags_validation_rules_hold() {
+        assert!(super::signalfd_flags_validation_rules_hold_for_test());
+    }
 }
