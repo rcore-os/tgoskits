@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use ax_hal::cache::TlbShootdownError;
+use ax_hal::{cache::TlbShootdownError, paging::DeferredPageTableFrames};
 use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
 
 /// One page-table mutation whose resources cannot be reclaimed before every
@@ -13,6 +13,7 @@ use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
 pub struct TlbGather {
     ranges: Vec<VirtAddrRange>,
     deferred_frames: Vec<PhysAddr>,
+    deferred_page_tables: Vec<DeferredPageTableFrames>,
     completed: bool,
 }
 
@@ -21,6 +22,7 @@ impl TlbGather {
         Self {
             ranges: Vec::new(),
             deferred_frames: Vec::new(),
+            deferred_page_tables: Vec::new(),
             completed: false,
         }
     }
@@ -36,8 +38,16 @@ impl TlbGather {
         self.deferred_frames.push(frame);
     }
 
+    pub(crate) fn defer_page_tables(&mut self, tables: DeferredPageTableFrames) {
+        if !tables.is_empty() {
+            self.deferred_page_tables.push(tables);
+        }
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
-        self.ranges.is_empty() && self.deferred_frames.is_empty()
+        self.ranges.is_empty()
+            && self.deferred_frames.is_empty()
+            && self.deferred_page_tables.is_empty()
     }
 
     fn finish(self) -> Result<(), (Self, TlbShootdownError)> {
@@ -53,9 +63,11 @@ impl Drop for TlbGather {
     fn drop(&mut self) {
         if !self.completed && !self.is_empty() {
             error!(
-                "dropping unconfirmed stage-1 TLB gather: ranges={:?}, deferred_frames={}",
+                "dropping unconfirmed stage-1 TLB gather: ranges={:?}, deferred_frames={}, \
+                 deferred_page_tables={}",
                 self.ranges,
-                self.deferred_frames.len()
+                self.deferred_frames.len(),
+                self.deferred_page_tables.len(),
             );
         }
     }
@@ -131,6 +143,12 @@ fn complete_tlb_gather_with<E>(
             return Err((gather, error));
         }
     }
+    for tables in gather.deferred_page_tables.drain(..) {
+        // SAFETY: every requested range has completed synchronous local and
+        // remote invalidation, so no hardware walker can retain the detached
+        // hierarchy.
+        unsafe { tables.reclaim() };
+    }
     for frame in gather.deferred_frames.drain(..) {
         reclaim(frame);
     }
@@ -146,6 +164,13 @@ pub(crate) fn resolve_published_mutation<R>(
         error!("published stage-1 mutation awaits quarantined TLB confirmation: {error}");
     }
     operation_result
+}
+
+pub(crate) fn resolve_confirmed_mutation<R>(
+    operation_result: crate::MmResult<R>,
+    shootdown_result: crate::MmResult,
+) -> crate::MmResult<R> {
+    shootdown_result.and(operation_result)
 }
 
 #[cfg(test)]
@@ -214,5 +239,18 @@ mod tests {
         );
 
         assert_eq!(result, Ok(17));
+    }
+
+    #[test]
+    fn confirmed_mutation_reports_failed_confirmation() {
+        let result = resolve_confirmed_mutation(
+            Ok(17usize),
+            Err(crate::MmError::TlbShootdown(TlbShootdownError::Timeout)),
+        );
+
+        assert_eq!(
+            result,
+            Err(crate::MmError::TlbShootdown(TlbShootdownError::Timeout))
+        );
     }
 }

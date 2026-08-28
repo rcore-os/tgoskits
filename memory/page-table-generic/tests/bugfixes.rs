@@ -215,12 +215,11 @@ fn test_walk_address_comparison() {
     println!("✅ 地址比较逻辑测试通过！");
 }
 
-/// 测试unmap递归回收逻辑
+/// 测试unmap递归保留逻辑
 ///
-/// Bug描述：unmap_range_recursive中遇到无效页表项时错误地设置can_reclaim=false，
-/// 实际上无效项不应该影响回收判断
+/// 已发布的页表不能在跨 CPU/硬件 walker 失效确认前回收中间页表帧。
 #[test]
-fn test_unmap_reclaim_logic() {
+fn safe_range_unmap_preserves_intermediate_tables_until_owner_teardown() {
     let mut pg = PageTable::<T4kL4, TrackedFram4k>::new(TrackedFram4k::new()).unwrap();
 
     let base_addr = 0x10000000usize;
@@ -247,11 +246,116 @@ fn test_unmap_reclaim_logic() {
     let allocated_after = allocator.allocated_count();
     println!("取消映射后分配的帧数: {}", allocated_after);
 
-    // 验证空的子页表帧被正确回收
-    // 注意：根页表帧不会被回收，所以应该只剩下根帧
-    assert!(allocated_after < allocated_before, "空的子页表帧应该被回收");
+    assert_eq!(
+        allocated_after, allocated_before,
+        "safe unmap must retain intermediate tables without a shootdown confirmation token"
+    );
 
-    println!("✅ unmap回收逻辑测试通过！");
+    drop(pg);
+    assert_eq!(
+        allocator.allocated_count(),
+        0,
+        "the page-table owner must reclaim the retained hierarchy at teardown"
+    );
+}
+
+#[test]
+fn safe_leaf_unmap_preserves_intermediate_tables_until_owner_teardown() {
+    let allocator = TrackedFram4k::new();
+    let mut page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    let vaddr = VirtAddr::from_usize(0x1000_0000);
+
+    page_table
+        .map_page(
+            vaddr,
+            PhysAddr::from_usize(0x2000_0000),
+            0x1000,
+            PteImpl::user_mode_config(),
+        )
+        .unwrap();
+    let allocated_before_unmap = allocator.allocated_count();
+
+    page_table.unmap_page(vaddr).unwrap();
+
+    assert_eq!(allocator.allocated_count(), allocated_before_unmap);
+    drop(page_table);
+    assert_eq!(allocator.allocated_count(), 0);
+}
+
+#[test]
+fn deferred_unmap_retains_empty_intermediate_tables_until_confirmation() {
+    let allocator = TrackedFram4k::new();
+    let mut page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    let vaddr = VirtAddr::from_usize(0x1000_0000);
+
+    page_table
+        .map_page(
+            vaddr,
+            PhysAddr::from_usize(0x2000_0000),
+            0x1000,
+            PteImpl::user_mode_config(),
+        )
+        .unwrap();
+    let allocated_before_unmap = allocator.allocated_count();
+
+    let (_, _, page_size, deferred_tables) = page_table.unmap_page_deferred(vaddr).unwrap();
+
+    assert_eq!(page_size, 0x1000);
+    assert!(!deferred_tables.is_empty());
+    assert_eq!(
+        allocator.allocated_count(),
+        allocated_before_unmap,
+        "detached page-table frames must stay owned until TLB confirmation"
+    );
+
+    // SAFETY: this unit test models completion of the remote TLB confirmation.
+    unsafe { deferred_tables.reclaim() };
+    assert_eq!(
+        allocator.allocated_count(),
+        1,
+        "only the root page-table frame should remain after confirmation"
+    );
+}
+
+#[test]
+fn failed_region_map_keeps_detached_prefix_tables_until_owner_teardown() {
+    let allocator = TrackedFram4k::new();
+    let mut page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    let prefix = VirtAddr::from_usize(0x1f_f000);
+    let conflict = VirtAddr::from_usize(0x20_0000);
+    let conflict_paddr = PhysAddr::from_usize(0x3000_0000);
+
+    page_table
+        .map_page(
+            conflict,
+            conflict_paddr,
+            0x1000,
+            PteImpl::user_mode_config(),
+        )
+        .unwrap();
+    let allocated_before_attempt = allocator.allocated_count();
+
+    assert!(matches!(
+        page_table.map_region(
+            prefix,
+            |vaddr| PhysAddr::from_usize(0x4000_0000 + (vaddr - prefix)),
+            0x2000,
+            PteImpl::user_mode_config(),
+            false,
+        ),
+        Err(PagingError::MappingConflict { .. })
+    ));
+
+    assert!(matches!(
+        page_table.query(prefix),
+        Err(PagingError::NotMapped)
+    ));
+    assert_eq!(page_table.query(conflict).unwrap().0, conflict_paddr);
+    assert_eq!(
+        allocator.allocated_count(),
+        allocated_before_attempt + 1,
+        "rollback must retain the now-empty prefix table instead of freeing it before shootdown"
+    );
 }
 
 /// 测试部分取消映射不影响其他映射

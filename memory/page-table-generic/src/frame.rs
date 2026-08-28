@@ -432,6 +432,64 @@ where
         ))
     }
 
+    pub(crate) fn take_occupied_leaf_deferred(
+        &mut self,
+        vaddr: VirtAddr,
+        level: usize,
+        deferred: &mut crate::DeferredPageTableFrames<A>,
+    ) -> PagingResult<(T::P, usize)> {
+        let index = Self::virt_to_index(vaddr, level);
+        let entry = self.as_slice()[index];
+        if entry.unused() {
+            return Err(PagingError::not_mapped());
+        }
+
+        if entry.huge(level > 1) || level == 1 {
+            self.as_slice_mut()[index].clear();
+            return Ok((entry, level));
+        }
+        if !entry.present() {
+            return Err(PagingError::hierarchy_error(
+                "Non-present intermediate entry is not a leaf",
+            ));
+        }
+
+        let child_paddr = entry.paddr(true);
+        let mut child = Self::from_paddr(child_paddr, self.allocator.clone());
+        let removed = child.take_occupied_leaf_deferred(vaddr, level - 1, deferred)?;
+        if child.as_slice().iter().all(PageTableEntry::unused) {
+            self.as_slice_mut()[index].clear();
+            deferred.push(child_paddr);
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn take_occupied_leaf_preserving_tables(
+        &mut self,
+        vaddr: VirtAddr,
+        level: usize,
+    ) -> PagingResult<(T::P, usize)> {
+        let index = Self::virt_to_index(vaddr, level);
+        let entry = self.as_slice()[index];
+        if entry.unused() {
+            return Err(PagingError::not_mapped());
+        }
+
+        if entry.huge(level > 1) || level == 1 {
+            self.as_slice_mut()[index].clear();
+            return Ok((entry, level));
+        }
+        if !entry.present() {
+            return Err(PagingError::hierarchy_error(
+                "Non-present intermediate entry is not a leaf",
+            ));
+        }
+
+        let child_paddr = entry.paddr(true);
+        let mut child = Self::from_paddr(child_paddr, self.allocator.clone());
+        child.take_occupied_leaf_preserving_tables(vaddr, level - 1)
+    }
+
     /// 递归释放指定的单个页表项
     ///
     /// 如果该PTE指向有效的子页表，则递归释放该子页表及其所有子帧

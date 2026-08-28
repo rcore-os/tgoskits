@@ -3,6 +3,8 @@
 const ASPACE: &str = include_str!("../src/mm/aspace/mod.rs");
 const COW_BACKEND: &str = include_str!("../src/mm/aspace/backend/cow.rs");
 const FILE_BACKEND: &str = include_str!("../src/mm/aspace/backend/file.rs");
+const LINEAR_BACKEND: &str = include_str!("../src/mm/aspace/backend/linear.rs");
+const SHARED_BACKEND: &str = include_str!("../src/mm/aspace/backend/shared.rs");
 const MEMFD: &str = include_str!("../src/file/memfd.rs");
 const TLB: &str = include_str!("../src/mm/aspace/tlb.rs");
 
@@ -144,6 +146,106 @@ fn moved_source_backends_survive_unconfirmed_tlb_invalidation() {
         .expect("mremap must relocate the source PTEs");
 
     assert!(retain < pte_move);
+}
+
+#[test]
+fn published_leaf_removal_defers_intermediate_page_table_frames() {
+    for (source, signature) in [
+        (COW_BACKEND, "fn unmap("),
+        (FILE_BACKEND, "fn unmap("),
+        (LINEAR_BACKEND, "fn unmap("),
+        (SHARED_BACKEND, "fn unmap("),
+    ] {
+        let unmap = function_body(source, signature);
+        assert_ordered(
+            unmap,
+            &[
+                "prepare_page_table_reclaims",
+                "unmap_page_deferred",
+                "defer_page_tables",
+            ],
+        );
+    }
+
+    let file_eviction = function_body(FILE_BACKEND, "fn unmap_evicted_page(");
+    assert_ordered(
+        file_eviction,
+        &[
+            "prepare_page_table_reclaims",
+            "unmap_page_deferred",
+            "defer_page_tables",
+            "record_range",
+        ],
+    );
+
+    let move_pages = function_body(ASPACE, "fn move_pages_inner(");
+    assert_ordered(
+        move_pages,
+        &[
+            "prepare_page_table_reclaims",
+            "unmap_page_deferred",
+            "defer_page_tables",
+        ],
+    );
+
+    let shared_rollback = function_body(SHARED_BACKEND, "fn rollback_mapped_prefix(");
+    assert_ordered(
+        shared_rollback,
+        &["unmap_page_deferred", "defer_page_tables", "record_range"],
+    );
+
+    let move_rollback = function_body(ASPACE, "fn rollback_moved_pages(");
+    assert_ordered(move_rollback, &["unmap_page_deferred", "defer_page_tables"]);
+
+    assert!(TLB.contains("deferred_page_tables"));
+    assert!(TLB.contains("unsafe { tables.reclaim() }"));
+}
+
+#[test]
+fn failed_cow_population_rolls_back_its_published_prefix() {
+    let populate_run = function_body(COW_BACKEND, "fn populate_new_run(");
+    let reserve_frames = source_offset(populate_run, "prepare_deferred_frames");
+    let reserve_tables = source_offset(populate_run, "prepare_page_table_reclaims");
+    let populate = source_offset(populate_run, "let result = (||");
+    let rollback = source_offset(populate_run, "rollback_populated_prefix");
+    assert!(reserve_frames < populate);
+    assert!(reserve_tables < populate);
+    assert!(populate < rollback);
+
+    let rollback = function_body(COW_BACKEND, "fn rollback_populated_prefix(");
+    assert_ordered(
+        rollback,
+        &[
+            "unmap_page_deferred",
+            "defer_page_tables",
+            "remove_charge",
+            "defer_frame",
+            "record_range",
+        ],
+    );
+}
+
+fn assert_ordered(source: &str, needles: &[&str]) {
+    let mut previous = 0usize;
+    for (index, needle) in needles.iter().enumerate() {
+        let offset = source
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing ordered source fragment: {needle}"));
+        if index != 0 {
+            assert!(
+                previous < offset,
+                "source fragment {needle:?} must follow {:?}",
+                needles[index - 1]
+            );
+        }
+        previous = offset;
+    }
+}
+
+fn source_offset(source: &str, needle: &str) -> usize {
+    source
+        .find(needle)
+        .unwrap_or_else(|| panic!("missing source fragment: {needle}"))
 }
 
 fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {

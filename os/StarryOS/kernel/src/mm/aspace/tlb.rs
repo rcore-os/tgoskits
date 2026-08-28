@@ -4,7 +4,10 @@ use alloc::vec::Vec;
 
 use ax_fs_ng::{file::PageCache, vfs::CachedFile};
 use ax_memory_addr::{VirtAddr, VirtAddrRange};
-use ax_runtime::hal::cache::TlbShootdownError;
+use ax_runtime::hal::{
+    cache::TlbShootdownError,
+    paging::DeferredPageTableFrames,
+};
 
 use super::{Backend, backend::DeferredFrameRelease};
 
@@ -20,6 +23,7 @@ pub struct TlbGather {
 struct DeferredResources {
     retained_backends: InlineStorage<Backend>,
     deferred_frames: InlineStorage<DeferredFrameRelease>,
+    deferred_page_tables: InlineStorage<DeferredPageTableFrames>,
     retained_file_pages: Vec<RetainedFilePage>,
 }
 
@@ -34,6 +38,7 @@ impl DeferredResources {
         Self {
             retained_backends: InlineStorage::new(),
             deferred_frames: InlineStorage::new(),
+            deferred_page_tables: InlineStorage::new(),
             retained_file_pages: Vec::new(),
         }
     }
@@ -41,10 +46,21 @@ impl DeferredResources {
     fn is_empty(&self) -> bool {
         self.retained_backends.is_empty()
             && self.deferred_frames.is_empty()
+            && self.deferred_page_tables.is_empty()
             && self.retained_file_pages.is_empty()
     }
 
     fn release(mut self) {
+        if let Some(tables) = self.deferred_page_tables.first.take() {
+            // SAFETY: TlbGather releases resources only after every selected
+            // CPU confirms invalidation of the detached hierarchy.
+            unsafe { tables.reclaim() };
+        }
+        for tables in self.deferred_page_tables.overflow.drain(..) {
+            // SAFETY: as above, synchronous shootdown confirmation precedes
+            // every page-table-frame reclaim in this release transaction.
+            unsafe { tables.reclaim() };
+        }
         if let Some(frame) = self.deferred_frames.first.take() {
             frame.release();
         }
@@ -189,6 +205,23 @@ impl TlbGather {
         self.deferred_mut().deferred_frames.push_reserved(frame);
     }
 
+    pub(super) fn prepare_page_table_reclaims(
+        &mut self,
+        count: usize,
+    ) -> Result<(), alloc::collections::TryReserveError> {
+        self.deferred_mut()
+            .deferred_page_tables
+            .try_reserve(count)
+    }
+
+    pub(super) fn defer_page_tables(&mut self, tables: DeferredPageTableFrames) {
+        if !tables.is_empty() {
+            self.deferred_mut()
+                .deferred_page_tables
+                .push_reserved(tables);
+        }
+    }
+
     /// Transfers one evicted page-cache frame into this transaction before any
     /// later fallible page-table work can return to the caller.
     pub(super) fn retain_file_page(
@@ -257,10 +290,11 @@ impl Drop for TlbGather {
                 .expect("an unfinished TLB gather must own deferred resources");
             error!(
                 "dropping unconfirmed Starry TLB gather: ranges={}, backends={}, \
-                 frames={}, file_pages={}",
+                 frames={}, page_tables={}, file_pages={}",
                 self.ranges.iter().count(),
                 deferred.retained_backends.iter().count(),
                 deferred.deferred_frames.iter().count(),
+                deferred.deferred_page_tables.iter().count(),
                 deferred.retained_file_pages.len(),
             );
         }

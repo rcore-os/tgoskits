@@ -5,6 +5,8 @@ use alloc::{
     vec::Vec,
 };
 use core::slice;
+#[cfg(all(test, axtest))]
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_fs_ng::vfs::FileBackend;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
@@ -105,6 +107,24 @@ impl FrameTableRefCount {
 }
 
 static FRAME_TABLE: IrqMutex<FrameTableRefCount> = IrqMutex::new(FrameTableRefCount::new());
+
+#[cfg(all(test, axtest))]
+static COW_ALLOCATIONS_BEFORE_FAILURE: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+#[cfg(all(test, axtest))]
+fn cow_frame_allocation_should_fail() -> bool {
+    match COW_ALLOCATIONS_BEFORE_FAILURE.try_update(
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |remaining| (remaining != usize::MAX).then_some(remaining.saturating_sub(1)),
+    ) {
+        Ok(0) => {
+            COW_ALLOCATIONS_BEFORE_FAILURE.store(usize::MAX, Ordering::Relaxed);
+            true
+        }
+        Ok(_) | Err(_) => false,
+    }
+}
 
 fn cow_file_max_read_len(
     file_len: u64,
@@ -265,6 +285,10 @@ impl CowBackend {
     }
 
     fn alloc_new_frame(&self, zeroed: bool) -> StarryResult<PhysAddr> {
+        #[cfg(all(test, axtest))]
+        if cow_frame_allocation_should_fail() {
+            return Err(StarryError::NoMemory);
+        }
         let frame = alloc_frame(zeroed, self.size)?;
         FRAME_TABLE.lock().init_frame(frame);
         Ok(frame)
@@ -277,7 +301,7 @@ impl CowBackend {
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> StarryResult {
+    ) -> StarryResult<PhysAddr> {
         let kind = self.rss_kind_for_fault(access_flags);
         let frame = self.alloc_new_frame(true)?;
 
@@ -335,66 +359,122 @@ impl CowBackend {
         if let Some(charge) = prepared_charge {
             charge.commit();
         }
-        Ok(())
+        Ok(frame)
     }
 
-    /// Fill a run of consecutive not-mapped FILE-backed pages with a single
-    /// `read_at` (readahead), then allocate + map each page.
-    fn alloc_file_run(
+    fn rollback_populated_prefix(
+        &self,
+        mapped: &[(VirtAddr, PhysAddr)],
+        acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
+        pt: &mut PageTable,
+    ) {
+        if mapped.is_empty() {
+            return;
+        }
+
+        for &(addr, frame) in mapped.iter().rev() {
+            let (_, _, _, deferred_page_tables) = pt
+                .unmap_page_deferred(addr)
+                .expect("a COW page installed by this transaction must remain occupied");
+            gather.defer_page_tables(deferred_page_tables);
+            if let Some(acct) = acct {
+                let removed = acct.remove_charge(addr);
+                debug_assert!(removed.is_some());
+            }
+            let frame_ref = FRAME_TABLE
+                .lock()
+                .get_frame_ref(frame)
+                .expect("a COW page installed by this transaction must retain its frame owner");
+            gather.defer_frame(DeferredFrameRelease::new(frame, self.size, frame_ref));
+        }
+        let start = mapped.first().expect("checked non-empty prefix").0;
+        let end = mapped.last().expect("checked non-empty prefix").0 + self.size;
+        gather.record_range(VirtAddrRange::new(start, end));
+    }
+
+    /// Populates a consecutive run of absent pages transactionally. File-backed
+    /// runs share one readahead; anonymous runs allocate zeroed pages.
+    fn populate_new_run(
         &self,
         run: &[VirtAddr],
         flags: MappingFlags,
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult<usize> {
-        let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
-            for &addr in run {
-                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-            }
-            return Ok(run.len());
-        };
-        let ps = self.size;
-        let v0 = run[0];
-        if v0.as_usize() < file_vaddr_base.as_usize() {
-            for &addr in run {
-                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-            }
-            return Ok(run.len());
+        if run.is_empty() {
+            return Ok(0);
         }
-        let n = run.len();
-        let total = n * ps;
-        let file_read_offset = file_start + (v0.as_usize() - file_vaddr_base.as_usize()) as u64;
-        let max_read = cow_file_max_read(file, *file_end, file_read_offset, total)?;
-        let mut buf = alloc::vec![0u8; total];
-        if max_read > 0 {
-            file.read_at(&mut &mut buf[..max_read], file_read_offset)?;
-        }
-        let kind = self.rss_kind_for_fault(access_flags);
-        for (k, &addr) in run.iter().enumerate() {
-            let frame = self.alloc_new_frame(false)?;
-            let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
-            dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
-            let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
-            let prepared_charge = match acct {
-                Some(acct) => match acct.prepare_new_charge(addr, kind) {
-                    Ok(charge) => Some(charge),
-                    Err(error) => {
-                        self.deinit_frame(frame);
-                        return Err(error);
-                    }
-                },
-                None => None,
+        let mut mapped = Vec::new();
+        mapped
+            .try_reserve(run.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        gather
+            .prepare_deferred_frames(run.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        gather
+            .prepare_page_table_reclaims(run.len())
+            .map_err(|_| StarryError::NoMemory)?;
+
+        let result = (|| -> StarryResult {
+            let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
+                for &addr in run {
+                    let frame = self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
+                    mapped.push((addr, frame));
+                }
+                return Ok(());
             };
-            if let Err(err) = pt.map_page(addr, frame, self.size, pte_flags) {
-                self.deinit_frame(frame);
-                return Err(err.into());
+            let ps = self.size;
+            let v0 = run[0];
+            if v0.as_usize() < file_vaddr_base.as_usize() {
+                for &addr in run {
+                    let frame = self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
+                    mapped.push((addr, frame));
+                }
+                return Ok(());
             }
-            if let Some(charge) = prepared_charge {
-                charge.commit();
+            let n = run.len();
+            let total = n * ps;
+            let file_read_offset = file_start + (v0.as_usize() - file_vaddr_base.as_usize()) as u64;
+            let max_read = cow_file_max_read(file, *file_end, file_read_offset, total)?;
+            let mut buf = alloc::vec![0u8; total];
+            if max_read > 0 {
+                file.read_at(&mut &mut buf[..max_read], file_read_offset)?;
             }
+            let kind = self.rss_kind_for_fault(access_flags);
+            for (k, &addr) in run.iter().enumerate() {
+                let frame = self.alloc_new_frame(false)?;
+                let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
+                dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
+                let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+                let prepared_charge = match acct {
+                    Some(acct) => match acct.prepare_new_charge(addr, kind) {
+                        Ok(charge) => Some(charge),
+                        Err(error) => {
+                            self.deinit_frame(frame);
+                            return Err(error);
+                        }
+                    },
+                    None => None,
+                };
+                if let Err(err) = pt.map_page(addr, frame, self.size, pte_flags) {
+                    self.deinit_frame(frame);
+                    return Err(err.into());
+                }
+                if let Some(charge) = prepared_charge {
+                    charge.commit();
+                }
+                mapped.push((addr, frame));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.rollback_populated_prefix(&mapped, acct, gather, pt);
+            return Err(error);
         }
-        Ok(n)
+        Ok(mapped.len())
     }
 
     fn handle_cow_fault(
@@ -715,9 +795,14 @@ impl BackendOps for CowBackend {
         gather
             .prepare_deferred_frames(mapped.len())
             .map_err(|_| StarryError::NoMemory)?;
+        gather
+            .prepare_page_table_reclaims(mapped.len())
+            .map_err(|_| StarryError::NoMemory)?;
         for (addr, frame, frame_ref) in mapped {
-            pt.unmap_page(addr)
+            let (_, _, _, deferred_page_tables) = pt
+                .unmap_page_deferred(addr)
                 .expect("a preflighted COW page must remain mapped under the address-space lock");
+            gather.defer_page_tables(deferred_page_tables);
             if let Some(acct) = acct {
                 acct.remove_charge(addr);
             }
@@ -765,25 +850,20 @@ impl BackendOps for CowBackend {
                     i += 1;
                 }
                 Err(PagingError::NotMapped) => {
-                    if self.file.is_some() {
-                        let run_start = i;
-                        while i < addrs.len()
-                            && matches!(pt.query(addrs[i]), Err(PagingError::NotMapped))
-                        {
-                            i += 1;
-                        }
-                        pages += self.alloc_file_run(
-                            &addrs[run_start..i],
-                            flags,
-                            access_flags,
-                            acct,
-                            pt,
-                        )?;
-                    } else {
-                        self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-                        pages += 1;
+                    let run_start = i;
+                    while i < addrs.len()
+                        && matches!(pt.query(addrs[i]), Err(PagingError::NotMapped))
+                    {
                         i += 1;
                     }
+                    pages += self.populate_new_run(
+                        &addrs[run_start..i],
+                        flags,
+                        access_flags,
+                        acct,
+                        gather,
+                        pt,
+                    )?;
                 }
                 Err(_) => return Err(StarryError::BadAddress),
             }
@@ -1069,6 +1149,53 @@ fn cow_clone_failure_rollback_rules_hold_for_test() -> bool {
     cow_clone_map_failure_restores_resources()
 }
 
+#[cfg(all(test, axtest))]
+fn cow_populate_failure_rolls_back_published_prefix_for_test() -> bool {
+    let start = VirtAddr::from(0x5000_0000);
+    let second_page = start + PAGE_SIZE_4K;
+    let mapping_size = 2 * PAGE_SIZE_4K;
+    let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+    let backend = CowBackend {
+        start,
+        size: PAGE_SIZE_4K,
+        file: None,
+        name: Some("[cow-populate-rollback-test]".to_string()),
+        shared: false,
+    };
+
+    let Ok(mut aspace) = AddrSpace::new_empty(start, mapping_size) else {
+        return false;
+    };
+    if aspace
+        .map(
+            start,
+            mapping_size,
+            flags,
+            false,
+            Backend::Cow(backend),
+        )
+        .is_err()
+    {
+        return false;
+    }
+    let frames_before = FRAME_TABLE.lock().table.len();
+    COW_ALLOCATIONS_BEFORE_FAILURE.store(1, Ordering::Relaxed);
+    let result = aspace.populate_area(start, mapping_size, MappingFlags::READ);
+    COW_ALLOCATIONS_BEFORE_FAILURE.store(usize::MAX, Ordering::Relaxed);
+    let frames_after = FRAME_TABLE.lock().table.len();
+
+    matches!(result, Err(StarryError::NoMemory))
+        && matches!(aspace.pt.query_occupied(start), Err(PagingError::NotMapped))
+        && matches!(
+            aspace.pt.query_occupied(second_page),
+            Err(PagingError::NotMapped)
+        )
+        && aspace.rss.charge_kind(start).is_none()
+        && aspace.rss.charge_kind(second_page).is_none()
+        && aspace.rss.rss_total_pages() == 0
+        && frames_after == frames_before
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(all(test, not(axtest)))]
@@ -1087,5 +1214,11 @@ mod tests {
     #[axtest::axtest]
     fn cow_clone_failure_rollback_rules_hold() {
         assert!(super::cow_clone_failure_rollback_rules_hold_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn cow_populate_failure_rolls_back_published_prefix() {
+        assert!(super::cow_populate_failure_rolls_back_published_prefix_for_test());
     }
 }

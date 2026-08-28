@@ -136,10 +136,14 @@ impl FileBackendInner {
             Err(error) => return Err(error.into()),
         };
         let unmapped = if mapped {
-            aspace
+            gather
+                .prepare_page_table_reclaims(1)
+                .map_err(|_| StarryError::NoMemory)?;
+            let (_, _, _, deferred_page_tables) = aspace
                 .page_table_mut()
-                .unmap_page(vaddr)
+                .unmap_page_deferred(vaddr)
                 .expect("a preflighted file-page eviction must remain mapped");
+            gather.defer_page_tables(deferred_page_tables);
             true
         } else {
             false
@@ -346,7 +350,7 @@ impl BackendOps for FileBackend {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
-        _gather: &mut TlbGather,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         let kind = self.rss_kind();
@@ -362,9 +366,14 @@ impl BackendOps for FileBackend {
                 }
             }
         }
+        gather
+            .prepare_page_table_reclaims(mapped.len())
+            .map_err(|_| StarryError::NoMemory)?;
         for addr in mapped {
-            pt.unmap_page(addr)
+            let (_, _, _, deferred_page_tables) = pt
+                .unmap_page_deferred(addr)
                 .expect("a preflighted file page must remain mapped under the address-space lock");
+            gather.defer_page_tables(deferred_page_tables);
             if let Some(acct) = acct {
                 acct.dec(kind, 1);
             }

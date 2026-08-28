@@ -184,10 +184,19 @@ where
         Ok(())
     }
 
-    /// 递归取消映射的核心实现
+    /// Recursively clears leaf mappings while retaining intermediate tables.
     ///
-    /// 返回值：bool 表示此帧是否为空（所有页表项都无效），可以回收
+    /// A generic page table cannot prove that every CPU or hardware walker has
+    /// invalidated the old hierarchy. Empty child tables therefore stay linked
+    /// until owner teardown unless the caller uses a deferred reclaim token.
     pub fn unmap_range_recursive(&mut self, config: UnmapRecursiveConfig) -> PagingResult<bool> {
+        self.unmap_range_recursive_preserving_tables(config)
+    }
+
+    pub(crate) fn unmap_range_recursive_preserving_tables(
+        &mut self,
+        config: UnmapRecursiveConfig,
+    ) -> PagingResult<bool> {
         let mut vaddr = config.start_vaddr;
         let mut can_reclaim = true;
         let allocator = self.allocator.clone();
@@ -251,13 +260,15 @@ where
                 };
 
                 // 递归取消子页表映射
-                let child_can_reclaim = child_frame.unmap_range_recursive(child_config)?;
+                let child_can_reclaim =
+                    child_frame.unmap_range_recursive_preserving_tables(child_config)?;
 
                 if child_can_reclaim {
-                    // 子页表完全为空，可以回收
-                    // 清除指向子页表的PTE
-                    pte_ref.clear();
-                    allocator.dealloc_frame(child_paddr);
+                    // A failed active-page-table map may already be observable
+                    // by a remote hardware walker. Leave its now-empty
+                    // hierarchy linked until owner teardown rather than
+                    // freeing it without a shootdown token.
+                    can_reclaim = false;
                 } else {
                     // 子页表仍有有效映射，不能回收
                     can_reclaim = false;

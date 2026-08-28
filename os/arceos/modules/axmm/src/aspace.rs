@@ -97,6 +97,19 @@ impl AddrSpace {
         )
     }
 
+    fn finish_confirmed_tlb_mutation<R>(
+        &mut self,
+        gather: TlbGather,
+        operation_result: MmResult<R>,
+    ) -> MmResult<R> {
+        crate::tlb::resolve_confirmed_mutation(
+            operation_result,
+            self.tlb_quarantine
+                .commit(gather)
+                .map_err(MmError::TlbShootdown),
+        )
+    }
+
     /// Retries every resource release quarantined by an earlier shootdown.
     pub fn retry_quarantined_tlb_reclaims(&mut self) -> MmResult {
         self.retry_tlb_quarantine()
@@ -267,7 +280,23 @@ impl AddrSpace {
 
     /// Removes a DMA-coherent alias without releasing its physical pages.
     pub fn unmap_dma_coherent_alias(&mut self, alias: NonNull<u8>, size: usize) -> MmResult {
-        self.unmap(VirtAddr::from_usize(alias.as_ptr() as usize), size)
+        let start = VirtAddr::from_usize(alias.as_ptr() as usize);
+        self.retry_tlb_quarantine()?;
+        if !self.contains_range(start, size) {
+            return Err(MmError::InvalidInput(
+                "DMA alias range is outside address space",
+            ));
+        }
+        if !start.is_aligned_4k() || !is_aligned_4k(size) {
+            return Err(MmError::InvalidInput("DMA alias range is not page aligned"));
+        }
+
+        let mut gather = TlbGather::new();
+        let operation = self
+            .areas
+            .unmap(start, size, &mut gather, &mut self.pt)
+            .map_err(Into::into);
+        self.finish_confirmed_tlb_mutation(gather, operation)
     }
 
     /// Add or replace a linear mapping.

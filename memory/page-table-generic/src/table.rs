@@ -11,6 +11,77 @@ use crate::{
 };
 
 const TARGETED_FLUSH_LIMIT: usize = 32;
+const MAX_DEFERRED_PAGE_TABLE_LEVELS: usize = 8;
+
+/// Intermediate page-table frames detached by one leaf removal.
+///
+/// The frames remain allocated until the stage-1 owner confirms that every
+/// CPU which could walk the old hierarchy has completed a TLB invalidation.
+/// Dropping this token without confirmation intentionally leaks the frames;
+/// reclaiming them early would turn a recoverable shootdown failure into a
+/// use-after-free in a remote hardware page-table walk.
+#[must_use = "detached page-table frames must be reclaimed only after TLB confirmation"]
+pub struct DeferredPageTableFrames<A: FrameAllocator> {
+    allocator: A,
+    frames: heapless::Vec<PhysAddr, MAX_DEFERRED_PAGE_TABLE_LEVELS>,
+}
+
+impl<A: FrameAllocator> core::fmt::Debug for DeferredPageTableFrames<A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DeferredPageTableFrames")
+            .field("frames", &self.frames)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<A: FrameAllocator> DeferredPageTableFrames<A> {
+    fn new(allocator: A) -> Self {
+        Self {
+            allocator,
+            frames: heapless::Vec::new(),
+        }
+    }
+
+    pub(crate) fn push(&mut self, frame: PhysAddr) {
+        self.frames
+            .push(frame)
+            .expect("one leaf cannot detach more page tables than the hierarchy depth");
+    }
+
+    /// Returns whether this removal detached no intermediate table frames.
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Returns the number of detached intermediate table frames.
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Reclaims the detached frames after all relevant CPUs confirm TLB
+    /// invalidation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prove that no CPU can retain a translation or hardware
+    /// page-walk reference through the detached page-table hierarchy.
+    pub unsafe fn reclaim(mut self) {
+        while let Some(frame) = self.frames.pop() {
+            self.allocator.dealloc_frame(frame);
+        }
+    }
+}
+
+impl<A: FrameAllocator> Drop for DeferredPageTableFrames<A> {
+    fn drop(&mut self) {
+        if !self.frames.is_empty() {
+            log::error!(
+                "leaking {} unconfirmed detached page-table frame(s)",
+                self.frames.len()
+            );
+        }
+    }
+}
 
 pub struct PageTable<T: TableMeta, A: FrameAllocator> {
     inner: PageTableRef<T, A>,
@@ -282,7 +353,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 let rollback_result = if offset == 0 {
                     Ok(())
                 } else {
-                    self.unmap_with_config(&UnmapConfig {
+                    self.unmap_with_config_preserving_tables(&UnmapConfig {
                         start_vaddr,
                         size: offset,
                         flush: false,
@@ -311,23 +382,49 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 
     /// Unmaps one page and returns its physical address, flags, and page size.
+    ///
+    /// Empty intermediate page-table frames remain linked until owner teardown.
+    /// Callers that can perform domain-wide TLB invalidation should instead use
+    /// [`Self::unmap_page_deferred`] and reclaim its token after confirmation.
     pub fn unmap_page(
         &mut self,
         vaddr: VirtAddr,
     ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
         let (pte, level) = self
             .root
-            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)?;
+            .take_occupied_leaf_preserving_tables(vaddr, Frame::<T, A>::PT_LEVEL)?;
+        let page_size = Frame::<T, A>::level_size(level);
+        T::flush(Some(vaddr.align_down(page_size)));
+        let is_dir = level > 1;
+        let paddr = pte.paddr(is_dir);
+        let config = pte.config(is_dir);
+        Ok((paddr, config, page_size))
+    }
+
+    /// Unmaps one occupied leaf without reclaiming detached intermediate
+    /// page-table frames.
+    ///
+    /// The returned ownership token must be retained by the stage-1 TLB gather
+    /// until every CPU that could use this page table confirms invalidation.
+    /// This method performs no TLB invalidation itself.
+    pub fn unmap_page_deferred(
+        &mut self,
+        vaddr: VirtAddr,
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize, DeferredPageTableFrames<A>)> {
+        if Frame::<T, A>::PT_LEVEL > MAX_DEFERRED_PAGE_TABLE_LEVELS {
+            return Err(PagingError::hierarchy_error(
+                "Page-table depth exceeds deferred reclaim capacity",
+            ));
+        }
+        let mut deferred = DeferredPageTableFrames::new(self.root.allocator.clone());
+        let (pte, level) =
+            self.root
+                .take_occupied_leaf_deferred(vaddr, Frame::<T, A>::PT_LEVEL, &mut deferred)?;
         let page_size = Frame::<T, A>::level_size(level);
         let is_dir = level > 1;
         let paddr = pte.paddr(is_dir);
         let config = pte.config(is_dir);
-        self.unmap_with_config(&UnmapConfig {
-            start_vaddr: vaddr.align_down(page_size),
-            size: page_size,
-            flush: true,
-        })?;
-        Ok((paddr, config, page_size))
+        Ok((paddr, config, page_size, deferred))
     }
 
     /// Changes one existing mapping's flags and returns its page size.
@@ -463,7 +560,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     ///
     /// # 行为
     /// - 清除指定虚拟地址范围内的所有页表项
-    /// - 自动回收空的子页表帧
+    /// - 保留空的子页表帧直到页表 owner teardown
     /// - 支持大页和普通页面的取消映射
     /// - 根据配置刷新TLB
     pub fn unmap(&mut self, start_vaddr: VirtAddr, size: usize) -> PagingResult<()> {
@@ -493,6 +590,10 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
 
     /// 使用配置对象取消映射
     pub fn unmap_with_config(&mut self, config: &UnmapConfig) -> PagingResult<()> {
+        self.unmap_with_config_preserving_tables(config)
+    }
+
+    fn unmap_with_config_preserving_tables(&mut self, config: &UnmapConfig) -> PagingResult<()> {
         self.validate_unmap_params(config.start_vaddr, config.size)?;
 
         let end_vaddr = match config.start_vaddr.as_usize().checked_add(config.size) {
@@ -505,12 +606,13 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         };
         self.validate_address_width(config.start_vaddr, config.size, "unmap_with_config")?;
 
-        self.root.unmap_range_recursive(UnmapRecursiveConfig {
-            start_vaddr: config.start_vaddr,
-            end_vaddr,
-            level: Frame::<T, A>::PT_LEVEL,
-            flush: config.flush,
-        })?;
+        self.root
+            .unmap_range_recursive_preserving_tables(UnmapRecursiveConfig {
+                start_vaddr: config.start_vaddr,
+                end_vaddr,
+                level: Frame::<T, A>::PT_LEVEL,
+                flush: config.flush,
+            })?;
 
         Ok(())
     }

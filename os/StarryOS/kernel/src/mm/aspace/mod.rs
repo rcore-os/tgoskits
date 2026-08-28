@@ -12,7 +12,7 @@ use ax_memory_set::{MemoryArea, MemorySet};
 use ax_runtime::{
     hal::{
         mem::phys_to_virt,
-        paging::{MappingFlags, PageTable, PagingAllocator},
+        paging::{MappingFlags, PageTable, PagingAllocator, PagingError},
         trap::PageFaultFlags,
     },
     task::AddressSpaceCpuState,
@@ -70,10 +70,16 @@ impl RetainedAddressSpaceNode {
 static RETAINED_ADDRESS_SPACES: SpinLock<Option<Box<RetainedAddressSpaceNode>>> =
     SpinLock::new(None);
 
-fn rollback_moved_pages(cursor: &mut PageTable, moved_pages: &[MovedPage]) {
+fn rollback_moved_pages(
+    cursor: &mut PageTable,
+    gather: &mut tlb::TlbGather,
+    moved_pages: &[MovedPage],
+) {
     for &(src_va, dst_va, paddr, flags, page_size, dst_newly_mapped) in moved_pages.iter().rev() {
-        if dst_newly_mapped {
-            let _ = cursor.unmap_page(dst_va);
+        if dst_newly_mapped
+            && let Ok((_, _, _, deferred_page_tables)) = cursor.unmap_page_deferred(dst_va)
+        {
+            gather.defer_page_tables(deferred_page_tables);
         }
         if cursor.query_occupied(src_va).is_err() {
             let _ = cursor.map_page(src_va, paddr, page_size, flags);
@@ -238,7 +244,11 @@ impl AddrSpace {
             gather.record_range(tlb::checked_range(start, size)?);
         }
         let operation_result = operation(self, &mut gather);
-        self.finish_retained_file_evictions(&mut gather);
+        let eviction_result = self.finish_retained_file_evictions(&mut gather);
+        let operation_result = match (operation_result, eviction_result) {
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+            (Ok(value), Ok(())) => Ok(value),
+        };
 
         // Snapshot after the PTE mutation. A CPU that published itself before
         // the mutation is included; a CPU entering after the snapshot installs
@@ -253,28 +263,33 @@ impl AddrSpace {
         ))
     }
 
-    fn finish_retained_file_evictions(&mut self, gather: &mut tlb::TlbGather) {
+    fn finish_retained_file_evictions(
+        &mut self,
+        gather: &mut tlb::TlbGather,
+    ) -> StarryResult {
         let retained = gather.take_retained_file_evictions();
-        for page in &retained {
-            // The page-table mutation does not change VMA topology. Clone one
-            // owner at a time so the immutable area borrow ends before its PTE
-            // callback and no post-mutation scratch allocation is needed.
-            for index in 0..self.areas.len() {
-                let owner = self.areas().nth(index).and_then(|area| {
-                    match area.backend() {
-                        Backend::File(file) => file.retained_cache_owner(&page.cache),
-                        _ => None,
-                    }
-                });
-                let Some(owner) = owner else {
-                    continue;
-                };
-                owner
-                    .unmap_evicted_page(page.page_number, self, gather)
-                    .expect("a retained file-page eviction must remain commit-ready");
+        let result = (|| {
+            for page in &retained {
+                // The page-table mutation does not change VMA topology. Clone one
+                // owner at a time so the immutable area borrow ends before its PTE
+                // callback and no post-mutation scratch allocation is needed.
+                for index in 0..self.areas.len() {
+                    let owner = self.areas().nth(index).and_then(|area| {
+                        match area.backend() {
+                            Backend::File(file) => file.retained_cache_owner(&page.cache),
+                            _ => None,
+                        }
+                    });
+                    let Some(owner) = owner else {
+                        continue;
+                    };
+                    owner.unmap_evicted_page(page.page_number, self, gather)?;
+                }
             }
-        }
+            Ok(())
+        })();
         gather.restore_retained_file_evictions(retained);
+        result
     }
 
     /// Retries resources quarantined by an earlier failed shootdown.
@@ -592,7 +607,7 @@ impl AddrSpace {
     pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> crate::StarryResult {
         self.mutate_with_tlb_gather(&[(src, size), (dst, size)], |aspace, gather| {
             aspace.retain_backends_for_range(src, size, gather)?;
-            aspace.move_pages_inner(src, dst, size)
+            aspace.move_pages_inner(src, dst, size, gather)
         })
     }
 
@@ -630,6 +645,7 @@ impl AddrSpace {
         src: VirtAddr,
         dst: VirtAddr,
         size: usize,
+        gather: &mut tlb::TlbGather,
     ) -> crate::StarryResult {
         let cursor = &mut self.pt;
         let mut mapped_pages = alloc::vec::Vec::new();
@@ -650,23 +666,45 @@ impl AddrSpace {
             .map(|&(src_va, dst_va, ..)| (src_va, dst_va))
             .collect();
         let prepared_charges = self.rss.prepare_charge_moves(&charge_moves)?;
+        let reclaim_capacity = mapped_pages
+            .len()
+            .checked_mul(2)
+            .ok_or(StarryError::NoMemory)?;
+        gather
+            .prepare_page_table_reclaims(reclaim_capacity)
+            .map_err(|_| StarryError::NoMemory)?;
 
         let mut moved_pages = alloc::vec::Vec::new();
         for &(src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
             let mut dst_newly_mapped = false;
-            if cursor.query(dst_va).is_err() {
-                if let Err(err) = cursor.map_page(dst_va, paddr, page_size, flags) {
-                    rollback_moved_pages(cursor, &moved_pages);
+            match cursor.query_occupied(dst_va) {
+                Ok(_) => {}
+                Err(PagingError::NotMapped) => {
+                    if let Err(err) = cursor.map_page(dst_va, paddr, page_size, flags) {
+                        rollback_moved_pages(cursor, gather, &moved_pages);
+                        return Err(err.into());
+                    }
+                    dst_newly_mapped = true;
+                }
+                Err(err) => {
+                    rollback_moved_pages(cursor, gather, &moved_pages);
                     return Err(err.into());
                 }
-                dst_newly_mapped = true;
             }
-            if let Err(err) = cursor.unmap_page(src_va) {
-                if dst_newly_mapped {
-                    let _ = cursor.unmap_page(dst_va);
+            match cursor.unmap_page_deferred(src_va) {
+                Ok((_, _, _, deferred_page_tables)) => {
+                    gather.defer_page_tables(deferred_page_tables);
                 }
-                rollback_moved_pages(cursor, &moved_pages);
-                return Err(err.into());
+                Err(err) => {
+                    if dst_newly_mapped
+                        && let Ok((_, _, _, deferred_page_tables)) =
+                            cursor.unmap_page_deferred(dst_va)
+                    {
+                        gather.defer_page_tables(deferred_page_tables);
+                    }
+                    rollback_moved_pages(cursor, gather, &moved_pages);
+                    return Err(err.into());
+                }
             }
             moved_pages.push((src_va, dst_va, paddr, flags, page_size, dst_newly_mapped));
         }

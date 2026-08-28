@@ -4,7 +4,7 @@
 
 本文对应 PR #1775 之上的通用性重构。实现和验证基线固定为：
 
-- PR #1775 head：`982a13d33020fe9f5895140a37bb3ad31b96ec21`；
+- PR #1775 head：`1f14e49949910ad26e8a69fcb0e1ef98e180ec41`；
 - parent branch：`codex/refactor-ax-task-from-1596`；
 - 本地 Linux 对照树：`/home/zhourui/linux-src`，head
   `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`（Linux v7.1）。
@@ -116,9 +116,19 @@ exec、任务退出、normal schedule 和 CPU offline 使用同一 active-mm 状
   → 全部确认后释放 frame / VA / backend / page-cache owner
 ```
 
-`TlbGather` 是 `#[must_use]` 的 move-only 所有权包。backend unmap 把 frame 所有权交给 gather，
-不能在 `unmap_page()` 后直接 `dealloc_frame()`。部分 populate 失败时，尚未发布的 frame 可以立即
-回滚；已经安装过 PTE 的 frame 必须进入 gather。
+`TlbGather` 是 `#[must_use]` 的 move-only 所有权包。published backend unmap 使用
+`unmap_page_deferred()`，把数据 frame 与中间页表 frame 所有权交给 gather，不能在普通 leaf
+removal 后直接 `dealloc_frame()`。部分 populate 失败时，尚未发布的 frame 可以立即回滚；已经安装过
+PTE 的 frame 必须进入 gather。
+
+数据 frame 之外，中间页表 frame 也属于同一回收屏障。清除最后一个 leaf 后，远端 CPU 可能仍
+持有旧 translation 或 page-walk cache；因此不能在 IPI ACK 前释放变空的下级页表。generic 层的
+`unmap_page_deferred()` 只负责清 leaf 并返回 move-only `DeferredPageTableFrames`，不执行 shootdown；
+ax-mm/Starry gather 接管 token，确认后才调用 `reclaim()`。token 未确认即 Drop 时只记录诊断并泄漏，
+禁止把超时降级为 table-page UAF。generic 的安全 `unmap_page()`/range unmap 默认只清理 leaf，保留
+变空层级到 owner teardown；活跃页表中的多页 map rollback 采用相同策略，避免生成一个尚无 gather
+承接的 detached table frame。需要及时回收的 published stage-1 调用点必须显式选择 deferred API，
+不能依赖 generic 层的本地 flush 推断远端 CPU 或其他 hardware walker 已经失效。
 
 页表查询明确区分两种语义：`query()` 回答“当前是否存在可用于地址翻译的 present leaf”，
 `query_occupied()` 回答“这个 slot 是否仍由一个 leaf descriptor 占用”。后者包括 `PROT_NONE`、
@@ -139,6 +149,11 @@ orphan PTE，也不会让共享 frame 在 stale translation 仍存在时析构�
 被重新包装成普通 `Err`，否则 `mremap`、`brk`、clone 或清理路径会错误执行“操作未发生”的补偿。
 实现保留原 mutation 结果，把确认失败的 range 和 owner 放入 quarantine；下一次 mutation 在任何
 新 PTE 修改或 VA 复用之前必须先成功重试，否则以“本次操作尚未开始”返回错误。
+
+DMA coherent alias 的 release 是例外：它的调用者会在 unmap 返回成功后立即把原物理页交还 allocator，
+因此必须使用 confirmed mutation 结果。alias PTE 已清除但 shootdown 失败时，ax-mm 仍把 detached
+页表资源放入地址空间 quarantine，同时向 DMA owner 返回 `TlbShootdown`；DMA 层据此保留 alias 与
+原物理页，禁止普通 published-mutation 的“逻辑成功”语义导致原 frame 提前复用。
 
 跨 CPU 失效即使遇到一个远端错误，也先完成当前 CPU，并继续尝试所有其余目标 CPU，只保留第一
 个错误用于诊断。这样发起 syscall/page fault 的 CPU 不会因为远端超时而携带自己的旧 translation
@@ -250,7 +265,7 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
 
 | 层 | 负责 | 不负责 |
 | --- | --- | --- |
-| page-table-generic | walker、PTE 结构、单页 map/unmap/protect 原语 | CPU footprint、IPI、deferred owner |
+| page-table-generic | walker、PTE 结构、保留中间层的安全 unmap、detached table-frame token | CPU footprint、IPI、shootdown/quarantine、OS deferred owner |
 | ax-cpu / ax-hal | stage-1 flags、本地 root/TLB 指令、架构 user entry | OS backend 生命周期 |
 | ax-task | 调度决策、execution/address-space handle 的单次 switch plan | 解引用 OS mm、直接操作页表 |
 | ax-runtime | prepared switch 组合、active-mm lease、kernel mapping 门面、跨 CPU shootdown | Starry VMA/COW/file policy |
@@ -262,7 +277,9 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
 确定性低层回归包括：
 
 - ax-mm：shootdown 失败时 frame 不 reclaim，重试确认后才 reclaim；partial populate rollback 中
-  已发布 frame 同样 deferred；
+  已发布 frame 同样 deferred；DMA alias 的 confirmed unmap 失败必须阻止原物理页回到 allocator；
+  page-table-generic 的 red/green 回归证明安全 leaf/range unmap、deferred leaf 删除与失败 map rollback
+  都不会在确认前释放变空的中间页表；
 - runtime：`A(same mm) → B(same mm) → C(other mm)` 保留共享 lease 后再按序撤销；不同
   逻辑 mm 即使 root 相同仍安装；
 - user entry：current context 错误、switch tail 未完成、mm/root 不匹配、IRQ/preempt 状态不安全，
@@ -274,7 +291,8 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
   `page_table_mut` 只在 mm backend 的受控 gather 范围内可见，外部 mutable access 由 rustdoc
   `compile_fail` 拒绝；多 VMA unmap 的第二个 backend 失败时，前一个虽已移除 PTE，全部 VMA/
   backend owner 仍保留到 retry；memfd unmap delta 只在 VMA transaction 后 commit；`mremap`
-  source backend 在 unconfirmed shootdown 中由 gather 继续持有；page-table-generic 回归固定
+  source backend 在 unconfirmed shootdown 中由 gather 继续持有；所有 published backend unmap
+  都必须预留并转移 `DeferredPageTableFrames`；page-table-generic 回归固定
   present query 与 occupied descriptor query 的差异，四架构 `mm-transition-safety` 用
   `PROT_NONE + MAP_FIXED` 固定覆盖 shared/private replacement，证明 non-present leaf 会被清除；
 - CPU offline：源码合同固定 kernel quarantine retry 早于 active-mm release，失败返回时 CPU 仍
@@ -290,7 +308,7 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
   shootdown 确认先于旧 frame reclaim。
 
 交付门禁不是“跑过一次”。每次 parent rebase 或 child SHA 变化都重置为 `0/3`。最终 child SHA
-必须以 `since_sha=982a13d33020fe9f5895140a37bb3ad31b96ec21` 连续完成三次独立 CI
+必须以 `since_sha=1f14e49949910ad26e8a69fcb0e1ef98e180ec41` 连续完成三次独立 CI
 workflow_dispatch；每次 required static/workspace job 和
 ArceOS、StarryOS、Axvisor × x86_64、aarch64、riscv64、loongarch64 全部成功，且每个 QEMU
 子任务存在 success marker。cancelled、skipped、timeout、缺 marker 或仅 rerun failed job 均不计绿。

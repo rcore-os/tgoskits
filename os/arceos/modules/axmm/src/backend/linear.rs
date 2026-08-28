@@ -45,8 +45,24 @@ impl Backend {
         _pa_va_offset: usize,
     ) -> bool {
         debug!("unmap_linear: [{:#x}, {:#x})", start, start + size);
-        if pt.unmap(start, size).is_err() {
-            return false;
+        let end = start + size;
+        let mut leaves = alloc::vec::Vec::new();
+        let mut cursor = start;
+        while cursor < end {
+            match pt.query_occupied(cursor) {
+                Ok((_, _, page_size)) => {
+                    leaves.push(cursor);
+                    cursor = cursor.align_down(page_size) + page_size;
+                }
+                Err(PagingError::NotMapped) => cursor += PAGE_SIZE_4K,
+                Err(_) => return false,
+            }
+        }
+        for vaddr in leaves {
+            let (_, _, _, deferred_page_tables) = pt
+                .unmap_page_deferred(vaddr)
+                .expect("a preflighted linear leaf must remain mapped under the aspace lock");
+            gather.defer_page_tables(deferred_page_tables);
         }
         gather.invalidate(start, size);
         true

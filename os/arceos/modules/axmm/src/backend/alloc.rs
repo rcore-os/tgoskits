@@ -85,8 +85,10 @@ impl Backend {
             }
         }
         for (addr, frame, owns_frame) in mapped {
-            pt.unmap_page(addr)
+            let (_, _, _, deferred_page_tables) = pt
+                .unmap_page_deferred(addr)
                 .expect("a preflighted allocated page must remain mapped under the aspace lock");
+            gather.defer_page_tables(deferred_page_tables);
             if owns_frame {
                 gather.defer_frame(frame);
             }
@@ -167,7 +169,9 @@ impl PopulatePageOps for PageTablePopulate<'_> {
     }
 
     fn unmap_frame(&mut self, addr: VirtAddr) -> Option<PhysAddr> {
-        let (frame, _, page_size) = self.page_table.unmap_page(addr).ok()?;
+        let (frame, _, page_size, deferred_page_tables) =
+            self.page_table.unmap_page_deferred(addr).ok()?;
+        self.gather.defer_page_tables(deferred_page_tables);
         assert_eq!(
             page_size, PAGE_SIZE_4K,
             "a populated 4K mapping must be rolled back as a 4K page"
