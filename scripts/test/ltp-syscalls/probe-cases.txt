@@ -1,4 +1,4 @@
-# LTP 20260529 candidate IDs for replacing PR #1775 Starry C-pipeline coverage.
+# LTP 20260529 probe IDs for replacing PR #1775 Starry C-pipeline coverage.
 # The frozen cases.txt is generated from the four-architecture successful intersection.
 clone01
 clone02

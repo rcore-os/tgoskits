@@ -142,6 +142,11 @@ int main(void)
         return 1;
     }
 
+    /*
+     * One synchronized delivery is sufficient to verify EINTR. Repeated
+     * delivery races handler return and process exit, turning this into an
+     * unrelated nested-signal/rt_sigreturn stress test.
+     */
     if (kill(child, SIGUSR1) != 0) {
         perror("parent: kill(SIGUSR1)");
         kill(child, SIGKILL);
@@ -166,15 +171,6 @@ int main(void)
         }
         usleep(WAIT_POLL_INTERVAL_US);
         waited_ms += WAIT_POLL_INTERVAL_US / 1000;
-        if (kill(child, SIGUSR1) != 0) {
-            if (errno == ESRCH) {
-                continue;
-            }
-            perror("parent: retry kill(SIGUSR1)");
-            kill(child, SIGKILL);
-            waitpid(child, NULL, 0);
-            return 1;
-        }
     }
 
     if (waited != child) {

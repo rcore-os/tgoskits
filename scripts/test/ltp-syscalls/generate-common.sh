@@ -30,7 +30,20 @@ for log_path in "$@"; do
     fi
     sed -n 's#^STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/ltp-syscalls-\([^ ]*\) elapsed_s=.*#\1#p' \
         "$normalized_log" | sort -u > "$work_dir/passed-$log_index"
-    comm -12 "$work_dir/intersection" "$work_dir/passed-$log_index" \
+    awk '
+        /^STARRY_SYSTEM_TEST_BEGIN: \/usr\/bin\/starry-test-suit\/ltp-syscalls-/ {
+            testcase = $0
+            sub(/^.*\/ltp-syscalls-/, "", testcase)
+            next
+        }
+        /T(CONF|BROK|FAIL)[[:space:]]*:/ {
+            if (testcase != "")
+                print testcase
+        }
+    ' "$normalized_log" | sort -u > "$work_dir/nonpassing-$log_index"
+    comm -23 "$work_dir/passed-$log_index" "$work_dir/nonpassing-$log_index" \
+        > "$work_dir/eligible-$log_index"
+    comm -12 "$work_dir/intersection" "$work_dir/eligible-$log_index" \
         > "$work_dir/next-intersection"
     mv "$work_dir/next-intersection" "$work_dir/intersection"
     log_index=$((log_index + 1))
@@ -43,7 +56,7 @@ fi
 
 output_tmp="${output}.tmp"
 {
-    echo "# LTP 20260529 cases returning zero on x86_64, aarch64, riscv64, and loongarch64."
+    echo "# LTP 20260529 cases returning zero without TCONF/TBROK/TFAIL on all four architectures."
     cat "$work_dir/intersection"
 } > "$output_tmp"
 mv "$output_tmp" "$output"

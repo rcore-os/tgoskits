@@ -155,8 +155,8 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 `20260529`（上游 commit `3a64d78f58bdceba93ed321e91215fb969a047ed`）。
 该目录不会复制 LTP 测试逻辑：`cases.txt` 中每个 testcase 会生成一个独立 wrapper，
 wrapper 在 guest 内依次确认 `/opt/ltp/Version`、`runtest/syscalls` 的唯一条目和对应
-可执行文件，然后原样运行上游命令并传播退出码。因此 `TCONF`、`TBROK`、`TFAIL`
-及超时都不会被当成通过。
+可执行文件，然后原样运行上游命令并传播退出码；即使 LTP 返回 0，wrapper 也会检查
+输出并拒绝 `TCONF`、`TBROK`、`TFAIL`。因此这些结果及超时都不会被当成通过。
 
 system runner 固定分成两个顺序阶段：先按名称执行剩余的原生 C binary，再执行所有
 `ltp-syscalls-*` wrapper。两个阶段仍对每个 binary 分配独立 PID/mount namespace，日志用
@@ -170,20 +170,22 @@ STARRY_SYSTEM_PHASE_BEGIN: ltp-syscalls
 STARRY_SYSTEM_PHASE_END: ltp-syscalls
 ```
 
-`candidates.txt` 保存从 PR #1775 所触及 C cases 对应到的官方 LTP families，包括
+`scripts/test/ltp-syscalls/probe-cases.txt` 保存从 PR #1775 所触及 C cases 对应到的
+官方 LTP families，包括
 process/namespace/pidfd/ptrace、futex/pipe/poll/epoll/socket、scheduler/affinity/timer/
 membarrier，以及 mmap/mprotect/memfd/perf。更新共同集时，先让候选集在四架构分别完成
 probe 并保存完整日志，再运行：
 
 ```bash
-scripts/test/generate-starry-ltp-syscalls-common.sh \
-  test-suit/starryos/qemu/system/ltp-syscalls/candidates.txt \
+scripts/test/ltp-syscalls/generate-common.sh \
+  scripts/test/ltp-syscalls/probe-cases.txt \
   test-suit/starryos/qemu/system/ltp-syscalls/cases.txt \
   x86_64.log aarch64.log riscv64.log loongarch64.log
 ```
 
-生成器只保留四份完整 LTP 阶段日志中都出现
-`STARRY_SYSTEM_TEST_PASSED` 的 testcase，并按静态排序冻结 `cases.txt`。修改候选集、LTP
+生成器只保留四份完整 LTP 阶段日志中都出现 `STARRY_SYSTEM_TEST_PASSED`，并且对应
+输出中没有 `TCONF`、`TBROK`、`TFAIL` 的 testcase，再按静态排序冻结 `cases.txt`。
+`qemu/system/ltp-syscalls` 运行目录只保存该最终 manifest 和 wrapper 生成资产。修改候选集、LTP
 版本或镜像内容后必须重新进行四架构 probe，不能依据单一架构或历史 TODO 清单手工放行。
 
 这次接管的边界有意收缩：PR #1775 新增或修改过可执行 C 源码的 Starry cases 从发现

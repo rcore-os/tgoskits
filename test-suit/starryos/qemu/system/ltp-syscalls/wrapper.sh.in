@@ -58,12 +58,22 @@ export LTPROOT="${ltp_root}"
 export PATH="${binary_dir}:${ltp_root}/bin:/usr/bin:/bin"
 export TMPDIR="${case_tmp}"
 export LTP_TIMEOUT_MUL=1
+case_output="${case_tmp}/ltp-output.log"
 
 set +e
 (
     cd "${case_tmp}"
     "$@"
-)
+) > "${case_output}" 2>&1
 status=$?
 set -e
+cat "${case_output}"
+
+if [ "${status}" -ne 0 ]; then
+    exit "${status}"
+fi
+if grep -Eq 'T(CONF|BROK|FAIL)[[:space:]]*:' "${case_output}"; then
+    echo "LTP testcase reported a non-passing result: ${case_id}" >&2
+    exit 1
+fi
 exit "${status}"

@@ -1,4 +1,4 @@
-# LTP 20260529 cases returning zero on x86_64, aarch64, riscv64, and loongarch64.
+# LTP 20260529 cases returning zero without TCONF/TBROK/TFAIL on all four architectures.
 clock_nanosleep04
 clone01
 clone02
@@ -7,8 +7,6 @@ clone04
 clone05
 clone06
 clone07
-epoll_create01
-epoll_create02
 epoll_create1_01
 epoll_create1_02
 execve01
@@ -45,7 +43,6 @@ vfork01
 vfork02
 wait401
 wait402
-waitpid01
 waitpid03
 waitpid06
 waitpid07
