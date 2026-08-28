@@ -189,16 +189,18 @@ where
     /// A generic page table cannot prove that every CPU or hardware walker has
     /// invalidated the old hierarchy. Empty child tables therefore stay linked
     /// until owner teardown unless the caller uses a deferred reclaim token.
+    /// The return value is always `false` because this operation never detaches
+    /// an intermediate table for immediate reclamation.
     pub fn unmap_range_recursive(&mut self, config: UnmapRecursiveConfig) -> PagingResult<bool> {
-        self.unmap_range_recursive_preserving_tables(config)
+        self.unmap_range_recursive_preserving_tables(config)?;
+        Ok(false)
     }
 
     pub(crate) fn unmap_range_recursive_preserving_tables(
         &mut self,
         config: UnmapRecursiveConfig,
-    ) -> PagingResult<bool> {
+    ) -> PagingResult<()> {
         let mut vaddr = config.start_vaddr;
-        let mut can_reclaim = true;
         let allocator = self.allocator.clone();
 
         while vaddr < config.end_vaddr {
@@ -259,41 +261,12 @@ where
                     flush: config.flush,
                 };
 
-                // 递归取消子页表映射
-                let child_can_reclaim =
-                    child_frame.unmap_range_recursive_preserving_tables(child_config)?;
-
-                if child_can_reclaim {
-                    // A failed active-page-table map may already be observable
-                    // by a remote hardware walker. Leave its now-empty
-                    // hierarchy linked until owner teardown rather than
-                    // freeing it without a shootdown token.
-                    can_reclaim = false;
-                } else {
-                    // 子页表仍有有效映射，不能回收
-                    can_reclaim = false;
-                }
+                child_frame.unmap_range_recursive_preserving_tables(child_config)?;
             }
 
             vaddr = next_level_vaddr;
         }
 
-        // 检查此帧是否完全为空
-        if can_reclaim {
-            can_reclaim = self.is_frame_empty();
-        }
-
-        Ok(can_reclaim)
-    }
-
-    /// 检查页表帧是否全为空（所有页表项都未使用）
-    fn is_frame_empty(&self) -> bool {
-        let entries = self.as_slice();
-        for pte in entries {
-            if !pte.unused() {
-                return false;
-            }
-        }
-        true
+        Ok(())
     }
 }

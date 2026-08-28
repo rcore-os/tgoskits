@@ -47,61 +47,9 @@ static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 // Host tests exercise only the topology algorithm and have no kernel task
 // context in which a PI mutex could sleep. Keep that test boundary on the
 // existing non-sleeping VFS lock instead of installing a fake task runtime.
-#[cfg(test)]
-struct MountTopologyMutex<T> {
-    inner: Mutex<T>,
-}
-
-#[cfg(test)]
-struct MountTopologyGuard<'a, T> {
-    inner: Option<MutexGuard<'a, T>>,
-}
-
-#[cfg(test)]
-std::thread_local! {
-    /// Tracks ownership by the current host-test thread. `SpinLock::is_locked`
-    /// is process-wide and therefore cannot distinguish a callback made by
-    /// this owner from an unrelated parallel test holding the topology lock.
-    static MOUNT_TOPOLOGY_OWNED_BY_CURRENT: core::cell::Cell<bool> =
-        const { core::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-impl<T> MountTopologyMutex<T> {
-    const fn new(value: T) -> Self {
-        Self {
-            inner: Mutex::new(value),
-        }
-    }
-
-    fn lock(&self) -> MountTopologyGuard<'_, T> {
-        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(|owned| {
-            assert!(
-                !owned.get(),
-                "mount topology lock cannot be acquired recursively"
-            );
-        });
-        let inner = self.inner.lock();
-        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(|owned| owned.set(true));
-        MountTopologyGuard { inner: Some(inner) }
-    }
-
-    fn is_owned_by_current(&self) -> bool {
-        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(core::cell::Cell::get)
-    }
-}
-
-#[cfg(test)]
-impl<T> Drop for MountTopologyGuard<'_, T> {
-    fn drop(&mut self) {
-        drop(self.inner.take());
-        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(|owned| owned.set(false));
-    }
-}
-
-#[cfg(all(not(test), feature = "host-test"))]
+#[cfg(feature = "host-test")]
 type MountTopologyMutex<T> = Mutex<T>;
-#[cfg(all(not(test), not(feature = "host-test")))]
+#[cfg(not(feature = "host-test"))]
 type MountTopologyMutex<T> = ax_sync::Mutex<T>;
 
 static MOUNT_TOPOLOGY_MUTATION: MountTopologyMutex<()> = MountTopologyMutex::new(());
@@ -1317,10 +1265,6 @@ mod tests {
 
     static MOCK_FS: MockFs = MockFs;
 
-    fn current_thread_owns_mount_topology_guard() -> bool {
-        MOUNT_TOPOLOGY_MUTATION.is_owned_by_current()
-    }
-
     impl FilesystemOps for MockFs {
         fn name(&self) -> &str {
             "mock"
@@ -1341,7 +1285,7 @@ mod tests {
 
         fn root_dir(&self) -> DirEntry {
             assert!(
-                !current_thread_owns_mount_topology_guard(),
+                !MOUNT_TOPOLOGY_MUTATION.is_locked(),
                 "filesystem callbacks must run outside the mount topology guard"
             );
             make_dir_entry("mounted-root")

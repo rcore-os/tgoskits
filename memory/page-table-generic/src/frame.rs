@@ -3,6 +3,11 @@ use crate::{
     VirtAddr,
 };
 
+enum EmptyTableReclaim<'a, A: FrameAllocator> {
+    Preserve,
+    Defer(&'a mut crate::DeferredPageTableFrames<A>),
+}
+
 /// 页表帧，代表一个物理页面上的页表
 #[derive(Clone, Copy)]
 pub struct Frame<T: TableMeta, A: FrameAllocator> {
@@ -438,36 +443,22 @@ where
         level: usize,
         deferred: &mut crate::DeferredPageTableFrames<A>,
     ) -> PagingResult<(T::P, usize)> {
-        let index = Self::virt_to_index(vaddr, level);
-        let entry = self.as_slice()[index];
-        if entry.unused() {
-            return Err(PagingError::not_mapped());
-        }
-
-        if entry.huge(level > 1) || level == 1 {
-            self.as_slice_mut()[index].clear();
-            return Ok((entry, level));
-        }
-        if !entry.present() {
-            return Err(PagingError::hierarchy_error(
-                "Non-present intermediate entry is not a leaf",
-            ));
-        }
-
-        let child_paddr = entry.paddr(true);
-        let mut child = Self::from_paddr(child_paddr, self.allocator.clone());
-        let removed = child.take_occupied_leaf_deferred(vaddr, level - 1, deferred)?;
-        if child.as_slice().iter().all(PageTableEntry::unused) {
-            self.as_slice_mut()[index].clear();
-            deferred.push(child_paddr);
-        }
-        Ok(removed)
+        self.take_occupied_leaf(vaddr, level, EmptyTableReclaim::Defer(deferred))
     }
 
     pub(crate) fn take_occupied_leaf_preserving_tables(
         &mut self,
         vaddr: VirtAddr,
         level: usize,
+    ) -> PagingResult<(T::P, usize)> {
+        self.take_occupied_leaf(vaddr, level, EmptyTableReclaim::Preserve)
+    }
+
+    fn take_occupied_leaf(
+        &mut self,
+        vaddr: VirtAddr,
+        level: usize,
+        reclaim: EmptyTableReclaim<'_, A>,
     ) -> PagingResult<(T::P, usize)> {
         let index = Self::virt_to_index(vaddr, level);
         let entry = self.as_slice()[index];
@@ -487,7 +478,23 @@ where
 
         let child_paddr = entry.paddr(true);
         let mut child = Self::from_paddr(child_paddr, self.allocator.clone());
-        child.take_occupied_leaf_preserving_tables(vaddr, level - 1)
+        match reclaim {
+            EmptyTableReclaim::Preserve => {
+                child.take_occupied_leaf(vaddr, level - 1, EmptyTableReclaim::Preserve)
+            }
+            EmptyTableReclaim::Defer(deferred) => {
+                let removed = child.take_occupied_leaf(
+                    vaddr,
+                    level - 1,
+                    EmptyTableReclaim::Defer(&mut *deferred),
+                )?;
+                if child.as_slice().iter().all(PageTableEntry::unused) {
+                    self.as_slice_mut()[index].clear();
+                    deferred.push(child_paddr);
+                }
+                Ok(removed)
+            }
+        }
     }
 
     /// 递归释放指定的单个页表项

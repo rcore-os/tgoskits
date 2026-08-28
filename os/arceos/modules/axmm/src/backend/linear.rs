@@ -58,6 +58,9 @@ impl Backend {
                 Err(_) => return false,
             }
         }
+        if gather.prepare_page_table_reclaims(leaves.len()).is_err() {
+            return false;
+        }
         for vaddr in leaves {
             let (_, _, _, deferred_page_tables) = pt
                 .unmap_page_deferred(vaddr)

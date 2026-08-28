@@ -56,7 +56,11 @@ impl<T: Send + Sync> TaskAddressSpaceOwner for DetachableTaskAddressSpaceOwner<T
 struct RuntimeAddressSpace {
     #[cfg(feature = "uspace")]
     root: usize,
-    active_cpus: AtomicUsize,
+    /// Number of runtime tokens currently borrowing this address-space owner.
+    ///
+    /// The CPU footprint itself belongs to `cpu_state`; same-mm switches keep
+    /// the existing lease even when the selected task token changes.
+    active_leases: AtomicUsize,
     reclaim_waiting: AtomicUsize,
     cpu_state: Arc<AddressSpaceCpuState>,
     _owner: Box<dyn TaskAddressSpaceOwner>,
@@ -236,7 +240,7 @@ impl TaskAddressSpace {
         let address_space = Box::new(RuntimeAddressSpace {
             #[cfg(feature = "uspace")]
             root: root.as_usize(),
-            active_cpus: AtomicUsize::new(0),
+            active_leases: AtomicUsize::new(0),
             reclaim_waiting: AtomicUsize::new(0),
             cpu_state,
             _owner: owner,
@@ -356,7 +360,7 @@ pub(super) fn validate_current_user_address_space(
     let selected = runtime_address_space(selected)?;
     let cpu_bit = AddressSpaceCpuState::cpu_bit(pin.area().cpu_index().as_usize());
     if !same_logical_address_space(active, selected)
-        || active.active_cpus.load(Ordering::Acquire) == 0
+        || active.active_leases.load(Ordering::Acquire) == 0
         || active.cpu_state.active_mask() & cpu_bit == 0
         || current_hardware_root() != active.root
     {
@@ -440,7 +444,7 @@ fn commit_user_address_space_activation(
     }
     #[cfg(feature = "qperf-metrics")]
     ACTIVE_MM_DIFFERENT_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
-    next.active_cpus.fetch_add(1, Ordering::AcqRel);
+    next.active_leases.fetch_add(1, Ordering::AcqRel);
     next.cpu_state.activate(cpu_id);
     #[cfg(feature = "qperf-metrics")]
     ACTIVE_MM_LEASE_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
@@ -592,7 +596,7 @@ pub(super) fn prepare_runtime_address_space_switch<'switch>(
 
         if let Some(previous) = previous {
             let bit = AddressSpaceCpuState::cpu_bit(cpu_id);
-            if previous.active_cpus.load(Ordering::Acquire) == 0
+            if previous.active_leases.load(Ordering::Acquire) == 0
                 || previous.cpu_state.active_mask() & bit == 0
             {
                 return Err(RuntimeStatus::InvalidHandle);
@@ -696,7 +700,7 @@ pub(super) fn destroy_runtime_address_space(
 ) -> AddressSpaceDestroyOutcome {
     let address_space = runtime_address_space(address_space)
         .unwrap_or_else(|_| panic!("address-space destruction received an invalid owning handle"));
-    if address_space.active_cpus.load(Ordering::Acquire) != 0 {
+    if address_space.active_leases.load(Ordering::Acquire) != 0 {
         return AddressSpaceDestroyOutcome::Active;
     }
     let raw = address_space as *const RuntimeAddressSpace as *mut RuntimeAddressSpace;
@@ -714,7 +718,7 @@ pub(super) fn arm_runtime_address_space_reclaim(
     let address_space = runtime_address_space(address_space)
         .unwrap_or_else(|_| panic!("address-space reclaim arm received an invalid owning handle"));
     address_space.reclaim_waiting.store(1, Ordering::Release);
-    if address_space.active_cpus.load(Ordering::Acquire) == 0 {
+    if address_space.active_leases.load(Ordering::Acquire) == 0 {
         address_space.reclaim_waiting.store(0, Ordering::Release);
         AddressSpaceReclaimArmOutcome::Ready
     } else {
@@ -743,8 +747,8 @@ pub(super) fn update_runtime_address_space_membarrier_state(
 
 #[cfg(any(feature = "uspace", test))]
 fn release_active_cpu(address_space: &RuntimeAddressSpace) -> bool {
-    let active = address_space.active_cpus.fetch_sub(1, Ordering::AcqRel);
-    assert!(active >= 1, "active address-space CPU count underflow");
+    let active = address_space.active_leases.fetch_sub(1, Ordering::AcqRel);
+    assert!(active >= 1, "active address-space lease count underflow");
     let reclaim_ready = active == 1 && address_space.reclaim_waiting.swap(0, Ordering::AcqRel) != 0;
     #[cfg(feature = "qperf-metrics")]
     if reclaim_ready {
@@ -913,7 +917,7 @@ mod tests {
         .unwrap();
         let handle = token.handle();
         let runtime = runtime_address_space(handle).unwrap();
-        runtime.active_cpus.fetch_add(1, Ordering::AcqRel);
+        runtime.active_leases.fetch_add(1, Ordering::AcqRel);
         let owned = token.take_token();
 
         assert_eq!(
@@ -966,7 +970,7 @@ mod tests {
         .unwrap();
         let handle = token.handle();
         let runtime = runtime_address_space(handle).unwrap();
-        runtime.active_cpus.fetch_add(1, Ordering::AcqRel);
+        runtime.active_leases.fetch_add(1, Ordering::AcqRel);
         let owned = token.take_token();
 
         detach_runtime_address_space_owner(handle);
@@ -1096,7 +1100,7 @@ mod tests {
         .unwrap();
         let previous_runtime = runtime_address_space(previous.handle()).unwrap();
         let next_runtime = runtime_address_space(next.handle()).unwrap();
-        previous_runtime.active_cpus.store(1, Ordering::Release);
+        previous_runtime.active_leases.store(1, Ordering::Release);
         tracker.activate(0);
         let hardware_root = AtomicUsize::new(0x4000);
         let hardware_installs = AtomicUsize::new(0);
@@ -1118,10 +1122,10 @@ mod tests {
             },
         );
 
-        let previous_leases = previous_runtime.active_cpus.load(Ordering::Acquire);
-        let next_leases = next_runtime.active_cpus.load(Ordering::Acquire);
-        previous_runtime.active_cpus.store(0, Ordering::Release);
-        next_runtime.active_cpus.store(0, Ordering::Release);
+        let previous_leases = previous_runtime.active_leases.load(Ordering::Acquire);
+        let next_leases = next_runtime.active_leases.load(Ordering::Acquire);
+        previous_runtime.active_leases.store(0, Ordering::Release);
+        next_runtime.active_leases.store(0, Ordering::Release);
         tracker.deactivate(0);
 
         assert_eq!(previous_leases, 1);
@@ -1151,7 +1155,7 @@ mod tests {
         .unwrap();
         let previous_runtime = runtime_address_space(previous.handle()).unwrap();
         let next_runtime = runtime_address_space(next.handle()).unwrap();
-        previous_runtime.active_cpus.store(1, Ordering::Release);
+        previous_runtime.active_leases.store(1, Ordering::Release);
         tracker.activate(0);
         let hardware_root = AtomicUsize::new(0);
         let hardware_installs = AtomicUsize::new(0);
@@ -1173,10 +1177,10 @@ mod tests {
             },
         );
 
-        let previous_leases = previous_runtime.active_cpus.load(Ordering::Acquire);
-        let next_leases = next_runtime.active_cpus.load(Ordering::Acquire);
-        previous_runtime.active_cpus.store(0, Ordering::Release);
-        next_runtime.active_cpus.store(0, Ordering::Release);
+        let previous_leases = previous_runtime.active_leases.load(Ordering::Acquire);
+        let next_leases = next_runtime.active_leases.load(Ordering::Acquire);
+        previous_runtime.active_leases.store(0, Ordering::Release);
+        next_runtime.active_leases.store(0, Ordering::Release);
         tracker.deactivate(0);
 
         assert_eq!(hardware_root.load(Ordering::Acquire), 0x4000);
@@ -1216,7 +1220,7 @@ mod tests {
         let first_runtime = runtime_address_space(first.handle()).unwrap();
         let second_runtime = runtime_address_space(second.handle()).unwrap();
         let third_runtime = runtime_address_space(third.handle()).unwrap();
-        first_runtime.active_cpus.store(1, Ordering::Release);
+        first_runtime.active_leases.store(1, Ordering::Release);
         shared.activate(0);
         let active = AtomicUsize::new(first.handle().into_raw());
 
@@ -1231,8 +1235,8 @@ mod tests {
             |next| active.store(next, Ordering::Release),
         ));
         assert_eq!(active.load(Ordering::Acquire), first.handle().into_raw());
-        assert_eq!(first_runtime.active_cpus.load(Ordering::Acquire), 1);
-        assert_eq!(second_runtime.active_cpus.load(Ordering::Acquire), 0);
+        assert_eq!(first_runtime.active_leases.load(Ordering::Acquire), 1);
+        assert_eq!(second_runtime.active_leases.load(Ordering::Acquire), 0);
 
         assert!(!commit_user_address_space_activation(
             0,
@@ -1249,13 +1253,13 @@ mod tests {
             |next| active.store(next, Ordering::Release),
         ));
         assert_eq!(active.load(Ordering::Acquire), third.handle().into_raw());
-        assert_eq!(first_runtime.active_cpus.load(Ordering::Acquire), 0);
-        assert_eq!(second_runtime.active_cpus.load(Ordering::Acquire), 0);
-        assert_eq!(third_runtime.active_cpus.load(Ordering::Acquire), 1);
+        assert_eq!(first_runtime.active_leases.load(Ordering::Acquire), 0);
+        assert_eq!(second_runtime.active_leases.load(Ordering::Acquire), 0);
+        assert_eq!(third_runtime.active_leases.load(Ordering::Acquire), 1);
         assert_eq!(shared.active_mask(), 0);
         assert_eq!(other.active_mask(), 1);
 
-        third_runtime.active_cpus.store(0, Ordering::Release);
+        third_runtime.active_leases.store(0, Ordering::Release);
         other.deactivate(0);
     }
 

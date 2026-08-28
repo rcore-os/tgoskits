@@ -37,7 +37,7 @@ TGOSKits 没有把物理 RAM 静态切成一个“栈区”和一个“堆区”
 
 栈的 owner 与分配来源跨架构一致，架构入口仅负责把栈顶写入本架构栈寄存器并跳转：x86_64 使用 `rsp`，AArch64 和 RISC-V 使用 `sp`，LoongArch64 使用 `$sp`。启动 entry 必须在进入 Rust 前满足相应调用约定的栈对齐，栈 owner 不保存架构私有寄存器状态。
 
-Guard page 的区别来自地址转换缓存失效：AArch64 使用 inner-shareable 硬件广播，x86_64、RISC-V 和 LoongArch64 的默认实现只处理本地 CPU，需要上层远程失效。地址窗口和指令细节统一见[多架构内存实现](./architecture-support.md)，本章后续只说明栈特有的 owner 和 guard 时序。
+Guard page 的架构差异只在本地地址转换缓存指令；四架构的跨 CPU 覆盖都由上层软件 mask、远程失效和确认协议拥有。地址窗口和指令细节统一见[多架构内存实现](./architecture-support.md)，本章后续只说明栈特有的 owner 和 guard 时序。
 
 ## 2. CPU0 启动栈
 

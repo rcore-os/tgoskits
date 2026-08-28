@@ -120,7 +120,7 @@ impl UserContext {
 
     /// Returns whether this register image can be restored as an interruptible
     /// ring-3 context.
-    pub fn is_user_entry_state_valid(&self) -> bool {
+    pub fn has_interruptible_user_return_mode(&self) -> bool {
         let forbidden =
             RFlags::IOPL_LOW | RFlags::IOPL_HIGH | RFlags::NESTED_TASK | RFlags::VIRTUAL_8086_MODE;
         let flags = RFlags::from_bits_retain(self.tf.rflags);
@@ -161,7 +161,7 @@ impl UserContext {
         }
 
         assert!(
-            self.is_user_entry_state_valid(),
+            self.has_interruptible_user_return_mode(),
             "raw user entry requires an interruptible ring-3 register image"
         );
 

@@ -11,7 +11,7 @@ use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
 #[derive(Debug)]
 #[must_use = "TLB gathers must be confirmed or transferred to quarantine"]
 pub struct TlbGather {
-    ranges: Vec<VirtAddrRange>,
+    range: Option<VirtAddrRange>,
     deferred_frames: Vec<PhysAddr>,
     deferred_page_tables: Vec<DeferredPageTableFrames>,
     completed: bool,
@@ -20,7 +20,7 @@ pub struct TlbGather {
 impl TlbGather {
     pub(crate) const fn new() -> Self {
         Self {
-            ranges: Vec::new(),
+            range: None,
             deferred_frames: Vec::new(),
             deferred_page_tables: Vec::new(),
             completed: false,
@@ -28,24 +28,52 @@ impl TlbGather {
     }
 
     pub(crate) fn invalidate(&mut self, start: VirtAddr, size: usize) {
-        if size != 0 {
-            self.ranges
-                .push(VirtAddrRange::from_start_size(start, size));
+        if size == 0 {
+            return;
         }
+        let range = VirtAddrRange::from_start_size(start, size);
+        self.range = Some(match self.range {
+            Some(current) => {
+                VirtAddrRange::new(current.start.min(range.start), current.end.max(range.end))
+            }
+            None => range,
+        });
+    }
+
+    pub(crate) fn prepare_deferred_frames(
+        &mut self,
+        count: usize,
+    ) -> Result<(), alloc::collections::TryReserveError> {
+        self.deferred_frames.try_reserve(count)
+    }
+
+    pub(crate) fn prepare_page_table_reclaims(
+        &mut self,
+        count: usize,
+    ) -> Result<(), alloc::collections::TryReserveError> {
+        self.deferred_page_tables.try_reserve(count)
     }
 
     pub(crate) fn defer_frame(&mut self, frame: PhysAddr) {
+        assert!(
+            self.deferred_frames.len() < self.deferred_frames.capacity(),
+            "deferred frame ownership must be reserved before PTE mutation"
+        );
         self.deferred_frames.push(frame);
     }
 
     pub(crate) fn defer_page_tables(&mut self, tables: DeferredPageTableFrames) {
         if !tables.is_empty() {
+            assert!(
+                self.deferred_page_tables.len() < self.deferred_page_tables.capacity(),
+                "page-table reclaim ownership must be reserved before PTE mutation"
+            );
             self.deferred_page_tables.push(tables);
         }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.ranges.is_empty()
+        self.range.is_none()
             && self.deferred_frames.is_empty()
             && self.deferred_page_tables.is_empty()
     }
@@ -65,7 +93,7 @@ impl Drop for TlbGather {
             error!(
                 "dropping unconfirmed stage-1 TLB gather: ranges={:?}, deferred_frames={}, \
                  deferred_page_tables={}",
-                self.ranges,
+                self.range,
                 self.deferred_frames.len(),
                 self.deferred_page_tables.len(),
             );
@@ -75,7 +103,7 @@ impl Drop for TlbGather {
 
 /// Address-space-owned retry queue for failed synchronous shootdowns.
 pub(crate) struct TlbQuarantine {
-    pending: Vec<TlbGather>,
+    pending: Option<TlbGather>,
     failures: u64,
     last_error: Option<TlbShootdownError>,
 }
@@ -83,7 +111,7 @@ pub(crate) struct TlbQuarantine {
 impl TlbQuarantine {
     pub(crate) const fn new() -> Self {
         Self {
-            pending: Vec::new(),
+            pending: None,
             failures: 0,
             last_error: None,
         }
@@ -95,33 +123,32 @@ impl TlbQuarantine {
             Err((gather, error)) => {
                 self.failures = self.failures.saturating_add(1);
                 self.last_error = Some(error);
-                self.pending.push(gather);
+                assert!(
+                    self.pending.is_none(),
+                    "a new stage-1 mutation cannot bypass an existing quarantine"
+                );
+                self.pending = Some(gather);
                 Err(error)
             }
         }
     }
 
     pub(crate) fn retry(&mut self) -> Result<(), TlbShootdownError> {
-        if self.pending.is_empty() {
+        let Some(gather) = self.pending.take() else {
             return Ok(());
-        }
-        let pending = core::mem::take(&mut self.pending);
-        let mut iter = pending.into_iter();
-        while let Some(gather) = iter.next() {
-            if let Err((gather, error)) = gather.finish() {
-                self.failures = self.failures.saturating_add(1);
-                self.last_error = Some(error);
-                self.pending.push(gather);
-                self.pending.extend(iter);
-                return Err(error);
-            }
+        };
+        if let Err((gather, error)) = gather.finish() {
+            self.failures = self.failures.saturating_add(1);
+            self.last_error = Some(error);
+            self.pending = Some(gather);
+            return Err(error);
         }
         self.last_error = None;
         Ok(())
     }
 
     pub(crate) fn pending_count(&self) -> usize {
-        self.pending.len()
+        usize::from(self.pending.is_some())
     }
 
     pub(crate) const fn failures(&self) -> u64 {
@@ -138,10 +165,10 @@ fn complete_tlb_gather_with<E>(
     mut shootdown: impl FnMut(VirtAddr, usize) -> Result<(), E>,
     mut reclaim: impl FnMut(PhysAddr),
 ) -> Result<(), (TlbGather, E)> {
-    for range in &gather.ranges {
-        if let Err(error) = shootdown(range.start, range.size()) {
-            return Err((gather, error));
-        }
+    if let Some(range) = gather.range
+        && let Err(error) = shootdown(range.start, range.size())
+    {
+        return Err((gather, error));
     }
     for tables in gather.deferred_page_tables.drain(..) {
         // SAFETY: every requested range has completed synchronous local and
@@ -187,6 +214,7 @@ mod tests {
         let events = Rc::new(RefCell::new(Vec::new()));
         let mut gather = TlbGather::new();
         gather.invalidate(VirtAddr::from_usize(0x4000), PAGE_SIZE_4K);
+        gather.prepare_deferred_frames(1).unwrap();
         gather.defer_frame(PhysAddr::from_usize(0x8000));
 
         let shootdown_events = Rc::clone(&events);
@@ -209,6 +237,7 @@ mod tests {
         let reclaimed = Rc::new(RefCell::new(Vec::new()));
         let mut gather = TlbGather::new();
         gather.invalidate(VirtAddr::from_usize(0x4000), PAGE_SIZE_4K);
+        gather.prepare_deferred_frames(1).unwrap();
         gather.defer_frame(PhysAddr::from_usize(0x8000));
 
         let first_reclaim = Rc::clone(&reclaimed);
@@ -229,6 +258,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(*reclaimed.borrow(), vec![PhysAddr::from_usize(0x8000)]);
+    }
+
+    #[test]
+    fn disjoint_invalidations_collapse_to_one_conservative_range() {
+        let mut gather = TlbGather::new();
+        gather.invalidate(VirtAddr::from_usize(0x4000), PAGE_SIZE_4K);
+        gather.invalidate(VirtAddr::from_usize(0x9000), PAGE_SIZE_4K);
+
+        let mut observed = None;
+        complete_tlb_gather_with(
+            gather,
+            |start, size| {
+                assert!(observed.replace((start, size)).is_none());
+                Ok::<_, ()>(())
+            },
+            |_| unreachable!("this gather owns no frames"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            observed,
+            Some((VirtAddr::from_usize(0x4000), 6 * PAGE_SIZE_4K))
+        );
     }
 
     #[test]

@@ -95,7 +95,7 @@ impl UserExecutionContext {
         if crate::guard::validate_prepared_user_entry() != RuntimeStatus::Success {
             return Err(TaskError::UnsafeContext);
         }
-        if !self.registers.is_user_entry_state_valid() {
+        if !self.registers.has_interruptible_user_return_mode() {
             return Err(TaskError::UnsafeContext);
         }
         let selected_address_space = ax_task::current_address_space_handle()?;

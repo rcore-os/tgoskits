@@ -92,7 +92,7 @@ impl UserContext {
 
     /// Returns whether this register image can be restored as an interruptible
     /// user-mode context.
-    pub fn is_user_entry_state_valid(&self) -> bool {
+    pub fn has_interruptible_user_return_mode(&self) -> bool {
         matches!(self.0.sstatus.spp(), riscv::register::sstatus::SPP::User) && self.0.sstatus.spie()
     }
 
@@ -134,7 +134,7 @@ impl UserContext {
             "raw user entry requires the prepared IRQ-off boundary"
         );
         assert!(
-            self.is_user_entry_state_valid(),
+            self.has_interruptible_user_return_mode(),
             "raw user entry requires an interruptible user-mode register image"
         );
         unsafe { enter_user(self) };

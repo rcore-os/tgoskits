@@ -176,6 +176,13 @@ ax-mm 的 gather 面向所有可能使用全局 kernel root 的在线 CPU，跨 
 `kernel_aspace` 的裸 mutable 入口，而是通过 `ax_runtime::kernel_mapping` 的
 `map/protect/unmap/query` 门面。
 
+ax-mm 每次 mutation 最多拥有一个未确认 gather，因此 range 用单个保守并集、quarantine 用单槽
+owner 表达，不维护可增长的重复队列。frame 与中间页表 token 的容量必须在第一条 PTE 修改前
+`try_reserve`；修改后的 `defer` 只做无分配的所有权转移。部分 populate 回滚不仅转移 frame，
+还必须把曾发布过的前缀并入同一 invalidation range；否则 gather 会在没有 shootdown 的情况下
+回收刚从 PTE 撤下的 frame。非连续物理页的 kernel 映射也以一个 gather 批量提交，失败时在同一
+事务内撤销已发布前缀，避免逐页创建互不关联的 shootdown/reclaim 窗口。
+
 失败的 gather 连同 deferred frame 进入 ax-mm address-space quarantine。重试点包括下一次安全
 mutation、kernel mm teardown 和 CPU offline 的 active-mm 撤销之前；只有 quarantine 重试成功后，
 offline commit 才安装安全 root、撤 active handle/CPU bit 并停止本地 clock event。overwrite mapping
@@ -302,15 +309,14 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
   `unsafe fn` 类型断言防止任一实现把签名退回安全函数；AArch64 DAIF validator 必须使用
   `FieldValue::mask()` 的已移位硬件 mask，禁止把字段宽度 `Field.mask` 当成 SPSR 位掩码；
 - Starry：shootdown 失败把 backend/frame/file-page owner 原样返回 quarantine；published
-  `page_table_mut` 只在 mm backend 的受控 gather 范围内可见，外部 mutable access 由 rustdoc
-  `compile_fail` 拒绝；多 VMA unmap 的第二个 backend 失败时，前一个虽已移除 PTE，全部 VMA/
-  backend owner 仍保留到 retry；memfd unmap delta 只在 VMA transaction 后 commit；`mremap`
+  `page_table_mut` 只在 `AddrSpace` 私有实现和 mm backend 的受控 gather 范围内可见，外部代码
+  由 Rust visibility 无法取得裸 mutable 页表；多 VMA unmap 的第二个 backend 失败时，前一个虽已
+  移除 PTE，全部 VMA/backend owner 仍保留到 retry；memfd unmap delta 只在 VMA transaction 后
+  commit；`mremap`
   source backend 在 unconfirmed shootdown 中由 gather 继续持有；所有 published backend unmap
   都必须预留并转移 `DeferredPageTableFrames`；page-table-generic 回归固定
   present query 与 occupied descriptor query 的差异，四架构 `mm-transition-safety` 用
   `PROT_NONE + MAP_FIXED` 固定覆盖 shared/private replacement，证明 non-present leaf 会被清除；
-- CPU offline：源码合同固定 kernel quarantine retry 早于 active-mm release，失败返回时 CPU 仍
-  保持原 active-mm 状态；
 - `qemu/system/mm-transition-safety`：两个 CPU 上以 affinity、barrier 和 `/proc/.../status` 的
   sleeping-state 观测固定顺序，覆盖共享 mm 的 writable translation、worker 已阻塞后的
   `mprotect`/远端唤醒、`sched_yield` 和 fork COW kernel-copy；

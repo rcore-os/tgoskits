@@ -49,6 +49,12 @@ impl Backend {
             populate
         );
         if populate {
+            let page_count = size / PAGE_SIZE_4K;
+            if gather.prepare_deferred_frames(page_count).is_err()
+                || gather.prepare_page_table_reclaims(page_count).is_err()
+            {
+                return false;
+            }
             let mut populate = PageTablePopulate {
                 page_table: pt,
                 flags,
@@ -83,6 +89,15 @@ impl Backend {
                 Err(PagingError::NotMapped) => {}
                 Err(_) => return false,
             }
+        }
+        let owned_frames = mapped
+            .iter()
+            .filter(|(_, _, owns_frame)| *owns_frame)
+            .count();
+        if gather.prepare_deferred_frames(owned_frames).is_err()
+            || gather.prepare_page_table_reclaims(mapped.len()).is_err()
+        {
+            return false;
         }
         for (addr, frame, owns_frame) in mapped {
             let (_, _, _, deferred_page_tables) = pt
@@ -149,6 +164,9 @@ trait PopulatePageOps {
 
     /// Retains a frame removed from a PTE until shootdown confirmation.
     fn defer_unmapped_frame(&mut self, frame: PhysAddr);
+
+    /// Records the published prefix removed by a failed populate operation.
+    fn invalidate_published_range(&mut self, _start: VirtAddr, _size: usize) {}
 }
 
 struct PageTablePopulate<'a> {
@@ -186,6 +204,10 @@ impl PopulatePageOps for PageTablePopulate<'_> {
     fn defer_unmapped_frame(&mut self, frame: PhysAddr) {
         self.gather.defer_frame(frame);
     }
+
+    fn invalidate_published_range(&mut self, start: VirtAddr, size: usize) {
+        self.gather.invalidate(start, size);
+    }
 }
 
 fn populate_pages(ops: &mut impl PopulatePageOps, start: VirtAddr, size: usize) -> bool {
@@ -210,6 +232,9 @@ fn rollback_populated_pages(ops: &mut impl PopulatePageOps, start: VirtAddr, map
             .expect("a page mapped by the current populate operation must remain mapped");
         ops.defer_unmapped_frame(frame);
     }
+    if mapped_end > start {
+        ops.invalidate_published_range(start, mapped_end - start);
+    }
 }
 
 #[cfg(test)]
@@ -231,6 +256,7 @@ mod tests {
         assert_eq!(ops.deallocated.len(), 2);
         assert!(ops.deallocated.contains(&PhysAddr::from(PAGE_SIZE_4K)));
         assert!(ops.deallocated.contains(&PhysAddr::from(2 * PAGE_SIZE_4K)));
+        assert_eq!(ops.invalidated, [(start, PAGE_SIZE_4K)]);
     }
 
     #[test]
@@ -241,6 +267,7 @@ mod tests {
         assert!(!populate_pages(&mut ops, start, 3 * PAGE_SIZE_4K));
         assert!(ops.mapped.is_empty());
         assert_eq!(ops.deallocated, [PhysAddr::from(PAGE_SIZE_4K)]);
+        assert_eq!(ops.invalidated, [(start, PAGE_SIZE_4K)]);
     }
 
     #[test]
@@ -279,6 +306,7 @@ mod tests {
         map_failure: Option<VirtAddr>,
         mapped: Vec<(VirtAddr, PhysAddr)>,
         deallocated: Vec<PhysAddr>,
+        invalidated: Vec<(VirtAddr, usize)>,
     }
 
     impl MockPopulatePageOps {
@@ -289,6 +317,7 @@ mod tests {
                 map_failure: Some(addr),
                 mapped: Vec::new(),
                 deallocated: Vec::new(),
+                invalidated: Vec::new(),
             }
         }
 
@@ -299,6 +328,7 @@ mod tests {
                 map_failure: None,
                 mapped: Vec::new(),
                 deallocated: Vec::new(),
+                invalidated: Vec::new(),
             }
         }
     }
@@ -334,6 +364,10 @@ mod tests {
 
         fn defer_unmapped_frame(&mut self, frame: PhysAddr) {
             self.deallocated.push(frame);
+        }
+
+        fn invalidate_published_range(&mut self, start: VirtAddr, size: usize) {
+            self.invalidated.push((start, size));
         }
     }
 }

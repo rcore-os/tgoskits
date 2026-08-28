@@ -77,22 +77,7 @@ pub fn map_kernel_pages(
     let start = aspace
         .find_free_area(hint, size, range)
         .ok_or(ax_mm::MmError::NoMemory)?;
-    for (index, page) in pages.iter().copied().enumerate() {
-        let vaddr = start + index * PAGE_SIZE_4K;
-        if let Err(mapping_error) = aspace.map_linear(vaddr, page, PAGE_SIZE_4K, flags) {
-            if index != 0
-                && let Err(rollback_error) = aspace.unmap(start, index * PAGE_SIZE_4K)
-            {
-                error!(
-                    "kernel page-list mapping rollback failed: start={start:?}, \
-                     mapped_pages={index}, mapping_error={mapping_error}, \
-                     rollback_error={rollback_error}"
-                );
-                return Err(rollback_error.into());
-            }
-            return Err(mapping_error.into());
-        }
-    }
+    aspace.map_linear_pages(start, pages, flags)?;
     Ok(start)
 }
 

@@ -2345,7 +2345,7 @@ impl Aarch64UserRegs {
         updated.sp = self.sp;
         updated.elr = self.pc;
         updated.spsr = self.pstate;
-        if !updated.is_user_entry_state_valid() {
+        if !updated.has_interruptible_user_return_mode() {
             return Err(StarryError::InvalidInput);
         }
         *uctx = updated;

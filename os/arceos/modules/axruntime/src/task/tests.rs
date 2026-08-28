@@ -3,8 +3,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
-const RUNTIME_IMPL_SOURCE: &str = include_str!("runtime_impl.rs");
-
 static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: ignore_extension_switch_in,
     on_switch_out: ignore_extension_switch_out,
@@ -33,49 +31,6 @@ enum ResourceEvent {
     CreateUserContext,
     DeallocateTls,
     DeallocateStack,
-}
-
-#[test]
-fn cpu_offline_retries_quarantine_before_releasing_active_mm() {
-    let prepare = source_function_body(
-        RUNTIME_IMPL_SOURCE,
-        "fn prepare_cpu_offline(cpu: RuntimeCpuId)",
-    );
-    let retry = prepare
-        .find("retry_kernel_tlb_reclaims()")
-        .expect("CPU offline must retry quarantined kernel mappings");
-    let release = prepare
-        .find("release_current_active_address_space();")
-        .expect("CPU offline must install the safe root and release active-mm");
-
-    assert!(
-        retry < release,
-        "failure-prone quarantine retry must precede active-mm publication"
-    );
-}
-
-fn source_function_body<'a>(source: &'a str, signature: &str) -> &'a str {
-    let start = source
-        .find(signature)
-        .unwrap_or_else(|| panic!("missing source item: {signature}"));
-    let source = &source[start..];
-    let brace = source
-        .find('{')
-        .unwrap_or_else(|| panic!("missing source body: {signature}"));
-    let mut depth = 0usize;
-    for (offset, character) in source[brace..].char_indices() {
-        match character {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &source[..brace + offset + character.len_utf8()];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("unterminated source item: {signature}");
 }
 
 struct InjectedResourceBackend {

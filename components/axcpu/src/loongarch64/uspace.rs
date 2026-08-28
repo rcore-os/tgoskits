@@ -69,7 +69,7 @@ impl UserContext {
 
     /// Returns whether this register image can be restored as an interruptible
     /// PLV3 context.
-    pub const fn is_user_entry_state_valid(&self) -> bool {
+    pub const fn has_interruptible_user_return_mode(&self) -> bool {
         const PPLV_MASK: usize = 0b11;
         const PIE: usize = 1 << 2;
 
@@ -111,7 +111,7 @@ impl UserContext {
             "raw user entry requires the prepared IRQ-off boundary"
         );
         assert!(
-            self.is_user_entry_state_valid(),
+            self.has_interruptible_user_return_mode(),
             "raw user entry requires an interruptible PLV3 register image"
         );
         unsafe { enter_user(self) };

@@ -241,6 +241,73 @@ impl AddrSpace {
         )
     }
 
+    /// Maps a physical page list into one contiguous virtual range.
+    ///
+    /// All page-sized areas are committed through one TLB gather. If a later
+    /// page cannot be mapped, the published prefix is removed before the
+    /// original error is returned.
+    pub fn map_linear_pages(
+        &mut self,
+        start: VirtAddr,
+        pages: &[PhysAddr],
+        flags: MappingFlags,
+    ) -> MmResult {
+        self.retry_tlb_quarantine()?;
+        let size = pages
+            .len()
+            .checked_mul(PAGE_SIZE_4K)
+            .filter(|size| *size != 0)
+            .ok_or(MmError::InvalidInput(
+                "physical page list is empty or overflows",
+            ))?;
+        if !self.contains_range(start, size) || !start.is_aligned_4k() {
+            return Err(MmError::InvalidInput("page-list mapping range is invalid"));
+        }
+        if pages.iter().any(|page| !page.is_aligned_4k()) {
+            return Err(MmError::InvalidInput(
+                "physical page list contains an unaligned frame",
+            ));
+        }
+
+        let mut gather = TlbGather::new();
+        let mut mapped_size = 0usize;
+        let mapping = (|| {
+            for page in pages {
+                let vaddr = start + mapped_size;
+                let offset = vaddr.as_usize() - page.as_usize();
+                let area = MemoryArea::new(vaddr, PAGE_SIZE_4K, flags, Backend::new_linear(offset));
+                self.areas
+                    .map(area, &mut gather, &mut self.pt, false)
+                    .map_err(MmError::from)?;
+                mapped_size += PAGE_SIZE_4K;
+            }
+            Ok(())
+        })();
+        let mapping = match mapping {
+            Ok(()) => Ok(()),
+            Err(mapping_error) if mapped_size == 0 => Err(mapping_error),
+            Err(mapping_error) => {
+                match self
+                    .areas
+                    .unmap(start, mapped_size, &mut gather, &mut self.pt)
+                {
+                    Ok(()) => Err(mapping_error),
+                    Err(rollback_error) => {
+                        error!(
+                            "page-list mapping rollback failed: start={start:?}, \
+                             mapped_size={mapped_size:#x}, mapping_error={mapping_error}, \
+                             rollback_error={rollback_error:?}"
+                        );
+                        Err(MmError::BadState(
+                            "failed to roll back a partial page-list mapping",
+                        ))
+                    }
+                }
+            }
+        };
+        self.finish_tlb_mutation(gather, mapping)
+    }
+
     /// Maps contiguous pages through a new uncached kernel alias.
     ///
     /// The existing direct mapping is deliberately left unchanged. The caller
