@@ -200,22 +200,9 @@ impl<B: MappingBackend> MemorySet<B> {
         // one removed PTEs. Keeping the complete VMA set makes that state
         // retryable and, more importantly, retains every backend until the
         // caller's invalidation transaction has confirmed stale translations.
-        for area in self.areas.values() {
-            if area.start() >= range.end {
-                break;
-            }
-            if area.end() <= range.start {
-                continue;
-            }
-            let unmap_start = area.start().max(range.start);
-            let unmap_end = area.end().min(range.end);
-            area.unmap_range(
-                unmap_start,
-                unmap_end.sub_addr(unmap_start),
-                context,
-                page_table,
-            )?;
-        }
+        self.for_each_intersecting_area(range, |area, unmap_start, unmap_size| {
+            area.unmap_range(unmap_start, unmap_size, context, page_table)
+        })?;
 
         // Validation above proves the range shape. This metadata-only commit
         // performs no backend operation and cannot fail due to page-table or
@@ -240,6 +227,21 @@ impl<B: MappingBackend> MemorySet<B> {
         // first PTE is removed. Commit still retains every backend owner until
         // all disjoint subranges complete or the caller quarantines a partial
         // published mutation.
+        self.for_each_intersecting_area(range, |area, unmap_start, unmap_size| {
+            area.validate_unmap_range(unmap_start, unmap_size, page_table)
+        })
+    }
+
+    /// Visits each VMA intersecting `range` with its clipped unmap interval.
+    ///
+    /// Keeping the range clipping in one place is important because both the
+    /// fallible preflight and the backend commit must describe exactly the same
+    /// subranges. The callback may fail; no metadata is changed by this helper.
+    fn for_each_intersecting_area(
+        &self,
+        range: AddrRange<B::Addr>,
+        mut visit: impl FnMut(&MemoryArea<B>, B::Addr, usize) -> MappingResult,
+    ) -> MappingResult {
         for area in self.areas.values() {
             if area.start() >= range.end {
                 break;
@@ -249,7 +251,7 @@ impl<B: MappingBackend> MemorySet<B> {
             }
             let unmap_start = area.start().max(range.start);
             let unmap_end = area.end().min(range.end);
-            area.validate_unmap_range(unmap_start, unmap_end.sub_addr(unmap_start), page_table)?;
+            visit(area, unmap_start, unmap_end.sub_addr(unmap_start))?;
         }
         Ok(())
     }
