@@ -148,20 +148,32 @@ impl FairEntity {
     /// sleeping task must retain that service credit while it is absent from
     /// the weighted average; deriving lag at wake time would instead reward
     /// arbitrary sleep duration.
-    pub(crate) fn capture_sleep_lag(&mut self, virtual_time: u64, timing_granularity_ns: u64) {
-        let virtual_lag = self.bounded_virtual_lag(virtual_time, timing_granularity_ns);
+    pub(crate) fn capture_sleep_lag(
+        &mut self,
+        virtual_time: u64,
+        rq_max_slice_ns: u64,
+        timing_granularity_ns: u64,
+    ) {
+        let virtual_lag =
+            self.bounded_virtual_lag(virtual_time, rq_max_slice_ns, timing_granularity_ns);
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_fair_sleep_lag(virtual_lag);
         self.placement = FairPlacement::Sleeping { virtual_lag };
     }
 
     /// Saves lag and the active request deadline before changing runqueues.
-    pub(crate) fn capture_migration(&mut self, virtual_time: u64, timing_granularity_ns: u64) {
+    pub(crate) fn capture_migration(
+        &mut self,
+        virtual_time: u64,
+        rq_max_slice_ns: u64,
+        timing_granularity_ns: u64,
+    ) {
         let relative_deadline = self.virtual_deadline.wrapping_sub(self.vruntime);
         self.placement = match self.placement {
             FairPlacement::Delayed { virtual_lag } => FairPlacement::DelayedMigrating {
                 virtual_lag: self.refreshed_delayed_lag(
                     virtual_time,
+                    rq_max_slice_ns,
                     timing_granularity_ns,
                     virtual_lag,
                 ),
@@ -170,7 +182,11 @@ impl FairEntity {
             FairPlacement::Migrating { .. } | FairPlacement::DelayedMigrating { .. } => return,
             FairPlacement::Initial | FairPlacement::Active | FairPlacement::Sleeping { .. } => {
                 FairPlacement::Migrating {
-                    virtual_lag: self.bounded_virtual_lag(virtual_time, timing_granularity_ns),
+                    virtual_lag: self.bounded_virtual_lag(
+                        virtual_time,
+                        rq_max_slice_ns,
+                        timing_granularity_ns,
+                    ),
                     relative_deadline,
                 }
             }
@@ -262,10 +278,14 @@ impl FairEntity {
         }
     }
 
-    fn bounded_virtual_lag(self, virtual_time: u64, timing_granularity_ns: u64) -> i64 {
+    fn bounded_virtual_lag(
+        self,
+        virtual_time: u64,
+        rq_max_slice_ns: u64,
+        timing_granularity_ns: u64,
+    ) -> i64 {
         let limit = weighted_delta(
-            self.service_request_ns
-                .saturating_add(timing_granularity_ns),
+            rq_max_slice_ns.saturating_add(timing_granularity_ns),
             self.load_weight(),
         )
         .min(i64::MAX as u64) as i64;
@@ -273,9 +293,14 @@ impl FairEntity {
     }
 
     /// Marks Linux's `on_rq && sched_delayed` state on an ineligible sleeper.
-    pub(crate) fn begin_delayed_dequeue(&mut self, virtual_time: u64, timing_granularity_ns: u64) {
+    pub(crate) fn begin_delayed_dequeue(
+        &mut self,
+        virtual_time: u64,
+        rq_max_slice_ns: u64,
+        timing_granularity_ns: u64,
+    ) {
         let virtual_lag = self
-            .bounded_virtual_lag(virtual_time, timing_granularity_ns)
+            .bounded_virtual_lag(virtual_time, rq_max_slice_ns, timing_granularity_ns)
             .min(0);
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_fair_delayed_begin(virtual_lag);
@@ -293,13 +318,14 @@ impl FairEntity {
     fn refreshed_delayed_lag(
         self,
         virtual_time: u64,
+        rq_max_slice_ns: u64,
         timing_granularity_ns: u64,
         saved_lag: i64,
     ) -> i64 {
         // Linux DELAY_ZERO is enabled in v7.1: delayed service debt may
         // improve toward zero, but it may neither grow more negative nor turn
         // into positive credit while the task sleeps on-rq.
-        self.bounded_virtual_lag(virtual_time, timing_granularity_ns)
+        self.bounded_virtual_lag(virtual_time, rq_max_slice_ns, timing_granularity_ns)
             .max(saved_lag)
             .min(0)
     }
@@ -309,6 +335,7 @@ impl FairEntity {
     pub(crate) fn delayed_requeue_lag(
         self,
         virtual_time: u64,
+        rq_max_slice_ns: u64,
         timing_granularity_ns: u64,
     ) -> Result<Option<i64>, TaskError> {
         let FairPlacement::Delayed {
@@ -320,9 +347,14 @@ impl FairEntity {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_fair_delayed_wake_refresh(
             saved_lag,
-            self.bounded_virtual_lag(virtual_time, timing_granularity_ns),
+            self.bounded_virtual_lag(virtual_time, rq_max_slice_ns, timing_granularity_ns),
         );
-        let lag = self.refreshed_delayed_lag(virtual_time, timing_granularity_ns, saved_lag);
+        let lag = self.refreshed_delayed_lag(
+            virtual_time,
+            rq_max_slice_ns,
+            timing_granularity_ns,
+            saved_lag,
+        );
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_fair_delayed_wake_lag(lag);
         let placed_vruntime = virtual_time.wrapping_sub(lag as u64);
@@ -363,6 +395,7 @@ impl FairEntity {
     pub(crate) fn finish_delayed_dequeue(
         &mut self,
         virtual_time: u64,
+        rq_max_slice_ns: u64,
         timing_granularity_ns: u64,
     ) -> Result<(), TaskError> {
         let FairPlacement::Delayed {
@@ -371,8 +404,12 @@ impl FairEntity {
         else {
             return Err(TaskError::InvalidConfiguration);
         };
-        let virtual_lag =
-            self.refreshed_delayed_lag(virtual_time, timing_granularity_ns, saved_lag);
+        let virtual_lag = self.refreshed_delayed_lag(
+            virtual_time,
+            rq_max_slice_ns,
+            timing_granularity_ns,
+            saved_lag,
+        );
         self.placement = FairPlacement::Sleeping { virtual_lag };
         Ok(())
     }
@@ -777,7 +814,7 @@ mod tests {
     #[test]
     fn forwarded_wake_keeps_sleep_placement_instead_of_an_active_deadline() {
         let mut entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 950);
-        entity.capture_sleep_lag(1_000, 1_000);
+        entity.capture_sleep_lag(1_000, entity.service_request_ns(), 1_000);
 
         entity
             .place_after_transfer(2_000, u64::from(Nice::ZERO.weight()))
@@ -788,5 +825,24 @@ mod tests {
             (1_800, 1_801)
         );
         assert_eq!(entity.remaining_request_ns(), entity.service_request_ns());
+    }
+
+    #[test]
+    fn sleep_lag_is_bounded_by_the_linux_rq_max_slice() {
+        let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 100, 0);
+        let rq_max_slice_ns = 1_000;
+        let timing_granularity_ns = 10;
+
+        entity.capture_sleep_lag(10_000, rq_max_slice_ns, timing_granularity_ns);
+
+        assert_eq!(
+            entity.placement,
+            FairPlacement::Sleeping {
+                virtual_lag: weighted_delta(
+                    rq_max_slice_ns + timing_granularity_ns,
+                    entity.weight(),
+                ) as i64,
+            }
+        );
     }
 }

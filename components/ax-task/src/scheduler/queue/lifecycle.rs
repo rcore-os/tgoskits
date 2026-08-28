@@ -78,7 +78,11 @@ impl RunQueue {
             && fair.is_delayed()
         {
             let virtual_time = self.virtual_time();
-            fair.finish_delayed_dequeue(virtual_time, timing_granularity_ns)
+            let rq_max_slice_ns = self
+                .max_fair_service_request_ns()
+                .unwrap_or(fair.service_request_ns())
+                .max(fair.service_request_ns());
+            fair.finish_delayed_dequeue(virtual_time, rq_max_slice_ns, timing_granularity_ns)
                 .expect("detached delayed Fair state must finish exactly once");
         }
         self.nr_running = self
@@ -400,6 +404,7 @@ impl RunQueue {
         &mut self,
         id: ThreadId,
         virtual_time: u64,
+        rq_max_slice_ns: u64,
         timing_granularity_ns: u64,
     ) -> bool {
         let active = match self.membership_class(id) {
@@ -414,9 +419,11 @@ impl RunQueue {
         let Some(active) = active else {
             return false;
         };
-        active
-            .base_entity_mut()
-            .capture_fair_migration(virtual_time, timing_granularity_ns);
+        active.base_entity_mut().capture_fair_migration(
+            virtual_time,
+            rq_max_slice_ns,
+            timing_granularity_ns,
+        );
         true
     }
 

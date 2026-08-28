@@ -151,16 +151,25 @@ impl SchedulerClass {
         // weighted average. Capture the same source-rq value before removing
         // our intrusive node; post-dequeue virtual time is not the task's
         // migration lag.
-        let source_virtual_time = run_queue
+        let source_fair_context = run_queue
             .queued_thread_including_current(id)
-            .filter(|thread| thread.base_entity.fair().is_some())
-            .map(|_| run_queue.virtual_time());
+            .and_then(|thread| thread.base_entity.fair())
+            .map(|fair| {
+                (
+                    run_queue.virtual_time(),
+                    run_queue
+                        .max_fair_service_request_ns()
+                        .unwrap_or(fair.service_request_ns())
+                        .max(fair.service_request_ns()),
+                )
+            });
         let mut thread = self.dequeue_task(run_queue, membership, id)?;
-        if let Some(source_virtual_time) = source_virtual_time {
-            thread
-                .active
-                .base_entity_mut()
-                .capture_fair_migration(source_virtual_time, timing_granularity_ns);
+        if let Some((source_virtual_time, rq_max_slice_ns)) = source_fair_context {
+            thread.active.base_entity_mut().capture_fair_migration(
+                source_virtual_time,
+                rq_max_slice_ns,
+                timing_granularity_ns,
+            );
         }
         Some(thread)
     }

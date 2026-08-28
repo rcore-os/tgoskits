@@ -468,10 +468,15 @@ impl CpuRunQueueState {
         if !force && fair.is_eligible(virtual_time) {
             return None;
         }
+        let rq_max_slice_ns = self
+            .queue
+            .max_fair_service_request_ns()
+            .unwrap_or(fair.service_request_ns())
+            .max(fair.service_request_ns());
         let SchedulingEntity::Fair(current) = self.current_scheduling_entity_mut()? else {
             return None;
         };
-        current.begin_delayed_dequeue(virtual_time, timing_granularity_ns);
+        current.begin_delayed_dequeue(virtual_time, rq_max_slice_ns, timing_granularity_ns);
         let dispatch = self.queue.take_current()?;
         let queued = dispatch.into_queued_thread()?;
         let entity = self.queue.enqueue_delayed_fair_current(queued);
@@ -594,18 +599,24 @@ impl CpuRunQueueState {
         thread: ThreadId,
         timing_granularity_ns: u64,
     ) {
-        if self
+        let Some(base_fair) = self
             .base_scheduling_entity(thread)
             .and_then(|entity| entity.fair())
-            .is_none()
-        {
+        else {
             return;
-        }
+        };
         let virtual_time = self.queue.virtual_time();
-        if self
+        let rq_max_slice_ns = self
             .queue
-            .capture_linked_fair_migration(thread, virtual_time, timing_granularity_ns)
-        {
+            .max_fair_service_request_ns()
+            .unwrap_or(base_fair.service_request_ns())
+            .max(base_fair.service_request_ns());
+        if self.queue.capture_linked_fair_migration(
+            thread,
+            virtual_time,
+            rq_max_slice_ns,
+            timing_granularity_ns,
+        ) {
             return;
         }
         let current = self
@@ -618,7 +629,7 @@ impl CpuRunQueueState {
         current
             .active_mut()
             .base_entity_mut()
-            .capture_fair_migration(virtual_time, timing_granularity_ns);
+            .capture_fair_migration(virtual_time, rq_max_slice_ns, timing_granularity_ns);
     }
 
     pub(crate) fn update_base_deadline_entity(

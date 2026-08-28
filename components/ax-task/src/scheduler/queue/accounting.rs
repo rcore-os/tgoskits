@@ -188,6 +188,19 @@ impl RunQueue {
         self.fair.min_service_request_ns()
     }
 
+    /// Linux `cfs_rq_max_slice()` across queued entities and the Fair current.
+    pub(crate) fn max_fair_service_request_ns(&self) -> Option<u64> {
+        let queued = self.fair.max_service_request_ns();
+        let current = self
+            .current
+            .as_ref()
+            .filter(|current| !current.is_dedicated_idle())
+            .and_then(CurrentDispatch::owned_scheduling_entity_ref)
+            .and_then(SchedulingEntity::fair)
+            .map(FairEntity::service_request_ns);
+        queued.into_iter().chain(current).max()
+    }
+
     pub(crate) fn fair_wakee_is_selected(&self, wakee: ThreadId, virtual_time: u64) -> bool {
         self.fair.earliest_eligible(virtual_time) == Some(wakee)
     }

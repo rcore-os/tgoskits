@@ -256,11 +256,17 @@ impl TaskSystem {
                 );
                 if !delayed {
                     let mut active = previous_core.sched().active(sched);
-                    if active.base_entity().fair().is_some() {
+                    if let Some(fair) = active.base_entity().fair() {
                         let virtual_time = transaction.virtual_time();
-                        active
-                            .base_entity_mut()
-                            .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
+                        let rq_max_slice_ns = transaction
+                            .max_fair_service_request_ns()
+                            .unwrap_or(fair.service_request_ns())
+                            .max(fair.service_request_ns());
+                        active.base_entity_mut().capture_fair_sleep_lag(
+                            virtual_time,
+                            rq_max_slice_ns,
+                            timing_granularity_ns,
+                        );
                     }
                 }
                 if !delayed {

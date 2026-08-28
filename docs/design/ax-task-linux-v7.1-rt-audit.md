@@ -4084,6 +4084,40 @@ process/20、4-vCPU TCG、全部任务固定 CPU0 的 qperf 窗口从上一检�
 `336a462e22` 的同工作量只有 44 次 pipe wait、499 次 context switch，后续仍需找出为何当前
 相同 I/O 会过早耗尽 pipe 数据并进入近 3000 次真实 block/wake transaction。
 
+### 2026-08-29 Fair vlag 使用 cfs-rq 最大 slice 限幅
+
+Linux v7.1 `entity_lag()` 不按被更新实体自身的 `se->slice` 限制 `vlag`，而是在实体仍属于
+`cfs_rq` 时读取 `cfs_rq_max_slice(cfs_rq) + TICK_NSEC`，再按该实体权重换算成 virtual limit。
+`cfs_rq_max_slice()` 同时覆盖 queued tree 与仍 `on_rq` 的 current。旧 ax-task 的
+`FairEntity::bounded_virtual_lag()` 只使用自身 `service_request_ns + timing_granularity_ns`；同一 rq
+存在更长 slice peer 时，它会把 sleep、migration 或 delayed-dequeue 保存的 lag 过早截小，随后
+wake placement 不能恢复 Linux 本来允许保留的 service credit/debt。
+
+确定性纯算法回归构造 100 ns 当前实体、1000 ns rq 最大 slice 与 10 ns timing granularity，令原始
+lag 超过两者的 limit。旧实现稳定保存 110，Linux 期望 1010；同一断言在修复后转绿。测试过程没有
+向 ax-task 仓库引入 host fake `TaskRuntime`：现有 host unit 链接缺少两个 preempt guard 外部符号，
+本地仅用 `/tmp` 的最小链接垫片执行该纯算法断言，生产代码、测试源码和提交均不包含 runtime fake。
+
+修复给 Fair AVL 节点增加 `max_service_request_ns` 增广值，和已有 `min_service_request_ns` 一样在
+insert、rotation、remove/recycle 全路径维护。rq 查询把 queued 最大值与非 dedicated-idle Fair
+current 合并；sleep、普通迁移、PI/策略迁移、delayed begin、delayed finish 与 delayed wake
+reactivation 都显式消费同一个 rq 最大 slice，不保留按自身 slice 的兼容分支。x86_64 Starry kernel
+真实 QEMU suite 73/73 通过。
+
+这项语义修复在当前 hackbench 中理论上应接近中性，因为所有 Normal Fair task 使用同一配置
+slice。1 秒 qperf 窗口为 1.205 s，8040 次 read 中有 3744 次 wait，产生 4279 次 blocked switch、
+305 次 preempted switch；registration race、direct retry 与 stale 仍全为 0。相同未插桩
+process/1000 按 warmup 加五轮协议得到 warmup 47.394 s、测量
+49.709/47.878/50.892/49.293/50.131 s，中位数 49.709 s；相对上一检查点 52.396 s 改善约 5.1%，
+但仍为 Linux v7.1 PREEMPT_RT 10.540 s 的约 4.72 倍。考虑 TCG 波动和该 workload 等 slice
+前提，不把这 5.1% 归因于 max-slice 修复；按完成规则保留已证明的 Linux 语义，并继续寻找导致
+数千次真实 block 的主差距。
+
+同轮还排除了一个 EEVDF wakeup 误报：Linux `pick_eevdf()` 最终让 current 与 queued best 调用
+`entity_before()`，而 v7.1 的 `entity_before()` 比较 virtual deadline，不是 vruntime。当前
+`fair_wakeup_preempts()` 先比较 eligible current/wakee deadline，再确认 wakee 是 queued best，
+结果与该选择顺序一致，因此没有为错误的“current vruntime override”结论修改代码。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

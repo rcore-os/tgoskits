@@ -63,6 +63,7 @@ pub(crate) struct FairNode {
     height: usize,
     min_vruntime: u64,
     min_service_request_ns: u64,
+    max_service_request_ns: u64,
 }
 
 impl FairNode {
@@ -79,6 +80,7 @@ impl FairNode {
             height: 1,
             min_vruntime: 0,
             min_service_request_ns: 0,
+            max_service_request_ns: 0,
         })
     }
 
@@ -87,6 +89,7 @@ impl FairNode {
         let fair = fair_entity(&thread);
         self.min_vruntime = fair.vruntime();
         self.min_service_request_ns = fair.service_request_ns();
+        self.max_service_request_ns = fair.service_request_ns();
         self.thread = Some(thread);
         self.left = None;
         self.right = None;
@@ -115,12 +118,16 @@ impl FairNode {
             .into_iter()
             .chain(link_min_service_request_ns(&self.right))
             .fold(fair_entity(self.thread()).service_request_ns(), u64::min);
+        self.max_service_request_ns = link_max_service_request_ns(&self.left)
+            .into_iter()
+            .chain(link_max_service_request_ns(&self.right))
+            .fold(fair_entity(self.thread()).service_request_ns(), u64::max);
     }
 }
 
 /// A fair-class queue ordered by virtual deadline and augmented by minimum
-/// vruntime and service request. The augmentations keep eligible selection
-/// logarithmic and expose Linux RUN_TO_PARITY's shortest queued slice in O(1).
+/// vruntime and service-request bounds. The augmentations keep eligible
+/// selection logarithmic and expose Linux's cfs-rq slice bounds in O(1).
 #[derive(Debug)]
 pub(super) struct FairRunQueue {
     root: FairLink,
@@ -187,6 +194,10 @@ impl FairRunQueue {
 
     pub(super) fn min_service_request_ns(&self) -> Option<u64> {
         self.root.as_deref().map(|node| node.min_service_request_ns)
+    }
+
+    pub(super) fn max_service_request_ns(&self) -> Option<u64> {
+        self.root.as_deref().map(|node| node.max_service_request_ns)
     }
 
     pub(super) fn insert(&mut self, thread: QueuedThread) {
@@ -332,11 +343,12 @@ impl FairRunQueue {
         virtual_time: u64,
         timing_granularity_ns: u64,
     ) -> Option<QueuedThread> {
+        let rq_max_slice_ns = self.max_service_request_ns()?;
         let mut thread = self.take_delayed(thread)?;
         let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
             unreachable!("FairRunQueue can contain only Fair entities")
         };
-        fair.finish_delayed_dequeue(virtual_time, timing_granularity_ns)
+        fair.finish_delayed_dequeue(virtual_time, rq_max_slice_ns, timing_granularity_ns)
             .ok()?;
         Some(thread)
     }
@@ -356,8 +368,12 @@ impl FairRunQueue {
                 .expect("fair identity index must match its tree")
                 .thread(),
         );
+        let rq_max_slice_ns = self
+            .max_service_request_ns()
+            .unwrap_or(fair.service_request_ns())
+            .max(current.map_or(0, FairEntity::service_request_ns));
         let requeue_lag = fair
-            .delayed_requeue_lag(self.virtual_time(), timing_granularity_ns)
+            .delayed_requeue_lag(self.virtual_time(), rq_max_slice_ns, timing_granularity_ns)
             .ok()?;
 
         let Some(saved_lag) = requeue_lag else {
@@ -529,6 +545,7 @@ impl FairRunQueue {
         removed.height = 1;
         removed.min_vruntime = 0;
         removed.min_service_request_ns = 0;
+        removed.max_service_request_ns = 0;
         unsafe {
             // SAFETY: the node is physically unlinked before the placement
             // transaction can publish this thread to another runqueue.
@@ -556,6 +573,10 @@ fn link_min_vruntime(link: &FairLink) -> Option<u64> {
 
 fn link_min_service_request_ns(link: &FairLink) -> Option<u64> {
     link.as_deref().map(|node| node.min_service_request_ns)
+}
+
+fn link_max_service_request_ns(link: &FairLink) -> Option<u64> {
+    link.as_deref().map(|node| node.max_service_request_ns)
 }
 
 fn balance_factor(node: &FairNode) -> isize {

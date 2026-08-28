@@ -379,15 +379,25 @@ impl SchedulingEntity {
         }
     }
 
-    pub(crate) fn capture_fair_sleep_lag(&mut self, virtual_time: u64, timing_granularity_ns: u64) {
+    pub(crate) fn capture_fair_sleep_lag(
+        &mut self,
+        virtual_time: u64,
+        rq_max_slice_ns: u64,
+        timing_granularity_ns: u64,
+    ) {
         if let Self::Fair(entity) = self {
-            entity.capture_sleep_lag(virtual_time, timing_granularity_ns);
+            entity.capture_sleep_lag(virtual_time, rq_max_slice_ns, timing_granularity_ns);
         }
     }
 
-    pub(crate) fn capture_fair_migration(&mut self, virtual_time: u64, timing_granularity_ns: u64) {
+    pub(crate) fn capture_fair_migration(
+        &mut self,
+        virtual_time: u64,
+        rq_max_slice_ns: u64,
+        timing_granularity_ns: u64,
+    ) {
         if let Self::Fair(entity) = self {
-            entity.capture_migration(virtual_time, timing_granularity_ns);
+            entity.capture_migration(virtual_time, rq_max_slice_ns, timing_granularity_ns);
         }
     }
 
