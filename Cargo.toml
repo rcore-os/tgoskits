@@ -306,6 +306,9 @@ proc-macro2 = "1.0.107"
 quote = "1.0.47"
 syn = "3.0.3"
 toml = { version = "1", default-features = false }
+flate2 = "1"
+tar = "0.4"
+tower-http = { version = "0.6", default-features = false, features = ["fs", "set-header"] }
 dma-api = { version = "0.10", path = "memory/dma-api" }
 mmio-api = { version = "0.3", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1", path = "drivers/interface/cvi-vdec-uapi" }

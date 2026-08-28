@@ -63,6 +63,36 @@ arch = "aarch64"
 cases = ["http-control-plane"]
 
 [[check]]
+id = "test-axvisor-aarch64-qemu-web-ui"
+impact_targets = ["axvisor:aarch64"]
+name = "QEMU aarch64 · Web management dashboard"
+timeout_minutes = 30
+command = '''
+echo "==> ensure Node.js >= 24 (build.rs runs 'npm ci && npm run build' on web-ui/)"
+if ! command -v node >/dev/null 2>&1 || [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -lt 24 ]; then
+  NODE_VER=24
+  case "$(uname -m)" in
+    x86_64) NODE_ARCH=x64 ;;
+    aarch64) NODE_ARCH=arm64 ;;
+    *) NODE_ARCH="$(uname -m)" ;;
+  esac
+  curl -fsSL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz
+  tar -xf /tmp/node.tar.xz -C /usr/local --strip-components=1
+fi
+node -v
+npm -v
+echo "==> pull qemu-aarch64 image"
+cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
+echo "==> axvisor aarch64 web-ui dashboard (asset extraction + lifecycle probe)"
+cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["web-ui"]
+
+[[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
 impact_targets = ["axvisor:riscv64"]
 name = "QEMU riscv64 · Smoke + IPI + panic modes"

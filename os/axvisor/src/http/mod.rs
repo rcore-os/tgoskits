@@ -15,6 +15,30 @@
 pub mod auth;
 pub mod server;
 pub mod vm;
+#[cfg(feature = "web-ui")]
+pub mod web_ui;
+
+/// Whether the web UI is ready to be served, or why it is not.
+///
+/// This is the typed contract between [`web_ui::init`] (which extracts the
+/// embedded UI bundle) and [`server::router`]: when `Unavailable`, the UI
+/// routes return `503` while `/api/*` keeps serving. It is defined here so the
+/// type is available whenever the `http-axum` feature is on, regardless of
+/// `web-ui`.
+#[derive(Clone, Copy, Debug)]
+pub enum WebUiStatus {
+    /// The bundle was extracted to `current/` and is served.
+    Ready,
+    /// Extraction failed; UI paths return `503`, `/api/*` stays up.
+    Unavailable { reason: &'static str },
+}
+
+impl WebUiStatus {
+    /// `true` when the UI should be served normally.
+    pub fn is_ready(self) -> bool {
+        matches!(self, WebUiStatus::Ready)
+    }
+}
 
 /// Blocking entry point for the management HTTP server.
 ///

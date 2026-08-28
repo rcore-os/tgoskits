@@ -1,0 +1,61 @@
+# Memory-backed guest fixture for the web management dashboard test.
+# The kernel and its BusyBox initramfs are embedded into the hypervisor binary
+# at build time (`image_location = "memory"`, see os/axvisor/build.rs) and
+# matched at runtime only by `base.id` — the `${workspace}` paths below are
+# resolved by axbuild at build time and ignored by the runtime create handler.
+#
+# `id = 1`: the runtime can only realize guest images baked into the hypervisor,
+# so the dashboard's lifecycle buttons drive this same config, whose `base.id`
+# re-matches the embedded image. `phys_cpu_ids = [1]` keeps the vCPU on Core 1
+# while the management console runs on Core 0, so a resume wake (parked vCPU on
+# a pinned non-primary CPU) is exercised exactly as in the pause/resume case.
+#
+# The hypervisor also mounts its NVMe rootfs (`root=/dev/nvme0n1`) so
+# `web_ui::init()` can extract the embedded UI bundle to
+# `/web/axvisor-ui/current/` and the axum routes serve it with `ServeDir`; the
+# guest Linux boots its own embedded initramfs (`rdinit=/init`) independently of
+# that host rootfs.
+[base]
+id = 1
+name = "linux-http-web-ui"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+entry_point = 0x8020_0000
+# The location of image: "memory" | "fs". Memory embeds the image at build time.
+image_location = "memory"
+# The file path of the kernel image (build-time only for memory images).
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-aarch64/linux/linux-qemu"
+# The load address of the kernel image.
+kernel_load_addr = 0x8020_0000
+# The load address of the device tree blob (DTB).
+dtb_load_addr = 0x8000_0000
+# BusyBox initramfs generated from the managed rootfs (the guest rootfs; the
+# QEMU case appends `rdinit=/init`).
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-web-ui/initramfs-aarch64.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+# MAP_ALLOC maps guest GPA 0x80000000 to hypervisor-allocated host pages; the
+# QEMU virt host RAM is 0x40000000..0x80000000, so an identity-mapped region
+# would land at the host heap address rather than the configured 0x80000000 and
+# the guest images at 0x80200000 would not resolve.
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0], # System RAM 256M MAP_ALLOC
+]
+
+#
+# Device specifications
+#
+
+# Physical-device selection. Virtual platform devices are machine-owned.
+[devices]
+passthrough = []
+disabled = []

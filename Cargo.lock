@@ -1567,6 +1567,7 @@ dependencies = [
  "axvm-types",
  "axvmconfig",
  "clap",
+ "flate2",
  "heapless",
  "log",
  "prettyplease 0.3.0",
@@ -1575,8 +1576,10 @@ dependencies = [
  "serde_json",
  "shlex 2.0.1",
  "syn 3.0.4",
+ "tar",
  "tokio",
  "toml 1.1.4+spec-1.1.0",
+ "tower-http",
 ]
 
 [[package]]

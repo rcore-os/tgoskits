@@ -1,0 +1,42 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "2",
+  # The hypervisor mounts its NVMe rootfs (`root=/dev/nvme0n1`) so `web-ui`
+  # can write the dashboard assets to `/web/` and serve them back. The default
+  # VM is a memory-embedded Linux guest that boots its own BusyBox initramfs
+  # (`rdinit=/init`), so the two mounts do not collide: the guest stays on its
+  # initramfs while the hypervisor owns the NVMe for `/web/`. The `-drive`
+  # `file=` is replaced by the runner with the managed rootfs image
+  # (`patch_qemu_rootfs_path`).
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "console=ttyAMA0 root=/dev/nvme0n1 rw rdinit=/init devtmpfs.mount=1 loglevel=7",
+  # `-m 1g`: the guest uses a 256M MAP_ALLOC region, and the hypervisor plus
+  # that region must both fit in QEMU's total RAM (same sizing as the previous
+  # HTTP control cases).
+  "-m",
+  "1g",
+]
+# The HTTP probe asserts the dashboard assets are served and drives the
+# lifecycle the dashboard buttons call; the probe result is the verdict.
+# `success_regex` is empty because the probe result, not serial output, is the
+# verdict; a guest panic still fails via `fail_regex`.
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+]
+success_regex = []
+timeout = 600
+to_bin = true
+uefi = false
+
+[host_http_probe]
+token = "axvisor-http-test-token"

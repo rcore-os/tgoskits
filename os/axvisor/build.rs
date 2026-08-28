@@ -42,6 +42,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::Context;
@@ -346,6 +347,190 @@ fn generate_firmware_img_loading_functions(
     Ok(())
 }
 
+/// Minimum toolchain required to build the web UI from source.
+const MIN_NODE_MAJOR: u32 = 24;
+const MIN_NPM_MAJOR: u32 = 11;
+const MIN_NPM_MINOR: u32 = 12; // npm >= 11.12.1
+
+/// Hard limits on the embedded UI bundle (reviewer-imposed).
+const MAX_UI_FILES: usize = 256;
+const MAX_UI_GZ_BYTES: usize = 512 * 1024;
+const MAX_UI_UNCOMPRESSED_BYTES: usize = 2 * 1024 * 1024;
+
+/// Parse `"v24.19.0"` / `"24.19.0"` into `(major, minor)`.
+fn semver_major_minor(v: &str) -> Option<(u32, u32)> {
+    let v = v.trim_start_matches('v');
+    let mut it = v.split('.');
+    let major: u32 = it.next()?.parse().ok()?;
+    let minor: u32 = it.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor))
+}
+
+/// Recursively collect `dist/` into `(relative path, is_dir, bytes)` entries.
+fn collect_dist(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(PathBuf, bool, Vec<u8>)>,
+    file_count: &mut usize,
+    uncompressed: &mut usize,
+) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap().to_path_buf();
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            out.push((rel, true, Vec::new()));
+            collect_dist(root, &path, out, file_count, uncompressed)?;
+        } else if ft.is_file() {
+            let data = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            *uncompressed += data.len();
+            *file_count += 1;
+            out.push((rel, false, data));
+        }
+    }
+    Ok(())
+}
+
+/// Build the React web UI and pack `dist/` into a deterministic gzip tarball.
+///
+/// The tarball normalizes every header (mtime 0, mode `0o644`/`0o755`, uid/gid
+/// 0, empty uname/gname) and the gzip stream fixes its mtime, so the embedded
+/// bytes are reproducible from the same `dist/` contents. The result is written
+/// to `OUT_DIR/web_ui_bundle.gz` and surfaced to the crate through the
+/// generated `OUT_DIR/web_ui_bundle.rs` (`include_bytes!`).
+fn build_web_ui_bundle() -> anyhow::Result<()> {
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR not set")?);
+    let web_ui_dir = manifest_dir.join("web-ui");
+    anyhow::ensure!(
+        web_ui_dir.exists(),
+        "web-ui directory missing: {}",
+        web_ui_dir.display()
+    );
+
+    // Toolchain version gates.
+    let node_ver = String::from_utf8(
+        Command::new("node")
+            .arg("--version")
+            .output()
+            .context("failed to run `node --version`; install Node.js >= 24")?
+            .stdout,
+    )
+    .context("node version is not utf-8")?;
+    let npm_ver = String::from_utf8(
+        Command::new("npm")
+            .arg("--version")
+            .output()
+            .context("failed to run `npm --version`; install npm >= 11.12.1")?
+            .stdout,
+    )
+    .context("npm version is not utf-8")?;
+    match semver_major_minor(&node_ver) {
+        Some((m, _)) if m >= MIN_NODE_MAJOR => {}
+        Some((m, _)) => anyhow::bail!("Node.js >= {MIN_NODE_MAJOR} required, found {m}"),
+        None => anyhow::bail!("could not parse node version: {node_ver:?}"),
+    }
+    match semver_major_minor(&npm_ver) {
+        Some((ma, mi)) if (ma, mi) >= (MIN_NPM_MAJOR, MIN_NPM_MINOR) => {}
+        Some((ma, mi)) => {
+            anyhow::bail!("npm >= {MIN_NPM_MAJOR}.{MIN_NPM_MINOR} required, found {ma}.{mi}")
+        }
+        None => anyhow::bail!("could not parse npm version: {npm_ver:?}"),
+    }
+
+    // Build from the committed lockfile (deterministic), then produce `dist/`.
+    let ci = Command::new("npm")
+        .args(["ci", "--no-audit", "--no-fund"])
+        .current_dir(&web_ui_dir)
+        .status()
+        .context("failed to spawn `npm ci`")?;
+    anyhow::ensure!(ci.success(), "`npm ci` failed with {ci}");
+    let build = Command::new("npm")
+        .args(["run", "build"])
+        .current_dir(&web_ui_dir)
+        .status()
+        .context("failed to spawn `npm run build`")?;
+    anyhow::ensure!(build.success(), "`npm run build` failed with {build}");
+
+    let dist = web_ui_dir.join("dist");
+    anyhow::ensure!(dist.exists(), "web-ui build produced no dist/");
+
+    let mut entries: Vec<(PathBuf, bool, Vec<u8>)> = Vec::new();
+    let mut file_count = 0usize;
+    let mut uncompressed = 0usize;
+    collect_dist(
+        &dist,
+        &dist,
+        &mut entries,
+        &mut file_count,
+        &mut uncompressed,
+    )?;
+    anyhow::ensure!(
+        file_count <= MAX_UI_FILES,
+        "web UI has {file_count} files; the hard limit is {MAX_UI_FILES}"
+    );
+    anyhow::ensure!(
+        uncompressed <= MAX_UI_UNCOMPRESSED_BYTES,
+        "web UI uncompressed size {uncompressed} exceeds the {MAX_UI_UNCOMPRESSED_BYTES} limit"
+    );
+
+    // Deterministic ordering independent of read_dir iteration order.
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    {
+        let mut builder = tar::Builder::new(&mut gz);
+        for (rel, is_dir, data) in &entries {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let mut header = tar::Header::new_gnu();
+            if *is_dir {
+                header.set_entry_type(tar::EntryType::dir());
+                header.set_size(0);
+                header.set_mode(0o755);
+            } else {
+                header.set_entry_type(tar::EntryType::file());
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+            }
+            header.set_mtime(0);
+            header.set_uid(0);
+            header.set_gid(0);
+            // `tar::Header::new_gnu()` already has empty uname/gname, which is
+            // the normalized value we want for a reproducible archive.
+            header.set_cksum();
+            builder
+                .append_data(&mut header, &rel, data.as_slice())
+                .context("failed to append entry to tar")?;
+        }
+        builder.finish().context("failed to finish tar")?;
+    }
+    let gz_bytes = gz.finish().context("failed to finish gzip")?;
+    anyhow::ensure!(
+        gz_bytes.len() <= MAX_UI_GZ_BYTES,
+        "web UI gzip size {} exceeds the {MAX_UI_GZ_BYTES} limit",
+        gz_bytes.len()
+    );
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR not set")?);
+    fs::write(out_dir.join("web_ui_bundle.gz"), &gz_bytes)
+        .context("failed to write web_ui_bundle.gz")?;
+
+    let bundle_rs = format!(
+        "// Generated by build.rs. Do not edit.\n\
+         /// Embedded, gzip-compressed tarball of the web UI (`dist/`).\n\
+         pub const WEB_UI_BUNDLE_GZ: &[u8] =\n\
+         \x20\x20\x20\x20include_bytes!(concat!(env!(\"OUT_DIR\"), \"/web_ui_bundle.gz\"));\n\
+         /// Number of files in the embedded bundle.\n\
+         pub const WEB_UI_FILE_COUNT: usize = {file_count};\n\
+         /// Uncompressed size of the embedded bundle in bytes.\n\
+         pub const WEB_UI_UNCOMPRESSED_BYTES: usize = {uncompressed};\n"
+    );
+    fs::write(out_dir.join("web_ui_bundle.rs"), bundle_rs)
+        .context("failed to write web_ui_bundle.rs")?;
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=linker.ld");
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR is not set")?);
@@ -411,5 +596,25 @@ fn main() -> anyhow::Result<()> {
             write_tokens(&mut output_file, output)?;
         }
     }
+
+    // Build and embed the web UI when the feature is enabled. A build failure
+    // surfaces as a `compile_error!` through the generated `web_ui_bundle.rs`
+    // so the operator sees the exact cause instead of an opaque include error.
+    #[cfg(feature = "web-ui")]
+    {
+        if let Err(e) = build_web_ui_bundle() {
+            let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap_or_else(|_| "OUT_DIR".into()));
+            let _ = fs::write(
+                out_dir.join("web_ui_bundle.rs"),
+                format!("compile_error!(\"web-ui build failed: {e}\");"),
+            );
+        }
+        println!("cargo:rerun-if-changed=web-ui/package.json");
+        println!("cargo:rerun-if-changed=web-ui/package-lock.json");
+        println!("cargo:rerun-if-changed=web-ui/src");
+        println!("cargo:rerun-if-changed=web-ui/index.html");
+        println!("cargo:rerun-if-changed=web-ui/vite.config.ts");
+    }
+
     Ok(())
 }

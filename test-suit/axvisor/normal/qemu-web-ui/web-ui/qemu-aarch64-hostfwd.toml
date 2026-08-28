@@ -1,0 +1,29 @@
+# QEMU config for manually running the web-ui dashboard with host port
+# forwarding, so the page is reachable from the host browser at
+# http://localhost:8080/. Companion to
+# build-aarch64-unknown-none-softfloat.toml (same rootfs / NVMe mount).
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "2",
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=/home/aptacc2421/rCore_leaning/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "console=ttyAMA0 root=/dev/nvme0n1 rw rdinit=/init devtmpfs.mount=1 loglevel=7",
+  "-netdev",
+  "user,id=net0,hostfwd=tcp::8080-:8080",
+  "-device",
+  "virtio-net-pci,netdev=net0",
+  "-m",
+  "1g",
+]
+fail_regex = []
+success_regex = []
+to_bin = true
+uefi = false

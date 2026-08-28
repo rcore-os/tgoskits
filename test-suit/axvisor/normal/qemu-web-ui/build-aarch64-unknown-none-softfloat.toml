@@ -1,0 +1,28 @@
+# Web management dashboard build for the axum management HTTP test (qemu-web-ui).
+# `web-ui` implies `http-axum` + `fs`: the hypervisor mounts its NVMe rootfs
+# (`ax-driver/nvme`), `build.rs` builds the React app and embeds a normalized
+# gzip tarball, and `web_ui::init()` extracts it to `/web/axvisor-ui/current/`
+# where the axum `ServeDir` serves it. `no-auto-start` keeps the default VM
+# (`web-ui/vm-memory.toml`, a build-time embedded `memory` Linux guest with a
+# BusyBox initramfs) in `Ready`; the typed probe asserts the served assets and
+# drives the lifecycle the dashboard buttons call. The managed rootfs the
+# hypervisor mounts ships the guest kernel, and the test flow auto-provisions it
+# and generates the initramfs at the path below.
+features = [
+    "web-ui",
+    "ax-driver/nvme",
+    "no-auto-start",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/qemu-web-ui/web-ui/vm-memory.toml"]
+
+# Control-plane auth + bind. The mutating routes the dashboard buttons call
+# require `Authorization: Bearer <token>`; the typed probe sends this same token
+# (`[host_http_probe] token`), and hostfwd reachability requires binding all
+# interfaces. The BusyBox initramfs is generated from the managed rootfs into
+# the path the fixture's `ramdisk_path` points at.
+[env]
+AXVM_HTTP_TOKEN = "axvisor-http-test-token"
+AXVM_HTTP_BIND = "0.0.0.0:8080"
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-web-ui/initramfs-aarch64.cpio.gz"

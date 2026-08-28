@@ -17,6 +17,7 @@ include = [
     "build.rs",
     "configs/**",
     "xtask/src/**",
+    "web-ui/**",
     "README.md",
     "LICENSE*",
 ]
@@ -67,6 +68,12 @@ http-axum = ["ax-std/net", "dep:axum", "dep:tokio", "dep:serde_json"]
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []
+# Web management dashboard: `build.rs` runs `npm ci && npm run build` on the
+# `web-ui/` React project (Node >= 24, npm >= 11.12.1), packs the deterministic
+# `dist/` into a normalized gzip tarball embedded via `include_bytes!`, and the
+# runtime stream-extracts it to `/web/axvisor-ui/current` before serving with
+# `tower-http::ServeDir` under a strict CSP. Implies `http-axum` and `fs`.
+web-ui = ["http-axum", "fs", "dep:tower-http", "dep:tar", "dep:flate2"]
 
 [dependencies]
 shlex.workspace = true
@@ -84,8 +91,14 @@ axum = { version = "0.8", optional = true }
 serde_json = { version = "1", optional = true }
 # The runtime only enables the IO driver (`enable_io()`), so no `time` driver
 # and thus no `timerfd` syscall is needed. `rt` + `net` cover the manually
-# built current-thread runtime and `TcpListener`.
-tokio = { version = "1", optional = true, features = ["rt", "net"] }
+# built current-thread runtime and `TcpListener`. `web-ui` additionally needs
+# `fs` + `io-util` for the (blocking) startup bundle extraction and the async
+# `ServeDir` reads.
+tokio = { version = "1", optional = true, features = ["rt", "net", "fs", "io-util"] }
+# `web-ui` only: stream-extract the embedded gzip tarball and serve it.
+tower-http = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
 
 # System dependent modules provided by ArceOS.
 ax-api.workspace = true
@@ -126,3 +139,6 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
 toml = { workspace = true, features = ["std", "serde", "parse", "display"] }
+# `web-ui` only: pack the built `dist/` into a normalized gzip tarball.
+tar = { workspace = true }
+flate2 = { workspace = true }
