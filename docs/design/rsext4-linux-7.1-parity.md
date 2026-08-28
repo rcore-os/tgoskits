@@ -273,6 +273,9 @@ affinity、镜像与 workload 下，预热 3 次、测量至少 10 次；现有�
 吞吐/IOPS 回退不得超过 5%，p95 latency 回退不得超过 10%。新增语义报告相对
 Linux 7.1 的代价，不套用不存在的 dev 对照。
 
+> 开发期原始 CSV 与临时 benchmark harness 已在 PR 收尾时从仓库清理；下文保留
+> 固定环境、统计口径、汇总值和性能结论。
+
 ### 7.1 dev 顺序 I/O 基线
 
 采集时间：2026-08-10；代码基线为本文第 1 节的 TGOSKits commit，加上只包含
@@ -397,8 +400,7 @@ backend、4 KiB block、`metadata_csum+64bit+journal`，workload 和计时边界
 
 10-run 探测曾出现一个 81.253 us sync 离群值；同配置立即复测的 sync p95 为
 37.816 us。为避免 10 个样本时 p95 退化为最大值，正式检查点扩展为 3 次预热加
-20 次测量，并保留全部原始样本于
-`docs/design/data/rsext4-perf/2026-08-10-legacy-indirect.csv`。harness marker 同时补齐
+20 次测量。harness marker 同时补齐
 commit、arch、backend 与 feature 字段，但没有改变 workload 或计时区间：
 
 ```text
@@ -420,8 +422,7 @@ extent 顺序 workload 只经过 inode-format 分支，不进入 legacy allocato
 两次 20-run 探测都原样判为未通过：第一次 write/read p95 分别为 9.130 ms 和
 9.978 ms，超过 dev p95 10% 上限；第二次 write/read 均通过，但 sync p95 为
 45.740 us，超过 42.508 us 上限。随后扩大为 50 次测量以降低单个离群值对 p95
-的支配，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-10-legacy-indirect-allocation.csv`：
+的支配，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=dad8b5da29364b0a5d1b85c9aaec912645c72b42 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6395663 write_p95_ns=7102484 read_median_ns=6319891 read_p95_ns=7474386 sync_median_ns=31184 sync_p95_ns=47367
@@ -443,8 +444,7 @@ block；grow 前清零旧 partial EOF，并让 extent whole-file read 按逻辑�
 hole。dense extent 热路径直接顺序遍历映射值，避免为无 hole 的既有 workload
 逐块执行 sparse 判定。
 
-正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-sparse-truncate.csv`：
+正式检查点使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=5bcde9da75af753dee5cd496a021f320465a74fd arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6395756 write_p95_ns=7162953 read_median_ns=6328195 read_p95_ns=7062791 sync_median_ns=30754 sync_p95_ns=41326
@@ -465,8 +465,7 @@ home block 计 credit，开始 operation 前预留 queue 空间，handle 内禁�
 commit，并在 operation error 时恢复 queue snapshot。它尚不包含 filesystem
 cache/bitmap/inode undo、revoke、abort state 或 Linux 的多 transaction 状态机。
 
-正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-jbd2-handle-credits.csv`：
+正式检查点使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=5e143a8302dd441188c7cfe35e603414a00bc0ee arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7035652 write_p95_ns=7129911 read_median_ns=6662757 read_p95_ns=6768021 sync_median_ns=39193 sync_p95_ns=41800
@@ -487,8 +486,7 @@ filesystem block size、descriptor header、tag/UUID/checksum tail 和 journal r
 geometry 推导每个 transaction 的安全 update 上限。后续 multi-descriptor 改造已
 在主追踪表登记；本节只保留该历史性能检查点的原始实现边界与测量数据。
 
-正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-jbd2-dynamic-capacity.csv`：
+正式检查点使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=4bba3dc12d0c05b5deec3a8558cdaa02d91d944f arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6467905 write_p95_ns=7227933 read_median_ns=6358891 read_p95_ns=7332003 sync_median_ns=31402 sync_p95_ns=37894
@@ -508,8 +506,7 @@ auto-commit、handle precommit 与 unmount commit 收口到单一 owner：首次
 reinstall 均返回 typed abort。`set_journal_use` 同时改为 fallible state transition，
 禁止 active handle 或 pending queue 被关闭 journal 后绕过。
 
-正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-jbd2-sticky-abort.csv`：
+正式检查点使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=b55692634f4b888ef83f9bb3f666dd230108883b arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6312878 write_p95_ns=6917725 read_median_ns=6221041 read_p95_ns=6873813 sync_median_ns=29124 sync_p95_ns=37816
@@ -529,8 +526,7 @@ journal abort 记录到 JBD2 superblock `s_errno`，重新计算 checksum，并�
 保存，不覆盖提交首错。没有 FUA/flush 能力时明确返回 unsupported，不能伪造
 持久化成功。
 
-正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-jbd2-abort-errno.csv`：
+正式检查点使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=367160c3b1f6da4c3299a94b814150dd8db42be2 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6273551 write_p95_ns=6709066 read_median_ns=6146874 read_p95_ns=6833113 sync_median_ns=28082 sync_p95_ns=47959
@@ -552,8 +548,7 @@ replay failure 保留 OS 无关的 initialize/scan/revoke/replay/persist/cache p
 并通过 typed `Observer` event 提供完整诊断。越界 `s_start` 不再清日志报成功，
 空 descriptor 未提交尾部仍按 Linux clean-end 语义丢弃。
 
-正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-jbd2-typed-replay.csv`：
+正式检查点使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=d7eaa40eb3950506744e62b277dd36069873d182 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6285312 write_p95_ns=6774413 read_median_ns=6107418 read_p95_ns=7027885 sync_median_ns=29408 sync_p95_ns=35354
@@ -574,8 +569,7 @@ legacy allocator 与 7.14 的一次 sync p95 红项仍原样保留，未被本�
 内部 callback 对既有 workload 的影响；待 harness 随公共 API 一并迁移后必须
 重新做最终 A/B，不能把本结果视为新 API 性能证明。
 
-本次探索使用 3 次预热与 10 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-owned-mount-boundary.csv`：
+本次探索使用 3 次预热与 10 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=d2871bd7d arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7272243 write_p95_ns=11335665 read_median_ns=6987463 read_p95_ns=7625277 sync_median_ns=37096 sync_p95_ns=46288
@@ -597,8 +591,7 @@ no-op、`NOREPLACE`、`EXCHANGE`、跨父目录 `..` 与 link count、替换目�
 生命周期和目录环检测。当前冻结 harness 仍调用 legacy path API，因此结果不构成
 typed rename 或最终 owned API 的因果性能证明。
 
-正式检查点使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-typed-rename.csv`：
+正式检查点使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=e3181fb4dac47922ee68db7267182e141d92f763 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7238489 write_p95_ns=7733222 read_median_ns=7235475 read_p95_ns=9102480 sync_median_ns=41238 sync_p95_ns=53439
@@ -625,8 +618,7 @@ warmup/run 与 marker 字段未变。这是公共 API 边界迁移后的新
 frozen harness；dev 基线由旧 API 完成同一 sequential 语义，最终 PR
 必须同时报告这一 API 差异，不能宣称为指令级完全相同的 harness。
 
-正式检查使用 3 次预热与 20 次测量，全部有效原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-owned-api-harness.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=c1da15b5ebfdee0dfc30d1e1d48932e7a0b58b91 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6599015 write_p95_ns=7737093 read_median_ns=6700307 read_p95_ns=8030772 sync_median_ns=32339 sync_p95_ns=57306
@@ -650,8 +642,7 @@ metadata transaction，并把 owned `sync` 收口到单一 flush/commit 路径�
 该 sequential workload 的计时区间，因此结果只用于验证现有 write/read/sync
 工作负载未回退，不能把变化归因于 remount。
 
-正式检查使用 3 次预热与 20 次测量，全部有效原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-journal-flush-remount.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=6374efcebfa2d90a17996807b027877c19275775 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6488946 write_p95_ns=7037221 read_median_ns=6203958 read_p95_ns=7585968 sync_median_ns=32273 sync_p95_ns=35688
@@ -675,8 +666,7 @@ inode 映射先发布后释放。冻结的 sequential workload 不创建或裁�
 inode，因此本结果只保护共享 write/read/sync 热路径，不能作为 truncate 路径的因果
 性能证明。
 
-正式检查使用 3 次预热与 20 次测量，全部有效原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-legacy-indirect-truncate.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=a1e72761288d58198232e441df521f4b52d08f38 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6563417 write_p95_ns=7134188 read_median_ns=6976323 read_p95_ns=7841817 sync_median_ns=33291 sync_p95_ns=48397
@@ -701,8 +691,7 @@ pointer metadata 和 inode bitmap 回收。冻结的 sequential workload 不执�
 或 orphan recovery，因此结果只保护共享 write/read/sync 热路径，不能作为新删除路径
 的因果性能证明。
 
-正式检查使用 3 次预热与 20 次测量，全部有效原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-legacy-indirect-reap.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=678a92512c8939ea02bf352a2c0114c9cce644c7 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7097313 write_p95_ns=7451501 read_median_ns=7420004 read_p95_ns=7875142 sync_median_ns=34526 sync_p95_ns=38863
@@ -734,16 +723,14 @@ sync 最大样本均保留，未选择性剔除或复测覆盖；7.20 及更早�
 RSEXT4_BENCH_SUMMARY commit=e4f4286d6b079fd639fcd14a7bd74691aa1dbbc2 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=13151344 write_p95_ns=14424605 read_median_ns=6525344 read_p95_ns=6983230 sync_median_ns=283976 sync_p95_ns=345254
 ```
 
-该结果的全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-unwritten-preallocation-red.csv`；相对 dev
+该结果相对 dev
 基线，write median/p95 分别回退约 92.6%/96.6%，sync p95 回退约 793%，
 原样登记为性能红项。之后将已准备的完整物理 run 批量写入 cache，不改变
 转换与事务边界。
 
 优化后重新执行完整 3+20；一组 commit marker 不匹配真实 HEAD 的输出作废，
 并以 `git rev-parse HEAD` 填充 marker 重新采集，作废不是因为样本结果。
-全部有效样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-unwritten-preallocation.csv`：
+汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=dadce8ebee8ae8e985e2acfeb59d075aebb7f8ae arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6524295 write_p95_ns=8584700 read_median_ns=6960653 read_p95_ns=9592953 sync_median_ns=32947 sync_p95_ns=41631
@@ -765,8 +752,7 @@ commit/abort 所有权。冻结的 sequential workload 不执行 xattr，因此�
 共享 allocator、inode、JBD2 与 sync 热路径，不能作为 xattr transaction clone 开销
 或 Linux 7.1 xattr 相对开销的替代数据。
 
-正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-xattr-metadata-transaction.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=a51017e08 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6266323 write_p95_ns=6973303 read_median_ns=6029894 read_p95_ns=7303204 sync_median_ns=30408 sync_p95_ns=39628
@@ -785,8 +771,7 @@ write median/p95 分别改善约 4.0%/18.8%，read median/p95 分别改善约
 采集时间：2026-08-11；固定 CPU 2、memory backend、4 KiB filesystem block、
 `metadata_csum+64bit+journal`，每组 3 次预热与 20 次测量。新增
 `xattr-external` workload 对 512-byte external value 分别测量 set 后 sync、get、
-remove 后 sync，且不改变既有 sequential workload 的计时边界。全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-xattr-external.csv`。
+remove 后 sync，且不改变既有 sequential workload 的计时边界。汇总如下。
 
 | 实现 | commit | set+sync median/p95 (ns) | get median/p95 (ns) | remove+sync median/p95 (ns) |
 | --- | --- | ---: | ---: | ---: |
@@ -802,8 +787,7 @@ get median/p95 改善约 14.9%/6.5%，remove median/p95 改善约 3.2%/3.2%。
 Linux 7.1 的同镜像 syscall/fsync 对照仍为红项。memory backend 的
 `Ext4::sync` 也不能冒充 Linux `fsync(fd)`，最终验收必须在固定 Linux 7.1 环境重跑。
 
-同 commit 的 sequential workload 连续采集两组，原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-11-metadata-cow-sequential-red.csv`：
+同 commit 的 sequential workload 连续采集两组，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=1ffabfbb5 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential sample_set=first write_median_ns=9310397 write_p95_ns=10172142 read_median_ns=12778695 read_p95_ns=13765920 sync_median_ns=50382 sync_p95_ns=55585
@@ -825,8 +809,7 @@ superblock 放入同一个 filesystem-owned transaction，并按 Linux
 文件会复用该 preallocation 路径，因此本 workload 可以直接捕捉新增 transaction
 边界对共享写路径的影响。
 
-正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-preallocation-transaction.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=d4bbc59cd arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6357845 write_p95_ns=6471216 read_median_ns=5941441 read_p95_ns=6380433 sync_median_ns=32170 sync_p95_ns=34831
@@ -848,8 +831,7 @@ workload 均保持冻结配置。本检查点只让超过 journal ring capacity 
 punch/truncate 进入 restart 路径，冻结 workload 不执行范围删除，因此结果只能保护
 共享 write/read/sync 热路径，不能作为 restart 路径本身的因果性能数据。
 
-正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-extent-removal-restart.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=1db33f3a858eecb00c82c99efa1551e66845e9dc arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=7258847 write_p95_ns=9203180 read_median_ns=8303538 read_p95_ns=10098886 sync_median_ns=35503 sync_p95_ns=45936
@@ -875,8 +857,7 @@ mapping transaction 与最终 inode transaction。冻结 workload 不创建 lega
 mapping，也不执行 punch/truncate/reap，因此本数据只监测共享路径，不能作为新路径
 本身的因果性能结论。
 
-正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-legacy-truncate-transaction.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=ed5577756e4ab07b0b92fdf3bfa1b487fb418b27 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6289045 write_p95_ns=6387234 read_median_ns=5951789 read_p95_ns=6262131 sync_median_ns=32500 sync_p95_ns=33948
@@ -900,8 +881,7 @@ workload 均保持冻结配置。本检查点实现超 ring legacy indirect trun
 但冻结 workload 不创建 legacy mapping，也不执行 truncate/reap；因此只能观测共享
 write/read/sync 热路径，不能作为 restart 路径的因果性能结论。
 
-正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-legacy-truncate-restart.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=07e8243e9f5d253c2718853743a62e0fc032d1db arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=8183734 write_p95_ns=8533919 read_median_ns=10598332 read_p95_ns=12150067 sync_median_ns=44336 sync_p95_ns=49554
@@ -925,8 +905,7 @@ image 分离，写出 Linux-compatible revoke record，并在 home write 持久�
 推进 journal tail。冻结 workload 的写、读与 sync 会经过共享 journal 路径，但不构造
 allocator reuse/revoke 场景，因此不能替代专项 replay 与 fault-injection 测试。
 
-正式检查使用 3 次预热与 20 次测量，全部原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-jbd2-revoke-checkpoint.csv`：
+正式检查使用 3 次预热与 20 次测量，汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=6ae468a65b88ae0be3821813baf2dc5e42dc1550 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6309883 write_p95_ns=7230443 read_median_ns=5940001 read_p95_ns=7577594 sync_median_ns=31856 sync_p95_ns=34724
@@ -946,8 +925,7 @@ RSEXT4_BENCH_SUMMARY commit=6ae468a65b88ae0be3821813baf2dc5e42dc1550 arch=x86_64
 采集时间：2026-08-12；core 样本 marker 为 `5adaafb44`（后续 amend 只改动
 ax-fs-ng，rsext4 代码与当前 `c0245c1bf` 相同）。环境与 7.29 一致：
 CPU 2、`powersave` governor、memory backend、4 KiB filesystem block、20 MiB
-sequential workload、3 次预热与 20 次测量。全部样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-jbd2-tail-cache-eviction.csv`：
+sequential workload、3 次预热与 20 次测量。汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=5adaafb44 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6701571 write_p95_ns=7395983 read_median_ns=7400465 read_p95_ns=9004776 sync_median_ns=36196 sync_p95_ns=55591
@@ -989,8 +967,7 @@ write-then-flush fallback，不伪造 durability。
 
 同一修改还避免 single-transaction checkpoint 在已经没有更早 image 时填充
 `later_blocks` 集合；多 transaction 覆盖与 revoke 仍使用原有反向过滤。固定 CPU 2、
-`powersave` governor、3 次预热、20 次测量的完整样本在
-`docs/design/data/rsext4-perf/2026-08-12-jbd2-fua-commit.csv`：
+`powersave` governor、3 次预热、20 次测量的汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=c822b89df arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6385677 write_p95_ns=6892860 read_median_ns=6001960 read_p95_ns=6938485 sync_median_ns=33227 sync_p95_ns=35032
@@ -1017,8 +994,7 @@ publish 对应 descriptor block 后才清位，metadata transaction abort 则与
 一起恢复 dirty bitmap。相同测试现要求 GDT write 为 0，同时 device flush 必须大于 0，
 因此没有以跳过 durability boundary 换取假性能。
 
-当前 20 次 sequential 样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-dirty-group-descriptors.csv`：
+20 次 sequential 汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=9eb326e2d arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6311198 write_p95_ns=6853818 read_median_ns=5999018 read_p95_ns=7331847 sync_median_ns=32512 sync_p95_ns=33487
@@ -1048,8 +1024,7 @@ flush，避免以删除 durability boundary 换取假性能。
 
 固定 CPU 2、`powersave` governor、3 次预热、20 次测量。首轮 write p95 受后半段主机
 抖动影响为 7.728 ms，超过 dev 门槛 0.36 个百分点；没有删样本，而是在完全相同配置
-下复测。两组原始样本均保存在
-`docs/design/data/rsext4-perf/2026-08-12-dirty-superblock.csv`，复测 marker 为：
+下复测。复测 marker 为：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=a95663e96-repeat arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6333066 write_p95_ns=6659600 read_median_ns=5907374 read_p95_ns=6311756 sync_median_ns=30622 sync_p95_ns=35290
@@ -1089,8 +1064,7 @@ update，稳定失败；新实现要求 running 为空、committing 持有一个
 `DataFlush`。成功路径同时断言 committing 已清空且 checkpoint 恰持有一个 transaction。
 56 个 JBD2 fault/replay/checkpoint 测试以及完整 Linux image differential 均通过。
 
-固定 CPU 2、`powersave` governor、3 次预热、20 次测量的原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-jbd2-committing-owner.csv`：
+固定 CPU 2、`powersave` governor、3 次预热、20 次测量的汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=1983fc88e arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sequential write_median_ns=6350459 write_p95_ns=6735837 read_median_ns=6112545 read_p95_ns=7269978 sync_median_ns=32787 sync_p95_ns=34825
@@ -1118,9 +1092,7 @@ mount 上创建文件并写入 20 MiB，依次计量第一次 dirty `sync()`、�
 运行当前源码。为避免伪称二进制同 harness，基线使用操作序列等价的旧 API adapter：
 同样的 128 MiB memory device、4 KiB block、journal、20 MiB payload、3 次预热、20 次
 测量，调用旧 `mkfs -> mount -> mkfile -> write_inode_data -> sync -> sync -> umount`。
-adapter 原文保存在
-`docs/design/data/rsext4-perf/2026-08-12-dev-sync-cycle-harness.rs`；两端全部样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-sync-cycle-ab.csv`。设备 trait 和 owned API
+设备 trait 和 owned API
 不同是明确可比性边界，但操作顺序、数据量和统计口径一致。
 
 ```text
@@ -1155,8 +1127,7 @@ work 的 clean sync 仍调用一次真实 device flush。相同测例同时固�
 write 与 flush 阶段相互独立，防止用合并 workload 隐藏回退。56 个 JBD2 定向测试、完整
 `cargo test -p rsext4 --all-features` 和三配置 targeted clippy 均通过。
 
-固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量的完整样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-jbd2-checkpoint-flush.csv`：
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量的汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=46784bf62 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=21578 dirty_sync_p95_ns=22474 clean_sync_median_ns=247 clean_sync_p95_ns=280 unmount_median_ns=9342 unmount_p95_ns=9568
@@ -1196,8 +1167,7 @@ clean-state transaction commit 后显式 checkpoint 全部 owner 并 FUA 发布 
 `set_journal_superblock()` 会静默丢弃 committed checkpoint owner；现在 running、committing、
 checkpoint、active handle 或 log accounting 非空时统一返回 typed `Busy`。
 
-固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量的完整样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-linux-sync-commit.csv`：
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量的汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=b1bafeabd arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=19313 dirty_sync_p95_ns=22365 clean_sync_median_ns=218 clean_sync_p95_ns=240 unmount_median_ns=9746 unmount_p95_ns=11293
@@ -1227,8 +1197,7 @@ journal 的 escaped bytes，成功后原 update 才移动到 checkpoint owner；
 临时取走 committing owner。确定性单测同时断言普通 payload 指针相同，以及 escaped journal
 image、tag checksum 与未转义 checkpoint home image。
 
-固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量。全部样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-jbd2-payload-borrow.csv`：
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量。汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=14220cfeb arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=18821 dirty_sync_p95_ns=21773 clean_sync_median_ns=218 clean_sync_p95_ns=286 unmount_median_ns=10279 unmount_p95_ns=15770
@@ -1259,9 +1228,7 @@ trait、全局 logger 或 lock，也不改变 ext4/JBD2 seed、finalize 和端�
 测试也全部通过。release binary 的反汇编确认生成 GPR `crc32 r64,r64`/`crc32 r32,r8`；helper
 没有使用 XMM/YMM operand。测试机为 Intel Core i7-10700，CPU 广告 `sse4_2`。
 
-固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量；两组全部样本分别保存在
-`docs/design/data/rsext4-perf/2026-08-12-x86-crc32c-sync-cycle.csv` 和
-`docs/design/data/rsext4-perf/2026-08-12-x86-crc32c-sequential.csv`：
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量；两组汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=795c113e3 arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=8115 dirty_sync_p95_ns=8784 clean_sync_median_ns=236 clean_sync_p95_ns=291 unmount_median_ns=5196 unmount_p95_ns=5485
@@ -1344,8 +1311,7 @@ e2fsprogs differential：`debugfs journal_open -c -v 2` 生成多 metadata block
 CSUM_V2（`-v 2` 实际生成 compat CRC32），因此 CSUM_V2 继续以 Linux 7.1 源码布局和独立
 reference CRC32C fixture 验证，不伪称拥有工具生成的 fixture。
 
-固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量，两组原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-jbd2-legacy-checksum-sync-cycle.csv`。首组与完整重复组
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量，首组与完整重复组
 均保留，首组的 28.016 us 最大样本没有剔除：
 
 ```text
@@ -1380,8 +1346,7 @@ descriptor/payload preflush、FUA commit、checkpoint 和 tail publication 的�
 零。multi-descriptor、writer revoke、CSUM_V2 corrupt-revoke 定向测试通过，随后 all-features、
 no-default 完整测试和 rsext4 3/3 clippy 均通过。
 
-固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量，两组原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-12-jbd2-scratch-reuse-sync-cycle.csv`：
+固定 CPU 2、`powersave` governor、20 MiB、3 次预热、20 次测量，两组汇总如下：
 
 ```text
 RSEXT4_BENCH_SUMMARY commit=2ffe3de0b arch=x86_64 backend=memory feature=metadata_csum+64bit+journal workload=sync-cycle dirty_sync_median_ns=7911 dirty_sync_p95_ns=8792 clean_sync_median_ns=194 clean_sync_p95_ns=263 unmount_median_ns=5182 unmount_p95_ns=6058
@@ -1579,8 +1544,7 @@ checked `SEEK_SET/CUR/END` 算术并在 seek 后清除 backend-private continuat
 现为 159/159，通过 EOF、rewind 和再次读取。
 
 固定 x86_64、CPU 2、release、memory backend、4 KiB block、`metadata_csum+64bit+journal`、
-800 个普通项、3 次预热和 10 次测量；计时区间只包含完整 HTree readdir。原始样本见
-`docs/design/data/rsext4-perf/2026-08-13-htree-readdir-incremental.csv`。这里的基线
+800 个普通项、3 次预热和 10 次测量；计时区间只包含完整 HTree readdir。这里的基线
 `6db697494` 是同一 PR 内的全树扫描检查点，只证明本次增量遍历的因果收益，不替代最终相对
 `6e27704c4` dev 的全量性能门槛。
 
@@ -1592,8 +1556,7 @@ checked `SEEK_SET/CUR/END` 算术并在 seek 后清除 backend-private continuat
 | 128 | p95 | 804,165 ns | 239,969 ns | -70.16% |
 
 同一环境随后把 `7bb3b194d` 的“每次调用重新 probe 当前 range”与实现提交 `336b58863` 的
-per-open hash-range cache 精确 A/B；原始 40 个样本见
-`docs/design/data/rsext4-perf/2026-08-13-htree-open-range-cache.csv`。batch=1 的 syscall 风格
+per-open hash-range cache 精确 A/B；batch=1 的 syscall 风格
 小缓冲路径不再每条记录重新读取、解析和排序当前 leaf range，batch=128 同样减少相邻调用的
 重复 probe；cache 是可丢弃派生状态，不改变 `calls` 或 cursor 语义。
 
@@ -1650,8 +1613,7 @@ typed `NoSpace` 且不发布 revoke。
 
 性能 A/B 固定 CPU 2、`powersave` governor、release、memory backend、4 KiB block、20 MiB、
 3 次预热和 20 次测量；baseline 为本检查点前的 `09460a38d913`，implementation 为
-`222da1964`。原始 80 个样本保存在
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-linux-transaction-limit.csv`。普通 workload 不会
+`222da1964`。普通 workload 不会
 接近新的 `/3` 上限，因此本轮只要求保持在门槛内，不把“没有触发 checkpoint”误称为性能优化。
 
 | workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
@@ -1704,11 +1666,9 @@ case 与 restart 后 allocation/mapping/e2fsck 断言保持不变。
 
 性能 A/B 以本检查点前的 `d37d299c1` 为 baseline、`a3b761580` 为 implementation，固定 CPU 2、
 release、memory backend、4 KiB block、20 MiB payload。常规 sequential 与 sync-cycle 各执行 3 次
-预热、50 次测量，200 个原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-revoke-credit.csv`。clean-sync 单次仅约 200 ns，
+预热、50 次测量，clean-sync 单次仅约 200 ns，
 多轮 50-sample A/B 的差值方向会随 timer/scheduler noise 翻转；因此没有挑选其中一轮，而是对两个
-revision 对称扩为 10 次预热、500 次测量，1,000 个原始 sync-cycle 样本保存在
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-revoke-credit-sync-stability.csv`，最终 sync 判定使用
+revision 对称扩为 10 次预热、500 次测量，最终 sync 判定使用
 这组完整扩样结果。
 
 | workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
@@ -1775,8 +1735,7 @@ panic。确定性红测固定 `usize::MAX * 2`，当前 read/write 共用 `check
 
 性能 A/B 以本检查点前的 `4d1f03698` 为 baseline、`e05159fa1` 为 implementation，固定 CPU 2、
 `powersave` governor、release、memory backend、4 KiB block、20 MiB payload；sequential 与 sync-cycle
-各执行 3 次预热、50 次测量，200 个原始样本保存在
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-reserved-handle.csv`。本轮所有 median/p95 都直接采用
+各执行 3 次预热、50 次测量，本轮所有 median/p95 都直接采用
 完整样本，没有删除或选择性复测：
 
 | workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
@@ -1852,8 +1811,7 @@ sync-cycle unmount p95 仍从 6,125 ns 增至 7,270 ns（+18.69%）。最终采�
 顺序累积的主机尾延迟漂移。没有删除首轮、扩样轮或交错轮的异常结果，也没有只重跑 implementation。
 
 最终判定使用 200+200 个 expanded sequential 样本与 200+200 个 interleaved sync-cycle 样本，800
-条原始记录保存在
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-transaction-restart.csv`：
+条原始记录汇总如下：
 
 | workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -1902,8 +1860,7 @@ owner 尚未实现，继续保持同一红测台账，不能把 `&mut` 独占误
 dirty-sync 已为 median +0.40%、p95 +5.97%。没有删除该首轮或单独重跑 implementation，而是继续
 追加 15 个双端交错批次，将完整 sync-cycle 判定窗口扩为 500+500。
 
-最终 1,400 条原始记录保存在
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-transaction-phase.csv`：
+最终 1,400 条原始记录汇总如下：
 
 | workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -1955,8 +1912,7 @@ Linux 内存/cache mechanics，checkpoint、replay 与 durable tail 的磁盘语
 `powersave` governor、release、memory backend、4 KiB block 与 20 MiB payload。两端按 25 个交错
 批次运行，每批每个 workload 都先预热 3 次、再测量 20 次，因此 sequential 与 sync-cycle 各有
 500+500 个样本。首轮 200+200 中约 10 us 的 dirty-sync/unmount median 被调度噪声放大到刚超过
-5%；没有删除样本或单跑 implementation，而是对两端对称扩样。最终 2,000 条原始记录保存在
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-cache-publication.csv`：
+5%；没有删除样本或单跑 implementation，而是对两端对称扩样。最终 2,000 条原始记录汇总如下：
 
 | workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -2108,8 +2064,7 @@ unwritten 恰好到上限与超过上限、以及 external leaf reload。本检�
 `extents.c:1786-1932`，不宣称整个 `extents.c` 已完成。
 
 首个正确性实现 `dae8d9499` 相对 `4cf9505a3` 的 500+500 交错 A/B 发现 dirty-sync median +7.51%、
-clean-sync p95 +10.76%、unmount median +5.15%，因此保留为性能红证据
-`docs/design/data/rsext4-perf/2026-08-13-extent-leaf-normalization.csv`，没有用功能测试绿色掩盖热路径
+clean-sync p95 +10.76%、unmount median +5.15%，因此保留为性能红证据，没有用功能测试绿色掩盖热路径
 回退。旧实现的常见 append 会原地扩大 predecessor；首版却先 `Vec::insert` 再立即 `remove`。后续
 `9ea3c593b` 恢复原位 append fast path，只有不能向左合并时才插入新 entry，再继续执行 Linux 的
 right-merge。
@@ -2118,7 +2073,7 @@ right-merge。
 sequential 使用 25 个交错批次、每批每端 3 次预热与 20 次测量，得到 500+500；sync-cycle 首个
 500+500 窗口的 dirty p95 被少数 batch 尾延迟推高 15.9%，但 median 为 -2.0%，独立批次分析也没有
 发现执行顺序或前后时段漂移。没有删除该窗口，而是对称追加第二个 500+500，最终 3,000 条原始记录
-保存在 `docs/design/data/rsext4-perf/2026-08-13-extent-leaf-normalization-fast-path.csv`：
+汇总如下：
 
 | workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -2155,8 +2110,7 @@ child、extent 集合、free count 与 `i_blocks` 全部恢复，child 也没有
 本检查点补齐 `extents.c:1861-1932`，与 7.58 的 right-merge 一起使 `1786-1932` 成为连续 reviewed
 segment。
 
-首个功能提交 `9af7a5f36` 相对 `3acc11385` 的完整 A/B 保存在
-`docs/design/data/rsext4-perf/2026-08-13-extent-merge-up.csv`：sequential 为 500+500，sync-cycle 在
+首个功能提交 `9af7a5f36` 相对 `3acc11385` 的完整 A/B 汇总如下：sequential 为 500+500，sync-cycle 在
 独立重复后为 1,000+1,000。dirty-sync 与 sequential 已过门槛，但第二轮 clean-sync median 仍为
 +7.69%，完整窗口为 +8.86%；这条路径虽然不执行 merge-up，也不能以 structural cold path 为由豁免。
 分析定位到普通 inline-leaf insertion 每次都会进入 merge-up 函数，直到函数内部才拒绝 root shape。
@@ -2164,8 +2118,7 @@ segment。
 `b80dd453f` 在 caller 已持有的 parsed root 上先做 depth/index count fast reject，真正的 merge-up 与共用
 collapse helper 标为 cold、non-inline。最终同机 A/B 固定 CPU 2、`powersave` governor、release、
 memory backend、4 KiB block、20 MiB payload，10 个交错批次、每批每端 3 次预热与 20 次测量，800 条
-原始记录保存在
-`docs/design/data/rsext4-perf/2026-08-13-extent-merge-up-fast-path.csv`：
+原始记录汇总如下：
 
 | workload/metric | baseline median | implementation median | 变化 | baseline p95 | implementation p95 | 变化 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -2271,14 +2224,12 @@ clock callback，不声称吞吐改善；它与最终 dev/head `sync-cycle` 对�
 首个实现提交 `897d40a01` 在空 commit 路径先做一次 immutable `system` 查找和
 pending 分支，再做 mutable 查找，因此即使不读时钟也污染 clean-sync 热路径。固定 CPU 2、
 `powersave` governor、同一 nightly/release/memory backend/4 KiB/20 MiB workload，20 个交错批次、
-每端每批 3 次预热和 20 次测量，共800 条原始记录保存于
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-stale-clock-before-fast-path.csv`。相对 parent
+每端每批 3 次预热和 20 次测量，共800 条原始记录汇总如下。相对 parent
 `a91e89cd8`，dirty-sync median/p95 为 +4.737%/-2.793%，clean-sync 为 +9.437%/+6.375%，
 unmount 为 +3.223%/+0.652%；clean-sync median 越过 5% 硬门槛。
 
 `aaf882ecf` 将空 running transaction 的早返收敛到单次 mutable owner 查找，只在真实 pending
-transaction 上读时钟和进入 commit state machine。同样配置独立重采 800 条，保存于
-`docs/design/data/rsext4-perf/2026-08-13-jbd2-stale-clock-fast-path.csv`：
+transaction 上读时钟和进入 commit state machine。同样配置独立重采 800 条，汇总如下：
 
 | sync-cycle metric | parent median | current median | 变化 | parent p95 | current p95 | 变化 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -2324,8 +2275,7 @@ QEMU 10.1.0、8 vCPU、512 MiB、NVMe snapshot rootfs 上运行双方共有的
 重构数据对应 `bb0f0a57a1`，双方各独立启动 3 次 guest。下表先取每次内部 5 轮中位数，
 再取 3 次 guest 的中位数。
 全部 30 个 correctness phase 均通过 bytewise、checksum 与跨 fd truncate/rewrite 校验。
-原始每次中位数保存在
-`docs/design/data/rsext4-perf/2026-08-27-starry-block-io-bench-dev-vs-refactor.csv`。
+汇总如下。
 
 | Starry 综合 workload | dev 数据（中位数） | 重构后数据（中位数） | 重构后耗时变化 | 结论 |
 | --- | ---: | ---: | ---: | --- |
@@ -2337,8 +2287,7 @@ QEMU 10.1.0、8 vCPU、512 MiB、NVMe snapshot rootfs 上运行双方共有的
 
 host `sync-cycle` 同机使用 128 MiB memory device、4 KiB block、journal、20 MiB payload、
 3 次预热和 20 次测量。最新 dev 因 API 已变化，仍使用 7.35 冻结的操作序列等价 adapter；
-双方执行相同的 `mkfs -> mount -> write -> dirty sync -> clean sync -> unmount`。完整样本保存于
-`docs/design/data/rsext4-perf/2026-08-27-sync-cycle-dev-vs-refactor.csv`。
+双方执行相同的 `mkfs -> mount -> write -> dirty sync -> clean sync -> unmount`。汇总如下。
 
 | host sync-cycle | dev 数据 median/p95 | 重构后数据 median/p95 | median 变化 | p95 变化 |
 | --- | ---: | ---: | ---: | ---: |
