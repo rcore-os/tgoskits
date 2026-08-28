@@ -11,7 +11,6 @@ use ax_std::os::arceos::task::{
     wake_waker_sync,
 };
 use axpoll::{IoEvents, PollRegistration, PollSource, Pollable, RegistrationMode};
-use axpoll_set::PollSet;
 use linux_raw_sys::{
     general::{O_RDONLY, O_WRONLY, S_IFIFO},
     ioctl::FIONREAD,
@@ -126,42 +125,46 @@ fn wake_pipe_waiters_all(waiters: &PipeWaitSet, ready: IoEvents) {
 }
 
 struct PipeWaitSet {
-    shared: PollSet,
-    exclusive: Arc<SpinLock<PipeExclusiveState>>,
+    state: Arc<SpinLock<PipeWaitState>>,
 }
 
-struct PipeExclusiveState {
-    waiters: VecDeque<PipeExclusiveWaiter>,
+struct PipeWaitState {
+    waiters: VecDeque<PipeWaiter>,
     next_id: u64,
     notification_generation: u64,
     closed: bool,
 }
 
-struct PipeExclusiveWaiter {
+struct PipeWaiter {
     id: u64,
-    target: PipeExclusiveTarget,
+    target: PipeWaitTarget,
 }
 
-enum PipeExclusiveTarget {
+enum PipeWaitTarget {
     Direct(WaitQueueWakeToken),
     Poll {
         waker: Waker,
         interests: IoEvents,
+        mode: RegistrationMode,
         notified: Arc<AtomicBool>,
     },
 }
 
-struct PipeExclusiveRegistration {
-    state: Arc<SpinLock<PipeExclusiveState>>,
+struct PipeWaitRegistration {
+    state: Arc<SpinLock<PipeWaitState>>,
     id: u64,
     notified: Option<Arc<AtomicBool>>,
+}
+
+struct PipeWakeSelection {
+    shared: VecDeque<PipeWaiter>,
+    exclusive: Option<PipeWaiter>,
 }
 
 impl PipeWaitSet {
     fn new() -> Self {
         Self {
-            shared: PollSet::new(),
-            exclusive: Arc::new(SpinLock::new(PipeExclusiveState {
+            state: Arc::new(SpinLock::new(PipeWaitState {
                 waiters: VecDeque::new(),
                 next_id: 0,
                 notification_generation: 0,
@@ -173,21 +176,18 @@ impl PipeWaitSet {
     fn wait_until(&self, condition: impl Fn() -> bool) -> bool {
         let _selected = wait_until_registered(
             condition,
-            || self.exclusive.lock().notification_generation,
+            || self.state.lock().notification_generation,
             |token, observed_notification| {
                 #[cfg(feature = "qperf-metrics")]
                 PIPE_WAIT_REGISTRATIONS.fetch_add(1, Ordering::Relaxed);
-                let mut state = self.exclusive.lock();
+                let mut state = self.state.lock();
                 if state.closed || state.notification_generation != observed_notification {
                     #[cfg(feature = "qperf-metrics")]
                     PIPE_WAIT_REGISTRATION_RACES.fetch_add(1, Ordering::Relaxed);
                     WaitQueueRegistration::Retry(None)
                 } else {
-                    let registration = self.register_exclusive_target_locked(
-                        &mut state,
-                        PipeExclusiveTarget::Direct(token),
-                        None,
-                    );
+                    let registration =
+                        self.register_target_locked(&mut state, PipeWaitTarget::Direct(token));
                     WaitQueueRegistration::Armed(Some(registration))
                 }
             },
@@ -199,32 +199,35 @@ impl PipeWaitSet {
         true
     }
 
-    fn register_exclusive_target(
-        &self,
-        target: PipeExclusiveTarget,
-        notified: Option<Arc<AtomicBool>>,
-    ) -> Option<PipeExclusiveRegistration> {
-        let mut state = self.exclusive.lock();
+    fn register_target(&self, target: PipeWaitTarget) -> Option<PipeWaitRegistration> {
+        let mut state = self.state.lock();
         if state.closed {
             return None;
         }
-        Some(self.register_exclusive_target_locked(&mut state, target, notified))
+        Some(self.register_target_locked(&mut state, target))
     }
 
-    fn register_exclusive_target_locked(
+    fn register_target_locked(
         &self,
-        state: &mut PipeExclusiveState,
-        target: PipeExclusiveTarget,
-        notified: Option<Arc<AtomicBool>>,
-    ) -> PipeExclusiveRegistration {
+        state: &mut PipeWaitState,
+        target: PipeWaitTarget,
+    ) -> PipeWaitRegistration {
         let id = state.next_id;
         state.next_id = state
             .next_id
             .checked_add(1)
             .expect("pipe waiter registration ID space exhausted");
-        state.waiters.push_back(PipeExclusiveWaiter { id, target });
-        PipeExclusiveRegistration {
-            state: Arc::clone(&self.exclusive),
+        let notified = target.notified();
+        let waiter = PipeWaiter { id, target };
+        if waiter.target.mode() == RegistrationMode::Shared {
+            // Linux add_wait_queue() inserts non-exclusive poll entries at the
+            // head. Direct and EPOLLEXCLUSIVE waiters stay FIFO at the tail.
+            state.waiters.push_front(waiter);
+        } else {
+            state.waiters.push_back(waiter);
+        }
+        PipeWaitRegistration {
+            state: Arc::clone(&self.state),
             id,
             notified,
         }
@@ -233,37 +236,64 @@ impl PipeWaitSet {
     fn wake(&self, ready: IoEvents, sync: bool) {
         #[cfg(feature = "qperf-metrics")]
         PIPE_WAKE_CALLS.fetch_add(1, Ordering::Relaxed);
-        let boundary = {
-            let mut state = self.exclusive.lock();
+        let (boundary, selected) = {
+            let mut state = self.state.lock();
             state.notification_generation = state
                 .notification_generation
                 .checked_add(1)
                 .expect("pipe notification generation exhausted");
-            state.next_id
-        };
-        let _shared_matches = unsafe {
-            // Pipe readiness is published before this call and the state lock
-            // is no longer held. Shared observers run before the exclusive
-            // tail, matching Linux waitqueue insertion order.
-            if sync {
-                self.shared.wake_with(ready, wake_waker_sync)
-            } else {
-                self.shared.wake(ready)
+            let boundary = state.next_id;
+            let mut selected = PipeWakeSelection {
+                shared: VecDeque::new(),
+                exclusive: None,
+            };
+            let mut index = 0;
+            while index < state.waiters.len() {
+                let waiter = &state.waiters[index];
+                if waiter.id >= boundary || !waiter.target.matches(ready) {
+                    index += 1;
+                    continue;
+                }
+                let mode = waiter.target.mode();
+                if mode == RegistrationMode::Exclusive && selected.exclusive.is_some() {
+                    index += 1;
+                    continue;
+                }
+                let waiter = state
+                    .waiters
+                    .remove(index)
+                    .expect("located pipe waiter must remain present under its lock");
+                waiter.target.mark_selected();
+                match mode {
+                    RegistrationMode::Shared => selected.shared.push_back(waiter),
+                    RegistrationMode::Exclusive => selected.exclusive = Some(waiter),
+                }
             }
+            (boundary, selected)
         };
         #[cfg(feature = "qperf-metrics")]
-        PIPE_WAKE_SHARED_MATCHES.fetch_add(_shared_matches as u64, Ordering::Relaxed);
+        PIPE_WAKE_SHARED_MATCHES.fetch_add(selected.shared.len() as u64, Ordering::Relaxed);
 
+        // Readiness was published before selection. Invoke callbacks after
+        // dropping the waitqueue lock so re-entrant poll paths cannot deadlock.
+        for waiter in selected.shared {
+            waiter.target.wake_poll(sync);
+        }
+
+        let mut selected_exclusive = selected.exclusive;
         let mut after_id = None;
         loop {
-            let Some(waiter) = self.take_next_matching(ready, boundary, after_id) else {
+            let waiter = selected_exclusive
+                .take()
+                .or_else(|| self.take_next_exclusive(ready, boundary, after_id));
+            let Some(waiter) = waiter else {
                 #[cfg(feature = "qperf-metrics")]
                 PIPE_WAKE_NO_EXCLUSIVE_MATCH.fetch_add(1, Ordering::Relaxed);
                 return;
             };
             after_id = Some(waiter.id);
             match &waiter.target {
-                PipeExclusiveTarget::Direct(token) => {
+                PipeWaitTarget::Direct(token) => {
                     #[cfg(feature = "qperf-metrics")]
                     PIPE_WAKE_DIRECT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
                     let outcome = if sync {
@@ -288,7 +318,7 @@ impl PipeWaitSet {
                         }
                     }
                 }
-                PipeExclusiveTarget::Poll { waker, .. } => {
+                PipeWaitTarget::Poll { waker, .. } => {
                     #[cfg(feature = "qperf-metrics")]
                     PIPE_WAKE_POLL_DELIVERED.fetch_add(1, Ordering::Relaxed);
                     if sync {
@@ -302,16 +332,17 @@ impl PipeWaitSet {
         }
     }
 
-    fn take_next_matching(
+    fn take_next_exclusive(
         &self,
         ready: IoEvents,
         boundary: u64,
         after_id: Option<u64>,
-    ) -> Option<PipeExclusiveWaiter> {
-        let mut state = self.exclusive.lock();
+    ) -> Option<PipeWaiter> {
+        let mut state = self.state.lock();
         let index = state.waiters.iter().position(|waiter| {
             waiter.id < boundary
                 && after_id.is_none_or(|after_id| waiter.id > after_id)
+                && waiter.target.mode() == RegistrationMode::Exclusive
                 && waiter.target.matches(ready)
         })?;
         let waiter = state
@@ -322,22 +353,24 @@ impl PipeWaitSet {
         Some(waiter)
     }
 
-    fn reinsert_if_active(&self, waiter: PipeExclusiveWaiter) {
-        let mut state = self.exclusive.lock();
+    fn reinsert_if_active(&self, waiter: PipeWaiter) {
+        let mut state = self.state.lock();
         if state.closed || !waiter.target.is_active() {
             return;
         }
         let index = state
             .waiters
             .iter()
-            .position(|queued| queued.id > waiter.id)
+            .position(|queued| {
+                queued.target.mode() == RegistrationMode::Exclusive && queued.id > waiter.id
+            })
             .unwrap_or(state.waiters.len());
         state.waiters.insert(index, waiter);
     }
 
     fn wake_all(&self, ready: IoEvents) {
         let waiters = {
-            let mut state = self.exclusive.lock();
+            let mut state = self.state.lock();
             state.notification_generation = state
                 .notification_generation
                 .checked_add(1)
@@ -356,26 +389,47 @@ impl PipeWaitSet {
             state.waiters = retained;
             selected
         };
-        unsafe {
-            // Peer close is permanent, so all shared observers are notified.
-            self.shared.wake_all(ready);
-        }
         for waiter in waiters {
             match waiter.target {
-                PipeExclusiveTarget::Direct(token) => {
+                PipeWaitTarget::Direct(token) => {
                     let _ = token.notify();
                 }
-                PipeExclusiveTarget::Poll { waker, .. } => waker.wake(),
+                PipeWaitTarget::Poll { waker, .. } => waker.wake(),
             }
         }
     }
 }
 
-impl PipeExclusiveTarget {
+impl PipeWaitTarget {
+    fn mode(&self) -> RegistrationMode {
+        match self {
+            Self::Direct(_) => RegistrationMode::Exclusive,
+            Self::Poll { mode, .. } => *mode,
+        }
+    }
+
     fn matches(&self, ready: IoEvents) -> bool {
         match self {
             Self::Direct(_) => true,
             Self::Poll { interests, .. } => interests.intersects(ready),
+        }
+    }
+
+    fn notified(&self) -> Option<Arc<AtomicBool>> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Poll { notified, .. } => Some(Arc::clone(notified)),
+        }
+    }
+
+    fn wake_poll(self, sync: bool) {
+        let Self::Poll { waker, .. } = self else {
+            unreachable!("shared pipe waiters are always poll registrations");
+        };
+        if sync {
+            wake_waker_sync(waker);
+        } else {
+            waker.wake();
         }
     }
 
@@ -393,7 +447,7 @@ impl PipeExclusiveTarget {
     }
 }
 
-impl PollRegistration for PipeExclusiveRegistration {
+impl PollRegistration for PipeWaitRegistration {
     fn was_notified(&self) -> bool {
         self.notified
             .as_ref()
@@ -401,7 +455,7 @@ impl PollRegistration for PipeExclusiveRegistration {
     }
 }
 
-impl Drop for PipeExclusiveRegistration {
+impl Drop for PipeWaitRegistration {
     fn drop(&mut self) {
         let mut state = self.state.lock();
         if let Some(index) = state.waiters.iter().position(|waiter| waiter.id == self.id) {
@@ -417,30 +471,21 @@ impl PollSource for PipeWaitSet {
         interests: IoEvents,
         mode: RegistrationMode,
     ) -> Option<Box<dyn PollRegistration>> {
-        match mode {
-            RegistrationMode::Shared => unsafe {
-                PollSource::register(&self.shared, waker, interests, mode)
-            },
-            RegistrationMode::Exclusive => {
-                let notified = Arc::new(AtomicBool::new(false));
-                self.register_exclusive_target(
-                    PipeExclusiveTarget::Poll {
-                        waker: waker.clone(),
-                        interests,
-                        notified: Arc::clone(&notified),
-                    },
-                    Some(notified),
-                )
-                .map(|registration| Box::new(registration) as Box<dyn PollRegistration>)
-            }
-        }
+        let notified = Arc::new(AtomicBool::new(false));
+        self.register_target(PipeWaitTarget::Poll {
+            waker: waker.clone(),
+            interests,
+            mode,
+            notified,
+        })
+        .map(|registration| Box::new(registration) as Box<dyn PollRegistration>)
     }
 }
 
 impl Drop for PipeWaitSet {
     fn drop(&mut self) {
         let waiters = {
-            let mut state = self.exclusive.lock();
+            let mut state = self.state.lock();
             state.closed = true;
             state.notification_generation = state
                 .notification_generation
@@ -454,10 +499,10 @@ impl Drop for PipeWaitSet {
         };
         for waiter in waiters {
             match waiter.target {
-                PipeExclusiveTarget::Direct(token) => {
+                PipeWaitTarget::Direct(token) => {
                     let _ = token.notify();
                 }
-                PipeExclusiveTarget::Poll { waker, .. } => {
+                PipeWaitTarget::Poll { waker, .. } => {
                     waker.wake();
                 }
             }
@@ -1294,7 +1339,7 @@ mod tests {
     };
     use axpoll::{PollSource, RegistrationMode};
 
-    use super::{IoEvents, PipeExclusiveTarget, PipeWaitSet, wake_pipe_waiter_sync};
+    use super::{IoEvents, PipeWaitSet, PipeWaitTarget, wake_pipe_waiter_sync};
 
     static DIRECT_READY: AtomicBool = AtomicBool::new(false);
     static DIRECT_WAIT_ARMED: AtomicBool = AtomicBool::new(false);
@@ -1331,6 +1376,27 @@ mod tests {
     impl Wake for CountWake {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    struct WakeOrder {
+        next: AtomicUsize,
+        slots: [AtomicUsize; 3],
+    }
+
+    struct OrderedWake {
+        id: usize,
+        order: Arc<WakeOrder>,
+    }
+
+    impl Wake for OrderedWake {
+        fn wake(self: Arc<Self>) {
+            let index = self.order.next.fetch_add(1, Ordering::AcqRel);
+            self.order
+                .slots
+                .get(index)
+                .expect("pipe wake callback count exceeded the expected budget")
+                .store(self.id, Ordering::Release);
         }
     }
 
@@ -1423,6 +1489,70 @@ mod tests {
     }
 
     #[axtest::axtest]
+    fn shared_poll_callbacks_precede_exclusive_in_linux_queue_order() {
+        let waiters = PipeWaitSet::new();
+        let order = Arc::new(WakeOrder {
+            next: AtomicUsize::new(0),
+            slots: core::array::from_fn(|_| AtomicUsize::new(0)),
+        });
+        let waker = |id| {
+            Waker::from(Arc::new(OrderedWake {
+                id,
+                order: Arc::clone(&order),
+            }))
+        };
+
+        // Linux inserts non-exclusive poll waiters at the queue head, so the
+        // later shared registration runs first. Exclusive waiters stay at the
+        // tail and consume the single wake quota only after all shared entries.
+        // SAFETY: every registration and waker outlives this wake transaction.
+        let shared_one = unsafe {
+            PollSource::register(
+                &waiters,
+                &waker(1),
+                IoEvents::IN,
+                RegistrationMode::Shared,
+            )
+        }
+        .expect("first shared registration must succeed");
+        // SAFETY: every registration and waker outlives this wake transaction.
+        let shared_two = unsafe {
+            PollSource::register(
+                &waiters,
+                &waker(2),
+                IoEvents::IN,
+                RegistrationMode::Shared,
+            )
+        }
+        .expect("second shared registration must succeed");
+        // SAFETY: every registration and waker outlives this wake transaction.
+        let exclusive = unsafe {
+            PollSource::register(
+                &waiters,
+                &waker(3),
+                IoEvents::IN,
+                RegistrationMode::Exclusive,
+            )
+        }
+        .expect("exclusive registration must succeed");
+
+        wake_pipe_waiter_sync(&waiters, IoEvents::IN);
+
+        assert_eq!(order.next.load(Ordering::Acquire), 3);
+        assert_eq!(
+            order
+                .slots
+                .each_ref()
+                .map(|slot| slot.load(Ordering::Acquire)),
+            [2, 1, 3],
+            "pipe wake order must match Linux waitqueue insertion and quota rules"
+        );
+        assert!(shared_one.was_notified());
+        assert!(shared_two.was_notified());
+        assert!(exclusive.was_notified());
+    }
+
+    #[axtest::axtest]
     fn earlier_epollexclusive_waiter_precedes_a_later_direct_waiter() {
         let waiters = Arc::new(PipeWaitSet::new());
         let poll_wakes = Arc::new(CountWake(AtomicUsize::new(0)));
@@ -1463,10 +1593,10 @@ mod tests {
             PollSource::register(&waiters, &waker, IoEvents::IN, RegistrationMode::Exclusive)
         }
         .expect("exclusive poll registration must succeed");
-        let boundary = waiters.exclusive.lock().next_id;
+        let boundary = waiters.state.lock().next_id;
 
         let selected = waiters
-            .take_next_matching(IoEvents::IN, boundary, None)
+            .take_next_exclusive(IoEvents::IN, boundary, None)
             .expect("registered exclusive waiter must be selected");
         assert!(
             registration.was_notified(),
@@ -1474,7 +1604,7 @@ mod tests {
         );
         drop(registration);
 
-        let PipeExclusiveTarget::Poll { waker, .. } = selected.target else {
+        let PipeWaitTarget::Poll { waker, .. } = selected.target else {
             panic!("selected registration must retain its poll callback");
         };
         waker.wake();

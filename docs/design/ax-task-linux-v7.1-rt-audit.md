@@ -4053,6 +4053,37 @@ Starry `qperf-metrics` 目标 clippy 与 `git diff --check` 通过。
 改善才是性能检查点。该结果证明 Linux lockless readiness 是单核差距的一项真实上层根因，但
 owner-rq transaction、guard 与真实 block/wake/switch 的剩余固定成本仍需继续分解。
 
+### 2026-08-29 Linux pipe 单一 waitqueue membership owner
+
+Linux v7.1 的每个 pipe 方向只有一个 `wait_queue_head`。`__pollwait()` 通过
+`add_wait_queue()` 把普通 poll entry 插到队首，后注册者先被扫描；
+`prepare_to_wait_event()` 与 EPOLLEXCLUSIVE 则把 exclusive entry 插到队尾并保持 FIFO。
+`__wake_up_common()` 在同一条链表中依次调用全部匹配的 non-exclusive callback，并只在
+exclusive callback 成功时消耗一个 quota。旧 Starry 虽已让 direct waiter 与
+EPOLLEXCLUSIVE 共用 exclusive FIFO，却仍由 `PollSet` 单独拥有 shared poll membership，
+一次 pipe wake 因而跨 generation lock、shared poll lock 和 exclusive lock，shared 顺序也仍是
+注册 FIFO `[1, 2]`，而不是 Linux 的队首插入 `[2, 1]`。这不是同一个 waitqueue owner。
+
+确定性真实 QEMU 回归按顺序注册 shared-1、shared-2、exclusive-3，再执行一次同步 pipe wake；
+只加入测试时旧实现稳定得到 `[1, 2, 3]` 并失败，Linux 期望为 `[2, 1, 3]`。修复后
+`PipeWaitSet` 只持有一个 `Arc<SpinLock<PipeWaitState>>`：shared poll 在队首，direct 与
+EPOLLEXCLUSIVE 在队尾；generation、registration/drop、matching 与 notified publication 都由
+这一状态线性化。普通 wake 在锁内快照选择全部 shared 和一个 exclusive，随后在锁外按队列顺序
+执行 callback，避免 callback 重入同一自旋锁。direct token 返回 `Retry` 时仍按原 ID 重插
+exclusive 尾部并继续尝试后续候选，只有 `Delivered` 或 poll callback 才消耗 quota；没有增加
+第二 API、兼容路径或旧 `WaitQueue` membership。
+
+source contract 2/2 转绿，x86_64 Starry kernel 真实 QEMU 从测试红态转为 73/73。相同
+process/20、4-vCPU TCG、全部任务固定 CPU0 的 qperf 窗口从上一检查点 1.424 s 降到
+1.094 s；pipe wait/direct delivery 从 3871 降到 2989（-22.8%），context switch 从 5254
+降到 4159（-20.8%），registration race/retry/stale 仍全为 0。相同未插桩 process/100 的三轮为
+5.400/5.220/5.006 s，中位数 5.220 s；正式 process/1000 按 warmup 加五轮协议得到 warmup
+68.199 s、测量 49.654/52.396/58.200/52.430/50.629 s，中位数 52.396 s。相对上一正式
+检查点 53.449 s 改善约 2.0%，仍为 Linux v7.1 PREEMPT_RT 10.540 s 的约 4.97 倍。
+因此保留这项已证明的 Linux membership 语义修复，但不把它误判为主要性能根因；历史好点
+`336a462e22` 的同工作量只有 44 次 pipe wait、499 次 context switch，后续仍需找出为何当前
+相同 I/O 会过早耗尽 pipe 数据并进入近 3000 次真实 block/wake transaction。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
@@ -4127,6 +4158,6 @@ owner-rq transaction、guard 与真实 block/wake/switch 的剩余固定成本�
 3. 目标 crate test/clippy 通过；
 4. 格式和 `git diff --check` 干净；
 5. 阶段提交并推送检查点；
-6. PR 描述同步问题、修改、设计依据、红绿证据和当前未完成项。
+6. PR 新进度评论同步问题、修改、设计依据、红绿证据和当前未完成项，不改写 PR 正文。
 
 最终完成要求：审计矩阵内无未处理的任务调度 finding，正常 IRQ 生命周期不依赖裸指针或永久泄漏兜底，四架构 QEMU 与 GitHub CI terminal 全绿。显式 `mem::forget` 等协议破坏仍以泄漏而非 UAF 失效。范围外问题必须有可接续的 issue 证据，而不是通过跳过或放宽测试隐藏。

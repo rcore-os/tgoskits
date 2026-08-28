@@ -17,11 +17,12 @@ fn blocking_pipe_io_uses_one_linux_style_exclusive_wait_order() {
     );
     assert!(
         !wait_set.contains("direct: WaitQueue")
-            && wait_set.contains("shared: PollSet")
-            && wait_set.contains("exclusive: Arc<SpinLock")
-            && !wait_set.contains("exclusive: Arc<PiMutex"),
-        "direct task waiters and EPOLLEXCLUSIVE callbacks must share one exclusive FIFO owner, \
-         without duplicating each direct waiter in an internal WaitQueue"
+            && wait_set.contains("state: Arc<SpinLock<PipeWaitState>>")
+            && !wait_set.contains("shared: PollSet")
+            && !wait_set.contains("exclusive: Arc<SpinLock")
+            && !wait_set.contains("state: Arc<PiMutex"),
+        "shared poll, direct task, and EPOLLEXCLUSIVE waiters must share one Linux-style \
+         waitqueue owner without an internal WaitQueue or split membership lock"
     );
     for (operation, wait_queue) in [(read, "wait_rx.wait_until"), (write, "wait_tx.wait_until")] {
         let operation = compact(operation);
@@ -40,10 +41,11 @@ fn blocking_pipe_io_uses_one_linux_style_exclusive_wait_order() {
     }
     assert!(
         sync_wake.contains("waiters.wake(ready, true)")
-            && wake.contains("self.shared.wake_with")
-            && wake.contains("take_next_matching")
+            && wake.contains("PipeWakeSelection")
+            && wake.contains("take_next_exclusive")
+            && !wake.contains("self.shared")
             && !wake.contains("notify_one_sync()"),
-        "pipe handoff must wake shared observers and consume one unified exclusive quota"
+        "one queue transaction must select all shared observers and one exclusive quota"
     );
 }
 
