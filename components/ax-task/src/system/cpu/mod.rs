@@ -34,8 +34,8 @@ pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{
     CpuRemotePublication, CpuRunQueueState, DeadlineBaseGuardSource, EqualRtWakeAction,
     IdlePullReservation, KtimerClaimClass, OwnerRqEnqueue, PreparedMigrationDelivery,
-    PreparedRemoteWakeDelivery, RescheduleKind, RunQueueGuardSource, SchedulerRequestClaim,
-    SchedulerRequestScope, WakePreemptionContext, WakePreemptionDecision,
+    RescheduleKind, RunQueueGuardSource, SchedulerRequestClaim, SchedulerRequestScope,
+    WakePreemptionContext, WakePreemptionDecision,
 };
 pub use snapshot::CpuSnapshot;
 pub(in crate::system) use transaction::OwnerRqTaskState;

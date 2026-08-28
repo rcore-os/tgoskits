@@ -17,7 +17,7 @@ pub(crate) use deadline::{
     CpuDeadlineState, DeadlineBaseGuardSource, KtimerClaimClass, SchedulerDeadlinePublicationState,
     SchedulerNonTimerDeadlines,
 };
-pub(crate) use delivery::{PreparedMigrationDelivery, PreparedRemoteWakeDelivery};
+pub(crate) use delivery::PreparedMigrationDelivery;
 pub(crate) use idle_pull::IdlePullReservation;
 pub use lifecycle::CpuLifecycleState;
 pub(crate) use lifecycle::{CpuRemotePublication, OwnedCpuRemotePublication};

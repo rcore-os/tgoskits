@@ -24,7 +24,7 @@ static STALL_RELEASED: AtomicBool = AtomicBool::new(false);
 static STALL_PROBE_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 static WAKER_STARTED: AtomicBool = AtomicBool::new(false);
 static WAKE_RETURNED: AtomicBool = AtomicBool::new(false);
-static WAKE_RETURNED_BEFORE_RELEASE: AtomicBool = AtomicBool::new(false);
+static WAKE_RETURNED_BEFORE_ON_CPU_CLEAR: AtomicBool = AtomicBool::new(false);
 static SLEEPER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 const REMOTE_WAKE_PROGRESS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -117,7 +117,7 @@ pub fn run() -> crate::TestResult {
     STALL_PROBE_EXHAUSTED.store(false, Ordering::Release);
     WAKER_STARTED.store(false, Ordering::Release);
     WAKE_RETURNED.store(false, Ordering::Release);
-    WAKE_RETURNED_BEFORE_RELEASE.store(false, Ordering::Release);
+    WAKE_RETURNED_BEFORE_ON_CPU_CLEAR.store(false, Ordering::Release);
     SLEEPER_CPU.store(usize::MAX, Ordering::Release);
 
     pin_current_to_cpu(waker_cpu);
@@ -131,7 +131,7 @@ pub fn run() -> crate::TestResult {
         {
             core::hint::spin_loop();
         }
-        WAKE_RETURNED_BEFORE_RELEASE
+        WAKE_RETURNED_BEFORE_ON_CPU_CLEAR
             .store(WAKE_RETURNED.load(Ordering::Acquire), Ordering::Release);
         STALL_RELEASED.store(true, Ordering::Release);
     });
@@ -186,8 +186,8 @@ pub fn run() -> crate::TestResult {
         "switch-out probe exhausted before the controller could release it"
     );
     assert!(
-        WAKE_RETURNED_BEFORE_RELEASE.load(Ordering::Acquire),
-        "remote wake spun until the target cleared on_cpu instead of queueing owner work"
+        !WAKE_RETURNED_BEFORE_ON_CPU_CLEAR.load(Ordering::Acquire),
+        "PREEMPT_RT remote wake returned before finish_task cleared on_cpu"
     );
     assert!(
         !api::ax_wait_queue_wait_until(

@@ -120,24 +120,6 @@ impl TaskSystem {
         }
     }
 
-    fn prepare_remote_on_cpu_wake(
-        &self,
-        core: &Arc<ThreadCore>,
-        sched: &ThreadSchedState,
-        waker: Option<CpuId>,
-        park_generation: u64,
-    ) -> Option<PreparedRemoteWakeDelivery> {
-        let owner = sched.placement.on_cpu()?;
-        if waker == Some(owner)
-            || !sched.affinity.affinity.contains(owner)
-            || sched.placement.committed_migration_target().is_some()
-        {
-            return None;
-        }
-        let owner_remote = self.cpu_remotes.get(owner.as_usize())?;
-        PreparedRemoteWakeDelivery::prepare(owner_remote, core, owner, park_generation).ok()
-    }
-
     fn select_wake_target(
         &self,
         sched: &ThreadSchedState,
@@ -457,24 +439,6 @@ impl TaskSystem {
                     intent,
                 );
             }
-            if let Some(delivery) =
-                self.prepare_remote_on_cpu_wake(&core, &sched, waker, core.park_generation())
-            {
-                let transition =
-                    Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
-                        task_runtime::fatal_invariant(0x574b_0020, core.id().as_u64() as usize)
-                    });
-                if transition != WakeTransition::Activate {
-                    task_runtime::fatal_invariant(0x574b_0021, core.id().as_u64() as usize);
-                }
-                // Linux publishes TASK_WAKING under p->pi_lock, then hands the
-                // activation to the descheduling CPU's wake_list. The prepared
-                // carrier makes this publication infallible after dropping the
-                // task lock, so this waker never waits for remote switch tail.
-                drop(sched);
-                delivery.commit();
-                return WakeResult::Notified;
-            }
             let previous = sched
                 .placement
                 .assigned_cpu()
@@ -583,20 +547,6 @@ impl TaskSystem {
                 if sched.placement.queued_cpu().is_some() {
                     task_runtime::fatal_invariant(0x574b_0018, core.id().as_u64() as usize);
                 }
-                if let Some(delivery) =
-                    self.prepare_remote_on_cpu_wake(&core, &sched, waker, claim.park_generation())
-                {
-                    let transition =
-                        Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
-                            task_runtime::fatal_invariant(0x574b_0022, core.id().as_u64() as usize)
-                        });
-                    if transition != WakeTransition::Activate {
-                        task_runtime::fatal_invariant(0x574b_0023, core.id().as_u64() as usize);
-                    }
-                    drop(sched);
-                    delivery.commit();
-                    return WaitWakeDelivery::Delivered;
-                }
                 let publication = self.cpu_remotes[target.as_usize()]
                     .begin_publication()
                     .unwrap_or_else(|| {
@@ -644,24 +594,6 @@ impl TaskSystem {
                     if result != WakeResult::Notified {
                         task_runtime::fatal_invariant(0x574b_0012, core.id().as_u64() as usize);
                     }
-                    return WaitWakeDelivery::Delivered;
-                }
-                if let Some(delivery) =
-                    self.prepare_remote_on_cpu_wake(&core, &sched, waker, claim.park_generation())
-                {
-                    if !claim.deliver_selected() {
-                        return WaitWakeDelivery::Cancelled;
-                    }
-                    let _already_pending = core.publish_wake();
-                    let transition =
-                        Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
-                            task_runtime::fatal_invariant(0x574b_0024, core.id().as_u64() as usize)
-                        });
-                    if transition != WakeTransition::Activate {
-                        task_runtime::fatal_invariant(0x574b_0025, core.id().as_u64() as usize);
-                    }
-                    drop(sched);
-                    delivery.commit();
                     return WaitWakeDelivery::Delivered;
                 }
                 let target = if let Some(target) = sched.placement.committed_migration_target() {
@@ -818,10 +750,9 @@ impl TaskSystem {
         publication: CpuRemotePublication<'_>,
         intent: WakeIntent,
     ) -> WakeResult {
-        // The direct fallback pairs this acquire wait with `finish_task()`'s
-        // release publication. A remote `on_cpu` wake reaches this helper from
-        // the old owner's inbox only after that CPU completes switch tail, like
-        // Linux `sched_ttwu_pending()`.
+        // PREEMPT_RT disables TTWU_QUEUE. The waker therefore retains the task
+        // lock, pairs this acquire wait with `finish_task()`'s release-clear of
+        // `on_cpu`, then activates the task under its selected rq lock.
 
         let (sched, irq_owner) = sched_guard.split_irq_owner();
         sched.placement.wait_until_not_on_cpu();

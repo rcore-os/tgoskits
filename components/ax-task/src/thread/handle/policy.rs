@@ -164,10 +164,6 @@ impl ThreadCore {
         &self.deadline_refresh_node
     }
 
-    pub(crate) const fn remote_wake_node(&self) -> &InboxNode {
-        &self.remote_wake_node
-    }
-
     pub(crate) const fn migration_node(&self) -> &InboxNode {
         &self.migration_node
     }

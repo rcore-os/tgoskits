@@ -98,9 +98,9 @@ impl DeferredTaskWorkBatch {
 /// IRQ and remote producers wake through
 /// [`ThreadWakeHandle::wake`](crate::ThreadWakeHandle::wake). The wake path
 /// serializes thread state, selects an online destination, and activates the
-/// thread under that destination's IRQ-safe runqueue lock. A remote thread
-/// still crossing switch tail hands its wake to the old owner through the
-/// owner-control inbox, which also carries migration and deferred owner work.
+/// thread under that destination's IRQ-safe runqueue lock. Like Linux
+/// PREEMPT_RT with `TTWU_QUEUE` disabled, a remote waker waits for switch tail's
+/// `on_cpu` release before completing that direct activation.
 #[derive(Debug)]
 pub struct TaskSystem {
     pub(super) config: TaskSystemConfig,

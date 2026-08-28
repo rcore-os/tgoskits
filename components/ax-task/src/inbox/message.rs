@@ -21,8 +21,6 @@ pub enum InboxKind {
 pub enum InboxOperation {
     /// Transfer physical runqueue ownership between CPUs.
     Migration,
-    /// Activate a remotely descheduling thread after its switch tail.
-    RemoteWake,
     /// Reconcile a thread's latest affinity with physical placement.
     AffinityUpdate,
     /// Refresh one Deadline donor after its remote CBS baton returns.
@@ -84,29 +82,6 @@ impl InboxMessage {
             target_cpu: target_cpu.as_u32(),
             generation,
             placement_demand,
-            balance_class: None,
-            payload,
-        }
-    }
-
-    /// Creates a remote wake handed to the descheduling CPU owner.
-    ///
-    /// The owner validates `generation` against the thread's park generation
-    /// before activating the `Waking` thread after switch tail.
-    pub const fn remote_wake_with_payload(
-        thread_id: ThreadId,
-        owner: CpuId,
-        generation: u64,
-        payload: usize,
-    ) -> Self {
-        Self {
-            kind: InboxKind::OwnerControl,
-            operation: InboxOperation::RemoteWake,
-            thread_id,
-            source_cpu: owner.as_u32(),
-            target_cpu: owner.as_u32(),
-            generation,
-            placement_demand: 0,
             balance_class: None,
             payload,
         }
@@ -277,11 +252,6 @@ impl InboxMessage {
         }
     }
 
-    /// Returns the operation-specific generation carried by this message.
-    pub const fn generation(self) -> u64 {
-        self.generation
-    }
-
     /// Returns the scheduling demand reserved by a migration carrier.
     pub const fn placement_demand(self) -> u64 {
         self.placement_demand
@@ -300,7 +270,6 @@ mod tests {
     fn operation_kind(operation: InboxOperation) -> InboxKind {
         match operation {
             InboxOperation::Migration
-            | InboxOperation::RemoteWake
             | InboxOperation::AffinityUpdate
             | InboxOperation::DeadlineRefresh
             | InboxOperation::BalanceRequest => InboxKind::OwnerControl,
@@ -313,7 +282,6 @@ mod tests {
     fn owner_control_inbox_carries_owner_serialized_work() {
         for operation in [
             InboxOperation::Migration,
-            InboxOperation::RemoteWake,
             InboxOperation::AffinityUpdate,
             InboxOperation::DeadlineRefresh,
             InboxOperation::BalanceRequest,

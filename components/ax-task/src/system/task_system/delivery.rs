@@ -607,47 +607,6 @@ impl TaskSystem {
             let target = message
                 .target_cpu()
                 .ok_or(TaskError::InvalidConfiguration)?;
-            if operation == InboxOperation::RemoteWake {
-                if source != owner || target != owner {
-                    let expected = if source != owner { source } else { target };
-                    return Err(TaskError::CpuOwnerMismatch {
-                        expected: expected.as_u32(),
-                        actual: owner.as_u32(),
-                    });
-                }
-                if core.park_generation() != message.generation() {
-                    continue;
-                }
-                let publication = cpu.remote().begin_owner_delivery().unwrap_or_else(|| {
-                    task_runtime::fatal_invariant(0x574b_0202, core.id().as_u64() as usize)
-                });
-                let sched = core.sched().lock();
-                if core.park_generation() != message.generation()
-                    || sched.lifecycle.state() != ThreadState::Waking
-                {
-                    continue;
-                }
-                if sched.placement.on_cpu().is_some()
-                    || sched.placement.queued_cpu().is_some()
-                    || sched.placement.committed_migration_target().is_some()
-                    || sched.placement.assigned_cpu() != Some(owner)
-                {
-                    // Owner-control drain runs after finish_task() and this
-                    // carrier was reserved only for a detached blocked task.
-                    task_runtime::fatal_invariant(0x574b_0203, core.id().as_u64() as usize);
-                }
-                let result = self.activate_waking_thread_locked(
-                    &core,
-                    sched,
-                    owner,
-                    publication,
-                    WakeIntent::Normal,
-                );
-                if result != WakeResult::Notified {
-                    task_runtime::fatal_invariant(0x574b_0204, core.id().as_u64() as usize);
-                }
-                continue;
-            }
             if operation == InboxOperation::DeadlineRefresh {
                 if source != owner || target != owner {
                     return Err(TaskError::CpuOwnerMismatch {

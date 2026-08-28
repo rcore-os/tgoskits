@@ -79,9 +79,9 @@ use crate::{
     system::cpu::{
         CpuRunQueueState, CurrentClassState, CurrentDispatch, CurrentDispatchState,
         DeadlineBaseGuardSource, EqualRtWakeAction, HardTimerServiceClaim, IdlePullReservation,
-        KtimerServiceClaim, OwnerRqEntry, OwnerRqTxn, PreparedMigrationDelivery,
-        PreparedRemoteWakeDelivery, RescheduleKind, RqTaskTime, RunQueueClockSnapshot,
-        RunQueueGuardSource, SchedulerDeadlineRqObservation, SchedulerRequestScope,
+        KtimerServiceClaim, OwnerRqEntry, OwnerRqTxn, PreparedMigrationDelivery, RescheduleKind,
+        RqTaskTime, RunQueueClockSnapshot, RunQueueGuardSource, SchedulerDeadlineRqObservation,
+        SchedulerRequestScope,
     },
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{
