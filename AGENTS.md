@@ -37,18 +37,32 @@
 
 以下规则约束验证、持续集成、拉取请求和项目协作流程，并与前述编码规范共同生效。
 
-- 修改逻辑后运行相关的 `cargo clippy` 检查。
-- 修改软件包后确保该软件包通过静态检查，定向验证优先使用 `cargo xtask clippy --package <crate>`。
+### 2.1 本地验证
+
+项目任务工具负责展开软件包选择、功能组合和目标矩阵，并统一汇总失败结果；本地验证应使用这些稳定入口。
+
+- 修改 Rust 代码后使用项目适配的 `cargo xtask clippy` 执行静态检查。定向检查使用 `cargo xtask clippy --package <软件包>`，全工作区检查使用 `cargo xtask clippy` 或 `cargo xtask clippy --all`，增量检查使用 `cargo xtask clippy --since <引用>`；不得用原生 `cargo clippy` 命令代替。
+- 修改 `scripts/test/std_crates.csv` 白名单覆盖的软件包后，使用 `cargo xtask test` 执行标准库测试；增量验证使用 `cargo xtask test --since <引用>`。该入口不支持按软件包选择，不得用原生 `cargo test` 命令代替。
 - 不得通过增加 `allow` 属性来回避静态检查警告；除非用户明确要求，否则应修复根因。
 - 编辑代码后运行 `cargo fmt`。
 - 修复错误时，先增加一个在错误实现上必然失败的确定性回归测试并验证失败，再实现或恢复修复，最后验证同一测试通过。不得只依赖修复后的证明、概率性复现程序或放宽后的测试。
-- `.github/workflows/ci.yml` 中自托管持续集成矩阵项的 `cache_key` 必须保持为空字符串（`cache_key: ""`）。非空值会在自托管运行器上启用 `rust-cache` 步骤，可能删除 Rust 或 Cargo 状态并破坏后续任务。
-- 构建、测试或运行 ArceOS、StarryOS 和 Axvisor 时，优先使用 `cargo xtask` 命令族，不直接使用 `cargo build`、`cargo test` 或 `cargo run`。
-- `cargo xtask` 无法满足特殊配置时，先检查 `xtask` 流程；确认无法满足后，才使用原生 Cargo 命令并手工匹配参数。
+- 构建、测试或运行 ArceOS、StarryOS 和 Axvisor 时，使用 `cargo xtask` 命令族，不直接使用 `cargo build`、`cargo test` 或 `cargo run`。
+- 只有项目任务工具没有相应入口且任务明确需要特殊配置时，才检查 `xtask` 实现并使用原生 Cargo 命令手工匹配参数；不得把任务工具内部调用的原生命令当作项目验证入口。
 - 解决变基或合并冲突时，不得手工合并发生冲突的 `Cargo.lock` 内容。先解决其他冲突，再用 Cargo 重新生成 `Cargo.lock` 并验证生成的锁文件。
+
+### 2.2 持续集成与审查
+
+持续集成配置和拉取请求审查使用仓库定义的证据链，不以临时本地命令或宽松检查替代项目门禁。
+
+- `.github/workflows/ci.yml` 中自托管持续集成矩阵项的 `cache_key` 必须保持为空字符串（`cache_key: ""`）。非空值会在自托管运行器上启用 `rust-cache` 步骤，可能删除 Rust 或 Cargo 状态并破坏后续任务。
 - 审查拉取请求时，在判断能否合入、起草评论、批准、请求修改或发布不提交审查的总结前，完整阅读 `.agents/skills/review-single-pr/SKILL.md`。唯一例外是技能规定的最小前置门禁状态报告 `CI_DEFERRED` 或 `CI_SKIPPED`；它不是审查结论，不得发布到拉取请求。
 - 审查拉取请求时，根据 `review-single-pr` 的完整要求建立任务清单，逐项核验每个适用的合入要求。每项只能标为有证据地满足、给出具体理由的不适用，或有证据的阻塞。
 - 执行 `review-single-pr` 或 `review-open-prs` 时，不得运行本地格式化、构建、静态检查、测试、QEMU 测试、元数据、打包或发布验证命令，审查流程负责的冲突修复完成后也不得运行。应使用当前精确提交的持续集成任务、步骤和日志。唯一运行时例外是 `apps/**` 下新增、修改或重命名进入可运行状态的应用，而且相同应用和目标缺少可接受的持续集成运行；此时按技能中的应用运行和板卡不可用规则处理。该审查专用例外不削弱普通开发、议题修复或作者侧提交拉取请求时的本地验证要求。
+
+### 2.3 拉取请求
+
+面向项目的提交应保持中性、可追溯，并让标题、正文、验证记录和分支实际内容一致。
+
 - 拉取请求、议题、审查回复、讨论及类似面向项目的提交使用中性、聚焦项目的语言。
 - 拉取请求标题遵循约定式提交的 `type(scope): content` 格式。一个软件包明显占主导时，优先把该软件包名作为 `scope`；跨领域或基础设施改动可以使用 `ci`、`repo` 或 `docs` 等较宽范围。
 - 拉取请求标题示例：`feat(axbuild): add Starry remote board test flow`、`fix(starry-process): correct tty session cleanup`、`chore(ci): split Starry self-hosted board matrix`。
