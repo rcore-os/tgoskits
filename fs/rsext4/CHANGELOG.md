@@ -27,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add typed inode-number extended-attribute operations with checked inline and
   external-block codecs, Linux hashes/checksums, create/replace policy, and
   dynamic block-size Linux-image coverage.
-- Add a durable external-xattr benchmark workload and retain machine-readable
-  metadata copy-on-write performance samples for final Linux/dev comparison.
+- Add a durable external-xattr benchmark workload and report its final
+  Linux/dev comparison without retaining development-only raw samples.
 - Add typed user-visible inode flags and project identifiers to the owned core
   metadata DTOs without exposing the on-disk inode representation.
 - Add typed linear/HTree directory cursors, bounded hash-range leaf
@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove misspelled compatibility entry points and replace the misspelled
   `BlcokGroupLayout` type and pluralized layout fields with the canonical
   `BlockGroupLayout` API.
+- Remove the descriptor-style `OpenFile/open/read_at/write_at/lseek` API, the
+  redundant `mv`/`rename_with_options` aliases, and unused crypto/key mount
+  provider placeholders; callers now use inode-owned operations and one typed
+  rename entry point directly.
 - Remove prefix-only group-descriptor checksum methods; checksum ownership now
   stays inside full-record mount and persistence paths.
 - Rename the misspelled `JournalSuperBllockS` disk type to
@@ -69,6 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Follow Linux HTree collision continuations across leaf and parent-index
   boundaries, preserve continuation I/O errors, and report the true byte offset
   of matched directory entries.
+- Return owned HTree lookup results instead of extending cache borrows to
+  `'static`, and limit linear fallback to Linux-style bad-index errors while
+  preserving I/O and checksum failures.
 - Reject invalid default directory-hash versions during feature negotiation and
   persist an unambiguous signed-byte policy on writable indexed filesystems.
 - Reuse the current Linux-style JBD2 owner for nested metadata helpers without

@@ -1,7 +1,7 @@
 //! Core ext4 filesystem implementation.
 //!
 //! This crate contains the main filesystem domains:
-//! - Filesystem mount, sync, and mkfs (`api`, `ext4`)
+//! - Filesystem mount, sync, and mkfs (`ext4`)
 //! - Block device and journal integration (`blockdev`, `loopfile`, `jbd2`)
 //! - Block groups, bitmaps, and caches (`blockgroup_description`, `bitmap`, `cache`)
 //! - File and directory operations (`file`, `dir`, `entries`)
@@ -18,8 +18,6 @@ extern crate std;
 mod test_contracts;
 
 // Re-export shared configuration constants for external callers.
-// Re-export the most frequently used public APIs.
-pub use api::{lseek, open, read_at, write_at};
 pub use blockdev::Jbd2Dev;
 pub use bmalloc::InodeNumber;
 pub use config::{
@@ -42,20 +40,18 @@ pub use file::{
     FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, PreallocationOptions,
     RangeOperation, RenameOptions, RenameOutcome, UnlinkOutcome, XattrName, XattrNamespace,
     XattrSetMode, ZeroRangeOptions, create_symbol_link, create_symbol_link_with_owner, delete_dir,
-    delete_file, inspect_inode_extents, is_dir_empty, link, mkfile, mkfile_with_owner, mv,
+    delete_file, inspect_inode_extents, is_dir_empty, link, mkfile, mkfile_with_owner,
     operate_inode_range, preallocate_inode, punch_hole_inode, read_file, read_inode_data_into,
-    reap_unlinked_inode, rename, rename_with_options, truncate, truncate_inode, unlink, write_file,
-    write_inode_data, zero_range_inode,
+    reap_unlinked_inode, rename, truncate, truncate_inode, unlink, write_file, write_inode_data,
+    zero_range_inode,
 };
 pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
 pub use runtime::{
-    Clock, CryptoOperation, CryptoProvider, Delay, DigestAlgorithm, EncryptionAlgorithm,
-    EntropySource, Event, KeyDescriptor, KeyProvider, KeyPurpose, MmpIdentity, MountServices,
-    MountedServices, NoopObserver, Observer,
+    Clock, Delay, EntropySource, Event, MmpIdentity, MountServices, MountedServices, NoopObserver,
+    Observer,
 };
 
-pub mod api;
 pub mod bitmap;
 pub mod blockdev;
 pub mod blockgroup_description;

@@ -1,5 +1,7 @@
 //! Hash tree lookup flow and fallback logic.
 
+#![forbid(unsafe_code)]
+
 use alloc::{vec, vec::Vec};
 
 use super::{
@@ -9,7 +11,7 @@ use crate::{
     blockdev::{BlockIo, Jbd2Dev},
     bmalloc::{AbsoluteBN, InodeNumber},
     disknode::Ext4Inode,
-    entries::{DirEntryIterator, Ext4DirEntryInfo, Ext4DxEntry, Ext4DxRootInfo, classic_dir},
+    entries::{DirEntryIterator, Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo, classic_dir},
     ext4::Ext4FileSystem,
     loopfile::{resolve_inode_block, resolve_inode_blocks},
     superblock::Ext4Superblock,
@@ -47,14 +49,16 @@ pub(super) fn lookup<B: BlockIo>(
         return manager.fallback_to_linear_search(fs, block_dev, dir_ino, dir_inode, target_name);
     }
 
-    let (search, root_info) =
-        manager.prepare_search(fs, block_dev, dir_ino, dir_inode, target_name)?;
+    let indexed_result = manager
+        .prepare_search(fs, block_dev, dir_ino, dir_inode, target_name)
+        .and_then(|(search, root)| manager.search_collision_chain(fs, block_dev, search, &root));
 
-    match manager.search_collision_chain(fs, block_dev, search, &root_info) {
+    match indexed_result {
         Ok(result) => Ok(result),
-        Err(error @ HashTreeError::Filesystem(_)) => Err(error),
-        Err(error @ HashTreeError::EntryNotFound) => Err(error),
-        Err(_) => manager.fallback_to_linear_search(fs, block_dev, dir_ino, dir_inode, target_name),
+        Err(error) if error.allows_linear_fallback() => {
+            manager.fallback_to_linear_search(fs, block_dev, dir_ino, dir_inode, target_name)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -345,9 +349,9 @@ impl HashTreeManager {
         for (entry, offset) in iter {
             if entry.name == target_name {
                 return Ok(HashTreeSearchResult {
-                    entry: unsafe {
-                        core::mem::transmute::<Ext4DirEntryInfo<'_>, Ext4DirEntryInfo<'_>>(entry)
-                    },
+                    inode: InodeNumber::new(entry.inode)
+                        .map_err(|_| HashTreeError::CorruptedHashTree)?,
+                    file_type: entry.file_type,
                     block_num,
                     offset,
                 });
@@ -374,42 +378,65 @@ impl HashTreeManager {
             total_size.div_ceil(block_bytes)
         };
 
-        if dir_inode.uses_extents() {
-            let mut inode_copy = *dir_inode;
-            let blocks_map = resolve_inode_blocks(fs, block_dev, dir_ino, &mut inode_copy)
+        let mut inode_copy = *dir_inode;
+        let blocks_map = resolve_inode_blocks(fs, block_dev, dir_ino, &mut inode_copy)
+            .map_err(HashTreeError::from)?;
+
+        for lbn in 0..total_blocks {
+            let phys = match blocks_map.get(&(lbn as u32)) {
+                Some(block) => *block,
+                None => continue,
+            };
+
+            let cached_block = fs
+                .datablock_cache
+                .get_or_load(block_dev, phys)
                 .map_err(HashTreeError::from)?;
-
-            for lbn in 0..total_blocks {
-                let phys = match blocks_map.get(&(lbn as u32)) {
-                    Some(block) => *block,
-                    None => continue,
-                };
-
-                let cached_block = fs
-                    .datablock_cache
-                    .get_or_load(block_dev, phys)
-                    .map_err(HashTreeError::from)?;
-
-                let block_data = &cached_block.data;
-                if let Some((entry, offset)) =
-                    classic_dir::find_entry_with_offset(block_data, target_name)
-                {
-                    return Ok(HashTreeSearchResult {
-                        entry: unsafe {
-                            core::mem::transmute::<Ext4DirEntryInfo<'_>, Ext4DirEntryInfo<'_>>(
-                                entry,
-                            )
-                        },
-                        block_num: phys,
-                        offset,
-                    });
-                }
+            let block_data = &cached_block.data;
+            let checksum_ok = if dir_inode.is_htree_indexed() {
+                crate::checksum::verify_ext4_dx_checksum(
+                    &fs.superblock,
+                    dir_ino.raw(),
+                    dir_inode.i_generation,
+                    block_data,
+                )
+                .unwrap_or_else(|| {
+                    crate::checksum::verify_ext4_dirblock_checksum(
+                        &fs.superblock,
+                        dir_ino.raw(),
+                        dir_inode.i_generation,
+                        block_data,
+                    )
+                })
+            } else {
+                crate::checksum::verify_ext4_dirblock_checksum(
+                    &fs.superblock,
+                    dir_ino.raw(),
+                    dir_inode.i_generation,
+                    block_data,
+                )
+            };
+            if !checksum_ok {
+                return Err(HashTreeError::Filesystem(
+                    crate::Ext4Error::checksum().with_operation("htree:linear"),
+                ));
             }
 
-            return Err(HashTreeError::EntryNotFound);
+            if let Some((entry, offset)) =
+                classic_dir::find_entry_with_offset(block_data, target_name)
+                && entry.file_type != Ext4DirEntryTail::RESERVED_FT
+            {
+                return Ok(HashTreeSearchResult {
+                    inode: InodeNumber::new(entry.inode)
+                        .map_err(|_| HashTreeError::CorruptedHashTree)?,
+                    file_type: entry.file_type,
+                    block_num: phys,
+                    offset,
+                });
+            }
         }
 
-        Err(HashTreeError::CorruptedHashTree)
+        Err(HashTreeError::EntryNotFound)
     }
 }
 

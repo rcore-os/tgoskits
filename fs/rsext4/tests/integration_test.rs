@@ -294,39 +294,6 @@ impl EntropySource for UnavailableCapabilities {
     }
 }
 
-impl CryptoProvider for UnavailableCapabilities {
-    fn crypt(
-        &mut self,
-        _operation: CryptoOperation,
-        _algorithm: EncryptionAlgorithm,
-        _key: &[u8],
-        _nonce: &[u8],
-        _input: &[u8],
-        _output: &mut [u8],
-    ) -> Ext4Result<()> {
-        Err(Ext4Error::unsupported_capability("crypto"))
-    }
-
-    fn digest(
-        &mut self,
-        _algorithm: DigestAlgorithm,
-        _input: &[u8],
-        _output: &mut [u8],
-    ) -> Ext4Result<usize> {
-        Err(Ext4Error::unsupported_capability("crypto"))
-    }
-}
-
-impl KeyProvider for UnavailableCapabilities {
-    fn read_key(
-        &mut self,
-        _descriptor: KeyDescriptor<'_>,
-        _output: &mut [u8],
-    ) -> Ext4Result<usize> {
-        Err(Ext4Error::unsupported_capability("keys"))
-    }
-}
-
 #[derive(Default)]
 struct RecordingObserver {
     events: Vec<Event>,
@@ -338,15 +305,8 @@ impl Observer for RecordingObserver {
     }
 }
 
-type TestOwnedFilesystem = Ext4<
-    IoOnlyDevice,
-    MountedServices<
-        UnavailableCapabilities,
-        UnavailableCapabilities,
-        UnavailableCapabilities,
-        RecordingObserver,
-    >,
->;
+type TestOwnedFilesystem =
+    Ext4<IoOnlyDevice, MountedServices<UnavailableCapabilities, RecordingObserver>>;
 
 fn owned_test_filesystem() -> TestOwnedFilesystem {
     let device = IoOnlyDevice::from(TestBlockDevice::new(100 * 1024 * 1024));
@@ -358,8 +318,6 @@ fn owned_test_filesystem() -> TestOwnedFilesystem {
     .expect("mkfs failed");
     let services = MountServices::new(
         SeparateClock(Cell::new(1_800_000_000)),
-        UnavailableCapabilities,
-        UnavailableCapabilities,
         UnavailableCapabilities,
         RecordingObserver::default(),
     );
@@ -386,7 +344,6 @@ fn owned_directory_change_attribute_tracks_persistent_name_mutations() {
 
     let _ = filesystem
         .unlink(
-            context,
             root,
             FileName::new(b"versioned-name").expect("valid raw name"),
         )
@@ -412,8 +369,6 @@ fn owned_test_filesystem_with_flush_failure() -> (TestOwnedFilesystem, Arc<Atomi
     let services = MountServices::new(
         SeparateClock(Cell::new(1_800_000_000)),
         UnavailableCapabilities,
-        UnavailableCapabilities,
-        UnavailableCapabilities,
         RecordingObserver::default(),
     );
     let filesystem =
@@ -433,8 +388,6 @@ fn clean_sync_does_not_rewrite_clean_metadata() {
     .expect("mkfs failed");
     let services = MountServices::new(
         SeparateClock(Cell::new(1_800_000_000)),
-        UnavailableCapabilities,
-        UnavailableCapabilities,
         UnavailableCapabilities,
         RecordingObserver::default(),
     );
@@ -473,8 +426,6 @@ fn sync_cycle_keeps_dirty_clean_and_unmount_io_boundaries_distinct() {
     let services = MountServices::new(
         SeparateClock(Cell::new(1_800_000_000)),
         UnavailableCapabilities,
-        UnavailableCapabilities,
-        UnavailableCapabilities,
         RecordingObserver::default(),
     );
     let mut filesystem =
@@ -489,7 +440,7 @@ fn sync_cycle_keeps_dirty_clean_and_unmount_io_boundaries_distinct() {
         )
         .expect("create file");
     filesystem
-        .write_inode(context, file.number, 0, &[0x5a; BLOCK_SIZE])
+        .write_inode(file.number, 0, &[0x5a; BLOCK_SIZE])
         .expect("write file");
 
     counters.reset();
@@ -530,8 +481,6 @@ fn owned_mount_injects_clock_separately_from_block_io() {
     .expect("mkfs failed");
     let services = MountServices::new(
         SeparateClock(Cell::new(1_800_000_000)),
-        UnavailableCapabilities,
-        UnavailableCapabilities,
         UnavailableCapabilities,
         RecordingObserver::default(),
     );
@@ -612,7 +561,7 @@ fn owned_mount_injects_clock_separately_from_block_io() {
 
     let raw_link_name = FileName::new(&[b'l', 0xfd]).expect("valid raw link name");
     let linked = filesystem
-        .hard_link(context, raw_file.number, root.number, raw_link_name)
+        .hard_link(raw_file.number, root.number, raw_link_name)
         .expect("raw hard link failed");
     assert_eq!(linked.number, raw_file.number);
     assert_eq!(linked.links, 2);
@@ -627,17 +576,17 @@ fn owned_mount_injects_clock_separately_from_block_io() {
 
     let payload = b"open-unlink through the owned core";
     filesystem
-        .write_inode(context, raw_file.number, 0, payload)
+        .write_inode(raw_file.number, 0, payload)
         .expect("owned inode write failed");
     let first_unlink = filesystem
-        .unlink(context, raw_directory.number, raw_file_name)
+        .unlink(raw_directory.number, raw_file_name)
         .expect("first raw unlink failed");
     assert_eq!(first_unlink.inode, raw_file.number);
     assert_eq!(first_unlink.remaining_links, 1);
     assert!(!first_unlink.requires_reap());
 
     let final_unlink = filesystem
-        .unlink(context, root.number, raw_link_name)
+        .unlink(root.number, raw_link_name)
         .expect("final raw unlink failed");
     assert_eq!(final_unlink.inode, raw_file.number);
     assert!(final_unlink.requires_reap());
@@ -762,8 +711,6 @@ fn owned_remount_rejects_read_write_on_read_only_device() {
     let services = MountServices::new(
         SeparateClock(Cell::new(1_800_000_000)),
         UnavailableCapabilities,
-        UnavailableCapabilities,
-        UnavailableCapabilities,
         RecordingObserver::default(),
     );
     let previous = MountOptions::read_only_no_journal_replay();
@@ -801,7 +748,7 @@ fn owned_read_only_read_does_not_update_atime() {
         )
         .expect("create file");
     filesystem
-        .write_inode(context, file.number, 0, b"payload")
+        .write_inode(file.number, 0, b"payload")
         .expect("write file");
     filesystem.sync().expect("sync file before remount");
     let before = filesystem.inode(file.number).expect("inspect before read");
@@ -839,7 +786,7 @@ fn owned_unmount_rejects_later_mutation_and_sync() {
     filesystem.unmount().expect("unmount filesystem");
 
     let write_error = filesystem
-        .write_inode(context, file.number, 0, b"forbidden")
+        .write_inode(file.number, 0, b"forbidden")
         .expect_err("an unmounted owner must reject mutation");
     assert_eq!(write_error.kind(), Ext4ErrorKind::Busy);
     let sync_error = filesystem
@@ -865,7 +812,6 @@ fn owned_rename_noreplace_preserves_both_entries() {
 
     let error = filesystem
         .rename(
-            context,
             root,
             source_name,
             root,
@@ -927,7 +873,6 @@ fn owned_rename_exchange_swaps_raw_names_across_directories() {
 
     let outcome = filesystem
         .rename(
-            context,
             left.number,
             left_name,
             right.number,
@@ -993,7 +938,6 @@ fn owned_rename_directory_updates_dotdot_and_parent_links() {
 
     let _ = filesystem
         .rename(
-            context,
             old_parent.number,
             source_name,
             new_parent.number,
@@ -1059,14 +1003,7 @@ fn owned_rename_replacement_returns_reapable_target() {
         .expect("target create failed");
 
     let outcome = filesystem
-        .rename(
-            context,
-            root,
-            source_name,
-            root,
-            target_name,
-            RenameOptions::REPLACE,
-        )
+        .rename(root, source_name, root, target_name, RenameOptions::REPLACE)
         .expect("replacement rename failed");
     let replaced = outcome.replaced.expect("target outcome missing");
 
@@ -1114,7 +1051,6 @@ fn owned_rename_rejects_moving_directory_below_itself() {
 
     let error = filesystem
         .rename(
-            context,
             root,
             source_name,
             child.number,
@@ -1217,7 +1153,7 @@ fn owned_empty_metadata_update_is_a_noop() {
         .expect("create regular file");
 
     let updated = filesystem
-        .update_inode_metadata(context, inode.number, InodeMetadataUpdate::default())
+        .update_inode_metadata(inode.number, InodeMetadataUpdate::default())
         .expect("empty metadata update");
 
     assert_eq!(updated, inode);
@@ -1245,7 +1181,6 @@ fn owned_metadata_update_exposes_typed_flags_and_project_id() {
 
     let default_project = filesystem
         .update_inode_metadata(
-            context,
             inode.number,
             InodeMetadataUpdate {
                 project_id: Some(0),
@@ -1258,7 +1193,6 @@ fn owned_metadata_update_exposes_typed_flags_and_project_id() {
     let requested = InodeFlags::NO_DUMP | InodeFlags::NO_ATIME;
     let updated = filesystem
         .update_inode_metadata(
-            context,
             inode.number,
             InodeMetadataUpdate {
                 flags: Some(requested),
@@ -1273,7 +1207,6 @@ fn owned_metadata_update_exposes_typed_flags_and_project_id() {
 
     let error = filesystem
         .update_inode_metadata(
-            context,
             inode.number,
             InodeMetadataUpdate {
                 project_id: Some(7),
@@ -1305,7 +1238,6 @@ fn owned_rmdir_keeps_open_directory_on_orphan_chain_until_reap() {
 
     let outcome = filesystem
         .remove_empty_directory(
-            context,
             root,
             FileName::new(b"open-directory").expect("valid raw name"),
         )
@@ -1367,11 +1299,7 @@ fn owned_rmdir_rejects_nonempty_directory_without_mutation() {
         .expect("inspect directory");
 
     let error = filesystem
-        .remove_empty_directory(
-            context,
-            root,
-            FileName::new(b"nonempty").expect("valid raw name"),
-        )
+        .remove_empty_directory(root, FileName::new(b"nonempty").expect("valid raw name"))
         .expect_err("nonempty directory must not be removed");
     assert_eq!(error.kind(), Ext4ErrorKind::NotEmpty);
     assert_eq!(filesystem.inode(root).expect("inspect root"), parent_before);
@@ -1527,8 +1455,7 @@ fn test_file_operations() {
     mkfs(&mut jbd2_dev).expect("mkfs failed");
     let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
-    // Test idea: mix high-level file helpers with the public open/read/write API
-    // and verify that both views observe the same file contents.
+    // Test idea: exercise path-based setup and I/O helpers together.
     mkdir(&mut jbd2_dev, &mut fs, "/filetest").expect("mkdir failed");
 
     mkfile(&mut jbd2_dev, &mut fs, "/filetest/empty.txt", None, None).expect("mkfile failed");
@@ -1557,16 +1484,6 @@ fn test_file_operations() {
 
     let data = read_file(&mut jbd2_dev, &mut fs, "/filetest/empty.txt").expect("read_file failed");
     assert_eq!(data, b"First line\nSecond line".to_vec());
-
-    // Then switch to the descriptor-style API and validate that open/write/read
-    // observe the same backing state.
-    let mut file = open(&mut jbd2_dev, &mut fs, "/filetest/api.txt", true).expect("open failed");
-
-    write_at(&mut jbd2_dev, &mut fs, &mut file, b"API test").expect("write_at failed");
-    lseek(&mut file, 0).expect("lseek failed");
-
-    let bytes_read = read_at(&mut jbd2_dev, &mut fs, &mut file, 8).expect("read_at failed");
-    assert_eq!(bytes_read, b"API test");
 
     umount(fs, &mut jbd2_dev).expect("umount failed");
 }

@@ -593,18 +593,8 @@ fn split_parent(path: &str) -> Ext4Result<(String, String)> {
     Ok((parent, path[split + 1..].to_string()))
 }
 
-/// Legacy path-based rename wrapper.
+/// Path-based rename operation with typed options.
 pub fn rename<B: BlockIo>(
-    device: &mut Jbd2Dev<B>,
-    fs: &mut Ext4FileSystem,
-    old_path: &str,
-    new_path: &str,
-) -> Ext4Result<RenameOutcome> {
-    rename_with_options(device, fs, old_path, new_path, RenameOptions::REPLACE)
-}
-
-/// Legacy path-based rename wrapper with typed operation options.
-pub fn rename_with_options<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     old_path: &str,
@@ -633,36 +623,4 @@ pub fn rename_with_options<B: BlockIo>(
             options,
         },
     )
-}
-
-/// Legacy no-replace move wrapper.
-pub fn mv<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    device: &mut Jbd2Dev<B>,
-    old_path: &str,
-    new_path: &str,
-) -> Ext4Result<()> {
-    let old_path = normalize_path(old_path);
-    let new_path = normalize_path(new_path);
-    if old_path == "/" || new_path == "/" {
-        return Err(Ext4Error::invalid_input());
-    }
-    let (old_parent_path, old_name) = split_parent(&old_path)?;
-    let (new_parent_path, new_name) = split_parent(&new_path)?;
-    let (old_parent, _) =
-        get_inode_with_num(fs, device, &old_parent_path)?.ok_or_else(Ext4Error::not_found)?;
-    let (new_parent, _) =
-        get_inode_with_num(fs, device, &new_parent_path)?.ok_or_else(Ext4Error::not_found)?;
-    let _ = rename_inode_at(
-        fs,
-        device,
-        RenameEntryRequest {
-            old_parent,
-            old_name: FileName::new(old_name.as_bytes())?,
-            new_parent,
-            new_name: FileName::new(new_name.as_bytes())?,
-            options: RenameOptions::NO_REPLACE,
-        },
-    )?;
-    Ok(())
 }

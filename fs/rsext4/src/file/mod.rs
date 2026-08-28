@@ -54,6 +54,20 @@ pub(crate) use io::{recover_linked_truncate_inode, truncate_inode_for_reap};
 pub use link::link;
 pub(crate) use link::link_inode_at;
 pub(crate) use rename::{RenameEntryRequest, rename_inode_at};
-pub use rename::{RenameOptions, RenameOutcome, mv, rename, rename_with_options};
+pub use rename::{RenameOptions, RenameOutcome, rename};
 pub use xattr::{XattrName, XattrNamespace, XattrSetMode};
 pub(crate) use xattr::{get_inode_xattr, list_inode_xattrs, remove_inode_xattr, set_inode_xattr};
+
+/// Returns the directory-entry type Linux derives from a recognized inode mode.
+pub(crate) const fn directory_entry_type_for_mode(mode: u16) -> Option<u8> {
+    match mode & Ext4Inode::S_IFMT {
+        Ext4Inode::S_IFREG => Some(Ext4DirEntry2::EXT4_FT_REG_FILE),
+        Ext4Inode::S_IFDIR => Some(Ext4DirEntry2::EXT4_FT_DIR),
+        Ext4Inode::S_IFCHR => Some(Ext4DirEntry2::EXT4_FT_CHRDEV),
+        Ext4Inode::S_IFBLK => Some(Ext4DirEntry2::EXT4_FT_BLKDEV),
+        Ext4Inode::S_IFIFO => Some(Ext4DirEntry2::EXT4_FT_FIFO),
+        Ext4Inode::S_IFSOCK => Some(Ext4DirEntry2::EXT4_FT_SOCK),
+        Ext4Inode::S_IFLNK => Some(Ext4DirEntry2::EXT4_FT_SYMLINK),
+        _ => None,
+    }
+}

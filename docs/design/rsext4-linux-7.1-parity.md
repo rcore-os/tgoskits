@@ -36,8 +36,11 @@ OS 或 runtime 能力通过以下小接口提供：
 - `BlockIo`：sector geometry、读写、只读状态和 durability capabilities；
 - `Clock`：创建或修改 inode 时取得时间；
 - `EntropySource`：mkfs UUID、salt 及需要随机性的格式字段；
-- `CryptoProvider` / `KeyProvider`：fscrypt 与 fsverity 算法和密钥；
+- `Delay`：MMP 挂载期所有权检查需要的阻塞等待；
 - `Observer`：接收 typed lifecycle/integrity/journal events。
+
+当前 writable feature negotiation 会拒绝 fscrypt/fsverity，因此不预先保存或公开
+未被调用的 crypto/key provider；实现对应磁盘语义时再按真实调用链定义最小能力接口。
 
 路径解析、file descriptor offset、page cache、权限/capability 检查、Linux
 errno 和动态设备发现均属于上层 glue。Core 只接收 inode、原始目录项名称、
@@ -61,7 +64,7 @@ offset、长度和已经校验过的 mutation context。
 | `fs/ext4/namei.c`, `dir.c`, `hash.c` | linear/HTree、link count、atomic rename、casefold | directory service | core | Linux syscall trace + e2fsck |
 | `fs/ext4/orphan.c`, `mmp.c` | persistent orphan cleanup、multi-mount exclusion | lifecycle service | core | truncate orphan intent + power-cut recovery |
 | `fs/ext4/xattr.c`, `acl.c`, `quota.c` | EA inode/block、ACL encoding、quota persistence | metadata services | core | xattr/ACL/quota differential |
-| `fs/ext4/crypto.c`, `verity.c` | on-disk policy、Merkle metadata、file data transformation | core + crypto/key traits | capability | Linux image and negative-key tests |
+| `fs/ext4/crypto.c`, `verity.c` | on-disk policy、Merkle metadata、file data transformation | core + 待实现时定义的最小 runtime capability | capability | Linux image and negative-key tests |
 | `fs/ext4/resize.c`, `ioctl.c`, `fsmap.c`, `move_extent.c` | resize and administrative operations | core typed operations | core | ioctl/fsmap/resize differential |
 | `fs/ext4/file.c`, VFS operation tables | permission/open/fd/page-cache/direct-I/O dispatch | ax-fs-ng / Starry | glue | common syscall tests |
 | ext4 DAX paths | persistent-memory direct mapping | none | not-applicable | mount option returns unsupported |
@@ -96,9 +99,10 @@ UNINIT bitmap flag 视为损坏。固定 `mkfs.ext4 -O ^metadata_csum,uninit_bg`
 
 ## 4. 公共 API 迁移
 
-v0.8 删除 `Ext4FileSystem` 公共字段、公开 `Jbd2Dev`、Linux `Errno` core
-类型、错误拼写和 path/fd helpers。替代接口为拥有私有状态的 `Ext4<D, S>`、
-typed IDs、domain errors，以及 `io`/`runtime` capability traits。
+v0.8 的生产边界使用拥有私有状态的 `Ext4<D, S>`、typed IDs、domain errors，
+以及 `io`/`runtime` capability traits。Linux `Errno` core 类型、错误拼写和
+descriptor-style `OpenFile/open/read_at/write_at/lseek` 已删除；低层 path helper、
+`Ext4FileSystem` 与 `Jbd2Dev` 暂只服务 crate differential/fault tests，待这些测试迁移后删除。
 
 同一集成 PR 内迁移 `ax-fs-ng` 与所有测试，不维护长期双 API。短期编译迁移
 helper 只能存在于未提交的本地步骤，不得进入最终 diff。
@@ -153,7 +157,7 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 | `domain-error-no-errno` | core 公开并按 Linux `Errno` 分支 | typed domain error，errno 仅由 adapter 映射 | portable core skeleton | 绿：core 已无 `Errno`；`ax-fs-ng` 集中映射 |
 | `blockio-adapter-capabilities` | ax-fs-ng 丢弃 read-only、flush/barrier、FUA 与 physical block geometry | adapter 只传递底层真实能力；只读写入在设备 I/O 前返回 typed read-only；缺少 durability 返回 unsupported capability；native FUA 标记每个拆分请求且不增加 post-write flush；physical 与 logical geometry 不混淆 | OS glue/capability boundary | 进行中：只读/flush/FUA 红测现验证零底层只读写、unsupported、真实 flush-as-barrier、一次 native FUA/零普通 write/零 flush，以及 4 个拆分 request 全部带 FUA。512 logical/4096 physical 红测证明旧 adapter 把 physical 错报成 512；同一测试现从 rdif `DeviceInfo` 经 native/region adapter 保留 4096，core 拒绝无效 physical geometry 但允许 filesystem block 小于 physical block。discard 仍为红项；alignment offset/io_min/io_opt 将作为独立 block geometry 能力继续追踪 |
 | `readonly-adapter-lifecycle` | ax-fs-ng 在取得 mount owner 前对 readonly sync/shutdown 直接返回成功，丢失 core 的 device flush boundary，且 mounted 状态永不结束 | RO/RW 一律在同一 sleepable mutex 下调用 owned core typed sync/unmount；adapter 不复制 journal/cache/lifecycle/read-only 状态 | OS glue/lock/lifecycle boundary | 绿：共享只读镜像 fixture 先固定旧 sync 的 flush 计数不变，以及 shutdown 后仍可原地 remount；同一测试现验证真实 device flush 与 `Busy(op=remount:unmounted)`。adapter 已删除 mount-time readonly 副本，`FilesystemOps::is_readonly()` 直接查询 owned core，确定性 remount 回归证明状态不会漂移。完整 ax-fs-ng ext4 92+3 tests 和 6/6 clippy 通过 |
-| `owned-mount-boundary` | caller 分别持有公开字段的 `Ext4FileSystem` 和公开 `Jbd2Dev`，且 block device 必须同时实现 `Clock` | 私有 `Ext4<D, S>` 独占 device/cache/journal/services；`BlockIo` 与 `Clock` 分离；只公开 typed operations/DTO | portable core skeleton | 进行中：`Ext4<D, MountedServices<...>>` 已消费 device 与 `MountServices`，独立 clock callback 驱动 metadata 链路；ax-fs-ng 现由一个 sleepable mutex 独占 `MountedExt4`，mount、inode I/O、readdir、namespace mutation、sync/unmount 不再 split 或访问 core cache/superblock/JBD2，手写 `unsafe Send/Sync` 已删除。host harness 也已改用 typed `format` 与 owned inode I/O，不再依赖 legacy path/JBD2 proxy。`InodeInfo::file_type`/`is_directory` 和根级 `InodeNumber` re-export 已移除 adapter 对 `disknode::Ext4Inode` 与 `bmalloc` 模块路径的生产依赖。mount fallback 只在 mount 前明确读到 `EXT4_ERROR_FS` 时选择只读 replay，RW/replay failure 不再复用已污染或 abort 的 owner；invalid revoke 红测证明旧实现把首个 `Corrupted` 覆盖成 `JournalAborted`，同一测试现保留首错。显式 forensic no-replay 继续由 typed mount options 提供。旧 path/fd re-export、公开 `Ext4FileSystem`/`Jbd2Dev` 与 `initial_jbd2dev` 仍待 crate tests/axtest 迁移后删除，因此尚不能转绿 |
+| `owned-mount-boundary` | caller 分别持有公开字段的 `Ext4FileSystem` 和公开 `Jbd2Dev`，且 block device 必须同时实现 `Clock` | 私有 `Ext4<D, S>` 独占 device/cache/journal/services；`BlockIo` 与 `Clock` 分离；只公开 typed operations/DTO | portable core skeleton | 进行中：`Ext4<D, MountedServices<...>>` 已消费 device 与 `MountServices`，独立 clock callback 驱动 metadata 链路；ax-fs-ng 现由一个 sleepable mutex 独占 `MountedExt4`，mount、inode I/O、readdir、namespace mutation、sync/unmount 不再 split 或访问 core cache/superblock/JBD2，手写 `unsafe Send/Sync` 已删除。host harness 也已改用 typed `format` 与 owned inode I/O，不再依赖 legacy path/JBD2 proxy。`InodeInfo::file_type`/`is_directory` 和根级 `InodeNumber` re-export 已移除 adapter 对 `disknode::Ext4Inode` 与 `bmalloc` 模块路径的生产依赖。mount fallback 只在 mount 前明确读到 `EXT4_ERROR_FS` 时选择只读 replay，RW/replay failure 不再复用已污染或 abort 的 owner；invalid revoke 红测证明旧实现把首个 `Corrupted` 覆盖成 `JournalAborted`，同一测试现保留首错。显式 forensic no-replay 继续由 typed mount options 提供。descriptor-style fd API 与未消费的 crypto/key provider 已直接删除，不保留兼容 wrapper；低层 path helper、公开 `Ext4FileSystem`/`Jbd2Dev` 与 `initial_jbd2dev` 仍待 crate differential/fault tests 迁移后删除，因此尚不能转绿 |
 | `typed-inode-metadata` | owned DTO 无 project ID 和 inode flags，adapter 只能访问磁盘 inode 或调用 path helper | `InodeInfo` 仅公开 typed project ID/用户可见 flags；`InodeMetadataUpdate` 仅能改 Linux user-modifiable bits；未启用 project feature 时 0 为 no-op，非 0 返回 unsupported | inode/capability boundary | 进行中：旧公共 API 编译红测缺少 `InodeFlags`/project 字段；同一 owned 测试现验证内部 `EXTENTS` 保留、`NO_DUMP|NO_ATIME` typed 更新和未启用 feature 时的 project 0 no-op/非 0 unsupported。固定 `mkfs.ext4 -I 256 -O project` 镜像现由 owned core 设置 project 1234/`PROJINHERIT`，子 inode 继承后 Linux `debugfs stat` 解码一致且 `e2fsck -fn` clean。quota transfer 和同一 filesystem-owned transaction 仍为红项 |
 | `directory-name-no-truncate` | `insert_dir_entry` 对超过 255 byte 的名称静默截断并仍返回成功 | raw name 在任何 inode/dirent mutation 前校验；非 UTF-8 合法，空串、NUL、`/`、超过 255 byte 明确拒绝 | namespace boundary | 绿：256-byte 名称确定性红测证明旧实现创建截断 dentry；`FileName` 与 strict insert 现在在分配/插入前返回 `InvalidInput`，同一测试验证没有遗留 255-byte truncated entry |
 | `typed-namespace-create` | create/mkdir 接收 absolute UTF-8 path，core 自动创建父目录并在创建后由 adapter 二次修改 mode | `parent inode + FileName + FilePermissions + MutationContext`，path/permission policy 留在 VFS | namespace boundary | 进行中：owned API 已提供 raw-byte regular-file/directory/special-inode/symlink create，并在首次 metadata publish 时应用 uid/gid/umask；ax-fs-ng create 已迁移到 resolved parent inode 与 typed DTO，不再路径查找或二次直改 inode。regular/special/symlink/mkdir 现共用 Linux extent/no-quota 的 `24 + 12 + 3 = 39` credit owner：payload data 在 metadata commit 前 ordered write，child/parent inode、dentry/dir block、本次变化的 block/inode bitmap、GDT、superblock 与 `used_dirs` 在同一 handle 发布。file 与 directory 的目录块写后故障红测均证明旧实现返回 I/O error 后仍留下可达名称；同一测试现经重挂载验证名称、free block/inode、parent nlink 与 `used_dirs` 完整恢复。legacy `create_symbol_link` 也已删除重复分配实现并复用 typed primitive。VFS 已删除 create/set 两阶段 symlink 合约并迁移为必选 typed atomic create；project inheritance/quota 与 caller context 贯通仍为红项。Linux v7.1 依据为 `fs/ext4/namei.c:2815-2880,2990-3050,3370-3445`、`fs/ext4/ext4_jbd2.h:21-50,78-84` |

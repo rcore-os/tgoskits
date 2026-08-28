@@ -358,6 +358,7 @@ mod file_functional_tests {
             &mut fs,
             "/renametest/oldname",
             "/renametest/newname",
+            RenameOptions::REPLACE,
         )
         .expect("rename failed");
 
@@ -385,8 +386,14 @@ mod file_functional_tests {
         mkfile(&mut jbd2_dev, &mut fs, "/same-name", Some(contents), None)
             .expect("file creation failed");
 
-        let _ = rename(&mut jbd2_dev, &mut fs, "/same-name", "/same-name")
-            .expect("same-path rename must succeed");
+        let _ = rename(
+            &mut jbd2_dev,
+            &mut fs,
+            "/same-name",
+            "/same-name",
+            RenameOptions::REPLACE,
+        )
+        .expect("same-path rename must succeed");
 
         let data = read_file(&mut jbd2_dev, &mut fs, "/same-name")
             .expect("same-path rename removed the entry");
@@ -468,8 +475,14 @@ mod file_functional_tests {
         mkfile(&mut jbd2_dev, &mut fs, "/tmp/temp.txt", Some(updated), None)
             .expect("mkfile temp failed");
 
-        let outcome = rename(&mut jbd2_dev, &mut fs, "/tmp/temp.txt", "/tmp/original.txt")
-            .expect("rename replace failed");
+        let outcome = rename(
+            &mut jbd2_dev,
+            &mut fs,
+            "/tmp/temp.txt",
+            "/tmp/original.txt",
+            RenameOptions::REPLACE,
+        )
+        .expect("rename replace failed");
         let replaced = outcome.replaced.expect("replacement outcome missing");
         assert!(replaced.requires_reap());
         reap_unlinked_inode(&mut fs, &mut jbd2_dev, replaced.inode)
@@ -509,6 +522,7 @@ mod file_functional_tests {
             &mut fs,
             "/temp-rewriteaof.aof",
             "/aofdir/appendonly.aof.1.base.rdb",
+            RenameOptions::REPLACE,
         )
         .expect("cross-dir rename failed");
 
@@ -572,6 +586,7 @@ mod file_functional_tests {
             &mut fs,
             "/old-parent/source",
             "/new-parent/destination",
+            RenameOptions::REPLACE,
         )
         .expect_err("old-directory write failure must abort the whole rename");
         assert_eq!(error.kind(), Ext4ErrorKind::Io);
@@ -658,7 +673,7 @@ mod file_functional_tests {
             .expect("disable journal for direct fault injection");
         fail_after_write_sector.set(Some(old_parent_block.raw()));
 
-        let error = rename_with_options(
+        let error = rename(
             &mut jbd2_dev,
             &mut fs,
             "/exchange-old/source",
@@ -746,6 +761,7 @@ mod file_functional_tests {
             &mut fs,
             "/replace-old/source",
             "/replace-new/target",
+            RenameOptions::REPLACE,
         )
         .expect_err("inode-table write failure must abort replacement rename");
         assert_eq!(error.kind(), Ext4ErrorKind::Io);
@@ -822,6 +838,7 @@ mod file_functional_tests {
             &mut fs,
             "/directory-old/moved",
             "/directory-new/moved",
+            RenameOptions::REPLACE,
         )
         .expect_err("dotdot write failure must abort the directory move");
         assert_eq!(error.kind(), Ext4ErrorKind::Io);
@@ -894,11 +911,12 @@ mod file_functional_tests {
         )
         .expect("mkfile failed");
 
-        mv(
-            &mut fs,
+        let _ = rename(
             &mut jbd2_dev,
+            &mut fs,
             "/sourcedir/movefile",
             "/destdir/movedfile",
+            RenameOptions::NO_REPLACE,
         )
         .expect("mv failed");
 

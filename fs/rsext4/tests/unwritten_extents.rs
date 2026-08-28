@@ -1038,8 +1038,6 @@ fn owned_core_exposes_preallocation_without_os_types() {
     let services = rsext4::MountServices::new(
         StaticClock(Cell::new(1_800_000_000)),
         (),
-        (),
-        (),
         rsext4::NoopObserver,
     );
     let mut filesystem = rsext4::Ext4::mount(device, services, rsext4::MountOptions::read_write())
@@ -1056,7 +1054,6 @@ fn owned_core_exposes_preallocation_without_os_types() {
 
     filesystem
         .preallocate_inode(
-            context,
             file.number,
             0,
             2 * BLOCK_SIZE as u64,
@@ -1071,7 +1068,6 @@ fn owned_core_exposes_preallocation_without_os_types() {
 
     filesystem
         .preallocate_inode(
-            context,
             file.number,
             2 * BLOCK_SIZE as u64,
             BLOCK_SIZE as u64,
@@ -1103,8 +1099,6 @@ fn owned_core_reports_sparse_and_unwritten_file_extents() {
     let services = rsext4::MountServices::new(
         StaticClock(Cell::new(1_800_000_000)),
         (),
-        (),
-        (),
         rsext4::NoopObserver,
     );
     let mut filesystem = rsext4::Ext4::mount(device, services, rsext4::MountOptions::read_write())
@@ -1119,19 +1113,13 @@ fn owned_core_reports_sparse_and_unwritten_file_extents() {
         )
         .expect("owned file creation failed");
     filesystem
-        .write_inode(context, file.number, 0, &vec![0x11; BLOCK_SIZE])
+        .write_inode(file.number, 0, &vec![0x11; BLOCK_SIZE])
         .expect("first extent write failed");
     filesystem
-        .write_inode(
-            context,
-            file.number,
-            2 * BLOCK_SIZE as u64,
-            &vec![0x22; BLOCK_SIZE],
-        )
+        .write_inode(file.number, 2 * BLOCK_SIZE as u64, &vec![0x22; BLOCK_SIZE])
         .expect("sparse extent write failed");
     filesystem
         .preallocate_inode(
-            context,
             file.number,
             4 * BLOCK_SIZE as u64,
             BLOCK_SIZE as u64,

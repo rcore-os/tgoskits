@@ -638,18 +638,15 @@ pub(crate) fn find_named_entry_in_parent<B: BlockIo>(
     if parent_inode.is_htree_indexed() {
         match lookup_directory_entry(fs, block_dev, parent_ino, parent_inode, name_bytes) {
             Ok(result) => {
-                let ino =
-                    InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?;
                 return Ok(ParentDirEntry {
-                    ino,
+                    ino: result.inode,
                     phys: result.block_num,
                     offset: result.offset,
-                    file_type: result.entry.file_type,
+                    file_type: result.file_type,
                 });
             }
-            Err(HashTreeError::Filesystem(error)) => return Err(error),
             Err(HashTreeError::EntryNotFound) => return Err(Ext4Error::not_found()),
-            Err(_) => {}
+            Err(error) => return Err(error.into_ext4("htree:parent_lookup")),
         }
     }
 

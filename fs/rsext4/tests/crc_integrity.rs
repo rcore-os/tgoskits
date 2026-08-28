@@ -28,7 +28,7 @@ use rsext4::{
         JBD2_FLAG_LAST_TAG, JBD2_FLAG_SAME_UUID, JBD2_MAGIC, JBD2_UUID_SIZE, JOURNAL_FILE_INODE,
         JournalBlockTag3S, JournalBlockTagS, JournalHeaderS, JournalSuperBlock,
     },
-    loopfile::{resolve_inode_block, resolve_inode_blocks},
+    loopfile::{get_file_inode, resolve_inode_block, resolve_inode_blocks},
     superblock::Ext4Superblock,
     *,
 };
@@ -743,11 +743,10 @@ fn axfs_ng_sync_order_preserves_inode_bitmap_across_remount() {
     for idx in 0..256 {
         let path = format!("/before-{idx}");
         mkfile(&mut first_dev, &mut fs, &path, Some(b"x"), None).expect("mkfile before failed");
-        let file = open(&mut first_dev, &mut fs, &path, false).expect("open before failed");
-        assert!(
-            seen.insert(file.inode_num.raw()),
-            "duplicate inode before sync"
-        );
+        let file = get_file_inode(&mut fs, &mut first_dev, &path)
+            .expect("lookup before failed")
+            .expect("file before missing");
+        assert!(seen.insert(file.0.raw()), "duplicate inode before sync");
     }
 
     sync_with_axfs_ng_order(&mut first_dev, &mut fs).expect("axfs-ng order sync failed");
@@ -769,9 +768,11 @@ fn axfs_ng_sync_order_preserves_inode_bitmap_across_remount() {
     for idx in 0..256 {
         let path = format!("/after-{idx}");
         mkfile(&mut remount_dev, &mut fs, &path, Some(b"y"), None).expect("mkfile after failed");
-        let file = open(&mut remount_dev, &mut fs, &path, false).expect("open after failed");
+        let file = get_file_inode(&mut fs, &mut remount_dev, &path)
+            .expect("lookup after failed")
+            .expect("file after missing");
         assert!(
-            seen.insert(file.inode_num.raw()),
+            seen.insert(file.0.raw()),
             "inode reused after axfs-ng order sync/remount"
         );
     }
@@ -1042,7 +1043,7 @@ fn owned_readonly_fallback_preserves_unrecoverable_journal_error() {
     write_journal_start(&device, journal_block, 1);
     write_invalid_journal_revoke(&device, journal_block);
 
-    let services = MountServices::new(OwnedTestClock, (), (), (), NoopObserver);
+    let services = MountServices::new(OwnedTestClock, (), NoopObserver);
     let error = match Ext4::mount_with_readonly_fallback(device, services) {
         Ok(_) => panic!("fallback must not hide an unrecoverable journal"),
         Err(error) => error,

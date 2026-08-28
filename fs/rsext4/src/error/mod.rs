@@ -65,7 +65,6 @@ pub struct Ext4Error {
     context: Option<ErrorContext>,
 }
 
-pub type EXT4ER = Ext4Error;
 pub type Ext4Result<T> = Result<T, Ext4Error>;
 
 impl Ext4Error {

@@ -5,9 +5,7 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
-    checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
     disknode::*,
-    entries::*,
     error::*,
     ext4::*,
     extents_tree::*,
@@ -82,14 +80,15 @@ pub fn get_file_inode<B: BlockIo>(
 
     let components = path.split('/').filter(|s| !s.is_empty());
 
-    let mut current_inode = fs.get_root(block_dev)?;
-    let mut current_ino_num = fs.root_inode;
-    let mut path_vec: Vec<Ext4Inode> = Vec::new();
-    path_vec.push(current_inode);
+    let root = (fs.root_inode, fs.get_root(block_dev)?);
+    let mut current = root;
+    let mut ancestors = Vec::from([root]);
 
-    // Walk the namespace one component at a time, carrying a small ancestor stack for `..`.
+    // Keep the inode number and contents in one path-stack element: pairing
+    // either value with a different directory would make block mapping and
+    // metadata checksums use different inode identities.
     for name in components {
-        if !current_inode.is_dir() {
+        if !current.1.is_dir() {
             return Ok(None);
         }
 
@@ -97,84 +96,24 @@ pub fn get_file_inode<B: BlockIo>(
             continue;
         }
         if name == ".." {
-            if path_vec.len() > 1 {
-                path_vec.pop();
-                if let Some(parent_inode) = path_vec.last() {
-                    current_inode = *parent_inode;
-                }
+            if ancestors.len() > 1 {
+                ancestors.pop();
+                current = *ancestors.last().ok_or_else(Ext4Error::corrupted)?;
             }
             continue;
         }
 
         let target = name.as_bytes();
-        let mut found_inode_num: Option<InodeNumber> = None;
-
-        // Prefer the hashed directory path and fall back to a full scan only when needed.
-        match lookup_directory_entry(fs, block_dev, current_ino_num, &current_inode, target) {
-            Ok(result) => {
-                found_inode_num =
-                    Some(InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?);
-            }
-            Err(HashTreeError::Filesystem(error)) => return Err(error),
-            Err(HashTreeError::EntryNotFound) => {}
-            Err(_) => {
-                let blocks =
-                    resolve_inode_blocks(fs, block_dev, current_ino_num, &mut current_inode)?;
-
-                for phys in &blocks {
-                    let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
-                    let block_data = &cached_block.data;
-
-                    let checksum_ok = if current_inode.is_htree_indexed() {
-                        verify_ext4_dx_checksum(
-                            &fs.superblock,
-                            current_ino_num.raw(),
-                            current_inode.i_generation,
-                            block_data,
-                        )
-                        .unwrap_or_else(|| {
-                            verify_ext4_dirblock_checksum(
-                                &fs.superblock,
-                                current_ino_num.raw(),
-                                current_inode.i_generation,
-                                block_data,
-                            )
-                        })
-                    } else {
-                        verify_ext4_dirblock_checksum(
-                            &fs.superblock,
-                            current_ino_num.raw(),
-                            current_inode.i_generation,
-                            block_data,
-                        )
-                    };
-
-                    if !checksum_ok {
-                        return Err(Ext4Error::checksum());
-                    }
-
-                    if let Some(entry) = classic_dir::find_entry(block_data, target)
-                        && entry.file_type != Ext4DirEntryTail::RESERVED_FT
-                    {
-                        found_inode_num = Some(
-                            InodeNumber::new(entry.inode).map_err(|_| Ext4Error::corrupted())?,
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-
-        let inode_num = match found_inode_num {
-            Some(n) => n,
-            None => return Ok(None),
+        let inode_num = match lookup_directory_entry(fs, block_dev, current.0, &current.1, target) {
+            Ok(result) => result.inode,
+            Err(HashTreeError::EntryNotFound) => return Ok(None),
+            Err(error) => return Err(error.into_ext4("htree:path_lookup")),
         };
 
         // Refresh the current inode after each successful component resolution.
-        current_inode = fs.get_inode_by_num(block_dev, inode_num)?;
-        current_ino_num = inode_num;
-        path_vec.push(current_inode);
+        current = (inode_num, fs.get_inode_by_num(block_dev, inode_num)?);
+        ancestors.push(current);
     }
 
-    Ok(Some((current_ino_num, current_inode)))
+    Ok(Some(current))
 }

@@ -419,7 +419,7 @@ fn htree_lookup_follows_linux_collision_continuation() {
     let result = HashTreeManager::new(fs.superblock.s_hash_seed)
         .lookup(&mut fs, &mut block_dev, root_inode, &inode, target_name)
         .unwrap();
-    assert_eq!(result.entry.inode, 42);
+    assert_eq!(result.inode.raw(), 42);
 }
 
 #[test]
@@ -466,7 +466,7 @@ fn htree_collision_continuation_crosses_parent_index_boundary() {
     let result = HashTreeManager::new(fs.superblock.s_hash_seed)
         .lookup(&mut fs, &mut block_dev, root_inode, &inode, target_name)
         .unwrap();
-    assert_eq!(result.entry.inode, 52);
+    assert_eq!(result.inode.raw(), 52);
 }
 
 #[test]
@@ -546,6 +546,44 @@ fn htree_leaf_result_reports_directory_entry_offset() {
         .search_in_leaf_data(&block, b"target", crate::bmalloc::AbsoluteBN::new(7))
         .unwrap();
     assert_eq!(result.offset, 12);
+    assert_eq!(result.inode.raw(), 42);
+    assert_eq!(result.file_type, Ext4DirEntry2::EXT4_FT_REG_FILE);
+}
+
+#[test]
+fn bad_htree_index_falls_back_to_legacy_directory_mapping() {
+    let mut fs = create_test_fs();
+    fs.superblock.s_flags = Ext4Superblock::EXT4_FLAGS_SIGNED_HASH;
+    fs.superblock.s_blocks_count_lo = 256;
+
+    let mut root = linux_htree_root_block(false);
+    root[28] = u8::MAX;
+    let leaf = directory_leaf(71, b"linear-target");
+    let mut device = MockBlockDevice::new(1024 * 1024);
+    device.is_open = true;
+    for (physical_block, data) in [(10_usize, root), (11, leaf)] {
+        let offset = physical_block * 4096;
+        device.data[offset..offset + 4096].copy_from_slice(&data);
+    }
+
+    let mut block_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+    let mut inode = create_test_dir_inode();
+    inode.i_size_lo = 2 * 4096;
+    inode.i_blocks_lo = 16;
+    inode.i_block[0] = 10;
+    inode.i_block[1] = 11;
+
+    let root_inode = fs.root_inode;
+    let result = HashTreeManager::new(fs.superblock.s_hash_seed)
+        .lookup(
+            &mut fs,
+            &mut block_dev,
+            root_inode,
+            &inode,
+            b"linear-target",
+        )
+        .unwrap();
+    assert_eq!(result.inode.raw(), 71);
 }
 
 #[test]

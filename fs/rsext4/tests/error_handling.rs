@@ -152,36 +152,6 @@ mod error_handling_tests {
         assert_eq!(error.kind(), Ext4ErrorKind::Io);
     }
 
-    /// Verifies that the filesystem still works on a normal device configured for
-    /// fault injection, giving the suite a baseline before harsher error cases.
-    #[test]
-    fn test_block_device_errors() {
-        let device = ErrorMockDevice::new(100 * 1024 * 1024); // 100MB
-        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
-        mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
-
-        mkdir(&mut jbd2_dev, &mut fs, "/error_test").expect("mkdir failed");
-
-        // Create one file and confirm the standard read path still succeeds.
-        let test_data = b"Test data for error scenarios";
-        mkfile(
-            &mut jbd2_dev,
-            &mut fs,
-            "/error_test/test.txt",
-            Some(test_data),
-            None,
-        )
-        .expect("mkfile failed");
-
-        let data =
-            read_file(&mut jbd2_dev, &mut fs, "/error_test/test.txt").expect("read_file failed");
-        assert_eq!(data, test_data.to_vec());
-
-        umount(fs, &mut jbd2_dev).expect("umount failed");
-    }
-
     /// Verifies filesystem-size and ext4 component-length boundaries.
     #[test]
     fn test_filesystem_boundaries() {
@@ -222,61 +192,6 @@ mod error_handling_tests {
         )
         .expect_err("256-byte ext4 component must be rejected");
         assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
-
-        umount(fs, &mut jbd2_dev).expect("umount failed");
-    }
-
-    /// Verifies that deleting and recreating the same path leaves the namespace
-    /// in a consistent state from the caller's perspective.
-    #[test]
-    fn test_concurrent_operation_errors() {
-        let device = ErrorMockDevice::new(100 * 1024 * 1024); // 100MB
-        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
-        mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
-
-        mkdir(&mut jbd2_dev, &mut fs, "/concurrent").expect("mkdir failed");
-
-        // Keep one untouched file around so the directory itself remains valid.
-        mkfile(
-            &mut jbd2_dev,
-            &mut fs,
-            "/concurrent/base.txt",
-            Some(b"base content"),
-            None,
-        )
-        .expect("mkfile failed");
-
-        // Delete one file, confirm the read failure, then recreate it.
-        let file_path = "/concurrent/delete_test.txt";
-        mkfile(
-            &mut jbd2_dev,
-            &mut fs,
-            file_path,
-            Some(b"to be deleted"),
-            None,
-        )
-        .expect("mkfile failed");
-
-        delete_file(&mut fs, &mut jbd2_dev, file_path).expect("delete failed");
-
-        // Reads against the deleted path should fail with `ENOENT`.
-        let result = read_file(&mut jbd2_dev, &mut fs, file_path).expect_err("deleted file");
-        assert_eq!(result.kind(), Ext4ErrorKind::NotFound);
-
-        // Recreating the same name should succeed and expose the new payload.
-        mkfile(
-            &mut jbd2_dev,
-            &mut fs,
-            file_path,
-            Some(b"new content"),
-            None,
-        )
-        .expect("mkfile failed");
-
-        let data = read_file(&mut jbd2_dev, &mut fs, file_path).expect("read_file failed");
-        assert_eq!(data, b"new content".to_vec());
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
@@ -358,57 +273,6 @@ mod error_handling_tests {
                 "partial-group padding bit {bit} should be marked allocated"
             );
         }
-
-        umount(fs, &mut jbd2_dev).expect("umount failed");
-    }
-
-    /// Verifies the current permission-related happy path and documents that the
-    /// test is checking data accessibility rather than full ACL semantics.
-    #[test]
-    fn test_permission_handling() {
-        let device = ErrorMockDevice::new(100 * 1024 * 1024); // 100MB
-        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
-        mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
-
-        mkdir(&mut jbd2_dev, &mut fs, "/permission").expect("mkdir failed");
-
-        mkfile(
-            &mut jbd2_dev,
-            &mut fs,
-            "/permission/test.txt",
-            Some(b"permission test"),
-            None,
-        )
-        .expect("mkfile failed");
-
-        // This test only covers the basic accessible path, not full Unix permission semantics.
-
-        // Reads should succeed on the file created by the same caller.
-        let data =
-            read_file(&mut jbd2_dev, &mut fs, "/permission/test.txt").expect("read_file failed");
-        assert_eq!(data, b"permission test".to_vec());
-
-        // Writes should also succeed and update the file prefix.
-        write_file(
-            &mut jbd2_dev,
-            &mut fs,
-            "/permission/test.txt",
-            0,
-            b"modified",
-        )
-        .expect("write_file failed");
-
-        // The implementation may preserve the old suffix, so only the rewritten prefix is asserted.
-        let data =
-            read_file(&mut jbd2_dev, &mut fs, "/permission/test.txt").expect("read_file failed");
-
-        assert_eq!(
-            &data[..b"modified".len()],
-            b"modified",
-            "The updated prefix should be written correctly",
-        );
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }

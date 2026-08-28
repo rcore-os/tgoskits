@@ -177,7 +177,7 @@ impl Ext4Filesystem {
     ) -> VfsResult<Filesystem> {
         let mmp_identity = mmp_identity_for_region(dev.name(), region);
         let disk = Ext4Disk::new(dev, region).map_err(into_vfs_err)?;
-        let services = MountServices::new(Ext4Clock, Ext4Entropy, (), (), Ext4Observer)
+        let services = MountServices::new(Ext4Clock, Ext4Entropy, Ext4Observer)
             .with_mmp(Ext4Delay, mmp_identity);
         let ext4 =
             rsext4::Ext4::mount_with_readonly_fallback(disk, services).map_err(into_vfs_err)?;
@@ -347,6 +347,45 @@ fn run_mmp_worker(
     }
 }
 
+impl FilesystemOps for Ext4Filesystem {
+    fn name(&self) -> &str {
+        "ext4"
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.lock().ext4.options().readonly
+    }
+
+    fn root_dir(&self) -> DirEntry {
+        self.root_dir.clone()
+    }
+
+    fn stat(&self) -> VfsResult<StatFs> {
+        let state = self.lock();
+        let stats = state.ext4.statfs();
+        Ok(StatFs {
+            fs_type: 0xef53,
+            block_size: stats.block_size as _,
+            blocks: stats.total_blocks,
+            blocks_free: stats.free_blocks,
+            blocks_available: stats.free_blocks,
+            file_count: stats.total_inodes as _,
+            free_file_count: stats.free_inodes as _,
+            name_length: MAX_NAME_LEN as _,
+            fragment_size: 0,
+            mount_flags: 0,
+        })
+    }
+
+    fn flush(&self) -> VfsResult<()> {
+        self.sync_to_disk()
+    }
+
+    fn shutdown(&self) -> VfsResult<()> {
+        self.shutdown_filesystem()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::{sync::Arc, vec::Vec};
@@ -477,7 +516,7 @@ mod tests {
         };
         let disk = Ext4Disk::new(Box::new(mount_device), BlockRegion::from_num_blocks(blocks))
             .expect("valid mount-device geometry");
-        let services = MountServices::new(Ext4Clock, Ext4Entropy, (), (), Ext4Observer)
+        let services = MountServices::new(Ext4Clock, Ext4Entropy, Ext4Observer)
             .with_mmp(Ext4Delay, MmpIdentity::default());
         let ext4 = rsext4::Ext4::mount_with_readonly_fallback(disk, services)
             .expect("mount error-state image read-only");
@@ -574,44 +613,5 @@ mod tests {
         drop(state);
 
         assert!(filesystem.is_readonly());
-    }
-}
-
-impl FilesystemOps for Ext4Filesystem {
-    fn name(&self) -> &str {
-        "ext4"
-    }
-
-    fn is_readonly(&self) -> bool {
-        self.lock().ext4.options().readonly
-    }
-
-    fn root_dir(&self) -> DirEntry {
-        self.root_dir.clone()
-    }
-
-    fn stat(&self) -> VfsResult<StatFs> {
-        let state = self.lock();
-        let stats = state.ext4.statfs();
-        Ok(StatFs {
-            fs_type: 0xef53,
-            block_size: stats.block_size as _,
-            blocks: stats.total_blocks,
-            blocks_free: stats.free_blocks,
-            blocks_available: stats.free_blocks,
-            file_count: stats.total_inodes as _,
-            free_file_count: stats.free_inodes as _,
-            name_length: MAX_NAME_LEN as _,
-            fragment_size: 0,
-            mount_flags: 0,
-        })
-    }
-
-    fn flush(&self) -> VfsResult<()> {
-        self.sync_to_disk()
-    }
-
-    fn shutdown(&self) -> VfsResult<()> {
-        self.shutdown_filesystem()
     }
 }

@@ -226,18 +226,11 @@ fn parse_record(data: &[u8], offset: usize) -> Ext4Result<(u32, u8, Vec<u8>, usi
 
 fn hash_tree_error(error: HashTreeError) -> Ext4Error {
     match error {
-        HashTreeError::Filesystem(error) => error,
-        HashTreeError::UnsupportedHashVersion => {
-            Ext4Error::unsupported().with_operation("htree:readdir_hash_version")
-        }
+        // A checked HTree walk must always contain a current entry. Unlike a
+        // pathname lookup miss, reaching this state is malformed index data.
         HashTreeError::EntryNotFound => {
             Ext4Error::corrupted().with_operation("htree:readdir_probe")
         }
-        HashTreeError::InvalidHashTree
-        | HashTreeError::CorruptedHashTree
-        | HashTreeError::BlockOutOfRange
-        | HashTreeError::BufferTooSmall => {
-            Ext4Error::corrupted().with_operation("htree:readdir_probe")
-        }
+        error => error.into_ext4("htree:readdir_probe"),
     }
 }

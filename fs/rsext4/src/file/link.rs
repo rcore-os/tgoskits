@@ -10,19 +10,6 @@ use crate::{
 // Quota is not yet accepted for writable mounts by this core.
 const HARD_LINK_TRANSACTION_CREDITS: usize = 37;
 
-fn directory_entry_type(inode: &Ext4Inode) -> Ext4Result<u8> {
-    match inode.i_mode & Ext4Inode::S_IFMT {
-        Ext4Inode::S_IFREG => Ok(Ext4DirEntry2::EXT4_FT_REG_FILE),
-        Ext4Inode::S_IFLNK => Ok(Ext4DirEntry2::EXT4_FT_SYMLINK),
-        Ext4Inode::S_IFBLK => Ok(Ext4DirEntry2::EXT4_FT_BLKDEV),
-        Ext4Inode::S_IFCHR => Ok(Ext4DirEntry2::EXT4_FT_CHRDEV),
-        Ext4Inode::S_IFIFO => Ok(Ext4DirEntry2::EXT4_FT_FIFO),
-        Ext4Inode::S_IFSOCK => Ok(Ext4DirEntry2::EXT4_FT_SOCK),
-        Ext4Inode::S_IFDIR => Err(Ext4Error::permission_denied()),
-        _ => Err(Ext4Error::corrupted().with_operation("link:inode_type")),
-    }
-}
-
 /// Creates a hard link below an already resolved parent directory.
 pub(crate) fn link_inode_at<B: BlockIo>(
     fs: &mut Ext4FileSystem,
@@ -46,7 +33,11 @@ fn link_inode_at_in_transaction<B: BlockIo>(
     if target_inode.i_links_count == 0 {
         return Err(Ext4Error::not_found().with_operation("link:unlinked_inode"));
     }
-    let file_type = directory_entry_type(&target_inode)?;
+    if target_inode.is_dir() {
+        return Err(Ext4Error::permission_denied());
+    }
+    let file_type = directory_entry_type_for_mode(target_inode.i_mode)
+        .ok_or_else(|| Ext4Error::corrupted().with_operation("link:inode_type"))?;
     let new_links = target_inode.incremented_links_count(false)?;
 
     let mut parent_inode = fs.get_inode_by_num(block_dev, request.parent)?;

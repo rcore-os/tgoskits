@@ -20,7 +20,7 @@ pub(crate) struct Ext4Disk {
 }
 
 pub(crate) type MountedExt4 =
-    rsext4::Ext4<Ext4Disk, MountedServices<Ext4Entropy, (), (), Ext4Observer, Ext4Delay>>;
+    rsext4::Ext4<Ext4Disk, MountedServices<Ext4Entropy, Ext4Observer, Ext4Delay>>;
 
 #[derive(Default)]
 pub(crate) struct Ext4Observer;

@@ -27,3 +27,31 @@ pub enum HashTreeError {
     #[error(transparent)]
     Filesystem(#[from] Ext4Error),
 }
+
+impl HashTreeError {
+    /// Returns whether Linux would treat this as `ERR_BAD_DX_DIR` and retry
+    /// through the ordinary directory scan.
+    pub(crate) const fn allows_linear_fallback(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidHashTree
+                | Self::UnsupportedHashVersion
+                | Self::CorruptedHashTree
+                | Self::BlockOutOfRange
+                | Self::BufferTooSmall
+        )
+    }
+
+    /// Converts an HTree boundary error into the filesystem domain.
+    pub(crate) fn into_ext4(self, operation: &'static str) -> Ext4Error {
+        match self {
+            Self::Filesystem(error) => error,
+            Self::UnsupportedHashVersion => Ext4Error::unsupported().with_operation(operation),
+            Self::EntryNotFound => Ext4Error::not_found().with_operation(operation),
+            Self::InvalidHashTree
+            | Self::CorruptedHashTree
+            | Self::BlockOutOfRange
+            | Self::BufferTooSmall => Ext4Error::corrupted().with_operation(operation),
+        }
+    }
+}

@@ -1,6 +1,7 @@
 use alloc::{string::ToString, vec, vec::Vec};
 
 use crate as rsext4;
+use crate::{RenameOptions, rename};
 
 #[test]
 fn rsext4_crc_and_error_rules_hold() {
@@ -649,7 +650,6 @@ fn rsext4_disk_format_and_journal_struct_rules_hold() {
 fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     use rsext4::{
         BLOCK_SIZE, Ext4Error, Ext4ErrorKind,
-        api::OpenFile,
         bitmap::bitmap_utils::set_bit,
         blockdev::{BlockBuffer, BlockIo},
         blockgroup_description::{BlockGroupDescTable, BlockGroupDescTableMut, Ext4GroupDesc},
@@ -823,15 +823,6 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     let old_checksum = superblock.s_checksum;
     rsext4::checksum::ext4_update_superblock_checksum(&mut superblock);
     assert_ne!(superblock.s_checksum, old_checksum);
-
-    let mut file = OpenFile {
-        inode_num,
-        path: "/alpha".to_string(),
-        inode,
-        offset: 0,
-    };
-    rsext4::lseek(&mut file, 1234).unwrap();
-    assert_eq!(file.offset, 1234);
 
     struct ReadonlyDevice;
     impl BlockIo for ReadonlyDevice {
@@ -1099,10 +1090,10 @@ fn rsext4_journal_device_overlay_rules_hold() {
 fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     use rsext4::{
         BLOCK_SIZE,
-        bmalloc::AbsoluteBN,
+        bmalloc::{AbsoluteBN, InodeNumber},
         disknode::{Ext4Extent, Ext4ExtentHeader, Ext4ExtentIdx, Ext4Inode},
         endian::DiskFormat,
-        entries::{Ext4DirEntry2, Ext4DirEntryInfo, Ext4DxEntry},
+        entries::{Ext4DirEntry2, Ext4DxEntry},
         extents_tree::{ExtentNode, ExtentRun, ExtentTree},
         hashtree::{
             Ext4InodeHashTreeExt, HashTreeError, HashTreeManager, HashTreeNode,
@@ -1247,15 +1238,13 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     }
 
     let result = HashTreeSearchResult {
-        entry: Ext4DirEntryInfo {
-            inode: 8,
-            file_type: Ext4DirEntry2::EXT4_FT_DIR,
-            name: b"dir",
-        },
+        inode: InodeNumber::new(8).unwrap(),
+        file_type: Ext4DirEntry2::EXT4_FT_DIR,
         block_num: AbsoluteBN::new(12),
         offset: 16,
     };
-    assert_eq!(result.entry.name, b"dir");
+    assert_eq!(result.inode.raw(), 8);
+    assert_eq!(result.file_type, Ext4DirEntry2::EXT4_FT_DIR);
     assert_eq!(result.block_num.raw(), 12);
     assert_eq!(result.offset, 16);
 }
@@ -2129,7 +2118,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         loopfile::{resolve_inode_block, resolve_inode_blocks},
         metadata::{chmod, chown},
         mkdir, mkdir_with_owner, mkfile, mkfile_with_owner, mkfs, read_file, read_inode_data_into,
-        rename, set_flags, set_project,
+        set_flags, set_project,
         superblock::Ext4Superblock,
         truncate, utimens, write_file,
     };
@@ -2439,14 +2428,15 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         Some(Ext4DirEntry2::EXT4_FT_FIFO),
     )
     .unwrap();
-    mkfile(
+    let error = mkfile(
         &mut device,
         &mut fs,
         "/cov/sub/unknown-kind",
         None,
         Some(Ext4DirEntry2::EXT4_FT_UNKNOWN),
     )
-    .unwrap();
+    .unwrap_err();
+    assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
     assert_eq!(
         mkfile(&mut device, &mut fs, "/", None, None)
             .unwrap_err()
@@ -2573,7 +2563,14 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         Ext4ErrorKind::InvalidInput
     );
 
-    let _ = rename(&mut device, &mut fs, "/cov/sub/file", "/cov/sub/renamed").unwrap();
+    let _ = rename(
+        &mut device,
+        &mut fs,
+        "/cov/sub/file",
+        "/cov/sub/renamed",
+        RenameOptions::REPLACE,
+    )
+    .unwrap();
     assert!(
         get_inode_with_num(&mut fs, &mut device, "/cov/sub/file")
             .unwrap()
@@ -2720,6 +2717,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         &mut fs,
         "/cov/other/child",
         "/cov/sub/moved-dir",
+        RenameOptions::REPLACE,
     )
     .unwrap();
     assert!(
@@ -2750,6 +2748,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         &mut fs,
         "/cov/sub/replace-src",
         "/cov/sub/replace-dst",
+        RenameOptions::REPLACE,
     )
     .unwrap();
     let replaced_file = replaced_file.replaced.expect("rename replaced a file");
@@ -2774,6 +2773,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             &mut fs,
             "/cov/sub/replace-dst",
             "/cov/sub/non-empty-dir",
+            RenameOptions::REPLACE,
         )
         .unwrap_err()
         .kind(),
@@ -2785,6 +2785,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             &mut fs,
             "/cov/sub/non-empty-dir",
             "/cov/sub/replace-dst",
+            RenameOptions::REPLACE,
         )
         .unwrap_err()
         .kind(),
@@ -2797,21 +2798,34 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             &mut fs,
             "/cov/sub/src-dir",
             "/cov/sub/non-empty-dir",
+            RenameOptions::REPLACE,
         )
         .unwrap_err()
         .kind(),
         Ext4ErrorKind::NotEmpty
     );
     assert_eq!(
-        rename(&mut device, &mut fs, "/cov/sub/src-dir", "bad-new")
-            .unwrap_err()
-            .kind(),
+        rename(
+            &mut device,
+            &mut fs,
+            "/cov/sub/src-dir",
+            "bad-new",
+            RenameOptions::REPLACE,
+        )
+        .unwrap_err()
+        .kind(),
         Ext4ErrorKind::InvalidInput
     );
     assert_eq!(
-        rename(&mut device, &mut fs, "/", "/cov/sub/root-move")
-            .unwrap_err()
-            .kind(),
+        rename(
+            &mut device,
+            &mut fs,
+            "/",
+            "/cov/sub/root-move",
+            RenameOptions::REPLACE,
+        )
+        .unwrap_err()
+        .kind(),
         Ext4ErrorKind::InvalidInput
     );
     mkdir(&mut device, &mut fs, "/cov/sub/replace-empty-src").unwrap();
@@ -2821,6 +2835,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         &mut fs,
         "/cov/sub/replace-empty-src",
         "/cov/sub/replace-empty-dst",
+        RenameOptions::REPLACE,
     )
     .unwrap();
     let replaced_directory = replaced_directory
@@ -2835,7 +2850,16 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
             .1
             .is_dir()
     );
-    assert!(rename(&mut device, &mut fs, "bad-old", "/cov/sub/bad-new").is_err());
+    assert!(
+        rename(
+            &mut device,
+            &mut fs,
+            "bad-old",
+            "/cov/sub/bad-new",
+            RenameOptions::REPLACE,
+        )
+        .is_err()
+    );
 
     truncate(&mut device, &mut fs, "/cov/sub/renamed", 4).unwrap();
     let truncated = read_file(&mut device, &mut fs, "/cov/sub/renamed").unwrap();
@@ -2859,42 +2883,11 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         Ext4ErrorKind::NotFound
     );
 
-    let mut api_file = rsext4::api::open(&mut device, &mut fs, "/cov/sub/api", true).unwrap();
-    assert_eq!(api_file.offset, 0);
-    rsext4::api::write_at(&mut device, &mut fs, &mut api_file, b"abcdef").unwrap();
-    assert_eq!(api_file.offset, 6);
-    rsext4::api::lseek(&mut api_file, 2).unwrap();
-    assert_eq!(
-        rsext4::api::read_at(&mut device, &mut fs, &mut api_file, 3).unwrap(),
-        b"cde"
-    );
-    assert_eq!(api_file.offset, 5);
-    assert_eq!(
-        rsext4::read_file(&mut device, &mut fs, "/cov/sub/api").unwrap(),
-        b"abcdef"
-    );
-    rsext4::api::lseek(&mut api_file, 99).unwrap();
-    assert_eq!(
-        rsext4::api::read_at(&mut device, &mut fs, &mut api_file, 4).unwrap(),
-        Vec::new()
-    );
-    assert_eq!(
-        rsext4::api::read_at(&mut device, &mut fs, &mut api_file, 0).unwrap(),
-        Vec::new()
-    );
-    let open_error = match rsext4::api::open(&mut device, &mut fs, "/cov/sub/no-api", false) {
-        Ok(_) => panic!("opening a missing file without create should fail"),
-        Err(error) => error,
-    };
-    assert_eq!(open_error.kind(), Ext4ErrorKind::NotFound);
-
-    delete_file(&mut fs, &mut device, "/cov/sub/api").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/noatime").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/char").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/socket").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/block").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/fifo").unwrap();
-    delete_file(&mut fs, &mut device, "/cov/sub/unknown-kind").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/project-child").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/project-sym").unwrap();
     delete_file(&mut fs, &mut device, "/cov/sub/hard").unwrap();

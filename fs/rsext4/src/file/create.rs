@@ -179,6 +179,9 @@ fn create_inode_at_inner<B: BlockIo>(
         return Err(Ext4Error::invalid_input());
     }
     let inode_type = request.mode & Ext4Inode::S_IFMT;
+    if directory_entry_type_for_mode(request.mode) != Some(file_type) {
+        return Err(Ext4Error::invalid_input().with_operation("inode:create_file_type"));
+    }
     let supports_data_mapping = matches!(inode_type, Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK);
     let (initial_data, device_number, fast_symlink) = match (inode_type, payload) {
         (Ext4Inode::S_IFREG, CreateInodePayload::Empty) => (None, None, None),
@@ -456,7 +459,7 @@ pub fn mkfile_with_owner<B: BlockIo>(
         Ext4DirEntry2::EXT4_FT_CHRDEV => Ext4Inode::S_IFCHR | 0o600,
         Ext4DirEntry2::EXT4_FT_FIFO => Ext4Inode::S_IFIFO | 0o644,
         Ext4DirEntry2::EXT4_FT_SOCK => Ext4Inode::S_IFSOCK | 0o644,
-        _ => Ext4Inode::S_IFREG | 0o644,
+        _ => return Err(Ext4Error::invalid_input().with_operation("inode:create_file_type")),
     };
     let payload = match file_type {
         Ext4DirEntry2::EXT4_FT_CHRDEV | Ext4DirEntry2::EXT4_FT_BLKDEV => match initial_data {

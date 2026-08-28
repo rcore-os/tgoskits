@@ -74,65 +74,6 @@ impl Default for MmpIdentity {
     }
 }
 
-/// Encryption algorithms that can be requested by ext4 policies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EncryptionAlgorithm {
-    Aes256Xts,
-    Aes256Cts,
-    Adiantum,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DigestAlgorithm {
-    Sha256,
-    Sha512,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CryptoOperation {
-    Encrypt,
-    Decrypt,
-}
-
-/// A key lookup descriptor stored as pure filesystem policy data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeyDescriptor<'a> {
-    pub identifier: &'a [u8],
-    pub purpose: KeyPurpose,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyPurpose {
-    FileContents,
-    FileNames,
-    VeritySignature,
-}
-
-/// Synchronous cryptographic primitives required by filesystem policies.
-pub trait CryptoProvider {
-    fn crypt(
-        &mut self,
-        operation: CryptoOperation,
-        algorithm: EncryptionAlgorithm,
-        key: &[u8],
-        nonce: &[u8],
-        input: &[u8],
-        output: &mut [u8],
-    ) -> Ext4Result<()>;
-
-    fn digest(
-        &mut self,
-        algorithm: DigestAlgorithm,
-        input: &[u8],
-        output: &mut [u8],
-    ) -> Ext4Result<usize>;
-}
-
-/// Key retrieval capability. Keyring ownership and policy stay in the OS.
-pub trait KeyProvider {
-    fn read_key(&mut self, descriptor: KeyDescriptor<'_>, output: &mut [u8]) -> Ext4Result<usize>;
-}
-
 /// High-value, allocation-free events observable by an embedding runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
@@ -217,11 +158,9 @@ impl Observer for NoopObserver {
 ///
 /// This is a composition type, not a catch-all runtime trait. Algorithms take
 /// the narrow capability they use, which keeps dependencies auditable.
-pub struct MountServices<C, E, P, K, O, W = ()> {
+pub struct MountServices<C, E, O, W = ()> {
     pub clock: C,
     pub entropy: E,
-    pub crypto: P,
-    pub keys: K,
     pub observer: O,
     pub mmp_delay: W,
     pub mmp_identity: MmpIdentity,
@@ -232,28 +171,22 @@ pub struct MountServices<C, E, P, K, O, W = ()> {
 ///
 /// The fields stay private so callers use typed filesystem operations instead
 /// of reaching through the mount object to invoke providers directly.
-pub struct MountedServices<E, P, K, O, W = ()> {
+pub struct MountedServices<E, O, W = ()> {
     pub(crate) entropy: E,
-    pub(crate) _crypto: P,
-    pub(crate) _keys: K,
     pub(crate) observer: O,
     pub(crate) mmp_delay: W,
     pub(crate) mmp_identity: MmpIdentity,
 }
 
-impl<E, P, K, O, W> MountedServices<E, P, K, O, W> {
+impl<E, O, W> MountedServices<E, O, W> {
     pub(crate) const fn new(
         entropy: E,
-        crypto: P,
-        keys: K,
         observer: O,
         mmp_delay: W,
         mmp_identity: MmpIdentity,
     ) -> Self {
         Self {
             entropy,
-            _crypto: crypto,
-            _keys: keys,
             observer,
             mmp_delay,
             mmp_identity,
@@ -261,13 +194,11 @@ impl<E, P, K, O, W> MountedServices<E, P, K, O, W> {
     }
 }
 
-impl<C, E, P, K, O> MountServices<C, E, P, K, O, ()> {
-    pub const fn new(clock: C, entropy: E, crypto: P, keys: K, observer: O) -> Self {
+impl<C, E, O> MountServices<C, E, O, ()> {
+    pub const fn new(clock: C, entropy: E, observer: O) -> Self {
         Self {
             clock,
             entropy,
-            crypto,
-            keys,
             observer,
             mmp_delay: (),
             mmp_identity: MmpIdentity {
@@ -278,14 +209,12 @@ impl<C, E, P, K, O> MountServices<C, E, P, K, O, ()> {
     }
 }
 
-impl<C, E, P, K, O, W> MountServices<C, E, P, K, O, W> {
+impl<C, E, O, W> MountServices<C, E, O, W> {
     /// Injects the mount-time MMP delay and diagnostic identity capabilities.
-    pub fn with_mmp<N>(self, delay: N, identity: MmpIdentity) -> MountServices<C, E, P, K, O, N> {
+    pub fn with_mmp<N>(self, delay: N, identity: MmpIdentity) -> MountServices<C, E, O, N> {
         MountServices {
             clock: self.clock,
             entropy: self.entropy,
-            crypto: self.crypto,
-            keys: self.keys,
             observer: self.observer,
             mmp_delay: delay,
             mmp_identity: identity,

@@ -120,6 +120,16 @@ struct HTreeReadDirSample {
     calls: usize,
 }
 
+#[derive(Clone, Copy)]
+struct BenchmarkConfig<'a> {
+    commit: &'a str,
+    arch: &'a str,
+    backend: &'a str,
+    feature: &'a str,
+    warmups: usize,
+    runs: usize,
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     env::var(name)
         .ok()
@@ -147,13 +157,7 @@ fn run_once(payload: &[u8]) -> Sample {
         MkfsOptions::default(),
     )
     .expect("benchmark mkfs must succeed");
-    let services = MountServices::new(
-        BenchClock(Cell::new(1_700_000_000)),
-        (),
-        (),
-        (),
-        NoopObserver,
-    );
+    let services = MountServices::new(BenchClock(Cell::new(1_700_000_000)), (), NoopObserver);
     let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
         .expect("benchmark mount must succeed");
     let context = MutationContext::new(0, 0, 0, 0);
@@ -168,7 +172,7 @@ fn run_once(payload: &[u8]) -> Sample {
 
     let start = Instant::now();
     filesystem
-        .write_inode(context, file.number, 0, payload)
+        .write_inode(file.number, 0, payload)
         .expect("benchmark write must succeed");
     let write = start.elapsed();
 
@@ -199,13 +203,7 @@ fn run_xattr_once(value: &[u8]) -> XattrSample {
         MkfsOptions::default(),
     )
     .expect("benchmark mkfs must succeed");
-    let services = MountServices::new(
-        BenchClock(Cell::new(1_700_000_000)),
-        (),
-        (),
-        (),
-        NoopObserver,
-    );
+    let services = MountServices::new(BenchClock(Cell::new(1_700_000_000)), (), NoopObserver);
     let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
         .expect("benchmark mount must succeed");
     let context = MutationContext::new(0, 0, 0, 0);
@@ -221,7 +219,6 @@ fn run_xattr_once(value: &[u8]) -> XattrSample {
     let start = Instant::now();
     filesystem
         .set_xattr(
-            context,
             file.number,
             XattrNamespace::User,
             b"host-perf",
@@ -244,7 +241,7 @@ fn run_xattr_once(value: &[u8]) -> XattrSample {
 
     let start = Instant::now();
     filesystem
-        .remove_xattr(context, file.number, XattrNamespace::User, b"host-perf")
+        .remove_xattr(file.number, XattrNamespace::User, b"host-perf")
         .expect("benchmark xattr remove must succeed");
     filesystem
         .sync()
@@ -269,13 +266,7 @@ fn run_sync_cycle_once(payload: &[u8]) -> SyncCycleSample {
         MkfsOptions::default(),
     )
     .expect("benchmark mkfs must succeed");
-    let services = MountServices::new(
-        BenchClock(Cell::new(1_700_000_000)),
-        (),
-        (),
-        (),
-        NoopObserver,
-    );
+    let services = MountServices::new(BenchClock(Cell::new(1_700_000_000)), (), NoopObserver);
     let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
         .expect("benchmark mount must succeed");
     let context = MutationContext::new(0, 0, 0, 0);
@@ -288,7 +279,7 @@ fn run_sync_cycle_once(payload: &[u8]) -> SyncCycleSample {
         )
         .expect("benchmark file creation must succeed");
     filesystem
-        .write_inode(context, file.number, 0, payload)
+        .write_inode(file.number, 0, payload)
         .expect("benchmark write must succeed");
 
     let start = Instant::now();
@@ -324,13 +315,7 @@ fn run_htree_readdir_once(entry_count: usize, batch_entries: usize) -> HTreeRead
         MkfsOptions::default(),
     )
     .expect("benchmark mkfs must succeed");
-    let services = MountServices::new(
-        BenchClock(Cell::new(1_700_000_000)),
-        (),
-        (),
-        (),
-        NoopObserver,
-    );
+    let services = MountServices::new(BenchClock(Cell::new(1_700_000_000)), (), NoopObserver);
     let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
         .expect("benchmark mount must succeed");
     let context = MutationContext::new(0, 0, 0, 0);
@@ -410,15 +395,15 @@ fn percentile(samples: &[u128], numerator: usize, denominator: usize) -> u128 {
     sorted[rank.min(sorted.len() - 1)]
 }
 
-fn run_xattr_benchmark(
-    commit: &str,
-    arch: &str,
-    backend: &str,
-    feature: &str,
-    warmups: usize,
-    runs: usize,
-    value_bytes: usize,
-) {
+fn run_xattr_benchmark(config: BenchmarkConfig<'_>, value_bytes: usize) {
+    let BenchmarkConfig {
+        commit,
+        arch,
+        backend,
+        feature,
+        warmups,
+        runs,
+    } = config;
     let mut value = vec![0u8; value_bytes];
     for (index, byte) in value.iter_mut().enumerate() {
         *byte = (index as u8).wrapping_mul(17).wrapping_add(11);
@@ -471,15 +456,15 @@ fn run_xattr_benchmark(
     );
 }
 
-fn run_sync_cycle_benchmark(
-    commit: &str,
-    arch: &str,
-    backend: &str,
-    feature: &str,
-    warmups: usize,
-    runs: usize,
-    payload: &[u8],
-) {
+fn run_sync_cycle_benchmark(config: BenchmarkConfig<'_>, payload: &[u8]) {
+    let BenchmarkConfig {
+        commit,
+        arch,
+        backend,
+        feature,
+        warmups,
+        runs,
+    } = config;
     println!(
         "RSEXT4_BENCH_CONFIG commit={commit} arch={arch} backend={backend} feature={feature} \
          workload=sync-cycle bytes={} warmups={warmups} runs={runs} block_size={BLOCK_SIZE} \
@@ -529,16 +514,15 @@ fn run_sync_cycle_benchmark(
     );
 }
 
-fn run_htree_readdir_benchmark(
-    commit: &str,
-    arch: &str,
-    backend: &str,
-    feature: &str,
-    warmups: usize,
-    runs: usize,
-    entries: usize,
-    batch_entries: usize,
-) {
+fn run_htree_readdir_benchmark(config: BenchmarkConfig<'_>, entries: usize, batch_entries: usize) {
+    let BenchmarkConfig {
+        commit,
+        arch,
+        backend,
+        feature,
+        warmups,
+        runs,
+    } = config;
     println!(
         "RSEXT4_BENCH_CONFIG commit={commit} arch={arch} backend={backend} feature={feature} \
          workload=htree-readdir entries={entries} batch_entries={batch_entries} warmups={warmups} \
@@ -592,6 +576,14 @@ fn main() {
     let workload = marker_value("RSEXT4_BENCH_WORKLOAD", "sequential");
     assert!(bytes > 0 && bytes.is_multiple_of(BLOCK_SIZE));
     assert!(runs > 0);
+    let config = BenchmarkConfig {
+        commit: &commit,
+        arch: &arch,
+        backend: &backend,
+        feature: &feature,
+        warmups,
+        runs,
+    };
 
     if workload == "xattr-external" {
         let value_bytes = env_usize("RSEXT4_BENCH_XATTR_BYTES", DEFAULT_XATTR_BYTES);
@@ -599,31 +591,14 @@ fn main() {
             value_bytes > 256,
             "external xattr fixture must not fit inline"
         );
-        run_xattr_benchmark(
-            &commit,
-            &arch,
-            &backend,
-            &feature,
-            warmups,
-            runs,
-            value_bytes,
-        );
+        run_xattr_benchmark(config, value_bytes);
         return;
     }
     if workload == "htree-readdir" {
         let entries = env_usize("RSEXT4_BENCH_HTREE_ENTRIES", DEFAULT_HTREE_ENTRIES);
         let batch_entries = env_usize("RSEXT4_BENCH_BATCH_ENTRIES", DEFAULT_HTREE_BATCH_ENTRIES);
         assert!(entries > 0 && batch_entries > 0);
-        run_htree_readdir_benchmark(
-            &commit,
-            &arch,
-            &backend,
-            &feature,
-            warmups,
-            runs,
-            entries,
-            batch_entries,
-        );
+        run_htree_readdir_benchmark(config, entries, batch_entries);
         return;
     }
     let mut payload = vec![0u8; bytes];
@@ -632,7 +607,7 @@ fn main() {
     }
 
     if workload == "sync-cycle" {
-        run_sync_cycle_benchmark(&commit, &arch, &backend, &feature, warmups, runs, &payload);
+        run_sync_cycle_benchmark(config, &payload);
         return;
     }
     assert_eq!(workload, "sequential", "unsupported benchmark workload");

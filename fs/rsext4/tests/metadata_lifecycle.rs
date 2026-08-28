@@ -8,6 +8,7 @@ use std::cell::Cell;
 use rsext4::{
     disknode::Ext4Inode,
     error::{Ext4Error, Ext4Result},
+    loopfile::get_file_inode,
     superblock::Ext4Superblock,
     *,
 };
@@ -142,8 +143,10 @@ fn test_create_delete_and_reallocate_inode_updates_dtime() {
     assert_eq!(link_inode.i_dtime, 0);
     assert!(link_inode.crtime_ts(INODE_SIZE).is_some());
 
-    let file = open(&mut dev, &mut fs, "/meta/file", false).expect("open failed");
-    let deleted_ino = file.inode_num;
+    let deleted_ino = get_file_inode(&mut fs, &mut dev, "/meta/file")
+        .expect("lookup failed")
+        .expect("file missing")
+        .0;
     delete_file(&mut fs, &mut dev, "/meta/file").expect("delete failed");
 
     let deleted_inode = fs
@@ -179,8 +182,7 @@ fn test_read_write_truncate_and_noatime_update_expected_timestamps() {
     let before = lookup_inode(&mut dev, &mut fs, "/rw/file");
     let before_atime = before.atime_ts(INODE_SIZE);
 
-    let mut file = open(&mut dev, &mut fs, "/rw/file", false).expect("open failed");
-    let data = read_at(&mut dev, &mut fs, &mut file, 5).expect("read_at failed");
+    let data = read_file(&mut dev, &mut fs, "/rw/file").expect("read failed");
     assert_eq!(data, b"hello");
 
     let after_read = lookup_inode(&mut dev, &mut fs, "/rw/file");
@@ -199,8 +201,7 @@ fn test_read_write_truncate_and_noatime_update_expected_timestamps() {
     assert_eq!(after_flags.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
 
     let atime_before_noatime_read = after_flags.atime_ts(INODE_SIZE);
-    let mut noatime_file = open(&mut dev, &mut fs, "/rw/file", false).expect("open failed");
-    read_at(&mut dev, &mut fs, &mut noatime_file, 5).expect("read_at failed");
+    read_file(&mut dev, &mut fs, "/rw/file").expect("read failed");
     let after_noatime_read = lookup_inode(&mut dev, &mut fs, "/rw/file");
     assert_eq!(
         after_noatime_read.atime_ts(INODE_SIZE),
@@ -339,7 +340,14 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
     assert!(inode_version(&parent_after_unlink) > inode_version(&parent_before_unlink));
 
     let parent_before_rename = parent_after_unlink;
-    let _ = rename(&mut dev, &mut fs, "/parent/file", "/parent/file2").expect("rename failed");
+    let _ = rename(
+        &mut dev,
+        &mut fs,
+        "/parent/file",
+        "/parent/file2",
+        RenameOptions::REPLACE,
+    )
+    .expect("rename failed");
     let parent_after_rename = lookup_inode(&mut dev, &mut fs, "/parent");
     assert!(
         parent_after_rename.mtime_ts(INODE_SIZE).sec
@@ -349,7 +357,14 @@ fn test_parent_directory_timestamps_follow_entry_changes() {
 
     let old_parent_before_move = parent_after_rename;
     let new_parent_before_move = lookup_inode(&mut dev, &mut fs, "/other");
-    mv(&mut fs, &mut dev, "/parent/file2", "/other/file2").expect("mv failed");
+    let _ = rename(
+        &mut dev,
+        &mut fs,
+        "/parent/file2",
+        "/other/file2",
+        RenameOptions::NO_REPLACE,
+    )
+    .expect("move failed");
     let old_parent_after_move = lookup_inode(&mut dev, &mut fs, "/parent");
     let new_parent_after_move = lookup_inode(&mut dev, &mut fs, "/other");
     assert!(

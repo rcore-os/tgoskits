@@ -373,7 +373,7 @@ where
     Ok(device.into_inner())
 }
 
-impl<D, E, P, K, O, W> Ext4<D, MountedServices<E, P, K, O, W>>
+impl<D, E, O, W> Ext4<D, MountedServices<E, O, W>>
 where
     D: BlockIo,
     E: crate::runtime::EntropySource,
@@ -383,43 +383,13 @@ where
     /// Mounts an ext4 filesystem and transfers ownership of all capabilities.
     pub fn mount<C>(
         device: D,
-        services: MountServices<C, E, P, K, O, W>,
+        services: MountServices<C, E, O, W>,
         options: MountOptions,
     ) -> Ext4Result<Self>
     where
         C: Clock + Send + 'static,
     {
-        let MountServices {
-            clock,
-            mut entropy,
-            crypto,
-            keys,
-            mut observer,
-            mut mmp_delay,
-            mmp_identity,
-        } = services;
-        let mut device = Jbd2Dev::with_clock(0, device, clock, true);
-        let filesystem = Ext4FileSystem::mount_with_services(
-            &mut device,
-            options,
-            &mut observer,
-            &mut entropy,
-            &mut mmp_delay,
-            mmp_identity,
-        )?;
-        Ok(Self {
-            filesystem,
-            device,
-            services: MountedServices::new(
-                entropy,
-                crypto,
-                keys,
-                observer,
-                mmp_delay,
-                mmp_identity,
-            ),
-            options,
-        })
+        Self::mount_selecting_options(device, services, |_| Ok(options))
     }
 
     /// Selects read-only replay before mounting when the on-disk filesystem
@@ -430,32 +400,44 @@ where
     /// second attempt would lose the first error and observe polluted state.
     pub fn mount_with_readonly_fallback<C>(
         device: D,
-        services: MountServices<C, E, P, K, O, W>,
+        services: MountServices<C, E, O, W>,
     ) -> Ext4Result<Self>
     where
         C: Clock + Send + 'static,
     {
+        Self::mount_selecting_options(device, services, |device| {
+            let read_write = MountOptions::read_write();
+            let read_only_replay = MountOptions {
+                readonly: true,
+                replay_journal: true,
+                block_validity: true,
+            };
+            if Ext4FileSystem::device_has_error_state(device)? {
+                Ok(read_only_replay)
+            } else {
+                Ok(read_write)
+            }
+        })
+    }
+
+    fn mount_selecting_options<C, F>(
+        device: D,
+        services: MountServices<C, E, O, W>,
+        select_options: F,
+    ) -> Ext4Result<Self>
+    where
+        C: Clock + Send + 'static,
+        F: FnOnce(&mut Jbd2Dev<D>) -> Ext4Result<MountOptions>,
+    {
         let MountServices {
             clock,
             mut entropy,
-            crypto,
-            keys,
             mut observer,
             mut mmp_delay,
             mmp_identity,
         } = services;
         let mut device = Jbd2Dev::with_clock(0, device, clock, true);
-        let read_write = MountOptions::read_write();
-        let read_only_replay = MountOptions {
-            readonly: true,
-            replay_journal: true,
-            block_validity: true,
-        };
-        let options = if Ext4FileSystem::device_has_error_state(&mut device)? {
-            read_only_replay
-        } else {
-            read_write
-        };
+        let options = select_options(&mut device)?;
         let filesystem = Ext4FileSystem::mount_with_services(
             &mut device,
             options,
@@ -468,20 +450,13 @@ where
         Ok(Self {
             filesystem,
             device,
-            services: MountedServices::new(
-                entropy,
-                crypto,
-                keys,
-                observer,
-                mmp_delay,
-                mmp_identity,
-            ),
+            services: MountedServices::new(entropy, observer, mmp_delay, mmp_identity),
             options,
         })
     }
 }
 
-impl<D, E, P, K, O, W> Ext4<D, MountedServices<E, P, K, O, W>>
+impl<D, E, O, W> Ext4<D, MountedServices<E, O, W>>
 where
     D: BlockIo,
     E: crate::runtime::EntropySource,
@@ -582,7 +557,6 @@ where
     /// Creates or replaces one VFS-authorized extended attribute.
     pub fn set_xattr(
         &mut self,
-        _context: MutationContext,
         number: InodeNumber,
         namespace: XattrNamespace,
         name: &[u8],
@@ -604,7 +578,6 @@ where
     /// Removes one VFS-authorized extended attribute.
     pub fn remove_xattr(
         &mut self,
-        _context: MutationContext,
         number: InodeNumber,
         namespace: XattrNamespace,
         name: &[u8],
@@ -622,7 +595,6 @@ where
     /// Applies VFS-authorized metadata fields through the checked inode codec.
     pub fn update_inode_metadata(
         &mut self,
-        _context: MutationContext,
         number: InodeNumber,
         update: InodeMetadataUpdate,
     ) -> Ext4Result<InodeInfo> {
@@ -1128,7 +1100,6 @@ where
     /// Adds a hard link to a non-directory inode.
     pub fn hard_link(
         &mut self,
-        _context: MutationContext,
         target: InodeNumber,
         parent: InodeNumber,
         name: FileName<'_>,
@@ -1149,12 +1120,7 @@ where
 
     /// Removes one non-directory name without reclaiming a final zero-link
     /// inode that may still be referenced by the embedding VFS.
-    pub fn unlink(
-        &mut self,
-        _context: MutationContext,
-        parent: InodeNumber,
-        name: FileName<'_>,
-    ) -> Ext4Result<UnlinkOutcome> {
+    pub fn unlink(&mut self, parent: InodeNumber, name: FileName<'_>) -> Ext4Result<UnlinkOutcome> {
         self.ensure_writable("inode:unlink")?;
         unlink_inode_at(&mut self.filesystem, &mut self.device, parent, name)
     }
@@ -1163,7 +1129,6 @@ where
     /// may still hold a live directory reference.
     pub fn remove_empty_directory(
         &mut self,
-        _context: MutationContext,
         parent: InodeNumber,
         name: FileName<'_>,
     ) -> Ext4Result<UnlinkOutcome> {
@@ -1174,7 +1139,6 @@ where
     /// Renames or exchanges two raw directory names below resolved parents.
     pub fn rename(
         &mut self,
-        _context: MutationContext,
         old_parent: InodeNumber,
         old_name: FileName<'_>,
         new_parent: InodeNumber,
@@ -1249,7 +1213,6 @@ where
 
     pub fn write_inode(
         &mut self,
-        _context: MutationContext,
         number: InodeNumber,
         offset: u64,
         input: &[u8],
@@ -1264,37 +1227,24 @@ where
         )
     }
 
-    pub fn truncate_inode(
-        &mut self,
-        _context: MutationContext,
-        number: InodeNumber,
-        size: u64,
-    ) -> Ext4Result<()> {
+    pub fn truncate_inode(&mut self, number: InodeNumber, size: u64) -> Ext4Result<()> {
         self.ensure_writable("inode:truncate")?;
         truncate_inode(&mut self.device, &mut self.filesystem, number, size)
     }
 
     pub fn preallocate_inode(
         &mut self,
-        _context: MutationContext,
         number: InodeNumber,
         offset: u64,
         len: u64,
         options: PreallocationOptions,
     ) -> Ext4Result<()> {
-        self.operate_inode_range(
-            _context,
-            number,
-            offset,
-            len,
-            RangeOperation::Allocate(options),
-        )
+        self.operate_inode_range(number, offset, len, RangeOperation::Allocate(options))
     }
 
     /// Applies one allocation or mapping operation to a byte range.
     pub fn operate_inode_range(
         &mut self,
-        _context: MutationContext,
         number: InodeNumber,
         offset: u64,
         len: u64,

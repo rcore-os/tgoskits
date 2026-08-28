@@ -69,10 +69,6 @@ impl Inode {
         MutationContext::new(uid, gid, 0, 0)
     }
 
-    const fn authorized_mutation() -> MutationContext {
-        Self::mutation_context(0, 0)
-    }
-
     fn timestamp(value: core::time::Duration) -> VfsResult<Ext4Timestamp> {
         let seconds = i64::try_from(value.as_secs())
             .map_err(|_| into_vfs_err(rsext4::Ext4Error::overflow()))?;
@@ -260,7 +256,7 @@ impl NodeOps for Inode {
             };
             state
                 .ext4
-                .update_inode_metadata(Self::authorized_mutation(), self.ino, metadata)
+                .update_inode_metadata(self.ino, metadata)
                 .map_err(into_vfs_err)?;
         }
         self.fs.sync_to_disk()
@@ -333,14 +329,7 @@ impl XattrOps for Inode {
         let mut state = self.fs.lock();
         state
             .ext4
-            .set_xattr(
-                Self::authorized_mutation(),
-                self.ino,
-                XattrNamespace::User,
-                name,
-                value,
-                mode,
-            )
+            .set_xattr(self.ino, XattrNamespace::User, name, value, mode)
             .map_err(Self::xattr_error)
     }
 
@@ -349,12 +338,7 @@ impl XattrOps for Inode {
         let mut state = self.fs.lock();
         state
             .ext4
-            .remove_xattr(
-                Self::authorized_mutation(),
-                self.ino,
-                XattrNamespace::User,
-                name,
-            )
+            .remove_xattr(self.ino, XattrNamespace::User, name)
             .map_err(Self::xattr_error)
     }
 }
@@ -374,7 +358,7 @@ impl FileNodeOps for Inode {
         // writable after their directory entry has been removed.
         state
             .ext4
-            .write_inode(Self::authorized_mutation(), self.ino, offset, buf)
+            .write_inode(self.ino, offset, buf)
             .map_err(into_vfs_err)?;
         Ok(buf.len())
     }
@@ -384,7 +368,7 @@ impl FileNodeOps for Inode {
         let length = state.ext4.inode(self.ino).map_err(into_vfs_err)?.size;
         state
             .ext4
-            .write_inode(Self::authorized_mutation(), self.ino, length, buf)
+            .write_inode(self.ino, length, buf)
             .map_err(into_vfs_err)?;
         let end = length
             .checked_add(buf.len() as u64)
@@ -398,7 +382,7 @@ impl FileNodeOps for Inode {
         // directory entry.
         state
             .ext4
-            .truncate_inode(Self::authorized_mutation(), self.ino, len)
+            .truncate_inode(self.ino, len)
             .map_err(into_vfs_err)
     }
 
@@ -419,13 +403,7 @@ impl FileNodeOps for Inode {
         let mut state = self.fs.lock();
         state
             .ext4
-            .operate_inode_range(
-                Self::authorized_mutation(),
-                self.ino,
-                offset,
-                len,
-                operation,
-            )
+            .operate_inode_range(self.ino, offset, len, operation)
             .map_err(into_vfs_err)
     }
 
@@ -632,7 +610,7 @@ impl DirNodeOps for Inode {
             let mut state = self.fs.lock();
             let info = state
                 .ext4
-                .hard_link(Self::authorized_mutation(), target.ino, self.ino, raw_name)
+                .hard_link(target.ino, self.ino, raw_name)
                 .map_err(into_vfs_err)?;
             state.inc_ref(info.number);
             info
@@ -658,13 +636,9 @@ impl DirNodeOps for Inode {
                 _ => {}
             }
             let outcome = if target_is_dir {
-                state
-                    .ext4
-                    .remove_empty_directory(Self::authorized_mutation(), self.ino, raw_name)
+                state.ext4.remove_empty_directory(self.ino, raw_name)
             } else {
-                state
-                    .ext4
-                    .unlink(Self::authorized_mutation(), self.ino, raw_name)
+                state.ext4.unlink(self.ino, raw_name)
             }
             .map_err(into_vfs_err)?;
             if outcome.requires_reap() {
@@ -708,14 +682,7 @@ impl DirNodeOps for Inode {
             let mut state = self.fs.lock();
             let outcome = state
                 .ext4
-                .rename(
-                    Self::authorized_mutation(),
-                    self.ino,
-                    src_name,
-                    dst_dir.ino,
-                    dst_name,
-                    core_options,
-                )
+                .rename(self.ino, src_name, dst_dir.ino, dst_name, core_options)
                 .map_err(into_vfs_err)?;
             match outcome.replaced.filter(|outcome| outcome.requires_reap()) {
                 Some(outcome) => {

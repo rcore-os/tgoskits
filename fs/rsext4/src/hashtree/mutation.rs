@@ -1138,17 +1138,7 @@ fn write_entry(
 }
 
 fn hash_tree_error(error: HashTreeError) -> Ext4Error {
-    match error {
-        HashTreeError::Filesystem(error) => error,
-        HashTreeError::UnsupportedHashVersion => {
-            Ext4Error::unsupported().with_operation("htree:hash_version")
-        }
-        HashTreeError::EntryNotFound => Ext4Error::not_found().with_operation("htree:probe"),
-        HashTreeError::InvalidHashTree
-        | HashTreeError::CorruptedHashTree
-        | HashTreeError::BlockOutOfRange
-        | HashTreeError::BufferTooSmall => Ext4Error::corrupted().with_operation("htree:probe"),
-    }
+    error.into_ext4("htree:probe")
 }
 
 #[cfg(test)]

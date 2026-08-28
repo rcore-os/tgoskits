@@ -515,13 +515,7 @@ fn linux_mmp_image_preserves_read_only_mounts_and_runs_writable_ownership_lifecy
     );
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem = Ext4::mount(
             device,
             services,
@@ -558,8 +552,6 @@ fn linux_mmp_image_preserves_read_only_mounts_and_runs_writable_ownership_lifecy
         let services = MountServices::new(
             TestClock(Cell::new(1_800_000_000)),
             FixedEntropy(0x1234_5678),
-            (),
-            (),
             NoopObserver,
         )
         .with_mmp(
@@ -615,8 +607,6 @@ fn failed_mmp_clean_release_leaves_a_terminal_non_mutating_mount() {
     let services = MountServices::new(
         TestClock(Cell::new(1_800_000_000)),
         FixedEntropy(0x1234_5678),
-        (),
-        (),
         NoopObserver,
     )
     .with_mmp(LogicalDelay::default(), MmpIdentity::default());
@@ -699,13 +689,7 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
     umount(filesystem, &mut device).expect("unmount Linux HTree fixture");
 
     let (device, device_reads) = CountingFileBlockDevice::open_with_sector_size(image.clone(), 512);
-    let services = MountServices::new(
-        TestClock(Cell::new(1_800_000_000)),
-        (),
-        (),
-        (),
-        NoopObserver,
-    );
+    let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
     let mut filesystem =
         Ext4::mount(device, services, MountOptions::read_write()).expect("mount HTree fixture");
     let indexed = filesystem
@@ -796,7 +780,6 @@ fn linux_indexed_directory_lookup_uses_on_disk_htree_root() {
     let removed_name = expected_names[2].clone();
     let removed = filesystem
         .unlink(
-            MutationContext::new(1000, 1001, 0, 0o022),
             indexed.number,
             FileName::new(&removed_name).expect("valid cached entry name"),
         )
@@ -872,13 +855,7 @@ fn owned_insert_preserves_linux_htree_index() {
 
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
         let root = filesystem.root_inode();
@@ -937,13 +914,7 @@ fn owned_full_linear_directory_converts_to_linux_htree() {
         .collect::<Vec<_>>();
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
         let context = MutationContext::new(1000, 1001, 0, 0o022);
@@ -1205,13 +1176,7 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
     let renamed_inode;
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_810_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_810_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
         let context = MutationContext::new(1000, 1001, 0, 0o022);
@@ -1252,7 +1217,6 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
 
         let rename = filesystem
             .rename(
-                context,
                 directory_number,
                 FileName::new(rename_source).expect("valid rename source"),
                 directory_number,
@@ -1268,7 +1232,6 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
 
         let deleted = filesystem
             .unlink(
-                context,
                 directory_number,
                 FileName::new(names[deleted_index].as_bytes()).expect("valid deleted name"),
             )
@@ -1318,16 +1281,9 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
 
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_820_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_820_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("remount Linux image");
-        let context = MutationContext::new(1000, 1001, 0, 0o022);
         let directory = filesystem
             .lookup_child(
                 filesystem.root_inode(),
@@ -1361,7 +1317,6 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
             }
             let outcome = filesystem
                 .unlink(
-                    context,
                     directory_number,
                     FileName::new(name.as_bytes()).expect("valid long name"),
                 )
@@ -1421,13 +1376,7 @@ fn owned_insert_splits_linux_htree_leaf() {
 
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
         let indexed = filesystem
@@ -1516,13 +1465,7 @@ fn owned_insert_grows_a_full_linux_htree_root() {
 
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
         let indexed = filesystem
@@ -1627,13 +1570,7 @@ fn failed_owned_htree_leaf_split_rolls_back_after_data_write() {
     fs::copy(&image, &calibration).expect("copy HTree split calibration image");
     let split_index = {
         let device = FileBlockDevice::open_with_sector_size(calibration.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount calibration");
         let indexed = filesystem
@@ -1735,13 +1672,7 @@ fn failed_owned_htree_leaf_split_rolls_back_after_data_write() {
 
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_900_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_900_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("remount after fault");
         let indexed = filesystem
@@ -1822,6 +1753,7 @@ fn linux_image_geometry_round_trip(filesystem_block_size: u32) {
             &mut fs,
             "/geometry/source.bin",
             "/geometry/renamed.bin",
+            RenameOptions::REPLACE,
         )
         .expect("rename geometry file");
         assert_eq!(
@@ -1914,13 +1846,7 @@ fn file_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     let block_size = u64::from(filesystem_block_size);
     let inode_number = {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
         let context = MutationContext::new(1000, 1000, 0, 0o022);
@@ -1933,11 +1859,10 @@ fn file_extent_map_geometry_round_trip(filesystem_block_size: u32) {
             )
             .expect("create FIEMAP fixture");
         filesystem
-            .write_inode(context, file.number, 0, &vec![0x11; block_size as usize])
+            .write_inode(file.number, 0, &vec![0x11; block_size as usize])
             .expect("write first initialized extent");
         filesystem
             .write_inode(
-                context,
                 file.number,
                 2 * block_size,
                 &vec![0x22; block_size as usize],
@@ -1945,7 +1870,6 @@ fn file_extent_map_geometry_round_trip(filesystem_block_size: u32) {
             .expect("write sparse initialized extent");
         filesystem
             .preallocate_inode(
-                context,
                 file.number,
                 4 * block_size,
                 block_size,
@@ -1995,13 +1919,7 @@ fn file_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     );
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_900_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_900_000_000)), (), NoopObserver);
         let mut filesystem = Ext4::mount(device, services, MountOptions::read_write())
             .expect("remount FIEMAP image");
         let mappings = filesystem
@@ -2054,13 +1972,7 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     );
 
     let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-    let services = MountServices::new(
-        TestClock(Cell::new(1_950_000_000)),
-        (),
-        (),
-        (),
-        NoopObserver,
-    );
+    let services = MountServices::new(TestClock(Cell::new(1_950_000_000)), (), NoopObserver);
     let mut filesystem =
         Ext4::mount(device, services, MountOptions::read_write()).expect("mount xattr image");
     let file = filesystem
@@ -2210,11 +2122,9 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     assert!(no_xattr.extents.is_empty());
     assert!(no_xattr.complete);
 
-    let context = MutationContext::new(1000, 1000, 0, 0o022);
     assert_eq!(
         filesystem
             .set_xattr(
-                context,
                 file.number,
                 XattrNamespace::User,
                 b"fiemap",
@@ -2228,7 +2138,6 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     assert_eq!(
         filesystem
             .set_xattr(
-                context,
                 file.number,
                 XattrNamespace::User,
                 b"missing",
@@ -2242,7 +2151,6 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
 
     filesystem
         .set_xattr(
-            context,
             file.number,
             XattrNamespace::User,
             b"rsext4",
@@ -2264,7 +2172,6 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
     let large_value = vec![b'z'; filesystem_block_size as usize - 80];
     filesystem
         .set_xattr(
-            context,
             file.number,
             XattrNamespace::User,
             b"rsext4",
@@ -2297,7 +2204,6 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
 
     filesystem
         .set_xattr(
-            context,
             file.number,
             XattrNamespace::User,
             b"rsext4",
@@ -2333,23 +2239,18 @@ fn file_xattr_extent_map_geometry_round_trip(filesystem_block_size: u32) {
         FileExtentState::Inline
     );
     filesystem
-        .remove_xattr(context, file.number, XattrNamespace::User, b"rsext4")
+        .remove_xattr(file.number, XattrNamespace::User, b"rsext4")
         .expect("remove re-inlined xattr");
     assert_eq!(
         filesystem
-            .remove_xattr(context, file.number, XattrNamespace::User, b"rsext4",)
+            .remove_xattr(file.number, XattrNamespace::User, b"rsext4",)
             .expect_err("remove must report a missing xattr")
             .kind(),
         Ext4ErrorKind::NotFound
     );
 
     filesystem
-        .write_inode(
-            MutationContext::new(1000, 1000, 0, 0o022),
-            file.number,
-            0,
-            b"updated",
-        )
+        .write_inode(file.number, 0, b"updated")
         .expect("mutate inode with inline xattr");
 
     filesystem.unmount().expect("unmount xattr image");
@@ -2435,13 +2336,7 @@ fn rsext4_special_device_is_linux_readable() {
 
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
         filesystem
@@ -2479,13 +2374,7 @@ fn owned_project_metadata_and_inheritance_are_linux_readable() {
 
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
-        let services = MountServices::new(
-            TestClock(Cell::new(1_800_000_000)),
-            (),
-            (),
-            (),
-            NoopObserver,
-        );
+        let services = MountServices::new(TestClock(Cell::new(1_800_000_000)), (), NoopObserver);
         let mut filesystem =
             Ext4::mount(device, services, MountOptions::read_write()).expect("mount Linux image");
         let context = MutationContext::new(1000, 1001, 0, 0o022);
@@ -2499,7 +2388,6 @@ fn owned_project_metadata_and_inheritance_are_linux_readable() {
             .expect("create project directory");
         let project_directory = filesystem
             .update_inode_metadata(
-                context,
                 project_directory.number,
                 InodeMetadataUpdate {
                     project_id: Some(1234),
@@ -3351,6 +3239,7 @@ fn repro_linux_image_create_write_rename_then_e2fsck() {
             &mut fs,
             &format!("{probe}/sub/data.txt"),
             &format!("{probe}/data-renamed.txt"),
+            RenameOptions::REPLACE,
         )
         .expect("rename data");
         umount(fs, &mut dev).expect("umount image");
