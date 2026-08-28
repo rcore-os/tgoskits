@@ -24,6 +24,7 @@ fn blocking_pipe_io_uses_one_linux_style_exclusive_wait_order() {
          without duplicating each direct waiter in an internal WaitQueue"
     );
     for (operation, wait_queue) in [(read, "wait_rx.wait_until"), (write, "wait_tx.wait_until")] {
+        let operation = compact(operation);
         assert!(
             operation.contains(wait_queue),
             "blocking pipe I/O must park on its endpoint wait queue"
@@ -44,6 +45,36 @@ fn blocking_pipe_io_uses_one_linux_style_exclusive_wait_order() {
             && !wake.contains("notify_one_sync()"),
         "pipe handoff must wake shared observers and consume one unified exclusive quota"
     );
+}
+
+#[test]
+fn pipe_wait_predicates_use_one_lockless_readiness_snapshot() {
+    let shared = struct_body(PIPE, "struct Shared");
+    let read = compact(function_body(PIPE, "fn read(&self,"));
+    let write = compact(function_body(PIPE, "fn write_with_broken_pipe_handler("));
+
+    assert!(
+        shared.contains("readiness: AtomicU64"),
+        "pipe state transitions must publish one packed readiness snapshot"
+    );
+    assert!(
+        read.contains(
+            "self.shared.wait_rx.wait_until(||self.shared.readiness().read_wait_ready()||task.\
+             interrupted())"
+        ) && write.contains(
+            "self.shared.wait_tx.wait_until(||self.shared.readiness().write_wait_ready()||task.\
+             interrupted())"
+        ),
+        "Linux-style pipe wait predicates must observe readiness without retaking the pipe state \
+         mutex"
+    );
+}
+
+fn compact(source: &str) -> String {
+    source
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
 }
 
 fn struct_body<'a>(source: &'a str, signature: &str) -> &'a str {

@@ -4015,6 +4015,44 @@ ext-ld、ext4fs 通过，随后在与本改动无关的 `ax-fs-ng` fatfs-only �
 一次明显退化，不能宣称已经找到 Linux RT 性能差距根因；后续继续检查 wake 无 exclusive match、
 owner-rq transaction 与 switch 固定成本，不回退这项已证明的语义对齐。
 
+### 2026-08-28 Linux pipe lockless readiness observation
+
+Linux v7.1 在 `anon_pipe_read()`/`anon_pipe_write()` 释放 `pipe->mutex` 后，等待谓词分别调用
+`pipe_readable()` 与 `pipe_writable()`；两者用 `READ_ONCE` 读取 `head_tail`、`writers`、
+`readers` 和 `max_usage`，不会为了决定是否进入 `schedule()` 再取得一次 pipe mutex。真正消费、
+写入、EOF 与 EPIPE 判定仍在 `pipe->mutex` 下复核。poll 同样先登记 waitqueue，再无锁读取状态，
+依靠 waitqueue barrier 关闭 register/check 与 producer wake 之间的窗口。
+
+旧 Starry 的实际读写虽然由 `PiMutex<PipeState>` 串行化，但每次 `WouldBlock` 后传给
+`PipeWaitSet::wait_until()` 的 predicate 又取得同一把 `PiMutex`，因此每个真实阻塞至少多走一次
+current-task identity、PI fast path 和锁内 readiness 派生。检查点前 1.330 s 的 process/20、
+全部任务固定 CPU0 窗口中，4031 次 pipe wait 没有任何 registration race、retry 或 stale，却产生
+35923 次 `PiMutex` acquisition；这说明额外 predicate lock 不是在处理真实锁争用，而是稳定存在于
+单核 block 热路径。确定性 source contract 先要求 Shared 发布一个 packed readiness snapshot，
+并禁止 read/write wait predicate 重取 `PipeState`；旧实现稳定在缺少 snapshot 的断言上转红。
+
+现在 `Shared::update_state()` 是 PipeState mutation 的唯一生产边界：它在同一 `PiMutex` 临界区中
+完成 buffer head/tail、PIPE_BUF slot、reader/writer count 或 capacity 更新，再以 Release 发布一个
+包含 data、space、has-readers、has-writers 的 `AtomicU64` 一致快照。所有 write/read、resize、
+reopen 和最后 peer close 都经过该边界；四个 readiness 事实不会由独立 atomics 拼出不存在的组合。
+wait 与 poll 用 Acquire 读取 snapshot，实际 read/write 仍回到 `PiMutex` 下复核，所以 snapshot 只
+决定是否进入睡眠，不成为可独立修改的第二状态源。producer 随后才推进 `PipeWaitSet` generation
+并唤醒；waiter 仍按 generation Acquire、snapshot Acquire、注册锁内 generation 复查的次序关闭
+lost-wakeup 窗口，没有用一个原子读替代 park handshake。
+
+最终 source contract 2/2 通过；x86_64 真实 Starry kernel QEMU suite 72/72 通过，其中
+`pipe_linux_io_semantics_hold` 现直接验证 write/read、满管道扩容、poll readiness 与最后 reader
+close 的 snapshot 发布，condition/register race、exclusive quota 与跨类型 FIFO 用例也继续通过。
+Starry `qperf-metrics` 目标 clippy 与 `git diff --check` 通过。
+
+相同未插桩 process/100 loops、4-vCPU QEMU 但全部任务固定 CPU0 的三轮为 4.761 s、5.224 s、
+5.228 s，中位数 5.224 s；上一检查点中位数 5.590 s，本轮改善约 6.5%。复测的 1 秒级 qperf
+窗口为 1.144 s，3786 次 pipe wait 仍对应 3786 次 registration 与 direct delivery，race/retry/stale
+全部为 0；`PiMutex` acquisition 增量从上一窗口 35923 降为 26608。两个诊断窗口的等待次数和
+启动背景活动不完全相同，因此不把 26% 的计数下降直接等同为耗时贡献；正式未插桩中位数的 6.5%
+改善才是性能检查点。该结果证明 Linux lockless readiness 是单核差距的一项真实上层根因，但
+owner-rq transaction、guard 与真实 block/wake/switch 的剩余固定成本仍需继续分解。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
