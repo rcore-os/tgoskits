@@ -149,6 +149,48 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 开始标记用于在超时时定位卡住的 binary；失败时保留该 binary 的原始输出、
 `STARRY_SYSTEM_TEST_FAILED`、退出码和耗时。
 
+### PR #1775 LTP 阶段
+
+`qemu/system/ltp-syscalls` 使用 rootfs 中固定的 Linux Test Project
+`20260529`（上游 commit `3a64d78f58bdceba93ed321e91215fb969a047ed`）。
+该目录不会复制 LTP 测试逻辑：`cases.txt` 中每个 testcase 会生成一个独立 wrapper，
+wrapper 在 guest 内依次确认 `/opt/ltp/Version`、`runtest/syscalls` 的唯一条目和对应
+可执行文件，然后原样运行上游命令并传播退出码。因此 `TCONF`、`TBROK`、`TFAIL`
+及超时都不会被当成通过。
+
+system runner 固定分成两个顺序阶段：先按名称执行剩余的原生 C binary，再执行所有
+`ltp-syscalls-*` wrapper。两个阶段仍对每个 binary 分配独立 PID/mount namespace，日志用
+以下 marker 明确阶段边界；只有全部 binary 返回 0 后才打印
+`STARRY_GROUPED_TESTS_PASSED`：
+
+```text
+STARRY_SYSTEM_PHASE_BEGIN: native-c
+STARRY_SYSTEM_PHASE_END: native-c
+STARRY_SYSTEM_PHASE_BEGIN: ltp-syscalls
+STARRY_SYSTEM_PHASE_END: ltp-syscalls
+```
+
+`candidates.txt` 保存从 PR #1775 所触及 C cases 对应到的官方 LTP families，包括
+process/namespace/pidfd/ptrace、futex/pipe/poll/epoll/socket、scheduler/affinity/timer/
+membarrier，以及 mmap/mprotect/memfd/perf。更新共同集时，先让候选集在四架构分别完成
+probe 并保存完整日志，再运行：
+
+```bash
+scripts/test/generate-starry-ltp-syscalls-common.sh \
+  test-suit/starryos/qemu/system/ltp-syscalls/candidates.txt \
+  test-suit/starryos/qemu/system/ltp-syscalls/cases.txt \
+  x86_64.log aarch64.log riscv64.log loongarch64.log
+```
+
+生成器只保留四份完整 LTP 阶段日志中都出现
+`STARRY_SYSTEM_TEST_PASSED` 的 testcase，并按静态排序冻结 `cases.txt`。修改候选集、LTP
+版本或镜像内容后必须重新进行四架构 probe，不能依据单一架构或历史 TODO 清单手工放行。
+
+这次接管的边界有意收缩：PR #1775 新增或修改过可执行 C 源码的 Starry cases 从发现
+流程中整项移除，由最终共同集中的官方 LTP 结果承担回归；原 C cases 中 LTP 没有表达的
+自定义断言不再保留，也不再宣称仍被覆盖。这个范围不包含 ArceOS C 测试和
+`apps/starry/wakeup-latency-bench`。
+
 子测例 CMake 产物应安装到：
 
 ```cmake

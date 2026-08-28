@@ -1,0 +1,69 @@
+#!/bin/sh
+set -eu
+
+case_id="@LTP_CASE_ID@"
+ltp_root="/opt/ltp"
+version_file="${ltp_root}/Version"
+runtest_file="${ltp_root}/runtest/syscalls"
+binary_dir="${ltp_root}/testcases/bin"
+
+if [ ! -f "${version_file}" ]; then
+    echo "missing LTP version file: ${version_file}" >&2
+    exit 2
+fi
+version="$(tr -d '\r\n' < "${version_file}")"
+if [ "${version}" != "20260529" ]; then
+    echo "unexpected LTP version: ${version}" >&2
+    exit 2
+fi
+if [ ! -f "${runtest_file}" ]; then
+    echo "missing LTP syscall runtest manifest: ${runtest_file}" >&2
+    exit 2
+fi
+
+if ! command="$(
+    awk -v testcase="${case_id}" '
+        $1 == testcase {
+            matches += 1
+            $1 = ""
+            sub(/^[[:space:]]+/, "")
+            testcase_command = $0
+        }
+        END {
+            if (matches != 1 || testcase_command == "")
+                exit 1
+            print testcase_command
+        }
+    ' "${runtest_file}"
+)"; then
+    echo "missing or duplicate LTP runtest entry: ${case_id}" >&2
+    exit 2
+fi
+
+set -- ${command}
+binary="$1"
+if [ ! -x "${binary_dir}/${binary}" ]; then
+    echo "missing LTP testcase binary: ${binary_dir}/${binary}" >&2
+    exit 2
+fi
+
+case_tmp="$(mktemp -d "/tmp/ltp-syscalls-${case_id}.XXXXXX")"
+cleanup_case_tmp()
+{
+    rm -rf -- "${case_tmp}"
+}
+trap cleanup_case_tmp EXIT HUP INT TERM
+
+export LTPROOT="${ltp_root}"
+export PATH="${binary_dir}:${ltp_root}/bin:/usr/bin:/bin"
+export TMPDIR="${case_tmp}"
+export LTP_TIMEOUT_MUL=1
+
+set +e
+(
+    cd "${case_tmp}"
+    "$@"
+)
+status=$?
+set -e
+exit "${status}"
