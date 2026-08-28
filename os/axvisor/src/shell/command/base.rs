@@ -134,7 +134,7 @@ fn do_cat(cmd: &ParsedCommand) {
         loop {
             let n = file.read(&mut buf)?;
             if n > 0 {
-                crate::guest_console::submit_host_bytes(&buf[..n]);
+                crate::shell::submit_shell_bytes(&buf[..n]);
             } else {
                 return Ok(());
             }

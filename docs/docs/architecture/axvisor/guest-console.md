@@ -5,7 +5,7 @@ sidebar_label: "客户机控制台"
 
 # Axvisor 客户机控制台架构
 
-Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机都需要收发字符。这个共享边界由 Axvisor 应用层的 `GuestConsoleMux` 管理：它是宿主输入的唯一读取者，决定当前前台，把输入送进对应 VM 的有界队列，并在多个客户机写同一个终端时完成输出仲裁。虚拟 UART 只通过 `SerialBackend` 读写字节，不拥有前台、快捷键或宿主终端策略。
+Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机都需要收发字符。这个共享边界由 Axvisor 应用层的 `GuestConsoleMux` 管理：它是物理宿主输入的唯一读取者，决定当前前台，把输入送进对应 VM 的有界队列，并在多个客户机写同一个物理终端时完成输出仲裁。可选的 `browser-console` 传输还可以把管理 shell 和启动时成功注册的最多三个 VM 映射到独立 WebSocket 字节流，而不改变物理 UART 前台。虚拟 UART 只通过 `SerialBackend` 读写字节，不拥有前台、快捷键或宿主终端策略。
 
 本文说明应用层的输入 ownership、前台状态、backend generation 有效性、输出模式和 VM 生命周期接入。UART 寄存器、FIFO、IRQ endpoint 与 vCPU poll 的完整语义见[设备运行时与中断架构](./device-runtime.md#5-串口完整路径)。
 
@@ -20,6 +20,7 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 | `GuestSerialBackendFactory` / `GuestSerialBackend` | factory 为一个 host-console serial request 创建带 `(VMId, BackendGeneration)` 身份的 backend；backend 把设备层字节调用转入 mux | configured node 创建；UART runtime 读写 |
 | `GuestOutputMux` | 在 `BootMultiplex` 与 `Interactive` 间切换，补齐物理行，维护每 VM 16 KiB 环形输出，并生成回放 | 客户机输出与前台变化 |
 | `guest_console/host.rs` | 在 vCPU 启动前取得唯一的 task-console RX、日志订阅与 output；output 移交给专用任务，其他路径只向固定队列提交事务 | Axvisor 初始化与 shell 主循环 |
+| `network_console` | 私有保存启动快照、四条固定容量通道、独占网页会话和 Axvisor 网页行编辑；不提供 raw TCP listener | `browser-console` 功能启用时 |
 | `shell/mod.rs` | 作为输入事件循环的唯一 owner，消费 `ConsoleInputEvent`，调用 `activate()`，每轮 reconcile VM 状态 | 管理 shell |
 | `shell/command/vm.rs` | `vm start --console`、`vm console` 以及 start/stop/reset/resume/delete 的 mux lifecycle 调用 | 管理命令 |
 | `AxvmManager` 接入 | 提供 VM registry/status，输入入队后唤醒 VM；实际设备 poll 由 vCPU0 执行 | VM lifecycle 与运行期 |
@@ -28,7 +29,8 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 `NoPreemptMutex`：`state` 保护以上全部可变状态，`output_lock` 串行化输出仲裁以及 backend
 replacement/invalidation。客户机输出路径的固定顺序是 `output_lock` → host transport queue →
 `state`；它只格式化并提交一个固定容量事务，不触碰物理 UART。其他同时使用两把 mux 锁的
-路径仍按 `output_lock` → `state` 加锁，禁止反向获取。
+路径仍按 `output_lock` → `state` 加锁，禁止反向获取。网络分支不同时持有这两把锁：它先在
+`state` 下校验 generation，释放后才向对应的固定网络队列复制原始字节。
 
 ## 2. 初始化与宿主输入 ownership
 
@@ -92,6 +94,10 @@ backlog，返回管理 shell 后再回放。底层 64 条 record 队列和 mux b
 每个 `GuestState.input` 最多保存 4096 字节。一次路由只写剩余容量，超出部分从本次输入尾部丢弃；已有队列内容不会被淘汰，调用者不阻塞，也不会把溢出字节改投给 shell。第一次溢出发布一条完整宿主 warning，guest 读出至少一个字节后才允许报告下一次溢出，避免静默丢失和 warning flood。backend 的 `read()` 按调用方 buffer 大小从队首取出字节。
 
 `route_host_byte()` 在持有 mux 锁时只完成状态修改和入队，把待唤醒的 VM ID 放进 `RoutedInput`。公共入口释放 `state` 和 `output_lock` 后才调用 `AxvmManager::notify_vm()`；唤醒失败只记录 warning，已入队字节仍保留。这个锁外调用避免 mux 锁跨入 VM manager 和 scheduler。
+
+`route_network_input(vm_id, bytes)` 复用同一有界队列和锁外唤醒，但它先要求目标
+VM 仍在 running 集合且存在当前 backend generation。该入口按 VM ID 直接路由，
+不取得物理 `TaskConsoleInput`、不解析 `Ctrl+X` 快捷键，也不改变 `attached`。
 
 ### 3.2 命令附着与 foreground 激活
 
@@ -236,6 +242,21 @@ flowchart LR
 | 单 vCPU guest | `notify_vm()` 设置 Release 发布的 pending device-poll flag 并唤醒；vCPU0 用 Acquire/AcqRel 消费 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
 | SMP guest | 当前沿用共享 wait queue 的 `notify_one()`，不发布 shared poll flag | 无法定向唤醒 vCPU0，可能只唤醒 secondary；空闲 SMP guest 的输入会延迟到 vCPU0 下次 VM-exit 或其他唤醒 |
 | 输出并发 | `output_lock` 覆盖 format 与 ring replay；固定队列保持事务边界，只有 output worker 等待 UART | transport 满时丢弃当前完整事务；per-guest ring 淘汰最旧字节；两者均报告摘要且不阻塞 vCPU writer |
+| 网络输出 | 每端点独立 64 KiB 固定队列；有连接时 vCPU 只复制原始字节并通过 `IrqNotify` 唤醒对应网页输出任务 | 无连接时不保留历史也不获取网络队列锁；慢客户端只影响自身通道并最终触发该端点队列丢弃摘要 |
+
+`browser-console` 在默认 VM 初始化后只获取一次运行时 VM 列表并按 VM ID 排序。网页通过 `/api/consoles` 获取这个启动快照，
+使用 `/ws/axvisor` 和 `/ws/vm-<真实 ID>` 路由，并直接显示客户机 TOML 的 `base.name`。
+零个客户机时只有管理窗格，一个、两个或三个客户机时分别生成两个、三个或四个窗格；
+运行中创建、删除 VM 不重建网络通道。超过三个启动客户机时，只为按 VM ID 排序后的前三个
+客户机创建网络通道，其余客户机仍正常启动并保留物理 UART 路径。
+这些 WebSocket 是无 TLS、无认证的原始控制台字节流，每端点同时只接受一个会话，只能用在受信任的管理网络。网络 shell 不给客户机提供 IP 栈；连接终止在 Axvisor 现有的 virtual-UART backend。
+
+启用 `browser-console` 后，Axvisor 会在配置的 HTTP 地址直接发布一个自适应页面。
+浏览器通过同源 WebSocket 取得 management/guest 独占会话、固定队列及溢出统计；
+该 feature 不隐式启用 `http-axum` VM 管理 API，也没有 raw TCP 控制台、per-lane dispatcher
+或 Tokio `mpsc` 中转。命令执行主机不参与运行时链路。页面的
+HTML、CSS 和 JavaScript 均编译进 Axvisor，不依赖 GitHub、CDN 或开发板根文件系统；
+不存在需要命令主机持续运行的网页代理路径。
 
 SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll 的 single-owner 假设。正确演进方向是为 vCPU0 提供可定向的 wait/wake 路径，再为 SMP 发布 pending poll 请求。
 
@@ -267,6 +288,9 @@ SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll �
 - BootMultiplex 多 VM 行前缀、默认附着和输入触发的抢占、命令 echo 后的前台结果；
 - 第一次前台输入进入 Interactive、切换时回放后台 ring、detach 后全部缓存；
 - foreground 或 background 未结束物理行在切换时正确补行。
+- VM 2 网络输入不改变物理 VM 1 foreground，并拒绝 stopped 或 stale backend；
+- 有连接的 VM 输出只进入对应网络通道，无连接时跳过网络输出路径；
+- 启动布局按 VM ID 排序、最多选择三个客户机并使用配置名称。
 
 `mux/output.rs` 另有 16 个内部测试，直接覆盖完整行选择、分片只加一次前缀、pending/total 容量上界、超大单次 write、16 KiB 淘汰与回放、Interactive 前台分片、reset/reconcile 后物理分隔符。`console_mux/transport.rs` 的 4 个测试验证 FIFO、队列满、超大事务和分块溢出时的整事务回滚。顶层 mux 测试还覆盖宿主完整日志隔离、guest 前台缓存与返回 shell 后回放；`axvm::runtime` 与 vCPU runtime 测试单 vCPU poll flag 和 SMP 不发布 shared flag 的差异。
 
