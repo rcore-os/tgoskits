@@ -120,13 +120,7 @@ impl TlbQuarantine {
         match gather.finish() {
             Ok(()) => Ok(()),
             Err((gather, error)) => {
-                self.failures = self.failures.saturating_add(1);
-                self.last_error = Some(error);
-                assert!(
-                    self.pending.is_none(),
-                    "a new stage-1 mutation cannot bypass an existing quarantine"
-                );
-                self.pending = Some(gather);
+                self.retain_failed_gather(gather, error);
                 Err(error)
             }
         }
@@ -137,13 +131,21 @@ impl TlbQuarantine {
             return Ok(());
         };
         if let Err((gather, error)) = gather.finish() {
-            self.failures = self.failures.saturating_add(1);
-            self.last_error = Some(error);
-            self.pending = Some(gather);
+            self.retain_failed_gather(gather, error);
             return Err(error);
         }
         self.last_error = None;
         Ok(())
+    }
+
+    fn retain_failed_gather(&mut self, gather: TlbGather, error: TlbShootdownError) {
+        self.failures = self.failures.saturating_add(1);
+        self.last_error = Some(error);
+        assert!(
+            self.pending.is_none(),
+            "a new stage-1 mutation cannot bypass an existing quarantine"
+        );
+        self.pending = Some(gather);
     }
 
     pub(crate) fn pending_count(&self) -> usize {

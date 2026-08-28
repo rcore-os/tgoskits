@@ -800,37 +800,43 @@ pub(super) fn take_context_switch_reclaim_ready() -> bool {
     }
 }
 
+#[cfg(feature = "uspace")]
+fn commit_current_task_address_space_transition<T>(
+    next_selected: AddressSpaceHandle,
+    action: impl FnOnce() -> Result<T, TaskError>,
+) -> Result<T, TaskError> {
+    let _irq = crate::sync::IrqSaveGuard::new();
+    // SAFETY: the IRQ guard pins the current CPU through preparation, the
+    // scheduler-token operation, and the infallible active-mm commit.
+    unsafe {
+        with_current_cpu_pin(|pin| {
+            let previous_selected = ax_task::current_address_space_handle()?;
+            let prepared = prepare_runtime_address_space_switch(
+                pin,
+                previous_selected,
+                next_selected,
+                AddressSpaceTransitionPhase::CurrentTask,
+            )
+            .map_err(super::runtime_status_error)?;
+            let result = action()?;
+            // No fallible operation may follow the ownership transition above.
+            prepared.commit(pin);
+            Ok(result)
+        })
+    }
+}
+
 /// Replaces the running user task's owning address-space token.
 pub fn switch_current_address_space(address_space: TaskAddressSpace) -> Result<(), TaskError> {
     #[cfg(feature = "uspace")]
     {
         let mut address_space = address_space;
-        let previous = {
-            let _irq = crate::sync::IrqSaveGuard::new();
-            let next_handle = address_space.handle();
-            let previous = unsafe {
-                // SAFETY: the IRQ guard pins the current CPU through prepare,
-                // scheduler-token transfer, and the infallible commit.
-                with_current_cpu_pin(|pin| {
-                    let previous_handle = ax_task::current_address_space_handle()?;
-                    let prepared = prepare_runtime_address_space_switch(
-                        pin,
-                        previous_handle,
-                        next_handle,
-                        AddressSpaceTransitionPhase::CurrentTask,
-                    )
-                    .map_err(super::runtime_status_error)?;
-                    let previous =
-                        ax_task::replace_current_address_space(address_space.token_mut())?;
-                    // No fallible operation may follow this ownership transfer.
-                    prepared.commit(pin);
-                    Ok::<_, TaskError>(previous)
-                })
-            }?;
-            let transferred = address_space.take_token();
-            debug_assert!(transferred.is_none());
-            previous
-        };
+        let next_handle = address_space.handle();
+        let previous = commit_current_task_address_space_transition(next_handle, || {
+            ax_task::replace_current_address_space(address_space.token_mut())
+        })?;
+        let transferred = address_space.take_token();
+        debug_assert!(transferred.is_none());
 
         // Reclaim may allocate or drop an OS ownership anchor. It therefore
         // runs only after the exec transaction has restored normal IRQ state.
@@ -849,27 +855,10 @@ pub fn switch_current_address_space(address_space: TaskAddressSpace) -> Result<(
 pub fn detach_current_address_space() -> Result<(), TaskError> {
     #[cfg(feature = "uspace")]
     {
-        let previous = {
-            let _irq = crate::sync::IrqSaveGuard::new();
-            unsafe {
-                // SAFETY: the IRQ guard pins the current CPU through prepare,
-                // scheduler-token transfer, and the lazy-mm commit.
-                with_current_cpu_pin(|pin| {
-                    let previous_handle = ax_task::current_address_space_handle()?;
-                    let prepared = prepare_runtime_address_space_switch(
-                        pin,
-                        previous_handle,
-                        AddressSpaceHandle::NONE,
-                        AddressSpaceTransitionPhase::CurrentTask,
-                    )
-                    .map_err(super::runtime_status_error)?;
-                    let previous = ax_task::detach_current_address_space()?;
-                    // No fallible operation may follow this ownership transfer.
-                    prepared.commit(pin);
-                    Ok::<_, TaskError>(previous)
-                })
-            }?
-        };
+        let previous = commit_current_task_address_space_transition(
+            AddressSpaceHandle::NONE,
+            ax_task::detach_current_address_space,
+        )?;
 
         // The task-scoped owner may acquire sleepable OS locks. Run it only
         // after restoring IRQs, while the runtime wrapper still pins the root
