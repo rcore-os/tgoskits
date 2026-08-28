@@ -58,15 +58,6 @@ impl IvcRegion {
         self.header.initialize();
     }
 
-    /// Re-publishes the protocol header with volatile stores.
-    ///
-    /// This is useful when the region is mapped as non-cacheable shared RAM and
-    /// the platform requires explicit volatile writes for the final protocol
-    /// header publication to be visible to a peer guest.
-    pub fn publish_header_volatile(&self) {
-        self.header.initialize_volatile();
-    }
-
     /// Returns whether the host-provided IVC channel header matches.
     pub fn channel_header_matches(&self, publisher_id: usize, key: usize) -> bool {
         self.publisher_id == publisher_id as u64 && self.key == key as u64
@@ -140,33 +131,6 @@ impl IvcRegionHeader {
             .store(IVC_RING_HEADER_SIZE, Ordering::Relaxed);
         self.version.store(IVC_REGION_VERSION, Ordering::Release);
         self.magic.store(IVC_REGION_MAGIC, Ordering::Release);
-    }
-
-    fn initialize_volatile(&self) {
-        unsafe {
-            self.header_size
-                .0
-                .as_ptr()
-                .write_volatile(IVC_REGION_HEADER_SIZE);
-            self.region_size
-                .as_ptr()
-                .write_volatile(IVC_REGION_TOTAL_SIZE);
-            self.features
-                .as_ptr()
-                .write_volatile(IVC_REGION_FEATURE_SPSC_FIXED_SLOTS);
-            self.publisher_to_subscriber_offset
-                .as_ptr()
-                .write_volatile(IVC_PUBLISHER_TO_SUBSCRIBER_RING_OFFSET);
-            self.subscriber_to_publisher_offset
-                .as_ptr()
-                .write_volatile(IVC_SUBSCRIBER_TO_PUBLISHER_RING_OFFSET);
-            self.ring_size.as_ptr().write_volatile(IVC_RING_HEADER_SIZE);
-            self.version
-                .0
-                .as_ptr()
-                .write_volatile(IVC_REGION_VERSION as u32);
-            self.magic.as_ptr().write_volatile(IVC_REGION_MAGIC);
-        }
     }
 }
 

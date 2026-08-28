@@ -83,7 +83,6 @@ impl AxivcRegistry {
             }
         };
         region.initialize();
-        region.publish_header_volatile();
         let region: &'static IvcRegion = region;
         let (producer, consumer) = unsafe { region.publisher_endpoints() }.into_parts();
 
@@ -411,16 +410,12 @@ impl DeviceOps for AxivcChannel {
         let state = inner
             .channel_mut(self.role, self.index)
             .ok_or(VfsError::NoSuchDevice)?;
-        let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
-        let message = state.consumer.try_recv(&mut payload).map_err(ring_error)?;
+        let message = state.consumer.try_recv(buf).map_err(ring_error)?;
         let Some(message) = message else {
             return Err(VfsError::WouldBlock);
         };
 
-        let len = message.len().min(buf.len());
-        let record_len = IVC_SLOT_PAYLOAD_SIZE.min(buf.len());
-        buf[..len].copy_from_slice(&payload[..len]);
-        buf[len..record_len].fill(0);
+        let len = message.len();
         if matches!(self.role, ChannelRole::Subscriber) {
             notify_peer(state, self.role_name());
         }
@@ -432,7 +427,7 @@ impl DeviceOps for AxivcChannel {
             message.kind(),
             len
         );
-        Ok(record_len)
+        Ok(len)
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
