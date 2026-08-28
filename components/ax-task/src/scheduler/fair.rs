@@ -566,20 +566,15 @@ impl FairEntity {
 }
 
 fn finish_hrtick_delta_ns(delta_ns: u64, irq_util_avg: u32) -> u64 {
-    if delta_ns == 0 {
-        0
+    debug_assert!(irq_util_avg < BASE_WEIGHT as u32);
+    let scaled_delta = if irq_util_avg == 0 {
+        delta_ns
     } else {
-        debug_assert!(irq_util_avg < BASE_WEIGHT as u32);
-        let scaled_delta = if irq_util_avg == 0 {
-            delta_ns
-        } else {
-            let scale = u128::from(BASE_WEIGHT) * u128::from(BASE_WEIGHT)
-                / u128::from(BASE_WEIGHT - u64::from(irq_util_avg));
-            (u128::from(delta_ns) * scale / u128::from(BASE_WEIGHT)).min(u128::from(u64::MAX))
-                as u64
-        };
-        scaled_delta.max(MIN_HRTICK_DELTA_NS)
-    }
+        let scale = u128::from(BASE_WEIGHT) * u128::from(BASE_WEIGHT)
+            / u128::from(BASE_WEIGHT - u64::from(irq_util_avg));
+        (u128::from(delta_ns) * scale / u128::from(BASE_WEIGHT)).min(u128::from(u64::MAX)) as u64
+    };
+    scaled_delta.max(MIN_HRTICK_DELTA_NS)
 }
 
 impl FairEntity {
@@ -700,6 +695,11 @@ mod tests {
         let entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1, 0);
 
         assert_eq!(entity.finish_runtime_deadline_delta_ns(0), 10_000);
+    }
+
+    #[test]
+    fn fair_hrtick_clamps_a_zero_deadline_like_linux() {
+        assert_eq!(finish_hrtick_delta_ns(0, 0), 10_000);
     }
 
     #[test]
