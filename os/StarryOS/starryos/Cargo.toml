@@ -59,9 +59,6 @@ ax-std = { workspace = true, default-features = false, features = [
   "fd",
   "ext-ld",
   "fs",
-  "multitask",
-  "irq",
-  "paging",
 ] }
 ax-driver.workspace = true
 ax-hal.workspace = true
