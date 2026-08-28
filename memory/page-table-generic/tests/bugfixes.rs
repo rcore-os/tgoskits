@@ -215,11 +215,14 @@ fn test_walk_address_comparison() {
     println!("✅ 地址比较逻辑测试通过！");
 }
 
-/// 测试unmap递归保留逻辑
+/// The generic unmap API retains its existing immediate-reclaim contract.
 ///
-/// 已发布的页表不能在跨 CPU/硬件 walker 失效确认前回收中间页表帧。
+/// Stage-1 owners that need remote shootdown confirmation use the separate
+/// deferred API. Changing the generic path to preserve empty tables would make
+/// stage-2 and other non-stage-1 users accumulate page-table frames until the
+/// entire root is destroyed.
 #[test]
-fn safe_range_unmap_preserves_intermediate_tables_until_owner_teardown() {
+fn generic_range_unmap_reclaims_empty_intermediate_tables() {
     let mut pg = PageTable::<T4kL4, TrackedFram4k>::new(TrackedFram4k::new()).unwrap();
 
     let base_addr = 0x10000000usize;
@@ -247,20 +250,21 @@ fn safe_range_unmap_preserves_intermediate_tables_until_owner_teardown() {
     println!("取消映射后分配的帧数: {}", allocated_after);
 
     assert_eq!(
-        allocated_after, allocated_before,
-        "safe unmap must retain intermediate tables without a shootdown confirmation token"
+        allocated_after, 1,
+        "generic unmap must reclaim every empty intermediate table"
     );
+    assert!(allocated_after < allocated_before);
 
     drop(pg);
     assert_eq!(
         allocator.allocated_count(),
         0,
-        "the page-table owner must reclaim the retained hierarchy at teardown"
+        "the page-table owner must reclaim the root at teardown"
     );
 }
 
 #[test]
-fn safe_leaf_unmap_preserves_intermediate_tables_until_owner_teardown() {
+fn generic_leaf_unmap_reclaims_empty_intermediate_tables() {
     let allocator = TrackedFram4k::new();
     let mut page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
     let vaddr = VirtAddr::from_usize(0x1000_0000);
@@ -277,7 +281,8 @@ fn safe_leaf_unmap_preserves_intermediate_tables_until_owner_teardown() {
 
     page_table.unmap_page(vaddr).unwrap();
 
-    assert_eq!(allocator.allocated_count(), allocated_before_unmap);
+    assert_eq!(allocator.allocated_count(), 1);
+    assert!(allocator.allocated_count() < allocated_before_unmap);
     drop(page_table);
     assert_eq!(allocator.allocated_count(), 0);
 }
@@ -318,7 +323,7 @@ fn deferred_unmap_retains_empty_intermediate_tables_until_confirmation() {
 }
 
 #[test]
-fn failed_region_map_keeps_detached_prefix_tables_until_owner_teardown() {
+fn failed_region_map_reclaims_unpublished_prefix_tables() {
     let allocator = TrackedFram4k::new();
     let mut page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
     let prefix = VirtAddr::from_usize(0x1f_f000);
@@ -353,8 +358,8 @@ fn failed_region_map_keeps_detached_prefix_tables_until_owner_teardown() {
     assert_eq!(page_table.query(conflict).unwrap().0, conflict_paddr);
     assert_eq!(
         allocator.allocated_count(),
-        allocated_before_attempt + 1,
-        "rollback must retain the now-empty prefix table instead of freeing it before shootdown"
+        allocated_before_attempt,
+        "rollback must reclaim empty tables created by the unpublished mapping attempt"
     );
 }
 

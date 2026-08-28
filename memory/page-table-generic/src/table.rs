@@ -353,7 +353,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 let rollback_result = if offset == 0 {
                     Ok(())
                 } else {
-                    self.unmap_with_config_preserving_tables(&UnmapConfig {
+                    self.unmap_with_config(&UnmapConfig {
                         start_vaddr,
                         size: offset,
                         flush: false,
@@ -382,22 +382,22 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 
     /// Unmaps one page and returns its physical address, flags, and page size.
-    ///
-    /// Empty intermediate page-table frames remain linked until owner teardown.
-    /// Callers that can perform domain-wide TLB invalidation should instead use
-    /// [`Self::unmap_page_deferred`] and reclaim its token after confirmation.
     pub fn unmap_page(
         &mut self,
         vaddr: VirtAddr,
     ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
         let (pte, level) = self
             .root
-            .take_occupied_leaf_preserving_tables(vaddr, Frame::<T, A>::PT_LEVEL)?;
+            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)?;
         let page_size = Frame::<T, A>::level_size(level);
-        T::flush(Some(vaddr.align_down(page_size)));
         let is_dir = level > 1;
         let paddr = pte.paddr(is_dir);
         let config = pte.config(is_dir);
+        self.unmap_with_config(&UnmapConfig {
+            start_vaddr: vaddr.align_down(page_size),
+            size: page_size,
+            flush: true,
+        })?;
         Ok((paddr, config, page_size))
     }
 
@@ -560,7 +560,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     ///
     /// # 行为
     /// - 清除指定虚拟地址范围内的所有页表项
-    /// - 保留空的子页表帧直到页表 owner teardown
+    /// - 自动回收空的子页表帧
     /// - 支持大页和普通页面的取消映射
     /// - 根据配置刷新TLB
     pub fn unmap(&mut self, start_vaddr: VirtAddr, size: usize) -> PagingResult<()> {
@@ -590,10 +590,6 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
 
     /// 使用配置对象取消映射
     pub fn unmap_with_config(&mut self, config: &UnmapConfig) -> PagingResult<()> {
-        self.unmap_with_config_preserving_tables(config)
-    }
-
-    fn unmap_with_config_preserving_tables(&mut self, config: &UnmapConfig) -> PagingResult<()> {
         self.validate_unmap_params(config.start_vaddr, config.size)?;
 
         let end_vaddr = match config.start_vaddr.as_usize().checked_add(config.size) {
@@ -606,13 +602,12 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         };
         self.validate_address_width(config.start_vaddr, config.size, "unmap_with_config")?;
 
-        self.root
-            .unmap_range_recursive_preserving_tables(UnmapRecursiveConfig {
-                start_vaddr: config.start_vaddr,
-                end_vaddr,
-                level: Frame::<T, A>::PT_LEVEL,
-                flush: config.flush,
-            })?;
+        self.root.unmap_range_recursive(UnmapRecursiveConfig {
+            start_vaddr: config.start_vaddr,
+            end_vaddr,
+            level: Frame::<T, A>::PT_LEVEL,
+            flush: config.flush,
+        })?;
 
         Ok(())
     }

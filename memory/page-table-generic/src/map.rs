@@ -184,23 +184,15 @@ where
         Ok(())
     }
 
-    /// Recursively clears leaf mappings while retaining intermediate tables.
+    /// Recursively clears leaf mappings.
     ///
-    /// A generic page table cannot prove that every CPU or hardware walker has
-    /// invalidated the old hierarchy. Empty child tables therefore stay linked
-    /// until owner teardown unless the caller uses a deferred reclaim token.
-    /// The return value is always `false` because this operation never detaches
-    /// an intermediate table for immediate reclamation.
+    /// Returns whether this frame is empty and can be reclaimed by its caller.
+    /// This is the existing generic page-table contract used by stage-2 and
+    /// single-owner domains. Stage-1 owners that require remote shootdown
+    /// confirmation use `PageTableRef::unmap_page_deferred` instead.
     pub fn unmap_range_recursive(&mut self, config: UnmapRecursiveConfig) -> PagingResult<bool> {
-        self.unmap_range_recursive_preserving_tables(config)?;
-        Ok(false)
-    }
-
-    pub(crate) fn unmap_range_recursive_preserving_tables(
-        &mut self,
-        config: UnmapRecursiveConfig,
-    ) -> PagingResult<()> {
         let mut vaddr = config.start_vaddr;
+        let mut can_reclaim = true;
         let allocator = self.allocator.clone();
 
         while vaddr < config.end_vaddr {
@@ -261,12 +253,21 @@ where
                     flush: config.flush,
                 };
 
-                child_frame.unmap_range_recursive_preserving_tables(child_config)?;
+                let child_can_reclaim = child_frame.unmap_range_recursive(child_config)?;
+                if child_can_reclaim {
+                    pte_ref.clear();
+                    allocator.dealloc_frame(child_paddr);
+                } else {
+                    can_reclaim = false;
+                }
             }
 
             vaddr = next_level_vaddr;
         }
 
-        Ok(())
+        if can_reclaim {
+            can_reclaim = self.as_slice().iter().all(PageTableEntry::unused);
+        }
+        Ok(can_reclaim)
     }
 }

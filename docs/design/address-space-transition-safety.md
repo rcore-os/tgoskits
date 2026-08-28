@@ -4,7 +4,7 @@
 
 本文对应 PR #1775 之上的通用性重构。实现和验证基线固定为：
 
-- PR #1775 head：`1f14e49949910ad26e8a69fcb0e1ef98e180ec41`；
+- PR #1775 head：`5ca6f2e3f909ebc8cfdcdbe9298cccb410bc9410`；
 - parent branch：`codex/refactor-ax-task-from-1596`；
 - 本地 Linux 对照树：`/home/zhourui/linux-src`，head
   `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`（Linux v7.1）。
@@ -125,10 +125,12 @@ PTE 的 frame 必须进入 gather。
 持有旧 translation 或 page-walk cache；因此不能在 IPI ACK 前释放变空的下级页表。generic 层的
 `unmap_page_deferred()` 只负责清 leaf 并返回 move-only `DeferredPageTableFrames`，不执行 shootdown；
 ax-mm/Starry gather 接管 token，确认后才调用 `reclaim()`。token 未确认即 Drop 时只记录诊断并泄漏，
-禁止把超时降级为 table-page UAF。generic 的安全 `unmap_page()`/range unmap 默认只清理 leaf，保留
-变空层级到 owner teardown；活跃页表中的多页 map rollback 采用相同策略，避免生成一个尚无 gather
-承接的 detached table frame。需要及时回收的 published stage-1 调用点必须显式选择 deferred API，
-不能依赖 generic 层的本地 flush 推断远端 CPU 或其他 hardware walker 已经失效。
+禁止把超时降级为 table-page UAF。generic 原有 `unmap_page()`/range unmap 继续按其调用域完成本地
+flush 并即时回收空中间表，供 Axvisor stage-2 和单 owner 页表使用；不能把 stage-1 的远端确认策略
+反向强加给这些调用方，导致反复 map/unmap 时页表帧累积到 root teardown。所有 published stage-1
+调用点必须显式选择 deferred API，不能依赖 generic 层的本地 flush 推断远端 CPU 已经失效。
+尚未发布的多页 map 失败前缀仍可由 generic rollback 立即回收，因为没有 CPU 或 hardware walker
+能够观察该临时层级。
 
 页表查询明确区分两种语义：`query()` 回答“当前是否存在可用于地址翻译的 present leaf”，
 `query_occupied()` 回答“这个 slot 是否仍由一个 leaf descriptor 占用”。后者包括 `PROT_NONE`、
@@ -284,7 +286,7 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
 
 | 层 | 负责 | 不负责 |
 | --- | --- | --- |
-| page-table-generic | walker、PTE 结构、保留中间层的安全 unmap、detached table-frame token | CPU footprint、IPI、shootdown/quarantine、OS deferred owner |
+| page-table-generic | walker、PTE 结构、调用域内普通回收、detached table-frame token | CPU footprint、IPI、shootdown/quarantine、OS deferred owner |
 | ax-cpu / ax-hal | stage-1 flags、本地 root/TLB 指令、架构 user entry | OS backend 生命周期 |
 | ax-task | 调度决策、execution/address-space handle 的单次 switch plan | 解引用 OS mm、直接操作页表 |
 | ax-runtime | prepared switch 组合、active-mm lease、kernel mapping 门面、跨 CPU shootdown | Starry VMA/COW/file policy |
@@ -297,8 +299,9 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
 
 - ax-mm：shootdown 失败时 frame 不 reclaim，重试确认后才 reclaim；partial populate rollback 中
   已发布 frame 同样 deferred；DMA alias 的 confirmed unmap 失败必须阻止原物理页回到 allocator；
-  page-table-generic 的 red/green 回归证明安全 leaf/range unmap、deferred leaf 删除与失败 map rollback
-  都不会在确认前释放变空的中间页表；AArch64 源级合同固定发起 CPU 的 `dsb ishst` 早于任何
+  page-table-generic 的 red/green 回归证明普通 leaf/range unmap 和未发布 map rollback 不积累空表，
+  同时 deferred leaf 删除在确认前不释放变空的中间页表；AArch64 源级合同固定发起 CPU 的
+  `dsb ishst` 早于任何
   目标失效，并固定本地 `dsb nshst → TLBI → dsb nsh → isb` 顺序，ax-hal 模型同时证明即使发起
   CPU 不在 active mask 中，写入发布仍早于第一条远端 IPI；
 - runtime：`A(same mm) → B(same mm) → C(other mm)` 保留共享 lease 后再按序撤销；不同
@@ -328,7 +331,7 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
   shootdown 确认先于旧 frame reclaim。
 
 交付门禁不是“跑过一次”。每次 parent rebase 或 child SHA 变化都重置为 `0/3`。最终 child SHA
-必须以 `since_sha=1f14e49949910ad26e8a69fcb0e1ef98e180ec41` 连续完成三次独立 CI
+必须以 `since_sha=5ca6f2e3f909ebc8cfdcdbe9298cccb410bc9410` 连续完成三次独立 CI
 workflow_dispatch；每次 required static/workspace job 和
 ArceOS、StarryOS、Axvisor × x86_64、aarch64、riscv64、loongarch64 全部成功，且每个 QEMU
 子任务存在 success marker。cancelled、skipped、timeout、缺 marker 或仅 rerun failed job 均不计绿。

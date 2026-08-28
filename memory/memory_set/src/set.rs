@@ -236,10 +236,10 @@ impl<B: MappingBackend> MemorySet<B> {
             return Ok(());
         }
 
-        // Validate every backend before the first PTE or owner is removed.
-        // Commit then touches disjoint sub-ranges under the same page-table
-        // lock, so a later area cannot turn an earlier area into a partial
-        // mutation.
+        // Reject predictable mapping-shape and ownership failures before the
+        // first PTE is removed. Commit still retains every backend owner until
+        // all disjoint subranges complete or the caller quarantines a partial
+        // published mutation.
         for area in self.areas.values() {
             if area.start() >= range.end {
                 break;
