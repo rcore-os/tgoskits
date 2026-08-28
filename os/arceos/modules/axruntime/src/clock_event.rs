@@ -208,7 +208,7 @@ impl LocalClockEvent {
         self.scheduler_generation = generation;
         self.scheduler_deadline = deadline.map(ClockDeadline::from_monotonic);
         self.runtime_deadline = runtime_deadline.map(ClockDeadline::from_monotonic);
-        self.reconcile_arm()
+        self.reconcile_scheduler_publication()
     }
 
     /// Claims a physical timer edge for this CPU lifecycle epoch.
@@ -345,6 +345,22 @@ impl LocalClockEvent {
     }
 
     fn reconcile_arm(&mut self) -> ClockEventAction {
+        self.reconcile_arm_with_early_edge(false)
+    }
+
+    /// Reconciles a scheduler hrtimer publication without moving an already
+    /// armed physical edge later.
+    ///
+    /// Linux updates the logical hrtimer expiry on a context switch, but only
+    /// reprograms the local clockevent immediately when the new expiry is
+    /// earlier. An obsolete earlier comparator is harmless: its IRQ observes
+    /// that no logical deadline is due and rearms the new minimum. Keeping it
+    /// avoids an APIC write on the common Fair-to-Fair switch path.
+    fn reconcile_scheduler_publication(&mut self) -> ClockEventAction {
+        self.reconcile_arm_with_early_edge(true)
+    }
+
+    fn reconcile_arm_with_early_edge(&mut self, keep_earlier_armed: bool) -> ClockEventAction {
         match self.phase {
             ClockEventPhase::Offline | ClockEventPhase::Firing => {
                 return ClockEventAction::None;
@@ -354,17 +370,11 @@ impl LocalClockEvent {
         }
         let selected = self.selected_deadline();
         if let Some(armed) = self.armed_deadline {
-            // The physical comparator represents the current logical minimum,
-            // not the task which happened to arm it. Linux hrtick restarts a
-            // queued timer when a context switch moves the active request in
-            // either direction. Keeping the previous task's later-invalidated
-            // slice edge would turn every blocking switch into a stale IRQ.
-            //
-            // Local IRQ exclusion serializes this state transition with the
-            // handler. A residual hardware edge which raced the reprogram is
-            // merely claimed as an early edge and reconciled once more.
             match selected {
                 Some(deadline) if deadline == armed => return ClockEventAction::None,
+                Some(deadline) if keep_earlier_armed && armed < deadline => {
+                    return ClockEventAction::None;
+                }
                 Some(deadline) => {
                     self.armed_deadline = Some(deadline);
                     self.phase = ClockEventPhase::Armed;
@@ -659,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn later_live_scheduler_deadline_replaces_a_future_slice_edge() {
+    fn later_live_scheduler_deadline_keeps_a_future_earlier_slice_edge() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(500)),
@@ -684,14 +694,51 @@ mod tests {
                 Some(scheduler_deadline(400)),
                 Some(scheduler_deadline(400)),
             ),
-            ClockEventAction::Program(deadline(400)),
-            "a new current task must replace the previous task's future slice edge"
+            ClockEventAction::None,
+            "a later current-task expiry must not move the physical edge later"
+        );
+        assert_eq!(event.scheduler_deadline(), Some(deadline(400)));
+        assert_eq!(event.armed_deadline(), Some(deadline(300)));
+    }
+
+    #[test]
+    fn later_scheduler_deadline_keeps_the_earlier_physical_edge_until_it_fires() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(
+            event.online(deadline(500)),
+            ClockEventAction::Resume(deadline(500))
+        );
+        assert_eq!(
+            event.publish_scheduler(
+                1,
+                Some(scheduler_deadline(300)),
+                Some(scheduler_deadline(300)),
+            ),
+            ClockEventAction::Program(deadline(300))
+        );
+
+        assert_eq!(
+            event.publish_scheduler(
+                2,
+                Some(scheduler_deadline(400)),
+                Some(scheduler_deadline(400)),
+            ),
+            ClockEventAction::None,
+            "Linux keeps an already armed earlier hrtimer edge instead of moving it later"
+        );
+        assert_eq!(event.scheduler_deadline(), Some(deadline(400)));
+        assert_eq!(event.armed_deadline(), Some(deadline(300)));
+
+        let firing = fire_due(&mut event, 300);
+        assert_eq!(
+            event.finish_firing(firing, ClockEventRearm::Immediate),
+            ClockEventAction::Resume(deadline(400))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(400)));
     }
 
     #[test]
-    fn logical_minimum_reprograms_when_scheduler_deadlines_move_later() {
+    fn later_logical_minimum_waits_for_the_earlier_armed_edge() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(500)),
@@ -711,17 +758,17 @@ mod tests {
                 Some(scheduler_deadline(400)),
                 Some(scheduler_deadline(400)),
             ),
-            ClockEventAction::Program(deadline(400))
+            ClockEventAction::None
         );
         assert_eq!(
             event.publish_scheduler(3, None, None),
-            ClockEventAction::Program(deadline(500))
+            ClockEventAction::None
         );
-        assert_eq!(event.armed_deadline(), Some(deadline(500)));
+        assert_eq!(event.armed_deadline(), Some(deadline(300)));
     }
 
     #[test]
-    fn residual_edge_after_later_reprogram_is_reconciled_as_early() {
+    fn retained_early_edge_rearms_the_later_live_deadline() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(500)),
@@ -746,14 +793,13 @@ mod tests {
                 Some(scheduler_deadline(400)),
                 Some(scheduler_deadline(400)),
             ),
-            ClockEventAction::Program(deadline(400)),
-            "the elapsed edge no longer represents a live logical deadline"
+            ClockEventAction::None,
+            "the elapsed edge is retained as an early hrtimer wakeup"
         );
-        assert_eq!(event.armed_deadline(), Some(deadline(400)));
+        assert_eq!(event.armed_deadline(), Some(deadline(300)));
 
-        // A backend may still deliver the old pending edge after the
-        // comparator was moved. It is an early firing for the new logical
-        // minimum and must rearm that same deadline without consuming it.
+        // The retained earlier edge is an early firing for the new logical
+        // minimum and must rearm that deadline without consuming it.
         let firing = fire_due(&mut event, 350);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
