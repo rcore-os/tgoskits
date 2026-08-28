@@ -67,14 +67,16 @@ impl ThreadLifecycle {
         }
     }
 
+    #[track_caller]
     pub(crate) fn state(&self) -> ThreadState {
-        decode_state(self.state.load(Ordering::Acquire) & STATE_MASK)
+        decode_state(self.state.load(Ordering::Acquire))
     }
 
+    #[track_caller]
     pub(crate) fn transition(&self, next: ThreadState) -> Result<(), TaskError> {
         let mut observed = self.state.load(Ordering::Acquire);
         loop {
-            let current = decode_state(observed & STATE_MASK);
+            let current = decode_state(observed);
             if !transition_is_valid(current, next) {
                 return Err(TaskError::InvalidTransition {
                     from: current,
@@ -94,10 +96,11 @@ impl ThreadLifecycle {
         }
     }
 
+    #[track_caller]
     pub(crate) fn publish_wake(&self) -> WakePublication {
         let previous = self.state.fetch_or(WAKE_STATE_PUBLISHED, Ordering::AcqRel);
         WakePublication {
-            state: decode_state(previous & STATE_MASK),
+            state: decode_state(previous),
             already_pending: previous & WAKE_PENDING != 0,
         }
     }
@@ -124,10 +127,11 @@ impl ThreadLifecycle {
     }
 
     /// Atomically chooses between a racing wake and blocked publication.
+    #[track_caller]
     pub(crate) fn publish_blocked_from_parking(&self) -> Result<ParkPublication, TaskError> {
         let mut observed = self.state.load(Ordering::Acquire);
         loop {
-            let current = decode_state(observed & STATE_MASK);
+            let current = decode_state(observed);
             if current != ThreadState::Parking {
                 return Err(TaskError::InvalidTransition {
                     from: current,
@@ -158,8 +162,9 @@ impl ThreadLifecycle {
     }
 }
 
-pub(crate) const fn decode_state(state: u8) -> ThreadState {
-    match state {
+#[track_caller]
+pub(crate) fn decode_state(packed: u8) -> ThreadState {
+    match packed & STATE_MASK {
         0 => ThreadState::New,
         1 => ThreadState::Ready,
         2 => ThreadState::Running,
@@ -167,7 +172,7 @@ pub(crate) const fn decode_state(state: u8) -> ThreadState {
         4 => ThreadState::Blocked,
         5 => ThreadState::Waking,
         6 => ThreadState::Exited,
-        _ => panic!("invalid thread lifecycle publication"),
+        _ => panic!("invalid thread lifecycle publication: raw={packed:#04x}"),
     }
 }
 
@@ -261,6 +266,17 @@ mod tests {
         lifecycle.transition(ThreadState::Running).unwrap();
 
         assert_eq!(lifecycle.state(), ThreadState::Running);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid thread lifecycle publication: raw=0x0f")]
+    fn invalid_lifecycle_publication_reports_the_packed_byte() {
+        let lifecycle = ThreadLifecycle::new();
+        lifecycle
+            .state
+            .store(WAKE_PENDING | STATE_MASK, Ordering::Relaxed);
+
+        let _ = lifecycle.state();
     }
 }
 
