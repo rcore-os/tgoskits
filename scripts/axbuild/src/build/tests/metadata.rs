@@ -147,3 +147,30 @@ fn ax_task_does_not_embed_a_host_fake_system_runtime() {
         "ax-task must not implement its own host TaskRuntime: {fake_runtime_implementations:?}"
     );
 }
+
+#[test]
+fn ax_task_fair_park_classification_keeps_linux_owner_rq_ownership() {
+    let workspace = crate::context::workspace_root_path().unwrap();
+    let park = fs::read_to_string(
+        workspace.join("components/ax-task/src/system/task_system/park_exit.rs"),
+    )
+    .expect("failed to read ax-task park ownership policy");
+    let normalized = park.split_whitespace().collect::<Vec<_>>().join(" ");
+    let rq_only_attempt = park
+        .find("let Some(commit) = self.try_commit_park_in_rq(")
+        .expect("ordinary park must try the owner-rq transaction");
+    let task_lock = park
+        .find("let mut previous_sched = unsafe { rq_entry.lock_thread_sched")
+        .expect("special park fallback must retain the task lock");
+
+    assert!(
+        normalized.contains(
+            "SchedulePolicy::Fair { .. } if !linked_current => Some(RqOnlyParkClass::Fair)"
+        ),
+        "ordinary Fair park must enter the owner-rq transaction before taking the task lock"
+    );
+    assert!(
+        rq_only_attempt < task_lock,
+        "ordinary park must attempt owner-rq ownership before the task-lock fallback"
+    );
+}

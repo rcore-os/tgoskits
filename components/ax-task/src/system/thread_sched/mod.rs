@@ -170,7 +170,7 @@ impl ThreadSchedCell {
         self.detached_active.install(active);
     }
 
-    /// Reserves detached ownership for the rq-only FIFO/RR block path.
+    /// Reserves detached ownership for an rq-only block publication.
     pub(super) fn begin_active_publication(&self) -> Option<DetachedActivePublication<'_>> {
         self.detached_active.begin_publication()
     }

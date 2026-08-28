@@ -51,8 +51,10 @@ pub(crate) struct DetachedActiveGuard<'a> {
 /// Move-only reservation for rq-owned block publication.
 ///
 /// The marker makes a task-lock reader wait until rq removal and placement
-/// publication are complete. Dropping an unfinished reservation restores the
-/// empty slot, which is required when a racing wake cancels the park CAS.
+/// publication are complete. The completed transition either installs an
+/// off-rq entity or leaves the slot empty while a delayed Fair node retains rq
+/// ownership. Dropping an unfinished reservation restores the empty slot,
+/// which is required when a racing wake cancels the park CAS.
 pub(crate) struct DetachedActivePublication<'a> {
     slot: &'a DetachedActiveState,
     completed: bool,
@@ -313,6 +315,24 @@ impl DetachedActivePublication<'_> {
             // SAFETY: a failed publication leaves ownership with this call.
             drop(unsafe { ActiveSchedulingState::from_raw(record) });
             panic!("detached active publication lost its reservation");
+        }
+        self.completed = true;
+    }
+
+    /// Completes publication while a delayed Fair rq node owns the entity.
+    pub(crate) fn finish_rq_owned(mut self) {
+        if self
+            .slot
+            .record
+            .compare_exchange(
+                detached_active_publication_marker(),
+                ptr::null_mut(),
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            panic!("rq-owned active publication lost its reservation");
         }
         self.completed = true;
     }

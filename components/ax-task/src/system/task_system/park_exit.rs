@@ -3,6 +3,28 @@
 use super::*;
 use crate::ParkPublication;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RqOnlyParkClass {
+    Fair,
+    Realtime,
+}
+
+fn classify_rq_only_park_class(
+    policy: SchedulePolicy,
+    linked_current: bool,
+    rt_quota_exempt: bool,
+) -> Option<RqOnlyParkClass> {
+    match policy {
+        SchedulePolicy::Fair { .. } if !linked_current => Some(RqOnlyParkClass::Fair),
+        SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+            if linked_current && !rt_quota_exempt =>
+        {
+            Some(RqOnlyParkClass::Realtime)
+        }
+        _ => None,
+    }
+}
+
 pub(crate) struct CurrentExitPermit {
     scheduler_exit: OwnedThreadSchedulerExit,
     current_core: Arc<ThreadCore>,
@@ -123,12 +145,14 @@ impl TaskSystem {
 
         if matches!(
             previous_core_hint.effective_policy_snapshot(),
-            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+            SchedulePolicy::Fair { .. }
+                | SchedulePolicy::Fifo { .. }
+                | SchedulePolicy::RoundRobin { .. }
         ) && !previous_core_hint
             .sched()
             .placement()
             .has_pending_migration()
-            && let Some(commit) = self.try_commit_park_rt_in_rq(
+            && let Some(commit) = self.try_commit_park_in_rq(
                 cpu.as_mut(),
                 token,
                 &remote,
@@ -337,16 +361,16 @@ impl TaskSystem {
         Ok(ParkCommit::Blocked(decision))
     }
 
-    /// Implements Linux's ordinary FIFO/RR `__schedule()` block transition.
+    /// Implements Linux's ordinary Fair/FIFO/RR `__schedule()` block transition.
     ///
-    /// A non-PI RT current remains linked in its rq class node, so `rq->lock`
-    /// provides the class mutation boundary exactly as it does in Linux
-    /// `__schedule()`. Task-control writers retain the `task lock -> rq` order;
+    /// Linux serializes normal scheduling state with `rq->lock`: Fair current
+    /// owns an unlinked entity while FIFO/RR current remains linked in its rq
+    /// class node. Task-control writers retain the `task lock -> rq` order;
     /// this path never acquires the task lock in reverse. Instead, a move-only
-    /// marker makes task-lock readers wait while rq removal, placement, and the
-    /// detached entity owner are published as one transition. Special classes,
-    /// PI, Deadline bandwidth, and migration use the full path directly.
-    fn try_commit_park_rt_in_rq(
+    /// marker makes task-lock readers wait while rq membership, placement, and
+    /// the detached-or-delayed entity owner are published as one transition.
+    /// Deadline bandwidth, migration, and special classes use the full path.
+    fn try_commit_park_in_rq(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         token: &mut ParkTicket,
@@ -360,13 +384,22 @@ impl TaskSystem {
         // SAFETY: propagated from `commit_park_owner`'s selected entry
         // contract. The returned transaction does not outlive this helper.
         let mut transaction = unsafe { rq_entry.begin(self, remote) };
-        let eligible = transaction.current().is_some_and(|current| {
-            current.thread() == token.thread()
+        let linked_current = transaction.is_linked_current(previous_core.id());
+        let park_class = transaction.current().and_then(|current| {
+            (current.thread() == token.thread()
                 && Arc::ptr_eq(current.runtime_core_arc(), previous_core)
-                && current.is_rt()
-                && !current.rt_quota_exempt()
-                && current.metadata().deadline_bandwidth_scaled == 0
-        }) && transaction.is_linked_current(previous_core.id())
+                && !current.is_dedicated_idle()
+                && current.metadata().deadline_bandwidth_scaled == 0)
+                .then(|| {
+                    classify_rq_only_park_class(
+                        current.schedule_policy(),
+                        linked_current,
+                        current.rt_quota_exempt(),
+                    )
+                })
+                .flatten()
+        });
+        let eligible = park_class.is_some()
             && previous_core.state() == ThreadState::Parking
             && placement.queued_cpu() == Some(owner)
             && placement.on_cpu() == Some(owner)
@@ -440,22 +473,77 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x504b_1115, previous_core.id().as_u64() as usize);
         }
 
-        let active = transaction
-            .deactivate_task(previous_core.id())
-            .into_active();
-        placement.block_current(owner);
-        // Publish the detached owner only after `on_rq = NONE` and `on_cpu =
-        // NONE`. A task-lock reader that acquired before the marker waits in
-        // `DetachedActiveState::take`; a later reader waits before inspecting
-        // task state. Neither can observe a Blocked RT task without its owner.
-        publication.finish(active);
+        let park_class = park_class.unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x504b_111a, previous_core.id().as_u64() as usize)
+        });
+        match park_class {
+            RqOnlyParkClass::Realtime => {
+                let active = transaction
+                    .deactivate_task(previous_core.id())
+                    .into_active();
+                placement.block_current(owner);
+                // Publish the detached owner only after `on_rq = NONE`.
+                publication.finish(active);
+            }
+            RqOnlyParkClass::Fair => {
+                let timing_granularity_ns = self.config.timing_granularity_ns();
+                let delayed = transaction
+                    .delay_dequeue_unlinked_current(
+                        previous_core.id(),
+                        timing_granularity_ns,
+                        false,
+                    )
+                    .is_some();
+                if delayed {
+                    // Linux keeps an ineligible Fair sleeper on-rq until pick
+                    // or wake completes its delayed dequeue. Release the
+                    // publication marker only after that rq owner is visible.
+                    placement.delay_dequeue_current(owner);
+                    publication.finish_rq_owned();
+                } else {
+                    transaction.deactivate_unlinked_current(previous_core.id());
+                    let mut active = transaction
+                        .take_current()
+                        .and_then(CurrentDispatch::into_active)
+                        .unwrap_or_else(|| {
+                            task_runtime::fatal_invariant(
+                                0x504b_111b,
+                                previous_core.id().as_u64() as usize,
+                            )
+                        });
+                    if let Some(fair) = active.base_entity().fair() {
+                        let virtual_time = transaction.virtual_time();
+                        let rq_max_slice_ns = transaction
+                            .max_fair_service_request_ns()
+                            .unwrap_or(fair.service_request_ns())
+                            .max(fair.service_request_ns());
+                        active.base_entity_mut().capture_fair_sleep_lag(
+                            virtual_time,
+                            rq_max_slice_ns,
+                            timing_granularity_ns,
+                        );
+                    }
+                    placement.block_current(owner);
+                    publication.finish(active);
+                }
+            }
+        }
 
         cpu.finish_park_preemption(false);
-        let outgoing = transaction.take_current().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x504b_1116, previous_core.id().as_u64() as usize)
-        });
-        if outgoing.thread() != previous_core.id() || outgoing.into_active().is_some() {
-            task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
+        let outgoing = transaction.take_current();
+        match (park_class, outgoing) {
+            (RqOnlyParkClass::Realtime, Some(outgoing)) => {
+                if outgoing.thread() != previous_core.id() || outgoing.into_active().is_some() {
+                    task_runtime::fatal_invariant(
+                        0x504b_1117,
+                        previous_core.id().as_u64() as usize,
+                    );
+                }
+            }
+            (RqOnlyParkClass::Fair, None) => {}
+            _ => {
+                task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
+            }
         }
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
 

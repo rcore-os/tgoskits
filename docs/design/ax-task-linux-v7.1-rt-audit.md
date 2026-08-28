@@ -4155,6 +4155,43 @@ Starry x86_64 QEMU `axtest_kernel` 73/73 通过；`cargo xtask clippy --package 
 现有材料没有保存原始 Linux QEMU 命令或 trace 输出，因此不会用一条 IDE/KVM 临时启动结果
 替代相同 q35/TCG/NVMe 协议的正式对照。
 
+### 2026-08-29 普通 Fair park 由 owner rq 提交
+
+Linux v7.1 在 `kernel/sched/core.c` 的 normal scheduling state 规则中明确以
+`rq->lock` 串行化普通调度状态；`__schedule()` 在本地 rq 锁下读取 current state、执行
+`try_to_block_task()` 并选择 successor，不为普通 Fair block 取得 `p->pi_lock`。Fair
+delayed dequeue 仍保留 `p->on_rq = 1` 与 `sched_delayed = 1`，直到 pick 或 wake 在同一 rq
+所有权下完成 dequeue；普通 off-rq 分支则以 `__block_task()` 的 Release `on_rq = 0` 作为旧 rq
+放弃所有权的发布点。`p->pi_lock -> rq->lock` 继续只用于 policy、PI、affinity/migration、Deadline
+bandwidth 等 task-control 事务。
+
+旧 ax-task 只给 linked FIFO/RR current 提供 rq-only park；普通 Fair current 在
+`commit_park_owner()` 中先取得完整 thread-sched lock，再进入 owner-rq transaction。现在
+Fair/FIFO/RR 都先由同一个 `try_commit_park_in_rq()` 权威核对 current identity、entity owner、
+placement、migration 与 Deadline bandwidth。eligible Fair 直接从 unlinked current 移到 detached
+task slot；ineligible Fair 调用现有 delayed dequeue，继续由 rq node 持有 entity；FIFO/RR 保持
+linked class node 的原路径。move-only detached publication marker 在 `Parking -> Blocked` CAS 前建立：
+off-rq 分支在 `on_rq = NONE` 后发布 entity，delayed 分支在 rq node 与 queued placement 都可见后
+发布“仍由 rq 拥有”。跨过 CAS 的 waiter 丢弃旧 task guard，Acquire 等待 publication，再按最新
+`on_rq` 选择普通 activation 或 delayed reactivation。Deadline bandwidth、pending migration、idle、
+Stop 与 Deadline class 仍回退完整 task-lock transaction，没有第二状态源或兼容分叉。
+
+确定性架构契约
+`ax_task_fair_park_classification_keeps_linux_owner_rq_ownership` 先在旧分类缺少 Fair 时稳定失败，
+并同时约束 owner-rq 尝试必须位于 `lock_thread_sched` fallback 之前；实现后同一测试转绿。系统语义
+不引入 host fake runtime：x86_64 ArceOS Rust QEMU `task-wait-queue` 在 4 CPU 下通过 wake/timeout，
+Starry true `-smp 1` process/20 五轮也完成数千次真实 block/wake，没有 panic、丢 wake 或 delayed
+owner 不变量失败。`cargo xtask clippy --package ax-task` 的 5 个目标/特性检查以及 axbuild targeted
+clippy 全部通过。
+
+相同未插桩 Starry process/20、五轮、true `-smp 1` 结果为
+1.242/1.447/1.380/1.290/1.331 s，中位数 1.331 s；相对上一 clockevent 检查点 1.357 s 改善约
+1.9%，相对 clockevent 对齐前 1.319 s 仍慢约 0.9%，而 Linux v7.1 PREEMPT_RT 同协议中位数
+0.396 s。该结果证明删除普通 Fair park 的额外 task-lock ownership 没有造成退化，但 Starry 仍为
+Linux 的约 3.36 倍；结合此前 task-lock 获取仅约 0.8k cycles 的 probe，这项已证明的 Linux
+语义不是主要性能根因。后续继续分解每个真实 block/wake 中的 owner-rq settle、Fair delayed
+dequeue/pick、switch handoff 与 wake activation 固定成本，不回退本检查点。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

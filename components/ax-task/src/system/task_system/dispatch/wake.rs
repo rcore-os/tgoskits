@@ -517,23 +517,21 @@ impl TaskSystem {
                 }
 
                 // The sticky publication normally makes the owner's final
-                // park CAS restore Running. The rq-only FIFO/RR block path
-                // may win that CAS immediately before this store; the state
-                // returned by fetch_or then proves that this waker must finish
-                // activation itself instead of leaving a sleeping task with
-                // a pending bit.
+                // park CAS restore Running. The rq-only block path may win
+                // that CAS immediately before this store; the state returned
+                // by fetch_or then proves that this waker must finish wakeup
+                // instead of leaving a sleeping task with a pending bit.
                 let wake = core.publish_wake();
                 if wake.state() != ThreadState::Blocked {
                     return WaitWakeDelivery::Delivered;
                 }
-                // The rq-only FIFO/RR parker does not take this task lock.
-                // It reserves detached ownership before publishing Blocked,
-                // so a claim which acquired the task lock while the state was
-                // still Parking can observe Blocked before `on_rq` removal and
-                // detached-owner installation finish. Drop that stale guard
-                // and reacquire through the publication-aware lock path. This
-                // is the same retry boundary as Linux's on_rq check under
-                // p->pi_lock followed by task_rq_lock() revalidation.
+                // The rq-only parker does not take this task lock. It reserves
+                // ownership publication before publishing Blocked, so a claim
+                // which acquired the task lock while the state was Parking can
+                // observe Blocked before detached or delayed rq ownership is
+                // visible. Drop that stale guard and reacquire through the
+                // publication-aware path, matching Linux's on_rq revalidation
+                // under p->pi_lock.
                 drop(sched);
                 let mut sched = core.sched().lock();
                 if core.park_generation() != claim.park_generation()
@@ -541,12 +539,10 @@ impl TaskSystem {
                 {
                     return WaitWakeDelivery::Delivered;
                 }
-                let target = sched.placement.assigned_cpu().unwrap_or_else(|| {
+                let assigned = sched.placement.assigned_cpu().unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x574b_0017, core.id().as_u64() as usize)
                 });
-                if sched.placement.queued_cpu().is_some() {
-                    task_runtime::fatal_invariant(0x574b_0018, core.id().as_u64() as usize);
-                }
+                let target = sched.placement.queued_cpu().unwrap_or(assigned);
                 let publication = self.cpu_remotes[target.as_usize()]
                     .begin_publication()
                     .unwrap_or_else(|| {
@@ -559,8 +555,11 @@ impl TaskSystem {
                 if transition != WakeTransition::Activate {
                     task_runtime::fatal_invariant(0x574b_001b, core.id().as_u64() as usize);
                 }
-                let result =
-                    self.activate_waking_thread_locked(&core, sched, target, publication, intent);
+                let result = if sched.placement.queued_cpu() == Some(target) {
+                    self.reactivate_delayed_fair_locked(&core, sched, target, publication, intent)
+                } else {
+                    self.activate_waking_thread_locked(&core, sched, target, publication, intent)
+                };
                 if result != WakeResult::Notified {
                     task_runtime::fatal_invariant(0x574b_001c, core.id().as_u64() as usize);
                 }

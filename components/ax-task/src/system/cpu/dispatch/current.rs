@@ -280,13 +280,6 @@ impl CurrentDispatch {
         Arc::clone(&self.task.runtime_core)
     }
 
-    pub(crate) fn is_rt(&self) -> bool {
-        matches!(
-            self.schedule_policy(),
-            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
-        )
-    }
-
     /// Returns the remaining task-clock budget for the running class.
     ///
     /// Absolute Deadline release/deadline events live in `rq->clock` and are
