@@ -67,6 +67,51 @@ fn render_scheduler_metrics() -> alloc::string::String {
     writeln!(output, "pipe_write_bytes {}", pipe.write_bytes).unwrap();
     writeln!(
         output,
+        "pipe_wait_registrations {}",
+        pipe.wait_registrations
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pipe_wait_registration_races {}",
+        pipe.wait_registration_races
+    )
+    .unwrap();
+    writeln!(output, "pipe_wake_calls {}", pipe.wake_calls).unwrap();
+    writeln!(
+        output,
+        "pipe_wake_shared_matches {}",
+        pipe.wake_shared_matches
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pipe_wake_no_exclusive_match {}",
+        pipe.wake_no_exclusive_match
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pipe_wake_direct_attempts {}",
+        pipe.wake_direct_attempts
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pipe_wake_direct_delivered {}",
+        pipe.wake_direct_delivered
+    )
+    .unwrap();
+    writeln!(output, "pipe_wake_direct_retry {}", pipe.wake_direct_retry).unwrap();
+    writeln!(output, "pipe_wake_direct_stale {}", pipe.wake_direct_stale).unwrap();
+    writeln!(
+        output,
+        "pipe_wake_poll_delivered {}",
+        pipe.wake_poll_delivered
+    )
+    .unwrap();
+    writeln!(
+        output,
         "current_thread_handle_queries {}",
         task.current_thread_handle_queries
     )
@@ -681,14 +726,24 @@ fn render_scheduler_metrics() -> alloc::string::String {
         task.task_work_address_space_reclaims
     )
     .unwrap();
-    writeln!(output, "pi_mutex_lock_attempts {}", task.pi_mutex_lock_attempts).unwrap();
+    writeln!(
+        output,
+        "pi_mutex_lock_attempts {}",
+        task.pi_mutex_lock_attempts
+    )
+    .unwrap();
     writeln!(
         output,
         "pi_mutex_fast_acquisitions {}",
         task.pi_mutex_fast_acquisitions
     )
     .unwrap();
-    writeln!(output, "pi_mutex_slow_entries {}", task.pi_mutex_slow_entries).unwrap();
+    writeln!(
+        output,
+        "pi_mutex_slow_entries {}",
+        task.pi_mutex_slow_entries
+    )
+    .unwrap();
     writeln!(
         output,
         "pi_mutex_slow_race_acquisitions {}",
@@ -701,7 +756,12 @@ fn render_scheduler_metrics() -> alloc::string::String {
         task.pi_mutex_waiter_registrations
     )
     .unwrap();
-    writeln!(output, "pi_mutex_waiter_parks {}", task.pi_mutex_waiter_parks).unwrap();
+    writeln!(
+        output,
+        "pi_mutex_waiter_parks {}",
+        task.pi_mutex_waiter_parks
+    )
+    .unwrap();
     writeln!(
         output,
         "pi_mutex_contended_releases {}",

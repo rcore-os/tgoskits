@@ -2,7 +2,7 @@
 
 use alloc::{collections::VecDeque, sync::Arc};
 use core::{
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence},
     time::Duration,
 };
 
@@ -41,6 +41,100 @@ pub struct WaitQueue {
     waiters: PreemptTicketLock<VecDeque<Waiter>>,
     notification_generation: AtomicU64,
     active_wait_attempts: AtomicUsize,
+}
+
+/// An exact wake capability for one waiter already published in a [`WaitQueue`].
+///
+/// Composite wait sources use this token to place task waiters and non-task
+/// callbacks in one externally ordered exclusive queue. The token contains no
+/// general thread handle and is valid only for its park generation.
+#[derive(Clone, Debug)]
+pub struct WaitQueueWakeToken {
+    waiter: Arc<WaiterWake>,
+    queue_addr: usize,
+}
+
+/// Result of selecting one exact [`WaitQueueWakeToken`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaitQueueWakeOutcome {
+    /// The selected park generation became runnable.
+    Delivered,
+    /// Delivery could not currently reach an online scheduler owner.
+    Retry,
+    /// The park generation was cancelled, completed, or exited.
+    Stale,
+}
+
+/// Result of publishing an exact waiter into a composite notification source.
+pub enum WaitQueueRegistration<G> {
+    /// The waiter is ordered in the source and the lease must remain alive.
+    Armed(G),
+    /// A notification crossed the predicate-to-registration window.
+    Retry(G),
+}
+
+impl WaitQueue {
+    /// Selects one exact registered waiter with ordinary task-context intent.
+    pub fn notify_token(&self, token: &WaitQueueWakeToken) -> WaitQueueWakeOutcome {
+        self.notify_token_with_intent(token, WakeIntent::Normal)
+    }
+
+    /// Selects one exact registered waiter with Linux `WF_SYNC` intent.
+    pub fn notify_token_sync(&self, token: &WaitQueueWakeToken) -> WaitQueueWakeOutcome {
+        self.notify_token_with_intent(token, WakeIntent::Sync)
+    }
+
+    fn notify_token_with_intent(
+        &self,
+        token: &WaitQueueWakeToken,
+        intent: WakeIntent,
+    ) -> WaitQueueWakeOutcome {
+        assert_task_context_notification();
+        assert_eq!(
+            token.queue_addr,
+            core::ptr::from_ref(self).addr(),
+            "an exact waiter token must be delivered by its owning wait queue"
+        );
+        let _preempt = PreemptScope::enter();
+        let claim = match token.waiter.try_select() {
+            WaiterSelection::Selected(claim) => claim,
+            WaiterSelection::Retry => return WaitQueueWakeOutcome::Retry,
+            WaiterSelection::Stale => {
+                remove_exact_waiter(&mut self.waiters.lock(), &token.waiter);
+                return WaitQueueWakeOutcome::Stale;
+            }
+        };
+        let delivery = token
+            .waiter
+            .wake
+            .deliver_wait_claim_from_task(&claim, intent);
+        let mut waiters = self.waiters.lock();
+        match delivery {
+            WaitWakeDelivery::Delivered => {
+                let removal = remove_exact_waiter(&mut waiters, &token.waiter);
+                debug_assert!(matches!(
+                    removal,
+                    WaiterRemoval::Missing | WaiterRemoval::Delivered
+                ));
+                WaitQueueWakeOutcome::Delivered
+            }
+            WaitWakeDelivery::Cancelled | WaitWakeDelivery::Exited => {
+                remove_exact_waiter(&mut waiters, &token.waiter);
+                WaitQueueWakeOutcome::Stale
+            }
+            WaitWakeDelivery::Unavailable => {
+                let still_queued = waiters
+                    .iter()
+                    .any(|waiter| Arc::ptr_eq(&waiter.wake, &token.waiter));
+                if still_queued && token.waiter.requeue_after_unavailable(&claim) {
+                    WaitQueueWakeOutcome::Retry
+                } else {
+                    remove_exact_waiter(&mut waiters, &token.waiter);
+                    WaitQueueWakeOutcome::Stale
+                }
+            }
+        }
+    }
 }
 
 impl WaitQueue {
@@ -92,6 +186,42 @@ impl WaitQueue {
         loop {
             if self.wait_once_if(None, &condition)? {
                 return Ok(());
+            }
+        }
+    }
+
+    /// Blocks until `condition` is true while publishing an exact wake token.
+    ///
+    /// `register` runs after the scheduler park and waiter record exist, but
+    /// before the condition is rechecked. Its returned lease is held until the
+    /// attempt resumes or is cancelled. This register-before-recheck ordering
+    /// lets a composite source merge this task waiter with other exclusive
+    /// callbacks without a lost-wakeup window.
+    ///
+    /// Returns whether at least one registered token was selected while this
+    /// call waited. Callers may use that result to continue Linux-style
+    /// exclusive handoff when the condition remains consumable.
+    #[track_caller]
+    pub fn wait_until_registered<F, O, R, G>(
+        &self,
+        condition: F,
+        mut observe_notification: O,
+        mut register: R,
+    ) -> bool
+    where
+        F: Fn() -> bool,
+        O: FnMut() -> u64,
+        R: FnMut(WaitQueueWakeToken, u64) -> WaitQueueRegistration<G>,
+    {
+        let mut selected = false;
+        loop {
+            match self
+                .wait_once_registered(&condition, &mut observe_notification, &mut register)
+                .expect("registered conditional wait must satisfy scheduler invariants")
+            {
+                WaitOutcome::Condition => return selected,
+                WaitOutcome::Notified => selected = true,
+                WaitOutcome::OtherWake => {}
             }
         }
     }
@@ -209,7 +339,7 @@ impl WaitQueue {
             let mut waiters = self.waiters.lock();
             let index = waiters
                 .iter()
-                .position(|waiter| waiter.thread == thread && waiter.owns_claim(&claim));
+                .position(|waiter| waiter.wake.thread == thread && waiter.owns_claim(&claim));
             match delivery {
                 WaitWakeDelivery::Delivered => {
                     assert_eq!(
@@ -218,13 +348,19 @@ impl WaitQueue {
                         "scheduler delivery must publish the claim before returning"
                     );
                     if let Some(index) = index {
-                        waiters.remove(index);
+                        let waiter = waiters
+                            .remove(index)
+                            .expect("located delivered waiter must remain present");
+                        assert_eq!(waiter.wake.deactivate(), WaiterRemoval::Delivered);
                     }
                     return true;
                 }
                 WaitWakeDelivery::Cancelled | WaitWakeDelivery::Exited => {
                     if let Some(index) = index {
-                        waiters.remove(index);
+                        let waiter = waiters
+                            .remove(index)
+                            .expect("located stale waiter must remain present");
+                        let _ = waiter.wake.deactivate();
                     }
                 }
                 WaitWakeDelivery::Unavailable => {
@@ -318,6 +454,69 @@ impl WaitQueue {
         })
     }
 
+    fn wait_once_registered<F, O, R, G>(
+        &self,
+        condition: &F,
+        observe_notification: &mut O,
+        register: &mut R,
+    ) -> Result<WaitOutcome, TaskError>
+    where
+        F: Fn() -> bool,
+        O: FnMut() -> u64,
+        R: FnMut(WaitQueueWakeToken, u64) -> WaitQueueRegistration<G>,
+    {
+        let permit = acquire_blocking_permit()?;
+        let _active_attempt = ActiveWaitAttempt::begin(&self.active_wait_attempts);
+        let observed_notification = observe_notification();
+        if condition() {
+            return Ok(WaitOutcome::Condition);
+        }
+
+        let (park, token) = {
+            let mut waiters = self.waiters.lock();
+            let park = match begin_current_park_with_permit(&permit)? {
+                CurrentParkStart::Notified => return Ok(WaitOutcome::OtherWake),
+                CurrentParkStart::Prepared(park) => park,
+            };
+            let thread = park.thread_id();
+            let waiter = Waiter::new(thread, park.generation(), park.wake_handle());
+            let token = WaitQueueWakeToken {
+                waiter: Arc::clone(&waiter.wake),
+                queue_addr: core::ptr::from_ref(self).addr(),
+            };
+            waiters.push_back(waiter);
+            (park, token)
+        };
+        let thread = park.thread_id();
+        let registration = register(token, observed_notification);
+        let (registration, retry) = match registration {
+            WaitQueueRegistration::Armed(registration) => (registration, false),
+            WaitQueueRegistration::Retry(registration) => (registration, true),
+        };
+
+        if retry {
+            drop(registration);
+            let removal = remove_waiter(&mut self.waiters.lock(), thread);
+            park.cancel()?;
+            return Ok(if removal == WaiterRemoval::Delivered {
+                WaitOutcome::Notified
+            } else {
+                WaitOutcome::OtherWake
+            });
+        }
+
+        if let Err(error) = park.commit() {
+            drop(registration);
+            remove_waiter(&mut self.waiters.lock(), thread);
+            return Err(error);
+        }
+        drop(registration);
+        Ok(match remove_waiter(&mut self.waiters.lock(), thread) {
+            WaiterRemoval::OtherWake => WaitOutcome::OtherWake,
+            WaiterRemoval::Missing | WaiterRemoval::Delivered => WaitOutcome::Notified,
+        })
+    }
+
     fn may_have_active_wait_attempts(&self) -> bool {
         // This is the same store/full-barrier/load pairing used by Linux's
         // wq_has_sleeper(). A producer publishes its condition before this
@@ -372,61 +571,124 @@ impl Default for WaitQueue {
 
 #[derive(Debug)]
 struct Waiter {
-    thread: ThreadId,
-    wake: ThreadWakeHandle,
-    park_generation: u64,
-    claim: Arc<WaitWakeClaim>,
+    wake: Arc<WaiterWake>,
     last_attempted_by: u64,
 }
 
 impl Waiter {
     fn new(thread: ThreadId, park_generation: u64, wake: ThreadWakeHandle) -> Self {
         Self {
-            thread,
-            wake,
-            park_generation,
-            claim: Arc::new(WaitWakeClaim::new(thread, park_generation)),
+            wake: Arc::new(WaiterWake::new(thread, park_generation, wake)),
             last_attempted_by: 0,
         }
-    }
-
-    fn can_select(&self, notification_generation: u64) -> bool {
-        self.claim.state() == WaitWakeClaimState::Queued
-            && self.last_attempted_by != notification_generation
     }
 
     fn select(
         &mut self,
         notification_generation: u64,
-    ) -> (ThreadId, ThreadWakeHandle, Arc<WaitWakeClaim>) {
-        assert!(
-            self.can_select(notification_generation),
-            "waiter selection must be unique within one notification"
-        );
-        assert!(
-            self.claim.select(),
-            "queue lock must own the unique Queued-to-Selected transition"
-        );
+    ) -> Option<(ThreadId, ThreadWakeHandle, Arc<WaitWakeClaim>)> {
+        if self.last_attempted_by == notification_generation {
+            return None;
+        }
         self.last_attempted_by = notification_generation;
-        (self.thread, self.wake.clone(), Arc::clone(&self.claim))
+        let WaiterSelection::Selected(claim) = self.wake.try_select() else {
+            return None;
+        };
+        Some((self.wake.thread, self.wake.wake.clone(), claim))
     }
 
     fn owns_claim(&self, claim: &Arc<WaitWakeClaim>) -> bool {
-        Arc::ptr_eq(&self.claim, claim)
+        self.wake.owns_claim(claim)
     }
 
-    fn requeue_after_unavailable(&mut self, claim: &Arc<WaitWakeClaim>) {
-        assert!(
-            self.owns_claim(claim),
-            "only the selected waiter may be requeued"
-        );
+    fn requeue_after_unavailable(&self, claim: &Arc<WaitWakeClaim>) {
+        assert!(self.wake.requeue_after_unavailable(claim));
+    }
+}
+
+#[derive(Debug)]
+struct WaiterWake {
+    thread: ThreadId,
+    wake: ThreadWakeHandle,
+    park_generation: u64,
+    claim: PreemptTicketLock<Arc<WaitWakeClaim>>,
+    active: AtomicBool,
+}
+
+impl WaiterWake {
+    fn new(thread: ThreadId, park_generation: u64, wake: ThreadWakeHandle) -> Self {
+        Self {
+            thread,
+            wake,
+            park_generation,
+            claim: PreemptTicketLock::new(Arc::new(WaitWakeClaim::new(thread, park_generation))),
+            active: AtomicBool::new(true),
+        }
+    }
+
+    fn try_select(&self) -> WaiterSelection {
+        let claim = self.claim.lock();
+        if !self.active.load(Ordering::Acquire) {
+            return WaiterSelection::Stale;
+        }
+        match claim.state() {
+            WaitWakeClaimState::Queued => {
+                assert!(
+                    claim.select(),
+                    "waiter claim lock must own the unique Queued-to-Selected transition"
+                );
+                WaiterSelection::Selected(Arc::clone(&claim))
+            }
+            WaitWakeClaimState::Selected => WaiterSelection::Retry,
+            WaitWakeClaimState::Delivered | WaitWakeClaimState::Cancelled => WaiterSelection::Stale,
+        }
+    }
+
+    fn owns_claim(&self, claim: &Arc<WaitWakeClaim>) -> bool {
+        Arc::ptr_eq(&*self.claim.lock(), claim)
+    }
+
+    fn requeue_after_unavailable(&self, claim: &Arc<WaitWakeClaim>) -> bool {
+        let mut current = self.claim.lock();
+        if !self.active.load(Ordering::Acquire) || !Arc::ptr_eq(&*current, claim) {
+            return false;
+        }
         assert_eq!(
             claim.state(),
             WaitWakeClaimState::Cancelled,
             "an unavailable scheduler delivery must cancel its old claim"
         );
-        self.claim = Arc::new(WaitWakeClaim::new(self.thread, self.park_generation));
+        *current = Arc::new(WaitWakeClaim::new(self.thread, self.park_generation));
+        true
     }
+
+    fn deactivate(&self) -> WaiterRemoval {
+        let claim = self.claim.lock();
+        self.active.store(false, Ordering::Release);
+        match claim.state() {
+            WaitWakeClaimState::Queued | WaitWakeClaimState::Cancelled => WaiterRemoval::OtherWake,
+            WaitWakeClaimState::Delivered => WaiterRemoval::Delivered,
+            WaitWakeClaimState::Selected => {
+                if claim.cancel_selected() {
+                    WaiterRemoval::OtherWake
+                } else {
+                    match claim.state() {
+                        WaitWakeClaimState::Delivered => WaiterRemoval::Delivered,
+                        WaitWakeClaimState::Cancelled => WaiterRemoval::OtherWake,
+                        WaitWakeClaimState::Queued | WaitWakeClaimState::Selected => unreachable!(
+                            "selected claim cancellation must choose one terminal state"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum WaiterSelection {
+    Selected(Arc<WaitWakeClaim>),
+    Retry,
+    Stale,
 }
 
 fn select_waiter(
@@ -435,8 +697,7 @@ fn select_waiter(
 ) -> Option<(ThreadId, ThreadWakeHandle, Arc<WaitWakeClaim>)> {
     waiters
         .iter_mut()
-        .find(|waiter| waiter.can_select(notification_generation))
-        .map(|waiter| waiter.select(notification_generation))
+        .find_map(|waiter| waiter.select(notification_generation))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -454,29 +715,29 @@ enum WaiterRemoval {
 }
 
 fn remove_waiter(waiters: &mut VecDeque<Waiter>, thread: ThreadId) -> WaiterRemoval {
-    let Some(index) = waiters.iter().position(|waiter| waiter.thread == thread) else {
+    let Some(index) = waiters
+        .iter()
+        .position(|waiter| waiter.wake.thread == thread)
+    else {
         return WaiterRemoval::Missing;
     };
     let waiter = waiters
         .remove(index)
         .expect("located wait-queue entry must remain present under its lock");
-    match waiter.claim.state() {
-        WaitWakeClaimState::Queued | WaitWakeClaimState::Cancelled => WaiterRemoval::OtherWake,
-        WaitWakeClaimState::Delivered => WaiterRemoval::Delivered,
-        WaitWakeClaimState::Selected => {
-            if waiter.claim.cancel_selected() {
-                WaiterRemoval::OtherWake
-            } else {
-                match waiter.claim.state() {
-                    WaitWakeClaimState::Delivered => WaiterRemoval::Delivered,
-                    WaitWakeClaimState::Cancelled => WaiterRemoval::OtherWake,
-                    WaitWakeClaimState::Queued | WaitWakeClaimState::Selected => {
-                        unreachable!("selected claim cancellation must choose one terminal state")
-                    }
-                }
-            }
-        }
-    }
+    waiter.wake.deactivate()
+}
+
+fn remove_exact_waiter(waiters: &mut VecDeque<Waiter>, target: &Arc<WaiterWake>) -> WaiterRemoval {
+    let Some(index) = waiters
+        .iter()
+        .position(|waiter| Arc::ptr_eq(&waiter.wake, target))
+    else {
+        return WaiterRemoval::Missing;
+    };
+    let waiter = waiters
+        .remove(index)
+        .expect("located exact wait-queue entry must remain present under its lock");
+    waiter.wake.deactivate()
 }
 
 #[cfg(all(test, not(miri)))]

@@ -3,15 +3,25 @@
 const PIPE: &str = include_str!("../src/file/pipe.rs");
 
 #[test]
-fn blocking_pipe_io_uses_the_pipe_wait_queues_directly() {
+fn blocking_pipe_io_uses_one_linux_style_exclusive_wait_order() {
     let shared = struct_body(PIPE, "struct Shared");
+    let wait_set = struct_body(PIPE, "struct PipeWaitSet");
     let read = function_body(PIPE, "fn read(&self,");
     let write = function_body(PIPE, "fn write_with_broken_pipe_handler(");
     let sync_wake = function_body(PIPE, "fn wake_pipe_waiter_sync(");
+    let wake = function_body(PIPE, "fn wake(&self, ready:");
 
     assert!(
-        shared.contains("wait_rx: WaitQueue") && shared.contains("wait_tx: WaitQueue"),
-        "blocking pipe I/O must sleep directly on Linux-style read/write wait queues"
+        shared.contains("wait_rx: PipeWaitSet") && shared.contains("wait_tx: PipeWaitSet"),
+        "each pipe direction must own one composite Linux-style wait source"
+    );
+    assert!(
+        wait_set.contains("direct: WaitQueue")
+            && wait_set.contains("shared: PollSet")
+            && wait_set.contains("exclusive: Arc<SpinLock")
+            && !wait_set.contains("exclusive: Arc<PiMutex"),
+        "the composite source must retain direct parking, shared observers, and one exclusive \
+         non-sleeping registration order"
     );
     for (operation, wait_queue) in [(read, "wait_rx.wait_until"), (write, "wait_tx.wait_until")] {
         assert!(
@@ -28,8 +38,11 @@ fn blocking_pipe_io_uses_the_pipe_wait_queues_directly() {
         );
     }
     assert!(
-        sync_wake.contains("notify_one_sync()") && sync_wake.contains("poll_set.wake_with"),
-        "pipe handoff must synchronously wake one blocking consumer and retained poll observers"
+        sync_wake.contains("waiters.wake(ready, true)")
+            && wake.contains("self.shared.wake_with")
+            && wake.contains("take_next_matching")
+            && !wake.contains("notify_one_sync()"),
+        "pipe handoff must wake shared observers and consume one unified exclusive quota"
     );
 }
 
