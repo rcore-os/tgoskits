@@ -39,7 +39,7 @@ mod task_work;
 
 pub use deadline::{
     CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
-    SchedulerTickStamp, SchedulerTickStatus, TaskClockEventOutcome, begin_current_park,
+    ClaimedSchedulerDeadlines, SchedulerTickStamp, TaskClockEventOutcome, begin_current_park,
     on_clock_event, publish_scheduler_tick,
 };
 pub(crate) use deadline::{

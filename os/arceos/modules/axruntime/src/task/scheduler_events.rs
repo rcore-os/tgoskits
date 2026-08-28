@@ -49,16 +49,16 @@ pub(crate) fn record_scheduler_ipi_consume() {
 /// Performs bounded task accounting and publishes a sticky reschedule request.
 pub(crate) fn on_clock_event(
     now: ax_task::runtime::MonotonicInstant,
-    scheduler_tick: ax_task::SchedulerTickStatus,
+    scheduler_event: ax_task::ClaimedSchedulerDeadlines,
 ) -> ax_task::TaskClockEventOutcome {
     TASK_TIMER_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
-    account_clock_event(now, scheduler_tick)
+    account_clock_event(now, scheduler_event)
 }
 fn account_clock_event(
     now: ax_task::runtime::MonotonicInstant,
-    scheduler_tick: ax_task::SchedulerTickStatus,
+    scheduler_event: ax_task::ClaimedSchedulerDeadlines,
 ) -> ax_task::TaskClockEventOutcome {
-    match ax_task::on_clock_event(now, TASK_CLOCK_EVENT_IRQ_BUDGET, scheduler_tick) {
+    match ax_task::on_clock_event(now, TASK_CLOCK_EVENT_IRQ_BUDGET, scheduler_event) {
         Ok(outcome) => outcome,
         Err(error) => panic!("task clockevent accounting failed: {error}"),
     }

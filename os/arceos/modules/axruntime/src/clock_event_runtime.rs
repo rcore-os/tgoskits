@@ -259,12 +259,11 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
         unsafe { ax_hal::time::scheduler_clock_tick() }
             .expect("current CPU scheduler clock must be online before timer IRQs");
         let now = monotonic_now();
-        let scheduler_tick = match (firing.periodic_tick(), firing.scheduler_deadline_elapsed()) {
-            (false, _) => ax_task::SchedulerTickStatus::NotElapsed,
-            (true, false) => ax_task::SchedulerTickStatus::Elapsed,
-            (true, true) => ax_task::SchedulerTickStatus::ElapsedWithSchedulerDeadline,
-        };
-        let outcome = crate::task::on_clock_event(now, scheduler_tick);
+        let scheduler_event = ax_task::ClaimedSchedulerDeadlines::new(
+            firing.periodic_tick(),
+            firing.scheduler_deadline_elapsed(),
+        );
+        let outcome = crate::task::on_clock_event(now, scheduler_event);
         if firing.periodic_tick() {
             crate::task::publish_scheduler_tick(
                 outcome.scheduler_tick_stamp(),

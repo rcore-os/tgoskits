@@ -187,25 +187,29 @@ pub(crate) fn begin_current_park_with_permit(
 pub fn on_clock_event(
     now: MonotonicInstant,
     budget: usize,
-    scheduler_tick: SchedulerTickStatus,
+    scheduler_event: ClaimedSchedulerDeadlines,
 ) -> Result<TaskClockEventOutcome, TaskError> {
     let system = runtime_task_system()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    if scheduler_tick.runs_periodic_task_tick() {
+    if scheduler_event.runs_periodic_task_tick() {
         // Linux PREEMPT_RT promotes TIF_NEED_RESCHED_LAZY before invoking the
         // current class's periodic task_tick hook. A new lazy request created
         // by that hook remains lazy until the following promotion point.
         cpu.promote_lazy_reschedule();
     }
-    let (charge, clock, current, task_tick_rq_observation) = match scheduler_tick {
-        SchedulerTickStatus::NotElapsed => {
+    let (charge, clock, current, task_tick_rq_observation) =
+        match scheduler_event.accounting_kind() {
+        ClockAccountingKind::RuntimeOnly => {
+            system.charge_current_until_with_clock(cpu.as_mut(), 0)?
+        }
+        ClockAccountingKind::SchedulerDeadline => {
             system.clock_event_current_until_with_clock(cpu.as_mut(), 0)?
         }
-        SchedulerTickStatus::Elapsed => {
+        ClockAccountingKind::PeriodicTick => {
             system.task_tick_current_until_with_clock(cpu.as_mut(), 0)?
         }
-        SchedulerTickStatus::ElapsedWithSchedulerDeadline => {
+        ClockAccountingKind::PeriodicTickWithSchedulerDeadline => {
             system.task_tick_and_clock_event_current_until_with_clock(cpu.as_mut(), 0)?
         }
     };
@@ -246,20 +250,42 @@ fn clock_event_rq_observation_reusable(
     !rt_period_rescheduled && hard_timers_processed == 0
 }
 
-/// Whether the claimed physical clockevent also advanced the periodic
-/// scheduler tick.
+/// Scheduler-owned deadlines claimed by one physical clockevent firing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SchedulerTickStatus {
-    NotElapsed,
-    Elapsed,
-    /// The periodic tick and an ax-task scheduler deadline expired in the same
-    /// physical clockevent firing transaction.
-    ElapsedWithSchedulerDeadline,
+pub struct ClaimedSchedulerDeadlines {
+    periodic_tick_elapsed: bool,
+    scheduler_deadline_elapsed: bool,
 }
 
-impl SchedulerTickStatus {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClockAccountingKind {
+    RuntimeOnly,
+    SchedulerDeadline,
+    PeriodicTick,
+    PeriodicTickWithSchedulerDeadline,
+}
+
+impl ClaimedSchedulerDeadlines {
+    /// Captures the two independent scheduler deadlines observed by the
+    /// physical clockevent owner.
+    pub const fn new(periodic_tick_elapsed: bool, scheduler_deadline_elapsed: bool) -> Self {
+        Self {
+            periodic_tick_elapsed,
+            scheduler_deadline_elapsed,
+        }
+    }
+
     const fn runs_periodic_task_tick(self) -> bool {
-        matches!(self, Self::Elapsed | Self::ElapsedWithSchedulerDeadline)
+        self.periodic_tick_elapsed
+    }
+
+    const fn accounting_kind(self) -> ClockAccountingKind {
+        match (self.periodic_tick_elapsed, self.scheduler_deadline_elapsed) {
+            (false, false) => ClockAccountingKind::RuntimeOnly,
+            (false, true) => ClockAccountingKind::SchedulerDeadline,
+            (true, false) => ClockAccountingKind::PeriodicTick,
+            (true, true) => ClockAccountingKind::PeriodicTickWithSchedulerDeadline,
+        }
     }
 }
 
@@ -554,13 +580,36 @@ impl TaskClockEventOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::{SchedulerTickStatus, clock_event_rq_observation_reusable};
+    use super::{
+        ClaimedSchedulerDeadlines, ClockAccountingKind, clock_event_rq_observation_reusable,
+    };
 
     #[test]
     fn only_periodic_clock_events_run_the_scheduler_tick() {
-        assert!(!SchedulerTickStatus::NotElapsed.runs_periodic_task_tick());
-        assert!(SchedulerTickStatus::Elapsed.runs_periodic_task_tick());
-        assert!(SchedulerTickStatus::ElapsedWithSchedulerDeadline.runs_periodic_task_tick());
+        assert!(!ClaimedSchedulerDeadlines::new(false, false).runs_periodic_task_tick());
+        assert!(!ClaimedSchedulerDeadlines::new(false, true).runs_periodic_task_tick());
+        assert!(ClaimedSchedulerDeadlines::new(true, false).runs_periodic_task_tick());
+        assert!(ClaimedSchedulerDeadlines::new(true, true).runs_periodic_task_tick());
+    }
+
+    #[test]
+    fn unrelated_physical_clockevent_only_accounts_runtime() {
+        assert_eq!(
+            ClaimedSchedulerDeadlines::new(false, false).accounting_kind(),
+            ClockAccountingKind::RuntimeOnly
+        );
+        assert_eq!(
+            ClaimedSchedulerDeadlines::new(false, true).accounting_kind(),
+            ClockAccountingKind::SchedulerDeadline
+        );
+        assert_eq!(
+            ClaimedSchedulerDeadlines::new(true, false).accounting_kind(),
+            ClockAccountingKind::PeriodicTick
+        );
+        assert_eq!(
+            ClaimedSchedulerDeadlines::new(true, true).accounting_kind(),
+            ClockAccountingKind::PeriodicTickWithSchedulerDeadline
+        );
     }
 
     #[test]
