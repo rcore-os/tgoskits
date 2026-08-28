@@ -4222,6 +4222,40 @@ clockevent 触发的 accounting、deadline derivation 与无效 scheduler entry�
 `task-fair-wake-idle-sibling` 1/1 通过；`cargo xtask clippy --package ax-task` 的 5 个
 目标/特性组合以及 rustfmt、`git diff --check` 均通过。
 
+### 2026-08-29 pinned current 复用已验证 CPU area identity
+
+Linux v7.1 x86_64 的 `get_current()` 直接通过 `this_cpu_read_stable(current_task)` 读取 per-CPU
+current 指针，调度热路径不会为了同一次 current 访问重复重建 per-CPU identity。cpu-local 的
+`with_cpu_pin()` 原来先用 `current_area()` 从架构 CPU base 完整重建并验证 `CpuAreaRef`，随后
+`current_context(pin)` 又从 current header 的 binding base 第二次调用
+`CpuAreaRef::from_initialized_base()`；后一次会重复检查 alignment、area header、`self_base`、CPU index
+与 permanent boot context identity。pin 已携带同一次访问所需的 validated area，但旧路径没有复用它。
+
+修复没有像性能上界实验那样信任裸 current 指针，也没有删除 context binding 校验。
+`ExecutionContextHeader::is_bound_to()` 仍通过原有 `raw_cpu_binding()` 对 binding epoch 做前后两次
+Acquire 读取，只在 phase 为 `Bound` 且 epoch 稳定时取得 base，再与 pin 中已经验证的 area identity
+直接比较。因此 `Unbound`、`Binding`、`Unbinding`、并发 epoch 变化和错误 CPU base 仍全部拒绝；改变的
+只是避免把同一 shutdown-lifetime area 完整重建第二次，没有增加第二状态源或兼容分支。
+
+确定性 host 回归把一次 `with_cpu_pin()` 的 initialized-area validation 计数固定为 1；旧实现稳定得到
+2 并失败，修复后同一断言转绿。另一个绑定测试覆盖正确 area、错误 area 与 unbind 后三种结果，确认
+快路径仍服从 binding phase/epoch。未提交的“完全跳过 header binding 校验”上界实验在 true `-smp 1`
+thread/20 得到 0.739 s 中位数；安全实现五轮为
+0.719/0.872/0.787/0.778/0.725 s，中位数 0.778 s，相对上一检查点 0.838 s 改善约 7.2%，取得上界收益的
+大部分。process/20 两组中位数分别为 1.387 s 与 1.299 s，跨过上一检查点 1.325 s 的两侧，不能证明
+进程模式有稳定变化；后一次仍约为 Linux v7.1 PREEMPT_RT 0.396 s 的 3.28 倍。一次随后尝试的严格
+A/B 在 Cargo package cache 竞争期间运行，结果同时出现明显宿主扰动，已排除而未写入检查点。
+
+这项对齐降低了 current/guard 共有热路径的固定成本，但 thread 与 process 仍远未达到 Linux RT；
+后续继续检查 guard 嵌套、wait/notify 中重复的 preemption/current boundary，以及 owner-rq 事务，而不
+以取消 binding 校验换取性能。
+
+质量验证覆盖两种 image mode：cpu-local host 模式 26 个单元测试、30 个集成契约测试和 2 个文档
+测试通过，host+TLS 模式 25 个单元测试、30 个集成契约测试和 2 个文档测试通过；x86_64 ArceOS
+Rust QEMU `task-fair-wake-idle-sibling` 1/1 通过；`cargo xtask clippy --package cpu-local` 的 3 个
+目标/特性组合、cpu-local targeted rustfmt 与 `git diff --check` 均通过。workspace-wide rustfmt check
+仍报告 8 个本检查点未修改文件的既有排版差异，因此没有把无关格式改动混入该语义/性能提交。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

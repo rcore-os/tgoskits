@@ -183,10 +183,7 @@ pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeade
     let pointer = validated_context_pointer(raw)?;
     // SAFETY: context publication only accepts pinned headers that remain
     // alive while current, and the caller retains the required CPU pin.
-    let context_area = unsafe { pointer.as_ref() }
-        .cpu_area()
-        .ok_or(CpuLocalError::CurrentContextMismatch)?;
-    if context_area != area {
+    if !unsafe { pointer.as_ref() }.is_bound_to(area) {
         return Err(CpuLocalError::CurrentContextMismatch);
     }
     Ok(pointer)
@@ -368,6 +365,25 @@ mod tests {
         assert_eq!(
             is_permanent_boot_context(runtime_context.as_ref().as_non_null()),
             Ok(false)
+        );
+    }
+
+    #[test]
+    fn pinned_current_validation_reuses_the_pinned_area_identity() {
+        let area = modeled_area(0);
+        let boot = area.prefix().boot_context().header();
+
+        // SAFETY: this host thread serially owns the leaked CPU fixture.
+        unsafe { imp::install_cpu_base(area.base(), boot as *const _ as usize) };
+        host_test::reset_register_read_counts();
+
+        // SAFETY: the host fixture cannot migrate or switch during the call.
+        unsafe { crate::with_cpu_pin(|_| ()) }.unwrap();
+
+        assert_eq!(
+            host_test::register_read_counts().initialized_area_validations,
+            1,
+            "the header-side binding check must reuse the already validated pinned area",
         );
     }
 

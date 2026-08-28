@@ -136,6 +136,13 @@ impl ExecutionContextHeader {
         Some(CurrentCpuBinding { area, epoch })
     }
 
+    pub(crate) fn is_bound_to(&self, area: CpuAreaRef) -> bool {
+        // The caller already owns a validated CpuAreaRef. Preserve the binding
+        // epoch validation without reconstructing the same area identity.
+        self.raw_cpu_binding()
+            .is_some_and(|(area_base, _)| area_base == area.base())
+    }
+
     pub(crate) fn raw_cpu_binding(&self) -> Option<(usize, CpuBindingEpoch)> {
         loop {
             let before = self.binding_epoch.load(Ordering::Acquire);
@@ -183,10 +190,39 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use core::mem::MaybeUninit;
+
     use super::*;
+    use crate::{CpuAreaPrefix, CpuIndex};
+
+    fn modeled_area(cpu_index: usize) -> CpuAreaRef {
+        let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
+        let base = storage.as_mut_ptr() as usize;
+        storage.write(
+            CpuAreaPrefix::initialize(CpuIndex::try_from(cpu_index).unwrap(), base).unwrap(),
+        );
+        // SAFETY: the initialized fixture is leaked for the process lifetime.
+        unsafe { CpuAreaRef::from_initialized_base(base) }.unwrap()
+    }
 
     #[test]
     fn execution_context_header_starts_with_cpu_binding() {
         assert_eq!(EXECUTION_CONTEXT_CPU_BASE_OFFSET, 0);
+    }
+
+    #[test]
+    fn stable_binding_matches_only_the_published_area() {
+        let first = modeled_area(0);
+        let second = modeled_area(1);
+        let header = Box::pin(ExecutionContextHeader::new());
+
+        // SAFETY: the pinned fixture is unbound and this test owns it.
+        let epoch = unsafe { header.as_ref().bind_cpu(first) }.unwrap();
+        assert!(header.is_bound_to(first));
+        assert!(!header.is_bound_to(second));
+
+        // SAFETY: the test owns the same live binding epoch.
+        unsafe { header.as_ref().unbind_cpu(epoch) }.unwrap();
+        assert!(!header.is_bound_to(first));
     }
 }
