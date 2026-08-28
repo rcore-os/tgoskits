@@ -70,6 +70,7 @@ struct CpuDeadlineSnapshot {
     sequence: AtomicU64,
     timer_deadline: AtomicU64,
     publication_deadline: AtomicU64,
+    publication_runtime_deadline: AtomicU64,
 }
 
 #[derive(Clone, Copy)]
@@ -84,6 +85,7 @@ impl CpuDeadlineSnapshot {
             sequence: AtomicU64::new(0),
             timer_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_NONE),
             publication_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_UNINITIALIZED),
+            publication_runtime_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_NONE),
         }
     }
 
@@ -101,6 +103,12 @@ impl CpuDeadlineSnapshot {
                 }),
             Ordering::Relaxed,
         );
+        self.publication_runtime_deadline.store(
+            state.publication.map_or(DEADLINE_SNAPSHOT_NONE, |publication| {
+                encode_deadline_snapshot(publication.runtime_deadline)
+            }),
+            Ordering::Relaxed,
+        );
         self.sequence
             .store(sequence.wrapping_add(2), Ordering::Release);
     }
@@ -114,6 +122,8 @@ impl CpuDeadlineSnapshot {
             }
             let timer_deadline = self.timer_deadline.load(Ordering::Relaxed);
             let publication_deadline = self.publication_deadline.load(Ordering::Relaxed);
+            let publication_runtime_deadline =
+                self.publication_runtime_deadline.load(Ordering::Relaxed);
             let after = self.sequence.load(Ordering::Acquire);
             if before == after {
                 return CpuDeadlineSnapshotValue {
@@ -121,6 +131,9 @@ impl CpuDeadlineSnapshot {
                     publication: (publication_deadline != DEADLINE_SNAPSHOT_UNINITIALIZED).then(
                         || SchedulerDeadlinePublicationState {
                             deadline: decode_deadline_snapshot(publication_deadline),
+                            runtime_deadline: decode_deadline_snapshot(
+                                publication_runtime_deadline,
+                            ),
                         },
                     ),
                 };
@@ -251,20 +264,31 @@ impl CpuDeadlineBase {
 
     pub(crate) fn publication_snapshot_matches(
         &self,
-        non_timer: Option<MonotonicDeadline>,
+        non_timer: SchedulerNonTimerDeadlines,
     ) -> bool {
         let snapshot = self.snapshot.read();
-        let deadline = [snapshot.timer_deadline, non_timer]
+        let deadline = [snapshot.timer_deadline, non_timer.deadline]
             .into_iter()
             .flatten()
             .min();
-        snapshot.publication == Some(SchedulerDeadlinePublicationState { deadline })
+        snapshot.publication
+            == Some(SchedulerDeadlinePublicationState {
+                deadline,
+                runtime_deadline: non_timer.runtime_deadline,
+            })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SchedulerNonTimerDeadlines {
+    pub(crate) deadline: Option<MonotonicDeadline>,
+    pub(crate) runtime_deadline: Option<MonotonicDeadline>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SchedulerDeadlinePublicationState {
     pub(crate) deadline: Option<MonotonicDeadline>,
+    pub(crate) runtime_deadline: Option<MonotonicDeadline>,
 }
 
 #[derive(Debug)]

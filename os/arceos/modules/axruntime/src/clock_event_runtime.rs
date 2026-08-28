@@ -133,7 +133,11 @@ impl ClockEventFiringTransaction {
         let token = self.token;
         let action = with_local_clock_event_mut(|clockevent| {
             let _ = clockevent
-                .publish_scheduler(outcome.update().generation(), outcome.update().deadline());
+                .publish_scheduler(
+                    outcome.update().generation(),
+                    outcome.update().deadline(),
+                    outcome.update().runtime_deadline(),
+                );
             let rearm = crate::clock_event::ClockEventRearm::Deferred;
             clockevent.finish_firing(token, rearm)
         });
@@ -171,7 +175,11 @@ pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::Schedul
     commit_local_clock_event(|clockevent| {
         (
             (),
-            clockevent.publish_scheduler(update.generation(), update.deadline()),
+            clockevent.publish_scheduler(
+                update.generation(),
+                update.deadline(),
+                update.runtime_deadline(),
+            ),
         )
     });
 }

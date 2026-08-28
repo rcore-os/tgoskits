@@ -1,6 +1,7 @@
 //! Owner-only scheduler deadline and soft-timer facade.
 
 use super::*;
+use crate::system::cpu::remote::SchedulerNonTimerDeadlines;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SoftTimerExpireBatch {
@@ -112,7 +113,10 @@ impl CpuLocal {
             .then(|| self.dispatch.fair_balance_deadline())
             .flatten();
         let rt_period = self.rt_bandwidth.deadline_for(self.owner);
-        let non_timer = [fair_balance, rt_period].into_iter().flatten().min();
+        let non_timer = SchedulerNonTimerDeadlines {
+            deadline: [fair_balance, rt_period].into_iter().flatten().min(),
+            runtime_deadline: None,
+        };
         self.remote.deadline_publication_snapshot_matches(non_timer)
     }
 
@@ -151,7 +155,7 @@ impl CpuLocal {
         self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
         rq_observation: SchedulerDeadlineRqObservation,
-    ) -> Option<MonotonicDeadline> {
+    ) -> SchedulerNonTimerDeadlines {
         let this = self.as_ref().get_ref();
         // Linux's hrtick callback returns HRTIMER_NORESTART after task_tick().
         // Once that callback has published a sticky preemption request, the
@@ -170,10 +174,13 @@ impl CpuLocal {
             .then(|| this.dispatch.fair_balance_deadline())
             .flatten();
         let rt_period = this.rt_bandwidth.deadline_for(this.owner);
-        [scheduler, fair_balance, rt_period]
-            .into_iter()
-            .flatten()
-            .min()
+        SchedulerNonTimerDeadlines {
+            deadline: [scheduler, fair_balance, rt_period]
+                .into_iter()
+                .flatten()
+                .min(),
+            runtime_deadline: scheduler,
+        }
     }
 
     pub(crate) fn next_scheduler_deadline_update_if_changed(
@@ -262,7 +269,7 @@ impl CpuLocal {
         self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
         source: SchedulerDeadlineDerivationSource,
-    ) -> Option<MonotonicDeadline> {
+    ) -> SchedulerNonTimerDeadlines {
         // Derive rq-owned inputs before entering the timer base. The caller can
         // then mutate the queue and commit its physical publication under one
         // Registration guard, preserving the rq -> deadline-base lock order.
@@ -282,15 +289,20 @@ impl CpuLocal {
 
     fn update_scheduler_deadline_publication_in_base(
         task_deadlines: &mut crate::system::cpu::remote::CpuDeadlineState,
-        non_timer: Option<MonotonicDeadline>,
+        non_timer: SchedulerNonTimerDeadlines,
     ) -> Result<SchedulerDeadlinePublicationOutcome, TaskError> {
         let timer = task_deadlines.timer_deadline();
         let publication = SchedulerDeadlinePublicationState {
-            deadline: [timer, non_timer].into_iter().flatten().min(),
+            deadline: [timer, non_timer.deadline].into_iter().flatten().min(),
+            runtime_deadline: non_timer.runtime_deadline,
         };
         if task_deadlines.publication == Some(publication) {
             let update =
-                SchedulerDeadlineUpdate::try_new(task_deadlines.generation, publication.deadline)
+                SchedulerDeadlineUpdate::try_new(
+                    task_deadlines.generation,
+                    publication.deadline,
+                    publication.runtime_deadline,
+                )
                     .ok_or(TaskError::InvalidConfiguration)?;
             return Ok(SchedulerDeadlinePublicationOutcome::Unchanged(update));
         }
@@ -300,7 +312,7 @@ impl CpuLocal {
 
     pub(crate) fn update_scheduler_deadline_registration_publication(
         task_deadlines: &mut crate::system::cpu::remote::CpuDeadlineState,
-        non_timer: Option<MonotonicDeadline>,
+        non_timer: SchedulerNonTimerDeadlines,
     ) -> Result<SchedulerDeadlineUpdate, TaskError> {
         // `task_deadlines` already owns the queue mutation. Reusing that guard
         // matches Linux hrtimer enqueue/remove plus expires-next reprogramming.
@@ -310,7 +322,7 @@ impl CpuLocal {
 
     pub(crate) fn update_scheduler_deadline_registration_publication_if_changed(
         task_deadlines: &mut crate::system::cpu::remote::CpuDeadlineState,
-        non_timer: Option<MonotonicDeadline>,
+        non_timer: SchedulerNonTimerDeadlines,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
         Self::update_scheduler_deadline_publication_in_base(task_deadlines, non_timer)
             .map(SchedulerDeadlinePublicationOutcome::changed_update)
@@ -325,7 +337,11 @@ impl CpuLocal {
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
         let update =
-            SchedulerDeadlineUpdate::try_new(task_deadlines.generation, publication.deadline)
+            SchedulerDeadlineUpdate::try_new(
+                task_deadlines.generation,
+                publication.deadline,
+                publication.runtime_deadline,
+            )
                 .ok_or(TaskError::InvalidConfiguration)?;
         task_deadlines.publication = Some(publication);
         Ok(update)

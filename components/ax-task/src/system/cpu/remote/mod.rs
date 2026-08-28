@@ -15,6 +15,7 @@ mod scheduler;
 pub(crate) use deadline::{
     CpuDeadlineActivityGuard, CpuDeadlineBase, CpuDeadlinePublicationGuard, CpuDeadlineReadGuard,
     CpuDeadlineState, DeadlineBaseGuardSource, KtimerClaimClass, SchedulerDeadlinePublicationState,
+    SchedulerNonTimerDeadlines,
 };
 pub(crate) use delivery::{PreparedMigrationDelivery, PreparedRemoteWakeDelivery};
 pub(crate) use idle_pull::IdlePullReservation;
@@ -136,7 +137,7 @@ impl CpuRemote {
 
     pub(crate) fn deadline_publication_snapshot_matches(
         &self,
-        non_timer: Option<MonotonicDeadline>,
+        non_timer: SchedulerNonTimerDeadlines,
     ) -> bool {
         self.deadline.publication_snapshot_matches(non_timer)
     }

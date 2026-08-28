@@ -191,19 +191,28 @@ mod monotonic_time_tests {
 pub struct SchedulerDeadlineUpdate {
     generation: u64,
     deadline: Option<MonotonicDeadline>,
+    runtime_deadline: Option<MonotonicDeadline>,
 }
 
 impl SchedulerDeadlineUpdate {
     /// Creates one publication after the owner has committed its local state.
     ///
     /// Generation zero is reserved for an uninitialized consumer.
-    pub const fn try_new(generation: u64, deadline: Option<MonotonicDeadline>) -> Option<Self> {
-        if generation == 0 {
+    pub const fn try_new(
+        generation: u64,
+        deadline: Option<MonotonicDeadline>,
+        runtime_deadline: Option<MonotonicDeadline>,
+    ) -> Option<Self> {
+        if generation == 0
+            || matches!((deadline, runtime_deadline), (None, Some(_)))
+            || matches!((deadline, runtime_deadline), (Some(deadline), Some(runtime)) if deadline.as_nanos() > runtime.as_nanos())
+        {
             None
         } else {
             Some(Self {
                 generation,
                 deadline,
+                runtime_deadline,
             })
         }
     }
@@ -216,5 +225,10 @@ impl SchedulerDeadlineUpdate {
     /// Returns the next scheduler-owned physical deadline, if one exists.
     pub const fn deadline(self) -> Option<MonotonicDeadline> {
         self.deadline
+    }
+
+    /// Returns the current scheduling class's hrtick deadline, if armed.
+    pub const fn runtime_deadline(self) -> Option<MonotonicDeadline> {
+        self.runtime_deadline
     }
 }
