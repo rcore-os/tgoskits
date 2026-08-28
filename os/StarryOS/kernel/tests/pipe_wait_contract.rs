@@ -16,12 +16,12 @@ fn blocking_pipe_io_uses_one_linux_style_exclusive_wait_order() {
         "each pipe direction must own one composite Linux-style wait source"
     );
     assert!(
-        wait_set.contains("direct: WaitQueue")
+        !wait_set.contains("direct: WaitQueue")
             && wait_set.contains("shared: PollSet")
             && wait_set.contains("exclusive: Arc<SpinLock")
             && !wait_set.contains("exclusive: Arc<PiMutex"),
-        "the composite source must retain direct parking, shared observers, and one exclusive \
-         non-sleeping registration order"
+        "direct task waiters and EPOLLEXCLUSIVE callbacks must share one exclusive FIFO owner, \
+         without duplicating each direct waiter in an internal WaitQueue"
     );
     for (operation, wait_queue) in [(read, "wait_rx.wait_until"), (write, "wait_tx.wait_until")] {
         assert!(

@@ -3975,6 +3975,46 @@ Linux `set_current_state()` 自身不取得 `rq->lock`，但它在 IRQ enabled �
 rq ownership 与调度语义均未改变；修复的是测试归因边界，避免用异步 IRQ 活动否定 Linux
 `set_current_state()` 的调用路径合同。
 
+### 2026-08-28 Linux pipe 单一 exclusive waiter owner
+
+Linux v7.1 `wait_event_interruptible_exclusive()` 为每次阻塞在目标 pipe waitqueue 上准备一个
+`wait_queue_entry`；成功唤醒时 `autoremove_wake_function()` 直接把这一 entry 从同一链表删除。
+`fs/pipe.c` 的 reader/writer handoff、普通 poll waiter 与 EPOLLEXCLUSIVE waiter 因而共享各自
+`rd_wait`/`wr_wait` 的一份有序 membership，不会再把同一个直接任务 waiter 同时登记进第二个
+内部 task queue。旧 Starry `PipeWaitSet` 虽然已经统一 direct waiter 与 EPOLLEXCLUSIVE 的
+exclusive wake budget，却仍让每个 direct waiter 同时存在于 `PipeExclusiveState.waiters` 和
+`WaitQueue.waiters`；一次选择还要跨两把锁按 token 回查并删除第二份 membership。这既偏离 Linux
+的单 entry 所有权，也把重复 `VecDeque` 插入、扫描和删除放进 pipe block/wake 热路径。
+
+1 秒级 qperf 诊断窗口使用 process/20 loops、全部任务固定 CPU0，workload 为 1.203 s：8040 次
+read 中发生 3590 次阻塞，恰好产生 3590 次 direct registration；5839 次 pipe wake 中 direct
+attempt/delivered 为 3590/3590，retry/stale 为 0/0。这说明重复登记不是外围冷路径，而是该单核
+workload 中每次实际阻塞都会支付的固定成本。确定性 source contract 先要求 `PipeWaitSet` 不再
+包含 `direct: WaitQueue`，在旧生产实现上稳定红；随后才移动 exact-wake ownership。
+
+现在 `wait_until_registered()` 直接创建 generation-bearing `WaitQueueWakeToken`，注册 lease
+只把它放进调用者提供的唯一有序源。token 自己完成 select、scheduler delivery、Unavailable
+重试和 deactivate，不再保存第二个 queue 地址或取得第二份 waiter lock。pipe 的 direct waiter
+与 EPOLLEXCLUSIVE callback 只由 `PipeExclusiveState.waiters` 排序；waiter 恢复时先 deactivate，
+再释放 registration lease，关闭 unavailable reinsert 与退出之间的竞态。普通 `WaitQueue` 仍保留
+自己的 FIFO、notification generation 与 active-attempt fast path，两种所有权没有合并成兼容分叉。
+
+同一 source contract 修复后转绿；x86_64 真实 ArceOS Rust QEMU 的 Starry kernel suite 通过
+72/72，覆盖 condition/register race、direct 与 EPOLLEXCLUSIVE 共用一个 wake quota、跨类型 FIFO
+顺序以及 selection 先于 registration drop。`cargo xtask clippy --package ax-task` 的 5 组矩阵和
+Starry `qperf-metrics` 目标 clippy 通过。`ax-runtime` clippy 的 base、aic8800-wifi、display、
+ext-ld、ext4fs 通过，随后在与本改动无关的 `ax-fs-ng` fatfs-only 配置因 `PAGE_SIZE` 与
+`SleepMutex` 仅受 ext4 gate 导入而失败；没有把文件系统矩阵修复混入本检查点。清理旧构建产物后，
+`cargo test -p ax-task` 的 host 链接还暴露缺少真实 runtime provider 的
+`__ax_task_0_6_preempt_guard_enter/exit`，因此本阶段以真实 QEMU 覆盖系统语义，不新增 fake
+`TaskRuntime`/`TaskSystem`。
+
+相同未插桩 process/100 loops、4-vCPU QEMU 但全部任务固定 CPU0 的三轮结果为 5.590 s、
+5.380 s、5.961 s，中位数 5.590 s；上一检查点三轮 5.632 s、6.206 s、5.620 s，中位数
+5.632 s，本轮约改善 0.75%，仍在噪声范围内。该检查点只确认 Linux 单 waiter owner 语义并排除
+一次明显退化，不能宣称已经找到 Linux RT 性能差距根因；后续继续检查 wake 无 exclusive match、
+owner-rq transaction 与 switch 固定成本，不回退这项已证明的语义对齐。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

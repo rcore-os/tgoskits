@@ -9,7 +9,8 @@ use core::{
 
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_std::os::arceos::task::{
-    WaitQueue, WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken, wake_waker_sync,
+    WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken, wait_until_registered,
+    wake_waker_sync,
 };
 use axpoll::{IoEvents, PollRegistration, PollSource, Pollable, RegistrationMode};
 use axpoll_set::PollSet;
@@ -127,7 +128,6 @@ fn wake_pipe_waiters_all(waiters: &PipeWaitSet, ready: IoEvents) {
 }
 
 struct PipeWaitSet {
-    direct: WaitQueue,
     shared: PollSet,
     exclusive: Arc<SpinLock<PipeExclusiveState>>,
 }
@@ -142,7 +142,6 @@ struct PipeExclusiveState {
 struct PipeExclusiveWaiter {
     id: u64,
     target: PipeExclusiveTarget,
-    active: Arc<AtomicBool>,
 }
 
 enum PipeExclusiveTarget {
@@ -157,14 +156,12 @@ enum PipeExclusiveTarget {
 struct PipeExclusiveRegistration {
     state: Arc<SpinLock<PipeExclusiveState>>,
     id: u64,
-    active: Arc<AtomicBool>,
     notified: Option<Arc<AtomicBool>>,
 }
 
 impl PipeWaitSet {
     fn new() -> Self {
         Self {
-            direct: WaitQueue::new(),
             shared: PollSet::new(),
             exclusive: Arc::new(SpinLock::new(PipeExclusiveState {
                 waiters: VecDeque::new(),
@@ -176,7 +173,7 @@ impl PipeWaitSet {
     }
 
     fn wait_until(&self, condition: impl Fn() -> bool) -> bool {
-        let _selected = self.direct.wait_until_registered(
+        let _selected = wait_until_registered(
             condition,
             || self.exclusive.lock().notification_generation,
             |token, observed_notification| {
@@ -209,14 +206,11 @@ impl PipeWaitSet {
         target: PipeExclusiveTarget,
         notified: Option<Arc<AtomicBool>>,
     ) -> Option<PipeExclusiveRegistration> {
-        let active = Arc::new(AtomicBool::new(true));
         let mut state = self.exclusive.lock();
         if state.closed {
             return None;
         }
-        Some(
-            self.register_exclusive_target_locked_with_active(&mut state, target, active, notified),
-        )
+        Some(self.register_exclusive_target_locked(&mut state, target, notified))
     }
 
     fn register_exclusive_target_locked(
@@ -225,35 +219,15 @@ impl PipeWaitSet {
         target: PipeExclusiveTarget,
         notified: Option<Arc<AtomicBool>>,
     ) -> PipeExclusiveRegistration {
-        self.register_exclusive_target_locked_with_active(
-            state,
-            target,
-            Arc::new(AtomicBool::new(true)),
-            notified,
-        )
-    }
-
-    fn register_exclusive_target_locked_with_active(
-        &self,
-        state: &mut PipeExclusiveState,
-        target: PipeExclusiveTarget,
-        active: Arc<AtomicBool>,
-        notified: Option<Arc<AtomicBool>>,
-    ) -> PipeExclusiveRegistration {
         let id = state.next_id;
         state.next_id = state
             .next_id
             .checked_add(1)
             .expect("pipe waiter registration ID space exhausted");
-        state.waiters.push_back(PipeExclusiveWaiter {
-            id,
-            target,
-            active: Arc::clone(&active),
-        });
+        state.waiters.push_back(PipeExclusiveWaiter { id, target });
         PipeExclusiveRegistration {
             state: Arc::clone(&self.exclusive),
             id,
-            active,
             notified,
         }
     }
@@ -295,9 +269,9 @@ impl PipeWaitSet {
                     #[cfg(feature = "qperf-metrics")]
                     PIPE_WAKE_DIRECT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
                     let outcome = if sync {
-                        self.direct.notify_token_sync(token)
+                        token.notify_sync()
                     } else {
-                        self.direct.notify_token(token)
+                        token.notify()
                     };
                     match outcome {
                         WaitQueueWakeOutcome::Delivered => {
@@ -352,7 +326,7 @@ impl PipeWaitSet {
 
     fn reinsert_if_active(&self, waiter: PipeExclusiveWaiter) {
         let mut state = self.exclusive.lock();
-        if state.closed || !waiter.active.load(Ordering::Acquire) {
+        if state.closed || !waiter.target.is_active() {
             return;
         }
         let index = state
@@ -384,14 +358,16 @@ impl PipeWaitSet {
             state.waiters = retained;
             selected
         };
-        self.direct.notify_all();
         unsafe {
             // Peer close is permanent, so all shared observers are notified.
             self.shared.wake_all(ready);
         }
         for waiter in waiters {
-            if let PipeExclusiveTarget::Poll { waker, .. } = waiter.target {
-                waker.wake();
+            match waiter.target {
+                PipeExclusiveTarget::Direct(token) => {
+                    let _ = token.notify();
+                }
+                PipeExclusiveTarget::Poll { waker, .. } => waker.wake(),
             }
         }
     }
@@ -410,6 +386,13 @@ impl PipeExclusiveTarget {
             notified.store(true, Ordering::Release);
         }
     }
+
+    fn is_active(&self) -> bool {
+        match self {
+            Self::Direct(token) => token.is_active(),
+            Self::Poll { .. } => false,
+        }
+    }
 }
 
 impl PollRegistration for PipeExclusiveRegistration {
@@ -423,7 +406,6 @@ impl PollRegistration for PipeExclusiveRegistration {
 impl Drop for PipeExclusiveRegistration {
     fn drop(&mut self) {
         let mut state = self.state.lock();
-        self.active.store(false, Ordering::Release);
         if let Some(index) = state.waiters.iter().position(|waiter| waiter.id == self.id) {
             state.waiters.remove(index);
         }
@@ -475,7 +457,7 @@ impl Drop for PipeWaitSet {
         for waiter in waiters {
             match waiter.target {
                 PipeExclusiveTarget::Direct(token) => {
-                    let _ = self.direct.notify_token(&token);
+                    let _ = token.notify();
                 }
                 PipeExclusiveTarget::Poll { waker, .. } => {
                     waker.wake();
