@@ -297,8 +297,11 @@ impl<B: MappingBackend> MemorySet<B> {
         Ok(())
     }
 
-    /// Validates that `area` can replace one contained metadata range.
-    pub fn validate_area_metadata_replacement(&self, area: &MemoryArea<B>) -> MappingResult {
+    /// Finds the existing area that contains the replacement range.
+    fn containing_area_for_metadata_replacement(
+        &self,
+        area: &MemoryArea<B>,
+    ) -> MappingResult<B::Addr> {
         if area.va_range().is_empty() {
             return Err(MappingError::InvalidParam);
         }
@@ -310,22 +313,21 @@ impl<B: MappingBackend> MemorySet<B> {
             .range(..=start)
             .last()
             .filter(|(_, old)| old.start() <= start && end <= old.end())
-            .map(|_| ())
+            .map(|(&old_start, _)| old_start)
             .ok_or(MappingError::InvalidParam)
+    }
+
+    /// Validates that `area` can replace one contained metadata range.
+    pub fn validate_area_metadata_replacement(&self, area: &MemoryArea<B>) -> MappingResult {
+        self.containing_area_for_metadata_replacement(area)
+            .map(|_| ())
     }
 
     /// Replaces area metadata without touching page-table entries.
     pub fn replace_area_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
-        self.validate_area_metadata_replacement(&area)?;
-
         let start = area.start();
         let end = area.end();
-        let old_start = self
-            .areas
-            .range(..=start)
-            .next_back()
-            .map(|(&old_start, _)| old_start)
-            .expect("validated metadata replacement lost its containing area");
+        let old_start = self.containing_area_for_metadata_replacement(&area)?;
 
         let mut old_area = self.areas.remove(&old_start).unwrap();
         if old_start < start {
