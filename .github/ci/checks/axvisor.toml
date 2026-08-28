@@ -55,12 +55,14 @@ echo "==> pull qemu-aarch64 image"
 cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
 echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
+echo "==> axvisor aarch64 browser console"
+cargo xtask axvisor test qemu --arch aarch64 --test-case browser-console
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["http-control-plane"]
+cases = ["http-control-plane", "browser-console"]
 
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
