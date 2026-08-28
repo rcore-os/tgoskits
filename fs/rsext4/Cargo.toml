@@ -16,6 +16,10 @@ license = "Apache-2.0"
 bitflags = "2.10"
 thiserror.workspace = true
 
+[dev-dependencies]
+# Host tests exercise runtime-provided synchronization contracts.
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
+
 [features]
 default = ["USE_MULTILEVEL_CACHE"]
 host-test = []
