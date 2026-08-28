@@ -530,16 +530,7 @@ impl AddrSpace {
     ) -> crate::StarryResult {
         // Compute the actual mapped bytes being removed (unmap is already O(n)).
         let end = start + size;
-        let removed_pages: u64 = self
-            .areas
-            .iter()
-            .filter(|a| a.start() < end && a.end() > start)
-            .map(|a| {
-                let lo = a.start().max(start);
-                let hi = a.end().min(end);
-                ((hi - lo) / PAGE_SIZE_4K) as u64
-            })
-            .sum();
+        let removed_pages = self.mapped_pages_in_range(start, end);
 
         let _rss = RssAccountingGuard::enter(&self.rss);
         self.areas.validate_unmap(start, size, &self.pt)?;
@@ -555,22 +546,25 @@ impl AddrSpace {
         self.validate_region(start, size)?;
 
         let end = start + size;
-        let removed_pages: u64 = self
-            .areas
-            .iter()
-            .filter(|a| a.start() < end && a.end() > start)
-            .map(|a| {
-                let lo = a.start().max(start);
-                let hi = a.end().min(end);
-                ((hi - lo) / PAGE_SIZE_4K) as u64
-            })
-            .sum();
+        let removed_pages = self.mapped_pages_in_range(start, end);
 
         let memfd_update = crate::syscall::memfd_prepare_shared_writable_unmap(self, start, size)?;
         self.areas.unmap_metadata(start, size)?;
         memfd_update.commit();
         self.vm_stat.on_unmap(removed_pages);
         Ok(())
+    }
+
+    fn mapped_pages_in_range(&self, start: VirtAddr, end: VirtAddr) -> u64 {
+        self.areas
+            .iter()
+            .filter(|area| area.start() < end && area.end() > start)
+            .map(|area| {
+                let overlap_start = area.start().max(start);
+                let overlap_end = area.end().min(end);
+                ((overlap_end - overlap_start) / PAGE_SIZE_4K) as u64
+            })
+            .sum()
     }
 
     pub fn replace_area_metadata_with_reported_flags(
