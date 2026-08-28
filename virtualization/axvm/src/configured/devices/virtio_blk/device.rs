@@ -1,4 +1,4 @@
-//! Configured VirtIO MMIO block device backed by memory or a file.
+//! Configured VirtIO MMIO block device runtime and backend.
 
 #[cfg(feature = "fs")]
 use core::sync::atomic::AtomicUsize;
@@ -8,7 +8,6 @@ use std::collections::VecDeque;
 use std::{
     boxed::Box,
     format,
-    string::String,
     sync::{Arc, Mutex},
     vec,
     vec::Vec,
@@ -24,40 +23,40 @@ use axvirtio_common::{GuestMemory, NoGuestMemoryAccessor, VirtioError, VirtioRes
 use axvm_types::GuestPhysAddr;
 use axvmconfig::VirtualDeviceRequest;
 
+#[cfg(feature = "fs")]
+use super::image::{
+    AxFilePublisher, ImagePreparationError, allocate_file_mirror, prepare_file_image,
+};
+use super::options::{BackendConfig, FilesystemFormat, VirtioBlkOptions};
 use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 
 const MMIO_SLOT: &str = "mmio";
 const IRQ_SLOT: &str = "irq";
 const MMIO_SIZE: u64 = 0x200;
 const SECTOR_SIZE: usize = 512;
-const DEFAULT_CAPACITY_BYTES: u64 = 2 * 1024 * 1024;
+const DEFAULT_RAMDISK_CAPACITY_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Catalog entry for `[[devices.virtual]] model = "virtio-blk"`.
-pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
+pub(super) const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
     model: "virtio-blk",
     create: create_device_node,
 };
-
-pub(super) fn register(
-    catalog: &mut crate::ConfiguredDeviceCatalog,
-) -> Result<(), ConfiguredDeviceError> {
-    catalog.register(module_path!(), REGISTRATION)
-}
 
 fn create_device_node(
     id: DeviceNodeId,
     request: &VirtualDeviceRequest,
     context: &DeviceInstantiationContext,
 ) -> Result<DeviceNodeSpec, ConfiguredDeviceError> {
-    let capacity_bytes = parse_capacity(request)?;
-    let backend_config = parse_backend(request)?;
-    let backend = VirtioBlkBackend::open(&backend_config, capacity_bytes).map_err(|error| {
-        ConfiguredDeviceError::Instantiation {
-            device: request.id.clone(),
-            model: request.model.clone(),
-            detail: format!("failed to initialize backing storage: {error}"),
-        }
-    })?;
+    let options = VirtioBlkOptions::parse(request)
+        .map_err(|error| invalid_options(request, &error.to_string()))?;
+    let backend =
+        VirtioBlkBackend::open(&options.backend, options.capacity_bytes).map_err(|error| {
+            ConfiguredDeviceError::Instantiation {
+                device: request.id.clone(),
+                model: request.model.clone(),
+                detail: format!("failed to initialize backing storage: {error}"),
+            }
+        })?;
     let controller =
         context
             .default_wired_controller()
@@ -82,102 +81,6 @@ fn invalid_options(request: &VirtualDeviceRequest, detail: &str) -> ConfiguredDe
         device: request.id.clone(),
         model: request.model.clone(),
         detail: detail.into(),
-    }
-}
-
-fn parse_capacity(request: &VirtualDeviceRequest) -> Result<Option<u64>, ConfiguredDeviceError> {
-    let capacity = request.options.get("capacity");
-    let legacy_sectors = request.options.get("capacity_sectors");
-    if capacity.is_some() && legacy_sectors.is_some() {
-        return Err(invalid_options(
-            request,
-            "specify only one of `capacity` and `capacity_sectors`",
-        ));
-    }
-    let bytes = if let Some(value) = capacity {
-        let value = value
-            .as_str()
-            .ok_or_else(|| invalid_options(request, "`capacity` must be a size string"))?;
-        Some(parse_capacity_bytes(value).map_err(|detail| invalid_options(request, detail))?)
-    } else if let Some(value) = legacy_sectors {
-        let sectors = value
-            .as_integer()
-            .and_then(|value| u64::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .ok_or_else(|| invalid_options(request, "`capacity_sectors` must be positive"))?;
-        Some(
-            sectors
-                .checked_mul(SECTOR_SIZE as u64)
-                .ok_or_else(|| invalid_options(request, "`capacity_sectors` is too large"))?,
-        )
-    } else {
-        None
-    };
-    Ok(bytes)
-}
-
-fn parse_capacity_bytes(value: &str) -> Result<u64, &'static str> {
-    let split = value
-        .find(|character: char| !character.is_ascii_digit())
-        .unwrap_or(value.len());
-    let (number, suffix) = value.split_at(split);
-    let number = number
-        .parse::<u64>()
-        .ok()
-        .filter(|number| *number > 0)
-        .ok_or("`capacity` must start with a positive integer")?;
-    let multiplier = match suffix.to_ascii_lowercase().as_str() {
-        "b" => 1,
-        "kb" => 1_000,
-        "mb" => 1_000_000,
-        "gb" => 1_000_000_000,
-        "kib" => 1024,
-        "mib" => 1024 * 1024,
-        "gib" => 1024 * 1024 * 1024,
-        _ => return Err("`capacity` suffix must be B, KB, MB, GB, KiB, MiB, or GiB"),
-    };
-    let bytes = number
-        .checked_mul(multiplier)
-        .ok_or("`capacity` is too large")?;
-    if bytes % SECTOR_SIZE as u64 != 0 {
-        return Err("`capacity` must be a multiple of 512 bytes");
-    }
-    Ok(bytes)
-}
-
-fn parse_backend(request: &VirtualDeviceRequest) -> Result<BackendConfig, ConfiguredDeviceError> {
-    let backend = request
-        .options
-        .get("backend")
-        .map(|value| {
-            value
-                .as_str()
-                .ok_or_else(|| invalid_options(request, "`backend` must be `file` or `ramdisk`"))
-        })
-        .transpose()?
-        .unwrap_or("file");
-    let path = request.options.get("path").map(|value| {
-        value
-            .as_str()
-            .filter(|path| !path.is_empty())
-            .ok_or_else(|| invalid_options(request, "`path` must be a non-empty string"))
-    });
-    match backend {
-        "ramdisk" if path.is_none() => Ok(BackendConfig::RamDisk),
-        "ramdisk" => Err(invalid_options(
-            request,
-            "`path` is only valid for the file backend",
-        )),
-        "file" => Ok(BackendConfig::File {
-            path: path
-                .transpose()?
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("/tmp/{}.img", request.id)),
-        }),
-        _ => Err(invalid_options(
-            request,
-            "`backend` must be `file` or `ramdisk`",
-        )),
     }
 }
 
@@ -209,11 +112,6 @@ fn allocate_zeroed_backend_buffer(
 struct VirtioBlkModel {
     backend: Mutex<Option<VirtioBlkBackend>>,
     controller: axdevice_base::InterruptControllerId,
-}
-
-enum BackendConfig {
-    RamDisk,
-    File { path: String },
 }
 
 impl DeviceModel for VirtioBlkModel {
@@ -321,10 +219,12 @@ impl VirtioBlkBackend {
     fn open(config: &BackendConfig, capacity_bytes: Option<u64>) -> DeviceManagerResult<Self> {
         match config {
             BackendConfig::RamDisk => {
-                let capacity = capacity_bytes.unwrap_or(DEFAULT_CAPACITY_BYTES);
+                let capacity = capacity_bytes.unwrap_or(DEFAULT_RAMDISK_CAPACITY_BYTES);
                 Ok(Self::RamDisk(RamDiskBackend::new(capacity)?))
             }
-            BackendConfig::File { path } => open_file_backend(path, capacity_bytes),
+            BackendConfig::File { path, filesystem } => {
+                open_file_backend(path, capacity_bytes, *filesystem)
+            }
         }
     }
 
@@ -341,71 +241,34 @@ impl VirtioBlkBackend {
 fn open_file_backend(
     path: &str,
     configured_capacity: Option<u64>,
+    filesystem: FilesystemFormat,
 ) -> DeviceManagerResult<VirtioBlkBackend> {
-    let mut options = ax_api::fs::AxOpenOptions::new();
-    options.read(true);
-    options.write(true);
-    options.create(true);
-    let file = ax_api::fs::ax_open_file(path, &options).map_err(|error| {
-        invalid_device_config(
-            "open virtio-blk backing file",
-            &format!("failed to open `{path}`: {error}"),
-        )
-    })?;
-    let existing_len = ax_api::fs::ax_file_attr(&file)
-        .map_err(|error| {
-            invalid_device_config(
-                "inspect virtio-blk backing file",
-                &format!("failed to inspect `{path}`: {error}"),
-            )
-        })?
-        .size;
-    let capacity = configured_capacity.unwrap_or({
-        if existing_len == 0 {
-            DEFAULT_CAPACITY_BYTES
-        } else {
-            existing_len
-        }
-    });
-    if capacity == 0 || !capacity.is_multiple_of(SECTOR_SIZE as u64) {
-        return Err(invalid_device_config(
-            "validate virtio-blk backing file",
-            "backing file capacity must be a positive multiple of 512 bytes",
-        ));
-    }
-    if existing_len != capacity {
-        ax_api::fs::ax_truncate_file(&file, capacity).map_err(|error| {
-            invalid_device_config(
-                "resize virtio-blk backing file",
-                &format!("failed to resize `{path}` to {capacity} bytes: {error}"),
-            )
-        })?;
-    }
-    let mut bytes = allocate_file_mirror(capacity)?;
-    let read = ax_api::fs::ax_read_file_at(&file, 0, &mut bytes).map_err(|error| {
-        invalid_device_config(
-            "load virtio-blk backing file",
-            &format!("failed to read `{path}`: {error}"),
-        )
-    })?;
-    if read != bytes.len() {
-        return Err(invalid_device_config(
-            "load virtio-blk backing file",
-            "backing file returned a short read",
-        ));
-    }
-    FileBackend::spawn(file, bytes, capacity / SECTOR_SIZE as u64).map(VirtioBlkBackend::File)
+    let mut publisher =
+        AxFilePublisher::open(path).map_err(|error| map_image_error(path, error))?;
+    let bytes = prepare_file_image(
+        &mut publisher,
+        configured_capacity,
+        filesystem,
+        allocate_file_mirror,
+    )
+    .map_err(|error| map_image_error(path, error))?;
+    let capacity_sectors = bytes.len() as u64 / SECTOR_SIZE as u64;
+    FileBackend::spawn(publisher.into_file(), bytes, capacity_sectors).map(VirtioBlkBackend::File)
 }
 
 #[cfg(feature = "fs")]
-fn allocate_file_mirror(capacity: u64) -> DeviceManagerResult<Vec<u8>> {
-    allocate_zeroed_backend_buffer(capacity, "allocate virtio-blk file mirror")
+fn map_image_error(path: &str, error: ImagePreparationError) -> DeviceManagerError {
+    invalid_device_config(
+        "prepare virtio-blk backing image",
+        &format!("failed to prepare `{path}`: {error}"),
+    )
 }
 
 #[cfg(not(feature = "fs"))]
 fn open_file_backend(
     path: &str,
     _configured_capacity: Option<u64>,
+    _filesystem: FilesystemFormat,
 ) -> DeviceManagerResult<VirtioBlkBackend> {
     Err(invalid_device_config(
         "open virtio-blk backing file",
@@ -821,21 +684,7 @@ fn map_virtio_error(error: VirtioError) -> DeviceError {
 
 #[cfg(test)]
 mod tests {
-    use super::{allocate_zeroed_backend_buffer, parse_capacity_bytes};
-
-    #[test]
-    fn parses_decimal_and_binary_capacity_suffixes() {
-        assert_eq!(parse_capacity_bytes("64MB"), Ok(64_000_000));
-        assert_eq!(parse_capacity_bytes("2GB"), Ok(2_000_000_000));
-        assert_eq!(parse_capacity_bytes("2MiB"), Ok(2 * 1024 * 1024));
-    }
-
-    #[test]
-    fn rejects_invalid_or_unaligned_capacity() {
-        assert!(parse_capacity_bytes("0GB").is_err());
-        assert!(parse_capacity_bytes("1XB").is_err());
-        assert!(parse_capacity_bytes("1KB").is_err());
-    }
+    use super::allocate_zeroed_backend_buffer;
 
     #[test]
     fn oversized_backend_capacity_returns_configuration_error() {

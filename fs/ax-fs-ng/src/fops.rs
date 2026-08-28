@@ -125,6 +125,7 @@ pub struct OpenOptions {
     truncate: bool,
     create: bool,
     create_new: bool,
+    direct: bool,
 }
 
 impl Default for OpenOptions {
@@ -142,6 +143,7 @@ impl OpenOptions {
             truncate: false,
             create: false,
             create_new: false,
+            direct: false,
         }
     }
 
@@ -169,6 +171,11 @@ impl OpenOptions {
         self.create_new = create_new;
     }
 
+    /// Selects direct I/O, bypassing the generic file page cache.
+    pub fn direct(&mut self, direct: bool) {
+        self.direct = direct;
+    }
+
     fn to_core(&self) -> CoreOpenOptions {
         let mut options = CoreOpenOptions::new();
         options
@@ -178,6 +185,8 @@ impl OpenOptions {
             .truncate(self.truncate)
             .create(self.create)
             .create_new(self.create_new);
+        #[cfg(feature = "vfs")]
+        options.direct(self.direct);
         options
     }
 }
@@ -379,6 +388,15 @@ mod directory_tests {
     use alloc::vec;
 
     use super::*;
+
+    #[cfg(feature = "vfs")]
+    #[test]
+    fn open_options_direct_is_forwarded() {
+        let mut options = OpenOptions::new();
+        options.direct(true);
+
+        assert!(options.to_core().direct_enabled());
+    }
 
     fn entry(name: &str, next_offset: u64) -> DirEntry {
         DirEntry {

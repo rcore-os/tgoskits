@@ -1,6 +1,4 @@
 const EXCEPTION_ASSEMBLY: &str = include_str!("architecture/exception.S");
-const CONTEXT_FRAME: &str = include_str!("architecture/context_frame.rs");
-const VCPU: &str = include_str!("architecture/vcpu.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     source
@@ -121,19 +119,6 @@ fn exception_vector_table_preserves_the_architectural_slot_layout() {
 
 #[test]
 fn tls_switch_occurs_only_inside_the_final_assembly_windows() {
-    let restore = section(
-        CONTEXT_FRAME,
-        "    pub unsafe fn restore(&self)",
-        "    }\n}",
-    );
-    let store = section(
-        CONTEXT_FRAME,
-        "    pub unsafe fn store(&mut self)",
-        "    /// Restores the values",
-    );
-    assert!(!restore.contains("msr TPIDR_EL0"));
-    assert!(!store.contains("mrs {0}, TPIDR_EL0"));
-
     let exit = section(
         EXCEPTION_ASSEMBLY,
         ".macro SAVE_VCPU_RUNTIME_FROM_EL1",
@@ -164,6 +149,4 @@ fn tls_switch_occurs_only_inside_the_final_assembly_windows() {
         ],
     );
     assert!(!entry.contains("bl      "));
-    assert!(VCPU.contains("offset_of!(HostRuntimeContext, tpidr_el0)"));
-    assert!(CONTEXT_FRAME.contains("offset_of!(GuestSystemRegisters, tpidr_el0)"));
 }

@@ -220,7 +220,9 @@ fn publish_device_event(
         activated = true;
         control_deferred |= control_bits != 0;
     }
-    if !control_deferred
+    // A queue target owns the complete drain-then-rearm transaction. The
+    // controller fallback is only for events without an activated queue.
+    if !activated
         && (!control.is_empty() || needs_rearm)
         && let Some(target) = controller_target
     {
@@ -500,6 +502,70 @@ mod tests {
                 control: ControlEvent::new(11, 0),
             }
         );
+    }
+
+    #[test]
+    fn queue_coupled_rearm_is_owned_only_by_hctx() {
+        let queue_latch = Arc::new(IrqEventLatch::new(11));
+        let queue_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let controller_latch = Arc::new(ControllerIrqLatch::new(11));
+        let controller_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let handler = FixedHandler {
+            ack: IrqAck::masked_needs_rearm(IrqQueueMask::from_queue(2), ControlEvent::new(11, 0)),
+        };
+        let mut action = BlockIrqAction::new(
+            Box::new(handler),
+            vec![IrqTarget::new(
+                2,
+                queue_latch.clone(),
+                queue_notification.clone(),
+            )],
+        )
+        .with_controller_target(ControllerIrqTarget::new(
+            controller_latch.clone(),
+            controller_notification.clone(),
+        ));
+
+        assert_eq!(action.run(), BlockIrqOutcome::Wake);
+        assert_eq!(
+            queue_notification.irq_notifications.load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(
+            controller_notification
+                .irq_notifications
+                .load(Ordering::Acquire),
+            0
+        );
+        assert!(queue_latch.take().needs_rearm);
+        assert!(!controller_latch.take().needs_rearm);
+    }
+
+    #[test]
+    fn controller_only_rearm_uses_controller_fallback() {
+        let controller_latch = Arc::new(ControllerIrqLatch::new(11));
+        let controller_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let handler = FixedHandler {
+            ack: IrqAck::masked_needs_rearm(IrqQueueMask::none(), ControlEvent::new(11, 0)),
+        };
+        let mut action = BlockIrqAction::new(Box::new(handler), vec![]).with_controller_target(
+            ControllerIrqTarget::new(controller_latch.clone(), controller_notification.clone()),
+        );
+
+        assert_eq!(action.run(), BlockIrqOutcome::Wake);
+        assert_eq!(
+            controller_notification
+                .irq_notifications
+                .load(Ordering::Acquire),
+            1
+        );
+        assert!(controller_latch.take().needs_rearm);
     }
 
     #[test]

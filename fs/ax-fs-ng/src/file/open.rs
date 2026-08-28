@@ -158,6 +158,11 @@ impl OpenOptions {
         self
     }
 
+    #[cfg(all(test, feature = "vfs"))]
+    pub(crate) const fn direct_enabled(&self) -> bool {
+        self.direct
+    }
+
     /// Sets the user and group id to open the file with.
     #[cfg(feature = "vfs")]
     pub fn user(&mut self, uid: u32, gid: u32) -> &mut Self {

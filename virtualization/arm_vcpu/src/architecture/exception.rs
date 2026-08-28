@@ -27,7 +27,10 @@ use super::{
         exception_sysreg_addr, exception_sysreg_direction_write, exception_sysreg_gpr,
     },
 };
-use crate::{ArmAccessWidth, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit};
+use crate::{
+    ArmAccessWidth, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
+    types::decode_current_el_host_page_fault,
+};
 
 numeric_enum_macro::numeric_enum! {
 #[repr(u8)]
@@ -333,6 +336,20 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
     let esr = ESR_EL2.extract();
     let ec = ESR_EL2.read(ESR_EL2::EC);
     let iss = ESR_EL2.read(ESR_EL2::ISS);
+
+    if let Some(access) = decode_current_el_host_page_fault(ec, iss) {
+        let mut saved_pc = tf.exception_pc();
+        let parent_irqs_enabled = tf.spsr & (1 << 7) == 0;
+        if super::host::handle_current_host_page_fault(
+            &mut saved_pc,
+            FAR_EL2.get() as usize,
+            access,
+            parent_irqs_enabled,
+        ) {
+            tf.set_exception_pc(saved_pc);
+            return;
+        }
+    }
 
     panic!(
         "Unhandled synchronous exception from current EL:\nESR_EL2: {:#x}\nException Class: \

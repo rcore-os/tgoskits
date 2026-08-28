@@ -303,6 +303,29 @@ impl ArmHostOps for AxvmArmHostOps {
             warn!("{error}");
         }
     }
+
+    fn handle_current_host_page_fault(
+        saved_pc: &mut usize,
+        fault_addr: usize,
+        access: ArmHostPageFaultAccess,
+        parent_irqs_enabled: bool,
+    ) -> bool {
+        use ax_std::os::arceos::modules::ax_hal::cpu::trap::{
+            PageFaultFlags, handle_kernel_page_fault,
+        };
+
+        let flags = match access {
+            ArmHostPageFaultAccess::Read => PageFaultFlags::READ,
+            ArmHostPageFaultAccess::Write => PageFaultFlags::WRITE,
+            ArmHostPageFaultAccess::Execute => PageFaultFlags::EXECUTE,
+        };
+        handle_kernel_page_fault(
+            saved_pc,
+            ax_memory_addr::VirtAddr::from(fault_addr),
+            flags,
+            parent_irqs_enabled,
+        )
+    }
 }
 
 pub(crate) struct AxvmArmVcpu {

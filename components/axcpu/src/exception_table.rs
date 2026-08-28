@@ -95,75 +95,104 @@ unsafe extern "C" {
 }
 
 impl TrapFrame {
+    #[cfg(not(target_arch = "aarch64"))]
     pub(crate) fn fixup_nofault_exception(&mut self) -> bool {
-        let entries = unsafe {
-            core::slice::from_raw_parts(
-                _nofault_ex_table_start.as_ptr(),
-                _nofault_ex_table_end
-                    .as_ptr()
-                    .offset_from_unsigned(_nofault_ex_table_start.as_ptr()),
-            )
-        };
-        #[cfg(target_arch = "x86_64")]
-        {
-            match entries
-                .iter()
-                .find(|entry| entry.source_addr() == self.ip())
-            {
-                Some(entry) => {
-                    self.set_ip(entry.to_addr());
-                    true
-                }
-                None => false,
-            }
-        }
-
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            match entries.binary_search_by_key(&self.ip(), NofaultExceptionTableEntry::source_addr)
-            {
-                Ok(entry) => {
-                    self.set_ip(entries[entry].to_addr());
-                    true
-                }
-                Err(_) => false,
-            }
+        let mut ip = self.ip();
+        if fixup_nofault_exception_ip(&mut ip) {
+            self.set_ip(ip);
+            true
+        } else {
+            false
         }
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     pub(crate) fn fixup_exception(&mut self) -> bool {
-        let entries = unsafe {
-            core::slice::from_raw_parts(
-                _ex_table_start.as_ptr(),
-                _ex_table_end
-                    .as_ptr()
-                    .offset_from_unsigned(_ex_table_start.as_ptr()),
-            )
-        };
+        let mut ip = self.ip();
+        if fixup_exception_ip(&mut ip) {
+            self.set_ip(ip);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+pub(crate) fn fixup_nofault_exception_ip(ip: &mut usize) -> bool {
+    // SAFETY: the linker emits `_nofault_ex_table_start` and
+    // `_nofault_ex_table_end` as properly aligned bounds of one contiguous
+    // `NofaultExceptionTableEntry` section, with start no later than end.
+    // Both symbols therefore belong to the same linker-defined allocation and
+    // the computed element range is exactly the initialized table.
+    let entries = unsafe {
+        core::slice::from_raw_parts(
+            _nofault_ex_table_start.as_ptr(),
+            _nofault_ex_table_end
+                .as_ptr()
+                .offset_from_unsigned(_nofault_ex_table_start.as_ptr()),
+        )
+    };
+    let target = {
         #[cfg(target_arch = "x86_64")]
         {
-            match entries
+            entries
                 .iter()
-                .find(|entry| entry.source_addr() == self.ip())
-            {
-                Some(entry) => {
-                    self.set_ip(entry.to_addr());
-                    true
-                }
-                None => false,
-            }
+                .find(|entry| entry.source_addr() == *ip)
+                .map(NofaultExceptionTableEntry::to_addr)
         }
 
         #[cfg(not(target_arch = "x86_64"))]
         {
-            match entries.binary_search_by_key(&self.ip(), ExceptionTableEntry::source_addr) {
-                Ok(entry) => {
-                    self.set_ip(entries[entry].to_addr());
-                    true
-                }
-                Err(_) => false,
+            match entries.binary_search_by_key(ip, NofaultExceptionTableEntry::source_addr) {
+                Ok(entry) => Some(entries[entry].to_addr()),
+                Err(_) => None,
             }
         }
+    };
+    if let Some(target) = target {
+        *ip = target;
+        true
+    } else {
+        false
+    }
+}
+
+pub(crate) fn fixup_exception_ip(ip: &mut usize) -> bool {
+    // SAFETY: the linker emits `_ex_table_start` and `_ex_table_end` as
+    // properly aligned bounds of one contiguous `ExceptionTableEntry`
+    // section, with start no later than end. Both symbols therefore belong to
+    // the same linker-defined allocation and the computed element range is
+    // exactly the initialized table.
+    let entries = unsafe {
+        core::slice::from_raw_parts(
+            _ex_table_start.as_ptr(),
+            _ex_table_end
+                .as_ptr()
+                .offset_from_unsigned(_ex_table_start.as_ptr()),
+        )
+    };
+    let target = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            entries
+                .iter()
+                .find(|entry| entry.source_addr() == *ip)
+                .map(ExceptionTableEntry::to_addr)
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            match entries.binary_search_by_key(ip, ExceptionTableEntry::source_addr) {
+                Ok(entry) => Some(entries[entry].to_addr()),
+                Err(_) => None,
+            }
+        }
+    };
+    if let Some(target) = target {
+        *ip = target;
+        true
+    } else {
+        false
     }
 }
 

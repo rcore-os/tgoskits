@@ -165,6 +165,87 @@ impl From<ArmAccessWidth> for usize {
     }
 }
 
+/// Access type reported by a current-EL host page fault.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmHostPageFaultAccess {
+    /// The faulting operation read memory.
+    Read,
+    /// The faulting operation wrote memory.
+    Write,
+    /// The faulting operation fetched an instruction.
+    Execute,
+}
+
+/// Host operations required by AArch64 virtualization code.
+///
+/// The vCPU core calls these static methods at architecture boundaries where
+/// the embedding OS or VMM owns the policy: virtual interrupt injection,
+/// physical interrupt reporting, and current-EL exception dispatch.
+pub trait ArmHostOps {
+    /// Injects a virtual interrupt through host interrupt-controller state.
+    fn inject_virtual_interrupt(vector: u32) -> ArmVcpuResult;
+
+    /// Completes the priority drop for an IAR value captured by the
+    /// assembly-only lower-EL IRQ exit path.
+    ///
+    /// The implementation must return the stable token used for later
+    /// deactivate, or `None` for a special or spurious acknowledgement.
+    fn finish_pending_host_irq(raw_ack: u32) -> Option<usize>;
+
+    /// Dispatches a host IRQ taken while running at the current exception level.
+    fn handle_current_host_irq();
+
+    /// Handles a host page fault taken while running at the current exception level.
+    ///
+    /// The implementation may replace `saved_pc` when an exception-table
+    /// entry recovers the fault. Returning `true` resumes from the resulting
+    /// saved PC; returning `false` retains the vCPU core's detailed panic.
+    fn handle_current_host_page_fault(
+        _saved_pc: &mut usize,
+        _fault_addr: usize,
+        _access: ArmHostPageFaultAccess,
+        _parent_irqs_enabled: bool,
+    ) -> bool {
+        false
+    }
+}
+
+pub(crate) const fn decode_current_el_host_page_fault(
+    exception_class: u64,
+    instruction_specific_syndrome: u64,
+) -> Option<ArmHostPageFaultAccess> {
+    const INSTRUCTION_ABORT_CURRENT_EL: u64 = 0b100001;
+    const DATA_ABORT_CURRENT_EL: u64 = 0b100101;
+    const FAULT_STATUS_MASK: u64 = 0b11_1111;
+    const FAULT_STATUS_KIND_MASK: u64 = 0b11_1100;
+    const TRANSLATION_FAULT: u64 = 0b00_0100;
+    const PERMISSION_FAULT: u64 = 0b00_1100;
+    const WRITE_NOT_READ: u64 = 1 << 6;
+    const CACHE_MAINTENANCE: u64 = 1 << 8;
+
+    let fault_status = instruction_specific_syndrome & FAULT_STATUS_MASK;
+    if !matches!(
+        fault_status & FAULT_STATUS_KIND_MASK,
+        TRANSLATION_FAULT | PERMISSION_FAULT
+    ) {
+        return None;
+    }
+
+    match exception_class {
+        INSTRUCTION_ABORT_CURRENT_EL => Some(ArmHostPageFaultAccess::Execute),
+        DATA_ABORT_CURRENT_EL => {
+            let is_write = instruction_specific_syndrome & WRITE_NOT_READ != 0;
+            let is_cache_maintenance = instruction_specific_syndrome & CACHE_MAINTENANCE != 0;
+            if is_write && !is_cache_maintenance {
+                Some(ArmHostPageFaultAccess::Write)
+            } else {
+                Some(ArmHostPageFaultAccess::Read)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Stage-2 page table configuration selected by the embedding VMM.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ArmNestedPagingConfig {
@@ -303,4 +384,118 @@ pub enum ArmVmExit {
     },
     /// The vCPU handled the event internally.
     Nothing,
+}
+
+#[cfg(test)]
+mod tests {
+    use core::marker::PhantomData;
+
+    use super::*;
+
+    struct BorrowedHost<'a>(PhantomData<&'a mut ()>);
+
+    impl ArmHostOps for BorrowedHost<'_> {
+        fn inject_virtual_interrupt(_vector: u32) -> ArmVcpuResult {
+            Ok(())
+        }
+
+        fn finish_pending_host_irq(_raw_ack: u32) -> Option<usize> {
+            None
+        }
+
+        fn handle_current_host_irq() {}
+    }
+
+    const INSTRUCTION_ABORT_CURRENT_EL: u64 = 0b100001;
+    const DATA_ABORT_CURRENT_EL: u64 = 0b100101;
+    const INSTRUCTION_ABORT_LOWER_EL: u64 = 0b100000;
+    const DATA_ABORT_LOWER_EL: u64 = 0b100100;
+    const TRANSLATION_FAULT_LEVEL_0: u64 = 0b000100;
+    const TRANSLATION_FAULT_LEVEL_3: u64 = 0b000111;
+    const PERMISSION_FAULT_LEVEL_0: u64 = 0b001100;
+    const PERMISSION_FAULT_LEVEL_3: u64 = 0b001111;
+    const ACCESS_FLAG_FAULT: u64 = 0b001000;
+    const WRITE_NOT_READ: u64 = 1 << 6;
+    const CACHE_MAINTENANCE: u64 = 1 << 8;
+
+    #[test]
+    fn arm_host_ops_accepts_a_non_static_implementor() {
+        fn require_borrowed_host<'a>(_borrow: &'a mut ()) {
+            fn require_host<H: ArmHostOps>() {}
+            require_host::<BorrowedHost<'a>>();
+            BorrowedHost::inject_virtual_interrupt(0).unwrap();
+            assert_eq!(BorrowedHost::finish_pending_host_irq(0), None);
+            BorrowedHost::handle_current_host_irq();
+            let mut saved_pc = 0;
+            assert!(!BorrowedHost::handle_current_host_page_fault(
+                &mut saved_pc,
+                0,
+                ArmHostPageFaultAccess::Read,
+                false,
+            ));
+        }
+
+        let mut borrowed = ();
+        require_borrowed_host(&mut borrowed);
+    }
+
+    #[test]
+    fn host_page_fault_decoder_accepts_translation_and_permission_faults() {
+        for fault_status in [
+            TRANSLATION_FAULT_LEVEL_0,
+            TRANSLATION_FAULT_LEVEL_3,
+            PERMISSION_FAULT_LEVEL_0,
+            PERMISSION_FAULT_LEVEL_3,
+        ] {
+            assert_eq!(
+                decode_current_el_host_page_fault(INSTRUCTION_ABORT_CURRENT_EL, fault_status),
+                Some(ArmHostPageFaultAccess::Execute)
+            );
+            assert_eq!(
+                decode_current_el_host_page_fault(DATA_ABORT_CURRENT_EL, fault_status),
+                Some(ArmHostPageFaultAccess::Read)
+            );
+        }
+    }
+
+    #[test]
+    fn host_page_fault_decoder_distinguishes_read_write_and_execute() {
+        assert_eq!(
+            decode_current_el_host_page_fault(
+                DATA_ABORT_CURRENT_EL,
+                TRANSLATION_FAULT_LEVEL_0 | WRITE_NOT_READ
+            ),
+            Some(ArmHostPageFaultAccess::Write)
+        );
+        assert_eq!(
+            decode_current_el_host_page_fault(
+                DATA_ABORT_CURRENT_EL,
+                TRANSLATION_FAULT_LEVEL_0 | WRITE_NOT_READ | CACHE_MAINTENANCE
+            ),
+            Some(ArmHostPageFaultAccess::Read)
+        );
+        assert_eq!(
+            decode_current_el_host_page_fault(
+                INSTRUCTION_ABORT_CURRENT_EL,
+                PERMISSION_FAULT_LEVEL_3
+            ),
+            Some(ArmHostPageFaultAccess::Execute)
+        );
+    }
+
+    #[test]
+    fn host_page_fault_decoder_rejects_other_exception_classes_and_fault_statuses() {
+        for exception_class in [INSTRUCTION_ABORT_LOWER_EL, DATA_ABORT_LOWER_EL, 0] {
+            assert_eq!(
+                decode_current_el_host_page_fault(exception_class, TRANSLATION_FAULT_LEVEL_0),
+                None
+            );
+        }
+        for fault_status in [ACCESS_FLAG_FAULT, 0, 0b010000] {
+            assert_eq!(
+                decode_current_el_host_page_fault(DATA_ABORT_CURRENT_EL, fault_status),
+                None
+            );
+        }
+    }
 }

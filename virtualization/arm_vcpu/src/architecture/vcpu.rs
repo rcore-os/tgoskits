@@ -22,11 +22,11 @@ use super::{
     context_frame::GuestSystemRegisters,
     exception::{TrapKind, handle_exception_sync},
     exception_utils::exception_class_value,
-    host::{ArmHostIrqConfig, ArmHostIrqGuard, ArmHostOps},
+    host::{ArmHostIrqConfig, ArmHostIrqGuard},
 };
 use crate::{
     ArmGuestPhysAddr, ArmNestedPagingConfig, ArmSysRegAddr, ArmTimerKind, ArmTimerSnapshot,
-    ArmTimerVmConfig, ArmVcpuResult, ArmVcpuTimer, ArmVmExit,
+    ArmTimerVmConfig, ArmVcpuResult, ArmVcpuTimer, ArmVmExit, types::ArmHostOps,
 };
 
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching

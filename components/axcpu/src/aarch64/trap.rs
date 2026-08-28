@@ -170,19 +170,14 @@ fn handle_breakpoint(tf: &mut KernelTrapFrame<'_>) {
 
 fn handle_page_fault(tf: &mut KernelTrapFrame<'_>, access_flags: PageFaultFlags) {
     let vaddr = va!(fault_addr());
-    #[cfg(feature = "exception-table")]
-    if tf.raw.0.fixup_nofault_exception() {
-        return;
-    }
-    if crate::trap::call_page_fault_handler_with_parent_irqs(
+    let mut saved_pc = tf.ip();
+    if crate::trap::handle_kernel_page_fault(
+        &mut saved_pc,
         vaddr,
         access_flags,
         tf.raw.0.spsr & (1 << 7) == 0,
     ) {
-        return;
-    }
-    #[cfg(feature = "exception-table")]
-    if tf.raw.0.fixup_exception() {
+        tf.set_ip(saved_pc);
         return;
     }
     let snapshot = tf.snapshot();

@@ -107,6 +107,74 @@ pub fn page_fault_handler(addr: VirtAddr, flags: PageFaultFlags) -> bool {
     dispatch_page_fault(addr, flags)
 }
 
+/// Handles a kernel page fault while preserving the standard fixup sequence.
+///
+/// The saved instruction PC is updated when either the nofault or ordinary
+/// exception table contains a matching recovery entry. The page-fault hook is
+/// invoked between those two fixup attempts with the IRQ state inherited from
+/// the interrupted context.
+pub fn handle_kernel_page_fault(
+    saved_pc: &mut usize,
+    addr: VirtAddr,
+    flags: PageFaultFlags,
+    parent_irqs_enabled: bool,
+) -> bool {
+    handle_kernel_page_fault_with(
+        saved_pc,
+        addr,
+        flags,
+        parent_irqs_enabled,
+        fixup_nofault_exception_ip,
+        call_page_fault_handler_with_parent_irqs,
+        fixup_exception_ip,
+    )
+}
+
+fn handle_kernel_page_fault_with<N, D, O>(
+    saved_pc: &mut usize,
+    addr: VirtAddr,
+    flags: PageFaultFlags,
+    parent_irqs_enabled: bool,
+    mut fixup_nofault: N,
+    mut dispatch: D,
+    mut fixup_ordinary: O,
+) -> bool
+where
+    N: FnMut(&mut usize) -> bool,
+    D: FnMut(VirtAddr, PageFaultFlags, bool) -> bool,
+    O: FnMut(&mut usize) -> bool,
+{
+    fixup_nofault(saved_pc)
+        || dispatch(addr, flags, parent_irqs_enabled)
+        || fixup_ordinary(saved_pc)
+}
+
+#[inline]
+fn fixup_nofault_exception_ip(saved_pc: &mut usize) -> bool {
+    #[cfg(feature = "exception-table")]
+    {
+        crate::exception_table::fixup_nofault_exception_ip(saved_pc)
+    }
+    #[cfg(not(feature = "exception-table"))]
+    {
+        let _ = saved_pc;
+        false
+    }
+}
+
+#[inline]
+fn fixup_exception_ip(saved_pc: &mut usize) -> bool {
+    #[cfg(feature = "exception-table")]
+    {
+        crate::exception_table::fixup_exception_ip(saved_pc)
+    }
+    #[cfg(not(feature = "exception-table"))]
+    {
+        let _ = saved_pc;
+        false
+    }
+}
+
 /// Invoke the page-fault slow path with the IRQ state restored to the
 /// faulting context.
 #[inline]
@@ -171,4 +239,123 @@ pub fn breakpoint_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
 #[eii]
 pub fn debug_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    #[test]
+    fn kernel_page_fault_runs_fixup_dispatch_fixup_in_order() {
+        let mut saved_pc = 0x1000;
+        let events = RefCell::new(std::vec::Vec::new());
+
+        let handled = handle_kernel_page_fault_with(
+            &mut saved_pc,
+            va!(0x2000),
+            PageFaultFlags::READ,
+            true,
+            |_| {
+                events.borrow_mut().push("nofault");
+                false
+            },
+            |_, _, parent_irqs_enabled| {
+                assert!(parent_irqs_enabled);
+                events.borrow_mut().push("dispatch");
+                false
+            },
+            |_| {
+                events.borrow_mut().push("ordinary");
+                false
+            },
+        );
+
+        assert!(!handled);
+        assert_eq!(*events.borrow(), ["nofault", "dispatch", "ordinary"]);
+        assert_eq!(saved_pc, 0x1000);
+    }
+
+    #[test]
+    fn kernel_page_fault_nofault_fixup_short_circuits_and_updates_pc() {
+        let mut saved_pc = 0x1000;
+        let handled = handle_kernel_page_fault_with(
+            &mut saved_pc,
+            va!(0x2000),
+            PageFaultFlags::WRITE,
+            false,
+            |pc| {
+                *pc = 0x1100;
+                true
+            },
+            |_, _, _| panic!("dispatch must not run after a nofault fixup"),
+            |_| panic!("ordinary fixup must not run after a nofault fixup"),
+        );
+
+        assert!(handled);
+        assert_eq!(saved_pc, 0x1100);
+    }
+
+    #[test]
+    fn kernel_page_fault_handled_lazy_fault_short_circuits() {
+        let mut saved_pc = 0x1000;
+        let handled = handle_kernel_page_fault_with(
+            &mut saved_pc,
+            va!(0x2000),
+            PageFaultFlags::EXECUTE,
+            true,
+            |_| false,
+            |addr, flags, parent_irqs_enabled| {
+                assert_eq!(addr, va!(0x2000));
+                assert_eq!(flags, PageFaultFlags::EXECUTE);
+                assert!(parent_irqs_enabled);
+                true
+            },
+            |_| panic!("ordinary fixup must not run after dispatch handles the fault"),
+        );
+
+        assert!(handled);
+        assert_eq!(saved_pc, 0x1000);
+    }
+
+    #[test]
+    fn kernel_page_fault_ordinary_fixup_updates_pc() {
+        let mut saved_pc = 0x1000;
+        let handled = handle_kernel_page_fault_with(
+            &mut saved_pc,
+            va!(0x2000),
+            PageFaultFlags::READ,
+            false,
+            |_| false,
+            |_, _, parent_irqs_enabled| {
+                assert!(!parent_irqs_enabled);
+                false
+            },
+            |pc| {
+                *pc = 0x1200;
+                true
+            },
+        );
+
+        assert!(handled);
+        assert_eq!(saved_pc, 0x1200);
+    }
+
+    #[test]
+    fn kernel_page_fault_returns_unhandled_when_all_stages_decline() {
+        let mut saved_pc = 0x1000;
+        let handled = handle_kernel_page_fault_with(
+            &mut saved_pc,
+            va!(0x2000),
+            PageFaultFlags::READ,
+            false,
+            |_| false,
+            |_, _, _| false,
+            |_| false,
+        );
+
+        assert!(!handled);
+        assert_eq!(saved_pc, 0x1000);
+    }
 }

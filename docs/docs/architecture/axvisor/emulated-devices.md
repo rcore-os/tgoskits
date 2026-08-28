@@ -562,7 +562,7 @@ reset 和 resume 按注册顺序执行，suspend 按逆序执行。pollable 去�
 | `uart16550-mmio` | 16550 MMIO 设备，wired IRQ，串口 service/固件元数据 | 同上 |
 | `uart16550-pio` | 16550 PIO 设备，wired IRQ，x86 端口访问 | `clock_hz`、`backend` |
 | `ivc-channel` | IVC aperture allocator service + wired notify endpoint service | options 为空且拒绝未知字段 |
-| `virtio-blk` | VirtIO MMIO block runtime + DMA grant/poller；ramdisk 或 file backend | `capacity`/`capacity_sectors`、`backend`、`path` |
+| `virtio-blk` | VirtIO MMIO block runtime + DMA grant/poller；ramdisk 或 file backend | `capacity`/`capacity_sectors`、`backend`、`path`、`filesystem` |
 | `virtio-net` | VirtIO MMIO net runtime + DMA grant/poller；连接 AxVM 内部 L2 switch | `guest_mac` |
 
 串口 backend 目前支持 `{ type = "host-console" }` 和 `{ type = "null" }`。`host-console` 每台 VM 只能有一个 owner。
@@ -570,6 +570,8 @@ reset 和 resume 按注册顺序执行，suspend 按逆序执行。pollable 去�
 `ivc-channel` 不注册可直接读写的 `Device`；它通过 service 提供共享 MMIO aperture 分配器和 notify endpoint。判断 IVC 是否生效不能只看 `device_count()`。
 
 virtio-blk/net 的 model、MMIO transport、DMA 接线、IRQ 和 backend glue 都由 AxVM 拥有；Axvisor 不再维护单独的 `virtual_devices` 模块或 model registration。两者的 MMIO/IRQ 均来自 auto pool，因此多实例按 graph ID 确定性分配，固件节点与实例一一对应。
+
+`virtio-blk` 的 file backend 默认使用 `filesystem = "ext4"`。新建空文件时默认容量为 64 MiB，也可用 `capacity = "128MiB"` 等 512 字节对齐的大小覆盖；旧的 `capacity_sectors` 仍兼容，但不能与 `capacity` 同时使用。AxVM 先在内存中完成 ext4 格式化和挂载校验，再写入 backing file；发布失败会尽力把新文件缩回零长度并 flush，rollback 失败会附在原错误中。非空已有镜像不会被重新格式化，未显式配置容量时保留原长度。file backend 需要 AxVM `fs` feature，并使用 direct I/O 打开 backing file；ramdisk 不接受 `path` 或 `filesystem`。
 
 ### 8.2 `fw_cfg`
 
