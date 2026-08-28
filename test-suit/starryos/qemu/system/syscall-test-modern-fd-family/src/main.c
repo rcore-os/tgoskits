@@ -1148,84 +1148,121 @@ static void test_pidfd_send_signal_paths(void)
     CHECK_RET(close(pfd), 0, "close pidfd");
 }
 
+#define PIDFD_REUSE_ATTEMPTS 0x8000u
+
+struct blocked_child {
+    pid_t pid;
+    int release_fd;
+};
+
+static int spawn_blocked_child(struct blocked_child *child, int read_failure_status)
+{
+    int release_pipe[2];
+    if (pipe(release_pipe) != 0) {
+        return -1;
+    }
+
+    fflush(NULL);
+    pid_t pid = fork();
+    if (pid < 0) {
+        int saved_errno = errno;
+        close(release_pipe[0]);
+        close(release_pipe[1]);
+        errno = saved_errno;
+        return -1;
+    }
+    if (pid == 0) {
+        close(release_pipe[1]);
+        char release;
+        if (read(release_pipe[0], &release, 1) != 1) {
+            _exit(read_failure_status);
+        }
+        _exit(0);
+    }
+
+    close(release_pipe[0]);
+    child->pid = pid;
+    child->release_fd = release_pipe[1];
+    return 0;
+}
+
+static int release_and_reap_blocked_child(struct blocked_child *child)
+{
+    char release = 'R';
+    int released = write(child->release_fd, &release, 1) == 1;
+    close(child->release_fd);
+
+    int status = 0;
+    int reaped = waitpid(child->pid, &status, 0) == child->pid;
+    child->pid = -1;
+    child->release_fd = -1;
+    return released && reaped && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 static void test_pidfd_generation_survives_numeric_pid_reuse(void)
 {
     printf("--- pidfd generation survives numeric PID reuse ---\n");
 
-    int first_release[2];
-    int rc = pipe(first_release);
-    CHECK_RET(rc, 0, "first child release pipe");
-    if (rc != 0)
-        return;
-    pid_t first = fork();
-    CHECK(first >= 0, "fork first PID generation");
-    if (first < 0) {
-        close(first_release[0]);
-        close(first_release[1]);
+    struct blocked_child first_child = {.pid = -1, .release_fd = -1};
+    int rc = spawn_blocked_child(&first_child, 41);
+    CHECK_RET(rc, 0, "spawn first PID generation");
+    if (rc != 0) {
         return;
     }
-    if (first == 0) {
-        close(first_release[1]);
-        char release;
-        if (read(first_release[0], &release, 1) != 1)
-            _exit(41);
-        _exit(0);
-    }
-    close(first_release[0]);
 
+    pid_t first = first_child.pid;
     int stale_pidfd = x_pidfd_open(first, 0);
     CHECK(stale_pidfd >= 0, "open pidfd for first generation");
-    char release = 'R';
-    CHECK_RET(write(first_release[1], &release, 1), 1, "release first generation");
-    close(first_release[1]);
-    int first_status = 0;
-    CHECK_RET(waitpid(first, &first_status, 0), first, "reap first generation");
-    CHECK(WIFEXITED(first_status) && WEXITSTATUS(first_status) == 0,
-          "first generation exited normally");
 
-    int second_release[2];
-    rc = pipe(second_release);
-    CHECK_RET(rc, 0, "second child release pipe");
-    if (rc != 0) {
-        if (stale_pidfd >= 0)
+    int first_reaped = release_and_reap_blocked_child(&first_child);
+    CHECK(first_reaped, "first generation is released and reaped");
+    if (!first_reaped || stale_pidfd < 0) {
+        if (stale_pidfd >= 0) {
             close(stale_pidfd);
+        }
         return;
     }
-    pid_t second = fork();
-    CHECK(second >= 0, "fork replacement PID generation");
-    if (second < 0) {
-        close(second_release[0]);
-        close(second_release[1]);
-        if (stale_pidfd >= 0)
-            close(stale_pidfd);
+
+    /*
+     * Linux tools/testing/selftests/pidfd/pidfd_test.c cycles until the
+     * target numeric PID is allocated again. Immediate reuse by the next
+     * fork is an allocator detail, not part of the pidfd ABI.
+     */
+    struct blocked_child replacement = {.pid = -1, .release_fd = -1};
+    unsigned int attempts = 0;
+    int search_ok = 1;
+    while (attempts < PIDFD_REUSE_ATTEMPTS) {
+        if (spawn_blocked_child(&replacement, 42) != 0) {
+            search_ok = 0;
+            break;
+        }
+        attempts++;
+        if (replacement.pid == first) {
+            break;
+        }
+        if (!release_and_reap_blocked_child(&replacement)) {
+            search_ok = 0;
+            break;
+        }
+    }
+
+    CHECK(search_ok, "numeric PID reuse search completes without child lifecycle errors");
+    int reused = replacement.pid == first;
+    CHECK(reused, "numeric PID slot is reused within the Linux selftest bound");
+    if (!search_ok || !reused) {
+        if (replacement.pid >= 0) {
+            release_and_reap_blocked_child(&replacement);
+        }
+        close(stale_pidfd);
         return;
     }
-    if (second == 0) {
-        close(second_release[1]);
-        char second_go;
-        if (read(second_release[0], &second_go, 1) != 1)
-            _exit(42);
-        _exit(0);
-    }
-    close(second_release[0]);
 
-    CHECK(second == first, "numeric PID slot is deterministically reused");
-    if (stale_pidfd >= 0) {
-        CHECK_ERR(x_pidfd_send_signal(stale_pidfd, 0, NULL, 0), ESRCH,
-                  "old pidfd does not retarget the replacement generation");
-    }
-    CHECK_RET(kill(second, 0), 0, "replacement generation remains alive");
-
-    CHECK_RET(write(second_release[1], &release, 1), 1,
-              "release replacement generation");
-    close(second_release[1]);
-    int second_status = 0;
-    CHECK_RET(waitpid(second, &second_status, 0), second,
-              "reap replacement generation");
-    CHECK(WIFEXITED(second_status) && WEXITSTATUS(second_status) == 0,
-          "replacement generation exited normally");
-    if (stale_pidfd >= 0)
-        CHECK_RET(close(stale_pidfd), 0, "close stale pidfd");
+    CHECK_ERR(x_pidfd_send_signal(stale_pidfd, 0, NULL, 0), ESRCH,
+              "old pidfd does not retarget the replacement generation");
+    CHECK_RET(kill(replacement.pid, 0), 0, "replacement generation remains alive");
+    CHECK(release_and_reap_blocked_child(&replacement),
+          "replacement generation is released and reaped");
+    CHECK_RET(close(stale_pidfd), 0, "close stale pidfd");
 }
 
 /* ---- pidfd_getfd ---- */

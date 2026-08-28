@@ -365,9 +365,11 @@ QEMU 为 407/407 通过。
 clone 在 `pid_identity_state_machine_rules_hold` 中确定性以 `BadState` panic。恢复
 `Reserved` 阶段 role 准备后，同一 x86_64 kernel QEMU 为 407/407。测试还覆盖已发布、未
 挂接 scheduler task 的异常事务由 `CloneTransaction` fallback 完整解除数字索引。pidfd ABA
-用例强制复用相同数值后，旧 pidfd 返回 `ESRCH`，modern-fd family 为 260/260；非 leader
-exec identity transfer 用例为 17/17。`starry-kernel` 的 25 个 clippy 配置（包括 aarch64
-PMU 路径）全部通过。
+用例与 Linux v7.1 `tools/testing/selftests/pidfd/pidfd_test.c` 一样，在独立 PID namespace
+中循环创建并回收 child，直到相同数值真正被新 generation 复用，再断言旧 pidfd 返回
+`ESRCH`；它不把“下一次 fork 立即复用”这一分配器游标细节当成 ABI。非 leader exec
+identity transfer 用例为 17/17。`starry-kernel` 的 25 个 clippy 配置（包括 aarch64 PMU
+路径）全部通过。
 
 聚焦 PID ABI 还产生了三组确定性红绿证据：
 
