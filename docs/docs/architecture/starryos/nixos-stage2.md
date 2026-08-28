@@ -11,6 +11,14 @@ systemd。这个边界用于验证真实发行版工作负载，但不代表 Sta
 NixOS。
 
 构建命令位于 `apps/starry/nixos/README.md`，当前兼容性例外和运行证据位于 `apps/starry/nixos/compatibility.md`。
+独立的 StarryOS-backed nixosTest P1 路径位于 `nixos-tests/starryos/`，通过 `cargo xtask starry test nixos --arch x86_64 -c boot` 使用当前 checkout 构建的 Starry UEFI 内核和 app-owned stage-2 rootfs。它复用本节定义的系统、provenance 和有序 marker 契约，但不属于 `test-suit/starryos` 的 TOML 用例，也不替换现有 `starry app qemu` 路径。
+
+该测试框架的边界是单机 x86_64、串口证据和生命周期检查。nixosTest driver、QEMU 和 OVMF 来自独立锁定的 Nix 输入；TCG 是正确性基线，不要求 `/dev/kvm` 或主机单独安装 QEMU/OVMF。每次运行使用新的 qcow2 rootfs overlay、OVMF vars 副本和 ESP，终端证据等待上限为 600 秒，全局 driver 上限为 900 秒。只有完整的 `pid1 → activation → systemd → marker → STARRY_NIXOS_SYSTEM_PASSED` 序列、无既有失败模式、guest 正常关机且 QEMU 返回零才算通过。
+
+P1 只验证启动和生命周期，不提供 `machine.succeed`、guest 命令通道、服务断言、网络、多机、图形、安装器/initrd 或其它架构。P2/P3 的扩展必须单独设计；上游 NixOS 测试套件不能据此宣称在 StarryOS 上普遍可运行。使用、诊断和保留兼容性命令见 `nixos-tests/starryos/README.md`。
+
+---
+
 
 ## 目标与非目标
 
