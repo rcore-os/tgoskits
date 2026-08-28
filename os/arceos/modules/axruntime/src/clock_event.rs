@@ -60,12 +60,16 @@ pub(crate) enum ClockEventRearm {
 pub(crate) struct ClockEventFiringToken {
     cpu_epoch: u64,
     quiesce: ClockEventAction,
+    logical_deadline_elapsed: bool,
     scheduler_deadline_elapsed: bool,
 }
 
 impl ClockEventFiringToken {
     pub(crate) const fn quiesce_action(&self) -> ClockEventAction {
         self.quiesce
+    }
+    pub(crate) const fn logical_deadline_elapsed(&self) -> bool {
+        self.logical_deadline_elapsed
     }
     pub(crate) const fn scheduler_deadline_elapsed(&self) -> bool {
         self.scheduler_deadline_elapsed
@@ -235,12 +239,14 @@ impl LocalClockEvent {
             ClockEventDeviceState::Started,
             "an armed clockevent must own an observable physical source"
         );
+        let logical_deadline_elapsed = self.has_immediate_work(now);
         self.armed_deadline = None;
         self.device_state = ClockEventDeviceState::Stopped;
         self.phase = ClockEventPhase::Firing;
         ClockEventIrqClaim::Firing(ClockEventFiringToken {
             cpu_epoch: self.cpu_epoch,
             quiesce: ClockEventAction::Stop,
+            logical_deadline_elapsed,
             scheduler_deadline_elapsed: self
                 .runtime_deadline
                 .is_some_and(|deadline| now.reached(deadline.as_monotonic())),
@@ -730,6 +736,10 @@ mod tests {
         assert_eq!(event.armed_deadline(), Some(deadline(300)));
 
         let firing = fire_due(&mut event, 300);
+        assert!(
+            !firing.logical_deadline_elapsed(),
+            "the retained edge must not claim a later logical deadline"
+        );
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Resume(deadline(400))
@@ -968,6 +978,7 @@ mod tests {
         );
 
         let firing = fire_due(&mut event, 100);
+        assert!(firing.logical_deadline_elapsed());
         assert!(
             !firing.scheduler_deadline_elapsed(),
             "a non-runtime timer edge must not claim the later runtime hrtick"

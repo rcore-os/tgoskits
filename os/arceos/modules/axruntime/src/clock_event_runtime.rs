@@ -132,14 +132,19 @@ impl ClockEventFiringTransaction {
     fn finish(self, outcome: ax_task::TaskClockEventOutcome) {
         let token = self.token;
         let action = with_local_clock_event_mut(|clockevent| {
-            let _ = clockevent
-                .publish_scheduler(
-                    outcome.update().generation(),
-                    outcome.update().deadline(),
-                    outcome.update().runtime_deadline(),
-                );
+            let _ = clockevent.publish_scheduler(
+                outcome.update().generation(),
+                outcome.update().deadline(),
+                outcome.update().runtime_deadline(),
+            );
             let rearm = crate::clock_event::ClockEventRearm::Deferred;
             clockevent.finish_firing(token, rearm)
+        });
+        apply_clock_event_action(action);
+    }
+    fn finish_early(self) {
+        let action = with_local_clock_event_mut(|clockevent| {
+            clockevent.finish_firing(self.token, crate::clock_event::ClockEventRearm::Deferred)
         });
         apply_clock_event_action(action);
     }
@@ -149,6 +154,16 @@ impl ClockEventFiringTransaction {
     const fn scheduler_deadline_elapsed(&self) -> bool {
         self.token.scheduler_deadline_elapsed()
     }
+    const fn logical_deadline_elapsed(&self) -> bool {
+        self.token.logical_deadline_elapsed()
+    }
+}
+
+const fn scheduler_service_required(
+    periodic_tick_elapsed: bool,
+    logical_deadline_elapsed: bool,
+) -> bool {
+    periodic_tick_elapsed || logical_deadline_elapsed
 }
 pub(crate) fn local_clock_event_has_immediate_work(
     now: ax_task::runtime::MonotonicInstant,
@@ -262,6 +277,10 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
                 return ax_hal::irq::IrqReturn::Handled;
             }
         };
+        if !scheduler_service_required(firing.periodic_tick(), firing.logical_deadline_elapsed()) {
+            firing.finish_early();
+            return ax_hal::irq::IrqReturn::Handled;
+        }
         // SAFETY: the claimed local firing transaction excludes migration and
         // nested scheduler-clock publication for this complete stamp.
         unsafe { ax_hal::time::scheduler_clock_tick() }
@@ -390,6 +409,14 @@ mod tests {
             super::periodic_interval_nanos(),
             configured_milliseconds * 1_000_000
         );
+    }
+
+    #[test]
+    fn only_elapsed_logical_deadlines_enter_scheduler_service() {
+        assert!(!super::scheduler_service_required(false, false));
+        assert!(super::scheduler_service_required(true, false));
+        assert!(super::scheduler_service_required(false, true));
+        assert!(super::scheduler_service_required(true, true));
     }
 
     #[test]
