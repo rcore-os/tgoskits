@@ -1,22 +1,8 @@
 # AGENTS.md
 
-## 项目技能
+## 1. Rust 编码规范
 
-项目技能以 `.agents/skills/<技能名>/SKILL.md` 为唯一真实来源。`.claude/skills/<技能名>` 是为 Claude Code 保留的兼容符号链接；新增、修改或引用项目技能时，统一使用 `.agents/skills` 下的真实路径。
-
-- `update-std-tests`：项目技能文件位于 `.agents/skills/update-std-tests/SKILL.md`。当用户要求审计或更新 `scripts/test/std_crates.csv`、比较工作区软件包与标准库测试允许列表，或确认应新增哪些标准库测试候选软件包时使用。
-- `starry-test-suit`：项目技能文件位于 `.agents/skills/starry-test-suit/SKILL.md`。当用户要求新增、重新分组、适配或验证 `test-suit/starryos` 用例，包括 `qemu-*.toml`、`normal`/`stress` 分组、成功或失败匹配规则以及 Starry 测试套件的持续集成行为时使用。
-- `cross-kernel-driver`：项目技能文件位于 `.agents/skills/cross-kernel-driver/SKILL.md`。当用户要求按设备类型创建、重构、审查或优化 `drivers/` 下的可移植 Rust 驱动软件包，划分驱动核心层、能力边界层、操作系统适配层和运行时层，通过 `mmio-api` 处理内存映射输入输出、通过 `dma-api` 处理直接内存访问、设计中断事件或队列契约，或审计驱动代码对操作系统接口的耦合时使用。
-- `review-open-prs`：项目技能文件位于 `.agents/skills/review-open-prs/SKILL.md`。当用户要求审计全部开放的 GitHub 拉取请求、审查非本人拉取请求、复审上次审查后已有新提交的拉取请求、使用子代理与工作树、对照可移植操作系统接口、Linux、征求意见稿或虚拟输入输出规范语义、分析当前精确提交的持续集成证据，并提交批准或请求修改审查时使用。
-- `resolve-github-issue`：项目技能文件位于 `.agents/skills/resolve-github-issue/SKILL.md`。当用户要求处理最新或指定的 GitHub 议题、定位并修复根因而不是放宽测试、使用子代理调查议题或审查补丁、增加确定性回归测试、验证原始失败命令、提交拉取请求，或加入 `Fixes #<issue>` 使合并后自动关闭议题时使用。
-- `review-single-pr`：项目技能文件位于 `.agents/skills/review-single-pr/SKILL.md`。当用户给出一个拉取请求编号或网址并要求集中审查、复审、分析重复或重叠的开放拉取请求、检查 Starry 应用支持测试的位置、处理本可批准但存在的合并冲突、对照 Linux、可移植操作系统接口、征求意见稿或虚拟输入输出规范语义、分析当前精确提交的持续集成证据、只对应用执行运行验证、撰写中文行内评论、批准或请求修改，以及审查后分配审查人时使用。
-- `reassign-pr-reviewers`：项目技能文件位于 `.agents/skills/reassign-pr-reviewers/SKILL.md`。当用户要求根据讨论、所有权矩阵、开放拉取请求范围或现有审查请求状态，为 `rcore-os/tgoskits` 分配或重新平衡审查人，并需保留机器人请求或处理协作者权限限制时使用。
-- `board-uboot-fsck-repair`：项目技能文件位于 `.agents/skills/board-uboot-fsck-repair/SKILL.md`。当实体板卡的 Linux 根文件系统需要通过 U-Boot 修复第四扩展文件系统、初始内存文件系统中的文件系统检查仍报告损坏、OrangePi-5-Plus 需要 `extraboardargs=fsckfix`，或 Starry 板卡写入测试前后必须执行 Linux 文件系统检查与启动验证时使用。
-- `board-linux-starry-debug`：项目技能文件位于 `.agents/skills/board-linux-starry-debug/SKILL.md`。当实体板卡流程在运行 StarryOS 或 ArceOS 前需要从 Linux 侧部署或检查，包括通过 `board connect` 发现网络地址、持有板卡租约时使用安全外壳协议或 `rsync`、重启到 StarryOS 前显式执行 `sync`、诊断已复制到 Linux 根文件系统但 StarryOS 报告 `not found`，或比较 Linux 与 StarryOS 可见的板卡根文件系统状态时使用。
-- `crates-io-owner`：项目技能文件位于 `.agents/skills/crates-io-owner/SKILL.md`。当用户要求为分支新增软件包添加或核验 `github:rcore-os:crates-io`、询问哪些新软件包仍缺少 crates.io 团队所有者，或明确要求使用 `cargo owner` 而不是修改 `Cargo.toml` 元数据时使用。
-- `arch-platform-porting`：项目技能文件位于 `.agents/skills/arch-platform-porting/SKILL.md`。当用户要求为 ArceOS、StarryOS、Axvisor、someboot、动态统一可扩展固件接口平台启动、多处理器启动、QEMU 启动配置、目标描述文件、axbuild 体系结构映射、axcpu 陷阱或上下文代码、axplat-dyn、somehal，以及 LoongArch、x86、AArch64 或 RISC-V 平台调通工作新增、适配、调试或审查支持时使用。
-
-## Rust 编码规范
+以下规则约束 Rust 代码的设计、实现和审查，并作为所有相关改动的基础要求。
 
 - 编写、修改或审查代码前，完整阅读 `docs/guideline/code-quality.md`，并将其视为强制性的基础编码规范。改动新增或扩展用户可见行为、共享或公共接口、软件包、子系统、平台或硬件能力时，完整阅读 `docs/guideline/feature-development.md`，并落实其中的风险分类、研究、替代方案、设计和证据要求。只有改动行为属于其他领域规范的适用范围时，才完整阅读相应规范。特别是改动或声明影响用户可见的 StarryOS 系统调用或 Linux 二进制接口语义时，必须完整阅读 `docs/guideline/starry_syscall.md`；任务、虚拟文件系统、命名空间、信号、套接字、凭据、内存管理及其他辅助代码造成的间接影响也包含在内。是否触发规范按语义而不是文件路径判断；规范明确不适用时，在审查工作中记录具体理由。对话上下文经过压缩、从摘要恢复，或无法确信仍完整记得适用规范时，继续前重新完整阅读相应规范。
 - 使用仓库固定的 Rust 2024 夜间工具链和 `rustfmt` 配置作为格式化事实来源，不在说明文字中重复由 `rustfmt` 决定的布局规则。
@@ -47,7 +33,9 @@
 - 删除重复知识，而不是机械删除所有重复行。集中管理协议常量、布局规则、错误转换和边界不变量；避免过早抽象，以免隐藏控制流或降低调用点的可审计性。
 - 以小而经过验证的步骤重构。除非改动明确更新语义，否则保持行为稳定；高风险重构应配套最底层、能够确定性发现破坏的回归测试或验证。
 
-## 其他要求
+## 2. 项目工作流
+
+以下规则约束验证、持续集成、拉取请求和项目协作流程，并与前述编码规范共同生效。
 
 - 修改逻辑后运行相关的 `cargo clippy` 检查。
 - 修改软件包后确保该软件包通过静态检查，定向验证优先使用 `cargo xtask clippy --package <crate>`。
