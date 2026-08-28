@@ -139,6 +139,8 @@ pub(crate) struct RedistributorState {
     lpis_enabled: bool,
     propbaser: u64,
     pendbaser: u64,
+    /// GICR_WAKER.ProcessorSleep (bit 1) written by the guest.
+    waker_processor_sleep: bool,
 }
 
 impl RedistributorState {
@@ -172,6 +174,7 @@ impl RedistributorState {
             lpis_enabled: false,
             propbaser: 0,
             pendbaser: 0,
+            waker_processor_sleep: false,
         })
     }
 
