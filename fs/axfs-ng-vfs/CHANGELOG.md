@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add typed atomic symlink creation, preallocation and range mutation,
+  filesystem extent inspection, inode xattrs, and directory cursors/rename
+  options without exposing ext4 disk structures through the VFS boundary.
+
+### Removed
+
+- Remove the file-level symlink target setter; symlink target publication is
+  part of the directory create transaction.
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.6.0...axfs-ng-vfs-v0.6.1) - 2026-08-25
 
 ### Fixed

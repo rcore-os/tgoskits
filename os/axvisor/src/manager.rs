@@ -78,6 +78,7 @@ impl AxvmManager {
     }
 
     /// Pause a VM by ID.
+    #[cfg(feature = "http-axum")]
     pub fn pause_vm(vm_id: VMId) -> Result<()> {
         AxvmRuntime::pause_vm(vm_id).with_context(|| format!("pause VM[{vm_id}]"))
     }

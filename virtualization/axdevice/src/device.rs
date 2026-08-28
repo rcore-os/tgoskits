@@ -170,6 +170,8 @@ pub struct DeviceRuntime {
     access_ports: RuntimeAccessPorts,
     /// Whether this runtime topology has been frozen after VM preparation.
     sealed: bool,
+    pci_roots: BTreeMap<DeviceNodeId, Arc<PciRootBinding>>,
+    pci_binding_leases: Vec<crate::pci::PciBindingLease>,
 }
 
 /// Stack-scoped metadata for one routed device access.
@@ -316,6 +318,8 @@ impl DeviceRuntime {
             stop_grants: Vec::new(),
             access_ports: RuntimeAccessPorts::new(),
             sealed: false,
+            pci_roots: BTreeMap::new(),
+            pci_binding_leases: Vec::new(),
         }
     }
 
@@ -357,6 +361,16 @@ impl DeviceRuntime {
     /// already-registered devices in this bundle are rolled back via
     /// `pop()` + index-key removal.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
+        if bundle.pci_function.is_some() || !bundle.services.all::<PciRootBindingKey>().is_empty() {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register device bundle",
+                detail: "PCI bindings require resolved graph-node registration".into(),
+            });
+        }
+        self.register_bundle_inner(bundle)
+    }
+
+    fn register_bundle_inner(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
         self.ensure_unsealed("register device bundle")?;
         validate_bundle_grant_indices(
             bundle.devices.len(),
@@ -483,6 +497,108 @@ impl DeviceRuntime {
         self.lifecycle_devices.extend(bundle.lifecycle);
         self.services.append(bundle.services);
         self.planned.append(bundle.planned);
+        Ok(())
+    }
+
+    /// Registers one graph node's bundle with PCI identity validation.
+    ///
+    /// Host nodes must publish exactly one [`PciRootBindingKey`] service whose
+    /// owner and topology match the resolved node; endpoint bundles must bind
+    /// their resolved function through a dependency-hosted root. The binding
+    /// lease is retained by the runtime and its `Drop` unwinds the provisional
+    /// route (invalidate generation -> withdraw root route -> release the
+    /// endpoint reference), so any failure leaves no residue.
+    pub(crate) fn register_graph_bundle(
+        &mut self,
+        node: &ResolvedDeviceNode,
+        bundle: DeviceBundle,
+    ) -> DeviceManagerResult {
+        let root_services = bundle.services.all::<PciRootBindingKey>();
+        let root = match node.pci_host_topology() {
+            Some(topology) => {
+                if root_services.len() != 1 {
+                    return Err(DeviceManagerError::InvalidConfig {
+                        operation: "register PCI host bundle",
+                        detail: alloc::format!(
+                            "host {} must publish exactly one PciRootBinding",
+                            node.id()
+                        ),
+                    });
+                }
+                let root = root_services[0].clone();
+                if root.host() != node.id()
+                    || !root.matches_topology(topology)
+                    || self.pci_roots.contains_key(node.id())
+                {
+                    return Err(DeviceManagerError::InvalidConfig {
+                        operation: "register PCI host bundle",
+                        detail: alloc::format!(
+                            "host {} published a mismatched PCI root",
+                            node.id()
+                        ),
+                    });
+                }
+                Some(root)
+            }
+            None if root_services.is_empty() => None,
+            None => {
+                return Err(DeviceManagerError::InvalidConfig {
+                    operation: "register PCI host bundle",
+                    detail: alloc::format!("non-host node {} published a PCI root", node.id()),
+                });
+            }
+        };
+
+        let endpoint = match (node.pci_endpoint(), bundle.pci_function.as_ref()) {
+            (Some(endpoint), Some(function)) => {
+                if function.device_index >= bundle.devices.len()
+                    || !node.dependencies().contains(&endpoint.host)
+                {
+                    return Err(DeviceManagerError::InvalidConfig {
+                        operation: "register PCI endpoint bundle",
+                        detail: alloc::format!(
+                            "endpoint {} has an invalid PCI device binding",
+                            node.id()
+                        ),
+                    });
+                }
+                let binding = self.pci_roots.get(&endpoint.host).ok_or_else(|| {
+                    DeviceManagerError::ResourceNotFound {
+                        operation: "register PCI endpoint bundle",
+                        resource: alloc::format!("PCI root dependency {}", endpoint.host),
+                    }
+                })?;
+                let device = DeviceId::new((self.devices.len() + function.device_index) as u32);
+                Some(binding.bind(&endpoint.function_node, device, function.function.clone())?)
+            }
+            (Some(_), None) => {
+                return Err(DeviceManagerError::InvalidConfig {
+                    operation: "register PCI endpoint bundle",
+                    detail: alloc::format!(
+                        "endpoint {} did not declare its bundled PCI function",
+                        node.id()
+                    ),
+                });
+            }
+            (None, Some(_)) => {
+                return Err(DeviceManagerError::InvalidConfig {
+                    operation: "register PCI endpoint bundle",
+                    detail: alloc::format!(
+                        "non-PCI node {} declared a bundled PCI function",
+                        node.id()
+                    ),
+                });
+            }
+            (None, None) => None,
+        };
+
+        self.register_bundle_inner(bundle)?;
+        if let Some(root) = root {
+            self.pci_roots.insert(node.id().clone(), root);
+        }
+        if let Some(endpoint) = endpoint {
+            self.pci_binding_leases.push(endpoint);
+        }
         Ok(())
     }
 

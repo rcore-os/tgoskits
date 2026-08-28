@@ -13,7 +13,7 @@ use super::cases::BenchCase;
 
 const REVIEW_CONTRACT: &str = include_str!("../../../agent-review-bench/reviewer.md");
 const REVIEW_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/review.schema.json");
-const REVIEW_SKILL_PATH: &str = ".claude/skills/review-single-pr/SKILL.md";
+const REVIEW_SKILL_PATH: &str = ".agents/skills/review-single-pr/SKILL.md";
 
 pub(super) struct ReviewSandbox {
     _root: TempDir,
@@ -260,11 +260,11 @@ mod tests {
             "current guideline\n",
         )
         .unwrap();
-        fs::create_dir_all(workspace.path().join(".claude/skills/review-single-pr")).unwrap();
+        fs::create_dir_all(workspace.path().join(".agents/skills/review-single-pr")).unwrap();
         fs::write(
             workspace
                 .path()
-                .join(".claude/skills/review-single-pr/SKILL.md"),
+                .join(".agents/skills/review-single-pr/SKILL.md"),
             "current review skill\n",
         )
         .unwrap();

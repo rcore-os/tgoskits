@@ -20,7 +20,7 @@ mod cmos;
 pub use cmos::X86CmosDevice;
 #[path = "x86/pci_config.rs"]
 mod pci_config;
-pub use pci_config::X86PciConfigDevice;
+pub use pci_config::{PciMemoryApertureDevice, PciRootLifecycle, X86PciConfigFrontend};
 #[path = "x86/pic.rs"]
 mod pic;
 pub use pic::X86PicDevice;

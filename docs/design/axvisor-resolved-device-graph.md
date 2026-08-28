@@ -125,6 +125,16 @@ pub trait DeviceModel: Send + Sync {
 
 `DeviceBundle` 原子提交设备、controller、endpoint、typed service、grant、poller、lifecycle 和资源 lease。任一步失败都会恢复所有索引。controller bundle 必须先于依赖节点构建；全部节点成功且所有 claim 转为 lease 后才 seal runtime，seal 后拒绝注册。
 
+## typed PCI function 与 root binding
+
+普通模型通过 `DeviceRequirements::with_pci_function` 声明至多一个 `PciFunctionRequirement`：typed host key、`PciEndpointIdentity`、`Auto`/`Fixed` BDF 请求和 32-bit non-prefetchable memory BAR 列表。每个 architecture composition root 通过 `DeviceGraphBuilder::register_pci_host` 显式注册唯一 `PciHostProvider`（host 节点、memory aperture slot、平台 function spec 及保留 BDF），不使用全局 registry、model 字符串发现或隐式默认 provider。graph declaration 阶段收集全部 `requirements()`，按 host key 解析 provider 并自动追加 endpoint→host 依赖边；自动边与显式边进入同一拓扑排序与环检测，缺失或重复 provider 在 declaration 阶段返回 typed error，调用方不得手写该依赖。
+
+PCI topology 在 `ResolvedDeviceGraph` 的同一解析事务内消费已规划的 host aperture：先校验 fixed 请求与平台保留 BDF，再按稳定节点 ID 为 auto function 分配最低空闲 device 的 function 0，BAR 按 size 降序 + node ID + index 确定性 first-fit，最后生成 power-on config image。每个 resolved function 携带非空的 owner（configured endpoint 归 endpoint node，Q35 host bridge/LPC 等平台 function 归 host node）和所属 host node id；metadata 仅在全图成功后一次性发布到 `ResolvedDeviceGraph`，不产生第二个公开 graph 或 seal。x86 上 Q35/LPC 与 endpoint 共享同一 `PciRootState`：CF8/CFC frontend 只解码 configuration mechanism #1 端口访问并统一走 root lookup，不保存 function table 或固定 BDF；完整 memory aperture 是单一顶层 MMIO 设备，BAR relocation 只改 root 内部 route；ACPI `_CRS` 的 PCI memory window 从同一 resolved aperture 推导并显式校验一致。
+
+runtime 注册时，host bundle 必须恰好发布一个 `PciRootBinding` 服务，runtime 校验其 host node id 与 `Arc` 身份均匹配本节点 resolved topology；endpoint bundle 声明 bundle-local device index 实现 resolved function，runtime 只沿冻结的 host dependency 取得该 binding，分配最终 endpoint `DeviceId` 并生成不可伪造的 `EndpointRouteToken`（仅含 `DeviceId` + binding generation，不携带任何 capability），经 binding 原子写入 root 后把 lease 保存在 runtime 中。缺失、重复、owner 不匹配、来自非 dependency 节点的 root service 或 bind 失败都会回滚整个 bundle 注册；lease drop 按“先失效 generation、再撤销 root route、最后释放引用”的顺序完成解绑。root 使用窄的 IRQ-safe 锁只保护 config bytes、BAR route 和 binding bookkeeping；token 与 route 在锁内克隆，回调严格在锁外由 runtime 校验 token 后执行。旧 generation token 在 unbind 或 rebind 后永远失效。
+
+当前 BAR dispatch 把身份正确但无能力的 context 传给 endpoint 回调：endpoint 的 DMA/timer/wake/stop grant 按 `DeviceId` 存放在 `DeviceRuntime` 中，BAR 回调路径暂不可达。这是记录在案的阶段限制而非长期语义——路由与 dispatch guard 的归属是 `DeviceRuntime`，由其基于 token 的 endpoint `DeviceId` 构造 endpoint-scoped 的真实 `DeviceContext`；首个需要 grant 的 endpoint 必须在自己的设计中扩展该 seam，并以 grant 经 BAR 回调实际生效的回归测试交付。token 本身永不签发或代理能力。
+
 ## 固件模型
 
 节点不再挂第二组 FDT/ACPI dyn trait。`DeviceModel::firmware()` 返回由 `FdtContributionSpec` / `AcpiContributionSpec` 分类的 typed contribution：普通设备、中断控制器、timer、PCI host bridge、console 或 firmware transport。架构选择 FDT 或 ACPI 后，先验证图中每个 `Interfaces` 设备支持该接口，再把 contribution 中的 slot 解析为最终地址、IRQ 与 controller identity。固件代码不能重新分配资源、按 model 匹配、注入 raw DTS/AML 或 downcast 运行时设备。
@@ -160,4 +170,4 @@ vPLIC 在自己的 `Device::read/write` 成功后发布 VSEIP 状态；LoongArch
 
 资源/registry 锁不在设备或控制器状态锁内获取；设备模型构建发生在 VM 可运行前。回调、唤醒、IPI 和物理 IRQ 操作遵守具体控制器的锁外执行契约。
 
-测试只保留守住边界的节点：确定性分配、命名空间/共享规则、claim 与 bundle 回滚、catalog 错误，以及一个跨 crate 的配置 → dyn 图 → 固件 → runtime 集成场景。架构 QEMU 用例继续验证 AArch64 VGIC、x86 ACPI 与四架构启动。
+测试只保留守住边界的节点：确定性分配、命名空间/共享规则、claim 与 bundle 回滚、catalog 错误，以及一个跨 crate 的配置 → dyn 图 → 固件 → runtime 集成场景。PCI 侧同等保留 typed BDF/BAR 解析、config/BAR 状态机、root binding 与回滚矩阵、x86 CF8/CFC 兼容的边界测试。架构 QEMU 用例继续验证 AArch64 VGIC、x86 ACPI 与四架构启动；generic vPCI 枚举由 x86 `pci-enumeration` VMX/SVM 用例验证。

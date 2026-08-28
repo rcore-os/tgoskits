@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use rdif_block::{BlkError, CompletedRequest};
 
-use crate::os::{BlockNotification, runtime_ops, sync::Mutex};
+use crate::os::{BlockNotification, runtime_ops, sync::IrqMutex};
 
 /// Blocking one-shot receiver for one owned block request.
 pub struct CompletionSubscription {
@@ -20,7 +20,7 @@ pub(super) struct CompletionSender {
 }
 
 struct CompletionCell {
-    state: Mutex<CompletionState>,
+    state: IrqMutex<CompletionState>,
     group: Arc<CompletionBarrier>,
 }
 
@@ -56,7 +56,7 @@ impl CompletionSubscription {
 
     fn pair_with_group(group: Arc<CompletionBarrier>) -> (Self, CompletionSender) {
         let cell = Arc::new(CompletionCell {
-            state: Mutex::new(CompletionState {
+            state: IrqMutex::new(CompletionState {
                 result: None,
                 receiver_alive: true,
             }),

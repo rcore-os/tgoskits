@@ -1,5 +1,6 @@
 use alloc::{
     borrow::{Cow, ToOwned},
+    boxed::Box,
     string::String,
     sync::{Arc, Weak},
     vec,
@@ -17,9 +18,10 @@ use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, Metadata,
-    MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
-    Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
+    Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps,
+    NodePermission, NodeType, OpenOptions, Reference, ReferenceKey, RenameOptions, TypeMap,
+    VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -42,9 +44,6 @@ static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 ///
 /// Callers acquire this outer guard before node-local locks. Node-local locks
 /// are never held while acquiring this guard.
-// Mount-tree transactions can resolve nodes, invoke filesystem callbacks, and
-// drop filesystem-owned objects. They therefore require a sleepable lock;
-// individual mountpoint fields below retain their short spin-locked updates.
 // Host tests exercise only the topology algorithm and have no kernel task
 // context in which a PI mutex could sleep. Keep that test boundary on the
 // existing non-sleeping VFS lock instead of installing a fake task runtime.
@@ -119,15 +118,20 @@ impl NodeOps for SyntheticMountDir {
 }
 
 impl DirNodeOps for SyntheticMountDir {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let entries = [
             (DOT, self.inode, NodeType::Directory),
             (DOTDOT, self.parent.inode(), NodeType::Directory),
         ];
-        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let start = usize::try_from(cursor.offset()).unwrap_or(usize::MAX);
         let mut count = 0;
         for (index, (name, ino, node_type)) in entries.iter().enumerate().skip(start) {
-            if !sink.accept(name, *ino, *node_type, (index + 1) as u64) {
+            if !sink.accept(
+                name.as_bytes(),
+                *ino,
+                *node_type,
+                DirectoryCursor::new((index + 1) as u64),
+            ) {
                 break;
             }
             count += 1;
@@ -154,6 +158,17 @@ impl DirNodeOps for SyntheticMountDir {
         Err(VfsError::ReadOnlyFilesystem)
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         Err(VfsError::ReadOnlyFilesystem)
     }
@@ -162,7 +177,13 @@ impl DirNodeOps for SyntheticMountDir {
         Err(VfsError::ReadOnlyFilesystem)
     }
 
-    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        _src_name: &str,
+        _dst_dir: &DirNode,
+        _dst_name: &str,
+        _options: RenameOptions,
+    ) -> VfsResult<()> {
         Err(VfsError::ReadOnlyFilesystem)
     }
 }
@@ -701,6 +722,10 @@ impl Location {
     pub fn flags(&self) -> NodeFlags;
 
     pub fn user_data(&self) -> MutexGuard<'_, TypeMap>;
+
+    pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;
+
+    pub fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>>;
 }
 
 impl Location {
@@ -733,6 +758,20 @@ impl Location {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         self.entry.update_metadata(update)
+    }
+
+    pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.set_xattr(name, value, mode)
+    }
+
+    pub fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.remove_xattr(name)
     }
 
     /// Returns the entry name.
@@ -868,6 +907,23 @@ impl Location {
             .map(|entry| self.wrap(entry))
     }
 
+    pub fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<Self> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry
+            .as_dir()?
+            .create_symlink(name, target, permission, uid, gid)
+            .map(|entry| self.wrap(entry))
+    }
+
     /// Creates an in-memory directory entry that exists only as a mount target.
     ///
     /// This is intended for early boot auto-mount recovery: if the root
@@ -931,25 +987,47 @@ impl Location {
     }
 
     pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
+        self.rename_with_options(src_name, dst_dir, dst_name, RenameOptions::REPLACE)
+    }
+
+    pub fn rename_with_options(
+        &self,
+        src_name: &str,
+        dst_dir: &Self,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
         if self.is_readonly() || dst_dir.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
+        let src_loc = self.lookup_no_follow(src_name)?;
         // Disallow moving a directory into one of its own descendants. Regular
         // files may still be renamed into child directories (e.g. Redis AOF
         // `temp-rewriteaof-*.aof` -> `appendonlydir/...`).
-        if let Ok(src_loc) = self.lookup_no_follow(src_name)
-            && src_loc.node_type() == NodeType::Directory
+        if src_loc.node_type() == NodeType::Directory
             && !self.ptr_eq(dst_dir)
             && src_loc.entry.is_ancestor_of(&dst_dir.entry)?
         {
             return Err(VfsError::InvalidInput);
         }
-        self.entry
-            .as_dir()?
-            .rename(src_name, dst_dir.entry.as_dir()?, dst_name)
+        if options.exchange() {
+            let dst_loc = dst_dir.lookup_no_follow(dst_name)?;
+            if dst_loc.node_type() == NodeType::Directory
+                && !self.ptr_eq(dst_dir)
+                && dst_loc.entry.is_ancestor_of(&self.entry)?
+            {
+                return Err(VfsError::InvalidInput);
+            }
+        }
+        self.entry.as_dir()?.rename_with_options(
+            src_name,
+            dst_dir.entry.as_dir()?,
+            dst_name,
+            options,
+        )
     }
 
     pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
@@ -969,8 +1047,33 @@ impl Location {
             .map(|entry| self.wrap(entry).resolve_mountpoint())
     }
 
-    pub fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        self.entry.as_dir()?.read_dir(offset, sink)
+    pub fn read_dir(
+        &self,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.entry.as_dir()?.read_dir(cursor, sink)
+    }
+
+    /// Creates filesystem-private state for this open directory description.
+    pub fn open_directory_read_state(&self) -> VfsResult<Box<dyn DirectoryReadState>> {
+        self.entry.as_dir()?.open_directory_read_state()
+    }
+
+    /// Reads directory entries with state owned by the open description.
+    pub fn read_dir_with_state(
+        &self,
+        state: &mut dyn DirectoryReadState,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        self.entry
+            .as_dir()?
+            .read_dir_with_state(state, cursor, sink)
+    }
+
+    pub fn directory_end_cursor(&self) -> VfsResult<DirectoryCursor> {
+        self.entry.as_dir()?.inner().directory_end_cursor()
     }
 
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
@@ -980,7 +1083,7 @@ impl Location {
     /// Mounts a filesystem with the source name exposed through mount metadata.
     pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
         // Filesystem callbacks may acquire sleepable locks. Prepare the
-        // unpublished mount before entering the serialized topology
+        // unpublished mount before entering the non-preemptible topology
         // transaction; only topology validation and publication belong inside
         // the global guard.
         let result = Mountpoint::new_with_source(fs, Some(self.clone()), source);
@@ -1122,18 +1225,28 @@ impl Pollable for Location {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, string::ToString};
+    use alloc::{
+        boxed::Box,
+        string::{String, ToString},
+    };
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
     use super::*;
-    use crate::StatFs;
+    use crate::{FileNode, FileNodeOps, StatFs};
 
     struct MockFs;
     struct ContextCheckingFs;
     struct MockNode;
+    struct SymlinkDir {
+        generic_create_calls: Arc<AtomicUsize>,
+        symlink_create_calls: Arc<AtomicUsize>,
+    }
+    struct SymlinkFile {
+        target: String,
+    }
     struct TopologyChangingFs {
         self_ref: Weak<Self>,
         topology_change: Box<dyn Fn() + Send + Sync>,
@@ -1171,8 +1284,9 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            assert!(
-                !MOUNT_TOPOLOGY_MUTATION.is_locked(),
+            assert_eq!(
+                ax_sync::host_preempt_depth(),
+                0,
                 "filesystem callbacks must run outside the mount topology guard"
             );
             make_dir_entry("mounted-root")
@@ -1231,7 +1345,11 @@ mod tests {
     }
 
     impl DirNodeOps for MockNode {
-        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             Ok(0)
         }
         fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
@@ -1247,13 +1365,29 @@ mod tests {
         ) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
         fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
         fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
-        fn rename(&self, _src: &str, _dst_dir: &DirNode, _dst: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }
@@ -1285,7 +1419,11 @@ mod tests {
     }
 
     impl DirNodeOps for TopologyChangingNode {
-        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             Ok(0)
         }
 
@@ -1304,6 +1442,17 @@ mod tests {
             Err(VfsError::ReadOnlyFilesystem)
         }
 
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
         fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
@@ -1312,8 +1461,188 @@ mod tests {
             Err(VfsError::ReadOnlyFilesystem)
         }
 
-        fn rename(&self, _src: &str, _dst_dir: &DirNode, _dst: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    impl NodeOps for SymlinkDir {
+        fn inode(&self) -> u64 {
+            1
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(mock_metadata(1, NodeType::Directory, 0))
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &MOCK_FS
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl DirNodeOps for SymlinkDir {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
+            Err(VfsError::NotFound)
+        }
+
+        fn create(
+            &self,
+            _name: &str,
+            _node_type: NodeType,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            self.generic_create_calls.fetch_add(1, Ordering::Relaxed);
+            Err(VfsError::InvalidInput)
+        }
+
+        fn create_symlink(
+            &self,
+            name: &str,
+            target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            self.symlink_create_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(DirEntry::new_file(
+                FileNode::new(Arc::new(SymlinkFile {
+                    target: target.to_string(),
+                })),
+                NodeType::Symlink,
+                Reference::new(None, name.to_string()),
+            ))
+        }
+
+        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+            Err(VfsError::OperationNotSupported)
+        }
+
+        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+            Err(VfsError::OperationNotSupported)
+        }
+
+        fn rename(
+            &self,
+            _src: &str,
+            _dst_dir: &DirNode,
+            _dst: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
+            Err(VfsError::OperationNotSupported)
+        }
+    }
+
+    impl NodeOps for SymlinkFile {
+        fn inode(&self) -> u64 {
+            2
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(mock_metadata(
+                2,
+                NodeType::Symlink,
+                self.target.len() as u64,
+            ))
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &MOCK_FS
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl Pollable for SymlinkFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN
+        }
+
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: IoEvents,
+        ) {
+        }
+    }
+
+    impl FileNodeOps for SymlinkFile {
+        fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+            let offset = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
+            let Some(remaining) = self.target.as_bytes().get(offset..) else {
+                return Ok(0);
+            };
+            let length = remaining.len().min(buf.len());
+            buf[..length].copy_from_slice(&remaining[..length]);
+            Ok(length)
+        }
+
+        fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_len(&self, _len: u64) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    fn mock_metadata(inode: u64, node_type: NodeType, size: u64) -> Metadata {
+        Metadata {
+            device: 0,
+            inode,
+            nlink: 1,
+            mode: NodePermission::default(),
+            node_type,
+            uid: 0,
+            gid: 0,
+            size,
+            block_size: 4096,
+            blocks: 0,
+            rdev: DeviceId::default(),
+            atime: Duration::ZERO,
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
         }
     }
 
@@ -1343,6 +1672,45 @@ mod tests {
         let mounted = Filesystem::new(Arc::new(ContextCheckingFs));
 
         target.mount(&mounted).expect("mount succeeds");
+    }
+
+    #[test]
+    fn symlink_creation_uses_atomic_typed_operation() {
+        let generic_create_calls = Arc::new(AtomicUsize::new(0));
+        let symlink_create_calls = Arc::new(AtomicUsize::new(0));
+        let ops: Arc<dyn DirNodeOps> = Arc::new(SymlinkDir {
+            generic_create_calls: generic_create_calls.clone(),
+            symlink_create_calls: symlink_create_calls.clone(),
+        });
+        let root = DirEntry::new_dir(|_| DirNode::new(ops), Reference::root());
+        let directory = root.as_dir().expect("root directory");
+
+        assert!(matches!(
+            directory.create(
+                "invalid",
+                NodeType::Symlink,
+                NodePermission::default(),
+                0,
+                0,
+            ),
+            Err(VfsError::InvalidInput)
+        ));
+        assert_eq!(generic_create_calls.load(Ordering::Relaxed), 0);
+
+        let link = directory
+            .create_symlink(
+                "link",
+                "/complete-target",
+                NodePermission::default(),
+                1000,
+                1001,
+            )
+            .expect("atomic symlink create");
+        assert_eq!(
+            link.read_link().expect("read final target"),
+            "/complete-target"
+        );
+        assert_eq!(symlink_create_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -1456,25 +1824,6 @@ mod tests {
 
         let cloned = root.clone_tree();
         assert_eq!(cloned.source(), "/dev/vda");
-    }
-
-    #[test]
-    fn absolute_path_rebases_bind_mount_source_at_mountpoint() {
-        let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
-        let root_location = root.root_location();
-        let nix_entry = make_child_dir_entry(Some(root_location.entry().clone()), "nix");
-        let store_entry = make_child_dir_entry(Some(nix_entry.clone()), "store");
-        let store = Location::new(root.clone(), store_entry.clone());
-
-        let bound_store = Mountpoint::bind(&store, store.clone(), false);
-        let executable_entry = make_child_dir_entry(Some(store_entry), "systemd");
-        let executable = Location::new(bound_store, executable_entry);
-
-        assert_eq!(
-            executable.absolute_path().unwrap().as_str(),
-            "/nix/store/systemd"
-        );
     }
 
     #[test]

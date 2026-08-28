@@ -3,17 +3,15 @@
 use crate::superblock::*;
 
 // ============================================================================
-// Journal configuration
-// ============================================================================
-/// Maximum number of in-memory JBD2 update buffers.
-pub const JBD2_BUFFER_MAX: usize = 10;
-
-// ============================================================================
 // Block geometry
 // ============================================================================
-/// Filesystem block size in bytes.
+/// Default filesystem block size selected by rsext4 mkfs.
 pub const BLOCK_SIZE: usize = 4096;
 pub const BLOCK_SIZE_U32: u32 = BLOCK_SIZE as u32;
+/// Smallest filesystem block size supported by ext4.
+pub const MIN_BLOCK_SIZE: u32 = 1024;
+/// Largest filesystem block size currently supported by the portable core.
+pub const MAX_BLOCK_SIZE: u32 = 4096;
 
 /// Log2 delta stored in `s_log_block_size`.
 ///
@@ -28,15 +26,17 @@ pub const LOG_BLOCK_SIZE: u32 = 2;
 pub const GROUP_DESC_SIZE: u16 = 64;
 /// Size of a legacy 32-bit ext4 group descriptor in bytes.
 pub const GROUP_DESC_SIZE_OLD: u16 = 32;
+/// Largest group descriptor accepted by Linux ext4.
+pub const GROUP_DESC_SIZE_MAX: u16 = 1024;
 // ============================================================================
 // Inode geometry
 // ============================================================================
 
-/// Default inode size in bytes.
-///
-/// NOTE: real inode size is stored in superblock.s_inode_size.
-/// This constant should only be used as a fallback when s_inode_size is 0.
+/// Inode size selected by rsext4 mkfs.
 pub const DEFAULT_INODE_SIZE: u16 = 256;
+
+/// Fixed inode size used by revision-0 ext2/ext4 superblocks.
+pub const GOOD_OLD_INODE_SIZE: u16 = 128;
 
 // ============================================================================
 // Cache sizing

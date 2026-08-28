@@ -1,26 +1,25 @@
-use alloc::{borrow::Cow, string::ToString, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc};
 use core::{
     ffi::c_int,
     hint::likely,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext, current_fs_context};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
-use axfs_ng_vfs::{Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
     ioctl::TIOCSCTTY,
 };
-
 use super::{FileLike, Kstat, get_file_like};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
     mm::VmPtr,
     pseudofs::Device,
-    sync::PiMutex,
+    sync::Mutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},
@@ -34,7 +33,7 @@ pub fn with_fs<R>(
     dirfd: c_int,
     f: impl FnOnce(&mut FsContext) -> StarryResult<R>,
 ) -> StarryResult<R> {
-    let fs_context = current_fs_context();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
     let mut fs = fs_context.lock();
     if dirfd == AT_FDCWD {
         f(&mut fs)
@@ -327,7 +326,10 @@ impl Pollable for File {
 /// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
     inner: Location,
-    pub offset: PiMutex<u64>,
+    // Serialize the complete getdents/lseek transition for one open file
+    // description. This is a sleepable mutex because filesystem reads may
+    // block; dup/fork share the Directory and therefore this position.
+    pub(crate) position: Mutex<DirectoryPosition>,
     /// Original open flags (used by fd_is_path / sys_fchmodat to detect
     /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
     /// must reject fchmod just like O_PATH on a regular file).
@@ -337,11 +339,19 @@ pub struct Directory {
     detached_mount_handle: bool,
 }
 
+pub(crate) struct DirectoryPosition {
+    pub(crate) cursor: DirectoryCursor,
+    pub(crate) read_state: Option<Box<dyn DirectoryReadState>>,
+}
+
 impl Directory {
     pub fn new(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: PiMutex::new(0),
+            position: Mutex::new(DirectoryPosition {
+                cursor: DirectoryCursor::START,
+                read_state: None,
+            }),
             open_flags,
             detached_mount_handle: false,
         }
@@ -350,7 +360,10 @@ impl Directory {
     pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: PiMutex::new(0),
+            position: Mutex::new(DirectoryPosition {
+                cursor: DirectoryCursor::START,
+                read_state: None,
+            }),
             open_flags,
             detached_mount_handle: true,
         }

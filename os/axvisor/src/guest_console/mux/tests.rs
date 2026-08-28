@@ -73,6 +73,34 @@ fn lowest_running_vm_is_default_and_input_only_reaches_foreground() {
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
+fn network_input_reaches_its_guest_without_changing_physical_foreground() {
+    let mux = GuestConsoleMux::new();
+    let backend_1 = mux.core.create_serial_backend(1);
+    let backend_2 = mux.core.create_serial_backend(2);
+    assert_eq!(mux.attach_default([1, 2]), Some(1));
+
+    assert_eq!(mux.route_network_input(2, b"uptime\r"), Some(false));
+    assert_eq!(mux.attached_vm(), Some(1));
+
+    let mut input = [0u8; 16];
+    assert_eq!(backend_1.read(&mut input), 0);
+    let read = backend_2.read(&mut input);
+    assert_eq!(&input[..read], b"uptime\r");
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn network_input_rejects_stopped_and_stale_guest_backends() {
+    let mux = GuestConsoleMux::new();
+    mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+    mux.mark_stopped(1);
+
+    assert_eq!(mux.route_network_input(1, b"ignored"), None);
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
 fn guest_input_overflow_is_reported_once_until_the_guest_drains_input() {
     let mux = GuestConsoleMux::new();
     let backend = mux.core.create_serial_backend(1);

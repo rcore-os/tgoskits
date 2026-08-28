@@ -42,7 +42,7 @@ use crate::{
     BlockError, BlockResult,
     os::{
         BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
-        sync::Mutex, wall_time,
+        sync::IrqMutex, wall_time,
     },
 };
 
@@ -208,8 +208,8 @@ impl BlockRuntime {
 
 struct BlockGroupHandle {
     name: String,
-    controller: Mutex<Option<Box<dyn BlockControllerGroup>>>,
-    registrations: Mutex<Vec<Box<dyn BlockIrqRegistration>>>,
+    controller: IrqMutex<Option<Box<dyn BlockControllerGroup>>>,
+    registrations: IrqMutex<Vec<Box<dyn BlockIrqRegistration>>>,
     members: Vec<Arc<BlockDeviceHandle>>,
     stopped: AtomicBool,
 }
@@ -335,8 +335,8 @@ impl BlockGroupHandle {
         }
         Ok(Self {
             name,
-            controller: Mutex::new(Some(controller)),
-            registrations: Mutex::new(registrations),
+            controller: IrqMutex::new(Some(controller)),
+            registrations: IrqMutex::new(registrations),
             members: ready,
             stopped: AtomicBool::new(false),
         })
@@ -346,10 +346,13 @@ impl BlockGroupHandle {
         if self.stopped.swap(true, Ordering::AcqRel) {
             return 0;
         }
+        // Teardown has exclusive ownership after publishing `stopped`. Move
+        // the controller out so retry waits never retain an IRQ-save guard.
+        let mut controller = self.controller.lock().take();
         for member in &self.members {
             member.inner.prepare_group_shutdown();
         }
-        if let Some(controller) = self.controller.lock().as_deref_mut() {
+        if let Some(controller) = controller.as_deref_mut() {
             let _ = drive_group_transition(
                 controller,
                 GroupControllerEvent::QuiesceIrqs,
@@ -363,7 +366,7 @@ impl BlockGroupHandle {
         for member in &self.members {
             member.shutdown();
         }
-        if let Some(mut controller) = self.controller.lock().take()
+        if let Some(mut controller) = controller
             && let Err(error) = drive_group_transition(
                 &mut *controller,
                 GroupControllerEvent::Shutdown,
@@ -505,16 +508,16 @@ impl Drop for BlockDeviceHandle {
 
 struct DeviceInner {
     name: String,
-    device_info: Mutex<DeviceInfoEpoch>,
+    device_info: IrqMutex<DeviceInfoEpoch>,
     max_io_queues: usize,
     irq_ownership: IrqOwnership,
     irq_sources: Vec<BlockIrqSource>,
-    hctxs: Mutex<Vec<Arc<Hctx>>>,
-    detached_queues: Mutex<Vec<Box<dyn HardwareQueue>>>,
-    cpu_channels: Mutex<Vec<CpuSubmissionChannel>>,
-    irq_registrations: Mutex<Vec<InstalledIrqSource>>,
+    hctxs: IrqMutex<Vec<Arc<Hctx>>>,
+    detached_queues: IrqMutex<Vec<Box<dyn HardwareQueue>>>,
+    cpu_channels: IrqMutex<Vec<CpuSubmissionChannel>>,
+    irq_registrations: IrqMutex<Vec<InstalledIrqSource>>,
     controller: Arc<ControllerPort>,
-    controller_thread: Mutex<Option<Box<dyn BlockThread>>>,
+    controller_thread: IrqMutex<Option<Box<dyn BlockThread>>>,
     state: AtomicU8,
     accepting: AtomicBool,
     active_data: AtomicUsize,
@@ -593,20 +596,20 @@ impl BlockDeviceHandle {
             )
             .map_err(|_| BlkError::NoMemory)?,
             notification: controller_notification,
-            irq_latches: Mutex::new(Vec::new()),
+            irq_latches: IrqMutex::new(Vec::new()),
         });
         let inner = Arc::new(DeviceInner {
             name,
-            device_info: Mutex::new(DeviceInfoEpoch::new(info)),
+            device_info: IrqMutex::new(DeviceInfoEpoch::new(info)),
             max_io_queues,
             irq_ownership,
             irq_sources: irqs,
-            hctxs: Mutex::new(Vec::new()),
-            detached_queues: Mutex::new(Vec::new()),
-            cpu_channels: Mutex::new(Vec::new()),
-            irq_registrations: Mutex::new(Vec::new()),
+            hctxs: IrqMutex::new(Vec::new()),
+            detached_queues: IrqMutex::new(Vec::new()),
+            cpu_channels: IrqMutex::new(Vec::new()),
+            irq_registrations: IrqMutex::new(Vec::new()),
             controller: Arc::clone(&controller_port),
-            controller_thread: Mutex::new(None),
+            controller_thread: IrqMutex::new(None),
             state: AtomicU8::new(DEVICE_STARTING),
             accepting: AtomicBool::new(false),
             active_data: AtomicUsize::new(0),
@@ -667,6 +670,28 @@ impl BlockDeviceHandle {
 
     pub fn device_info(&self) -> DeviceInfo {
         self.inner.published_device_info()
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn supports_flush(&self) -> bool {
+        let queues = self.inner.hctxs.lock();
+        !queues.is_empty()
+            && queues
+                .iter()
+                .all(|queue| queue.info().limits.supports_flush)
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn supports_fua(&self) -> bool {
+        let queues = self.inner.hctxs.lock();
+        !queues.is_empty()
+            && queues.iter().all(|queue| {
+                queue
+                    .info()
+                    .limits
+                    .supported_flags
+                    .contains(RequestFlags::FUA)
+            })
     }
 
     /// Enqueues one DMA-owning request on the current CPU software channel.
@@ -805,6 +830,14 @@ impl BlockDeviceHandle {
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> BlockResult {
         io::write_blocks(self, block_id, buf)
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn write_blocks_fua(&self, block_id: u64, buf: &[u8]) -> BlockResult {
+        if !self.supports_fua() {
+            return Err(BlockError::Unsupported);
+        }
+        io::write_blocks_fua(self, block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]

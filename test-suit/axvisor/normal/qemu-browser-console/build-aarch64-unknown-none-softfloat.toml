@@ -1,0 +1,11 @@
+# Minimal browser-console build. No VM image or filesystem is required: the
+# host-side probe validates Axvisor's own console lane and the embedded page,
+# while axtest covers startup layouts containing one to three guests.
+features = ["browser-console"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []
+
+[env]
+# QEMU hostfwd reaches the guest through its non-loopback interface.
+AXVM_HTTP_BIND = "0.0.0.0:8080"

@@ -4,7 +4,7 @@ use core::mem;
 use crate::{
     BlockError as FsBlockError, BlockResult as FsBlockResult,
     block::{BlockRegion, FsBlockDevice, RegionBlockDevice},
-    os::sync::Mutex,
+    os::sync::SleepMutex,
 };
 
 fn take<'a>(buf: &mut &'a [u8], cnt: usize) -> &'a [u8] {
@@ -22,12 +22,12 @@ fn take_mut<'a>(buf: &mut &'a mut [u8], cnt: usize) -> &'a mut [u8] {
 
 /// A disk device with a cursor.
 pub struct SeekableDisk {
-    state: Arc<Mutex<SeekableDiskState>>,
+    state: Arc<SleepMutex<SeekableDiskState>>,
 }
 
 #[derive(Clone)]
 pub struct SeekableDiskFlusher {
-    state: Arc<Mutex<SeekableDiskState>>,
+    state: Arc<SleepMutex<SeekableDiskState>>,
 }
 
 struct SeekableDiskState {
@@ -53,7 +53,7 @@ impl SeekableDisk {
         let read_buffer = vec![0u8; block_size].into_boxed_slice();
         let write_buffer = vec![0u8; block_size].into_boxed_slice();
         Self {
-            state: Arc::new(Mutex::new(SeekableDiskState {
+            state: Arc::new(SleepMutex::new(SeekableDiskState {
                 dev: RegionBlockDevice::new(dev, region),
                 block_id: 0,
                 offset: 0,
@@ -273,6 +273,25 @@ mod tests {
             512
         }
 
+        #[cfg(feature = "ext4")]
+        fn physical_block_size(&self) -> usize {
+            512
+        }
+
+        fn is_read_only(&self) -> bool {
+            false
+        }
+
+        #[cfg(feature = "ext4")]
+        fn supports_flush(&self) -> bool {
+            true
+        }
+
+        #[cfg(feature = "ext4")]
+        fn supports_fua(&self) -> bool {
+            false
+        }
+
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> FsBlockResult<()> {
             assert_eq!(block_id, 0);
             buf.copy_from_slice(&self.storage.lock().unwrap());
@@ -283,6 +302,11 @@ mod tests {
             assert_eq!(block_id, 0);
             self.storage.lock().unwrap().copy_from_slice(buf);
             Ok(())
+        }
+
+        #[cfg(feature = "ext4")]
+        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> FsBlockResult<()> {
+            Err(FsBlockError::Unsupported)
         }
 
         fn flush(&mut self) -> FsBlockResult<()> {

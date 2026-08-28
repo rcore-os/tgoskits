@@ -4,7 +4,7 @@ use alloc::string::String;
 
 use axdevice_base::*;
 
-use crate::{DeviceGraphError, InterruptRegistrationError};
+use crate::{DeviceGraphError, InterruptRegistrationError, PciError};
 
 /// Result type returned by device manager operations.
 pub type DeviceManagerResult<T = ()> = Result<T, DeviceManagerError>;
@@ -99,6 +99,9 @@ pub enum DeviceManagerError {
     /// Deterministic VM resource allocation failed.
     #[error(transparent)]
     ResourcePlanning(#[from] crate::ResourcePlanningError),
+    /// PCI declaration, topology, or config-state construction failed.
+    #[error(transparent)]
+    Pci(#[from] PciError),
 }
 
 impl From<DeviceManagerError> for DeviceError {
@@ -148,6 +151,10 @@ impl From<DeviceManagerError> for DeviceError {
             },
             DeviceManagerError::ResourcePlanning(error) => Self::InvalidInput {
                 operation: "plan device resources",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::Pci(error) => Self::InvalidInput {
+                operation: "resolve PCI device graph",
                 detail: alloc::format!("{error}"),
             },
         }

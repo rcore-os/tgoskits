@@ -65,6 +65,25 @@ pub(super) fn write_blocks(
     block_id: u64,
     buffer: &[u8],
 ) -> BlockResult {
+    write_blocks_with_flags(device, block_id, buffer, RequestFlags::NONE)
+}
+
+#[cfg(feature = "ext4")]
+pub(super) fn write_blocks_fua(
+    device: &BlockDeviceHandle,
+    block_id: u64,
+    buffer: &[u8],
+) -> BlockResult {
+    write_blocks_with_flags(device, block_id, buffer, RequestFlags::FUA)
+}
+
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn write_blocks_with_flags(
+    device: &BlockDeviceHandle,
+    block_id: u64,
+    buffer: &[u8],
+    flags: RequestFlags,
+) -> BlockResult {
     if buffer.is_empty() {
         return Ok(());
     }
@@ -81,7 +100,7 @@ pub(super) fn write_blocks(
             && plan.peek().is_some()
         {
             let window = take_window(&mut plan, window_limit)
-                .and_then(|chunks| submit_write_window(device, info, chunks, buffer));
+                .and_then(|chunks| submit_write_window(device, info, chunks, buffer, flags));
             match window {
                 Ok(window) => pending.push_back(window),
                 Err(error) => first_error = Some(error),
@@ -127,9 +146,10 @@ fn submit_write_window(
     info: QueueInfo,
     chunks: Vec<TransferChunk>,
     buffer: &[u8],
+    flags: RequestFlags,
 ) -> Result<WriteWindow, BlockError> {
     let first_lba = chunks[0].lba;
-    let requests = prepare_write_requests(info, &chunks, buffer)?;
+    let requests = prepare_write_requests(info, &chunks, buffer, flags)?;
     let completions = device.submit_batch_owned(requests).map_err(|error| {
         block_io_error("submit window", RequestOp::Write, first_lba, error.error)
     })?;
@@ -208,6 +228,7 @@ fn prepare_write_requests(
     info: QueueInfo,
     chunks: &[TransferChunk],
     buffer: &[u8],
+    flags: RequestFlags,
 ) -> Result<OwnedRequestBatch, BlockError> {
     let mut requests = OwnedRequestBatch::with_capacity(chunks.len());
     for chunk in chunks {
@@ -219,7 +240,7 @@ fn prepare_write_requests(
             lba: chunk.lba,
             block_count: chunk.block_count,
             data: Some(data),
-            flags: RequestFlags::NONE,
+            flags,
         });
     }
     Ok(requests)

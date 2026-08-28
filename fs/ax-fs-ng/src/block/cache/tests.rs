@@ -28,12 +28,17 @@ const KEY_A: usize = 0x1000;
 enum IoOp {
     Read { lba: u64, blocks: usize },
     Write { lba: u64, blocks: usize },
+    FuaWrite { lba: u64, blocks: usize },
     Flush,
 }
 
 impl IoOp {
     fn is_write_of(&self, lba: u64, blocks: usize) -> bool {
-        matches!(*self, IoOp::Write { lba: l, blocks: n } if l == lba && n == blocks)
+        matches!(
+            *self,
+            IoOp::Write { lba: l, blocks: n } | IoOp::FuaWrite { lba: l, blocks: n }
+                if l == lba && n == blocks
+        )
     }
 
     fn is_read(&self) -> bool {
@@ -161,6 +166,11 @@ impl FsBlockDevice for RecordingDevice {
         self.block_size
     }
 
+    #[cfg(feature = "ext4")]
+    fn supports_fua(&self) -> bool {
+        true
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult<()> {
         let mut state = self.state.lock().unwrap();
         state.log.push(IoOp::Read {
@@ -196,6 +206,21 @@ impl FsBlockDevice for RecordingDevice {
             return Err(BlockError::Io);
         }
         state.log.push(IoOp::Write {
+            lba: block_id,
+            blocks: buf.len() / self.block_size,
+        });
+        let start = block_id as usize * self.block_size;
+        state.storage[start..start + buf.len()].copy_from_slice(buf);
+        Ok(())
+    }
+
+    #[cfg(feature = "ext4")]
+    fn write_block_fua(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.fail_writes {
+            return Err(BlockError::Io);
+        }
+        state.log.push(IoOp::FuaWrite {
             lba: block_id,
             blocks: buf.len() / self.block_size,
         });
@@ -293,6 +318,51 @@ fn write_is_deferred_until_flush() {
     // flush() = writeback followed by the device barrier.
     let log = state.lock().unwrap().log.clone();
     assert_eq!(*log.last().unwrap(), IoOp::Flush);
+}
+
+#[cfg(feature = "ext4")]
+#[test]
+fn fua_bypasses_deferred_write_and_refreshes_cached_bytes() {
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 24, device);
+    let old = [0x11u8; 512];
+    let durable = [0x5au8; 512];
+
+    cached.write_block(3, &old).unwrap();
+    cached.write_block_fua(3, &durable).unwrap();
+
+    let log = state.lock().unwrap().log.clone();
+    assert_eq!(
+        log,
+        vec![
+            IoOp::Write { lba: 3, blocks: 1 },
+            IoOp::FuaWrite { lba: 3, blocks: 1 }
+        ]
+    );
+    let reads_before = count_ops(&state, IoOp::is_read);
+    let mut observed = [0u8; 512];
+    cached.read_block(3, &mut observed).unwrap();
+    assert_eq!(observed, durable);
+    assert_eq!(count_ops(&state, IoOp::is_read), reads_before);
+}
+
+#[cfg(feature = "ext4")]
+#[test]
+fn failed_fua_invalidates_overlapping_cache_slots() {
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 25, device);
+    let mut observed = [0u8; 512];
+    cached.read_block(4, &mut observed).unwrap();
+    state.lock().unwrap().fail_writes = true;
+
+    assert_eq!(
+        cached.write_block_fua(4, &[0x5au8; 512]),
+        Err(BlockError::Io)
+    );
+    state.lock().unwrap().fail_writes = false;
+    let reads_before = count_ops(&state, IoOp::is_read);
+    cached.read_block(4, &mut observed).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), reads_before + 1);
 }
 
 #[test]

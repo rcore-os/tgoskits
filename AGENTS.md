@@ -1,81 +1,74 @@
 # AGENTS.md
 
-## Project Skills
+## 1. Rust 编码规范
 
-- `update-std-tests`: project-local skill at `.claude/skills/update-std-tests/SKILL.md`
-- Use `update-std-tests` when the user wants to audit or update `scripts/test/std_crates.csv`, compare workspace packages against the std test whitelist, or confirm which new std-test candidates should be added.
-- `starry-test-suit`: project-local skill at `.claude/skills/starry-test-suit/SKILL.md`
-- Use `starry-test-suit` when the user wants to add, regroup, adapt, or validate `test-suit/starryos` cases, including `qemu-*.toml`, `normal`/`stress` grouping, success/fail regexes, or Starry test-suit related CI behavior.
-- `cross-kernel-driver`: project-local skill at `.claude/skills/cross-kernel-driver/SKILL.md`
-- Use `cross-kernel-driver` when the user wants to create, refactor, review, or optimize portable Rust driver crates under `drivers/` by device type, separate Driver Core / Capability Boundary / OS Glue / Runtime layers, handle MMIO/iomap with `mmio-api`, handle DMA with `dma-api`, design IRQ event or queue contracts, or audit OS API coupling in driver code.
-- `review-open-prs`: project-local skill at `.claude/skills/review-open-prs/SKILL.md`
-- Use `review-open-prs` when the user wants to audit all open GitHub PRs, review non-self PRs, re-review PRs updated after their last review, use subagents/worktrees for PR review, compare changes with POSIX/Linux/RFC/VirtIO semantics, analyze exact-head CI evidence, and submit approve or request-changes reviews.
-- `resolve-github-issue`: project-local skill at `.claude/skills/resolve-github-issue/SKILL.md`
-- Use `resolve-github-issue` when the user wants to inspect the latest or a specified GitHub issue, analyze and fix the root cause instead of loosening tests, use subagents for issue investigation or patch review, add deterministic regression coverage, validate the original failing command, submit a PR, or include `Fixes #<issue>` so merging closes the issue.
-- `review-single-pr`: project-local skill at `.claude/skills/review-single-pr/SKILL.md`
-- Use `review-single-pr` when the user names one PR number or URL and wants a focused review, re-review, duplicate or overlapping open-PR analysis, Starry app-support test placement checks, merge-conflict handling for otherwise approvable PRs, Linux/POSIX/RFC/VirtIO comparison, exact-head CI analysis, app-only runtime validation, Chinese inline review comments, approval, request-changes submission, or post-review reviewer assignment.
-- `reassign-pr-reviewers`: project-local skill at `.claude/skills/reassign-pr-reviewers/SKILL.md`
-- Use `reassign-pr-reviewers` when the user wants to assign or rebalance GitHub PR reviewers for `rcore-os/tgoskits` from a discussion, ownership matrix, open PR scope, or existing review-request state, including preserving bot requests and handling collaborator permission limits.
-- `board-uboot-fsck-repair`: project-local skill at `.claude/skills/board-uboot-fsck-repair/SKILL.md`
-- Use `board-uboot-fsck-repair` when a physical board Linux rootfs needs ext4 recovery through U-Boot, initramfs fsck reports unrepaired corruption, OrangePi-5-Plus needs `extraboardargs=fsckfix`, or Starry board write tests must be bracketed by Linux fsck/boot checks.
-- `board-linux-starry-debug`: project-local skill at `.claude/skills/board-linux-starry-debug/SKILL.md`
-- Use `board-linux-starry-debug` when a physical-board workflow needs Linux-side deployment or inspection before running StarryOS or ArceOS, including `board connect` IP discovery, SSH/rsync while holding a board lease, explicit `sync` before rebooting into StarryOS, diagnosing StarryOS `not found` for files copied into the Linux rootfs, or comparing Linux-visible and StarryOS-visible board rootfs state.
-- `crates-io-owner`: project-local skill at `.claude/skills/crates-io-owner/SKILL.md`
-- Use `crates-io-owner` when the user wants to add or verify `github:rcore-os:crates-io` for branch-added crates, asks which new crates still need the crates.io team owner, or explicitly wants `cargo owner` used instead of `Cargo.toml` metadata.
-- `arch-platform-porting`: project-local skill at `.claude/skills/arch-platform-porting/SKILL.md`
-- Use `arch-platform-porting` when the user wants to add, adapt, debug, or review architecture/platform support for ArceOS, StarryOS, Axvisor, someboot, dynamic UEFI platform boot, SMP startup, QEMU boot configs, target JSON files, axbuild arch mapping, axcpu trap/context code, axplat-dyn, somehal, or LoongArch/x86/aarch64/riscv platform bring-up issues.
+以下规则约束 Rust 代码的设计、实现和审查，并作为所有相关改动的基础要求。
 
-## Rust Coding Standards
+- 编写、修改或审查代码前，完整阅读 `docs/guideline/code-quality.md`，并将其视为强制性的基础编码规范。改动新增或扩展用户可见行为、共享或公共接口、软件包、子系统、平台或硬件能力时，完整阅读 `docs/guideline/feature-development.md`，并落实其中的风险分类、研究、替代方案、设计和证据要求。只有改动行为属于其他领域规范的适用范围时，才完整阅读相应规范。特别是改动或声明影响用户可见的 StarryOS 系统调用或 Linux 二进制接口语义时，必须完整阅读 `docs/guideline/starry_syscall.md`；任务、虚拟文件系统、命名空间、信号、套接字、凭据、内存管理及其他辅助代码造成的间接影响也包含在内。是否触发规范按语义而不是文件路径判断；规范明确不适用时，在审查工作中记录具体理由。对话上下文经过压缩、从摘要恢复，或无法确信仍完整记得适用规范时，继续前重新完整阅读相应规范。
+- 使用仓库固定的 Rust 2024 夜间工具链和 `rustfmt` 配置作为格式化事实来源，不在说明文字中重复由 `rustfmt` 决定的布局规则。
+- 可复用的内核、组件、内存、虚拟化和可移植驱动软件包优先使用 `#![no_std]`；只有软件包边界确实需要时，才增加 `alloc`、`std` 或受功能开关控制的支持。
+- 软件包和模块边界应与 TGOSKits 分层一致：可复用逻辑放在 `components/`、`drivers/`、`memory/` 或 `virtualization/`，操作系统适配代码放在使用它的 ArceOS、StarryOS、Axvisor 或平台层附近。
+- 编写的代码应能通过 `.agents/skills/review-single-pr/SKILL.md` 中适用的审查视角，包括可维护性、正确性、安全与健全性、硬件与二进制接口，以及文档与用户可见兼容性。把这些视角视为作者侧设计约束，而不是完成实现后才应用的审查检查项。
+- 实现新功能前，明确具体问题、用户、成功标准、不包含项、内部与外部既有方案、现实替代方案和验证计划。现有项目边界能够满足所需语义时，优先复用或扩展该边界。`docs/guideline/feature-development.md` 判定的高风险功能在合入前必须具备可独立审查的设计材料。
+- 模块应聚焦单一领域。实现模块默认保持私有，只暴露有意设计的公共接口；从 `lib.rs` 重新导出稳定入口能够改善公共接口时再进行重新导出。
+- 按领域不变量命名对象，例如地址空间、中断线路、虚拟机、设备、队列、请求、页、页框、能力或错误条件。已知更准确的项目概念时，避免使用 `data`、`info`、`mgr` 或 `handle` 等泛化名称。
+- 优先编写只完成一次状态转换、硬件操作、系统调用步骤、验证步骤或转换的小函数。探测、映射、注册和启用各自具有不同不变量或失败处理时，将流程拆成具名阶段。
+- 通过 `&mut`、返回值、类型化状态转换或名称清楚的接口显式表达修改与副作用。能够用独立函数、枚举或配置结构表达意图时，避免使用包含多个布尔值的控制参数。
+- 优先使用类型化标识符、新类型封装、`repr(transparent)` 包装器、常量构造函数、操作枚举和位标志，不要使用裸 `usize`、字符串或关系松散的参数。
+- 将纯数据与拥有行为的对象分开。配置、描述符和线协议格式数据可以公开字段；拥有不变量、资源、锁或硬件状态的类型应保持表示私有，并公开能够表达意图的方法。
+- 按变化原因和所拥有的不变量拆分大型对象。不可变配置、已验证描述符、可变运行时状态、队列、中断端点、能力句柄和操作系统适配器的生命周期或同步规则不同时，优先使用独立类型。
+- 将特征设计为小型能力边界，不要设计成继承层次。只暴露使用方需要的能力；对于可选行为，优先使用扩展特征、适配器类型或受功能开关控制的接口，不要持续扩大中央特征。
+- 优先组合，不使用模仿继承的设计。以控制端口、队列、后端、分配器、登记表和适配器等具名部件构建大型服务；静态组合使用具体字段或泛型，只有动态能力或插件边界才使用特征对象。
+- 不要强迫调用方穿透多层嵌套对象执行操作。内部部件属于实现细节时保持私有，只公开能够表达边界操作、状态转换或调用方实际查询需求的小方法。
+- 驱动核心应独立于操作系统运行时适配代码。内存映射输入输出、直接内存访问、中断、队列、唤醒、轮询和任务调度契约应通过 `mmio-api`、`dma-api`、`rdif-*` 或运行时适配层等明确能力边界传递。
+- 存在工作区软件包名和 `[workspace.dependencies]` 时使用它们。优先使用工作区元数据；除非确有需要，关闭 `no_std` 依赖的默认功能；避免临时增加 Git、路径或注册表覆盖。
+- 库软件包和领域软件包应公开调用方可以匹配并转换的类型化错误。库、组件、领域和硬件抽象软件包中的非平凡公共错误枚举，应从工作区 `thiserror` 依赖派生 `thiserror::Error`，并在 `#[error(...)]` 中写显示文本；只有体量很小且对依赖高度敏感的软件包才手工实现 `Display` 和 `core::error::Error`。
+- 宿主侧二进制程序和工具软件包应使用 `anyhow::Result`、`Context`、`anyhow!` 和 `bail!` 处理顶层编排及面向人的错误报告。不要把 `anyhow::Error` 泄漏到可复用库接口中；在 ArceOS 或内核集成边界把类型化领域错误转换为 `ax_errno::{AxError, AxResult}`。
+- 平台、固件、硬件、客户机、用户内存、文件系统和网络路径尚未实现时，返回明确的不支持或错误变体。调用方需要据此决策时，不得静默采用后备路径、猜测默认设备、中断或地址，也不得把结构化元数据转换成字符串。
+- `unwrap`、`expect` 和 `panic` 只用于测试、不可能状态断言、一次性初始化失败或有文档说明的不变量。可恢复的运行时失败应返回 `Result` 或 `Option`，并提供足以转换或重试的上下文。
+- `unsafe` 块应尽可能小，并把已检查的前置条件放在附近。每个 `unsafe fn` 或 `unsafe trait` 都需要 `# Safety` 契约；每个非平凡的 `unsafe` 块或 `unsafe impl` 都应说明指针有效性、别名关系、内存映射输入输出或直接内存访问所有权、用户内存访问、中断上下文或生命周期假设。
+- 并发代码应有意选择仓库同步原语：可睡眠路径使用可睡眠锁，中断或调度器敏感路径使用中断感知锁或不可睡眠锁，并保持临界区狭窄。模块拥有多个锁时记录加锁顺序；持有范围较大的锁时，避免调用唤醒或通知回调。
+- 原子操作应说明发布与观察关系。同步优先使用获取、发布或获取并发布内存序；`Relaxed` 只用于计数器或已经证明不承担同步作用的状态，不明显时应说明实际同步路径。
+- 注释应解释不变量、安全契约、协议步骤、硬件特殊行为、并发顺序或不明显的取舍，不要复述代码。公共接口和共享代码的注释使用英文。
+- 删除重复知识，而不是机械删除所有重复行。集中管理协议常量、布局规则、错误转换和边界不变量；避免过早抽象，以免隐藏控制流或降低调用点的可审计性。
+- 以小而经过验证的步骤重构。除非改动明确更新语义，否则保持行为稳定；高风险重构应配套最底层、能够确定性发现破坏的回归测试或验证。
 
-- Before writing, modifying, or reviewing code, fully read (完整阅读) `docs/guideline/code-quality.md` and treat it as the mandatory baseline coding standard. When a change adds or expands user-visible behavior, a shared or public interface, a crate or subsystem, or a platform or hardware capability, fully read `docs/guideline/feature-development.md` and apply its risk classification, research, alternatives, design, and evidence requirements. Fully read additional domain guidelines only when the changed behavior is in their scope. In particular, fully read `docs/guideline/starry_syscall.md` whenever a change or claim affects user-visible StarryOS syscall/Linux ABI semantics, including indirect changes in task, VFS, namespace, signal, socket, credential, memory-management, or other helper code. These triggers are semantic rather than path-based; when a guideline is clearly inapplicable, record the concrete reason in review work. If the conversation context is compacted, resumed from a summary, or you cannot confidently recall an applicable guideline, re-read that complete guideline before continuing.
-- Use the pinned Rust 2024 nightly toolchain and the repository rustfmt configuration as the formatting source of truth; do not restate rustfmt-owned layout rules in prose.
-- Prefer `#![no_std]` for reusable kernel, component, memory, virtualization, and portable driver crates; add `alloc`, `std`, or feature-gated support only where the crate boundary requires it.
-- Keep crate and module boundaries aligned with TGOSKits layers: reusable logic belongs in `components/`, `drivers/`, `memory/`, or `virtualization/`; OS glue belongs near the consuming ArceOS, StarryOS, Axvisor, or platform layer.
-- Write code so it can pass the applicable `.claude/skills/review-single-pr/SKILL.md` review lenses: maintainability, correctness, security/soundness, hardware/ABI, and documentation/user-facing compatibility. Treat those lenses as author-side design constraints, not only reviewer-side checks after the fact.
-- Before implementing a new feature, establish its concrete problem, users, success criteria, non-goals, internal and external prior art, realistic alternatives, and validation plan. Prefer reusing or extending an existing project boundary when it satisfies the required semantics; high-risk features identified by `docs/guideline/feature-development.md` require independently reviewable design material before implementation is merged.
-- Keep modules domain-focused. Use private implementation modules by default, expose only intentional public surfaces, and re-export stable entry points from `lib.rs` when that improves the public API.
-- Name items by their domain invariant, such as address space, IRQ line, VM, device, queue, request, page, frame, capability, or error condition. Avoid generic names like `data`, `info`, `mgr`, or `handle` when a stronger project concept is known.
-- Prefer small functions that perform one state transition, hardware operation, syscall step, validation step, or conversion. Split probe/map/register/enable flows into named phases when each phase has distinct invariants or failure handling.
-- Make mutation and side effects visible through `&mut`, returned values, typed state transitions, or clearly named APIs. Avoid boolean-heavy control flags when separate functions, enums, or configuration structs express the intent better.
-- Prefer typed IDs, newtypes, `repr(transparent)` wrappers, const constructors, operation enums, and bitflags over raw `usize`, strings, or loosely related parameters.
-- Separate plain data from behavior-owning objects. Configuration, descriptors, and wire-format data may expose fields; types that own invariants, resources, locks, or hardware state should keep representation private and expose intent-revealing methods.
-- Split large objects by reason to change and by owned invariant. Prefer separate types for immutable configuration, validated descriptors, mutable runtime state, queues, IRQ endpoints, capability handles, and OS adapters when those parts have different lifetimes or synchronization rules.
-- Use traits as small capability boundaries, not inheritance hierarchies. Expose the capability the consumer needs, and prefer extension traits, adapter types, or feature-gated APIs over growing a central trait for optional behavior.
-- Prefer composition over inheritance-shaped designs. Build larger services from named parts such as control ports, queues, backends, allocators, registries, and adapters; use concrete fields or generics for static composition and trait objects only at dynamic capability or plugin boundaries.
-- Do not force callers to reach through nested objects to perform work. Keep internal parts private when they are implementation details, and expose small methods that express the boundary action, state transition, or query the caller actually needs.
-- Keep driver cores independent from OS runtime glue. MMIO, DMA, IRQ, queue, wake, poll, and task-scheduling contracts should cross explicit capability boundaries such as `mmio-api`, `dma-api`, `rdif-*`, or runtime adapter layers.
-- Use workspace package names and `[workspace.dependencies]` where available. Prefer workspace metadata, disable default features for `no_std` dependencies unless required, and avoid ad hoc git/path/registry overrides.
-- Library and domain crates should expose typed errors that callers can match and translate. Nontrivial public error enums in library, component, domain, and hardware-abstraction crates should derive `thiserror::Error` from the workspace `thiserror` dependency and put display text in `#[error(...)]`; only tiny, strongly dependency-sensitive crates should hand-write `Display` and `core::error::Error`.
-- Host-side `bin` and tool crates should use `anyhow::Result`, `Context`, `anyhow!`, and `bail!` for top-level orchestration and human-facing error reports. Do not leak `anyhow::Error` into reusable library APIs; translate typed domain errors to `ax_errno::{AxError, AxResult}` at ArceOS or kernel integration boundaries.
-- Return explicit unsupported or error variants for unimplemented platform, firmware, hardware, guest, user-memory, filesystem, and network paths. Do not silently fall back, guess a default device/IRQ/address, or stringify structured metadata when callers need to make a decision.
-- Use `unwrap`, `expect`, and `panic` only in tests, impossible-state assertions, one-time initialization failures, or documented invariants. Recoverable runtime failures should return `Result` or `Option` with enough context for translation or retry.
-- Keep `unsafe` blocks as small as practical and place checked preconditions next to them. Every `unsafe fn` or `unsafe trait` needs a `# Safety` contract; every nontrivial `unsafe` block or `unsafe impl` should document pointer validity, aliasing, MMIO/DMA ownership, user-memory access, interrupt context, or lifetime assumptions.
-- For concurrency, choose repo primitives deliberately: sleepable locks for sleepable paths, IRQ-aware or non-sleeping locks for interrupt and scheduler-sensitive paths, and narrow critical sections. Document lock ordering when a module owns multiple locks, and avoid wake/notify callbacks while holding broad locks.
-- Use atomics with explicit publish/observe reasoning. Prefer Acquire/Release/AcqRel for synchronization; use `Relaxed` only for counters or proven non-synchronizing state, with the synchronization path documented where it is not obvious.
-- Comments should explain invariants, safety contracts, protocol steps, hardware quirks, concurrency ordering, or non-obvious tradeoffs; do not restate the code. Public APIs and shared code comments should be in English.
-- Remove duplicated knowledge, not every repeated line. Centralize protocol constants, layout rules, error conversions, and boundary invariants, but avoid premature abstractions that hide control flow or make call sites harder to audit.
-- Refactor in small verified steps. Keep behavior stable unless the change intentionally updates semantics, and pair risky refactors with the lowest-layer deterministic regression or validation that can catch a breakage.
+## 2. 项目工作流
 
-## Other Requirements
+以下规则约束验证、持续集成、拉取请求和项目协作流程，并与前述编码规范共同生效。
 
-- When changing logic, run a relevant `cargo clippy` check after the code change.
-- After modifying a crate, ensure that crate passes clippy. Prefer `cargo xtask clippy --package <crate>` for targeted verification.
-- Do not silence clippy warnings with `allow` as a shortcut; prefer fixing the root cause unless the user explicitly asks otherwise.
-- Run `cargo fmt` after code edits.
-- When fixing a bug, first add a deterministic regression test that necessarily fails on the buggy implementation, verify the failure, then implement or restore the fix and verify the same test passes. Do not rely only on post-fix validation, probabilistic reproducers, or relaxed tests.
-- For self-hosted CI matrix entries in `.github/workflows/ci.yml`, keep `cache_key` as an empty string (`cache_key: ""`). Non-empty values enable the rust-cache step on self-hosted runners, which can remove Rust/Cargo state and break later jobs.
-- For ArceOS, StarryOS, and Axvisor builds/tests/runs, prefer the `cargo xtask` command family instead of raw `cargo build`, `cargo test`, or `cargo run`.
-- If `cargo xtask` cannot satisfy a special configuration, inspect the `xtask` flow first and only then fall back to native Cargo commands with manually matched arguments.
-- When resolving rebase or merge conflicts, do not manually merge conflicted `Cargo.lock` contents. Resolve all other conflicts first, then regenerate `Cargo.lock` with Cargo and verify the generated lockfile.
-- When reviewing a PR, fully read (完整阅读) `.claude/skills/review-single-pr/SKILL.md` before judging merge readiness, drafting comments, approving, requesting changes, or posting a no-submit summary. The only exception is the skill's minimal pre-gate `CI_DEFERRED` or `CI_SKIPPED` status report, which is not a review conclusion and must not be posted to the PR.
-- During PR review, build a todo/checklist from the full `review-single-pr` requirements and verify each applicable merge requirement one by one. Mark each item as satisfied, not applicable with a concrete reason, or blocking with evidence.
-- During `review-single-pr` and `review-open-prs`, do not run local format, build, clippy, test, QEMU test, metadata, packaging, or publish-validation commands, including after review-owned conflict repair. Use exact-current-head CI jobs, steps, and logs instead. The only runtime exception is an added, modified, or renamed-into runnable app under `apps/**` when the same app and target lack accepted CI execution; follow the skill's app-run and board-unavailable rules. This review-only exception does not weaken the local validation requirements for ordinary development, issue fixes, or author-side PR submission outside the review workflow.
-- For PRs, issues, review replies, discussions, and similar project-facing submissions, keep the language neutral and project-focused.
-- For PR titles, follow `type(scope): content` in Conventional Commits style. Prefer the main affected crate name as `scope` when one crate clearly dominates the change; for cross-cutting or infrastructure work, broader scopes such as `ci`, `repo`, or `docs` are acceptable.
-- PR title examples: `feat(axbuild): add Starry remote board test flow`, `fix(starry-process): correct tty session cleanup`, `chore(ci): split Starry self-hosted board matrix`.
-- When submitting a PR, write the title in English and the body in Chinese.
-- PR descriptions must clearly cover: the problem being solved, what was changed to solve it, and the logic behind each step of the solution.
-- Before submitting a PR, locally validate the CI flow as much as practical, excluding only physical board tests and self-hosted test flows unless the user explicitly asks to run them. Changes unrelated to building or testing, such as documentation-only updates, do not require local CI validation.
-- After adding or changing commits on a PR branch, update the PR description so it stays synchronized with the committed changes.
-- Do not insert agent-related labels, signatures, branding, or other advertisement-style wording such as `codex`, `agent`, `AI`, or similar self-promotional tags unless the user explicitly requests it.
-- When changing architecture boot logic, someboot startup order, UEFI handoff, SMP bring-up, dynamic platform contracts, target JSON assumptions, or the recommended debugging flow, update `.claude/skills/arch-platform-porting/SKILL.md` or its references in the same change.
+### 2.1 本地验证
+
+项目任务工具负责展开软件包选择、功能组合和目标矩阵，并统一汇总失败结果；本地验证应使用这些稳定入口。
+
+- 修改 Rust 代码后使用项目适配的 `cargo xtask clippy` 执行静态检查。定向检查使用 `cargo xtask clippy --package <软件包>`，全工作区检查使用 `cargo xtask clippy` 或 `cargo xtask clippy --all`，增量检查使用 `cargo xtask clippy --since <引用>`；不得用原生 `cargo clippy` 命令代替。
+- 修改 `scripts/test/std_crates.csv` 白名单覆盖的软件包后，使用 `cargo xtask test` 执行标准库测试；增量验证使用 `cargo xtask test --since <引用>`。该入口不支持按软件包选择，不得用原生 `cargo test` 命令代替。
+- 不得通过增加 `allow` 属性来回避静态检查警告；除非用户明确要求，否则应修复根因。
+- 编辑代码后运行 `cargo fmt`。
+- 修复错误时，先增加一个在错误实现上必然失败的确定性回归测试并验证失败，再实现或恢复修复，最后验证同一测试通过。不得只依赖修复后的证明、概率性复现程序或放宽后的测试。
+- 构建、测试或运行 ArceOS、StarryOS 和 Axvisor 时，使用 `cargo xtask` 命令族，不直接使用 `cargo build`、`cargo test` 或 `cargo run`。
+- 只有项目任务工具没有相应入口且任务明确需要特殊配置时，才检查 `xtask` 实现并使用原生 Cargo 命令手工匹配参数；不得把任务工具内部调用的原生命令当作项目验证入口。
+- 解决变基或合并冲突时，不得手工合并发生冲突的 `Cargo.lock` 内容。先解决其他冲突，再用 Cargo 重新生成 `Cargo.lock` 并验证生成的锁文件。
+
+### 2.2 持续集成与审查
+
+持续集成配置和拉取请求审查使用仓库定义的证据链，不以临时本地命令或宽松检查替代项目门禁。
+
+- `.github/workflows/ci.yml` 中自托管持续集成矩阵项的 `cache_key` 必须保持为空字符串（`cache_key: ""`）。非空值会在自托管运行器上启用 `rust-cache` 步骤，可能删除 Rust 或 Cargo 状态并破坏后续任务。
+- 审查拉取请求时，在判断能否合入、起草评论、批准、请求修改或发布不提交审查的总结前，完整阅读 `.agents/skills/review-single-pr/SKILL.md`。唯一例外是技能规定的最小前置门禁状态报告 `CI_DEFERRED` 或 `CI_SKIPPED`；它不是审查结论，不得发布到拉取请求。
+- 审查拉取请求时，根据 `review-single-pr` 的完整要求建立任务清单，逐项核验每个适用的合入要求。每项只能标为有证据地满足、给出具体理由的不适用，或有证据的阻塞。
+- 执行 `review-single-pr` 或 `review-open-prs` 时，不得运行本地格式化、构建、静态检查、测试、QEMU 测试、元数据、打包或发布验证命令，审查流程负责的冲突修复完成后也不得运行。应使用当前精确提交的持续集成任务、步骤和日志。唯一运行时例外是 `apps/**` 下新增、修改或重命名进入可运行状态的应用，而且相同应用和目标缺少可接受的持续集成运行；此时按技能中的应用运行和板卡不可用规则处理。该审查专用例外不削弱普通开发、议题修复或作者侧提交拉取请求时的本地验证要求。
+
+### 2.3 拉取请求
+
+面向项目的提交应保持中性、可追溯，并让标题、正文、验证记录和分支实际内容一致。
+
+- 拉取请求、议题、审查回复、讨论及类似面向项目的提交使用中性、聚焦项目的语言。
+- 拉取请求标题遵循约定式提交的 `type(scope): content` 格式。一个软件包明显占主导时，优先把该软件包名作为 `scope`；跨领域或基础设施改动可以使用 `ci`、`repo` 或 `docs` 等较宽范围。
+- 拉取请求标题示例：`feat(axbuild): add Starry remote board test flow`、`fix(starry-process): correct tty session cleanup`、`chore(ci): split Starry self-hosted board matrix`。
+- 提交拉取请求时，标题使用英文，正文使用中文。
+- 拉取请求描述必须清楚说明：要解决的问题、为解决问题所做的改动，以及每一步解决方案背后的逻辑。
+- 提交拉取请求前，尽可能在本地验证持续集成流程；除非用户明确要求，只有实体板卡测试和自托管测试流程可以排除。与构建或测试无关的改动，例如只修改文档，不要求本地持续集成验证。
+- 在拉取请求分支新增或修改提交后，更新拉取请求描述，使其与已经提交的改动保持同步。
+- 除非用户明确要求，不得加入与代理相关的标签、签名、品牌或其他宣传性措辞，例如 `codex`、`agent`、`AI` 等自我推广标记。
+- 修改体系结构启动逻辑、someboot 启动顺序、统一可扩展固件接口交接、对称多处理启动、动态平台契约、目标描述文件假设或推荐调试流程时，在同一改动中更新 `.agents/skills/arch-platform-porting/SKILL.md` 或其参考资料。

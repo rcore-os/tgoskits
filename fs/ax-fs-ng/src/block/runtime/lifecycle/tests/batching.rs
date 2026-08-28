@@ -103,6 +103,74 @@ fn read_blocks_queues_the_next_bounded_window_before_waiting() {
     assert_eq!(handle.shutdown(), 1);
 }
 
+#[cfg(feature = "ext4")]
+#[test]
+fn fua_write_marks_every_split_request() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    install_dma_op(&TEST_DMA_OP);
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+
+    let counters = Arc::new(BatchingQueueCounters::default());
+    let controller = BatchingReadController {
+        queue: Some(BatchingReadQueue {
+            counters: Arc::clone(&counters),
+            next_id: 0,
+            pending: Vec::new(),
+            fail_next_drain: false,
+        }),
+    };
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "fua-write",
+        [BlockIrqSource { source_id: 0, irq }],
+        Box::new(controller),
+    ))
+    .unwrap();
+    assert!(handle.supports_fua());
+
+    let writer = Arc::clone(&handle);
+    let (result_tx, result_rx) = mpsc::channel();
+    let write_thread = thread::spawn(move || {
+        let buffer = vec![0x5a; 4 * 512];
+        result_tx.send(writer.write_blocks_fua(0, &buffer)).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while counters.submitted.load(Ordering::Acquire) < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "FUA write requests were not submitted"
+        );
+        thread::yield_now();
+    }
+    while counters.commits.load(Ordering::Acquire) < 1 {
+        assert!(
+            Instant::now() < deadline,
+            "maintenance task did not commit the FUA write window"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(counters.fua_submitted.load(Ordering::Acquire), 4);
+    assert_eq!(
+        TEST_IRQ_REGISTRAR.run_registered_action(),
+        BlockIrqOutcome::Wake
+    );
+    assert!(
+        result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_ok()
+    );
+    write_thread.join().unwrap();
+    assert_eq!(handle.shutdown(), 1);
+}
+
 #[test]
 #[cfg(any(feature = "ext4", feature = "fat"))]
 fn write_blocks_drains_submitted_windows_before_returning_error() {

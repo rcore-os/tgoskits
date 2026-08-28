@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::bail;
 use args::{DeviceArg, DriveArg};
+use clap::ValueEnum;
 use ostool::run::qemu::QemuConfig;
 use serde::Deserialize;
 
@@ -62,10 +63,10 @@ pub(crate) enum RootfsPatchMode {
     EnsureDiskBootNet,
 }
 
-/// Controls whether writes to the selected managed rootfs survive QEMU exit.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+/// Controls whether writes to the selected rootfs survive QEMU exit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum RootfsWritePolicy {
+pub enum RootfsWritePolicy {
     /// Keep all guest writes in a temporary per-drive snapshot.
     #[default]
     Discard,

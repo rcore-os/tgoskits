@@ -6,13 +6,21 @@ use alloc::{
     vec::Vec,
 };
 
-use super::*;
+use super::{resolved::ResolvedPciHost, *};
 use crate::*;
 
 /// Mutable architecture-owned device graph construction surface.
 #[derive(Default)]
 pub struct DeviceGraphBuilder {
     nodes: BTreeMap<DeviceNodeId, DeviceNodeSpec>,
+    pci_hosts: BTreeMap<PciHostKey, DeclaredPciHost>,
+}
+
+pub(crate) struct DeclaredPciHost {
+    pub(crate) host_id: DeviceNodeId,
+    pub(crate) memory_aperture_slot: ResourceSlot,
+    pub(crate) platform_functions: Vec<PciFunctionSpec>,
+    pub(crate) reserved_bdfs: Vec<PciBdf>,
 }
 
 impl DeviceGraphBuilder {
@@ -20,6 +28,7 @@ impl DeviceGraphBuilder {
     pub const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
+            pci_hosts: BTreeMap::new(),
         }
     }
 
@@ -32,6 +41,32 @@ impl DeviceGraphBuilder {
             });
         }
         self.nodes.insert(id, node);
+        Ok(())
+    }
+
+    /// Registers one typed PCI host provider and its ordinary graph node.
+    pub fn register_pci_host(&mut self, provider: PciHostProvider) -> Result<(), DeviceGraphError> {
+        if self.pci_hosts.contains_key(&provider.key) {
+            return Err(DeviceGraphError::DuplicatePciHost {
+                host: provider.key.to_string(),
+            });
+        }
+        if provider.node.model.is_none() {
+            return Err(DeviceGraphError::PciHostRequiresRuntimeModel {
+                node: provider.node.id.to_string(),
+            });
+        }
+        let host_id = provider.node.id().clone();
+        self.add(provider.node)?;
+        self.pci_hosts.insert(
+            provider.key,
+            DeclaredPciHost {
+                host_id,
+                memory_aperture_slot: provider.memory_aperture_slot,
+                platform_functions: provider.platform_functions,
+                reserved_bdfs: provider.reserved_bdfs,
+            },
+        );
         Ok(())
     }
 
@@ -50,9 +85,18 @@ impl DeviceGraphBuilder {
     }
 
     /// Runs every runtime factory's pure declaration phase and seals topology.
-    pub fn declare(self) -> Result<DeclaredDeviceGraph, DeviceGraphError> {
-        let nodes = declared_nodes(&self.nodes)?;
-        Ok(DeclaredDeviceGraph { nodes })
+    pub fn declare(mut self) -> Result<DeclaredDeviceGraph, DeviceGraphError> {
+        let requirements = self
+            .nodes
+            .iter()
+            .map(|(id, node)| Ok((id.clone(), node.declared_requirements()?)))
+            .collect::<Result<BTreeMap<_, _>, DeviceGraphError>>()?;
+        add_pci_dependencies(&mut self.nodes, &self.pci_hosts, &requirements)?;
+        let nodes = declared_nodes_with_requirements(&self.nodes, requirements)?;
+        Ok(DeclaredDeviceGraph {
+            nodes,
+            pci_hosts: self.pci_hosts,
+        })
     }
 }
 
@@ -74,6 +118,28 @@ fn declared_nodes(
     Ok(nodes)
 }
 
+fn declared_nodes_with_requirements(
+    nodes_by_id: &BTreeMap<DeviceNodeId, DeviceNodeSpec>,
+    mut requirements: BTreeMap<DeviceNodeId, DeviceRequirements>,
+) -> Result<Vec<DeclaredDeviceNode>, DeviceGraphError> {
+    validate_edges(nodes_by_id)?;
+    let order = topological_order(nodes_by_id)?;
+    let mut nodes = Vec::with_capacity(order.len());
+    for id in order {
+        let node = nodes_by_id
+            .get(&id)
+            .expect("topological IDs originate from the graph");
+        let requirements = requirements
+            .remove(&id)
+            .expect("requirements were frozen for every graph node");
+        let mut node = node.to_declared_with_requirements(requirements);
+        node.dependencies.sort();
+        node.dependencies.dedup();
+        nodes.push(node);
+    }
+    Ok(nodes)
+}
+
 pub(crate) struct DeclaredDeviceNode {
     pub(crate) id: DeviceNodeId,
     pub(crate) kind: DeviceNodeKind,
@@ -87,7 +153,7 @@ pub(crate) struct DeclaredDeviceNode {
 }
 
 impl DeviceNodeSpec {
-    fn to_declared(&self) -> Result<DeclaredDeviceNode, DeviceGraphError> {
+    pub(crate) fn declared_requirements(&self) -> Result<DeviceRequirements, DeviceGraphError> {
         if self.kind.requires_factory() && self.model.is_none() {
             return Err(DeviceGraphError::MissingFactory {
                 node: self.id.to_string(),
@@ -121,7 +187,24 @@ impl DeviceNodeSpec {
                 });
             }
         };
-        Ok(DeclaredDeviceNode {
+        if self.model.is_none() && requirements.pci_function().is_some() {
+            return Err(DeviceGraphError::PciEndpointRequiresRuntimeModel {
+                node: self.id.to_string(),
+            });
+        }
+        Ok(requirements)
+    }
+
+    fn to_declared(&self) -> Result<DeclaredDeviceNode, DeviceGraphError> {
+        let requirements = self.declared_requirements()?;
+        Ok(self.to_declared_with_requirements(requirements))
+    }
+
+    fn to_declared_with_requirements(
+        &self,
+        requirements: DeviceRequirements,
+    ) -> DeclaredDeviceNode {
+        DeclaredDeviceNode {
             id: self.id.clone(),
             kind: self.kind,
             parent: self.parent.clone(),
@@ -131,13 +214,14 @@ impl DeviceNodeSpec {
             model: self.model.clone(),
             requirements,
             host_mapping: self.host_mapping,
-        })
+        }
     }
 }
 
 /// Sealed declarations awaiting architecture-owned resource pools.
 pub struct DeclaredDeviceGraph {
     nodes: Vec<DeclaredDeviceNode>,
+    pci_hosts: BTreeMap<PciHostKey, DeclaredPciHost>,
 }
 
 impl DeclaredDeviceGraph {
@@ -153,13 +237,80 @@ impl DeclaredDeviceGraph {
     pub fn resolve(self, pools: ResourcePools) -> DeviceManagerResult<ResolvedDeviceGraph> {
         let requests = self.requests()?;
         let plan = VmResourcePlanner::new(pools).plan(requests)?;
+        let pci_topologies = resolve_pci_topologies(&self.nodes, &self.pci_hosts, &plan)?;
         let nodes = self
             .nodes
             .into_iter()
             .map(ResolvedDeviceNode::from_declared)
             .collect();
-        ResolvedDeviceGraph::new(nodes, plan)
+        ResolvedDeviceGraph::new(nodes, plan, pci_topologies)
     }
+}
+
+fn add_pci_dependencies(
+    nodes: &mut BTreeMap<DeviceNodeId, DeviceNodeSpec>,
+    providers: &BTreeMap<PciHostKey, DeclaredPciHost>,
+    requirements: &BTreeMap<DeviceNodeId, DeviceRequirements>,
+) -> Result<(), DeviceGraphError> {
+    for (id, node) in nodes.iter_mut() {
+        let Some(requirement) = requirements[id].pci_function() else {
+            continue;
+        };
+        let provider = providers.get(requirement.host()).ok_or_else(|| {
+            DeviceGraphError::PciHostUnavailable {
+                endpoint: id.to_string(),
+                host: requirement.host().to_string(),
+            }
+        })?;
+        node.dependencies.push(provider.host_id.clone());
+    }
+    Ok(())
+}
+
+fn resolve_pci_topologies(
+    nodes: &[DeclaredDeviceNode],
+    providers: &BTreeMap<PciHostKey, DeclaredPciHost>,
+    plan: &VmResourcePlan,
+) -> DeviceManagerResult<BTreeMap<PciHostKey, ResolvedPciHost>> {
+    let mut resolved = BTreeMap::new();
+    for (key, provider) in providers {
+        let (base, size) = plan
+            .resources(provider.host_id.as_str())?
+            .mmio(&provider.memory_aperture_slot)?;
+        let end = base
+            .checked_add(size)
+            .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                operation: "resolve PCI host aperture",
+                detail: alloc::format!("host {key} memory aperture overflows u64"),
+            })?;
+        let mut topology = PciTopologyBuilder::new();
+        for bdf in &provider.reserved_bdfs {
+            topology.reserve_bdf(*bdf)?;
+        }
+        for function in &provider.platform_functions {
+            topology.add_function(function.clone())?;
+        }
+        let mut endpoints = BTreeSet::new();
+        for node in nodes {
+            let Some(requirement) = node.requirements.pci_function() else {
+                continue;
+            };
+            if requirement.host() == key {
+                endpoints.insert(node.id.clone());
+                topology.add_function(requirement.function_spec(node.id.clone())?)?;
+            }
+        }
+        let mut topology = topology.resolve(base..end)?;
+        topology.assign_graph_ownership(&provider.host_id, &endpoints);
+        resolved.insert(
+            key.clone(),
+            ResolvedPciHost {
+                host_id: provider.host_id.clone(),
+                topology: alloc::sync::Arc::new(topology),
+            },
+        );
+    }
+    Ok(resolved)
 }
 
 fn validate_edges(nodes: &BTreeMap<DeviceNodeId, DeviceNodeSpec>) -> Result<(), DeviceGraphError> {

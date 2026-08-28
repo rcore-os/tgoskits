@@ -1,12 +1,15 @@
 use alloc::{borrow::Cow, sync::Arc, vec, vec::Vec};
 use core::ffi::{c_char, c_int};
 
-use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
+use ax_fs_ng::vfs::{FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
-use axfs_ng_vfs::{NodePermission, NodeType};
+use axfs_ng_vfs::{
+    DirectoryCursor, FileRangeOperation, NodePermission, NodeType, PreallocationMode,
+};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
-    __kernel_off_t, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
+    __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
+    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
 };
 use syscalls::Sysno;
 
@@ -22,8 +25,10 @@ use crate::{
     },
     ipc::mqueue::MqDescriptor,
     mm::{
-        IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut, VmMutPtr, VmPtr, vm_load_path_string,
+        IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut, VmMutPtr, VmPtr,
+        vm_load_path_string,
     },
+    task::UserTaskRef,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -70,29 +75,6 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
     }
 }
 
-// Writes zero-filled chunks into the file over the requested byte range.
-fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> StarryResult<()> {
-    const ZERO_CHUNK_SIZE: usize = 64 * 1024;
-
-    let zeroes = vec![0; ZERO_CHUNK_SIZE];
-    let mut remaining = len;
-    while remaining > 0 {
-        let chunk = remaining.min(ZERO_CHUNK_SIZE as u64) as usize;
-        let mut written = 0;
-        while written < chunk {
-            let n = file.write_at(&zeroes[written..chunk], offset)?;
-            if n == 0 {
-                return Err(StarryError::WriteZero);
-            }
-            written += n;
-            offset += n as u64;
-            remaining -= n as u64;
-        }
-    }
-
-    Ok(())
-}
-
 struct DummyFd;
 impl FileLike for DummyFd {
     fn path(&self) -> Cow<'_, str> {
@@ -112,10 +94,7 @@ impl Pollable for DummyFd {
     }
 }
 
-pub fn sys_dummy_fd(
-    current: &crate::task::UserTaskRef,
-    sysno: Sysno,
-) -> crate::StarryResult<isize> {
+pub fn sys_dummy_fd(current: &UserTaskRef, sysno: Sysno) -> StarryResult<isize> {
     if current.name().starts_with("qemu-") {
         // We need to be honest to qemu, since it can automatically fallback to
         // other strategies.
@@ -129,21 +108,21 @@ pub fn sys_dummy_fd(
 ///
 /// Return the read size if success.
 pub fn sys_read(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: i32,
     buf: *mut u8,
     len: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_read <= fd: {fd}, buf: {buf:p}, len: {len}");
     Ok(get_file_like(fd)?.read(&mut VmBytesMut::new(current, buf, len))? as _)
 }
 
 pub fn sys_readv(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: i32,
     iov: *const IoVec,
     iovcnt: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_readv <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
     f.read(&mut IoVectorBuf::new(current, iov, iovcnt)?.into_io())
@@ -154,28 +133,24 @@ pub fn sys_readv(
 ///
 /// Return the written size if success.
 pub fn sys_write(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: i32,
     buf: *mut u8,
     len: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
     file_like.validate_write_len(len)?;
-    // Linux imports one user iterator and lets the file consume it directly.
-    // Only memfd needs an eager access check because EFAULT precedes a seal
-    // rejection; ordinary streams must not copy the complete payload into an
-    // allocation before the file knows how much it can accept.
     memfd_checks_before_stream_write_from_user(&file_like, current, buf.cast_const(), len)?;
     Ok(file_like.write(&mut VmBytes::new(current, buf.cast_const(), len))? as _)
 }
 
 pub fn sys_writev(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: i32,
     iov: *const IoVec,
     iovcnt: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
     let file_like = get_file_like(fd)?;
     // Check length invariants (e.g. eventfd count) before importing segment
@@ -217,19 +192,26 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
     }
 
     if let Ok(d) = any_file.downcast_arc::<Directory>() {
-        let mut off = d.offset.lock();
+        let mut position = d.position.lock();
         let new_pos = match pos {
             SeekFrom::Start(pos) => pos,
             SeekFrom::End(delta) => d
                 .inner()
-                .len()?
+                .directory_end_cursor()?
+                .offset()
                 .checked_add_signed(delta)
                 .ok_or(StarryError::InvalidInput)?,
-            SeekFrom::Current(delta) => off
+            SeekFrom::Current(delta) => position
+                .cursor
+                .offset()
                 .checked_add_signed(delta)
                 .ok_or(StarryError::InvalidInput)?,
         };
-        *off = new_pos;
+        if new_pos > i64::MAX as u64 {
+            return Err(StarryError::InvalidInput);
+        }
+        position.cursor = DirectoryCursor::new(new_pos);
+        position.read_state = None;
         return Ok(new_pos as _);
     }
 
@@ -237,10 +219,10 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
 }
 
 pub fn sys_truncate(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     length: __kernel_off_t,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     let path = vm_load_path_string(current, path)?;
     debug!("sys_truncate <= {path:?} {length}");
     if path.is_empty() {
@@ -249,10 +231,9 @@ pub fn sys_truncate(
     if length < 0 {
         return Err(StarryError::InvalidInput);
     }
-    let fs_context = current_fs_context();
     let file = OpenOptions::new()
         .write(true)
-        .open(&fs_context.lock(), &path)?
+        .open(&ax_fs_ng::vfs::current_fs_context().lock(), &path)?
         .into_file()?;
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(StarryError::from(Errno::EFBIG));
@@ -308,23 +289,24 @@ pub fn sys_fallocate(
     len: __kernel_off_t,
 ) -> StarryResult<isize> {
     debug!("sys_fallocate <= fd: {fd}, mode: {mode}, offset: {offset}, len: {len}");
-    // Validate fd first: invalid/closed/dir/read-only → EBADF, pipe → ESPIPE.
-    // Linux errno priority: EBADF/ESPIPE > EOPNOTSUPP > EINVAL.
-    let f = file_or_espipe_write(fd)?;
+    // Linux resolves the descriptor before entering vfs_fallocate, but range
+    // and mode checks precede write access and inode-type checks after that.
     let f_like = get_file_like(fd)?;
-    memfd_check_write_seal(&f_like)?;
-
-    let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
-    let operation = mode & !FALLOC_FL_KEEP_SIZE;
-    let supported_mode = operation == 0 && !keep_size
-        || operation == FALLOC_FL_ZERO_RANGE
-        || operation == FALLOC_FL_PUNCH_HOLE && keep_size;
-    if !supported_mode {
-        return Err(StarryError::OperationNotSupported);
-    }
     if offset < 0 || len <= 0 {
         return Err(StarryError::InvalidInput);
     }
+    let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
+    let operation = mode & !FALLOC_FL_KEEP_SIZE;
+    let supported_mode = operation == 0
+        || operation == FALLOC_FL_ZERO_RANGE
+        || operation == FALLOC_FL_PUNCH_HOLE && keep_size
+        || operation == FALLOC_FL_COLLAPSE_RANGE && !keep_size
+        || operation == FALLOC_FL_INSERT_RANGE && !keep_size;
+    if !supported_mode {
+        return Err(StarryError::OperationNotSupported);
+    }
+    let f = file_or_espipe_write(fd)?;
+    memfd_check_write_seal(&f_like)?;
     let end = (offset as u64)
         .checked_add(len as u64)
         .ok_or(StarryError::from(Errno::EFBIG))?;
@@ -350,29 +332,59 @@ pub fn sys_fallocate(
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
     let old_len = file.location().len()?;
-    let new_len = if keep_size { old_len } else { old_len.max(end) };
+    let new_len = match operation {
+        FALLOC_FL_COLLAPSE_RANGE => old_len
+            .checked_sub(len as u64)
+            .ok_or(StarryError::InvalidInput)?,
+        FALLOC_FL_INSERT_RANGE => old_len
+            .checked_add(len as u64)
+            .ok_or(StarryError::from(Errno::EFBIG))?,
+        _ if keep_size => old_len,
+        _ => old_len.max(end),
+    };
+    if new_len > u32::MAX as u64 * 4096 {
+        return Err(StarryError::from(Errno::EFBIG));
+    }
     memfd_check_resize_seals(&f_like, old_len, new_len)?;
 
     match operation {
         0 => {
-            if new_len != old_len {
-                file.set_len(new_len)?;
+            if Memfd::from_fd(fd).is_ok() {
+                if keep_size {
+                    return Err(StarryError::OperationNotSupported);
+                }
+                if new_len != old_len {
+                    file.set_len(new_len)?;
+                }
+            } else {
+                let mode = if keep_size {
+                    PreallocationMode::KeepSize
+                } else {
+                    PreallocationMode::ExtendSize
+                };
+                file.preallocate(offset as u64, len as u64, mode)?;
             }
         }
         FALLOC_FL_ZERO_RANGE => {
-            if new_len != old_len {
-                file.set_len(new_len)?;
-            }
-            let zero_end = old_len.min(end);
-            if (offset as u64) < zero_end {
-                write_zero_range(file, offset as u64, zero_end - offset as u64)?;
-            }
+            let mode = if keep_size {
+                PreallocationMode::KeepSize
+            } else {
+                PreallocationMode::ExtendSize
+            };
+            file.operate_range(
+                offset as u64,
+                len as u64,
+                FileRangeOperation::ZeroRange(mode),
+            )?;
         }
         FALLOC_FL_PUNCH_HOLE => {
-            let zero_end = old_len.min(end);
-            if (offset as u64) < zero_end {
-                write_zero_range(file, offset as u64, zero_end - offset as u64)?;
-            }
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::PunchHole)?;
+        }
+        FALLOC_FL_COLLAPSE_RANGE => {
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::CollapseRange)?;
+        }
+        FALLOC_FL_INSERT_RANGE => {
+            file.operate_range(offset as u64, len as u64, FileRangeOperation::InsertRange)?;
         }
         _ => unreachable!(),
     }
@@ -475,12 +487,12 @@ pub fn sys_fadvise64(
 }
 
 pub fn sys_pread64(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: c_int,
     buf: *mut u8,
     len: usize,
     offset: __kernel_off_t,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     let f = file_or_espipe(fd)?;
     if offset < 0 {
         return Err(StarryError::InvalidInput);
@@ -492,7 +504,7 @@ pub fn sys_pread64(
 }
 
 pub fn sys_pwrite64(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: c_int,
     buf: *const u8,
     len: usize,
@@ -527,7 +539,7 @@ pub fn sys_pwrite64(
 }
 
 pub fn sys_preadv(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: c_int,
     iov: *const IoVec,
     iovcnt: usize,
@@ -543,7 +555,7 @@ pub fn sys_preadv(
 }
 
 pub fn sys_pwritev(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: c_int,
     iov: *const IoVec,
     iovcnt: usize,
@@ -568,7 +580,7 @@ fn validate_rwf_flags(flags: u32) -> StarryResult<()> {
 }
 
 pub fn sys_preadv2(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: c_int,
     iov: *const IoVec,
     iovcnt: usize,
@@ -594,7 +606,7 @@ pub fn sys_preadv2(
 }
 
 pub fn sys_pwritev2(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: c_int,
     iov: *const IoVec,
     iovcnt: usize,
@@ -629,15 +641,17 @@ pub fn sys_pwritev2(
         let file_like = get_file_like(fd)?;
         memfd_checks_before_write_at(&file_like, offset as u64, total as u64)?;
         let data = copy_user_iov_read_buf(current, iov, iovcnt)?;
-        Ok(f.inner().write_at(data.as_slice(), offset as _)? as _)
+        Ok(f.inner()
+            .write_at(data.as_slice(), offset as _)
+            .map(|n| n as _)?)
     }
 }
 
 fn copy_user_read_buf(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     buf: *const u8,
     len: usize,
-) -> crate::StarryResult<Vec<u8>> {
+) -> StarryResult<Vec<u8>> {
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -645,11 +659,7 @@ fn copy_user_read_buf(
 }
 
 /// `access_ok`-style validation without copying payload (may surface `BadAddress` / EFAULT).
-fn validate_user_read_buf(
-    current: &crate::task::UserTaskRef,
-    buf: *const u8,
-    len: usize,
-) -> crate::StarryResult<()> {
+fn validate_user_read_buf(current: &UserTaskRef, buf: *const u8, len: usize) -> StarryResult<()> {
     if len == 0 {
         return Ok(());
     }
@@ -661,11 +671,7 @@ fn validate_user_read_buf(
 /// array pointer still yields `EFAULT`) but does not touch `iov_base`, letting
 /// callers enforce length invariants (e.g. eventfd's 8-byte count) before any
 /// segment payload is imported. Same overflow cap as [`IoVectorBuf`].
-fn iov_total_len(
-    current: &crate::task::UserTaskRef,
-    iov: *const IoVec,
-    iovcnt: usize,
-) -> crate::StarryResult<usize> {
+fn iov_total_len(current: &UserTaskRef, iov: *const IoVec, iovcnt: usize) -> StarryResult<usize> {
     if iovcnt > 1024 {
         return Err(StarryError::InvalidInput);
     }
@@ -684,10 +690,10 @@ fn iov_total_len(
 
 /// Validate each `iovec` segment is readable; returns total length (same cap as [`IoVectorBuf`]).
 fn validate_user_iov_buf_regions(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     iov: *const IoVec,
     iovcnt: usize,
-) -> crate::StarryResult<usize> {
+) -> StarryResult<usize> {
     if iovcnt > 1024 {
         return Err(StarryError::InvalidInput);
     }
@@ -699,18 +705,16 @@ fn validate_user_iov_buf_regions(
         }
         let seg = iov.iov_len as usize;
         UserConstPtr::<u8>::from(iov.iov_base.cast_const()).validate_slice(current, seg)?;
-        total = total
-            .checked_add(seg)
-            .ok_or(crate::StarryError::InvalidInput)?;
+        total = total.checked_add(seg).ok_or(StarryError::InvalidInput)?;
     }
     Ok(total)
 }
 
 fn copy_user_iov_read_buf(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     iov: *const IoVec,
     iovcnt: usize,
-) -> crate::StarryResult<Vec<u8>> {
+) -> StarryResult<Vec<u8>> {
     let mut src = IoVectorBuf::new(current, iov, iovcnt)?.into_io();
     let len = src.remaining();
     let mut data = vec![0; len];
@@ -737,10 +741,10 @@ enum SendFile {
 /// instead of unwrapping it to its inner `File` (which would bypass
 /// `F_SEAL_WRITE` and `F_SEAL_GROW`).
 fn send_offset_out(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: c_int,
     offset: *mut u64,
-) -> crate::StarryResult<SendFile> {
+) -> StarryResult<SendFile> {
     let fl = get_file_like(fd)?;
     if let Ok(memfd) = fl.clone().downcast_arc::<crate::file::memfd::Memfd>() {
         return Ok(SendFile::OffsetMemfd(memfd, offset));
@@ -762,11 +766,7 @@ impl SendFile {
         .contains(IoEvents::IN)
     }
 
-    fn read(
-        &mut self,
-        current: &crate::task::UserTaskRef,
-        mut buf: &mut [u8],
-    ) -> crate::StarryResult<usize> {
+    fn read(&mut self, current: &UserTaskRef, mut buf: &mut [u8]) -> StarryResult<usize> {
         match self {
             SendFile::Direct(file) => file.read(&mut buf),
             SendFile::Offset(file, _, pos) => Ok(file.inner().read_at(&mut buf, *pos)?),
@@ -779,11 +779,7 @@ impl SendFile {
         }
     }
 
-    fn write(
-        &mut self,
-        current: &crate::task::UserTaskRef,
-        mut buf: &[u8],
-    ) -> crate::StarryResult<usize> {
+    fn write(&mut self, current: &UserTaskRef, mut buf: &[u8]) -> StarryResult<usize> {
         match self {
             SendFile::Direct(file) => {
                 super::memfd::memfd_checks_before_stream_write(file, buf.len() as u64)?;
@@ -808,12 +804,12 @@ impl SendFile {
 }
 
 fn do_send(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     mut src: SendFile,
     mut dst: SendFile,
     len: usize,
     nonblock: bool,
-) -> crate::StarryResult<usize> {
+) -> StarryResult<usize> {
     let mut buf = vec![0; 0x1000];
     let mut total_written = 0;
     let mut remaining = len;
@@ -868,12 +864,12 @@ fn do_send(
 }
 
 pub fn sys_sendfile(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     out_fd: c_int,
     in_fd: c_int,
     offset: *mut u64,
     len: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     debug!(
         "sys_sendfile <= out_fd: {}, in_fd: {}, offset: {}, len: {}",
         out_fd,
@@ -906,7 +902,7 @@ pub fn sys_sendfile(
 }
 
 pub fn sys_copy_file_range(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd_in: c_int,
     off_in: *mut u64,
     fd_out: c_int,
@@ -1001,7 +997,7 @@ pub fn sys_copy_file_range(
 }
 
 pub fn sys_splice(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd_in: c_int,
     off_in: *mut i64,
     fd_out: c_int,

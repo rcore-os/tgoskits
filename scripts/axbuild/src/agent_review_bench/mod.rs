@@ -540,9 +540,9 @@ mod tests {
             "current guideline\n",
         )
         .unwrap();
-        fs::create_dir_all(workspace.join(".claude/skills/review-single-pr")).unwrap();
+        fs::create_dir_all(workspace.join(".agents/skills/review-single-pr")).unwrap();
         fs::write(
-            workspace.join(".claude/skills/review-single-pr/SKILL.md"),
+            workspace.join(".agents/skills/review-single-pr/SKILL.md"),
             "current review skill\n",
         )
         .unwrap();

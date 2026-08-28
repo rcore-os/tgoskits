@@ -15,7 +15,9 @@ host-fs = ["fs", "dep:ax-driver"]
 host-test = [
     "ax-std/host-test",
     "axdevice/host-test",
+    "vpci-test-device",
 ]
+vpci-test-device = []
 sstc = ["riscv_vcpu/sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
 

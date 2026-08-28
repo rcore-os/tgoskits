@@ -2,7 +2,10 @@ use alloc::{string::String, vec::Vec};
 use core::time::Duration;
 
 use ax_io::{Seek, SeekFrom};
-use axfs_ng_vfs::{Metadata, MetadataUpdate, NodePermission, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{
+    FileRangeOperation, Metadata, MetadataUpdate, NodePermission, NodeType, PreallocationMode,
+    VfsError, VfsResult,
+};
 
 use crate::{
     highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context},
@@ -67,6 +70,8 @@ impl FilePermExt for FilePerm {
 pub struct DirEntry {
     name: String,
     ty: FileType,
+    ino: u64,
+    next_offset: u64,
 }
 
 impl Default for DirEntry {
@@ -74,6 +79,8 @@ impl Default for DirEntry {
         Self {
             name: String::new(),
             ty: FileType::Unknown,
+            ino: 0,
+            next_offset: 0,
         }
     }
 }
@@ -83,6 +90,8 @@ impl DirEntry {
         Self {
             name: String::new(),
             ty: FileType::Unknown,
+            ino: 0,
+            next_offset: 0,
         }
     }
 
@@ -96,6 +105,15 @@ impl DirEntry {
 
     pub const fn entry_type(&self) -> FileType {
         self.ty
+    }
+
+    pub const fn inode(&self) -> u64 {
+        self.ino
+    }
+
+    /// Linux-visible position of the next directory entry.
+    pub const fn next_offset(&self) -> u64 {
+        self.next_offset
     }
 }
 
@@ -182,6 +200,14 @@ impl File {
         Ok(())
     }
 
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult {
+        self.inner.preallocate(offset, len, mode)
+    }
+
+    pub fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> VfsResult {
+        self.inner.operate_range(offset, len, operation)
+    }
+
     pub fn read(&mut self, buf: &mut [u8]) -> VfsResult<usize> {
         self.inner.read(buf).map_err(io_error_to_vfs_error)
     }
@@ -251,6 +277,8 @@ impl Directory {
                 entries.push(DirEntry {
                     name: entry.name,
                     ty: entry.node_type,
+                    ino: entry.ino,
+                    next_offset: entry.offset,
                 });
             }
             Ok::<_, VfsError>(entries)
@@ -269,6 +297,55 @@ impl Directory {
             count += 1;
         }
         Ok(count)
+    }
+
+    /// Returns the next entry without advancing the open-directory position.
+    pub fn peek_dir_entry(&self) -> Option<&DirEntry> {
+        self.entries.get(self.cursor)
+    }
+
+    /// Commits one successfully consumed entry.
+    pub fn advance_dir_entry(&mut self) {
+        if self.cursor < self.entries.len() {
+            self.cursor += 1;
+        }
+    }
+
+    /// Seeks the materialized directory view by its visible directory cookie.
+    pub fn seek(&mut self, pos: SeekFrom) -> VfsResult<u64> {
+        let current = self.current_offset();
+        let end = self.entries.last().map_or(0, DirEntry::next_offset);
+        let target = match pos {
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::Current(delta) => current
+                .checked_add_signed(delta)
+                .ok_or(VfsError::InvalidInput)?,
+            SeekFrom::End(delta) => end
+                .checked_add_signed(delta)
+                .ok_or(VfsError::InvalidInput)?,
+        };
+        self.cursor = if target == 0 {
+            0
+        } else {
+            (0..self.entries.len())
+                .find(|&index| {
+                    let current = if index == 0 {
+                        0
+                    } else {
+                        self.entries[index - 1].next_offset
+                    };
+                    current >= target
+                })
+                .unwrap_or(self.entries.len())
+        };
+        Ok(target)
+    }
+
+    fn current_offset(&self) -> u64 {
+        self.cursor
+            .checked_sub(1)
+            .and_then(|index| self.entries.get(index))
+            .map_or(0, DirEntry::next_offset)
     }
 }
 
@@ -294,5 +371,67 @@ impl FileAttrExt for FileAttr {
 
     fn blocks(&self) -> u64 {
         self.blocks
+    }
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use alloc::vec;
+
+    use super::*;
+
+    fn entry(name: &str, next_offset: u64) -> DirEntry {
+        DirEntry {
+            name: name.into(),
+            ty: FileType::RegularFile,
+            ino: 1,
+            next_offset,
+        }
+    }
+
+    #[test]
+    fn peek_does_not_advance_until_output_is_committed() {
+        let mut directory = Directory {
+            entries: vec![entry("first", 1), entry("second", 2)],
+            cursor: 0,
+        };
+
+        assert_eq!(
+            directory.peek_dir_entry().map(DirEntry::name),
+            Some("first")
+        );
+        assert_eq!(
+            directory.peek_dir_entry().map(DirEntry::name),
+            Some("first")
+        );
+        directory.advance_dir_entry();
+        assert_eq!(
+            directory.peek_dir_entry().map(DirEntry::name),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn seek_to_shared_htree_cookie_restarts_the_collision_chain() {
+        let mut directory = Directory {
+            entries: vec![
+                entry("before", 10),
+                entry("collision-a", 10),
+                entry("collision-b", 20),
+                entry("after", 30),
+            ],
+            cursor: 4,
+        };
+
+        assert_eq!(directory.seek(SeekFrom::Start(10)), Ok(10));
+        assert_eq!(
+            directory.peek_dir_entry().map(DirEntry::name),
+            Some("collision-a")
+        );
+        directory.advance_dir_entry();
+        assert_eq!(
+            directory.peek_dir_entry().map(DirEntry::name),
+            Some("collision-b")
+        );
     }
 }

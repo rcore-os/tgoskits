@@ -73,7 +73,15 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     rootfs::ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
     let mut cargo = build::load_cargo_config(&request)?;
     args_support::apply_perf_cargo_features(&mut cargo, &args);
-    let mut qemu = rootfs::load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
+    let mut qemu = rootfs::load_patched_qemu_config(
+        starry,
+        &request,
+        &cargo,
+        None,
+        true,
+        rootfs::RootfsWritePolicy::Discard,
+    )
+    .await?;
     let prepared_test_case =
         test_case::prepare(starry, &request, selected_test_case.as_ref(), &mut qemu).await?;
     let elf = build_output.elf_path().to_path_buf();

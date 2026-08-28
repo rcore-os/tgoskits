@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Implement ext4 data and xattr `FS_IOC_FIEMAP`, persistent inode-owned xattrs,
+  and typed ext4 fallocate operations for preallocation, zero/punch,
+  collapse-range, and insert-range.
+
+### Fixed
+
+- Publish tmpfs/overlay symlinks atomically with their final targets and keep
+  directory positions on Linux-compatible opaque ext4 cursors.
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.8.2...starry-kernel-v0.8.3) - 2026-08-27
 
 ### Added

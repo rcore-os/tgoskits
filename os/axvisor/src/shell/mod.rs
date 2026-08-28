@@ -15,14 +15,31 @@
 use std::io::prelude::*;
 use std::string::ToString;
 
+#[cfg(feature = "browser-console")]
+use core::cell::Cell;
+
+#[cfg(feature = "browser-console")]
+std::thread_local! {
+    static NETWORK_OUTPUT_SELECTED: Cell<bool> = const { Cell::new(false) };
+}
+
 fn submit_shell_fragment(args: core::fmt::Arguments<'_>) {
     let output = axvisor::shell_support::format_fragment(args);
-    crate::guest_console::submit_host_bytes(output.as_bytes());
+    submit_shell_bytes(output.as_bytes());
 }
 
 fn submit_shell_line(args: core::fmt::Arguments<'_>) {
     let output = axvisor::shell_support::format_line(args);
-    crate::guest_console::submit_host_bytes(output.as_bytes());
+    submit_shell_bytes(output.as_bytes());
+}
+
+pub(crate) fn submit_shell_bytes(bytes: &[u8]) {
+    #[cfg(feature = "browser-console")]
+    if NETWORK_OUTPUT_SELECTED.with(Cell::get) {
+        crate::network_console::submit_management_output(bytes);
+        return;
+    }
+    crate::guest_console::submit_host_bytes(bytes);
 }
 
 macro_rules! print {
@@ -77,6 +94,32 @@ fn print_console_shortcuts() {
     println!("  Ctrl+X, then h  return to the Axvisor shell");
     println!("  Ctrl+X, then [  attach the previous running guest");
     println!("  Ctrl+X, then ]  attach the next running guest");
+}
+
+/// Executes one complete command for a connection-local network shell.
+///
+/// Returns `false` for `exit` and `quit`, which disconnect only that network
+/// client instead of shutting down the hypervisor.
+#[cfg(feature = "browser-console")]
+pub(crate) fn run_network_command(input: &str) -> bool {
+    let command = input.trim();
+    if matches!(command, "exit" | "quit") {
+        return false;
+    }
+
+    NETWORK_OUTPUT_SELECTED.with(|selected| {
+        let previous = selected.replace(true);
+        if !command.is_empty() && !handle_builtin_commands(command) {
+            run_cmd_bytes(command.as_bytes());
+        }
+        selected.set(previous);
+    });
+    true
+}
+
+#[cfg(feature = "browser-console")]
+pub(crate) fn network_prompt() -> String {
+    prompt_string()
 }
 
 fn route_pending_host_log(

@@ -16,13 +16,30 @@ pub(crate) struct VmDevicePlan {
 }
 
 impl VmDevicePlan {
+    #[cfg(any(not(target_arch = "x86_64"), test))]
     pub(crate) fn with_pools_for_vm(
         config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
         replacement_ranges: &[Range<u64>],
         mut pools: ResourcePools,
     ) -> AxVmResult<Self> {
-        Self::build(config, nodes, replacement_ranges, &mut pools)
+        Self::build(config, nodes, replacement_ranges, &mut pools, None)
+    }
+
+    pub(crate) fn with_pci_host_for_vm(
+        config: &AxVMConfig,
+        nodes: Vec<DeviceNodeSpec>,
+        replacement_ranges: &[Range<u64>],
+        mut pools: ResourcePools,
+        pci_host: PciHostProvider,
+    ) -> AxVmResult<Self> {
+        Self::build(
+            config,
+            nodes,
+            replacement_ranges,
+            &mut pools,
+            Some(pci_host),
+        )
     }
 
     fn build(
@@ -30,10 +47,16 @@ impl VmDevicePlan {
         nodes: Vec<DeviceNodeSpec>,
         replacement_ranges: &[Range<u64>],
         pools: &mut ResourcePools,
+        pci_host: Option<PciHostProvider>,
     ) -> AxVmResult<Self> {
         let mut builder = DeviceGraphBuilder::new();
         for node in nodes {
             builder.add(node).map_err(DeviceManagerError::from)?;
+        }
+        if let Some(pci_host) = pci_host {
+            builder
+                .register_pci_host(pci_host)
+                .map_err(DeviceManagerError::from)?;
         }
 
         let configured_requests = builder.requests().map_err(DeviceManagerError::from)?;

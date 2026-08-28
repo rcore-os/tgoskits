@@ -45,9 +45,29 @@ pub(crate) trait FsBlockDevice: Send {
     fn name(&self) -> &str;
     fn num_blocks(&self) -> u64;
     fn block_size(&self) -> usize;
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize {
+        self.block_size()
+    }
+    #[cfg(feature = "ext4")]
+    fn is_read_only(&self) -> bool {
+        false
+    }
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool {
+        true
+    }
+    #[cfg(feature = "ext4")]
+    fn supports_fua(&self) -> bool {
+        false
+    }
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult;
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult;
+    #[cfg(feature = "ext4")]
+    fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult {
+        Err(BlockError::Unsupported)
+    }
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn flush(&mut self) -> BlockResult;
 }
@@ -65,6 +85,26 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
         (**self).block_size()
     }
 
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize {
+        (**self).physical_block_size()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn is_read_only(&self) -> bool {
+        (**self).is_read_only()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool {
+        (**self).supports_flush()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_fua(&self) -> bool {
+        (**self).supports_fua()
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         (**self).read_block(block_id, buf)
     }
@@ -72,6 +112,11 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
         (**self).write_block(block_id, buf)
+    }
+
+    #[cfg(feature = "ext4")]
+    fn write_block_fua(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
+        (**self).write_block_fua(block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
@@ -134,6 +179,26 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
         self.inner.block_size()
     }
 
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize {
+        self.inner.physical_block_size()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool {
+        self.inner.supports_flush()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_fua(&self) -> bool {
+        self.inner.supports_fua()
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         self.check_io_bounds(block_id, buf.len())?;
         let physical = self
@@ -155,6 +220,17 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
         self.inner.write_block(physical, buf)
     }
 
+    #[cfg(feature = "ext4")]
+    fn write_block_fua(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
+        self.check_io_bounds(block_id, buf.len())?;
+        let physical = self
+            .region
+            .start_lba
+            .checked_add(block_id)
+            .ok_or(BlockError::InvalidState)?;
+        self.inner.write_block_fua(physical, buf)
+    }
+
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn flush(&mut self) -> BlockResult {
         self.inner.flush()
@@ -174,13 +250,44 @@ impl FsBlockDevice for NativeHandleBlockDevice {
         self.handle.device_info().logical_block_size
     }
 
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize {
+        self.handle.device_info().physical_block_size
+    }
+
+    #[cfg(feature = "ext4")]
+    fn is_read_only(&self) -> bool {
+        self.handle.device_info().read_only
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool {
+        self.handle.supports_flush()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_fua(&self) -> bool {
+        self.handle.supports_fua()
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         self.handle.read_blocks(block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
+        if self.handle.device_info().read_only {
+            return Err(BlockError::Unsupported);
+        }
         self.handle.write_blocks(block_id, buf)
+    }
+
+    #[cfg(feature = "ext4")]
+    fn write_block_fua(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
+        if self.is_read_only() {
+            return Err(BlockError::Unsupported);
+        }
+        self.handle.write_blocks_fua(block_id, buf)
     }
 
     #[cfg(any(feature = "ext4", feature = "fat"))]

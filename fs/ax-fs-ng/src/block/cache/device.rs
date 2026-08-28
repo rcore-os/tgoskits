@@ -17,7 +17,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::address_space::{BlockAddressSpace, FolioGeometry};
-use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::Mutex};
+use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex};
 
 /// The shared per-device cache tree and its global-writeback endpoint.
 ///
@@ -29,8 +29,8 @@ use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::Mutex};
 pub(crate) struct BlockCacheShared {
     device_key: usize,
     consumers: AtomicUsize,
-    state: Mutex<BlockAddressSpace>,
-    endpoint: Mutex<Box<dyn FsBlockDevice>>,
+    state: SleepMutex<BlockAddressSpace>,
+    endpoint: SleepMutex<Box<dyn FsBlockDevice>>,
 }
 
 impl BlockCacheShared {
@@ -42,8 +42,8 @@ impl BlockCacheShared {
         Self {
             device_key,
             consumers: AtomicUsize::new(0),
-            state: Mutex::new(BlockAddressSpace::new(geometry)),
-            endpoint: Mutex::new(endpoint),
+            state: SleepMutex::new(BlockAddressSpace::new(geometry)),
+            endpoint: SleepMutex::new(endpoint),
         }
     }
 
@@ -190,6 +190,26 @@ impl<T: FsBlockDevice> FsBlockDevice for BufferedBlockDevice<T> {
         self.inner.block_size()
     }
 
+    #[cfg(feature = "ext4")]
+    fn physical_block_size(&self) -> usize {
+        self.inner.physical_block_size()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_flush(&self) -> bool {
+        self.inner.supports_flush()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn supports_fua(&self) -> bool {
+        self.inner.supports_fua()
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult<()> {
         let (first, count) = self.split_request(block_id, buf.len())?;
         let mut state = self.shared.state.lock();
@@ -222,6 +242,28 @@ impl<T: FsBlockDevice> FsBlockDevice for BufferedBlockDevice<T> {
                 // The device contract reports no completed prefix. Some
                 // blocks may already be durable, so every overlapping folio
                 // must be refetched before it can become authoritative again.
+                state.invalidate_range(first, count);
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(feature = "ext4")]
+    fn write_block_fua(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
+        let (first, count) = self.split_request(block_id, buf.len())?;
+        let mut state = self.shared.state.lock();
+
+        // FUA is a durability request, never a deferred buffered write. Older
+        // dirty bytes in the same range must reach the device first; then the
+        // FUA request is sent unchanged and the shared cache is refreshed from
+        // the completed image.
+        state.writeback_dirty(&mut self.inner, Some((first, count)))?;
+        match self.inner.write_block_fua(block_id, buf) {
+            Ok(()) => {
+                state.apply_direct(first, count, buf, false);
+                Ok(())
+            }
+            Err(error) => {
                 state.invalidate_range(first, count);
                 Err(error)
             }

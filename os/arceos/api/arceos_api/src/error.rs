@@ -103,7 +103,11 @@ fn vfs_error_to_io_error(error: VfsError) -> IoError {
         VfsError::BadFileDescriptor => IoError::BadFileDescriptor,
         VfsError::BadState => IoError::BadState,
         VfsError::CrossesDevices => IoError::CrossesDevices,
+        // These VFS categories have no exact `ax-io` representation. Keep
+        // them exact for VFS/POSIX callers and degrade only at this facade.
+        VfsError::DataMissing => IoError::InvalidData,
         VfsError::DirectoryNotEmpty => IoError::DirectoryNotEmpty,
+        VfsError::FilesystemCorrupted => IoError::InvalidData,
         VfsError::FilesystemLoop => IoError::FilesystemLoop,
         VfsError::FileTooLarge => IoError::FileTooLarge,
         VfsError::InvalidData => IoError::InvalidData,
@@ -121,11 +125,14 @@ fn vfs_error_to_io_error(error: VfsError) -> IoError {
         VfsError::OperationNotPermitted => IoError::OperationNotPermitted,
         VfsError::OperationNotSupported => IoError::OperationNotSupported,
         VfsError::PermissionDenied => IoError::PermissionDenied,
+        VfsError::QuotaExceeded => IoError::StorageFull,
         VfsError::ReadOnlyFilesystem => IoError::ReadOnlyFilesystem,
         VfsError::ResourceBusy => IoError::ResourceBusy,
         VfsError::StorageFull => IoError::StorageFull,
         VfsError::TimedOut => IoError::TimedOut,
+        VfsError::TooManyLinks => IoError::Io,
         VfsError::Unsupported => IoError::Unsupported,
+        VfsError::ValueOverflow => IoError::OutOfRange,
         VfsError::WouldBlock => IoError::WouldBlock,
     }
 }

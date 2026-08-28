@@ -152,6 +152,7 @@ impl SharedHardIrqHandler for SharedSpuriousHandler {
 #[derive(Default)]
 struct BatchingQueueCounters {
     submitted: AtomicUsize,
+    fua_submitted: AtomicUsize,
     commits: AtomicUsize,
     largest_batch: AtomicUsize,
 }
@@ -191,6 +192,9 @@ impl HardwareQueue for BatchingReadQueue {
             let Some(request) = requests.pop_front() else {
                 break;
             };
+            if request.flags.contains(RequestFlags::FUA) {
+                self.counters.fua_submitted.fetch_add(1, Ordering::AcqRel);
+            }
             self.next_id += 1;
             let id = RequestId::new(self.next_id);
             let data = request
@@ -688,6 +692,7 @@ fn batching_queue_info() -> QueueInfo {
     limits.max_blocks_per_request = 1;
     limits.max_inflight = 4;
     limits.max_submit_batch = 4;
+    limits.supported_flags = RequestFlags::FUA;
     QueueInfo {
         id: 0,
         device: DeviceInfo::new(32, 512),

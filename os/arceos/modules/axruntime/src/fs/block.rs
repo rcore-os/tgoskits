@@ -25,6 +25,10 @@ struct RuntimeTimeProvider;
 
 impl BlockTimeProvider for RuntimeTimeProvider {
     fn wall_time(&self) -> Duration {
+        ax_hal::time::wall_time()
+    }
+
+    fn monotonic_time(&self) -> Duration {
         ax_hal::time::monotonic_time()
     }
 }
@@ -296,6 +300,7 @@ pub(super) fn init(bootargs: Option<&str>) {
         &TASK_OPS,
         axklib::dma::op(),
         irq_registrar(),
+        None,
     );
     ax_fs_ng::root::init_root_from_rdif_sources(
         take_rdif_block_devices(),

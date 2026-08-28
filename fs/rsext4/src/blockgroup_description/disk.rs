@@ -1,11 +1,46 @@
 //! Disk encoding helpers for block group descriptors.
 
 use super::desc::Ext4GroupDesc;
-use crate::endian::{DiskFormat, read_u16_le, read_u32_le, write_u16_le, write_u32_le};
+use crate::{
+    endian::{DiskFormat, read_u16_le, read_u32_le, write_u16_le, write_u32_le},
+    error::{Ext4Error, Ext4Result},
+};
 
-impl DiskFormat for Ext4GroupDesc {
-    fn from_disk_bytes(bytes: &[u8]) -> Self {
-        if bytes.len() == 32 {
+impl Ext4GroupDesc {
+    /// Largest group descriptor accepted by Linux ext4.
+    pub const MAX_DESC_SIZE: usize = crate::config::GROUP_DESC_SIZE_MAX as usize;
+
+    /// Decodes one validated on-disk group descriptor record.
+    ///
+    /// Linux uses 32-byte descriptors without the `64bit` feature and a
+    /// power-of-two size from 64 through 1024 bytes with it. Fields after the
+    /// first 64 bytes are reserved for future extensions and are deliberately
+    /// ignored by the typed view.
+    pub fn decode_checked(bytes: &[u8]) -> Ext4Result<Self> {
+        if !Self::is_supported_record_size(bytes.len()) {
+            return Err(Ext4Error::corrupted().with_operation("group_descriptor:record_size"));
+        }
+        Ok(Self::from_validated_disk_bytes(bytes))
+    }
+
+    /// Encodes the known fields while retaining extension bytes beyond byte 64.
+    pub(crate) fn encode_checked(&self, bytes: &mut [u8]) -> Ext4Result<()> {
+        if !Self::is_supported_record_size(bytes.len()) {
+            return Err(Ext4Error::corrupted().with_operation("group_descriptor:record_size"));
+        }
+        self.write_validated_disk_bytes(bytes);
+        Ok(())
+    }
+
+    const fn is_supported_record_size(size: usize) -> bool {
+        size == Self::GOOD_OLD_DESC_SIZE
+            || (size >= Self::EXT4_DESC_SIZE_64BIT
+                && size <= Self::MAX_DESC_SIZE
+                && size.is_power_of_two())
+    }
+
+    fn from_validated_disk_bytes(bytes: &[u8]) -> Self {
+        if bytes.len() == Self::GOOD_OLD_DESC_SIZE {
             Self {
                 bg_block_bitmap_lo: read_u32_le(&bytes[0..4]),
                 bg_inode_bitmap_lo: read_u32_le(&bytes[4..8]),
@@ -60,7 +95,7 @@ impl DiskFormat for Ext4GroupDesc {
         }
     }
 
-    fn to_disk_bytes(&self, bytes: &mut [u8]) {
+    fn write_validated_disk_bytes(&self, bytes: &mut [u8]) {
         write_u32_le(self.bg_block_bitmap_lo, &mut bytes[0..4]);
         write_u32_le(self.bg_inode_bitmap_lo, &mut bytes[4..8]);
         write_u32_le(self.bg_inode_table_lo, &mut bytes[8..12]);
@@ -74,7 +109,7 @@ impl DiskFormat for Ext4GroupDesc {
         write_u16_le(self.bg_itable_unused_lo, &mut bytes[28..30]);
         write_u16_le(self.bg_checksum, &mut bytes[30..32]);
 
-        if bytes.len() >= 64 {
+        if bytes.len() >= Self::EXT4_DESC_SIZE_64BIT {
             write_u32_le(self.bg_block_bitmap_hi, &mut bytes[32..36]);
             write_u32_le(self.bg_inode_bitmap_hi, &mut bytes[36..40]);
             write_u32_le(self.bg_inode_table_hi, &mut bytes[40..44]);
@@ -88,6 +123,16 @@ impl DiskFormat for Ext4GroupDesc {
             write_u32_le(self.bg_reserved, &mut bytes[60..64]);
         }
     }
+}
+
+impl DiskFormat for Ext4GroupDesc {
+    fn from_disk_bytes(bytes: &[u8]) -> Self {
+        Self::from_validated_disk_bytes(bytes)
+    }
+
+    fn to_disk_bytes(&self, bytes: &mut [u8]) {
+        self.write_validated_disk_bytes(bytes);
+    }
 
     fn disk_size() -> usize {
         64
@@ -95,18 +140,19 @@ impl DiskFormat for Ext4GroupDesc {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) fn block_group_desc_disk_format_rules_hold_for_test() -> bool {
+    // DiskFormat for Ext4GroupDesc: disk_size should be 64
+    assert!(<Ext4GroupDesc as DiskFormat>::disk_size() == 64);
 
-    #[test]
-    fn short_group_descriptor_zero_extends_high_fields() {
-        assert_eq!(<Ext4GroupDesc as DiskFormat>::disk_size(), 64);
+    // Test from_disk_bytes with 32-byte input (short form)
+    let short_bytes = [0u8; 32];
+    let desc = Ext4GroupDesc::from_disk_bytes(&short_bytes);
+    assert!(desc.bg_block_bitmap_lo == 0);
+    assert!(desc.bg_inode_bitmap_lo == 0);
+    assert!(desc.bg_inode_table_lo == 0);
+    // High parts should be zero for short form
+    assert!(desc.bg_block_bitmap_hi == 0);
+    assert!(desc.bg_reserved == 0);
 
-        let desc = Ext4GroupDesc::from_disk_bytes(&[0_u8; 32]);
-        assert_eq!(desc.bg_block_bitmap_lo, 0);
-        assert_eq!(desc.bg_inode_bitmap_lo, 0);
-        assert_eq!(desc.bg_inode_table_lo, 0);
-        assert_eq!(desc.bg_block_bitmap_hi, 0);
-        assert_eq!(desc.bg_reserved, 0);
-    }
+    true
 }

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Route typed ext4 preallocation, range mutation, extent inspection, and xattr
+  operations through the page-cache and inode adapters.
+- Propagate native block geometry, read-only, flush, and FUA capabilities
+  through the shared filesystem block cache.
+
+### Fixed
+
+- Serialize collapse/insert range mapping shifts with cached I/O and invalidate
+  pages from the shift point after stable-length revalidation.
+- Send FUA writes directly through the block runtime after overlapping dirty
+  cache writeback, then refresh or invalidate shared cache state from the
+  completion result.
+- Keep unlinked inode page-cache lifetime out of the global reclaim registry.
+
 ## [0.9.3](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.2...ax-fs-ng-v0.9.3) - 2026-08-27
 
 ### Added

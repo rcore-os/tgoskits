@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct ControllerPort {
     pub(super) commands: BoundedChannel<ControllerCommand>,
     pub(super) notification: Arc<dyn BlockNotification>,
-    pub(super) irq_latches: Mutex<Vec<Arc<ControllerIrqLatch>>>,
+    pub(super) irq_latches: IrqMutex<Vec<Arc<ControllerIrqLatch>>>,
 }
 
 pub(super) struct ControllerCommand {
@@ -12,7 +12,7 @@ pub(super) struct ControllerCommand {
 }
 
 struct ControllerReply {
-    result: Mutex<Option<Result<ControllerState, BlkError>>>,
+    result: IrqMutex<Option<Result<ControllerState, BlkError>>>,
     notification: Arc<dyn BlockNotification>,
 }
 
@@ -33,7 +33,7 @@ impl ControllerPort {
             .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
             .notification();
         let reply = Arc::new(ControllerReply {
-            result: Mutex::new(None),
+            result: IrqMutex::new(None),
             notification,
         });
         let command = ControllerCommand {

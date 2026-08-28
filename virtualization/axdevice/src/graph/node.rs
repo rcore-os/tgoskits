@@ -133,6 +133,11 @@ pub struct DeviceNodeSpec {
 }
 
 impl DeviceNodeSpec {
+    /// Returns this declaration's stable graph identity.
+    pub const fn id(&self) -> &DeviceNodeId {
+        &self.id
+    }
+
     /// Creates a runtime-backed virtual node.
     pub fn virtual_device(id: DeviceNodeId, model: Arc<dyn DeviceModel>) -> Self {
         Self::runtime(id, DeviceNodeKind::Virtual, model)

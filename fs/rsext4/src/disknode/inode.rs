@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::{Ext4Error, Ext4Result};
 
 /// On-disk ext4 inode layout.
 ///
@@ -113,9 +114,127 @@ impl Ext4Inode {
         (self.i_size_high as u64) << 32 | self.i_size_lo as u64
     }
 
-    /// Returns the full 48-bit block count.
-    pub fn blocks_count(&self) -> u64 {
-        (self.l_i_blocks_high as u64) << 32 | self.i_blocks_lo as u64
+    /// Returns the inode size under the filesystem's `LARGEDIR` policy.
+    pub(crate) fn size_in_filesystem(&self, largedir: bool) -> u64 {
+        if largedir || self.is_file() {
+            self.size()
+        } else {
+            u64::from(self.i_size_lo)
+        }
+    }
+
+    /// Stores both halves of the on-disk inode size.
+    pub fn set_size(&mut self, size: u64) {
+        self.i_size_lo = size as u32;
+        self.i_size_high = (size >> 32) as u32;
+    }
+
+    /// Maximum link count persisted by ext4 before directory sentinel handling.
+    pub const EXT4_LINK_MAX: u16 = 65_000;
+
+    const MAX_RAW_BLOCK_COUNT: u64 = (1_u64 << 48) - 1;
+
+    /// Decodes `i_blocks` into Linux's 512-byte sector units.
+    pub fn blocks_count(&self, block_size: u32, huge_file_feature: bool) -> u64 {
+        if !huge_file_feature {
+            return u64::from(self.i_blocks_lo);
+        }
+
+        let raw = (u64::from(self.l_i_blocks_high) << 32) | u64::from(self.i_blocks_lo);
+        if self.i_flags & Self::EXT4_HUGE_FILE_FL != 0 {
+            raw * u64::from(block_size / 512)
+        } else {
+            raw
+        }
+    }
+
+    /// Encodes a Linux `i_blocks` value expressed in 512-byte sectors.
+    pub fn set_blocks_count(
+        &mut self,
+        sectors: u64,
+        block_size: u32,
+        huge_file_feature: bool,
+    ) -> Ext4Result<()> {
+        if block_size < 512 || !block_size.is_multiple_of(512) {
+            return Err(Ext4Error::invalid_input().with_operation("inode:set_blocks_count"));
+        }
+
+        let (raw, huge_file_inode) = if sectors <= u64::from(u32::MAX) {
+            (sectors, false)
+        } else if !huge_file_feature {
+            return Err(Ext4Error::corrupted().with_operation("inode:set_blocks_count"));
+        } else if sectors <= Self::MAX_RAW_BLOCK_COUNT {
+            (sectors, false)
+        } else {
+            let sectors_per_block = u64::from(block_size / 512);
+            if !sectors.is_multiple_of(sectors_per_block) {
+                return Err(Ext4Error::corrupted().with_operation("inode:set_blocks_count"));
+            }
+            let filesystem_blocks = sectors / sectors_per_block;
+            if filesystem_blocks > Self::MAX_RAW_BLOCK_COUNT {
+                return Err(Ext4Error::file_too_large().with_operation("inode:set_blocks_count"));
+            }
+            (filesystem_blocks, true)
+        };
+
+        self.i_blocks_lo = raw as u32;
+        self.l_i_blocks_high = (raw >> 32) as u16;
+        if huge_file_inode {
+            self.i_flags |= Self::EXT4_HUGE_FILE_FL;
+        } else {
+            self.i_flags &= !Self::EXT4_HUGE_FILE_FL;
+        }
+        Ok(())
+    }
+
+    /// Computes the link count after adding one name or subdirectory.
+    pub fn incremented_links_count(&self, dir_nlink_feature: bool) -> Ext4Result<u16> {
+        // `i_links_count == 1` is the durable DIR_NLINK sentinel. Keep it even
+        // if this core downgraded a stale HTree to linear lookup after mutation.
+        if dir_nlink_feature && self.is_dir() && self.i_links_count == 1 {
+            return Ok(1);
+        }
+        let indexed_directory = self.is_dir() && self.i_flags & Self::EXT4_INDEX_FL != 0;
+        if self.i_links_count >= Self::EXT4_LINK_MAX {
+            return if dir_nlink_feature && indexed_directory {
+                Ok(1)
+            } else {
+                Err(Ext4Error::too_many_links())
+            };
+        }
+
+        let incremented = self
+            .i_links_count
+            .checked_add(1)
+            .ok_or_else(Ext4Error::too_many_links)?;
+        if dir_nlink_feature && indexed_directory && incremented == 2 {
+            Ok(1)
+        } else {
+            Ok(incremented)
+        }
+    }
+
+    /// Computes the link count after removing one name or subdirectory.
+    pub fn decremented_links_count(&self) -> Ext4Result<u16> {
+        if self.is_dir() && self.i_links_count <= 2 {
+            return Ok(self.i_links_count);
+        }
+        self.i_links_count
+            .checked_sub(1)
+            .ok_or_else(|| Ext4Error::corrupted().with_operation("inode:decrement_links"))
+    }
+
+    /// Applies repeated directory-child removals without changing sentinel values.
+    pub fn links_count_after_removing_directories(&self, removed: u32) -> Ext4Result<u16> {
+        if !self.is_dir() {
+            return Err(Ext4Error::corrupted().with_operation("inode:remove_directory_links"));
+        }
+        if self.i_links_count <= 2 {
+            return Ok(self.i_links_count);
+        }
+        let remaining = u32::from(self.i_links_count).saturating_sub(removed).max(2);
+        u16::try_from(remaining)
+            .map_err(|_| Ext4Error::corrupted().with_operation("inode:remove_directory_links"))
     }
 
     /// Returns the merged 32-bit UID.
@@ -143,6 +262,16 @@ impl Ext4Inode {
         (self.l_i_file_acl_high as u64) << 32 | self.i_file_acl_lo as u64
     }
 
+    /// Stores a checked 48-bit extended-attribute block pointer.
+    pub fn set_file_acl(&mut self, block: u64) -> Ext4Result<()> {
+        if block >= 1_u64 << 48 {
+            return Err(Ext4Error::overflow().with_operation("inode:set_file_acl"));
+        }
+        self.i_file_acl_lo = block as u32;
+        self.l_i_file_acl_high = (block >> 32) as u16;
+        Ok(())
+    }
+
     /// Returns true when the inode type is directory.
     pub fn is_dir(&self) -> bool {
         self.i_mode & Self::S_IFMT == Self::S_IFDIR
@@ -156,6 +285,54 @@ impl Ext4Inode {
     /// Returns true when the inode type is symbolic link.
     pub fn is_symlink(&self) -> bool {
         self.i_mode & Self::S_IFMT == Self::S_IFLNK
+    }
+
+    /// Returns true when this inode stores a character-device number.
+    pub fn is_character_device(&self) -> bool {
+        self.i_mode & Self::S_IFMT == Self::S_IFCHR
+    }
+
+    /// Returns true when this inode stores a block-device number.
+    pub fn is_block_device(&self) -> bool {
+        self.i_mode & Self::S_IFMT == Self::S_IFBLK
+    }
+
+    /// Returns true when this inode represents a FIFO.
+    pub fn is_fifo(&self) -> bool {
+        self.i_mode & Self::S_IFMT == Self::S_IFIFO
+    }
+
+    /// Returns true when this inode represents a socket.
+    pub fn is_socket(&self) -> bool {
+        self.i_mode & Self::S_IFMT == Self::S_IFSOCK
+    }
+
+    /// Decodes the device number stored in a character or block inode.
+    pub fn device_number(&self) -> Ext4Result<Option<DeviceNumber>> {
+        if !self.is_character_device() && !self.is_block_device() {
+            return Ok(None);
+        }
+        let device = if self.i_block[0] != 0 {
+            DeviceNumber::decode_legacy(self.i_block[0])
+        } else {
+            DeviceNumber::decode_modern(self.i_block[1])
+        };
+        Ok(Some(device))
+    }
+
+    /// Encodes a device number into the ext4 `i_block` union.
+    pub fn set_device_number(&mut self, device: DeviceNumber) -> Ext4Result<()> {
+        if !self.is_character_device() && !self.is_block_device() {
+            return Err(Ext4Error::invalid_input().with_operation("inode:set_device_number"));
+        }
+        self.i_block = [0; 15];
+        self.i_flags &= !Self::EXT4_EXTENTS_FL;
+        if device.has_legacy_encoding() {
+            self.i_block[0] = device.encode_legacy();
+        } else {
+            self.i_block[1] = device.encode_modern();
+        }
+        Ok(())
     }
 
     pub fn permissions(&self) -> u16 {
@@ -189,21 +366,13 @@ impl Ext4Inode {
     fn is_extent(&self) -> bool {
         self.i_flags & Self::EXT4_EXTENTS_FL != 0
     }
-    /// Verifies both the extent flag and the embedded extent-header magic.
-    pub fn have_extend_header_and_use_extend(&self) -> bool {
-        if !Self::is_extent(self) {
-            debug!("Inode not have extend flag!");
-            return false;
-        }
-
-        let word0_le = self.i_block[0].to_le_bytes();
-        let magic = u16::from_le_bytes([word0_le[0], word0_le[1]]);
-        if magic == Ext4ExtentHeader::EXT4_EXT_MAGIC {
-            true
-        } else {
-            debug!("No tree header!!!");
-            false
-        }
+    /// Returns whether `i_block` must be decoded as an extent tree.
+    ///
+    /// The extent header is validated by the checked codec. A bad magic value
+    /// on an extent inode is corruption, not a reason to reinterpret `i_block`
+    /// as legacy indirect pointers.
+    pub fn uses_extents(&self) -> bool {
+        Self::is_extent(self)
     }
 
     // some metadata change support
@@ -227,6 +396,23 @@ impl Ext4Inode {
 
     pub fn field_fits(&self, inode_size: u16, field_end: u16) -> bool {
         field_end <= inode_size && field_end <= Self::GOOD_OLD_INODE_SIZE + self.i_extra_isize
+    }
+
+    pub(crate) fn version(&self, inode_size: u16) -> u64 {
+        let high = if self.field_fits(inode_size, Self::FIELD_END_I_VERSION_HI) {
+            self.i_version_hi
+        } else {
+            0
+        };
+        (u64::from(high) << 32) | u64::from(self.l_i_version)
+    }
+
+    pub(crate) fn increment_version(&mut self, inode_size: u16) {
+        let version = self.version(inode_size).wrapping_add(1);
+        self.l_i_version = version as u32;
+        if self.field_fits(inode_size, Self::FIELD_END_I_VERSION_HI) {
+            self.i_version_hi = (version >> 32) as u32;
+        }
     }
 
     fn encode_extra_time(ts: Ext4Timestamp) -> u32 {

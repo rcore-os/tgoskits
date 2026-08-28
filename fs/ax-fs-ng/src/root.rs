@@ -222,11 +222,7 @@ pub fn init_root(
         |part| part.info.region,
     );
 
-    let root = if let Some(kind) = selected_filesystem_kind(
-        selected.raw_filesystem,
-        &selected.partitions,
-        selected_partition,
-    ) {
+    let root = if let Some(kind) = selected_filesystem_kind(&selected, selected_partition) {
         init_detected_filesystem(selected.handle.clone(), region, kind, &description, source)
     } else {
         init_filesystem(selected.handle.clone(), region, &description, source)
@@ -697,12 +693,11 @@ fn mount_path_for_partition(partition: &PartitionInfo) -> String {
 }
 
 fn selected_filesystem_kind(
-    raw_filesystem: Option<FilesystemKind>,
-    partitions: &[DetectedPartition],
+    disk: &DiscoveredDisk,
     partition_index: Option<usize>,
 ) -> Option<FilesystemKind> {
-    partition_index.map_or(raw_filesystem, |partition_index| {
-        partitions
+    partition_index.map_or(disk.raw_filesystem, |partition_index| {
+        disk.partitions
             .iter()
             .find(|partition| partition.info.index == partition_index)
             .and_then(|partition| partition.filesystem)
@@ -813,15 +808,23 @@ mod tests {
     use core::{any::Any, time::Duration};
 
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-        FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, Reference, StatFs, VfsResult,
-        WeakDirEntry,
+        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
+        FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+        Reference, RenameOptions, StatFs, VfsResult, WeakDirEntry,
     };
-    use rdif_block::DeviceInfo;
+    use rdif_block::{
+        BatchSubmitResult, BlkError, BlockController, CompletionSink, ControllerEvent,
+        ControllerState, ControllerUpdate, DeviceInfo, DriverGeneric, HardwareQueue,
+        OwnedRequestBatch, QueueInfo, QueueLimits, SubmissionSink,
+    };
 
     use super::*;
-    use crate::{BlockError, BlockResult};
+    use crate::{
+        BlockError, BlockResult,
+        block::runtime::{BlockRuntime, RdifBlockDevice},
+    };
 
+    struct TestQueue;
     struct FlakyMetadataDevice {
         remaining_failures: usize,
         data: Vec<u8>,
@@ -965,7 +968,11 @@ mod tests {
     }
 
     impl DirNodeOps for ReadonlyDir {
-        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        fn read_dir(
+            &self,
+            _cursor: DirectoryCursor,
+            _sink: &mut dyn DirEntrySink,
+        ) -> VfsResult<usize> {
             Ok(0)
         }
 
@@ -1015,6 +1022,17 @@ mod tests {
             Err(VfsError::ReadOnlyFilesystem)
         }
 
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
         fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
             Err(VfsError::ReadOnlyFilesystem)
         }
@@ -1023,7 +1041,13 @@ mod tests {
             Err(VfsError::ReadOnlyFilesystem)
         }
 
-        fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+        fn rename(
+            &self,
+            _src_name: &str,
+            _dst_dir: &DirNode,
+            _dst_name: &str,
+            _options: RenameOptions,
+        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }
@@ -1098,9 +1122,87 @@ mod tests {
         fn set_len(&self, _len: u64) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
+    }
 
-        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
+    impl HardwareQueue for TestQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 0,
+                device: DeviceInfo::new(16, 512),
+                limits: QueueLimits::simple(
+                    512,
+                    dma_api::DmaDeviceInfo::new(
+                        dma_api::DmaDomainId::Direct,
+                        dma_api::DmaCoherency::NonCoherent,
+                        dma_api::DmaConstraints::new(u64::MAX),
+                    ),
+                ),
+            }
+        }
+
+        fn submit_batch_owned(
+            &mut self,
+            requests: &mut OwnedRequestBatch,
+            _sink: &mut dyn SubmissionSink,
+        ) -> BatchSubmitResult {
+            let _ = requests;
+            unreachable!("root selection tests do not submit block requests")
+        }
+
+        fn commit_submissions(&mut self) -> Result<(), BlkError> {
+            unreachable!("root selection tests do not commit block requests")
+        }
+
+        fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+            unreachable!("root selection tests do not drain block requests")
+        }
+
+        fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+            Ok(())
+        }
+    }
+
+    struct TestController {
+        queue: Option<TestQueue>,
+    }
+
+    impl DriverGeneric for TestController {
+        fn name(&self) -> &str {
+            "test-controller"
+        }
+
+        fn raw_any(&self) -> Option<&dyn Any> {
+            Some(self)
+        }
+
+        fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
+            Some(self)
+        }
+    }
+
+    impl BlockController for TestController {
+        fn device_info(&self) -> DeviceInfo {
+            DeviceInfo::new(16, 512)
+        }
+
+        fn max_io_queues(&self) -> usize {
+            1
+        }
+
+        fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+            match event {
+                ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                    ControllerState::Ready,
+                    alloc::vec![Box::new(self.queue.take().unwrap())],
+                    Vec::new(),
+                )),
+                ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
+                _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+            }
         }
     }
 
@@ -1127,6 +1229,26 @@ mod tests {
 
         fn block_size(&self) -> usize {
             512
+        }
+
+        #[cfg(feature = "ext4")]
+        fn physical_block_size(&self) -> usize {
+            512
+        }
+
+        #[cfg(feature = "ext4")]
+        fn is_read_only(&self) -> bool {
+            false
+        }
+
+        #[cfg(feature = "ext4")]
+        fn supports_flush(&self) -> bool {
+            true
+        }
+
+        #[cfg(feature = "ext4")]
+        fn supports_fua(&self) -> bool {
+            false
         }
 
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
@@ -1162,6 +1284,11 @@ mod tests {
             Ok(())
         }
 
+        #[cfg(feature = "ext4")]
+        fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult {
+            Err(BlockError::Unsupported)
+        }
+
         #[cfg(any(feature = "ext4", feature = "fat"))]
         fn flush(&mut self) -> BlockResult {
             Ok(())
@@ -1186,6 +1313,23 @@ mod tests {
                 },
                 filesystem,
             }),
+        }
+    }
+
+    fn raw_disk(filesystem: Option<FilesystemKind>) -> DiscoveredDisk {
+        crate::os::task::install_test_runtime_ops();
+        let runtime = BlockRuntime::from_rdif_devices([RdifBlockDevice::new_with_irqs(
+            "test-disk",
+            [],
+            Box::new(TestController {
+                queue: Some(TestQueue),
+            }),
+        )]);
+        DiscoveredDisk {
+            disk_index: 0,
+            handle: runtime.devices()[0].clone(),
+            raw_filesystem: filesystem,
+            partitions: Vec::new(),
         }
     }
 
@@ -1300,8 +1444,18 @@ mod tests {
 
     #[test]
     fn raw_root_selection_preserves_detected_filesystem_kind() {
+        let disks = [raw_disk(Some(FilesystemKind::Fat))];
+        let candidates = collect_root_candidates(&disks);
+        let (disk_index, partition_index) =
+            select_default_root(&candidates).expect("raw root should be selected");
+        let disk = disks
+            .iter()
+            .find(|disk| disk.disk_index == disk_index)
+            .unwrap();
+
+        assert_eq!(partition_index, None);
         assert_eq!(
-            selected_filesystem_kind(Some(FilesystemKind::Fat), &[], None),
+            selected_filesystem_kind(disk, partition_index),
             Some(FilesystemKind::Fat)
         );
     }

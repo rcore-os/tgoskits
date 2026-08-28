@@ -37,9 +37,13 @@ mod config;
 ))]
 mod console_regression;
 mod guest_console;
-#[cfg(feature = "http-axum")]
+#[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
 mod manager;
+#[cfg(feature = "browser-console")]
+mod network_console;
+#[cfg(feature = "browser-console")]
+mod network_status;
 mod shell;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
@@ -73,8 +77,9 @@ fn init_atomic_output_panic_hook() {
 /// 2. Print the startup banner through its output worker.
 /// 3. Check and enable hardware virtualization on every CPU.
 /// 4. Build the default guest VMs.
-/// 5. Spawn the management plane first — the HTTP server so the API is live
-///    before any guest boots — then the VM lifecycle waiter and the shell.
+/// 5. Spawn the management plane first — the configured HTTP and network
+///    console services so they are live before any guest boots — then the VM
+///    lifecycle waiter and the physical-console shell.
 ///
 /// The vCPU tasks are pinned to the secondary CPUs via `phys_cpu_ids` in the
 /// VM configs, while the management console stays on the primary CPU.
@@ -103,17 +108,40 @@ fn main() {
 
     manager.init_default_vms();
 
-    // The management HTTP server accepts connections in a loop and needs its
-    // own task so neither the shell nor the VMM blocks it. It is spawned first
-    // so the management API is ready as early as possible. `ax_std::thread::spawn`
-    // only enqueues the task — the main task keeps running until it yields or
-    // blocks — so the server's bind does not necessarily happen before
-    // `launch_default_vms` queues the vCPU tasks; the ordering is best-effort.
-    #[cfg(feature = "http-axum")]
+    // The browser-console registry snapshots the successfully initialized
+    // default VM set exactly once. Initialize it before HTTP so the browser's
+    // `/api/consoles` endpoint cannot observe a partially configured layout.
+    #[cfg(feature = "browser-console")]
+    network_console::start()
+        .unwrap_or_else(|error| panic!("failed to initialize browser consoles: {error:#}"));
+
+    // The optional HTTP server accepts connections in a loop and needs its
+    // own task so neither the shell nor the VMM blocks it. The console registry
+    // is already complete when this task is enqueued, but the server's bind
+    // still races guest task scheduling because spawning only enqueues work.
+    #[cfg(any(feature = "browser-console", feature = "http-axum"))]
     std::thread::Builder::new()
         .name("axvisor-http".into())
-        .spawn(http::serve)
-        .unwrap_or_else(|error| panic!("failed to start management HTTP server: {error}"));
+        .spawn(|| {
+            #[cfg(feature = "browser-console")]
+            network_console::pin_current_task();
+
+            #[cfg(feature = "browser-console")]
+            if let Err(error) = http::serve() {
+                let message = format!(
+                    "\r\nAxvisor web console unavailable:\r\n  bind = {}\r\n  error = {error:#}\r\n",
+                    http::bind_addr()
+                );
+                guest_console::submit_host_bytes(message.as_bytes());
+            }
+
+            #[cfg(all(feature = "http-axum", not(feature = "browser-console")))]
+            http::serve().unwrap_or_else(|error| panic!("Axvisor HTTP server failed: {error:#}"));
+        })
+        .unwrap_or_else(|error| panic!("failed to start Axvisor HTTP server: {error}"));
+
+    #[cfg(feature = "browser-console")]
+    network_status::start();
 
     #[cfg(feature = "test-console-atomic-output")]
     console_regression::emit_atomic_output();

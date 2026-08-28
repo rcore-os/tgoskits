@@ -7,6 +7,14 @@ use ax_hal as _;
 use ax_std as _;
 use axvm as _;
 
+// Compile the production guest-console mux with narrow host/manager adapters
+// so its application-layer state machine is exercised by the kernel harness.
+#[path = "../src/network_console/layout.rs"]
+mod browser_console_layout;
+mod guest_console_harness;
+mod manager;
+mod network_console;
+
 #[axtest::tests]
 mod tests {
     use axtest::prelude::*;
@@ -22,6 +30,73 @@ mod tests {
         CopyMode, RemoveOptions, copy_path, ensure_recursive_destination_outside_source,
         metadata_for_remove, move_file_or_dir, remove_path, touch_file_at,
     };
+
+    #[test]
+    fn guest_output_reaches_only_its_network_console() {
+        use crate::{guest_console_harness::mux, network_console};
+
+        network_console::reset();
+        network_console::set_guest_connected(1);
+        network_console::set_guest_connected(2);
+        let backend_1 = mux::serial_backend_factory(1).create();
+        let backend_2 = mux::serial_backend_factory(2).create();
+        mux::mark_running(1);
+        mux::mark_running(2);
+
+        backend_1.write(b"starry output\n");
+        backend_2.write(b"zephyr output\n");
+
+        ax_assert_eq!(network_console::take_guest_output(1), b"starry output\n");
+        ax_assert_eq!(network_console::take_guest_output(2), b"zephyr output\n");
+        ax_assert!(network_console::take_guest_output(3).is_empty());
+        mux::remove(1);
+        mux::remove(2);
+    }
+
+    #[test]
+    fn guest_output_skips_network_path_without_a_browser_session() {
+        use crate::{guest_console_harness::mux, network_console};
+
+        network_console::reset();
+        let backend = mux::serial_backend_factory(1).create();
+        mux::mark_running(1);
+
+        backend.write(b"physical console only\n");
+
+        ax_assert!(network_console::take_guest_output(1).is_empty());
+        mux::remove(1);
+    }
+
+    #[test]
+    fn browser_console_layout_uses_at_most_three_sorted_guests() {
+        use crate::browser_console_layout::{ConsoleLane, MAX_GUEST_CONSOLES, plan_endpoints};
+
+        let endpoints = plan_endpoints(
+            [7, 5, 9, 3]
+                .into_iter()
+                .map(|vm_id| (vm_id, vm_id.to_string()))
+                .collect(),
+        );
+
+        ax_assert_eq!(endpoints.len(), MAX_GUEST_CONSOLES + 1);
+        ax_assert_eq!(ConsoleLane::COUNT, 4);
+        ax_assert_eq!(endpoints[0].route, "axvisor");
+        ax_assert_eq!(endpoints[1].vm_id, Some(3));
+        ax_assert_eq!(endpoints[2].vm_id, Some(5));
+        ax_assert_eq!(endpoints[3].vm_id, Some(7));
+        ax_assert_eq!(endpoints[3].lane.index(), 3);
+    }
+
+    #[test]
+    fn browser_console_layout_uses_configured_names_with_vm_fallback() {
+        use crate::browser_console_layout::plan_endpoints;
+
+        let endpoints = plan_endpoints(vec![(2, "zephyr".into()), (1, String::new())]);
+
+        ax_assert_eq!(endpoints[1].display_name, "VM 1");
+        ax_assert_eq!(endpoints[2].display_name, "zephyr");
+        ax_assert_eq!(endpoints[2].route, "vm-2");
+    }
 
     #[cfg(feature = "fs")]
     #[test]

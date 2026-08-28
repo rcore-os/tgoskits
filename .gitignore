@@ -45,7 +45,6 @@ __pycache__/
 /.cargo/.config-local.toml
 .axconfig*
 *.img
-!.claude/skills/*
 /tmp/*
 *.vi
 
@@ -58,7 +57,9 @@ __pycache__/
 .direnv/
 /.zcode/
 .codex
-.agents
+/.agents/*
+!/.agents/skills/
+!/.agents/skills/**
 .image.toml
 coverage/
 third_party/

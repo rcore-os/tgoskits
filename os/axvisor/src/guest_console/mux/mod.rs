@@ -397,6 +397,13 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
     }
 }
 
+#[cfg(any(feature = "browser-console", test, axtest))]
+impl GuestConsoleMux {
+    fn route_network_input(&self, vm_id: VMId, bytes: &[u8]) -> Option<bool> {
+        self.core.route_network_input(vm_id, bytes)
+    }
+}
+
 impl ConsoleCore {
     fn lock_state(&self) -> NoPreemptMutexGuard<'_, ConsoleState> {
         self.state.lock()
@@ -460,7 +467,7 @@ impl ConsoleCore {
         read_len
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, axtest))]
     fn format_guest_output(
         &self,
         vm_id: VMId,
@@ -481,6 +488,21 @@ impl ConsoleCore {
             return;
         }
 
+        #[cfg(any(feature = "browser-console", all(test, axtest)))]
+        if crate::network_console::guest_output_connected(vm_id) {
+            let is_current = {
+                let state = self.lock_state();
+                state
+                    .guests
+                    .get(&vm_id)
+                    .is_some_and(|guest| guest.backend_generation == Some(generation))
+            };
+            if !is_current {
+                return;
+            }
+            crate::network_console::submit_guest_output(vm_id, bytes);
+        }
+
         let _output_guard = self.lock_output();
         submit_host_transaction(|emit| {
             let mut state = self.lock_state();
@@ -497,6 +519,20 @@ impl ConsoleCore {
                     .format_registered_into(vm_id, multiple_running, bytes, emit);
             debug_assert!(formatted, "active backend output state must be registered");
         });
+    }
+
+    #[cfg(any(feature = "browser-console", test, axtest))]
+    fn route_network_input(&self, vm_id: VMId, bytes: &[u8]) -> Option<bool> {
+        let mut state = self.lock_state();
+        if !state.running.contains(&vm_id)
+            || !state
+                .guests
+                .get(&vm_id)
+                .is_some_and(|guest| guest.backend_generation.is_some())
+        {
+            return None;
+        }
+        Some(enqueue_guest_input(&mut state, vm_id, bytes))
     }
 }
 
@@ -547,6 +583,24 @@ pub fn route_host_byte(byte: u8) -> ConsoleInputEvent {
         warn!("failed to wake VM[{vm_id}] for console input: {error:#}");
     }
     routed.event
+}
+
+/// Routes bytes from a VM-specific network endpoint without changing the
+/// physical console foreground.
+#[cfg(feature = "browser-console")]
+pub(crate) fn route_network_input(vm_id: VMId, bytes: &[u8]) -> bool {
+    let Some(overflowed) = GUEST_CONSOLE_MUX.route_network_input(vm_id, bytes) else {
+        return false;
+    };
+    if overflowed {
+        warn!("VM[{vm_id}] network console input queue overflowed; dropping bytes");
+    }
+    if !bytes.is_empty()
+        && let Err(error) = crate::manager::AxvmManager::notify_vm(vm_id)
+    {
+        warn!("failed to wake VM[{vm_id}] for network console input: {error:#}");
+    }
+    true
 }
 
 /// Routes a complete host log record without exposing it to a guest UART.
@@ -622,5 +676,5 @@ pub fn attached_vm() -> Option<VMId> {
     GUEST_CONSOLE_MUX.attached_vm()
 }
 
-#[cfg(test)]
+#[cfg(any(test, axtest))]
 mod tests;

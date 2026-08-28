@@ -56,7 +56,11 @@ fn namespace_vfs_error(error: axfs_ng_vfs::VfsError) -> ax_net::NetError {
         VfsError::BadFileDescriptor => NetError::BadFileDescriptor,
         VfsError::BadState => NetError::BadState,
         VfsError::CrossesDevices => NetError::CrossesDevices,
+        // Unix socket path operations cannot expose the filesystem-only
+        // categories through `NetError`; degrade only at this namespace edge.
+        VfsError::DataMissing => NetError::InvalidData,
         VfsError::DirectoryNotEmpty => NetError::DirectoryNotEmpty,
+        VfsError::FilesystemCorrupted => NetError::InvalidData,
         VfsError::FilesystemLoop => NetError::FilesystemLoop,
         VfsError::FileTooLarge => NetError::FileTooLarge,
         VfsError::InvalidData => NetError::InvalidData,
@@ -74,11 +78,14 @@ fn namespace_vfs_error(error: axfs_ng_vfs::VfsError) -> ax_net::NetError {
         VfsError::OperationNotPermitted => NetError::OperationNotPermitted,
         VfsError::OperationNotSupported => NetError::OperationNotSupported,
         VfsError::PermissionDenied => NetError::PermissionDenied,
+        VfsError::QuotaExceeded => NetError::StorageFull,
         VfsError::ReadOnlyFilesystem => NetError::ReadOnlyFilesystem,
         VfsError::ResourceBusy => NetError::ResourceBusy,
         VfsError::StorageFull => NetError::StorageFull,
         VfsError::TimedOut => NetError::TimedOut,
+        VfsError::TooManyLinks => NetError::OperationNotSupported,
         VfsError::Unsupported => NetError::Unsupported,
+        VfsError::ValueOverflow => NetError::InvalidInput,
         VfsError::WouldBlock => NetError::WouldBlock,
     }
 }

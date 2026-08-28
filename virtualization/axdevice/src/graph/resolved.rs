@@ -1,6 +1,6 @@
 //! Immutable resolved device graph.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use super::{builder::*, *};
 use crate::*;
@@ -15,6 +15,18 @@ pub struct ResolvedDeviceNode {
     firmware_spec: DeviceFirmwareSpec,
     model: Option<Arc<dyn DeviceModel>>,
     host_mapping: Option<HostPassthroughMapping>,
+    pci_host_topology: Option<Arc<ResolvedPciTopology>>,
+    pci_endpoint: Option<ResolvedPciEndpoint>,
+}
+
+pub(crate) struct ResolvedPciEndpoint {
+    pub(crate) host: DeviceNodeId,
+    pub(crate) function_node: DeviceNodeId,
+}
+
+pub(crate) struct ResolvedPciHost {
+    pub(crate) host_id: DeviceNodeId,
+    pub(crate) topology: Arc<ResolvedPciTopology>,
 }
 
 impl ResolvedDeviceNode {
@@ -28,6 +40,8 @@ impl ResolvedDeviceNode {
             firmware_spec: node.firmware_spec,
             model: node.model,
             host_mapping: node.host_mapping,
+            pci_host_topology: None,
+            pci_endpoint: None,
         }
     }
 
@@ -74,6 +88,14 @@ impl ResolvedDeviceNode {
     pub(crate) const fn builds_at_runtime(&self) -> bool {
         self.model.is_some()
     }
+
+    pub(crate) fn pci_host_topology(&self) -> Option<&Arc<ResolvedPciTopology>> {
+        self.pci_host_topology.as_ref()
+    }
+
+    pub(crate) const fn pci_endpoint(&self) -> Option<&ResolvedPciEndpoint> {
+        self.pci_endpoint.as_ref()
+    }
 }
 
 /// One immutable graph and its single authoritative resource plan.
@@ -81,12 +103,14 @@ pub struct ResolvedDeviceGraph {
     nodes: Vec<ResolvedDeviceNode>,
     resources: VmResourcePlan,
     fixed_leases: Vec<ResourceLease>,
+    pci_topologies: BTreeMap<PciHostKey, ResolvedPciHost>,
 }
 
 impl ResolvedDeviceGraph {
     pub(crate) fn new(
-        nodes: Vec<ResolvedDeviceNode>,
+        mut nodes: Vec<ResolvedDeviceNode>,
         resources: VmResourcePlan,
+        pci_topologies: BTreeMap<PciHostKey, ResolvedPciHost>,
     ) -> DeviceManagerResult<Self> {
         let mut fixed_leases = Vec::new();
         for node in nodes.iter().filter(|node| !node.builds_at_runtime()) {
@@ -97,10 +121,31 @@ impl ResolvedDeviceGraph {
             }
             claims.finish()?;
         }
+        for host in pci_topologies.values() {
+            let host_node = nodes
+                .iter_mut()
+                .find(|node| node.id == host.host_id)
+                .expect("resolved PCI hosts originate from graph nodes");
+            host_node.pci_host_topology = Some(host.topology.clone());
+            for function in host.topology.functions() {
+                if function.owner() == &host.host_id {
+                    continue;
+                }
+                let endpoint = nodes
+                    .iter_mut()
+                    .find(|node| node.id == *function.owner())
+                    .expect("resolved PCI endpoint owners originate from graph nodes");
+                endpoint.pci_endpoint = Some(ResolvedPciEndpoint {
+                    host: host.host_id.clone(),
+                    function_node: function.id().clone(),
+                });
+            }
+        }
         Ok(Self {
             nodes,
             resources,
             fixed_leases,
+            pci_topologies,
         })
     }
 
@@ -127,6 +172,13 @@ impl ResolvedDeviceGraph {
     /// Returns the canonical VM resource plan used by firmware and runtime.
     pub const fn resource_plan(&self) -> &VmResourcePlan {
         &self.resources
+    }
+
+    /// Returns the immutable PCI topology published for one typed host.
+    pub fn pci_topology(&self, host: &PciHostKey) -> Option<&ResolvedPciTopology> {
+        self.pci_topologies
+            .get(host)
+            .map(|host| host.topology.as_ref())
     }
 
     /// Rejects a runtime model that declares platform nodes but no FDT form.

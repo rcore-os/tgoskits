@@ -1,15 +1,11 @@
-//! Extended attribute syscalls backed by per-node `user_data`.
+//! Extended attribute syscalls backed by filesystem inode capabilities.
 //!
-//! Only the `user.*` namespace is supported here. Attributes are stored in a
-//! VFS node side map rather than in the underlying on-disk filesystem. Overlay
-//! paths need special handling: overlay entries are non-cacheable, so xattrs
-//! must be read from the current real target and written to the copy-up target
-//! instead of the temporary overlay entry.
+//! Only the `user.*` namespace is currently exposed by Starry. Persistent
+//! storage and create/replace atomicity belong to the selected filesystem;
+//! this layer owns userspace validation, overlay copy-up, and Linux ABI sizes.
 
 use alloc::{
-    collections::{BTreeMap, btree_map::Entry},
     string::String,
-    sync::Arc,
     vec::Vec,
 };
 use core::{
@@ -19,53 +15,21 @@ use core::{
 };
 
 use ax_memory_addr::PAGE_SIZE_4K;
-use axfs_ng_vfs::Location;
+use axfs_ng_vfs::{Location, VfsError, XattrSetMode};
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
     XATTR_REPLACE, XATTR_SIZE_MAX, xattr_args,
 };
-
 use crate::{
-    Errno, StarryError, StarryResult,
+    StarryError, StarryResult,
     file::{fd_is_path, resolve_at},
     mm::{vm_load_path_string, vm_load_string, vm_read_slice, vm_write_slice},
     pseudofs::overlay,
-    sync::PiMutex,
+    task::UserTaskRef,
 };
 
-type XattrMap = BTreeMap<String, Vec<u8>>;
-
-#[derive(Default)]
-struct XattrStore {
-    attrs: PiMutex<XattrMap>,
-}
-
-fn linux_errno(errno: Errno) -> StarryError {
-    StarryError::from(errno)
-}
-
-fn existing_store(loc: &Location) -> Option<Arc<XattrStore>> {
-    loc.user_data().get::<XattrStore>()
-}
-
-/// Return the existing xattr store or attach a new one to this real node.
-fn store_for_update(loc: &Location) -> Arc<XattrStore> {
-    loc.user_data().get_or_insert_with(XattrStore::default)
-}
-
-/// Snapshot existing attrs before copy-up.
-///
-/// Copy-up creates a different upper `Location`, so metadata kept in
-/// `user_data` must be transferred explicitly when the upper store is empty.
-fn existing_attrs(loc: &Location) -> Option<XattrMap> {
-    existing_store(loc).map(|store| store.attrs.lock().clone())
-}
-
 /// Read and validate an xattr name from userspace.
-fn read_name(
-    current: &crate::task::UserTaskRef,
-    name: *const c_char,
-) -> crate::StarryResult<String> {
+fn read_name(current: &UserTaskRef, name: *const c_char) -> StarryResult<String> {
     let name = vm_load_string(current, name)?;
     let bytes = name.as_bytes();
     if bytes.is_empty() || bytes.len() > XATTR_NAME_MAX as usize {
@@ -78,11 +42,7 @@ fn read_name(
 }
 
 /// Read an xattr value from userspace with Linux size limits.
-fn read_value(
-    current: &crate::task::UserTaskRef,
-    value: *const u8,
-    size: usize,
-) -> crate::StarryResult<Vec<u8>> {
+fn read_value(current: &UserTaskRef, value: *const u8, size: usize) -> StarryResult<Vec<u8>> {
     if size > XATTR_SIZE_MAX as usize {
         return Err(StarryError::ArgumentListTooLong);
     }
@@ -99,10 +59,10 @@ fn read_value(
 
 /// Resolve a path argument used by path-based xattr syscalls.
 fn resolve_path(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     nofollow: bool,
-) -> crate::StarryResult<Location> {
+) -> StarryResult<Location> {
     let path = vm_load_path_string(current, path)?;
     let flags = if nofollow { AT_SYMLINK_NOFOLLOW } else { 0 };
     resolve_at(AT_FDCWD, Some(&path), flags)?
@@ -111,7 +71,7 @@ fn resolve_path(
 }
 
 fn resolve_xattrat(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     dirfd: i32,
     path: *const c_char,
     at_flags: u32,
@@ -138,7 +98,7 @@ fn resolve_fd(fd: i32) -> StarryResult<Location> {
 }
 
 fn read_xattr_args(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     args: *const xattr_args,
     args_size: usize,
 ) -> StarryResult<xattr_args> {
@@ -173,11 +133,11 @@ fn read_xattr_args(
 
 /// Copy a single xattr value to userspace, or return its required size.
 fn copy_value_to_user(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     value: &[u8],
     user_value: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     if size == 0 {
         return Ok(value.len() as isize);
     }
@@ -191,13 +151,11 @@ fn copy_value_to_user(
 }
 
 /// Serialize xattr names as a nul-separated Linux listxattr buffer.
-fn serialize_names(attrs: Option<&XattrMap>) -> StarryResult<Vec<u8>> {
+fn serialize_names(attrs: &[Vec<u8>]) -> StarryResult<Vec<u8>> {
     let mut names = Vec::new();
-    if let Some(attrs) = attrs {
-        for name in attrs.keys() {
-            names.extend_from_slice(name.as_bytes());
-            names.push(0);
-        }
+    for name in attrs {
+        names.extend_from_slice(name);
+        names.push(0);
     }
     if names.len() > XATTR_LIST_MAX as usize {
         return Err(StarryError::ArgumentListTooLong);
@@ -207,11 +165,11 @@ fn serialize_names(attrs: Option<&XattrMap>) -> StarryResult<Vec<u8>> {
 
 /// Copy a listxattr buffer to userspace, or return its required size.
 fn copy_list_to_user(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     names: &[u8],
     list: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     if size == 0 {
         return Ok(names.len() as isize);
     }
@@ -226,46 +184,49 @@ fn copy_list_to_user(
 
 /// Get an xattr from the currently visible real node.
 fn get_xattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     loc: Location,
     name: *const c_char,
     user_value: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     let name = read_name(current, name)?;
     let loc = overlay::visible_target(&loc)?;
-    let value = {
-        let store = existing_store(&loc).ok_or_else(|| linux_errno(Errno::ENODATA))?;
-        store
-            .attrs
-            .lock()
-            .get(&name)
-            .cloned()
-            .ok_or_else(|| linux_errno(Errno::ENODATA))?
-    };
+    let value = loc.get_xattr(name.as_bytes())?;
     copy_value_to_user(current, &value, user_value, size)
 }
 
 /// List xattrs from the currently visible real node.
 fn list_xattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     loc: Location,
     list: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     let loc = overlay::visible_target(&loc)?;
-    let names = {
-        let Some(store) = existing_store(&loc) else {
-            return copy_list_to_user(current, &[], list, size);
-        };
-        serialize_names(Some(&store.attrs.lock()))?
-    };
+    let names = serialize_names(&loc.list_xattrs()?)?;
     copy_list_to_user(current, &names, list, size)
+}
+
+fn copy_up_xattrs(source: &Location, target: &Location) -> StarryResult<()> {
+    if source.ptr_eq(target) {
+        return Ok(());
+    }
+    let names = match source.list_xattrs() {
+        Ok(names) => names,
+        Err(VfsError::OperationNotSupported | VfsError::Unsupported) => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    for name in names {
+        let value = source.get_xattr(&name)?;
+        target.set_xattr(&name, &value, XattrSetMode::Upsert)?;
+    }
+    Ok(())
 }
 
 /// Set an xattr, copying lower-backed overlay files up before writing.
 fn set_xattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     loc: Location,
     name: *const c_char,
     value: *const u8,
@@ -281,102 +242,77 @@ fn set_xattr(
 
     let name = read_name(current, name)?;
     let value = read_value(current, value, size)?;
-    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?);
-
-    if let Some(attrs) = &old_attrs {
-        let exists = attrs.contains_key(&name);
-        if exists && flags & XATTR_CREATE != 0 {
-            return Err(StarryError::AlreadyExists);
-        }
-        if !exists && flags & XATTR_REPLACE != 0 {
-            return Err(linux_errno(Errno::ENODATA));
-        }
+    if loc.is_readonly() {
+        return Err(StarryError::ReadOnlyFilesystem);
+    }
+    let source = overlay::visible_target(&loc)?;
+    let target = overlay::ensure_copy_up_target(&loc)?;
+    copy_up_xattrs(&source, &target)?;
+    let mode = if flags & XATTR_CREATE != 0 {
+        XattrSetMode::Create
     } else if flags & XATTR_REPLACE != 0 {
-        return Err(linux_errno(Errno::ENODATA));
-    }
-
-    let loc = overlay::ensure_copy_up_target(&loc)?;
-    let store = store_for_update(&loc);
-    let mut attrs = store.attrs.lock();
-    if attrs.is_empty()
-        && let Some(old_attrs) = old_attrs
-    {
-        *attrs = old_attrs;
-    }
-    match attrs.entry(name) {
-        Entry::Occupied(mut entry) => {
-            if flags & XATTR_CREATE != 0 {
-                return Err(StarryError::AlreadyExists);
-            }
-            entry.insert(value);
-        }
-        Entry::Vacant(entry) => {
-            if flags & XATTR_REPLACE != 0 {
-                return Err(linux_errno(Errno::ENODATA));
-            }
-            entry.insert(value);
-        }
-    }
+        XattrSetMode::Replace
+    } else {
+        XattrSetMode::Upsert
+    };
+    target.set_xattr(name.as_bytes(), &value, mode)?;
     Ok(0)
 }
 
 /// Remove an xattr, copying lower-backed overlay files up before mutation.
 fn remove_xattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     loc: Location,
     name: *const c_char,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     let name = read_name(current, name)?;
-    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?)
-        .ok_or_else(|| linux_errno(Errno::ENODATA))?;
-    if !old_attrs.contains_key(&name) {
-        return Err(linux_errno(Errno::ENODATA));
+    if loc.is_readonly() {
+        return Err(StarryError::ReadOnlyFilesystem);
     }
-
-    let loc = overlay::ensure_copy_up_target(&loc)?;
-    let store = store_for_update(&loc);
-    let mut attrs = store.attrs.lock();
-    if attrs.is_empty() {
-        *attrs = old_attrs;
-    }
-    attrs.remove(&name);
+    let source = overlay::visible_target(&loc)?;
+    // Probe before copy-up so removing a missing lower attribute does not
+    // materialize an upper inode.
+    source.get_xattr(name.as_bytes())?;
+    let target = overlay::ensure_copy_up_target(&loc)?;
+    copy_up_xattrs(&source, &target)?;
+    target.remove_xattr(name.as_bytes())?;
     Ok(0)
 }
 
 pub fn sys_listxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     list: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     list_xattr(current, resolve_path(current, path, false)?, list, size)
 }
 
 pub fn sys_llistxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     list: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     list_xattr(current, resolve_path(current, path, true)?, list, size)
 }
 
 pub fn sys_flistxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: i32,
     list: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     list_xattr(current, resolve_fd(fd)?, list, size)
 }
 
 pub fn sys_getxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     name: *const c_char,
     value: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     get_xattr(
         current,
         resolve_path(current, path, false)?,
@@ -387,12 +323,12 @@ pub fn sys_getxattr(
 }
 
 pub fn sys_lgetxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     name: *const c_char,
     value: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     get_xattr(
         current,
         resolve_path(current, path, true)?,
@@ -403,17 +339,17 @@ pub fn sys_lgetxattr(
 }
 
 pub fn sys_fgetxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: i32,
     name: *const c_char,
     value: *mut u8,
     size: usize,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     get_xattr(current, resolve_fd(fd)?, name, value, size)
 }
 
 pub fn sys_getxattrat(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     dirfd: i32,
     path: *const c_char,
     at_flags: u32,
@@ -435,13 +371,13 @@ pub fn sys_getxattrat(
 }
 
 pub fn sys_setxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     name: *const c_char,
     value: *const u8,
     size: usize,
     flags: i32,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     set_xattr(
         current,
         resolve_path(current, path, false)?,
@@ -453,7 +389,7 @@ pub fn sys_setxattr(
 }
 
 pub fn sys_setxattrat(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     dirfd: i32,
     path: *const c_char,
     at_flags: u32,
@@ -473,13 +409,13 @@ pub fn sys_setxattrat(
 }
 
 pub fn sys_lsetxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     name: *const c_char,
     value: *const u8,
     size: usize,
     flags: i32,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     set_xattr(
         current,
         resolve_path(current, path, true)?,
@@ -491,41 +427,41 @@ pub fn sys_lsetxattr(
 }
 
 pub fn sys_fsetxattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: i32,
     name: *const c_char,
     value: *const u8,
     size: usize,
     flags: i32,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     set_xattr(current, resolve_fd(fd)?, name, value, size, flags)
 }
 
 pub fn sys_removexattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     name: *const c_char,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     remove_xattr(current, resolve_path(current, path, false)?, name)
 }
 
 pub fn sys_lremovexattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     path: *const c_char,
     name: *const c_char,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     remove_xattr(current, resolve_path(current, path, true)?, name)
 }
 
 pub fn sys_fremovexattr(
-    current: &crate::task::UserTaskRef,
+    current: &UserTaskRef,
     fd: i32,
     name: *const c_char,
-) -> crate::StarryResult<isize> {
+) -> StarryResult<isize> {
     remove_xattr(current, resolve_fd(fd)?, name)
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(test)]
 fn xattr_name_and_value_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{XATTR_NAME_MAX, XATTR_SIZE_MAX};
 
@@ -540,7 +476,7 @@ fn xattr_name_and_value_validation_rules_hold_for_test() -> bool {
     true
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(test)]
 mod tests {
     #[test]
     fn xattr_name_and_value_validation_rules_hold() {

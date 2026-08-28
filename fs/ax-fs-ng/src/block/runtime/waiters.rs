@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     BlockResult,
-    os::{BlockNotification, runtime_ops, sync::Mutex},
+    os::{BlockNotification, runtime_ops, sync::IrqMutex},
 };
 
 /// Task-context waiters whose wakeups must not be coalesced with each other.
@@ -12,13 +12,13 @@ use crate::{
 /// their state transition first and then wake the registered tasks. Registering
 /// before rechecking the predicate closes the transition-to-sleep race.
 pub(super) struct TaskWaiters {
-    notifications: Mutex<Vec<Arc<dyn BlockNotification>>>,
+    notifications: IrqMutex<Vec<Arc<dyn BlockNotification>>>,
 }
 
 impl TaskWaiters {
     pub(super) const fn new() -> Self {
         Self {
-            notifications: Mutex::new(Vec::new()),
+            notifications: IrqMutex::new(Vec::new()),
         }
     }
 
@@ -87,14 +87,14 @@ struct CapacityWaiter {
 /// whose requests can fit in the newly available capacity. A producer that
 /// still cannot fit hands unused capacity to smaller waiters before sleeping.
 pub(super) struct CapacityWaiters {
-    waiters: Mutex<Vec<CapacityWaiter>>,
+    waiters: IrqMutex<Vec<CapacityWaiter>>,
     count: AtomicUsize,
 }
 
 impl CapacityWaiters {
     pub(super) const fn new() -> Self {
         Self {
-            waiters: Mutex::new(Vec::new()),
+            waiters: IrqMutex::new(Vec::new()),
             count: AtomicUsize::new(0),
         }
     }

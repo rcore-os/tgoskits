@@ -31,8 +31,12 @@ pub enum VfsError {
     BadState,
     #[error("operation crosses filesystem devices")]
     CrossesDevices,
+    #[error("filesystem extended attribute data is missing")]
+    DataMissing,
     #[error("directory is not empty")]
     DirectoryNotEmpty,
+    #[error("filesystem metadata is corrupted")]
+    FilesystemCorrupted,
     #[error("filesystem traversal loop detected")]
     FilesystemLoop,
     #[error("filesystem file is too large")]
@@ -67,6 +71,8 @@ pub enum VfsError {
     OperationNotSupported,
     #[error("filesystem permission denied")]
     PermissionDenied,
+    #[error("filesystem quota is exceeded")]
+    QuotaExceeded,
     #[error("filesystem is read-only")]
     ReadOnlyFilesystem,
     #[error("filesystem resource is busy")]
@@ -75,10 +81,14 @@ pub enum VfsError {
     StorageFull,
     #[error("filesystem operation timed out")]
     TimedOut,
+    #[error("filesystem object has too many links")]
+    TooManyLinks,
     #[error("filesystem operation is not implemented")]
     Unsupported,
     #[error("filesystem operation would block")]
     WouldBlock,
+    #[error("filesystem value cannot be represented")]
+    ValueOverflow,
 }
 
 pub type VfsResult<T = ()> = Result<T, VfsError>;

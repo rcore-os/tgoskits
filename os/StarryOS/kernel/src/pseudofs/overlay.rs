@@ -20,15 +20,16 @@ use core::any::Any;
 
 use ax_fs_ng::vfs::OpenOptions;
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
-    NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
+    FileRangeOperation, Filesystem, FilesystemOps, Location, Metadata, MetadataUpdate, NodeFlags,
+    NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult,
+    WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 
 use crate::{
     pseudofs::dummy_stat_fs,
-    sync::{IrqMutex, SpinLock},
+    sync::{IrqMutex, Mutex},
 };
 
 const COPY_BUF_SIZE: usize = 4096;
@@ -240,20 +241,26 @@ fn lookup_lower(dirs: &[Location], name: &str) -> VfsResult<Option<Location>> {
 /// Whiteouts remove earlier lower names from the merged view, while opaque
 /// markers are hidden from users.
 fn read_names(dir: &Location, names: &mut BTreeMap<String, DirentInfo>) -> VfsResult<()> {
-    dir.read_dir(0, &mut |name: &str, ino, node_type, _| {
-        if name == "." || name == ".." || name == OPAQUE_MARKER_NAME {
-            return true;
-        }
-        let Ok(loc) = dir.lookup_no_follow(name) else {
-            return true;
-        };
-        if is_whiteout(&loc).unwrap_or(false) {
-            names.remove(name);
-        } else {
-            names.insert(name.to_string(), DirentInfo { ino, node_type });
-        }
-        true
-    })?;
+    dir.read_dir(
+        DirectoryCursor::START,
+        &mut |name: &[u8], ino, node_type, _| {
+            let Ok(name) = core::str::from_utf8(name) else {
+                return true;
+            };
+            if name == "." || name == ".." || name == OPAQUE_MARKER_NAME {
+                return true;
+            }
+            let Ok(loc) = dir.lookup_no_follow(name) else {
+                return true;
+            };
+            if is_whiteout(&loc).unwrap_or(false) {
+                names.remove(name);
+            } else {
+                names.insert(name.to_string(), DirentInfo { ino, node_type });
+            }
+            true
+        },
+    )?;
     Ok(())
 }
 
@@ -306,10 +313,16 @@ fn copy_metadata(src: &Location, dst: &Location) -> VfsResult<()> {
 /// Copy a lower entry into an upper directory.
 fn copy_entry(src: &Location, dst_dir: &Location, name: &str) -> VfsResult<Location> {
     let meta = src.metadata()?;
-    let dst = dst_dir.create(name, meta.node_type, meta.mode, meta.uid, meta.gid)?;
+    let dst = match meta.node_type {
+        NodeType::Symlink => {
+            let target = src.read_link()?;
+            dst_dir.create_symlink(name, &target, meta.mode, meta.uid, meta.gid)?
+        }
+        _ => dst_dir.create(name, meta.node_type, meta.mode, meta.uid, meta.gid)?,
+    };
     match meta.node_type {
         NodeType::RegularFile => copy_file_contents(src, &dst)?,
-        NodeType::Symlink => dst.entry().as_file()?.set_symlink(&src.read_link()?)?,
+        NodeType::Symlink => {}
         NodeType::Directory => {}
         _ => {}
     }
@@ -338,7 +351,7 @@ struct DirentInfo {
 struct OverlayDir {
     fs: Arc<OverlayFs>,
     /// Materialized upper directory for this overlay path, if it exists.
-    upper_dir: SpinLock<Option<Location>>,
+    upper_dir: Mutex<Option<Location>>,
     /// Lower directories that still participate in this overlay directory.
     lower_dirs: Vec<Location>,
     /// Path from overlay root to this directory, used for deferred copy-up.
@@ -359,7 +372,7 @@ impl OverlayDir {
             |this| {
                 DirNode::new(Arc::new(Self {
                     fs,
-                    upper_dir: SpinLock::new(upper_dir),
+                    upper_dir: Mutex::new(upper_dir),
                     lower_dirs,
                     path,
                     this: Some(this),
@@ -496,7 +509,7 @@ impl OverlayDir {
                 |this| {
                     DirNode::new(Arc::new(Self {
                         fs,
-                        upper_dir: SpinLock::new(upper),
+                        upper_dir: Mutex::new(upper),
                         lower_dirs,
                         path,
                         this: Some(this),
@@ -508,7 +521,7 @@ impl OverlayDir {
             Ok(DirEntry::new_file(
                 FileNode::new(Arc::new(OverlayFile {
                     fs: self.fs.clone(),
-                    upper_dir: SpinLock::new(self.existing_upper_dir()),
+                    upper_dir: Mutex::new(self.existing_upper_dir()),
                     parent_path: self.path.clone(),
                     name: name.to_string(),
                     upper,
@@ -580,12 +593,26 @@ impl NodeOps for OverlayDir {
 }
 
 impl DirNodeOps for OverlayDir {
+    fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: axfs_ng_vfs::FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<axfs_ng_vfs::FileExtentMap> {
+        self.current_dir()?
+            .entry()
+            .as_dir()?
+            .inner()
+            .map_extents(offset, len, target, extent_limit)
+    }
+
     /// Return the merged directory view.
     ///
     /// Lower layers are merged first from bottom to top, then upper entries
     /// override them. Whiteouts delete lower names, and opaque upper dirs skip
     /// lower merging entirely.
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut entries = BTreeMap::new();
         let is_opaque = match self.existing_upper_dir() {
             Some(upper_dir) => is_opaque(&upper_dir)?,
@@ -601,8 +628,17 @@ impl DirNodeOps for OverlayDir {
         }
 
         let mut emitted = 0;
-        for (idx, (name, info)) in entries.into_iter().enumerate().skip(offset as usize) {
-            if !sink.accept(&name, info.ino, info.node_type, idx as u64 + 1) {
+        for (idx, (name, info)) in entries
+            .into_iter()
+            .enumerate()
+            .skip(cursor.offset() as usize)
+        {
+            if !sink.accept(
+                name.as_bytes(),
+                info.ino,
+                info.node_type,
+                DirectoryCursor::new(idx as u64 + 1),
+            ) {
                 break;
             }
             emitted += 1;
@@ -643,11 +679,30 @@ impl DirNodeOps for OverlayDir {
         uid: u32,
         gid: u32,
     ) -> VfsResult<DirEntry> {
+        if node_type == NodeType::Symlink {
+            return Err(VfsError::InvalidInput);
+        }
         self.ensure_no_visible_entry(name)?;
         self.remove_existing_whiteout(name)?;
         let upper = self
             .materialize_upper_dir()?
             .create(name, node_type, permission, uid, gid)?;
+        self.build_entry(name, Some(upper), None)
+    }
+
+    fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<DirEntry> {
+        self.ensure_no_visible_entry(name)?;
+        self.remove_existing_whiteout(name)?;
+        let upper = self
+            .materialize_upper_dir()?
+            .create_symlink(name, target, permission, uid, gid)?;
         self.build_entry(name, Some(upper), None)
     }
 
@@ -681,8 +736,24 @@ impl DirNodeOps for OverlayDir {
     /// Lower-backed files are copied up before rename. Lower-backed
     /// directories are rejected because full redirect_dir/index semantics are
     /// not implemented.
-    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
+        if options.exchange() || options.whiteout() {
+            return Err(VfsError::OperationNotSupported);
+        }
         let dst = dst_dir.downcast::<Self>()?;
+        if options.no_replace() {
+            match dst.lookup(dst_name) {
+                Ok(_) => return Err(VfsError::AlreadyExists),
+                Err(VfsError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let src = match self.lookup_visible_upper_child(src_name)? {
             Some(upper) => upper,
             None => {
@@ -694,8 +765,12 @@ impl DirNodeOps for OverlayDir {
             }
         };
         dst.remove_existing_whiteout(dst_name)?;
-        self.materialize_upper_dir()?
-            .rename(src_name, &dst.materialize_upper_dir()?, dst_name)?;
+        self.materialize_upper_dir()?.rename_with_options(
+            src_name,
+            &dst.materialize_upper_dir()?,
+            dst_name,
+            options,
+        )?;
         if lookup_lower(&self.lower_dirs, src_name)?.is_some() {
             create_whiteout(&self.materialize_upper_dir()?, src_name)?;
         }
@@ -711,7 +786,7 @@ impl DirNodeOps for OverlayDir {
 struct OverlayFile {
     fs: Arc<OverlayFs>,
     /// Materialized upper parent directory, if one exists.
-    upper_dir: SpinLock<Option<Location>>,
+    upper_dir: Mutex<Option<Location>>,
     /// Parent path from overlay root, used to materialize the upper parent.
     parent_path: Vec<String>,
     name: String,
@@ -832,8 +907,23 @@ impl FileNodeOps for OverlayFile {
         open_write(self.ensure_upper()?)?.backend()?.set_len(len)
     }
 
-    fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        self.ensure_upper()?.entry().as_file()?.set_symlink(target)
+    fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> VfsResult<()> {
+        open_write(self.ensure_upper()?)?
+            .backend()?
+            .operate_range(offset, len, operation)
+    }
+
+    fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: axfs_ng_vfs::FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<axfs_ng_vfs::FileExtentMap> {
+        self.current()?
+            .entry()
+            .as_file()?
+            .map_extents(offset, len, target, extent_limit)
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {

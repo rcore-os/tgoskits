@@ -1,0 +1,4 @@
+interface:
+  display_name: "跨内核驱动"
+  short_description: "按分层与所有权边界创建或重构可移植跨内核驱动软件包"
+  default_prompt: "请使用 $cross-kernel-driver 在 `drivers/` 下创建或优化驱动，明确内存映射输入输出、直接内存访问能力边界，以及控制、中断和队列端点的所有权。"

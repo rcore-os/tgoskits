@@ -1,0 +1,22 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "2",
+    "-m",
+    "512M",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+]
+# The host-side probe is the verdict and terminates QEMU through QMP.
+success_regex = []
+timeout = 180
+to_bin = true
+uefi = false
+
+[host_http_probe]

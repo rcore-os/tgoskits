@@ -177,7 +177,7 @@ trait CargoRunner {
 
 ## 7. 白名单维护
 
-白名单不是静态的——随着 workspace 演进，新的可测 crate 需要加入，不再适用的需要移除。审计与更新流程由 `update-std-tests` 技能封装（`.claude/skills/update-std-tests/SKILL.md`）：
+白名单不是静态的——随着 workspace 演进，新的可测 crate 需要加入，不再适用的需要移除。审计与更新流程由 `update-std-tests` 技能封装（`.agents/skills/update-std-tests/SKILL.md`）：
 
 - 比较 workspace packages 与 CSV，列出"在 workspace 中但不在 CSV"的候选（可能需要加入）
 - 列出"在 CSV 中但不在 workspace"的条目（必须移除，否则校验报错）

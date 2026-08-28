@@ -2,6 +2,7 @@
 use alloc::vec;
 use alloc::{
     borrow::{Cow, ToOwned},
+    boxed::Box,
     collections::vec_deque::VecDeque,
     string::String,
     sync::{Arc, Weak},
@@ -17,13 +18,14 @@ use ax_lazyinit::OnceLock;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    Location, Metadata, NodePermission, NodeType, VfsError, VfsResult,
+    DirectoryCursor, DirectoryReadState, Location, Metadata, NodePermission, NodeType,
+    RenameOptions, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
 use crate::{
     file::File,
-    os::sync::{Mutex, SpinLock},
+    os::sync::{IrqMutex, SleepMutex as Mutex},
 };
 
 /// Maximum number of symlinks that will be followed during path resolution.
@@ -39,7 +41,7 @@ pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: SpinLock<Vec<Weak<Mutex<FsContext>>>> = SpinLock::new(Vec::new());
+static FS_REGISTRY: IrqMutex<Vec<Weak<Mutex<FsContext>>>> = IrqMutex::new(Vec::new());
 #[cfg(feature = "vfs")]
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -467,10 +469,12 @@ impl FsContext {
     /// Returns an iterator over the entries in a directory.
     pub fn read_dir(&self, path: impl AsRef<Path>) -> VfsResult<ReadDir> {
         let dir = self.resolve(path)?;
+        let state = dir.open_directory_read_state()?;
         Ok(ReadDir {
             dir,
+            state,
             buf: VecDeque::new(),
-            offset: 0,
+            cursor: DirectoryCursor::START,
             ended: false,
         })
     }
@@ -506,9 +510,19 @@ impl FsContext {
     /// Renames a file or directory to a new name, replacing the original file
     /// if `to` already exists.
     pub fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> VfsResult<()> {
+        self.rename_with_options(from, to, RenameOptions::REPLACE)
+    }
+
+    /// Renames a path with typed `renameat2` behavior.
+    pub fn rename_with_options(
+        &self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
         let (src_dir, src_name) = self.resolve_parent(from.as_ref())?;
         let (dst_dir, dst_name) = self.resolve_parent(to.as_ref())?;
-        src_dir.rename(&src_name, &dst_dir, &dst_name)
+        src_dir.rename_with_options(&src_name, &dst_dir, &dst_name, options)
     }
 
     /// Creates a new, empty directory at the provided path.
@@ -554,12 +568,7 @@ impl FsContext {
         gid: u32,
     ) -> VfsResult<Location> {
         let (dir, name) = self.resolve_nonexistent(link_path.as_ref())?;
-        if dir.lookup_no_follow(name).is_ok() {
-            return Err(VfsError::AlreadyExists);
-        }
-        let symlink = dir.create(name, NodeType::Symlink, NodePermission::default(), uid, gid)?;
-        symlink.entry().as_file()?.set_symlink(target.as_ref())?;
-        Ok(symlink)
+        dir.create_symlink(name, target.as_ref(), NodePermission::default(), uid, gid)
     }
 
     /// Returns the canonical, absolute form of a path.
@@ -657,8 +666,9 @@ impl FsContext {
 /// Iterator returned by [`FsContext::read_dir`].
 pub struct ReadDir {
     dir: Location,
+    state: Box<dyn DirectoryReadState>,
     buf: VecDeque<ReadDirEntry>,
-    offset: u64,
+    cursor: DirectoryCursor,
     ended: bool,
 }
 
@@ -678,22 +688,31 @@ impl Iterator for ReadDir {
 
         if self.buf.is_empty() {
             self.buf.clear();
-            let result = self.dir.read_dir(
-                self.offset,
-                &mut |name: &str, ino: u64, node_type: NodeType, offset: u64| {
+            let mut invalid_name = false;
+            let result = self.dir.read_dir_with_state(
+                &mut *self.state,
+                self.cursor,
+                &mut |name: &[u8], ino: u64, node_type: NodeType, cursor: DirectoryCursor| {
+                    let Ok(name) = core::str::from_utf8(name) else {
+                        invalid_name = true;
+                        return false;
+                    };
                     self.buf.push_back(ReadDirEntry {
                         name: name.to_owned(),
                         ino,
                         node_type,
-                        offset,
+                        offset: cursor.offset(),
                     });
-                    self.offset = offset;
+                    self.cursor = cursor;
                     self.buf.len() < Self::BUF_SIZE
                 },
             );
 
             // We handle errors only if we didn't get any entries
             if self.buf.is_empty() {
+                if invalid_name {
+                    return Some(Err(VfsError::InvalidData));
+                }
                 if let Err(err) = result {
                     return Some(Err(err));
                 }

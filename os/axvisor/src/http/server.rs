@@ -49,12 +49,45 @@
 //! - Device suspension covers only devices registered with lifecycle
 //!   semantics; other devices are not quiesced while paused.
 
-use axum::{Router, routing::get, routing::post};
+#[cfg(feature = "browser-console")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::Context;
+use axum::Router;
+
+#[cfg(feature = "http-axum")]
 use crate::http::vm;
+#[cfg(feature = "http-axum")]
+use axum::{routing::get, routing::post};
 
-/// Assemble the management routes.
+#[cfg(feature = "browser-console")]
+static LISTENING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "browser-console")]
+struct ListeningGuard;
+
+#[cfg(feature = "browser-console")]
+impl Drop for ListeningGuard {
+    fn drop(&mut self) {
+        LISTENING.store(false, Ordering::Release);
+    }
+}
+
+/// Assemble only the HTTP services selected by build features.
 pub fn router() -> Router {
+    let router = Router::new();
+
+    #[cfg(feature = "http-axum")]
+    let router = router.merge(management_router());
+
+    #[cfg(feature = "browser-console")]
+    let router = router.merge(crate::http::browser_console::router());
+
+    router
+}
+
+#[cfg(feature = "http-axum")]
+fn management_router() -> Router {
     Router::new()
         .route("/api/vms", get(vm::list_vms))
         .route("/api/vms/{id}", get(vm::vm_detail).delete(vm::vm_delete))
@@ -72,7 +105,7 @@ pub fn router() -> Router {
 /// hostfwd to reach the in-guest listener must opt in to all interfaces by
 /// setting `[env] AXVM_HTTP_BIND = "0.0.0.0:8080"` in their build config; the
 /// mutating routes still require the bearer token regardless of the bind.
-fn bind_addr() -> &'static str {
+pub(super) fn bind_addr() -> &'static str {
     option_env!("AXVM_HTTP_BIND").unwrap_or("127.0.0.1:8080")
 }
 
@@ -81,17 +114,28 @@ fn bind_addr() -> &'static str {
 /// `main` spawns this on its own task via `std::thread::spawn(|| http::serve())`;
 /// the runtime is built here. Only the IO driver is enabled — the epoll
 /// reactor suffices for `axum::serve`; a time driver would need `timerfd`.
-pub fn serve() {
+pub fn serve() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .build()
-        .expect("failed to build tokio runtime");
+        .context("failed to build Axvisor HTTP Tokio runtime")?;
     rt.block_on(async {
         let bind = bind_addr();
         let listener = tokio::net::TcpListener::bind(bind)
             .await
-            .expect("failed to bind management HTTP server");
-        info!("management HTTP server (axum) listening on {bind}");
-        axum::serve(listener, router()).await.expect("server error");
-    });
+            .with_context(|| format!("failed to bind Axvisor HTTP server at {bind}"))?;
+        #[cfg(feature = "browser-console")]
+        LISTENING.store(true, Ordering::Release);
+        #[cfg(feature = "browser-console")]
+        let _listening_guard = ListeningGuard;
+        info!("Axvisor HTTP server (axum) listening on {bind}");
+        axum::serve(listener, router())
+            .await
+            .context("Axvisor HTTP server stopped")
+    })
+}
+
+#[cfg(feature = "browser-console")]
+pub(crate) fn is_listening() -> bool {
+    LISTENING.load(Ordering::Acquire)
 }

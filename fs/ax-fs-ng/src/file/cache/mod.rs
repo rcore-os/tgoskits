@@ -9,7 +9,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloc::{collections::BTreeMap, sync::Weak};
 use core::{
     num::NonZeroUsize,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_io::prelude::*;
@@ -26,8 +26,10 @@ pub use reclaim::{page_cache_reclaim, sync_all_cached_files};
 
 use super::page::PageCache;
 #[cfg(feature = "ext4")]
-use crate::os::sync::SpinLock;
-use crate::os::{memory::PAGE_SIZE, sync::Mutex};
+use crate::os::{
+    memory::PAGE_SIZE,
+    sync::SleepMutex,
+};
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
 
@@ -37,8 +39,8 @@ type CachedFileKey = (usize, u64);
 type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
 
 #[cfg(feature = "ext4")]
-static CACHED_FILE_BY_INODE: LazyLock<SpinLock<InodeCacheIndex>> =
-    LazyLock::new(|| SpinLock::new(BTreeMap::new()));
+static CACHED_FILE_BY_INODE: LazyLock<SleepMutex<InodeCacheIndex>> =
+    LazyLock::new(|| SleepMutex::new(BTreeMap::new()));
 
 /// Eviction listener callback. Returns `true` if the listener successfully
 /// invalidated all mappings for the evicted page.
@@ -54,33 +56,36 @@ struct EvictListener {
 intrusive_adapter!(EvictListenerAdapter = Box<EvictListener>: EvictListener { link: LinkedListAtomicLink });
 
 struct CachedFileShared {
-    page_cache: Mutex<LruCache<u32, PageCache>>,
-    io_lock: Mutex<()>,
-    evict_listeners: Mutex<LinkedList<EvictListenerAdapter>>,
+    page_cache: SleepMutex<LruCache<u32, PageCache>>,
+    io_lock: SleepMutex<()>,
+    evict_listeners: SleepMutex<LinkedList<EvictListenerAdapter>>,
     backing: Option<FileNode>,
     len: AtomicU64,
+    unlinked: AtomicBool,
 }
 
 impl CachedFileShared {
     pub fn new(len: u64, backing: FileNode) -> Self {
         Self {
-            page_cache: Mutex::new(LruCache::new(
+            page_cache: SleepMutex::new(LruCache::new(
                 NonZeroUsize::new(DISK_PAGE_CACHE_CAP).unwrap(),
             )),
-            io_lock: Mutex::new(()),
-            evict_listeners: Mutex::new(LinkedList::default()),
+            io_lock: SleepMutex::new(()),
+            evict_listeners: SleepMutex::new(LinkedList::default()),
             backing: Some(backing),
             len: AtomicU64::new(len),
+            unlinked: AtomicBool::new(false),
         }
     }
 
     pub fn new_unbounded(len: u64) -> Self {
         Self {
-            page_cache: Mutex::new(LruCache::unbounded()),
-            io_lock: Mutex::new(()),
-            evict_listeners: Mutex::new(LinkedList::default()),
+            page_cache: SleepMutex::new(LruCache::unbounded()),
+            io_lock: SleepMutex::new(()),
+            evict_listeners: SleepMutex::new(LinkedList::default()),
             backing: None,
             len: AtomicU64::new(len),
+            unlinked: AtomicBool::new(false),
         }
     }
 
@@ -109,6 +114,11 @@ impl CachedFileShared {
         self.backing.as_ref().ok_or(VfsError::InvalidInput)
     }
 
+    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    fn mark_unlinked(&self) {
+        self.unlinked.store(true, Ordering::Release);
+    }
+
     #[cfg(test)]
     fn invoke_writeback_protect_for_test(&self, pns: &[u32]) -> VfsResult<()> {
         self.protect_dirty_pages_before_writeback(pns)
@@ -130,11 +140,22 @@ impl CachedFileShared {
     }
 }
 
+impl Drop for CachedFileShared {
+    fn drop(&mut self) {
+        if !self.unlinked.load(Ordering::Acquire) {
+            return;
+        }
+        for (_, page) in self.page_cache.lock().iter_mut() {
+            page.dirty = false;
+        }
+    }
+}
+
 /// A file handle with an LRU page cache for buffered I/O.
 pub struct CachedFile {
     inner: Location,
     shared: Arc<CachedFileShared>,
-    readahead: Arc<Mutex<ReadAheadState>>,
+    readahead: Arc<SleepMutex<ReadAheadState>>,
     in_memory: bool,
 }
 
@@ -181,7 +202,7 @@ impl CachedFile {
             return Ok(Self {
                 inner: location,
                 shared,
-                readahead: Arc::new(Mutex::new(ReadAheadState::new())),
+                readahead: Arc::new(SleepMutex::new(ReadAheadState::new())),
                 in_memory,
             });
         }
@@ -235,7 +256,7 @@ impl CachedFile {
         Ok(Self {
             inner: location,
             shared,
-            readahead: Arc::new(Mutex::new(ReadAheadState::new())),
+            readahead: Arc::new(SleepMutex::new(ReadAheadState::new())),
             in_memory,
         })
     }
@@ -667,9 +688,17 @@ fn insert_inode_cached_file(key: CachedFileKey, shared: &Arc<CachedFileShared>) 
 #[cfg(feature = "ext4")]
 pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64) {
     if filesystem.name() == "ext4" {
-        CACHED_FILE_BY_INODE
+        let cached = CACHED_FILE_BY_INODE
             .lock()
-            .remove(&(filesystem_key(filesystem), inode));
+            .remove(&(filesystem_key(filesystem), inode))
+            .and_then(|cached| cached.upgrade());
+        #[cfg(feature = "vfs")]
+        if let Some(cached) = cached {
+            cached.mark_unlinked();
+            reclaim::release_unlinked_cached_file(&cached);
+        }
+        #[cfg(not(feature = "vfs"))]
+        let _ = cached;
     }
 }
 
