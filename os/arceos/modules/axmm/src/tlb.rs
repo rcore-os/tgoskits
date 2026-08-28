@@ -7,10 +7,9 @@ use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
 
 /// One page-table mutation whose resources cannot be reclaimed before every
 /// potentially active CPU confirms invalidation.
-#[doc(hidden)]
 #[derive(Debug)]
 #[must_use = "TLB gathers must be confirmed or transferred to quarantine"]
-pub struct TlbGather {
+pub(crate) struct TlbGather {
     range: Option<VirtAddrRange>,
     deferred_frames: Vec<PhysAddr>,
     deferred_page_tables: Vec<DeferredPageTableFrames>,

@@ -25,9 +25,7 @@ use ax_sync::SpinLock;
 
 pub use self::{
     aspace::AddrSpace,
-    backend::Backend,
     error::{MmError, MmResult},
-    tlb::TlbGather,
 };
 
 static KERNEL_ASPACE: LazyInit<SpinLock<AddrSpace>> = LazyInit::new();

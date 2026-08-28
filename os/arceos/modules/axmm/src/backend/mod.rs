@@ -22,7 +22,7 @@ pub(crate) use alloc::dealloc_frame;
 /// - **Allocation**: used in general, or for lazy mappings. The target physical
 ///   frames are obtained from the global allocator.
 #[derive(Clone)]
-pub enum Backend {
+pub(crate) enum Backend {
     /// Linear mapping backend.
     ///
     /// The offset between the virtual address and the physical address is

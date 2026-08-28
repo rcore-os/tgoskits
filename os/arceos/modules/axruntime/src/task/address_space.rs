@@ -54,8 +54,6 @@ impl<T: Send + Sync> TaskAddressSpaceOwner for DetachableTaskAddressSpaceOwner<T
 }
 
 struct RuntimeAddressSpace {
-    #[cfg(feature = "uspace")]
-    root: usize,
     /// Number of runtime tokens currently borrowing this address-space owner.
     ///
     /// The CPU footprint itself belongs to `cpu_state`; same-mm switches keep
@@ -64,6 +62,13 @@ struct RuntimeAddressSpace {
     reclaim_waiting: AtomicUsize,
     cpu_state: Arc<AddressSpaceCpuState>,
     _owner: Box<dyn TaskAddressSpaceOwner>,
+}
+
+#[cfg(feature = "uspace")]
+impl RuntimeAddressSpace {
+    fn root(&self) -> usize {
+        self.cpu_state.root()
+    }
 }
 
 const _: () = assert!(crate::CPU_CAPACITY <= usize::BITS as usize);
@@ -135,7 +140,11 @@ impl AddressSpaceCpuState {
     }
 
     fn matches_root(&self, root: PhysAddr) -> bool {
-        self.root == root.as_usize()
+        self.root() == root.as_usize()
+    }
+
+    fn root(&self) -> usize {
+        self.root
     }
 
     /// Returns the CPUs that may currently retain translations for this root.
@@ -238,8 +247,6 @@ impl TaskAddressSpace {
             return Err(TaskError::InvalidRuntimeHandle);
         }
         let address_space = Box::new(RuntimeAddressSpace {
-            #[cfg(feature = "uspace")]
-            root: root.as_usize(),
             active_leases: AtomicUsize::new(0),
             reclaim_waiting: AtomicUsize::new(0),
             cpu_state,
@@ -362,7 +369,7 @@ pub(super) fn validate_current_user_address_space(
     if !same_logical_address_space(active, selected)
         || active.active_leases.load(Ordering::Acquire) == 0
         || active.cpu_state.active_mask() & cpu_bit == 0
-        || current_hardware_root() != active.root
+        || current_hardware_root() != active.root()
     {
         return Err(RuntimeStatus::InvalidHandle);
     }
@@ -430,8 +437,8 @@ fn commit_user_address_space_activation(
         #[cfg(feature = "qperf-metrics")]
         ACTIVE_MM_SAME_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
         debug_assert_eq!(
-            previous.map(|previous| previous.root),
-            Some(next.root),
+            previous.map(RuntimeAddressSpace::root),
+            Some(next.root()),
             "one address-space CPU tracker cannot describe different roots"
         );
         // Match Linux arm64's `enter_lazy_tlb()`/`switch_mm_irqs_off()` pair:
@@ -439,7 +446,10 @@ fn commit_user_address_space_activation(
         // thread temporarily installed the reserved lower root. The runtime
         // backend suppresses the write when the hardware root is already
         // correct, so user-to-user switches in the same mm remain a no-op.
-        install_root(next.root, HardwareAddressSpaceTransition::SameAddressSpace);
+        install_root(
+            next.root(),
+            HardwareAddressSpaceTransition::SameAddressSpace,
+        );
         return false;
     }
     #[cfg(feature = "qperf-metrics")]
@@ -449,7 +459,7 @@ fn commit_user_address_space_activation(
     #[cfg(feature = "qperf-metrics")]
     ACTIVE_MM_LEASE_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
     install_root(
-        next.root,
+        next.root(),
         HardwareAddressSpaceTransition::DifferentAddressSpace,
     );
     publish_active(next_raw);
