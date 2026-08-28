@@ -154,12 +154,15 @@ pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> StarryResul
 
     match cmd {
         LINUX_REBOOT_CMD_CAD_ON | LINUX_REBOOT_CMD_CAD_OFF => Ok(0),
+        // Linux's reboot(2) contract does not synchronize or unmount file
+        // systems; callers such as systemctl perform sync before entering
+        // this syscall. Teardown here can wait forever on userspace services
+        // that still hold descriptors while the requested power transition
+        // is already being committed.
         LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => {
-            let _ = ax_fs_ng::shutdown_filesystems();
             ax_runtime::hal::power::system_reset()
         }
         LINUX_REBOOT_CMD_HALT | LINUX_REBOOT_CMD_POWER_OFF => {
-            let _ = ax_fs_ng::shutdown_filesystems();
             ax_runtime::hal::power::system_off()
         }
         _ => Err(StarryError::from(Errno::EINVAL)),
@@ -1130,5 +1133,27 @@ mod tests {
     #[test]
     fn sys_constants_and_validation_rules_hold() {
         assert!(super::sys_constants_and_validation_rules_hold_for_test());
+    }
+
+    #[test]
+    fn reboot_syscall_does_not_tear_down_filesystems() {
+        let source = include_str!("sys.rs");
+        let start = source
+            .find("pub fn sys_reboot(")
+            .expect("sys_reboot must exist");
+        let remainder = &source[start..];
+        let end = remainder[1..]
+            .find("\npub fn ")
+            .map(|offset| offset + 1)
+            .unwrap_or(remainder.len());
+        let reboot = &remainder[..end];
+        assert!(
+            !reboot.contains("shutdown_filesystems"),
+            "reboot(2) must not sync or unmount filesystems; Linux leaves that to userspace"
+        );
+        assert!(
+            reboot.contains("system_reset") && reboot.contains("system_off"),
+            "reboot(2) restart and power-off must still reach the platform power helpers"
+        );
     }
 }
