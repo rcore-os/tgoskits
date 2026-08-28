@@ -5,6 +5,14 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use ax_sync::SpinLock as SpinMutex;
 
 use crate::{blockdev::*, bmalloc::AbsoluteBN, config::*, error::*};
+
+/// Maximum number of LRU victims flushed per eviction event.
+///
+/// Batched eviction lets consecutive dirty victims (the common sequential-
+/// write case once the cache fills) be written back as one coalesced
+/// multi-block I/O instead of one IOP per block.
+const EVICT_BATCH: usize = 64;
+
 /// Cache key for one physical data block.
 pub type BlockCacheKey = AbsoluteBN;
 
@@ -102,36 +110,25 @@ impl DataBlockCache {
         let mut inner = self.inner.lock();
 
         if !inner.cache.contains_key(&block_num) {
-            // Phase 1: snapshot LRU eviction info while holding the lock.
-            let evict_info = if inner.cache.len() >= inner.max_entries {
-                inner.snapshot_lru()
+            // Phase 1: snapshot a batch of LRU victims while holding the lock.
+            let evict_batch = if inner.cache.len() >= inner.max_entries {
+                inner.snapshot_lru_batch(EVICT_BATCH)
             } else {
-                None
+                Vec::new()
             };
 
             drop(inner);
 
             // Phase 2: load the requested block from disk (no dirty writeback
-            // yet — the victim snapshot may be stale).
+            // yet — the victim snapshots may be stale).
             let data = self.load_block(block_dev, block_num)?;
 
-            // Phase 3: reacquire the lock. Validate the victim generation.
-            // If valid, remove it and schedule dirty writeback for Phase 4.
-            // If stale, discard the snapshot without writing anything.
+            // Phase 3: reacquire the lock. Validate each victim's generation;
+            // remove clean victims and collect dirty data for writeback. Dirty
+            // entries stay in cache until the write succeeds.
             inner = self.inner.lock();
 
-            let dirty_to_write = match evict_info {
-                Some((lru_key, lru_gen, dirty_opt))
-                    if inner
-                        .cache
-                        .get(&lru_key)
-                        .is_some_and(|cached| cached.generation == lru_gen) =>
-                {
-                    inner.cache.remove(&lru_key);
-                    dirty_opt.map(|data| (lru_key, data))
-                }
-                _ => None,
-            };
+            let to_write = inner.extract_dirty_for_writeback(&evict_batch);
 
             inner
                 .cache
@@ -140,10 +137,15 @@ impl DataBlockCache {
 
             drop(inner);
 
-            // Phase 4: write the victim's dirty data to disk AFTER the
-            // generation check passed (outside the spinlock).
-            if let Some((lru_key, ref lru_data)) = dirty_to_write {
-                Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
+            // Phase 4: write the victims' dirty data coalesced (consecutive
+            // blocks become one multi-block I/O) AFTER the generation check
+            // passed — outside the spinlock.
+            if !to_write.is_empty() {
+                Self::write_dirty_runs(block_dev, &to_write, self.block_size)?;
+                let mut inner = self.inner.lock();
+                for (blk, generation, _) in &to_write {
+                    inner.remove_if_generation(*blk, *generation);
+                }
             }
 
             // Reacquire for the LRU refresh below.
@@ -174,36 +176,24 @@ impl DataBlockCache {
         let mut inner = self.inner.lock();
 
         if !inner.cache.contains_key(&block_num) {
-            // Phase 1: snapshot LRU eviction info while holding the lock.
-            let evict_info = if inner.cache.len() >= inner.max_entries {
-                inner.snapshot_lru()
+            // Phase 1: snapshot a batch of LRU victims while holding the lock.
+            let evict_batch = if inner.cache.len() >= inner.max_entries {
+                inner.snapshot_lru_batch(EVICT_BATCH)
             } else {
-                None
+                Vec::new()
             };
 
             drop(inner);
 
             // Phase 2: load the requested block from disk (no dirty writeback
-            // yet — the victim snapshot may be stale).
+            // yet — the victim snapshots may be stale).
             let data = self.load_block(block_dev, block_num)?;
 
-            // Phase 3: reacquire the lock. Validate the victim generation.
-            // If valid, remove it and schedule dirty writeback for Phase 4.
-            // If stale, discard the snapshot without writing anything.
+            // Phase 3: reacquire the lock. Validate each victim's generation;
+            // remove clean victims and collect dirty data for writeback.
             inner = self.inner.lock();
 
-            let dirty_to_write = match evict_info {
-                Some((lru_key, lru_gen, dirty_opt))
-                    if inner
-                        .cache
-                        .get(&lru_key)
-                        .is_some_and(|cached| cached.generation == lru_gen) =>
-                {
-                    inner.cache.remove(&lru_key);
-                    dirty_opt.map(|data| (lru_key, data))
-                }
-                _ => None,
-            };
+            let to_write = inner.extract_dirty_for_writeback(&evict_batch);
 
             // Re-check after reacquiring: another thread may have inserted the
             // same key while we held no lock.
@@ -214,10 +204,14 @@ impl DataBlockCache {
 
             drop(inner);
 
-            // Phase 4: write the victim's dirty data to disk AFTER the
-            // generation check passed (outside the spinlock).
-            if let Some((lru_key, ref lru_data)) = dirty_to_write {
-                Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
+            // Phase 4: write the victims' dirty data coalesced, outside the
+            // spinlock.
+            if !to_write.is_empty() {
+                Self::write_dirty_runs(block_dev, &to_write, self.block_size)?;
+                let mut inner = self.inner.lock();
+                for (blk, generation, _) in &to_write {
+                    inner.remove_if_generation(*blk, *generation);
+                }
             }
 
             inner = self.inner.lock();
@@ -259,20 +253,21 @@ impl DataBlockCache {
 
         // Phase 1: snapshot eviction info while holding the lock.
         // Two evictions may be needed: (a) the same block number from a
-        // previous incarnation, and (b) an LRU slot to stay within max_entries.
+        // previous incarnation, and (b) an LRU batch to stay within max_entries.
         let evict_existing = inner.snapshot_block_for_evict(block_num);
-        let evict_lru_info = if inner.cache.len() >= inner.max_entries && evict_existing.is_none() {
+        let evict_lru_batch = if inner.cache.len() >= inner.max_entries && evict_existing.is_none()
+        {
             // Only evict LRU if we did not already free a slot above.
-            inner.snapshot_lru()
+            inner.snapshot_lru_batch(EVICT_BATCH)
         } else {
-            None
+            Vec::new()
         };
 
         drop(inner);
 
         // Phase 2: write dirty data for unconditional same-block eviction.
-        // The LRU victim's dirty data is NOT written here — it must pass
-        // the generation check first (see Phase 4).
+        // The LRU victims' dirty data is NOT written here — it must pass the
+        // generation check first (see Phase 4).
         if let Some(ref data) = evict_existing {
             Self::write_block_static(block_dev, block_num, data, self.block_size)?;
         }
@@ -285,20 +280,9 @@ impl DataBlockCache {
         if evict_existing.is_some() {
             inner.cache.remove(&block_num);
         }
-        // Validate LRU victim generation; if valid, remove and schedule
-        // dirty writeback. If stale, discard the snapshot silently.
-        let lru_dirty_to_write = match evict_lru_info {
-            Some((lru_key, lru_gen, dirty_opt))
-                if inner
-                    .cache
-                    .get(&lru_key)
-                    .is_some_and(|cached| cached.generation == lru_gen) =>
-            {
-                inner.cache.remove(&lru_key);
-                dirty_opt.map(|data| (lru_key, data))
-            }
-            _ => None,
-        };
+        // Validate LRU victim generations; remove clean victims and collect
+        // dirty data for writeback. Dirty entries stay until write succeeds.
+        let to_write = inner.extract_dirty_for_writeback(&evict_lru_batch);
 
         let data = alloc::vec![0u8; inner.block_size];
         let mut cached = CachedBlock::new(data, block_num);
@@ -317,9 +301,14 @@ impl DataBlockCache {
 
         drop(inner);
 
-        // Phase 4: write LRU victim's dirty data AFTER generation check.
-        if let Some((lru_key, ref lru_data)) = lru_dirty_to_write {
-            Self::write_block_static(block_dev, lru_key, lru_data, self.block_size)?;
+        // Phase 4: write LRU victims' dirty data coalesced, AFTER generation
+        // check, outside the spinlock.
+        if !to_write.is_empty() {
+            Self::write_dirty_runs(block_dev, &to_write, self.block_size)?;
+            let mut inner = self.inner.lock();
+            for (blk, generation, _) in &to_write {
+                inner.remove_if_generation(*blk, *generation);
+            }
         }
 
         result
@@ -554,17 +543,28 @@ impl DataBlockCache {
     }
 
     /// Writes one block to disk (static helper, takes runtime block_size).
+    ///
+    /// The cached block data is always a full `block_size` bytes, so this writes
+    /// it directly — no read-modify-write. (The previous implementation read the
+    /// block first then overwrote it, which doubled the IOP cost of every dirty
+    /// eviction/flush on a low-IOPS device for no benefit.)
     fn write_block_static<B: BlockDevice>(
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
         data: &[u8],
         block_size: usize,
     ) -> Ext4Result<()> {
-        let mut buf = alloc::vec![0u8; block_size];
-        block_dev.read_blocks(&mut buf, block_num, 1)?;
         let len = core::cmp::min(data.len(), block_size);
-        buf[..len].copy_from_slice(&data[..len]);
-        block_dev.write_blocks(&buf, block_num, 1, false)?;
+        if len == block_size {
+            // Full block — write straight through.
+            block_dev.write_blocks(&data[..len], block_num, 1, false)?;
+        } else {
+            // Partial (defensive): read-modify-write the tail.
+            let mut buf = alloc::vec![0u8; block_size];
+            block_dev.read_blocks(&mut buf, block_num, 1)?;
+            buf[..len].copy_from_slice(&data[..len]);
+            block_dev.write_blocks(&buf, block_num, 1, false)?;
+        }
         Ok(())
     }
 
@@ -615,33 +615,34 @@ pub struct DataBlockCacheStats {
 // ── Inner methods (caller holds `self.inner.lock()`) ─────────────────────────
 
 impl DataBlockCacheInner {
-    /// Snapshots the LRU data block for lock-free eviction.
+    /// Snapshots up to `max_k` least-recently-used entries for batched,
+    /// coalesced eviction.
     ///
-    /// Returns `Some((lru_key, generation, dirty_data))` where `generation` is
-    /// the entry's generation at snapshot time.  The caller must do the I/O
-    /// *without* holding the spinlock, then re-lock, verify that the entry's
-    /// generation still matches, and only then remove it.
-    /// A generation mismatch means another thread accessed or modified the
-    /// victim while we held no lock — in that case the victim must NOT be
-    /// removed (temporarily exceeding `max_entries` is harmless).
-    fn snapshot_lru(&self) -> Option<(AbsoluteBN, u64, Option<Vec<u8>>)> {
-        let lru_key = self
+    /// Returns `(block_num, generation, dirty_data)` for the `max_k` entries
+    /// with the smallest `last_access`. Batched eviction lets consecutive dirty
+    /// victims (the common sequential-append case once the cache fills) be
+    /// written back as a single multi-block I/O instead of one IOP per block —
+    /// the dominant win for write workloads larger than the cache on a
+    /// low-IOPS device.
+    fn snapshot_lru_batch(&self, max_k: usize) -> Vec<(AbsoluteBN, u64, Option<Vec<u8>>)> {
+        let mut entries: Vec<(AbsoluteBN, u64, u64, Option<Vec<u8>>)> = self
             .cache
             .iter()
-            .min_by_key(|(_, cached)| cached.last_access)
-            .map(|(key, _)| *key)?;
-
-        let lru_gen = self.cache.get(&lru_key).map(|cached| cached.generation)?;
-
-        let dirty_data = self.cache.get(&lru_key).and_then(|cached| {
-            if cached.dirty {
-                Some(cached.data.clone())
-            } else {
-                None
-            }
-        });
-
-        Some((lru_key, lru_gen, dirty_data))
+            .map(|(k, c)| {
+                (
+                    *k,
+                    c.last_access,
+                    c.generation,
+                    if c.dirty { Some(c.data.clone()) } else { None },
+                )
+            })
+            .collect();
+        entries.sort_by_key(|e| e.1);
+        entries.truncate(max_k);
+        entries
+            .into_iter()
+            .map(|(k, _, gen_v, dirty)| (k, gen_v, dirty))
+            .collect()
     }
 
     /// Snapshots a single block for lock-free eviction.
@@ -685,6 +686,44 @@ impl DataBlockCacheInner {
         {
             self.cache.remove(&block_num);
         }
+    }
+
+    /// Validates a batch of eviction snapshots against current generations and
+    /// removes the still-valid entries. Returns the dirty victims (sorted by
+    /// block number) so the caller can write them back coalesced, *outside* the
+    /// spinlock. Entries whose generation changed (accessed/modified while the
+    /// lock was released) are left untouched — the cache may then transiently
+    /// exceed `max_entries`, which is harmless.
+    /// Validates a snapshot batch against current generations and extracts
+    /// dirty data for writeback.
+    ///
+    /// Clean entries whose generation still matches are removed immediately
+    /// (no data loss risk). Dirty entries are **not** removed — their data is
+    /// returned so the caller can write it back; the caller must call
+    /// `remove_if_generation` for each successfully written dirty entry.
+    ///
+    /// This ensures that a write failure leaves dirty entries in the cache,
+    /// preserving data for a future retry.
+    fn extract_dirty_for_writeback(
+        &mut self,
+        batch: &[(AbsoluteBN, u64, Option<Vec<u8>>)],
+    ) -> Vec<(AbsoluteBN, u64, Vec<u8>)> {
+        let mut to_write: Vec<(AbsoluteBN, u64, Vec<u8>)> = Vec::new();
+        for (key, gen_v, dirty_opt) in batch {
+            if self
+                .cache
+                .get(key)
+                .is_some_and(|cached| cached.generation == *gen_v)
+            {
+                if let Some(d) = dirty_opt {
+                    to_write.push((*key, *gen_v, d.clone()));
+                } else {
+                    self.cache.remove(key);
+                }
+            }
+        }
+        to_write.sort_by_key(|(b, ..)| *b);
+        to_write
     }
 
     fn block_for_flush(&self, block_num: AbsoluteBN) -> (Option<(u64, Vec<u8>)>, usize) {
@@ -993,5 +1032,83 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.total_entries, 2);
         assert_eq!(stats.max_entries, 1);
+    }
+
+    #[test]
+    fn evict_preserves_dirty_on_write_failure() {
+        use crate::error::Errno;
+
+        struct FailWriteDevice {
+            data: Vec<u8>,
+        }
+
+        impl FailWriteDevice {
+            fn new(blocks: usize) -> Self {
+                Self {
+                    data: alloc::vec![0; blocks * BLOCK_SIZE],
+                }
+            }
+        }
+
+        impl BlockDevice for FailWriteDevice {
+            fn read(
+                &mut self,
+                buffer: &mut [u8],
+                block_id: AbsoluteBN,
+                _count: u32,
+            ) -> Ext4Result<()> {
+                let start = block_id.as_usize()? * BLOCK_SIZE;
+                let end = start + buffer.len();
+                buffer.copy_from_slice(&self.data[start..end]);
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                _buffer: &[u8],
+                _block_id: AbsoluteBN,
+                _count: u32,
+            ) -> Ext4Result<()> {
+                Err(Ext4Error::from(Errno::EIO))
+            }
+
+            fn open(&mut self) -> Ext4Result<()> {
+                Ok(())
+            }
+
+            fn close(&mut self) -> Ext4Result<()> {
+                Ok(())
+            }
+
+            fn total_blocks(&self) -> u64 {
+                (self.data.len() / BLOCK_SIZE) as u64
+            }
+
+            fn block_size(&self) -> u32 {
+                BLOCK_SIZE as u32
+            }
+
+            fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+                Ok(Ext4Timestamp::new(0, 0))
+            }
+        }
+
+        let cache = DataBlockCache::new(1, BLOCK_SIZE);
+        let device = FailWriteDevice::new(1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        cache
+            .create_new(&mut jbd2_dev, AbsoluteBN::new(10))
+            .expect("create first dirty block");
+
+        assert_eq!(cache.stats().dirty_entries, 1);
+
+        let result = cache.create_new(&mut jbd2_dev, AbsoluteBN::new(20));
+        assert!(result.is_err(), "write failure must propagate");
+
+        assert!(
+            cache.stats().dirty_entries >= 1,
+            "dirty entry must be preserved after write failure"
+        );
     }
 }

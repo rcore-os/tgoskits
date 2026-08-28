@@ -98,7 +98,7 @@ struct InodeCacheInner {
 ///
 /// `inode_size` is stored outside the spinlock because it is immutable after
 /// construction and is needed by lock-free paths (`calc_inode_location`) and
-/// by `load_inode` which is called from code paths that already hold the lock.
+/// by `load_inode_block` which is called from code paths that already hold the lock.
 pub struct InodeCache {
     inner: SpinMutex<InodeCacheInner>,
     /// On-disk inode size in bytes (immutable after construction).
@@ -145,28 +145,22 @@ impl InodeCache {
         Ok((block_num, offset_in_block, group_idx))
     }
 
-    /// Loads one inode from disk using a caller-provided buffer.
+    /// Reads one inode-table block into a fresh 4 KiB buffer.
     ///
-    /// Lock-free: uses `self.inode_size` (immutable after construction)
-    /// so it is safe to call from code paths that already hold the lock.
-    fn load_inode<B: BlockDevice>(
+    /// Used by `get_or_load`/`get_or_load_mut` so the same block read that
+    /// satisfies a miss can also populate the cache with the block's other
+    /// inodes (see `populate_siblings`), instead of re-reading the block for
+    /// every sibling inode.
+    fn load_inode_block<B: BlockDevice>(
         &self,
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
-        offset: usize,
-    ) -> Ext4Result<Ext4Inode> {
-        let inode_size = self.inode_size;
+    ) -> Ext4Result<Vec<u8>> {
         // Use a local buffer to avoid the BlockDev single-block buffer,
         // which is shared mutable state that would serialize concurrent reads.
         let mut buf = alloc::vec![0u8; crate::config::BLOCK_SIZE];
         block_dev.read_blocks(&mut buf, block_num, 1)?;
-
-        if offset + inode_size > buf.len() {
-            return Err(Ext4Error::corrupted());
-        }
-
-        let inode = Ext4Inode::from_disk_bytes(&buf[offset..offset + inode_size]);
-        Ok(inode)
+        Ok(buf)
     }
 
     /// Returns a cached inode, loading it from disk on demand.
@@ -190,9 +184,15 @@ impl InodeCache {
 
             drop(inner);
 
-            // Phase 2: load the requested inode from disk (no dirty writeback
-            // yet — the victim snapshot may be stale).
-            let inode = self.load_inode(block_dev, block_num, offset)?;
+            // Phase 2: load the requested inode's block from disk (no dirty
+            // writeback yet — the victim snapshot may be stale). The same read
+            // also feeds sibling population below.
+            let inode_size = self.inode_size;
+            let block_bytes = self.load_inode_block(block_dev, block_num)?;
+            if offset + inode_size > block_bytes.len() {
+                return Err(Ext4Error::corrupted());
+            }
+            let inode = Ext4Inode::from_disk_bytes(&block_bytes[offset..offset + inode_size]);
 
             // Phase 3: reacquire the lock. Validate the victim generation.
             // If valid, remove it and schedule dirty writeback for Phase 4.
@@ -218,6 +218,10 @@ impl InodeCache {
                 .cache
                 .entry(inode_num)
                 .or_insert_with(|| CachedInode::new(inode, inode_num, block_num, offset));
+
+            // Populate the block's other inodes (clean) so the next access to
+            // a sibling hits the cache instead of re-reading the 4 KiB block.
+            inner.populate_siblings(&block_bytes, block_num, inode_num, offset);
 
             drop(inner);
 
@@ -266,9 +270,14 @@ impl InodeCache {
 
             drop(inner);
 
-            // Phase 2: load the requested inode from disk (no dirty writeback
-            // yet — the victim snapshot may be stale).
-            let inode = self.load_inode(block_dev, block_num, offset)?;
+            // Phase 2: load the requested inode's block from disk (no dirty
+            // writeback yet — the victim snapshot may be stale).
+            let inode_size = self.inode_size;
+            let block_bytes = self.load_inode_block(block_dev, block_num)?;
+            if offset + inode_size > block_bytes.len() {
+                return Err(Ext4Error::corrupted());
+            }
+            let inode = Ext4Inode::from_disk_bytes(&block_bytes[offset..offset + inode_size]);
 
             // Phase 3: reacquire the lock. Validate the victim generation.
             // If valid, remove it and schedule dirty writeback for Phase 4.
@@ -294,6 +303,10 @@ impl InodeCache {
                 .cache
                 .entry(inode_num)
                 .or_insert_with(|| CachedInode::new(inode, inode_num, block_num, offset));
+
+            // Populate the block's other inodes (clean) for the same reason as
+            // in `get_or_load`.
+            inner.populate_siblings(&block_bytes, block_num, inode_num, offset);
 
             drop(inner);
 
@@ -530,6 +543,59 @@ pub struct InodeCacheStats {
 // ── Inner methods (caller holds `self.inner.lock()`) ─────────────────────────
 
 impl InodeCacheInner {
+    /// Populates clean cache entries for the other inodes that share `requested`'s
+    /// inode-table block, using the block bytes already read for the miss.
+    ///
+    /// Without this, every inode in a 16-inode block re-reads the 4 KiB block
+    /// on its own miss — the dominant read cost of file creation. Siblings are
+    /// inserted only while there is room (no eviction), so this never triggers
+    /// writeback I/O; if the cache is full the requested inode's own insert has
+    /// already handled eviction via the normal path.
+    fn populate_siblings(
+        &mut self,
+        block_bytes: &[u8],
+        block_num: AbsoluteBN,
+        requested: InodeNumber,
+        offset: usize,
+    ) {
+        let inode_size = self.inode_size;
+        if inode_size == 0 {
+            return;
+        }
+        let inodes_per_block = crate::config::BLOCK_SIZE / inode_size;
+        let slot = offset / inode_size;
+        let Some(base_raw) = requested.raw().checked_sub(slot as u32) else {
+            return;
+        };
+        let now = self.access_counter;
+        for s in 0..inodes_per_block {
+            if s == slot {
+                continue; // requested inode handled by caller
+            }
+            let Some(raw) = base_raw.checked_add(s as u32) else {
+                continue;
+            };
+            if raw == 0 {
+                continue; // inode 0 is invalid
+            }
+            let Ok(inum) = InodeNumber::new(raw) else {
+                continue;
+            };
+            // Best-effort: only insert siblings while there is room and the
+            // slot is free. Never evict for a sibling.
+            if self.cache.len() < self.max_entries && !self.cache.contains_key(&inum) {
+                let off = s * inode_size;
+                if off + inode_size > block_bytes.len() {
+                    break;
+                }
+                let inode = Ext4Inode::from_disk_bytes(&block_bytes[off..off + inode_size]);
+                let mut cached = CachedInode::new(inode, inum, block_num, off);
+                cached.last_access = now;
+                self.cache.insert(inum, cached);
+            }
+        }
+    }
+
     /// Snapshots the LRU entry for lock-free eviction.
     ///
     /// Returns `(lru_key, generation, dirty_write_info)` where `generation`
