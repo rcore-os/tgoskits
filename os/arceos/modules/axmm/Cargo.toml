@@ -23,3 +23,5 @@ thiserror.workspace = true
 
 [dev-dependencies]
 ax-hal = { path = "../axhal", features = ["host-test"] }
+# Unit-test binaries use ax-sync locks and must link the shared host provider.
+ax-runtime = { path = "../axruntime", features = ["host-test"] }
