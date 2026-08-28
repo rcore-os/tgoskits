@@ -4118,6 +4118,43 @@ process/1000 按 warmup 加五轮协议得到 warmup 47.394 s、测量
 `fair_wakeup_preempts()` 先比较 eligible current/wakee deadline，再确认 wakee 是 queued best，
 结果与该选择顺序一致，因此没有为错误的“current vruntime override”结论修改代码。
 
+### 2026-08-29 Fair repick 保留 RUN_TO_PARITY current
+
+Linux v7.1 的 class chain 先调用 `pick_task()`，只有选出不同 successor 后才由
+`put_prev_set_next_task()` 把旧 current 放回 class queue。Fair `pick_task_fair()` 因而仍能把
+`cfs_rq->curr` 传给 `pick_eevdf(..., protect=true)`；只要 current 仍 runnable、eligible 且
+`protect_slice(curr)` 成立，它必须在 deadline tree 之前直接胜出。只有 Stop、Deadline 或 RT 等
+更高 class 可以越过该保护。旧 ax-task 在 owner-rq decision 中先执行 Fair put-prev，把 current
+作为普通树节点插入，再只按 earliest eligible deadline 选择；PI、policy/migration、bandwidth 或
+owner-delivery 等非 Fair-wakeup 的 Immediate request 因而能在保护期内错误切走 current。普通
+Fair wake 通常被 wakeup-preemption 的 protection 检查挡住，不能覆盖这个 class-pick 缺口。
+
+确定性纯算法回归构造一个 eligible 且仍受保护的 Fair current；修复前代表旧 pick 条件的断言
+稳定失败，修复后转绿。owner transaction 现在只在普通 preemption/unconditional schedule 中
+显式携带旧 current identity；class chain 仍先扫描 Stop、Deadline 和 RT，落到 Fair 后再从同一
+AVL membership 中核对 generation、delayed、eligibility 与 protection。命中时取回 current，且
+不重新调用 `set_slice_protection()` 延长已有窗口；显式 yield 已先取消/更新 request，block/exit
+已移除 membership，migration 已从源 rq detach，因此没有保留旧 current 的兼容分支或第二状态源。
+`qperf-metrics` 增加 `fair_pick_protected_current`，用于直接验证这条选择，而不是从 switch 数量反推。
+
+process/20 单核 qperf 实测 1.208 s，8040 次 read 中有 4054 次 wait；工作负载期间
+`fair_pick_protected_current` 增量为 0，说明该语义修复不在当前 hackbench 热路径上。无插桩
+process/1000 按 warmup 加五轮协议得到 warmup 52.409 s、测量
+51.324/51.708/51.659/52.940/52.324 s，中位数 51.708 s；相对上一检查点 49.709 s 名义退化约
+4.0%，仍为 Linux v7.1 PREEMPT_RT 10.540 s 的约 4.91 倍。由于修复分支在诊断窗口中零命中，
+不能把该波动归因于实现；按完成规则保留已证明的 Linux 语义，继续追踪每次 pipe 空读触发的
+block/wake 固定成本与运行顺序差异。
+
+质量验证覆盖同一个变更：`ax-task` 的 103 个单元测试、3 个集成测试和 12 个文档测试全部通过，
+Starry x86_64 QEMU `axtest_kernel` 73/73 通过；`cargo xtask clippy --package ax-task
+--package starry-kernel` 的 111/111 个目标/特性组合通过。
+
+同轮尝试恢复 Linux sched trace 基准时确认，当前 `/home/zhourui/linux-build-7.1-rt-wakeup`
+配置禁用了 `CONFIG_BLK_DEV_NVME`，而现有 Alpine rootfs 仍带 `needs_recovery` 并有 e2fsck
+结构错误；它不能直接复现文档所记录的 NVMe baseline，也不应以 rw 模式继续破坏共享镜像。
+现有材料没有保存原始 Linux QEMU 命令或 trace 输出，因此不会用一条 IDE/KVM 临时启动结果
+替代相同 q35/TCG/NVMe 协议的正式对照。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

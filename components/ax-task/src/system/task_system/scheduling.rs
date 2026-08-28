@@ -41,7 +41,7 @@ fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
     // unique highest-priority RT node is current, but Stop or Deadline may
     // still precede it. Lower-priority RT and Fair tasks cannot displace it.
     let Some(PickTaskResult::Continue(picked)) =
-        transaction.pick_next_task(RtEligibility::Runnable, false)
+        transaction.pick_next_task(RtEligibility::Runnable, false, None)
     else {
         task_runtime::fatal_invariant(0x5343_1217, current.as_u64() as usize)
     };
@@ -86,7 +86,11 @@ impl TaskSystem {
         mut transaction: OwnerRqTxn<'_>,
         state: RequestedPreemptionState,
     ) -> RequestedPreemptionCommit {
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
+        let next = self.pick_owner_next_after_preemption_in_rq(
+            cpu.as_mut(),
+            &mut transaction,
+            state.previous,
+        );
         let next_core = next.core;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1206, next_core.id().as_u64() as usize)
@@ -626,7 +630,8 @@ impl TaskSystem {
             );
             migration = schedule_out.migration;
         }
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
+        let next =
+            self.pick_owner_next_after_preemption_in_rq(cpu.as_mut(), &mut transaction, previous);
         let next_core = next.core;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1203, next_core.id().as_u64() as usize)

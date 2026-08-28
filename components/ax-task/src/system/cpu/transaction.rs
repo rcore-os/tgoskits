@@ -627,9 +627,13 @@ impl<'a> OwnerRqTxn<'a> {
         &mut self,
         rt_eligibility: RtEligibility,
         skip_delayed: bool,
+        protected_fair_current: Option<ThreadId>,
     ) -> Option<PickTaskResult> {
-        self.scheduler_queue_mut()
-            .pick_next_task(rt_eligibility, skip_delayed)
+        self.scheduler_queue_mut().pick_next_task(
+            rt_eligibility,
+            skip_delayed,
+            protected_fair_current,
+        )
     }
 
     pub(crate) fn rollback_pick(&mut self, picked: PickedThread) {

@@ -504,6 +504,12 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "fair_pick_protected_current {}",
+        task.fair_pick_protected_current
+    )
+    .unwrap();
+    writeln!(
+        output,
         "fair_wake_wakee_ineligible {}",
         task.fair_wake_wakee_ineligible
     )
@@ -895,6 +901,7 @@ mod tests {
                 "direct_wake_preemptions",
                 "direct_wake_current_kept",
                 "direct_wake_queued_candidate_selected",
+                "fair_pick_protected_current",
                 "fair_wake_wakee_ineligible",
                 "fair_wake_current_ineligible",
                 "fair_wake_current_protected",

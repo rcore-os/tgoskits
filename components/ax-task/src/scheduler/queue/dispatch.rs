@@ -89,10 +89,11 @@ impl RunQueue {
         &mut self,
         rt_eligibility: RtEligibility,
         skip_delayed: bool,
+        protected_fair_current: Option<ThreadId>,
     ) -> Option<PickTaskResult> {
-        SchedulerClass::PICK_ORDER
-            .into_iter()
-            .find_map(|class| class.pick_task(self, rt_eligibility, skip_delayed))
+        SchedulerClass::PICK_ORDER.into_iter().find_map(|class| {
+            class.pick_task(self, rt_eligibility, skip_delayed, protected_fair_current)
+        })
     }
 
     /// Linux `set_next_task()`: commits one class pick as current.

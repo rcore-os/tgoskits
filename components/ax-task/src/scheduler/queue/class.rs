@@ -182,6 +182,7 @@ impl SchedulerClass {
         run_queue: &mut RunQueue,
         rt_eligibility: RtEligibility,
         skip_delayed: bool,
+        protected_fair_current: Option<ThreadId>,
     ) -> Option<PickTaskResult> {
         match self {
             Self::Stop => run_queue
@@ -207,17 +208,28 @@ impl SchedulerClass {
                 run_queue.update_fair_virtual_time(None);
                 let queue = &mut run_queue.fair;
                 let virtual_time = queue.virtual_time();
-                let mut thread = match queue.pick_eligible(virtual_time, skip_delayed)? {
-                    FairPick::Runnable(thread) => thread,
-                    FairPick::Delayed(core) => {
-                        return Some(PickTaskResult::Break(core));
-                    }
+                let (mut thread, starts_dispatch) = if let Some(thread) = protected_fair_current
+                    .and_then(|current| queue.take_protected_current(current, virtual_time))
+                {
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_fair_pick_protected_current();
+                    (thread, false)
+                } else {
+                    let thread = match queue.pick_eligible(virtual_time, skip_delayed)? {
+                        FairPick::Runnable(thread) => thread,
+                        FairPick::Delayed(core) => {
+                            return Some(PickTaskResult::Break(core));
+                        }
+                    };
+                    (thread, true)
                 };
-                let shortest_competing_slice_ns = queue.min_service_request_ns();
-                let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
-                    unreachable!("FairRunQueue can select only Fair entities")
-                };
-                fair.set_slice_protection(shortest_competing_slice_ns);
+                if starts_dispatch {
+                    let shortest_competing_slice_ns = queue.min_service_request_ns();
+                    let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
+                        unreachable!("FairRunQueue can select only Fair entities")
+                    };
+                    fair.set_slice_protection(shortest_competing_slice_ns);
+                }
                 Some(PickTaskResult::Continue(PickedThread::Owned(thread)))
             }
         }

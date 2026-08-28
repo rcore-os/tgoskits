@@ -580,7 +580,29 @@ impl TaskSystem {
         } else {
             RtEligibility::Throttled
         };
-        self.pick_owner_next_with_rt_eligibility(cpu, transaction, rt_eligibility, outgoing_delayed)
+        self.pick_owner_next_with_rt_eligibility(
+            cpu,
+            transaction,
+            rt_eligibility,
+            outgoing_delayed,
+            None,
+        )
+    }
+
+    /// Preserves Linux EEVDF's protected-current identity after ax-task has
+    /// returned an outgoing runnable Fair task to its owner tree.
+    pub(super) fn pick_owner_next_after_preemption_in_rq(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        transaction: &mut OwnerRqTxn<'_>,
+        previous: Option<ThreadId>,
+    ) -> OwnerNext {
+        let rt_eligibility = if !transaction.rt_is_effectively_throttled() {
+            RtEligibility::Runnable
+        } else {
+            RtEligibility::Throttled
+        };
+        self.pick_owner_next_with_rt_eligibility(cpu, transaction, rt_eligibility, None, previous)
     }
 
     /// Selects the sole bootstrap task before RT runtime and root-domain
@@ -593,7 +615,13 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         transaction: &mut OwnerRqTxn<'_>,
     ) -> OwnerNext {
-        self.pick_owner_next_with_rt_eligibility(cpu, transaction, RtEligibility::Runnable, None)
+        self.pick_owner_next_with_rt_eligibility(
+            cpu,
+            transaction,
+            RtEligibility::Runnable,
+            None,
+            None,
+        )
     }
 
     fn pick_owner_next_with_rt_eligibility(
@@ -602,12 +630,14 @@ impl TaskSystem {
         transaction: &mut OwnerRqTxn<'_>,
         rt_eligibility: RtEligibility,
         mut outgoing_delayed: Option<(&ThreadCore, &mut ThreadSchedState)>,
+        protected_fair_current: Option<ThreadId>,
     ) -> OwnerNext {
         let owner = cpu.owner();
         let mut skip_delayed = false;
         let mut delayed_retry_required = false;
         let queued = loop {
-            let picked = transaction.pick_next_task(rt_eligibility, skip_delayed);
+            let picked =
+                transaction.pick_next_task(rt_eligibility, skip_delayed, protected_fair_current);
 
             match picked {
                 Some(PickTaskResult::Continue(queued)) => break Some(queued),

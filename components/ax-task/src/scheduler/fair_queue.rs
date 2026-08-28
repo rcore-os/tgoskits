@@ -314,6 +314,30 @@ impl FairRunQueue {
         Some(FairPick::Runnable(thread))
     }
 
+    /// Returns the runnable current while Linux `RUN_TO_PARITY` still
+    /// protects its active request. Linux checks `cfs_rq->curr` before the
+    /// deadline tree in `pick_eevdf(..., protect=true)`; ax-task has already
+    /// returned the outgoing current to this tree when selection begins, so
+    /// its identity must be carried explicitly through the owner transaction.
+    pub(super) fn take_protected_current(
+        &mut self,
+        current: ThreadId,
+        virtual_time: u64,
+    ) -> Option<QueuedThread> {
+        let (generation, key) = self
+            .keys
+            .get(current.slot() as usize)
+            .and_then(|entry| *entry)?;
+        if generation != current.generation() {
+            return None;
+        }
+        let node =
+            find_node(self.root.as_deref(), key).expect("fair identity index must match its tree");
+        protected_current_is_eligible(fair_entity(node.thread()), virtual_time)
+            .then(|| self.remove_entry(current))
+            .flatten()
+    }
+
     pub(super) fn earliest_eligible(&self, virtual_time: u64) -> Option<ThreadId> {
         earliest_eligible_key(self.root.as_deref(), virtual_time, true).map(|key| key.thread)
     }
@@ -563,6 +587,10 @@ fn fair_entity(thread: &QueuedThread) -> FairEntity {
         .expect("FairRunQueue accepts only fair scheduling entities")
 }
 
+fn protected_current_is_eligible(entity: FairEntity, virtual_time: u64) -> bool {
+    !entity.is_delayed() && entity.is_eligible(virtual_time) && entity.slice_is_protected()
+}
+
 fn link_height(link: &FairLink) -> usize {
     link.as_deref().map_or(0, |node| node.height)
 }
@@ -761,4 +789,18 @@ fn find_first_runnable_matching<'queue>(
                 .then_some(node.thread())
         })
         .or_else(|| find_first_runnable_matching(node.right.as_deref(), predicate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FairMode, Nice};
+
+    #[test]
+    fn linux_run_to_parity_keeps_an_eligible_protected_current() {
+        let mut current = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 1_000);
+        current.set_slice_protection(None);
+
+        assert!(protected_current_is_eligible(current, 1_000));
+    }
 }
