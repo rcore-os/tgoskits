@@ -130,7 +130,17 @@ pub unsafe fn write_user_page_table(root_paddr: PhysAddr) {
     TTBR0_EL1.set(root_paddr.as_usize() as _);
 }
 
-/// Flushes the TLB.
+/// Makes page-table writes visible to the inner-shareable domain.
+///
+/// Cross-CPU shootdown must execute this before sending any IPI. A barrier on
+/// the remote CPU cannot order page-table writes performed by the initiating
+/// CPU.
+#[inline]
+pub fn synchronize_page_table_writes() {
+    unsafe { asm!("dsb ishst") };
+}
+
+/// Flushes the local TLB.
 ///
 /// If `vaddr` is [`None`], flushes the entire TLB. Otherwise, flushes the TLB
 /// entry that maps the given virtual address.
@@ -142,25 +152,27 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 
         #[cfg(not(feature = "arm-el2"))]
         unsafe {
-            // TLB Invalidate by VA, All ASID, EL1, Inner Shareable
-            asm!("tlbi vaae1is, {}; dsb sy; isb", in(reg) operand)
+            // TLB Invalidate by VA, All ASID, EL1, local PE. The runtime owns
+            // cross-CPU targeting and invokes this function on every selected
+            // CPU only after the initiator publishes its page-table writes.
+            asm!("dsb nshst; tlbi vaae1, {}; dsb nsh; isb", in(reg) operand)
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
-            // TLB Invalidate by VA, EL2, Inner Shareable
-            asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) operand)
+            // TLB Invalidate by VA, EL2, local PE.
+            asm!("dsb nshst; tlbi vae2, {}; dsb nsh; isb", in(reg) operand)
         }
     } else {
         // flush the entire TLB
         #[cfg(not(feature = "arm-el2"))]
         unsafe {
-            // TLB Invalidate by VMID, All at stage 1, EL1
-            asm!("dsb sy; isb; tlbi vmalle1; dsb sy; isb")
+            // TLB Invalidate by VMID, All at stage 1, EL1, local PE.
+            asm!("dsb nshst; tlbi vmalle1; dsb nsh; isb")
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
-            // TLB Invalidate All, EL2
-            asm!("tlbi alle2; dsb sy; isb")
+            // TLB Invalidate All, EL2, local PE.
+            asm!("dsb nshst; tlbi alle2; dsb nsh; isb")
         }
     }
 }

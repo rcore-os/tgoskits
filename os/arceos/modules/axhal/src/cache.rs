@@ -110,6 +110,7 @@ trait TlbShootdown {
     fn cpu_count(&self) -> usize;
     fn current_cpu(&self) -> usize;
     fn cpu_online(&self, cpu_id: usize) -> bool;
+    fn synchronize_page_table_writes(&self);
     fn flush_remote(
         &self,
         cpu_id: usize,
@@ -132,6 +133,13 @@ impl TlbShootdown for AxHalTlbShootdown {
 
     fn cpu_online(&self, cpu_id: usize) -> bool {
         crate::irq::is_cpu_online(cpu_id)
+    }
+
+    fn synchronize_page_table_writes(&self) {
+        #[cfg(target_arch = "aarch64")]
+        ax_cpu::asm::synchronize_page_table_writes();
+        #[cfg(not(target_arch = "aarch64"))]
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     }
 
     fn flush_remote(
@@ -179,6 +187,11 @@ fn flush_tlb_range_on_cpus_with(
     start: VirtAddr,
     size: usize,
 ) -> Result<(), TlbShootdownError> {
+    // Publish the initiating CPU's PTE writes before any local invalidation or
+    // remote IPI. In particular, an AArch64 DSB executed by the remote CPU
+    // cannot order stores performed here. Reclaim is legal only after this
+    // publication edge and every selected invalidation has completed.
+    runtime.synchronize_page_table_writes();
     let current_cpu = runtime.current_cpu();
     if current_cpu < usize::BITS as usize && cpu_mask & (1usize << current_cpu) != 0 {
         runtime.flush_local(start, size);
@@ -291,6 +304,7 @@ mod tests {
         remote_error: Option<TlbShootdownError>,
         remote_mask: Cell<usize>,
         local_flushed: Cell<bool>,
+        writes_synchronized: Cell<bool>,
     }
 
     impl TlbShootdown for ModelShootdown {
@@ -306,18 +320,33 @@ mod tests {
             self.online[cpu_id]
         }
 
+        fn synchronize_page_table_writes(&self) {
+            assert!(
+                !self.writes_synchronized.replace(true),
+                "one shootdown transaction must publish PTE writes exactly once"
+            );
+        }
+
         fn flush_remote(
             &self,
             cpu_id: usize,
             _start: VirtAddr,
             _size: usize,
         ) -> Result<(), TlbShootdownError> {
+            assert!(
+                self.writes_synchronized.get(),
+                "PTE writes must be published before a remote invalidation"
+            );
             self.remote_mask
                 .set(self.remote_mask.get() | (1usize << cpu_id));
             self.remote_error.map_or(Ok(()), Err)
         }
 
         fn flush_local(&self, _start: VirtAddr, _size: usize) {
+            assert!(
+                self.writes_synchronized.get(),
+                "PTE writes must be published before a local invalidation"
+            );
             self.local_flushed.set(true);
         }
     }
@@ -329,6 +358,7 @@ mod tests {
             remote_error: Some(TlbShootdownError::Timeout),
             remote_mask: Cell::new(0),
             local_flushed: Cell::new(false),
+            writes_synchronized: Cell::new(false),
         };
 
         let result =
@@ -340,6 +370,7 @@ mod tests {
             runtime.local_flushed.get(),
             "a remote failure must not skip the current CPU invalidation"
         );
+        assert!(runtime.writes_synchronized.get());
     }
 
     #[test]
@@ -349,6 +380,7 @@ mod tests {
             remote_error: None,
             remote_mask: Cell::new(0),
             local_flushed: Cell::new(false),
+            writes_synchronized: Cell::new(false),
         };
 
         let result =
@@ -357,6 +389,7 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(runtime.remote_mask.get(), 1usize << 2);
         assert!(runtime.local_flushed.get());
+        assert!(runtime.writes_synchronized.get());
     }
 
     #[test]
@@ -366,6 +399,7 @@ mod tests {
             remote_error: None,
             remote_mask: Cell::new(0),
             local_flushed: Cell::new(false),
+            writes_synchronized: Cell::new(false),
         };
 
         let result =
@@ -374,6 +408,7 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(runtime.remote_mask.get(), 1usize << 2);
         assert!(!runtime.local_flushed.get());
+        assert!(runtime.writes_synchronized.get());
     }
 
     #[test]

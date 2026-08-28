@@ -159,6 +159,16 @@ DMA coherent alias 的 release 是例外：它的调用者会在 unmap 返回成
 个错误用于诊断。这样发起 syscall/page fault 的 CPU 不会因为远端超时而携带自己的旧 translation
 返回；未确认的远端仍由 quarantine 阻止 frame/VA 回收和复用。
 
+shootdown 确认之前还必须存在独立的“页表写入已发布”边。AArch64 发起 CPU 在任何本地 TLBI 或
+远端 IPI 前执行 `dsb ishst`；每个目标 CPU 只执行本地
+`dsb nshst → TLBI → dsb nsh → isb`。`ax-cpu` 因而不使用 `vaae1is/vae2is` 隐式广播，CPU mask、
+online 状态和确认统一由 ax-hal/runtime 软件 shootdown 事务拥有。若只在远端回调中执行 DSB，
+它不能排序发起 CPU 先前清除 parent PTE 的写入：远端可能在 ACK 后仍走旧 table 层级，而 gather
+随即回收并复用中间页表 frame，形成 page-walk use-after-free。CI run `33142588973` 中随后出现的
+AArch64 `IrqWaitCell::wake_registration` 无关对象损坏与这一缺口的下游表现一致；同配置 ELF 将
+faulting load 还原为损坏的 `ThreadCore.state` 引用，而不是 IRQ wait 自身的所有权错误。该 fault
+用于暴露缺失的架构顺序，不能单独证明损坏只可能来自这一条路径。
+
 ### 5.2 ax-mm kernel stage-1
 
 ax-mm 的 gather 面向所有可能使用全局 kernel root 的在线 CPU，跨 CPU 失效由 ax-hal/runtime
@@ -246,6 +256,8 @@ offline guard。
   参与；
 - `arch/x86/mm/tlb.c:1428-1463`：generation 发布和同步确认形成回收屏障；
 - `mm/mmu_gather.c:427-555`：页表/TLB flush 完成后才执行批量 free。
+- `arch/arm64/include/asm/tlbflush.h:593-644`：range TLBI 先执行 `dsb(ishst)` 发布页表写入，
+  再发出 TLBI 并以同步屏障收尾。
 
 TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语义顺序，再用 Rust ownership、
 对象 identity 和线性 token 收紧可调用状态。
@@ -279,7 +291,9 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
 - ax-mm：shootdown 失败时 frame 不 reclaim，重试确认后才 reclaim；partial populate rollback 中
   已发布 frame 同样 deferred；DMA alias 的 confirmed unmap 失败必须阻止原物理页回到 allocator；
   page-table-generic 的 red/green 回归证明安全 leaf/range unmap、deferred leaf 删除与失败 map rollback
-  都不会在确认前释放变空的中间页表；
+  都不会在确认前释放变空的中间页表；AArch64 源级合同固定发起 CPU 的 `dsb ishst` 早于任何
+  目标失效，并固定本地 `dsb nshst → TLBI → dsb nsh → isb` 顺序，ax-hal 模型同时证明即使发起
+  CPU 不在 active mask 中，写入发布仍早于第一条远端 IPI；
 - runtime：`A(same mm) → B(same mm) → C(other mm)` 保留共享 lease 后再按序撤销；不同
   逻辑 mm 即使 root 相同仍安装；
 - user entry：current context 错误、switch tail 未完成、mm/root 不匹配、IRQ/preempt 状态不安全，
