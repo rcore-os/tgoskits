@@ -41,10 +41,6 @@ jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
 rk3588-pwm = ["starry-kernel/rk3588-pwm"]
 rga = ["ax-driver/rga", "starry-kernel/rga"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
-axivc-device = [
-  "starry-kernel/axivc",
-  "ax-std/paging",
-]
 
 [[bin]]
 name = "starryos"
@@ -64,6 +60,7 @@ ax-std = { workspace = true, default-features = false, features = [
   "fs",
   "multitask",
   "irq",
+  "paging",
 ] }
 ax-driver.workspace = true
 ax-hal.workspace = true

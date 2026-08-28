@@ -121,7 +121,6 @@ smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []
-axivc = ["dep:axhvc", "dep:axivc"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
@@ -169,8 +168,8 @@ rdif-block = { workspace = true }
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
 ax-io = { workspace = true }
-axhvc = { workspace = true, optional = true }
-axivc = { workspace = true, optional = true }
+axhvc = { workspace = true }
+axivc = { workspace = true }
 axpoll = { workspace = true }
 bitflags = "2.10"
 bitmaps = { version = "3.2", default-features = false }

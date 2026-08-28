@@ -1,6 +1,5 @@
 //! Special devices
 
-#[cfg(feature = "axivc")]
 mod axivc;
 mod card0;
 #[cfg(feature = "rknpu")]
@@ -612,7 +611,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         ),
     );
 
-    #[cfg(feature = "axivc")]
     axivc::register_devices(&mut root, fs.clone());
 
     #[cfg(feature = "k230-kpu")]
