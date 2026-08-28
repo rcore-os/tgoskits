@@ -288,12 +288,34 @@ fn notify_ptrace_waiter(thr: &Thread, signo: Signo) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SignalCheckOutcome {
+    None,
+    HandlerInstalled,
+    HandledInKernel,
+}
+
+impl SignalCheckOutcome {
+    fn delivered(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 pub fn check_signals(
     current: &UserTaskRef,
     uctx: &mut UserContext,
     restore_blocked: Option<SignalSet>,
     restart_info: Option<&SyscallRestartInfo>,
 ) -> bool {
+    check_signals_with_outcome(current, uctx, restore_blocked, restart_info).delivered()
+}
+
+pub(crate) fn check_signals_with_outcome(
+    current: &UserTaskRef,
+    uctx: &mut UserContext,
+    restore_blocked: Option<SignalSet>,
+    restart_info: Option<&SyscallRestartInfo>,
+) -> SignalCheckOutcome {
     let thr = current.as_thread();
     queue_rttime_limit_signal(thr);
     if thr.take_deadline_overrun() {
@@ -313,7 +335,7 @@ pub fn check_signals(
     // and the user-task outer loop bails on `pending_exit()`.
     if thr.take_exit_request() {
         do_exit(0, false);
-        return true;
+        return SignalCheckOutcome::HandledInKernel;
     }
 
     let mut user_memory = UserMemoryProvider::new(current);
@@ -345,7 +367,7 @@ pub fn check_signals(
             }
         },
     ) else {
-        return false;
+        return SignalCheckOutcome::None;
     };
 
     let signo = sig.signo();
@@ -357,12 +379,12 @@ pub fn check_signals(
         && let Some(resume_signo) = ptrace_stop_current(thr, signo, uctx)
     {
         match resume_signo {
-            None => return true,
+            None => return SignalCheckOutcome::HandledInKernel,
             Some(new_signo) if new_signo != signo => {
                 thr.proc_data
                     .set_ptrace_resume_signal_bypass_for(thr.tid(), new_signo);
                 let _ = thr.signal().send_signal(SignalInfo::new_kernel(new_signo));
-                return true;
+                return SignalCheckOutcome::HandledInKernel;
             }
             Some(_) => {}
         }
@@ -379,6 +401,11 @@ pub fn check_signals(
     // signal that follows.
     let dump_on_terminate = thr.claim_fault_dump(signo as u8);
 
+    let outcome = if os_action == SignalOSAction::NoFurtherAction {
+        SignalCheckOutcome::HandlerInstalled
+    } else {
+        SignalCheckOutcome::HandledInKernel
+    };
     match os_action {
         SignalOSAction::Terminate => {
             if dump_on_terminate {
@@ -396,7 +423,7 @@ pub fn check_signals(
         SignalOSAction::Continue => {}
         SignalOSAction::NoFurtherAction => {}
     }
-    true
+    outcome
 }
 
 fn queue_rttime_limit_signal(thr: &Thread) {
@@ -538,10 +565,30 @@ pub fn with_blocked_signals<R>(
     let curr = current_user_task();
     let sig = curr.as_thread().signal();
 
-    let old_blocked = blocked.map(|set| sig.set_blocked(set));
+    let Some(blocked) = blocked else {
+        return f();
+    };
+
+    let old_blocked = sig.set_blocked(blocked);
+    let has_deliverable_signal = || !(sig.pending() & !sig.blocked()).is_empty();
+    // A signal may already be pending under the caller's mask. Once the
+    // temporary pselect/ppoll mask makes it deliverable, publish the same
+    // sticky interruption that a newly arriving signal would publish.
+    if has_deliverable_signal() {
+        curr.interrupt();
+    }
+
     let result = f();
-    if let Some(old) = old_blocked {
-        sig.set_blocked(old);
+    if matches!(&result, Err(crate::StarryError::Interrupted)) {
+        // Keep the temporary mask active through the return-to-user signal
+        // scan. This also closes the window where a signal arrives after the
+        // wait reports interruption but before the syscall restores its mask.
+        // The signal frame records old_blocked, and rt_sigreturn restores it
+        // after the handler, matching Linux's saved_sigmask contract. If no
+        // signal remains deliverable, the safe-point scan restores it directly.
+        curr.as_thread().defer_signal_mask_restore(old_blocked);
+    } else {
+        sig.set_blocked(old_blocked);
     }
     result
 }

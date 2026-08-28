@@ -158,6 +158,7 @@ impl ThreadLifecycle {
 struct ThreadSignals {
     manager: Arc<ThreadSignalManager>,
     signalfd_waker: PollSet,
+    deferred_mask_restore: IrqMutex<Option<SignalSet>>,
 }
 
 impl ThreadSignals {
@@ -169,6 +170,7 @@ impl ThreadSignals {
         Self {
             manager: ThreadSignalManager::new_with_blocked(tid, process_signal, signal_mask),
             signalfd_waker: PollSet::new(),
+            deferred_mask_restore: IrqMutex::new(None),
         }
     }
 }
@@ -695,6 +697,20 @@ impl Thread {
     /// Returns this thread's signal manager.
     pub fn signal(&self) -> &Arc<ThreadSignalManager> {
         &self.signals.manager
+    }
+
+    /// Defers restoration of a temporary syscall signal mask until delivery.
+    pub(crate) fn defer_signal_mask_restore(&self, mask: SignalSet) {
+        let previous = self.signals.deferred_mask_restore.lock().replace(mask);
+        assert!(
+            previous.is_none(),
+            "one thread cannot own nested deferred signal-mask restores"
+        );
+    }
+
+    /// Takes the mask that the next delivered signal frame must restore.
+    pub(crate) fn take_deferred_signal_mask_restore(&self) -> Option<SignalSet> {
+        self.signals.deferred_mask_restore.lock().take()
     }
 
     pub(crate) fn wake_signalfd(&self) {

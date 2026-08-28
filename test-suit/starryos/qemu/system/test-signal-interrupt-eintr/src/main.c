@@ -5,7 +5,7 @@
  *
  * 测试目的：
  * 1) 固定 StarryOS 信号打断阻塞 syscall 的 ABI 语义：
- *    线程/进程阻塞在 interruptible 路径（本例用 poll）时，
+ *    线程/进程阻塞在 interruptible 路径（本例用 ppoll）时，
  *    收到可投递且未屏蔽信号后必须返回 -1，errno == EINTR。
  * 2) 避免仅依赖 nginx 多 worker 集成场景；
  *    一旦 task.interrupt() 语义回退，本用例应直接失败。
@@ -53,7 +53,7 @@ static int read_ready_byte(int fd, char *ready)
     }
 }
 
-static int child_run(int notify_fd, int block_fd)
+static int child_run(int notify_fd, int release_fd, int block_fd)
 {
     /*
      * 子进程安装可投递信号处理器：
@@ -69,10 +69,11 @@ static int child_run(int notify_fd, int block_fd)
         return 1;
     }
 
-    sigset_t empty;
-    sigemptyset(&empty);
-    if (sigprocmask(SIG_SETMASK, &empty, NULL) != 0) {
-        perror("child: sigprocmask(SIG_SETMASK)");
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGUSR1);
+    if (sigprocmask(SIG_BLOCK, &blocked, NULL) != 0) {
+        perror("child: sigprocmask(SIG_BLOCK)");
         return 1;
     }
 
@@ -83,17 +84,43 @@ static int child_run(int notify_fd, int block_fd)
         return 1;
     }
 
+    /*
+     * Keep SIGUSR1 blocked until the parent confirms that kill() completed.
+     * The signal is therefore pending before ppoll atomically installs its
+     * empty mask, eliminating the ready-to-wait userspace race.
+     */
+    char release = 0;
+    if (read(release_fd, &release, 1) != 1 || release != 'G') {
+        perror("child: wait for parent release");
+        return 1;
+    }
+
     struct pollfd pfd = {
         .fd = block_fd,
         .events = POLLIN,
     };
 
     errno = 0;
-    /* 关键断言：阻塞 poll 在 SIGUSR1 到达后必须返回 -1/EINTR。 */
-    int r = poll(&pfd, 1, -1);
+    sigset_t wait_mask;
+    sigemptyset(&wait_mask);
+    /*
+     * The temporary empty mask makes the already-pending SIGUSR1 deliverable
+     * atomically with entering the wait. ppoll must return -1/EINTR.
+     */
+    int r = ppoll(&pfd, 1, NULL, &wait_mask);
     int e = errno;
     if (r == -1 && e == EINTR && got_usr1) {
-        printf("PASS: poll interrupted by SIGUSR1 with EINTR\n");
+        sigset_t restored;
+        if (sigprocmask(SIG_SETMASK, NULL, &restored) != 0) {
+            perror("child: read restored signal mask");
+            return 1;
+        }
+        if (sigismember(&restored, SIGUSR1) != 1) {
+            fprintf(stderr,
+                    "FAIL: ppoll did not restore the caller's SIGUSR1 mask\n");
+            return 1;
+        }
+        printf("PASS: ppoll interrupted by pending SIGUSR1 with EINTR\n");
         return 0;
     }
 
@@ -107,7 +134,8 @@ int main(void)
 {
     int block_pipe[2] = {-1, -1};
     int sync_pipe[2] = {-1, -1};
-    if (pipe(block_pipe) != 0 || pipe(sync_pipe) != 0) {
+    int release_pipe[2] = {-1, -1};
+    if (pipe(block_pipe) != 0 || pipe(sync_pipe) != 0 || pipe(release_pipe) != 0) {
         perror("pipe");
         return 1;
     }
@@ -120,14 +148,17 @@ int main(void)
 
     if (child == 0) {
         close(sync_pipe[0]);
+        close(release_pipe[1]);
         close(block_pipe[1]);
-        int rc = child_run(sync_pipe[1], block_pipe[0]);
+        int rc = child_run(sync_pipe[1], release_pipe[0], block_pipe[0]);
         close(sync_pipe[1]);
+        close(release_pipe[0]);
         close(block_pipe[0]);
         _exit(rc);
     }
 
     close(sync_pipe[1]);
+    close(release_pipe[0]);
     close(block_pipe[0]);
 
     /*
@@ -153,6 +184,14 @@ int main(void)
         waitpid(child, NULL, 0);
         return 1;
     }
+    char release = 'G';
+    if (write(release_pipe[1], &release, 1) != 1) {
+        perror("parent: release child");
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        return 1;
+    }
+    close(release_pipe[1]);
 
     int status = 0;
     int waited_ms = 0;

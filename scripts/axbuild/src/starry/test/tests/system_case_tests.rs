@@ -434,7 +434,7 @@ fn starry_system_runner_bounds_each_pid_namespace() {
 }
 
 #[test]
-fn signal_interrupt_eintr_subcase_bounds_child_wait() {
+fn signal_interrupt_eintr_subcase_uses_race_free_ppoll_wait() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source_path = workspace_root
         .join("test-suit/starryos/qemu/system/test-signal-interrupt-eintr/src/main.c");
@@ -448,8 +448,12 @@ fn signal_interrupt_eintr_subcase_bounds_child_wait() {
         source_path.display()
     );
     assert!(
-        source.contains("poll(&pfd, 1, -1)"),
-        "{} must preserve the poll EINTR check",
+        source.contains("sigprocmask(SIG_BLOCK, &blocked, NULL)")
+            && source.contains("write(release_pipe[1], &release, 1)")
+            && source.contains("ppoll(&pfd, 1, NULL, &wait_mask)")
+            && source.contains("sigismember(&restored, SIGUSR1) != 1"),
+        "{} must queue SIGUSR1 while blocked, enter ppoll with an atomic empty mask, and verify \
+         mask restoration",
         source_path.display()
     );
     assert!(

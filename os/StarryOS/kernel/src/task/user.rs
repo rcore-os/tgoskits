@@ -9,9 +9,10 @@ use syscalls::Sysno;
 #[cfg(target_arch = "loongarch64")]
 use super::unaligned::{UnalignedEmulationResult, emulate_user_unaligned};
 use super::{
-    SyscallRestartInfo, SyscallTraceState, Thread, TidNumber, TimerState, check_signals,
-    current_user_task, poll_process_timers, ptrace_stop_current, ptrace_syscall_stop_current,
-    raise_signal_fatal, set_timer_state, wait_existing_ptrace_stop_current,
+    SignalCheckOutcome, SyscallRestartInfo, SyscallTraceState, Thread, TidNumber, TimerState,
+    check_signals, check_signals_with_outcome, current_user_task, poll_process_timers,
+    ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state,
+    wait_existing_ptrace_stop_current,
 };
 use crate::{
     mm::{VmMutPtr, VmPtr},
@@ -373,6 +374,7 @@ pub fn new_user_task(
                 // loop must not re-apply the decision.
                 let mut pending_restart = restart.as_ref();
                 let mut poll_timer = true;
+                let mut deferred_mask_restore = thr.take_deferred_signal_mask_restore();
                 loop {
                     // Match Linux's recalc_sigpending()/TIF_SIGPENDING
                     // handshake: only acknowledge wake publications that were
@@ -385,7 +387,34 @@ pub fn new_user_task(
                         poll_process_timers(&thr.proc_data);
                         poll_timer = false;
                     }
-                    while check_signals(&curr, &mut uctx, None, pending_restart) {
+                    loop {
+                        let outcome = check_signals_with_outcome(
+                            &curr,
+                            &mut uctx,
+                            deferred_mask_restore,
+                            pending_restart,
+                        );
+                        match outcome {
+                            SignalCheckOutcome::None => {
+                                if let Some(old_blocked) = deferred_mask_restore.take() {
+                                    // The interrupt was not backed by a signal
+                                    // that remains deliverable. Restore the
+                                    // syscall-entry mask instead of leaking the
+                                    // temporary mask.
+                                    thr.signal().set_blocked(old_blocked);
+                                }
+                                break;
+                            }
+                            SignalCheckOutcome::HandlerInstalled => {
+                                // The signal frame now owns restoration of the
+                                // syscall-entry mask through rt_sigreturn.
+                                deferred_mask_restore = None;
+                            }
+                            SignalCheckOutcome::HandledInKernel => {
+                                // Keep the temporary mask until a handler owns
+                                // restoration or no deliverable signals remain.
+                            }
+                        }
                         pending_restart = None;
                     }
                     thr.acknowledge_interrupt(interrupt_snapshot);
