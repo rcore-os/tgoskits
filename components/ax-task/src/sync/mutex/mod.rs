@@ -2,11 +2,13 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+mod entry;
 #[cfg(feature = "lockdep")]
 pub(in crate::sync) mod lockdep;
 #[path = "core.rs"]
 mod pi_core;
 
+use self::entry::{FastLockResult, try_fast_or_prepare_slow};
 pub use self::pi_core::*;
 
 /// A non-recursive, urgency-ordered PI mutex implementing `lock_api::RawMutex`.
@@ -26,11 +28,6 @@ pub struct RawMutex {
 pub(in crate::sync) struct PiMutexAlgorithm<'lock> {
     core: PiMutexCoreView<'lock>,
     next_waiter_sequence: &'lock AtomicU64,
-}
-
-enum LockAttempt {
-    Acquired,
-    Contended,
 }
 
 /// Interruption observed while waiting for a PI mutex.
@@ -146,33 +143,26 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     pub(in crate::sync) fn lock_pi(&self) {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_pi_mutex_lock_attempt();
-        let mut blocking_context_validated = false;
-
-        loop {
-            let (current, attempt) = self.try_or_observe_current();
-            match attempt {
-                LockAttempt::Acquired => {
-                    #[cfg(feature = "qperf-metrics")]
-                    crate::metrics::record_pi_mutex_fast_acquisition();
-                    return;
-                }
-                LockAttempt::Contended => {
-                    if !blocking_context_validated {
-                        // The uncontended path neither publishes a waiter nor
-                        // schedules and must remain usable during
-                        // single-threaded boot.
-                        task_result(
-                            crate::validate_blocking_context(),
-                            "validate PI mutex blocking context",
-                        );
-                        blocking_context_validated = true;
-                        continue;
-                    }
-                    #[cfg(feature = "qperf-metrics")]
-                    crate::metrics::record_pi_mutex_slow_entry();
-                    self.lock_contended(current);
-                    return;
-                }
+        match try_fast_or_prepare_slow(
+            || self.try_or_observe_current(),
+            || {
+                // The uncontended path neither publishes a waiter nor
+                // schedules and must remain usable during single-threaded
+                // boot.
+                task_result(
+                    crate::validate_blocking_context(),
+                    "validate PI mutex blocking context",
+                );
+            },
+        ) {
+            FastLockResult::Acquired => {
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_pi_mutex_fast_acquisition();
+            }
+            FastLockResult::Contended(current) => {
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_pi_mutex_slow_entry();
+                self.lock_contended(current);
             }
         }
     }
@@ -181,23 +171,18 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         &self,
         mut should_interrupt: impl FnMut() -> bool,
     ) -> Result<(), PiMutexLockInterrupted> {
-        let mut blocking_context_validated = false;
-
-        loop {
-            let (current, attempt) = self.try_or_observe_current();
-            match attempt {
-                LockAttempt::Acquired => return Ok(()),
-                LockAttempt::Contended => {
-                    if !blocking_context_validated {
-                        task_result(
-                            crate::validate_blocking_context(),
-                            "validate PI mutex blocking context",
-                        );
-                        blocking_context_validated = true;
-                        continue;
-                    }
-                    return self.lock_contended_interruptible(current, &mut should_interrupt);
-                }
+        match try_fast_or_prepare_slow(
+            || self.try_or_observe_current(),
+            || {
+                task_result(
+                    crate::validate_blocking_context(),
+                    "validate PI mutex blocking context",
+                );
+            },
+        ) {
+            FastLockResult::Acquired => Ok(()),
+            FastLockResult::Contended(current) => {
+                self.lock_contended_interruptible(current, &mut should_interrupt)
             }
         }
     }
@@ -323,17 +308,16 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         }
     }
 
-    fn try_or_observe_current(&self) -> (PiTaskId, LockAttempt) {
+    fn try_or_observe_current(&self) -> FastLockResult<PiTaskId> {
         let current = Self::current_task_id();
-        let attempt = self.try_or_observe_current_token(current);
-        (current, attempt)
+        match self.try_or_observe_current_token(current) {
+            PiMutexAcquire::Acquired => FastLockResult::Acquired,
+            PiMutexAcquire::Contended => FastLockResult::Contended(current),
+        }
     }
 
-    fn try_or_observe_current_token(&self, current: PiTaskId) -> LockAttempt {
-        match core_result(self.core.try_acquire(current), "try PI mutex acquisition") {
-            PiMutexAcquire::Acquired => LockAttempt::Acquired,
-            PiMutexAcquire::Contended => LockAttempt::Contended,
-        }
+    fn try_or_observe_current_token(&self, current: PiTaskId) -> PiMutexAcquire {
+        core_result(self.core.try_acquire(current), "try PI mutex acquisition")
     }
 
     pub(in crate::sync) fn try_lock_pi(&self) -> bool {
