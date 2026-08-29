@@ -222,7 +222,11 @@ pub fn init_root(
         |part| part.info.region,
     );
 
-    let root = if let Some(kind) = selected_filesystem_kind(&selected, selected_partition) {
+    let root = if let Some(kind) = selected_filesystem_kind(
+        selected.raw_filesystem,
+        &selected.partitions,
+        selected_partition,
+    ) {
         init_detected_filesystem(selected.handle.clone(), region, kind, &description, source)
     } else {
         init_filesystem(selected.handle.clone(), region, &description, source)
@@ -693,11 +697,12 @@ fn mount_path_for_partition(partition: &PartitionInfo) -> String {
 }
 
 fn selected_filesystem_kind(
-    disk: &DiscoveredDisk,
+    raw_filesystem: Option<FilesystemKind>,
+    partitions: &[DetectedPartition],
     partition_index: Option<usize>,
 ) -> Option<FilesystemKind> {
-    partition_index.map_or(disk.raw_filesystem, |partition_index| {
-        disk.partitions
+    partition_index.map_or(raw_filesystem, |partition_index| {
+        partitions
             .iter()
             .find(|partition| partition.info.index == partition_index)
             .and_then(|partition| partition.filesystem)
@@ -812,19 +817,11 @@ mod tests {
         FileNodeOps, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate,
         NodeFlags, NodeOps, Reference, RenameOptions, StatFs, VfsResult, WeakDirEntry,
     };
-    use rdif_block::{
-        BatchSubmitResult, BlkError, BlockController, CompletionSink, ControllerEvent,
-        ControllerState, ControllerUpdate, DeviceInfo, DriverGeneric, HardwareQueue,
-        OwnedRequestBatch, QueueInfo, QueueLimits, SubmissionSink,
-    };
+    use rdif_block::DeviceInfo;
 
     use super::*;
-    use crate::{
-        BlockError, BlockResult,
-        block::runtime::{BlockRuntime, RdifBlockDevice},
-    };
+    use crate::{BlockError, BlockResult};
 
-    struct TestQueue;
     struct FlakyMetadataDevice {
         remaining_failures: usize,
         data: Vec<u8>,
@@ -1119,88 +1116,6 @@ mod tests {
         }
     }
 
-    impl HardwareQueue for TestQueue {
-        fn id(&self) -> usize {
-            0
-        }
-
-        fn info(&self) -> QueueInfo {
-            QueueInfo {
-                id: 0,
-                device: DeviceInfo::new(16, 512),
-                limits: QueueLimits::simple(
-                    512,
-                    dma_api::DmaDeviceInfo::new(
-                        dma_api::DmaDomainId::Direct,
-                        dma_api::DmaCoherency::NonCoherent,
-                        dma_api::DmaConstraints::new(u64::MAX),
-                    ),
-                ),
-            }
-        }
-
-        fn submit_batch_owned(
-            &mut self,
-            requests: &mut OwnedRequestBatch,
-            _sink: &mut dyn SubmissionSink,
-        ) -> BatchSubmitResult {
-            let _ = requests;
-            unreachable!("root selection tests do not submit block requests")
-        }
-
-        fn commit_submissions(&mut self) -> Result<(), BlkError> {
-            unreachable!("root selection tests do not commit block requests")
-        }
-
-        fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-            unreachable!("root selection tests do not drain block requests")
-        }
-
-        fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-            Ok(())
-        }
-    }
-
-    struct TestController {
-        queue: Option<TestQueue>,
-    }
-
-    impl DriverGeneric for TestController {
-        fn name(&self) -> &str {
-            "test-controller"
-        }
-
-        fn raw_any(&self) -> Option<&dyn Any> {
-            Some(self)
-        }
-
-        fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
-            Some(self)
-        }
-    }
-
-    impl BlockController for TestController {
-        fn device_info(&self) -> DeviceInfo {
-            DeviceInfo::new(16, 512)
-        }
-
-        fn max_io_queues(&self) -> usize {
-            1
-        }
-
-        fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
-            match event {
-                ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
-                    ControllerState::Ready,
-                    alloc::vec![Box::new(self.queue.take().unwrap())],
-                    Vec::new(),
-                )),
-                ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
-                _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
-            }
-        }
-    }
-
     impl FlakyMetadataDevice {
         fn new(remaining_failures: usize) -> Self {
             let mut data = alloc::vec![0; 16 * 512];
@@ -1308,23 +1223,6 @@ mod tests {
                 },
                 filesystem,
             }),
-        }
-    }
-
-    fn raw_disk(filesystem: Option<FilesystemKind>) -> DiscoveredDisk {
-        crate::os::task::install_test_runtime_ops();
-        let runtime = BlockRuntime::from_rdif_devices([RdifBlockDevice::new_with_irqs(
-            "test-disk",
-            [],
-            Box::new(TestController {
-                queue: Some(TestQueue),
-            }),
-        )]);
-        DiscoveredDisk {
-            disk_index: 0,
-            handle: runtime.devices()[0].clone(),
-            raw_filesystem: filesystem,
-            partitions: Vec::new(),
         }
     }
 
@@ -1439,18 +1337,17 @@ mod tests {
 
     #[test]
     fn raw_root_selection_preserves_detected_filesystem_kind() {
-        let disks = [raw_disk(Some(FilesystemKind::Fat))];
-        let candidates = collect_root_candidates(&disks);
+        let candidates = [RootCandidate {
+            disk_index: 0,
+            partition: None,
+        }];
         let (disk_index, partition_index) =
             select_default_root(&candidates).expect("raw root should be selected");
-        let disk = disks
-            .iter()
-            .find(|disk| disk.disk_index == disk_index)
-            .unwrap();
 
+        assert_eq!(disk_index, 0);
         assert_eq!(partition_index, None);
         assert_eq!(
-            selected_filesystem_kind(disk, partition_index),
+            selected_filesystem_kind(Some(FilesystemKind::Fat), &[], partition_index),
             Some(FilesystemKind::Fat)
         );
     }
