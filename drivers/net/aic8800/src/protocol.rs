@@ -10,16 +10,19 @@ pub(crate) const DBG_MEM_WRITE_REQ: u16 = 0x0402;
 pub(crate) const DBG_MEM_BLOCK_WRITE_REQ: u16 = 0x040b;
 pub(crate) const DBG_START_APP_REQ: u16 = 0x040d;
 pub(crate) const DBG_MEM_MASK_WRITE_REQ: u16 = 0x0411;
-pub(crate) const MM_SET_STACK_START_REQ: u16 = 0x007b;
-pub(crate) const TASK_MM: u16 = 0;
-
 const SDIO_HEADER_SIZE: usize = 4;
 const DUMMY_WORD_SIZE: usize = 4;
 const LMAC_HEADER_SIZE: usize = 8;
-const RESPONSE_PAYLOAD_OFFSET: usize = 16;
 const HOST_DESCRIPTOR_SIZE: usize = 28;
 const TX_ALIGNMENT: usize = 4;
 const TAIL_SIZE: usize = 4;
+const DEBUG_BLOCK_DATA_SIZE: usize = 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DebugConfirmationError {
+    Malformed,
+    Rejected(u32),
+}
 
 fn align_up(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & !(alignment - 1)
@@ -61,21 +64,6 @@ pub(crate) fn debug_command_frame(message_id: u16, payload: &[u8], v3: bool) -> 
     command_frame(message_id, TASK_DBG, payload, v3)
 }
 
-/// Extracts the confirmation payload from a boot/FDRV FIFO frame.
-pub(crate) fn confirmation_payload(frame: &[u8], expected_message_id: u16) -> Result<Vec<u8>, ()> {
-    if frame.len() < RESPONSE_PAYLOAD_OFFSET {
-        return Err(());
-    }
-    let actual = u16::from_le_bytes([frame[4], frame[5]]);
-    if actual != expected_message_id {
-        return Err(());
-    }
-    let declared = u16::from_le_bytes([frame[10], frame[11]]) as usize;
-    let available = frame.len().saturating_sub(RESPONSE_PAYLOAD_OFFSET);
-    let length = declared.min(available);
-    Ok(frame[RESPONSE_PAYLOAD_OFFSET..RESPONSE_PAYLOAD_OFFSET + length].to_vec())
-}
-
 pub(crate) fn memory_read_payload(address: u32) -> [u8; 4] {
     address.to_le_bytes()
 }
@@ -96,11 +84,11 @@ pub(crate) fn memory_mask_write_payload(address: u32, mask: u32, value: u32) -> 
 }
 
 pub(crate) fn memory_block_write_payload(address: u32, bytes: &[u8]) -> Vec<u8> {
-    debug_assert!(bytes.len() <= 1024);
-    let mut payload = Vec::with_capacity(8 + bytes.len());
-    payload.extend_from_slice(&address.to_le_bytes());
-    payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    payload.extend_from_slice(bytes);
+    debug_assert!(bytes.len() <= DEBUG_BLOCK_DATA_SIZE);
+    let mut payload = vec![0; 8 + DEBUG_BLOCK_DATA_SIZE];
+    payload[..4].copy_from_slice(&address.to_le_bytes());
+    payload[4..8].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+    payload[8..8 + bytes.len()].copy_from_slice(bytes);
     payload
 }
 
@@ -109,6 +97,55 @@ pub(crate) fn start_app_payload(address: u32, boot_type: u32) -> [u8; 8] {
     payload[..4].copy_from_slice(&address.to_le_bytes());
     payload[4..].copy_from_slice(&boot_type.to_le_bytes());
     payload
+}
+
+pub(crate) fn debug_memory_read(
+    payload: &[u8],
+    expected_address: u32,
+) -> Result<u32, DebugConfirmationError> {
+    let words = exact_two_words(payload)?;
+    if words[0] != expected_address {
+        return Err(DebugConfirmationError::Malformed);
+    }
+    Ok(words[1])
+}
+
+pub(crate) fn require_debug_memory_write(
+    payload: &[u8],
+    expected_address: u32,
+    expected_value: Option<u32>,
+) -> Result<(), DebugConfirmationError> {
+    let words = exact_two_words(payload)?;
+    if words[0] != expected_address || expected_value.is_some_and(|value| words[1] != value) {
+        return Err(DebugConfirmationError::Malformed);
+    }
+    Ok(())
+}
+
+pub(crate) fn require_debug_status(payload: &[u8]) -> Result<(), DebugConfirmationError> {
+    let status = exact_word(payload)?;
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(DebugConfirmationError::Rejected(status))
+    }
+}
+
+fn exact_word(payload: &[u8]) -> Result<u32, DebugConfirmationError> {
+    let bytes: [u8; 4] = payload
+        .try_into()
+        .map_err(|_| DebugConfirmationError::Malformed)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn exact_two_words(payload: &[u8]) -> Result<[u32; 2], DebugConfirmationError> {
+    if payload.len() != 8 {
+        return Err(DebugConfirmationError::Malformed);
+    }
+    Ok([
+        u32::from_le_bytes(payload[..4].try_into().expect("length checked above")),
+        u32::from_le_bytes(payload[4..].try_into().expect("length checked above")),
+    ])
 }
 
 /// Encapsulates one Ethernet packet for the firmware data ingress path.
@@ -165,12 +202,33 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_rejects_unexpected_message() {
-        let mut frame = vec![0; 32];
-        frame[4..6].copy_from_slice(&0x401u16.to_le_bytes());
-        frame[10..12].copy_from_slice(&4u16.to_le_bytes());
-        frame[16..20].copy_from_slice(&[1, 2, 3, 4]);
-        assert_eq!(confirmation_payload(&frame, 0x401), Ok(vec![1, 2, 3, 4]));
-        assert!(confirmation_payload(&frame, 0x403).is_err());
+    fn debug_read_rejects_an_out_of_order_address() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0x4050_0000u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+
+        assert_eq!(
+            debug_memory_read(&payload, 0x20),
+            Err(DebugConfirmationError::Malformed)
+        );
+    }
+
+    #[test]
+    fn debug_status_rejects_firmware_failure() {
+        assert_eq!(
+            require_debug_status(&7u32.to_le_bytes()),
+            Err(DebugConfirmationError::Rejected(7))
+        );
+    }
+
+    #[test]
+    fn block_write_uses_the_fixed_vendor_request_layout() {
+        let payload = memory_block_write_payload(0x0018_0000, &[1, 2, 3, 4]);
+
+        assert_eq!(payload.len(), 8 + 1024);
+        assert_eq!(&payload[..4], &0x0018_0000_u32.to_le_bytes());
+        assert_eq!(&payload[4..8], &4_u32.to_le_bytes());
+        assert_eq!(&payload[8..12], &[1, 2, 3, 4]);
+        assert!(payload[12..].iter().all(|byte| *byte == 0));
     }
 }

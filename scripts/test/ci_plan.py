@@ -73,6 +73,7 @@ CHECK_FIELDS = {
     "fetch_depth",
     "timeout_minutes",
     "cache_key",
+    "wifi_secrets",
     "apk_region",
     "upload_xtask_bin_artifact",
     "download_xtask_bin_artifact",
@@ -89,6 +90,7 @@ REQUIRED_CHECK_FIELDS = {"id", "name", "command"}
 BOOLEAN_CHECK_FIELDS = {
     "upload_xtask_bin_artifact",
     "download_xtask_bin_artifact",
+    "wifi_secrets",
 }
 
 
@@ -654,6 +656,7 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "command": command.strip(),
         "cache_key": check.get("cache_key", ""),
         "apk_region": check.get("apk_region", "china"),
+        "wifi_secrets": check.get("wifi_secrets", False),
         "fetch_depth": fetch_depth,
         "timeout_minutes": check.get("timeout_minutes", 360),
         "require_kvm": check.get("require_kvm", False),

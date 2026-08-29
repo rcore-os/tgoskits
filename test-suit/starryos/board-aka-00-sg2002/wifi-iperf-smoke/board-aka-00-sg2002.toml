@@ -1,0 +1,18 @@
+board_type = "AKA-00-SG2002"
+dtb_file = "os/StarryOS/configs/board/aka-00-sg2002.dtb"
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+bootm_addr = "0x82200000"
+session_files = ["iperf-smoke.sh"]
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh '${sessionFile:iperf-smoke.sh}' '${boardServerIp}'"
+success_regex = ['(?m)^STARRY_AKA_WIFI_IPERF_SMOKE_PASSED\s*$']
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault|SIGSEGV',
+  '(?m)^STARRY_AKA_WIFI_DHCP_FAILED\s*$',
+  '(?m)^STARRY_AKA_WIFI_IPERF_SMOKE_FAILED\s*$',
+  '(?i)(wifi-session-helper|iperf3|curl|wget|chmod|ip|grep|sh): .*not found',
+  '(?i)WPA2 .*failed|AIC .*failed|DHCP .*failed',
+]
+timeout = 600

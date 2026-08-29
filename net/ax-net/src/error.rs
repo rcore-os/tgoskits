@@ -118,6 +118,9 @@ pub enum NetError {
     /// The requested network capability is unavailable in this build.
     #[error("network capability is unavailable")]
     Unsupported,
+    /// A secured wireless connection cannot obtain trusted runtime entropy.
+    #[error("trusted wireless connection entropy is unavailable")]
+    EntropyUnavailable,
     /// The operation cannot complete without blocking.
     #[error("network operation would block")]
     WouldBlock,
@@ -189,6 +192,7 @@ impl From<NetError> for IoError {
             NetError::StorageFull => Self::StorageFull,
             NetError::TimedOut | NetError::Elapsed(_) => Self::TimedOut,
             NetError::Unsupported => Self::Unsupported,
+            NetError::EntropyUnavailable => Self::OperationNotSupported,
             NetError::WouldBlock => Self::WouldBlock,
             NetError::Io(error) => error,
             NetError::BackendIo => Self::Io,

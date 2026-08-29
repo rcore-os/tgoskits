@@ -1,0 +1,39 @@
+board_type = "AKA-00-SG2002"
+dtb_file = "os/StarryOS/configs/board/aka-00-sg2002.dtb"
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+bootm_addr = "0x82200000"
+session_files = ["iperf-bench.sh"]
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+ok=1
+wifi_credential_cleanup() {
+  rm -f '${sessionFile:credentials/wifi-ssid}' '${sessionFile:credentials/wifi-pmk}'
+}
+trap wifi_credential_cleanup EXIT HUP INT TERM
+chmod 700 '${sessionFile:bin/wifi-session-helper}' || ok=0
+if [ "$ok" = 1 ]; then
+  '${sessionFile:bin/wifi-session-helper}' \
+    '${sessionFile:credentials/wifi-ssid}' \
+    '${sessionFile:credentials/wifi-pmk}' || ok=0
+fi
+wifi_credential_cleanup
+attempt=1
+while [ "$ok" = 1 ] && [ "$attempt" -le 60 ]; do
+  if ip -4 -o addr show dev wlan0 | grep -q ' inet '; then break; fi
+  sleep 1
+  attempt=$((attempt + 1))
+done
+if ! ip -4 -o addr show dev wlan0 | grep -q ' inet '; then echo STARRY_IPERF3_BENCH_FAILED; ok=0; fi
+export STARRY_IPERF3_SERVER='${boardServerIp}'
+export STARRY_IPERF3_SCRIPT_PATH='${sessionFile:iperf-bench.sh}'
+if [ "$ok" != 1 ]; then echo STARRY_IPERF3_BENCH_FAILED; fi
+'''
+success_regex = ['(?m)^STARRY_IPERF3_BENCH_PASSED$']
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault|SIGSEGV',
+  '(?m)^STARRY_IPERF3_BENCH_FAILED$',
+  '(?i)(wifi-session-helper|iperf3|curl|wget|chmod|ip|grep|sh): .*not found',
+]
+timeout = 1800

@@ -275,7 +275,13 @@ impl<H: SdMmcIrqHost + 'static> ProtocolHost<H> {
     pub(super) fn submit_bus_op(&mut self, op: SdMmcBusOp) -> Result<ProtocolBusRequest<H>, Error> {
         let op = op.into_host_op();
         let inner = unsafe { self.host.submit_bus_op(op) }.map_err(host_error)?;
-        self.progress_wait = HostProgressWait::Irq;
+        // A newly submitted bus operation has not run its first owner step, so
+        // it cannot yet know whether hardware IRQ or register progress is
+        // required. Execute that Submitted step immediately in owner task
+        // context; `advance_bus_op` will publish the host's actual next wait.
+        self.progress_wait = HostProgressWait::Register {
+            retry_after: core::time::Duration::ZERO,
+        };
         Ok(ProtocolBusRequest {
             inner: Some(inner),
             op,

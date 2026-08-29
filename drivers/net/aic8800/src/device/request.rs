@@ -20,6 +20,15 @@ pub(super) fn expect_byte(response: SdioResponse) -> Result<u8, AicError> {
     }
 }
 
+pub(super) fn expect_write_readback(response: SdioResponse, expected: u8) -> Result<(), AicError> {
+    let actual = expect_byte(response)?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(AicError::SdioWriteReadbackMismatch { expected, actual })
+    }
+}
+
 pub(super) fn expect_data(response: SdioResponse) -> Result<Vec<u8>, AicError> {
     match response {
         SdioResponse::Data(data) => Ok(data),

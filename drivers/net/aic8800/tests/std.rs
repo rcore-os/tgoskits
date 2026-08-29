@@ -6,27 +6,27 @@ use aic8800::{
 #[test]
 fn public_startup_api_owns_the_sdio_function_lifecycle() {
     let now = MonotonicTime::from_nanos(0);
-    let mut device = AicDevice::new(ChipVariant::Aic8801).expect("AIC8801 is supported");
+    let mut device = AicDevice::new(ChipVariant::Aic8800D80).expect("AIC8800 D80 is supported");
     device.start(now).expect("stopped device can start");
 
-    let AicAction::SubmitSdio(enable) = device.advance(AicInput::tick(now)) else {
-        panic!("startup must request SDIO function enable")
+    let AicAction::SubmitSdio(block_size) = device.advance(AicInput::tick(now)) else {
+        panic!("startup must configure the SDIO function block size")
     };
     assert!(matches!(
-        enable.kind,
-        SdioRequestKind::EnableFunction(function) if function.get() == 1
+        block_size.kind,
+        SdioRequestKind::SetBlockSize { function, .. } if function.get() == 1
     ));
 
     let action = device.advance(AicInput {
         now,
         event: Some(AicInputEvent::Sdio(SdioCompletion {
-            request_id: enable.id,
+            request_id: block_size.id,
             result: Ok(SdioResponse::Unit),
         })),
     });
     assert!(matches!(
         action,
         AicAction::SubmitSdio(request)
-            if matches!(request.kind, SdioRequestKind::SetBlockSize { .. })
+            if matches!(request.kind, SdioRequestKind::EnableFunction(function) if function.get() == 1)
     ));
 }

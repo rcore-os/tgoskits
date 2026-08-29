@@ -17,7 +17,7 @@ use rdif_eth::{
     NetDeviceParts, NetError, NetHardIrqEndpoint, NetHardIrqHandler, NetHardIrqResult,
     NetIrqSnapshot, NetIrqSourceId, NetPollGroupId, NetPollGroupParts, NetPollIrqControl,
     NetQueueId, NetQueuePairParts, NetRearmResult, QueueConfig, RxCompletion, SubmitError,
-    WifiControl, WifiControlProgress, WifiLinkPolicy, WifiOperation, WifiTransaction,
+    WifiControl, WifiControlProgress, WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk,
 };
 
 struct MockError;
@@ -237,9 +237,9 @@ impl WifiControl for MockWifi {
         match operation {
             WifiOperation::Connect {
                 ssid,
-                password,
+                pmk: Some(pmk),
                 entropy: _,
-            } if ssid == "ssid" && password == "pass" => {
+            } if ssid == "ssid" && pmk.bytes() == &[1; 32] => {
                 self.connects += 1;
                 self.active = true;
                 Ok(WifiControlProgress::WaitForInterruptUntil {
@@ -402,7 +402,7 @@ fn wifi_control_keeps_only_owned_control_operations() {
         connects: 0,
         active: false,
     };
-    let connect = WifiTransaction::connect("ssid", "pass");
+    let connect = WifiTransaction::connect_wpa2_pmk("ssid", Wpa2Pmk::new([1; 32]));
     assert_eq!(
         wifi.start(connect.operation(), 10).unwrap(),
         WifiControlProgress::WaitForInterruptUntil {
@@ -422,4 +422,37 @@ fn wifi_control_keeps_only_owned_control_operations() {
     assert_eq!(wifi.connects, 1);
 
     let _name = String::from("keeps alloc linked");
+}
+
+#[test]
+fn wifi_transaction_only_fills_missing_secured_entropy() {
+    let mut ordinary = WifiTransaction::connect_wpa2_pmk("ssid", Wpa2Pmk::new([1; 32]));
+    assert!(ordinary.needs_connect_entropy());
+    ordinary.provide_connect_entropy([7; 32]);
+    assert!(!ordinary.needs_connect_entropy());
+    assert!(matches!(
+        ordinary.operation(),
+        WifiOperation::Connect {
+            entropy: Some(value),
+            ..
+        } if *value == [7; 32]
+    ));
+
+    let mut explicit =
+        WifiTransaction::connect_wpa2_pmk_with_entropy("ssid", Wpa2Pmk::new([1; 32]), [3; 32]);
+    explicit.provide_connect_entropy([9; 32]);
+    assert!(matches!(
+        explicit.operation(),
+        WifiOperation::Connect {
+            entropy: Some(value),
+            ..
+        } if *value == [3; 32]
+    ));
+
+    let mut open = WifiTransaction::connect_open("ssid");
+    open.provide_connect_entropy([5; 32]);
+    assert!(matches!(
+        open.operation(),
+        WifiOperation::Connect { entropy: None, .. }
+    ));
 }

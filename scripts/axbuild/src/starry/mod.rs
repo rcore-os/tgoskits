@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ostool::{
-    board::{BoardRunRequest, RunBoardOptions, config::BoardRunConfig},
+    board::{RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
 };
 
@@ -24,6 +24,7 @@ pub mod perf;
 pub mod quick_start;
 pub(crate) mod resolver;
 pub mod rootfs;
+mod session_env;
 pub mod test;
 #[cfg(test)]
 mod tests;
@@ -366,6 +367,7 @@ impl Starry {
             self.app.workspace_root(),
             &args.test_case,
             args.board_config.as_deref(),
+            args.board_type.as_deref(),
         )?;
         let request = self.prepare_request(
             StarryCliArgs {
@@ -541,31 +543,36 @@ impl Starry {
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: Cargo,
-        board_config: BoardRunConfig,
+        mut board_config: BoardRunConfig,
         board_config_path: PathBuf,
         session_assets: Option<test::PreparedBoardSessionAssets>,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
+        if let Some(assets) = &session_assets {
+            assets.prepare_boot_data(&mut board_config)?;
+        }
         let output = self.build_artifact(request, cargo.clone()).await?;
-        let board_request = match session_assets {
+        let board_request = match &session_assets {
             Some(assets) => {
                 println!(
-                    "[axbuild] board session upload root: {}",
+                    "[axbuild] board boot-session root: {}",
                     assets.root.display()
                 );
-                BoardRunRequest::new(board_config, options)
-                    .with_session_files(&assets.root, &assets.relative_paths)?
+                assets.attach_to_board_request(board_config, options)?
             }
             None => board_run_request(&board_config_path, board_config, options)?,
         };
-        self.app
+        let result = self
+            .app
             .board_prepared_elf_with_request(
                 output.elf_path().to_path_buf(),
                 cargo.to_bin,
                 request.build_info_path.clone(),
                 board_request,
             )
-            .await
+            .await;
+        drop(session_assets);
+        result
     }
 
     async fn run_qemu_request(

@@ -42,15 +42,73 @@ fn irq_capability_trait_controls_hardware_signal_masks() {
     assert!(sdmmc_protocol::sdio::SdMmcIrqHost::completion_irq_enabled(
         &host
     ));
+    assert_ne!(
+        host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CMD_COMPLETE,
+        0,
+        "command completion must be latched before its signal is enabled"
+    );
+    assert_ne!(
+        host.read_u16(REG_ERROR_INT_STATUS_ENABLE) & ERROR_INT_CMD_TIMEOUT,
+        0,
+        "command errors must be latched before their signal is enabled"
+    );
     assert_ne!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
     assert_ne!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
 
+    // Completion re-enable must preserve the runtime-owned CARD_INT mask;
+    // otherwise a card drain that just closed a level source would be
+    // undone by the next command/data rearm.
+    host.write_u16(
+        REG_NORMAL_INT_STATUS_ENABLE,
+        NORMAL_INT_CMD_COMPLETE | NORMAL_INT_CARD_INTERRUPT,
+    );
+    host.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, NORMAL_INT_CARD_INTERRUPT);
+    host.enable_completion_irq();
+    assert_ne!(
+        host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+    assert_ne!(
+        host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+
+    let mut card_irq = host.card_irq_endpoint();
+    sdmmc_protocol::sdio::CardIrqControl::disable(&mut card_irq);
     sdmmc_protocol::sdio::SdMmcIrqHost::disable_completion_irq(&mut host).unwrap();
     assert!(!sdmmc_protocol::sdio::SdMmcIrqHost::completion_irq_enabled(
         &host
     ));
     assert_eq!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
     assert_eq!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
+}
+
+#[test]
+fn completion_rearm_captures_status_latched_while_signal_is_masked() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.irq.state.begin_request();
+    host.write_u16(REG_NORMAL_INT_STATUS_ENABLE, NORMAL_INT_CMD_COMPLETE);
+    host.disable_completion_irq();
+
+    // The controller captures completion while external IRQ delivery is
+    // quiesced. An edge-triggered parent is not required to raise another edge
+    // when SIGNAL_ENABLE is restored.
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
+    assert_eq!(
+        sdmmc_protocol::sdio::SdMmcIrqHost::rearm_completion_irq_and_check(&mut host).unwrap(),
+        sdmmc_protocol::sdio::CompletionIrqRearm::Pending
+    );
+
+    assert_eq!(
+        host.irq.state.pending_normal(),
+        NORMAL_INT_CMD_COMPLETE,
+        "rearm must synchronously publish an already-latched completion"
+    );
 }
 
 #[test]
@@ -127,7 +185,7 @@ fn card_interrupt_and_error_share_one_lossless_snapshot() {
 }
 
 #[test]
-fn card_irq_top_half_masks_signal_without_acknowledging_level_status() {
+fn card_irq_top_half_masks_status_and_signal_without_acknowledging_level_status() {
     use sdmmc_protocol::sdio::host::{HostEvent, SdMmcIrqHandle};
 
     #[repr(align(4))]
@@ -149,6 +207,10 @@ fn card_irq_top_half_masks_signal_without_acknowledging_level_status() {
         NORMAL_INT_CARD_INTERRUPT
     );
     assert_eq!(
+        host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+    assert_eq!(
         host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
         0
     );
@@ -168,7 +230,7 @@ fn card_irq_rearm_closes_already_asserted_window() {
     let mut card_irq = host.card_irq_endpoint();
 
     assert!(card_irq.rearm_and_check());
-    assert_ne!(
+    assert_eq!(
         host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
         0
     );
@@ -592,4 +654,33 @@ fn masked_irq_status_is_acked_without_publishing_an_event() {
 
     assert_eq!(handle.handle_irq(), Event::None);
     assert_eq!(host.irq.state.pending_normal(), 0);
+}
+
+#[test]
+fn status_enabled_completion_is_not_lost_when_only_card_signal_is_unmasked() {
+    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, SdMmcIrqHandle};
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.irq.state.begin_request();
+    host.enable_interrupt_status_capture();
+    host.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, NORMAL_INT_CARD_INTERRUPT);
+    host.write_u16(
+        REG_NORMAL_INT_STATUS,
+        NORMAL_INT_CARD_INTERRUPT | NORMAL_INT_CMD_COMPLETE,
+    );
+
+    let event = host.irq_endpoint().handle_irq();
+
+    assert_eq!(event.kind(), HostEventKind::CommandComplete);
+    assert!(event.card_interrupt());
+    assert_eq!(
+        host.irq.state.pending_normal(),
+        NORMAL_INT_CMD_COMPLETE,
+        "status-enable controls completion capture; signal-enable only gates the IRQ pin"
+    );
 }

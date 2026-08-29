@@ -38,6 +38,7 @@ pub type NetDeviceResult<T = ()> = Result<T, NetDeviceError>;
 /// copies a bounded frame into this inline object and immediately publishes
 /// the token to the recycle SPSC ring, so no heap allocation or shared frame
 /// ownership is introduced.
+#[derive(Clone)]
 pub struct ProtocolEthernetFrame {
     bytes: [u8; ETHERNET_FRAME_CAPACITY],
     len: usize,

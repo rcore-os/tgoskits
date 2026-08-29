@@ -183,8 +183,7 @@ impl Sdhci {
         if self.read_u8(REG_SOFTWARE_RESET) & mask == 0 {
             if mask == RESET_ALL {
                 self.call_after_reset_hook().map_err(map_protocol_error)?;
-                self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-                self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+                self.write_interrupt_status(NORMAL_INT_CLEAR_ALL, ERROR_INT_CLEAR_ALL);
                 self.clear_cached_irq_status();
                 self.restore_completion_irq_after_reset(was_irq_enabled);
                 self.dma_poisoned = false;
@@ -451,8 +450,7 @@ impl Sdhci {
             return Err(sdmmc_host::Error::Timeout);
         }
         self.call_after_reset_hook().map_err(map_protocol_error)?;
-        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-        self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+        self.write_interrupt_status(NORMAL_INT_CLEAR_ALL, ERROR_INT_CLEAR_ALL);
         self.clear_cached_irq_status();
         self.restore_completion_irq_after_reset(was_irq_enabled);
         self.command_state = command::CommandState::Idle;

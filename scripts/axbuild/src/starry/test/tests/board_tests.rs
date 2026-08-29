@@ -165,7 +165,14 @@ fn sg2002_board_cases_select_the_repository_dtb() {
         .expect("repository SG2002 board cases must be discoverable");
     let expected_dtb = "os/StarryOS/configs/board/aka-00-sg2002.dtb";
 
-    assert_eq!(groups.len(), 3, "all public SG2002 board cases must run");
+    assert_eq!(
+        groups
+            .iter()
+            .map(|group| group.name.as_str())
+            .collect::<Vec<_>>(),
+        ["boot", "tennis-yolo", "usb2-lsusb", "wifi-iperf-smoke"],
+        "all public SG2002 board cases must run"
+    );
     for group in groups {
         let config = fs::read_to_string(&group.board_test_config_path).unwrap_or_else(|err| {
             panic!(

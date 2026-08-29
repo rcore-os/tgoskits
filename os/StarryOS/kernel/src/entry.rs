@@ -31,6 +31,14 @@ pub fn init(args: &[String], envs: &[String]) {
     crate::kmod::init_kmod();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
+    if let Some(session) = crate::boot_session::materialize()
+        .unwrap_or_else(|error| panic!("Failed to materialize boot session: {error}"))
+    {
+        info!(
+            "Materialized boot session: {} files, {} bytes",
+            session.file_count, session.byte_count
+        );
+    }
     spawn_alarm_task();
     // DVFS: a one-shot OPP-calibration boot runs the sweep and skips the governor;
     // otherwise start the ondemand governor. Both run here (early init, before the

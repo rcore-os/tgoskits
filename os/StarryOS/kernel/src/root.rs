@@ -26,6 +26,7 @@ mod host_link_symbols {
 }
 
 mod cgroup;
+mod boot_session;
 mod config;
 mod ebpf;
 mod error;

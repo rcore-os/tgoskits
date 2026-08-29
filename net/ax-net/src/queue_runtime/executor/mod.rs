@@ -1,4 +1,4 @@
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{collections::VecDeque, string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_sync::SpinLock;
@@ -6,6 +6,8 @@ use rd_net::{
     DmaBuffer, NetError, NetOwnerStartupProgress, NetRearmResult, PreparedNetPollGroup,
     RxCompletion,
 };
+
+pub(super) const TX_BACKLOG_CAPACITY: usize = 64;
 
 use super::{
     COMMAND_QUARANTINE, COMMAND_STOP, COMMAND_WAIT, CPU_ROUND_BUDGET, PollGroupState, QUEUE_BUDGET,
@@ -85,6 +87,11 @@ pub(super) struct QueueFramePort {
     pub(super) name: String,
     pub(super) mac: Arc<SpinLock<[u8; 6]>>,
     pub(super) groups: Vec<ProtocolGroupPort>,
+    /// Bounded protocol-side backlog for transient queue exhaustion. Linux
+    /// qdiscs retain packets when a driver reports a busy queue; dropping the
+    /// packet at this boundary would make a short DMA stall look like a TCP
+    /// connection failure.
+    pub(super) pending_tx: VecDeque<ProtocolEthernetFrame>,
     pub(super) next_rx: usize,
     pub(super) next_tx: usize,
 }
@@ -102,6 +109,44 @@ impl EthernetFramePort for QueueFramePort {
         if self.groups.is_empty() {
             return Err(NetDeviceError::Stopped);
         }
+
+        self.flush_pending_tx()?;
+        if !self.pending_tx.is_empty() {
+            return self.enqueue_pending(frame);
+        }
+
+        match self.try_transmit(frame) {
+            Ok(()) => Ok(()),
+            Err(NetDeviceError::Again) => self.enqueue_pending(frame),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame> {
+        if self.groups.is_empty() {
+            return Err(NetDeviceError::Stopped);
+        }
+        // Completion of a DMA TX token requests another protocol poll. Flush
+        // the retained qdisc-like backlog before consuming RX work so a busy
+        // TX queue cannot remain stranded while the link is otherwise live.
+        self.flush_pending_tx()?;
+        for offset in 0..self.groups.len() {
+            let index = (self.next_rx + offset) % self.groups.len();
+            match self.groups[index].receive() {
+                Ok(frame) => {
+                    self.next_rx = (index + 1) % self.groups.len();
+                    return Ok(frame);
+                }
+                Err(NetDeviceError::Again) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(NetDeviceError::Again)
+    }
+}
+
+impl QueueFramePort {
+    fn try_transmit(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
         for offset in 0..self.groups.len() {
             let index = (self.next_tx + offset) % self.groups.len();
             match self.groups[index].transmit(frame) {
@@ -116,22 +161,28 @@ impl EthernetFramePort for QueueFramePort {
         Err(NetDeviceError::Again)
     }
 
-    fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame> {
-        if self.groups.is_empty() {
-            return Err(NetDeviceError::Stopped);
+    fn enqueue_pending(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
+        if self.pending_tx.len() >= TX_BACKLOG_CAPACITY {
+            return Err(NetDeviceError::Again);
         }
-        for offset in 0..self.groups.len() {
-            let index = (self.next_rx + offset) % self.groups.len();
-            match self.groups[index].receive() {
-                Ok(frame) => {
-                    self.next_rx = (index + 1) % self.groups.len();
-                    return Ok(frame);
+        self.pending_tx.push_back(frame.clone());
+        Ok(())
+    }
+
+    fn flush_pending_tx(&mut self) -> NetDeviceResult {
+        while let Some(frame) = self.pending_tx.pop_front() {
+            match self.try_transmit(&frame) {
+                Ok(()) => {}
+                Err(NetDeviceError::Again) => {
+                    self.pending_tx.push_front(frame);
+                    break;
                 }
-                Err(NetDeviceError::Again) => {}
-                Err(error) => return Err(error),
+                Err(error) => {
+                    return Err(error);
+                }
             }
         }
-        Err(NetDeviceError::Again)
+        Ok(())
     }
 }
 
@@ -257,6 +308,55 @@ impl QueueGroupExecutor {
         }
 
         let mut work = 0;
+        if let Some(buffer) = self.pending_tx_free.take() {
+            if let Err(buffer) = self.tx_free.push(buffer) {
+                self.pending_tx_free = Some(buffer);
+                return GroupPollOutcome::Blocked(work);
+            }
+            crate::request_poll();
+        }
+
+        let tx_completion_budget = QUEUE_BUDGET.min(cpu_budget.saturating_sub(work));
+        let mut tx_completed = 0;
+        while tx_completed < tx_completion_budget {
+            let Some(buffer) = self.group.tx.reclaim() else {
+                break;
+            };
+            tx_completed += 1;
+            work += 1;
+            if let Err(buffer) = self.tx_free.push(buffer) {
+                self.pending_tx_free = Some(buffer);
+                return GroupPollOutcome::Blocked(work);
+            }
+            crate::request_poll();
+        }
+
+        let tx_submit_budget = QUEUE_BUDGET.min(cpu_budget.saturating_sub(work));
+        let mut submitted = 0;
+        while submitted < tx_submit_budget {
+            let buffer = match self.pending_tx.take().or_else(|| self.tx_ready.pop()) {
+                Some(buffer) => buffer,
+                None => break,
+            };
+            match self.group.tx.submit(buffer) {
+                Ok(()) => {
+                    submitted += 1;
+                    work += 1;
+                }
+                Err(error) => {
+                    let (buffer, reason) = error.into_parts();
+                    if waits_for_hardware_event(&reason) {
+                        self.pending_tx = Some(buffer);
+                        return hardware_retry_outcome(work);
+                    }
+                    if let Err(buffer) = self.tx_free.push(buffer) {
+                        self.pending_tx_free = Some(buffer);
+                        return GroupPollOutcome::Blocked(work);
+                    }
+                }
+            }
+        }
+
         if let Some(completion) = self.pending_rx.take() {
             match self.rx_ready.push(completion) {
                 Ok(()) => crate::request_poll(),
@@ -265,13 +365,6 @@ impl QueueGroupExecutor {
                     return GroupPollOutcome::Blocked(work);
                 }
             }
-        }
-        if let Some(buffer) = self.pending_tx_free.take() {
-            if let Err(buffer) = self.tx_free.push(buffer) {
-                self.pending_tx_free = Some(buffer);
-                return GroupPollOutcome::Blocked(work);
-            }
-            crate::request_poll();
         }
         let mut rx_refill_blocked = false;
         if let Some(buffer) = self.pending_rx_recycle.take() {
@@ -325,47 +418,6 @@ impl QueueGroupExecutor {
                 return GroupPollOutcome::Blocked(work);
             }
             crate::request_poll();
-        }
-
-        let tx_completion_budget = QUEUE_BUDGET.min(cpu_budget.saturating_sub(work));
-        let mut tx_completed = 0;
-        while tx_completed < tx_completion_budget {
-            let Some(buffer) = self.group.tx.reclaim() else {
-                break;
-            };
-            tx_completed += 1;
-            work += 1;
-            if let Err(buffer) = self.tx_free.push(buffer) {
-                self.pending_tx_free = Some(buffer);
-                return GroupPollOutcome::Blocked(work);
-            }
-            crate::request_poll();
-        }
-
-        let tx_submit_budget = QUEUE_BUDGET.min(cpu_budget.saturating_sub(work));
-        let mut submitted = 0;
-        while submitted < tx_submit_budget {
-            let buffer = match self.pending_tx.take().or_else(|| self.tx_ready.pop()) {
-                Some(buffer) => buffer,
-                None => break,
-            };
-            match self.group.tx.submit(buffer) {
-                Ok(()) => {
-                    submitted += 1;
-                    work += 1;
-                }
-                Err(error) => {
-                    let (buffer, reason) = error.into_parts();
-                    if waits_for_hardware_event(&reason) {
-                        self.pending_tx = Some(buffer);
-                        return hardware_retry_outcome(work);
-                    }
-                    if let Err(buffer) = self.tx_free.push(buffer) {
-                        self.pending_tx_free = Some(buffer);
-                        return GroupPollOutcome::Blocked(work);
-                    }
-                }
-            }
         }
 
         if rx_refill_blocked {
@@ -425,6 +477,7 @@ pub(super) struct ExecutorControl {
     pub(super) command: AtomicU8,
     pub(super) affinity_status: AtomicU8,
     pub(super) startup_status: AtomicU8,
+    pub(super) startup_error: SpinLock<Option<NetError>>,
     pub(super) notify: Arc<ax_task::IrqNotify>,
 }
 
@@ -485,9 +538,14 @@ pub(super) fn queue_executor_main(
         return;
     }
 
-    let initialized = groups.iter_mut().all(|group| group.initialize().is_ok());
+    let initialization = groups
+        .iter_mut()
+        .try_for_each(QueueGroupExecutor::initialize);
+    if let Err(error) = initialization {
+        *control.startup_error.lock_irqsave() = Some(error);
+    }
     control.startup_status.store(
-        if initialized {
+        if control.startup_error.lock_irqsave().is_none() {
             STATUS_READY
         } else {
             STATUS_FAILED
@@ -495,7 +553,7 @@ pub(super) fn queue_executor_main(
         Ordering::Release,
     );
     control.notify.notify();
-    if !initialized {
+    if control.startup_error.lock_irqsave().is_some() {
         let irq_synchronized = wait_for_cleanup_command(&control);
         release_executor_resources(groups, wifi, irq_synchronized);
         return;
@@ -653,6 +711,25 @@ pub(super) const fn requested_irq_synchronization(command: u8) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_tx_backlog_is_bounded() {
+        let mut port = QueueFramePort {
+            name: String::from("test0"),
+            mac: Arc::new(SpinLock::new([0; 6])),
+            groups: Vec::new(),
+            pending_tx: VecDeque::with_capacity(TX_BACKLOG_CAPACITY),
+            next_rx: 0,
+            next_tx: 0,
+        };
+        let frame = ProtocolEthernetFrame::new(60).unwrap();
+
+        for _ in 0..TX_BACKLOG_CAPACITY {
+            assert!(port.enqueue_pending(&frame).is_ok());
+        }
+        assert_eq!(port.pending_tx.len(), TX_BACKLOG_CAPACITY);
+        assert_eq!(port.enqueue_pending(&frame), Err(NetDeviceError::Again));
+    }
 
     #[test]
     fn idle_executor_waits_only_for_notification_without_a_deadline() {

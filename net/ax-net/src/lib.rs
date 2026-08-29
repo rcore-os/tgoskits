@@ -72,7 +72,9 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
-use alloc::{borrow::ToOwned, boxed::Box, format, sync::Arc, task::Wake, vec, vec::Vec};
+use alloc::{
+    borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
+};
 use core::{
     net::{IpAddr, Ipv4Addr},
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
@@ -83,7 +85,9 @@ use ax_lazyinit::{LazyLock, OnceLock};
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet};
 pub use error::{NetError, NetResult};
-pub use rd_net::{WifiLinkPolicy, WifiOperation, WifiTransaction};
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore, SeedableRng};
+pub use rd_net::{WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -125,6 +129,7 @@ static SERVICE: OnceLock<Mutex<Service>> = OnceLock::new();
 static NET_CONTROL: OnceLock<Arc<NetControl>> = OnceLock::new();
 static QUEUE_RUNTIME: OnceLock<Mutex<NetworkQueueRuntime>> = OnceLock::new();
 static WIFI_INTERFACES: OnceLock<Vec<WifiInterfaceControl>> = OnceLock::new();
+static WIFI_ENTROPY: OnceLock<Mutex<WifiEntropy>> = OnceLock::new();
 static PROTOCOL_POLL: ProtocolPollRuntime = ProtocolPollRuntime::new();
 static PROTOCOL_AFFINITY_STATUS: AtomicU8 = AtomicU8::new(0);
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
@@ -137,6 +142,36 @@ struct WifiInterfaceControl {
     device_index: usize,
     mac: EthernetAddress,
     handle: queue_runtime::WifiRuntimeHandle,
+}
+
+struct WifiEntropy {
+    generator: ChaCha20Rng,
+}
+
+impl WifiEntropy {
+    fn from_seed(seed: [u8; 32]) -> Self {
+        Self {
+            generator: ChaCha20Rng::from_seed(seed),
+        }
+    }
+
+    fn next_connection_entropy(&mut self) -> [u8; 32] {
+        let mut entropy = [0; 32];
+        self.generator.fill_bytes(&mut entropy);
+        entropy
+    }
+}
+
+fn next_wifi_connection_entropy() -> NetResult<[u8; 32]> {
+    if WIFI_ENTROPY.get().is_none() {
+        let seed = ax_hal::boot::boot_entropy().ok_or(NetError::EntropyUnavailable)?;
+        WIFI_ENTROPY.call_once(|| Mutex::new(WifiEntropy::from_seed(seed)));
+    }
+    Ok(WIFI_ENTROPY
+        .get()
+        .expect("Wi-Fi entropy was initialized above")
+        .lock()
+        .next_connection_entropy())
 }
 
 pub(crate) struct DeferPollWake {
@@ -184,7 +219,7 @@ fn map_driver_net_error(error: rd_net::NetError) -> NetError {
         rd_net::NetError::LinkDown => NetError::NoSuchDeviceOrAddress,
         rd_net::NetError::InvalidParts => NetError::InvalidData,
         rd_net::NetError::Stopped | rd_net::NetError::DmaShutdownUnconfirmed => NetError::BadState,
-        rd_net::NetError::Other(_) => NetError::BadState,
+        rd_net::NetError::Other(_) => NetError::BackendIo,
     }
 }
 
@@ -193,7 +228,7 @@ fn map_driver_net_error(error: rd_net::NetError) -> NetError {
 ///
 /// The calling task only submits a bounded command and waits for completion. It
 /// never gains access to the wireless control endpoint or SDIO/MMIO state.
-pub fn reconfigure_wifi(ifname: &str, transaction: WifiTransaction) -> NetResult {
+pub fn reconfigure_wifi(ifname: &str, mut transaction: WifiTransaction) -> NetResult {
     let interface = WIFI_INTERFACES
         .get()
         .and_then(|interfaces| {
@@ -203,10 +238,17 @@ pub fn reconfigure_wifi(ifname: &str, transaction: WifiTransaction) -> NetResult
         })
         .ok_or(NetError::NoSuchDevice)?;
 
-    interface
-        .handle
-        .submit(transaction.clone())
-        .map_err(map_driver_net_error)?;
+    if transaction.needs_connect_entropy() {
+        transaction.provide_connect_entropy(next_wifi_connection_entropy()?);
+        log::info!("[wifi] {ifname}: secure connection entropy prepared");
+    }
+
+    log::info!("[wifi] {ifname}: submitting control transaction");
+    if let Err(error) = interface.handle.submit(transaction.clone()) {
+        log::error!("[wifi] {ifname}: control transaction failed: {error:?}");
+        return Err(map_driver_net_error(error));
+    }
+    log::info!("[wifi] {ifname}: control transaction complete");
 
     let mut service = get_service();
     match transaction.operation() {
@@ -229,6 +271,35 @@ pub fn reconfigure_wifi(ifname: &str, transaction: WifiTransaction) -> NetResult
     drop(service);
     request_poll();
     Ok(())
+}
+
+#[cfg(test)]
+mod wifi_entropy_tests {
+    use alloc::boxed::Box;
+
+    use super::{NetError, WifiEntropy, default_interface_name, map_driver_net_error};
+
+    #[test]
+    fn one_seed_produces_unique_entropy_for_each_connection() {
+        let mut source = WifiEntropy::from_seed([0x5a; 32]);
+        let first = source.next_connection_entropy();
+        let second = source.next_connection_entropy();
+        assert_ne!(first, second);
+        assert_ne!(first, [0; 32]);
+        assert_ne!(second, [0; 32]);
+    }
+
+    #[test]
+    fn wifi_capability_preserves_the_driver_registered_interface_name() {
+        assert_eq!(default_interface_name(0, "wlan0", true), "wlan0");
+        assert_eq!(default_interface_name(0, "virtio-net", false), "eth0");
+    }
+
+    #[test]
+    fn driver_io_failures_do_not_become_bad_user_addresses() {
+        let driver_error = rd_net::NetError::Other(Box::new(ax_io::IoError::Io));
+        assert_eq!(map_driver_net_error(driver_error), NetError::BackendIo);
+    }
 }
 
 /// Initializes the network subsystem by NIC devices.
@@ -268,7 +339,11 @@ pub fn init_network(
 
     for (order, dev) in frame_ports.drain(..).enumerate() {
         info!("  use NIC {}: {:?}", order, dev.device_name());
-        let default_name = format!("eth{}", order);
+        let wifi_capable = queue_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.wifi_handle(order))
+            .is_some();
+        let default_name = default_interface_name(order, dev.device_name(), wifi_capable);
         let mac = EthernetAddress(dev.mac_address());
         let cfg_idx = find_interface_config(
             &config.interfaces,
@@ -489,6 +564,14 @@ fn ensure_all_interface_configs_used(config: &NetworkConfig, used_configs: &[boo
                 config.interfaces[i].name
             );
         }
+    }
+}
+
+fn default_interface_name(order: usize, driver_name: &str, wifi_capable: bool) -> String {
+    if wifi_capable {
+        driver_name.into()
+    } else {
+        format!("eth{order}")
     }
 }
 

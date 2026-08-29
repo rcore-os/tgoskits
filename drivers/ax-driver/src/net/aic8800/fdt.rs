@@ -3,7 +3,7 @@
 use alloc::{format, string::String};
 use core::time::Duration;
 
-use aic8800::{AicRdifOptions, ChipVariant};
+use aic8800::AicRdifOptions;
 use rd_net::{NetIrqSourceId, WifiLinkPolicy, WifiTransaction};
 use rdrive::{probe::OnProbeError, register::FdtInfo};
 
@@ -56,8 +56,8 @@ impl AicFdtProfile {
             RTCSYS_IO_PHANDLE,
             RTCSYS_IO_MIN_MMIO_SIZE,
         )?;
-        let mut options = AicRdifOptions::new(chip_variant(info)?, NetIrqSourceId::new(0))
-            .with_startup_delay(startup_delay(info));
+        let mut options =
+            AicRdifOptions::new(NetIrqSourceId::new(0)).with_startup_delay(startup_delay(info));
         if let Some(timeout) = duration_millis(info, "aic,startup-timeout-ms") {
             options = options.with_startup_timeout(timeout);
         }
@@ -84,16 +84,6 @@ impl AicFdtProfile {
             dma_address_mask: dma_address_mask(info)?,
             options,
         })
-    }
-}
-
-fn chip_variant(info: &FdtInfo<'_>) -> Result<ChipVariant, OnProbeError> {
-    match fdt_string(info, "aic,chip-variant").as_deref() {
-        None | Some("aic8800d80") => Ok(ChipVariant::Aic8800D80),
-        Some(other) => Err(OnProbeError::other(format!(
-            "[{}] unsupported aic,chip-variant '{other}'; this driver supports aic8800d80 only",
-            info.node.name()
-        ))),
     }
 }
 

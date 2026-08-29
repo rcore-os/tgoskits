@@ -82,7 +82,9 @@ pub const SDIOWIFI_V3_SLEEP_READY_BIT: u8 = 0x10;
 // ============================================================
 // SDIO 帧类型
 // ============================================================
-pub const SDIO_TYPE_DATA: u8 = 0x01;
+// The vendor BSP reserves type 0 for aggregated 802.11 data.  Config frames
+// use the 0x10 class (0x11 command response, 0x12 TX completion, 0x13 print).
+pub const SDIO_TYPE_DATA: u8 = 0x00;
 pub const SDIO_TYPE_CFG: u8 = 0x10;
 pub const SDIO_TYPE_CFG_CMD_RSP: u8 = 0x11;
 pub const SDIO_TYPE_CFG_DATA_CFM: u8 = 0x12;
@@ -136,10 +138,6 @@ impl ChipVariant {
             (VID_AIC8800D80X2, DID_AIC8800D80X2) => Self::Aic8800D80X2,
             _ => Self::Unknown,
         }
-    }
-
-    pub fn is_v3(&self) -> bool {
-        matches!(self, Self::Aic8800D80 | Self::Aic8800D80X2)
     }
 }
 

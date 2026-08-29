@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use core::time::Duration;
 
 use rdif_eth::{
@@ -7,12 +8,10 @@ use rdif_eth::{
 use ringbuf::traits::{Consumer, Producer};
 use sdmmc_protocol::sdio::SdMmcIrqHost;
 
-use crate::{
-    AicError, SdioFailure,
-    rdif::{
-        device::{OwnerReceiver, OwnerSender},
-        owner::{AicOwner, OwnerProgress, OwnerWait},
-    },
+use crate::rdif::{
+    device::{OwnerReceiver, OwnerSender, WifiProgressSignal},
+    error::AicRdifError,
+    owner::{AicOwner, OwnerProgress, OwnerWait},
 };
 
 pub(super) struct AicOwnerStartup<H: SdMmcIrqHost + Send + 'static> {
@@ -44,6 +43,7 @@ impl<H: SdMmcIrqHost + Send + 'static> AicOwnerStartup<H> {
     }
 
     fn finish(&mut self, progress: OwnerProgress) -> Result<NetOwnerStartupProgress, NetError> {
+        let timeout_deadline = self.timeout_deadline.ok_or(NetError::InvalidParts)?;
         match progress {
             OwnerProgress::Ready => {
                 let owner_sender = &mut self.owner_sender;
@@ -54,15 +54,32 @@ impl<H: SdMmcIrqHost + Send + 'static> AicOwnerStartup<H> {
                     })?;
                 Ok(NetOwnerStartupProgress::Ready)
             }
-            OwnerProgress::Wait(OwnerWait::Interrupt) => {
-                Ok(NetOwnerStartupProgress::WaitForInterruptUntil {
-                    deadline_nanos: self.timeout_deadline.ok_or(NetError::InvalidParts)?,
-                })
-            }
-            OwnerProgress::Wait(OwnerWait::RetryAt(deadline_nanos)) => {
-                Ok(NetOwnerStartupProgress::RetryAt { deadline_nanos })
+            OwnerProgress::Wait(wait) => Ok(startup_wait(wait, timeout_deadline)),
+        }
+    }
+}
+
+const fn startup_wait(wait: OwnerWait, timeout_deadline: u64) -> NetOwnerStartupProgress {
+    match wait {
+        OwnerWait::Interrupt => NetOwnerStartupProgress::WaitForInterruptUntil {
+            deadline_nanos: timeout_deadline,
+        },
+        OwnerWait::InterruptUntil(deadline_nanos) => {
+            NetOwnerStartupProgress::WaitForInterruptUntil {
+                deadline_nanos: if deadline_nanos < timeout_deadline {
+                    deadline_nanos
+                } else {
+                    timeout_deadline
+                },
             }
         }
+        OwnerWait::RetryAt(deadline_nanos) => NetOwnerStartupProgress::RetryAt {
+            deadline_nanos: if deadline_nanos < timeout_deadline {
+                deadline_nanos
+            } else {
+                timeout_deadline
+            },
+        },
     }
 }
 
@@ -70,16 +87,25 @@ impl<H: SdMmcIrqHost + Send + 'static> NetOwnerStartup for AicOwnerStartup<H> {
     fn start(&mut self, now_nanos: u64) -> Result<NetOwnerStartupProgress, NetError> {
         let timeout = u64::try_from(self.startup_timeout.as_nanos()).unwrap_or(u64::MAX);
         self.timeout_deadline = Some(now_nanos.saturating_add(timeout));
+        log::info!(
+            "[wifi] AIC owner startup timeout armed for {:?}",
+            self.startup_timeout
+        );
         if !self.startup_delay.is_zero() {
             let delay = u64::try_from(self.startup_delay.as_nanos()).unwrap_or(u64::MAX);
             let delay_deadline = now_nanos.saturating_add(delay);
             self.delay_deadline = Some(delay_deadline);
+            log::info!(
+                "[wifi] AIC owner startup waiting {:?} for SDIO1 reset settle",
+                self.startup_delay
+            );
             return Ok(NetOwnerStartupProgress::RetryAt {
                 deadline_nanos: delay_deadline
                     .min(self.timeout_deadline.ok_or(NetError::InvalidParts)?),
             });
         }
         self.started = true;
+        log::info!("[wifi] AIC owner starting SDIO card enumeration");
         let progress = self
             .owner
             .as_mut()
@@ -92,12 +118,30 @@ impl<H: SdMmcIrqHost + Send + 'static> NetOwnerStartup for AicOwnerStartup<H> {
     fn advance(&mut self, now_nanos: u64) -> Result<NetOwnerStartupProgress, NetError> {
         let timeout_deadline = self.timeout_deadline.ok_or(NetError::InvalidParts)?;
         if now_nanos >= timeout_deadline {
+            let (card_protocol_ready, irq_sequence, irq_pending, completion_pending) = self
+                .owner
+                .as_mut()
+                .ok_or(NetError::Stopped)?
+                .startup_diagnostic();
+            log::error!(
+                "[wifi] AIC owner startup timed out (enumeration_started={}, \
+                 card_protocol_ready={}, irq_sequence={}, irq_pending={}, \
+                 completion_pending={completion_pending:?})",
+                self.started,
+                card_protocol_ready,
+                irq_sequence,
+                irq_pending
+            );
             shutdown_owner(&mut self.owner, |owner| {
                 owner.shutdown().map_err(NetError::from)
             })?;
-            return Err(NetError::Other(alloc::boxed::Box::new(AicError::Sdio(
-                SdioFailure::Timeout,
-            ))));
+            return Err(NetError::from(AicRdifError::StartupTimeout {
+                enumeration_started: self.started,
+                card_protocol_ready,
+                irq_sequence,
+                irq_pending,
+                completion_pending,
+            }));
         }
         let owner = self.owner.as_mut().ok_or(NetError::Stopped)?;
         let progress = if self.started {
@@ -110,6 +154,7 @@ impl<H: SdMmcIrqHost + Send + 'static> NetOwnerStartup for AicOwnerStartup<H> {
                 });
             }
             self.started = true;
+            log::info!("[wifi] AIC owner reset settle complete; starting SDIO card enumeration");
             owner.start(now_nanos)
         }
         .map_err(NetError::from)?;
@@ -162,13 +207,18 @@ fn shutdown_owner<T, E>(
 pub(super) struct AicPollIrqControl<H: SdMmcIrqHost + Send + 'static> {
     owner: Option<AicOwner<H>>,
     owner_receiver: OwnerReceiver<H>,
+    wifi_progress_signal: Arc<WifiProgressSignal>,
 }
 
 impl<H: SdMmcIrqHost + Send + 'static> AicPollIrqControl<H> {
-    pub(super) fn new(owner_receiver: OwnerReceiver<H>) -> Self {
+    pub(super) fn new(
+        owner_receiver: OwnerReceiver<H>,
+        wifi_progress_signal: Arc<WifiProgressSignal>,
+    ) -> Self {
         Self {
             owner: None,
             owner_receiver,
+            wifi_progress_signal,
         }
     }
 
@@ -194,13 +244,23 @@ impl<H: SdMmcIrqHost + Send + 'static> NetPollIrqControl for AicPollIrqControl<H
             .owner()?
             .rearm_and_advance(now_nanos)
             .map_err(NetError::from)?;
-        Ok(if pending {
-            NetRearmResult::WorkPending(NetIrqSnapshot::all_queue_work())
-        } else if let OwnerProgress::Wait(OwnerWait::RetryAt(deadline_nanos)) = progress {
-            NetRearmResult::RetryAt { deadline_nanos }
-        } else {
-            NetRearmResult::Idle
-        })
+        Ok(owner_rearm_result(
+            progress,
+            pending || self.wifi_progress_signal.has_pending(),
+        ))
+    }
+}
+
+const fn owner_rearm_result(progress: OwnerProgress, pending: bool) -> NetRearmResult {
+    if pending {
+        NetRearmResult::WorkPending(NetIrqSnapshot::all_queue_work())
+    } else if let OwnerProgress::Wait(
+        OwnerWait::RetryAt(deadline_nanos) | OwnerWait::InterruptUntil(deadline_nanos),
+    ) = progress
+    {
+        NetRearmResult::RetryAt { deadline_nanos }
+    } else {
+        NetRearmResult::Idle
     }
 }
 
@@ -236,5 +296,21 @@ mod tests {
         .unwrap();
 
         assert_eq!(shutdown_count, 1);
+    }
+
+    #[test]
+    fn interrupt_deadline_rearms_card_irq_and_schedules_owner_retry() {
+        assert_eq!(
+            owner_rearm_result(OwnerProgress::Wait(OwnerWait::InterruptUntil(41)), false),
+            NetRearmResult::RetryAt { deadline_nanos: 41 }
+        );
+    }
+
+    #[test]
+    fn startup_retry_never_extends_the_end_to_end_timeout() {
+        assert_eq!(
+            startup_wait(OwnerWait::RetryAt(101), 41),
+            NetOwnerStartupProgress::RetryAt { deadline_nanos: 41 }
+        );
     }
 }

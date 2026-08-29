@@ -428,17 +428,34 @@ impl Sdhci {
     /// Recovery uses this before restoring the runtime-owned signal mask so a
     /// subsequent IRQ cannot arrive without a corresponding latched status.
     pub(crate) fn enable_interrupt_status_capture(&mut self) {
-        self.write_u16(REG_NORMAL_INT_STATUS_ENABLE, NORMAL_INT_CLEAR_ALL);
-        self.write_u16(REG_ERROR_INT_STATUS_ENABLE, ERROR_INT_CLEAR_ALL);
-        self.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, 0);
-        self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
+        write_irq_register(
+            self.base_addr,
+            REG_NORMAL_INT_STATUS_ENABLE,
+            NORMAL_INT_CLEAR_ALL,
+            ERROR_INT_CLEAR_ALL,
+        );
+        write_irq_register(self.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE, 0, 0);
     }
 
     /// Route command/data-completion and error status to the host CPU IRQ line.
     pub fn enable_completion_irq(&mut self) {
-        let card_interrupt =
-            self.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & NORMAL_INT_CARD_INTERRUPT;
-        self.write_u16(
+        let (status_enable, _) = read_irq_register(self.base_addr, REG_NORMAL_INT_STATUS_ENABLE);
+        let card_status = status_enable & NORMAL_INT_CARD_INTERRUPT;
+        let (signals, _) = read_irq_register(self.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+        let card_interrupt = signals & NORMAL_INT_CARD_INTERRUPT;
+        // STATUS_ENABLE owns the controller's latched sources; SIGNAL_ENABLE
+        // only gates assertion of the parent IRQ.  Linux programs both masks
+        // during host bring-up.  Keeping this here makes every enable path
+        // self-contained, including SDIO initialization after a controller
+        // reset where the status mask is not guaranteed to retain its value.
+        write_irq_register(
+            self.base_addr,
+            REG_NORMAL_INT_STATUS_ENABLE,
+            (NORMAL_INT_CLEAR_ALL & !NORMAL_INT_CARD_INTERRUPT) | card_status,
+            ERROR_INT_CLEAR_ALL,
+        );
+        write_irq_register(
+            self.base_addr,
             REG_NORMAL_INT_SIGNAL_ENABLE,
             NORMAL_INT_CMD_COMPLETE
                 | NORMAL_INT_XFER_COMPLETE
@@ -446,25 +463,25 @@ impl Sdhci {
                 | NORMAL_INT_BUFFER_READ_READY
                 | NORMAL_INT_ERROR
                 | card_interrupt,
-        );
-        self.write_u16(
-            REG_ERROR_INT_SIGNAL_ENABLE,
             ERROR_INT_CMD_LINE_MASK | ERROR_INT_DATA_OR_ADMA_MASK,
         );
     }
 
     /// Mask host CPU IRQ delivery while keeping status bits observable.
     pub fn disable_completion_irq(&mut self) {
-        let card_interrupt =
-            self.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & NORMAL_INT_CARD_INTERRUPT;
-        self.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, card_interrupt);
-        self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
+        let (signals, _) = read_irq_register(self.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+        let card_interrupt = signals & NORMAL_INT_CARD_INTERRUPT;
+        write_irq_register(
+            self.base_addr,
+            REG_NORMAL_INT_SIGNAL_ENABLE,
+            card_interrupt,
+            0,
+        );
     }
 
     pub fn completion_irq_enabled(&self) -> bool {
-        self.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE)
-            & (NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR)
-            != 0
+        let (signals, _) = read_irq_register(self.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+        signals & (NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR) != 0
     }
 
     /// Read the controller's base reference clock from Capabilities (Hz).
@@ -528,6 +545,22 @@ impl Sdhci {
         self.read_u32(off)
     }
 
+    pub(crate) fn read_interrupt_status(&self) -> (u16, u16) {
+        read_irq_register(self.base_addr, REG_NORMAL_INT_STATUS)
+    }
+
+    pub(crate) fn write_interrupt_status(&self, normal: u16, error: u16) {
+        write_irq_register(self.base_addr, REG_NORMAL_INT_STATUS, normal, error);
+    }
+
+    pub(crate) fn read_interrupt_status_enable(&self) -> (u16, u16) {
+        read_irq_register(self.base_addr, REG_NORMAL_INT_STATUS_ENABLE)
+    }
+
+    pub(crate) fn read_interrupt_signal_enable(&self) -> (u16, u16) {
+        read_irq_register(self.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE)
+    }
+
     pub(crate) fn read_u32(&self, off: usize) -> u32 {
         unsafe { core::ptr::read_volatile((self.base_addr + off) as *const u32) }
     }
@@ -551,6 +584,22 @@ impl Sdhci {
     pub(crate) fn write_u8(&self, off: usize, val: u8) {
         unsafe { core::ptr::write_volatile((self.base_addr + off) as *mut u8, val) }
     }
+}
+
+/// Read one of the SDHCI interrupt register pairs using the controller's
+/// required 32-bit MMIO access.  The low half is the normal interrupt field;
+/// the high half is its corresponding error field.
+pub(crate) fn read_irq_register(base_addr: usize, off: usize) -> (u16, u16) {
+    let value = unsafe { core::ptr::read_volatile((base_addr + off) as *const u32) };
+    (value as u16, (value >> 16) as u16)
+}
+
+/// Write one of the SDHCI interrupt register pairs with a single 32-bit MMIO
+/// transaction.  CV181x/DWC MSHC implements these W1C/mask fields as a
+/// combined word; 16-bit writes can leave the latched status asserted.
+pub(crate) fn write_irq_register(base_addr: usize, off: usize, normal: u16, error: u16) {
+    let value = u32::from(normal) | (u32::from(error) << 16);
+    unsafe { core::ptr::write_volatile((base_addr + off) as *mut u32, value) }
 }
 
 /// Platform clock capability for hosts whose controller divider is unusable.

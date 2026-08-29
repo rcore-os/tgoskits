@@ -25,6 +25,13 @@ pub struct Cv181xSdhci {
     inner: Sdhci,
     mmio: Cv181xMmio,
     config: Cv181xConfig,
+    controller: ControllerResources,
+}
+
+#[derive(Clone, Copy)]
+enum ControllerResources {
+    Sd,
+    Sdio1(Cv181xSdio1Mmio),
 }
 
 // SAFETY: The wrapper owns exclusive access to one SDHCI register file and the
@@ -45,6 +52,7 @@ impl Cv181xSdhci {
             inner,
             mmio,
             config: config.normalized(),
+            controller: ControllerResources::Sd,
         };
         this.restore_ds_hs_phy();
         this
@@ -59,8 +67,16 @@ impl Cv181xSdhci {
     /// returned controller lifetime. The runtime must observe
     /// [`CV181X_SDIO1_RESET_SETTLE`] before issuing the first card command.
     pub unsafe fn new_sdio1(mmio: Cv181xSdio1Mmio, config: Cv181xConfig) -> Self {
-        mmio.initialize();
-        unsafe { Self::new(mmio.host(), config) }
+        let host = mmio.host();
+        let inner = unsafe { Sdhci::new(host.core()) };
+        let mut this = Self {
+            inner,
+            mmio: host,
+            config: config.normalized(),
+            controller: ControllerResources::Sdio1(mmio),
+        };
+        this.restore_controller_after_reset();
+        this
     }
 
     pub const fn config(&self) -> Cv181xConfig {

@@ -1,0 +1,5 @@
+inject_boot_entropy = true
+
+[wifi]
+ssid_file = "credentials/wifi-ssid"
+pmk_file = "credentials/wifi-pmk"

@@ -277,6 +277,12 @@ impl SdMmcIrqHost for Sdhci {
         Ok(())
     }
 
+    fn rearm_completion_irq_and_check(
+        &mut self,
+    ) -> Result<sdmmc_protocol::sdio::CompletionIrqRearm, Error> {
+        Ok(Sdhci::rearm_completion_irq_and_check(self))
+    }
+
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         Sdhci::disable_completion_irq(self);
         Ok(())
@@ -423,6 +429,17 @@ impl Sdhci {
             irq: self.irq.clone(),
         }
     }
+
+    fn rearm_completion_irq_and_check(&mut self) -> sdmmc_protocol::sdio::CompletionIrqRearm {
+        self.enable_completion_irq();
+        fence(Ordering::SeqCst);
+        match handle_irq_core(&self.irq).kind() {
+            HostEventKind::None | HostEventKind::CardInterrupt => {
+                sdmmc_protocol::sdio::CompletionIrqRearm::Idle
+            }
+            _ => sdmmc_protocol::sdio::CompletionIrqRearm::Pending,
+        }
+    }
 }
 
 impl SdMmcIrqHandle for SdhciIrqHandle {
@@ -435,36 +452,58 @@ impl SdMmcIrqHandle for SdhciIrqHandle {
 
 fn handle_irq_core(irq: &host::IrqCore) -> Event {
     let generation = irq.state.generation();
-    let raw_normal = read_u16(irq.base_addr, REG_NORMAL_INT_STATUS);
-    let raw_error = if raw_normal & NORMAL_INT_ERROR != 0 {
-        read_u16(irq.base_addr, REG_ERROR_INT_STATUS)
+    let (raw_normal, raw_error) = host::read_irq_register(irq.base_addr, REG_NORMAL_INT_STATUS);
+    let (normal_status_enable, error_status_enable) =
+        host::read_irq_register(irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE);
+    let (signal_enable, error_signal_enable) =
+        host::read_irq_register(irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+
+    let normal_enabled = raw_normal & normal_status_enable;
+    let error_enabled = if normal_enabled & NORMAL_INT_ERROR != 0 {
+        raw_error & error_status_enable
     } else {
         0
     };
 
+    // STATUS_ENABLE controls which latched bits the driver owns and
+    // SIGNAL_ENABLE gates assertion of the external IRQ line. A CARD_INT can
+    // arrive together with command/data completion; preserve the completion
+    // facts in this snapshot before masking the level source below.
+    let visible_card = normal_enabled & signal_enable & NORMAL_INT_CARD_INTERRUPT;
+    let normal = (normal_enabled & !NORMAL_INT_CARD_INTERRUPT) | visible_card;
+    let error = error_enabled;
+
     let normal_to_ack = raw_normal & !NORMAL_INT_CARD_INTERRUPT;
-    if normal_to_ack != 0 {
-        write_u16(irq.base_addr, REG_NORMAL_INT_STATUS, normal_to_ack);
-    }
-    if raw_error != 0 {
-        write_u16(irq.base_addr, REG_ERROR_INT_STATUS, raw_error);
+    if normal_to_ack != 0 || raw_error != 0 {
+        host::write_irq_register(
+            irq.base_addr,
+            REG_NORMAL_INT_STATUS,
+            normal_to_ack,
+            raw_error,
+        );
     }
 
-    let signal_enable = read_u16(irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
-    let normal = raw_normal & read_u16(irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE) & signal_enable;
-    let error = raw_error
-        & read_u16(irq.base_addr, REG_ERROR_INT_STATUS_ENABLE)
-        & read_u16(irq.base_addr, REG_ERROR_INT_SIGNAL_ENABLE);
     let normal = if error == 0 {
         normal & !NORMAL_INT_ERROR
     } else {
         normal
     };
     if normal & NORMAL_INT_CARD_INTERRUPT != 0 {
-        write_u16(
+        // Linux's SDHCI `ier` is written to both INT_ENABLE and
+        // SIGNAL_ENABLE when CARD_INT is consumed.  Do the same here: the
+        // source is level-sensitive and must remain masked until the task
+        // context drains the AIC function FIFOs and explicitly rearms it.
+        host::write_irq_register(
+            irq.base_addr,
+            REG_NORMAL_INT_STATUS_ENABLE,
+            normal_status_enable & !NORMAL_INT_CARD_INTERRUPT,
+            error_status_enable,
+        );
+        host::write_irq_register(
             irq.base_addr,
             REG_NORMAL_INT_SIGNAL_ENABLE,
             signal_enable & !NORMAL_INT_CARD_INTERRUPT,
+            error_signal_enable,
         );
     }
     irq.state
@@ -475,11 +514,21 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
 
 impl CardIrqControl for SdhciCardIrqHandle {
     fn mask(&mut self) {
-        let signals = read_u16(self.irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
-        write_u16(
+        let (status_enable, error_status_enable) =
+            host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE);
+        host::write_irq_register(
+            self.irq.base_addr,
+            REG_NORMAL_INT_STATUS_ENABLE,
+            status_enable & !NORMAL_INT_CARD_INTERRUPT,
+            error_status_enable,
+        );
+        let (signals, error_signals) =
+            host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+        host::write_irq_register(
             self.irq.base_addr,
             REG_NORMAL_INT_SIGNAL_ENABLE,
             signals & !NORMAL_INT_CARD_INTERRUPT,
+            error_signals,
         );
     }
 
@@ -488,34 +537,33 @@ impl CardIrqControl for SdhciCardIrqHandle {
     }
 
     fn rearm_and_check(&mut self) -> bool {
-        let status_enable = read_u16(self.irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE);
-        write_u16(
+        let (status_enable, error_status_enable) =
+            host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE);
+        host::write_irq_register(
             self.irq.base_addr,
             REG_NORMAL_INT_STATUS_ENABLE,
             status_enable | NORMAL_INT_CARD_INTERRUPT,
+            error_status_enable,
         );
-        let signals = read_u16(self.irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
-        write_u16(
+        let (signals, error_signals) =
+            host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+        host::write_irq_register(
             self.irq.base_addr,
             REG_NORMAL_INT_SIGNAL_ENABLE,
             signals | NORMAL_INT_CARD_INTERRUPT,
+            error_signals,
         );
         fence(Ordering::SeqCst);
-        if read_u16(self.irq.base_addr, REG_NORMAL_INT_STATUS) & NORMAL_INT_CARD_INTERRUPT != 0 {
+        if host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_STATUS).0
+            & NORMAL_INT_CARD_INTERRUPT
+            != 0
+        {
             self.mask();
             true
         } else {
             false
         }
     }
-}
-
-fn read_u16(base_addr: usize, off: usize) -> u16 {
-    unsafe { core::ptr::read_volatile((base_addr + off) as *const u16) }
-}
-
-fn write_u16(base_addr: usize, off: usize, val: u16) {
-    unsafe { core::ptr::write_volatile((base_addr + off) as *mut u16, val) }
 }
 
 #[cfg(test)]

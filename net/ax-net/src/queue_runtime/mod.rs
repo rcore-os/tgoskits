@@ -163,8 +163,8 @@ pub enum NetworkRuntimeError {
     InvalidTopology,
     #[error("network queue executor could not be pinned to CPU {0}")]
     WorkerAffinity(usize),
-    #[error("network queue initialization failed")]
-    QueueInit,
+    #[error("network queue initialization failed: {0}")]
+    QueueInit(NetError),
     #[error("network IRQ registration failed: {0}")]
     IrqRegistration(#[from] PinnedNetIrqError),
     #[error("network DMA setup failed: {0}")]
@@ -456,6 +456,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 name: port_name,
                 mac: port_mac,
                 groups: protocol_groups,
+                pending_tx: VecDeque::with_capacity(TX_BACKLOG_CAPACITY),
                 next_rx: 0,
                 next_tx: 0,
             }) as Box<dyn EthernetFramePort>);
@@ -471,6 +472,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 command: AtomicU8::new(COMMAND_WAIT),
                 affinity_status: AtomicU8::new(STATUS_PENDING),
                 startup_status: AtomicU8::new(STATUS_PENDING),
+                startup_error: SpinLock::new(None),
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
             });
             let task_control = Arc::clone(&control);
@@ -588,6 +590,12 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         for executor in &executors {
             wait_status(&executor.control.startup_status);
             if executor.control.startup_status.load(Ordering::Acquire) != STATUS_READY {
+                let error = executor
+                    .control
+                    .startup_error
+                    .lock_irqsave()
+                    .take()
+                    .unwrap_or(NetError::InvalidParts);
                 let irq_synchronized = release_registrations(registrations);
                 stop_executors(&executors, irq_synchronized);
                 release_runtime_side_resources(
@@ -602,7 +610,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     ),
                     irq_synchronized,
                 );
-                return Err(NetworkRuntimeError::QueueInit);
+                return Err(NetworkRuntimeError::QueueInit(error));
             }
         }
         let protocol_owner_cpu = select_protocol_owner(&group_owners, self.online_cpus);

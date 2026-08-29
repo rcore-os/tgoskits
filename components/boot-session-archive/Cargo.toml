@@ -1,0 +1,15 @@
+[package]
+name = "boot-session-archive"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded boot-time session file archive shared by axbuild and StarryOS"
+
+[features]
+default = ["alloc"]
+alloc = []
+
+[dependencies]
+thiserror.workspace = true

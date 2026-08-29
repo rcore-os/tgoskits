@@ -22,10 +22,17 @@ buildroot recipe `aic8800-sdio-firmware`:
 - Pinned commit: `c56f910044cc854d6c553bcb9a644f3bca5a4c38`
 
 The `aic8800` crate embeds the following blobs via `include_bytes!`
-(`src/firmware.rs`):
+(`src/firmware/mod.rs`):
 
 | File | Upstream path |
 |------|---------------|
-| `fmacfw.bin` | `aic8800_and_aic8800D80/fmacfw.bin` |
-| `fmacfw_patch.bin` | `aic8800_and_aic8800D80/fmacfw_patch.bin` |
+| `fmacfw_patch_8800dc_u02.bin` | `aic8800DC/fmacfw_patch_8800dc_u02.bin` |
+| `fmacfw_patch_tbl_8800dc_u02.bin` | `aic8800DC/fmacfw_patch_tbl_8800dc_u02.bin` |
+| `fmacfw_patch_8800dc_h_u02.bin` | `aic8800DC/fmacfw_patch_8800dc_h_u02.bin` |
+| `fmacfw_patch_tbl_8800dc_h_u02.bin` | `aic8800DC/fmacfw_patch_tbl_8800dc_h_u02.bin` |
+| `fmacfw_calib_8800dc_u02.bin` | `aic8800DC/fmacfw_calib_8800dc_u02.bin` |
+| `fmacfw_calib_8800dc_h_u02.bin` | `aic8800DC/fmacfw_calib_8800dc_h_u02.bin` |
+| `fmacfw_patch_8800dc_hbt_u02.bin` | `aic8800DC/fmacfw_patch_8800dc_hbt_u02.bin` |
+| `fmacfw_patch_tbl_8800dc_hbt_u02.bin` | `aic8800DC/fmacfw_patch_tbl_8800dc_hbt_u02.bin` |
+| `fmacfw_calib_8800dc_hbt_u02.bin` | `aic8800DC/fmacfw_calib_8800dc_hbt_u02.bin` |
 | `fmacfw_8800d80_u02.bin` | `aic8800_and_aic8800D80/fmacfw_8800d80_u02.bin` |

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use ostool::board::{BoardRunRequest, RunBoardOptions};
+use ostool::board::RunBoardOptions;
 
 use super::{
     ArgsTestBoard, StarryBoardTestGroup, board_assets::prepare_board_session_assets,
@@ -77,7 +77,7 @@ impl Starry {
                     SnapshotPersistence::Discard,
                 )?;
                 let cargo = build::load_cargo_config(&request)?;
-                let (board_config, board_config_path) = self
+                let (mut board_config, board_config_path) = self
                     .load_board_config(&cargo, Some(board_test_config.as_path()))
                     .await?;
                 let options = RunBoardOptions {
@@ -101,19 +101,22 @@ impl Starry {
                     &board_config.session_files,
                 )
                 .await?;
+                if let Some(assets) = &session_assets {
+                    assets.prepare_boot_data(&mut board_config)?;
+                }
                 let output = self.build_artifact(&request, cargo.clone()).await?;
-                let board_request = match session_assets {
+                let board_request = match &session_assets {
                     Some(assets) => {
                         println!(
-                            "[axbuild] board session upload root: {}",
+                            "[axbuild] board boot-session root: {}",
                             assets.root.display()
                         );
-                        BoardRunRequest::new(board_config, options)
-                            .with_session_files(&assets.root, &assets.relative_paths)?
+                        assets.attach_to_board_request(board_config, options)?
                     }
                     None => board_run_request(&board_config_path, board_config, options)?,
                 };
-                self.app
+                let result = self
+                    .app
                     .board_prepared_elf_with_request(
                         output.elf_path().to_path_buf(),
                         cargo.to_bin,
@@ -129,7 +132,9 @@ impl Starry {
                             group.build_config_path.display(),
                             board_test_config_summary
                         )
-                    })
+                    });
+                drop(session_assets);
+                result
             }
             .await;
 

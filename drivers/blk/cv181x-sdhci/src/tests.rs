@@ -6,7 +6,7 @@ use sdmmc_host::{BusWidth, ClockSpeed, SignalVoltage};
 use tock_registers::interfaces::{Readable, Writeable};
 
 use super::*;
-use crate::platform::*;
+use crate::{host2::AfterBusOp, platform::*};
 
 #[repr(align(4))]
 struct FakeMmio<const N: usize>([u8; N]);
@@ -68,6 +68,42 @@ fn sdio1_soc_setup_programs_pinmux_pull_clock_reset_and_card_detect() {
     assert_eq!(crg.read_u32(0x30) & (1 << 7), 0);
     assert_ne!(rtcsys_ctrl.read_u32(0x18) & (1 << 2), 0);
     assert_eq!(rtcsys_ctrl.read_u32(0x1c) & 0xf, 0);
+    assert_ne!(syscon.read_u32(0x294) & ((1 << 8) | (1 << 9)), 0);
+    assert_ne!(
+        core.read_u32(0x200) & (1 << 16),
+        0,
+        "SDIO1 must select the controller's SD1 path before the first CMD52"
+    );
+}
+
+#[test]
+fn sdio1_reset_restores_its_own_soc_path_without_touching_sdio0_power() {
+    let mut core = FakeMmio::<0x400>::new();
+    let mut syscon = FakeMmio::<0x2000>::new();
+    let mut crg = FakeMmio::<0x1000>::new();
+    let mut rtcsys_ctrl = FakeMmio::<0x1000>::new();
+    let mut rtcsys_io = FakeMmio::<0x1000>::new();
+    let sdio0_power_sentinel = 0xa5a5_a5ae;
+    syscon.write_u32(0x1f4, sdio0_power_sentinel);
+
+    let host_mmio = Cv181xMmio::new(core.base(), syscon.base());
+    let sdio1_mmio =
+        Cv181xSdio1Mmio::new(host_mmio, crg.base(), rtcsys_ctrl.base(), rtcsys_io.base());
+    let mut host = unsafe { Cv181xSdhci::new_sdio1(sdio1_mmio, Cv181xConfig::default()) };
+
+    core.write_u32(0x200, 0);
+    crg.write_u32(0, 0);
+    rtcsys_ctrl.write_u32(0x18, 0);
+    syscon.write_u32(0x294, 0);
+    host.apply_after(AfterBusOp::ResetAll).unwrap();
+
+    assert_eq!(syscon.read_u32(0x1f4), sdio0_power_sentinel);
+    assert_ne!(core.read_u32(0x200) & (1 << 16), 0);
+    assert_eq!(
+        crg.read_u32(0) & ((1 << 21) | (1 << 22) | (1 << 23)),
+        (1 << 21) | (1 << 22) | (1 << 23)
+    );
+    assert_ne!(rtcsys_ctrl.read_u32(0x18) & (1 << 2), 0);
     assert_ne!(syscon.read_u32(0x294) & ((1 << 8) | (1 << 9)), 0);
 }
 

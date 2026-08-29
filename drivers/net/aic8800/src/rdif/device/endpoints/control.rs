@@ -7,8 +7,8 @@ use rdif_eth::{
 use ringbuf::traits::{Consumer, Producer};
 
 use crate::{
-    AicError, ControlRequest, Entropy, SdioFailure,
-    rdif::device::{MacAddressState, WifiProgressReceiver, WifiRequestSender},
+    AicError, ControlRequest, Entropy, Pmk, SdioFailure,
+    rdif::device::{MacAddressState, WifiProgressReceiver, WifiProgressSignal, WifiRequestSender},
 };
 
 pub(super) struct AicNetControl {
@@ -30,6 +30,7 @@ impl NetControlEndpoint for AicNetControl {
 pub(super) struct AicWifiControl {
     requests: WifiRequestSender,
     progress: WifiProgressReceiver,
+    progress_signal: Arc<WifiProgressSignal>,
     startup: Option<WifiTransaction>,
     control_timeout: Duration,
     deadline_nanos: Option<u64>,
@@ -40,12 +41,14 @@ impl AicWifiControl {
     pub(super) fn new(
         requests: WifiRequestSender,
         progress: WifiProgressReceiver,
+        progress_signal: Arc<WifiProgressSignal>,
         startup: Option<WifiTransaction>,
         control_timeout: Duration,
     ) -> Self {
         Self {
             requests,
             progress,
+            progress_signal,
             startup,
             control_timeout,
             deadline_nanos: None,
@@ -87,6 +90,10 @@ impl WifiControl for AicWifiControl {
         let Some(progress) = self.progress.try_pop() else {
             return Ok(WifiControlProgress::WaitForInterruptUntil { deadline_nanos });
         };
+        self.progress_signal.consume();
+        if matches!(progress, Ok(WifiControlProgress::Complete) | Err(_)) {
+            log::info!("[wifi] control result consumed by network runtime");
+        }
         match progress {
             Ok(WifiControlProgress::Complete) => {
                 self.active = false;
@@ -132,17 +139,13 @@ impl WifiControl for AicWifiControl {
 
 fn map_wifi_operation(operation: &WifiOperation) -> Result<ControlRequest, NetError> {
     match operation {
-        WifiOperation::Connect {
-            ssid,
-            password,
-            entropy,
-        } => {
-            if !password.is_empty() && entropy.is_none() {
+        WifiOperation::Connect { ssid, pmk, entropy } => {
+            if pmk.is_some() && entropy.is_none() {
                 return Err(NetError::Other(Box::new(AicError::EntropyUnavailable)));
             }
             Ok(ControlRequest::Connect {
                 ssid: ssid.as_bytes().to_vec(),
-                password: password.as_bytes().to_vec(),
+                pmk: pmk.as_ref().map(|pmk| Pmk::new(*pmk.bytes())),
                 entropy: entropy.map(Entropy::new),
             })
         }
@@ -170,6 +173,7 @@ mod tests {
         let mut control = AicWifiControl::new(
             wifi.requests_tx,
             wifi.progress_rx,
+            wifi.progress_signal,
             None,
             Duration::from_nanos(10),
         );

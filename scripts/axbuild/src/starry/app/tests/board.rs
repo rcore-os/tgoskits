@@ -12,7 +12,7 @@ fn resolves_board_case_from_apps_dir() {
     let root = tempdir().unwrap();
     write_minimal_board_case(root.path(), "demo");
 
-    let case = resolve_board_case(root.path(), "demo", None).unwrap();
+    let case = resolve_board_case(root.path(), "demo", None, None).unwrap();
 
     assert_eq!(case.name, "demo");
     assert_eq!(case.target, "aarch64-unknown-none-softfloat");
@@ -31,7 +31,7 @@ fn resolves_board_case_from_apps_dir() {
 fn reports_missing_apps_dir() {
     let root = tempdir().unwrap();
 
-    let err = resolve_board_case(root.path(), "demo", None)
+    let err = resolve_board_case(root.path(), "demo", None, None)
         .unwrap_err()
         .to_string();
 
@@ -44,7 +44,7 @@ fn reports_unknown_case_with_available_cases() {
     let root = tempdir().unwrap();
     write_minimal_board_case(root.path(), "demo");
 
-    let err = resolve_board_case(root.path(), "missing", None)
+    let err = resolve_board_case(root.path(), "missing", None, None)
         .unwrap_err()
         .to_string();
 
@@ -59,7 +59,7 @@ fn explicit_board_config_overrides_case_config() {
     let explicit = root.path().join("custom-board.toml");
     fs::write(&explicit, "board_type = \"custom\"\n").unwrap();
 
-    let case = resolve_board_case(root.path(), "demo", Some(explicit.as_path())).unwrap();
+    let case = resolve_board_case(root.path(), "demo", Some(explicit.as_path()), None).unwrap();
 
     assert_eq!(case.board_config_path, explicit);
 }
@@ -75,10 +75,31 @@ fn explicit_relative_board_config_can_resolve_inside_case() {
         "board_type = \"Custom\"\nshell_prefix = \"root@starry:/root #\"\n",
     );
 
-    let case =
-        resolve_board_case(root.path(), "demo", Some(Path::new("board-custom.toml"))).unwrap();
+    let case = resolve_board_case(
+        root.path(),
+        "demo",
+        Some(Path::new("board-custom.toml")),
+        None,
+    )
+    .unwrap();
 
     assert_eq!(case.board_config_path, explicit);
+}
+
+#[test]
+fn requested_board_type_selects_one_of_multiple_case_configs() {
+    let root = tempdir().unwrap();
+    write_minimal_board_case(root.path(), "demo");
+    let aka = write_case_file(
+        root.path(),
+        "demo",
+        "board-aka-00-sg2002.toml",
+        "board_type = \"AKA-00-SG2002\"\nshell_prefix = \"root@starry:\"\n",
+    );
+
+    let case = resolve_board_case(root.path(), "demo", None, Some("AKA-00-SG2002")).unwrap();
+
+    assert_eq!(case.board_config_path, aka);
 }
 
 #[test]
@@ -124,7 +145,7 @@ fn board_default_target_picks_matching_build_config() {
         "aarch64-unknown-none-softfloat",
     );
 
-    let case = resolve_board_case(root.path(), "demo", None).unwrap();
+    let case = resolve_board_case(root.path(), "demo", None, None).unwrap();
 
     assert_eq!(case.target, "aarch64-unknown-none-softfloat");
     assert_eq!(case.build_config_path, board_build);
@@ -142,7 +163,7 @@ fn board_default_build_config_is_used_without_an_app_override() {
     );
     let board_build = write_board_default(root.path(), "visionfive2", "riscv64gc-unknown-none-elf");
 
-    let case = resolve_board_case(root.path(), "demo", None).unwrap();
+    let case = resolve_board_case(root.path(), "demo", None, None).unwrap();
 
     assert_eq!(case.target, "riscv64gc-unknown-none-elf");
     assert_eq!(case.build_config_path, board_build);

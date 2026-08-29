@@ -106,6 +106,7 @@ id = "test-starry-self-hosted-board-aka-00-sg2002"
 impact_targets = ["starry:riscv64"]
 name = "Board AKA-00 SG2002 · Suites"
 runner = "board"
+wifi_secrets = true
 command = '''
 cargo xtask starry test board --board aka-00-sg2002
 '''

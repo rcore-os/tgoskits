@@ -183,6 +183,11 @@ impl SdMmcIrqHost for Host2Mock {
         Ok(())
     }
 
+    fn rearm_completion_irq_and_check(&mut self) -> Result<CompletionIrqRearm, Error> {
+        self.completion_irq_enabled = true;
+        Ok(CompletionIrqRearm::Idle)
+    }
+
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         self.completion_irq_enabled = false;
         Ok(())
@@ -303,6 +308,24 @@ fn host2_adapter_submits_bus_ops_for_clock_changes() {
         driver.host().bus_ops.clone(),
         std::vec![sdmmc_host::BusOp::SetClock(ClockSpeed::HighSpeed)]
     );
+}
+
+#[test]
+fn newly_submitted_io_card_bus_operation_is_runnable_without_an_irq() {
+    let host = Host2Mock::new(sdmmc_host::RawResponse::empty());
+    let mut card = SdioCard::new(host);
+
+    let _request = card.submit_init().expect("ResetAll bus operation submits");
+
+    assert_eq!(
+        card.progress_wait(),
+        HostProgressWait::Register {
+            retry_after: core::time::Duration::ZERO,
+        },
+        "a bus operation must execute its Submitted step before it can decide whether an IRQ is \
+         required"
+    );
+    assert_eq!(card.host().bus_ops, std::vec![sdmmc_host::BusOp::ResetAll]);
 }
 
 #[test]

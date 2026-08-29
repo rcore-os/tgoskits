@@ -7,6 +7,7 @@ use core::{fmt, ptr::NonNull};
 
 pub use dma_api;
 pub use rdif_base::{DriverGeneric, KError, io};
+use zeroize::Zeroize;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -552,14 +553,41 @@ pub struct WifiLinkPolicy {
 ///
 /// Operations are submitted to the queue executor that owns the device's IRQ
 /// domain. Callers must never execute them directly on their own CPU.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
+pub struct Wpa2Pmk([u8; 32]);
+
+impl Wpa2Pmk {
+    /// Creates one owned WPA2 pairwise master key.
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrows the PMK for transfer into a device owner.
+    pub const fn bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Wpa2Pmk {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Wpa2Pmk([REDACTED])")
+    }
+}
+
+impl Drop for Wpa2Pmk {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub enum WifiOperation {
     /// Configure station mode and connect to one network.
     Connect {
         /// Network name.
         ssid: String,
-        /// Empty for an open network, otherwise a WPA2 passphrase.
-        password: String,
+        /// Pairwise master key for WPA2, or `None` for an open network.
+        pmk: Option<Wpa2Pmk>,
         /// Caller-owned entropy for a secured connection.
         ///
         /// A secured driver must reject the operation when this is `None`;
@@ -577,6 +605,37 @@ pub enum WifiOperation {
     },
 }
 
+impl fmt::Debug for WifiOperation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connect { ssid, pmk, entropy } => formatter
+                .debug_struct("Connect")
+                .field("ssid", ssid)
+                .field("pmk", pmk)
+                .field("entropy", &entropy.as_ref().map(|_| "[REDACTED]"))
+                .finish(),
+            Self::Disconnect => formatter.write_str("Disconnect"),
+            Self::StartOpenAccessPoint { ssid, channel } => formatter
+                .debug_struct("StartOpenAccessPoint")
+                .field("ssid", ssid)
+                .field("channel", channel)
+                .finish(),
+        }
+    }
+}
+
+impl Drop for WifiOperation {
+    fn drop(&mut self) {
+        if let Self::Connect {
+            entropy: Some(entropy),
+            ..
+        } = self
+        {
+            entropy.zeroize();
+        }
+    }
+}
+
 /// One atomic wireless reconfiguration transaction.
 ///
 /// The hardware operation and the protocol-side link policy are carried
@@ -589,32 +648,71 @@ pub struct WifiTransaction {
 }
 
 impl WifiTransaction {
-    /// Creates a station-mode transaction. The protocol stack starts DHCP only
-    /// after the hardware connection succeeds.
-    pub fn connect(ssid: impl Into<String>, password: impl Into<String>) -> Self {
+    /// Creates an open station-mode transaction.
+    pub fn connect_open(ssid: impl Into<String>) -> Self {
         Self {
             operation: WifiOperation::Connect {
                 ssid: ssid.into(),
-                password: password.into(),
+                pmk: None,
                 entropy: None,
             },
             link_policy: None,
         }
     }
 
-    /// Creates a station-mode transaction with one owned WPA entropy input.
-    pub fn connect_with_entropy(
+    /// Creates a WPA2 station transaction. Runtime-owned entropy is added at
+    /// submission when the caller does not provide it explicitly.
+    pub fn connect_wpa2_pmk(ssid: impl Into<String>, pmk: Wpa2Pmk) -> Self {
+        Self {
+            operation: WifiOperation::Connect {
+                ssid: ssid.into(),
+                pmk: Some(pmk),
+                entropy: None,
+            },
+            link_policy: None,
+        }
+    }
+
+    /// Creates a WPA2 station transaction with explicit caller-owned entropy.
+    pub fn connect_wpa2_pmk_with_entropy(
         ssid: impl Into<String>,
-        password: impl Into<String>,
+        pmk: Wpa2Pmk,
         entropy: [u8; 32],
     ) -> Self {
         Self {
             operation: WifiOperation::Connect {
                 ssid: ssid.into(),
-                password: password.into(),
+                pmk: Some(pmk),
                 entropy: Some(entropy),
             },
             link_policy: None,
+        }
+    }
+
+    /// Returns whether this secured station transaction still needs entropy
+    /// from the owning network runtime.
+    pub fn needs_connect_entropy(&self) -> bool {
+        matches!(
+            &self.operation,
+            WifiOperation::Connect {
+                pmk: Some(_),
+                entropy: None,
+                ..
+            }
+        )
+    }
+
+    /// Installs runtime-owned entropy only when a secured connection does not
+    /// already carry explicit caller entropy.
+    pub fn provide_connect_entropy(&mut self, provided: [u8; 32]) {
+        if let WifiOperation::Connect {
+            pmk: Some(_),
+            entropy,
+            ..
+        } = &mut self.operation
+            && entropy.is_none()
+        {
+            *entropy = Some(provided);
         }
     }
 

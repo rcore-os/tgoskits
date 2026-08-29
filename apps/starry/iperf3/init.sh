@@ -1,13 +1,18 @@
 server_ip="${STARRY_IPERF3_SERVER:-}"
+script_path="${STARRY_IPERF3_SCRIPT_PATH:-}"
 script_url="${STARRY_IPERF3_SCRIPT_URL:-}"
 script=/tmp/iperf-bench.sh
 download=/tmp/iperf-bench.sh.part
 ready=0
 
-rm -f "$script" "$download"
+if [ -n "$script_path" ] && [ -s "$script_path" ]; then
+    script=$script_path
+    chmod +x "$script" && ready=1
+fi
 
+rm -f "$download"
 attempt=1
-while [ "$attempt" -le 30 ]; do
+while [ "$ready" != "1" ] && [ "$attempt" -le 30 ]; do
     if command -v curl >/dev/null 2>&1; then
         curl --connect-timeout 2 --max-time 5 -fsSL "$script_url" -o "$download" || true
     elif command -v wget >/dev/null 2>&1; then
