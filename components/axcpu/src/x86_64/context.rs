@@ -473,6 +473,22 @@ impl TaskContext {
         }
     }
 
+    /// Replaces this task's user FPU state with the architecture initial image.
+    pub fn reset_user_fp_state(&mut self) {
+        #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+        {
+            let current = self
+                .context_header()
+                .expect("a userspace FPU reset requires a bound execution context")
+                .as_ptr()
+                .expose_provenance();
+            super::local_state::assert_current_user_fp_resettable(current);
+            self.ext_state = ExtendedState::default();
+            self.ext_state.restore();
+            super::local_state::publish_current_user_fp_owner(current);
+        }
+    }
+
     /// Commits current-context publication and performs the raw transfer.
     ///
     /// # Safety

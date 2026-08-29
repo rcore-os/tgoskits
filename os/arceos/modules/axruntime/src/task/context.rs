@@ -374,6 +374,34 @@ pub(crate) fn prepare_current_user_fp_return() -> Result<(), TaskError> {
     }
 }
 
+pub(super) fn reset_current_user_fp_state() -> Result<(), TaskError> {
+    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    {
+        if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
+            return Err(TaskError::UnsafeContext);
+        }
+        ax_hal::asm::disable_irqs();
+        // SAFETY: local IRQ exclusion pins the current runtime context and its
+        // CPU-local FPU owner through the reset and owner publication.
+        let result = unsafe {
+            with_current_cpu_pin(|cpu_pin| {
+                let context = current_runtime_context(cpu_pin).map_err(runtime_status_error)?;
+                // SAFETY: this is the currently executing architecture context;
+                // IRQ exclusion prevents scheduler or interrupt re-entry.
+                let architecture_context = &mut *context.inner.get();
+                architecture_context.reset_user_fp_state();
+                Ok(())
+            })
+        };
+        ax_hal::asm::enable_irqs();
+        result
+    }
+    #[cfg(not(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace")))]
+    {
+        Ok(())
+    }
+}
+
 fn prepare_runtime_thread_switch<'switch>(
     pin: &'switch CpuPin<'_>,
     previous: &'static RuntimeContext,

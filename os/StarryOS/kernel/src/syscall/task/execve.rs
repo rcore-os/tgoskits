@@ -466,6 +466,8 @@ fn do_execve(
     // init process — the only state the new image legitimately
     // inherits is the address space and the kernel/scheduler bits we
     // explicitly preserved above.
+    ax_runtime::task::reset_current_user_fp_state()
+        .unwrap_or_else(|error| panic!("exec committed without a resettable FPU owner: {error}"));
     *uctx = UserContext::new(entry_point.as_usize(), user_stack_base, 0);
 
     debug!(

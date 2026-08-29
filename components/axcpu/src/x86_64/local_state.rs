@@ -288,6 +288,19 @@ pub(super) fn current_user_fp_needs_restore(current: usize) -> bool {
     }
 }
 
+/// Validates that `current` may replace the physical user FPU image.
+#[cfg(feature = "fp-simd")]
+pub(super) fn assert_current_user_fp_resettable(current: usize) {
+    #[cfg(not(feature = "host-test"))]
+    debug_assert!(!super::asm::irqs_enabled());
+    match classify_user_fp_owner(current_cpu_user_fp_owner(), current) {
+        UserFpOwnerMatch::Unowned | UserFpOwnerMatch::Current => {}
+        UserFpOwnerMatch::Foreign => {
+            panic!("x86 user FPU owner does not match the resetting current context")
+        }
+    }
+}
+
 /// Publishes `current` after its user FPU image has reached hardware.
 #[cfg(feature = "fp-simd")]
 pub(super) fn publish_current_user_fp_owner(current: usize) {

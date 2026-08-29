@@ -4369,6 +4369,46 @@ targeted rustfmt 与 `git diff --check` 通过。尚未关闭的 x86 Linux ABI �
 exec reset、ptrace owner 同步/XSAVE regset 和 signal frame/sigreturn FP state；这些将作为后续独立红绿与
 性能检查点完成，不能用本次 scheduler owner 修复代替。
 
+### 2026-08-29 exec 同步重置 task image 与物理 FPU owner
+
+Linux v7.1 成功替换 executable image 后由 `flush_thread()` 调用 `fpu_flush_thread()`；后者先
+`fpstate_reset(x86_task_fpu(current))` 重置 task-owned memory image，再调用
+`fpu_reset_fpstate_regs()` 把当前物理寄存器恢复为架构初始状态
+（`arch/x86/kernel/process.c:284-293`、`arch/x86/kernel/fpu/core.c:836-876`）。Starry 的 exec
+commit 原来只用 `UserContext::new()` 重建 GP/IP/SP/TLS，既不修改 runtime `TaskContext.ext_state`，也不
+更新 CPU-local `user_fp_owner`。未发生调度时 owner 仍匹配 current，最终 user-return 会跳过 restore；
+发生过调度时旧 image 又会被保存回同一个 `TaskContext`。两条路径都会把旧程序的 x87/MXCSR/XMM/YMM
+状态泄漏给新 image，与代码中“clobbers any FP/SIMD state to the ABI default”的现有注释不一致。
+
+确定性真实 QEMU 回归先让旧程序把 x87 FCW/MXCSR 设置为 `0x077f/0x3f80`，再 `execv` 同一 ELF；新
+image 在主动执行任何 FP 初始化前读取控制状态。旧实现稳定输出
+`fcw=0x77f mxcsr=0x3f80`，而期望 Linux 初始值为 `0x037f/0x1f80`，程序非零退出并由 grouped runner
+传播为 `STARRY_GROUPED_TEST_FAILED`。修复后同一二进制首次进入新 image 即观察到
+`0x037f/0x1f80`，原命令转绿。用例位于 `qemu/system` 的独立子用例，非 x86 架构明确 skip，不新增
+子用例 TOML，也没有放宽 system runner 的 success/fail 规则。
+
+修复把架构状态操作保持在 axcpu/axruntime owner 边界内：exec 越过 point-of-no-return 后调用 runtime
+窄接口；runtime 要求 task context、IRQ enabled 且非 hard IRQ，随后在 IRQ-off `CpuPin` 下取得当前
+`RuntimeContext`。axcpu 先验证 CPU-local owner 只能是 unowned 或 current，再把 task-owned
+`ExtendedState` 替换为默认 image、立即 XRSTOR/FXRSTOR 物理寄存器，最后发布同一个 current owner。
+旧 image 不会在 reset 中被保存，也不会留下“memory 已重置但 owner 仍指向 foreign context”的第二
+状态源。不可逆 exec 区域把 runtime failure 视为内核协议破坏而 panic，不伪装成可以回滚的 syscall
+错误。
+
+性能优先验证仍使用未插桩 Starry true `-smp 1` 五轮。thread/20 为
+0.768/0.871/0.863/0.916/0.835 s，中位数 0.863 s，相对上一 FPU-owner 检查点 0.850 s 名义退化约
+1.5%；process/20 为 1.418/1.287/1.421/1.556/1.583 s，中位数 1.421 s，相对上一 1.443 s 名义改善约
+1.5%。两项方向相反且 exec 不在 hackbench 热路径，结果只能解释为 TCG 波动；process 仍为 Linux v7.1
+PREEMPT_RT 0.396 s 的约 3.59 倍。本步修复 ABI 泄漏但不是吞吐根因，后续不会回退 reset 语义来追求
+hackbench 数字。
+
+质量验证覆盖完整 ax-cpu `fp-simd + host-test + uspace` 测试矩阵和 ax-cpu 29 个 clippy 组合；
+ax-runtime x86_64 `fp-simd + uspace + smp`、Starry kernel x86_64 `smp` 定向 clippy 通过。Starry kernel
+全包 clippy 的前 8/106 个跨架构/单 feature 组合通过后，为避免等待与本改动无关的完整串行矩阵而停止；
+真实 x86 Starry build、红绿 QEMU、targeted rustfmt 与 `git diff --check` 构成本检查点门禁。下一步继续
+补齐 clone inheritance；ptrace full xstate/owner invalidation 与 signal frame/sigreturn FP ABI 分别保留为
+独立检查点。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

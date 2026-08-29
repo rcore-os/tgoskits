@@ -134,6 +134,11 @@ pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
 pub fn prepare_user_return() -> Result<(), TaskError> {
     crate::guard::prepare_user_return()
 }
+
+/// Resets the current task's user FPU image during a successful executable replacement.
+pub fn reset_current_user_fp_state() -> Result<(), TaskError> {
+    context::reset_current_user_fp_state()
+}
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
 pub(crate) use scheduler_events::{record_scheduler_ipi_consume, record_scheduler_ipi_send};
 pub use spawn::{
