@@ -392,15 +392,7 @@ pub(crate) fn enter_scheduler_frame_guard(
     }
 
     ax_hal::asm::disable_irqs();
-    let preempt_depth = current_preempt_depth();
-    let claimed = with_guard_state_mut(|state| match entry {
-        RuntimeSchedulerEntry::Task => state.claim_task_scheduler(preempt_depth),
-        RuntimeSchedulerEntry::PreemptExit | RuntimeSchedulerEntry::IrqReturn => {
-            state.enter_preclaimed_scheduler(preempt_depth)
-        }
-        RuntimeSchedulerEntry::IrqReturnContinuation => state.claim_task_scheduler(preempt_depth),
-        RuntimeSchedulerEntry::IrqGuardExit => state.claim_irq_exit_scheduler(preempt_depth),
-    });
+    let claimed = claim_scheduler_cpu_state(entry);
     if !claimed {
         if irqs_enabled {
             ax_hal::asm::enable_irqs();
@@ -408,6 +400,24 @@ pub(crate) fn enter_scheduler_frame_guard(
         return RuntimeStatus::UnsafeContext;
     }
     RuntimeStatus::Success
+}
+
+fn claim_scheduler_cpu_state(entry: ax_task::runtime::RuntimeSchedulerEntry) -> bool {
+    use ax_task::runtime::RuntimeSchedulerEntry;
+
+    with_current_cpu_pin(|pin| {
+        let preempt_depth = current_preempt_depth_pinned(pin);
+        with_guard_state_mut_pinned(pin, |state| match entry {
+            RuntimeSchedulerEntry::Task => state.claim_task_scheduler(preempt_depth),
+            RuntimeSchedulerEntry::PreemptExit | RuntimeSchedulerEntry::IrqReturn => {
+                state.enter_preclaimed_scheduler(preempt_depth)
+            }
+            RuntimeSchedulerEntry::IrqReturnContinuation => {
+                state.claim_task_scheduler(preempt_depth)
+            }
+            RuntimeSchedulerEntry::IrqGuardExit => state.claim_irq_exit_scheduler(preempt_depth),
+        })
+    })
 }
 pub(crate) fn exit_scheduler_frame_guard(
     return_to: ax_task::runtime::RuntimeSchedulerReturn,
@@ -485,7 +495,11 @@ fn read_state() -> RuntimeGuardState {
 
 #[inline(always)]
 fn current_preempt_depth() -> u32 {
-    with_current_cpu_pin(cpu_local::preemption_snapshot)
+    with_current_cpu_pin(current_preempt_depth_pinned)
+}
+
+fn current_preempt_depth_pinned(pin: &cpu_local::CpuPin<'_>) -> u32 {
+    cpu_local::preemption_snapshot(pin)
         .unwrap_or_else(|error| panic!("architecture preemption state is invalid: {error}"))
         .depth()
 }

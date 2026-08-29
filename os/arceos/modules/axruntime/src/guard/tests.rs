@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(feature = "host-test")]
+static HOST_CPU_GUARD_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(feature = "host-test")]
 #[test]
 fn host_spin_guard_before_runtime_bootstrap_is_noop() {
     let lock = crate::sync::SpinLock::new(());
@@ -10,6 +13,9 @@ fn host_spin_guard_before_runtime_bootstrap_is_noop() {
 #[cfg(feature = "host-test")]
 #[test]
 fn scheduler_exit_state_reuses_one_cpu_pin() {
+    let _serial = HOST_CPU_GUARD_TEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::thread::spawn(|| {
         ax_hal::percpu::initialize_host_test_cpu();
         ax_hal::asm::disable_irqs();
@@ -28,6 +34,36 @@ fn scheduler_exit_state_reuses_one_cpu_pin() {
     })
     .join()
     .expect("modeled CPU must finish scheduler exit state");
+}
+
+#[cfg(feature = "host-test")]
+#[test]
+fn scheduler_entry_state_reuses_one_cpu_pin() {
+    let _serial = HOST_CPU_GUARD_TEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::thread::spawn(|| {
+        ax_hal::percpu::initialize_host_test_cpu();
+        ax_hal::asm::disable_irqs();
+        with_current_cpu_pin(cpu_local::release_bootstrap_preemption)
+            .expect("modeled task must release bootstrap preemption");
+        cpu_local::host_test::reset_register_read_counts();
+
+        assert!(claim_scheduler_cpu_state(
+            ax_task::runtime::RuntimeSchedulerEntry::Task
+        ));
+
+        let reads = cpu_local::host_test::register_read_counts();
+        assert_eq!(
+            reads.current_context, 2,
+            "scheduler entry needs one pin validation and one context-owned preemption lookup"
+        );
+        assert_eq!(reads.binding_observations, 2);
+        with_guard_state_mut(|state| state.exit_scheduler_preempt("test scheduler frame"));
+        ax_hal::asm::enable_irqs();
+    })
+    .join()
+    .expect("modeled CPU must finish scheduler entry state");
 }
 
 #[test]
