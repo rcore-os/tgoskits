@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import queue
 import re
+import time
 from typing import Any
 
 PHASE_ARTIFACT_PREPARATION = "artifact-preparation"
@@ -101,7 +103,7 @@ def parse_assertion_record(console: str) -> dict[str, Any]:
         )
 
     def required_field(prefix: str) -> str:
-        match = re.search(rf"(?m)^{re.escape(prefix)}(.*)$", console)
+        match = re.search(rf"{re.escape(prefix)}(.*)$", console, re.M)
         if match is None:
             raise_phase(
                 PHASE_GUEST_ASSERTION,
@@ -121,16 +123,23 @@ def parse_assertion_record(console: str) -> dict[str, Any]:
             console,
         )
 
-    begin = console.find(ASSERT_OUTPUT_BEGIN)
-    end = console.find(ASSERT_OUTPUT_END)
-    if begin < 0 or end < 0 or end < begin:
+    lines = console.splitlines()
+    begin_idx = next((i for i, line in enumerate(lines) if ASSERT_OUTPUT_BEGIN in line), -1)
+    end_idx = next((i for i, line in enumerate(lines) if ASSERT_OUTPUT_END in line), -1)
+    if begin_idx < 0 or end_idx < 0 or end_idx < begin_idx:
         raise_phase(
             PHASE_GUEST_ASSERTION,
             "missing STARRY_NIXOS_ASSERT_OUTPUT delimiters",
             console,
         )
-    output_block = console[begin + len(ASSERT_OUTPUT_BEGIN) : end]
-    output = output_block.strip("\n")
+    journal_prefix = lines[begin_idx][: lines[begin_idx].find(ASSERT_OUTPUT_BEGIN)]
+    payload = []
+    for line in lines[begin_idx + 1 : end_idx]:
+        if journal_prefix and line.startswith(journal_prefix):
+            payload.append(line[len(journal_prefix) :])
+        else:
+            payload.append(line)
+    output = "\n".join(payload)
     return {
         "result": "Passed",
         "reason": None,
@@ -233,6 +242,38 @@ def evaluate_service_assertion(
             console,
         )
     return record
+
+
+def wait_for_console_evidence(
+    machine: Any,
+    pattern: str,
+    *,
+    deadline: float,
+    now: Any = time.monotonic,
+    sleep: Any = time.sleep,
+) -> tuple[str, bool, bool]:
+    compiled = re.compile(pattern)
+    terminal_seen = False
+    while now() < deadline:
+        try:
+            while True:
+                machine.last_lines.get(block=False)
+        except queue.Empty:
+            pass
+        except AttributeError:
+            pass
+        console = machine.get_console_log()
+        if compiled.search(console):
+            terminal_seen = True
+            break
+        process = getattr(machine, "process", None)
+        if process is not None and process.poll() is not None:
+            break
+        sleep(1)
+    console = machine.get_console_log()
+    process = getattr(machine, "process", None)
+    qemu_exited = process is not None and process.poll() is not None
+    return console, terminal_seen, qemu_exited
 
 
 class StarryMachine:

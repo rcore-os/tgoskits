@@ -41,38 +41,46 @@ STARRY_NIXOS_SYSTEM_PASSED
 
 The driver waits at most 600 seconds for terminal evidence and has a 900-second global timeout. A pass additionally requires no panic, fatal record, marker-unit failure, explicit `STARRY_NIXOS_SYSTEM_FAILED:` line, premature QEMU exit, or nonzero QEMU/test status. The marker is not sufficient by itself: the guest must power off cleanly.
 
-The xtask output reports the prepared kernel identity and streams the Nix test-driver output. On failure, inspect the last phase, the first terminal failure pattern, the QEMU exit/shutdown result, and the retained driver log. Artifact preparation, Nix evaluation, machine startup, activation, terminal evidence, shutdown, and timeout failures are intentionally nonzero and fail closed.
+`service` continues after those markers until a structured `STARRY_NIXOS_ASSERT_*` block appears, then requires status 0, the expected command output, and clean poweroff. `service-fail` must return nonzero with `STARRY_NIXOS_PHASE_FAILED=guest-assertion` and the named failed expectation. `unsupported` must return nonzero immediately with `unsupported Starry nixosTest operation: succeed` and must not wait for `/dev/hvc0`.
 
-Each driver run owns a fresh temporary rootfs overlay, OVMF variables copy, and ESP. The immutable Nix-store rootfs and firmware inputs are never reused as writable state.
+The xtask output reports the prepared kernel identity and streams the Nix test-driver output. On failure, inspect `STARRY_NIXOS_PHASE_FAILED=`, the failed expectation, the last serial evidence, and the QEMU exit/shutdown result. Artifact preparation, Nix evaluation, machine startup, activation, guest assertion, unexpected guest exit, shutdown, and timeout failures are intentionally nonzero and fail closed.
+
+Each driver run owns a fresh temporary rootfs overlay, OVMF variables copy, and ESP. The immutable Nix-store rootfs and firmware inputs are never reused as writable state. A retry needs no manual overlay cleanup.
 
 ## Retained compatibility paths
 
-P1 adds a new entry point; it does not replace these existing checks:
+The nixosTest entry point does not replace these existing checks:
 
 ```bash
 apps/starry/nixos/build-rootfs.sh --self-test
 cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
 cargo xtask starry test qemu --arch x86_64 -c qemu/system/starrynixos-stage2
 ```
+
 ## Diagnostics and limits
 
-A failure before QEMU indicates kernel preparation, NAR import, flake evaluation, rootfs, firmware, or launch-adapter setup. Look for `STARRY_NIXOS_PHASE_FAILED=` in driver/xtask output: `artifact-preparation`, `machine-startup`, `stage2-activation`, `guest-assertion`, `unexpected-guest-exit`, `shutdown`, or `timeout`.
+A failure before QEMU indicates kernel preparation, NAR import, flake evaluation, rootfs, firmware, or launch-adapter setup. Look for `STARRY_NIXOS_PHASE_FAILED=` in driver/xtask output:
 
-`service` adds a structured `STARRY_NIXOS_ASSERT_*` serial block after the P1 markers. `service-fail` must return nonzero with phase `guest-assertion`. `unsupported` must return nonzero immediately with `unsupported Starry nixosTest operation: succeed` and must not wait for `/dev/hvc0`. Guest commands are declared systemd oneshots, not `machine.succeed`. There is still no claim that unmodified upstream NixOS tests run on StarryOS, and CI scheduling is unchanged.
-A failure before QEMU indicates kernel preparation, NAR import, flake evaluation, rootfs, firmware, or launch-adapter setup. During boot, the last phase and full serial log identify the earliest observable boundary. Missing terminal evidence is a bounded timeout; a terminal marker without shutdown indicates lifecycle failure.
+- `artifact-preparation`
+- `machine-startup`
+- `stage2-activation`
+- `guest-assertion`
+- `unexpected-guest-exit`
+- `shutdown`
+- `timeout`
 
-P1 deliberately does not claim broad upstream NixOS test compatibility. Test-specific services and in-guest assertions are deferred to P2 because StarryOS does not yet expose the required guest command channel. Repeatability and deeper diagnostic reporting are P3 work. Unsupported operations must remain explicit failures rather than skipped success.
+Guest commands are declared systemd oneshots observed on serial, not `machine.succeed`. Shared marker poweroff still happens unless the test-owned `/etc/starry-nixos/keep-running` file is present. There is still no claim that unmodified upstream NixOS tests run on StarryOS, and CI scheduling is unchanged.
 
 ## 当前验证记录
 
-- `apps/starry/nixos/build-rootfs.sh --self-test` passed with `STARRY_NIXOS_ARTIFACT_SELF_TEST_PASSED`.
-- `cargo xtask starry test nixos --list` passed and reported `boot`, `arch=x86_64`, `target=x86_64-unknown-none` without launching a VM.
-- `python3 -m unittest discover -s nixos-tests/starryos -p 'test_*.py' -v` passed all 7 launcher contract tests.
-- The focused axbuild fallback `cargo test -p axbuild starry` passed 263 tests in the project container. `cargo xtask clippy --package axbuild` passed; repository formatting was applied with `cargo fmt --all`.
-- `nix flake check --no-build path:nixos-tests/starryos` and `path:apps/starry/nixos` both evaluated successfully. The Nix client retried a missing mirror NAR before evaluating the derivations.
-- Real TCG `proxychains4 cargo xtask starry test nixos --arch x86_64 -c boot` reached the ordered marker sequence, finished `wait_for_shutdown` in 12.85 seconds, and completed the test script in 551.08 seconds. Kernel NAR hash `sha256-0qiyFvF8EeDJvPr4VB2EyqAQ8MqVdRnko95GDKcVB6A=`, kernel store `/nix/store/gq18jjcphdhyd6mcn9wzf1nsqrqmd2zv-starry-nixos-kernel`, system `/nix/store/fmwlbisll4zjspinwkkn6wm2hj6b5hz6-nixos-system-starrynixos-starry-nixos-stage2`. Clean shutdown uses the `sys_reboot()` fix that remains in this branch and is also submitted independently as https://github.com/rcore-os/tgoskits/pull/2220.
-- The retained `proxychains4 cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix` path published the same rootfs identity and printed `activation`/`systemd`/`marker`/`STARRY_NIXOS_SYSTEM_PASSED`. A retry taken while the local reboot patch was temporarily removed reported `QEMU stopped without matching a configured success regex` during poweroff sync. Marker semantics are unchanged; the patch is restored on this branch.
-- The retained `cargo xtask starry test qemu --arch x86_64 -c qemu/system/starrynixos-stage2` path built the Starry test kernel. `proxychains4` must not wrap that command because grouped `prebuild.sh` runs under musl `qemu-x86_64`; the unwrapped run timed out fetching `tgosimages` registry `v0.0.12.toml`. No guest result is claimed.
+最新 TCG 身份、断言块、阶段名和三次 `service-fail` 隔离结果记在 `nixos-tests/starryos/compatibility.md`。
+
+- `cargo xtask starry test nixos --list` 报告四个 x86_64 用例且不启动 VM。
+- `python3 -m unittest discover -s nixos-tests/starryos -p 'test_*.py' -v` 覆盖 launcher 与 `starry_machine` 合同。
+- TCG `service` 在 P1 marker 后看到 `STARRY_NIXOS_ASSERT_PASSED` 并以零退出。
+- TCG `service-fail` 以 `STARRY_NIXOS_PHASE_FAILED=guest-assertion` 和 `declared command false exited 1` 非零退出。
+- TCG `unsupported` 立即以 `unsupported Starry nixosTest operation: succeed` 非零退出，不等待 `/dev/hvc0`。
+- TCG `boot` 仍完成有序 marker 与关机。
 
 ## 网络受限主机
 

@@ -1,8 +1,7 @@
 # Negative declared-service nixosTest contract for the independent StarryOS test flake.
-{ lib, pkgs, launcher }:
+{ lib, pkgs, launcher, starryMachine }:
 let
-  boot = import ./boot.nix { inherit lib pkgs launcher; };
-  starryMachine = ./starry_machine.py;
+  boot = import ./boot.nix { inherit lib pkgs launcher starryMachine; };
 in
 {
   inherit (boot) patterns;
@@ -17,36 +16,35 @@ in
       evaluate_boot_console = starry_machine.evaluate_boot_console
       evaluate_service_assertion = starry_machine.evaluate_service_assertion
       raise_phase = starry_machine.raise_phase
+      wait_for_console_evidence = starry_machine.wait_for_console_evidence
       wrap_machine = starry_machine.wrap_machine
       PHASE_GUEST_ASSERTION = starry_machine.PHASE_GUEST_ASSERTION
+      PHASE_TIMEOUT = starry_machine.PHASE_TIMEOUT
 
-      import queue
-      import re
       import time
 
       machine = wrap_machine(create_machine(${builtins.toJSON launcher}, name="starry-nixos-service-fail"))
       machine.start()
 
-      terminal_deadline = time.monotonic() + 600
-      terminal_seen = False
-      terminal_pattern = ${builtins.toJSON boot.patterns.terminalPattern} + "|STARRY_NIXOS_ASSERT_FAILED:"
-      while time.monotonic() < terminal_deadline:
-          try:
-              while True:
-                  machine.last_lines.get(block=False)
-          except queue.Empty:
-              pass
-          console = machine.get_console_log()
-          if re.search(terminal_pattern, console):
-              terminal_seen = True
-              break
-          if machine.process is not None and machine.process.poll() is not None:
-              break
-          time.sleep(1)
-
-      console = machine.get_console_log()
-      qemu_exited = machine.process is not None and machine.process.poll() is not None
+      global_deadline = time.monotonic() + 900
+      console, terminal_seen, qemu_exited = wait_for_console_evidence(
+          machine,
+          ${builtins.toJSON boot.patterns.terminalPattern},
+          deadline=min(time.monotonic() + 600, global_deadline),
+      )
       evaluate_boot_console(console, terminal_seen=terminal_seen, qemu_exited=qemu_exited)
+
+      console, assertion_seen, qemu_exited = wait_for_console_evidence(
+          machine,
+          r"STARRY_NIXOS_ASSERT_PASSED|STARRY_NIXOS_ASSERT_FAILED:",
+          deadline=global_deadline,
+      )
+      if not assertion_seen:
+          raise_phase(
+              PHASE_TIMEOUT,
+              "StarryNixOS service-fail produced no assertion record before the global deadline",
+              console,
+          )
       record = evaluate_service_assertion(console, require_pass=False)
       machine.wait_for_shutdown()
       raise_phase(

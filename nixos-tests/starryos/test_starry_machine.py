@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import queue
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,41 @@ STARRY_NIXOS_ASSERT_OUTPUT_END
 STARRY_NIXOS_ASSERT_FAILED:declared command false exited 1
 """
 
+JOURNAL_PREFIXED_ASSERT_CONSOLE = BOOT_CONSOLE + """
+starry-nixos-service-assert-start[2]: STARRY_NIXOS_ASSERT_BEGIN
+starry-nixos-service-assert-start[2]: STARRY_NIXOS_ASSERT_CMD=hello
+starry-nixos-service-assert-start[2]: STARRY_NIXOS_ASSERT_STATUS=0
+starry-nixos-service-assert-start[2]: STARRY_NIXOS_ASSERT_OUTPUT_BEGIN
+starry-nixos-service-assert-start[2]: Hello, world!
+starry-nixos-service-assert-start[2]: STARRY_NIXOS_ASSERT_OUTPUT_END
+starry-nixos-service-assert-start[2]: STARRY_NIXOS_ASSERT_PASSED
+"""
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class ScriptedConsole:
+    def __init__(self, snapshots: list[str]) -> None:
+        self.snapshots = snapshots
+        self.last_lines: queue.Queue[str] = queue.Queue()
+        self.process = None
+        self.calls = 0
+
+    def get_console_log(self) -> str:
+        index = min(self.calls, len(self.snapshots) - 1)
+        self.calls += 1
+        return self.snapshots[index]
+
+
 
 class RecordingInner:
     def __init__(self) -> None:
@@ -67,6 +103,19 @@ class StarryMachineTests(unittest.TestCase):
         self.assertEqual(record["command"], "hello")
         self.assertEqual(record["status"], 0)
         self.assertEqual(record["output"], "Hello, world!")
+
+    def test_parses_journal_prefixed_assertion_record(self) -> None:
+        record = STARRY_MACHINE.parse_assertion_record(JOURNAL_PREFIXED_ASSERT_CONSOLE)
+        self.assertEqual(record["result"], "Passed")
+        self.assertEqual(record["command"], "hello")
+        self.assertEqual(record["status"], 0)
+        self.assertEqual(record["output"], "Hello, world!")
+        STARRY_MACHINE.evaluate_service_assertion(
+            JOURNAL_PREFIXED_ASSERT_CONSOLE,
+            expected_status=0,
+            expected_output="Hello, world!",
+            require_pass=True,
+        )
 
     def test_parses_failed_assertion_record(self) -> None:
         record = STARRY_MACHINE.parse_assertion_record(ASSERT_FAIL_CONSOLE)
@@ -173,6 +222,21 @@ class StarryMachineTests(unittest.TestCase):
         inner.start = start
         STARRY_MACHINE.wrap_machine(inner).start()
         self.assertTrue(inner.started)
+
+    def test_wait_for_assertion_continues_after_system_passed(self) -> None:
+        clock = FakeClock()
+        machine = ScriptedConsole([BOOT_CONSOLE, BOOT_CONSOLE, ASSERT_PASS_CONSOLE])
+        console, seen, qemu_exited = STARRY_MACHINE.wait_for_console_evidence(
+            machine,
+            r"STARRY_NIXOS_ASSERT_PASSED|STARRY_NIXOS_ASSERT_FAILED:",
+            deadline=clock.now + 10,
+            now=clock,
+            sleep=clock.sleep,
+        )
+        self.assertTrue(seen)
+        self.assertFalse(qemu_exited)
+        self.assertIn("STARRY_NIXOS_ASSERT_PASSED", console)
+        self.assertGreaterEqual(machine.calls, 3)
 
 
 if __name__ == "__main__":

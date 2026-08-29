@@ -1,5 +1,5 @@
 # Upstream nixosTest lifecycle contract for the independent StarryOS test flake.
-{ lib, pkgs, launcher }:
+{ lib, pkgs, launcher, starryMachine }:
 let
   successPattern = "(?s:"
     + builtins.concatStringsSep ".*" [
@@ -20,7 +20,6 @@ let
   # The upstream driver waits for one terminal line at a time. The full ordered
   # success expression is checked against the complete console after wakeup.
   terminalPattern = "STARRY_NIXOS_SYSTEM_PASSED|" + builtins.concatStringsSep "|" failurePatterns;
-  starryMachine = ./starry_machine.py;
 in
 {
   patterns = {
@@ -45,37 +44,19 @@ in
       spec.loader.exec_module(starry_machine)
       evaluate_boot_console = starry_machine.evaluate_boot_console
       raise_phase = starry_machine.raise_phase
+      wait_for_console_evidence = starry_machine.wait_for_console_evidence
       PHASE_SHUTDOWN = starry_machine.PHASE_SHUTDOWN
 
-      import queue
-      import re
       import time
 
       machine = create_machine(${builtins.toJSON launcher}, name="starry-nixos-boot")
       machine.start()
 
-      terminal_deadline = time.monotonic() + 600
-      terminal_seen = False
-      while time.monotonic() < terminal_deadline:
-          # The driver stores every line in full_console_log but its public
-          # wait helper consumes only one queued line per retry. Drain queued
-          # lines first; otherwise normal Starry kernel diagnostics can delay
-          # the terminal marker beyond the 600-second budget.
-          try:
-              while True:
-                  machine.last_lines.get(block=False)
-          except queue.Empty:
-              pass
-          console = machine.get_console_log()
-          if re.search(${builtins.toJSON terminalPattern}, console):
-              terminal_seen = True
-              break
-          if machine.process is not None and machine.process.poll() is not None:
-              break
-          time.sleep(1)
-
-      console = machine.get_console_log()
-      qemu_exited = machine.process is not None and machine.process.poll() is not None
+      console, terminal_seen, qemu_exited = wait_for_console_evidence(
+          machine,
+          ${builtins.toJSON terminalPattern},
+          deadline=time.monotonic() + 600,
+      )
       evaluate_boot_console(console, terminal_seen=terminal_seen, qemu_exited=qemu_exited)
 
       machine.wait_for_shutdown()

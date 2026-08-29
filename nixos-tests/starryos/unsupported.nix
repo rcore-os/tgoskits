@@ -1,8 +1,7 @@
 # Fail-closed command-channel nixosTest contract for StarryOS.
-{ lib, pkgs, launcher }:
+{ lib, pkgs, launcher, starryMachine }:
 let
-  boot = import ./boot.nix { inherit lib pkgs launcher; };
-  starryMachine = ./starry_machine.py;
+  boot = import ./boot.nix { inherit lib pkgs launcher starryMachine; };
 in
 {
   inherit (boot) patterns;

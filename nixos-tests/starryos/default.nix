@@ -58,15 +58,16 @@ let
       -- "$@"
   '';
   launcher = pkgs.writeShellScript "run-starry-nixos-${caseName}-vm" launcherScript;
+  starryMachine = pkgs.writeText "starry_machine.py" (builtins.readFile ./starry_machine.py);
   selected =
     if caseName == "boot" then
-      import ./boot.nix { inherit lib pkgs launcher; }
+      import ./boot.nix { inherit lib pkgs launcher starryMachine; }
     else if caseName == "service" then
-      import ./service.nix { inherit lib pkgs launcher; }
+      import ./service.nix { inherit lib pkgs launcher starryMachine; }
     else if caseName == "service-fail" then
-      import ./service-fail.nix { inherit lib pkgs launcher; }
+      import ./service-fail.nix { inherit lib pkgs launcher starryMachine; }
     else
-      import ./unsupported.nix { inherit lib pkgs launcher; };
+      import ./unsupported.nix { inherit lib pkgs launcher starryMachine; };
   contract = selected.contract;
 in
 {
