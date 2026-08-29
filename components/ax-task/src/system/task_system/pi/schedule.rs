@@ -1,6 +1,7 @@
 //! PI scheduling-class resolution and rq-owned priority updates.
 
 use super::*;
+use crate::{scheduler::SchedulerClass, system::OwnerRqTaskState};
 impl TaskSystem {
     pub(in crate::system::task_system) fn resolved_pi_schedule_update(
         &self,
@@ -220,7 +221,28 @@ impl TaskSystem {
         }
         record_pi_schedule_owner_rq_transaction(core.id());
         let mut transaction = OwnerRqTxn::begin(self, remote);
-        if transaction.current().is_some() {
+        let owner_state = transaction.task_state(core.id(), &sched.placement);
+        let accounting_path = match owner_state {
+            OwnerRqTaskState::Current => PiOwnerRqAccountingPath::Running,
+            OwnerRqTaskState::Queued { .. } | OwnerRqTaskState::DelayedFair { .. } => {
+                PiOwnerRqAccountingPath::QueuedClassDequeue
+            }
+            OwnerRqTaskState::Inactive => PiOwnerRqAccountingPath::Inactive,
+        };
+        let owner_accounting_class =
+            match SchedulerClass::for_policy(core.effective_policy_snapshot()) {
+                SchedulerClass::Stop => None,
+                class => Some(class),
+            };
+        let current_accounting_class = transaction
+            .current()
+            .filter(|current| !current.is_dedicated_idle())
+            .map(|current| SchedulerClass::for_policy(current.schedule_policy()));
+        if owner_rq_needs_current_settlement(
+            accounting_path,
+            owner_accounting_class,
+            current_accounting_class,
+        ) {
             let _settled = transaction.settle_current(0);
         }
         let base_entity = core

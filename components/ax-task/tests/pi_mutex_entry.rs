@@ -9,7 +9,9 @@ use entry::{
     FastLockAttempt, LockEntry, capture_current_and_prepare_slow, owner_spin_eligible,
     owner_spin_progress_gates,
 };
-use transition::publish_owner_after_waiter_detach;
+use transition::{
+    PiOwnerRqAccountingPath, owner_rq_needs_current_settlement, publish_owner_after_waiter_detach,
+};
 
 #[test]
 fn uncontended_entry_does_not_validate_a_blocking_context() {
@@ -133,4 +135,54 @@ fn failed_owner_update_restores_the_detached_waiter() {
 
     assert_eq!(result, Err("owner update failed"));
     assert_eq!(events, ["detach waiter", "publish owner", "restore waiter"]);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TestSchedulerClass {
+    Stop,
+    Deadline,
+    Realtime,
+    Fair,
+}
+
+#[test]
+fn pi_owner_update_accounts_the_linux_class_dequeue_path() {
+    assert!(owner_rq_needs_current_settlement(
+        PiOwnerRqAccountingPath::Running,
+        Some(TestSchedulerClass::Stop),
+        Some(TestSchedulerClass::Stop),
+    ));
+
+    for class in [
+        TestSchedulerClass::Deadline,
+        TestSchedulerClass::Realtime,
+        TestSchedulerClass::Fair,
+    ] {
+        assert!(owner_rq_needs_current_settlement(
+            PiOwnerRqAccountingPath::QueuedClassDequeue,
+            Some(class),
+            Some(class),
+        ));
+    }
+
+    assert!(!owner_rq_needs_current_settlement(
+        PiOwnerRqAccountingPath::QueuedClassDequeue,
+        None,
+        Some(TestSchedulerClass::Stop),
+    ));
+    assert!(!owner_rq_needs_current_settlement(
+        PiOwnerRqAccountingPath::QueuedClassDequeue,
+        Some(TestSchedulerClass::Fair),
+        Some(TestSchedulerClass::Realtime),
+    ));
+    assert!(!owner_rq_needs_current_settlement(
+        PiOwnerRqAccountingPath::Inactive,
+        Some(TestSchedulerClass::Fair),
+        Some(TestSchedulerClass::Fair),
+    ));
+    assert!(!owner_rq_needs_current_settlement(
+        PiOwnerRqAccountingPath::QueuedClassDequeue,
+        Some(TestSchedulerClass::Fair),
+        None,
+    ));
 }
