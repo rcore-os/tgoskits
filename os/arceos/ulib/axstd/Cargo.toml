@@ -61,6 +61,7 @@ tls = ["ax-runtime/tls"]
 
 # Scheduler configuration
 lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
+qperf-metrics = ["ax-runtime/qperf-metrics"]
 task-ext = []
 tracepoint-hooks = []
 stack-guard-page = ["ax-runtime/stack-guard-page"]

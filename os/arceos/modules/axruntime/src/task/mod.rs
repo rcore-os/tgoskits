@@ -94,6 +94,8 @@ use address_space::{
     destroy_runtime_address_space, release_current_active_address_space,
     runtime_address_space_membarrier_state, update_runtime_address_space_membarrier_state,
 };
+#[cfg(feature = "qperf-metrics")]
+pub use ax_task::qperf_cpu_owner_claims;
 #[cfg(feature = "tls")]
 pub(crate) use bootstrap::initialize_early_bootstrap_tls;
 #[cfg(test)]

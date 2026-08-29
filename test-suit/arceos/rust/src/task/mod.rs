@@ -20,6 +20,8 @@ pub mod preempt_guard;
 pub mod priority;
 #[cfg(feature = "task-rt-policy")]
 pub mod rt_policy;
+#[cfg(feature = "task-scheduler-owner-claim")]
+pub mod scheduler_owner_claim;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;
 #[cfg(feature = "task-smp-online")]

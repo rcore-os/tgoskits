@@ -196,6 +196,12 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "runtime_cpu_owner_claims {}",
+        task.runtime_cpu_owner_claims
+    )
+    .unwrap();
+    writeln!(
+        output,
         "scheduler_deadline_derivation_entries {}",
         task.scheduler_deadline_derivation_entries
     )
@@ -966,6 +972,7 @@ mod tests {
                 "active_mm_reclaim_ready",
                 "active_mm_reclaim_destroyed",
                 "current_thread_handle_queries",
+                "runtime_cpu_owner_claims",
                 "scheduler_deadline_derivation_entries",
                 "scheduler_deadline_derivation_clock_event_entries",
                 "scheduler_deadline_derivation_park_arm_entries",

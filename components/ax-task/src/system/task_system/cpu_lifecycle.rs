@@ -55,6 +55,19 @@ impl TaskSystem {
         Ok(remote.busy_runtime_ns())
     }
 
+    /// Returns successful runtime owner claims observed by one online CPU.
+    #[cfg(feature = "qperf-metrics")]
+    pub fn qperf_cpu_owner_claims(&self, cpu: CpuId) -> Result<u64, TaskError> {
+        let remote = self
+            .cpu_remotes
+            .get(cpu.as_usize())
+            .ok_or(TaskError::InvalidCpu(cpu.as_u32()))?;
+        if !remote.is_online() {
+            return Err(TaskError::CpuOffline(cpu.as_u32()));
+        }
+        Ok(remote.qperf_owner_claims())
+    }
+
     pub(super) fn ensure_owner_cpu_online(&self, cpu: &CpuLocal) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(cpu)?;
         let remote = self

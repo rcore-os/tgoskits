@@ -56,6 +56,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "task-preempt-guard",
     "task-priority",
     "task-rt-policy",
+    "task-scheduler-owner-claim",
     "task-sleep",
     "task-smp-online",
     ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,

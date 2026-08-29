@@ -66,6 +66,7 @@ pub mod net;
         feature = "task-preempt-guard",
         feature = "task-priority",
         feature = "task-rt-policy",
+        feature = "task-scheduler-owner-claim",
         feature = "task-sleep",
         feature = "task-smp-online",
         feature = "task-stack-guard-page",
@@ -156,6 +157,11 @@ test_runner!(
     task::priority::run_priority
 );
 test_runner!("task-rt-policy", run_task_rt_policy, task::rt_policy::run);
+test_runner!(
+    "task-scheduler-owner-claim",
+    run_task_scheduler_owner_claim,
+    task::scheduler_owner_claim::run
+);
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
 test_runner!(
     "task-smp-online",
@@ -301,6 +307,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "task-rt-policy",
         "default FIFO bypasses disabled RT bandwidth",
         run_task_rt_policy,
+    ),
+    #[cfg(feature = "task-scheduler-owner-claim")]
+    TestCase::new(
+        "task-scheduler-owner-claim",
+        "no-switch scheduler frame reuses one CPU owner claim",
+        run_task_scheduler_owner_claim,
     ),
     #[cfg(feature = "task-sleep")]
     TestCase::new("task-sleep", "bounded task sleeps", run_task_sleep),

@@ -15,6 +15,7 @@ const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 9;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QperfSchedulerMetricsSnapshot {
     pub current_thread_handle_queries: u64,
+    pub runtime_cpu_owner_claims: u64,
     pub scheduler_deadline_derivation_entries: u64,
     pub scheduler_deadline_derivation_clock_event_entries: u64,
     pub scheduler_deadline_derivation_park_arm_entries: u64,
@@ -142,6 +143,7 @@ pub struct QperfSchedulerMetricsSnapshot {
 
 struct QperfSchedulerMetrics {
     current_thread_handle_queries: AtomicU64,
+    runtime_cpu_owner_claims: AtomicU64,
     scheduler_deadline_derivations: [AtomicU64; SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT],
     preempt_guard_entries: [AtomicU64; PREEMPT_GUARD_SOURCE_COUNT],
     preempt_guard_none: [AtomicU64; PREEMPT_GUARD_SOURCE_COUNT],
@@ -219,6 +221,7 @@ impl QperfSchedulerMetrics {
     const fn new() -> Self {
         Self {
             current_thread_handle_queries: AtomicU64::new(0),
+            runtime_cpu_owner_claims: AtomicU64::new(0),
             scheduler_deadline_derivations: [const { AtomicU64::new(0) };
                 SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT],
             preempt_guard_entries: [
@@ -454,6 +457,7 @@ impl QperfSchedulerMetrics {
             current_thread_handle_queries: self
                 .current_thread_handle_queries
                 .load(Ordering::Relaxed),
+            runtime_cpu_owner_claims: self.runtime_cpu_owner_claims.load(Ordering::Relaxed),
             scheduler_deadline_derivation_entries,
             scheduler_deadline_derivation_clock_event_entries,
             scheduler_deadline_derivation_park_arm_entries,
@@ -675,6 +679,12 @@ pub fn qperf_scheduler_metrics_snapshot() -> QperfSchedulerMetricsSnapshot {
 pub(crate) fn record_current_thread_handle_query() {
     QPERF_SCHEDULER_METRICS
         .current_thread_handle_queries
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_runtime_cpu_owner_claim() {
+    QPERF_SCHEDULER_METRICS
+        .runtime_cpu_owner_claims
         .fetch_add(1, Ordering::Relaxed);
 }
 

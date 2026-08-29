@@ -263,6 +263,12 @@ pub fn cpu_busy_runtime_ns(cpu: CpuId) -> Result<u64, TaskError> {
     runtime_task_system()?.cpu_busy_runtime_ns(cpu)
 }
 
+/// Returns successful runtime owner claims observed by one online CPU.
+#[cfg(feature = "qperf-metrics")]
+pub fn qperf_cpu_owner_claims(cpu: CpuId) -> Result<u64, TaskError> {
+    runtime_task_system()?.qperf_cpu_owner_claims(cpu)
+}
+
 /// Returns the fixed topology width accepted by scheduler affinity masks.
 pub fn cpu_topology_len() -> Result<usize, TaskError> {
     Ok(runtime_task_system()?.cpu_topology_len())

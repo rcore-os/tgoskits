@@ -56,11 +56,12 @@ fn schedule_current_cpu_with_entry(
         let mut scheduler_frame =
             RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
         let system = runtime_task_system()?;
-        let outcome = {
+        let (outcome, no_switch_request_pending) = {
             let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
             // SAFETY: RuntimeSchedulerFrameGuard owns the IRQ-off scheduler baton.
             let current_state = unsafe { cpu.scheduler_current_lifecycle_state() };
-            if !cpu.scheduler_request_pending(request_scope) && !cpu.has_remote_work() {
+            let outcome = if !cpu.scheduler_request_pending(request_scope) && !cpu.has_remote_work()
+            {
                 if current_state == Some(ThreadState::Parking) {
                     SchedulerOutcome::ParkingDeferred
                 } else {
@@ -76,13 +77,21 @@ fn schedule_current_cpu_with_entry(
                         request_scope,
                     )?
                 }
-            }
+            };
+            let request_pending = match outcome.decision() {
+                Some(decision) if decision.requires_context_switch() => None,
+                Some(_) | None => Some(cpu.scheduler_request_pending(request_scope)),
+            };
+            (outcome, request_pending)
         };
         if let Some(decision) = outcome.decision() {
             execute_switch_plan(&mut scheduler_frame, decision);
         }
-        let needs_reschedule =
-            runtime_current_cpu_mut(&mut scheduler_frame)?.scheduler_request_pending(request_scope);
+        let needs_reschedule = if let Some(request_pending) = no_switch_request_pending {
+            request_pending
+        } else {
+            runtime_current_cpu_mut(&mut scheduler_frame)?.scheduler_request_pending(request_scope)
+        };
         let repeat = preempt_schedule_needs_repeat(outcome, needs_reschedule);
         drop(scheduler_frame);
         if !repeat {

@@ -5,6 +5,8 @@ pub(super) struct OwnerState {
     claimed: AtomicBool,
     idle_thread: AtomicU64,
     busy_runtime_ns: AtomicU64,
+    #[cfg(feature = "qperf-metrics")]
+    owner_claims: AtomicU64,
 }
 
 impl OwnerState {
@@ -13,6 +15,8 @@ impl OwnerState {
             claimed: AtomicBool::new(false),
             idle_thread: AtomicU64::new(0),
             busy_runtime_ns: AtomicU64::new(0),
+            #[cfg(feature = "qperf-metrics")]
+            owner_claims: AtomicU64::new(0),
         }
     }
 }
@@ -51,6 +55,13 @@ impl CpuRemote {
                 actual: actual.as_u32(),
             });
         }
+        #[cfg(feature = "qperf-metrics")]
+        {
+            self.owner_state
+                .owner_claims
+                .fetch_add(1, Ordering::Relaxed);
+            crate::metrics::record_runtime_cpu_owner_claim();
+        }
         Ok(CpuLocalOwnerBorrow {
             remote: self,
             cpu,
@@ -78,6 +89,11 @@ impl CpuRemote {
     /// Returns cumulative time this CPU has executed non-idle scheduler threads.
     pub fn busy_runtime_ns(&self) -> u64 {
         self.owner_state.busy_runtime_ns.load(Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "qperf-metrics")]
+    pub(crate) fn qperf_owner_claims(&self) -> u64 {
+        self.owner_state.owner_claims.load(Ordering::Relaxed)
     }
 
     pub(in crate::system::cpu) fn charge_busy_runtime(&self, runtime_ns: u64) {
