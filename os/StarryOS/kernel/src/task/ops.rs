@@ -138,6 +138,26 @@ fn inactive_interval_timer_poll_skips_cpu_time_sample_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 mod axtests {
+    use alloc::{string::ToString, sync::Arc};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use ax_runtime::task::{
+        WaitQueue, begin_pi_schedule_test_probe, current_thread_id, end_pi_schedule_test_probe,
+        join_thread, pi_schedule_test_probe_snapshot, spawn_raw,
+    };
+
+    use crate::sync::PiMutex;
+
+    fn wait_for(mut condition: impl FnMut() -> bool, message: &str) {
+        for _ in 0..1_000_000 {
+            if condition() {
+                return;
+            }
+            ax_std::thread::yield_now();
+        }
+        panic!("{message}");
+    }
+
     #[axtest::axtest]
     fn kernel_thread_retains_active_mm_membarrier_state() {
         assert!(
@@ -149,6 +169,96 @@ mod axtests {
     #[axtest::axtest]
     fn inactive_interval_timer_poll_skips_cpu_time_sample() {
         assert!(super::inactive_interval_timer_poll_skips_cpu_time_sample_for_test());
+    }
+
+    #[axtest::axtest]
+    fn unchanged_pi_schedule_returns_before_the_owner_rq_transaction() {
+        let mutex = Arc::new(PiMutex::new(()));
+        let owner_wait = Arc::new(WaitQueue::new());
+        let owner_locked = Arc::new(AtomicBool::new(false));
+        let release_owner = Arc::new(AtomicBool::new(false));
+        let waiter_done = Arc::new(AtomicBool::new(false));
+
+        let owner = {
+            let mutex = Arc::clone(&mutex);
+            let owner_wait = Arc::clone(&owner_wait);
+            let owner_locked = Arc::clone(&owner_locked);
+            let release_owner = Arc::clone(&release_owner);
+            spawn_raw(
+                move || {
+                    begin_pi_schedule_test_probe(
+                        current_thread_id().expect("PI owner must have a thread identity"),
+                    );
+                    let _guard = mutex.lock();
+                    owner_locked.store(true, Ordering::Release);
+                    owner_wait.wait_until(|| release_owner.load(Ordering::Acquire));
+                },
+                "pi-no-rq-owner".to_string(),
+                256 * 1024,
+            )
+            .expect("failed to spawn PI owner")
+        };
+        wait_for(
+            || owner_locked.load(Ordering::Acquire),
+            "PI owner did not acquire the mutex",
+        );
+
+        let waiter = {
+            let mutex = Arc::clone(&mutex);
+            let waiter_done = Arc::clone(&waiter_done);
+            spawn_raw(
+                move || {
+                    drop(mutex.lock());
+                    waiter_done.store(true, Ordering::Release);
+                },
+                "pi-no-rq-waiter".to_string(),
+                256 * 1024,
+            )
+            .expect("failed to spawn PI waiter")
+        };
+
+        wait_for(
+            || {
+                let snapshot = pi_schedule_test_probe_snapshot();
+                snapshot.recompute_attempts > 0
+                    && snapshot.no_rq_fast_returns + snapshot.owner_rq_transactions
+                        >= snapshot.recompute_attempts
+            },
+            "equal-policy PI contention did not reach owner recompute",
+        );
+        let registered = pi_schedule_test_probe_snapshot();
+        assert_eq!(
+            registered.owner_rq_transactions, 0,
+            "unchanged PI state must return before the owner-rq transaction"
+        );
+        assert_eq!(
+            registered.no_rq_fast_returns, registered.recompute_attempts,
+            "every equal-policy PI recompute must resolve from task-owned state"
+        );
+
+        release_owner.store(true, Ordering::Release);
+        owner_wait.notify_all();
+        join_thread(owner).expect("PI owner must exit cleanly");
+        join_thread(waiter).expect("PI waiter must exit cleanly");
+        assert!(
+            waiter_done.load(Ordering::Acquire),
+            "PI waiter must acquire the mutex after owner release"
+        );
+
+        let completed = pi_schedule_test_probe_snapshot();
+        end_pi_schedule_test_probe();
+        assert!(
+            completed.recompute_attempts >= 2,
+            "PI registration and release must both recompute the owner schedule"
+        );
+        assert_eq!(
+            completed.no_rq_fast_returns, completed.recompute_attempts,
+            "unchanged registration and deboost must both avoid the owner rq"
+        );
+        assert_eq!(
+            completed.owner_rq_transactions, 0,
+            "unchanged registration and deboost must not enter the owner rq"
+        );
     }
 }
 

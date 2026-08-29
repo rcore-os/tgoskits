@@ -32,6 +32,11 @@ pub use ax_task::{
     thread_handle, thread_policy, thread_runtime, validate_blocking_context, wait_until_registered,
     yield_current_cpu,
 };
+#[cfg(axtest)]
+pub use ax_task::{
+    PiScheduleTestProbeSnapshot, begin_pi_schedule_test_probe, end_pi_schedule_test_probe,
+    pi_schedule_test_probe_snapshot,
+};
 
 /// Arms the shared physical IPI delivery edge for one CPU.
 ///

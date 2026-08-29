@@ -128,6 +128,10 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub pi_mutex_waiter_registrations: u64,
     pub pi_mutex_waiter_parks: u64,
     pub pi_mutex_contended_releases: u64,
+    pub pi_schedule_recompute_attempts: u64,
+    pub pi_schedule_no_rq_fast_returns: u64,
+    pub pi_schedule_owner_rq_transactions: u64,
+    pub pi_schedule_unchanged_after_rq: u64,
     pub context_switches: u64,
     pub context_switches_preempted: u64,
     pub context_switches_yield: u64,
@@ -199,6 +203,10 @@ struct QperfSchedulerMetrics {
     pi_mutex_waiter_registrations: AtomicU64,
     pi_mutex_waiter_parks: AtomicU64,
     pi_mutex_contended_releases: AtomicU64,
+    pi_schedule_recompute_attempts: AtomicU64,
+    pi_schedule_no_rq_fast_returns: AtomicU64,
+    pi_schedule_owner_rq_transactions: AtomicU64,
+    pi_schedule_unchanged_after_rq: AtomicU64,
     context_switches: AtomicU64,
     context_switches_preempted: AtomicU64,
     context_switches_yield: AtomicU64,
@@ -285,6 +293,10 @@ impl QperfSchedulerMetrics {
             pi_mutex_waiter_registrations: AtomicU64::new(0),
             pi_mutex_waiter_parks: AtomicU64::new(0),
             pi_mutex_contended_releases: AtomicU64::new(0),
+            pi_schedule_recompute_attempts: AtomicU64::new(0),
+            pi_schedule_no_rq_fast_returns: AtomicU64::new(0),
+            pi_schedule_owner_rq_transactions: AtomicU64::new(0),
+            pi_schedule_unchanged_after_rq: AtomicU64::new(0),
             context_switches: AtomicU64::new(0),
             context_switches_preempted: AtomicU64::new(0),
             context_switches_yield: AtomicU64::new(0),
@@ -601,6 +613,18 @@ impl QperfSchedulerMetrics {
                 .load(Ordering::Relaxed),
             pi_mutex_waiter_parks: self.pi_mutex_waiter_parks.load(Ordering::Relaxed),
             pi_mutex_contended_releases: self.pi_mutex_contended_releases.load(Ordering::Relaxed),
+            pi_schedule_recompute_attempts: self
+                .pi_schedule_recompute_attempts
+                .load(Ordering::Relaxed),
+            pi_schedule_no_rq_fast_returns: self
+                .pi_schedule_no_rq_fast_returns
+                .load(Ordering::Relaxed),
+            pi_schedule_owner_rq_transactions: self
+                .pi_schedule_owner_rq_transactions
+                .load(Ordering::Relaxed),
+            pi_schedule_unchanged_after_rq: self
+                .pi_schedule_unchanged_after_rq
+                .load(Ordering::Relaxed),
             context_switches: self.context_switches.load(Ordering::Relaxed),
             context_switches_preempted: self.context_switches_preempted.load(Ordering::Relaxed),
             context_switches_yield: self.context_switches_yield.load(Ordering::Relaxed),
@@ -693,6 +717,30 @@ pub(crate) fn record_pi_mutex_waiter_park() {
 pub(crate) fn record_pi_mutex_contended_release() {
     QPERF_SCHEDULER_METRICS
         .pi_mutex_contended_releases
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_schedule_recompute_attempt() {
+    QPERF_SCHEDULER_METRICS
+        .pi_schedule_recompute_attempts
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_schedule_no_rq_fast_return() {
+    QPERF_SCHEDULER_METRICS
+        .pi_schedule_no_rq_fast_returns
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_schedule_owner_rq_transaction() {
+    QPERF_SCHEDULER_METRICS
+        .pi_schedule_owner_rq_transactions
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_schedule_unchanged_after_rq() {
+    QPERF_SCHEDULER_METRICS
+        .pi_schedule_unchanged_after_rq
         .fetch_add(1, Ordering::Relaxed);
 }
 

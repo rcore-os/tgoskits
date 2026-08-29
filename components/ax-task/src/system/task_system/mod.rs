@@ -13,6 +13,11 @@ mod model;
 mod outcome;
 mod park_exit;
 mod pi;
+#[cfg(axtest)]
+pub use pi::{
+    PiScheduleTestProbeSnapshot, begin_pi_schedule_test_probe, end_pi_schedule_test_probe,
+    pi_schedule_test_probe_snapshot,
+};
 mod placement;
 mod priority_index;
 mod registry;

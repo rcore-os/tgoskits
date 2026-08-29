@@ -854,6 +854,30 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "pi_schedule_recompute_attempts {}",
+        task.pi_schedule_recompute_attempts
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pi_schedule_no_rq_fast_returns {}",
+        task.pi_schedule_no_rq_fast_returns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pi_schedule_owner_rq_transactions {}",
+        task.pi_schedule_owner_rq_transactions
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pi_schedule_unchanged_after_rq {}",
+        task.pi_schedule_unchanged_after_rq
+    )
+    .unwrap();
+    writeln!(
+        output,
         "scheduler_ipi_sends {}",
         metrics.scheduler_ipi_sends
     )
@@ -1055,6 +1079,10 @@ mod tests {
                 "pi_mutex_waiter_registrations",
                 "pi_mutex_waiter_parks",
                 "pi_mutex_contended_releases",
+                "pi_schedule_recompute_attempts",
+                "pi_schedule_no_rq_fast_returns",
+                "pi_schedule_owner_rq_transactions",
+                "pi_schedule_unchanged_after_rq",
                 "scheduler_ipi_sends",
                 "scheduler_ipi_consumes",
                 "clockevent_irqs",

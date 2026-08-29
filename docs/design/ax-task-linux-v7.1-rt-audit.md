@@ -4696,6 +4696,43 @@ pipe 专属 qperf 归因进一步把主要热锁固定到 `Shared::state`：19,2
 registration/release/claim 分阶段的 no-change 计数和确定性回归，再把 no-change PI recompute
 移到 owner-rq transaction 之前；不能为了性能绕过 waiter tree、deboost 或 wake_q 交接语义。
 
+### 2026-08-29 unchanged PI schedule 在 owner rq 前返回
+
+Linux v7.1 `kernel/sched/core.c::rt_mutex_setprio()` 在 `pi_top_task` 与 effective priority
+都未变化、且新旧 effective class 都不是 Deadline 时，先于 `task_rq_lock()` 返回。这个 early
+return 不撤销 rtmutex waiter tree 的插入或删除，只跳过不会改变调度 class/entity 的 rq 更新。
+旧 ax-task 虽然最后也计算 `changed == false`，但这项判断位于 `OwnerRqTxn::begin()`、rq clock
+settle、base entity lookup 与 generation 派生之后；pipe 的等策略竞争因而为每次 registration 和
+release 各付一次无效 owner-rq 事务。
+
+本次把非 Deadline 的 task-owned resolution 移到 owner rq 之前：使用 base policy、已发布的
+effective policy、effective donor 和 donor tree top snapshot 计算下一状态；只有所有状态均未变化
+时返回。base 或 inherited policy 为 Deadline 时保持原 rq 路径，因为 Deadline urgency 来自
+rq-owned active server 的绝对截止期，不能用相对 policy 参数在 task lock 内证明不变。waiter tree、
+donor replacement、PI chain walk、真实 deboost、dispatch generation 和 wake/reschedule 提交路径均
+未绕过，也没有引入第二套 scheduler state。
+
+确定性回归通过真实 Starry axtest runtime 创建一个持有 `PiMutex` 后阻塞的 Fair owner，再由同
+policy waiter 竞争；test-only probe 只按该 owner 的 `ThreadId` 记录 recompute、rq 前返回和
+owner-rq 进入，不安装 fake `TaskRuntime`、`TaskSystem` 或 `CpuLocal`。临时恢复旧行为后，同一
+`cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64` 稳定失败，观测到
+`owner_rq_transactions = 1`；恢复修复后新增用例
+`unchanged_pi_schedule_returns_before_the_owner_rq_transaction` 通过，整套为 78/78。
+
+性能优先验证的未插桩 true `-smp 1` process/20 五轮为
+1.252/1.284/1.440/1.230/1.369 s，中位数 1.284 s；相对上一检查点 1.346 s 名义改善约 4.6%，
+仍约为 Linux v7.1 PREEMPT_RT 0.396 s 的 3.24 倍。该幅度仍可能包含 TCG 波动，保留本改动的
+依据是 Linux 语义与确定性 rq 事务消除，而不是把名义吞吐改善当作根因证明。
+
+qperf 专属计数给出了直接归因。true `-smp 1` process/20 的 5.484 s workload 窗口中，
+PI recompute 增量为 8,030，rq 前 fast return 同为 8,030，PI 专属 owner-rq transaction 和
+rq 后 unchanged 均为 0。全局仍有 9,831 次 owner-rq scheduler transaction、9,198 次 context
+switch、7,253 次 blocked switch、8,450 次 different-mm activation，以及 3,895 次 pipe state
+lock contention/4,015 次 PI slow entry。这证明当前 helper 已完整覆盖该 workload 的 no-change PI
+重算；剩余 owner-rq 成本来自 park/switch 等调度链路，不能再归因于 PI donation resolution。
+下一检查点转向 Linux `schedule()`/`try_to_wake_up()` 与 ax-task park、direct wake、EEVDF placement
+及 active-mm transaction 的一一语义和事务数量对照。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

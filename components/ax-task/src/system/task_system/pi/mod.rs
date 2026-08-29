@@ -69,3 +69,11 @@ impl TaskSystem {
 mod graph;
 mod operations;
 mod schedule;
+
+#[cfg(axtest)]
+mod axtest;
+#[cfg(axtest)]
+pub use axtest::{
+    PiScheduleTestProbeSnapshot, begin_pi_schedule_test_probe, end_pi_schedule_test_probe,
+    pi_schedule_test_probe_snapshot,
+};

@@ -196,6 +196,17 @@ impl TaskSystem {
         sched: &mut ThreadSchedState,
         donor: Option<(PiWaitKey, PiDonation)>,
     ) -> Result<bool, TaskError> {
+        record_pi_schedule_recompute_attempt(core.id());
+        if pi_schedule_update_unchanged_without_rq(
+            sched.policy.base,
+            core.effective_policy_snapshot(),
+            sched.pi.donor,
+            sched.pi.deadline_donor,
+            donor.as_ref(),
+        ) {
+            record_pi_schedule_no_rq_fast_return(core.id());
+            return Ok(false);
+        }
         let owner = sched
             .placement
             .assigned_cpu()
@@ -207,6 +218,7 @@ impl TaskSystem {
         if !remote.is_online() {
             return Err(TaskError::CpuOffline(owner.as_u32()));
         }
+        record_pi_schedule_owner_rq_transaction(core.id());
         let mut transaction = OwnerRqTxn::begin(self, remote);
         if transaction.current().is_some() {
             let _settled = transaction.settle_current(0);
@@ -239,6 +251,10 @@ impl TaskSystem {
         let changed = core.effective_policy_snapshot() != update.policy
             || sched.pi.donor != update.donor
             || sched.pi.deadline_donor != update.deadline_donor;
+        #[cfg(feature = "qperf-metrics")]
+        if !changed {
+            crate::metrics::record_pi_schedule_unchanged_after_rq();
+        }
         let followup = if changed {
             sched.policy.dispatch_generation = generation;
             Some(self.apply_pi_schedule_update_in_rq(core, sched, update, &mut transaction))
@@ -255,6 +271,67 @@ impl TaskSystem {
         }
         Ok(changed)
     }
+}
+
+fn record_pi_schedule_recompute_attempt(owner: ThreadId) {
+    #[cfg(feature = "qperf-metrics")]
+    crate::metrics::record_pi_schedule_recompute_attempt();
+    #[cfg(axtest)]
+    super::axtest::record_recompute_attempt(owner);
+    #[cfg(not(axtest))]
+    let _ = owner;
+}
+
+fn record_pi_schedule_no_rq_fast_return(owner: ThreadId) {
+    #[cfg(feature = "qperf-metrics")]
+    crate::metrics::record_pi_schedule_no_rq_fast_return();
+    #[cfg(axtest)]
+    super::axtest::record_no_rq_fast_return(owner);
+    #[cfg(not(axtest))]
+    let _ = owner;
+}
+
+fn record_pi_schedule_owner_rq_transaction(owner: ThreadId) {
+    #[cfg(feature = "qperf-metrics")]
+    crate::metrics::record_pi_schedule_owner_rq_transaction();
+    #[cfg(axtest)]
+    super::axtest::record_owner_rq_transaction(owner);
+    #[cfg(not(axtest))]
+    let _ = owner;
+}
+
+/// Returns whether task-owned state proves that PI cannot change the effective
+/// schedule, before acquiring the owner rq.
+///
+/// Deadline is deliberately excluded: its urgency comes from the rq-owned
+/// active server and Linux also bypasses the `rt_mutex_setprio()` early return
+/// for an effective Deadline policy.
+fn pi_schedule_update_unchanged_without_rq(
+    base: SchedulePolicy,
+    effective: SchedulePolicy,
+    effective_donor: Option<ThreadId>,
+    effective_deadline_donor: Option<ThreadId>,
+    donor: Option<&(PiWaitKey, PiDonation)>,
+) -> bool {
+    if matches!(base, SchedulePolicy::Deadline(_)) {
+        return false;
+    }
+
+    let base_urgency = base.scheduling_urgency();
+    let mut next_policy = base;
+    let mut next_donor = None;
+    if let Some((_top, donation)) = donor
+        && donation.boost_urgency < base_urgency
+        && let Some(inherited) = pi_inherited_policy(base, donation.policy)
+    {
+        if matches!(inherited, SchedulePolicy::Deadline(_)) {
+            return false;
+        }
+        next_policy = inherited;
+        next_donor = Some(donation.root);
+    }
+
+    effective == next_policy && effective_donor == next_donor && effective_deadline_donor.is_none()
 }
 
 fn pi_inherited_policy(base: SchedulePolicy, donor: SchedulePolicy) -> Option<SchedulePolicy> {
