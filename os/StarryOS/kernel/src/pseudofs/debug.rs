@@ -67,6 +67,24 @@ fn render_scheduler_metrics() -> alloc::string::String {
     writeln!(output, "pipe_write_bytes {}", pipe.write_bytes).unwrap();
     writeln!(
         output,
+        "pipe_write_reader_wakes_before_wait {}",
+        pipe.write_reader_wakes_before_wait
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pipe_write_reader_wakes_final {}",
+        pipe.write_reader_wakes_final
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pipe_write_writer_wakes_final {}",
+        pipe.write_writer_wakes_final
+    )
+    .unwrap();
+    writeln!(
+        output,
         "pipe_wait_registrations {}",
         pipe.wait_registrations
     )

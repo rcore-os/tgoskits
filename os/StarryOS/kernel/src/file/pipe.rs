@@ -49,6 +49,12 @@ static PIPE_WRITE_WAITS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "qperf-metrics")]
 static PIPE_WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "qperf-metrics")]
+static PIPE_WRITE_READER_WAKES_BEFORE_WAIT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_WRITE_READER_WAKES_FINAL: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_WRITE_WRITER_WAKES_FINAL: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
 static PIPE_WAIT_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "qperf-metrics")]
 static PIPE_WAIT_REGISTRATION_RACES: AtomicU64 = AtomicU64::new(0);
@@ -78,6 +84,9 @@ pub(crate) struct PipeQperfMetricsSnapshot {
     pub(crate) write_calls: u64,
     pub(crate) write_waits: u64,
     pub(crate) write_bytes: u64,
+    pub(crate) write_reader_wakes_before_wait: u64,
+    pub(crate) write_reader_wakes_final: u64,
+    pub(crate) write_writer_wakes_final: u64,
     pub(crate) wait_registrations: u64,
     pub(crate) wait_registration_races: u64,
     pub(crate) wake_calls: u64,
@@ -99,6 +108,9 @@ pub(crate) fn qperf_metrics_snapshot() -> PipeQperfMetricsSnapshot {
         write_calls: PIPE_WRITE_CALLS.load(Ordering::Relaxed),
         write_waits: PIPE_WRITE_WAITS.load(Ordering::Relaxed),
         write_bytes: PIPE_WRITE_BYTES.load(Ordering::Relaxed),
+        write_reader_wakes_before_wait: PIPE_WRITE_READER_WAKES_BEFORE_WAIT.load(Ordering::Relaxed),
+        write_reader_wakes_final: PIPE_WRITE_READER_WAKES_FINAL.load(Ordering::Relaxed),
+        write_writer_wakes_final: PIPE_WRITE_WRITER_WAKES_FINAL.load(Ordering::Relaxed),
         wait_registrations: PIPE_WAIT_REGISTRATIONS.load(Ordering::Relaxed),
         wait_registration_races: PIPE_WAIT_REGISTRATION_RACES.load(Ordering::Relaxed),
         wake_calls: PIPE_WAKE_CALLS.load(Ordering::Relaxed),
@@ -557,6 +569,22 @@ impl PipeBuffer {
     }
 }
 
+enum PipeWriteWakePhase {
+    BeforeWait,
+    Final,
+}
+
+fn pipe_write_reader_wake_due(
+    was_empty: bool,
+    poll_usage: bool,
+    phase: PipeWriteWakePhase,
+) -> bool {
+    match phase {
+        PipeWriteWakePhase::BeforeWait => was_empty,
+        PipeWriteWakePhase::Final => was_empty || poll_usage,
+    }
+}
+
 impl Shared {
     fn new(state: PipeState) -> Self {
         let readiness = state.readiness();
@@ -838,6 +866,38 @@ impl Pipe {
         Ok(())
     }
 
+    fn wake_readers_before_write_wait(&self, was_empty: bool) {
+        let wake_readers = pipe_write_reader_wake_due(
+            was_empty,
+            self.shared.poll_usage.load(Ordering::Acquire),
+            PipeWriteWakePhase::BeforeWait,
+        );
+        if wake_readers {
+            #[cfg(feature = "qperf-metrics")]
+            PIPE_WRITE_READER_WAKES_BEFORE_WAIT.fetch_add(1, Ordering::Relaxed);
+            wake_pipe_waiter_sync(&self.shared.wait_rx, IoEvents::IN);
+        }
+    }
+
+    fn finish_write_wakes(&self, was_empty: bool, wake_next_writer: bool) {
+        let readiness = self.shared.readiness();
+        let wake_readers = pipe_write_reader_wake_due(
+            was_empty,
+            self.shared.poll_usage.load(Ordering::Acquire),
+            PipeWriteWakePhase::Final,
+        );
+        if wake_readers {
+            #[cfg(feature = "qperf-metrics")]
+            PIPE_WRITE_READER_WAKES_FINAL.fetch_add(1, Ordering::Relaxed);
+            wake_pipe_waiter_sync(&self.shared.wait_rx, IoEvents::IN);
+        }
+        if wake_next_writer && readiness.contains(PipeReadiness::SPACE_AVAILABLE) {
+            #[cfg(feature = "qperf-metrics")]
+            PIPE_WRITE_WRITER_WAKES_FINAL.fetch_add(1, Ordering::Relaxed);
+            wake_pipe_waiter_sync(&self.shared.wait_tx, IoEvents::OUT);
+        }
+    }
+
     fn write_with_broken_pipe_handler(
         &self,
         src: &mut IoSrc,
@@ -853,103 +913,89 @@ impl Pipe {
         #[cfg(feature = "qperf-metrics")]
         PIPE_WRITE_CALLS.fetch_add(1, Ordering::Relaxed);
 
+        enum WriteStep {
+            Closed,
+            WouldBlock,
+            Wrote(usize),
+        }
+
         let mut total_written = 0;
         let mut merge_pending = true;
         let merge_bytes = size % PIPE_BUF;
-        let mut operation = |selected_for_handoff: bool| {
-            enum WriteStep {
-                Closed,
-                WouldBlock,
-                Wrote {
-                    bytes: usize,
-                    wake_readers: bool,
-                    wake_next_writer: bool,
-                },
-            }
-
-            let step = self
-                .shared
-                .update_state(|state| -> StarryResult<WriteStep> {
-                    // Linux makes writes no larger than PIPE_BUF commit atomically;
-                    // nonblocking callers get EAGAIN until the whole record fits.
-                    if state.readers == 0 {
-                        Ok(WriteStep::Closed)
-                    } else {
-                        let was_empty = state.buffer.is_empty();
-                        let mut written = 0;
-                        if merge_pending {
-                            merge_pending = false;
-                            if merge_bytes > 0 && state.can_merge(merge_bytes) {
-                                written += state.merge_from(src, merge_bytes)?;
-                            }
-                        }
-                        while src.remaining() > 0 && state.has_free_buffer() {
-                            let appended = state.append_from(src)?;
-                            written += appended;
-                            if appended == 0 {
-                                break;
-                            }
-                        }
-                        if written == 0 {
-                            Ok(WriteStep::WouldBlock)
-                        } else {
-                            Ok(WriteStep::Wrote {
-                                bytes: written,
-                                wake_readers: was_empty
-                                    || self.shared.poll_usage.load(Ordering::Acquire),
-                                wake_next_writer: selected_for_handoff && state.has_free_buffer(),
-                            })
-                        }
-                    }
-                })?;
-
-            let written = match step {
-                WriteStep::Closed => {
-                    if total_written > 0 {
-                        return Ok(total_written);
-                    }
-                    on_broken_pipe();
-                    return Err(StarryError::BrokenPipe);
-                }
-                WriteStep::WouldBlock => return Err(StarryError::WouldBlock),
-                WriteStep::Wrote {
-                    bytes,
-                    wake_readers,
-                    wake_next_writer,
-                } => {
-                    #[cfg(feature = "qperf-metrics")]
-                    PIPE_WRITE_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
-                    if wake_readers {
-                        // Pipe bytes were committed before waking readers.
-                        wake_pipe_waiter_sync(&self.shared.wait_rx, IoEvents::IN);
-                    }
-                    if wake_next_writer {
-                        // A selected writer transfers remaining capacity to
-                        // the next exclusive waiter.
-                        wake_pipe_waiter_sync(&self.shared.wait_tx, IoEvents::OUT);
-                    }
-                    bytes
-                }
-            };
-
-            if written > 0 {
-                total_written += written;
-                if total_written == size || self.nonblocking() {
-                    return Ok(total_written);
-                }
-            }
-            Err(StarryError::WouldBlock)
-        };
-
-        let mut selected_for_handoff = false;
+        let mut sample_initial_was_empty = true;
+        let mut refresh_was_empty_after_wait = false;
+        let mut was_empty = false;
+        let mut wake_next_writer = false;
         let mut wait_recorded = false;
         let mut task = None;
         loop {
-            match operation(selected_for_handoff) {
-                Ok(result) => return Ok(result),
-                Err(error) if error.is_would_block() && self.nonblocking() => return Err(error),
-                Err(error) if error.is_would_block() => {}
-                Err(error) => return Err(error),
+            let step = self
+                .shared
+                .update_state(|state| -> StarryResult<WriteStep> {
+                    if refresh_was_empty_after_wait {
+                        was_empty = state.buffer.is_empty();
+                        refresh_was_empty_after_wait = false;
+                    }
+                    if state.readers == 0 {
+                        return Ok(WriteStep::Closed);
+                    }
+                    if sample_initial_was_empty {
+                        was_empty = state.buffer.is_empty();
+                        sample_initial_was_empty = false;
+                    }
+
+                    let mut written = 0;
+                    if merge_pending {
+                        merge_pending = false;
+                        if merge_bytes > 0 && state.can_merge(merge_bytes) {
+                            written += state.merge_from(src, merge_bytes)?;
+                        }
+                    }
+                    while src.remaining() > 0 && state.has_free_buffer() {
+                        let appended = state.append_from(src)?;
+                        written += appended;
+                        if appended == 0 {
+                            break;
+                        }
+                    }
+                    if written == 0 {
+                        Ok(WriteStep::WouldBlock)
+                    } else {
+                        Ok(WriteStep::Wrote(written))
+                    }
+                });
+
+            let step = match step {
+                Ok(step) => step,
+                Err(error) => {
+                    self.finish_write_wakes(was_empty, wake_next_writer);
+                    return Err(error);
+                }
+            };
+            match step {
+                WriteStep::Closed => {
+                    on_broken_pipe();
+                    self.finish_write_wakes(was_empty, wake_next_writer);
+                    if total_written > 0 {
+                        return Ok(total_written);
+                    }
+                    return Err(StarryError::BrokenPipe);
+                }
+                WriteStep::WouldBlock => {}
+                WriteStep::Wrote(written) => {
+                    #[cfg(feature = "qperf-metrics")]
+                    PIPE_WRITE_BYTES.fetch_add(written as u64, Ordering::Relaxed);
+                    total_written += written;
+                    if total_written == size || self.nonblocking() {
+                        self.finish_write_wakes(was_empty, wake_next_writer);
+                        return Ok(total_written);
+                    }
+                }
+            }
+
+            if self.nonblocking() {
+                self.finish_write_wakes(was_empty, wake_next_writer);
+                return Err(StarryError::WouldBlock);
             }
             if !wait_recorded {
                 #[cfg(feature = "qperf-metrics")]
@@ -961,16 +1007,19 @@ impl Pipe {
             if task.take_interrupt() {
                 // Linux returns committed bytes instead of EINTR once a pipe
                 // write has made progress, so SA_RESTART cannot replay them.
+                self.finish_write_wakes(was_empty, wake_next_writer);
                 return if total_written > 0 {
                     Ok(total_written)
                 } else {
                     Err(StarryError::Interrupted)
                 };
             }
-            selected_for_handoff = self
-                .shared
+            self.wake_readers_before_write_wait(was_empty);
+            self.shared
                 .wait_tx
                 .wait_until(|| self.shared.readiness().write_wait_ready() || task.interrupted());
+            refresh_was_empty_after_wait = true;
+            wake_next_writer = true;
         }
     }
 
@@ -1520,6 +1569,16 @@ mod tests {
         assert!(
             read_end.shared.poll_usage.load(Ordering::Acquire),
             "every Linux pipe_poll registration must publish poll_usage"
+        );
+    }
+
+    #[axtest::axtest]
+    fn nonempty_pipe_batches_poll_wake_until_write_completion() {
+        let wake_readers =
+            super::pipe_write_reader_wake_due(false, true, super::PipeWriteWakePhase::BeforeWait);
+        assert!(
+            !wake_readers,
+            "Linux defers poll_usage wake for a nonempty pipe until write completion"
         );
     }
 

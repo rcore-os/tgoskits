@@ -4582,6 +4582,44 @@ segment boundary 会改变当前 workload 的读写分段与阻塞节奏，不�
 write wake 不一致，再决定是否修改 wake transaction；不同 mm 的 active-mm/lazy-TLB generation
 缺失作为后续独立 Linux 语义检查点，不与 pipe 修复混合。
 
+### 2026-08-29 Linux pipe write 两阶段 wake batching
+
+Linux v7.1 `anon_pipe_write()` 在一次 syscall 内维护 `was_empty` 与 `wake_next_writer`。普通写入不会在
+每个成功 page operation 后立即通知：只有写端已经把原空管道填满、即将释放 pipe mutex 并等待空间
+时，才先用 `wake_up_interruptible_sync_poll()` 通知 reader 以保证进展；等待返回后重新取锁采样
+`was_empty`，并记录 writer handoff。成功、部分写、`EAGAIN`、`EINTR`、`EPIPE` 和 copy failure 最终
+都进入同一出口：`was_empty || poll_usage` 时通知 reader，等待返回且最终管道未满时才通知下一个
+exclusive writer（`fs/pipe.c:431-600`）。`WF_SYNC` 是调度 hint，PREEMPT_RT 不改变该 pipe 状态机、
+poll key 或 exclusive wake budget。
+
+旧 Starry 把 reader/writer wake 放在每次内部 `operation()` 成功写入之后。非空 pipe 一旦使用过 poll，
+每一轮 partial progress 都按 `poll_usage` 提前通知，即使本次 write syscall 接下来仍要阻塞；partial
+write 后 reader 关闭时也会直接返回已写字节而不发送 Linux 要求的 SIGPIPE。确定性真实 QEMU axtest
+直接约束生产 wake policy：非空 pipe、`poll_usage=true`、write 尚未完成并即将等待时不得通知 reader；
+旧策略稳定转红为
+`Linux defers poll_usage wake for a nonempty pipe until write completion`。
+
+最终实现只保留一份 syscall-local wake 状态：首次进入在确认 reader 存在后采样 `was_empty`，每次等待
+返回后在 pipe state lock 内重新采样；等待前只消费 empty-transition wake，所有返回路径统一经过 final
+wake，writer handoff 还必须同时满足“已经等待返回”和“最终仍有空 slot”。reader 在 partial write 后
+消失时先发送 SIGPIPE，再按 Linux 规则返回已写字节。qperf 新增
+`pipe_write_reader_wakes_before_wait`、`pipe_write_reader_wakes_final` 与
+`pipe_write_writer_wakes_final`，只用于区分这三个所有权明确的 callsite，不建立第二状态源。同一 QEMU
+suite 最终 76/76 通过。
+
+最终相同 qperf 窗口传输量仍为 read 800040 bytes/8040 calls、write 800041 bytes/8041 calls；相对上一
+pipe-buffer 检查点，时间从 1.263 s 降到 1.048 s（-17.0%），read waits 从 4224 降到 3335
+（-21.0%），context switches 从 5209 降到 4246（-18.5%），其中 blocked 从 4789 降到 3849，
+pipe wake calls 从 6529 降到 5359。来源计数为 before-wait reader wake 0、final reader wake 3357、
+final writer wake 0，证明该 workload 的收益来自删除非空 pipe 的 syscall 中途通知，而不是跳过 Linux
+所需的进展 wake。未插桩 true `-smp 1` process/20 两组各五轮中位数分别为 1.411 s 与 1.308 s；
+十轮合并中位数约 1.335 s，相对上一检查点 1.359 s 改善约 1.8%。端到端波动仍大，但事务下降在两次
+qperf 中重复出现；本检查点既满足 Linux 语义，也取得小幅无插桩改善。
+
+当前 3335 次 read wait/3849 次 blocked switch 仍远高于历史好点的 44/499，不能把 pipe wake batching
+当作全部根因。下一独立检查点转向不同进程切换的 active-mm、lazy-TLB generation、实际 CR3 write
+与 lease 事务计数，先证明 process 特有的地址空间成本与 Linux v7.1 `switch_mm_irqs_off()` 差异。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
