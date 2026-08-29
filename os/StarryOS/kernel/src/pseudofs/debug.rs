@@ -895,6 +895,18 @@ fn render_scheduler_metrics() -> alloc::string::String {
     )
     .unwrap();
     writeln!(output, "clockevent_irqs {}", metrics.clockevent_irqs).unwrap();
+    writeln!(
+        output,
+        "irq_return_scheduler_continuations {}",
+        metrics.irq_return_scheduler_continuations
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "irq_return_scheduler_windows {}",
+        metrics.irq_return_scheduler_windows
+    )
+    .unwrap();
     writeln!(output, "context_switches {}", task.context_switches).unwrap();
     writeln!(
         output,

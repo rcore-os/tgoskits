@@ -380,12 +380,24 @@ pub(crate) fn enter_scheduler_frame_guard(
     use ax_task::runtime::{RuntimeSchedulerEntry, RuntimeStatus};
 
     let irqs_enabled = ax_hal::asm::irqs_enabled();
+    if entry == RuntimeSchedulerEntry::IrqReturnContinuation {
+        if irqs_enabled || in_hard_irq() {
+            return RuntimeStatus::UnsafeContext;
+        }
+        #[cfg(feature = "qperf-metrics")]
+        crate::task::record_irq_return_scheduler_continuation();
+        return if enter_irq_return_continuation_scheduler() {
+            RuntimeStatus::Success
+        } else {
+            RuntimeStatus::UnsafeContext
+        };
+    }
     let raw_state_valid = match entry {
         RuntimeSchedulerEntry::Task => irqs_enabled,
         RuntimeSchedulerEntry::PreemptExit
         | RuntimeSchedulerEntry::IrqReturn
-        | RuntimeSchedulerEntry::IrqReturnContinuation
         | RuntimeSchedulerEntry::IrqGuardExit => !irqs_enabled,
+        RuntimeSchedulerEntry::IrqReturnContinuation => unreachable!(),
     };
     if !raw_state_valid || in_hard_irq() {
         return RuntimeStatus::UnsafeContext;
@@ -402,6 +414,38 @@ pub(crate) fn enter_scheduler_frame_guard(
     RuntimeStatus::Success
 }
 
+fn enter_irq_return_continuation_scheduler() -> bool {
+    assert!(
+        !ax_hal::asm::irqs_enabled(),
+        "IRQ-return continuation must enter with hardware IRQs disabled"
+    );
+    let Some(token) = enter_lock_preempt() else {
+        return false;
+    };
+
+    // Linux preempt_schedule_irq() disables preemption before opening local
+    // IRQs between __schedule() passes. The token prevents an interrupt in
+    // this window from recursively scheduling, while carrying no CpuPin,
+    // owner borrow, or scheduler baton across the IRQ-enabled interval.
+    ax_hal::asm::enable_irqs();
+    // x86 STI defers maskable interrupts through the following instruction.
+    // Keep one architecture relaxation in the window so a pending IRQ can be
+    // delivered before CLI closes the next scheduler transaction.
+    core::hint::spin_loop();
+    ax_hal::asm::disable_irqs();
+    #[cfg(feature = "qperf-metrics")]
+    crate::task::record_irq_return_scheduler_window();
+
+    let cpu_local::PreemptionExit::Pending(pending) = cpu_local::finish_preemption(token) else {
+        panic!("IRQ-return continuation lost its pending scheduler request");
+    };
+    let preclaimed =
+        with_guard_state_mut(|state| state.claim_preempt_exit_scheduler(current_preempt_depth()));
+    pending.release();
+    preclaimed
+        && with_guard_state_mut(|state| state.enter_preclaimed_scheduler(current_preempt_depth()))
+}
+
 fn claim_scheduler_cpu_state(entry: ax_task::runtime::RuntimeSchedulerEntry) -> bool {
     use ax_task::runtime::RuntimeSchedulerEntry;
 
@@ -412,9 +456,7 @@ fn claim_scheduler_cpu_state(entry: ax_task::runtime::RuntimeSchedulerEntry) -> 
             RuntimeSchedulerEntry::PreemptExit | RuntimeSchedulerEntry::IrqReturn => {
                 state.enter_preclaimed_scheduler(preempt_depth)
             }
-            RuntimeSchedulerEntry::IrqReturnContinuation => {
-                state.claim_task_scheduler(preempt_depth)
-            }
+            RuntimeSchedulerEntry::IrqReturnContinuation => unreachable!(),
             RuntimeSchedulerEntry::IrqGuardExit => state.claim_irq_exit_scheduler(preempt_depth),
         })
     })

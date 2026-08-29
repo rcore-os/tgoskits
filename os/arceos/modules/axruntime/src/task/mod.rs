@@ -95,7 +95,7 @@ use address_space::{
     runtime_address_space_membarrier_state, update_runtime_address_space_membarrier_state,
 };
 #[cfg(feature = "qperf-metrics")]
-pub use ax_task::qperf_cpu_owner_claims;
+pub use ax_task::{DEFAULT_BATCH_LIMIT, qperf_cpu_owner_claims};
 #[cfg(feature = "tls")]
 pub(crate) use bootstrap::initialize_early_bootstrap_tls;
 #[cfg(test)]
@@ -134,6 +134,10 @@ pub use scheduler_events::{
     qperf_runtime_scheduler_metrics_snapshot,
 };
 pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use scheduler_events::{
+    record_irq_return_scheduler_continuation, record_irq_return_scheduler_window,
+};
 
 /// Checks the kernel-thread active-mm membarrier transition in real runtime builds.
 #[cfg(axtest)]

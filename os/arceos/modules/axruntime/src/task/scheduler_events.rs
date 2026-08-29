@@ -9,6 +9,10 @@ static TASK_TIMER_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 static SCHEDULER_IPI_SEND_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "qperf-metrics")]
 static SCHEDULER_IPI_CONSUME_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static IRQ_RETURN_SCHEDULER_CONTINUATION_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static IRQ_RETURN_SCHEDULER_WINDOW_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Aggregate scheduler delivery counters for feature-gated qperf diagnostics.
 #[cfg(feature = "qperf-metrics")]
@@ -26,6 +30,8 @@ pub struct QperfRuntimeSchedulerMetricsSnapshot {
     pub scheduler_ipi_sends: u64,
     pub scheduler_ipi_consumes: u64,
     pub clockevent_irqs: u64,
+    pub irq_return_scheduler_continuations: u64,
+    pub irq_return_scheduler_windows: u64,
 }
 
 /// Returns the aggregate number of scheduler timer interrupts since boot.
@@ -50,7 +56,20 @@ pub fn qperf_runtime_scheduler_metrics_snapshot() -> QperfRuntimeSchedulerMetric
         scheduler_ipi_sends: SCHEDULER_IPI_SEND_COUNT.load(Ordering::Relaxed),
         scheduler_ipi_consumes: SCHEDULER_IPI_CONSUME_COUNT.load(Ordering::Relaxed),
         clockevent_irqs: timer_irq_count(),
+        irq_return_scheduler_continuations: IRQ_RETURN_SCHEDULER_CONTINUATION_COUNT
+            .load(Ordering::Relaxed),
+        irq_return_scheduler_windows: IRQ_RETURN_SCHEDULER_WINDOW_COUNT.load(Ordering::Relaxed),
     }
+}
+
+#[cfg(feature = "qperf-metrics")]
+pub(crate) fn record_irq_return_scheduler_continuation() {
+    IRQ_RETURN_SCHEDULER_CONTINUATION_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "qperf-metrics")]
+pub(crate) fn record_irq_return_scheduler_window() {
+    IRQ_RETURN_SCHEDULER_WINDOW_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Returns successful CPU-pin entries observed by the current CPU.

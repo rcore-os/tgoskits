@@ -622,9 +622,10 @@ pub enum RuntimeSchedulerEntry {
     /// A repeated IRQ-return pass after the previous scheduler frame fully
     /// released its switch baton.
     ///
-    /// Hardware IRQs remain disabled and preemption depth is zero between
-    /// passes. The runtime claims a fresh baton without requiring the one-shot
-    /// [`Self::IrqReturn`] preemption-exit handoff.
+    /// The caller enters with hardware IRQs disabled and preemption depth zero.
+    /// Before claiming the fresh scheduler baton, the runtime establishes one
+    /// ordinary preemption depth, opens the Linux-style IRQ window, disables
+    /// IRQs again, and atomically converts that depth into the scheduler baton.
     IrqReturnContinuation = 4,
 }
 

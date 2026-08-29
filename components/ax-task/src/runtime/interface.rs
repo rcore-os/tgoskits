@@ -229,6 +229,10 @@ pub trait TaskRuntime {
     /// final task-context IRQ-publication depth. Neither path may expose a
     /// fully preemptible intermediate state. The runtime must not save this
     /// phase in an execution context or migrate ordinary IRQ tokens with tasks.
+    /// [`RuntimeSchedulerEntry::IrqReturnContinuation`] must reproduce Linux's
+    /// IRQ-return pass boundary: establish one preemption depth, enable local
+    /// IRQs without a live scheduler baton, disable them again, then convert
+    /// that exact depth into the next scheduler baton.
     fn scheduler_frame_guard_enter(
         origin: RuntimeScheduleOrigin,
         entry: RuntimeSchedulerEntry,

@@ -66,6 +66,7 @@ pub mod net;
         feature = "task-preempt-guard",
         feature = "task-priority",
         feature = "task-rt-policy",
+        feature = "task-scheduler-irq-window",
         feature = "task-scheduler-owner-claim",
         feature = "task-sleep",
         feature = "task-smp-online",
@@ -157,6 +158,11 @@ test_runner!(
     task::priority::run_priority
 );
 test_runner!("task-rt-policy", run_task_rt_policy, task::rt_policy::run);
+test_runner!(
+    "task-scheduler-irq-window",
+    run_task_scheduler_irq_window,
+    task::scheduler_irq_window::run
+);
 test_runner!(
     "task-scheduler-owner-claim",
     run_task_scheduler_owner_claim,
@@ -307,6 +313,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "task-rt-policy",
         "default FIFO bypasses disabled RT bandwidth",
         run_task_rt_policy,
+    ),
+    #[cfg(feature = "task-scheduler-irq-window")]
+    TestCase::new(
+        "task-scheduler-irq-window",
+        "IRQ-return scheduler passes reopen local interrupts",
+        run_task_scheduler_irq_window,
     ),
     #[cfg(feature = "task-scheduler-owner-claim")]
     TestCase::new(
