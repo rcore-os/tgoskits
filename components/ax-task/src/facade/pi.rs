@@ -73,9 +73,10 @@ pub fn pi_wait_try_cancel(token: &PiWaitToken) -> Result<PiWaitCancelOutcome, Ta
 ///
 /// # Safety
 ///
-/// `old_owner` must come from [`PiMutexCore::try_release_owned`] on `lock`, and
-/// the caller must retain the higher-level raw-mutex owner authority until this
-/// complete release transaction returns.
+/// `old_owner` must be the executing identity passed to
+/// [`PiMutexCore::try_release_owned`] on `lock`, and the caller must retain the
+/// higher-level raw-mutex owner authority until this complete release
+/// transaction returns.
 pub unsafe fn pi_mutex_release_owned(
     lock: PiMutexRef<'_>,
     old_owner: ThreadId,

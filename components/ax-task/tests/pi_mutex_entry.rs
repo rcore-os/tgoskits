@@ -3,11 +3,14 @@ mod entry;
 #[path = "../src/system/task_system/pi/transition.rs"]
 mod transition;
 
-use core::cell::Cell;
+use core::{
+    cell::Cell,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use entry::{
-    FastLockAttempt, LockEntry, capture_current_and_prepare_slow, owner_spin_eligible,
-    owner_spin_progress_gates,
+    FastLockAttempt, FastReleaseAttempt, LockEntry, capture_current_and_prepare_slow,
+    owner_spin_eligible, owner_spin_progress_gates, try_release_current_owner_word,
 };
 use transition::{
     PiOwnerRqAccountingPath, owner_rq_needs_current_settlement, publish_owner_after_waiter_detach,
@@ -57,6 +60,17 @@ fn contended_entry_attempts_owner_fastpath_once_before_slowpath() {
         "the move-only current token must be reused from fast attempt through slow entry",
     );
     assert_eq!(blocking_validations.get(), 1);
+}
+
+#[test]
+fn fast_release_rejects_a_different_executing_identity() {
+    let owner = AtomicU64::new(7);
+
+    assert_eq!(
+        try_release_current_owner_word(&owner, 8, u64::MAX >> 1),
+        FastReleaseAttempt::InvalidOwner,
+    );
+    assert_eq!(owner.load(Ordering::Relaxed), 7);
 }
 
 #[test]

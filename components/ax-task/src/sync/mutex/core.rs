@@ -8,6 +8,7 @@ use core::{
     sync::atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
+use super::entry::{FastReleaseAttempt, try_release_current_owner_word};
 use crate::ThreadHandle;
 
 static NEXT_PI_MUTEX_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -295,34 +296,28 @@ impl<'lock> PiMutexCoreView<'lock> {
         T: Into<PiTaskId>,
     {
         let current = current.into();
-        match self
-            .owner
-            .compare_exchange(current.get(), 0, Ordering::Release, Ordering::Relaxed)
-        {
-            Ok(_) => Ok(true),
-            Err(owner) if owner_from_word(owner) == Some(current) => Ok(false),
-            Err(_) => Err(PiMutexStateError::InvalidState),
+        match try_release_current_owner_word(self.owner, current.get(), OWNER_ID_MASK) {
+            FastReleaseAttempt::Released => Ok(true),
+            FastReleaseAttempt::Contended => Ok(false),
+            FastReleaseAttempt::InvalidOwner => Err(PiMutexStateError::InvalidState),
         }
     }
 
-    /// Releases the physical owner named by this mutex's owner word.
+    /// Releases this raw mutex for the executing owner identity.
     ///
     /// # Safety
     ///
     /// The caller must own this mutex through a higher-level raw-mutex
-    /// contract and retain that authority through any contended handoff.
-    pub unsafe fn try_release_owned(self) -> Result<PiMutexOwnedRelease, PiMutexStateError> {
-        let observed = self.owner.load(Ordering::Acquire);
-        let owner = owner_from_word(observed).ok_or(PiMutexStateError::InvalidState)?;
-        match self
-            .owner
-            .compare_exchange(owner.get(), 0, Ordering::Release, Ordering::Relaxed)
-        {
-            Ok(_) => Ok(PiMutexOwnedRelease::Released),
-            Err(current) if owner_from_word(current) == Some(owner) => {
-                Ok(PiMutexOwnedRelease::Contended(owner))
-            }
-            Err(_) => Err(PiMutexStateError::InvalidState),
+    /// contract, pass the executing scheduler identity as `current`, and
+    /// retain that authority through any contended handoff.
+    pub unsafe fn try_release_owned(
+        self,
+        current: PiTaskId,
+    ) -> Result<PiMutexOwnedRelease, PiMutexStateError> {
+        match try_release_current_owner_word(self.owner, current.get(), OWNER_ID_MASK) {
+            FastReleaseAttempt::Released => Ok(PiMutexOwnedRelease::Released),
+            FastReleaseAttempt::Contended => Ok(PiMutexOwnedRelease::Contended(current)),
+            FastReleaseAttempt::InvalidOwner => Err(PiMutexStateError::InvalidState),
         }
     }
 
@@ -488,14 +483,18 @@ impl PiMutexCore {
         unsafe { self.view().try_release_for_thread(current) }
     }
 
-    /// Releases the physical owner named by this mutex's owner word.
+    /// Releases this raw mutex for the executing owner identity.
     ///
     /// # Safety
     ///
     /// The caller must own this mutex through a higher-level raw-mutex
-    /// contract and retain that authority through any contended handoff.
-    pub unsafe fn try_release_owned(&self) -> Result<PiMutexOwnedRelease, PiMutexStateError> {
-        unsafe { self.view().try_release_owned() }
+    /// contract, pass the executing scheduler identity as `current`, and
+    /// retain that authority through any contended handoff.
+    pub unsafe fn try_release_owned(
+        &self,
+        current: PiTaskId,
+    ) -> Result<PiMutexOwnedRelease, PiMutexStateError> {
+        unsafe { self.view().try_release_owned(current) }
     }
 
     /// Returns whether `current` is the physical owner.

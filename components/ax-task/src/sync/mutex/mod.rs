@@ -357,9 +357,15 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     }
 
     pub(in crate::sync) unsafe fn unlock_core(core: PiMutexCoreView<'_>) {
+        let current = Self::current_task_id();
         // SAFETY: the caller is the lock_api raw-mutex owner and retains that
-        // exclusive authority through this complete release transaction.
-        match core_result(unsafe { core.try_release_owned() }, "try PI mutex release") {
+        // exclusive authority through this complete release transaction;
+        // `current` is the executing scheduler identity named by that owner
+        // contract.
+        match core_result(
+            unsafe { core.try_release_owned(current) },
+            "try PI mutex release",
+        ) {
             PiMutexOwnedRelease::Released => {}
             PiMutexOwnedRelease::Contended(owner) => {
                 #[cfg(feature = "qperf-metrics")]

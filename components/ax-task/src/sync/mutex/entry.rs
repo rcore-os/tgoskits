@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
 /// Result of one owner-word PI-mutex fast attempt.
 pub(crate) enum FastLockAttempt {
     Acquired,
@@ -8,6 +10,14 @@ pub(crate) enum FastLockAttempt {
 pub(crate) enum LockEntry<T> {
     Acquired,
     Contended(T),
+}
+
+/// Result of one current-identity owner-word release attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FastReleaseAttempt {
+    Released,
+    Contended,
+    InvalidOwner,
 }
 
 /// Captures current, performs the sole fast attempt, and prepares slow entry.
@@ -27,6 +37,22 @@ pub(crate) fn capture_current_and_prepare_slow<T>(
             validate_blocking_context();
             LockEntry::Contended(current)
         }
+    }
+}
+
+/// Attempts the Linux rtmutex current-owner release transition.
+pub(crate) fn try_release_current_owner_word(
+    owner: &AtomicU64,
+    current: u64,
+    owner_id_mask: u64,
+) -> FastReleaseAttempt {
+    if current == 0 || current & !owner_id_mask != 0 {
+        return FastReleaseAttempt::InvalidOwner;
+    }
+    match owner.compare_exchange(current, 0, Ordering::Release, Ordering::Relaxed) {
+        Ok(_) => FastReleaseAttempt::Released,
+        Err(owner_word) if owner_word & owner_id_mask == current => FastReleaseAttempt::Contended,
+        Err(_) => FastReleaseAttempt::InvalidOwner,
     }
 }
 
