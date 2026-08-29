@@ -169,9 +169,10 @@ fn x86_linux_current_installs_user_tls_only_at_user_owner_transitions() {
     assert!(!prepare_switch.contains("switch_user_tls"));
 
     let local_state = read_source("x86_64/local_state.rs");
-    assert!(local_state.contains("struct CpuUserTlsState"));
+    assert!(local_state.contains("struct CpuUserState"));
     assert!(local_state.contains("CPU_AREA_ARCH_STATE_OFFSET"));
-    assert!(local_state.contains("generation"));
+    assert!(local_state.contains("tls_generation"));
+    assert!(local_state.contains("user_fp_owner"));
     assert!(local_state.contains("previous.fs_base != next.fs_base"));
     assert!(local_state.contains("previous.gs_base != next.gs_base"));
 }

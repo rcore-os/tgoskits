@@ -350,6 +350,30 @@ pub(super) fn scheduler_current_thread_publication() -> CurrentThreadPublication
     unsafe { *(*context).publication.get() }
 }
 
+/// Restores the current x86 userspace FPU image after the final no-work snapshot.
+pub(crate) fn prepare_current_user_fp_return() -> Result<(), TaskError> {
+    #[cfg(all(target_arch = "x86_64", feature = "fp-simd"))]
+    {
+        // SAFETY: the user-return boundary keeps local IRQs disabled, so the
+        // current header, runtime context, and CPU-local FPU owner stay pinned
+        // through the restore and owner publication.
+        unsafe {
+            with_current_cpu_pin(|cpu_pin| {
+                let context = current_runtime_context(cpu_pin).map_err(runtime_status_error)?;
+                // SAFETY: this is the currently executing architecture context;
+                // no scheduler or remote path can mutate it under IRQ exclusion.
+                let architecture_context = &*context.inner.get();
+                architecture_context.prepare_user_return_fp();
+                Ok(())
+            })
+        }
+    }
+    #[cfg(not(all(target_arch = "x86_64", feature = "fp-simd")))]
+    {
+        Ok(())
+    }
+}
+
 fn prepare_runtime_thread_switch<'switch>(
     pin: &'switch CpuPin<'_>,
     previous: &'static RuntimeContext,

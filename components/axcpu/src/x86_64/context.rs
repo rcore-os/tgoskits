@@ -438,10 +438,38 @@ impl TaskContext {
 
     /// Completes every helper operation that must precede current publication.
     pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
-        #[cfg(feature = "fp-simd")]
+        #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+        {
+            let Some(current) = self.context_header() else {
+                super::local_state::assert_current_user_fp_unowned();
+                return;
+            };
+            let current = current.as_ptr().expose_provenance();
+            if super::local_state::current_user_fp_is_owner(current) {
+                self.ext_state.save();
+                super::local_state::clear_current_user_fp_owner_after_save(current);
+            }
+        }
+        #[cfg(all(feature = "fp-simd", not(feature = "uspace")))]
         {
             self.ext_state.save();
             _next_ctx.ext_state.restore();
+        }
+    }
+
+    /// Restores this task's userspace FPU image at the final IRQ-off return boundary.
+    pub fn prepare_user_return_fp(&self) {
+        #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+        {
+            let current = self
+                .context_header()
+                .expect("a userspace FPU owner requires a bound execution context")
+                .as_ptr()
+                .expose_provenance();
+            if super::local_state::current_user_fp_needs_restore(current) {
+                self.ext_state.restore();
+                super::local_state::publish_current_user_fp_owner(current);
+            }
         }
     }
 

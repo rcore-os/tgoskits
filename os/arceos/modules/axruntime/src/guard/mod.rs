@@ -77,9 +77,13 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
             }
         };
         if !pending {
+            if let Err(error) = crate::task::prepare_current_user_fp_return() {
+                ax_hal::asm::enable_irqs();
+                return Err(error);
+            }
             // Keep IRQs disabled. UserContext::run() enters the architecture
-            // return path without exposing a kernel IRQ window after this
-            // final no-work snapshot.
+            // return path without exposing a kernel IRQ window after the final
+            // no-work snapshot and FPU-owner publication.
             return Ok(());
         }
 

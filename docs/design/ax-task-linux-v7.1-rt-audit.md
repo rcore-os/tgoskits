@@ -4327,6 +4327,48 @@ blocked publication、successor selection 或 switch-tail owner。
 边界；更大的固定切换成本继续转向 Linux FPU owner/need-load 语义，当前 Starry hackbench 每次
 switch 都无条件 XSAVE/XRSTOR，而 TLS MSR 路径并未在该构建启用。
 
+### 2026-08-29 x86 用户 FPU owner 与 return-to-user restore
+
+Linux v7.1 x86_64 不在每次 scheduler context switch 中无条件恢复 incoming FPU image。
+`switch_fpu_prepare()` 只在 outgoing task 是当前 CPU 的 FPU owner 时保存并失效 owner，incoming task
+则通过 `TIF_NEED_FPU_LOAD` 保持待恢复状态；真正的 `fpregs_restore_userregs()` 位于返回用户态边界
+（`arch/x86/include/asm/fpu/sched.h:18-53`、`arch/x86/kernel/fpu/context.h:8-39,53-80`、
+`arch/x86/kernel/fpu/core.c:878-887`）。旧 ax-cpu 的 `TaskContext::prepare_switch_to()` 每次都执行
+outgoing XSAVE/FXSAVE 和 incoming XRSTOR/FXRSTOR，即使 incoming 仍在内核中运行且这次调度之后不会立即
+返回用户态。这既增加了固定 switch 成本，也没有表达物理 FPU image 的单一 CPU owner。
+
+本检查点在 x86 CPU area 的 architecture reserve 中增加一个 `user_fp_owner`，owner identity 直接使用
+已绑定 `RuntimeContext` 的 offset-zero execution header。scheduler switch 在 IRQ-off baton 下只保存并
+清除匹配 outgoing current 的 owner；owner 为空时不保存，出现 foreign owner 则作为协议破坏立即失败，
+不猜测或静默覆盖。`prepare_user_return()` 完成最后一次 no-work snapshot、保持 IRQ disabled 后，再借用
+current architecture context 恢复 image 并发布 owner，随后立即进入 `UserContext::run()`。每次实际
+switch 都清空 owner，因此不会把已退出 task 的地址跨 switch 留在 CPU-local state，也没有增加第二份
+scheduler current。`fp-simd` 但不含 `uspace` 的 unikernel/虚拟化配置继续采用原有 eager per-task FPU
+切换，不把 Linux 用户态 return contract 错误套到没有 user-return 边界的 image mode。
+
+确定性源码契约先要求 userspace switch 通过 CPU-local owner 决定是否保存、禁止在该分支恢复 incoming，
+并要求最终 IRQ-off guard 调用 user-return FPU prepare；旧实现稳定因 eager incoming restore 失败，修改后
+同一契约转绿。完整 ax-cpu `fp-simd + host-test + uspace` 测试矩阵随后通过。真实 x86_64 Haswell QEMU
+`test-x86-avx-ctxsw` 验证 sibling thread 的 YMM lower/upper 在 20,000 次 yield 后保持，
+`test-x87-fresh-stack` 验证新 pthread 的 x87 tag word 为空且 8 次 `fld` 不溢出，两项均通过。
+
+性能优先验证继续使用未插桩 Starry true `-smp 1`。为量化上界，临时完全跳过 FPU save/restore 的诊断版
+thread/20 五轮为 0.744/0.804/0.791/0.737/1.103 s，中位数 0.791 s，process/20 为
+1.542/1.262/1.350/1.263/1.740 s，中位数 1.350 s；该诊断改动已完整撤销。立即配对的旧 eager 实现
+thread/20 中位数 0.917 s，process/20 中位数 1.391 s。真实 owner 实现 thread/20 为
+0.850/0.886/0.939/0.816/0.829 s，中位数 0.850 s，相对配对 eager 改善约 7.3%；process/20 为
+1.493/1.443/1.286/1.375/1.473 s，中位数 1.443 s，没有稳定改善，仍为 Linux v7.1 PREEMPT_RT
+0.396 s 的约 3.64 倍。结论是 eager FPU restore 确实贡献 thread/common-switch 固定成本，但不足以解释
+process 主差距；本检查点按 Linux 语义保留，后续继续寻找 process 路径的 rq/wait/wake 放大。
+
+质量验证中，`cargo xtask clippy --package ax-cpu` 的 29 个目标/特性组合全部通过；ax-runtime base 与
+x86_64 `fp-simd + uspace + smp` 定向 clippy 通过。ax-runtime 全包矩阵在本检查点未修改的
+`ax-fs-ng + fatfs` 历史 feature-gate 错误处提前失败（`PAGE_SIZE`/`SleepMutex` 只在 ext4 下导入），
+不把该文件系统修复混入本提交；两项真实 Starry QEMU 已覆盖本次 runtime user-return 链路。修改文件
+targeted rustfmt 与 `git diff --check` 通过。尚未关闭的 x86 Linux ABI 路径包括 clone FPU image 继承、
+exec reset、ptrace owner 同步/XSAVE regset 和 signal frame/sigreturn FP state；这些将作为后续独立红绿与
+性能检查点完成，不能用本次 scheduler owner 修复代替。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

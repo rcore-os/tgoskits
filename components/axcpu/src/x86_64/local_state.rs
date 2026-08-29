@@ -1,4 +1,4 @@
-//! Lazy x86 LinuxCurrent user-TLS ownership.
+//! Lazy x86 LinuxCurrent userspace register ownership.
 
 #[cfg(not(feature = "host-test"))]
 use core::mem::offset_of;
@@ -23,25 +23,48 @@ struct UserTlsWrites {
     gs_base: bool,
 }
 
-/// CPU-owned physical user-TLS image and its publication generation.
+/// CPU-owned physical userspace register image.
 #[repr(C)]
-struct CpuUserTlsState {
+struct CpuUserState {
     fs_base: usize,
     gs_base: usize,
-    generation: usize,
+    tls_generation: usize,
+    user_fp_owner: usize,
 }
 
 #[cfg(not(feature = "host-test"))]
 const CPU_USER_FS_BASE_OFFSET: usize =
-    CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserTlsState, fs_base);
+    CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserState, fs_base);
 #[cfg(not(feature = "host-test"))]
 const CPU_USER_GS_BASE_OFFSET: usize =
-    CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserTlsState, gs_base);
+    CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserState, gs_base);
 #[cfg(not(feature = "host-test"))]
 const CPU_USER_TLS_GENERATION_OFFSET: usize =
-    CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserTlsState, generation);
+    CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserState, tls_generation);
+#[cfg(not(feature = "host-test"))]
+const CPU_USER_FP_OWNER_OFFSET: usize =
+    CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserState, user_fp_owner);
 
-const _: () = assert!(size_of::<CpuUserTlsState>() <= CPU_AREA_ARCH_STATE_SIZE);
+const _: () = assert!(size_of::<CpuUserState>() <= CPU_AREA_ARCH_STATE_SIZE);
+
+#[cfg(feature = "fp-simd")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UserFpOwnerMatch {
+    Unowned,
+    Current,
+    Foreign,
+}
+
+#[cfg(feature = "fp-simd")]
+fn classify_user_fp_owner(owner: usize, current: usize) -> UserFpOwnerMatch {
+    if owner == 0 {
+        UserFpOwnerMatch::Unowned
+    } else if owner == current {
+        UserFpOwnerMatch::Current
+    } else {
+        UserFpOwnerMatch::Foreign
+    }
+}
 
 fn changed_user_tls(
     previous: UserTlsValues,
@@ -117,6 +140,46 @@ fn publish_current_cpu_user_tls(_values: UserTlsValues, _generation: usize) {
     // Host tests cannot address the kernel GS CPU area.
 }
 
+#[cfg(all(feature = "fp-simd", not(feature = "host-test")))]
+fn current_cpu_user_fp_owner() -> usize {
+    let owner: usize;
+    // SAFETY: local IRQs are disabled after CPU-area installation. The owner
+    // word is private to this physical CPU and is never accessed remotely.
+    unsafe {
+        core::arch::asm!(
+            "mov {owner}, gs:[{owner_offset}]",
+            owner = out(reg) owner,
+            owner_offset = const CPU_USER_FP_OWNER_OFFSET,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    owner
+}
+
+#[cfg(all(feature = "fp-simd", feature = "host-test"))]
+fn current_cpu_user_fp_owner() -> usize {
+    0
+}
+
+#[cfg(not(feature = "host-test"))]
+fn publish_current_cpu_user_fp_owner(owner: usize) {
+    // SAFETY: the caller retains the same IRQ-disabled CPU ownership used by
+    // `current_cpu_user_fp_owner` for the complete hardware-state transition.
+    unsafe {
+        core::arch::asm!(
+            "mov gs:[{owner_offset}], {owner}",
+            owner_offset = const CPU_USER_FP_OWNER_OFFSET,
+            owner = in(reg) owner,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+#[cfg(feature = "host-test")]
+fn publish_current_cpu_user_fp_owner(_owner: usize) {
+    // Host tests cannot address the kernel GS CPU area.
+}
+
 fn write_changed_user_tls(previous: UserTlsValues, next: UserTlsValues, initialized: bool) {
     let writes = changed_user_tls(previous, next, initialized);
     if writes.fs_base {
@@ -156,6 +219,7 @@ pub(super) fn initialize_cpu_user_tls() {
     let values = UserTlsValues::default();
     write_changed_user_tls(UserTlsValues::default(), values, false);
     publish_current_cpu_user_tls(values, 1);
+    publish_current_cpu_user_fp_owner(0);
 }
 
 /// Lazily installs a user context without disturbing it in kernel-only tasks.
@@ -171,6 +235,66 @@ pub(super) fn install_current_user_tls(fs_base: usize, gs_base: usize) {
     }
     write_changed_user_tls(previous, next, initialized);
     publish_current_cpu_user_tls(next, next_generation(generation));
+}
+
+/// Reports whether `current` owns the physical FPU image that must be saved.
+#[cfg(feature = "fp-simd")]
+pub(super) fn current_user_fp_is_owner(current: usize) -> bool {
+    #[cfg(not(feature = "host-test"))]
+    debug_assert!(!super::asm::irqs_enabled());
+    match classify_user_fp_owner(current_cpu_user_fp_owner(), current) {
+        UserFpOwnerMatch::Unowned => false,
+        UserFpOwnerMatch::Current => true,
+        UserFpOwnerMatch::Foreign => {
+            panic!("x86 user FPU owner does not match the outgoing current context")
+        }
+    }
+}
+
+/// Clears `current` only after its physical FPU image has reached task memory.
+#[cfg(feature = "fp-simd")]
+pub(super) fn clear_current_user_fp_owner_after_save(_current: usize) {
+    #[cfg(not(feature = "host-test"))]
+    {
+        debug_assert!(!super::asm::irqs_enabled());
+        debug_assert_eq!(current_cpu_user_fp_owner(), _current);
+    }
+    publish_current_cpu_user_fp_owner(0);
+}
+
+/// Verifies that a context without a scheduler identity owns no user FPU image.
+#[cfg(feature = "fp-simd")]
+pub(super) fn assert_current_user_fp_unowned() {
+    #[cfg(not(feature = "host-test"))]
+    debug_assert!(!super::asm::irqs_enabled());
+    assert_eq!(
+        current_cpu_user_fp_owner(),
+        0,
+        "an unbound context cannot own the physical user FPU image",
+    );
+}
+
+/// Reports whether `current` must restore its user FPU image before user mode.
+#[cfg(feature = "fp-simd")]
+pub(super) fn current_user_fp_needs_restore(current: usize) -> bool {
+    #[cfg(not(feature = "host-test"))]
+    debug_assert!(!super::asm::irqs_enabled());
+    match classify_user_fp_owner(current_cpu_user_fp_owner(), current) {
+        UserFpOwnerMatch::Unowned => true,
+        UserFpOwnerMatch::Current => false,
+        UserFpOwnerMatch::Foreign => {
+            panic!("x86 user FPU owner does not match the return-to-user context")
+        }
+    }
+}
+
+/// Publishes `current` after its user FPU image has reached hardware.
+#[cfg(feature = "fp-simd")]
+pub(super) fn publish_current_user_fp_owner(current: usize) {
+    #[cfg(not(feature = "host-test"))]
+    debug_assert!(!super::asm::irqs_enabled());
+    assert_ne!(current, 0, "a user FPU owner requires a context identity");
+    publish_current_cpu_user_fp_owner(current);
 }
 
 #[cfg(test)]
@@ -242,5 +366,19 @@ mod tests {
     #[test]
     fn user_tls_generation_remains_a_nonzero_initialized_marker() {
         assert_eq!(next_generation(usize::MAX), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "fp-simd")]
+    fn user_fpu_owner_has_one_current_or_unowned_state() {
+        assert_eq!(classify_user_fp_owner(0, 0x1000), UserFpOwnerMatch::Unowned);
+        assert_eq!(
+            classify_user_fp_owner(0x1000, 0x1000),
+            UserFpOwnerMatch::Current
+        );
+        assert_eq!(
+            classify_user_fp_owner(0x2000, 0x1000),
+            UserFpOwnerMatch::Foreign
+        );
     }
 }
