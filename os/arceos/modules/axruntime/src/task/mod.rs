@@ -141,6 +141,8 @@ pub fn reset_current_user_fp_state() -> Result<(), TaskError> {
 }
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
 pub(crate) use scheduler_events::{record_scheduler_ipi_consume, record_scheduler_ipi_send};
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub use spawn::prepare_raw_with_extension_in_address_space_and_inherited_fp_scheduler_state;
 pub use spawn::{
     prepare_raw, prepare_raw_with_extension_in_address_space_and_scheduler_state, spawn_raw,
     spawn_raw_with_affinity, spawn_raw_with_extension, spawn_raw_with_extension_and_affinity,

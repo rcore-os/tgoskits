@@ -11,7 +11,9 @@ use starry_signal::Signo;
 use super::schedule_abi::fork_schedule_policy;
 #[cfg(target_arch = "riscv64")]
 use crate::task::prepare_user_thread_with_fp_scheduler_state;
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(target_arch = "x86_64")]
+use crate::task::prepare_user_thread_inheriting_fp_scheduler_state;
+#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
 use crate::task::prepare_user_thread_with_scheduler_state;
 use crate::{
     StarryError, StarryResult,
@@ -545,7 +547,16 @@ impl CloneArgs {
             child_scheduler_state,
         )
         .map_err(map_task_creation_error)?;
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(target_arch = "x86_64")]
+        let prepared_task = prepare_user_thread_inheriting_fp_scheduler_state(
+            new_user_task(new_uctx, set_child_tid, child_visible_tid),
+            alloc::string::String::from(curr.name().as_ref()),
+            crate::config::KERNEL_STACK_SIZE,
+            thr,
+            child_scheduler_state,
+        )
+        .map_err(map_task_creation_error)?;
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
         let prepared_task = prepare_user_thread_with_scheduler_state(
             new_user_task(new_uctx, set_child_tid, child_visible_tid),
             alloc::string::String::from(curr.name().as_ref()),

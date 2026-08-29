@@ -343,6 +343,48 @@ where
     }
 }
 
+/// Prepares an x86 user thread inheriting the current task's FP image.
+///
+/// The runtime saves the current hardware image directly into the new context
+/// before the scheduler can bind or publish it.
+///
+/// # Safety
+///
+/// The extension and address-space ownership rules are identical to
+/// [`spawn_raw_with_extension_in_address_space`]. The caller must be the
+/// ordinary task context whose userspace FP image the child inherits.
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub unsafe fn prepare_raw_with_extension_in_address_space_and_inherited_fp_scheduler_state<F>(
+    entry: F,
+    name: String,
+    stack_size: usize,
+    os_extension: Option<ThreadExtension>,
+    address_space: TaskAddressSpace,
+    policy: SchedulePolicy,
+    affinity: CpuSet,
+) -> Result<PreparedThread, TaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    if let Err(error) = context::validate_current_user_fp_clone_context() {
+        // SAFETY: validation failed before any runtime object observed the
+        // uniquely transferred extension.
+        unsafe { release_transferred_extension(os_extension) };
+        return Err(error);
+    }
+    unsafe {
+        prepare_raw_with_options(
+            entry,
+            name,
+            stack_size,
+            os_extension,
+            Some(affinity),
+            policy,
+            InitialContextState::user_inheriting_current_fp_state(address_space),
+        )
+    }
+}
+
 unsafe fn spawn_raw_with_options<F>(
     entry: F,
     name: String,

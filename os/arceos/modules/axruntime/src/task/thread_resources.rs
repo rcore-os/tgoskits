@@ -1,9 +1,17 @@
 use super::*;
 
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+enum InitialX86FpState {
+    Default,
+    InheritCurrent,
+}
+
 pub(super) struct InitialContextState {
     pub(super) address_space: Option<TaskAddressSpace>,
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
     pub(super) fp_state: Option<ax_hal::cpu::FpState>,
+    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    x86_fp_state: InitialX86FpState,
 }
 
 impl InitialContextState {
@@ -12,6 +20,8 @@ impl InitialContextState {
             address_space: None,
             #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
             fp_state: None,
+            #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+            x86_fp_state: InitialX86FpState::Default,
         }
     }
 
@@ -20,6 +30,8 @@ impl InitialContextState {
             address_space: Some(address_space),
             #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
             fp_state: None,
+            #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+            x86_fp_state: InitialX86FpState::Default,
         }
     }
 
@@ -31,6 +43,14 @@ impl InitialContextState {
         Self {
             address_space: Some(address_space),
             fp_state: Some(fp_state),
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    pub(super) fn user_inheriting_current_fp_state(address_space: TaskAddressSpace) -> Self {
+        Self {
+            address_space: Some(address_space),
+            x86_fp_state: InitialX86FpState::InheritCurrent,
         }
     }
 }
@@ -335,6 +355,13 @@ pub(super) fn create_thread_resources_with(
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
     if let Some(fp_state) = context_state.fp_state {
         context::install_initial_fp_state(context_result.handle, fp_state);
+    }
+    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    if matches!(
+        context_state.x86_fp_state,
+        InitialX86FpState::InheritCurrent
+    ) {
+        context::inherit_current_user_fp_state(context_result.handle);
     }
     let address_space = context_state.address_space.as_mut().map_or(
         ax_task::runtime::AddressSpaceToken::NONE,

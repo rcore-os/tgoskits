@@ -374,6 +374,53 @@ pub(crate) fn prepare_current_user_fp_return() -> Result<(), TaskError> {
     }
 }
 
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub(super) fn validate_current_user_fp_clone_context() -> Result<(), TaskError> {
+    if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
+        return Err(TaskError::UnsafeContext);
+    }
+    ax_hal::asm::disable_irqs();
+    // SAFETY: local IRQ exclusion pins the current header while validating
+    // that this call originates from a runtime-owned user task context.
+    let result = unsafe {
+        with_current_cpu_pin(|cpu_pin| {
+            current_runtime_context(cpu_pin)
+                .map(|_| ())
+                .map_err(runtime_status_error)
+        })
+    };
+    ax_hal::asm::enable_irqs();
+    result
+}
+
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub(super) fn inherit_current_user_fp_state(child_context: usize) {
+    assert!(
+        ax_hal::asm::irqs_enabled() && !ax_hal::irq::in_irq_context(),
+        "x86 FPU inheritance requires ordinary task context",
+    );
+    assert_ne!(
+        child_context, 0,
+        "x86 FPU inheritance requires a child context"
+    );
+    let child = ptr::with_exposed_provenance_mut::<RuntimeContext>(child_context);
+    ax_hal::asm::disable_irqs();
+    // SAFETY: the child allocation is exclusively owned by resource creation
+    // and remains unpublished. IRQ exclusion pins the current parent context
+    // and its CPU-local FPU owner through the direct XSAVE into the child.
+    unsafe {
+        with_current_cpu_pin(|cpu_pin| {
+            let parent = current_runtime_context(cpu_pin)
+                .unwrap_or_else(|status| panic!("invalid FPU clone parent context: {status:?}"));
+            assert!(!core::ptr::eq(parent, child));
+            let parent_architecture_context = &*parent.inner.get();
+            let child_architecture_context = &mut *(*child).inner.get();
+            parent_architecture_context.clone_user_fp_state_into(child_architecture_context);
+        })
+    };
+    ax_hal::asm::enable_irqs();
+}
+
 pub(super) fn reset_current_user_fp_state() -> Result<(), TaskError> {
     #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
     {

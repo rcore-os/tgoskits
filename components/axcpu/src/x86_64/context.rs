@@ -473,6 +473,29 @@ impl TaskContext {
         }
     }
 
+    /// Saves the current task's user FPU image directly into an unpublished clone.
+    #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+    pub fn clone_user_fp_state_into(&self, child: &mut Self) {
+        assert!(
+            !core::ptr::eq(self, child),
+            "a cloned user FPU image requires a distinct task context",
+        );
+        assert!(
+            child.context_header().is_none(),
+            "a cloned user FPU image must be installed before context binding",
+        );
+        let current = self
+            .context_header()
+            .expect("a userspace FPU clone requires a bound execution context")
+            .as_ptr()
+            .expose_provenance();
+        if super::local_state::current_user_fp_needs_restore(current) {
+            self.ext_state.restore();
+            super::local_state::publish_current_user_fp_owner(current);
+        }
+        child.ext_state.save();
+    }
+
     /// Replaces this task's user FPU state with the architecture initial image.
     pub fn reset_user_fp_state(&mut self) {
         #[cfg(all(feature = "fp-simd", feature = "uspace"))]

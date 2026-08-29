@@ -4409,6 +4409,49 @@ ax-runtime x86_64 `fp-simd + uspace + smp`、Starry kernel x86_64 `smp` 定向 c
 补齐 clone inheritance；ptrace full xstate/owner invalidation 与 signal frame/sigreturn FP ABI 分别保留为
 独立检查点。
 
+### 2026-08-29 x86 clone 在未发布子 context 中继承当前 FPU image
+
+Linux v7.1 的 `arch_dup_task_struct()` 不通过 `task_struct` memcpy 复制 FPU，明确把目标 fpstate 的
+初始化交给后续 `fpu_clone()`；`copy_thread()` 在子 task 已分配但尚未发布时调用它
+（`arch/x86/kernel/process.c:105-114,170-226`）。普通用户 clone 先为子 task 重置独立 fpstate 并设置
+lazy-load 状态；若父 task 当前需要恢复，则先执行 `fpregs_restore_userregs()`，随后把当前父硬件寄存器
+直接 `save_fpregs_to_fpstate(dst_fpu)` 到子 image。子 `last_cpu=-1`，所以继承 fpstate 而不继承物理 CPU
+owner（`arch/x86/kernel/fpu/core.c:660-721`、`arch/x86/kernel/fpu/context.h:10-20,53-80`）。
+PREEMPT_RT 不改变复制与 owner 算法，只把 `fpregs_lock()` 的实现从普通内核的 bottom-half exclusion 改为
+`preempt_disable()`，因为 RT bottom half 在线程上下文执行
+（`arch/x86/include/asm/fpu/api.h:51-80`）。
+
+旧 Starry clone 只复制 `UserContext` 的通用寄存器。RISC-V 已把 clone-point `FpState` 传入未发布
+`TaskContext`，x86 却一直由 `TaskContext::new()` 安装默认 `ExtendedState`。确定性 x86_64 QEMU 回归在
+raw `clone(SIGCHLD, NULL)` 前把父 x87 FCW/MXCSR 设置为 `0x077f/0x3f80`，子分支在任何 libc/浮点操作前
+立即读取并写入共享页。旧实现稳定得到默认 `0x037f/0x1f80`，以状态 77 退出并使 grouped runner 报
+`STARRY_GROUPED_TEST_FAILED`；修复后子首次运行观察到父值，同一命令转为
+`STARRY_GROUPED_TESTS_PASSED`。原有 RISC-V 分支保留，其他架构明确 skip。
+
+最终实现没有把 2688 字节 `ExtendedState` 作为值跨 crate 多次搬运。Starry 用显式
+`InheritCurrent` 初始化状态进入 runtime 资源事务；runtime 先验证调用者是 IRQ-enabled 的普通当前
+user task，再创建子 runtime context。在 scheduler bind/stage/publication 之前，runtime 关闭本地 IRQ、
+同时取得当前父 context 与独占的子 context；axcpu 若发现父 owner 为 unowned，先恢复父 image 并发布
+current owner，然后直接 XSAVE/FXSAVE 到子的内联 `ext_state`。父 owner 保持 current，子 context header
+仍为空且不获得 CPU-local owner，随后才进入原有 bind 和 publication 链。foreign owner、父子 context
+相同、子已绑定等情况均作为协议破坏失败，不增加共享 fpstate 或第二 owner 状态源。这与 Linux
+`save_fpregs_to_fpstate(dst_fpu)` 的目标位置、父 restore 顺序和子 lazy owner 语义一致。
+
+性能优先验证继续使用未插桩 true `-smp 1`。最初按值传递 fpstate 的两组合并中位数为 thread/20
+0.880 s、process/20 1.625 s，暴露出大 image 跨层搬运不符合 Linux 热路径。改为直接写入未发布子
+context 后，两组 thread/20 为 0.867/0.781/0.816/0.879/0.846 s 与
+0.891/0.847/1.152/0.942/0.882 s，十次合并中位数 0.873 s；process/20 为
+1.508/1.482/1.520/1.557/1.456 s 与 1.618/1.548/1.551/1.793/1.785 s，合并中位数 1.550 s。
+相对上一 exec 检查点 0.863/1.421 s，thread 名义退化约 1.2%，process 约 9.0%；direct-XSAVE 相对按值
+原型的 process 改善约 4.6%，但 Linux 必需的每次 clone FPU capture 仍有成本。process 仍为 Linux v7.1
+PREEMPT_RT 0.396 s 的约 3.91 倍，说明本步不是剩余吞吐差距的根因；Linux 正确继承语义按规则保留。
+
+质量门禁覆盖完整 ax-cpu `fp-simd + host-test + uspace` 测试、ax-cpu 29/29 clippy 组合、ax-runtime
+x86_64 `fp-simd + uspace + smp` 定向 clippy，以及 Starry kernel x86_64/riscv64 `smp` 两条实际架构
+分支 clippy；真实 x86 QEMU 同一 clone 用例完成红绿。仓库全量 rustfmt 曾触及 8 个与本检查点无关的
+已有格式漂移文件，已逐项撤销，只保留目标 Rust 文件格式结果；`git diff --check` 通过。没有运行与本
+改动无关的 Starry 106 项全 feature 串行矩阵。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

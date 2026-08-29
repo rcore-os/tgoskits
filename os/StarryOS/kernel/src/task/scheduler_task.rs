@@ -585,7 +585,7 @@ impl UserThreadInitialSchedulerState {
 }
 
 /// Prepares a Starry user thread with inherited scheduling state.
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
 pub fn prepare_user_thread_with_scheduler_state<F>(
     entry: F,
     name: String,
@@ -633,10 +633,40 @@ where
     )
 }
 
+/// Prepares an x86 user thread inheriting the current hardware FP image.
+#[cfg(target_arch = "x86_64")]
+pub fn prepare_user_thread_inheriting_fp_scheduler_state<F>(
+    entry: F,
+    name: String,
+    stack_size: usize,
+    thread: Box<Thread>,
+    scheduler_state: UserThreadInitialSchedulerState,
+) -> Result<PreparedUserTask, scheduler::TaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let address_space = thread.proc_data.scheduler_address_space()?;
+    prepare_user_thread_inner(
+        entry,
+        name,
+        stack_size,
+        thread,
+        StarryContextState::user_inheriting_current_fp_state(address_space, scheduler_state),
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+enum X86FpInitialization {
+    Default,
+    InheritCurrent,
+}
+
 struct StarryContextState {
     address_space: Option<scheduler::TaskAddressSpace>,
     #[cfg(target_arch = "riscv64")]
     fp_state: Option<ax_cpu::FpState>,
+    #[cfg(target_arch = "x86_64")]
+    x86_fp: X86FpInitialization,
     scheduler_state: UserThreadInitialSchedulerState,
 }
 
@@ -646,19 +676,31 @@ impl StarryContextState {
             address_space: Some(address_space),
             #[cfg(target_arch = "riscv64")]
             fp_state: None,
+            #[cfg(target_arch = "x86_64")]
+            x86_fp: X86FpInitialization::Default,
             scheduler_state: UserThreadInitialSchedulerState::default_user(),
         }
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
     fn user_with_scheduler_state(
         address_space: scheduler::TaskAddressSpace,
         scheduler_state: UserThreadInitialSchedulerState,
     ) -> Self {
         Self {
             address_space: Some(address_space),
-            #[cfg(target_arch = "riscv64")]
-            fp_state: None,
+            scheduler_state,
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn user_inheriting_current_fp_state(
+        address_space: scheduler::TaskAddressSpace,
+        scheduler_state: UserThreadInitialSchedulerState,
+    ) -> Self {
+        Self {
+            address_space: Some(address_space),
+            x86_fp: X86FpInitialization::InheritCurrent,
             scheduler_state,
         }
     }
@@ -724,7 +766,30 @@ where
             )?,
         }
     };
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "x86_64")]
+    let prepared = unsafe {
+        match context_state.x86_fp {
+            X86FpInitialization::InheritCurrent => scheduler::prepare_raw_with_extension_in_address_space_and_inherited_fp_scheduler_state(
+                entry,
+                name,
+                stack_size,
+                Some(extension),
+                address_space,
+                context_state.scheduler_state.policy,
+                context_state.scheduler_state.affinity,
+            )?,
+            X86FpInitialization::Default => scheduler::prepare_raw_with_extension_in_address_space_and_scheduler_state(
+                entry,
+                name,
+                stack_size,
+                Some(extension),
+                address_space,
+                context_state.scheduler_state.policy,
+                context_state.scheduler_state.affinity,
+            )?,
+        }
+    };
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
     let prepared = unsafe {
         scheduler::prepare_raw_with_extension_in_address_space_and_scheduler_state(
             entry,
