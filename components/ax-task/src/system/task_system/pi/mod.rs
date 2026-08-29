@@ -69,6 +69,9 @@ impl TaskSystem {
 mod graph;
 mod operations;
 mod schedule;
+mod transition;
+
+use transition::publish_owner_after_waiter_detach;
 
 #[cfg(axtest)]
 mod axtest;

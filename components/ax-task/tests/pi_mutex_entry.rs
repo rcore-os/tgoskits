@@ -1,5 +1,7 @@
 #[path = "../src/sync/mutex/entry.rs"]
 mod entry;
+#[path = "../src/system/task_system/pi/transition.rs"]
+mod transition;
 
 use core::cell::Cell;
 
@@ -7,6 +9,7 @@ use entry::{
     FastLockAttempt, LockEntry, capture_current_and_prepare_slow, owner_spin_eligible,
     owner_spin_progress_gates,
 };
+use transition::publish_owner_after_waiter_detach;
 
 #[test]
 fn uncontended_entry_does_not_validate_a_blocking_context() {
@@ -88,4 +91,46 @@ fn owner_spin_requires_every_linux_progress_gate() {
     assert!(!owner_spin_eligible(2, || owner_spin_progress_gates(
         true, true, true, true,
     )));
+}
+
+#[test]
+fn waiter_edge_is_detached_before_owner_update() {
+    let mut events = Vec::new();
+
+    publish_owner_after_waiter_detach(
+        &mut events,
+        |events| {
+            events.push("detach waiter");
+            Ok::<_, ()>(())
+        },
+        |events, _detached| {
+            events.push("publish owner");
+            Ok::<_, ()>(())
+        },
+        |_events, _detached| unreachable!("successful publication must not roll back"),
+    )
+    .unwrap();
+
+    assert_eq!(events, ["detach waiter", "publish owner"]);
+}
+
+#[test]
+fn failed_owner_update_restores_the_detached_waiter() {
+    let mut events = Vec::new();
+
+    let result = publish_owner_after_waiter_detach(
+        &mut events,
+        |events| {
+            events.push("detach waiter");
+            Ok::<_, &'static str>(())
+        },
+        |events, _detached| {
+            events.push("publish owner");
+            Err::<(), _>("owner update failed")
+        },
+        |events, _detached| events.push("restore waiter"),
+    );
+
+    assert_eq!(result, Err("owner update failed"));
+    assert_eq!(events, ["detach waiter", "publish owner", "restore waiter"]);
 }
