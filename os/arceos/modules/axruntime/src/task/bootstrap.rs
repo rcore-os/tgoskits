@@ -440,6 +440,7 @@ mod tests {
                 cpu_local::host_test::RegisterReadCounts {
                     cpu_base: 1,
                     current_context: 0,
+                    binding_observations: 0,
                     initialized_area_validations: 0,
                 },
                 "scheduler endpoint lookup must use the pre-pin CPU-area boundary",

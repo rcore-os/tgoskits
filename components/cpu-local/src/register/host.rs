@@ -17,6 +17,7 @@ std::thread_local! {
     static KERNEL_TLS: Cell<usize> = const { Cell::new(0) };
     static CPU_BASE_READS: Cell<usize> = const { Cell::new(0) };
     static CURRENT_CONTEXT_READS: Cell<usize> = const { Cell::new(0) };
+    static BINDING_OBSERVATIONS: Cell<usize> = const { Cell::new(0) };
     static INITIALIZED_AREA_VALIDATIONS: Cell<usize> = const { Cell::new(0) };
     #[cfg(test)]
     static MIGRATION_TARGET: Cell<usize> = const { Cell::new(0) };
@@ -79,6 +80,7 @@ pub(super) unsafe fn write_kernel_tls(value: usize) {
 pub(super) fn reset_register_read_counts() {
     CPU_BASE_READS.set(0);
     CURRENT_CONTEXT_READS.set(0);
+    BINDING_OBSERVATIONS.set(0);
     INITIALIZED_AREA_VALIDATIONS.set(0);
 }
 
@@ -86,8 +88,13 @@ pub(super) fn register_read_counts() -> super::host_test::RegisterReadCounts {
     super::host_test::RegisterReadCounts {
         cpu_base: CPU_BASE_READS.get(),
         current_context: CURRENT_CONTEXT_READS.get(),
+        binding_observations: BINDING_OBSERVATIONS.get(),
         initialized_area_validations: INITIALIZED_AREA_VALIDATIONS.get(),
     }
+}
+
+pub(super) fn record_binding_observation() {
+    BINDING_OBSERVATIONS.set(BINDING_OBSERVATIONS.get().wrapping_add(1));
 }
 
 pub(super) fn record_initialized_area_validation() {

@@ -144,6 +144,8 @@ impl ExecutionContextHeader {
     }
 
     pub(crate) fn raw_cpu_binding(&self) -> Option<(usize, CpuBindingEpoch)> {
+        #[cfg(feature = "host-test")]
+        crate::register::host_test::record_binding_observation();
         loop {
             let before = self.binding_epoch.load(Ordering::Acquire);
             if before & CPU_PHASE_MASK != CPU_BOUND {

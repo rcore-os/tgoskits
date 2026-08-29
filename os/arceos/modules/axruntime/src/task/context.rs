@@ -180,18 +180,14 @@ fn current_runtime_context(cpu_pin: &CpuPin) -> Result<&'static RuntimeContext, 
         .as_ptr()
         .expose_provenance();
     let header = ptr::with_exposed_provenance::<ExecutionContextHeader>(current);
-    // SAFETY: the CPU runtime slot may publish only a pinned header whose live
-    // CPU binding matches this prefix. The supplied pin covers the load and
-    // every validation below.
+    // SAFETY: `current_context` has already validated that the published,
+    // pinned header is live and bound to the supplied CPU pin.
     let header = unsafe { &*header };
     // RuntimeContext is `repr(C)` and the pinned header is its offset-zero
     // owner identity. The independently allocated architecture context keeps
     // ContextIdentity free of self-referential outer pointers.
     let context = unsafe { &*ptr::from_ref(header).cast::<RuntimeContext>() };
     if !ptr::eq(context.header().get_ref(), header) {
-        return Err(RuntimeStatus::InvalidHandle);
-    }
-    if header.cpu_area() != Some(cpu_pin.area()) {
         return Err(RuntimeStatus::InvalidHandle);
     }
     Ok(context)
@@ -670,5 +666,47 @@ mod tests {
         })
         .join()
         .expect("modeled CPU must complete switch preparation");
+    }
+
+    #[test]
+    fn current_runtime_context_reuses_pinned_binding_validation() {
+        std::thread::spawn(|| {
+            let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
+            let base = storage.as_mut_ptr() as usize;
+            storage.write(CpuAreaPrefix::initialize(CpuIndex::try_from(0).unwrap(), base).unwrap());
+            // SAFETY: the leaked prefix is initialized and remains mapped for
+            // this modeled CPU's complete process lifetime.
+            let area = unsafe { CpuAreaRef::from_initialized_base(base) }.unwrap();
+            // SAFETY: this fresh host thread owns its CPU-local register model.
+            unsafe { cpu_local::install_cpu_area(area) }.unwrap();
+
+            let current = RuntimeContext::allocate(
+                ax_hal::context::TaskContext::new(),
+                StackHandle::NONE,
+                InitialPreemptionState::Enabled,
+            );
+
+            // SAFETY: the leaked runtime context remains pinned while this
+            // host thread validates the modeled current publication.
+            unsafe {
+                cpu_local::with_cpu_pin(|pin| {
+                    let expected = &*current;
+                    cpu_local::install_bootstrap_context(pin, expected.header()).unwrap();
+                    cpu_local::host_test::reset_register_read_counts();
+
+                    let observed = current_runtime_context(pin).unwrap();
+                    assert!(ptr::eq(observed, expected));
+                    let reads = cpu_local::host_test::register_read_counts();
+                    assert_eq!(reads.current_context, 1);
+                    assert_eq!(
+                        reads.binding_observations, 1,
+                        "the pinned current lookup must not repeat its binding validation"
+                    );
+                })
+            }
+            .unwrap();
+        })
+        .join()
+        .expect("modeled CPU must complete current lookup");
     }
 }

@@ -260,6 +260,8 @@ pub(crate) mod host_test {
         pub cpu_base: usize,
         /// Reads of the selected architecture current-context source.
         pub current_context: usize,
+        /// Stable observations of an execution context's CPU binding.
+        pub binding_observations: usize,
         /// Complete reconstructions and identity checks of an initialized area.
         pub initialized_area_validations: usize,
     }
@@ -276,6 +278,10 @@ pub(crate) mod host_test {
 
     pub(crate) fn record_initialized_area_validation() {
         super::imp::record_initialized_area_validation();
+    }
+
+    pub(crate) fn record_binding_observation() {
+        super::imp::record_binding_observation();
     }
 }
 
@@ -393,6 +399,7 @@ mod tests {
             host_test::RegisterReadCounts {
                 cpu_base: 1,
                 current_context: 0,
+                binding_observations: 0,
                 initialized_area_validations: 0,
             },
             "a live installed base must not repeat shutdown-lifetime identity validation",
