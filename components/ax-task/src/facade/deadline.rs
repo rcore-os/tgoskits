@@ -198,8 +198,8 @@ pub fn on_clock_event(
         // by that hook remains lazy until the following promotion point.
         cpu.promote_lazy_reschedule();
     }
-    let (charge, clock, current, task_tick_rq_observation) =
-        match scheduler_event.accounting_kind() {
+    let (charge, clock, current, task_tick_rq_observation) = match scheduler_event.accounting_kind()
+    {
         ClockAccountingKind::RuntimeOnly => {
             system.charge_current_until_with_clock(cpu.as_mut(), 0)?
         }

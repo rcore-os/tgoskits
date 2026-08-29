@@ -101,3 +101,6 @@ thiserror.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

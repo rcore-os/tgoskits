@@ -15,6 +15,14 @@ static SCHEDULER_IPI_CONSUME_COUNT: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QperfRuntimeSchedulerMetricsSnapshot {
     pub task: ax_task::QperfSchedulerMetricsSnapshot,
+    pub active_mm_same_activations: u64,
+    pub active_mm_different_activations: u64,
+    pub active_mm_kernel_lazy_activations: u64,
+    pub active_mm_hardware_root_writes: u64,
+    pub active_mm_lease_activations: u64,
+    pub active_mm_lease_deactivations: u64,
+    pub active_mm_reclaim_ready: u64,
+    pub active_mm_reclaim_destroyed: u64,
     pub scheduler_ipi_sends: u64,
     pub scheduler_ipi_consumes: u64,
     pub clockevent_irqs: u64,
@@ -28,8 +36,17 @@ pub fn timer_irq_count() -> u64 {
 /// Returns aggregate task and physical-delivery counters without locking.
 #[cfg(feature = "qperf-metrics")]
 pub fn qperf_runtime_scheduler_metrics_snapshot() -> QperfRuntimeSchedulerMetricsSnapshot {
+    let active_mm = super::address_space::qperf_address_space_metrics_snapshot();
     QperfRuntimeSchedulerMetricsSnapshot {
         task: ax_task::qperf_scheduler_metrics_snapshot(),
+        active_mm_same_activations: active_mm.same_activations,
+        active_mm_different_activations: active_mm.different_activations,
+        active_mm_kernel_lazy_activations: active_mm.kernel_lazy_activations,
+        active_mm_hardware_root_writes: active_mm.hardware_root_writes,
+        active_mm_lease_activations: active_mm.lease_activations,
+        active_mm_lease_deactivations: active_mm.lease_deactivations,
+        active_mm_reclaim_ready: active_mm.reclaim_ready,
+        active_mm_reclaim_destroyed: active_mm.reclaim_destroyed,
         scheduler_ipi_sends: SCHEDULER_IPI_SEND_COUNT.load(Ordering::Relaxed),
         scheduler_ipi_consumes: SCHEDULER_IPI_CONSUME_COUNT.load(Ordering::Relaxed),
         clockevent_irqs: timer_irq_count(),

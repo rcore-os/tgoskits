@@ -527,7 +527,11 @@ impl CpuRunQueueState {
         if self.queue.current().is_some() {
             task_runtime::fatal_invariant(0x5251_0001, self.owner.as_u32() as usize);
         }
-        self.membarrier_state = Self::state_for_address_space(current.address_space());
+        let task_membarrier_state = Self::state_for_address_space(current.address_space());
+        self.membarrier_state = crate::runtime::scheduled_membarrier_state(
+            self.membarrier_state,
+            task_membarrier_state,
+        );
         self.queue.install_current(current);
     }
 

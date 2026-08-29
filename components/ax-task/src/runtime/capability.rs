@@ -256,6 +256,25 @@ impl AddressSpaceMembarrierState {
     }
 }
 
+pub(crate) const fn scheduled_membarrier_state(
+    active_mm_state: AddressSpaceMembarrierState,
+    task_membarrier_state: AddressSpaceMembarrierState,
+) -> AddressSpaceMembarrierState {
+    if task_membarrier_state.identity().is_none() {
+        active_mm_state
+    } else {
+        task_membarrier_state
+    }
+}
+
+#[cfg(axtest)]
+pub const fn scheduled_membarrier_state_for_test(
+    active_mm_state: AddressSpaceMembarrierState,
+    task_membarrier_state: AddressSpaceMembarrierState,
+) -> AddressSpaceMembarrierState {
+    scheduled_membarrier_state(active_mm_state, task_membarrier_state)
+}
+
 /// Bounded operation executed synchronously on a target CPU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]

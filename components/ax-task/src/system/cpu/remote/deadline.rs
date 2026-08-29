@@ -104,9 +104,11 @@ impl CpuDeadlineSnapshot {
             Ordering::Relaxed,
         );
         self.publication_runtime_deadline.store(
-            state.publication.map_or(DEADLINE_SNAPSHOT_NONE, |publication| {
-                encode_deadline_snapshot(publication.runtime_deadline)
-            }),
+            state
+                .publication
+                .map_or(DEADLINE_SNAPSHOT_NONE, |publication| {
+                    encode_deadline_snapshot(publication.runtime_deadline)
+                }),
             Ordering::Relaxed,
         );
         self.sequence

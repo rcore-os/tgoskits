@@ -130,6 +130,54 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "active_mm_same_activations {}",
+        metrics.active_mm_same_activations
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "active_mm_different_activations {}",
+        metrics.active_mm_different_activations
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "active_mm_kernel_lazy_activations {}",
+        metrics.active_mm_kernel_lazy_activations
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "active_mm_hardware_root_writes {}",
+        metrics.active_mm_hardware_root_writes
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "active_mm_lease_activations {}",
+        metrics.active_mm_lease_activations
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "active_mm_lease_deactivations {}",
+        metrics.active_mm_lease_deactivations
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "active_mm_reclaim_ready {}",
+        metrics.active_mm_reclaim_ready
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "active_mm_reclaim_destroyed {}",
+        metrics.active_mm_reclaim_destroyed
+    )
+    .unwrap();
+    writeln!(
+        output,
         "current_thread_handle_queries {}",
         task.current_thread_handle_queries
     )
@@ -852,6 +900,33 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "pipe_read_calls",
+                "pipe_read_waits",
+                "pipe_read_bytes",
+                "pipe_write_calls",
+                "pipe_write_waits",
+                "pipe_write_bytes",
+                "pipe_write_reader_wakes_before_wait",
+                "pipe_write_reader_wakes_final",
+                "pipe_write_writer_wakes_final",
+                "pipe_wait_registrations",
+                "pipe_wait_registration_races",
+                "pipe_wake_calls",
+                "pipe_wake_shared_matches",
+                "pipe_wake_no_exclusive_match",
+                "pipe_wake_direct_attempts",
+                "pipe_wake_direct_delivered",
+                "pipe_wake_direct_retry",
+                "pipe_wake_direct_stale",
+                "pipe_wake_poll_delivered",
+                "active_mm_same_activations",
+                "active_mm_different_activations",
+                "active_mm_kernel_lazy_activations",
+                "active_mm_hardware_root_writes",
+                "active_mm_lease_activations",
+                "active_mm_lease_deactivations",
+                "active_mm_reclaim_ready",
+                "active_mm_reclaim_destroyed",
                 "current_thread_handle_queries",
                 "scheduler_deadline_derivation_entries",
                 "scheduler_deadline_derivation_clock_event_entries",

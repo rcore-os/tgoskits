@@ -3,6 +3,8 @@
 use alloc::{boxed::Box, sync::Arc};
 #[cfg(feature = "uspace")]
 use core::sync::atomic::AtomicBool;
+#[cfg(feature = "qperf-metrics")]
+use core::sync::atomic::AtomicU64;
 use core::{
     mem::align_of,
     ptr,
@@ -62,6 +64,50 @@ struct RuntimeAddressSpace {
 }
 
 const _: () = assert!(crate::CPU_CAPACITY <= usize::BITS as usize);
+
+#[cfg(feature = "qperf-metrics")]
+static ACTIVE_MM_SAME_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static ACTIVE_MM_DIFFERENT_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static ACTIVE_MM_KERNEL_LAZY_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static ACTIVE_MM_HARDWARE_ROOT_WRITES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static ACTIVE_MM_LEASE_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static ACTIVE_MM_LEASE_DEACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static ACTIVE_MM_RECLAIM_READY: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static ACTIVE_MM_RECLAIM_DESTROYED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "qperf-metrics")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct QperfAddressSpaceMetricsSnapshot {
+    pub(super) same_activations: u64,
+    pub(super) different_activations: u64,
+    pub(super) kernel_lazy_activations: u64,
+    pub(super) hardware_root_writes: u64,
+    pub(super) lease_activations: u64,
+    pub(super) lease_deactivations: u64,
+    pub(super) reclaim_ready: u64,
+    pub(super) reclaim_destroyed: u64,
+}
+
+#[cfg(feature = "qperf-metrics")]
+pub(super) fn qperf_address_space_metrics_snapshot() -> QperfAddressSpaceMetricsSnapshot {
+    QperfAddressSpaceMetricsSnapshot {
+        same_activations: ACTIVE_MM_SAME_ACTIVATIONS.load(Ordering::Relaxed),
+        different_activations: ACTIVE_MM_DIFFERENT_ACTIVATIONS.load(Ordering::Relaxed),
+        kernel_lazy_activations: ACTIVE_MM_KERNEL_LAZY_ACTIVATIONS.load(Ordering::Relaxed),
+        hardware_root_writes: ACTIVE_MM_HARDWARE_ROOT_WRITES.load(Ordering::Relaxed),
+        lease_activations: ACTIVE_MM_LEASE_ACTIVATIONS.load(Ordering::Relaxed),
+        lease_deactivations: ACTIVE_MM_LEASE_DEACTIVATIONS.load(Ordering::Relaxed),
+        reclaim_ready: ACTIVE_MM_RECLAIM_READY.load(Ordering::Relaxed),
+        reclaim_destroyed: ACTIVE_MM_RECLAIM_DESTROYED.load(Ordering::Relaxed),
+    }
+}
 
 /// Shared CPU-footprint state for one hardware page-table root.
 ///
@@ -318,6 +364,8 @@ fn install_hardware_root(root: usize, transition: HardwareAddressSpaceTransition
         // SAFETY: callers retain local IRQ exclusion for the complete active-mm
         // transaction.
         unsafe { ax_hal::asm::write_user_page_table(root) };
+        #[cfg(feature = "qperf-metrics")]
+        ACTIVE_MM_HARDWARE_ROOT_WRITES.fetch_add(1, Ordering::Relaxed);
         // Linux reloads CR3 when the logical mm changes even if a reclaimed
         // page-table frame gives the new mm the same root address. Otherwise
         // non-PCID x86 can retain translations from the former mm. The other
@@ -351,6 +399,8 @@ fn commit_user_address_space_activation(
     let same_address_space = next_raw == previous_raw
         || previous.is_some_and(|previous| Arc::ptr_eq(&previous.cpu_state, &next.cpu_state));
     if same_address_space {
+        #[cfg(feature = "qperf-metrics")]
+        ACTIVE_MM_SAME_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
         debug_assert_eq!(
             previous.map(|previous| previous.root),
             Some(next.root),
@@ -364,8 +414,12 @@ fn commit_user_address_space_activation(
         install_root(next.root, HardwareAddressSpaceTransition::SameAddressSpace);
         return false;
     }
+    #[cfg(feature = "qperf-metrics")]
+    ACTIVE_MM_DIFFERENT_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
     next.active_cpus.fetch_add(1, Ordering::AcqRel);
     next.cpu_state.activate(cpu_id);
+    #[cfg(feature = "qperf-metrics")]
+    ACTIVE_MM_LEASE_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
     install_root(
         next.root,
         HardwareAddressSpaceTransition::DifferentAddressSpace,
@@ -373,6 +427,8 @@ fn commit_user_address_space_activation(
     publish_active(next_raw);
     if let Some(previous) = previous {
         previous.cpu_state.deactivate(cpu_id);
+        #[cfg(feature = "qperf-metrics")]
+        ACTIVE_MM_LEASE_DEACTIVATIONS.fetch_add(1, Ordering::Relaxed);
         release_active_cpu(previous)
     } else {
         false
@@ -388,6 +444,8 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
             with_current_cpu_pin(|pin| {
                 let previous_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
                 if activation.kind() == AddressSpaceActivationKind::KernelLazy {
+                    #[cfg(feature = "qperf-metrics")]
+                    ACTIVE_MM_KERNEL_LAZY_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
                     enter_lazy_kernel_address_space();
                     return RuntimeStatus::Success;
                 }
@@ -467,6 +525,8 @@ pub(super) fn release_current_active_address_space() {
             previous
                 .cpu_state
                 .deactivate(pin.area().cpu_index().as_usize());
+            #[cfg(feature = "qperf-metrics")]
+            ACTIVE_MM_LEASE_DEACTIVATIONS.fetch_add(1, Ordering::Relaxed);
             release_active_cpu(previous)
         })
     };
@@ -488,6 +548,8 @@ pub(super) fn destroy_runtime_address_space(
     // SAFETY: the caller owns the unique AddressSpaceToken destruction right,
     // and the zero active count proves no CPU retains a borrowed pointer.
     drop(unsafe { Box::from_raw(raw) });
+    #[cfg(feature = "qperf-metrics")]
+    ACTIVE_MM_RECLAIM_DESTROYED.fetch_add(1, Ordering::Relaxed);
     AddressSpaceDestroyOutcome::Released
 }
 
@@ -528,7 +590,12 @@ pub(super) fn update_runtime_address_space_membarrier_state(
 fn release_active_cpu(address_space: &RuntimeAddressSpace) -> bool {
     let active = address_space.active_cpus.fetch_sub(1, Ordering::AcqRel);
     assert!(active >= 1, "active address-space CPU count underflow");
-    active == 1 && address_space.reclaim_waiting.swap(0, Ordering::AcqRel) != 0
+    let reclaim_ready = active == 1 && address_space.reclaim_waiting.swap(0, Ordering::AcqRel) != 0;
+    #[cfg(feature = "qperf-metrics")]
+    if reclaim_ready {
+        ACTIVE_MM_RECLAIM_READY.fetch_add(1, Ordering::Relaxed);
+    }
+    reclaim_ready
 }
 
 #[cfg(any(feature = "uspace", test))]

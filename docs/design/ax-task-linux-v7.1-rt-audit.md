@@ -4620,6 +4620,47 @@ qperf 中重复出现；本检查点既满足 Linux 语义，也取得小幅无�
 当作全部根因。下一独立检查点转向不同进程切换的 active-mm、lazy-TLB generation、实际 CR3 write
 与 lease 事务计数，先证明 process 特有的地址空间成本与 Linux v7.1 `switch_mm_irqs_off()` 差异。
 
+### 2026-08-29 Linux kernel thread 借用 active-mm 的 membarrier 状态
+
+Linux v7.1 `kernel/sched/core.c::context_switch()` 在 user task 切到 kernel thread 时不切换到一份
+空 mm：`next->active_mm = prev->active_mm`，并用 `mmgrab_lazy_tlb()` 持有借用生命周期；kernel
+thread 继续切到 user task 时才由 switch tail 对旧 active-mm 执行对应释放。只有 `next->mm` 非空时
+才调用 `membarrier_switch_mm()` 与 `switch_mm_irqs_off()`，因此普通 user -> kernel 调度不能把
+`rq->membarrier_state` 当作“当前 task 没有 mm”而清零。kernel thread 没有自己的 mm，并不表示
+CPU 在这一段失去当前 active-mm 或其 membarrier 可见状态。
+
+旧 Starry/ax-task 的地址空间硬件 owner 已经支持 kernel-lazy：x86 保留当前 user page-table root，
+ax-runtime 也保留每 CPU `ACTIVE_ADDRESS_SPACE` 的借用。但 `CpuRunQueueState::install_current()`
+仍只从 `current.address_space()` 派生 rq membarrier state；kernel thread 的 token 为 `NONE`，于是
+同一个调度提交错误地把仍被借用的 active-mm 状态清零。最终实现把调度提交规则收敛为一个状态
+转换：user task 发布自己的 mm 状态，kernel thread 则保留 owner rq 已有的 active-mm 状态。
+exec/detach 等真正替换或释放 current address space 的路径仍显式刷新为 provider 状态，不建立第二份
+mm identity、兼容分支或 Starry 到 ax-task 的直接依赖。
+
+确定性回归通过 Starry -> ax-runtime 的 axtest-only 观测入口编译真实 ax-task 转换，不安装 fake
+`TaskRuntime`/`TaskSystem`/`CpuLocal`。旧实现的 x86_64 真实 Starry QEMU suite 到达断言后稳定 panic：
+`a kernel thread borrows the CPU's active mm and must retain its rq membarrier state`；修复后同一命令
+`cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64` 为 77/77，新增用例
+`kernel_thread_retains_active_mm_membarrier_state` 实际执行并通过。
+
+性能优先验证的未插桩 true `-smp 1` process/20 五轮为
+1.337/1.471/1.423/1.608/1.428 s，中位数 1.428 s；相对上一检查点十轮合并中位数 1.335 s 名义
+退化约 7.0%，仍在此前 TCG 波动范围内。与 Linux v7.1 PREEMPT_RT 0.396 s 相比仍约慢 3.61 倍。
+该转换符合 Linux active-mm 语义，因此不因吞吐波动回退。
+
+为区分 active-mm 事务与外围调度成本，`qperf-metrics` 在 ax-runtime 的唯一 activation、hardware-root、
+lease 与 reclaim owner 点增加 feature-gated relaxed 计数，并由 Starry debugfs 原样导出。true
+`-smp 1`、process/20 的有效 qperf 窗口为 5.655 s；相同传输量下共有 9216 次 context switch，
+其中 different-mm activation、hardware-root write、lease activation/deactivation 都是 8460 次，
+占真实切换约 91.8%；kernel-lazy activation 为 701 次，约占 7.6%。本次语义修复只影响后者附近的
+rq membarrier publication，不减少前者的 CR3 写入或切换次数，因而不是剩余性能差距根因。
+
+QEMU 当前 CPU 模型同时报告 PCID 与 INVPCID 不可用；在该配置中 Linux 的不同-mm 路径同样需要
+写 CR3，不能把 8460 次写入本身判为 Starry 特有错误。尚未对齐的独立语义是 Linux x86
+`arch/x86/mm/tlb.c::switch_mm_irqs_off()` 的 `loaded_mm`、`is_lazy`、per-ASID `tlb_gen` 与
+`LOADED_MM_SWITCHING` 协议。下一检查点必须先构造旧实现必然失败的真实 QEMU stale-TLB 红测，再
+修改这一完整路径；不能仅凭性能计数删除正确的不同-mm flush。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

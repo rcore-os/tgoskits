@@ -297,13 +297,12 @@ impl CpuLocal {
             runtime_deadline: non_timer.runtime_deadline,
         };
         if task_deadlines.publication == Some(publication) {
-            let update =
-                SchedulerDeadlineUpdate::try_new(
-                    task_deadlines.generation,
-                    publication.deadline,
-                    publication.runtime_deadline,
-                )
-                    .ok_or(TaskError::InvalidConfiguration)?;
+            let update = SchedulerDeadlineUpdate::try_new(
+                task_deadlines.generation,
+                publication.deadline,
+                publication.runtime_deadline,
+            )
+            .ok_or(TaskError::InvalidConfiguration)?;
             return Ok(SchedulerDeadlinePublicationOutcome::Unchanged(update));
         }
         Self::commit_scheduler_deadline_publication(task_deadlines, publication)
@@ -336,13 +335,12 @@ impl CpuLocal {
             .generation
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
-        let update =
-            SchedulerDeadlineUpdate::try_new(
-                task_deadlines.generation,
-                publication.deadline,
-                publication.runtime_deadline,
-            )
-                .ok_or(TaskError::InvalidConfiguration)?;
+        let update = SchedulerDeadlineUpdate::try_new(
+            task_deadlines.generation,
+            publication.deadline,
+            publication.runtime_deadline,
+        )
+        .ok_or(TaskError::InvalidConfiguration)?;
         task_deadlines.publication = Some(publication);
         Ok(update)
     }

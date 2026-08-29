@@ -127,6 +127,26 @@ pub use scheduler_events::{
 };
 pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
 
+/// Checks the kernel-thread active-mm membarrier transition in real runtime builds.
+#[cfg(axtest)]
+pub fn kernel_thread_retains_active_mm_membarrier_state_for_test() -> bool {
+    static IDENTITY_ANCHOR: u8 = 0;
+
+    let identity_raw = (&IDENTITY_ANCHOR as *const u8).expose_provenance();
+    // SAFETY: the static address is non-zero, unique, and remains live for the
+    // complete duration in which this test state can be observed.
+    let identity = unsafe { ax_task::runtime::AddressSpaceMembarrierId::from_raw(identity_raw) };
+    // SAFETY: the identity satisfies the contract above and zero contains no
+    // undeclared registration bits.
+    let active_mm_state =
+        unsafe { ax_task::runtime::AddressSpaceMembarrierState::new(identity, 0) };
+
+    ax_task::runtime::scheduled_membarrier_state_for_test(
+        active_mm_state,
+        ax_task::runtime::AddressSpaceMembarrierState::NONE,
+    ) == active_mm_state
+}
+
 /// Drains scheduler work and leaves IRQs disabled for atomic userspace entry.
 ///
 /// The caller must invoke the architecture `UserContext::run()` immediately

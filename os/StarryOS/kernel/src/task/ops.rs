@@ -139,6 +139,14 @@ fn inactive_interval_timer_poll_skips_cpu_time_sample_for_test() -> bool {
 #[cfg(all(test, axtest))]
 mod axtests {
     #[axtest::axtest]
+    fn kernel_thread_retains_active_mm_membarrier_state() {
+        assert!(
+            ax_runtime::task::kernel_thread_retains_active_mm_membarrier_state_for_test(),
+            "a kernel thread borrows the CPU's active mm and must retain its rq membarrier state",
+        );
+    }
+
+    #[axtest::axtest]
     fn inactive_interval_timer_poll_skips_cpu_time_sample() {
         assert!(super::inactive_interval_timer_poll_skips_cpu_time_sample_for_test());
     }
