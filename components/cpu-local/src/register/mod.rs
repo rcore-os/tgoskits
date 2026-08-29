@@ -107,9 +107,9 @@ pub(crate) fn current_area() -> Result<CpuAreaRef, CpuLocalError> {
     if area_base == 0 {
         return Err(CpuLocalError::AreaNotInstalled);
     }
-    // SAFETY: only install_cpu_area writes the architecture-owned base, and
-    // its contract requires a shutdown-lifetime initialized area.
-    unsafe { CpuAreaRef::from_initialized_base(area_base) }
+    // SAFETY: only install_cpu_area writes the architecture-owned base after
+    // validating it, and its contract keeps that area mapped until shutdown.
+    Ok(unsafe { CpuAreaRef::from_installed_base(area_base) })
 }
 
 /// Reads the architecture CPU-area base without validating current context.
@@ -207,17 +207,27 @@ pub unsafe fn current_context_unpinned() -> Result<NonNull<ExecutionContextHeade
             validated_context_pointer(register)
         }
         #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
-        CurrentContextSource::RuntimeAnchor => loop {
-            // Architectures whose current source is also the kernel TLS base
-            // keep current in the CPU runtime anchor. Retry if migration
-            // changes the area before the guard can be constructed.
-            let area = current_area()?;
-            let register = unsafe { imp::read_current_context(area.base()) };
-            if unsafe { imp::read_cpu_base()? } != area.base() {
-                continue;
+        CurrentContextSource::RuntimeAnchor => {
+            #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+            {
+                // GS selects the CPU-owned current slot, but the value names
+                // the pinned execution context. An interrupt may migrate this
+                // instruction stream after the read; when it resumes, the
+                // same context and immutable publication are still live.
+                validated_context_pointer(unsafe { imp::read_current_context(0) })
             }
-            return validated_context_pointer(register);
-        },
+            #[cfg(not(all(target_arch = "x86_64", not(feature = "host-test"))))]
+            loop {
+                // Other anchor-backed architectures require the sampled area
+                // to remain stable until their current slot has been read.
+                let area = current_area()?;
+                let register = unsafe { imp::read_current_context(area.base()) };
+                if unsafe { imp::read_cpu_base()? } != area.base() {
+                    continue;
+                }
+                return validated_context_pointer(register);
+            }
+        }
     }
 }
 
@@ -369,6 +379,27 @@ mod tests {
     }
 
     #[test]
+    fn installed_current_area_reuses_install_time_identity_validation() {
+        let area = modeled_area(0);
+        let boot = area.prefix().boot_context().header();
+
+        // SAFETY: this host thread serially owns the leaked CPU fixture.
+        unsafe { imp::install_cpu_base(area.base(), boot as *const _ as usize) };
+        host_test::reset_register_read_counts();
+
+        assert_eq!(current_area(), Ok(area));
+        assert_eq!(
+            host_test::register_read_counts(),
+            host_test::RegisterReadCounts {
+                cpu_base: 1,
+                current_context: 0,
+                initialized_area_validations: 0,
+            },
+            "a live installed base must not repeat shutdown-lifetime identity validation",
+        );
+    }
+
+    #[test]
     fn pinned_current_validation_reuses_the_pinned_area_identity() {
         let area = modeled_area(0);
         let boot = area.prefix().boot_context().header();
@@ -382,8 +413,8 @@ mod tests {
 
         assert_eq!(
             host_test::register_read_counts().initialized_area_validations,
-            1,
-            "the header-side binding check must reuse the already validated pinned area",
+            0,
+            "pin construction must reuse the area identity validated before installation",
         );
     }
 

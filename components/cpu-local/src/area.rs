@@ -205,6 +205,25 @@ impl CpuAreaRef {
         Ok(Self { prefix, cpu_index })
     }
 
+    /// Reconstructs the area selected by an already validated installed base.
+    ///
+    /// # Safety
+    ///
+    /// `area_base` must be the exact base of a [`CpuAreaRef`] previously
+    /// validated and installed through the architecture register boundary.
+    /// That area must retain its immutable identity and remain mapped until
+    /// shutdown.
+    pub(crate) unsafe fn from_installed_base(area_base: usize) -> Self {
+        debug_assert!(area_base != 0);
+        debug_assert!(area_base.is_multiple_of(align_of::<CpuAreaPrefix>()));
+        // SAFETY: the caller guarantees that the installed base is non-null
+        // and still names the previously validated shutdown-lifetime prefix.
+        let prefix = unsafe { NonNull::new_unchecked(area_base as *mut CpuAreaPrefix) };
+        // SAFETY: the installed prefix retains its immutable validated header.
+        let cpu_index = unsafe { prefix.as_ref() }.header().cpu_index();
+        Self { prefix, cpu_index }
+    }
+
     /// Returns this area's logical CPU index.
     pub const fn cpu_index(self) -> CpuIndex {
         self.cpu_index
