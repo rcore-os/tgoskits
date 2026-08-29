@@ -175,7 +175,7 @@ struct ContextSwitchFrame {
 /// restore the x87 FPU, MMX, XMM, and MXCSR registers.
 ///
 /// This is also the legacy region (offset 0..512) at the head of the
-/// XSAVE/XRSTOR area, so it doubles as the start of [`XsaveArea`].
+/// XSAVE/XRSTOR area, so it doubles as the start of [`UserXstate`].
 ///
 /// See <https://www.felixcloutier.com/x86/fxsave> for more details.
 #[allow(missing_docs)]
@@ -207,6 +207,18 @@ const _: () = assert!(core::mem::size_of::<FxsaveArea>() == 512);
 ///
 /// [`enable_xsave_features`]: ../../../../platforms/someboot/src/arch/x86_64/trap.rs
 const XSAVE_AREA_SIZE: usize = 1024;
+#[cfg(feature = "fp-simd")]
+const XSAVE_HEADER_OFFSET: usize = 512;
+#[cfg(feature = "fp-simd")]
+const XSAVE_HEADER_SIZE: usize = 64;
+#[cfg(feature = "fp-simd")]
+const XSAVE_XCOMP_BV_OFFSET: usize = XSAVE_HEADER_OFFSET + size_of::<u64>();
+#[cfg(feature = "fp-simd")]
+const XSAVE_HEADER_RESERVED_OFFSET: usize = XSAVE_XCOMP_BV_OFFSET + size_of::<u64>();
+#[cfg(feature = "fp-simd")]
+const XFEATURE_MASK_FPSSE: u64 = (1 << 0) | (1 << 1);
+#[cfg(feature = "fp-simd")]
+const MXCSR_FALLBACK_MASK: u32 = 0x0000_ffbf;
 
 /// A 64-byte-aligned memory region for the XSAVE/XRSTOR instructions, which save
 /// and restore the full `XCR0`-enabled extended state (x87, SSE/XMM, and the
@@ -218,7 +230,8 @@ const XSAVE_AREA_SIZE: usize = 1024;
 ///
 /// See <https://www.felixcloutier.com/x86/xsave> for more details.
 #[repr(C, align(64))]
-struct XsaveArea {
+#[derive(Clone, Copy)]
+pub struct UserXstate {
     /// Legacy region, identical in layout to the FXSAVE/FXRSTOR area.
     legacy: FxsaveArea,
     /// XSAVE header (`XSTATE_BV`, `XCOMP_BV`, reserved) plus the extended
@@ -227,7 +240,137 @@ struct XsaveArea {
     rest: [u8; XSAVE_AREA_SIZE - 512],
 }
 
-const _: () = assert!(core::mem::size_of::<XsaveArea>() == XSAVE_AREA_SIZE);
+const _: () = assert!(core::mem::size_of::<UserXstate>() == XSAVE_AREA_SIZE);
+
+#[cfg(feature = "fp-simd")]
+impl UserXstate {
+    /// Returns the standard, non-compacted x86 user xstate size enabled by XCR0.
+    ///
+    /// `None` means this CPU uses the FXSAVE fallback and therefore does not
+    /// provide Linux's `NT_X86_XSTATE` regset.
+    pub fn user_size() -> Option<usize> {
+        if !ExtendedState::xsave_enabled() {
+            return None;
+        }
+        let size = core::arch::x86_64::__cpuid_count(0x0d, 0).ebx as usize;
+        assert!(
+            (XSAVE_HEADER_OFFSET + XSAVE_HEADER_SIZE..=XSAVE_AREA_SIZE).contains(&size),
+            "enabled x86 user xstate exceeds the task-owned XSAVE area",
+        );
+        Some(size)
+    }
+
+    /// Returns the legacy 512-byte FXSAVE region.
+    pub const fn fxsave_area(&self) -> &FxsaveArea {
+        &self.legacy
+    }
+
+    /// Returns the enabled standard-format user xstate bytes.
+    pub fn user_bytes(&self) -> Option<&[u8]> {
+        let size = Self::user_size()?;
+        // SAFETY: `UserXstate` is a contiguous XSAVE area and `size` was
+        // validated against its capacity above.
+        Some(unsafe { core::slice::from_raw_parts((self as *const Self).cast::<u8>(), size) })
+    }
+
+    /// Replaces the Linux FXSAVE-compatible portion while retaining all other
+    /// xfeatures, as `PTRACE_SETFPREGS`/`NT_PRFPREG` require.
+    pub fn replace_fxsave_area(&mut self, area: FxsaveArea) -> bool {
+        if !Self::mxcsr_is_valid(area.mxcsr) {
+            return false;
+        }
+        self.legacy = area;
+        if ExtendedState::xsave_enabled() {
+            let features = self.xstate_bv() | XFEATURE_MASK_FPSSE;
+            self.write_xstate_bv(features);
+        }
+        true
+    }
+
+    /// Replaces the complete standard-format user xstate after validating the
+    /// Linux UABI header, enabled feature mask, and MXCSR reserved bits.
+    pub fn replace_user_bytes(&mut self, bytes: &[u8]) -> bool {
+        let Some(user_size) = Self::user_size() else {
+            return false;
+        };
+        if bytes.len() != user_size {
+            return false;
+        }
+        let xstate_bv = read_u64(bytes, XSAVE_HEADER_OFFSET);
+        let xcomp_bv = read_u64(bytes, XSAVE_XCOMP_BV_OFFSET);
+        if xstate_bv & !ExtendedState::xsave_mask() != 0
+            || xcomp_bv != 0
+            || bytes[XSAVE_HEADER_RESERVED_OFFSET..XSAVE_HEADER_OFFSET + XSAVE_HEADER_SIZE]
+                .iter()
+                .any(|byte| *byte != 0)
+        {
+            return false;
+        }
+        let mxcsr = u32::from_ne_bytes(
+            bytes[24..28]
+                .try_into()
+                .expect("the FXSAVE MXCSR field has a fixed width"),
+        );
+        if !Self::mxcsr_is_valid(mxcsr) {
+            return false;
+        }
+
+        // SAFETY: `UserXstate` is a contiguous writable XSAVE area, and the
+        // destination length is its compile-time capacity.
+        let destination = unsafe {
+            core::slice::from_raw_parts_mut((self as *mut Self).cast::<u8>(), XSAVE_AREA_SIZE)
+        };
+        destination.fill(0);
+        destination[..user_size].copy_from_slice(bytes);
+        true
+    }
+
+    fn xstate_bv(&self) -> u64 {
+        read_u64(
+            self.user_bytes()
+                .expect("xstate header requires XSAVE support"),
+            XSAVE_HEADER_OFFSET,
+        )
+    }
+
+    fn write_xstate_bv(&mut self, value: u64) {
+        let bytes = value.to_ne_bytes();
+        // SAFETY: the fixed XSAVE header lies inside `UserXstate`.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (self as *mut Self).cast::<u8>().add(XSAVE_HEADER_OFFSET),
+                bytes.len(),
+            )
+        };
+    }
+
+    fn mxcsr_is_valid(mxcsr: u32) -> bool {
+        let mut feature_image =
+            unsafe { core::mem::MaybeUninit::<FxsaveArea>::zeroed().assume_init() };
+        // SAFETY: `feature_image` is a writable 16-byte-aligned FXSAVE area.
+        // FXSAVE preserves the current hardware registers and reports the CPU
+        // feature mask independently of any user-provided xstate payload.
+        unsafe {
+            core::arch::x86_64::_fxsave64((&mut feature_image as *mut FxsaveArea).cast::<u8>())
+        };
+        let mask = if feature_image.mxcsr_mask == 0 {
+            MXCSR_FALLBACK_MASK
+        } else {
+            feature_image.mxcsr_mask
+        };
+        mxcsr & !mask == 0
+    }
+}
+
+#[cfg(feature = "fp-simd")]
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_ne_bytes(
+        bytes[offset..offset + size_of::<u64>()]
+            .try_into()
+            .expect("the XSAVE header field has a fixed width"),
+    )
+}
 
 /// Extended state of a task, such as FP/SIMD states.
 ///
@@ -235,7 +378,7 @@ const _: () = assert!(core::mem::size_of::<XsaveArea>() == XSAVE_AREA_SIZE);
 /// path enabled `CR4.OSXSAVE` (so that the AVX `YMM` upper halves are preserved),
 /// and falls back to FXSAVE/FXRSTOR otherwise.
 pub struct ExtendedState {
-    area: XsaveArea,
+    area: UserXstate,
 }
 
 #[cfg(feature = "fp-simd")]
@@ -310,7 +453,7 @@ impl ExtendedState {
         // Zeroing the whole area gives XRSTOR an all-initial XSAVE header
         // (XSTATE_BV = 0) so the first restore loads each component's default
         // state; the legacy fields below seed the FXSAVE fallback path too.
-        let mut area: XsaveArea = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        let mut area: UserXstate = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
         area.legacy.fcw = 0x37f;
         // In the 512-byte FXSAVE/FXRSTOR area the x87 tag word is *abridged*: the
         // low byte of this field is one bit per x87 register, where 0 = empty and
@@ -494,6 +637,37 @@ impl TaskContext {
             super::local_state::publish_current_user_fp_owner(current);
         }
         child.ext_state.save();
+    }
+
+    /// Captures the current task's complete hardware user xstate.
+    #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+    pub fn capture_user_fp_state(&self) -> UserXstate {
+        let current = self
+            .context_header()
+            .expect("a userspace FPU snapshot requires a bound execution context")
+            .as_ptr()
+            .expose_provenance();
+        if super::local_state::current_user_fp_needs_restore(current) {
+            self.ext_state.restore();
+            super::local_state::publish_current_user_fp_owner(current);
+        }
+        let mut snapshot = ExtendedState::default();
+        snapshot.save();
+        snapshot.area
+    }
+
+    /// Installs a complete user xstate into the current task and hardware owner.
+    #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+    pub fn replace_user_fp_state(&mut self, state: UserXstate) {
+        let current = self
+            .context_header()
+            .expect("a userspace FPU replacement requires a bound execution context")
+            .as_ptr()
+            .expose_provenance();
+        super::local_state::assert_current_user_fp_resettable(current);
+        self.ext_state.area = state;
+        self.ext_state.restore();
+        super::local_state::publish_current_user_fp_owner(current);
     }
 
     /// Replaces this task's user FPU state with the architecture initial image.

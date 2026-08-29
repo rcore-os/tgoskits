@@ -69,6 +69,8 @@ const NT_PRSTATUS: usize = 1;
 const NT_FPREGSET: usize = 2;
 #[cfg(target_arch = "x86_64")]
 const NT_FPREGSET: usize = 2;
+#[cfg(target_arch = "x86_64")]
+const NT_X86_XSTATE: usize = 0x202;
 
 const PTRACE_O_TRACESYSGOOD: usize = 1;
 const PTRACE_O_TRACEFORK: usize = 1 << 1;
@@ -523,6 +525,8 @@ fn ptrace_getregset(
             target_arch = "x86_64"
         ))]
         NT_FPREGSET => ptrace_getregset_fpregset(current, pid, data),
+        #[cfg(target_arch = "x86_64")]
+        NT_X86_XSTATE => ptrace_getregset_x86_xstate(current, pid, data),
         _ => Err(crate::StarryError::Unsupported),
     }
 }
@@ -542,6 +546,8 @@ fn ptrace_setregset(
             target_arch = "x86_64"
         ))]
         NT_FPREGSET => ptrace_setregset_fpregset(current, pid, data),
+        #[cfg(target_arch = "x86_64")]
+        NT_X86_XSTATE => ptrace_setregset_x86_xstate(current, pid, data),
         _ => Err(crate::StarryError::Unsupported),
     }
 }
@@ -965,6 +971,10 @@ fn ptrace_getregset_fpregset(
     if iov.iov_len < 0 {
         return Err(StarryError::InvalidInput);
     }
+    #[cfg(target_arch = "x86_64")]
+    if !(iov.iov_len as usize).is_multiple_of(size_of::<u64>()) {
+        return Err(StarryError::InvalidInput);
+    }
     let bytes = unsafe {
         slice::from_raw_parts(
             (&regs as *const ArchFpRegs).cast::<u8>(),
@@ -993,11 +1003,96 @@ fn ptrace_setregset_fpregset(
         return Err(StarryError::InvalidInput);
     }
     let iov = (data as *const IoVec).vm_read(current)?;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let requested = usize::try_from(iov.iov_len).map_err(|_| StarryError::InvalidInput)?;
+        if !requested.is_multiple_of(size_of::<u64>())
+            || requested.min(size_of::<ArchFpRegs>()) != size_of::<ArchFpRegs>()
+        {
+            return Err(StarryError::InvalidInput);
+        }
+    }
     if iov.iov_len < size_of::<ArchFpRegs>() as isize {
         return Err(StarryError::InvalidInput);
     }
     let regs = ptrace_read_user_fpregs(current, iov.iov_base as usize)?;
-    ptrace_write_stopped_fp_regs(current, pid, regs)
+    ptrace_write_stopped_fp_regs(current, pid, regs)?;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut iov = iov;
+        iov.iov_len = size_of::<ArchFpRegs>() as isize;
+        (data as *mut IoVec).vm_write(current, iov)?;
+    }
+    Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_getregset_x86_xstate(
+    current: &UserTaskRef,
+    pid: PtraceTarget,
+    data: usize,
+) -> StarryResult<isize> {
+    if data == 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    let mut iov = (data as *const IoVec).vm_read(current)?;
+    let requested = usize::try_from(iov.iov_len).map_err(|_| StarryError::InvalidInput)?;
+    if !requested.is_multiple_of(size_of::<u64>()) {
+        return Err(StarryError::InvalidInput);
+    }
+
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
+    let fp_data = tracee
+        .ptrace_stop_fp_data_for(tid)
+        .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
+    let bytes = fp_data.0.user_bytes().ok_or(StarryError::NoSuchDevice)?;
+    let copy_len = requested.min(bytes.len());
+    vm_write_slice(current, iov.iov_base, &bytes[..copy_len])?;
+    iov.iov_len = copy_len as isize;
+    (data as *mut IoVec).vm_write(current, iov)?;
+    Ok(0)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_setregset_x86_xstate(
+    current: &UserTaskRef,
+    pid: PtraceTarget,
+    data: usize,
+) -> StarryResult<isize> {
+    if data == 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    let mut iov = (data as *const IoVec).vm_read(current)?;
+    let requested = usize::try_from(iov.iov_len).map_err(|_| StarryError::InvalidInput)?;
+    if !requested.is_multiple_of(size_of::<u64>()) {
+        return Err(StarryError::InvalidInput);
+    }
+    let user_size = ax_cpu::UserXstate::user_size().ok_or(StarryError::NoSuchDevice)?;
+    let copy_len = requested.min(user_size);
+    if copy_len != user_size {
+        return Err(StarryError::BadAddress);
+    }
+
+    let mut raw = vec![MaybeUninit::<u8>::uninit(); user_size];
+    vm_read_slice(current, iov.iov_base as *const u8, &mut raw)?;
+    // SAFETY: `vm_read_slice` initialized every byte in `raw` or returned an
+    // error before this conversion.
+    let bytes = unsafe { slice::from_raw_parts(raw.as_ptr().cast::<u8>(), raw.len()) };
+
+    let (tracee, tid) = ptrace_stopped_tracee_with_tid(current, pid)?;
+    let mut fp_data = tracee
+        .ptrace_stop_fp_data_for(tid)
+        .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
+    if !fp_data.0.replace_user_bytes(bytes) {
+        return Err(StarryError::InvalidInput);
+    }
+    if !tracee.set_ptrace_stop_fp_data_for(tid, fp_data) {
+        return Err(StarryError::from(Errno::ESRCH));
+    }
+
+    iov.iov_len = user_size as isize;
+    (data as *mut IoVec).vm_write(current, iov)?;
+    Ok(0)
 }
 
 #[cfg(any(
@@ -1091,7 +1186,17 @@ fn ptrace_write_stopped_fp_regs(
         fp_data.fcsr = regs.fcsr;
         fp_data
     };
-    #[cfg(not(target_arch = "loongarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    let fp_data = {
+        let mut fp_data = tracee
+            .ptrace_stop_fp_data_for(tid)
+            .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
+        if !fp_data.0.replace_fxsave_area(regs.0) {
+            return Err(StarryError::InvalidInput);
+        }
+        fp_data
+    };
+    #[cfg(not(any(target_arch = "loongarch64", target_arch = "x86_64")))]
     let fp_data = PtraceStopFpData::from(regs);
 
     if !tracee.set_ptrace_stop_fp_data_for(tid, fp_data) {
@@ -2400,14 +2505,7 @@ fn loongarch_unpack_fcc(packed: u64) -> [u8; 8] {
 #[cfg(target_arch = "x86_64")]
 impl From<PtraceStopFpData> for X8664FpRegs {
     fn from(data: PtraceStopFpData) -> Self {
-        Self(data.0)
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-impl From<X8664FpRegs> for PtraceStopFpData {
-    fn from(regs: X8664FpRegs) -> Self {
-        Self(regs.0)
+        Self(*data.0.fxsave_area())
     }
 }
 

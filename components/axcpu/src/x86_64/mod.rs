@@ -16,6 +16,6 @@ pub mod uspace;
 
 pub(crate) use self::context::TrapFrame;
 pub use self::{
-    context::{ExtendedState, FxsaveArea, TaskContext, TrapFrame as UserRegisters},
+    context::{ExtendedState, FxsaveArea, TaskContext, TrapFrame as UserRegisters, UserXstate},
     trap::KernelTrapFrame,
 };

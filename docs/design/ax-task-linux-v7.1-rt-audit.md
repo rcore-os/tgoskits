@@ -4452,6 +4452,54 @@ x86_64 `fp-simd + uspace + smp` 定向 clippy，以及 Starry kernel x86_64/risc
 已有格式漂移文件，已逐项撤销，只保留目标 Rust 文件格式结果；`git diff --check` 通过。没有运行与本
 改动无关的 Starry 106 项全 feature 串行矩阵。
 
+### 2026-08-29 x86 ptrace 完整 XSAVE regset 与 current owner 恢复
+
+Linux v7.1 x86_64 把 stopped task 的 task-owned fpstate 作为 ptrace 唯一真源：上下文切换已经把远端
+tracee 的硬件寄存器保存到内存，`NT_PRFPREG` 暴露 512 字节标准 FXSAVE UABI，
+`NT_X86_XSTATE` 则按 CPUID/XCR0 决定的 `fpu_user_cfg.max_size` 暴露标准、非 compacted XSAVE UABI。
+完整 xstate SET 校验 header、enabled feature mask 和 CPU 的 `mxcsr_feature_mask`，随后使旧硬件缓存
+失效；下一次返回用户态必须从修改后的 task fpstate 恢复。PREEMPT_RT 不改变这些 regset、UABI 或
+owner 算法，只把 `fpregs_lock()` 的实现换成禁抢占
+（`arch/x86/kernel/ptrace.c:1246-1262,1365-1374`、
+`arch/x86/kernel/fpu/regset.c:36-175`、`arch/x86/kernel/fpu/xstate.c:1290-1405`、
+`arch/x86/kernel/fpu/context.h:10-80`）。
+
+旧 Starry 在 tracee 自己进入 ptrace stop 时直接 `_fxsave64` 到独立 512 字节 map，既丢失 YMM upper
+128-bit，也没有 `NT_X86_XSTATE`；resume 又直接 `_fxrstor64`，但没有同步当前
+`TaskContext.ext_state` 或 CPU-local `user_fp_owner`。因此 tracer 的 SET 即使修改 stop snapshot，也可能
+在最终 user-return 时被旧 task image 覆盖。确定性 x86_64 QEMU 回归让 tracee 在 `int3` 前一条指令
+写入完整 YMM0，tracer 读取 legacy XMM 与 full xstate，修改完整 YMM 后继续，tracee 在任何 libc 调用前
+立即保存寄存器并退出。旧实现稳定在 `NT_X86_XSTATE` 返回 `ENOSYS`；补全主链后，又分别以确定性红测
+发现 legacy regset 接受 511 字节非槽对齐 GET，以及错误地把用户可写 `mxcsr_mask` 当作后续 CPU feature
+mask。最终同一用例覆盖 aligned length/truncation、短 SET 的 `EFAULT`、非法 header/MXCSR 的
+`EINVAL`、完整 YMM GET/SET 和 resume owner transaction，全部转绿。
+
+最终实现保留 stop snapshot map 的正确所有权边界：远端 tracer 从不借用 stopped tracee 的 runtime
+context，也不操作另一个 CPU 的 physical owner。tracee 在 stop 前通过 axruntime 的 current-only API，
+于 IRQ-off `CpuPin` 下确认/恢复自己的 owner 后捕获 64-byte aligned `UserXstate`；调度切出仍把同一
+硬件镜像保存到 task-owned `ExtendedState`。tracer 只修改 stop-owned snapshot：legacy SET 保留其余
+xfeatures 并标记 x87/SSE in-use，full SET 只接受 XCR0 enabled standard header，并通过本 CPU FXSAVE
+得到只读 capability mask 校验 MXCSR，不信任 UABI 中用户可写的 `mxcsr_mask`。resume 回到 tracee 自己
+的 current context 后，在同一个 IRQ-off owner transaction 中同时替换 `ext_state`、XRSTOR/FXRSTOR
+物理寄存器并发布 current owner；最终 user-return 因 owner 已匹配不会再恢复旧 image。这对应 Linux
+`fpu_force_restore()` 失效旧 cache、随后 lazy restore 新 fpstate 的可观察语义，同时符合 Starry 现有
+CPU-local owner 模型，不增加远端 context lease 或第二份真源。
+
+性能优先验证使用未插桩 Starry true `-smp 1`，thread/20 五轮为
+0.766/0.877/0.770/0.906/0.901 s，中位数 0.877 s；process/20 为
+1.512/1.428/1.377/1.394/1.483 s，中位数 1.428 s。相对上一 clone 检查点 0.873/1.550 s，thread
+名义退化约 0.5%，process 名义改善约 7.9%。ptrace 不在 hackbench 热路径，因此只能证明普通调度路径
+没有可见退化，不能把 process 改善归因于本修复；process 仍为 Linux v7.1 PREEMPT_RT 0.396 s 的约
+3.61 倍，剩余单核吞吐差距继续向非 ptrace 高频路径查找。
+
+质量门禁覆盖 ax-cpu `fp-simd + host-test + uspace` 的 9 个单元/集成测试组合与 doctest、ax-cpu
+29/29 clippy 组合、ax-runtime x86_64 `fp-simd + uspace + smp` 定向 clippy，以及 Starry kernel
+x86_64/riscv64 `smp` 两条架构分支的定向 clippy。完整 ax-runtime clippy 仍被本检查点外的 ax-fs-ng
+fatfs feature-gate 错误阻断，riscv64 全依赖 clippy 则被既有的 ax-runtime 8 参数接口告警阻断；目标
+crate 自身的 `--no-deps -D warnings` 已通过，不通过 `allow` 隐藏。最终真实 x86_64 QEMU 同一
+`test-ptrace-x86-xstate` 用例再次输出 `STARRY_GROUPED_TESTS_PASSED`；目标 Rust 文件 rustfmt 与
+`git diff --check` 作为提交前门禁执行。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

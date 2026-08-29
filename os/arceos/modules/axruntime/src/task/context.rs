@@ -421,6 +421,52 @@ pub(super) fn inherit_current_user_fp_state(child_context: usize) {
     ax_hal::asm::enable_irqs();
 }
 
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub(super) fn capture_current_user_fp_state() -> Result<ax_hal::cpu::UserXstate, TaskError> {
+    if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
+        return Err(TaskError::UnsafeContext);
+    }
+    ax_hal::asm::disable_irqs();
+    // SAFETY: local IRQ exclusion pins the runtime context and CPU-local FPU
+    // owner while the current hardware image is copied into a task-owned value.
+    let result = unsafe {
+        with_current_cpu_pin(|cpu_pin| {
+            let context = current_runtime_context(cpu_pin).map_err(runtime_status_error)?;
+            // SAFETY: this is the current architecture context and the IRQ-off
+            // CPU pin excludes scheduler and remote context mutation.
+            let architecture_context = &*context.inner.get();
+            Ok(architecture_context.capture_user_fp_state())
+        })
+    };
+    ax_hal::asm::enable_irqs();
+    result
+}
+
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub(super) fn replace_current_user_fp_state(
+    state: ax_hal::cpu::UserXstate,
+) -> Result<(), TaskError> {
+    if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
+        return Err(TaskError::UnsafeContext);
+    }
+    ax_hal::asm::disable_irqs();
+    // SAFETY: local IRQ exclusion pins the runtime context and CPU-local FPU
+    // owner through the task-memory replacement, hardware restore, and owner
+    // publication transaction.
+    let result = unsafe {
+        with_current_cpu_pin(|cpu_pin| {
+            let context = current_runtime_context(cpu_pin).map_err(runtime_status_error)?;
+            // SAFETY: this is the current architecture context and IRQ
+            // exclusion prevents concurrent scheduler mutation.
+            let architecture_context = &mut *context.inner.get();
+            architecture_context.replace_user_fp_state(state);
+            Ok(())
+        })
+    };
+    ax_hal::asm::enable_irqs();
+    result
+}
+
 pub(super) fn reset_current_user_fp_state() -> Result<(), TaskError> {
     #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
     {

@@ -324,7 +324,7 @@ pub struct PtraceStopFpData;
 
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
-pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
+pub struct PtraceStopFpData(pub ax_cpu::UserXstate);
 
 impl ProcessData {
     /// Mark this process as traceable by its parent.
@@ -876,15 +876,12 @@ impl ProcessData {
 
     #[cfg(target_arch = "x86_64")]
     pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
-        let mut area =
-            unsafe { core::mem::MaybeUninit::<ax_cpu::FxsaveArea>::zeroed().assume_init() };
-        unsafe {
-            core::arch::x86_64::_fxsave64((&mut area as *mut ax_cpu::FxsaveArea).cast::<u8>());
-        }
+        let state = ax_runtime::task::capture_current_user_fp_state()
+            .expect("ptrace stop must snapshot FPU state from ordinary current task context");
         self.ptrace
             .stop_fp_data
             .lock()
-            .insert(tid, PtraceStopFpData(area));
+            .insert(tid, PtraceStopFpData(state));
     }
 
     #[cfg(target_arch = "riscv64")]
@@ -949,12 +946,11 @@ impl ProcessData {
 
     #[cfg(target_arch = "x86_64")]
     pub fn restore_current_fp_for_ptrace(&self, tid: TidNumber, _uctx: &mut UserContext) {
-        let Some(PtraceStopFpData(area)) = self.ptrace.stop_fp_data.lock().remove(&tid) else {
+        let Some(PtraceStopFpData(state)) = self.ptrace.stop_fp_data.lock().remove(&tid) else {
             return;
         };
-        unsafe {
-            core::arch::x86_64::_fxrstor64((&area as *const ax_cpu::FxsaveArea).cast::<u8>());
-        }
+        ax_runtime::task::replace_current_user_fp_state(state)
+            .expect("ptrace resume must restore FPU state in ordinary current task context");
     }
 
     pub fn ptrace_stop_fp_data_for(&self, tid: TidNumber) -> Option<PtraceStopFpData> {

@@ -139,6 +139,18 @@ pub fn prepare_user_return() -> Result<(), TaskError> {
 pub fn reset_current_user_fp_state() -> Result<(), TaskError> {
     context::reset_current_user_fp_state()
 }
+
+/// Captures the current x86 task's complete standard user xstate image.
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub fn capture_current_user_fp_state() -> Result<ax_hal::cpu::UserXstate, TaskError> {
+    context::capture_current_user_fp_state()
+}
+
+/// Replaces the current x86 task's user xstate and physical FPU owner image.
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub fn replace_current_user_fp_state(state: ax_hal::cpu::UserXstate) -> Result<(), TaskError> {
+    context::replace_current_user_fp_state(state)
+}
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
 pub(crate) use scheduler_events::{record_scheduler_ipi_consume, record_scheduler_ipi_send};
 #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
