@@ -294,6 +294,7 @@ impl ThreadSignalManager {
         vm: &mut I,
         uctx: &mut UserContext,
         prepared: PreparedSignalHandler,
+        fpstate: crate::arch::SignalFpState,
     ) -> SignalOSAction {
         let layout = Layout::new::<SignalFrame>();
         let mut uses_sigaltstack = false;
@@ -311,13 +312,54 @@ impl ThreadSignalManager {
         } else {
             uctx.sp()
         };
-        let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
+
+        #[cfg(target_arch = "x86_64")]
+        let (aligned_sp, fpstate_address, fpstate) = {
+            // Linux preserves the interrupted x86-64 red zone before placing
+            // the 64-byte-aligned variable-sized FPU frame and rt_sigframe.
+            let Some(fpstate_address) = sp
+                .checked_sub(128)
+                .and_then(|sp| sp.checked_sub(fpstate.frame_size()))
+                .map(|sp| sp & !(64 - 1))
+            else {
+                return SignalOSAction::CoreDump;
+            };
+            let Some(frame_address) = fpstate_address.checked_sub(layout.size()) else {
+                return SignalOSAction::CoreDump;
+            };
+            (
+                frame_address & !(layout.align() - 1),
+                fpstate_address,
+                fpstate,
+            )
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = fpstate;
+        #[cfg(not(target_arch = "x86_64"))]
+        let aligned_sp = {
+            let Some(frame_address) = sp.checked_sub(layout.size()) else {
+                return SignalOSAction::CoreDump;
+            };
+            frame_address & !(layout.align() - 1)
+        };
+
+        #[cfg(target_arch = "x86_64")]
+        let mut ucontext = UContext::new(uctx, prepared.restore_blocked);
+        #[cfg(not(target_arch = "x86_64"))]
+        let ucontext = UContext::new(uctx, prepared.restore_blocked);
+        #[cfg(target_arch = "x86_64")]
+        {
+            ucontext.set_fpstate(fpstate_address, fpstate.has_xstate());
+            if fpstate.write(vm, fpstate_address).is_err() {
+                return SignalOSAction::CoreDump;
+            }
+        }
         let frame_ptr = aligned_sp as *mut SignalFrame;
         if frame_ptr
             .vm_write(
                 vm,
                 SignalFrame {
-                    ucontext: UContext::new(uctx, prepared.restore_blocked),
+                    ucontext,
                     siginfo: prepared.siginfo,
                     uctx: *uctx,
                     used_sigaltstack: u8::from(uses_sigaltstack),
@@ -357,15 +399,17 @@ impl ThreadSignalManager {
     }
 
     #[cold]
-    fn check_signals_slow_with<I: VmIo, F>(
+    fn check_signals_slow_with<I: VmIo, F, C>(
         &self,
         vm: &mut I,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
         before_deliver: &mut F,
+        capture_fpstate: &mut C,
     ) -> Option<(SignalInfo, SignalOSAction)>
     where
         F: FnMut(&mut UserContext, &SignalInfo, bool),
+        C: FnMut() -> crate::arch::SignalFpState,
     {
         let blocked = self.blocked.lock_irqsave();
         let mask = !*blocked;
@@ -383,7 +427,8 @@ impl ThreadSignalManager {
                 }
                 PreparedSignal::Handler(prepared) => {
                     before_deliver(uctx, &sig, restartable);
-                    let os_action = self.install_signal_handler(vm, uctx, prepared);
+                    let os_action =
+                        self.install_signal_handler(vm, uctx, prepared, capture_fpstate());
                     break Some((sig, os_action));
                 }
             }
@@ -395,15 +440,17 @@ impl ThreadSignalManager {
     /// Calls `before_deliver` immediately before the selected signal is
     /// delivered. The callback receives the user context, the delivered signal,
     /// and whether its disposition is restartable.
-    pub fn check_signals_with<I: VmIo, F>(
+    pub fn check_signals_with<I: VmIo, F, C>(
         &self,
         vm: &mut I,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
         mut before_deliver: F,
+        mut capture_fpstate: C,
     ) -> Option<(SignalInfo, SignalOSAction)>
     where
         F: FnMut(&mut UserContext, &SignalInfo, bool),
+        C: FnMut() -> crate::arch::SignalFpState,
     {
         // Fast path
         if !self.possibly_has_signal.load(Ordering::Acquire)
@@ -411,26 +458,45 @@ impl ThreadSignalManager {
         {
             return None;
         }
-        self.check_signals_slow_with(vm, uctx, restore_blocked, &mut before_deliver)
+        self.check_signals_slow_with(
+            vm,
+            uctx,
+            restore_blocked,
+            &mut before_deliver,
+            &mut capture_fpstate,
+        )
     }
 
     /// Checks pending signals and delivers one if possible.
     ///
-    /// Returns the delivered signal and its delivery result, if any.
-    pub fn check_signals<I: VmIo>(
+    /// The caller supplies the architecture state captured at the current-task
+    /// runtime boundary. Returns the delivered signal and its delivery result,
+    /// if any.
+    pub fn check_signals<I: VmIo, C>(
         &self,
         vm: &mut I,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
-    ) -> Option<(SignalInfo, SignalOSAction)> {
-        self.check_signals_with(vm, uctx, restore_blocked, |_, _, _| {})
+        capture_fpstate: C,
+    ) -> Option<(SignalInfo, SignalOSAction)>
+    where
+        C: FnMut() -> crate::arch::SignalFpState,
+    {
+        self.check_signals_with(vm, uctx, restore_blocked, |_, _, _| {}, capture_fpstate)
     }
 
     /// Restores the signal frame. Called by `sigreturn`.
-    pub fn restore<I: VmIo>(&self, vm: &mut I, uctx: &mut UserContext) -> SignalResult<isize> {
+    pub fn restore<I: VmIo>(
+        &self,
+        vm: &mut I,
+        uctx: &mut UserContext,
+    ) -> SignalResult<crate::arch::SignalFpRestore> {
         let frame_ptr = uctx.sp() as *const SignalFrame;
         // copy the saved frame back from uspace
         let frame: SignalFrame = unsafe { frame_ptr.vm_read_uninit(vm)?.assume_init() };
+
+        #[cfg(target_arch = "x86_64")]
+        let restored_fpstate = crate::arch::SignalFpState::restore(vm, frame.ucontext.fpstate())?;
 
         *uctx = frame.uctx;
         frame.ucontext.mcontext.restore(uctx);
@@ -440,7 +506,10 @@ impl ThreadSignalManager {
             self.leave_stack();
         }
         self.possibly_has_signal.store(true, Ordering::Release);
-        Ok(0)
+        #[cfg(target_arch = "x86_64")]
+        return Ok(restored_fpstate);
+        #[cfg(not(target_arch = "x86_64"))]
+        Ok(())
     }
 
     /// Sends a signal to the thread.

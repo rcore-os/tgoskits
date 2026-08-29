@@ -37,7 +37,14 @@ fn handle_signal() {
 
     let mut uctx = initial;
     assert!(thr.send_signal(sig.clone()));
-    let (_si, result) = thr.check_signals(&mut vm(), &mut uctx, None).unwrap();
+    let (_si, result) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
 
     assert_eq!(result, SignalOSAction::NoFurtherAction);
     assert_eq!(uctx.ip(), test_handler as *const () as usize);
@@ -95,11 +102,25 @@ fn check_signals() {
     let sig = SignalInfo::new_user(signo, 0, 1, 0);
 
     assert_eq!(proc.send_signal(sig.clone()), Some(TID));
-    let (si, _os_action) = thr.check_signals(&mut vm(), &mut uctx, None).unwrap();
+    let (si, _os_action) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
     assert_eq!(si.signo(), signo);
 
     assert!(thr.send_signal(sig.clone()));
-    let (si, _os_action) = thr.check_signals(&mut vm(), &mut uctx, None).unwrap();
+    let (si, _os_action) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
     assert_eq!(si.signo(), signo);
 }
 
@@ -122,9 +143,15 @@ fn check_signals_with_reports_restartable_delivery() {
     assert!(thr.send_signal(sig));
     let mut observed = None;
     let (si, os_action) = thr
-        .check_signals_with(&mut vm(), &mut uctx, None, |_, delivered, restartable| {
-            observed = Some((delivered.signo(), restartable));
-        })
+        .check_signals_with(
+            &mut vm(),
+            &mut uctx,
+            None,
+            |_, delivered, restartable| {
+                observed = Some((delivered.signo(), restartable));
+            },
+            starry_signal::arch::SignalFpState::default,
+        )
         .unwrap();
 
     assert_eq!(si.signo(), signo);
@@ -146,7 +173,14 @@ fn restore() {
 
     let mut uctx = initial;
     assert!(thr.send_signal(sig.clone()));
-    let (_si, action) = thr.check_signals(&mut vm(), &mut uctx, None).unwrap();
+    let (_si, action) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
     assert_eq!(action, SignalOSAction::NoFurtherAction);
 
     prepare_restore_context(&mut uctx);
@@ -181,7 +215,14 @@ fn sigaltstack_reports_active_until_restore() {
 
     let mut uctx = UserContext::new(0x219, initial_sp().into(), 0);
     assert!(thr.send_signal(SignalInfo::new_user(signo, 0, 1, 0)));
-    let (_si, action) = thr.check_signals(&mut vm(), &mut uctx, None).unwrap();
+    let (_si, action) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
 
     assert_eq!(action, SignalOSAction::NoFurtherAction);
     assert!(uctx.sp() >= alt_base);

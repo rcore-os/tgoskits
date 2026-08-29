@@ -244,6 +244,11 @@ const _: () = assert!(core::mem::size_of::<UserXstate>() == XSAVE_AREA_SIZE);
 
 #[cfg(feature = "fp-simd")]
 impl UserXstate {
+    /// Returns the architecture's initial user FPU state image.
+    pub const fn initial() -> Self {
+        ExtendedState::default().area
+    }
+
     /// Returns the standard, non-compacted x86 user xstate size enabled by XCR0.
     ///
     /// `None` means this CPU uses the FXSAVE fallback and therefore does not
@@ -260,9 +265,29 @@ impl UserXstate {
         Some(size)
     }
 
+    /// Returns the user xfeatures enabled by the boot-time XCR0 policy.
+    pub fn user_feature_mask() -> u64 {
+        if ExtendedState::xsave_enabled() {
+            ExtendedState::xsave_mask()
+        } else {
+            XFEATURE_MASK_FPSSE
+        }
+    }
+
     /// Returns the legacy 512-byte FXSAVE region.
     pub const fn fxsave_area(&self) -> &FxsaveArea {
         &self.legacy
+    }
+
+    /// Returns the legacy 512-byte FXSAVE region as bytes.
+    pub fn fxsave_bytes(&self) -> &[u8] {
+        // SAFETY: `FxsaveArea` is a contiguous initialized 512-byte region.
+        unsafe {
+            core::slice::from_raw_parts(
+                (&self.legacy as *const FxsaveArea).cast::<u8>(),
+                size_of::<FxsaveArea>(),
+            )
+        }
     }
 
     /// Returns the enabled standard-format user xstate bytes.
@@ -285,6 +310,24 @@ impl UserXstate {
             self.write_xstate_bv(features);
         }
         true
+    }
+
+    /// Replaces the Linux FXSAVE-compatible portion from its byte UABI.
+    pub fn replace_fxsave_bytes(&mut self, bytes: &[u8]) -> bool {
+        if bytes.len() != size_of::<FxsaveArea>() {
+            return false;
+        }
+        let mut area = core::mem::MaybeUninit::<FxsaveArea>::zeroed();
+        // SAFETY: the destination is a valid aligned `FxsaveArea`, both slices
+        // have exactly its size, and `u8` has no invalid bit patterns.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                area.as_mut_ptr().cast::<u8>(),
+                bytes.len(),
+            );
+            self.replace_fxsave_area(area.assume_init())
+        }
     }
 
     /// Replaces the complete standard-format user xstate after validating the
@@ -325,6 +368,30 @@ impl UserXstate {
         true
     }
 
+    /// Replaces a standard-format user xstate prefix from an older signal ABI.
+    ///
+    /// Components absent from the supplied prefix enter their architectural
+    /// initial state. Every feature named in `XSTATE_BV` must fit completely in
+    /// the supplied prefix.
+    pub fn replace_user_bytes_prefix(&mut self, bytes: &[u8]) -> bool {
+        let Some(user_size) = Self::user_size() else {
+            return false;
+        };
+        if !(XSAVE_HEADER_OFFSET + XSAVE_HEADER_SIZE..=user_size).contains(&bytes.len()) {
+            return false;
+        }
+        let xstate_bv = read_u64(bytes, XSAVE_HEADER_OFFSET);
+        if xstate_bv & !ExtendedState::xsave_mask() != 0
+            || !xstate_components_fit(xstate_bv, bytes.len())
+        {
+            return false;
+        }
+
+        let mut complete = [0; XSAVE_AREA_SIZE];
+        complete[..bytes.len()].copy_from_slice(bytes);
+        self.replace_user_bytes(&complete[..user_size])
+    }
+
     fn xstate_bv(&self) -> u64 {
         read_u64(
             self.user_bytes()
@@ -361,6 +428,26 @@ impl UserXstate {
         };
         mxcsr & !mask == 0
     }
+}
+
+#[cfg(feature = "fp-simd")]
+fn xstate_components_fit(xstate_bv: u64, supplied_size: usize) -> bool {
+    for feature in 2..u64::BITS {
+        if xstate_bv & (1 << feature) == 0 {
+            continue;
+        }
+        let component = core::arch::x86_64::__cpuid_count(0x0d, feature);
+        let offset = component.ebx as usize;
+        let size = component.eax as usize;
+        if size == 0
+            || offset
+                .checked_add(size)
+                .is_none_or(|end| end > supplied_size)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(feature = "fp-simd")]

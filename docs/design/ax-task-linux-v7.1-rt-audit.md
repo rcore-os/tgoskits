@@ -4500,6 +4500,56 @@ crate 自身的 `--no-deps -D warnings` 已通过，不通过 `allow` 隐藏。�
 `test-ptrace-x86-xstate` 用例再次输出 `STARRY_GROUPED_TESTS_PASSED`；目标 Rust 文件 rustfmt 与
 `git diff --check` 作为提交前门禁执行。
 
+### 2026-08-29 x86 signal XSAVE frame 与 sigreturn current owner 恢复
+
+Linux v7.1 x86_64 在建立 `rt_sigframe` 时先保留 128 字节 red zone，再把独立 FPU payload 放在
+64 字节对齐的用户栈地址。payload 的前 512 字节保持 FXSAVE legacy 布局；启用 XSAVE 时，内核在
+legacy 区偏移 464 写 `_fpx_sw_bytes`（`FP_XSTATE_MAGIC1`、extended size、允许的 xfeatures 与
+xstate size），使用 standard/non-compacted xstate header，并在 payload 尾部写
+`FP_XSTATE_MAGIC2`。`rt_sigreturn` 对合法扩展帧校验 feature mask、header、reserved 字段与 MXCSR，
+对没有有效 magic 的 payload 按 legacy FX-only 帧恢复，空 `fpstate` 指针则恢复初始 FPU 状态；最终
+恢复必须同时更新 task-owned fpstate 和当前 CPU 的物理 owner。PREEMPT_RT 只改变
+`fpregs_lock()` 的抢占保护实现，不改变 signal UABI 或 owner 算法
+（`arch/x86/kernel/fpu/signal.c:27-65,101-147,327-360,449-492`、
+`arch/x86/kernel/signal_64.c:50-190,243-279`、
+`arch/x86/include/uapi/asm/sigcontext.h:21-197`、
+`arch/x86/include/asm/fpu/context.h:10-80`）。
+
+旧 Starry 始终把 `MContext.fpstate` 写成 0，signal delivery 不保存 x87/SSE/AVX，handler 返回后的
+`rt_sigreturn` 也不解析用户 signal xstate、不更新 `TaskContext.ext_state` 或 CPU-local
+`user_fp_owner`。确定性 x86_64 QEMU 回归在 signal 到达前把完整模式写入 YMM15，SA_SIGINFO handler
+验证 Linux magic/header 后修改用户 xstate frame 中的 YMM upper half，并在返回前执行 `vzeroall`；
+旧实现稳定失败为 `fpregs == NULL`，最终实现则在任何 libc 调用前观察到 interrupted low half 与
+handler-modified upper half，输出 `PASS: x86 rt_sigreturn restores handler-modified AVX xstate`。
+
+最终所有权边界没有让 `starry-signal` 依赖 ax-runtime，也没有为 host test 增加 fake task/runtime：
+signal crate 只负责 Linux UABI 的 frame placement、编码、解析与纯 `UserXstate` 校验；Starry kernel
+在普通 current task 上通过 axruntime current-only API 捕获或安装状态。signal delivery 在发布
+frame 前捕获 current physical xstate，设置 `UC_FP_XSTATE` 与 64 字节对齐指针；sigreturn 对合法
+XSAVE、legacy fallback 和 null-reset 分别产生 task-owned restore 结果，kernel 再于同一个 current
+owner transaction 中替换内存 image、恢复物理寄存器并发布 owner。非法帧在返回错误前重置当前
+FPU，避免部分解析后继续沿用不可信硬件状态；远端任务、第二份 fpstate map 和旧 `ax-task` fake
+system 均未引入。
+
+性能优先验证使用未插桩 Starry true `-smp 1`。thread/20 五轮为
+0.885/0.852/0.818/0.906/0.863 s，中位数 0.863 s；process/20 为
+1.699/1.390/1.353/1.329/1.296 s，中位数 1.353 s。相对上一 ptrace 检查点 0.877/1.428 s，thread
+名义改善约 1.6%，process 名义改善约 5.3%；signal 不在 hackbench 热路径，因此只能证明普通调度
+路径没有可见退化，不能把波动归因于本修复。process 仍为 Linux v7.1 PREEMPT_RT 0.396 s 的约
+3.42 倍；下一步用 1 秒 qperf 计数同时核对 pipe read/write 字节与 syscall 次数、wait/wake/context
+switch 放大，以及不同 mm 切换的 active-mm/CR3 事务。
+
+质量门禁覆盖 ax-cpu `fp-simd + host-test + uspace` 的完整测试、ax-cpu 29/29 与 starry-signal
+1/1 clippy 组合、starry-signal 全部 host tests，以及 Starry kernel x86_64/riscv64 `smp` 两条实际
+架构分支的 `--no-deps -D warnings`。真实 x86_64 QEMU 的新增 AVX signal-frame 红绿用例、既有
+`test-sigreturn` 9/9 和 `test-rt_sigaction` 548/548 均通过。目标 Rust 文件 rustfmt 与
+`git diff --check` 作为提交前门禁执行。
+
+本检查点只完成 signal xstate UABI 与 current owner 恢复，不能据此声称整个 `rt_sigreturn` 已与
+Linux 等价。现存的通用寄存器/SS/RFLAGS 校验、altstack 与 signal mask 恢复顺序，以及坏 frame 应
+进入 `signal_fault`/SIGSEGV 而非普通 syscall error 的差异，继续作为独立红绿检查点处理；验证这些
+语义时不得放宽现有测试，也不得用 signal 特例绕过 task/runtime owner。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
