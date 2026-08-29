@@ -79,6 +79,9 @@ cargo xtask cross-test --arch riscv64 \
 echo "==> axvisor riscv64 VSEIP unbound-state cross-test"
 cargo xtask cross-test --arch riscv64 --package riscv_vcpu --lib \
   controller_vseip_line_updates_saved_state_while_unbound
+echo "==> axvisor riscv64 host trap-state cross-test"
+cargo xtask cross-test --arch riscv64 --package riscv_vcpu --no-default-features --lib \
+  vm_exit_restores_host_stvec_before_host_sstatus
 echo "==> axvisor riscv64 backtrace panic"
 cargo xtask axvisor test qemu --arch riscv64 --test-case backtrace-panic
 echo "==> axvisor riscv64 no-backtrace panic"

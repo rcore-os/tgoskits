@@ -61,6 +61,22 @@ fn vm_exit_restores_host_anchors_before_returning_to_rust() {
 }
 
 #[test]
+fn vm_exit_restores_host_stvec_before_host_sstatus() {
+    // The interrupt-safe restore order is an assembly contract: Rust only
+    // regains control after this sequence has completed.
+    let restore = section(TRAP_ASSEMBLY, "_restore_csrs:", "/* Save guest EPC. */");
+    assert_in_order(
+        restore,
+        &[
+            "ld    t1, ({hyp_stvec})(a0)",
+            "csrw  stvec, t1",
+            "ld    t1, ({hyp_sstatus})(a0)",
+            "csrrw t1, sstatus, t1",
+        ],
+    );
+}
+
+#[test]
 fn mmio_decode_uses_the_trap_snapshot() {
     let decode = section(
         VCPU,
