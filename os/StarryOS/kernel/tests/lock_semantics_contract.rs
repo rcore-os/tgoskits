@@ -87,6 +87,20 @@ fn tty_blocking_ownership_uses_pi_mutexes() {
 }
 
 #[test]
+fn single_cpu_pi_mutex_does_not_spin_on_its_owner() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("Starry kernel must remain below the workspace root");
+    let mutex = compact_source(&workspace_root.join("components/ax-task/src/sync/mutex/mod.rs"));
+
+    assert!(
+        mutex.contains("cpu_count>1&&same_owner&&owner_on_cpu&&waiter_is_top&&!need_resched"),
+        "Linux PREEMPT_RT disables rtmutex owner spinning on a single-CPU kernel"
+    );
+}
+
+#[test]
 fn exec_cloexec_table_guard_does_not_cross_the_commit_boundary() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let execve = std::fs::read_to_string(source_root.join("syscall/task/execve.rs"))

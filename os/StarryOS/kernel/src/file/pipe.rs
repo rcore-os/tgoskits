@@ -74,6 +74,10 @@ static PIPE_WAKE_DIRECT_RETRY: AtomicU64 = AtomicU64::new(0);
 static PIPE_WAKE_DIRECT_STALE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "qperf-metrics")]
 static PIPE_WAKE_POLL_DELIVERED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_STATE_LOCK_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_STATE_LOCK_CONTENDED: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "qperf-metrics")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,6 +101,8 @@ pub(crate) struct PipeQperfMetricsSnapshot {
     pub(crate) wake_direct_retry: u64,
     pub(crate) wake_direct_stale: u64,
     pub(crate) wake_poll_delivered: u64,
+    pub(crate) state_lock_attempts: u64,
+    pub(crate) state_lock_contended: u64,
 }
 
 #[cfg(feature = "qperf-metrics")]
@@ -121,6 +127,8 @@ pub(crate) fn qperf_metrics_snapshot() -> PipeQperfMetricsSnapshot {
         wake_direct_retry: PIPE_WAKE_DIRECT_RETRY.load(Ordering::Relaxed),
         wake_direct_stale: PIPE_WAKE_DIRECT_STALE.load(Ordering::Relaxed),
         wake_poll_delivered: PIPE_WAKE_POLL_DELIVERED.load(Ordering::Relaxed),
+        state_lock_attempts: PIPE_STATE_LOCK_ATTEMPTS.load(Ordering::Relaxed),
+        state_lock_contended: PIPE_STATE_LOCK_CONTENDED.load(Ordering::Relaxed),
     }
 }
 
@@ -605,6 +613,14 @@ impl Shared {
     }
 
     fn update_state<R>(&self, update: impl FnOnce(&mut PipeState) -> R) -> R {
+        #[cfg(feature = "qperf-metrics")]
+        PIPE_STATE_LOCK_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "qperf-metrics")]
+        let mut state = self.state.try_lock().unwrap_or_else(|| {
+            PIPE_STATE_LOCK_CONTENDED.fetch_add(1, Ordering::Relaxed);
+            self.state.lock()
+        });
+        #[cfg(not(feature = "qperf-metrics"))]
         let mut state = self.state.lock();
         let result = update(&mut state);
         // Every PipeState mutation goes through this boundary. Publish while

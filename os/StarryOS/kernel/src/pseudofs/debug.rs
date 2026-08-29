@@ -130,6 +130,18 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "pipe_state_lock_attempts {}",
+        pipe.state_lock_attempts
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pipe_state_lock_contended {}",
+        pipe.state_lock_contended
+    )
+    .unwrap();
+    writeln!(
+        output,
         "active_mm_same_activations {}",
         metrics.active_mm_same_activations
     )
@@ -919,6 +931,8 @@ mod tests {
                 "pipe_wake_direct_retry",
                 "pipe_wake_direct_stale",
                 "pipe_wake_poll_delivered",
+                "pipe_state_lock_attempts",
+                "pipe_state_lock_contended",
                 "active_mm_same_activations",
                 "active_mm_different_activations",
                 "active_mm_kernel_lazy_activations",

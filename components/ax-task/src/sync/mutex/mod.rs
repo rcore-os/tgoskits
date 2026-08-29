@@ -301,6 +301,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         let Some(owner) = token.initial_owner() else {
             return token.can_claim() || token.is_granted();
         };
+        let cpu_count = task_result(crate::cpu_topology_len(), "capture PI mutex CPU topology");
 
         loop {
             if token.can_claim() || token.is_granted() {
@@ -308,6 +309,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             }
 
             let may_spin = owner_spin_eligible(
+                cpu_count,
                 self.core.is_owned_by(owner),
                 token.initial_owner_is_on_cpu(),
                 token.is_top_waiter(),
@@ -508,12 +510,13 @@ unsafe impl lock_api::RawMutex for RawMutex {
 }
 
 fn owner_spin_eligible(
+    cpu_count: usize,
     same_owner: bool,
     owner_on_cpu: bool,
     waiter_is_top: bool,
     need_resched: bool,
 ) -> bool {
-    same_owner && owner_on_cpu && waiter_is_top && !need_resched
+    cpu_count > 1 && same_owner && owner_on_cpu && waiter_is_top && !need_resched
 }
 
 #[track_caller]
@@ -568,10 +571,11 @@ mod tests {
 
     #[test]
     fn owner_spin_requires_every_linux_progress_gate() {
-        assert!(owner_spin_eligible(true, true, true, false));
-        assert!(!owner_spin_eligible(false, true, true, false));
-        assert!(!owner_spin_eligible(true, false, true, false));
-        assert!(!owner_spin_eligible(true, true, false, false));
-        assert!(!owner_spin_eligible(true, true, true, true));
+        assert!(!owner_spin_eligible(1, true, true, true, false));
+        assert!(owner_spin_eligible(2, true, true, true, false));
+        assert!(!owner_spin_eligible(2, false, true, true, false));
+        assert!(!owner_spin_eligible(2, true, false, true, false));
+        assert!(!owner_spin_eligible(2, true, true, false, false));
+        assert!(!owner_spin_eligible(2, true, true, true, true));
     }
 }

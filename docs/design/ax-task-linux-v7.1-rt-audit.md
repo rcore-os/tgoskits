@@ -4661,6 +4661,41 @@ QEMU 当前 CPU 模型同时报告 PCID 与 INVPCID 不可用；在该配置中 
 `LOADED_MM_SWITCHING` 协议。下一检查点必须先构造旧实现必然失败的真实 QEMU stale-TLB 红测，再
 修改这一完整路径；不能仅凭性能计数删除正确的不同-mm flush。
 
+### 2026-08-29 Linux UP rtmutex 禁止 owner spin
+
+本检查点先纠正一次性能实验的错误前提。Linux v7.1 在
+`include/linux/mutex.h` 中明确把 `CONFIG_PREEMPT_RT` 的 `struct mutex` 替换为
+`rt_mutex_base`；pipe 的 mutex 因而仍具有 rtmutex/PI 语义。把 Starry pipe 状态锁改为
+non-PI mutex 虽曾把未插桩 true `-smp 1` process/20 五轮中位数从 1.428 s 降到
+0.777 s，但该方案违反目标 Linux 配置，且试验中的 non-PI 状态机还存在交接竞争，最终代码未保留。
+这个结果只能作为“现有 PI 实现存在成本放大”的诊断证据，不能作为删除 PI 的理由。
+
+Linux v7.1 `kernel/locking/rtmutex.c::rtmutex_spin_on_owner()` 只在 `CONFIG_SMP` 下
+尝试 owner spin；非 SMP 实现固定返回 `false`，因为单 CPU waiter 忙等时 owner 不可能并行
+运行。旧 ax-task 只检查 owner identity、owner on-CPU、top waiter 与 `need_resched`，没有 CPU
+数量 gate。本次把在线 topology 数量作为一次锁等待的稳定输入；只有 `cpu_count > 1` 时才允许
+进入既有 owner-spin 循环。确定性 contract 在旧实现上以
+`Linux PREEMPT_RT disables rtmutex owner spinning on a single-CPU kernel` 失败，修复后同一用例通过。
+真实 QEMU 的 4 CPU `task-pi-mutex` 为 1/1，证明 SMP PI 交接仍可运行；Starry pipe syscall suite
+为 71/71。
+
+性能优先验证的未插桩 true `-smp 1` process/20 五轮为
+1.447/1.276/1.346/1.351/1.301 s，中位数 1.346 s；相对上一检查点 1.428 s 名义改善约
+5.7%，但仍约为 Linux v7.1 PREEMPT_RT 0.396 s 的 3.40 倍。qperf 复测没有确认这项改善：
+workload 输出时间从上一归因窗口的 5.795 s 变为 6.189 s；报告因 stop marker 之后 QEMU 被
+SIGKILL 标记为 `incomplete`，但 before/after counter 与完整 workload 输出均已形成有效窗口。
+该窗口仍有 4,082 次 PI slow entry、4,081 次 waiter registration/release、4,091 次 park、
+7,270 次 blocked switch 与 10,352 次 owner-rq scheduler transaction，与 gate 前的
+4,082/4,082/4,090/7,344/10,078 同量级。因此 5.7% 只能视为 TCG 波动；本语义对齐仍保留。
+
+pipe 专属 qperf 归因进一步把主要热锁固定到 `Shared::state`：19,248 次状态锁尝试中
+4,084 次竞争，几乎逐一对应全局 4,082 次 PI slow entry。Ax 的
+`recompute_pi_owner_locked()` 在判断 effective policy/top donor 是否变化之前就创建
+`OwnerRqTxn`，而 Linux v7.1 `kernel/sched/core.c::rt_mutex_setprio()` 在
+`pi_top_task`、effective priority 均未变化时先于 rq lock 直接返回。下一独立检查点应先增加
+registration/release/claim 分阶段的 no-change 计数和确定性回归，再把 no-change PI recompute
+移到 owner-rq transaction 之前；不能为了性能绕过 waiter tree、deboost 或 wake_q 交接语义。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
