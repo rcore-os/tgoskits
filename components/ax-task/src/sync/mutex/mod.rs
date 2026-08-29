@@ -8,7 +8,10 @@ pub(in crate::sync) mod lockdep;
 #[path = "core.rs"]
 mod pi_core;
 
-use self::entry::{FastLockAttempt, LockEntry, capture_current_and_prepare_slow};
+use self::entry::{
+    FastLockAttempt, LockEntry, capture_current_and_prepare_slow, owner_spin_eligible,
+    owner_spin_progress_gates,
+};
 pub use self::pi_core::*;
 
 /// A non-recursive, urgency-ordered PI mutex implementing `lock_api::RawMutex`.
@@ -300,13 +303,14 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                 return true;
             }
 
-            let may_spin = owner_spin_eligible(
-                cpu_count,
-                self.core.is_owned_by(owner),
-                token.initial_owner_is_on_cpu(),
-                token.is_top_waiter(),
-                crate::runtime::task_runtime::current_preemption_pending(),
-            );
+            let may_spin = owner_spin_eligible(cpu_count, || {
+                owner_spin_progress_gates(
+                    self.core.is_owned_by(owner),
+                    token.initial_owner_is_on_cpu(),
+                    token.is_top_waiter(),
+                    crate::runtime::task_runtime::current_preemption_pending(),
+                )
+            });
             if !may_spin {
                 return token.can_claim() || token.is_granted();
             }
@@ -494,16 +498,6 @@ unsafe impl lock_api::RawMutex for RawMutex {
     }
 }
 
-fn owner_spin_eligible(
-    cpu_count: usize,
-    same_owner: bool,
-    owner_on_cpu: bool,
-    waiter_is_top: bool,
-    need_resched: bool,
-) -> bool {
-    cpu_count > 1 && same_owner && owner_on_cpu && waiter_is_top && !need_resched
-}
-
 #[track_caller]
 fn core_result<T>(result: Result<T, PiMutexStateError>, operation: &'static str) -> T {
     result.unwrap_or_else(|error| panic!("{operation} failed: {error}"))
@@ -547,20 +541,5 @@ impl<T: ?Sized> InterruptibleMutexExt<T> for Mutex<T> {
 
         // SAFETY: the raw acquisition above established current as owner.
         Ok(unsafe { self.make_guard_unchecked() })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::owner_spin_eligible;
-
-    #[test]
-    fn owner_spin_requires_every_linux_progress_gate() {
-        assert!(!owner_spin_eligible(1, true, true, true, false));
-        assert!(owner_spin_eligible(2, true, true, true, false));
-        assert!(!owner_spin_eligible(2, false, true, true, false));
-        assert!(!owner_spin_eligible(2, true, false, true, false));
-        assert!(!owner_spin_eligible(2, true, true, false, false));
-        assert!(!owner_spin_eligible(2, true, true, true, true));
     }
 }

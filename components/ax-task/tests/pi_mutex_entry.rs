@@ -3,7 +3,10 @@ mod entry;
 
 use core::cell::Cell;
 
-use entry::{FastLockAttempt, LockEntry, capture_current_and_prepare_slow};
+use entry::{
+    FastLockAttempt, LockEntry, capture_current_and_prepare_slow, owner_spin_eligible,
+    owner_spin_progress_gates,
+};
 
 #[test]
 fn uncontended_entry_does_not_validate_a_blocking_context() {
@@ -49,4 +52,40 @@ fn contended_entry_attempts_owner_fastpath_once_before_slowpath() {
         "the move-only current token must be reused from fast attempt through slow entry",
     );
     assert_eq!(blocking_validations.get(), 1);
+}
+
+#[test]
+fn single_cpu_spin_gate_skips_owner_progress_observations() {
+    let progress_observations = Cell::new(0);
+
+    let eligible = owner_spin_eligible(1, || {
+        progress_observations.set(progress_observations.get() + 1);
+        true
+    });
+
+    assert!(!eligible);
+    assert_eq!(
+        progress_observations.get(),
+        0,
+        "Linux compiles owner spinning out on non-SMP and performs no owner-progress observations",
+    );
+}
+
+#[test]
+fn owner_spin_requires_every_linux_progress_gate() {
+    assert!(owner_spin_eligible(2, || owner_spin_progress_gates(
+        true, true, true, false,
+    )));
+    assert!(!owner_spin_eligible(2, || owner_spin_progress_gates(
+        false, true, true, false,
+    )));
+    assert!(!owner_spin_eligible(2, || owner_spin_progress_gates(
+        true, false, true, false,
+    )));
+    assert!(!owner_spin_eligible(2, || owner_spin_progress_gates(
+        true, true, false, false,
+    )));
+    assert!(!owner_spin_eligible(2, || owner_spin_progress_gates(
+        true, true, true, true,
+    )));
 }

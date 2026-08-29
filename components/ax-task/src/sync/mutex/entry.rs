@@ -29,3 +29,21 @@ pub(crate) fn capture_current_and_prepare_slow<T>(
         }
     }
 }
+
+/// Applies the Linux SMP gate before owner-progress observations.
+pub(crate) fn owner_spin_eligible(
+    cpu_count: usize,
+    observe_progress_gates: impl FnOnce() -> bool,
+) -> bool {
+    cpu_count > 1 && observe_progress_gates()
+}
+
+/// Tests the Linux owner-progress gates after SMP eligibility is established.
+pub(crate) fn owner_spin_progress_gates(
+    same_owner: bool,
+    owner_on_cpu: bool,
+    waiter_is_top: bool,
+    need_resched: bool,
+) -> bool {
+    same_owner && owner_on_cpu && waiter_is_top && !need_resched
+}
