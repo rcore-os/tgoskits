@@ -150,16 +150,13 @@ impl CurrentAccountingEvent {
     const fn class_reschedule_kind(
         self,
         policy: SchedulePolicy,
-        slice_expired: bool,
+        _slice_expired: bool,
     ) -> RescheduleKind {
-        match (self, policy, slice_expired) {
-            // Linux's Fair hrtick callback invokes task_tick(..., queued=1),
-            // which upgrades the class-runtime expiry to NEED_RESCHED instead
-            // of leaving it as the lazy request used by update_curr().
-            (Self::ClockEvent | Self::SchedulerTickWithClockEvent, _, true) => {
-                RescheduleKind::Immediate
-            }
-            (_, SchedulePolicy::Fair { .. }, _) => RescheduleKind::Lazy,
+        match policy {
+            // Linux's Fair hrtick callback calls task_tick(..., queued=1), but
+            // entity_tick() still reaches update_curr(), whose EEVDF reschedule
+            // is lazy. `queued` only skips the later periodic housekeeping.
+            SchedulePolicy::Fair { .. } => RescheduleKind::Lazy,
             _ => RescheduleKind::Immediate,
         }
     }
@@ -854,10 +851,10 @@ impl CpuRunQueueState {
     /// Accounts a physical non-periodic clockevent.
     ///
     /// When this event consumes a class runtime budget, Linux's hrtick callback
-    /// runs the class tick hook and requests ordinary preemption before it
-    /// returns from the interrupt. Other timer sources may share the same
-    /// physical event; they do not invoke the hook unless accounting proves the
-    /// current request expired.
+    /// runs the class tick hook before it returns from the interrupt. Fair
+    /// preserves `PREEMPT_LAZY`; RT and Deadline request ordinary preemption.
+    /// Other timer sources may share the same physical event; they do not
+    /// invoke the hook unless accounting proves the current request expired.
     pub(in crate::system::cpu) fn clock_event_current(
         &mut self,
         runtime_ns: u64,
@@ -896,8 +893,8 @@ impl CpuRunQueueState {
     ///
     /// Linux runs both logical callbacks when the periodic tick and hrtick
     /// share one physical interrupt. The periodic hook still performs its
-    /// ordinary class maintenance, while an expired Fair request retains the
-    /// hrtick callback's immediate preemption semantics.
+    /// ordinary class maintenance, while a newly expired Fair request retains
+    /// the hrtick callback's lazy preemption semantics.
     pub(in crate::system::cpu) fn task_tick_and_clock_event_current(
         &mut self,
         runtime_ns: u64,
@@ -1255,23 +1252,36 @@ mod tests {
     use super::*;
     use crate::Nice;
 
+    const FAIR_POLICY: SchedulePolicy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    const FAIR_HRTICK_RESCHEDULE: RescheduleKind =
+        CurrentAccountingEvent::ClockEvent.class_reschedule_kind(FAIR_POLICY, true);
+    const FAIR_COALESCED_TICK_RESCHEDULE: RescheduleKind =
+        CurrentAccountingEvent::SchedulerTickWithClockEvent
+            .class_reschedule_kind(FAIR_POLICY, true);
+
+    const _: () = assert!(matches!(FAIR_HRTICK_RESCHEDULE, RescheduleKind::Lazy));
+    const _: () = assert!(matches!(
+        FAIR_COALESCED_TICK_RESCHEDULE,
+        RescheduleKind::Lazy
+    ));
+
     #[test]
-    fn fair_class_runtime_expiry_uses_immediate_hrtick_semantics() {
+    fn fair_class_runtime_expiry_preserves_lazy_hrtick_semantics() {
         let event = CurrentAccountingEvent::ClockEvent;
-        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
 
         assert!(event.runs_class_tick(true));
         assert_eq!(
-            event.class_reschedule_kind(policy, true),
-            RescheduleKind::Immediate
+            FAIR_HRTICK_RESCHEDULE,
+            RescheduleKind::Lazy,
+            "Fair hrtick reaches update_curr(), which requests Linux PREEMPT_LAZY",
         );
         assert_eq!(
-            CurrentAccountingEvent::SchedulerTickWithClockEvent.class_reschedule_kind(policy, true),
-            RescheduleKind::Immediate,
-            "a periodic tick coalesced with Fair runtime expiry must retain hrtick semantics",
+            FAIR_COALESCED_TICK_RESCHEDULE,
+            RescheduleKind::Lazy,
+            "coalescing a periodic tick must not upgrade Fair hrtick to ordinary preemption",
         );
         assert_eq!(
-            CurrentAccountingEvent::SchedulerTick.class_reschedule_kind(policy, false),
+            CurrentAccountingEvent::SchedulerTick.class_reschedule_kind(FAIR_POLICY, false),
             RescheduleKind::Lazy,
             "a periodic Fair class check without hrtick expiry remains lazy",
         );

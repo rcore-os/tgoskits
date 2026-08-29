@@ -4733,6 +4733,59 @@ lock contention/4,015 次 PI slow entry。这证明当前 helper 已完整覆盖
 下一检查点转向 Linux `schedule()`/`try_to_wake_up()` 与 ax-task park、direct wake、EEVDF placement
 及 active-mm transaction 的一一语义和事务数量对照。
 
+### 2026-08-29 Fair hrtick 保持 PREEMPT_LAZY
+
+Linux v7.1 `kernel/sched/core.c::hrtick()` 在 hardirq 与 rq lock 内调用当前 class 的
+`task_tick(rq, curr, 1)`。对 Fair 来说，`kernel/sched/fair.c::task_tick_fair()` 的 `queued` 参数
+不会跳过 `entity_tick()`；它只在 entity accounting 完成后跳过 NUMA、misfit 与 core-scheduling
+housekeeping。`entity_tick()` 仍进入 `update_curr()`，而 EEVDF request 到期或 run-to-parity 保护结束
+时由该函数调用 `resched_curr_lazy()`。因此 Fair hrtick 产生的是
+`TIF_NEED_RESCHED_LAZY`，不是普通 `TIF_NEED_RESCHED`；RT、Deadline、跨 class 与带宽到期仍保持
+普通重调度。
+
+旧 `CurrentAccountingEvent::class_reschedule_kind()` 把
+`ClockEvent | SchedulerTickWithClockEvent` 且 `slice_expired` 的所有 class 都升级为
+`Immediate`，其注释错误地认为 `queued=1` 会把 Fair request 升级为 ordinary preemption。现在
+clockevent 只决定是否执行 class tick，重调度种类重新由 class 语义决定：Fair 为 `Lazy`，其余为
+`Immediate`。periodic tick 仍在 class tick 前提升已经存在的 lazy request；同一个 class tick 新产生
+的 lazy request 与 Linux 一样留给下一个 promotion、显式 schedule 或用户返回边界消费。没有新增
+timer 状态、兼容入口或 Starry 特判。
+
+确定性回归先只改变预期，使用 const-evaluated production mapping 约束普通 Fair hrtick 与
+periodic-tick-coalesced hrtick 都必须为 `Lazy`。旧实现执行
+`cargo check -p ax-task --tests --features host-test` 时两个断言均稳定以 `E0080` 失败；修复后同一
+命令通过。普通 host `cargo test` 仍会在当前分支缺少真实 runtime provider 时链接失败，因此不把该
+外围失败当作 red/green；真实 runtime 由 Starry x86_64 QEMU `axtest_kernel` 78/78 与下面的实际
+hackbench 路径覆盖。ax-task 五组 clippy matrix 与 package rustfmt 同样通过。
+
+历史检查点解释了性能退化来源。相同 true `-smp 1`、TCG multi、
+`hackbench -pipe 1 process 20`、五轮中位数协议中，共同祖先 `f70cf8d0ea` 为 1.218 s；反向性能
+bisect 定位 `fc9ef028fd`（实现 PREEMPT_RT lazy rescheduling）是历史分支第一个快点，样本中位数
+0.376 s，`336a462e22` 复现为 0.274 s。当前错误映射位于后续 scheduler ownership rebuild
+`51740df12b`；修正前 `a82800b9ae` 为 1.284 s，修正后五轮
+0.317/0.372/0.722/0.330/0.326 s，中位数 0.330 s，较修正前下降 74.3%，回到 Linux v7.1
+PREEMPT_RT 基线 0.396 s 的同一量级。0.722 s 是单次 TCG outlier，因此这里只判定性能差距已闭合，
+不宣称稳定快于 Linux。
+
+同一 qperf case、`-smp 1` 与 process/20 窗口进一步证明提升来自调度边界，而不是减少物理 timer：
+
+| 指标 | 修正前 | Fair hrtick lazy | 变化 |
+|---|---:|---:|---:|
+| physical clockevent IRQ | 2,661 | 2,707 | +1.7% |
+| PI mutex slow entry | 4,015 | 247 | -93.8% |
+| owner-rq scheduler transaction | 9,831 | 5,015 | -49.0% |
+| context switch | 9,198 | 4,634 | -49.6% |
+| blocked switch | 7,253 | 3,072 | -57.6% |
+| different-mm activation/root write | 8,450 | 4,406 | -47.9% |
+| pipe read wait | 3,147 | 2,699 | -14.2% |
+
+clockevent 次数没有下降，但 immediate hrtick 不再在内核临界区的最终 preempt-enable 处强制切走
+Fair owner；owner 能先完成 pipe `PiMutex` 临界区，再在 Linux lazy safe point 调度，因而避免 waiter
+立刻运行、再次阻塞形成的 lock convoy。PI slow entry、blocked switch、地址空间切换与 owner-rq
+事务同步下降，构成从 Linux 语义到单核性能恢复的完整因果链。本检查点关闭此前 process/20 的主要
+单核差距；后续语义审计继续保留，但不再把 active-mm 合法 root write 或 PI no-change helper 当作
+当前根因。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
