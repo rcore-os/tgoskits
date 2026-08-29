@@ -70,9 +70,9 @@ impl TaskSystem {
     /// reclaims `CpuLocal` nor repeats switch-tail completion.
     pub(crate) fn prepare_current_park(
         &self,
-        current: &Arc<ThreadCore>,
+        current: &ThreadCore,
     ) -> Result<ParkPrepare, TaskError> {
-        let core = Arc::clone(current);
+        let core = current;
         let placement = core.sched().placement();
         let queued_cpu = placement.queued_cpu();
         if core.state() != ThreadState::Running
@@ -593,7 +593,7 @@ impl TaskSystem {
     pub(crate) fn cancel_current_park(
         &self,
         cpu: Pin<&mut CpuLocal>,
-        current: &Arc<ThreadCore>,
+        current: &ThreadCore,
         token: &mut ParkTicket,
     ) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -601,7 +601,7 @@ impl TaskSystem {
             return Err(TaskError::StaleThreadId);
         }
         self.ensure_owner_cpu_online(&cpu)?;
-        let core = Arc::clone(current);
+        let core = current;
         if core.park_generation() != token.generation() {
             return Err(TaskError::StaleThreadId);
         }

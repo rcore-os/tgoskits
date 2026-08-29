@@ -4256,6 +4256,42 @@ Rust QEMU `task-fair-wake-idle-sibling` 1/1 通过；`cargo xtask clippy --packa
 目标/特性组合、cpu-local targeted rustfmt 与 `git diff --check` 均通过。workspace-wide rustfmt check
 仍报告 8 个本检查点未修改文件的既有排版差异，因此没有把无关格式改动混入该语义/性能提交。
 
+### 2026-08-29 current park 状态操作借用 scheduler owner
+
+Linux v7.1 的 waitqueue 以栈上 `wait_queue_entry` 的 `private=current` 指向 scheduler 已拥有的
+`task_struct`，`prepare_to_wait_event()`、`finish_wait()` 和 pipe wait 路径不会为每次 park 增加、释放
+一对 `task_struct` 引用计数（`include/linux/wait.h:302-326`、`kernel/sched/wait.c:280-323,375-399`、
+`fs/pipe.c:388,573,1101-1109`）。其安全性来自 scheduler current/rq 所有权、`on_cpu` 的
+Release/Acquire 交接以及 exit/RCU 回收协议，而不是 waitqueue 临时持有；`try_to_wake_up()` 与
+`__schedule()` 同样围绕这些 owner/ordering 约束工作（`kernel/sched/core.c:4152-4182,4950-4975,
+6582-6627,7017-7040,7064-7100`）。
+
+TGOS 的 `ThreadCore` 生命周期也已有明确 owner：registry 的 `ThreadRecord.core` 负责长期登记，只有
+线程为 `Exited`、不在 CPU 上且没有 lease 后才允许 reap；rq/current/switch handoff 在调度事务中持有
+自己的 `Arc`，waiter 的 `ThreadWakeHandle` 也持有跨睡眠期 owner。因此
+`prepare_current_park()`、`cancel_current_park()` 以及 park deadline 的 arm/cancel 这些只在当前调用栈
+内读取或更新状态、不会跨越 block/switch 边界的操作，不应再次制造临时 `Arc` 所有权。本检查点把这些
+接口收窄为 `&ThreadCore`，并让 `PreparedCurrentPark::arm_deadline()` 直接借用其已经持有的 owner；
+`PreparedCurrentPark`、wake handle、rq/current 与 switch transaction 中真正跨边界的 `Arc` 均保留。
+这不是用 Rust 引用计数替代 Linux 的 rq/`on_cpu`/锁语义，也没有引入第二条兼容路径。
+
+确定性源码所有权回归要求上述 state-only API 接受 `&ThreadCore`，并禁止恢复
+`Arc::clone(current)` 与 `Arc::clone(&self.thread)`；旧实现稳定在第一个借用契约断言失败，修改后同一
+测试转绿。未插桩 Starry true `-smp 1` 五轮 thread/20 为
+0.661/0.849/0.806/0.736/0.924 s，中位数 0.806 s，相对上一安全检查点 0.778 s 名义退化约 3.6%；
+process/20 为 1.286/1.471/1.429/1.473/1.461 s，中位数 1.461 s，仍为 Linux v7.1 PREEMPT_RT
+0.396 s 的约 3.69 倍。该改动不改变 runnable/block/wake/switch 工作量，且 QEMU TCG 五轮噪声足以
+覆盖这一级差异；依据“Linux 语义已对齐即保留”的规则保留本检查点，不能把该名义退化解释为新增
+调度工作，也不能把临时引用计数认定为剩余主根因。
+
+质量验证覆盖 ax-task 104 个单元测试、4 个集成测试和 12 个文档测试；x86_64 ArceOS Rust QEMU
+`task-wait-queue` 的 wait/wake 与 timeout 1/1 通过；`cargo xtask clippy --package ax-task` 的 5 个
+目标/特性组合和 `git diff --check` 通过。目标新增测试与 `park_exit.rs` 的 rustfmt 检查通过；crate 级
+rustfmt 仍报告 4 个既有文件中的排版差异，其中 `deadline.rs` 的报告位于本检查点未修改的第 198 行，
+没有把这些无关改写混入提交。下一步继续量化
+`PreparedCurrentPark` 跨 block 边界的 owner 交接及 wait/notify guard nesting；只有能以现有
+rq/current/handoff owner 证明完整生命周期时，才进一步移除跨边界 `Arc`。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

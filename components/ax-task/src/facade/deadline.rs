@@ -88,12 +88,12 @@ impl PreparedCurrentPark {
 
     /// Arms an absolute deadline in the runtime's finite monotonic domain.
     pub fn arm_deadline(&mut self, deadline: MonotonicDeadline) -> Result<(), TaskError> {
-        let thread = Arc::clone(&self.thread);
+        let thread = self.thread.as_ref();
         let ticket = self
             .ticket
             .as_mut()
             .expect("prepared park ticket remains owned");
-        arm_current_park_deadline(&thread, ticket, deadline)
+        arm_current_park_deadline(thread, ticket, deadline)
     }
 
     /// Commits the scheduler park and returns after this thread is runnable again.
@@ -337,7 +337,7 @@ pub(crate) fn commit_current_park(
 }
 
 pub(crate) fn cancel_current_park(
-    current: &Arc<ThreadCore>,
+    current: &ThreadCore,
     ticket: &mut crate::ParkTicket,
 ) -> Result<(), TaskError> {
     let mut irq = RuntimeIrqGuard::enter();
@@ -346,7 +346,7 @@ pub(crate) fn cancel_current_park(
 }
 
 pub(crate) fn arm_current_park_deadline(
-    thread: &Arc<ThreadCore>,
+    thread: &ThreadCore,
     ticket: &mut crate::ParkTicket,
     deadline: MonotonicDeadline,
 ) -> Result<(), TaskError> {
@@ -409,7 +409,7 @@ pub(crate) fn arm_current_park_deadline(
 }
 
 pub(crate) fn cancel_current_park_deadline(
-    thread: &Arc<ThreadCore>,
+    thread: &ThreadCore,
     ticket: &mut crate::ParkTicket,
 ) -> Result<bool, TaskError> {
     if ticket.thread() != thread.id() {
