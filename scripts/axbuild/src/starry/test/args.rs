@@ -91,7 +91,7 @@ pub struct ArgsTestNixos {
         short = 'c',
         long = "test-case",
         value_name = "CASE",
-        value_parser = ["boot"],
+        value_parser = ["boot", "service", "service-fail", "unsupported"],
         required_unless_present = "list",
         requires = "arch",
         conflicts_with = "list",

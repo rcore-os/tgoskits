@@ -204,6 +204,23 @@ fn command_parses_test_nixos_boot() {
 }
 
 #[test]
+fn command_parses_test_nixos_p2_cases() {
+    for case_name in ["service", "service-fail", "unsupported"] {
+        match parse([
+            "starry", "test", "nixos", "--arch", "x86_64", "-c", case_name,
+        ]) {
+            Command::Test(args) => match args.command {
+                TestCommand::Nixos(args) => {
+                    assert_eq!(args.test_case.as_deref(), Some(case_name));
+                }
+                _ => panic!("expected nixos test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+}
+
+#[test]
 fn command_rejects_test_nixos_without_case_selection() {
     assert!(try_parse(["starry", "test", "nixos"]).is_err());
     assert!(try_parse(["starry", "test", "nixos", "--arch", "x86_64"]).is_err());

@@ -1,23 +1,26 @@
-# StarryOS-backed nixosTest P1
+# StarryOS-backed nixosTest
 
-This directory owns the project-local NixOS test framework for StarryOS. It is independent of the Starry application cases under `test-suit/starryos/` and of the legacy `starry app qemu` acceptance path. It currently contains one x86_64 `boot` case.
+This directory owns the project-local NixOS test framework for StarryOS. It is independent of the Starry application cases under `test-suit/starryos/` and of the legacy `starry app qemu` acceptance path. It currently contains four x86_64 cases: `boot`, `service`, `service-fail`, and `unsupported`.
 
 ## Supported boundary
 
 - Host: x86_64 Linux with Nix or Lix, flakes, and `nix-command`.
 - Guest: one x86_64 StarryOS VM using the existing NixOS stage-2 system.
 - Runtime: QEMU and OVMF supplied by the pinned flake input; TCG is the correctness baseline and `/dev/kvm` is not required.
-- Scope: serial console and lifecycle assertions only. There is no guest command channel, `machine.succeed`, service assertion, SSH backdoor, network test, multi-machine test, graphical test, installer/initrd test, or additional architecture.
+- Scope: serial console, lifecycle assertions, and declared systemd-oneshot command records. There is no `machine.succeed` / `/dev/hvc0` backdoor, SSH, network test, multi-machine test, graphical test, installer/initrd test, or additional architecture.
 
 Host-installed QEMU and OVMF are not prerequisites. The workflow does not change the active NixOS system, user profile, or tracked repository files.
 
-## Run the P1 case
+## Run the cases
 
 From the repository root:
 
 ```bash
 cargo xtask starry test nixos --list
 cargo xtask starry test nixos --arch x86_64 -c boot
+cargo xtask starry test nixos --arch x86_64 -c service
+cargo xtask starry test nixos --arch x86_64 -c service-fail
+cargo xtask starry test nixos --arch x86_64 -c unsupported
 ```
 
 `--list` is discovery-only: it does not build, evaluate Nix, or start QEMU. The run command builds the current-checkout Starry UEFI image through the existing axbuild path, verifies its NAR hash, imports that exact content into the independent test flake, constructs the shared app-owned stage-2 system, and starts the pinned test driver.
@@ -51,11 +54,11 @@ apps/starry/nixos/build-rootfs.sh --self-test
 cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
 cargo xtask starry test qemu --arch x86_64 -c qemu/system/starrynixos-stage2
 ```
-
-The app path remains the authoritative legacy StarryNixOS acceptance flow. The TOML test-suit path remains focused StarryOS regression coverage. Neither path is routed through this nixosTest framework.
-
 ## Diagnostics and limits
 
+A failure before QEMU indicates kernel preparation, NAR import, flake evaluation, rootfs, firmware, or launch-adapter setup. Look for `STARRY_NIXOS_PHASE_FAILED=` in driver/xtask output: `artifact-preparation`, `machine-startup`, `stage2-activation`, `guest-assertion`, `unexpected-guest-exit`, `shutdown`, or `timeout`.
+
+`service` adds a structured `STARRY_NIXOS_ASSERT_*` serial block after the P1 markers. `service-fail` must return nonzero with phase `guest-assertion`. `unsupported` must return nonzero immediately with `unsupported Starry nixosTest operation: succeed` and must not wait for `/dev/hvc0`. Guest commands are declared systemd oneshots, not `machine.succeed`. There is still no claim that unmodified upstream NixOS tests run on StarryOS, and CI scheduling is unchanged.
 A failure before QEMU indicates kernel preparation, NAR import, flake evaluation, rootfs, firmware, or launch-adapter setup. During boot, the last phase and full serial log identify the earliest observable boundary. Missing terminal evidence is a bounded timeout; a terminal marker without shutdown indicates lifecycle failure.
 
 P1 deliberately does not claim broad upstream NixOS test compatibility. Test-specific services and in-guest assertions are deferred to P2 because StarryOS does not yet expose the required guest command channel. Repeatability and deeper diagnostic reporting are P3 work. Unsupported operations must remain explicit failures rather than skipped success.

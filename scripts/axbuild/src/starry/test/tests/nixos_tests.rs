@@ -17,7 +17,7 @@ use super::{
 use crate::starry::build::{LogLevel, StarryBuildInfo};
 
 #[test]
-fn listing_is_side_effect_free_and_reports_the_p1_case() {
+fn listing_is_side_effect_free_and_reports_the_supported_cases() {
     let missing_workspace = Path::new("/workspace/that-does-not-exist");
     let action = plan_nixos_action(
         missing_workspace,
@@ -29,9 +29,9 @@ fn listing_is_side_effect_free_and_reports_the_p1_case() {
     .unwrap();
 
     assert_eq!(action, NixosAction::List);
-    assert_eq!(supported_cases().len(), 1);
-    assert_eq!(supported_cases()[0].name, "boot");
-    assert_eq!(supported_cases()[0].arch, "x86_64");
+    let names: Vec<_> = supported_cases().iter().map(|case| case.name).collect();
+    assert_eq!(names, ["boot", "service", "service-fail", "unsupported"]);
+    assert!(supported_cases().iter().all(|case| case.arch == "x86_64"));
 }
 
 #[test]
@@ -51,8 +51,32 @@ fn boot_selects_the_canonical_build_config() {
         action,
         NixosAction::Run {
             build_config: root.join("apps/starry/nixos/build-x86_64-unknown-none.toml"),
+            case_name: "boot".to_string(),
         }
     );
+}
+
+#[test]
+fn service_cases_select_the_same_build_config() {
+    let root = Path::new("/workspace");
+    for case_name in ["service", "service-fail", "unsupported"] {
+        let action = plan_nixos_action(
+            root,
+            &ArgsTestNixos {
+                arch: Some("x86_64".to_string()),
+                test_case: Some(case_name.to_string()),
+                list: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            action,
+            NixosAction::Run {
+                build_config: root.join("apps/starry/nixos/build-x86_64-unknown-none.toml"),
+                case_name: case_name.to_string(),
+            }
+        );
+    }
 }
 
 #[test]
@@ -134,6 +158,7 @@ fn nix_test_command_is_exact_and_streams_driver_output() {
         Path::new("/workspace"),
         Path::new("/tmp/starryos.bin"),
         "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "service",
     );
 
     assert_eq!(command.program, PathBuf::from("nix"));
@@ -150,11 +175,11 @@ fn nix_test_command_is_exact_and_streams_driver_output() {
              \"x86_64-linux\"; test = testFlake.lib.${system}.mkStarryNixosTest { kernelPath = \
              \"/tmp/starryos.bin\"; kernelNarHash = \
              \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"; starryNixos = \
-             appFlake.lib.${system}.starryNixos; }; in assert testFlake.inputs.nixpkgs.outPath == \
-             appFlake.inputs.nixpkgs.outPath; builtins.trace (\"[axbuild] Starry nixosTest \
-             kernel_store=\" + builtins.toString test.kernelStorePath) (builtins.trace \
-             (\"[axbuild] Starry nixosTest system_toplevel=\" + builtins.toString \
-             test.systemToplevel) test)",
+             appFlake.lib.${system}.starryNixos; caseName = \"service\"; }; in assert \
+             testFlake.inputs.nixpkgs.outPath == appFlake.inputs.nixpkgs.outPath; builtins.trace \
+             (\"[axbuild] Starry nixosTest kernel_store=\" + builtins.toString \
+             test.kernelStorePath) (builtins.trace (\"[axbuild] Starry nixosTest \
+             system_toplevel=\" + builtins.toString test.systemToplevel) test)",
         ]
     );
     assert_eq!(command.output, OutputMode::Inherit);

@@ -16,7 +16,6 @@ use crate::{
 
 const ARCH: &str = "x86_64";
 const TARGET: &str = "x86_64-unknown-none";
-const CASE_NAME: &str = "boot";
 const BUILD_CONFIG: &str = "apps/starry/nixos/build-x86_64-unknown-none.toml";
 const APP_FLAKE_DIR: &str = "apps/starry/nixos";
 const TEST_FLAKE_DIR: &str = "nixos-tests/starryos";
@@ -31,7 +30,10 @@ pub(crate) struct NixosCase {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum NixosAction {
     List,
-    Run { build_config: PathBuf },
+    Run {
+        build_config: PathBuf,
+        case_name: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,25 +56,45 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsTestNixos) -> anyhow::Res
             print_cases();
             Ok(())
         }
-        NixosAction::Run { build_config } => {
+        NixosAction::Run {
+            build_config,
+            case_name,
+        } => {
             let kernel = build_kernel(starry, build_config).await?;
             let kernel = validate_kernel(&kernel)?;
             let kernel_nar_hash = hash_kernel(&workspace, &kernel)?;
             println!("[axbuild] Starry nixosTest kernel={}", kernel.display());
             println!("[axbuild] Starry nixosTest kernel_nar_hash={kernel_nar_hash}");
 
-            let command = nix_test_command(&workspace, &kernel, &kernel_nar_hash);
+            let command = nix_test_command(&workspace, &kernel, &kernel_nar_hash, &case_name);
             run_inherited(&workspace, &command)
         }
     }
 }
 
 pub(crate) fn supported_cases() -> &'static [NixosCase] {
-    const CASES: &[NixosCase] = &[NixosCase {
-        name: CASE_NAME,
-        arch: ARCH,
-        target: TARGET,
-    }];
+    const CASES: &[NixosCase] = &[
+        NixosCase {
+            name: "boot",
+            arch: ARCH,
+            target: TARGET,
+        },
+        NixosCase {
+            name: "service",
+            arch: ARCH,
+            target: TARGET,
+        },
+        NixosCase {
+            name: "service-fail",
+            arch: ARCH,
+            target: TARGET,
+        },
+        NixosCase {
+            name: "unsupported",
+            arch: ARCH,
+            target: TARGET,
+        },
+    ];
     CASES
 }
 
@@ -91,16 +113,22 @@ pub(crate) fn plan_nixos_action(
     let test_case = args
         .test_case
         .as_deref()
-        .context("Starry nixosTest requires `--test-case boot`")?;
+        .context("Starry nixosTest requires `--test-case`")?;
     if arch != ARCH {
         bail!("unsupported Starry nixosTest architecture `{arch}`; supported: {ARCH}");
     }
-    if test_case != CASE_NAME {
-        bail!("unsupported Starry nixosTest case `{test_case}`; supported: {CASE_NAME}");
+    if !supported_cases().iter().any(|case| case.name == test_case) {
+        let supported = supported_cases()
+            .iter()
+            .map(|case| case.name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("unsupported Starry nixosTest case `{test_case}`; supported: {supported}");
     }
 
     Ok(NixosAction::Run {
         build_config: workspace.join(BUILD_CONFIG),
+        case_name: test_case.to_string(),
     })
 }
 
@@ -160,13 +188,14 @@ pub(crate) fn nix_test_command(
     workspace: &Path,
     kernel: &Path,
     kernel_nar_hash: &str,
+    case_name: &str,
 ) -> ProcessSpec {
     let app_flake = format!("path:{}/{}", workspace.display(), APP_FLAKE_DIR);
     let test_flake = format!("path:{}/{}", workspace.display(), TEST_FLAKE_DIR);
     let expression = format!(
         "let testFlake = builtins.getFlake {}; appFlake = builtins.getFlake {}; system = {}; test \
          = testFlake.lib.${{system}}.mkStarryNixosTest {{ kernelPath = {}; kernelNarHash = {}; \
-         starryNixos = appFlake.lib.${{system}}.starryNixos; }}; in assert \
+         starryNixos = appFlake.lib.${{system}}.starryNixos; caseName = {}; }}; in assert \
          testFlake.inputs.nixpkgs.outPath == appFlake.inputs.nixpkgs.outPath; builtins.trace \
          (\"[axbuild] Starry nixosTest kernel_store=\" + builtins.toString test.kernelStorePath) \
          (builtins.trace (\"[axbuild] Starry nixosTest system_toplevel=\" + builtins.toString \
@@ -176,6 +205,7 @@ pub(crate) fn nix_test_command(
         nix_string("x86_64-linux"),
         nix_string(&kernel.display().to_string()),
         nix_string(kernel_nar_hash),
+        nix_string(case_name),
     );
     ProcessSpec {
         program: PathBuf::from("nix"),

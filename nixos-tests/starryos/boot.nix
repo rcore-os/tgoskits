@@ -20,6 +20,7 @@ let
   # The upstream driver waits for one terminal line at a time. The full ordered
   # success expression is checked against the complete console after wakeup.
   terminalPattern = "STARRY_NIXOS_SYSTEM_PASSED|" + builtins.concatStringsSep "|" failurePatterns;
+  starryMachine = ./starry_machine.py;
 in
 {
   patterns = {
@@ -37,6 +38,15 @@ in
     sshBackdoor.enable = false;
     globalTimeout = 900;
     testScript = ''
+      import importlib.util
+      spec = importlib.util.spec_from_file_location("starry_machine", ${builtins.toJSON (toString starryMachine)})
+      assert spec is not None and spec.loader is not None
+      starry_machine = importlib.util.module_from_spec(spec)
+      spec.loader.exec_module(starry_machine)
+      evaluate_boot_console = starry_machine.evaluate_boot_console
+      raise_phase = starry_machine.raise_phase
+      PHASE_SHUTDOWN = starry_machine.PHASE_SHUTDOWN
+
       import queue
       import re
       import time
@@ -65,22 +75,12 @@ in
           time.sleep(1)
 
       console = machine.get_console_log()
-      if not terminal_seen:
-          raise Exception("StarryNixOS boot produced no terminal evidence within 600 seconds")
-
-      if not re.search(${builtins.toJSON successPattern}, console):
-          raise Exception("StarryNixOS boot did not reach the ordered success contract")
-
-      for failure_pattern in ${builtins.toJSON failurePatterns}:
-          if re.search(failure_pattern, console):
-              raise Exception(
-                  "StarryNixOS boot matched a terminal failure pattern: "
-                  + failure_pattern
-              )
+      qemu_exited = machine.process is not None and machine.process.poll() is not None
+      evaluate_boot_console(console, terminal_seen=terminal_seen, qemu_exited=qemu_exited)
 
       machine.wait_for_shutdown()
       if machine.process is None or machine.process.returncode != 0:
-          raise Exception("StarryNixOS QEMU did not exit successfully")
+          raise_phase(PHASE_SHUTDOWN, "StarryNixOS QEMU did not exit successfully", console)
     '';
   };
 }
