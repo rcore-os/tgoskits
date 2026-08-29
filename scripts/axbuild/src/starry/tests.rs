@@ -205,7 +205,7 @@ fn command_parses_test_nixos_boot() {
 
 #[test]
 fn command_parses_test_nixos_p2_cases() {
-    for case_name in ["service", "service-fail", "unsupported"] {
+    for case_name in ["service", "service-fail", "unsupported", "hello-tmpfiles"] {
         match parse([
             "starry", "test", "nixos", "--arch", "x86_64", "-c", case_name,
         ]) {
@@ -228,14 +228,19 @@ fn command_rejects_test_nixos_without_case_selection() {
 }
 
 #[test]
-fn command_rejects_unknown_nixos_case_and_architecture() {
-    assert!(try_parse(["starry", "test", "nixos", "--arch", "aarch64", "-c", "boot",]).is_err());
-    assert!(
-        try_parse([
-            "starry", "test", "nixos", "--arch", "x86_64", "-c", "unknown",
-        ])
-        .is_err()
-    );
+fn command_rejects_unknown_nixos_architecture_but_parses_unknown_case_name() {
+    assert!(try_parse(["starry", "test", "nixos", "--arch", "aarch64", "-c", "boot"]).is_err());
+    match parse([
+        "starry", "test", "nixos", "--arch", "x86_64", "-c", "unknown",
+    ]) {
+        Command::Test(args) => match args.command {
+            TestCommand::Nixos(args) => {
+                assert_eq!(args.test_case.as_deref(), Some("unknown"));
+            }
+            _ => panic!("expected nixos test command"),
+        },
+        _ => panic!("expected test command"),
+    }
 }
 
 #[test]
