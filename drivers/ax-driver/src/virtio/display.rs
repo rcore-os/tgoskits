@@ -134,6 +134,10 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
 
     fn handle_irq(&mut self) -> Event {
         let status = self.raw.ack_interrupt();
+        // Drain the control queue's used ring: async EXECBUFFERs are fire-and-forget, so a
+        // completion IRQ is the prompt signal that their descriptors can be recycled and the
+        // queue can make room for the next batch (Linux `virtio_gpu_dequeue_ctrl_func`).
+        let _ = self.raw.pump_completions();
         display_irq_event(self.irq_enabled, status)
     }
 
@@ -407,6 +411,20 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
         Ok(fence_id)
     }
 
+    fn wait_fence(&mut self, fence_id: u64) -> Result<(), DisplayError> {
+        self.raw.wait_fence(fence_id).map_err(map_gpu3d_err)
+    }
+
+    fn fence_completed(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        // Drain the used ring before answering: the device's completion
+        // interrupt is not delivered in every environment (this virtio-vga
+        // guest never receives one), so the completion level only advances
+        // when some caller pumps. Every fence query pumping keeps a
+        // poll-blocked waiter's refresher able to observe completion.
+        self.raw.pump_completions().map_err(map_gpu3d_err)?;
+        Ok(self.raw.fence_completed(fence_id))
+    }
+
     fn get_capset_info(&mut self, index: u32) -> Result<CapsetInfo, DisplayError> {
         let resp = self.raw.get_capset_info(index).map_err(map_gpu3d_err)?;
         Ok(CapsetInfo {
@@ -423,6 +441,10 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
         size: u32,
     ) -> Result<alloc::vec::Vec<u8>, DisplayError> {
         self.raw.get_capset(id, ver, size).map_err(map_gpu3d_err)
+    }
+
+    fn ctrl_notify(&mut self) {
+        self.raw.ctrl_notify();
     }
 }
 

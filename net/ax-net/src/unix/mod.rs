@@ -38,6 +38,12 @@ pub use self::{
     namespace::{UnixNamespace, register_unix_namespace},
     stream::StreamTransport,
 };
+
+/// [run6g] monotonic ns of the last unix-stream send that woke the peer's
+/// pollers (see `stream::LAST_PEER_WAKE_NS`).
+pub fn last_peer_wake_ns() -> u64 {
+    stream::LAST_PEER_WAKE_NS.load(core::sync::atomic::Ordering::Relaxed)
+}
 use crate::{
     NetError, NetResult, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},

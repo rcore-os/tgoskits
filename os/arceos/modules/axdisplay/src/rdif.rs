@@ -237,7 +237,15 @@ impl DisplayDevice for RdifDisplayDevice {
         cmd: &[u8],
     ) -> crate::DisplayResult {
         self.device
-            .resource_create_blob(ctx_id, resource_id, blob_mem, blob_flags, size, blob_id, cmd)
+            .resource_create_blob(
+                ctx_id,
+                resource_id,
+                blob_mem,
+                blob_flags,
+                size,
+                blob_id,
+                cmd,
+            )
             .map_err(map_display_error)
     }
 
@@ -293,6 +301,16 @@ impl DisplayDevice for RdifDisplayDevice {
             .map_err(map_display_error)
     }
 
+    fn wait_fence(&mut self, fence_id: u64) -> Result<(), DisplayError> {
+        self.device.wait_fence(fence_id).map_err(map_display_error)
+    }
+
+    fn fence_completed(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        self.device
+            .fence_completed(fence_id)
+            .map_err(map_display_error)
+    }
+
     fn capset_info(&mut self, index: u32) -> Result<CapsetInfo, DisplayError> {
         self.device
             .get_capset_info(index)
@@ -304,6 +322,10 @@ impl DisplayDevice for RdifDisplayDevice {
         self.device
             .get_capset(id, ver, size)
             .map_err(map_display_error)
+    }
+
+    fn ctrl_notify(&mut self) {
+        self.device.ctrl_notify();
     }
 }
 

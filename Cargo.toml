@@ -140,7 +140,11 @@ ax-ctor-bare = { version = "0.4", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.6", path = "os/arceos/modules/axdisplay" }
 ax-driver = { version = "0.13", path = "drivers/ax-driver" }
-virtio-drivers = { git = "https://github.com/rcore-os/virtio-drivers.git", rev = "b59889b2d99fd7c63f9e63e3ad11955461c06b37", default-features = false }
+# EXPERIMENT (2026-08-23, perf attribution F1): temporary path override so the
+# no-FENCE submit_3d change in the local fork (/home/zyc/code/virtio-drivers)
+# reaches the build. REVERT after measuring back to:
+# virtio-drivers = { git = "https://github.com/rcore-os/virtio-drivers.git", rev = "b59889b2d99fd7c63f9e63e3ad11955461c06b37", default-features = false }
+virtio-drivers = { path = "/home/zyc/code/virtio-drivers", default-features = false }
 ax-fs-ng = { version = "0.9", path = "fs/ax-fs-ng" }
 ax-hal = { version = "0.6", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.4", path = "components/irq-framework" }

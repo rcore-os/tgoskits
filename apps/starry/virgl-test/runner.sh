@@ -33,6 +33,14 @@ rc-service dbus start 2>/dev/null || true
 echo "[virgl-test] 启动 Weston..."
 rm -f /tmp/wayland-*
 
+# run6f: LD_PRELOAD weston-side probe (recvmsg/sendmsg timestamps) to split
+# the wayland sync round-trip latency. Optional — weston runs without it if
+# the download fails.
+wget -q -O /tmp/libweston_probe_v8.so http://10.0.2.2:8899/libweston_probe_v8.so 2>/dev/null \
+    && export LD_PRELOAD=/tmp/libweston_probe_v8.so \
+    && echo "[virgl-test] weston 探针已加载" \
+    || unset LD_PRELOAD
+
 /usr/bin/weston \
     --backend=drm-backend.so \
     --renderer=gl \
@@ -40,6 +48,7 @@ rm -f /tmp/wayland-*
     --idle-time=0 \
     --log=/tmp/weston.log &
 WESTON_PID=$!
+unset LD_PRELOAD
 
 # 等待 Wayland socket
 DISP=""
@@ -76,7 +85,7 @@ readlink /sys/class/drm/renderD128/device/subsystem 2>/dev/null || echo "  无 s
 echo "[virgl-test] virtio_gpu_dri.so 存在性:"
 ls -la /usr/lib/dri/virtio_gpu_dri.so 2>/dev/null || ls -la /usr/lib64/dri/virtio_gpu_dri.so 2>/dev/null || echo "  未找到 virtio_gpu_dri.so"
 echo "[virgl-test] weston DRM 初始化日志:"
-grep -iE 'drm|render|gbm|egl|virgl|virtio' /tmp/weston.log 2>/dev/null | head -15 || true
+grep -iE 'drm|render|gbm|egl|virgl|virtio|dmabuf|dma_buf|fence|import|wayland extension' /tmp/weston.log 2>/dev/null | head -20 || true
 
 # GL_RENDERER 检查（es2_info）：无显示时会打印噪音（Error: couldn't open display），
 # 暂时注释掉。需要验证 virgl 是否生效时，去掉以下块的行首 "#" 重新启用。
@@ -134,8 +143,39 @@ if command -v weston-simple-egl >/dev/null 2>&1; then
 fi
 
 if command -v glmark2-es2-wayland >/dev/null 2>&1; then
-    echo "[virgl-test] 运行 glmark2-es2-wayland..."
-    timeout 600 glmark2-es2-wayland 2>&1
+    # run6c-1: clean FPS baseline (fb-refresh off, no WAYLAND_DEBUG /
+    # EGL_LOG_LEVEL pollution). FB_REFRESH_TASK_ENABLED=false is in the
+    # kernel build; this measures the xfer(babe) removal's FPS effect
+    # vs run6a's 500+ baseline.
+    echo "[virgl-test] run6c-1: 干净 FPS 基线 (60s)..."
+    timeout 60 glmark2-es2-wayland 2>&1 \
+        | grep -aE 'FPS|FrameTime' | tail -25
+
+    # run6d-2: LD_PRELOAD syscall probe — intercept ioctl/poll/ppoll/select/
+    # nanosleep/futex/epoll_wait with per-call timestamps, to locate the
+    # ~1.5ms/frame guest-side silence (no card0 ioctls) after the per-frame
+    # ioctl burst. Logs to /tmp/probe.log + per-5s [sum] lines to stderr.
+    # Served from host via QEMU user-net (10.0.2.2:8899).
+    echo "[virgl-test] run6f-2: LD_PRELOAD syscall 探针 (40s)..."
+    if wget -q -O /tmp/libsyscall_probe_v7.so http://10.0.2.2:8899/libsyscall_probe_v7.so 2>/dev/null; then
+        timeout 40 env LD_PRELOAD=/tmp/libsyscall_probe_v7.so glmark2-es2-wayland 2>&1 \
+            | grep -aE '\[probe|\[sum\]' | tail -30
+        echo "[virgl-test] probe 尾部 12 行:"
+        tail -12 /tmp/probe.log 2>/dev/null
+        echo "[virgl-test] weston 探针摘要:"
+        grep -a '\[weston\]' /tmp/probe_weston.log 2>/dev/null | tail -8
+        echo "[virgl-test] weston 探针尾部 6 行:"
+        tail -6 /tmp/probe_weston.log 2>/dev/null
+        echo "[virgl-test] probe 段完成"
+    # run6g: upload the full per-call probe logs to the host (serial drops
+    # lines); host listener: nc -l -p 8900 > /tmp/probe_upload.log
+    echo "[virgl-test] 上传 probe 文件到 host..."
+    (cat /tmp/probe.log; echo "===WESTON==="; cat /tmp/probe_weston.log) \
+        | nc 10.0.2.2 8900 2>/dev/null && echo "[virgl-test] 上传完成" \
+        || echo "[virgl-test] 上传失败"
+    else
+        echo "[virgl-test] probe 下载失败（host http server 未起?）"
+    fi
 elif command -v glmark2-es2 >/dev/null 2>&1; then
     echo "[virgl-test] 运行 glmark2-es2..."
     timeout 600 glmark2-es2 2>&1

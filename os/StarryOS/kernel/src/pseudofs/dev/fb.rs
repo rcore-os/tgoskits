@@ -78,6 +78,11 @@ struct FixScreenInfo {
     pub reserved: [u16; 2], // Reserved for future compatibility
 }
 
+/// run6 A/B: when false, the 60Hz framebuffer_flush task is not spawned.
+/// (run6a keeps it for baseline; run6b flips to false to measure the
+/// xfer(0xbabe)+flush chain's contribution to the display path.)
+const FB_REFRESH_TASK_ENABLED: bool = false;
+
 async fn refresh_task() {
     let delay = core::time::Duration::from_secs_f32(1. / 60.);
     loop {
@@ -94,10 +99,12 @@ pub struct FrameBuffer {
 }
 impl FrameBuffer {
     pub fn new() -> Self {
-        ax_task::spawn_with_name(
-            || ax_task::future::block_on(refresh_task()),
-            "fb-refresh".into(),
-        );
+        if FB_REFRESH_TASK_ENABLED {
+            ax_task::spawn_with_name(
+                || ax_task::future::block_on(refresh_task()),
+                "fb-refresh".into(),
+            );
+        }
         let info = ax_display::framebuffer_info();
         Self {
             base: VirtAddr::from(info.fb_base_vaddr),

@@ -200,6 +200,18 @@ pub trait DisplayDevice: Send {
         Err(DisplayError::NotSupported)
     }
 
+    /// Block until the submit identified by `fence_id` has completed on the
+    /// host (Linux `dma_resv_wait_timeout`). Default: not supported.
+    fn wait_fence(&mut self, _fence_id: u64) -> Result<(), DisplayError> {
+        Err(DisplayError::NotSupported)
+    }
+
+    /// Non-blocking fence query (Linux `dma_resv_test_signaled`).
+    /// Default: not supported.
+    fn fence_completed(&mut self, _fence_id: u64) -> Result<bool, DisplayError> {
+        Err(DisplayError::NotSupported)
+    }
+
     fn capset_info(&mut self, _index: u32) -> Result<CapsetInfo, DisplayError> {
         Err(DisplayError::NotSupported)
     }
@@ -207,6 +219,11 @@ pub trait DisplayDevice: Send {
     fn capset(&mut self, _id: u32, _ver: u32, _size: u32) -> Result<Vec<u8>, DisplayError> {
         Err(DisplayError::NotSupported)
     }
+
+    /// Flush any pending fire-and-forget control-queue commands and notify the
+    /// host — an ioctl/transaction boundary (Linux `virtio_gpu_notify()`,
+    /// vq.c:551). Default: no-op.
+    fn ctrl_notify(&mut self) {}
 }
 
 pub struct ErasedDisplayDevice {
@@ -273,12 +290,7 @@ impl DisplayDevice for ErasedDisplayDevice {
         self.inner.set_scanout(scanout_id, resource_id, x, y, w, h)
     }
 
-    fn resource_create_2d(
-        &mut self,
-        resource_id: u32,
-        width: u32,
-        height: u32,
-    ) -> DisplayResult {
+    fn resource_create_2d(&mut self, resource_id: u32, width: u32, height: u32) -> DisplayResult {
         self.inner.resource_create_2d(resource_id, width, height)
     }
 
@@ -288,7 +300,8 @@ impl DisplayDevice for ErasedDisplayDevice {
         paddr: u64,
         length: u32,
     ) -> DisplayResult {
-        self.inner.resource_attach_backing(resource_id, paddr, length)
+        self.inner
+            .resource_attach_backing(resource_id, paddr, length)
     }
 
     fn transfer_to_host_2d(
@@ -382,7 +395,15 @@ impl DisplayDevice for ErasedDisplayDevice {
         blob_id: u64,
         cmd: &[u8],
     ) -> DisplayResult {
-        self.inner.resource_create_blob(ctx_id, resource_id, blob_mem, blob_flags, size, blob_id, cmd)
+        self.inner.resource_create_blob(
+            ctx_id,
+            resource_id,
+            blob_mem,
+            blob_flags,
+            size,
+            blob_id,
+            cmd,
+        )
     }
 
     fn transfer_to_host_3d(
@@ -431,11 +452,23 @@ impl DisplayDevice for ErasedDisplayDevice {
         self.inner.submit_cmd(ctx_id, cmds)
     }
 
+    fn wait_fence(&mut self, fence_id: u64) -> Result<(), DisplayError> {
+        self.inner.wait_fence(fence_id)
+    }
+
+    fn fence_completed(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        self.inner.fence_completed(fence_id)
+    }
+
     fn capset_info(&mut self, index: u32) -> Result<CapsetInfo, DisplayError> {
         self.inner.capset_info(index)
     }
 
     fn capset(&mut self, id: u32, ver: u32, size: u32) -> Result<Vec<u8>, DisplayError> {
         self.inner.capset(id, ver, size)
+    }
+
+    fn ctrl_notify(&mut self) {
+        self.inner.ctrl_notify();
     }
 }

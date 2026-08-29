@@ -40,6 +40,26 @@ extern crate std;
 /// Native ArceOS synchronization primitives.
 pub mod sync;
 
+/// [run6h] wake->run latency histogram snapshot: 6 µs buckets
+/// (<100, 100-500, 500-1000, 1-2ms, 2-4ms, >4ms) + total count.
+pub fn wake_run_lat_snapshot() -> ([u64; 6], u64) {
+    use core::sync::atomic::Ordering;
+    let mut buckets = [0u64; 6];
+    for (i, slot) in run_queue::WAKE_RUN_LAT.iter().enumerate() {
+        buckets[i] = slot.load(Ordering::Relaxed);
+    }
+    (buckets, run_queue::WAKE_RUN_LAT_CNT.load(Ordering::Relaxed))
+}
+
+/// [run6h] reset the wake->run latency histogram (per fx report window).
+pub fn wake_run_lat_reset() {
+    use core::sync::atomic::Ordering;
+    for slot in run_queue::WAKE_RUN_LAT.iter() {
+        slot.store(0, Ordering::Relaxed);
+    }
+    run_queue::WAKE_RUN_LAT_CNT.store(0, Ordering::Relaxed);
+}
+
 #[cfg(all(test, target_os = "none"))]
 fn bare_metal_test_runner(_tests: &[&dyn Fn()]) {}
 

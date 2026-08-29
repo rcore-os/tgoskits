@@ -807,6 +807,7 @@ dependencies = [
 name = "ax-display"
 version = "0.6.9"
 dependencies = [
+ "ax-hal",
  "ax-lazyinit",
  "ax-task",
  "irq-framework",
@@ -9136,7 +9137,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "virtio-drivers"
 version = "0.13.0"
-source = "git+https://github.com/rcore-os/virtio-drivers.git?rev=b59889b2d99fd7c63f9e63e3ad11955461c06b37#b59889b2d99fd7c63f9e63e3ad11955461c06b37"
 dependencies = [
  "bitflags 2.13.1",
  "enumn",

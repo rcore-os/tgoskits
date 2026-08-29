@@ -52,16 +52,51 @@ extract_base_rootfs() {
 resize_rootfs() {
     local img="$1"
     local target_mib="$2"
-    local current_mib
-    current_mib=$(stat --format=%s "$img" 2>/dev/null | awk '{print int($1/1048576)}')
-    if [ "$current_mib" -ge "$target_mib" ]; then
+
+    # 先强制检查文件系统。dirty 状态下 resize2fs 拒绝扩容，而 e2fsck
+    # 进入交互提问时在非交互 stdin 下会静默失败——必须 -y 自动应答。
+    # e2fsck 退出码：0=干净，1/2=已修正需重跑确认，>=3=真错误。第 1 遍
+    # 修复过错误的镜像必然返回 1，不能当成硬失败；必须 loop 到 0。
+    echo "[virgl prebuild] 检查 rootfs 文件系统..."
+    local fs_clean=0
+    for attempt in 1 2 3; do
+        if e2fsck -f -y "$img" 2>&1; then
+            fs_clean=1
+            break
+        fi
+        local rc=$?
+        if [ "$rc" -ge 3 ]; then
+            echo "error: e2fsck -f 无法修复: $img (exit=$rc)" >&2
+            exit 1
+        fi
+        echo "[virgl prebuild] e2fsck 第 ${attempt} 遍已修正错误，重跑确认..."
+    done
+    if [ "$fs_clean" -ne 1 ]; then
+        echo "error: e2fsck -f 反复修正仍不干净: $img" >&2
+        exit 1
+    fi
+
+    # 扩容判断以"内层文件系统实际大小"为准，而不是镜像文件大小。
+    # 镜像文件 5G 但内层 fs 只有 2G 时（例如某次扩容失败后一直复用
+    # 旧镜像），按文件大小判断会提前 return，fs 将永远长不起来，
+    # 最终 apk 灌装把 2G 写满导致 overlay 注入失败。
+    local fs_mib
+    fs_mib=$(dumpe2fs -h "$img" 2>/dev/null | awk -F: '/^Block count:/{gsub(/[^0-9]/,"",$2); print int($2/256)}')
+    if [ "${fs_mib:-0}" -ge "$target_mib" ]; then
         return
     fi
-    local extra=$((target_mib - current_mib))
-    echo "[virgl prebuild] 扩容 rootfs: ${current_mib}M → ${target_mib}M (+${extra}M)..."
-    dd if=/dev/zero bs=1M count="$extra" >> "$img" 2>/dev/null
-    e2fsck -f "$img" >/dev/null 2>&1 || true
-    resize2fs "$img" >/dev/null
+
+    local file_mib extra
+    file_mib=$(stat --format=%s "$img" 2>/dev/null | awk '{print int($1/1048576)}')
+    extra=$((target_mib - file_mib))
+    if [ "$extra" -gt 0 ]; then
+        echo "[virgl prebuild] 扩容 rootfs: ${fs_mib}M → ${target_mib}M (+${extra}M)..."
+        dd if=/dev/zero bs=1M count="$extra" >> "$img" 2>/dev/null
+    fi
+    resize2fs "$img" >/dev/null || {
+        echo "error: resize2fs 失败: $img" >&2
+        exit 1
+    }
 }
 
 install_packages() {

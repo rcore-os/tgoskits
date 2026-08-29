@@ -142,7 +142,12 @@ pub trait Interface: DriverGeneric {
     }
 
     /// Create a 3D rendering context.
-    fn ctx_create(&mut self, _ctx_id: u32, _name: &str, _context_init: u32) -> Result<(), DisplayError> {
+    fn ctx_create(
+        &mut self,
+        _ctx_id: u32,
+        _name: &str,
+        _context_init: u32,
+    ) -> Result<(), DisplayError> {
         Err(DisplayError::NotSupported)
     }
 
@@ -188,8 +193,20 @@ pub trait Interface: DriverGeneric {
         nr_samples: u32,
         flags: u32,
     ) -> Result<(), DisplayError> {
-        let _ = (ctx_id, resource_id, target, format, bind, width, height, depth,
-                 array_size, last_level, nr_samples, flags);
+        let _ = (
+            ctx_id,
+            resource_id,
+            target,
+            format,
+            bind,
+            width,
+            height,
+            depth,
+            array_size,
+            last_level,
+            nr_samples,
+            flags,
+        );
         Err(DisplayError::NotSupported)
     }
 
@@ -234,7 +251,15 @@ pub trait Interface: DriverGeneric {
         stride: u32,
         layer_stride: u32,
     ) -> Result<(), DisplayError> {
-        let _ = (ctx_id, resource_id, box_, offset, level, stride, layer_stride);
+        let _ = (
+            ctx_id,
+            resource_id,
+            box_,
+            offset,
+            level,
+            stride,
+            layer_stride,
+        );
         Err(DisplayError::NotSupported)
     }
 
@@ -249,12 +274,35 @@ pub trait Interface: DriverGeneric {
         stride: u32,
         layer_stride: u32,
     ) -> Result<(), DisplayError> {
-        let _ = (ctx_id, resource_id, box_, offset, level, stride, layer_stride);
+        let _ = (
+            ctx_id,
+            resource_id,
+            box_,
+            offset,
+            level,
+            stride,
+            layer_stride,
+        );
         Err(DisplayError::NotSupported)
     }
 
     /// Submit a virgl command buffer. Returns a monotonically increasing fence ID.
     fn submit_cmd(&mut self, _ctx_id: u32, _cmds: &[u8]) -> Result<u64, DisplayError> {
+        Err(DisplayError::NotSupported)
+    }
+
+    /// Block until the submit identified by `fence_id` (and everything enqueued
+    /// before it) has completed on the host — the honest completion signal
+    /// behind Linux `virtio_gpu_wait_ioctl` (`dma_resv_wait_timeout`).
+    /// The fence ID comes from [`Interface::submit_cmd`].
+    fn wait_fence(&mut self, _fence_id: u64) -> Result<(), DisplayError> {
+        Err(DisplayError::NotSupported)
+    }
+
+    /// Non-blocking fence query: has `fence_id` already completed on the host?
+    /// `false` means the host is still busy with the batch — Linux
+    /// `dma_resv_test_signaled` (the NOWAIT probe in `virtio_gpu_wait_ioctl`).
+    fn fence_completed(&mut self, _fence_id: u64) -> Result<bool, DisplayError> {
         Err(DisplayError::NotSupported)
     }
 
@@ -264,7 +312,20 @@ pub trait Interface: DriverGeneric {
     }
 
     /// Retrieve capset data.
-    fn get_capset(&mut self, _id: u32, _ver: u32, _size: u32) -> Result<alloc::vec::Vec<u8>, DisplayError> {
+    fn get_capset(
+        &mut self,
+        _id: u32,
+        _ver: u32,
+        _size: u32,
+    ) -> Result<alloc::vec::Vec<u8>, DisplayError> {
         Err(DisplayError::NotSupported)
     }
+
+    /// Flush any pending control-queue commands and notify the host — an
+    /// ioctl/transaction boundary (Linux `virtio_gpu_notify()`, vq.c:551).
+    ///
+    /// Drivers that coalesce fire-and-forget control commands must deliver
+    /// them with exactly one notify per transaction; call this once at the end
+    /// of each ioctl that enqueued such commands. Default: no-op.
+    fn ctrl_notify(&mut self) {}
 }

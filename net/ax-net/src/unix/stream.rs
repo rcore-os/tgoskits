@@ -42,6 +42,10 @@ use crate::{
 
 const BUF_SIZE: usize = 64 * 1024;
 
+/// [run6g] monotonic ns of the last unix-stream send that woke the peer's
+/// pollers. StarryOS `do_poll` measures wake-to-return latency against this.
+pub static LAST_PEER_WAKE_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// One pending cmsg batch carried across a Unix stream socketpair.
 ///
 /// `start_byte` is the 1-based cumulative tx-byte offset of the first
@@ -497,6 +501,13 @@ impl TransportOps for StreamTransport {
             if let Some(poll) = wake_poll {
                 // Peer-visible bytes and cmsg state are published before wake.
                 unsafe { poll.wake(IoEvents::IN | IoEvents::OUT) };
+                // [run6g] poll-wakeup-latency forensics: the receiver's blocked
+                // ppoll should return within µs of this wake. StarryOS do_poll
+                // buckets (return_ts - this) to find where the ~1.9ms goes.
+                LAST_PEER_WAKE_NS.store(
+                    ax_hal::time::monotonic_time_nanos() as u64,
+                    core::sync::atomic::Ordering::Relaxed,
+                );
             }
             result
         })

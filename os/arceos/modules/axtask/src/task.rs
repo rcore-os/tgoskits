@@ -160,6 +160,9 @@ pub struct TaskInner {
     need_resched: AtomicBool,
     #[cfg(feature = "preempt")]
     force_resched: AtomicBool,
+    /// [run6h] monotonic ns when this task was last unblocked (wake-up
+    /// latency forensics: wake -> actually-running).
+    last_wake_ns: AtomicU64,
     #[cfg(axtest)]
     initial_scheduler_frame_consumed: AtomicBool,
 
@@ -437,6 +440,7 @@ impl TaskInner {
             need_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             force_resched: AtomicBool::new(false),
+            last_wake_ns: AtomicU64::new(0),
             #[cfg(axtest)]
             initial_scheduler_frame_consumed: AtomicBool::new(false),
             interrupted: InterruptState::new(),
@@ -585,6 +589,18 @@ impl TaskInner {
     #[cfg(feature = "preempt")]
     pub(crate) fn set_preempt_pending(&self, pending: bool) {
         self.need_resched.store(pending, Ordering::Release)
+    }
+
+    /// [run6h] record the wake (unblock) time; consumed by the scheduler's
+    /// wake->run latency measurement when the task is next scheduled.
+    pub(crate) fn set_last_wake_ns(&self, ns: u64) {
+        self.last_wake_ns.store(ns, Ordering::Relaxed);
+    }
+
+    /// [run6h] take-and-clear the recorded wake time (0 if not recently
+    /// woken / already consumed).
+    pub(crate) fn take_last_wake_ns(&self) -> u64 {
+        self.last_wake_ns.swap(0, Ordering::Relaxed)
     }
 
     #[inline]

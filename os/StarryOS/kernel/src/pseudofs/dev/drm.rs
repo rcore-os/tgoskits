@@ -121,6 +121,20 @@ pub struct DrmModeDirtyFB {
     pub clips_ptr: u64,
 }
 
+/// One rectangle in a `DIRTY_FB` clip array — `struct drm_clip_rect` on the
+/// wire: four `u16` *inclusive* bounds in framebuffer pixel coordinates
+/// (`x2`/`y2` name the last damaged pixel). Linux feeds these into
+/// `drm_atomic_helper_damage_merged`; Starry merges them in
+/// `Card::handle_dirty_fb` so `present_fb` uploads only the damaged region.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmClipRect {
+    pub x1: u16,
+    pub y1: u16,
+    pub x2: u16,
+    pub y2: u16,
+}
+
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmPrimeHandle {

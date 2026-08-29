@@ -13,6 +13,7 @@ host-test = ["ax-task/host-test"]
 [dependencies]
 ax-task.workspace = true
 ax-lazyinit.workspace = true
+ax-hal.workspace = true
 log.workspace = true
 rdif-display.workspace = true
 irq-framework.workspace = true

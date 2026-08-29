@@ -22,6 +22,34 @@ use crate::{
     wait_queue::WaitQueueGuard,
 };
 
+/// [run6h] wake->run latency buckets (µs): <100, 100-500, 500-1000, 1-2ms,
+/// 2-4ms, >4ms. Bucketed in `switch_to` for any task that was just unblocked.
+pub static WAKE_RUN_LAT: [core::sync::atomic::AtomicU64; 6] = [
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+];
+pub static WAKE_RUN_LAT_CNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn record_wake_run_lat(wake_ns: u64) {
+    use core::sync::atomic::Ordering;
+    let now = ax_hal::time::monotonic_time_nanos() as u64;
+    let lat_us = now.saturating_sub(wake_ns) / 1000;
+    let idx = match lat_us {
+        x if x < 100 => 0,
+        x if x < 500 => 1,
+        x if x < 1000 => 2,
+        x if x < 2000 => 3,
+        x if x < 4000 => 4,
+        _ => 5,
+    };
+    WAKE_RUN_LAT[idx].fetch_add(1, Ordering::Relaxed);
+    WAKE_RUN_LAT_CNT.fetch_add(1, Ordering::Relaxed);
+}
+
 struct PreviousTask {
     task: NonNull<crate::AxTask>,
     binding: PreviousContextBinding,
@@ -712,13 +740,15 @@ impl<G: GuardState> AxRunQueueRef<G> {
         // otherwise, the task is already unblocked by other cores.
         // Note:
         // target task can not be insert into the run queue until it finishes its scheduling process.
+        let wake_ns = ax_hal::time::monotonic_time_nanos() as u64;
         if self
             .inner
             // A wakeup is not a time-slice preemption of the woken task.
-            .put_task_with_state(task, TaskState::Blocked, false)
+            .put_task_with_state(task.clone(), TaskState::Blocked, false)
         {
             // Since now, the task to be unblocked is in the `Ready` state.
             let cpu_id = self.inner.cpu_id;
+            task.set_last_wake_ns(wake_ns);
             if let Some(task_id_name) = task_id_name {
                 debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
             }
@@ -746,12 +776,14 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         } else {
             None
         };
+        let wake_ns = ax_hal::time::monotonic_time_nanos() as u64;
         if self
             .inner
             // A wakeup is not a time-slice preemption of the woken task.
-            .put_task_with_state(task, TaskState::Blocked, false)
+            .put_task_with_state(task.clone(), TaskState::Blocked, false)
         {
             let cpu_id = self.inner.cpu_id;
+            task.set_last_wake_ns(wake_ns);
             if let Some(task_id_name) = task_id_name {
                 debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
             }
@@ -1184,6 +1216,12 @@ impl AxRunQueue {
             prev_task.id_name(),
             next_task.id_name()
         );
+        // [run6h] wake->run latency: if the next task was just unblocked,
+        // record how long the wake took to actually run it.
+        let wake_ns = next_task.take_last_wake_ns();
+        if wake_ns != 0 {
+            record_wake_run_lat(wake_ns);
+        }
         prev_task.check_stack_canary();
         #[cfg(feature = "preempt")]
         next_task.set_preempt_pending(false);
