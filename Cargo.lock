@@ -7805,6 +7805,7 @@ dependencies = [
  "anyhow",
  "arm-gic-driver",
  "ax-cpu",
+ "ax-percpu",
  "ax-riscv-plic",
  "ax-sync",
  "cpu-local",
