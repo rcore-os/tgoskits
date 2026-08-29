@@ -441,8 +441,7 @@ fn exit_scheduler_frame_guard_inner(
             |error| panic!("scheduler tail lost the current scheduler owner: {error:?}"),
         )
     };
-    finish_scheduler_cpu_state(needs_reschedule, owner);
-    crate::clock_event_runtime::finish_deferred_rearm();
+    finish_scheduler_cpu_transaction(needs_reschedule, owner);
     match return_to {
         RuntimeSchedulerReturn::Task => {
             ax_hal::asm::enable_irqs();
@@ -452,10 +451,11 @@ fn exit_scheduler_frame_guard_inner(
     }
 }
 
-fn finish_scheduler_cpu_state(needs_reschedule: bool, owner: &'static str) {
+fn finish_scheduler_cpu_transaction(needs_reschedule: bool, owner: &'static str) {
     with_current_cpu_pin(|pin| {
         publish_preemption_pending_pinned(pin, needs_reschedule);
         with_guard_state_mut_pinned(pin, |state| state.exit_scheduler_preempt(owner));
+        crate::clock_event_runtime::finish_deferred_rearm_pinned(pin);
     });
 }
 

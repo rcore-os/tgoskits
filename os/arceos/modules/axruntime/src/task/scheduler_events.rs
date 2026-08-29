@@ -53,6 +53,23 @@ pub fn qperf_runtime_scheduler_metrics_snapshot() -> QperfRuntimeSchedulerMetric
     }
 }
 
+/// Returns successful CPU-pin entries observed by the current CPU.
+#[cfg(feature = "qperf-metrics")]
+pub fn qperf_current_cpu_pin_entries() -> u64 {
+    let restore_irqs = ax_hal::asm::irqs_enabled();
+    if restore_irqs {
+        ax_hal::asm::disable_irqs();
+    }
+    // SAFETY: raw local IRQ exclusion prevents migration through the scalar
+    // per-CPU diagnostic snapshot without constructing another measured pin.
+    let entries = unsafe { cpu_local::qperf_current_cpu_pin_entries() }
+        .unwrap_or_else(|error| panic!("qperf CPU-pin snapshot is invalid: {error}"));
+    if restore_irqs {
+        ax_hal::asm::enable_irqs();
+    }
+    entries
+}
+
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
 pub(crate) fn record_scheduler_ipi_send() {
     SCHEDULER_IPI_SEND_COUNT.fetch_add(1, Ordering::Relaxed);

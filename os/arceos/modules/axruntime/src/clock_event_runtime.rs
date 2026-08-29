@@ -28,14 +28,25 @@ fn with_local_clock_event_mut<R>(
     // SAFETY: every caller is either offline initialization or the local timer
     // IRQ/scheduler path with IRQs disabled. The clockevent has no remote
     // mutable endpoint, so this excludes every conflicting access.
+    unsafe { ax_percpu::with_cpu_pin(|pin| with_local_clock_event_mut_pinned(pin, operation)) }
+        .unwrap_or_else(|error| panic!("clockevent CPU-local state is invalid: {error}"))
+}
+
+fn with_local_clock_event_mut_pinned<R>(
+    pin: &cpu_local::CpuPin<'_>,
+    operation: impl for<'value> FnOnce(&'value mut crate::clock_event::LocalClockEvent) -> R,
+) -> R {
+    assert!(
+        !ax_hal::asm::irqs_enabled(),
+        "mutable clockevent access requires local IRQ exclusion"
+    );
+    // SAFETY: the caller's local IRQ exclusion covers the supplied pin and
+    // prevents every conflicting clockevent owner access.
     unsafe {
-        ax_percpu::with_cpu_pin(|pin| {
-            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
-                LOCAL_CLOCK_EVENT.with_current_mut(exclusive, operation)
-            })
+        ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+            LOCAL_CLOCK_EVENT.with_current_mut(exclusive, operation)
         })
     }
-    .unwrap_or_else(|error| panic!("clockevent CPU-local state is invalid: {error}"))
 }
 fn apply_clock_event_action(action: crate::clock_event::ClockEventAction) {
     match action {
@@ -206,6 +217,16 @@ pub(crate) fn finish_deferred_rearm() {
         "deferred clockevent rearm requires local IRQ exclusion"
     );
     let action = with_local_clock_event_mut(|clockevent| clockevent.finish_deferred_rearm());
+    apply_clock_event_action(action);
+}
+
+pub(crate) fn finish_deferred_rearm_pinned(pin: &cpu_local::CpuPin<'_>) {
+    assert!(
+        !ax_hal::asm::irqs_enabled(),
+        "deferred clockevent rearm requires local IRQ exclusion"
+    );
+    let action =
+        with_local_clock_event_mut_pinned(pin, |clockevent| clockevent.finish_deferred_rearm());
     apply_clock_event_action(action);
 }
 pub(crate) fn init_timer() {

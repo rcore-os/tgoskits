@@ -130,7 +130,8 @@ pub use runtime_impl::{SchedSwitchTraceHook, install_sched_switch_trace_hook};
 pub use scheduler_events::timer_irq_count;
 #[cfg(feature = "qperf-metrics")]
 pub use scheduler_events::{
-    QperfRuntimeSchedulerMetricsSnapshot, qperf_runtime_scheduler_metrics_snapshot,
+    QperfRuntimeSchedulerMetricsSnapshot, qperf_current_cpu_pin_entries,
+    qperf_runtime_scheduler_metrics_snapshot,
 };
 pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
 

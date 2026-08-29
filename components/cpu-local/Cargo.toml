@@ -19,5 +19,8 @@ tls = []
 # Use a thread-local register model for host-side tests.
 host-test = []
 
+# Record per-CPU pin construction for scheduler qperf diagnostics.
+qperf-metrics = []
+
 [dependencies]
 thiserror.workspace = true

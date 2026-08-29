@@ -24,7 +24,7 @@ ipi = ["dep:ax-ipi", "ax-hal/ipi"]
 # Scheduler-only users still share ax-ipi's typed, coalescible physical edge;
 # logical pending state remains in ax-task.
 wake-ipi = ["dep:ax-ipi", "ax-hal/ipi"]
-qperf-metrics = ["ax-task/qperf-metrics"]
+qperf-metrics = ["ax-task/qperf-metrics", "cpu-local/qperf-metrics"]
 fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
