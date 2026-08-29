@@ -295,10 +295,28 @@ impl CurrentDispatch {
                 Some(fair.finish_runtime_deadline_delta_ns(irq_util_avg))
             }
             SchedulingEntity::Fifo => None,
-            SchedulingEntity::RoundRobin {
-                remaining_quantum_ns,
-            } => Some(*remaining_quantum_ns),
+            // Linux SCHED_RR rotates from the periodic scheduler tick. Its
+            // quantum never contributes an independent hrtick deadline.
+            SchedulingEntity::RoundRobin { .. } => None,
             SchedulingEntity::Deadline(deadline) => Some(deadline.remaining_runtime_ns()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_robin_quantum_does_not_arm_a_runtime_clockevent() {
+        assert_eq!(
+            CurrentDispatch::runtime_timer_delta_for(
+                &SchedulingEntity::RoundRobin {
+                    remaining_quantum_ns: 30,
+                },
+                0,
+            ),
+            None,
+        );
     }
 }

@@ -766,11 +766,12 @@ impl<'a> OwnerRqTxn<'a> {
         &mut self,
         runtime_ns: u64,
         reclaimed_ns: u64,
+        tick_ns: u64,
     ) -> DispatchCharge {
         let deadline_extra_bw_scaled = self.remote.deadline_extra_bw_scaled();
         let update = self
             .run_queue_mut()
-            .task_tick_current(runtime_ns, reclaimed_ns, deadline_extra_bw_scaled)
+            .task_tick_current(runtime_ns, reclaimed_ns, deadline_extra_bw_scaled, tick_ns)
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5251_1001, self.remote.owner().as_u32() as usize)
             });
@@ -796,11 +797,17 @@ impl<'a> OwnerRqTxn<'a> {
         &mut self,
         runtime_ns: u64,
         reclaimed_ns: u64,
+        tick_ns: u64,
     ) -> DispatchCharge {
         let deadline_extra_bw_scaled = self.remote.deadline_extra_bw_scaled();
         let update = self
             .run_queue_mut()
-            .task_tick_and_clock_event_current(runtime_ns, reclaimed_ns, deadline_extra_bw_scaled)
+            .task_tick_and_clock_event_current(
+                runtime_ns,
+                reclaimed_ns,
+                deadline_extra_bw_scaled,
+                tick_ns,
+            )
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5251_1001, self.remote.owner().as_u32() as usize)
             });
@@ -861,7 +868,11 @@ impl<'a> OwnerRqTxn<'a> {
         self.charge_current(runtime_ns, reclaimed_ns)
     }
 
-    pub(crate) fn task_tick_current_until(&mut self, reclaimed_ns: u64) -> DispatchCharge {
+    pub(crate) fn task_tick_current_until(
+        &mut self,
+        reclaimed_ns: u64,
+        tick_ns: u64,
+    ) -> DispatchCharge {
         let now_ns = self.clock.task().as_nanos();
         let runtime_ns = self
             .current()
@@ -869,7 +880,7 @@ impl<'a> OwnerRqTxn<'a> {
                 task_runtime::fatal_invariant(0x5251_1002, self.remote.owner().as_u32() as usize)
             })
             .unaccounted_runtime(now_ns);
-        self.task_tick_current(runtime_ns, reclaimed_ns)
+        self.task_tick_current(runtime_ns, reclaimed_ns, tick_ns)
     }
 
     pub(crate) fn clock_event_current_until(&mut self, reclaimed_ns: u64) -> DispatchCharge {
@@ -886,6 +897,7 @@ impl<'a> OwnerRqTxn<'a> {
     pub(crate) fn task_tick_and_clock_event_current_until(
         &mut self,
         reclaimed_ns: u64,
+        tick_ns: u64,
     ) -> DispatchCharge {
         let now_ns = self.clock.task().as_nanos();
         let runtime_ns = self
@@ -894,7 +906,7 @@ impl<'a> OwnerRqTxn<'a> {
                 task_runtime::fatal_invariant(0x5251_1002, self.remote.owner().as_u32() as usize)
             })
             .unaccounted_runtime(now_ns);
-        self.task_tick_and_clock_event_current(runtime_ns, reclaimed_ns)
+        self.task_tick_and_clock_event_current(runtime_ns, reclaimed_ns, tick_ns)
     }
 
     /// Commits every rq-derived publication exactly once and releases the rq.

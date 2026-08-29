@@ -442,6 +442,7 @@ impl TaskSystem {
         &self,
         cpu: Pin<&mut CpuLocal>,
         reclaimed_ns: u64,
+        tick_ns: u64,
     ) -> Result<
         (
             ChargeOutcome,
@@ -462,7 +463,7 @@ impl TaskSystem {
             transaction.commit();
             return Err(TaskError::NoRunnableThread);
         };
-        let charge = transaction.task_tick_current_until(reclaimed_ns);
+        let charge = transaction.task_tick_current_until(reclaimed_ns, tick_ns);
         let rq_observation = transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit();
         Ok((
@@ -518,6 +519,7 @@ impl TaskSystem {
         &self,
         cpu: Pin<&mut CpuLocal>,
         reclaimed_ns: u64,
+        tick_ns: u64,
     ) -> Result<
         (
             ChargeOutcome,
@@ -538,7 +540,7 @@ impl TaskSystem {
             transaction.commit();
             return Err(TaskError::NoRunnableThread);
         };
-        let charge = transaction.task_tick_and_clock_event_current_until(reclaimed_ns);
+        let charge = transaction.task_tick_and_clock_event_current_until(reclaimed_ns, tick_ns);
         let rq_observation = transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit();
         Ok((

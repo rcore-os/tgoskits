@@ -28,6 +28,7 @@ pub(super) struct ClassEnqueue {
 
 #[derive(Clone, Copy)]
 pub(crate) struct ClassTick {
+    pub(crate) slice_expired: bool,
     pub(crate) request_reschedule: bool,
 }
 
@@ -295,45 +296,58 @@ impl SchedulerClass {
         policy: SchedulePolicy,
         current_entity: &SchedulingEntity,
         charge: DispatchCharge,
+        periodic_tick_ns: Option<u64>,
     ) -> ClassTick {
-        ClassTick {
-            request_reschedule: match self {
-                // Linux `update_curr_dl_se()` always dequeues and reschedules
-                // an exhausted CBS entity. `SCHED_FLAG_DL_OVERRUN` controls
-                // only user-visible overrun notification, never whether the
-                // throttled task may keep running.
-                Self::Deadline => charge.slice_expired,
-                Self::Realtime => match policy {
-                    SchedulePolicy::RoundRobin { .. } if charge.slice_expired => {
-                        let key = match run_queue.membership_class(current) {
-                            Some(QueueMembershipClass::Realtime(key)) => key,
-                            _ => task_runtime::fatal_invariant(
-                                0x5251_1010,
-                                current.as_u64() as usize,
-                            ),
-                        };
-                        run_queue
-                            .rt
-                            .task_tick_round_robin(key, policy)
-                            .unwrap_or_else(|| {
-                                task_runtime::fatal_invariant(
-                                    0x5251_1010,
-                                    current.as_u64() as usize,
-                                )
-                            })
+        match self {
+            // Linux `update_curr_dl_se()` always dequeues and reschedules an
+            // exhausted CBS entity. `SCHED_FLAG_DL_OVERRUN` controls only
+            // user-visible overrun notification.
+            Self::Deadline => ClassTick {
+                slice_expired: charge.slice_expired,
+                request_reschedule: charge.slice_expired,
+            },
+            Self::Realtime => match policy {
+                SchedulePolicy::RoundRobin { .. } => {
+                    let tick_ns = periodic_tick_ns.unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x5251_1012, current.as_u64() as usize)
+                    });
+                    let key = match run_queue.membership_class(current) {
+                        Some(QueueMembershipClass::Realtime(key)) => key,
+                        _ => task_runtime::fatal_invariant(0x5251_1010, current.as_u64() as usize),
+                    };
+                    let tick = run_queue
+                        .rt
+                        .task_tick_round_robin(key, policy, tick_ns)
+                        .unwrap_or_else(|| {
+                            task_runtime::fatal_invariant(0x5251_1010, current.as_u64() as usize)
+                        });
+                    ClassTick {
+                        slice_expired: tick.quantum_expired,
+                        request_reschedule: tick.request_reschedule,
                     }
-                    SchedulePolicy::RoundRobin { .. } | SchedulePolicy::Fifo { .. } => false,
-                    _ => task_runtime::fatal_invariant(0x5251_1011, current.as_u64() as usize),
-                },
-                // Linux v7.1 requests lazy rescheduling when either the full
-                // request expires or RUN_TO_PARITY protection ends. A lone
-                // current still keeps running without a Fair clockevent.
-                Self::Fair => {
-                    // Every fair policy shares one cfs_rq, so any queued Fair
-                    // contender keeps the current's runtime deadline active.
-                    fair_tick_requests_reschedule(run_queue.has_fair(), current_entity, charge)
                 }
-                Self::Stop => false,
+                SchedulePolicy::Fifo { .. } => ClassTick {
+                    slice_expired: false,
+                    request_reschedule: false,
+                },
+                _ => task_runtime::fatal_invariant(0x5251_1011, current.as_u64() as usize),
+            },
+            // Linux v7.1 requests lazy rescheduling when either the full
+            // request expires or RUN_TO_PARITY protection ends. A lone
+            // current still keeps running without a Fair clockevent.
+            Self::Fair => ClassTick {
+                slice_expired: charge.slice_expired,
+                // Every fair policy shares one cfs_rq, so any queued Fair
+                // contender keeps the current's runtime deadline active.
+                request_reschedule: fair_tick_requests_reschedule(
+                    run_queue.has_fair(),
+                    current_entity,
+                    charge,
+                ),
+            },
+            Self::Stop => ClassTick {
+                slice_expired: false,
+                request_reschedule: false,
             },
         }
     }

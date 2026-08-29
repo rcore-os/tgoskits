@@ -433,12 +433,9 @@ impl SchedulingEntity {
             Self::KernelStop => false,
             Self::Fair(entity) => entity.charge(runtime_ns, virtual_time),
             Self::Fifo => false,
-            Self::RoundRobin {
-                remaining_quantum_ns,
-            } => {
-                *remaining_quantum_ns = remaining_quantum_ns.saturating_sub(runtime_ns);
-                *remaining_quantum_ns == 0
-            }
+            // Linux advances SCHED_RR's time slice only from task_tick_rt().
+            // Execution accounting between periodic ticks must not consume it.
+            Self::RoundRobin { .. } => false,
             Self::Deadline(entity) => entity.charge(runtime_ns, reclaimed_ns),
         }
     }
@@ -484,17 +481,20 @@ impl SchedulingEntity {
         }
     }
 
-    /// Reports whether a round-robin dispatch consumed its complete quantum.
-    pub const fn round_robin_quantum_expired(&self) -> bool {
-        matches!(
-            self,
-            Self::RoundRobin {
-                remaining_quantum_ns: 0
-            }
-        )
+    /// Advances one Linux periodic tick for a round-robin dispatch.
+    pub(crate) fn advance_round_robin_tick(&mut self, tick_ns: u64) -> bool {
+        assert!(tick_ns > 0, "round-robin tick duration must be nonzero");
+        let Self::RoundRobin {
+            remaining_quantum_ns,
+        } = self
+        else {
+            return false;
+        };
+        *remaining_quantum_ns = remaining_quantum_ns.saturating_sub(tick_ns);
+        *remaining_quantum_ns == 0
     }
 
-    /// Starts a fresh round-robin quantum after yield or expiration.
+    /// Starts a fresh round-robin quantum after periodic-tick expiration.
     pub fn reset_round_robin_quantum(&mut self, policy: SchedulePolicy) {
         if let (
             Self::RoundRobin {
@@ -542,5 +542,31 @@ mod tests {
         assert!(!entity.charge(40, 0));
         assert!(!entity.charge(40, 0));
         assert!(entity.charge(20, 0));
+    }
+
+    #[test]
+    fn round_robin_quantum_is_not_execution_runtime_budget() {
+        let mut entity = SchedulingEntity::RoundRobin {
+            remaining_quantum_ns: 30,
+        };
+
+        assert!(!entity.charge(30, 0, 0));
+        assert_eq!(
+            entity,
+            SchedulingEntity::RoundRobin {
+                remaining_quantum_ns: 30,
+            }
+        );
+    }
+
+    #[test]
+    fn round_robin_quantum_advances_by_periodic_ticks() {
+        let mut entity = SchedulingEntity::RoundRobin {
+            remaining_quantum_ns: 25,
+        };
+
+        assert!(!entity.advance_round_robin_tick(10));
+        assert!(!entity.advance_round_robin_tick(10));
+        assert!(entity.advance_round_robin_tick(10));
     }
 }

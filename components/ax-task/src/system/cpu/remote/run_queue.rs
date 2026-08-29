@@ -135,16 +135,25 @@ pub(in crate::system::cpu) enum RqCurrentUpdate {
 enum CurrentAccountingEvent {
     RuntimeUpdate,
     ClockEvent,
-    SchedulerTick,
-    SchedulerTickWithClockEvent,
+    SchedulerTick { tick_ns: u64 },
+    SchedulerTickWithClockEvent { tick_ns: u64 },
 }
 
 impl CurrentAccountingEvent {
     const fn runs_class_tick(self, slice_expired: bool) -> bool {
         matches!(
             self,
-            Self::SchedulerTick | Self::SchedulerTickWithClockEvent
+            Self::SchedulerTick { .. } | Self::SchedulerTickWithClockEvent { .. }
         ) || slice_expired
+    }
+
+    const fn periodic_tick_ns(self) -> Option<u64> {
+        match self {
+            Self::SchedulerTick { tick_ns } | Self::SchedulerTickWithClockEvent { tick_ns } => {
+                Some(tick_ns)
+            }
+            Self::RuntimeUpdate | Self::ClockEvent => None,
+        }
     }
 
     const fn class_reschedule_kind(
@@ -156,7 +165,7 @@ impl CurrentAccountingEvent {
             // Linux's Fair hrtick callback invokes task_tick(..., queued=1).
             // entity_tick() first performs the lazy update_curr() accounting,
             // then upgrades the queued hrtick expiry with resched_curr().
-            (Self::ClockEvent | Self::SchedulerTickWithClockEvent, _, true) => {
+            (Self::ClockEvent | Self::SchedulerTickWithClockEvent { .. }, _, true) => {
                 RescheduleKind::Immediate
             }
             (_, SchedulePolicy::Fair { .. }, _) => RescheduleKind::Lazy,
@@ -883,12 +892,13 @@ impl CpuRunQueueState {
         runtime_ns: u64,
         reclaimed_ns: u64,
         deadline_extra_bw_scaled: u64,
+        tick_ns: u64,
     ) -> Result<RqCurrentUpdate, TaskError> {
         self.update_current_for_event(
             runtime_ns,
             reclaimed_ns,
             deadline_extra_bw_scaled,
-            CurrentAccountingEvent::SchedulerTick,
+            CurrentAccountingEvent::SchedulerTick { tick_ns },
         )
     }
 
@@ -903,12 +913,13 @@ impl CpuRunQueueState {
         runtime_ns: u64,
         reclaimed_ns: u64,
         deadline_extra_bw_scaled: u64,
+        tick_ns: u64,
     ) -> Result<RqCurrentUpdate, TaskError> {
         self.update_current_for_event(
             runtime_ns,
             reclaimed_ns,
             deadline_extra_bw_scaled,
-            CurrentAccountingEvent::SchedulerTickWithClockEvent,
+            CurrentAccountingEvent::SchedulerTickWithClockEvent { tick_ns },
         )
     }
 
@@ -935,7 +946,7 @@ impl CpuRunQueueState {
         }
 
         let bandwidth = self.queue.deadline_bandwidth();
-        let (charge, policy, current_entity, rt_quota_exempt) = self.queue.charge_current(
+        let (mut charge, policy, current_entity, rt_quota_exempt) = self.queue.charge_current(
             runtime_ns,
             now_ns,
             bandwidth.inactive_bw_scaled(),
@@ -952,16 +963,20 @@ impl CpuRunQueueState {
         if let Some(current_fair) = current_entity.fair() {
             self.queue.update_fair_virtual_time(Some(current_fair));
         }
-        let class_tick_reschedule = event.runs_class_tick(charge.slice_expired)
-            && SchedulerClass::for_policy(policy)
-                .task_tick(
-                    &mut self.queue,
-                    current_thread,
-                    policy,
-                    &current_entity,
-                    charge,
-                )
-                .request_reschedule;
+        let class_tick = event.runs_class_tick(charge.slice_expired).then(|| {
+            SchedulerClass::for_policy(policy).task_tick(
+                &mut self.queue,
+                current_thread,
+                policy,
+                &current_entity,
+                charge,
+                event.periodic_tick_ns(),
+            )
+        });
+        if class_tick.is_some_and(|tick| tick.slice_expired) {
+            charge.slice_expired = true;
+        }
+        let class_tick_reschedule = class_tick.is_some_and(|tick| tick.request_reschedule);
         let deadline_runtime_reschedule =
             matches!(policy, SchedulePolicy::Deadline(_)) && charge.slice_expired;
         let reschedule = if deadline_runtime_reschedule || deadline_replenish_reschedule {
@@ -1259,7 +1274,7 @@ mod tests {
     const FAIR_HRTICK_RESCHEDULE: RescheduleKind =
         CurrentAccountingEvent::ClockEvent.class_reschedule_kind(FAIR_POLICY, true);
     const FAIR_COALESCED_TICK_RESCHEDULE: RescheduleKind =
-        CurrentAccountingEvent::SchedulerTickWithClockEvent
+        CurrentAccountingEvent::SchedulerTickWithClockEvent { tick_ns: 10 }
             .class_reschedule_kind(FAIR_POLICY, true);
 
     const _: () = assert!(matches!(FAIR_HRTICK_RESCHEDULE, RescheduleKind::Immediate));
@@ -1284,7 +1299,8 @@ mod tests {
             "a periodic tick coalesced with Fair hrtick must retain queued hrtick semantics",
         );
         assert_eq!(
-            CurrentAccountingEvent::SchedulerTick.class_reschedule_kind(FAIR_POLICY, false),
+            CurrentAccountingEvent::SchedulerTick { tick_ns: 10 }
+                .class_reschedule_kind(FAIR_POLICY, false),
             RescheduleKind::Lazy,
             "a periodic Fair class check without hrtick expiry remains lazy",
         );

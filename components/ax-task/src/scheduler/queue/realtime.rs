@@ -10,6 +10,11 @@ const RT_PRIORITY_LEVELS: usize = 99;
 const FIXED_PRIORITY_LEVELS: usize = RT_PRIORITY_LEVELS;
 const RT_PRIORITY_BITMAP: u128 = (1_u128 << RT_PRIORITY_LEVELS) - 1;
 
+pub(super) struct RoundRobinTick {
+    pub(super) quantum_expired: bool,
+    pub(super) request_reschedule: bool,
+}
+
 /// Per-thread RT linkage prepared during thread construction.
 #[derive(Debug)]
 pub(crate) struct RealtimeNode {
@@ -644,11 +649,19 @@ impl RealtimeRunQueue {
         &mut self,
         key: RealtimeQueueKey,
         policy: SchedulePolicy,
-    ) -> Option<bool> {
+        tick_ns: u64,
+    ) -> Option<RoundRobinTick> {
         let index = key.index();
-        let expired = self.get(key)?.active.entity().round_robin_quantum_expired();
+        let expired = self
+            .get_mut(key)?
+            .active
+            .entity_mut()
+            .advance_round_robin_tick(tick_ns);
         if !expired {
-            return Some(false);
+            return Some(RoundRobinTick {
+                quantum_expired: false,
+                request_reschedule: false,
+            });
         }
 
         let has_peer = self.active[index].len > 1;
@@ -666,7 +679,10 @@ impl RealtimeRunQueue {
                 .entity_mut()
                 .reset_round_robin_quantum(policy);
         }
-        Some(has_peer)
+        Some(RoundRobinTick {
+            quantum_expired: true,
+            request_reschedule: has_peer,
+        })
     }
 
     fn after_remove(&mut self, index: usize, mut node: Box<RealtimeNode>) -> QueuedThread {

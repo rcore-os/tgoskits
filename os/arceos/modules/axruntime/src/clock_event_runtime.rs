@@ -286,16 +286,17 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
         unsafe { ax_hal::time::scheduler_clock_tick() }
             .expect("current CPU scheduler clock must be online before timer IRQs");
         let now = monotonic_now();
+        let periodic_tick_ns = firing.periodic_tick().then(|| {
+            core::num::NonZeroU64::new(periodic_interval_nanos())
+                .expect("scheduler tick interval was validated as nonzero")
+        });
         let scheduler_event = ax_task::ClaimedSchedulerDeadlines::new(
-            firing.periodic_tick(),
+            periodic_tick_ns,
             firing.scheduler_deadline_elapsed(),
         );
         let outcome = crate::task::on_clock_event(now, scheduler_event);
-        if firing.periodic_tick() {
-            crate::task::publish_scheduler_tick(
-                outcome.scheduler_tick_stamp(),
-                periodic_interval_nanos(),
-            );
+        if let Some(tick_ns) = periodic_tick_ns {
+            crate::task::publish_scheduler_tick(outcome.scheduler_tick_stamp(), tick_ns.get());
         }
         firing.finish(outcome);
         ax_hal::irq::IrqReturn::Handled

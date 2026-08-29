@@ -1,3 +1,5 @@
+use core::num::NonZeroU64;
+
 use super::*;
 use crate::{DeadlineBaseGuardSource, SchedulerDeadlineDerivationSource};
 
@@ -206,12 +208,17 @@ pub fn on_clock_event(
         ClockAccountingKind::SchedulerDeadline => {
             system.clock_event_current_until_with_clock(cpu.as_mut(), 0)?
         }
-        ClockAccountingKind::PeriodicTick => {
-            system.task_tick_current_until_with_clock(cpu.as_mut(), 0)?
-        }
-        ClockAccountingKind::PeriodicTickWithSchedulerDeadline => {
-            system.task_tick_and_clock_event_current_until_with_clock(cpu.as_mut(), 0)?
-        }
+        ClockAccountingKind::PeriodicTick => system.task_tick_current_until_with_clock(
+            cpu.as_mut(),
+            0,
+            scheduler_event.periodic_tick_ns(),
+        )?,
+        ClockAccountingKind::PeriodicTickWithSchedulerDeadline => system
+            .task_tick_and_clock_event_current_until_with_clock(
+                cpu.as_mut(),
+                0,
+                scheduler_event.periodic_tick_ns(),
+            )?,
     };
     let rt_period_rescheduled = system.service_rt_period(&cpu, now);
     let hard = system.service_due_hard_timers(cpu.as_mut(), now)?;
@@ -253,7 +260,7 @@ fn clock_event_rq_observation_reusable(
 /// Scheduler-owned deadlines claimed by one physical clockevent firing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClaimedSchedulerDeadlines {
-    periodic_tick_elapsed: bool,
+    periodic_tick_ns: Option<NonZeroU64>,
     scheduler_deadline_elapsed: bool,
 }
 
@@ -266,21 +273,34 @@ enum ClockAccountingKind {
 }
 
 impl ClaimedSchedulerDeadlines {
-    /// Captures the two independent scheduler deadlines observed by the
-    /// physical clockevent owner.
-    pub const fn new(periodic_tick_elapsed: bool, scheduler_deadline_elapsed: bool) -> Self {
+    /// Captures the periodic-tick duration and independent scheduler deadline
+    /// observed by the physical clockevent owner.
+    pub const fn new(
+        periodic_tick_ns: Option<NonZeroU64>,
+        scheduler_deadline_elapsed: bool,
+    ) -> Self {
         Self {
-            periodic_tick_elapsed,
+            periodic_tick_ns,
             scheduler_deadline_elapsed,
         }
     }
 
     const fn runs_periodic_task_tick(self) -> bool {
-        self.periodic_tick_elapsed
+        self.periodic_tick_ns.is_some()
+    }
+
+    fn periodic_tick_ns(self) -> u64 {
+        match self.periodic_tick_ns {
+            Some(tick_ns) => tick_ns.get(),
+            None => task_runtime::fatal_invariant(0x5251_1013, 0),
+        }
     }
 
     const fn accounting_kind(self) -> ClockAccountingKind {
-        match (self.periodic_tick_elapsed, self.scheduler_deadline_elapsed) {
+        match (
+            self.periodic_tick_ns.is_some(),
+            self.scheduler_deadline_elapsed,
+        ) {
             (false, false) => ClockAccountingKind::RuntimeOnly,
             (false, true) => ClockAccountingKind::SchedulerDeadline,
             (true, false) => ClockAccountingKind::PeriodicTick,
@@ -580,34 +600,40 @@ impl TaskClockEventOutcome {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU64;
+
     use super::{
         ClaimedSchedulerDeadlines, ClockAccountingKind, clock_event_rq_observation_reusable,
     };
 
     #[test]
     fn only_periodic_clock_events_run_the_scheduler_tick() {
-        assert!(!ClaimedSchedulerDeadlines::new(false, false).runs_periodic_task_tick());
-        assert!(!ClaimedSchedulerDeadlines::new(false, true).runs_periodic_task_tick());
-        assert!(ClaimedSchedulerDeadlines::new(true, false).runs_periodic_task_tick());
-        assert!(ClaimedSchedulerDeadlines::new(true, true).runs_periodic_task_tick());
+        let tick_ns = NonZeroU64::new(10).unwrap();
+
+        assert!(!ClaimedSchedulerDeadlines::new(None, false).runs_periodic_task_tick());
+        assert!(!ClaimedSchedulerDeadlines::new(None, true).runs_periodic_task_tick());
+        assert!(ClaimedSchedulerDeadlines::new(Some(tick_ns), false).runs_periodic_task_tick());
+        assert!(ClaimedSchedulerDeadlines::new(Some(tick_ns), true).runs_periodic_task_tick());
     }
 
     #[test]
     fn unrelated_physical_clockevent_only_accounts_runtime() {
+        let tick_ns = NonZeroU64::new(10).unwrap();
+
         assert_eq!(
-            ClaimedSchedulerDeadlines::new(false, false).accounting_kind(),
+            ClaimedSchedulerDeadlines::new(None, false).accounting_kind(),
             ClockAccountingKind::RuntimeOnly
         );
         assert_eq!(
-            ClaimedSchedulerDeadlines::new(false, true).accounting_kind(),
+            ClaimedSchedulerDeadlines::new(None, true).accounting_kind(),
             ClockAccountingKind::SchedulerDeadline
         );
         assert_eq!(
-            ClaimedSchedulerDeadlines::new(true, false).accounting_kind(),
+            ClaimedSchedulerDeadlines::new(Some(tick_ns), false).accounting_kind(),
             ClockAccountingKind::PeriodicTick
         );
         assert_eq!(
-            ClaimedSchedulerDeadlines::new(true, true).accounting_kind(),
+            ClaimedSchedulerDeadlines::new(Some(tick_ns), true).accounting_kind(),
             ClockAccountingKind::PeriodicTickWithSchedulerDeadline
         );
     }

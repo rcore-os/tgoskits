@@ -4769,6 +4769,45 @@ preempt/pipe-lock/park-switch 路径产生了 Linux RT 没有的 lock convoy。�
 hrtick 不变，继续对照 Linux 从 irq-exit/preempt-enable 到 schedule、pipe mutex handoff、park 与
 wakeup 的完整事务边界。
 
+### 2026-08-29 SCHED_RR quantum 只由周期 tick 推进
+
+Linux v7.1 `kernel/sched/core.c::sched_tick()` 每个物理周期 tick 只调用一次当前 class 的
+`task_tick()`；`kernel/sched/rt.c::task_tick_rt()` 在运行时统计之后只对 `SCHED_RR` 将
+`time_slice` 减一。归零时无条件恢复完整 quantum，但只有当前 RT entity 或其祖先存在同优先级
+peer 才执行 `requeue_task_rt(..., 0)` 并请求调度；无 peer 时继续运行。Linux tick hrtimer 迟到时
+通过 `hrtimer_forward()` 跳到当前时间之后，不补发错过的每一个 scheduler tick。因此 RR quantum
+是离散周期 tick 状态，不是任意 rq accounting 的纳秒预算，也不是独立 hrtick deadline。
+
+旧 ax-task 在每次 `SchedulingEntity::charge()` 中按实际运行纳秒消耗 RR quantum，并把剩余 quantum
+加入 current runtime clockevent。这样 block、wake、clockevent 等非周期 accounting 都可能提前推进
+RR slice，且为 RR 建立了 Linux 不存在的独立 hrtick。最终实现把物理周期的非零 tick 时长从
+ax-runtime 的唯一 clockevent owner 作为 `ClaimedSchedulerDeadlines` 的 typed state 传入 ax-task；
+普通 accounting 对 RR 只更新通用运行时统计，不消耗 quantum。只有 `SchedulerTick` 与
+`SchedulerTickWithClockEvent` 运行一次 RT class tick，按一个周期推进 RR entity；到期后的 reset、
+同优先级 peer 尾插和 reschedule 仍在同一 owner-rq transaction 内完成。物理周期同时命中 scheduler
+deadline 时只运行一次 class tick；迟到的物理 tick 仍只推进一次 quantum。yield、普通抢占、block 与
+wake 不重置剩余 quantum。
+
+确定性红测先约束两项错误语义：`round_robin_quantum_is_not_execution_runtime_budget` 要求任意
+execution accounting 不改变 RR quantum，`round_robin_quantum_does_not_arm_a_runtime_clockevent`
+要求 RR 不贡献 runtime timer。旧实现执行
+`RUSTFLAGS='-C link-arg=/tmp/ax_task_algorithm_test_link_stubs.o' cargo test -p ax-task --lib
+--features host-test round_robin_ -- --nocapture` 时两项都稳定失败；修复后同一命令包含非整周期
+quantum 的第三项回归并以 3/3 通过。`cargo check -p ax-task --tests --features host-test` 通过，真实
+x86_64 QEMU 命令
+`cargo xtask arceos test qemu --test-group rust --test-case sched-rr --target x86_64-unknown-none`
+执行 `sched-rr` 并以 1/1 通过；Starry x86_64 axtest 同时以 78/78 通过。ax-task 的 5 个 clippy
+组合全部通过；ax-runtime 的 base、aic8800、display、ext-ld、ext4fs、smp、qperf-metrics、host-test
+及 smp+qperf-metrics 组合通过。完整 ax-runtime clippy 矩阵在 fatfs 组合被工作区既有、未纳入本提交的
+ax-fs-ng `PAGE_SIZE`/`SleepMutex` 条件导入错误阻塞，本检查点没有改动或提交这些用户文件。
+
+性能优先验证继续使用相同 true `-smp 1`、TCG multi、`hackbench -pipe 1 process 20` 五轮协议：
+1.249/1.246/1.374/1.333/1.308 s，中位数 1.308 s。相对上一 Linux-correct Fair hrtick 检查点
+1.404 s 名义改善约 6.8%，仍约为 Linux v7.1 PREEMPT_RT 0.396 s 的 3.30 倍。该 Fair workload
+不命中 RR policy，因而这组数据只证明完整 RR 语义修复没有使单核主路径进一步退化，不能把名义改善
+归因于 RR，也不能把 RR 当作剩余性能差距根因。下一检查点继续保留 ordinary Fair hrtick 与本节 RR
+周期语义，定位其后的 preempt/pipe-lock/park-switch lock convoy。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
