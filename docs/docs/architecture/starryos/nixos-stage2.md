@@ -15,7 +15,7 @@ NixOS。
 
 该测试框架的边界是单机 x86_64、串口证据和生命周期检查。nixosTest driver、QEMU 和 OVMF 来自独立锁定的 Nix 输入；TCG 是正确性基线，不要求 `/dev/kvm` 或主机单独安装 QEMU/OVMF。每次运行使用新的 qcow2 rootfs overlay、OVMF vars 副本和 ESP，终端证据等待上限为 600 秒，全局 driver 上限为 900 秒。`boot` 只有完整的 `pid1 → activation → systemd → marker → STARRY_NIXOS_SYSTEM_PASSED` 序列、无既有失败模式、guest 正常关机且 QEMU 返回零才算通过。
 
-P2 在同一入口增加 `service`、`service-fail` 和 `unsupported`。guest 命令是测试所有的 systemd oneshot，通过 `STARRY_NIXOS_ASSERT_*` 串口记录提交状态和输出；`machine.succeed`、`wait_for_unit` 和 SSH backdoor 是显式不支持，不得等待 `/dev/hvc0`。共享 marker 仅在缺少 `/etc/starry-nixos/keep-running` 时强制关机，因此 P1 和 app 镜像行为不变。失败必须带 `STARRY_NIXOS_PHASE_FAILED=` 阶段名。上游 NixOS 测试套件不能据此宣称在 StarryOS 上普遍可运行。使用、诊断和保留兼容性命令见 `nixos-tests/starryos/README.md`。
+P4 把闭集四名字改成 `nixos-tests/starryos/cases/*.nix` 文件发现。作者增加一个 case 记录及其 extra module 即可被 `--list` / `-c` 选中，不必改 clap 或 xtask 名表。guest 命令仍是测试所有的 systemd oneshot；`machine.succeed` 仍是显式不支持。extra module 不得重新启用 udev、dbus、nscd、logind、getty、DHCP 或 Nix daemon。树外 flake、多机和上游未改 NixOS 测试仍不在范围内。使用、诊断和保留兼容性命令见 `nixos-tests/starryos/README.md`。
 
 ---
 

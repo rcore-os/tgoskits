@@ -53,8 +53,8 @@
           config.system.build.toplevel = fixtureSystem;
         };
         mkRootfs = _: pkgs.runCommand "starry-nixos-fixture-rootfs" { } "touch $out";
-        systemModule = ./boot.nix;
-        qemuConfig = ./boot.nix;
+        systemModule = ./kernel-fixture.bin;
+        qemuConfig = ./kernel-fixture.bin;
       };
       missingInputs = builtins.tryEval (
         (mkStarryNixosTest {
@@ -91,6 +91,36 @@
         starryNixos = fixtureShared;
         caseName = "unsupported";
       };
+      fixtureHello = mkAssembly {
+        kernelPath = ./kernel-fixture.bin;
+        kernelNarHash = "sha256-fiqck+CYjhisfQB5RvFEY3jAVmNFkaT5oXtmB/O54kk=";
+        starryNixos = fixtureShared;
+        caseName = "hello-tmpfiles";
+      };
+      unknownCase = builtins.tryEval (
+        (mkAssembly {
+          kernelPath = ./kernel-fixture.bin;
+          kernelNarHash = "sha256-fiqck+CYjhisfQB5RvFEY3jAVmNFkaT5oXtmB/O54kk=";
+          starryNixos = fixtureShared;
+          caseName = "does-not-exist";
+        }).extraModules
+      );
+      udevGuard = builtins.tryEval (
+        (import ./lib/baseline-guard.nix {
+          lib = nixpkgs.lib;
+          extraModules = [ { services.udev.enable = true; } ];
+        })
+      );
+      extraModuleHasKeepRunning =
+        extraModules:
+        nixpkgs.lib.any (
+          module: module == ./modules/keep-running.nix
+        ) extraModules;
+      extraModuleHasHelloTmpfiles =
+        extraModules:
+        nixpkgs.lib.any (
+          module: module == ./modules/hello-tmpfiles.nix
+        ) extraModules;
       p1InterfaceCheck =
         assert missingInputs.success == false;
         assert fixture.kernelStorePath != ./kernel-fixture.bin;
@@ -122,27 +152,28 @@
           PY
           touch "$out"
         '';
-      p2InterfaceCheck =
-        assert fixtureService.caseName == "service";
-        assert fixtureService.extraModules == [
-          ./modules/keep-running.nix
-          ./modules/service-assert.nix
-        ];
-        assert fixtureServiceFail.caseName == "service-fail";
-        assert fixtureServiceFail.extraModules == [
-          ./modules/keep-running.nix
-          ./modules/service-assert-fail.nix
-        ];
-        assert fixtureUnsupported.caseName == "unsupported";
+
+      p4InterfaceCheck =
+        assert unknownCase.success == false;
+        assert fixture.extraModules == [ ];
+        assert extraModuleHasKeepRunning fixtureService.extraModules;
+        assert extraModuleHasKeepRunning fixtureServiceFail.extraModules;
+        assert extraModuleHasKeepRunning fixtureHello.extraModules;
+        assert extraModuleHasHelloTmpfiles fixtureHello.extraModules;
         assert fixtureUnsupported.extraModules == [ ];
         assert fixtureService.contract.name == "starry-nixos-service";
         assert fixtureServiceFail.contract.name == "starry-nixos-service-fail";
         assert fixtureUnsupported.contract.name == "starry-nixos-unsupported";
+        assert fixtureHello.contract.name == "starry-nixos-hello-tmpfiles";
         assert nixpkgs.lib.hasInfix "STARRY_NIXOS_ASSERT_PASSED" fixtureService.contract.testScript;
         assert nixpkgs.lib.hasInfix "STARRY_NIXOS_ASSERT_FAILED" fixtureServiceFail.contract.testScript;
         assert nixpkgs.lib.hasInfix "succeed(\"true\")" fixtureUnsupported.contract.testScript;
+        assert nixpkgs.lib.hasInfix "STARRY_NIXOS_ASSERT_PASSED" fixtureHello.contract.testScript;
+        assert nixpkgs.lib.hasInfix "wrap_machine" fixture.contract.testScript;
+        assert udevGuard.success == false;
         assert (builtins.tryEval fixtureService.test.drvPath).success;
-        pkgs.runCommand "starry-nixos-p2-interface-check" { } ''
+        assert (builtins.tryEval fixtureHello.test.drvPath).success;
+        pkgs.runCommand "starry-nixos-p4-interface-check" { } ''
           touch "$out"
         '';
     in
@@ -153,7 +184,7 @@
       };
       checks.${system} = {
         p1-interface = p1InterfaceCheck;
-        p2-interface = p2InterfaceCheck;
+        p4-interface = p4InterfaceCheck;
       };
     };
 }

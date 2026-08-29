@@ -2,7 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
-    sync::OnceLock,
+    sync::{LazyLock, OnceLock},
 };
 
 use anyhow::{Context, bail};
@@ -19,17 +19,20 @@ const TARGET: &str = "x86_64-unknown-none";
 const BUILD_CONFIG: &str = "apps/starry/nixos/build-x86_64-unknown-none.toml";
 const APP_FLAKE_DIR: &str = "apps/starry/nixos";
 const TEST_FLAKE_DIR: &str = "nixos-tests/starryos";
+const CASES_DIR: &str = "nixos-tests/starryos/cases";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NixosCase {
-    pub(crate) name: &'static str,
+    pub(crate) name: String,
     pub(crate) arch: &'static str,
     pub(crate) target: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum NixosAction {
-    List,
+    List {
+        cases: Vec<NixosCase>,
+    },
     Run {
         build_config: PathBuf,
         case_name: String,
@@ -52,8 +55,8 @@ pub(crate) struct ProcessSpec {
 pub(super) async fn run(starry: &mut Starry, args: ArgsTestNixos) -> anyhow::Result<()> {
     let workspace = starry.app.workspace_root().to_path_buf();
     match plan_nixos_action(&workspace, &args)? {
-        NixosAction::List => {
-            print_cases();
+        NixosAction::List { cases } => {
+            print_cases(&cases);
             Ok(())
         }
         NixosAction::Run {
@@ -72,38 +75,17 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsTestNixos) -> anyhow::Res
     }
 }
 
-pub(crate) fn supported_cases() -> &'static [NixosCase] {
-    const CASES: &[NixosCase] = &[
-        NixosCase {
-            name: "boot",
-            arch: ARCH,
-            target: TARGET,
-        },
-        NixosCase {
-            name: "service",
-            arch: ARCH,
-            target: TARGET,
-        },
-        NixosCase {
-            name: "service-fail",
-            arch: ARCH,
-            target: TARGET,
-        },
-        NixosCase {
-            name: "unsupported",
-            arch: ARCH,
-            target: TARGET,
-        },
-    ];
-    CASES
+pub(crate) fn supported_cases(workspace: &Path) -> anyhow::Result<Vec<NixosCase>> {
+    discover_cases(&workspace.join(CASES_DIR))
 }
 
 pub(crate) fn plan_nixos_action(
     workspace: &Path,
     args: &ArgsTestNixos,
 ) -> anyhow::Result<NixosAction> {
+    let cases = supported_cases(workspace)?;
     if args.list {
-        return Ok(NixosAction::List);
+        return Ok(NixosAction::List { cases });
     }
 
     let arch = args
@@ -117,10 +99,10 @@ pub(crate) fn plan_nixos_action(
     if arch != ARCH {
         bail!("unsupported Starry nixosTest architecture `{arch}`; supported: {ARCH}");
     }
-    if !supported_cases().iter().any(|case| case.name == test_case) {
-        let supported = supported_cases()
+    if !cases.iter().any(|case| case.name == test_case) {
+        let supported = cases
             .iter()
-            .map(|case| case.name)
+            .map(|case| case.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
         bail!("unsupported Starry nixosTest case `{test_case}`; supported: {supported}");
@@ -240,10 +222,87 @@ pub(crate) fn configure_p1_build_info(
     build_info
 }
 
-fn print_cases() {
-    for case in supported_cases() {
+fn print_cases(cases: &[NixosCase]) {
+    for case in cases {
         println!("{}\tarch={}\ttarget={}", case.name, case.arch, case.target);
     }
+}
+
+fn case_stem_is_legal(name: &str) -> bool {
+    static NAME: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[a-z][a-z0-9-]{0,62}$")
+            .expect("Starry nixosTest case-name pattern must compile")
+    });
+    NAME.is_match(name) && name != "default"
+}
+
+fn discover_cases(cases_dir: &Path) -> anyhow::Result<Vec<NixosCase>> {
+    let metadata = fs::metadata(cases_dir).with_context(|| {
+        format!(
+            "Starry nixosTest cases directory is missing: {}",
+            cases_dir.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!(
+            "Starry nixosTest cases path is not a directory: {}",
+            cases_dir.display()
+        );
+    }
+
+    let mut names = Vec::new();
+    let mut illegal = Vec::new();
+    for entry in fs::read_dir(cases_dir).with_context(|| {
+        format!(
+            "failed to read Starry nixosTest cases directory {}",
+            cases_dir.display()
+        )
+    })? {
+        let path = entry
+            .with_context(|| {
+                format!(
+                    "failed to read a Starry nixosTest cases directory entry in {}",
+                    cases_dir.display()
+                )
+            })?
+            .path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("nix") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            illegal.push(path.display().to_string());
+            continue;
+        };
+        if !case_stem_is_legal(stem) {
+            illegal.push(
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string()),
+            );
+            continue;
+        }
+        names.push(stem.to_string());
+    }
+    if !illegal.is_empty() {
+        illegal.sort();
+        bail!(
+            "illegal Starry nixosTest case file name(s): {}",
+            illegal.join(", ")
+        );
+    }
+    names.sort();
+    names.dedup();
+    Ok(names
+        .into_iter()
+        .map(|name| NixosCase {
+            name,
+            arch: ARCH,
+            target: TARGET,
+        })
+        .collect())
 }
 
 async fn build_kernel(starry: &mut Starry, build_config: PathBuf) -> anyhow::Result<PathBuf> {

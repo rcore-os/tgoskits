@@ -1,0 +1,4 @@
+{
+  kind = "unsupported";
+  expectPass = false;
+}

@@ -1,12 +1,12 @@
 # StarryOS-backed nixosTest compatibility evidence
 
-This ledger records the evidence obtained for the independent P1–P3 path. It does not claim full NixOS compatibility.
+This ledger records the evidence obtained for the independent P1–P4 path. It does not claim full NixOS compatibility.
 
 ## P1 discovery and static checks
 
 | Check | Result |
 | --- | --- |
-| `cargo xtask starry test nixos --list` | Passed; reported `boot`, `service`, `service-fail`, `unsupported` for `arch=x86_64`, `target=x86_64-unknown-none`; no VM started. |
+| `cargo xtask starry test nixos --list` | Passed; reported `boot`, `hello-tmpfiles`, `service`, `service-fail`, `unsupported` for `arch=x86_64`, `target=x86_64-unknown-none`; no VM started. |
 | Launcher plus evaluator tests | Passed: 19 tests in `python3 -m unittest discover -s nixos-tests/starryos -p 'test_*.py' -v`. |
 | Axbuild host tests | Passed: `cargo test -p axbuild starry` in `ghcr.io/rcore-os/tgoskits-container:latest`. |
 | `cargo xtask clippy --package axbuild` | Passed. |
@@ -167,3 +167,99 @@ proxychains4 cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
 - `qemu run` finished in 445.94 seconds
 
 The app image still lacks `/etc/starry-nixos/keep-running`. Marker/poweroff semantics are unchanged from P1.
+
+## P4 authoring catalog
+
+Discovery after file-stem listing:
+
+```text
+boot	arch=x86_64	target=x86_64-unknown-none
+hello-tmpfiles	arch=x86_64	target=x86_64-unknown-none
+service	arch=x86_64	target=x86_64-unknown-none
+service-fail	arch=x86_64	target=x86_64-unknown-none
+unsupported	arch=x86_64	target=x86_64-unknown-none
+```
+
+Host checks: `cargo test -p axbuild starry::test::tests::nixos_tests` (13 passed), `python3 -m unittest discover -s nixos-tests/starryos -p 'test_*.py' -v` (19 passed), `nix flake check --no-build path:nixos-tests/starryos`, `nix flake check --no-build path:apps/starry/nixos`, `cargo xtask clippy --package axbuild`, `cargo fmt --all -- --check`.
+
+### hello-tmpfiles
+
+```bash
+proxychains4 cargo xtask starry test nixos --arch x86_64 -c hello-tmpfiles
+```
+
+- kernel NAR hash: `sha256-PHSwW38ASJTy9H0AoOPYDDLpps4q6Ufl+ZmQnlekmLo=`
+- imported kernel store path: `/nix/store/bcipvddwxsrs36rhhxqd9k4wpvjabdib-starry-nixos-kernel`
+- system toplevel: `/nix/store/cwm8naai86czrkdc37k4r0xms3d5k25j-nixos-system-starrynixos-starry-nixos-stage2`
+- ordered P1 markers, then `STARRY_NIXOS_ASSERT_CMD=cat /etc/starry-nixos/hello-tmpfiles`, `STATUS=0`, `tmpfiles-ok`, `STARRY_NIXOS_ASSERT_PASSED`
+- `wait_for_shutdown` finished in 6.79 seconds; test script 498.19 seconds; xtask exit 0
+
+### unsupported after P4
+
+```bash
+proxychains4 cargo xtask starry test nixos --arch x86_64 -c unsupported
+```
+
+Returned nonzero immediately with `STARRY_NIXOS_PHASE_FAILED=guest-assertion` and `unsupported Starry nixosTest operation: succeed`. The wrapped machine never called `connect()` and did not wait on `/dev/hvc0`.
+
+### boot after P4
+
+```bash
+proxychains4 cargo xtask starry test nixos --arch x86_64 -c boot
+```
+
+- kernel NAR hash: `sha256-+/fthZJoaQ4QB5rsO3dXtCvnhO6sw9wn4t9Kk7hDlJs=`
+- imported kernel store path: `/nix/store/snsiv7j5pgd8a4s5yan6c4vbr4sxgbx4-starry-nixos-kernel`
+- system toplevel: `/nix/store/b9h09mm8rlcw8z0iyhsqfwnq1jblvfz9-nixos-system-starrynixos-starry-nixos-stage2`
+- ordered markers `pid1 → activation → systemd → marker → STARRY_NIXOS_SYSTEM_PASSED`
+- `wait_for_shutdown` finished in 3.66 seconds; test script 577.85 seconds; xtask exit 0
+
+Keep-running is not attached to `boot`. Marker poweroff semantics match P1.
+
+### service-fail after P4
+
+```bash
+proxychains4 cargo xtask starry test nixos --arch x86_64 -c service-fail
+```
+
+- kernel NAR hash: `sha256-Wk6pehLO49SPq6byC2wNuISUyB9KMM4sytN9UJTsj4U=`
+- imported kernel store path: `/nix/store/p0fzd2280x1ah9h6cprca8vgv6r20yvy-starry-nixos-kernel`
+- system toplevel: `/nix/store/q6q7gq0fy95bbipa3kxcwqqmbj992rmy-nixos-system-starrynixos-starry-nixos-stage2`
+- ordered P1 markers, then `STARRY_NIXOS_ASSERT_CMD=false`, `STATUS=1`, `STARRY_NIXOS_ASSERT_FAILED:declared command false exited 1`
+- `wait_for_shutdown` finished in 6.50 seconds; xtask exit 1 with `STARRY_NIXOS_PHASE_FAILED=guest-assertion` and `failed expectation: declared command false exited 1`
+
+### service after P4
+
+```bash
+proxychains4 cargo xtask starry test nixos --arch x86_64 -c service
+```
+
+- kernel NAR hash: `sha256-xKZPy3WolBRItY9qTPjA+dfZgD3jGt+so8l+Ml+zVKw=`
+- imported kernel store path: `/nix/store/2vzbg2jav19mmvpwasnc1dpn3dygznbm-starry-nixos-kernel`
+- system toplevel: `/nix/store/ppwxc9m9s1340b7jwq8hym71xznrp642-nixos-system-starrynixos-starry-nixos-stage2`
+- ordered P1 markers, then `STARRY_NIXOS_ASSERT_CMD=hello`, `STATUS=0`, `Hello, world!`, `STARRY_NIXOS_ASSERT_PASSED`
+- `wait_for_shutdown` finished in 3.62 seconds; test script 551.22 seconds; xtask exit 0
+
+Rootfs artifact self-test after P4:
+
+```bash
+apps/starry/nixos/build-rootfs.sh --self-test
+```
+
+Passed with `STARRY_NIXOS_ARTIFACT_SELF_TEST_PASSED`. The keep-running extra module is test-owned and is not part of the app package output.
+
+Retained app QEMU after P4:
+
+```bash
+proxychains4 cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
+```
+
+- flake-lock SHA-256: `e484df03c41a61badf4c0dddb62ef5c3c1c60a15cfc9e5b78f5477f8e1314ac4`
+- system: `/nix/store/b9h09mm8rlcw8z0iyhsqfwnq1jblvfz9-nixos-system-starrynixos-starry-nixos-stage2`
+- image SHA-256: `37bb262fcd56a7e70b68fa87e984ec2c84700f60ff778f88587462e665a49eae`
+- guest printed `STARRY_NIXOS_PHASE=pid1`, `activation`, `systemd`, `marker`, and `STARRY_NIXOS_SYSTEM_PASSED`
+- `qemu run` finished in 394.18 seconds; xtask wall time 423.31 seconds
+
+The app image still lacks `/etc/starry-nixos/keep-running`. Marker/poweroff semantics are unchanged from P1.
+
+
