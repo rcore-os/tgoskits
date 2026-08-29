@@ -210,9 +210,9 @@ impl AddrSpace {
         ranges: &[(VirtAddr, usize)],
         operation: impl FnOnce(&mut Self, &mut tlb::TlbGather) -> crate::StarryResult<R>,
     ) -> crate::StarryResult<R> {
-        retry_retained_address_space_teardowns();
-        self.publish_tlb_gather_mutation(ranges, operation)?
-            .into_operation_result()
+        self.mutate_with_tlb_gather_resolved(ranges, operation, |mutation| {
+            mutation.into_operation_result()
+        })
     }
 
     /// Runs a published mutation whose caller owns an external resource that
@@ -222,9 +222,20 @@ impl AddrSpace {
         ranges: &[(VirtAddr, usize)],
         operation: impl FnOnce(&mut Self, &mut tlb::TlbGather) -> crate::StarryResult<R>,
     ) -> crate::StarryResult<R> {
+        self.mutate_with_tlb_gather_resolved(ranges, operation, |mutation| {
+            mutation.into_confirmed_result()
+        })
+    }
+
+    fn mutate_with_tlb_gather_resolved<R>(
+        &mut self,
+        ranges: &[(VirtAddr, usize)],
+        operation: impl FnOnce(&mut Self, &mut tlb::TlbGather) -> crate::StarryResult<R>,
+        resolve: impl FnOnce(tlb::PublishedMutation<R>) -> crate::StarryResult<R>,
+    ) -> crate::StarryResult<R> {
         retry_retained_address_space_teardowns();
-        self.publish_tlb_gather_mutation(ranges, operation)?
-            .into_confirmed_result()
+        let mutation = self.publish_tlb_gather_mutation(ranges, operation)?;
+        resolve(mutation)
     }
 
     fn publish_tlb_gather_mutation<R>(

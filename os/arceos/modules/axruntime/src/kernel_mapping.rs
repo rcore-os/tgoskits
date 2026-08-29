@@ -43,10 +43,7 @@ pub fn allocate_kernel_range(
         );
     }
     let mut aspace = ax_mm::kernel_aspace().lock();
-    let range = VirtAddrRange::new(aspace.base(), aspace.end());
-    let start = aspace
-        .find_free_area(hint, size, range)
-        .ok_or(ax_mm::MmError::NoMemory)?;
+    let start = find_free_kernel_range(&mut aspace, hint, size)?;
     aspace.map_alloc(start, size, flags, populate)?;
     Ok(start)
 }
@@ -73,12 +70,21 @@ pub fn map_kernel_pages(
     }
 
     let mut aspace = ax_mm::kernel_aspace().lock();
-    let range = VirtAddrRange::new(aspace.base(), aspace.end());
-    let start = aspace
-        .find_free_area(hint, size, range)
-        .ok_or(ax_mm::MmError::NoMemory)?;
+    let start = find_free_kernel_range(&mut aspace, hint, size)?;
     aspace.map_linear_pages(start, pages, flags)?;
     Ok(start)
+}
+
+fn find_free_kernel_range(
+    aspace: &mut ax_mm::AddrSpace,
+    hint: VirtAddr,
+    size: usize,
+) -> RuntimeResult<VirtAddr> {
+    let range = VirtAddrRange::new(aspace.base(), aspace.end());
+    aspace
+        .find_free_area(hint, size, range)
+        .ok_or(ax_mm::MmError::NoMemory)
+        .map_err(Into::into)
 }
 
 /// Removes a kernel mapping only after synchronous TLB confirmation.
