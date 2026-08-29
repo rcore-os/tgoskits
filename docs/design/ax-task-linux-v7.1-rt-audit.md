@@ -4292,6 +4292,41 @@ rustfmt 仍报告 4 个既有文件中的排版差异，其中 `deadline.rs` 的
 `PreparedCurrentPark` 跨 block 边界的 owner 交接及 wait/notify guard nesting；只有能以现有
 rq/current/handoff owner 证明完整生命周期时，才进一步移除跨边界 `Arc`。
 
+### 2026-08-29 park commit 借用 prepared current owner
+
+对完整 park 生命周期的复核确认，`PreparedCurrentPark.thread` 的 `Arc<ThreadCore>` 不能改成借用：它从
+current publication 取得 scheduler-owned 强引用，跨 wait registration、deadline arm/cancel、
+`commit()`、裸 context switch 和 resumed switch-tail 存活；wake handle、rq current 与
+`SwitchHandoff` 则分别拥有其跨线程、rq 和 `on_cpu` 交接阶段的独立引用。这与 Linux v7.1 在
+`__schedule()` 持有 rq/current 所有权、切换后由 `finish_task_switch()` 在 rq lock 下通过
+`smp_store_release(&prev->on_cpu, 0)` 完成 previous 生命周期交接的语义一致
+（`kernel/sched/core.c:4950-4975,5202-5245,7017-7100`）。因此不能为了减少引用计数而删除跨切换 owner，
+也不能仅依赖 registry owner 替代 `on_cpu`/switch-tail 协议。
+
+`commit_park_owner()` 原来却在调用期间从 `PreparedCurrentPark.thread` 再 clone 一个
+`previous_core_hint`，只用它读取 policy/placement、取得 task scheduler lock，并与 rq 返回的
+`previous_core` 做 `Arc::ptr_eq` 身份校验；这个临时 owner 不跨 helper、transaction 或 context switch。
+本检查点直接借用入参 `current` 完成相同检查，保留 rq 取得的 `previous_core`、完整身份校验以及
+`SwitchHandoff` 对 previous/incoming 的独立 `Arc`，所以没有改变 park generation、rq lock order、
+blocked publication、successor selection 或 switch-tail owner。
+
+确定性源码所有权回归先禁止 `let previous_core_hint = Arc::clone(current);`；旧实现稳定在该断言失败，
+删除临时 clone 后同一测试转绿。性能优先验证使用未插桩 Starry true `-smp 1`，但两组五轮都出现
+宿主/TCG 阶段性抖动：第一组 thread/20 为 0.746/0.859/2.190/0.892/3.177 s，中位数 0.892 s，
+其中两轮明显异常；同组 process/20 为 1.442/1.429/1.518/1.456/1.375 s，中位数 1.442 s，
+相对上一检查点 1.461 s 名义改善约 1.3%。立即复跑的 thread/20 为
+0.901/0.994/0.938/0.973/0.914 s，中位数 0.938 s；process/20 则为
+2.227/2.644/2.986/1.497/1.568 s，中位数 2.644 s，前三轮再次明显受扰动。两组异常方向相反，不能证明
+该 clone 删除带来稳定提升或退化；唯一可信结论是影响小于当前 TCG 噪声，且不能据此把引用计数认定为
+剩余约 3.7 倍 process 差距的主根因。按 Linux owner 语义已对齐的规则保留实现。
+
+质量验证覆盖 ax-task 104 个单元测试、4 个集成测试和 12 个文档测试；x86_64 ArceOS Rust QEMU
+`task-wait-queue` 的 wait/wake 与 timeout 1/1 通过；`cargo xtask clippy --package ax-task` 的 5 个
+目标/特性组合、修改文件 targeted rustfmt 与 `git diff --check` 通过。下一步先用 path-specific 指标
+区分 common Fair park 的 rq-only fast path 与 fallback，避免依据 owner-rq 总计数误删 lock-order
+边界；更大的固定切换成本继续转向 Linux FPU owner/need-load 语义，当前 Starry hackbench 每次
+switch 都无条件 XSAVE/XRSTOR，而 TLS MSR 路径并未在该构建启用。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

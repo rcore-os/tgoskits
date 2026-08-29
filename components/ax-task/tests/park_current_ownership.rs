@@ -33,6 +33,10 @@ fn current_park_state_operations_borrow_the_scheduler_owned_current() {
         "state-only park operations must not manufacture temporary Arc ownership",
     );
     assert!(
+        !PARK_EXIT.contains("let previous_core_hint = Arc::clone(current);"),
+        "park commit must borrow the prepared current owner until the rq takes ownership",
+    );
+    assert!(
         !DEADLINE.contains("let thread = Arc::clone(&self.thread);"),
         "arming a prepared park deadline must not clone its existing owner",
     );

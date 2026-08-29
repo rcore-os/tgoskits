@@ -141,22 +141,18 @@ impl TaskSystem {
         let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = Arc::clone(current);
 
         if matches!(
-            previous_core_hint.effective_policy_snapshot(),
+            current.effective_policy_snapshot(),
             SchedulePolicy::Fair { .. }
                 | SchedulePolicy::Fifo { .. }
                 | SchedulePolicy::RoundRobin { .. }
-        ) && !previous_core_hint
-            .sched()
-            .placement()
-            .has_pending_migration()
+        ) && !current.sched().placement().has_pending_migration()
             && let Some(commit) = self.try_commit_park_in_rq(
                 cpu.as_mut(),
                 token,
                 &remote,
-                &previous_core_hint,
+                current,
                 initial_request,
                 rq_entry,
             )?
@@ -165,7 +161,7 @@ impl TaskSystem {
         }
 
         // SAFETY: propagated from the selected entry contract.
-        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
+        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(current.sched()) };
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
 
@@ -182,7 +178,7 @@ impl TaskSystem {
             transaction.commit_and_finish_scheduler_request();
             return Err(TaskError::NoRunnableThread);
         };
-        if !Arc::ptr_eq(&previous_core, &previous_core_hint) {
+        if !Arc::ptr_eq(&previous_core, current) {
             transaction.commit_and_finish_scheduler_request();
             return Err(TaskError::InvalidConfiguration);
         }
