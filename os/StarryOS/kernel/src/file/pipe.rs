@@ -524,9 +524,37 @@ struct PipeReadiness(u64);
 
 struct PipeState {
     buffer: HeapRb<u8>,
-    buffers: VecDeque<usize>,
+    buffers: VecDeque<PipeBuffer>,
     readers: usize,
     writers: usize,
+}
+
+struct PipeBuffer {
+    offset: usize,
+    length: usize,
+}
+
+impl PipeBuffer {
+    fn new(length: usize) -> Self {
+        debug_assert!((1..=PIPE_BUF).contains(&length));
+        Self { offset: 0, length }
+    }
+
+    fn can_merge(&self, bytes: usize) -> bool {
+        self.offset
+            .checked_add(self.length)
+            .and_then(|end| end.checked_add(bytes))
+            .is_some_and(|end| end <= PIPE_BUF)
+    }
+
+    fn consume(&mut self, bytes: usize) {
+        debug_assert!(bytes <= self.length);
+        self.offset = self
+            .offset
+            .checked_add(bytes)
+            .expect("pipe buffer offset overflowed its page slot");
+        self.length -= bytes;
+    }
 }
 
 impl Shared {
@@ -614,7 +642,7 @@ impl PipeState {
     fn can_merge(&self, bytes: usize) -> bool {
         self.buffers
             .back()
-            .is_some_and(|length| length + bytes <= PIPE_BUF)
+            .is_some_and(|buffer| buffer.can_merge(bytes))
     }
 
     fn readiness(&self) -> PipeReadiness {
@@ -656,10 +684,10 @@ impl PipeState {
     fn merge_from(&mut self, src: &mut IoSrc, bytes: usize) -> StarryResult<usize> {
         debug_assert!(self.can_merge(bytes));
         let copied = self.copy_from(src, bytes)?;
-        *self
-            .buffers
+        self.buffers
             .back_mut()
-            .expect("merge requires an existing pipe buffer") += copied;
+            .expect("merge requires an existing pipe buffer")
+            .length += copied;
         Ok(copied)
     }
 
@@ -668,7 +696,7 @@ impl PipeState {
         let limit = src.remaining().min(PIPE_BUF);
         let copied = self.copy_from(src, limit)?;
         if copied > 0 {
-            self.buffers.push_back(copied);
+            self.buffers.push_back(PipeBuffer::new(copied));
         }
         Ok(copied)
     }
@@ -679,10 +707,10 @@ impl PipeState {
                 .buffers
                 .front_mut()
                 .expect("pipe bytes require a pipe buffer");
-            let consumed = bytes.min(*front);
-            *front -= consumed;
+            let consumed = bytes.min(front.length);
+            front.consume(consumed);
             bytes -= consumed;
-            if *front == 0 {
+            if front.length == 0 {
                 self.buffers.pop_front();
             }
         }
@@ -1250,7 +1278,6 @@ impl Pollable for Pipe {
         sink: &mut dyn axpoll::SharedRegistrationSink,
         events: IoEvents,
     ) {
-        self.shared.poll_usage.store(true, Ordering::Release);
         self.register_poll_source(events, |poll, interests| unsafe {
             sink.register_shared(poll, interests)
         });
@@ -1273,6 +1300,9 @@ impl Pipe {
         events: IoEvents,
         register: impl FnOnce(&dyn PollSource, IoEvents),
     ) {
+        // Linux publishes poll_usage for every pipe_poll() attempt, including
+        // exclusive consumers, so non-empty writes keep notifying pollers.
+        self.shared.poll_usage.store(true, Ordering::Release);
         let read_ready = events.intersects(IoEvents::IN | IoEvents::RDNORM);
         let write_ready = events.intersects(IoEvents::OUT | IoEvents::WRNORM);
         let mut interests = if self.read_side {
@@ -1337,9 +1367,12 @@ mod tests {
         self as scheduler, SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps,
         ThreadHandle, ThreadId,
     };
-    use axpoll::{PollSource, RegistrationMode};
+    use axpoll::{ExclusiveConsumer, PollRegistrar, PollSource, Pollable, RegistrationMode};
+    use ringbuf::traits::Consumer;
 
-    use super::{IoEvents, PipeWaitSet, PipeWaitTarget, wake_pipe_waiter_sync};
+    use super::{
+        IoEvents, PIPE_BUF, Pipe, PipeState, PipeWaitSet, PipeWaitTarget, wake_pipe_waiter_sync,
+    };
 
     static DIRECT_READY: AtomicBool = AtomicBool::new(false);
     static DIRECT_WAIT_ARMED: AtomicBool = AtomicBool::new(false);
@@ -1453,6 +1486,44 @@ mod tests {
     }
 
     #[axtest::axtest]
+    fn partial_pipe_buffer_cannot_merge_past_its_linux_page_boundary() {
+        let mut state = PipeState::new(2 * PIPE_BUF);
+        let initial = [b'a'; PIPE_BUF];
+        let mut src: &[u8] = &initial;
+        assert!(
+            matches!(
+                state.append_from(&mut src as &mut dyn super::super::ReadBuf),
+                Ok(written) if written == PIPE_BUF
+            ),
+            "initial Linux pipe buffer must fill one complete page slot"
+        );
+
+        const CONSUMED: usize = 2096;
+        unsafe { state.buffer.advance_read_index(CONSUMED) };
+        state.consume(CONSUMED);
+
+        assert!(
+            !state.can_merge(2000),
+            "Linux pipe_buffer offset must remain part of the merge boundary after a partial read"
+        );
+    }
+
+    #[axtest::axtest]
+    fn exclusive_pipe_poll_registration_marks_linux_poll_usage() {
+        let (read_end, _write_end) = Pipe::new();
+        let wakes = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(wakes);
+        let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
+
+        unsafe { read_end.register_exclusive(&mut registrar, IoEvents::IN) };
+
+        assert!(
+            read_end.shared.poll_usage.load(Ordering::Acquire),
+            "every Linux pipe_poll registration must publish poll_usage"
+        );
+    }
+
+    #[axtest::axtest]
     fn pipe_resize_rounding_and_state_rules_hold() {
         assert!(super::pipe_resize_rounding_and_state_rules_hold_for_test());
     }
@@ -1507,22 +1578,12 @@ mod tests {
         // tail and consume the single wake quota only after all shared entries.
         // SAFETY: every registration and waker outlives this wake transaction.
         let shared_one = unsafe {
-            PollSource::register(
-                &waiters,
-                &waker(1),
-                IoEvents::IN,
-                RegistrationMode::Shared,
-            )
+            PollSource::register(&waiters, &waker(1), IoEvents::IN, RegistrationMode::Shared)
         }
         .expect("first shared registration must succeed");
         // SAFETY: every registration and waker outlives this wake transaction.
         let shared_two = unsafe {
-            PollSource::register(
-                &waiters,
-                &waker(2),
-                IoEvents::IN,
-                RegistrationMode::Shared,
-            )
+            PollSource::register(&waiters, &waker(2), IoEvents::IN, RegistrationMode::Shared)
         }
         .expect("second shared registration must succeed");
         // SAFETY: every registration and waker outlives this wake transaction.

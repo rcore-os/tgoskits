@@ -4550,6 +4550,38 @@ Linux 等价。现存的通用寄存器/SS/RFLAGS 校验、altstack 与 signal m
 进入 `signal_fault`/SIGSEGV 而非普通 syscall error 的差异，继续作为独立红绿检查点处理；验证这些
 语义时不得放宽现有测试，也不得用 signal 特例绕过 task/runtime owner。
 
+### 2026-08-29 Linux pipe buffer offset 与 poll usage
+
+Linux v7.1 的 pipe ring 保存完整 `pipe_buffer.offset/len`。部分读取会同时推进 `offset`、缩短 `len`；
+后续 anonymous pipe write 只有在 `offset + len + bytes <= PAGE_SIZE` 时才允许合并到尾 buffer，不能
+把已经消费的页首空间当作可复用尾部容量（`fs/pipe.c:343-352,477-484`）。此外每次
+`pipe_poll()` 都会发布 `poll_usage = true`，不区分普通、shared 或 exclusive poll waiter；write
+路径据此决定非空管道是否仍需通知 poll waitqueue（`fs/pipe.c:592-599,658-668`）。PREEMPT_RT 不
+改变 pipe buffer 的页内边界或 poll publication 语义。
+
+旧 Starry 的 `PipeState.buffers: VecDeque<usize>` 只保存剩余长度。一个满页 buffer 被部分读取后，
+`can_merge()` 会错误地用 `remaining + bytes <= PIPE_BUF` 判断，允许写指针越过原 Linux page slot
+的尾部；同时只有 shared registration 设置 `poll_usage`，exclusive `pipe_poll()` 没有发布该状态。
+两个真实 Starry QEMU axtest 先分别稳定转红为
+`every Linux pipe_poll registration must publish poll_usage` 和
+`Linux pipe_buffer offset must remain part of the merge boundary after a partial read`。最终
+`PipeBuffer { offset, length }` 成为每个 ring segment 的唯一边界真源：append 建立新 slot，consume
+推进同一 slot 的 offset，merge 只增长同一 slot 的 length；exclusive/shared registration 则统一经
+`register_poll_source()` 发布 `poll_usage`。同一 QEMU suite 最终 75/75 通过，没有 fake runtime、
+第二份 shadow offset 或针对 hackbench 的特殊路径。
+
+性能优先验证先使用相同 1 秒级 qperf workload。修改前后传输量与 syscall 数保持完全一致：
+read 800040 bytes/8040 calls、write 800041 bytes/8041 calls；单次窗口从 1.159 s 到 1.263 s，pipe
+read waits 从 3969 到 4224（+6.4%），context switches 从 4906 到 5209（+6.2%）。这说明恢复正确
+segment boundary 会改变当前 workload 的读写分段与阻塞节奏，不能为追求旧吞吐重新允许跨页合并。
+未插桩 true `-smp 1` process/20 五轮为 1.313/1.359/1.396/1.568/1.288 s，中位数 1.359 s；相对
+上一 signal 检查点 1.353 s 名义退化约 0.4%，没有复现插桩单次窗口的同幅退化。依据 Linux 语义
+完成即保留的规则，本检查点保留；它修正 UABI 可观察行为，但不是剩余单核性能差距的根因。
+
+下一步继续用计数证明 Linux `anon_pipe_write()` 的 sync/async wake batching 是否与 Starry 每轮
+write wake 不一致，再决定是否修改 wake transaction；不同 mm 的 active-mm/lazy-TLB generation
+缺失作为后续独立 Linux 语义检查点，不与 pipe 修复混合。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
