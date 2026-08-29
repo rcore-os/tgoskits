@@ -4808,6 +4808,41 @@ ax-fs-ng `PAGE_SIZE`/`SleepMutex` 条件导入错误阻塞，本检查点没有�
 归因于 RR，也不能把 RR 当作剩余性能差距根因。下一检查点继续保留 ordinary Fair hrtick 与本节 RR
 周期语义，定位其后的 preempt/pipe-lock/park-switch lock convoy。
 
+### 2026-08-29 Fair request 到期与重标定只使用虚拟时间线
+
+Linux v7.1 `kernel/sched/fair.c::update_curr()` 先按 load weight 推进 `se->vruntime`，随后
+`update_deadline()` 只在 `vruntime >= deadline` 时认定当前 EEVDF request 到期并建立下一 deadline。
+`reweight_entity()` 则先把 deadline 转成相对 `avg_vruntime` 的值，再按 old/new weight 比例缩放，最后
+恢复到新的 runqueue virtual time。物理 service request 只用于创建 virtual deadline，不是并行的到期
+权威。
+
+旧 `FairEntity` 同时保存 `remaining_request_ns` 和 `virtual_deadline`，`charge()` 却以物理 remaining
+归零为到期条件。非零 nice 下 `weighted_delta()` 的整数截断可让物理 remaining 先归零，而累计
+`vruntime` 仍未到 deadline；policy reconfigure 又从这个物理副本重建 deadline，进一步保留了两个可
+分叉的状态源。当前实现删除 `remaining_request_ns`：charge、enqueue/yield 的 exhausted 检查都只比较
+虚拟时间线；request renew 只重建一个 virtual deadline；nice/mode 变化按 Linux 公式同时重标定 lag、
+deadline 与 protection，迁移 metadata 保存同一已重标定 request 的相对 deadline，不保留兼容副本。
+
+确定性红测 `weighted_request_expires_at_its_virtual_deadline` 使用 nice -5 与 10,013 ns request。
+旧实现先 charge 10,012 ns，再 charge 1 ns 时因物理 remaining 归零而稳定错误 renew；此时
+`vruntime` 仍比 deadline 少 1。修复后该次 charge 保持原 deadline，再有足以推进 1 个虚拟单位的
+4 ns 才到期。旧实现下 focused host-test 稳定失败，修复后转绿；补充
+`reconfigure_rescales_the_linux_relative_deadline` 直接约束 Linux 的 avg-vruntime 相对重标定公式。
+ax-task host-test 110/110 通过，真实 x86_64 ArceOS QEMU `sched-cfs` 1/1 通过，ax-task 的 5 个
+clippy 组合全部通过。
+
+同轮 Linux v7.1 PREEMPT_RT guest 运行时确认 `HRTICK` 默认启用、`base_slice_ns=700000`。默认
+HRTICK 五轮 hackbench 自报中位数 0.443 s、`sched_switch` 中位数 5,101；关闭 HRTICK 的结果呈
+0.071--0.417 s 双峰且切换数可降到数百。这说明接近 0.33 s 的错误全-Lazy 反事实只是复现了
+NO_HRTICK 的批处理快序列，不能据此关闭 Linux 默认启用的 ordinary HRTICK。
+
+性能优先验证使用未插桩 true `-smp 1` process/20 两组各五轮。第一组为
+1.416/1.291/1.440/1.392/1.391 s，中位数 1.392 s；第二组为
+1.420/1.271/1.429/1.445/1.361 s，中位数 1.420 s；十轮合并中位数 1.404 s。相对上一检查点
+1.308 s 名义退化约 7.3%，仍约为 Linux PREEMPT_RT 0.396 s 的 3.55 倍。process/20 全部使用
+nice 0，旧/新到期判定在数学上相同，因此不能把这次波动归因于已修复的非零 nice 分叉；按完成规则
+保留已证明的 Linux 语义，并继续定位 ordinary HRTICK 后的 PI mutex/park/context-switch 固定成本。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

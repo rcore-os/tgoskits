@@ -37,7 +37,6 @@ pub(crate) struct FairEntity {
     mode: FairMode,
     vruntime: u64,
     service_request_ns: u64,
-    remaining_request_ns: u64,
     virtual_deadline: u64,
     protected_until_vruntime: u64,
     placement: FairPlacement,
@@ -85,7 +84,6 @@ impl FairEntity {
             mode,
             vruntime,
             service_request_ns: 1,
-            remaining_request_ns: 1,
             virtual_deadline,
             protected_until_vruntime: virtual_deadline,
             placement: FairPlacement::Active,
@@ -102,7 +100,6 @@ impl FairEntity {
             mode,
             vruntime: virtual_time,
             service_request_ns: request_ns,
-            remaining_request_ns: request_ns,
             virtual_deadline: virtual_time.wrapping_add(weighted_request),
             protected_until_vruntime: virtual_time,
             placement: FairPlacement::Initial,
@@ -119,8 +116,7 @@ impl FairEntity {
         self.vruntime = self
             .vruntime
             .wrapping_add(weighted_delta(runtime_ns, self.load_weight()));
-        self.remaining_request_ns = self.remaining_request_ns.saturating_sub(runtime_ns);
-        let request_exhausted = self.remaining_request_ns == 0;
+        let request_exhausted = self.request_exhausted();
         if request_exhausted {
             self.renew_request();
         }
@@ -233,7 +229,6 @@ impl FairEntity {
         }
         let placement_lag = self.inflated_placement_lag(saved_lag, runnable_weight);
         self.vruntime = virtual_time.wrapping_sub(placement_lag as u64);
-        self.remaining_request_ns = request_ns;
         self.virtual_deadline = self
             .vruntime
             .wrapping_add(weighted_delta(request_ns, self.load_weight()));
@@ -382,7 +377,6 @@ impl FairEntity {
         }
         let placement_lag = self.inflated_placement_lag(saved_lag, runnable_weight);
         self.vruntime = virtual_time.wrapping_sub(placement_lag as u64);
-        self.remaining_request_ns = self.service_request_ns;
         self.virtual_deadline = self
             .vruntime
             .wrapping_add(weighted_delta(self.service_request_ns, self.load_weight()));
@@ -447,7 +441,6 @@ impl FairEntity {
 
     /// Starts a new request after expiry or explicit yield.
     pub(crate) fn renew_request(&mut self) {
-        self.remaining_request_ns = self.service_request_ns;
         self.virtual_deadline = self
             .vruntime
             .wrapping_add(weighted_delta(self.service_request_ns, self.load_weight()));
@@ -503,14 +496,18 @@ impl FairEntity {
             self.protected_until_vruntime,
             source_virtual_time,
         ));
+        let relative_deadline =
+            i128::from(virtual_delta(self.virtual_deadline, source_virtual_time));
         let lag = i128::from(virtual_delta(source_virtual_time, self.vruntime));
         let reweighted_lag = reweight_lag(lag as i64);
+        let reweighted_deadline =
+            (relative_deadline * i128::from(old_weight) / i128::from(new_weight))
+                .clamp(-i128::from(i64::MAX), i128::from(i64::MAX)) as i64;
         self.nice = nice;
         self.mode = mode;
         self.vruntime = destination_virtual_time.wrapping_sub(reweighted_lag as u64);
-        self.virtual_deadline = self
-            .vruntime
-            .wrapping_add(weighted_delta(self.remaining_request_ns, new_weight));
+        self.virtual_deadline = destination_virtual_time.wrapping_add(reweighted_deadline as u64);
+        let active_relative_deadline = self.virtual_deadline.wrapping_sub(self.vruntime);
         self.protected_until_vruntime = if protected {
             let reweighted_protection =
                 (relative_protection * i128::from(old_weight) / i128::from(new_weight))
@@ -528,12 +525,12 @@ impl FairEntity {
             },
             FairPlacement::Migrating { virtual_lag, .. } => FairPlacement::Migrating {
                 virtual_lag: reweight_lag(virtual_lag),
-                relative_deadline: weighted_delta(self.remaining_request_ns, new_weight),
+                relative_deadline: active_relative_deadline,
             },
             FairPlacement::DelayedMigrating { virtual_lag, .. } => {
                 FairPlacement::DelayedMigrating {
                     virtual_lag: reweight_lag(virtual_lag),
-                    relative_deadline: weighted_delta(self.remaining_request_ns, new_weight),
+                    relative_deadline: active_relative_deadline,
                 }
             }
             FairPlacement::Initial | FairPlacement::Active => self.placement,
@@ -617,7 +614,7 @@ fn finish_hrtick_delta_ns(delta_ns: u64, irq_util_avg: u32) -> u64 {
 impl FairEntity {
     /// Reports whether the active request has no service left.
     pub(crate) const fn request_exhausted(self) -> bool {
-        self.remaining_request_ns == 0
+        !virtual_before(self.vruntime, self.virtual_deadline)
     }
 
     /// Returns whether non-negative lag makes this entity eligible.
@@ -665,12 +662,6 @@ impl FairEntity {
     pub(crate) const fn service_request_ns(self) -> u64 {
         self.service_request_ns
     }
-
-    /// Returns physical service left in the active request.
-    #[cfg(test)]
-    const fn remaining_request_ns(self) -> u64 {
-        self.remaining_request_ns
-    }
 }
 
 fn weighted_delta(runtime_ns: u64, weight: u32) -> u64 {
@@ -699,6 +690,22 @@ mod tests {
         entity.charge(250, 10_000);
 
         assert_eq!(entity.virtual_deadline(), deadline);
+    }
+
+    #[test]
+    fn weighted_request_expires_at_its_virtual_deadline() {
+        let mut entity = FairEntity::new(Nice::new(-5).unwrap(), FairMode::Normal, 10_013, 0);
+        let deadline = entity.virtual_deadline();
+
+        assert!(!entity.charge(10_012, 0));
+        assert_eq!(entity.vruntime(), deadline - 1);
+        assert!(
+            !entity.charge(1, 0),
+            "physical request exhaustion must not renew before vruntime reaches deadline"
+        );
+        assert_eq!(entity.virtual_deadline(), deadline);
+        assert!(entity.charge(4, 0));
+        assert!(virtual_after(entity.virtual_deadline(), deadline));
     }
 
     #[test]
@@ -762,7 +769,7 @@ mod tests {
         entity.place_after_activation(10_000, 0).unwrap();
 
         assert_eq!(entity.service_request_ns(), 1_000);
-        assert_eq!(entity.remaining_request_ns(), 500);
+        assert_eq!(entity.runtime_deadline_delta_ns(), 500);
         assert_eq!(entity.virtual_deadline(), 10_500);
     }
 
@@ -775,6 +782,17 @@ mod tests {
 
         assert_eq!(reconfigured.vruntime(), 29);
         assert_eq!(reconfigured.virtual_deadline(), 30);
+    }
+
+    #[test]
+    fn reconfigure_rescales_the_linux_relative_deadline() {
+        let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 100);
+        assert!(!entity.charge(250, 0));
+
+        let reconfigured = entity.reconfigure(Nice::new(-5).unwrap(), FairMode::Normal, 500, 1_000);
+
+        assert_eq!(reconfigured.vruntime(), 951);
+        assert_eq!(reconfigured.virtual_deadline(), 1_196);
     }
 
     #[test]
@@ -824,7 +842,10 @@ mod tests {
             (entity.vruntime(), entity.virtual_deadline()),
             (1_800, 1_801)
         );
-        assert_eq!(entity.remaining_request_ns(), entity.service_request_ns());
+        assert_eq!(
+            entity.runtime_deadline_delta_ns(),
+            entity.service_request_ns()
+        );
     }
 
     #[test]
