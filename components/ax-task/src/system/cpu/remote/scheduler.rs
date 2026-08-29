@@ -232,6 +232,44 @@ impl CpuRemote {
         self.publish_scheduler_request_owned(kind.request_bit())
     }
 
+    fn publish_scheduler_reasons_owned(
+        &self,
+        reschedule: Option<RescheduleKind>,
+        owner_work: bool,
+    ) {
+        let mut reasons = reschedule.map_or(0, RescheduleKind::request_bit);
+        if owner_work {
+            reasons |= REQUEST_OWNER_WORK;
+        }
+        if let Some(publication) = self.publish_scheduler_request_owned(reasons)
+            && (owner_work || reschedule == Some(RescheduleKind::Immediate))
+        {
+            self.deliver_scheduler_work_owned(publication);
+        }
+    }
+
+    /// Publishes wakeup scheduler reasons under the target placement reservation.
+    ///
+    /// The wake transaction acquired this stronger Online reservation before
+    /// locking the target rq. Retaining it through the post-enqueue publication
+    /// matches Linux `ttwu_queue()` holding the selected CPU/rq stable through
+    /// `ttwu_do_activate()` and `resched_curr()` without a second hotplug token.
+    pub(crate) fn publish_scheduler_reasons_reserved(
+        &self,
+        publication: &CpuRemotePublication<'_>,
+        reschedule: Option<RescheduleKind>,
+        owner_work: bool,
+    ) {
+        if reschedule.is_none() && !owner_work {
+            return;
+        }
+        if !publication.reserves(self) {
+            task_runtime::fatal_invariant(0x4350_5552, self.owner.as_u32() as usize);
+        }
+        let _irq = IrqScope::enter();
+        self.publish_scheduler_reasons_owned(reschedule, owner_work);
+    }
+
     /// Publishes a remote preemption after the runqueue transaction is visible.
     ///
     /// Like Linux `__resched_curr()`, only an ordinary request rings a remote
@@ -242,11 +280,7 @@ impl CpuRemote {
             return;
         };
         let _irq = IrqScope::enter();
-        if let Some(publication) = self.request_reschedule_owned(kind)
-            && kind == RescheduleKind::Immediate
-        {
-            self.deliver_scheduler_work_owned(publication);
-        }
+        self.publish_scheduler_reasons_owned(Some(kind), false);
     }
 
     /// Publishes coupled preemption and owner-work reasons before ringing one
@@ -260,11 +294,7 @@ impl CpuRemote {
             return;
         };
         let _irq = IrqScope::enter();
-        if let Some(publication) =
-            self.publish_scheduler_request_owned(kind.request_bit() | REQUEST_OWNER_WORK)
-        {
-            self.deliver_scheduler_work_owned(publication);
-        }
+        self.publish_scheduler_reasons_owned(Some(kind), true);
     }
 
     pub(crate) fn request_scheduler_work(&self) {

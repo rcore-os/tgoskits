@@ -16,6 +16,8 @@ const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 9;
 pub struct QperfSchedulerMetricsSnapshot {
     pub current_thread_handle_queries: u64,
     pub runtime_cpu_owner_claims: u64,
+    pub cpu_placement_publication_acquires: u64,
+    pub cpu_owner_control_publication_acquires: u64,
     pub scheduler_deadline_derivation_entries: u64,
     pub scheduler_deadline_derivation_clock_event_entries: u64,
     pub scheduler_deadline_derivation_park_arm_entries: u64,
@@ -82,6 +84,7 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub direct_wake_preemptions: u64,
     pub direct_wake_current_kept: u64,
     pub direct_wake_queued_candidate_selected: u64,
+    pub direct_wake_scheduler_republications: u64,
     pub fair_pick_protected_current: u64,
     pub fair_wake_wakee_ineligible: u64,
     pub fair_wake_current_ineligible: u64,
@@ -144,6 +147,8 @@ pub struct QperfSchedulerMetricsSnapshot {
 struct QperfSchedulerMetrics {
     current_thread_handle_queries: AtomicU64,
     runtime_cpu_owner_claims: AtomicU64,
+    cpu_placement_publication_acquires: AtomicU64,
+    cpu_owner_control_publication_acquires: AtomicU64,
     scheduler_deadline_derivations: [AtomicU64; SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT],
     preempt_guard_entries: [AtomicU64; PREEMPT_GUARD_SOURCE_COUNT],
     preempt_guard_none: [AtomicU64; PREEMPT_GUARD_SOURCE_COUNT],
@@ -158,6 +163,7 @@ struct QperfSchedulerMetrics {
     direct_wake_preemptions: AtomicU64,
     direct_wake_current_kept: AtomicU64,
     direct_wake_queued_candidate_selected: AtomicU64,
+    direct_wake_scheduler_republications: AtomicU64,
     fair_pick_protected_current: AtomicU64,
     fair_wake_wakee_ineligible: AtomicU64,
     fair_wake_current_ineligible: AtomicU64,
@@ -222,6 +228,8 @@ impl QperfSchedulerMetrics {
         Self {
             current_thread_handle_queries: AtomicU64::new(0),
             runtime_cpu_owner_claims: AtomicU64::new(0),
+            cpu_placement_publication_acquires: AtomicU64::new(0),
+            cpu_owner_control_publication_acquires: AtomicU64::new(0),
             scheduler_deadline_derivations: [const { AtomicU64::new(0) };
                 SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT],
             preempt_guard_entries: [
@@ -249,6 +257,7 @@ impl QperfSchedulerMetrics {
             direct_wake_preemptions: AtomicU64::new(0),
             direct_wake_current_kept: AtomicU64::new(0),
             direct_wake_queued_candidate_selected: AtomicU64::new(0),
+            direct_wake_scheduler_republications: AtomicU64::new(0),
             fair_pick_protected_current: AtomicU64::new(0),
             fair_wake_wakee_ineligible: AtomicU64::new(0),
             fair_wake_current_ineligible: AtomicU64::new(0),
@@ -458,6 +467,12 @@ impl QperfSchedulerMetrics {
                 .current_thread_handle_queries
                 .load(Ordering::Relaxed),
             runtime_cpu_owner_claims: self.runtime_cpu_owner_claims.load(Ordering::Relaxed),
+            cpu_placement_publication_acquires: self
+                .cpu_placement_publication_acquires
+                .load(Ordering::Relaxed),
+            cpu_owner_control_publication_acquires: self
+                .cpu_owner_control_publication_acquires
+                .load(Ordering::Relaxed),
             scheduler_deadline_derivation_entries,
             scheduler_deadline_derivation_clock_event_entries,
             scheduler_deadline_derivation_park_arm_entries,
@@ -545,6 +560,9 @@ impl QperfSchedulerMetrics {
             direct_wake_current_kept: self.direct_wake_current_kept.load(Ordering::Relaxed),
             direct_wake_queued_candidate_selected: self
                 .direct_wake_queued_candidate_selected
+                .load(Ordering::Relaxed),
+            direct_wake_scheduler_republications: self
+                .direct_wake_scheduler_republications
                 .load(Ordering::Relaxed),
             fair_pick_protected_current: self.fair_pick_protected_current.load(Ordering::Relaxed),
             fair_wake_wakee_ineligible: self.fair_wake_wakee_ineligible.load(Ordering::Relaxed),
@@ -685,6 +703,18 @@ pub(crate) fn record_current_thread_handle_query() {
 pub(crate) fn record_runtime_cpu_owner_claim() {
     QPERF_SCHEDULER_METRICS
         .runtime_cpu_owner_claims
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_cpu_placement_publication_acquire() {
+    QPERF_SCHEDULER_METRICS
+        .cpu_placement_publication_acquires
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_cpu_owner_control_publication_acquire() {
+    QPERF_SCHEDULER_METRICS
+        .cpu_owner_control_publication_acquires
         .fetch_add(1, Ordering::Relaxed);
 }
 

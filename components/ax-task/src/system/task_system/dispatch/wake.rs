@@ -729,15 +729,8 @@ impl TaskSystem {
         let owner_work_required = enqueue.scheduler_deadline_refresh_required();
         run_queue.commit();
         drop(sched_guard);
+        remote.publish_scheduler_reasons_reserved(&publication, reschedule, owner_work_required);
         drop(publication);
-        match (reschedule, owner_work_required) {
-            (Some(kind), true) => remote.request_remote_reschedule_with_scheduler_work(kind),
-            (Some(kind), false) => remote.request_remote_reschedule(kind),
-            (None, true) => {
-                remote.kick_scheduler_work();
-            }
-            (None, false) => {}
-        }
         WakeResult::Notified
     }
 
@@ -923,22 +916,23 @@ impl TaskSystem {
         }
         if deadline_wake {
             if preempts_current {
-                remote.request_reschedule(RescheduleKind::Immediate);
+                remote.publish_scheduler_reasons_reserved(
+                    &publication,
+                    Some(RescheduleKind::Immediate),
+                    false,
+                );
             }
             // The reserved Deadline refresh is already an owner-control
             // publication. Its scheduler-work bit covers RT/DL push and a new
             // root-period projection, so a second generation is redundant.
             self.publish_owner_deadline_refresh_reserved(core, target, publication);
         } else {
+            remote.publish_scheduler_reasons_reserved(
+                &publication,
+                reschedule,
+                owner_work_required,
+            );
             drop(publication);
-            match (reschedule, owner_work_required) {
-                (Some(kind), true) => remote.request_remote_reschedule_with_scheduler_work(kind),
-                (Some(kind), false) => remote.request_remote_reschedule(kind),
-                (None, true) => {
-                    remote.kick_scheduler_work();
-                }
-                (None, false) => {}
-            }
         }
         if let Some(class) = push_class {
             self.root_domain.start_rt_deadline_push_from(class, target);

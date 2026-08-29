@@ -202,6 +202,18 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "cpu_placement_publication_acquires {}",
+        task.cpu_placement_publication_acquires
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "cpu_owner_control_publication_acquires {}",
+        task.cpu_owner_control_publication_acquires
+    )
+    .unwrap();
+    writeln!(
+        output,
         "scheduler_deadline_derivation_entries {}",
         task.scheduler_deadline_derivation_entries
     )
@@ -584,6 +596,12 @@ fn render_scheduler_metrics() -> alloc::string::String {
         output,
         "direct_wake_queued_candidate_selected {}",
         task.direct_wake_queued_candidate_selected
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "direct_wake_scheduler_republications {}",
+        task.direct_wake_scheduler_republications
     )
     .unwrap();
     writeln!(
@@ -1045,12 +1063,15 @@ mod tests {
                 "owner_rq_irqsave_transactions",
                 "owner_rq_scheduler_transactions",
                 "owner_rq_bootstrap_transactions",
+                "cpu_placement_publication_acquires",
+                "cpu_owner_control_publication_acquires",
                 "direct_wake_attempts",
                 "direct_wake_activations",
                 "direct_wake_enqueues",
                 "direct_wake_preemptions",
                 "direct_wake_current_kept",
                 "direct_wake_queued_candidate_selected",
+                "direct_wake_scheduler_republications",
                 "fair_pick_protected_current",
                 "fair_wake_wakee_ineligible",
                 "fair_wake_current_ineligible",

@@ -207,7 +207,18 @@ impl CpuRemote {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return true,
+                Ok(_) => {
+                    #[cfg(feature = "qperf-metrics")]
+                    match class {
+                        CpuPublicationClass::Placement => {
+                            crate::metrics::record_cpu_placement_publication_acquire();
+                        }
+                        CpuPublicationClass::OwnerControl => {
+                            crate::metrics::record_cpu_owner_control_publication_acquire();
+                        }
+                    }
+                    return true;
+                }
                 Err(actual) => current = actual,
             }
         }
@@ -262,6 +273,10 @@ impl OwnedCpuRemotePublication {
 }
 
 impl CpuRemotePublication<'_> {
+    pub(super) fn reserves(&self, remote: &CpuRemote) -> bool {
+        core::ptr::eq(self.remote, remote)
+    }
+
     pub(crate) fn publish_owner_control(
         self,
         node: Pin<&'static InboxNode>,
