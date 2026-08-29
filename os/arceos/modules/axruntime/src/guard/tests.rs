@@ -7,6 +7,29 @@ fn host_spin_guard_before_runtime_bootstrap_is_noop() {
     let _guard = lock.lock_irqsave();
 }
 
+#[cfg(feature = "host-test")]
+#[test]
+fn scheduler_exit_state_reuses_one_cpu_pin() {
+    std::thread::spawn(|| {
+        ax_hal::percpu::initialize_host_test_cpu();
+        ax_hal::asm::disable_irqs();
+        with_guard_state_mut(|state| assert!(state.claim_task_scheduler(0)));
+        cpu_local::host_test::reset_register_read_counts();
+
+        finish_scheduler_cpu_state(false, "test scheduler frame");
+
+        let reads = cpu_local::host_test::register_read_counts();
+        assert_eq!(
+            reads.current_context, 2,
+            "scheduler exit needs one pin validation and one context-owned preemption lookup"
+        );
+        assert_eq!(reads.binding_observations, 2);
+        ax_hal::asm::enable_irqs();
+    })
+    .join()
+    .expect("modeled CPU must finish scheduler exit state");
+}
+
 #[test]
 fn nested_irq_exits_restore_only_the_outer_state() {
     let mut state = RuntimeGuardState::new();

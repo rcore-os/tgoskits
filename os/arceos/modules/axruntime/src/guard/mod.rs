@@ -431,8 +431,7 @@ fn exit_scheduler_frame_guard_inner(
             |error| panic!("scheduler tail lost the current scheduler owner: {error:?}"),
         )
     };
-    publish_preemption_pending(needs_reschedule);
-    with_guard_state_mut(|state| state.exit_scheduler_preempt(owner));
+    finish_scheduler_cpu_state(needs_reschedule, owner);
     crate::clock_event_runtime::finish_deferred_rearm();
     match return_to {
         RuntimeSchedulerReturn::Task => {
@@ -441,6 +440,13 @@ fn exit_scheduler_frame_guard_inner(
         }
         RuntimeSchedulerReturn::IrqReturn => false,
     }
+}
+
+fn finish_scheduler_cpu_state(needs_reschedule: bool, owner: &'static str) {
+    with_current_cpu_pin(|pin| {
+        publish_preemption_pending_pinned(pin, needs_reschedule);
+        with_guard_state_mut_pinned(pin, |state| state.exit_scheduler_preempt(owner));
+    });
 }
 
 /// Verifies the fixed CPU-local baton immediately before the raw switch.
@@ -484,13 +490,15 @@ fn current_preempt_depth() -> u32 {
         .depth()
 }
 fn publish_preemption_pending(pending: bool) {
-    with_current_cpu_pin(|pin| {
-        if pending {
-            cpu_local::set_preemption_pending(pin)
-        } else {
-            cpu_local::clear_preemption_pending(pin)
-        }
-    })
+    with_current_cpu_pin(|pin| publish_preemption_pending_pinned(pin, pending));
+}
+
+fn publish_preemption_pending_pinned(pin: &cpu_local::CpuPin<'_>, pending: bool) {
+    if pending {
+        cpu_local::set_preemption_pending(pin)
+    } else {
+        cpu_local::clear_preemption_pending(pin)
+    }
     .unwrap_or_else(|error| panic!("architecture preemption publication failed: {error}"));
 }
 
@@ -517,19 +525,24 @@ fn with_guard_state<R>(operation: impl for<'value> FnOnce(&'value RuntimeGuardSt
 fn with_guard_state_mut<R>(
     operation: impl for<'value> FnOnce(&'value mut RuntimeGuardState) -> R,
 ) -> R {
+    with_current_cpu_pin(|pin| with_guard_state_mut_pinned(pin, operation))
+}
+
+fn with_guard_state_mut_pinned<R>(
+    pin: &cpu_local::CpuPin<'_>,
+    operation: impl for<'value> FnOnce(&'value mut RuntimeGuardState) -> R,
+) -> R {
     assert!(
         !ax_hal::asm::irqs_enabled(),
         "mutable runtime guard state requires local IRQ exclusion"
     );
-    with_current_cpu_pin(|pin| {
-        // SAFETY: local IRQ exclusion prevents migration, re-entry, and every
-        // conflicting owner access for the complete callback.
-        unsafe {
-            cpu_local::with_exclusive_cpu(pin, |exclusive| {
-                RUNTIME_GUARD_STATE.with_current_mut(exclusive, operation)
-            })
-        }
-    })
+    // SAFETY: local IRQ exclusion prevents migration, re-entry, and every
+    // conflicting owner access for the complete callback.
+    unsafe {
+        cpu_local::with_exclusive_cpu(pin, |exclusive| {
+            RUNTIME_GUARD_STATE.with_current_mut(exclusive, operation)
+        })
+    }
 }
 
 #[cfg(test)]
