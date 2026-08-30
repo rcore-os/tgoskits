@@ -104,10 +104,13 @@ fn consumers_use_their_layer_owned_lock_interfaces() {
     let fs_facade = workspace.join("fs/ax-fs-ng/src/os/sync.rs");
     assert_contains(
         &fs_facade,
-        "pub use ax_sync::{Mutex, MutexGuard, SpinLock, SpinLockGuard};",
+        "pub use ax_sync::{Mutex as SleepMutex, MutexGuard as SleepMutexGuard};",
     );
+    assert_contains(&fs_facade, "pub struct IrqMutex<T: ?Sized>");
+    assert_contains(&fs_facade, "pub type IrqMutexGuard<'a, T>");
     assert_not_contains(&fs_facade, "PiMutex");
     assert_not_contains(&fs_facade, "SpinMutex");
+    assert_not_contains(&fs_facade, "SpinLock as Mutex");
 }
 
 #[test]
