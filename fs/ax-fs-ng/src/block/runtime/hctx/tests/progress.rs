@@ -28,11 +28,11 @@ fn register_retry_advances_only_register_state_and_posts_controller_event() {
     crate::os::task::install_test_runtime_ops();
     let ops = runtime_ops().unwrap();
     let state = HctxState {
-        queue_info: Mutex::new(QueueInfoEpoch::new(test_queue_info(1))),
-        submission_channels: Mutex::new(Vec::new()),
+        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(1))),
+        submission_channels: IrqMutex::new(Vec::new()),
         notification: ops.notification(),
         lifecycle_notification: ops.notification(),
-        irq_latches: Mutex::new(Vec::new()),
+        irq_latches: IrqMutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(false),
@@ -98,11 +98,11 @@ fn terminal_state_rejects_an_already_due_register_retry() {
     crate::os::task::install_test_runtime_ops();
     let ops = runtime_ops().unwrap();
     let state = HctxState {
-        queue_info: Mutex::new(QueueInfoEpoch::new(test_queue_info(1))),
-        submission_channels: Mutex::new(Vec::new()),
+        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(1))),
+        submission_channels: IrqMutex::new(Vec::new()),
         notification: ops.notification(),
         lifecycle_notification: ops.notification(),
-        irq_latches: Mutex::new(Vec::new()),
+        irq_latches: IrqMutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(true),
@@ -150,11 +150,11 @@ fn retry_backlog_does_not_starve_fresh_cpu_channel_submissions() {
     let channel =
         Arc::new(BoundedChannel::with_item_notification(4, Arc::clone(&notification)).unwrap());
     let state = HctxState {
-        queue_info: Mutex::new(QueueInfoEpoch::new(test_queue_info(2))),
-        submission_channels: Mutex::new(vec![Arc::clone(&channel)]),
+        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(2))),
+        submission_channels: IrqMutex::new(vec![Arc::clone(&channel)]),
         notification,
         lifecycle_notification: ops.notification(),
-        irq_latches: Mutex::new(Vec::new()),
+        irq_latches: IrqMutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(false),
