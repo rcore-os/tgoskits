@@ -22,7 +22,6 @@ use std::{
 };
 
 const MAX_SENDER_CPUS: usize = 3;
-const IDLE_WAKE_POLLS: usize = 100_000;
 const POST_IPI_WAITER_COUNT: usize = 16;
 const POST_IPI_SHARED_DEADLINE: Duration = Duration::from_millis(500);
 const POST_IPI_PROGRESS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -32,7 +31,7 @@ const POLL_INTERVAL_MS: u64 = 1;
 static TARGET_CPU: AtomicUsize = AtomicUsize::new(0);
 static EXECUTED_HARD_CALLS: AtomicUsize = AtomicUsize::new(0);
 static IDLE_TARGET_MASKED: AtomicBool = AtomicBool::new(false);
-static IDLE_IPI_PUBLISHED: AtomicBool = AtomicBool::new(false);
+static IDLE_IPI_ARMED: AtomicBool = AtomicBool::new(false);
 static IDLE_IPI_ACKNOWLEDGED: AtomicBool = AtomicBool::new(false);
 static POST_IPI_WAITERS: WaitQueue = WaitQueue::new();
 static POST_IPI_PROGRESS: WaitQueue = WaitQueue::new();
@@ -89,7 +88,7 @@ fn set_idle_test_timer_irq_enabled(_enabled: bool) {}
 
 fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
     IDLE_TARGET_MASKED.store(false, Ordering::Release);
-    IDLE_IPI_PUBLISHED.store(false, Ordering::Release);
+    IDLE_IPI_ARMED.store(false, Ordering::Release);
     IDLE_IPI_ACKNOWLEDGED.store(false, Ordering::Release);
 
     let target = thread::spawn(move || {
@@ -105,7 +104,7 @@ fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
         );
         IDLE_TARGET_MASKED.store(true, Ordering::Release);
 
-        while !IDLE_IPI_PUBLISHED.load(Ordering::Acquire) {
+        while !IDLE_IPI_ARMED.load(Ordering::Acquire) {
             core::hint::spin_loop();
         }
 
@@ -115,14 +114,6 @@ fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
             ax_hal::asm::irqs_enabled(),
             "IRQ-masked idle wait must return with IRQ delivery enabled"
         );
-
-        for _ in 0..IDLE_WAKE_POLLS {
-            if IDLE_IPI_ACKNOWLEDGED.load(Ordering::Acquire) {
-                return;
-            }
-            core::hint::spin_loop();
-        }
-        panic!("pending IPI did not wake the IRQ-masked idle handoff");
     });
 
     let sender = thread::spawn(move || {
@@ -130,13 +121,20 @@ fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
         while !IDLE_TARGET_MASKED.load(Ordering::Acquire) {
             thread::yield_now();
         }
-        IDLE_IPI_PUBLISHED.store(true, Ordering::Release);
+        ax_ipi::notify_cpu(CpuId(target_cpu)).expect("idle-wake IPI notification failed");
+        IDLE_IPI_ARMED.store(true, Ordering::Release);
         // SAFETY: the callback uses only static atomics and performs bounded
-        // hard-IRQ work. `call_on_cpu` waits for callback completion.
+        // hard-IRQ work. The preceding notification makes the physical edge
+        // pending before the target enters its final wait, and `call_on_cpu`
+        // verifies that the target claims that edge and drains logical work.
         unsafe {
             ax_ipi::call_on_cpu(CpuId(target_cpu), idle_wake_callback, core::ptr::null_mut())
         }
         .expect("idle-wake hard call failed");
+        assert!(
+            IDLE_IPI_ACKNOWLEDGED.load(Ordering::Acquire),
+            "idle-wake hard call must complete before the sender returns"
+        );
     });
 
     sender.join().expect("idle-wake sender must exit");
