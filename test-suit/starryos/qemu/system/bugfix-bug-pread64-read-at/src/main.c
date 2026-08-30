@@ -52,6 +52,8 @@ int main(void)
               "pread64 on -1 returns EBADF");
     CHECK_ERR(syscall(SYS_pread64, 9999, dummy, 1, 0), EBADF,
               "pread64 on unopened fd returns EBADF");
+    CHECK_ERR(syscall(SYS_pread64, -1, dummy, 1, (long)-1), EINVAL,
+              "pread64 negative offset takes precedence over invalid fd");
 
     fd = open(TMPFILE, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     CHECK(fd >= 0, "open write-only fixture");
