@@ -14,8 +14,7 @@ use ax_task::{
     runtime::{
         ContextThreadBinding, CurrentThreadPublication, ExecutionContextHandle,
         KernelContextRequest, RuntimeHandleResult, RuntimeStatus, RuntimeSwitchPlan, StackHandle,
-        ThreadIdentityV1,
-        UserContextRequest,
+        ThreadIdentityV1, UserContextRequest,
     },
 };
 

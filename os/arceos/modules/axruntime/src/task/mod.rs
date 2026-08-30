@@ -64,12 +64,12 @@ use ax_task::{
     impl_trait as impl_task_runtime,
     runtime::{
         AddressSpaceActivation, AddressSpaceDestroyOutcome, AddressSpaceHandle,
-        AddressSpaceMembarrierState, AddressSpaceReclaimArmOutcome,
-        ContextThreadBinding, CpuRemoteHandle, CurrentCpuLocalHandle, CurrentCpuOwnerHandles,
-        CurrentThreadPublication, ExecutionContextHandle, IrqGuardToken, KernelContextRequest,
-        MembarrierRegistrationPhase, RuntimeCpuId, RuntimeHandleResult, RuntimeMembarrierAction,
-        RuntimeStatus, RuntimeSwitchPlan, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle,
-        TlsHandle, TlsRequest, UserContextRequest,
+        AddressSpaceMembarrierState, AddressSpaceReclaimArmOutcome, ContextThreadBinding,
+        CpuRemoteHandle, CurrentCpuLocalHandle, CurrentCpuOwnerHandles, CurrentThreadPublication,
+        ExecutionContextHandle, IrqGuardToken, KernelContextRequest, MembarrierRegistrationPhase,
+        RuntimeCpuId, RuntimeHandleResult, RuntimeMembarrierAction, RuntimeStatus,
+        RuntimeSwitchPlan, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, TlsHandle,
+        TlsRequest, UserContextRequest,
     },
 };
 
