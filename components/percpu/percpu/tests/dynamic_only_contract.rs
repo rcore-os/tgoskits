@@ -14,8 +14,8 @@ fn manifests_expose_only_the_supported_dynamic_features() {
         feature_names(&read(
             &workspace_dir.join("components/cpu-local/Cargo.toml")
         )),
-        ["host-test", "tls"],
-        "cpu-local must expose only register-mode and host-test capabilities"
+        ["host-test", "qperf-metrics", "tls"],
+        "cpu-local must expose only register-mode, qperf, and host-test capabilities"
     );
     assert!(
         !read(&workspace_dir.join("components/percpu/percpu_macros/Cargo.toml"))
