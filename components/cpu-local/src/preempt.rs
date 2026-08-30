@@ -92,6 +92,29 @@ impl PreemptionState {
         self.0.fetch_or(PREEMPT_NO_PENDING, Ordering::Relaxed);
     }
 
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    pub(crate) fn as_mut_ptr(&self) -> *mut u32 {
+        self.0.as_ptr()
+    }
+
+    #[inline(always)]
+    fn compare_exchange_local(&self, current: u32, next: u32) -> bool {
+        #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+        {
+            // SAFETY: a live token retains positive depth on this exact
+            // CPU-owned word. No remote CPU may update it; a local interrupt
+            // can update it only before or after the single instruction.
+            unsafe { crate::register::compare_exchange_x86_preemption_state(self, current, next) }
+        }
+
+        #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+        {
+            self.0
+                .compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        }
+    }
+
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     fn enter(&self) {
         let previous = self.0.fetch_add(1, Ordering::Relaxed);
@@ -113,11 +136,7 @@ impl PreemptionState {
             }
 
             let next = state - 1;
-            if self
-                .0
-                .compare_exchange_weak(state, next, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
+            if self.compare_exchange_local(state, next) {
                 return if depth == 1 {
                     PreemptionExit::Enabled
                 } else {

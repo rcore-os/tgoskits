@@ -540,3 +540,21 @@ pub(crate) unsafe fn current_x86_preemption_state() -> &'static PreemptionState 
     // word and retains that exclusion through the returned reference.
     unsafe { imp::current_preemption_state() }
 }
+
+/// Compares one CPU-owned preemption transition without cross-CPU locking.
+///
+/// # Safety
+///
+/// `state` must be the live owner retained by a positive preemption depth on
+/// the current CPU. No remote CPU may access the word during this operation.
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn compare_exchange_x86_preemption_state(
+    state: &PreemptionState,
+    current: u32,
+    next: u32,
+) -> bool {
+    // SAFETY: the caller supplies the CPU-local ownership contract forwarded
+    // by this architecture boundary.
+    unsafe { imp::compare_exchange_preemption_state(state, current, next) }
+}

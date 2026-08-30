@@ -120,6 +120,35 @@ pub(super) unsafe fn current_preemption_state() -> &'static PreemptionState {
     unsafe { &*core::ptr::with_exposed_provenance::<PreemptionState>(state) }
 }
 
+/// Compares one transition of the current CPU-owned preemption word.
+///
+/// # Safety
+///
+/// `state` must be the owner retained by the caller's positive preemption
+/// depth, and no remote CPU may access that owner. A local interrupt may
+/// update the word only at an instruction boundary.
+#[inline(always)]
+pub(super) unsafe fn compare_exchange_preemption_state(
+    state: &PreemptionState,
+    current: u32,
+    next: u32,
+) -> bool {
+    let mut observed = current;
+    // SAFETY: x86 completes CMPXCHG before recognizing a local interrupt. The
+    // absence of a LOCK prefix is valid because the owner contract excludes
+    // remote access, matching Linux raw_cpu_try_cmpxchg_4().
+    unsafe {
+        core::arch::asm!(
+            "cmpxchg dword ptr [{state}], {next:e}",
+            state = in(reg) state.as_mut_ptr(),
+            next = in(reg) next,
+            inout("eax") observed,
+            options(nostack),
+        );
+    }
+    observed == current
+}
+
 #[cfg(feature = "tls")]
 pub(super) unsafe fn read_kernel_tls() -> usize {
     let low: u32;

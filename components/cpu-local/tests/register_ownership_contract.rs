@@ -31,6 +31,7 @@ fn each_host_thread_must_install_its_own_cpu_binding() {
 }
 
 const REGISTER: &str = include_str!("../src/register/mod.rs");
+const PREEMPT: &str = include_str!("../src/preempt.rs");
 const X86_64: &str = include_str!("../src/register/x86_64.rs");
 const AARCH64: &str = include_str!("../src/register/aarch64.rs");
 const RISCV: &str = include_str!("../src/register/riscv.rs");
@@ -158,6 +159,24 @@ fn x86_and_aarch64_keep_context_tls_separate_from_the_cpu_anchor() {
     let task_pointer = aarch64.split_once("unsafe fn read_kernel_tls").unwrap().1;
     assert!(task_pointer.contains("TPIDR_EL0"));
     assert!(aarch64.contains("cfg(feature = \"tls\")"));
+}
+
+#[test]
+fn x86_preemption_finish_uses_a_cpu_local_compare_exchange() {
+    assert!(
+        PREEMPT.contains("compare_exchange_x86_preemption_state"),
+        "the common preemption exit must select the CPU-local x86 transition"
+    );
+    assert!(
+        REGISTER.contains("compare_exchange_x86_preemption_state")
+            && X86_64.contains("compare_exchange_preemption_state"),
+        "the x86 CPU-local transition must stay behind the register leaf"
+    );
+    assert!(
+        X86_64.contains("cmpxchg dword ptr [{state}]")
+            && !X86_64.contains("lock cmpxchg dword ptr [{state}]"),
+        "an owner-only CPU-local word must not acquire cross-CPU cache-line ownership"
+    );
 }
 
 #[test]
