@@ -35,6 +35,41 @@ enum WakeTargetSelection {
     SchedulerClass,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnRqWakeAction {
+    ReactivateDelayedFair,
+    PublishAlreadyQueued,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnRqRevalidation {
+    CommitOnRq,
+    ActivateOffRq,
+}
+
+/// Selects the Linux `ttwu_runnable()` action after the rq lock is held.
+fn on_rq_wake_action(delayed_fair: bool) -> OnRqWakeAction {
+    if delayed_fair {
+        OnRqWakeAction::ReactivateDelayedFair
+    } else {
+        OnRqWakeAction::PublishAlreadyQueued
+    }
+}
+
+/// Mirrors Linux's `!task_on_cpu(rq, p)` wakeup-preemption gate.
+fn on_rq_wake_preemption_required(on_cpu: bool) -> bool {
+    !on_cpu
+}
+
+/// Revalidates Linux's `task_on_rq_queued()` fact under the rq lock.
+fn on_rq_revalidation(scheduler_owned: bool) -> OnRqRevalidation {
+    if scheduler_owned {
+        OnRqRevalidation::CommitOnRq
+    } else {
+        OnRqRevalidation::ActivateOffRq
+    }
+}
+
 /// Mirrors the generic Linux `select_task_rq()` gate before scheduler-class
 /// placement runs.
 fn wake_target_selection(affinity: &CpuSet) -> WakeTargetSelection {
@@ -117,6 +152,24 @@ impl TaskSystem {
                 Ok(WakeTransition::Notified)
             }
             ThreadState::New | ThreadState::Exited => Ok(WakeTransition::Notified),
+        }
+    }
+
+    /// Consumes a wake for Linux's `ttwu_runnable()` on-rq path.
+    ///
+    /// The task remains Blocked while its rq membership is revalidated and a
+    /// possible delayed Fair dequeue is cancelled under the rq lock. That
+    /// transaction publishes Running directly; Waking is reserved for the
+    /// off-rq path that must drop the task lock before target selection and
+    /// enqueue.
+    fn consume_on_rq_wake_locked(
+        core: &Arc<ThreadCore>,
+        sched: &ThreadSchedState,
+    ) -> WakeTransition {
+        if !core.consume_wake(false) || sched.lifecycle.state() != ThreadState::Blocked {
+            WakeTransition::Notified
+        } else {
+            WakeTransition::Activate
         }
     }
 
@@ -423,21 +476,12 @@ impl TaskSystem {
                     drop(sched);
                     continue;
                 };
-                let transition =
-                    Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
-                        task_runtime::fatal_invariant(0x574b_000e, core.id().as_u64() as usize)
-                    });
+                let transition = Self::consume_on_rq_wake_locked(&core, &sched);
                 if transition != WakeTransition::Activate {
                     task_runtime::fatal_invariant(0x574b_000f, core.id().as_u64() as usize);
                 }
 
-                return self.reactivate_delayed_fair_locked(
-                    &core,
-                    sched,
-                    target,
-                    publication,
-                    intent,
-                );
+                return self.wake_on_rq_locked(&core, sched, target, publication, intent);
             }
             let previous = sched
                 .placement
@@ -548,15 +592,19 @@ impl TaskSystem {
                     .unwrap_or_else(|| {
                         task_runtime::fatal_invariant(0x574b_0019, core.id().as_u64() as usize)
                     });
-                let transition =
+                let on_rq = sched.placement.queued_cpu() == Some(target);
+                let transition = if on_rq {
+                    Self::consume_on_rq_wake_locked(&core, &sched)
+                } else {
                     Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
                         task_runtime::fatal_invariant(0x574b_001a, core.id().as_u64() as usize)
-                    });
+                    })
+                };
                 if transition != WakeTransition::Activate {
                     task_runtime::fatal_invariant(0x574b_001b, core.id().as_u64() as usize);
                 }
-                let result = if sched.placement.queued_cpu() == Some(target) {
-                    self.reactivate_delayed_fair_locked(&core, sched, target, publication, intent)
+                let result = if on_rq {
+                    self.wake_on_rq_locked(&core, sched, target, publication, intent)
                 } else {
                     self.activate_waking_thread_locked(&core, sched, target, publication, intent)
                 };
@@ -576,20 +624,11 @@ impl TaskSystem {
                         return WaitWakeDelivery::Cancelled;
                     }
                     let _already_pending = core.publish_wake();
-                    let transition =
-                        Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
-                            task_runtime::fatal_invariant(0x574b_0010, core.id().as_u64() as usize)
-                        });
+                    let transition = Self::consume_on_rq_wake_locked(&core, &sched);
                     if transition != WakeTransition::Activate {
                         task_runtime::fatal_invariant(0x574b_0011, core.id().as_u64() as usize);
                     }
-                    let result = self.reactivate_delayed_fair_locked(
-                        &core,
-                        sched,
-                        target,
-                        publication,
-                        intent,
-                    );
+                    let result = self.wake_on_rq_locked(&core, sched, target, publication, intent);
                     if result != WakeResult::Notified {
                         task_runtime::fatal_invariant(0x574b_0012, core.id().as_u64() as usize);
                     }
@@ -653,11 +692,14 @@ impl TaskSystem {
         }
     }
 
-    /// Cancels Linux Fair delayed dequeue without waiting for `on_cpu`.
+    /// Completes Linux's `ttwu_runnable()` transaction without waiting for `on_cpu`.
     ///
-    /// The task already owns `TASK_ON_RQ_QUEUED`; `ENQUEUE_DELAYED` only
-    /// refreshes lag, clears the delayed bit, and evaluates wakeup preemption.
-    fn reactivate_delayed_fair_locked(
+    /// If the task still owns `TASK_ON_RQ_QUEUED`, a delayed Fair task uses
+    /// `ENQUEUE_DELAYED` to cancel its pending dequeue while an ordinary task
+    /// stays linked. A concurrent dequeue instead falls through to the
+    /// already-reserved off-rq activation, matching `ttwu_runnable()` returning
+    /// false to `try_to_wake_up()`.
+    fn wake_on_rq_locked(
         &self,
         core: &Arc<ThreadCore>,
         mut sched_guard: crate::lock::IrqTicketGuard<'_, ThreadSchedState>,
@@ -665,69 +707,125 @@ impl TaskSystem {
         publication: CpuRemotePublication<'_>,
         intent: WakeIntent,
     ) -> WakeResult {
-        let (sched, irq_owner) = sched_guard.split_irq_owner();
-        if sched.lifecycle.state() != ThreadState::Waking
-            || sched.placement.queued_cpu() != Some(target)
-        {
-            task_runtime::fatal_invariant(0x574b_0013, core.id().as_u64() as usize);
-        }
         let remote = &self.cpu_remotes[target.as_usize()];
         remote.cancel_idle_pull_if_uncommitted();
-        let mut run_queue = OwnerRqTxn::begin_nested(self, remote, &irq_owner);
+        let on_rq_publication = {
+            let (sched, irq_owner) = sched_guard.split_irq_owner();
+            if sched.lifecycle.state() != ThreadState::Blocked {
+                task_runtime::fatal_invariant(0x574b_0013, core.id().as_u64() as usize);
+            }
+            let mut run_queue = OwnerRqTxn::begin_nested(self, remote, &irq_owner);
+            let scheduling_state = run_queue.scheduling_state(core.id());
 
-        if !run_queue.is_delayed_fair(core.id()) {
-            task_runtime::fatal_invariant(0x574b_0014, core.id().as_u64() as usize);
-        }
-        let policy = run_queue
-            .scheduling_state(core.id())
-            .map(|(policy, _entity)| policy)
-            .unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize)
-            });
-        if matches!(policy, SchedulePolicy::Fair { .. })
-            && run_queue.current().is_some_and(|current| {
-                matches!(current.schedule_policy(), SchedulePolicy::Fair { .. })
-            })
-        {
-            let _ = run_queue.settle_current(0);
-        }
-        let current_fair = run_queue.current_fair_contender();
+            match on_rq_revalidation(scheduling_state.is_some()) {
+                OnRqRevalidation::ActivateOffRq => {
+                    if sched.placement.queued_cpu().is_some()
+                        || sched.placement.committed_migration_target().is_some()
+                    {
+                        task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize);
+                    }
+                    run_queue.commit();
+                    None
+                }
+                OnRqRevalidation::CommitOnRq => {
+                    if sched.placement.queued_cpu() != Some(target) {
+                        task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize);
+                    }
+                    let action = on_rq_wake_action(run_queue.is_delayed_fair(core.id()));
+                    let on_cpu = match sched.placement.on_cpu() {
+                        None => false,
+                        Some(owner) if owner == target => true,
+                        Some(owner) => {
+                            task_runtime::fatal_invariant(0x574b_0018, owner.as_u32() as usize)
+                        }
+                    };
+                    let policy = scheduling_state
+                        .map(|(policy, _entity)| policy)
+                        .unwrap_or_else(|| {
+                            task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize)
+                        });
+                    if matches!(policy, SchedulePolicy::Fair { .. })
+                        && run_queue.current().is_some_and(|current| {
+                            matches!(current.schedule_policy(), SchedulePolicy::Fair { .. })
+                        })
+                    {
+                        let _ = run_queue.settle_current(0);
+                    }
+                    let current_fair = run_queue.current_fair_contender();
 
-        run_queue.update_fair_virtual_time(current_fair);
-        let enqueue = run_queue.reactivate_delayed_fair(
-            core.id(),
-            current_fair,
-            self.config.timing_granularity_ns(),
-        );
+                    run_queue.update_fair_virtual_time(current_fair);
+                    let (wakeup_entity, owner_work_required) = match action {
+                        OnRqWakeAction::ReactivateDelayedFair => {
+                            let enqueue = run_queue.reactivate_delayed_fair(
+                                core.id(),
+                                current_fair,
+                                self.config.timing_granularity_ns(),
+                            );
+                            (
+                                enqueue.entity().clone(),
+                                enqueue.scheduler_deadline_refresh_required(),
+                            )
+                        }
+                        OnRqWakeAction::PublishAlreadyQueued => (
+                            run_queue
+                                .scheduling_state(core.id())
+                                .map(|(_policy, entity)| entity)
+                                .unwrap_or_else(|| {
+                                    task_runtime::fatal_invariant(
+                                        0x574b_0014,
+                                        core.id().as_u64() as usize,
+                                    )
+                                }),
+                            false,
+                        ),
+                    };
 
-        run_queue.update_fair_virtual_time(current_fair);
-        let fair_virtual_time = enqueue
-            .entity()
-            .fair()
-            .map_or(0, |_| run_queue.virtual_time());
+                    run_queue.update_fair_virtual_time(current_fair);
+                    let fair_virtual_time =
+                        wakeup_entity.fair().map_or(0, |_| run_queue.virtual_time());
 
-        let reschedule_pending = remote.immediate_preemption_requested();
-        let preemption = run_queue.wakeup_preempt_with_intent(
-            core.id(),
-            policy,
-            enqueue.entity(),
-            fair_virtual_time,
-            WakePreemptionContext::new(
+                    let reschedule_pending = remote.immediate_preemption_requested();
+                    let preemption = if on_rq_wake_preemption_required(on_cpu) {
+                        run_queue.wakeup_preempt_with_intent(
+                            core.id(),
+                            policy,
+                            &wakeup_entity,
+                            fair_virtual_time,
+                            WakePreemptionContext::new(
+                                intent,
+                                EqualRtWakeAction::PreserveFifoOrder,
+                                reschedule_pending,
+                            ),
+                        )
+                    } else {
+                        WakePreemptionDecision::KeepCurrent
+                    };
+
+                    let reschedule = preemption.reschedule_kind(policy);
+
+                    core.publish_effective_schedule(policy, &wakeup_entity);
+                    core.set_wake_cpu_hint(target);
+                    if sched.transition(core, ThreadState::Running).is_err() {
+                        task_runtime::fatal_invariant(0x574b_0015, core.id().as_u64() as usize);
+                    }
+                    run_queue.commit();
+                    Some((reschedule, owner_work_required))
+                }
+            }
+        };
+
+        let Some((reschedule, owner_work_required)) = on_rq_publication else {
+            if sched_guard.transition(core, ThreadState::Waking).is_err() {
+                task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize);
+            }
+            return self.activate_waking_thread_locked(
+                core,
+                sched_guard,
+                target,
+                publication,
                 intent,
-                EqualRtWakeAction::PreserveFifoOrder,
-                reschedule_pending,
-            ),
-        );
-
-        let reschedule = preemption.reschedule_kind(policy);
-
-        core.publish_effective_schedule(policy, enqueue.entity());
-        core.set_wake_cpu_hint(target);
-        if sched.transition(core, ThreadState::Running).is_err() {
-            task_runtime::fatal_invariant(0x574b_0015, core.id().as_u64() as usize);
-        }
-        let owner_work_required = enqueue.scheduler_deadline_refresh_required();
-        run_queue.commit();
+            );
+        };
         drop(sched_guard);
         remote.publish_scheduler_reasons_reserved(&publication, reschedule, owner_work_required);
         drop(publication);
@@ -1089,5 +1187,23 @@ mod tests {
             wake_target_selection(&affinity),
             WakeTargetSelection::Pinned(pinned),
         );
+    }
+
+    #[test]
+    fn linux_on_rq_wake_keeps_an_already_queued_task_linked() {
+        assert_eq!(
+            on_rq_wake_action(false),
+            OnRqWakeAction::PublishAlreadyQueued,
+        );
+    }
+
+    #[test]
+    fn linux_on_rq_wake_skips_preemption_for_the_current_task() {
+        assert!(!on_rq_wake_preemption_required(true));
+    }
+
+    #[test]
+    fn linux_on_rq_wake_falls_back_after_a_concurrent_dequeue() {
+        assert_eq!(on_rq_revalidation(false), OnRqRevalidation::ActivateOffRq,);
     }
 }

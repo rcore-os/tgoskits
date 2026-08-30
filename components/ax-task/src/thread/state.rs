@@ -189,7 +189,9 @@ pub(crate) const fn transition_is_valid(from: ThreadState, to: ThreadState) -> b
             )
             | (
                 ThreadState::Blocked,
-                ThreadState::Waking | ThreadState::Exited
+                // Linux `ttwu_runnable()` changes an on-rq sleeper directly
+                // to TASK_RUNNING. Only the off-rq enqueue path uses Waking.
+                ThreadState::Running | ThreadState::Waking | ThreadState::Exited
             )
             | (
                 ThreadState::Waking,
@@ -244,6 +246,21 @@ mod tests {
             ParkPublication::Blocked
         );
         assert_eq!(lifecycle.publish_wake().state(), ThreadState::Blocked);
+    }
+
+    #[test]
+    fn on_rq_wake_transitions_directly_from_blocked_to_running() {
+        let lifecycle = ThreadLifecycle::new();
+        lifecycle.transition(ThreadState::Running).unwrap();
+        lifecycle.transition(ThreadState::Parking).unwrap();
+        assert_eq!(
+            lifecycle.publish_blocked_from_parking().unwrap(),
+            ParkPublication::Blocked
+        );
+
+        lifecycle.transition(ThreadState::Running).unwrap();
+
+        assert_eq!(lifecycle.state(), ThreadState::Running);
     }
 }
 

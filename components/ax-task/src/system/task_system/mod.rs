@@ -57,8 +57,6 @@ use super::thread_sched::{
     PiScheduleUpdate, ThreadDeadlineInit, ThreadPlacementInit, ThreadPolicyInit, ThreadRuntimeInit,
     ThreadSchedCell, ThreadSchedInit, ThreadSchedState,
 };
-#[cfg(feature = "qperf-metrics")]
-use crate::system::cpu::WakePreemptionDecision;
 use crate::{
     ActiveSchedulingState, CpuId, CpuLocal, CpuRemote, CpuRemotePublication, CpuSet, CpuSnapshot,
     DEADLINE_CLASS_RANK, DeadlineAdmission, DeadlineBandwidthSnapshot, DeadlineEntity,
@@ -86,7 +84,7 @@ use crate::{
         DeadlineBaseGuardSource, EqualRtWakeAction, HardTimerServiceClaim, IdlePullReservation,
         KtimerServiceClaim, OwnerRqEntry, OwnerRqTxn, PreparedMigrationDelivery, RescheduleKind,
         RqTaskTime, RunQueueClockSnapshot, RunQueueGuardSource, SchedulerDeadlineRqObservation,
-        SchedulerRequestScope,
+        SchedulerRequestScope, WakePreemptionDecision,
     },
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{
