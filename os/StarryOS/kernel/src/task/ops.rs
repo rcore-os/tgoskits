@@ -542,7 +542,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
     let is_process_leader = thr.tid().pid_number() == process.pid().pid_number();
-    thr.account_cpu_time_now();
+    thr.commit_cpu_time_now();
     let (utime, stime) = task_cpu_time(&curr);
     let task_identity = thr.pid_identity();
     // The lease keeps this identity's exit path pending until the tail of

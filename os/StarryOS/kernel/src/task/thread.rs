@@ -522,8 +522,8 @@ impl Thread {
         // SAFETY: switch-in established exactly one activation for this task,
         // and the scheduler baton still pins the same CPU during switch-out.
         unsafe { self.scope.deactivate_pinned(cpu_pin) };
-        self.proc_data
-            .record_cpu_time_transition(|| self.accounting.cpu_time.scheduler_switch_out(reason));
+        self.accounting.cpu_time.scheduler_switch_out(reason);
+        self.publish_cpu_time_for_active_interval_timer();
     }
 
     pub(crate) fn set_cpu_time_state(&self, state: TimerState) {
@@ -531,16 +531,22 @@ impl Thread {
     }
 
     pub(crate) fn apply_cpu_time_policy(&self, realtime_policy: bool, observed_ns: u64) {
-        self.proc_data.record_cpu_time_transition(|| {
-            self.accounting
-                .cpu_time
-                .apply_realtime_policy(realtime_policy, observed_ns)
-        });
+        self.accounting
+            .cpu_time
+            .apply_realtime_policy(realtime_policy, observed_ns);
+        self.publish_cpu_time_for_active_interval_timer();
     }
 
     pub(crate) fn account_cpu_time_now(&self) {
-        self.proc_data
-            .record_cpu_time_transition(|| self.accounting.cpu_time.account_now());
+        self.accounting.cpu_time.account_now();
+        self.publish_cpu_time_for_active_interval_timer();
+    }
+
+    pub(crate) fn commit_cpu_time_now(&self) {
+        self.accounting.cpu_time.account_now();
+        self.proc_data.record_cpu_time_transition(|| {
+            self.accounting.cpu_time.publish_committed_delta()
+        });
     }
 
     pub(super) fn sample_scheduler_tick_cpu_time(&self, observed_ns: u64) {
@@ -549,6 +555,14 @@ impl Thread {
                 .cpu_time
                 .sample_scheduler_tick_at(observed_ns)
         });
+    }
+
+    fn publish_cpu_time_for_active_interval_timer(&self) {
+        if self.proc_data.has_active_cpu_interval_timers() {
+            self.proc_data.record_cpu_time_transition(|| {
+                self.accounting.cpu_time.publish_committed_delta()
+            });
+        }
     }
 
     pub(crate) fn cpu_time(&self) -> &CpuTimeAccounting {

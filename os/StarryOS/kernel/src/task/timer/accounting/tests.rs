@@ -21,8 +21,8 @@ mod tests {
         let policy_accounting = Arc::clone(&accounting);
         let policy_writer = thread::spawn(move || {
             started_tx.send(()).unwrap();
-            let delta = policy_accounting.set_realtime_policy_at(false, 10);
-            completed_tx.send(delta).unwrap();
+            policy_accounting.set_realtime_policy_at(false, 10);
+            completed_tx.send(()).unwrap();
         });
 
         started_rx.recv().unwrap();
@@ -35,11 +35,12 @@ mod tests {
         drop(execution_writer);
         assert_eq!(
             completed_rx.recv_timeout(StdDuration::from_secs(1)),
-            Ok(CpuTimeDelta {
-                raw_user_ns: 0,
-                raw_system_ns: 0,
-                runtime_ns: 10,
-            })
+            Ok(())
+        );
+        assert_eq!(
+            accounting.unpublished_delta_at(10).runtime_ns,
+            10,
+            "a policy transition must leave group publication to the active CPU timer path"
         );
         policy_writer.join().unwrap();
     }
@@ -74,6 +75,40 @@ mod tests {
         let blocked = accounting.snapshot_at(2_000_000);
         assert_eq!(blocked.realtime_continuous_ns, 0);
         assert_eq!(blocked.realtime_reset_generation, 1);
+    }
+
+    #[test]
+    fn switch_out_keeps_runtime_unpublished_until_group_accounting_requests_it() {
+        let accounting = CpuTimeAccounting::new();
+        accounting.set_state_at(TimerState::User, 0);
+        accounting.scheduler_switch_in_at(false, 0);
+
+        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Blocked, 10);
+
+        assert_eq!(
+            accounting.unpublished_delta_at(10),
+            CpuTimeDelta {
+                raw_user_ns: 0,
+                raw_system_ns: 0,
+                runtime_ns: 10,
+            },
+            "ordinary switches must not update process-group CPU counters"
+        );
+
+        assert_eq!(
+            accounting.publish_committed_delta(),
+            CpuTimeDelta {
+                raw_user_ns: 0,
+                raw_system_ns: 0,
+                runtime_ns: 10,
+            },
+            "active group accounting must publish the task-local runtime"
+        );
+        assert_eq!(
+            accounting.unpublished_delta_at(10),
+            CpuTimeDelta::ZERO,
+            "published runtime must not be added again by a group reader"
+        );
     }
 
     #[test]

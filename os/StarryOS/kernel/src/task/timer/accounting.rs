@@ -103,32 +103,23 @@ impl CpuTimeAccounting {
         self.scheduler_switch_in_locked(realtime_policy, monotonic_time_nanos() as u64)
     }
 
-    pub(crate) fn scheduler_switch_out(&self, reason: scheduler::SwitchReason) -> CpuTimeDelta {
-        {
-            let _writer = self.begin_write();
-            self.scheduler_switch_out_locked(reason, monotonic_time_nanos() as u64);
-        }
-        self.publish_committed_delta()
+    pub(crate) fn scheduler_switch_out(&self, reason: scheduler::SwitchReason) {
+        let _writer = self.begin_write();
+        self.scheduler_switch_out_locked(reason, monotonic_time_nanos() as u64);
     }
 
     pub(crate) fn apply_realtime_policy(
         &self,
         realtime_policy: bool,
         observed_ns: u64,
-    ) -> CpuTimeDelta {
-        {
-            let _writer = self.begin_write();
-            self.set_realtime_policy_locked(realtime_policy, observed_ns);
-        }
-        self.publish_committed_delta()
+    ) {
+        let _writer = self.begin_write();
+        self.set_realtime_policy_locked(realtime_policy, observed_ns);
     }
 
-    pub(crate) fn account_now(&self) -> CpuTimeDelta {
-        {
-            let _writer = self.begin_write();
-            self.account_now_at(monotonic_time_nanos() as u64);
-        }
-        self.publish_committed_delta()
+    pub(crate) fn account_now(&self) {
+        let _writer = self.begin_write();
+        self.account_now_at(monotonic_time_nanos() as u64);
     }
 
     /// Samples the scheduler-tick carrier through the IRQ observation boundary.
@@ -159,16 +150,9 @@ impl CpuTimeAccounting {
     }
 
     #[cfg(any(test, axtest))]
-    fn scheduler_switch_out_at(
-        &self,
-        reason: scheduler::SwitchReason,
-        now_ns: u64,
-    ) -> CpuTimeDelta {
-        {
-            let _writer = self.begin_write();
-            self.scheduler_switch_out_locked(reason, now_ns);
-        }
-        self.publish_committed_delta()
+    fn scheduler_switch_out_at(&self, reason: scheduler::SwitchReason, now_ns: u64) {
+        let _writer = self.begin_write();
+        self.scheduler_switch_out_locked(reason, now_ns);
     }
 
     fn scheduler_switch_out_locked(&self, reason: scheduler::SwitchReason, now_ns: u64) {
@@ -185,12 +169,9 @@ impl CpuTimeAccounting {
     }
 
     #[cfg(all(test, not(axtest)))]
-    fn set_realtime_policy_at(&self, realtime_policy: bool, now_ns: u64) -> CpuTimeDelta {
-        {
-            let _writer = self.begin_write();
-            self.set_realtime_policy_locked(realtime_policy, now_ns);
-        }
-        self.publish_committed_delta()
+    fn set_realtime_policy_at(&self, realtime_policy: bool, now_ns: u64) {
+        let _writer = self.begin_write();
+        self.set_realtime_policy_locked(realtime_policy, now_ns);
     }
 
     fn set_realtime_policy_locked(&self, realtime_policy: bool, now_ns: u64) {
@@ -272,7 +253,7 @@ impl CpuTimeAccounting {
         }
     }
 
-    fn publish_committed_delta(&self) -> CpuTimeDelta {
+    pub(crate) fn publish_committed_delta(&self) -> CpuTimeDelta {
         let tick = self.scheduler_tick_cpu_time.snapshot();
         self.publish_totals(
             tick.user_ns(),
@@ -437,11 +418,12 @@ fn adjust_cpu_time(
 
 /// Monotonic process-wide CPU accounting.
 ///
-/// Scheduler tick, switch, and explicit policy/accounting boundaries publish
-/// task deltas into the group counters. User/kernel transitions remain local to
-/// the running task; full readers combine the committed group counters with
-/// every live task's unpublished totals. A monotonic high-water mark closes the
-/// publication handoff window without waiting for a task that was switched out.
+/// Active CPU-timer sampling and task exit publish task deltas into the group
+/// counters. Ordinary switches keep their totals task-local, matching Linux's
+/// disabled thread-group cputimer path. Full readers combine the committed
+/// group counters with every live task's unpublished totals. A monotonic
+/// high-water mark closes the publication handoff window without waiting for a
+/// task that was switched out.
 pub struct ProcessCpuTimeAccounting {
     raw_user_ns: AtomicU64,
     raw_system_ns: AtomicU64,
@@ -562,8 +544,9 @@ pub(super) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool 
 
     let first = process.snapshot_at_with_live(10, &mut |now| accounting.unpublished_delta_at(now));
     accounting.set_state_at(TimerState::Kernel, 10);
+    accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 15);
     process.record_transition(|| {
-        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 15)
+        accounting.publish_committed_delta()
     });
     let second = process.snapshot_committed_at(15);
 
