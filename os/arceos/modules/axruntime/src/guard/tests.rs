@@ -97,6 +97,36 @@ fn irq_pinned_guard_state_read_skips_current_context_reconstruction() {
     .expect("modeled CPU must finish the owner-state read");
 }
 
+#[cfg(feature = "host-test")]
+#[test]
+fn final_preempt_exit_reuses_one_cpu_pin_and_one_depth_snapshot() {
+    let _serial = HOST_CPU_GUARD_TEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::thread::spawn(|| {
+        ax_hal::percpu::initialize_host_test_cpu();
+        ax_hal::asm::disable_irqs();
+        assert_eq!(
+            current_preempt_depth(),
+            1,
+            "host CPU bootstrap depth models the retained final exit"
+        );
+        cpu_local::host_test::reset_register_read_counts();
+
+        assert!(claim_preempt_exit_scheduler(PreemptExitOrigin::Task, true));
+
+        let reads = cpu_local::host_test::register_read_counts();
+        assert_eq!(
+            reads.current_context, 2,
+            "preempt exit needs one pin validation and one context-owned depth lookup"
+        );
+        with_guard_state_mut(|state| state.exit_scheduler_preempt("modeled preempt exit"));
+        ax_hal::asm::enable_irqs();
+    })
+    .join()
+    .expect("modeled CPU must finish the final preempt exit");
+}
+
 #[test]
 fn nested_irq_exits_restore_only_the_outer_state() {
     let mut state = RuntimeGuardState::new();

@@ -258,22 +258,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
     let irqs_were_enabled = ax_hal::asm::irqs_enabled();
     ax_hal::asm::disable_irqs();
 
-    let must_schedule = with_guard_state_mut(|state| {
-        let must_schedule = preempt_exit_needs_schedule(
-            state,
-            current_preempt_depth(),
-            origin,
-            irqs_were_enabled,
-            in_hard_irq_pinned,
-        );
-        if must_schedule {
-            assert!(
-                state.claim_preempt_exit_scheduler(current_preempt_depth()),
-                "final preemption depth could not become the scheduler baton"
-            );
-        }
-        must_schedule
-    });
+    let must_schedule = claim_preempt_exit_scheduler(origin, irqs_were_enabled);
 
     // A pending final exit retains depth one until either a CPU-local scheduler
     // baton or a later safe point owns the observation. Releasing it never
@@ -304,6 +289,28 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
     if !irq_return && irqs_were_enabled {
         ax_hal::asm::enable_irqs();
     }
+}
+
+fn claim_preempt_exit_scheduler(origin: PreemptExitOrigin, irqs_were_enabled: bool) -> bool {
+    with_current_cpu_pin(|pin| {
+        let preempt_depth = current_preempt_depth_pinned(pin);
+        with_guard_state_mut_pinned(pin, |state| {
+            let must_schedule = preempt_exit_needs_schedule(
+                state,
+                preempt_depth,
+                origin,
+                irqs_were_enabled,
+                || in_hard_irq_on(pin),
+            );
+            if must_schedule {
+                assert!(
+                    state.claim_preempt_exit_scheduler(preempt_depth),
+                    "final preemption depth could not become the scheduler baton"
+                );
+            }
+            must_schedule
+        })
+    })
 }
 
 /// Enters an ordinary lock-preemption scope unless a stronger owner scope is active.
@@ -526,9 +533,11 @@ fn in_hard_irq() -> bool {
     ax_hal::irq::in_irq_context()
 }
 fn in_hard_irq_pinned() -> bool {
-    // SAFETY: every caller has already disabled raw local IRQs or owns the
-    // scheduler baton, which prevents migration across this observation.
-    unsafe { ax_hal::irq::in_irq_context_pinned() }
+    with_current_cpu_pin(in_hard_irq_on)
+}
+
+fn in_hard_irq_on(pin: &cpu_local::CpuPin<'_>) -> bool {
+    ax_hal::irq::in_irq_context_pinned(pin)
 }
 
 fn read_state() -> RuntimeGuardState {

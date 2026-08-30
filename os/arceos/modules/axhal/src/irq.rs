@@ -90,20 +90,11 @@ fn finish_irq_entry(release_preempt: impl FnOnce(), complete: impl FnOnce()) {
     release_preempt(); // Explicit IRQ-return scheduling keeps local IRQs disabled.
 }
 
-/// Tests IRQ-action context while the caller already pins the current CPU.
-///
-/// # Safety
-///
-/// The caller must prevent migration for the complete CPU identity and IRQ
-/// publication observation.
+/// Tests IRQ-action context for the explicitly pinned current CPU.
 #[doc(hidden)]
 #[inline(always)]
-pub unsafe fn in_irq_context_pinned() -> bool {
-    // SAFETY: forwarded caller contract prevents migration for this complete
-    // non-escaping CPU-area observation.
-    let cpu = unsafe { cpu_local::with_cpu_pin(|pin| pin.area().cpu_index().as_usize()) }
-        .map(CpuId)
-        .unwrap_or_else(|error| panic!("IRQ context CPU identity is invalid: {error}"));
+pub fn in_irq_context_pinned(pin: &cpu_local::CpuPin<'_>) -> bool {
+    let cpu = CpuId(pin.area().cpu_index().as_usize());
     ax_plat::irq::in_irq_context_on(cpu)
 }
 
