@@ -2034,7 +2034,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
                     // as a periodic VMM poll point after first letting the
                     // host consume the pending physical IRQ.
                     let vector = self.external_interrupt_exit_vector();
-                    H::poll_host_interrupt();
+                    H::service_pending_host_interrupt();
                     svm_intr_exit_reason(vector)
                 }
                 SvmExitCode::HLT => {

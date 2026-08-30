@@ -224,12 +224,6 @@ impl ArchOps for X86_64Arch {
                     access_flags: x86_access_flags_to_ax(access_flags),
                 },
             ),
-            X86VmExit::ExternalInterrupt { vector } => {
-                debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Defer(DeferredRunWork::ExternalInterrupt {
-                    vector: vector as usize,
-                }))
-            }
             X86VmExit::PreemptionTimer => {
                 Ok(BoundVcpuExit::Defer(DeferredRunWork::TimesliceExpired))
             }
@@ -599,13 +593,16 @@ impl X86HostOps for AxvmX86HostOps {
         ax_std::os::arceos::modules::ax_hal::time::nanos_to_ticks(nanos)
     }
 
-    fn poll_host_interrupt() -> Option<u8> {
+    fn service_pending_host_interrupt() {
         let host_rflags = current_rflags();
         unsafe {
             asm!("sti", "nop", options(nomem, nostack));
         }
         restore_host_interrupt_flag(host_rflags);
-        None
+    }
+
+    fn dispatch_acknowledged_host_interrupt(vector: u8) {
+        crate::host::arceos::dispatch_host_irq(vector as usize);
     }
 }
 

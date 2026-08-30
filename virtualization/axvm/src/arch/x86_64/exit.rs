@@ -8,7 +8,6 @@ use super::*;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DeferredRunWork {
-    ExternalInterrupt { vector: usize },
     TimesliceExpired,
     InterruptEnd { vector: Option<u8> },
 }
@@ -135,9 +134,6 @@ pub(crate) fn finish(
     work: DeferredRunWork,
 ) -> AxVmResult<VcpuRunAction> {
     match work {
-        DeferredRunWork::ExternalInterrupt { vector } => {
-            crate::architecture::exit::finish_external_interrupt(vector);
-        }
         DeferredRunWork::TimesliceExpired => {}
         DeferredRunWork::InterruptEnd { vector } => {
             if let Some(vector) = vector {
