@@ -183,7 +183,6 @@ impl CpuAreaPrefix {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CpuAreaRef {
     prefix: NonNull<CpuAreaPrefix>,
-    cpu_index: CpuIndex,
 }
 
 // SAFETY: the initialization contract keeps the immutable prefix and runtime
@@ -210,8 +209,7 @@ impl CpuAreaRef {
             .ok_or(CpuLocalError::InvalidAreaBase { base: area_base })?;
         // SAFETY: forwarded caller contract provides a live initialized prefix.
         let header = unsafe { prefix.as_ref() }.header();
-        let cpu_index =
-            CpuIndex::from_u32(header.cpu_index).ok_or(CpuLocalError::AreaIdentityMismatch)?;
+        CpuIndex::from_u32(header.cpu_index).ok_or(CpuLocalError::AreaIdentityMismatch)?;
         if header.self_base != area_base {
             return Err(CpuLocalError::AreaIdentityMismatch);
         }
@@ -229,7 +227,7 @@ impl CpuAreaRef {
         {
             return Err(CpuLocalError::AreaIdentityMismatch);
         }
-        Ok(Self { prefix, cpu_index })
+        Ok(Self { prefix })
     }
 
     /// Reconstructs the area selected by an already validated installed base.
@@ -246,14 +244,12 @@ impl CpuAreaRef {
         // SAFETY: the caller guarantees that the installed base is non-null
         // and still names the previously validated shutdown-lifetime prefix.
         let prefix = unsafe { NonNull::new_unchecked(area_base as *mut CpuAreaPrefix) };
-        // SAFETY: the installed prefix retains its immutable validated header.
-        let cpu_index = unsafe { prefix.as_ref() }.header().cpu_index();
-        Self { prefix, cpu_index }
+        Self { prefix }
     }
 
     /// Returns this area's logical CPU index.
     pub const fn cpu_index(self) -> CpuIndex {
-        self.cpu_index
+        self.prefix().header().cpu_index()
     }
 
     /// Returns the exact runtime prefix address used as area identity.
@@ -262,7 +258,7 @@ impl CpuAreaRef {
     }
 
     /// Returns the initialized fixed prefix.
-    pub fn prefix(self) -> &'static CpuAreaPrefix {
+    pub const fn prefix(self) -> &'static CpuAreaPrefix {
         // SAFETY: construction requires a shutdown-lifetime mapping.
         unsafe { self.prefix.as_ref() }
     }
@@ -327,3 +323,14 @@ pub static mut __CPU_LOCAL_AREA_PREFIX: MaybeUninit<CpuAreaPrefix> = MaybeUninit
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".percpu.template.end")]
 pub static __CPU_LOCAL_TEMPLATE_END: u8 = 0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_area_ref_keeps_one_area_identity() {
+        assert_eq!(size_of::<CpuAreaRef>(), size_of::<usize>());
+        assert_eq!(size_of::<Option<CpuAreaRef>>(), size_of::<usize>());
+    }
+}
