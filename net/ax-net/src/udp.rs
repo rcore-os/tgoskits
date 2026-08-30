@@ -43,8 +43,8 @@ use smoltcp::{
 };
 
 use crate::{
-    ConnectStatus, DeferPollWake, IpCmsg, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET,
-    SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    ConnectStatus, IpCmsg, NetError, NetResult, ReadinessVersion, RecvFlags, RecvOptions,
+    SOCKET_SET, SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketDeferPollWake, SocketOps,
     addr::allocate_ephemeral_port,
     config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
@@ -82,6 +82,8 @@ pub struct UdpSocket {
     general: GeneralOptions,
     /// Multiplexes protocol and timer wakeups to owned poll registrations.
     poll_state: Arc<PollSet>,
+    /// Generation published for each socket readiness wake.
+    readiness_version: ReadinessVersion,
     /// Egress IP_TOS policies registered for recently used UDP destinations.
     tos_keys: SpinLock<Vec<EgressIpTosKey>>,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
@@ -106,9 +108,15 @@ impl UdpSocket {
 
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
             poll_state: Arc::new(PollSet::new()),
+            readiness_version: ReadinessVersion::new(),
             tos_keys: SpinLock::new(Vec::new()),
             cork: Mutex::new(None),
         }
+    }
+
+    /// Returns the latest readiness wake generation for edge-triggered pollers.
+    pub fn readiness_version(&self) -> u64 {
+        self.readiness_version.current()
     }
 
     /// Restricts this socket to one interface for route selection.
@@ -636,24 +644,27 @@ impl UdpSocket {
     fn arm_poll_sources(&self, events: IoEvents) {
         self.with_smol_socket(|socket| {
             if events.contains(IoEvents::IN) {
-                socket.register_recv_waker(&Waker::from(Arc::new(DeferPollWake {
-                    poll: self.poll_state.clone(),
-                    ready: IoEvents::IN,
-                })));
+                socket.register_recv_waker(&Waker::from(Arc::new(SocketDeferPollWake::new(
+                    self.poll_state.clone(),
+                    IoEvents::IN,
+                    self.readiness_version.clone(),
+                ))));
             }
             if events.contains(IoEvents::OUT) {
-                socket.register_send_waker(&Waker::from(Arc::new(DeferPollWake {
-                    poll: self.poll_state.clone(),
-                    ready: IoEvents::OUT,
-                })));
+                socket.register_send_waker(&Waker::from(Arc::new(SocketDeferPollWake::new(
+                    self.poll_state.clone(),
+                    IoEvents::OUT,
+                    self.readiness_version.clone(),
+                ))));
             }
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
             self.general
-                .register_waker(&Waker::from(Arc::new(DeferPollWake {
-                    poll: self.poll_state.clone(),
-                    ready: events,
-                })));
+                .register_waker(&Waker::from(Arc::new(SocketDeferPollWake::new(
+                    self.poll_state.clone(),
+                    events,
+                    self.readiness_version.clone(),
+                ))));
         }
     }
 }

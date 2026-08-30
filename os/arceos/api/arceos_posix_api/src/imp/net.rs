@@ -96,8 +96,8 @@ impl Socket {
 
     pub fn poll(&self) -> PosixResult<PollState> {
         match self {
-            Socket::Udp(socket) => Ok(poll_state(socket.poll())),
-            Socket::Tcp(socket) => Ok(poll_state(socket.poll())),
+            Socket::Udp(socket) => Ok(poll_state(socket.poll(), socket.readiness_version())),
+            Socket::Tcp(socket) => Ok(poll_state(socket.poll(), socket.readiness_version())),
         }
     }
 
@@ -319,11 +319,11 @@ fn into_ip_addr(addr: SocketAddrEx) -> PosixResult<SocketAddr> {
     Ok(addr.into_ip()?)
 }
 
-fn poll_state(events: IoEvents) -> PollState {
+fn poll_state(events: IoEvents, readiness_version: u64) -> PollState {
     PollState {
         readable: events.intersects(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP),
         writable: events.contains(IoEvents::OUT),
-        readiness_version: 0,
+        readiness_version,
     }
 }
 
@@ -836,4 +836,17 @@ pub unsafe fn sys_setsockopt(
             Err(PosixError::ENOPROTOOPT)
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn socket_poll_state_preserves_readiness_generation() {
+        let state = poll_state(IoEvents::IN, 7);
+
+        assert!(state.readable);
+        assert_eq!(state.readiness_version, 7);
+    }
 }

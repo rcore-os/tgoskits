@@ -46,8 +46,8 @@ use smoltcp::{
 };
 
 use crate::{
-    ConnectStatus, DeferPollWake, LISTEN_TABLE, NetError, NetResult, RecvFlags, RecvOptions,
-    SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
+    ConnectStatus, LISTEN_TABLE, NetError, NetResult, ReadinessVersion, RecvFlags, RecvOptions,
+    SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx, SocketDeferPollWake, SocketOps,
     addr::{allocate_ephemeral_port, listen_addrs_conflict},
     config::{DeviceBinding, InterfaceId},
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
@@ -58,7 +58,7 @@ use crate::{
         Configurable, GetSocketOption, SetSocketOption, TcpCongestionControl, TcpInfo,
         TcpInfoOptions, TcpState,
     },
-    request_poll,
+    receive_starts_next_edge, request_poll,
     state::*,
 };
 
@@ -109,6 +109,8 @@ pub struct TcpSocket {
     poll_tx: Arc<PollSet>,
     /// Wakes waiters when the receive side becomes closed.
     poll_rx_closed: PollSet,
+    /// Generation published for each socket readiness wake.
+    readiness_version: ReadinessVersion,
 }
 
 unsafe impl Sync for TcpSocket {}
@@ -137,6 +139,7 @@ impl TcpSocket {
             poll_rx: Arc::new(PollSet::new()),
             poll_tx: Arc::new(PollSet::new()),
             poll_rx_closed: PollSet::new(),
+            readiness_version: ReadinessVersion::new(),
         }
     }
 
@@ -175,6 +178,7 @@ impl TcpSocket {
             poll_rx: Arc::new(PollSet::new()),
             poll_tx: Arc::new(PollSet::new()),
             poll_rx_closed: PollSet::new(),
+            readiness_version: ReadinessVersion::new(),
         };
         let endpoint = IpListenEndpoint {
             addr: Some(local_endpoint.addr),
@@ -187,6 +191,11 @@ impl TcpSocket {
                 .unwrap_or_default(),
         );
         result
+    }
+
+    /// Returns the latest readiness wake generation for edge-triggered pollers.
+    pub fn readiness_version(&self) -> u64 {
+        self.readiness_version.current()
     }
 }
 
@@ -660,6 +669,13 @@ impl SocketOps for TcpSocket {
                         }
                         total += len;
                     }
+                    if receive_starts_next_edge(total, socket.recv_queue()) {
+                        // Linux EPOLLET treats data arriving after the receive
+                        // queue was drained as a new edge even if epoll did not
+                        // sample the empty interval. Preserve that epoch for
+                        // the polling POSIX epoll adapter.
+                        self.readiness_version.publish();
+                    }
                     Ok(total)
                 }
             } else if !socket.may_recv() {
@@ -717,6 +733,7 @@ impl SocketOps for TcpSocket {
         if how.has_read() {
             self.rx_closed.store(true, Ordering::Release);
             // rx_closed is visible before waking RDHUP/EOF waiters.
+            self.readiness_version.publish();
             unsafe { self.poll_rx_closed.wake(IoEvents::RDHUP | IoEvents::IN) };
         }
 
@@ -815,10 +832,11 @@ impl TcpSocket {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
             register(&self.poll_rx, IoEvents::IN | IoEvents::RDHUP);
-            Some(Waker::from(Arc::new(DeferPollWake {
-                poll: self.poll_rx.clone(),
-                ready: IoEvents::IN | IoEvents::RDHUP,
-            })))
+            Some(Waker::from(Arc::new(SocketDeferPollWake::new(
+                self.poll_rx.clone(),
+                IoEvents::IN | IoEvents::RDHUP,
+                self.readiness_version.clone(),
+            ))))
         } else {
             None
         };
@@ -826,10 +844,11 @@ impl TcpSocket {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
             register(&self.poll_tx, IoEvents::OUT);
-            Some(Waker::from(Arc::new(DeferPollWake {
-                poll: self.poll_tx.clone(),
-                ready: IoEvents::OUT,
-            })))
+            Some(Waker::from(Arc::new(SocketDeferPollWake::new(
+                self.poll_tx.clone(),
+                IoEvents::OUT,
+                self.readiness_version.clone(),
+            ))))
         } else {
             None
         };
@@ -853,10 +872,11 @@ impl TcpSocket {
         if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
             register(&self.poll_rx, events);
             self.general
-                .register_waker(&Waker::from(Arc::new(DeferPollWake {
-                    poll: self.poll_rx.clone(),
-                    ready: events,
-                })));
+                .register_waker(&Waker::from(Arc::new(SocketDeferPollWake::new(
+                    self.poll_rx.clone(),
+                    events,
+                    self.readiness_version.clone(),
+                ))));
         }
         if events.contains(IoEvents::RDHUP) {
             // Registration happens from the OS-owned socket wait context.

@@ -78,7 +78,7 @@ mod wrapper;
 use alloc::{borrow::ToOwned, boxed::Box, format, sync::Arc, task::Wake, vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr},
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -160,6 +160,60 @@ impl Wake for DeferPollWake {
         // defer the actual PollSet wake to the protocol executor outer loop.
         defer_poll_wake(self.poll.clone(), self.ready);
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct ReadinessVersion(Arc<AtomicU64>);
+
+impl ReadinessVersion {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(0)))
+    }
+
+    pub(crate) fn publish(&self) {
+        // The protocol state change happens before this release operation;
+        // polling observes both through `current` before reporting readiness.
+        self.0.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn current(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+pub(crate) struct SocketDeferPollWake {
+    poll: Arc<PollSet>,
+    ready: IoEvents,
+    readiness_version: ReadinessVersion,
+}
+
+impl SocketDeferPollWake {
+    pub(crate) fn new(
+        poll: Arc<PollSet>,
+        ready: IoEvents,
+        readiness_version: ReadinessVersion,
+    ) -> Self {
+        Self {
+            poll,
+            ready,
+            readiness_version,
+        }
+    }
+}
+
+impl Wake for SocketDeferPollWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.readiness_version.publish();
+        defer_poll_wake(self.poll.clone(), self.ready);
+    }
+}
+
+pub(crate) const fn receive_starts_next_edge(consumed: usize, remaining: usize) -> bool {
+    consumed != 0 && remaining == 0
 }
 
 const DHCP_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -842,4 +896,26 @@ fn wait_for_dhcp_bootstrap() {
         return;
     }
     warn!("DHCP bootstrap timed out");
+}
+
+#[cfg(test)]
+mod readiness_version_tests {
+    use super::{ReadinessVersion, receive_starts_next_edge};
+
+    #[test]
+    fn readiness_wake_publishes_a_new_generation() {
+        let version = ReadinessVersion::new();
+        let before = version.current();
+
+        version.publish();
+
+        assert_eq!(version.current(), before.wrapping_add(1));
+    }
+
+    #[test]
+    fn only_a_drained_receive_starts_the_next_readiness_edge() {
+        assert!(!receive_starts_next_edge(0, 0));
+        assert!(!receive_starts_next_edge(1, 1));
+        assert!(receive_starts_next_edge(1, 0));
+    }
 }
