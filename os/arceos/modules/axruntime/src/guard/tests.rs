@@ -22,7 +22,7 @@ fn scheduler_exit_state_reuses_one_cpu_pin() {
         with_guard_state_mut(|state| assert!(state.claim_task_scheduler(0)));
         cpu_local::host_test::reset_register_read_counts();
 
-        finish_scheduler_cpu_state(false, "test scheduler frame");
+        finish_scheduler_cpu_transaction(false, "test scheduler frame");
 
         let reads = cpu_local::host_test::register_read_counts();
         assert_eq!(
