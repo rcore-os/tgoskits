@@ -2,7 +2,7 @@
 
 use alloc::{collections::VecDeque, sync::Arc};
 use core::{
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence},
     time::Duration,
 };
 
@@ -85,7 +85,7 @@ impl WaitQueueWakeToken {
 
     /// Returns whether this park generation can still accept a wake delivery.
     pub fn is_active(&self) -> bool {
-        self.waiter.active.load(Ordering::Acquire)
+        self.waiter.claim.is_active()
     }
 
     fn notify_with_intent(&self, intent: WakeIntent) -> WaitQueueWakeOutcome {
@@ -592,8 +592,6 @@ impl Waiter {
 struct WaiterWake {
     wake: ThreadWakeHandle,
     claim: WaitWakeClaim,
-    claim_control: PreemptTicketLock<()>,
-    active: AtomicBool,
 }
 
 impl WaiterWake {
@@ -601,65 +599,34 @@ impl WaiterWake {
         Self {
             wake,
             claim: WaitWakeClaim::new(thread, park_generation),
-            claim_control: PreemptTicketLock::new(()),
-            active: AtomicBool::new(true),
         }
     }
 
     fn try_select(self: &Arc<Self>) -> WaiterSelection {
-        let _control = self.claim_control.lock();
-        if !self.active.load(Ordering::Acquire) {
-            return WaiterSelection::Stale;
-        }
-        match self.claim.state() {
-            WaitWakeClaimState::Queued => {
-                assert!(
-                    self.claim.select(),
-                    "waiter claim lock must own the unique Queued-to-Selected transition"
-                );
-                WaiterSelection::Selected(Arc::clone(self))
+        loop {
+            match self.claim.state() {
+                WaitWakeClaimState::Queued => {
+                    if self.claim.select() {
+                        return WaiterSelection::Selected(Arc::clone(self));
+                    }
+                }
+                WaitWakeClaimState::Selected => return WaiterSelection::Retry,
+                WaitWakeClaimState::Delivered
+                | WaitWakeClaimState::Cancelled
+                | WaitWakeClaimState::Inactive => return WaiterSelection::Stale,
             }
-            WaitWakeClaimState::Selected => WaiterSelection::Retry,
-            WaitWakeClaimState::Delivered | WaitWakeClaimState::Cancelled => WaiterSelection::Stale,
         }
     }
 
     fn requeue_after_unavailable(&self) -> bool {
-        let _control = self.claim_control.lock();
-        if !self.active.load(Ordering::Acquire) {
-            return false;
-        }
-        assert_eq!(
-            self.claim.state(),
-            WaitWakeClaimState::Cancelled,
-            "an unavailable scheduler delivery must cancel the selected claim"
-        );
-        assert!(
-            self.claim.requeue_cancelled(),
-            "the claim-control lock must own the unique Cancelled-to-Queued transition"
-        );
-        true
+        self.claim.requeue_cancelled()
     }
 
     fn deactivate(&self) -> WaiterRemoval {
-        let _control = self.claim_control.lock();
-        self.active.store(false, Ordering::Release);
-        match self.claim.state() {
-            WaitWakeClaimState::Queued | WaitWakeClaimState::Cancelled => WaiterRemoval::OtherWake,
-            WaitWakeClaimState::Delivered => WaiterRemoval::Delivered,
-            WaitWakeClaimState::Selected => {
-                if self.claim.cancel_selected() {
-                    WaiterRemoval::OtherWake
-                } else {
-                    match self.claim.state() {
-                        WaitWakeClaimState::Delivered => WaiterRemoval::Delivered,
-                        WaitWakeClaimState::Cancelled => WaiterRemoval::OtherWake,
-                        WaitWakeClaimState::Queued | WaitWakeClaimState::Selected => unreachable!(
-                            "selected claim cancellation must choose one terminal state"
-                        ),
-                    }
-                }
-            }
+        if self.claim.deactivate() {
+            WaiterRemoval::Delivered
+        } else {
+            WaiterRemoval::OtherWake
         }
     }
 }

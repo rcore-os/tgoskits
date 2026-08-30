@@ -11,14 +11,15 @@ const WAIT_WAKE_QUEUED: u8 = 0;
 const WAIT_WAKE_SELECTED: u8 = 1;
 const WAIT_WAKE_DELIVERED: u8 = 2;
 const WAIT_WAKE_CANCELLED: u8 = 3;
+const WAIT_WAKE_INACTIVE: u8 = 4;
 
 /// One queue notification claim state machine bound to an exact park attempt.
 ///
-/// The wait entry's control lock owns selection. The scheduler owns delivery
-/// after all fallible placement preparation, while timeout cleanup may cancel
-/// a selected claim before that delivery point. An unavailable scheduler owner
-/// may return a cancelled claim to the same wait entry for another selection
-/// attempt.
+/// The containing wait queue owns entry order, while this atomic state owns
+/// selection against concurrent cleanup. The scheduler owns delivery after all
+/// fallible placement preparation, while timeout cleanup may close a selected
+/// claim before that delivery point. An unavailable scheduler owner may return
+/// a cancelled claim to the same wait entry for another selection attempt.
 #[derive(Debug)]
 pub(crate) struct WaitWakeClaim {
     thread: ThreadId,
@@ -49,8 +50,18 @@ impl WaitWakeClaim {
             WAIT_WAKE_SELECTED => WaitWakeClaimState::Selected,
             WAIT_WAKE_DELIVERED => WaitWakeClaimState::Delivered,
             WAIT_WAKE_CANCELLED => WaitWakeClaimState::Cancelled,
-            _ => unreachable!("wait-wake claim state must be one of four closed states"),
+            WAIT_WAKE_INACTIVE => WaitWakeClaimState::Inactive,
+            _ => unreachable!("wait-wake claim state must be one of five closed states"),
         }
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        matches!(
+            self.state(),
+            WaitWakeClaimState::Queued
+                | WaitWakeClaimState::Selected
+                | WaitWakeClaimState::Cancelled
+        )
     }
 
     pub(crate) fn select(&self) -> bool {
@@ -88,9 +99,9 @@ impl WaitWakeClaim {
 
     /// Returns a synchronously rejected delivery to its owning wait entry.
     ///
-    /// The caller must hold the wait entry's claim-control lock after the
-    /// scheduler delivery call has returned `Unavailable`; the scheduler does
-    /// not retain this claim after that call.
+    /// The scheduler does not retain this claim after returning `Unavailable`.
+    /// This transition races cleanup through the same atomic state: either the
+    /// claim becomes queued again or cleanup closes it as inactive.
     pub(crate) fn requeue_cancelled(&self) -> bool {
         self.state
             .compare_exchange(
@@ -101,6 +112,37 @@ impl WaitWakeClaim {
             )
             .is_ok()
     }
+
+    /// Closes this wait entry against later selection or unavailable requeue.
+    ///
+    /// Selection, scheduler delivery, and cleanup all transition this one
+    /// atomic state. The scheduler's task lock still owns runnable placement;
+    /// no separate wait-entry lock is needed to serialize these terminal CAS
+    /// operations.
+    pub(crate) fn deactivate(&self) -> bool {
+        loop {
+            let current = self.state.load(Ordering::Acquire);
+            match current {
+                WAIT_WAKE_DELIVERED => return true,
+                WAIT_WAKE_INACTIVE => return false,
+                WAIT_WAKE_QUEUED | WAIT_WAKE_SELECTED | WAIT_WAKE_CANCELLED => {
+                    if self
+                        .state
+                        .compare_exchange(
+                            current,
+                            WAIT_WAKE_INACTIVE,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return false;
+                    }
+                }
+                _ => unreachable!("wait-wake claim state must be one of five closed states"),
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +151,7 @@ pub(crate) enum WaitWakeClaimState {
     Selected,
     Delivered,
     Cancelled,
+    Inactive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,5 +285,48 @@ mod tests {
         assert!(claim.deliver_selected());
         assert!(!claim.requeue_cancelled());
         assert_eq!(claim.state(), WaitWakeClaimState::Delivered);
+    }
+
+    #[test]
+    fn deactivated_queued_claim_cannot_be_selected_or_requeued() {
+        let claim = WaitWakeClaim::new(ThreadId::from_parts(7, 3), 11);
+
+        assert!(!claim.deactivate());
+        assert!(!claim.select());
+        assert!(!claim.requeue_cancelled());
+        assert!(!claim.is_active());
+        assert_eq!(claim.state(), WaitWakeClaimState::Inactive);
+    }
+
+    #[test]
+    fn deactivation_cancels_a_selected_claim_before_delivery() {
+        let claim = WaitWakeClaim::new(ThreadId::from_parts(7, 3), 11);
+
+        assert!(claim.select());
+        assert!(!claim.deactivate());
+        assert!(!claim.deliver_selected());
+        assert_eq!(claim.state(), WaitWakeClaimState::Inactive);
+    }
+
+    #[test]
+    fn deactivation_observes_a_delivered_claim_idempotently() {
+        let claim = WaitWakeClaim::new(ThreadId::from_parts(7, 3), 11);
+
+        assert!(claim.select());
+        assert!(claim.deliver_selected());
+        assert!(claim.deactivate());
+        assert!(claim.deactivate());
+        assert_eq!(claim.state(), WaitWakeClaimState::Delivered);
+    }
+
+    #[test]
+    fn deactivated_cancelled_claim_cannot_be_requeued() {
+        let claim = WaitWakeClaim::new(ThreadId::from_parts(7, 3), 11);
+
+        assert!(claim.select());
+        assert!(claim.cancel_selected());
+        assert!(!claim.deactivate());
+        assert!(!claim.requeue_cancelled());
+        assert_eq!(claim.state(), WaitWakeClaimState::Inactive);
     }
 }
