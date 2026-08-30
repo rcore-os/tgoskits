@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     CPU_AREA_CURRENT_CONTEXT_OFFSET, CPU_AREA_PREEMPTION_STATE_OFFSET, CPU_AREA_SELF_BASE_OFFSET,
+    preempt::PreemptionState,
 };
 
 const IA32_GS_BASE: u32 = 0xc000_0101;
@@ -85,6 +86,38 @@ pub(super) unsafe fn enter_preemption() {
             options(nostack),
         );
     }
+}
+
+/// Returns the current CPU's preemption word after a caller has raised its
+/// depth through [`enter_preemption`].
+///
+/// # Safety
+///
+/// The caller must have completed the matching increment before invoking this
+/// function and must keep the returned reference within that preemption
+/// exclusion. The installed GS area and its preemption word remain mapped for
+/// the runtime lifetime.
+#[inline(always)]
+pub(super) unsafe fn current_preemption_state() -> &'static PreemptionState {
+    let area_base: usize;
+    // SAFETY: the preceding GS increment pins this instruction stream to the
+    // selected CPU area until the matching preemption exit. `mov` is used
+    // instead of `lea`: x86 effective-address calculation does not include a
+    // GS base, while this load reads the installed per-CPU self pointer.
+    unsafe {
+        core::arch::asm!(
+            "mov {base}, gs:[{offset}]",
+            base = out(reg) area_base,
+            offset = const CPU_AREA_SELF_BASE_OFFSET,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    let state = area_base
+        .checked_add(CPU_AREA_PREEMPTION_STATE_OFFSET)
+        .unwrap_or_else(|| crate::register::fatal_register_invariant());
+    // SAFETY: the installed CPU area is retained for the runtime lifetime and
+    // the checked preemption depth pins this access to that area.
+    unsafe { &*core::ptr::with_exposed_provenance::<PreemptionState>(state) }
 }
 
 #[cfg(feature = "tls")]

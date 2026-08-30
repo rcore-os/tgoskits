@@ -258,10 +258,9 @@ pub fn enter_preemption() -> PreemptionToken {
         // Increment through GS before resolving the token owner. Once the
         // increment is visible this execution cannot migrate away from it.
         unsafe { crate::register::enter_x86_preemption() };
-        let owner = crate::register::current_area()
-            .unwrap_or_else(|_| crate::register::fatal_register_invariant())
-            .runtime_anchor()
-            .preemption_state();
+        // SAFETY: the increment above establishes the CPU pin required by the
+        // architecture-specific owner lookup.
+        let owner = unsafe { crate::register::current_x86_preemption_state() };
         PreemptionToken::new(owner)
     }
 

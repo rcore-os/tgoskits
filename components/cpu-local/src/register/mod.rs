@@ -2,6 +2,8 @@
 
 use core::{pin::Pin, ptr::NonNull, sync::atomic::Ordering};
 
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+use crate::preempt::PreemptionState;
 use crate::{
     ContextSwitchError, CpuAreaRef, CpuLocalError, CpuPin, ExecutionContextHeader,
     preempt::PreemptionSnapshot,
@@ -529,4 +531,12 @@ pub(crate) fn fatal_register_invariant() -> ! {
 #[inline(always)]
 pub(crate) unsafe fn enter_x86_preemption() {
     unsafe { imp::enter_preemption() };
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn current_x86_preemption_state() -> &'static PreemptionState {
+    // SAFETY: the caller has already incremented the GS-selected preemption
+    // word and retains that exclusion through the returned reference.
+    unsafe { imp::current_preemption_state() }
 }
