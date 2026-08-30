@@ -1,8 +1,6 @@
 #[cfg(test)]
 use core::sync::atomic::AtomicUsize;
-use core::{
-    sync::atomic::{AtomicU8, Ordering},
-};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_io::{SeekFrom, prelude::*};
 use axfs_ng_vfs::{

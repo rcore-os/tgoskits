@@ -717,8 +717,8 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
 fn axfs_ng_vfs_mount_tree_rules_hold() {
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
-        FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mountpoint, Mutex, NodeOps,
-        NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult,
+        FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mountpoint, Mutex,
+        NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult,
     };
     use axpoll::{IoEvents, Pollable};
 

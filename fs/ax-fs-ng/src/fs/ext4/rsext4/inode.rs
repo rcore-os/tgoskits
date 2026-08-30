@@ -6,9 +6,9 @@ use axfs_ng_vfs::{
     DirectoryReadState, FileExtent as VfsFileExtent, FileExtentMap as VfsFileExtentMap,
     FileExtentState as VfsFileExtentState, FileExtentTarget as VfsFileExtentTarget, FileNode,
     FileNodeOps, FileRangeOperation as VfsRangeOperation, FilesystemOps, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType,
-    PreallocationMode as VfsPreallocationMode, Reference, RenameOptions as VfsRenameOptions,
-    VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode as VfsXattrSetMode,
+    NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode as VfsPreallocationMode,
+    Reference, RenameOptions as VfsRenameOptions, VfsError, VfsResult, WeakDirEntry, XattrOps,
+    XattrSetMode as VfsXattrSetMode,
 };
 use axpoll::{IoEvents, Pollable};
 use rsext4::{

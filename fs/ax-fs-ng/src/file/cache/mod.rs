@@ -26,10 +26,7 @@ pub use reclaim::{page_cache_reclaim, sync_all_cached_files};
 
 use super::page::PageCache;
 #[cfg(feature = "ext4")]
-use crate::os::{
-    memory::PAGE_SIZE,
-    sync::SleepMutex,
-};
+use crate::os::{memory::PAGE_SIZE, sync::SleepMutex};
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
 
