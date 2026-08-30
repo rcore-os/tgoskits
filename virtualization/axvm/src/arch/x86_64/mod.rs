@@ -853,6 +853,11 @@ impl X86InterruptDomain {
     pub(super) fn take_forwarding_hooks(&self) -> std::vec::Vec<host_irq::IrqHandle> {
         std::mem::take(&mut *self.forwarding_hooks())
     }
+
+    #[cfg(test)]
+    fn vcpu_kick(&self) -> Arc<DeferredVcpuKick> {
+        Arc::clone(&self.wired.kick)
+    }
 }
 
 impl X86InterruptDomainOps for X86InterruptDomain {
