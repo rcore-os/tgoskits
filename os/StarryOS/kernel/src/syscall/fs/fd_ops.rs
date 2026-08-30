@@ -707,7 +707,8 @@ pub fn sys_close_range(
             crate::file::current_fd_table().read().clone(),
         ));
         curr.as_thread().with_current_scope_mut(|scope| {
-            *FD_TABLE.scope_cell_mut(scope).deref_mut() = new_files;
+            *FD_TABLE.scope_cell_mut(scope).deref_mut() =
+                crate::file::new_file_table_scope(new_files);
         });
     }
 
@@ -724,9 +725,7 @@ pub fn sys_close_range(
     if let Some(max_index) = fd_table.last_id() {
         for fd in first..=last.min(max_index as u32) {
             if cloexec {
-                if let Some(f) = fd_table.get_mut(fd as _) {
-                    f.cloexec = true;
-                }
+                let _ = fd_table.set_cloexec(fd as _, true);
             } else if let Some(f) = fd_table.remove(fd as _) {
                 closing.push(f);
             }
@@ -889,9 +888,7 @@ pub fn sys_fcntl(
             let cloexec = arg & FD_CLOEXEC as usize != 0;
             crate::file::current_fd_table()
                 .write()
-                .get_mut(fd as _)
-                .ok_or(StarryError::BadFileDescriptor)?
-                .cloexec = cloexec;
+                .set_cloexec(fd as _, cloexec)?;
             Ok(0)
         }
         F_SETOWN => {

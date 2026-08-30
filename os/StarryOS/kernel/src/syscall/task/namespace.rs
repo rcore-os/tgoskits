@@ -99,7 +99,8 @@ impl PreparedUnshare {
         if file_table.is_some() || fs_context.is_some() {
             thread.with_current_scope_mut(|scope| {
                 if let Some(file_table) = file_table {
-                    *FD_TABLE.scope_cell_mut(scope).deref_mut() = file_table;
+                    *FD_TABLE.scope_cell_mut(scope).deref_mut() =
+                        crate::file::new_file_table_scope(file_table);
                 }
                 if let Some(fs_context) = fs_context {
                     *FS_CONTEXT.scope_cell_mut(scope) = fs_context;

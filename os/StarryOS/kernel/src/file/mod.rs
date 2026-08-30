@@ -26,7 +26,7 @@ pub mod timerfd;
 mod wext;
 
 use alloc::{borrow::Cow, collections::BTreeSet, sync::Arc};
-use core::{ffi::c_int, time::Duration};
+use core::{cell::UnsafeCell, ffi::c_int, ops::{Deref, DerefMut}, sync::atomic::{AtomicUsize, Ordering}, time::Duration};
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::prelude::*;
@@ -308,14 +308,26 @@ pub struct FileDescriptor {
 pub struct FileTable {
     entries: FlattenObjects<FileDescriptor, AX_FILE_LIMIT>,
     reserved: BTreeSet<usize>,
+    generation: Arc<AtomicUsize>,
 }
 
 impl FileTable {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             entries: FlattenObjects::new(),
             reserved: BTreeSet::new(),
+            generation: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    #[inline]
+    fn generation(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.generation)
+    }
+
+    #[inline]
+    fn changed(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     pub fn count(&self) -> usize {
@@ -326,17 +338,17 @@ impl FileTable {
         self.entries.get(fd)
     }
 
-    pub fn get_mut(&mut self, fd: usize) -> Option<&mut FileDescriptor> {
-        self.entries.get_mut(fd)
-    }
-
     pub fn add(&mut self, descriptor: FileDescriptor) -> Result<usize, FileDescriptor> {
         let Some(fd) = (0..AX_FILE_LIMIT)
             .find(|fd| !self.entries.is_assigned(*fd) && !self.reserved.contains(fd))
         else {
             return Err(descriptor);
         };
-        self.entries.add_at(fd, descriptor)
+        let result = self.entries.add_at(fd, descriptor);
+        if result.is_ok() {
+            self.changed();
+        }
+        result
     }
 
     pub fn add_at(
@@ -347,11 +359,19 @@ impl FileTable {
         if self.reserved.contains(&fd) {
             return Err(descriptor);
         }
-        self.entries.add_at(fd, descriptor)
+        let result = self.entries.add_at(fd, descriptor);
+        if result.is_ok() {
+            self.changed();
+        }
+        result
     }
 
     pub fn remove(&mut self, fd: usize) -> Option<FileDescriptor> {
-        self.entries.remove(fd)
+        let result = self.entries.remove(fd);
+        if result.is_some() {
+            self.changed();
+        }
+        result
     }
 
     pub fn ids(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
@@ -366,11 +386,24 @@ impl FileTable {
         self.reserved.contains(&fd)
     }
 
+    pub(crate) fn set_cloexec(&mut self, fd: usize, cloexec: bool) -> StarryResult {
+        let descriptor = self
+            .entries
+            .get_mut(fd)
+            .ok_or(StarryError::BadFileDescriptor)?;
+        if descriptor.cloexec != cloexec {
+            descriptor.cloexec = cloexec;
+            self.changed();
+        }
+        Ok(())
+    }
+
     fn reserve(&mut self) -> Option<usize> {
         let fd = (0..AX_FILE_LIMIT)
             .find(|fd| !self.entries.is_assigned(*fd) && !self.reserved.contains(fd))?;
         let inserted = self.reserved.insert(fd);
         debug_assert!(inserted);
+        self.changed();
         Some(fd)
     }
 
@@ -382,7 +415,11 @@ impl FileTable {
         if !self.reserved.remove(&fd) {
             return Err(descriptor);
         }
-        self.entries.add_at(fd, descriptor).map(|_| ())
+        let result = self.entries.add_at(fd, descriptor).map(|_| ());
+        if result.is_ok() {
+            self.changed();
+        }
+        result
     }
 
     fn release_reserved(&mut self, fd: usize) {
@@ -390,6 +427,7 @@ impl FileTable {
             self.reserved.remove(&fd),
             "releasing an unreserved file descriptor"
         );
+        self.changed();
     }
 }
 
@@ -400,6 +438,9 @@ impl Clone for FileTable {
             // An in-flight syscall owns each reservation. A copied fd table
             // inherits only descriptors that have reached install.
             reserved: BTreeSet::new(),
+            generation: Arc::new(AtomicUsize::new(
+                self.generation.load(Ordering::Acquire),
+            )),
         }
     }
 }
@@ -410,9 +451,121 @@ impl Default for FileTable {
     }
 }
 
+struct FileLookupCache {
+    table: usize,
+    fd: c_int,
+    generation: usize,
+    file: Option<Arc<dyn FileLike>>,
+}
+
+impl FileLookupCache {
+    const fn new() -> Self {
+        Self {
+            table: 0,
+            fd: -1,
+            generation: 0,
+            file: None,
+        }
+    }
+}
+
+pub(crate) struct FileTableScope {
+    table: Arc<RwLock<FileTable>>,
+    generation: Arc<AtomicUsize>,
+    cache: UnsafeCell<FileLookupCache>,
+}
+
+// SAFETY: a scope-local value is accessed by at most the task currently
+// activated on that CPU. The cache is never exposed through a cloned scope;
+// clones reset it, while the shared table and generation remain synchronized
+// by the table lock and release/acquire generation publication.
+unsafe impl Sync for FileTableScope {}
+unsafe impl Send for FileTableScope {}
+
+impl FileTableScope {
+    fn new() -> Self {
+        let table = Arc::new(RwLock::new(FileTable::new()));
+        let generation = table.read().generation();
+        Self {
+            table,
+            generation,
+            cache: UnsafeCell::new(FileLookupCache::new()),
+        }
+    }
+
+    fn from_table(table: Arc<RwLock<FileTable>>) -> Self {
+        let generation = table.read().generation();
+        Self {
+            table,
+            generation,
+            cache: UnsafeCell::new(FileLookupCache::new()),
+        }
+    }
+
+    fn lookup(&self, fd: c_int) -> StarryResult<Arc<dyn FileLike>> {
+        let table_key = Arc::as_ptr(&self.table) as usize;
+        let generation = self.generation.load(Ordering::Acquire);
+        // SAFETY: see the `Sync` contract above; this scope is active only on
+        // the current task and this lookup is pinned by `LocalItem::with`.
+        let cache = unsafe { &mut *self.cache.get() };
+        if cache.table == table_key
+            && cache.fd == fd
+            && cache.generation == generation
+            && let Some(file) = &cache.file
+        {
+            return Ok(Arc::clone(file));
+        }
+
+        #[cfg(all(test, axtest))]
+        FD_TABLE_LOOKUP_READ_LOCKS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: `LocalItem::with` pins this task for the complete lookup.
+        // File-table access is task-context-only, so local interrupt reentry
+        // cannot acquire this lock. The atomic lock state serializes siblings.
+        let table = unsafe { self.table.read_raw() };
+        let file = table
+            .get(fd as usize)
+            .map(|fd| Arc::clone(&fd.inner))
+            .ok_or(StarryError::BadFileDescriptor)?;
+        let generation = self.generation.load(Ordering::Acquire);
+        cache.table = table_key;
+        cache.fd = fd;
+        cache.generation = generation;
+        cache.file = Some(Arc::clone(&file));
+        Ok(file)
+    }
+}
+
+impl Clone for FileTableScope {
+    fn clone(&self) -> Self {
+        Self {
+            table: Arc::clone(&self.table),
+            generation: Arc::clone(&self.generation),
+            cache: UnsafeCell::new(FileLookupCache::new()),
+        }
+    }
+}
+
+pub(crate) fn new_file_table_scope(table: Arc<RwLock<FileTable>>) -> FileTableScope {
+    FileTableScope::from_table(table)
+}
+
+impl Deref for FileTableScope {
+    type Target = Arc<RwLock<FileTable>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.table
+    }
+}
+
+impl DerefMut for FileTableScope {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.table
+    }
+}
+
 scope_local::scope_local! {
-    /// The current file descriptor table.
-    pub static FD_TABLE: Arc<RwLock<FileTable>> = Arc::default();
+    /// The current file descriptor table and its task-local lookup cache.
+    pub static FD_TABLE: FileTableScope = FileTableScope::new();
 }
 
 /// Returns an owned reference to the file table of the active scope.
@@ -420,8 +573,11 @@ scope_local::scope_local! {
 /// The CPU pin is released after cloning the `Arc`, before callers acquire the
 /// table lock or run descriptor destructors.
 pub fn current_fd_table() -> Arc<RwLock<FileTable>> {
-    FD_TABLE.clone_current()
+    FD_TABLE.clone_current().table
 }
+
+#[cfg(all(test, axtest))]
+static FD_TABLE_LOOKUP_READ_LOCKS: AtomicUsize = AtomicUsize::new(0);
 
 /// A file descriptor number prepared by a fallible syscall transaction.
 ///
@@ -505,17 +661,7 @@ pub fn prepare_file_like(
 
 /// Get a file-like object by `fd`.
 pub fn get_file_like(fd: c_int) -> StarryResult<Arc<dyn FileLike>> {
-    FD_TABLE.with(|fd_table| {
-        // SAFETY: `LocalItem::with` pins this task to the current CPU for the
-        // complete lookup. File-table access is task-context-only, so local
-        // interrupt reentry cannot acquire this lock. The lock's atomic state
-        // continues to serialize sibling threads that share the table.
-        let table = unsafe { fd_table.read_raw() };
-        table
-            .get(fd as usize)
-            .map(|fd| fd.inner.clone())
-            .ok_or(StarryError::BadFileDescriptor)
-    })
+    FD_TABLE.with(|fd_table| fd_table.lookup(fd))
 }
 
 /// Returns true iff `fd` was opened with `O_PATH`.
@@ -740,9 +886,68 @@ fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
 }
 
 #[cfg(all(test, axtest))]
+fn stable_descriptor_lookup_avoids_repeated_read_lock_for_test() -> bool {
+    let (read_end, _write_end) = Pipe::new();
+    let scope = FileTableScope::new();
+    assert!(
+        scope
+            .table
+            .write()
+            .add(FileDescriptor {
+                inner: Arc::new(read_end),
+                cloexec: false,
+            })
+            .is_ok()
+    );
+    let before = FD_TABLE_LOOKUP_READ_LOCKS.load(Ordering::Relaxed);
+    scope.lookup(0).unwrap();
+    scope.lookup(0).unwrap();
+
+    FD_TABLE_LOOKUP_READ_LOCKS.load(Ordering::Relaxed) - before == 1
+}
+
+#[cfg(all(test, axtest))]
+fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
+    let scope = FileTableScope::new();
+    let (first_read, _first_write) = Pipe::new();
+    let (second_read, _second_write) = Pipe::new();
+    assert!(scope.table.write().add(FileDescriptor {
+        inner: Arc::new(first_read),
+        cloexec: false,
+    }).is_ok());
+    let first = scope.lookup(0).ok();
+    assert!(scope.table.write().remove(0).is_some());
+    assert!(scope.table.write().add(FileDescriptor {
+        inner: Arc::new(second_read),
+        cloexec: false,
+    }).is_ok());
+    let second = scope.lookup(0).ok();
+    match (first, second) {
+        (Some(first), Some(second)) => !Arc::ptr_eq(&first, &second),
+        _ => false,
+    }
+}
+
+#[cfg(all(test, axtest))]
 mod tests {
     #[axtest::axtest]
     fn prepared_descriptor_stays_hidden_until_install() {
         assert!(super::prepared_descriptor_stays_hidden_until_install_for_test());
+    }
+
+    #[axtest::axtest]
+    fn stable_descriptor_lookup_avoids_repeated_shared_read_lock() {
+        assert!(
+            super::stable_descriptor_lookup_avoids_repeated_read_lock_for_test(),
+            "a stable descriptor lookup must not update one shared reader-count cache line twice"
+        );
+    }
+
+    #[axtest::axtest]
+    fn descriptor_lookup_invalidates_after_fd_reuse() {
+        assert!(
+            super::descriptor_lookup_invalidates_after_reuse_for_test(),
+            "fd reuse must invalidate the task-local lookup cache"
+        );
     }
 }

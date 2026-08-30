@@ -475,7 +475,9 @@ impl CloneArgs {
             // close_all_fds either observes our strong-count increment or
             // blocks until the new thread has installed the shared Arc.
             let _guard = current_fd_table.read();
-            FD_TABLE.scope_mut(&mut scope).clone_from(&current_fd_table);
+            FD_TABLE
+                .scope_mut(&mut scope)
+                .clone_from(&crate::file::new_file_table_scope(current_fd_table.clone()));
         } else {
             FD_TABLE
                 .scope_mut(&mut scope)

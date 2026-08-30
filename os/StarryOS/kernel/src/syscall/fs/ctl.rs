@@ -136,9 +136,7 @@ pub fn sys_ioctl(
     if cmd == FIOCLEX || cmd == FIONCLEX {
         current_fd_table()
             .write()
-            .get_mut(fd as _)
-            .ok_or(StarryError::BadFileDescriptor)?
-            .cloexec = cmd == FIOCLEX;
+            .set_cloexec(fd as _, cmd == FIOCLEX)?;
         return Ok(0);
     }
     f.ioctl(current, cmd, arg)

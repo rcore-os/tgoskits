@@ -7,7 +7,7 @@ use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
 
 use crate::{
-    file::{FD_TABLE, FileTable},
+    file::{FD_TABLE, FileTable, new_file_table_scope},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     namespace::NsProxy,
     pseudofs::{self, dev::tty},
@@ -127,7 +127,8 @@ pub fn init(args: &[String], envs: &[String]) {
     let mut scope = scope_local::Scope::new();
     let mut fd_table = FileTable::new();
     crate::file::add_stdio(&mut fd_table).expect("Failed to add stdio");
-    *FD_TABLE.scope_mut(&mut scope) = Arc::new(RwLock::new(fd_table));
+    *FD_TABLE.scope_mut(&mut scope) =
+        new_file_table_scope(Arc::new(RwLock::new(fd_table)));
 
     let thr = Thread::new(
         identity.clone(),
