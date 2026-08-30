@@ -102,8 +102,7 @@ impl ExclusiveCpu<'_> {
 /// # Errors
 ///
 /// Returns [`CpuLocalError::AreaNotInstalled`] before this CPU has installed
-/// its runtime area, or [`CpuLocalError::CurrentContextMismatch`] if the
-/// published current source is null or misaligned.
+/// its runtime area.
 ///
 /// # Safety
 ///
@@ -119,9 +118,9 @@ pub unsafe fn with_cpu_pin<R>(
         _scope: PhantomData,
         _not_send_or_sync: PhantomData,
     };
-    // Validate the pointer shape selected by this image's sole current source.
-    // Its CPU binding was validated by the installation or switch boundary.
-    register::current_context(&pin)?;
+    // Installation validates the area, while initial binding and every switch
+    // validate current before publication. Like Linux per-CPU access, this hot
+    // path trusts those owner boundaries instead of re-reading current.
     #[cfg(feature = "qperf-metrics")]
     pin.area.runtime_anchor().record_cpu_pin_entry();
     Ok(operation(&pin))

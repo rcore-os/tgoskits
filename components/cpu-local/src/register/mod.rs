@@ -430,6 +430,11 @@ mod tests {
             0,
             "pin construction must trust the current binding published by the switch boundary",
         );
+        assert_eq!(
+            host_test::register_read_counts().current_context,
+            0,
+            "pin construction must not re-read the current context after publication",
+        );
     }
 
     #[test]
