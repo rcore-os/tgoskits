@@ -93,9 +93,12 @@ fn single_cpu_pi_mutex_does_not_spin_on_its_owner() {
         .nth(3)
         .expect("Starry kernel must remain below the workspace root");
     let mutex = compact_source(&workspace_root.join("components/ax-task/src/sync/mutex/mod.rs"));
+    let entry = compact_source(&workspace_root.join("components/ax-task/src/sync/mutex/entry.rs"));
 
     assert!(
-        mutex.contains("cpu_count>1&&same_owner&&owner_on_cpu&&waiter_is_top&&!need_resched"),
+        mutex.contains("owner_spin_eligible(cpu_count")
+            && entry.contains("cpu_count>1")
+            && entry.contains("same_owner&&owner_on_cpu&&waiter_is_top&&!need_resched"),
         "Linux PREEMPT_RT disables rtmutex owner spinning on a single-CPU kernel"
     );
 }
