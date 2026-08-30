@@ -837,10 +837,6 @@ impl X86InterruptDomain {
         self.wired.kick.stop()
     }
 
-    fn vcpu_kick(&self) -> Arc<DeferredVcpuKick> {
-        Arc::clone(&self.wired.kick)
-    }
-
     fn take_pending_wired_gsis(&self) -> (usize, usize) {
         let pending = self.wired.pending.swap(0, Ordering::AcqRel);
         let pending_level = self

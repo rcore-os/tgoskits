@@ -113,12 +113,6 @@ fn interrupt_domain_for_vm(vm: &crate::AxVM) -> Option<std::sync::Arc<X86Interru
         .ok()
 }
 
-pub(super) fn vcpu_kick_for_vm(
-    vm: &crate::AxVM,
-) -> Option<std::sync::Arc<crate::irq::deferred::DeferredVcpuKick>> {
-    interrupt_domain_for_vm(vm).map(|domain| domain.vcpu_kick())
-}
-
 #[cfg(feature = "host-fs")]
 fn require_interrupt_domain(
     vm: &crate::AxVMRef,
