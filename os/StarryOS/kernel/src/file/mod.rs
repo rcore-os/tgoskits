@@ -25,7 +25,7 @@ pub mod signalfd;
 pub mod timerfd;
 mod wext;
 
-use alloc::{borrow::Cow, collections::BTreeSet, sync::Arc};
+use alloc::{borrow::Cow, collections::BTreeSet, sync::{Arc, Weak}};
 use core::{cell::UnsafeCell, ffi::c_int, ops::{Deref, DerefMut}, sync::atomic::{AtomicUsize, Ordering}, time::Duration};
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
@@ -455,7 +455,9 @@ struct FileLookupCache {
     table: usize,
     fd: c_int,
     generation: usize,
-    file: Option<Arc<dyn FileLike>>,
+    // A lookup cache must not keep a closed file alive after its descriptor is
+    // removed; the filesystem may perform final close-time state updates.
+    file: Option<Weak<dyn FileLike>>,
 }
 
 impl FileLookupCache {
@@ -511,9 +513,9 @@ impl FileTableScope {
         if cache.table == table_key
             && cache.fd == fd
             && cache.generation == generation
-            && let Some(file) = &cache.file
+            && let Some(file) = cache.file.as_ref().and_then(Weak::upgrade)
         {
-            return Ok(Arc::clone(file));
+            return Ok(file);
         }
 
         #[cfg(all(test, axtest))]
@@ -530,7 +532,7 @@ impl FileTableScope {
         cache.table = table_key;
         cache.fd = fd;
         cache.generation = generation;
-        cache.file = Some(Arc::clone(&file));
+        cache.file = Some(Arc::downgrade(&file));
         Ok(file)
     }
 }
@@ -547,6 +549,11 @@ impl Clone for FileTableScope {
 
 pub(crate) fn new_file_table_scope(table: Arc<RwLock<FileTable>>) -> FileTableScope {
     FileTableScope::from_table(table)
+}
+
+/// Copies an fd table into a private scope and binds its cache to the copy.
+pub(crate) fn clone_file_table_scope(table: &Arc<RwLock<FileTable>>) -> FileTableScope {
+    FileTableScope::from_table(Arc::new(RwLock::new(table.read().clone())))
 }
 
 impl Deref for FileTableScope {
@@ -929,6 +936,31 @@ fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
 }
 
 #[cfg(all(test, axtest))]
+fn cloned_table_scope_invalidates_after_fd_reuse_for_test() -> bool {
+    let parent = FileTableScope::new();
+    let (parent_read, _parent_write) = Pipe::new();
+    assert!(parent.table.write().add(FileDescriptor {
+        inner: Arc::new(parent_read),
+        cloexec: false,
+    }).is_ok());
+
+    let child = clone_file_table_scope(&parent.table);
+    let first = child.lookup(0).ok();
+    assert!(child.table.write().remove(0).is_some());
+    let (child_read, _child_write) = Pipe::new();
+    assert!(child.table.write().add(FileDescriptor {
+        inner: Arc::new(child_read),
+        cloexec: false,
+    }).is_ok());
+    let second = child.lookup(0).ok();
+
+    match (first, second) {
+        (Some(first), Some(second)) => !Arc::ptr_eq(&first, &second),
+        _ => false,
+    }
+}
+
+#[cfg(all(test, axtest))]
 mod tests {
     #[axtest::axtest]
     fn prepared_descriptor_stays_hidden_until_install() {
@@ -948,6 +980,14 @@ mod tests {
         assert!(
             super::descriptor_lookup_invalidates_after_reuse_for_test(),
             "fd reuse must invalidate the task-local lookup cache"
+        );
+    }
+
+    #[axtest::axtest]
+    fn cloned_table_scope_invalidates_after_fd_reuse() {
+        assert!(
+            super::cloned_table_scope_invalidates_after_fd_reuse_for_test(),
+            "a private fd-table clone must bind its lookup cache to the cloned table generation"
         );
     }
 }

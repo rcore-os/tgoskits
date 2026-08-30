@@ -479,10 +479,9 @@ impl CloneArgs {
                 .scope_mut(&mut scope)
                 .clone_from(&crate::file::new_file_table_scope(current_fd_table.clone()));
         } else {
-            FD_TABLE
-                .scope_mut(&mut scope)
-                .write()
-                .clone_from(&current_fd_table.read());
+            FD_TABLE.scope_mut(&mut scope).clone_from(
+                &crate::file::clone_file_table_scope(&current_fd_table),
+            );
         }
 
         let current_fs_context = ax_fs_ng::vfs::current_fs_context();
