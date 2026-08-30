@@ -55,7 +55,6 @@ __pycache__/
 
 # Tooling artifacts
 .direnv/
-/.zcode/
 .codex
 /.agents/*
 !/.agents/skills/
