@@ -1776,6 +1776,12 @@ mod tests {
         let waiters = Arc::new(PipeWaitSet::new());
         let attempted = Arc::new(AtomicBool::new(false));
         let acquired = Arc::new(AtomicBool::new(false));
+        // Establish the tested ownership before publishing the contender. A
+        // timer interrupt between spawn and lock would otherwise let the
+        // contender acquire and release an initially unlocked mutex, making
+        // the later assertion report a mutual-exclusion failure that never
+        // happened while this guard was held.
+        let state = waiters.state.lock();
         let contender_state = Arc::clone(&waiters.state);
         let contender_attempted = Arc::clone(&attempted);
         let contender_acquired = Arc::clone(&acquired);
@@ -1791,7 +1797,6 @@ mod tests {
         )
         .expect("failed to spawn pipe wait-set lock contender");
 
-        let state = waiters.state.lock();
         for _ in 0..32 {
             scheduler::yield_current_cpu()
                 .expect("Linux RT waitqueue lock must remain schedulable while held");
