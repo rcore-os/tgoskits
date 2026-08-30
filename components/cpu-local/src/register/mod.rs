@@ -229,11 +229,11 @@ pub unsafe fn current_context_unpinned() -> Result<NonNull<ExecutionContextHeade
     }
 }
 
-/// Reports whether `context` is the CPU area's permanent boot context.
+/// Reports whether `context` is the current CPU area's permanent boot context.
 ///
-/// Runtime layers use this distinction before they publish their first owned
-/// execution context. The check compares identities only; the boot context
-/// does not carry a runtime kind, task cookie, or consumer pointer.
+/// Runtime layers use this area-identity check before they publish their first
+/// owned execution context. Hot readers that already own a live context header
+/// can inspect [`ExecutionContextHeader::is_permanent_boot_context`] directly.
 #[doc(hidden)]
 pub fn is_permanent_boot_context(
     context: NonNull<ExecutionContextHeader>,
@@ -375,6 +375,8 @@ mod tests {
         // SAFETY: this host thread serially owns the leaked CPU fixture.
         unsafe { imp::install_cpu_base(area.base(), boot as *const _ as usize) };
 
+        assert!(boot.is_permanent_boot_context());
+        assert!(!runtime_context.is_permanent_boot_context());
         assert_eq!(is_permanent_boot_context(NonNull::from(boot)), Ok(true));
         assert_eq!(
             is_permanent_boot_context(runtime_context.as_ref().as_non_null()),

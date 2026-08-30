@@ -21,8 +21,15 @@ const CPU_BINDING: usize = 0b01;
 const CPU_BOUND: usize = 0b10;
 const CPU_UNBINDING: usize = 0b11;
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutionContextKind {
+    Owned,
+    PermanentBoot,
+}
+
 const fn execution_context_reserved_size() -> usize {
-    64 - 4 * size_of::<usize>() - size_of::<PreemptionState>()
+    64 - 4 * size_of::<usize>() - size_of::<PreemptionState>() - size_of::<ExecutionContextKind>()
 }
 
 /// Pinned architecture header for one execution context.
@@ -36,6 +43,7 @@ pub struct ExecutionContextHeader {
     binding_epoch: AtomicUsize,
     architecture_state: [AtomicUsize; 2],
     preemption_state: PreemptionState,
+    kind: ExecutionContextKind,
     reserved: [u8; execution_context_reserved_size()],
 }
 
@@ -47,6 +55,7 @@ impl ExecutionContextHeader {
             binding_epoch: AtomicUsize::new(CPU_UNBOUND),
             architecture_state: [const { AtomicUsize::new(0) }; 2],
             preemption_state: PreemptionState::new(),
+            kind: ExecutionContextKind::Owned,
             reserved: [0; execution_context_reserved_size()],
         }
     }
@@ -57,6 +66,7 @@ impl ExecutionContextHeader {
             binding_epoch: AtomicUsize::new(CPU_BOUND),
             architecture_state: [const { AtomicUsize::new(0) }; 2],
             preemption_state: PreemptionState::bootstrap_disabled(),
+            kind: ExecutionContextKind::PermanentBoot,
             reserved: [0; execution_context_reserved_size()],
         }
     }
@@ -72,8 +82,19 @@ impl ExecutionContextHeader {
             binding_epoch: AtomicUsize::new(CPU_UNBOUND),
             architecture_state: [const { AtomicUsize::new(0) }; 2],
             preemption_state: PreemptionState::bootstrap_disabled(),
+            kind: ExecutionContextKind::Owned,
             reserved: [0; execution_context_reserved_size()],
         }
+    }
+
+    /// Reports whether this is a CPU area's permanent pre-runtime placeholder.
+    ///
+    /// The kind is immutable after construction, so a current-context reader
+    /// may classify its already-live header without sampling CPU-local state.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub const fn is_permanent_boot_context(&self) -> bool {
+        matches!(self.kind, ExecutionContextKind::PermanentBoot)
     }
 
     /// Returns the stable CPU area while this header is fully bound.

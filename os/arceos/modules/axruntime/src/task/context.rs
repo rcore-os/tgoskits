@@ -337,9 +337,11 @@ pub(super) fn scheduler_current_thread_publication() -> CurrentThreadPublication
     let Ok(header) = (unsafe { ax_hal::percpu::current_context_unpinned() }) else {
         return CurrentThreadPublication::NONE;
     };
-    let Ok(false) = ax_hal::percpu::is_permanent_boot_context(header) else {
+    // SAFETY: current_context_unpinned returned the live pinned header owned by
+    // this executing context; its construction kind never changes.
+    if unsafe { header.as_ref() }.is_permanent_boot_context() {
         return CurrentThreadPublication::NONE;
-    };
+    }
     let context = header.as_ptr().cast::<RuntimeContext>();
     // SAFETY: RuntimeContext embeds the published header at offset zero and
     // remains alive while this execution context can run or resume.
@@ -716,5 +718,49 @@ mod tests {
         })
         .join()
         .expect("modeled CPU must complete current lookup");
+    }
+
+    #[test]
+    fn current_publication_classification_does_not_resample_cpu_area() {
+        std::thread::spawn(|| {
+            let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
+            let base = storage.as_mut_ptr() as usize;
+            storage.write(CpuAreaPrefix::initialize(CpuIndex::try_from(0).unwrap(), base).unwrap());
+            // SAFETY: the leaked prefix is initialized and remains mapped for
+            // this modeled CPU's complete process lifetime.
+            let area = unsafe { CpuAreaRef::from_initialized_base(base) }.unwrap();
+            // SAFETY: this fresh host thread owns its CPU-local register model.
+            unsafe { cpu_local::install_cpu_area(area) }.unwrap();
+
+            let current = RuntimeContext::allocate(
+                ax_hal::context::TaskContext::new(),
+                StackHandle::NONE,
+                InitialPreemptionState::Enabled,
+            );
+
+            // SAFETY: the leaked runtime context remains pinned while this
+            // host thread reads its immutable scheduler publication.
+            unsafe {
+                cpu_local::with_cpu_pin(|pin| {
+                    let current = &*current;
+                    cpu_local::install_bootstrap_context(pin, current.header()).unwrap();
+                    cpu_local::host_test::reset_register_read_counts();
+
+                    assert_eq!(
+                        scheduler_current_thread_publication(),
+                        CurrentThreadPublication::NONE,
+                    );
+                    let reads = cpu_local::host_test::register_read_counts();
+                    assert_eq!(reads.current_context, 1);
+                    assert_eq!(
+                        reads.cpu_base, 0,
+                        "current publication lookup must not resample the CPU-area base",
+                    );
+                })
+            }
+            .unwrap();
+        })
+        .join()
+        .expect("modeled CPU must classify its current runtime context");
     }
 }

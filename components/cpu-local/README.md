@@ -38,10 +38,11 @@ uncommitted prepared token rolls the next binding back. The binding epoch is a
 stale-tail guard, not an ABI version.
 
 `ExecutionContextHeader` starts with the CPU binding at offset zero and contains
-only architecture/context mechanisms. A runtime may embed it as the first
-field of its own wrapper and recover that wrapper directly from the current
-header address. `cpu-local` has no task owner pointer, runtime cookie, run-queue
-publication, or scheduler baton.
+only architecture/context mechanisms and an immutable distinction between the
+permanent pre-runtime placeholder and an owned context. A runtime may embed it
+as the first field of its own wrapper and recover that wrapper directly from
+the current header address. `cpu-local` has no task owner pointer, runtime
+cookie, run-queue publication, or scheduler baton.
 
 Preemption is an architecture-selected linear capability. x86_64 owns its word
 in the CPU runtime anchor; load/store architectures own it in the current
