@@ -6,7 +6,9 @@ use core::{
 };
 
 use super::{RawTicketGuard, RawTicketLock};
-use crate::runtime::{PreemptGuardSource, PreemptGuardToken, enter_preempt_guard, task_runtime};
+use crate::runtime::{PreemptGuardSource, PreemptGuardToken};
+#[cfg(not(test))]
+use crate::runtime::{enter_preempt_guard, task_runtime};
 
 /// A private ticket lock for scheduler state that hard IRQs never acquire.
 #[derive(Debug)]
@@ -55,8 +57,19 @@ impl PreemptScope {
     }
 
     fn enter_with_source(source: PreemptGuardSource) -> Self {
+        #[cfg(test)]
+        let token = {
+            // Crate-local unit tests exercise scheduler algorithms without an
+            // OS runtime provider. Their host threads cannot migrate between
+            // kernel CPUs, so the raw ticket lock supplies the needed mutual
+            // exclusion without fabricating a TaskRuntime implementation.
+            let _ = source;
+            PreemptGuardToken::NONE
+        };
+        #[cfg(not(test))]
+        let token = enter_preempt_guard(source);
         Self {
-            token: enter_preempt_guard(source),
+            token,
             _not_send: PhantomData,
         }
     }
@@ -67,9 +80,14 @@ impl Drop for PreemptScope {
         if self.token.is_none() {
             return;
         }
+        #[cfg(test)]
+        unreachable!("unit-test preemption scopes never own runtime tokens");
+        #[cfg(not(test))]
         // SAFETY: this !Send scope consumes the token returned on the same
         // task context after every protected publication is complete.
-        unsafe { task_runtime::preempt_guard_exit(self.token) };
+        unsafe {
+            task_runtime::preempt_guard_exit(self.token)
+        };
     }
 }
 

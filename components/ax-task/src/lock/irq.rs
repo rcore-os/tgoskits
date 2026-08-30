@@ -2,7 +2,9 @@
 
 use core::marker::PhantomData;
 
-use crate::runtime::{IrqGuardSource, IrqGuardToken, enter_irq_guard, task_runtime};
+use crate::runtime::{IrqGuardSource, IrqGuardToken};
+#[cfg(not(test))]
+use crate::runtime::{enter_irq_guard, task_runtime};
 
 /// Non-sleeping scope that excludes local scheduler preemption.
 ///
@@ -25,8 +27,18 @@ impl IrqScope {
     }
 
     fn enter_with_source(source: IrqGuardSource) -> Self {
+        #[cfg(test)]
+        let token = {
+            // Crate-local host tests have no kernel IRQ context. Their raw
+            // ticket locks still provide cross-thread exclusion, so do not
+            // fabricate an OS runtime provider merely to model local IRQs.
+            let _ = source;
+            IrqGuardToken::NONE
+        };
+        #[cfg(not(test))]
+        let token = enter_irq_guard(source);
         Self {
-            token: enter_irq_guard(source),
+            token,
             _not_send: PhantomData,
         }
     }
@@ -34,8 +46,16 @@ impl IrqScope {
 
 impl Drop for IrqScope {
     fn drop(&mut self) {
+        if self.token.is_none() {
+            return;
+        }
+        #[cfg(test)]
+        unreachable!("unit-test IRQ scopes never own runtime tokens");
+        #[cfg(not(test))]
         // SAFETY: construction received this token on the current CPU, the
         // !Send marker prevents migration, and Drop consumes it exactly once.
-        unsafe { task_runtime::irq_guard_exit(self.token) };
+        unsafe {
+            task_runtime::irq_guard_exit(self.token)
+        };
     }
 }
