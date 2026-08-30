@@ -528,7 +528,7 @@ impl FairRunQueue {
         if sum_weighted_delta < 0 {
             sum_weighted_delta -= total_weight - 1;
         }
-        let delta = sum_weighted_delta / total_weight;
+        let delta = divide_weighted_sum(sum_weighted_delta, total_weight);
         let delta = i64::try_from(delta).expect("a weighted mean of i64 deltas must fit in i64");
         self.rebase(delta);
         self.zero_vruntime
@@ -593,6 +593,24 @@ fn protected_current_is_eligible(entity: FairEntity, virtual_time: u64) -> bool 
 
 fn link_height(link: &FairLink) -> usize {
     link.as_deref().map_or(0, |node| node.height)
+}
+
+const fn weighted_sum_needs_wide_division(sum: i128, total_weight: i128) -> bool {
+    sum < i64::MIN as i128
+        || sum > i64::MAX as i128
+        || total_weight <= 0
+        || total_weight > i64::MAX as i128
+}
+
+fn divide_weighted_sum(sum: i128, total_weight: i128) -> i128 {
+    if weighted_sum_needs_wide_division(sum, total_weight) {
+        return sum / total_weight;
+    }
+
+    // The bounds above make both casts value-preserving. Linux's
+    // `avg_vruntime()` performs this ordinary case with `s64 / long`; retain
+    // the wider representation only as an overflow-safe fallback.
+    i128::from((sum as i64) / (total_weight as i64))
 }
 
 fn link_min_vruntime(link: &FairLink) -> Option<u64> {
@@ -795,6 +813,20 @@ fn find_first_runnable_matching<'queue>(
 mod tests {
     use super::*;
     use crate::{FairMode, Nice};
+
+    #[test]
+    fn ordinary_weighted_sum_uses_native_width_division() {
+        assert!(!weighted_sum_needs_wide_division(-40_960, 40_960));
+        assert_eq!(divide_weighted_sum(-40_960, 40_960), -1);
+        assert!(weighted_sum_needs_wide_division(
+            i128::from(i64::MAX) + 1,
+            1
+        ));
+        assert_eq!(
+            divide_weighted_sum(i128::from(i64::MAX) + 1, 2),
+            (i128::from(i64::MAX) + 1) / 2
+        );
+    }
 
     #[test]
     fn linux_run_to_parity_keeps_an_eligible_protected_current() {
