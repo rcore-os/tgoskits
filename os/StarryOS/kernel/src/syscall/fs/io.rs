@@ -278,6 +278,15 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> StarryResult<isize> {
             e
         }
     })?;
+    // O_PATH handles do not permit file operations and must report EBADF
+    // before length validation. Other non-path files opened read-only report
+    // EINVAL on Linux.
+    if f.inner().is_path() {
+        return Err(StarryError::BadFileDescriptor);
+    }
+    if !f.inner().flags().contains(FileFlags::WRITE) {
+        return Err(StarryError::from(Errno::EINVAL));
+    }
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(StarryError::from(Errno::EFBIG));
     }
