@@ -13,7 +13,8 @@ use ax_task::{
     TaskError,
     runtime::{
         ContextSwitch, ContextThreadBinding, CurrentThreadPublication, ExecutionContextHandle,
-        KernelContextRequest, RuntimeHandleResult, RuntimeStatus, StackHandle, UserContextRequest,
+        KernelContextRequest, RuntimeHandleResult, RuntimeStatus, StackHandle, ThreadIdentityV1,
+        UserContextRequest,
     },
 };
 
@@ -346,6 +347,11 @@ pub(super) fn scheduler_current_thread_publication() -> CurrentThreadPublication
     // SAFETY: RuntimeContext embeds the published header at offset zero and
     // remains alive while this execution context can run or resume.
     unsafe { *(*context).publication.get() }
+}
+
+/// Reads only the immutable scheduler identity owned by the current task.
+pub(super) fn scheduler_current_thread_identity() -> ThreadIdentityV1 {
+    scheduler_current_thread_publication().identity()
 }
 
 /// Restores the current x86 userspace FPU image after the final no-work snapshot.
@@ -721,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn current_publication_classification_does_not_resample_cpu_area() {
+    fn current_publication_queries_do_not_resample_cpu_area() {
         std::thread::spawn(|| {
             let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
             let base = storage.as_mut_ptr() as usize;
@@ -755,6 +761,15 @@ mod tests {
                     assert_eq!(
                         reads.cpu_base, 0,
                         "current publication lookup must not resample the CPU-area base",
+                    );
+
+                    cpu_local::host_test::reset_register_read_counts();
+                    assert_eq!(scheduler_current_thread_identity(), ThreadIdentityV1::NONE);
+                    let reads = cpu_local::host_test::register_read_counts();
+                    assert_eq!(reads.current_context, 1);
+                    assert_eq!(
+                        reads.cpu_base, 0,
+                        "current identity lookup must not resample the CPU-area base",
                     );
                 })
             }

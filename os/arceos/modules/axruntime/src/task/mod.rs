@@ -68,8 +68,8 @@ use ax_task::{
         ContextThreadBinding, CpuRemoteHandle, CurrentCpuLocalHandle, CurrentCpuOwnerHandles,
         CurrentThreadPublication, ExecutionContextHandle, IrqGuardToken, KernelContextRequest,
         MembarrierRegistrationPhase, RuntimeCpuId, RuntimeHandleResult, RuntimeMembarrierAction,
-        RuntimeStatus, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, TlsHandle,
-        TlsRequest, UserContextRequest,
+        RuntimeStatus, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, ThreadIdentityV1,
+        TlsHandle, TlsRequest, UserContextRequest,
     },
 };
 
@@ -116,8 +116,8 @@ pub(crate) use context::prepare_current_user_fp_return;
 use context::{
     bind_bootstrap_runtime_context, bind_runtime_context_thread, create_bootstrap_context,
     create_runtime_context, create_user_runtime_context, destroy_runtime_context,
-    finish_runtime_context_switch_tail, scheduler_current_thread_publication,
-    switch_runtime_context,
+    finish_runtime_context_switch_tail, scheduler_current_thread_identity,
+    scheduler_current_thread_publication, switch_runtime_context,
 };
 pub use executor::{BlockOnError, block_on, block_on_timeout};
 pub use irq_worker::FixedIrqWorkerSignal;

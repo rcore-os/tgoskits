@@ -51,6 +51,20 @@ pub trait TaskRuntime {
     /// allocation.
     unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle;
 
+    /// Returns the generation-bearing scheduler identity bound to the calling
+    /// execution context.
+    ///
+    /// This is the identity-only equivalent of Linux's direct `current`
+    /// pointer for fast paths that do not need an owner reference. Providers
+    /// must read the task-owned runtime context selected by the architecture
+    /// current-thread register. [`ThreadIdentityV1::NONE`] denotes an unbound
+    /// bootstrap context.
+    ///
+    /// A bound result must equal the identity in
+    /// [`Self::current_thread_publication`] and remain immutable for the
+    /// complete lifetime of that runtime context.
+    fn current_thread_identity() -> ThreadIdentityV1;
+
     /// Returns the scheduler publication bound to the calling execution context.
     ///
     /// This is the local equivalent of Linux's direct `current` task pointer.

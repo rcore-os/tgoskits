@@ -65,6 +65,10 @@ impl_task_runtime! {
             unsafe { scheduler_current_cpu_remote_handle() }
         }
 
+        fn current_thread_identity() -> ThreadIdentityV1 {
+            scheduler_current_thread_identity()
+        }
+
         fn current_thread_publication() -> CurrentThreadPublication {
             scheduler_current_thread_publication()
         }

@@ -103,7 +103,7 @@ pub fn current_thread_handle() -> Result<ThreadHandle, TaskError> {
 /// Returns the generation-bearing identity of the calling scheduler thread.
 #[inline(always)]
 pub fn current_thread_id() -> Result<ThreadId, TaskError> {
-    let identity = current_thread_publication()?.identity();
+    let identity = current_thread_identity()?;
     Ok(ThreadId::from_parts(identity.slot, identity.generation))
 }
 
@@ -111,6 +111,24 @@ pub fn current_thread_id() -> Result<ThreadId, TaskError> {
 #[inline(always)]
 pub fn current_thread_token() -> Result<CurrentThreadToken, TaskError> {
     Ok(CurrentThreadToken::new(current_thread_id()?))
+}
+
+#[inline(always)]
+fn current_thread_identity() -> Result<crate::runtime::ThreadIdentityV1, TaskError> {
+    let identity = task_runtime::current_thread_identity();
+    if identity.is_bound() {
+        return Ok(identity);
+    }
+
+    let publication = task_runtime::current_thread_publication();
+    if publication.identity() != identity || !publication.owner().is_none() {
+        return Err(TaskError::InvalidRuntimeHandle);
+    }
+    // Preserve the public distinction between a runtime that has not installed
+    // its task system and an initialized bootstrap context without a current
+    // scheduler thread. Bound task contexts never enter this cold path.
+    let _system = runtime_task_system()?;
+    Err(TaskError::NoRunnableThread)
 }
 
 fn current_thread_publication() -> Result<crate::runtime::CurrentThreadPublication, TaskError> {
