@@ -976,6 +976,9 @@ impl<H: X86HostOps> VmxVcpu<H> {
 
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> X86VcpuResult {
+        if let Some(vector) = self.vlapic.take_pending_timer_interrupt() {
+            self.queue_event(vector, None);
+        }
         if self.injecting_event.is_some() {
             return Ok(());
         }
@@ -2280,6 +2283,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         self.injecting_event.is_some()
             || self.reinjection_event.is_some()
             || !self.pending_events.is_empty()
+            || self.vlapic.has_pending_timer_interrupt()
     }
 
     pub fn handle_eoi(&mut self) -> Option<u8> {

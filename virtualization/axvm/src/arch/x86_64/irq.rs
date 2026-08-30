@@ -113,6 +113,12 @@ fn interrupt_domain_for_vm(vm: &crate::AxVM) -> Option<std::sync::Arc<X86Interru
         .ok()
 }
 
+pub(super) fn vcpu_kick_for_vm(
+    vm: &crate::AxVM,
+) -> Option<std::sync::Arc<crate::irq::deferred::DeferredVcpuKick>> {
+    interrupt_domain_for_vm(vm).map(|domain| domain.vcpu_kick())
+}
+
 #[cfg(feature = "host-fs")]
 fn require_interrupt_domain(
     vm: &crate::AxVMRef,
@@ -965,6 +971,16 @@ mod tests {
         fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
 
         assert_irq_safe_lock(&super::HOST_IRQ_FORWARDING_LEASES);
+    }
+
+    #[test]
+    fn local_apic_timer_reuses_the_vm_owned_deferred_kick_publisher() {
+        let domain = new_domain();
+        let timer_kick = domain.vcpu_kick();
+
+        timer_kick.publish_from_irq(0).unwrap();
+
+        assert_eq!(domain.vcpu_kick().take_pending_for_test(), 1);
     }
 
     fn reset_forwarding_routes() {

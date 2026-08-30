@@ -7,11 +7,23 @@ It is based on Linux v7.1 KVM, hrtimer, and clockevents ownership, adapted to
 TGOSKits crate boundaries. It does not merge guest architectural timer state,
 APIC/VGIC pending state, or scheduler policy into one subsystem.
 
-The direct-ACPI VMX timeout reported by PR #1775 is a motivating failure
-sample, not a proven timer bug. A claim that this design fixes that timeout
-requires a reproduction that records VM exits, guest RIP and RFLAGS.IF,
-pending vectors, clockevent generations, timer promotions, vCPU entries, and
-wakeups. Without such evidence the result must be reported as not reproduced.
+The direct-ACPI and MP-fallback VMX timeouts reported by PR #1775 stop guest
+time immediately after Linux installs its local-APIC timer, while the same
+2095 MHz CPUID fallback appears in both passing and failing runs. The x86
+LAPIC transport was the remaining semantic difference from KVM: expiry first
+promoted a soft callback and depended on `ktimers/<cpu>` to publish the guest
+interrupt. A continuously runnable guest could therefore delay the operation
+that makes its own next scheduling interrupt visible.
+
+The x86 LAPIC now follows KVM's split directly. Hard expiry accumulates an
+atomic pending edge, invokes a pre-bound vCPU wake capability, and publishes a
+deferred kick that sends an IPI when the vCPU is already running. VMX/SVM
+consume and clear pending state immediately before guest entry. Both halves
+matter: a wake closes the blocked-vCPU race, while the kick forces a
+continuously running VMX guest to reach that entry boundary. Timer frequency
+discovery remains independent and is not treated as the timeout fix. PIT
+routing stays in task context because it traverses PIC/IOAPIC device state
+rather than publishing a local architectural timer edge.
 
 ## Ownership model
 
@@ -20,7 +32,7 @@ wakeups. Without such evidence the result must be reported as not reproduced.
 | KVM LAPIC and architectural timer | AxVM and architecture vCPU crates | Own guest-visible registers, masking, periodic state, and interrupt level |
 | hrtimer per-CPU bases | `components/ax-task::CpuDeadlineState` | Own typed task deadlines, kernel timers, generation, and callback lifecycle |
 | clockevents | `axruntime::LocalClockEvent` | Exclusively own physical one-shot comparator programming |
-| `kvm_vcpu_kick` and vCPU wait condition | AxVM generation plus pre-bound wake capability | Publish completion before waking and recheck after publishing wait state |
+| `kvm_vcpu_kick` and vCPU wait condition | AxVM generation, pre-bound wake capability, and deferred vCPU kick | Publish completion before waking/kicking and recheck after publishing wait state |
 
 Linux KVM arms absolute hard hrtimers for both x86 LAPIC deadlines
 (`arch/x86/kvm/lapic.c`) and the Arm virtual timer software fallback
@@ -114,16 +126,21 @@ cancelled or migrated before the per-CPU area is reclaimed.
 The blocked-vCPU path follows the same lost-wakeup rule as KVM:
 
 1. the timer callback publishes its completed generation with `Release`;
-2. it invokes only a pre-bound `ThreadWakeHandle` and never calls
-   task-context-only `WaitQueue::notify_*`;
+2. it invokes only a pre-bound `ThreadWakeHandle` plus the VM-owned deferred
+   kick publisher, and never performs a VM lookup or calls task-context-only
+   `WaitQueue::notify_*`;
 3. the waiter publishes its waiting state;
 4. the waiter rechecks completion and architectural pending conditions with
    `Acquire` before sleeping.
 
-The hard callback never takes a VGIC lock. Arm virtual-timer PPI level is
-recomputed after the vCPU wakes and immediately before guest entry. x86 LAPIC,
-PIT, LoongArch architectural timers, and emulated device timers use soft kernel
-timers because their callbacks require ordinary task context.
+The hard callback never takes a VGIC or vLAPIC register lock. Arm virtual-timer
+PPI level is recomputed after the vCPU wakes and immediately before guest
+entry. x86 LAPIC hard expiry similarly touches only atomic pending/deadline
+state, a pre-bound wake capability, and the deferred kick bitmap; its worker
+sends the target CPU IPI without moving LAPIC state out of the vCPU. The target
+vCPU reads the LVT and coalesces accumulated expirations before entry. PIT,
+LoongArch architectural timers, and emulated device timers continue to use
+soft kernel timers when their callbacks require ordinary task context.
 
 ## Lock ordering and failure handling
 
@@ -150,8 +167,12 @@ wheel, timer worker, external deadline source, IRQ callback, direct
 Required model coverage includes earlier/later rearm, head cancellation,
 same-deadline ordering, stale handles and epochs, early/stale IRQ edges, budget
 exhaustion, cancel-versus-rearm, and proof that soft callbacks run outside IRQ
-and the base lock. Runtime coverage includes notify-versus-timeout, stale task
-timer rejection, Future poll/drop after CPU migration, and clockevent idle.
+and the base lock. x86 LAPIC coverage additionally proves that hard expiry
+publishes one coalesced edge plus one VM-owned deferred kick for the next vCPU
+entry and that cancellation waits for a callback that already claimed the arm.
+Runtime coverage includes
+notify-versus-timeout, stale task timer rejection, Future poll/drop after CPU
+migration, and clockevent idle.
 
 Architecture validation includes Axvisor smoke tests on aarch64, riscv64,
 loongarch64, and x86_64; Arm GICv2/GICv3 timer stress; and the x86 VMX sequence

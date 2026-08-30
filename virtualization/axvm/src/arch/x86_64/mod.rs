@@ -378,6 +378,40 @@ impl X86VlapicHostOps for AxvmX86HostOps {
             .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
+    unsafe fn register_hard_timer(
+        deadline_nanos: u64,
+        mut callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle> {
+        let (vm_id, vcpu_id) =
+            with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())))
+                .ok_or(X86VlapicError::TimerUnavailable)?;
+        let kick = manager::with_vm(vm_id, |vm| irq::vcpu_kick_for_vm(vm))
+            .flatten()
+            .ok_or(X86VlapicError::TimerUnavailable)?;
+        let wake = crate::host::task::current_thread().wake_handle();
+        unsafe {
+            // SAFETY: x86_vlapic proves that its callback touches only atomic
+            // pending/deadline state and IRQ-safe registration locks. The wake
+            // handle and deferred vCPU kick publisher are pre-bound in task
+            // context and are explicitly safe to invoke from hard IRQ.
+            default_host().register_hard_restartable_timer(
+                Duration::from_nanos(deadline_nanos),
+                Box::new(move |now| {
+                    let action = callback(now.as_nanos() as u64);
+                    let _ = wake.wake();
+                    let _ = kick.publish_from_irq(vcpu_id);
+                    match action {
+                        X86TimerAction::Complete => HostHardTimerAction::Complete,
+                        X86TimerAction::Rearm(deadline) => {
+                            HostHardTimerAction::Rearm(Duration::from_nanos(deadline))
+                        }
+                    }
+                }),
+            )
+        }
+        .map_err(|_| X86VlapicError::TimerUnavailable)
+    }
+
     fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult {
         default_host()
             .cancel_timer(handle)
@@ -802,6 +836,10 @@ impl X86InterruptDomain {
 
     fn stop_kick_worker(&self) -> AxVmResult {
         self.wired.kick.stop()
+    }
+
+    fn vcpu_kick(&self) -> Arc<DeferredVcpuKick> {
+        Arc::clone(&self.wired.kick)
     }
 
     fn take_pending_wired_gsis(&self) -> (usize, usize) {

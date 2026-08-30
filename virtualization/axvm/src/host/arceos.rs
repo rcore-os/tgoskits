@@ -15,7 +15,7 @@ use axvm_types::{HostPhysAddr, HostVirtAddr};
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 use crate::AxVmError;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use crate::host::HostHardTimerAction;
 #[cfg(target_arch = "x86_64")]
 use crate::host::HostTimerAction;
@@ -129,7 +129,7 @@ impl HostTimer for ArceOsHost {
         .map_err(|error| crate::AxVmError::host("register restartable host timer", error))
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     unsafe fn register_hard_restartable_timer(
         &self,
         deadline: Duration,
@@ -142,6 +142,7 @@ impl HostTimer for ArceOsHost {
             runtime_task::HardKernelTimerCallback::new(Box::new(move |now| {
                 match callback(Duration::from_nanos(now.as_nanos())) {
                     HostHardTimerAction::Complete => runtime_task::HardKernelTimerAction::Complete,
+                    #[cfg(target_arch = "aarch64")]
                     HostHardTimerAction::Disarm => runtime_task::HardKernelTimerAction::Disarm,
                     HostHardTimerAction::Rearm(deadline) => {
                         runtime_task::HardKernelTimerAction::Rearm(

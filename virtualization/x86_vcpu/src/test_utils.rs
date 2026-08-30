@@ -215,6 +215,13 @@ pub mod mock {
             Err(X86VlapicError::TimerUnavailable)
         }
 
+        unsafe fn register_hard_timer(
+            _deadline_nanos: u64,
+            _callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            Err(X86VlapicError::TimerUnavailable)
+        }
+
         fn cancel_timer(_handle: Self::TimerHandle) -> X86VlapicResult {
             Ok(())
         }
