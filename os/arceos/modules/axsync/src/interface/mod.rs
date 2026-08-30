@@ -299,7 +299,15 @@ pub trait MutexOps {
         metadata: &LockMetadata,
         lock_addr: usize,
         subclass: u32,
-        is_try: bool,
+        caller: &'static Location<'static>,
+    );
+
+    fn try_acquire(
+        storage: &PiMutexStorage,
+        next_waiter_sequence: &AtomicU64,
+        metadata: &LockMetadata,
+        lock_addr: usize,
+        subclass: u32,
         caller: &'static Location<'static>,
     ) -> bool;
 
@@ -472,9 +480,8 @@ pub(crate) fn mutex_acquire(
     metadata: &LockMetadata,
     lock_addr: usize,
     subclass: u32,
-    is_try: bool,
     caller: &'static Location<'static>,
-) -> bool {
+) {
     ax_crate_interface::call_interface!(
         MutexOps::acquire,
         storage,
@@ -482,7 +489,26 @@ pub(crate) fn mutex_acquire(
         metadata,
         lock_addr,
         subclass,
-        is_try,
+        caller
+    );
+}
+
+#[cfg(feature = "sleep")]
+pub(crate) fn mutex_try_acquire(
+    storage: &PiMutexStorage,
+    next_waiter_sequence: &AtomicU64,
+    metadata: &LockMetadata,
+    lock_addr: usize,
+    subclass: u32,
+    caller: &'static Location<'static>,
+) -> bool {
+    ax_crate_interface::call_interface!(
+        MutexOps::try_acquire,
+        storage,
+        next_waiter_sequence,
+        metadata,
+        lock_addr,
+        subclass,
         caller
     )
 }
@@ -562,6 +588,19 @@ mod tests {
             let _: AcquireResult = spin_try_acquire(&spin, &metadata, 0, 0, 0, caller);
             let _: ContextState = rwlock_acquire(&rwlock, &metadata, 0, 0, 0, caller);
             let _: AcquireResult = rwlock_try_acquire(&rwlock, &metadata, 0, 0, 0, caller);
+        }
+    }
+
+    #[test]
+    fn blocking_pi_mutex_bridge_has_no_fallible_result() {
+        if false {
+            let storage = PiMutexStorage::new();
+            let sequence = AtomicU64::new(0);
+            let metadata = LockMetadata::new();
+            let caller = Location::caller();
+
+            let _: () = mutex_acquire(&storage, &sequence, &metadata, 0, 0, caller);
+            let _: bool = mutex_try_acquire(&storage, &sequence, &metadata, 0, 0, caller);
         }
     }
 

@@ -284,9 +284,8 @@ impl ax_sync::interface::MutexOps for RuntimeMutexOps {
         metadata: &ax_sync::interface::LockMetadata,
         lock_addr: usize,
         subclass: u32,
-        is_try: bool,
         caller: &'static Location<'static>,
-    ) -> bool {
+    ) {
         ax_task::sync::bridge::mutex_acquire(ax_task::sync::bridge::MutexAcquireRequest {
             storage: into_task_pi_storage(storage),
             next_waiter_sequence,
@@ -296,7 +295,27 @@ impl ax_sync::interface::MutexOps for RuntimeMutexOps {
             },
             lock_addr,
             subclass,
-            is_try,
+            caller,
+        });
+    }
+
+    fn try_acquire(
+        storage: &ax_sync::interface::PiMutexStorage,
+        next_waiter_sequence: &AtomicU64,
+        metadata: &ax_sync::interface::LockMetadata,
+        lock_addr: usize,
+        subclass: u32,
+        caller: &'static Location<'static>,
+    ) -> bool {
+        ax_task::sync::bridge::mutex_try_acquire(ax_task::sync::bridge::MutexAcquireRequest {
+            storage: into_task_pi_storage(storage),
+            next_waiter_sequence,
+            class: ax_task::sync::bridge::LockClass {
+                class_id: metadata.class_id(),
+                class_key: metadata.class_key(),
+            },
+            lock_addr,
+            subclass,
             caller,
         })
     }

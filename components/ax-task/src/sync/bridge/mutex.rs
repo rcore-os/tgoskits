@@ -52,20 +52,22 @@ pub struct MutexAcquireRequest<'lock> {
     pub class: LockClass<'lock>,
     pub lock_addr: usize,
     pub subclass: u32,
-    pub is_try: bool,
     pub caller: &'static Location<'static>,
 }
 
-/// Acquires an external PI mutex through the native Linux-RT-style algorithm.
-pub fn mutex_acquire(request: MutexAcquireRequest<'_>) -> bool {
-    let lockdep = prepare_lockdep(&request);
+/// Acquires an external PI mutex through the native Linux-RT-style blocking path.
+pub fn mutex_acquire(request: MutexAcquireRequest<'_>) {
+    let lockdep = prepare_lockdep(&request, false);
     let algorithm = PiMutexAlgorithm::new(request.storage.core(), request.next_waiter_sequence);
-    let acquired = if request.is_try {
-        algorithm.try_lock_pi()
-    } else {
-        algorithm.lock_pi();
-        true
-    };
+    algorithm.lock_pi();
+    finish_lockdep(lockdep, true);
+}
+
+/// Tries to acquire an external PI mutex without blocking.
+pub fn mutex_try_acquire(request: MutexAcquireRequest<'_>) -> bool {
+    let lockdep = prepare_lockdep(&request, true);
+    let algorithm = PiMutexAlgorithm::new(request.storage.core(), request.next_waiter_sequence);
+    let acquired = algorithm.try_lock_pi();
     finish_lockdep(lockdep, acquired);
     acquired
 }
@@ -106,12 +108,12 @@ pub fn mutex_destroy(storage: PiMutexStorageMut<'_>) {
 }
 
 #[cfg(feature = "lockdep")]
-fn prepare_lockdep(request: &MutexAcquireRequest<'_>) -> LockdepAcquire {
+fn prepare_lockdep(request: &MutexAcquireRequest<'_>, is_try: bool) -> LockdepAcquire {
     LockdepAcquire::prepare_view(LockdepAcquireRequest {
         map: LockdepMapView::new(request.class.class_id, request.class.class_key),
         addr: request.lock_addr,
         subclass: request.subclass,
-        is_try: request.is_try,
+        is_try,
         caller: request.caller,
     })
 }
@@ -121,8 +123,8 @@ fn prepare_lockdep(request: &MutexAcquireRequest<'_>) -> LockdepAcquire {
 struct LockdepAcquire;
 
 #[cfg(not(feature = "lockdep"))]
-fn prepare_lockdep(request: &MutexAcquireRequest<'_>) -> LockdepAcquire {
-    let _ = request;
+fn prepare_lockdep(request: &MutexAcquireRequest<'_>, is_try: bool) -> LockdepAcquire {
+    let _ = (request, is_try);
     LockdepAcquire
 }
 

@@ -39,14 +39,26 @@ impl RawMutex {
 
     #[inline(always)]
     #[track_caller]
-    fn acquire(&self, subclass: u32, is_try: bool) -> bool {
+    fn acquire(&self, subclass: u32) {
         crate::interface::mutex_acquire(
             &self.storage,
             &self.next_waiter_sequence,
             &self.metadata,
             self.addr(),
             subclass,
-            is_try,
+            Location::caller(),
+        );
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    fn try_acquire(&self, subclass: u32) -> bool {
+        crate::interface::mutex_try_acquire(
+            &self.storage,
+            &self.next_waiter_sequence,
+            &self.metadata,
+            self.addr(),
+            subclass,
             Location::caller(),
         )
     }
@@ -54,25 +66,19 @@ impl RawMutex {
     #[inline(always)]
     #[track_caller]
     fn lock(&self) {
-        assert!(
-            self.acquire(0, false),
-            "blocking mutex acquisition returned failure"
-        );
+        self.acquire(0);
     }
 
     #[inline(always)]
     #[track_caller]
     fn lock_nested(&self, subclass: u32) {
-        assert!(
-            self.acquire(subclass, false),
-            "blocking nested mutex acquisition returned failure"
-        );
+        self.acquire(subclass);
     }
 
     #[inline(always)]
     #[track_caller]
     fn try_lock(&self) -> bool {
-        self.acquire(0, true)
+        self.try_acquire(0)
     }
 
     #[inline(always)]

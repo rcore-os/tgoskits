@@ -19,6 +19,7 @@ pub use self::{
     mutex::{
         MutexAcquireRequest, PiMutexStorage, PiMutexStorageMut, mutex_acquire, mutex_destroy,
         mutex_force_release, mutex_is_locked, mutex_is_owned_by_current, mutex_release,
+        mutex_try_acquire,
     },
     spin::{
         RwLockAcquireRequest, SpinAcquireRequest, rwlock_acquire, rwlock_force_read_decrement,
