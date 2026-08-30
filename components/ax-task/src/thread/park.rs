@@ -12,11 +12,13 @@ const WAIT_WAKE_SELECTED: u8 = 1;
 const WAIT_WAKE_DELIVERED: u8 = 2;
 const WAIT_WAKE_CANCELLED: u8 = 3;
 
-/// One queue notification claim bound to an exact park attempt.
+/// One queue notification claim state machine bound to an exact park attempt.
 ///
-/// The wait-queue lock owns selection. The scheduler owns delivery after all
-/// fallible placement preparation, while timeout cleanup may cancel a selected
-/// claim before that delivery point.
+/// The wait entry's control lock owns selection. The scheduler owns delivery
+/// after all fallible placement preparation, while timeout cleanup may cancel
+/// a selected claim before that delivery point. An unavailable scheduler owner
+/// may return a cancelled claim to the same wait entry for another selection
+/// attempt.
 #[derive(Debug)]
 pub(crate) struct WaitWakeClaim {
     thread: ThreadId,
@@ -78,6 +80,22 @@ impl WaitWakeClaim {
             .compare_exchange(
                 WAIT_WAKE_SELECTED,
                 WAIT_WAKE_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// Returns a synchronously rejected delivery to its owning wait entry.
+    ///
+    /// The caller must hold the wait entry's claim-control lock after the
+    /// scheduler delivery call has returned `Unavailable`; the scheduler does
+    /// not retain this claim after that call.
+    pub(crate) fn requeue_cancelled(&self) -> bool {
+        self.state
+            .compare_exchange(
+                WAIT_WAKE_CANCELLED,
+                WAIT_WAKE_QUEUED,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
@@ -198,4 +216,31 @@ pub enum ParkCommit {
     Notified,
     /// The thread committed `BLOCKED` and selected its replacement.
     Blocked(ScheduleDecision),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_wait_wake_claim_can_retry_the_same_park() {
+        let claim = WaitWakeClaim::new(ThreadId::from_parts(7, 3), 11);
+
+        assert!(claim.select());
+        assert!(claim.cancel_selected());
+        assert!(claim.requeue_cancelled());
+        assert!(claim.select());
+        assert!(claim.deliver_selected());
+        assert_eq!(claim.state(), WaitWakeClaimState::Delivered);
+    }
+
+    #[test]
+    fn delivered_wait_wake_claim_cannot_be_requeued() {
+        let claim = WaitWakeClaim::new(ThreadId::from_parts(7, 3), 11);
+
+        assert!(claim.select());
+        assert!(claim.deliver_selected());
+        assert!(!claim.requeue_cancelled());
+        assert_eq!(claim.state(), WaitWakeClaimState::Delivered);
+    }
 }
