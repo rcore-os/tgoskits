@@ -505,11 +505,17 @@ pub fn prepare_file_like(
 
 /// Get a file-like object by `fd`.
 pub fn get_file_like(fd: c_int) -> StarryResult<Arc<dyn FileLike>> {
-    current_fd_table()
-        .read()
-        .get(fd as usize)
-        .map(|fd| fd.inner.clone())
-        .ok_or(StarryError::BadFileDescriptor)
+    FD_TABLE.with(|fd_table| {
+        // SAFETY: `LocalItem::with` pins this task to the current CPU for the
+        // complete lookup. File-table access is task-context-only, so local
+        // interrupt reentry cannot acquire this lock. The lock's atomic state
+        // continues to serialize sibling threads that share the table.
+        let table = unsafe { fd_table.read_raw() };
+        table
+            .get(fd as usize)
+            .map(|fd| fd.inner.clone())
+            .ok_or(StarryError::BadFileDescriptor)
+    })
 }
 
 /// Returns true iff `fd` was opened with `O_PATH`.
