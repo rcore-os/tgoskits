@@ -417,27 +417,30 @@ impl WaitQueue {
 /// Blocks until `condition` is true while publishing one exact wake token.
 ///
 /// `register` runs after the scheduler park exists, but before the park is
-/// committed. The returned lease keeps the token in the caller's sole ordered
-/// source until this attempt resumes or is cancelled. No second internal task
-/// queue owns the same waiter.
+/// `acquire` must return the external queue lock that protects `condition` and
+/// waiter publication. The lock is held while the scheduler park is prepared
+/// and `register` publishes the token, then released before the park commits.
+/// This is the Linux waitqueue order: a contending rtmutex can sleep while the
+/// caller is still `Running`, while the lock closes the predicate-to-enqueue
+/// race before `Parking` becomes visible.
+///
+/// The returned registration lease keeps the token in the caller's sole
+/// ordered source until this attempt resumes or is cancelled. No second
+/// internal task queue owns the same waiter.
 ///
 /// Returns whether at least one registered token was selected while this call
 /// waited. Callers may use that result to continue Linux-style exclusive
 /// handoff when the condition remains consumable.
 #[track_caller]
-pub fn wait_until_registered<F, O, R, G>(
-    condition: F,
-    mut observe_notification: O,
-    mut register: R,
-) -> bool
+pub fn wait_until_registered<F, L, R, G, H>(condition: F, mut acquire: L, mut register: R) -> bool
 where
     F: Fn() -> bool,
-    O: FnMut() -> u64,
-    R: FnMut(WaitQueueWakeToken, u64) -> WaitQueueRegistration<G>,
+    L: FnMut() -> G,
+    R: FnMut(&mut G, WaitQueueWakeToken) -> WaitQueueRegistration<H>,
 {
     let mut selected = false;
     loop {
-        match wait_once_registered(&condition, &mut observe_notification, &mut register)
+        match wait_once_registered(&condition, &mut acquire, &mut register)
             .expect("registered conditional wait must satisfy scheduler invariants")
         {
             WaitOutcome::Condition => return selected,
@@ -447,24 +450,27 @@ where
     }
 }
 
-fn wait_once_registered<F, O, R, G>(
+fn wait_once_registered<F, L, R, G, H>(
     condition: &F,
-    observe_notification: &mut O,
+    acquire: &mut L,
     register: &mut R,
 ) -> Result<WaitOutcome, TaskError>
 where
     F: Fn() -> bool,
-    O: FnMut() -> u64,
-    R: FnMut(WaitQueueWakeToken, u64) -> WaitQueueRegistration<G>,
+    L: FnMut() -> G,
+    R: FnMut(&mut G, WaitQueueWakeToken) -> WaitQueueRegistration<H>,
 {
     let permit = acquire_blocking_permit()?;
-    let observed_notification = observe_notification();
+    let mut queue_guard = acquire();
     if condition() {
+        drop(queue_guard);
         return Ok(WaitOutcome::Condition);
     }
-
     let park = match begin_current_park_with_permit(&permit)? {
-        CurrentParkStart::Notified => return Ok(WaitOutcome::OtherWake),
+        CurrentParkStart::Notified => {
+            drop(queue_guard);
+            return Ok(WaitOutcome::OtherWake);
+        }
         CurrentParkStart::Prepared(park) => park,
     };
     let token = WaitQueueWakeToken {
@@ -474,7 +480,8 @@ where
             park.wake_handle(),
         )),
     };
-    let registration = register(token.clone(), observed_notification);
+    let registration = register(&mut queue_guard, token.clone());
+    drop(queue_guard);
     let (registration, retry) = match registration {
         WaitQueueRegistration::Armed(registration) => (registration, false),
         WaitQueueRegistration::Retry(registration) => (registration, true),

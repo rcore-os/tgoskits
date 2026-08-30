@@ -26,7 +26,7 @@ use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
     mm::VmMutPtr,
-    sync::{PiMutex, SpinLock},
+    sync::PiMutex,
     task::{current_user_task, send_signal_to_process},
 };
 
@@ -145,7 +145,10 @@ fn wake_pipe_waiters_all(waiters: &PipeWaitSet, ready: IoEvents) {
 }
 
 struct PipeWaitSet {
-    state: Arc<SpinLock<PipeWaitState>>,
+    // Linux wait_queue_head::lock becomes an rtmutex-backed spinlock under
+    // PREEMPT_RT. Pipe wait-set callers are task-only, and callbacks run after
+    // this guard is released, so use the same schedulable PI lock semantics.
+    state: Arc<PiMutex<PipeWaitState>>,
 }
 
 struct PipeWaitState {
@@ -171,7 +174,7 @@ enum PipeWaitTarget {
 }
 
 struct PipeWaitRegistration {
-    state: Arc<SpinLock<PipeWaitState>>,
+    state: Arc<PiMutex<PipeWaitState>>,
     id: u64,
     notified: Option<Arc<AtomicBool>>,
 }
@@ -184,7 +187,7 @@ struct PipeWakeSelection {
 impl PipeWaitSet {
     fn new() -> Self {
         Self {
-            state: Arc::new(SpinLock::new(PipeWaitState {
+            state: Arc::new(PiMutex::new(PipeWaitState {
                 waiters: VecDeque::new(),
                 next_id: 0,
                 notification_generation: 0,
@@ -196,18 +199,17 @@ impl PipeWaitSet {
     fn wait_until(&self, condition: impl Fn() -> bool) -> bool {
         let _selected = wait_until_registered(
             condition,
-            || self.state.lock().notification_generation,
-            |token, observed_notification| {
+            || self.state.lock(),
+            |state, token| {
                 #[cfg(feature = "qperf-metrics")]
                 PIPE_WAIT_REGISTRATIONS.fetch_add(1, Ordering::Relaxed);
-                let mut state = self.state.lock();
-                if state.closed || state.notification_generation != observed_notification {
+                if state.closed {
                     #[cfg(feature = "qperf-metrics")]
                     PIPE_WAIT_REGISTRATION_RACES.fetch_add(1, Ordering::Relaxed);
                     WaitQueueRegistration::Retry(None)
                 } else {
-                    let registration =
-                        self.register_target_locked(&mut state, PipeWaitTarget::Direct(token));
+                    let registration = self
+                        .register_target_locked(state, PipeWaitTarget::Direct(token));
                     WaitQueueRegistration::Armed(Some(registration))
                 }
             },
@@ -1755,5 +1757,116 @@ mod tests {
             waiters.wait_until(|| true),
             "returning from an exclusive wait must hand remaining readiness to the next waiter"
         );
+    }
+
+    #[axtest::axtest]
+    fn pipe_wait_set_lock_remains_schedulable_like_linux_rt() {
+        let current = scheduler::current_thread_id().expect("axtest must run in task context");
+        let original_affinity =
+            scheduler::thread_affinity(current).expect("current affinity must be available");
+        let cpu = scheduler::CpuId::new(
+            u32::try_from(ax_runtime::hal::percpu::this_cpu_id())
+                .expect("logical CPU ID must fit the scheduler ABI"),
+        );
+        let mut affinity = scheduler::CpuSet::empty(ax_runtime::hal::cpu_num());
+        assert!(affinity.insert(cpu));
+        scheduler::set_current_thread_affinity(affinity.clone())
+            .expect("test task must remain on its current CPU");
+
+        let waiters = Arc::new(PipeWaitSet::new());
+        let attempted = Arc::new(AtomicBool::new(false));
+        let acquired = Arc::new(AtomicBool::new(false));
+        let contender_state = Arc::clone(&waiters.state);
+        let contender_attempted = Arc::clone(&attempted);
+        let contender_acquired = Arc::clone(&acquired);
+        let contender = scheduler::spawn_raw_with_affinity(
+            move || {
+                contender_attempted.store(true, Ordering::Release);
+                let _state = contender_state.lock();
+                contender_acquired.store(true, Ordering::Release);
+            },
+            "pipe-wait-set-lock-contender".to_string(),
+            256 * 1024,
+            affinity,
+        )
+        .expect("failed to spawn pipe wait-set lock contender");
+
+        let state = waiters.state.lock();
+        for _ in 0..32 {
+            scheduler::yield_current_cpu()
+                .expect("Linux RT waitqueue lock must remain schedulable while held");
+            if attempted.load(Ordering::Acquire) {
+                break;
+            }
+        }
+        assert!(
+            attempted.load(Ordering::Acquire),
+            "same-CPU contender did not attempt the held wait-set lock"
+        );
+        assert!(
+            !acquired.load(Ordering::Acquire),
+            "contender acquired the wait-set lock before its owner released it"
+        );
+        drop(state);
+
+        scheduler::join_thread(contender).expect("pipe wait-set lock contender must exit");
+        scheduler::set_current_thread_affinity(original_affinity)
+            .expect("test task affinity must be restored");
+        assert!(acquired.load(Ordering::Acquire));
+    }
+
+    #[axtest::axtest]
+    fn pipe_wait_registration_locks_before_publishing_parking() {
+        let current = scheduler::current_thread_id().expect("axtest must run in task context");
+        let original_affinity =
+            scheduler::thread_affinity(current).expect("current affinity must be available");
+        let cpu = scheduler::CpuId::new(
+            u32::try_from(ax_runtime::hal::percpu::this_cpu_id())
+                .expect("logical CPU ID must fit the scheduler ABI"),
+        );
+        let mut affinity = scheduler::CpuSet::empty(ax_runtime::hal::cpu_num());
+        assert!(affinity.insert(cpu));
+        scheduler::set_current_thread_affinity(affinity.clone())
+            .expect("test task must remain on its current CPU");
+
+        let waiters = Arc::new(PipeWaitSet::new());
+        let waiter_started = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false));
+        let waiter_completed = Arc::new(AtomicBool::new(false));
+        let state = waiters.state.lock();
+        let waiter_set = Arc::clone(&waiters);
+        let waiter_started_flag = Arc::clone(&waiter_started);
+        let waiter_ready = Arc::clone(&ready);
+        let waiter_completed_flag = Arc::clone(&waiter_completed);
+        let waiter = scheduler::spawn_raw_with_affinity(
+            move || {
+                waiter_started_flag.store(true, Ordering::Release);
+                waiter_set.wait_until(|| waiter_ready.load(Ordering::Acquire));
+                waiter_completed_flag.store(true, Ordering::Release);
+            },
+            "pipe-wait-registration-order".to_string(),
+            256 * 1024,
+            affinity,
+        )
+        .expect("failed to spawn pipe wait registration task");
+
+        for _ in 0..32 {
+            scheduler::yield_current_cpu().expect("wait-set lock owner must remain schedulable");
+            if waiter_started.load(Ordering::Acquire) {
+                break;
+            }
+        }
+        assert!(
+            waiter_started.load(Ordering::Acquire),
+            "pipe waiter did not attempt registration"
+        );
+        drop(state);
+        ready.store(true, Ordering::Release);
+        waiters.wake_all(IoEvents::IN);
+
+        scheduler::join_thread(waiter).expect("pipe wait registration task must exit");
+        scheduler::set_current_thread_affinity(original_affinity)
+            .expect("test task affinity must be restored");
+        assert!(waiter_completed.load(Ordering::Acquire));
     }
 }
