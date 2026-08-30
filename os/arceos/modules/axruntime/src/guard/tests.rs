@@ -29,7 +29,10 @@ fn scheduler_exit_state_reuses_one_cpu_pin() {
             reads.current_context, 2,
             "scheduler exit needs one pin validation and one context-owned preemption lookup"
         );
-        assert_eq!(reads.binding_observations, 2);
+        assert_eq!(
+            reads.binding_observations, 0,
+            "scheduler exit must trust switch-time binding publication"
+        );
         ax_hal::asm::enable_irqs();
     })
     .join()
@@ -58,7 +61,10 @@ fn scheduler_entry_state_reuses_one_cpu_pin() {
             reads.current_context, 2,
             "scheduler entry needs one pin validation and one context-owned preemption lookup"
         );
-        assert_eq!(reads.binding_observations, 2);
+        assert_eq!(
+            reads.binding_observations, 0,
+            "scheduler entry must trust switch-time binding publication"
+        );
         with_guard_state_mut(|state| state.exit_scheduler_preempt("test scheduler frame"));
         ax_hal::asm::enable_irqs();
     })

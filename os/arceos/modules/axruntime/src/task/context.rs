@@ -180,8 +180,8 @@ fn current_runtime_context(cpu_pin: &CpuPin) -> Result<&'static RuntimeContext, 
         .as_ptr()
         .expose_provenance();
     let header = ptr::with_exposed_provenance::<ExecutionContextHeader>(current);
-    // SAFETY: `current_context` has already validated that the published,
-    // pinned header is live and bound to the supplied CPU pin.
+    // SAFETY: the switch boundary validated the binding before publishing
+    // this live pinned header, and the supplied CPU pin prevents migration.
     let header = unsafe { &*header };
     // RuntimeContext is `repr(C)` and the pinned header is its offset-zero
     // owner identity. The independently allocated architecture context keeps
@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn current_runtime_context_reuses_pinned_binding_validation() {
+    fn current_runtime_context_trusts_switch_binding_publication() {
         std::thread::spawn(|| {
             let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
             let base = storage.as_mut_ptr() as usize;
@@ -699,8 +699,8 @@ mod tests {
                     let reads = cpu_local::host_test::register_read_counts();
                     assert_eq!(reads.current_context, 1);
                     assert_eq!(
-                        reads.binding_observations, 1,
-                        "the pinned current lookup must not repeat its binding validation"
+                        reads.binding_observations, 0,
+                        "the pinned current lookup must trust switch-time binding validation"
                     );
                 })
             }

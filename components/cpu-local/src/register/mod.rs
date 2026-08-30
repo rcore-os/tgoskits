@@ -170,6 +170,10 @@ pub(crate) unsafe fn commit_current_context(_area: CpuAreaRef, _value: usize) {
 }
 
 /// Returns the pinned header selected by this image's sole current source.
+///
+/// Context installation and switch preparation validate the header's CPU
+/// binding before publication. Like Linux `current`, this hot lookup trusts
+/// that published invariant while the caller's pin prevents migration.
 pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeader>, CpuLocalError> {
     let area = pin.area();
     let raw = match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
@@ -180,13 +184,7 @@ pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeade
         #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
         CurrentContextSource::RuntimeAnchor => area.runtime_anchor().current_context_raw(),
     };
-    let pointer = validated_context_pointer(raw)?;
-    // SAFETY: context publication only accepts pinned headers that remain
-    // alive while current, and the caller retains the required CPU pin.
-    if !unsafe { pointer.as_ref() }.is_bound_to(area) {
-        return Err(CpuLocalError::CurrentContextMismatch);
-    }
-    Ok(pointer)
+    validated_context_pointer(raw)
 }
 
 /// Reads the current header before a caller can construct its migration guard.
@@ -407,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_current_validation_reuses_the_pinned_area_identity() {
+    fn pin_construction_trusts_published_area_and_context_identity() {
         let area = modeled_area(0);
         let boot = area.prefix().boot_context().header();
 
@@ -422,6 +420,11 @@ mod tests {
             host_test::register_read_counts().initialized_area_validations,
             0,
             "pin construction must reuse the area identity validated before installation",
+        );
+        assert_eq!(
+            host_test::register_read_counts().binding_observations,
+            0,
+            "pin construction must trust the current binding published by the switch boundary",
         );
     }
 
@@ -487,7 +490,7 @@ pub unsafe fn install_bootstrap_context(
             imp::write_current_context(pointer)
         },
     }
-    if current_context(pin) != Ok(header.as_non_null()) {
+    if current_context(pin) != Ok(header.as_non_null()) || !header.is_bound_to(pin.area()) {
         // The register is already committed, so continuing would make all
         // later Rust execution unsound. Rollback is intentionally impossible.
         let _ = epoch;
