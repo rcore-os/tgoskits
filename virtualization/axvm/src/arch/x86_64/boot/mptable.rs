@@ -18,6 +18,11 @@ const IO_APIC_VERSION: u8 = 0x11;
 const BUS_ID_PCI: u8 = 0;
 const BUS_ID_ISA: u8 = 1;
 
+const MP_INTERRUPT: u8 = 0;
+const MP_NMI: u8 = 1;
+const MP_EXTINT: u8 = 3;
+const MP_APIC_ALL: u8 = 0xff;
+
 const MP_IRQ_FLAGS_CONFORMING: u16 = 0;
 const MP_IRQ_FLAGS_ACTIVE_LOW: u16 = 0x3;
 const MP_IRQ_FLAGS_LEVEL_TRIGGERED: u16 = 0xc;
@@ -97,6 +102,7 @@ fn config_entries(apic_ids: &[u8], io_apic_address: u32) -> Vec<Vec<u8>> {
     ]);
     push_isa_interrupt_entries(&mut entries);
     push_pci_interrupt_entries(&mut entries);
+    push_local_interrupt_entries(&mut entries);
     entries
 }
 
@@ -131,17 +137,60 @@ fn io_apic_entry(io_apic_address: u32) -> Vec<u8> {
 }
 
 fn push_isa_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
-    // Keep legacy ISA IRQs identity-routed to the IOAPIC. IRQ0 is timer and
-    // IRQ4 is COM1; both are useful during early Linux bring-up diagnostics.
-    for irq in 0u8..16 {
+    // Keep the legacy PIC in virtual-wire mode while routing the 8254 timer
+    // through the IOAPIC's conventional INTIN2. This is the topology Linux
+    // constructs for a mixed PIC/IOAPIC MPS machine (IRQ0 -> INTIN2 and the
+    // 8259A cascade -> INTIN0). IRQ2 is the PIC cascade and has no direct
+    // ISA interrupt entry.
+    entries.push(interrupt_entry(
+        MP_EXTINT,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        0,
+        0,
+    ));
+    entries.push(interrupt_entry(
+        MP_INTERRUPT,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        0,
+        2,
+    ));
+    entries.push(interrupt_entry(
+        MP_INTERRUPT,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        1,
+        1,
+    ));
+    for irq in 3u8..16 {
         entries.push(interrupt_entry(
-            0,
+            MP_INTERRUPT,
             MP_IRQ_FLAGS_CONFORMING,
             BUS_ID_ISA,
             irq,
             irq,
         ));
     }
+}
+
+fn push_local_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
+    entries.push(local_interrupt_entry(
+        MP_EXTINT,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        0,
+        MP_APIC_ALL,
+        0,
+    ));
+    entries.push(local_interrupt_entry(
+        MP_NMI,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        0,
+        MP_APIC_ALL,
+        1,
+    ));
 }
 
 fn push_pci_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
@@ -185,6 +234,25 @@ fn interrupt_entry(
     entry.push(source_bus_irq);
     entry.push(IO_APIC_ID);
     entry.push(dest_io_apic_intin);
+    entry
+}
+
+fn local_interrupt_entry(
+    interrupt_type: u8,
+    flags: u16,
+    source_bus_id: u8,
+    source_bus_irq: u8,
+    dest_apic: u8,
+    dest_apic_lint: u8,
+) -> Vec<u8> {
+    let mut entry = Vec::with_capacity(8);
+    entry.push(4);
+    entry.push(interrupt_type);
+    entry.extend_from_slice(&flags.to_le_bytes());
+    entry.push(source_bus_id);
+    entry.push(source_bus_irq);
+    entry.push(dest_apic);
+    entry.push(dest_apic_lint);
     entry
 }
 
@@ -250,6 +318,50 @@ mod tests {
         );
         assert_eq!(entry[6], IO_APIC_ID);
         assert_eq!(entry[7], 4);
+    }
+
+    #[test]
+    fn mps_timer_keeps_pic_cascade_and_routes_irq0_to_intin2() {
+        let entries = config_entries(&[0], 0xfec0_0000);
+        let isa_irq0 = |interrupt_type| {
+            entries
+                .iter()
+                .find(|entry| {
+                    entry.len() == 8
+                        && entry[0] == 3
+                        && entry[1] == interrupt_type
+                        && entry[4] == BUS_ID_ISA
+                        && entry[5] == 0
+                })
+                .expect("MP table must describe ISA IRQ0")
+        };
+
+        assert_eq!(isa_irq0(MP_EXTINT)[7], 0);
+        assert_eq!(isa_irq0(MP_INTERRUPT)[7], 2);
+        assert!(!entries.iter().any(|entry| {
+            entry.len() == 8
+                && entry[0] == 3
+                && entry[1] == MP_INTERRUPT
+                && entry[4] == BUS_ID_ISA
+                && entry[5] == 2
+        }));
+    }
+
+    #[test]
+    fn mps_table_describes_local_extint_and_nmi_delivery() {
+        let entries = config_entries(&[0], 0xfec0_0000);
+        let lint_entries = entries
+            .iter()
+            .filter(|entry| entry[0] == 4)
+            .collect::<Vec<_>>();
+
+        assert_eq!(lint_entries.len(), 2);
+        assert_eq!(lint_entries[0][1], MP_EXTINT);
+        assert_eq!(lint_entries[0][6], MP_APIC_ALL);
+        assert_eq!(lint_entries[0][7], 0);
+        assert_eq!(lint_entries[1][1], MP_NMI);
+        assert_eq!(lint_entries[1][6], MP_APIC_ALL);
+        assert_eq!(lint_entries[1][7], 1);
     }
 
     #[test]

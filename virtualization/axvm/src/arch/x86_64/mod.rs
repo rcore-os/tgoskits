@@ -450,8 +450,12 @@ impl X86VlapicHostOps for AxvmX86HostOps {
             let devices = vm.get_devices().map_err(ax_error_to_vlapic)?;
             let pic = devices.services().require::<X86PicServiceKey>().ok();
             let ioapic = devices.services().require::<X86InterruptDomainKey>().ok();
+            let ioapic_interrupts = [
+                ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(0)),
+                ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(2)),
+            ];
 
-            route_pit_claim(
+            route_pit_claims(
                 || pic.as_ref().and_then(|pic| pic.claim_irq(0)),
                 PicInterruptClaim::vector,
                 |claim| {
@@ -459,7 +463,7 @@ impl X86VlapicHostOps for AxvmX86HostOps {
                         .expect("a PIC claim must retain its originating controller")
                         .restore_interrupt(claim)
                 },
-                || ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(0)),
+                ioapic_interrupts,
                 |vector, trigger| dispatch_pit_interrupt(vm, vcpu_id, vector, trigger),
             )
         })
@@ -489,11 +493,27 @@ fn route_pit_claim<C>(
     assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
     mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
 ) -> X86VlapicResult {
+    route_pit_claims(
+        claim_pic,
+        pic_vector,
+        restore_pic,
+        [assert_ioapic()],
+        inject,
+    )
+}
+
+fn route_pit_claims<C>(
+    claim_pic: impl FnOnce() -> Option<C>,
+    pic_vector: impl FnOnce(&C) -> u8,
+    restore_pic: impl FnOnce(C),
+    ioapic_interrupts: impl IntoIterator<Item = Option<IoApicInterrupt>>,
+    mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+) -> X86VlapicResult {
     // KVM fans GSI 0 out to both in-kernel irqchips. Each controller owns its
     // mask/in-service state and independently decides whether this edge is
-    // currently deliverable.
+    // currently deliverable. The second IOAPIC input preserves the standard
+    // MPS IRQ0 -> INTIN2 route while the first preserves the ACPI GSI0 route.
     let pic_claim = claim_pic();
-    let ioapic_interrupt = assert_ioapic();
     let mut first_error = None;
 
     if let Some(claim) = pic_claim {
@@ -503,7 +523,7 @@ fn route_pit_claim<C>(
             first_error = Some(error);
         }
     }
-    if let Some(interrupt) = ioapic_interrupt {
+    for interrupt in ioapic_interrupts.into_iter().flatten() {
         let trigger = if interrupt.level_triggered {
             InterruptTriggerMode::LevelTriggered
         } else {

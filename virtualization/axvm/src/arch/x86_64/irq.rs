@@ -16,6 +16,9 @@ use crate::{
 pub(super) const IOAPIC_GSI_COUNT: usize = 24;
 
 const PIT_TIMER_GSI: usize = 0;
+// MPS mixed PIC/IOAPIC tables conventionally route IRQ0 to INTIN2, while
+// the ACPI table used by the same machine routes it directly to GSI0.
+const MPS_PIT_TIMER_GSI: usize = 2;
 const COM1_GSI: usize = 4;
 type IoApicForwardingActivator = fn();
 
@@ -91,7 +94,7 @@ fn host_irq_forwarding_leases() -> IrqSafeMutexGuard<'static, Vec<HostIrqLease>>
 }
 
 fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
-    gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI && gsi != COM1_GSI
+    gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI && gsi != MPS_PIT_TIMER_GSI && gsi != COM1_GSI
 }
 
 fn host_irq_is_guest_assignable(
@@ -992,6 +995,7 @@ mod tests {
     #[test]
     fn pit_gsi_uses_synthetic_injection_not_host_irq_hook() {
         assert!(!should_register_ioapic_gsi_hook(PIT_TIMER_GSI));
+        assert!(!should_register_ioapic_gsi_hook(MPS_PIT_TIMER_GSI));
     }
 
     #[test]
