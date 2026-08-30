@@ -924,11 +924,11 @@ mod tests {
     use axdevice::X86IoApicDeviceOps;
 
     use super::{
-        COM1_GSI, IOAPIC_GSI_COUNT, PIT_TIMER_GSI, acquire_host_irq_forwarding_lease, gsi_bit,
-        host_irq_forwarding_lease_count, host_irq_is_guest_assignable, host_irq_to_raw,
-        ioapic_irq_hook_gsis, raw_to_host_irq, release_host_irq_forwarding_leases_for_vm,
-        reset_host_irq_forwarding_leases, should_rearm_forwarded_host_gsi_after_eoi,
-        should_register_ioapic_gsi_hook,
+        COM1_GSI, IOAPIC_GSI_COUNT, MPS_PIT_TIMER_GSI, PIT_TIMER_GSI,
+        acquire_host_irq_forwarding_lease, gsi_bit, host_irq_forwarding_lease_count,
+        host_irq_is_guest_assignable, host_irq_to_raw, ioapic_irq_hook_gsis, raw_to_host_irq,
+        release_host_irq_forwarding_leases_for_vm, reset_host_irq_forwarding_leases,
+        should_rearm_forwarded_host_gsi_after_eoi, should_register_ioapic_gsi_hook,
     };
     use crate::{InterruptTriggerMode, arch::x86_64::X86InterruptDomain};
 
