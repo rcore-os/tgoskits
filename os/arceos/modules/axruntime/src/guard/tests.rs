@@ -26,8 +26,8 @@ fn scheduler_exit_state_reuses_one_cpu_pin() {
 
         let reads = cpu_local::host_test::register_read_counts();
         assert_eq!(
-            reads.current_context, 2,
-            "scheduler exit needs one pin validation and one context-owned preemption lookup"
+            reads.current_context, 1,
+            "scheduler exit reuses the published current and reads only preemption ownership"
         );
         assert_eq!(
             reads.binding_observations, 0,
@@ -58,8 +58,8 @@ fn scheduler_entry_state_reuses_one_cpu_pin() {
 
         let reads = cpu_local::host_test::register_read_counts();
         assert_eq!(
-            reads.current_context, 2,
-            "scheduler entry needs one pin validation and one context-owned preemption lookup"
+            reads.current_context, 1,
+            "scheduler entry reuses the published current and reads only preemption ownership"
         );
         assert_eq!(
             reads.binding_observations, 0,
@@ -117,8 +117,8 @@ fn final_preempt_exit_reuses_one_cpu_pin_and_one_depth_snapshot() {
 
         let reads = cpu_local::host_test::register_read_counts();
         assert_eq!(
-            reads.current_context, 2,
-            "preempt exit needs one pin validation and one context-owned depth lookup"
+            reads.current_context, 1,
+            "preempt exit reuses the published current and reads only the owned depth"
         );
         with_guard_state_mut(|state| state.exit_scheduler_preempt("modeled preempt exit"));
         ax_hal::asm::enable_irqs();
