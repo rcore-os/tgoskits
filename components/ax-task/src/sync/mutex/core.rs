@@ -1,7 +1,7 @@
 //! Lock-local state for scheduler-owned PI mutexes.
 
 use core::{
-    cell::UnsafeCell,
+    cell::{RefCell, UnsafeCell},
     fmt,
     mem::MaybeUninit,
     ptr::NonNull,
@@ -9,7 +9,7 @@ use core::{
 };
 
 use super::entry::{FastReleaseAttempt, try_release_current_owner_word};
-use crate::ThreadHandle;
+use crate::{ParkTicket, ThreadHandle};
 
 static NEXT_PI_MUTEX_GENERATION: AtomicU64 = AtomicU64::new(1);
 const OWNER_HAS_WAITERS: u64 = 1 << 63;
@@ -753,6 +753,7 @@ pub struct PiWaitToken {
     generation: u64,
     lock: PiMutexRaw,
     provider_waiter: NonNull<()>,
+    prepared_park: RefCell<Option<ParkTicket>>,
 }
 
 impl PiWaitToken {
@@ -777,7 +778,24 @@ impl PiWaitToken {
             generation,
             lock,
             provider_waiter,
+            prepared_park: RefCell::new(None),
         }
+    }
+
+    pub(crate) fn install_prepared_park(&self, ticket: ParkTicket) {
+        assert_eq!(
+            ticket.thread().as_u64(),
+            self.thread.get(),
+            "PI waiter park ticket must belong to the registered task"
+        );
+        assert!(
+            self.prepared_park.replace(Some(ticket)).is_none(),
+            "PI waiter may own only one prepared park"
+        );
+    }
+
+    pub(crate) fn take_prepared_park(&self) -> Option<ParkTicket> {
+        self.prepared_park.take()
     }
 
     /// Returns the registered task identity.

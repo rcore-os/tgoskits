@@ -250,7 +250,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         debug_assert_eq!(token.thread_id(), current_id);
 
         loop {
-            if token.is_granted() || self.try_claim_waiter(&token, &current) {
+            if self.try_claim_waiter(&token, &current) {
                 return Ok(());
             }
             if should_interrupt() {
@@ -258,7 +258,13 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                     crate::pi_wait_try_cancel(&token),
                     "cancel interruptible PI mutex waiter",
                 ) {
-                    PiWaitCancelOutcome::Cancelled => return Err(PiMutexLockInterrupted),
+                    PiWaitCancelOutcome::Cancelled => {
+                        task_result(
+                            crate::cancel_prepared_pi_park(&token),
+                            "cancel prepared interruptible PI mutex park",
+                        );
+                        return Err(PiMutexLockInterrupted);
+                    }
                     PiWaitCancelOutcome::HandoffPending => continue,
                 }
             }
@@ -273,9 +279,6 @@ impl<'lock> PiMutexAlgorithm<'lock> {
 
     fn wait_for_handoff(&self, token: PiWaitToken, current: &crate::CurrentThreadToken) {
         loop {
-            if token.is_granted() {
-                break;
-            }
             if self.try_claim_waiter(&token, current) {
                 break;
             }
@@ -341,18 +344,29 @@ impl<'lock> PiMutexAlgorithm<'lock> {
 
     fn try_claim_waiter(&self, token: &PiWaitToken, current: &crate::CurrentThreadToken) -> bool {
         if token.is_granted() {
+            task_result(
+                crate::cancel_prepared_pi_park(token),
+                "cancel prepared PI mutex park after handoff",
+            );
             return true;
         }
         if !token.can_claim() {
             return false;
         }
-        match task_result(
+        let claimed = match task_result(
             crate::pi_mutex_claim(token, current),
             "claim ownerless PI mutex handoff",
         ) {
             PiMutexClaimOutcome::Claimed => true,
             PiMutexClaimOutcome::Retry => false,
+        };
+        if claimed {
+            task_result(
+                crate::cancel_prepared_pi_park(token),
+                "cancel prepared PI mutex park after claim",
+            );
         }
+        claimed
     }
 
     pub(in crate::sync) unsafe fn unlock_pi(&self) {

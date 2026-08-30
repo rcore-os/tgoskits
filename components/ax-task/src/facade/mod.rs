@@ -60,6 +60,7 @@ pub use membarrier::{
     MembarrierCommand, membarrier, refresh_current_membarrier_run_queue,
     register_current_membarrier,
 };
+pub(crate) use pi::cancel_prepared_pi_park;
 pub use pi::{
     pi_drop_wait_handle, pi_initial_owner_is_on_cpu, pi_mutex_claim, pi_mutex_lock_slow,
     pi_mutex_release_owned, pi_park_current_once, pi_wait_cancel, pi_wait_try_cancel,

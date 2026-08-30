@@ -241,6 +241,8 @@ impl TaskSystem {
             let initial_owner_handle = initial_owner
                 .as_ref()
                 .map(|owner| ThreadHandle::from_core(Arc::clone(owner)));
+            #[cfg(axtest)]
+            super::axtest::record_waiter_registration(owner, waiter_core.state());
             drop(_owner_activity);
             drop(_waiter_activity);
 

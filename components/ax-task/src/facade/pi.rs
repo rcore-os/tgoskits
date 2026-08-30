@@ -12,7 +12,35 @@ pub fn pi_mutex_lock_slow(
     current: &CurrentThreadToken,
     sequence: u64,
 ) -> Result<PiMutexLockResult, TaskError> {
-    runtime_task_system()?.pi_mutex_lock_slow(lock, current.id(), sequence)
+    let _permit = acquire_blocking_permit()?;
+    let current_core = current_thread_core_arc()?;
+    if current_core.id() != current.id() {
+        return Err(TaskError::InvalidPiState);
+    }
+    let system = runtime_task_system()?;
+    let mut irq = RuntimeIrqGuard::enter();
+    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    system.drain_owner_control(cpu.as_mut())?;
+    let mut park = loop {
+        match system.prepare_current_park(&current_core)? {
+            ParkPrepare::Notified => continue,
+            ParkPrepare::Prepared(ticket) => break ticket,
+        }
+    };
+    match system.pi_mutex_lock_slow(lock, current.id(), sequence) {
+        Ok(PiMutexLockResult::Acquired) => {
+            system.cancel_current_park(cpu.as_mut(), &current_core, &mut park)?;
+            Ok(PiMutexLockResult::Acquired)
+        }
+        Ok(PiMutexLockResult::Waiting(token)) => {
+            token.install_prepared_park(park);
+            Ok(PiMutexLockResult::Waiting(token))
+        }
+        Err(error) => {
+            system.cancel_current_park(cpu.as_mut(), &current_core, &mut park)?;
+            Err(error)
+        }
+    }
 }
 
 /// Performs one scheduler park attempt for a PI waiter.
@@ -22,11 +50,20 @@ pub fn pi_mutex_lock_slow(
 /// wake returns control to the rtmutex state loop instead of being consumed by
 /// an inner uninterruptible wait.
 pub fn pi_park_current_once(token: &PiWaitToken) -> Result<(), TaskError> {
-    if token.can_claim() || token.is_granted() {
-        return Ok(());
-    }
     let system = runtime_task_system()?;
-    let (current, mut ticket) = match prepare_pi_park_attempt(system, token)? {
+    let prepared = if let Some(ticket) = token.take_prepared_park() {
+        let current = current_thread_core_arc()?;
+        if current.id() != token.thread_id().into() || ticket.thread() != current.id() {
+            return Err(TaskError::InvalidPiState);
+        }
+        PiParkAttempt::Prepared(current, ticket)
+    } else {
+        if token.can_claim() || token.is_granted() {
+            return Ok(());
+        }
+        prepare_pi_park_attempt(system, token)?
+    };
+    let (current, mut ticket) = match prepared {
         PiParkAttempt::Complete | PiParkAttempt::Retry => return Ok(()),
         PiParkAttempt::Prepared(current, ticket) => (current, ticket),
     };
@@ -35,6 +72,17 @@ pub fn pi_park_current_once(token: &PiWaitToken) -> Result<(), TaskError> {
         return Ok(());
     }
     commit_current_park(&current, &mut ticket).map(|_| ())
+}
+
+pub(crate) fn cancel_prepared_pi_park(token: &PiWaitToken) -> Result<(), TaskError> {
+    let Some(mut ticket) = token.take_prepared_park() else {
+        return Ok(());
+    };
+    let current = current_thread_core_arc()?;
+    if current.id() != token.thread_id().into() || ticket.thread() != current.id() {
+        return Err(TaskError::InvalidPiState);
+    }
+    cancel_current_park(&current, &mut ticket)
 }
 
 pub(super) fn prepare_pi_park_attempt(
@@ -60,7 +108,12 @@ pub(super) fn prepare_pi_park_attempt(
 
 /// Cancels a PI wait token after a handoff-before-block race.
 pub fn pi_wait_cancel(token: PiWaitToken) -> Result<(), TaskError> {
-    runtime_task_system()?.pi_wait_cancel(token)
+    let outcome = runtime_task_system()?.pi_wait_try_cancel(&token)?;
+    cancel_prepared_pi_park(&token)?;
+    match outcome {
+        PiWaitCancelOutcome::Cancelled => Ok(()),
+        PiWaitCancelOutcome::HandoffPending => Err(TaskError::InvalidPiState),
+    }
 }
 
 /// Tries to cancel one PI waiter while preserving an ownerless handoff that

@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use crate::ThreadId;
+use crate::{ThreadId, ThreadState};
 
 struct PiScheduleTestProbe {
     state: AtomicU8,
@@ -10,6 +10,8 @@ struct PiScheduleTestProbe {
     recompute_attempts: AtomicU64,
     no_rq_fast_returns: AtomicU64,
     owner_rq_transactions: AtomicU64,
+    waiter_registrations: AtomicU64,
+    parking_waiter_registrations: AtomicU64,
 }
 
 impl PiScheduleTestProbe {
@@ -24,6 +26,8 @@ impl PiScheduleTestProbe {
             recompute_attempts: AtomicU64::new(0),
             no_rq_fast_returns: AtomicU64::new(0),
             owner_rq_transactions: AtomicU64::new(0),
+            waiter_registrations: AtomicU64::new(0),
+            parking_waiter_registrations: AtomicU64::new(0),
         }
     }
 
@@ -40,6 +44,9 @@ impl PiScheduleTestProbe {
         self.recompute_attempts.store(0, Ordering::Relaxed);
         self.no_rq_fast_returns.store(0, Ordering::Relaxed);
         self.owner_rq_transactions.store(0, Ordering::Relaxed);
+        self.waiter_registrations.store(0, Ordering::Relaxed);
+        self.parking_waiter_registrations
+            .store(0, Ordering::Relaxed);
         self.state.store(Self::ACTIVE, Ordering::Release);
     }
 
@@ -58,6 +65,8 @@ impl PiScheduleTestProbe {
             recompute_attempts: self.recompute_attempts.load(Ordering::Acquire),
             no_rq_fast_returns: self.no_rq_fast_returns.load(Ordering::Acquire),
             owner_rq_transactions: self.owner_rq_transactions.load(Ordering::Acquire),
+            waiter_registrations: self.waiter_registrations.load(Ordering::Acquire),
+            parking_waiter_registrations: self.parking_waiter_registrations.load(Ordering::Acquire),
         }
     }
 
@@ -81,6 +90,10 @@ pub struct PiScheduleTestProbeSnapshot {
     pub no_rq_fast_returns: u64,
     /// Number that entered the owner-rq transaction.
     pub owner_rq_transactions: u64,
+    /// Number of waiters registered against the probed owner.
+    pub waiter_registrations: u64,
+    /// Number already published as `Parking` when registration completed.
+    pub parking_waiter_registrations: u64,
 }
 
 /// Arms the real-runtime PI schedule probe for one owner thread.
@@ -119,5 +132,18 @@ pub(super) fn record_owner_rq_transaction(owner: ThreadId) {
         PI_SCHEDULE_TEST_PROBE
             .owner_rq_transactions
             .fetch_add(1, Ordering::Release);
+    }
+}
+
+pub(super) fn record_waiter_registration(owner: Option<ThreadId>, state: ThreadState) {
+    if owner.is_some_and(|owner| PI_SCHEDULE_TEST_PROBE.records(owner)) {
+        PI_SCHEDULE_TEST_PROBE
+            .waiter_registrations
+            .fetch_add(1, Ordering::Release);
+        if state == ThreadState::Parking {
+            PI_SCHEDULE_TEST_PROBE
+                .parking_waiter_registrations
+                .fetch_add(1, Ordering::Release);
+        }
     }
 }

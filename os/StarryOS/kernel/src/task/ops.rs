@@ -259,6 +259,14 @@ mod axtests {
             completed.owner_rq_transactions, 0,
             "unchanged registration and deboost must not enter the owner rq"
         );
+        assert_eq!(
+            completed.waiter_registrations, 1,
+            "the probe must observe the PI waiter registration"
+        );
+        assert_eq!(
+            completed.parking_waiter_registrations, completed.waiter_registrations,
+            "Linux publishes the rtmutex wait state before linking the waiter"
+        );
     }
 }
 
