@@ -664,7 +664,17 @@ impl FairEntity {
     }
 }
 
+const fn weighted_delta_needs_scaling(weight: u32) -> bool {
+    weight != BASE_WEIGHT as u32
+}
+
 fn weighted_delta(runtime_ns: u64, weight: u32) -> u64 {
+    // Linux `calc_delta_fair()` returns the execution delta unchanged for
+    // NICE_0_LOAD. Besides preserving the exact value, this keeps the default
+    // fair path out of the software 128-bit division helper.
+    if !weighted_delta_needs_scaling(weight) {
+        return runtime_ns.min(MAX_VIRTUAL_DELTA);
+    }
     ((runtime_ns as u128).saturating_mul(BASE_WEIGHT as u128) / weight as u128)
         .min(MAX_VIRTUAL_DELTA as u128) as u64
 }
@@ -672,6 +682,11 @@ fn weighted_delta(runtime_ns: u64, weight: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_weight_does_not_need_vruntime_scaling() {
+        assert!(!weighted_delta_needs_scaling(BASE_WEIGHT as u32));
+    }
 
     #[test]
     fn higher_weight_accumulates_less_vruntime() {
