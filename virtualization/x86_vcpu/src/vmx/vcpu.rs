@@ -1899,6 +1899,18 @@ fn vmx_external_interrupt_allowed(rflags: u64, block_state: u32) -> bool {
         && block_state & (BLOCKING_BY_STI | BLOCKING_BY_MOV_SS) == 0
 }
 
+/// Lets the host consume the physical IRQ that caused a VMX external-interrupt exit.
+///
+/// VMX exits are taken with host IRQs disabled, so dispatching the vector later
+/// from the unbound vCPU path can leave the local APIC interrupt transaction
+/// detached from the VM-exit window. Briefly opening the host IRQ window after
+/// the VM-exit state has been restored matches the SVM path and lets the normal
+/// host IRQ entry perform the controller claim, action dispatch, and EOI.
+fn handle_vmx_external_interrupt_exit<H: X86HostOps>() -> X86VmExit {
+    let _ = H::poll_host_interrupt();
+    X86VmExit::PreemptionTimer
+}
+
 impl<H: X86HostOps> Drop for VmxVcpu<H> {
     fn drop(&mut self) {
         unsafe { vmx::vmclear(self.vmcs.phys_addr().as_usize() as u64).unwrap() };
@@ -2134,13 +2146,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
                         self.io_exit_info()?,
                         exit_info.exit_instruction_length as u8,
                     )?,
-                    VmxExitReason::EXTERNAL_INTERRUPT => {
-                        let int_info = self.interrupt_exit_info()?;
-                        assert!(int_info.valid);
-                        X86VmExit::ExternalInterrupt {
-                            vector: int_info.vector as _,
-                        }
-                    }
+                    VmxExitReason::EXTERNAL_INTERRUPT => handle_vmx_external_interrupt_exit::<H>(),
                     VmxExitReason::PREEMPTION_TIMER => {
                         self.handle_vmx_preemption_timer()?;
                         X86VmExit::PreemptionTimer
@@ -2391,6 +2397,14 @@ mod tests {
         let nmi_blocked = 1 << 3;
 
         assert!(vmx_external_interrupt_allowed(if_enabled, nmi_blocked));
+    }
+
+    #[test]
+    fn vmx_external_irq_is_consumed_by_the_host_poll_point() {
+        assert_eq!(
+            handle_vmx_external_interrupt_exit::<crate::test_utils::mock::MockMmHal>(),
+            X86VmExit::PreemptionTimer
+        );
     }
 
     #[test]
