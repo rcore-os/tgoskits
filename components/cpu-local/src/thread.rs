@@ -13,7 +13,6 @@ pub(crate) struct CpuBindingEpoch(usize);
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CurrentCpuBinding {
     pub(crate) area: CpuAreaRef,
-    pub(crate) epoch: CpuBindingEpoch,
 }
 
 const CPU_PHASE_MASK: usize = 0b11;
@@ -129,18 +128,22 @@ impl ExecutionContextHeader {
     }
 
     pub(crate) fn cpu_binding(&self) -> Option<CurrentCpuBinding> {
-        let (area_base, epoch) = self.raw_cpu_binding()?;
+        let (area_base, _) = self.raw_cpu_binding()?;
         // SAFETY: only bind_cpu can publish this field, and it accepts an
         // already validated shutdown-lifetime CpuAreaRef.
         let area = unsafe { CpuAreaRef::from_initialized_base(area_base) }.ok()?;
-        Some(CurrentCpuBinding { area, epoch })
+        Some(CurrentCpuBinding { area })
     }
 
     pub(crate) fn is_bound_to(&self, area: CpuAreaRef) -> bool {
-        // The caller already owns a validated CpuAreaRef. Preserve the binding
-        // epoch validation without reconstructing the same area identity.
+        self.binding_epoch_for_area(area).is_some()
+    }
+
+    pub(crate) fn binding_epoch_for_area(&self, area: CpuAreaRef) -> Option<CpuBindingEpoch> {
+        // The caller already owns a validated CpuAreaRef. Preserve the stable
+        // epoch observation without reconstructing the same area identity.
         self.raw_cpu_binding()
-            .is_some_and(|(area_base, _)| area_base == area.base())
+            .and_then(|(area_base, epoch)| (area_base == area.base()).then_some(epoch))
     }
 
     pub(crate) fn raw_cpu_binding(&self) -> Option<(usize, CpuBindingEpoch)> {

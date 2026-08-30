@@ -107,9 +107,8 @@ pub unsafe fn prepare_context_switch<'switch>(
     if published != previous.as_non_null() {
         return Err(ContextSwitchError::CurrentContextMismatch);
     }
-    let previous_binding = previous
-        .cpu_binding()
-        .filter(|binding| binding.area == pin.area())
+    let previous_epoch = previous
+        .binding_epoch_for_area(pin.area())
         .ok_or(ContextSwitchError::CurrentContextMismatch)?;
     let next_epoch = unsafe { next.bind_cpu(pin.area()) }?;
     Ok((
@@ -123,7 +122,7 @@ pub unsafe fn prepare_context_switch<'switch>(
         },
         PreviousContextBinding {
             previous: previous.as_non_null(),
-            epoch: previous_binding.epoch,
+            epoch: previous_epoch,
         },
     ))
 }

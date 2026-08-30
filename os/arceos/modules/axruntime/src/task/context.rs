@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_prepare_reads_the_current_context_register_once() {
+    fn switch_prepare_reuses_current_register_and_pinned_area_identity() {
         std::thread::spawn(|| {
             let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
             let base = storage.as_mut_ptr() as usize;
@@ -658,6 +658,14 @@ mod tests {
                     assert_eq!(
                         reads.current_context, 1,
                         "switch preparation must validate current publication exactly once"
+                    );
+                    assert_eq!(
+                        reads.binding_observations, 1,
+                        "switch preparation must observe the outgoing binding exactly once"
+                    );
+                    assert_eq!(
+                        reads.initialized_area_validations, 0,
+                        "switch preparation must reuse the area identity carried by the CPU pin"
                     );
                     drop(prepared);
                 })
