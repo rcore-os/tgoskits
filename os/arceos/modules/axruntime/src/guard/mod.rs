@@ -532,6 +532,13 @@ fn in_hard_irq_pinned() -> bool {
 }
 
 fn read_state() -> RuntimeGuardState {
+    if !ax_hal::asm::irqs_enabled() {
+        // Raw IRQ exclusion already fixes the CPU and prevents every local
+        // guard-state mutation. Reading the CPU-owned object directly avoids
+        // rebuilding task-current identity inside an existing owner scope.
+        return unsafe { RUNTIME_GUARD_STATE.with_current_cpu_area(|state| *state) }
+            .unwrap_or_else(|error| panic!("runtime CPU-owner state is invalid: {error}"));
+    }
     with_guard_state(|state| *state)
 }
 

@@ -72,6 +72,31 @@ fn scheduler_entry_state_reuses_one_cpu_pin() {
     .expect("modeled CPU must finish scheduler entry state");
 }
 
+#[cfg(feature = "host-test")]
+#[test]
+fn irq_pinned_guard_state_read_skips_current_context_reconstruction() {
+    let _serial = HOST_CPU_GUARD_TEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::thread::spawn(|| {
+        ax_hal::percpu::initialize_host_test_cpu();
+        ax_hal::asm::disable_irqs();
+        cpu_local::host_test::reset_register_read_counts();
+
+        assert!(read_state().irq.is_clear());
+
+        let reads = cpu_local::host_test::register_read_counts();
+        assert_eq!(reads.cpu_base, 1, "the owner read selects one CPU area");
+        assert_eq!(
+            reads.current_context, 0,
+            "an IRQ-pinned CPU owner must not reconstruct task current"
+        );
+        ax_hal::asm::enable_irqs();
+    })
+    .join()
+    .expect("modeled CPU must finish the owner-state read");
+}
+
 #[test]
 fn nested_irq_exits_restore_only_the_outer_state() {
     let mut state = RuntimeGuardState::new();
