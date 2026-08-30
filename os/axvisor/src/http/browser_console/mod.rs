@@ -148,7 +148,7 @@ fn run_browser_output(
         .build()
         .context("failed to build browser console output runtime")?;
 
-    while let Some(output) = console_output.receive() {
+    while let Some(output) = console_output.receive()? {
         runtime
             .block_on(browser_sender.send(Message::Binary(output.into())))
             .context("failed to write the browser console")?;
