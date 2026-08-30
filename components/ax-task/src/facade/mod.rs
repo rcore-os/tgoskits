@@ -101,12 +101,14 @@ pub fn current_thread_handle() -> Result<ThreadHandle, TaskError> {
 }
 
 /// Returns the generation-bearing identity of the calling scheduler thread.
+#[inline(always)]
 pub fn current_thread_id() -> Result<ThreadId, TaskError> {
     let identity = current_thread_publication()?.identity();
     Ok(ThreadId::from_parts(identity.slot, identity.generation))
 }
 
 /// Captures the scheduler thread executing this task context.
+#[inline(always)]
 pub fn current_thread_token() -> Result<CurrentThreadToken, TaskError> {
     Ok(CurrentThreadToken::new(current_thread_id()?))
 }

@@ -202,6 +202,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn lock_contended(&self, current: crate::CurrentThreadToken) {
         let current_id = current.id().into();
         let sequence = self.next_waiter_sequence.fetch_add(1, Ordering::Relaxed);
@@ -228,6 +230,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         self.wait_for_handoff(token, &current);
     }
 
+    #[cold]
+    #[inline(never)]
     fn lock_contended_interruptible(
         &self,
         current: crate::CurrentThreadToken,

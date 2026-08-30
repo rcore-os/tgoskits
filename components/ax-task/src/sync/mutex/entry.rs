@@ -25,6 +25,7 @@ pub(crate) enum FastReleaseAttempt {
 /// A contended result is not retried here. The slow path owns the waiter lock
 /// that excludes new fast acquisitions and retries there, matching Linux
 /// rtmutex ordering.
+#[inline(always)]
 pub(crate) fn capture_current_and_prepare_slow<T>(
     capture_current: impl FnOnce() -> T,
     try_fast: impl FnOnce(&T) -> FastLockAttempt,
