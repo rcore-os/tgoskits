@@ -18,7 +18,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 # Host tests exercise runtime-provided synchronization contracts.
-ax-runtime = { workspace = true, features = ["host-test"] }
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 
 [features]
 default = ["USE_MULTILEVEL_CACHE"]
