@@ -431,11 +431,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
         vmcs::exit_info()
     }
 
-    /// Information for VM exits due to external interrupts.
-    pub fn interrupt_exit_info(&self) -> X86VcpuResult<vmcs::VmxInterruptInfo> {
-        vmcs::interrupt_exit_info()
-    }
-
     /// Information for VM exits due to I/O instructions.
     pub fn io_exit_info(&self) -> X86VcpuResult<vmcs::VmxIoExitInfo> {
         vmcs::io_exit_info()

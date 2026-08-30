@@ -382,23 +382,28 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         deadline_nanos: u64,
         mut callback: X86TimerCallback,
     ) -> X86VlapicResult<Self::TimerHandle> {
-        with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|_| ()))
+        let (vm_id, vcpu_id) =
+            with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())))
+                .ok_or(X86VlapicError::TimerUnavailable)?;
+        let kick = manager::with_vm(vm_id, |vm| irq::vcpu_kick_for_vm(vm))
+            .flatten()
             .ok_or(X86VlapicError::TimerUnavailable)?;
         let wake = crate::host::task::current_thread().wake_handle();
         unsafe {
             // SAFETY: x86_vlapic proves that its callback touches only atomic
             // pending/deadline state and IRQ-safe registration locks. The
-            // owning vCPU wake handle is pre-bound in task context and is
-            // explicitly safe to invoke from hard IRQ. The host timer IRQ
-            // already exits VMX, so routing this local LAPIC expiry through
-            // the deferred virtual-IRQ worker would re-enter scheduler
-            // wait-cell delivery while the clockevent IRQ transaction is
-            // still active.
+            // owning vCPU wake handle and deferred kick publisher are
+            // pre-bound in task context and explicitly safe to invoke from
+            // hard IRQ. The kick is required when the host timer callback is
+            // observed outside the VMX exit that made the physical edge
+            // pending; the worker sends the target-vCPU IPI after the IRQ
+            // transaction has released its scheduler baton.
             default_host().register_hard_restartable_timer(
                 Duration::from_nanos(deadline_nanos),
                 Box::new(move |now| {
                     let action = callback(now.as_nanos() as u64);
                     let _ = wake.wake();
+                    let _ = kick.publish_from_irq(vcpu_id);
                     match action {
                         X86TimerAction::Complete => HostHardTimerAction::Complete,
                         X86TimerAction::Rearm(deadline) => {
@@ -875,7 +880,6 @@ impl X86InterruptDomain {
         std::mem::take(&mut *self.forwarding_hooks())
     }
 
-    #[cfg(test)]
     fn vcpu_kick(&self) -> Arc<DeferredVcpuKick> {
         Arc::clone(&self.wired.kick)
     }
