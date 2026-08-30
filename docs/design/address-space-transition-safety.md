@@ -4,7 +4,7 @@
 
 本文对应 PR #1775 之上的通用性重构。实现和验证基线固定为：
 
-- PR #1775 head：`eda0f9e62f00ff306c2a04317e3cddfe8b13e4e5`；
+- PR #1775 head：`0cb57a41a5d39171df2ef268c3875d57ee78fe64`；
 - parent branch：`codex/refactor-ax-task-from-1596`；
 - 本地 Linux 对照树：`/home/zhourui/linux-src`，head
   `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`（Linux v7.1）。
@@ -331,7 +331,7 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
   shootdown 确认先于旧 frame reclaim。
 
 交付门禁不是“跑过一次”。每次 parent rebase 或 child SHA 变化都重置为 `0/3`。最终 child SHA
-必须以 `since_sha=eda0f9e62f00ff306c2a04317e3cddfe8b13e4e5` 连续完成三次独立 CI
+必须以 `since_sha=0cb57a41a5d39171df2ef268c3875d57ee78fe64` 连续完成三次独立 CI
 workflow_dispatch；每次 required static/workspace job 和
 ArceOS、StarryOS、Axvisor × x86_64、aarch64、riscv64、loongarch64 全部成功，且每个 QEMU
 子任务存在 success marker。cancelled、skipped、timeout、缺 marker 或仅 rerun failed job 均不计绿。
