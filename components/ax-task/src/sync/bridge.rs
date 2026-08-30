@@ -22,6 +22,7 @@ pub use self::{
     },
     spin::{
         RwLockAcquireRequest, SpinAcquireRequest, rwlock_acquire, rwlock_force_read_decrement,
-        rwlock_release, spin_acquire, spin_force_release, spin_is_locked, spin_release,
+        rwlock_release, rwlock_try_acquire, spin_acquire, spin_force_release, spin_is_locked,
+        spin_release, spin_try_acquire,
     },
 };

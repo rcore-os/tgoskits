@@ -239,7 +239,15 @@ pub trait SpinOps {
         lock_addr: usize,
         context: u8,
         subclass: u32,
-        is_try: bool,
+        caller: &'static Location<'static>,
+    ) -> ContextState;
+
+    fn try_acquire(
+        locked: &AtomicBool,
+        metadata: &LockMetadata,
+        lock_addr: usize,
+        context: u8,
+        subclass: u32,
         caller: &'static Location<'static>,
     ) -> AcquireResult;
 
@@ -259,7 +267,15 @@ pub trait RwLockOps {
         lock_addr: usize,
         context: u8,
         mode: u8,
-        is_try: bool,
+        caller: &'static Location<'static>,
+    ) -> ContextState;
+
+    fn try_acquire(
+        state: &AtomicUsize,
+        metadata: &LockMetadata,
+        lock_addr: usize,
+        context: u8,
+        mode: u8,
         caller: &'static Location<'static>,
     ) -> AcquireResult;
 
@@ -335,9 +351,8 @@ pub(crate) fn spin_acquire(
     lock_addr: usize,
     context: u8,
     subclass: u32,
-    is_try: bool,
     caller: &'static Location<'static>,
-) -> AcquireResult {
+) -> ContextState {
     ax_crate_interface::call_interface!(
         SpinOps::acquire,
         locked,
@@ -345,7 +360,25 @@ pub(crate) fn spin_acquire(
         lock_addr,
         context,
         subclass,
-        is_try,
+        caller
+    )
+}
+
+pub(crate) fn spin_try_acquire(
+    locked: &AtomicBool,
+    metadata: &LockMetadata,
+    lock_addr: usize,
+    context: u8,
+    subclass: u32,
+    caller: &'static Location<'static>,
+) -> AcquireResult {
+    ax_crate_interface::call_interface!(
+        SpinOps::try_acquire,
+        locked,
+        metadata,
+        lock_addr,
+        context,
+        subclass,
         caller
     )
 }
@@ -379,9 +412,8 @@ pub(crate) fn rwlock_acquire(
     lock_addr: usize,
     context: u8,
     mode: u8,
-    is_try: bool,
     caller: &'static Location<'static>,
-) -> AcquireResult {
+) -> ContextState {
     ax_crate_interface::call_interface!(
         RwLockOps::acquire,
         state,
@@ -389,7 +421,25 @@ pub(crate) fn rwlock_acquire(
         lock_addr,
         context,
         mode,
-        is_try,
+        caller
+    )
+}
+
+pub(crate) fn rwlock_try_acquire(
+    state: &AtomicUsize,
+    metadata: &LockMetadata,
+    lock_addr: usize,
+    context: u8,
+    mode: u8,
+    caller: &'static Location<'static>,
+) -> AcquireResult {
+    ax_crate_interface::call_interface!(
+        RwLockOps::try_acquire,
+        state,
+        metadata,
+        lock_addr,
+        context,
+        mode,
         caller
     )
 }
@@ -498,6 +548,21 @@ mod tests {
         let acquired = AcquireResult::new(true, ContextState::new(0x5a5a, 0xa5a5));
         assert!(acquired.acquired());
         assert_eq!(acquired.context_state(), ContextState::new(0x5a5a, 0xa5a5));
+    }
+
+    #[test]
+    fn blocking_spin_bridges_return_only_context_state() {
+        if false {
+            let spin = AtomicBool::new(false);
+            let rwlock = AtomicUsize::new(0);
+            let metadata = LockMetadata::new();
+            let caller = Location::caller();
+
+            let _: ContextState = spin_acquire(&spin, &metadata, 0, 0, 0, caller);
+            let _: AcquireResult = spin_try_acquire(&spin, &metadata, 0, 0, 0, caller);
+            let _: ContextState = rwlock_acquire(&rwlock, &metadata, 0, 0, 0, caller);
+            let _: AcquireResult = rwlock_try_acquire(&rwlock, &metadata, 0, 0, 0, caller);
+        }
     }
 
     #[test]

@@ -27,7 +27,6 @@ pub struct SpinAcquireRequest<'lock> {
     pub lock_addr: usize,
     pub context: u8,
     pub subclass: u32,
-    pub is_try: bool,
     pub caller: &'static Location<'static>,
 }
 
@@ -38,7 +37,6 @@ pub struct RwLockAcquireRequest<'lock> {
     pub lock_addr: usize,
     pub context: u8,
     pub mode: u8,
-    pub is_try: bool,
     pub caller: &'static Location<'static>,
 }
 
@@ -46,11 +44,21 @@ pub struct RwLockAcquireRequest<'lock> {
 pub fn spin_acquire(
     request: SpinAcquireRequest<'_>,
     operations: &ContextOperations,
+) -> ContextState {
+    let pending_context = PendingContext::enter(request.context, operations);
+    let lockdep = prepare_spin_lockdep(&request, AcquireKind::Blocking);
+    acquire_spin_state(request.locked, lockdep);
+    pending_context.into_state()
+}
+
+/// Attempts an external exclusive spin acquisition through the native state machine.
+pub fn spin_try_acquire(
+    request: SpinAcquireRequest<'_>,
+    operations: &ContextOperations,
 ) -> (bool, ContextState) {
     let pending_context = PendingContext::enter(request.context, operations);
-    let lockdep = prepare_spin_lockdep(&request);
-    let acquired = acquire_spin_state(request.locked, request.is_try, lockdep);
-
+    let lockdep = prepare_spin_lockdep(&request, AcquireKind::Try);
+    let acquired = try_acquire_spin_state(request.locked, lockdep);
     if acquired {
         (true, pending_context.into_state())
     } else {
@@ -94,12 +102,23 @@ pub fn spin_is_locked(locked: &AtomicBool) -> bool {
 pub fn rwlock_acquire(
     request: RwLockAcquireRequest<'_>,
     operations: &ContextOperations,
+) -> ContextState {
+    let pending_context = PendingContext::enter(request.context, operations);
+    let lockdep = prepare_rwlock_lockdep(&request, AcquireKind::Blocking);
+    acquire_rwlock_state(request.state, request.mode);
+    finish_rwlock_lockdep(lockdep, true);
+    pending_context.into_state()
+}
+
+/// Attempts an external spin read-write acquisition through the native state machine.
+pub fn rwlock_try_acquire(
+    request: RwLockAcquireRequest<'_>,
+    operations: &ContextOperations,
 ) -> (bool, ContextState) {
     let pending_context = PendingContext::enter(request.context, operations);
-    let lockdep = prepare_rwlock_lockdep(&request);
-    let acquired = acquire_rwlock_state(request.state, request.mode, request.is_try);
+    let lockdep = prepare_rwlock_lockdep(&request, AcquireKind::Try);
+    let acquired = try_acquire_rwlock_state(request.state, request.mode);
     finish_rwlock_lockdep(lockdep, acquired);
-
     if acquired {
         (true, pending_context.into_state())
     } else {
@@ -165,6 +184,12 @@ type LockdepAcquire = lockdep::Lockdep;
 #[derive(Clone, Copy)]
 struct LockdepAcquire;
 
+#[derive(Clone, Copy)]
+enum AcquireKind {
+    Blocking,
+    Try,
+}
+
 #[cfg(feature = "lockdep")]
 struct BridgeLockdepRequest<'lock> {
     class: LockClass<'lock>,
@@ -178,7 +203,10 @@ struct BridgeLockdepRequest<'lock> {
     track_task_lock: bool,
 }
 
-fn prepare_spin_lockdep(request: &SpinAcquireRequest<'_>) -> LockdepAcquire {
+fn prepare_spin_lockdep(
+    request: &SpinAcquireRequest<'_>,
+    acquire_kind: AcquireKind,
+) -> LockdepAcquire {
     #[cfg(feature = "lockdep")]
     {
         prepare_lockdep(BridgeLockdepRequest {
@@ -188,7 +216,7 @@ fn prepare_spin_lockdep(request: &SpinAcquireRequest<'_>) -> LockdepAcquire {
             lock_addr: request.lock_addr,
             context: request.context,
             subclass: request.subclass,
-            is_try: request.is_try,
+            is_try: matches!(acquire_kind, AcquireKind::Try),
             caller: request.caller,
             track_task_lock: true,
         })
@@ -196,12 +224,15 @@ fn prepare_spin_lockdep(request: &SpinAcquireRequest<'_>) -> LockdepAcquire {
 
     #[cfg(not(feature = "lockdep"))]
     {
-        let _ = request;
+        let _ = (request, acquire_kind);
         LockdepAcquire
     }
 }
 
-fn prepare_rwlock_lockdep(request: &RwLockAcquireRequest<'_>) -> LockdepAcquire {
+fn prepare_rwlock_lockdep(
+    request: &RwLockAcquireRequest<'_>,
+    acquire_kind: AcquireKind,
+) -> LockdepAcquire {
     let track_task_lock = match request.mode {
         LOCK_MODE_READ => false,
         LOCK_MODE_WRITE => true,
@@ -216,7 +247,7 @@ fn prepare_rwlock_lockdep(request: &RwLockAcquireRequest<'_>) -> LockdepAcquire 
             lock_addr: request.lock_addr,
             context: request.context,
             subclass: 0,
-            is_try: request.is_try,
+            is_try: matches!(acquire_kind, AcquireKind::Try),
             caller: request.caller,
             track_task_lock,
         })
@@ -224,7 +255,7 @@ fn prepare_rwlock_lockdep(request: &RwLockAcquireRequest<'_>) -> LockdepAcquire 
 
     #[cfg(not(feature = "lockdep"))]
     {
-        let _ = (request, track_task_lock);
+        let _ = (request, acquire_kind, track_task_lock);
         LockdepAcquire
     }
 }
@@ -244,26 +275,34 @@ fn prepare_lockdep(request: BridgeLockdepRequest<'_>) -> LockdepAcquire {
     })
 }
 
-fn acquire_spin_state(locked: &AtomicBool, is_try: bool, lockdep: LockdepAcquire) -> bool {
+fn acquire_spin_state(locked: &AtomicBool, lockdep: LockdepAcquire) {
     #[cfg(feature = "smp")]
     {
-        if is_try {
-            let acquired = spin_try_acquire_with_lockdep(locked, lockdep);
-            if !acquired {
-                finish_spin_try_failure(lockdep);
-            }
-            acquired
-        } else {
-            atomic::spin_acquire(locked, || {
-                spin_acquire_once_weak_with_lockdep(locked, lockdep)
-            });
-            true
-        }
+        atomic::spin_acquire(locked, || {
+            spin_acquire_once_weak_with_lockdep(locked, lockdep)
+        });
     }
 
     #[cfg(not(feature = "smp"))]
     {
-        let _ = (locked, is_try);
+        let _ = locked;
+        finish_lockdep_with_irqsave(lockdep, true);
+    }
+}
+
+fn try_acquire_spin_state(locked: &AtomicBool, lockdep: LockdepAcquire) -> bool {
+    #[cfg(feature = "smp")]
+    {
+        let acquired = spin_try_acquire_with_lockdep(locked, lockdep);
+        if !acquired {
+            finish_spin_try_failure(lockdep);
+        }
+        acquired
+    }
+
+    #[cfg(not(feature = "smp"))]
+    {
+        let _ = locked;
         finish_lockdep_with_irqsave(lockdep, true);
         true
     }
@@ -311,19 +350,23 @@ fn force_release_spin_state(locked: &AtomicBool, lock_addr: usize, context: u8) 
     });
 }
 
-fn acquire_rwlock_state(state: &AtomicUsize, mode: u8, is_try: bool) -> bool {
-    match (mode, is_try) {
-        (LOCK_MODE_READ, true) => atomic::rw_try_acquire_read(state),
-        (LOCK_MODE_READ, false) => {
+fn acquire_rwlock_state(state: &AtomicUsize, mode: u8) {
+    match mode {
+        LOCK_MODE_READ => {
             atomic::rw_acquire_read(state);
-            true
         }
-        (LOCK_MODE_WRITE, true) => atomic::rw_try_acquire_write(state),
-        (LOCK_MODE_WRITE, false) => {
+        LOCK_MODE_WRITE => {
             atomic::rw_acquire_write(state);
-            true
         }
-        (mode, _) => panic!("unknown external rwlock mode {mode}"),
+        mode => panic!("unknown external rwlock mode {mode}"),
+    }
+}
+
+fn try_acquire_rwlock_state(state: &AtomicUsize, mode: u8) -> bool {
+    match mode {
+        LOCK_MODE_READ => atomic::rw_try_acquire_read(state),
+        LOCK_MODE_WRITE => atomic::rw_try_acquire_write(state),
+        mode => panic!("unknown external rwlock mode {mode}"),
     }
 }
 

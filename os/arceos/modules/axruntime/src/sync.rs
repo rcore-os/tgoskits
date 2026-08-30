@@ -122,10 +122,9 @@ impl ax_sync::interface::SpinOps for RuntimeSpinOps {
         lock_addr: usize,
         context: u8,
         subclass: u32,
-        is_try: bool,
         caller: &'static Location<'static>,
-    ) -> ax_sync::interface::AcquireResult {
-        let (acquired, context_state) = ax_task::sync::bridge::spin_acquire(
+    ) -> ax_sync::interface::ContextState {
+        let context_state = ax_task::sync::bridge::spin_acquire(
             ax_task::sync::bridge::SpinAcquireRequest {
                 locked,
                 class: ax_task::sync::bridge::LockClass {
@@ -135,7 +134,31 @@ impl ax_sync::interface::SpinOps for RuntimeSpinOps {
                 lock_addr,
                 context,
                 subclass,
-                is_try,
+                caller,
+            },
+            &CONTEXT_OPERATIONS,
+        );
+        into_sync_context_state(context_state)
+    }
+
+    fn try_acquire(
+        locked: &AtomicBool,
+        metadata: &ax_sync::interface::LockMetadata,
+        lock_addr: usize,
+        context: u8,
+        subclass: u32,
+        caller: &'static Location<'static>,
+    ) -> ax_sync::interface::AcquireResult {
+        let (acquired, context_state) = ax_task::sync::bridge::spin_try_acquire(
+            ax_task::sync::bridge::SpinAcquireRequest {
+                locked,
+                class: ax_task::sync::bridge::LockClass {
+                    class_id: metadata.class_id(),
+                    class_key: metadata.class_key(),
+                },
+                lock_addr,
+                context,
+                subclass,
                 caller,
             },
             &CONTEXT_OPERATIONS,
@@ -177,10 +200,9 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
         lock_addr: usize,
         context: u8,
         mode: u8,
-        is_try: bool,
         caller: &'static Location<'static>,
-    ) -> ax_sync::interface::AcquireResult {
-        let (acquired, context_state) = ax_task::sync::bridge::rwlock_acquire(
+    ) -> ax_sync::interface::ContextState {
+        let context_state = ax_task::sync::bridge::rwlock_acquire(
             ax_task::sync::bridge::RwLockAcquireRequest {
                 state,
                 class: ax_task::sync::bridge::LockClass {
@@ -190,7 +212,31 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
                 lock_addr,
                 context,
                 mode,
-                is_try,
+                caller,
+            },
+            &CONTEXT_OPERATIONS,
+        );
+        into_sync_context_state(context_state)
+    }
+
+    fn try_acquire(
+        state: &AtomicUsize,
+        metadata: &ax_sync::interface::LockMetadata,
+        lock_addr: usize,
+        context: u8,
+        mode: u8,
+        caller: &'static Location<'static>,
+    ) -> ax_sync::interface::AcquireResult {
+        let (acquired, context_state) = ax_task::sync::bridge::rwlock_try_acquire(
+            ax_task::sync::bridge::RwLockAcquireRequest {
+                state,
+                class: ax_task::sync::bridge::LockClass {
+                    class_id: metadata.class_id(),
+                    class_key: metadata.class_key(),
+                },
+                lock_addr,
+                context,
+                mode,
                 caller,
             },
             &CONTEXT_OPERATIONS,
