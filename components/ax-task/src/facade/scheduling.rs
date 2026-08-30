@@ -286,11 +286,16 @@ pub(super) fn prepare_next_address_space(
     } else {
         task_runtime::address_space_membarrier_state(address_space)
     };
-    if previous.identity() != next.identity() {
-        // Common four-architecture counterpart of Linux's switch_mm()/mmdrop
-        // barrier after publishing rq->curr and before user execution.
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    if previous.identity() == next.identity() {
+        // Linux's membarrier_switch_mm() returns before touching rq state when
+        // both tasks share one mm. A direct user-to-user switch also cannot
+        // carry a lazy kernel root, so the runtime activation would only
+        // rediscover the already active CPU lease and hardware root.
+        return;
     }
+    // Common four-architecture counterpart of Linux's switch_mm()/mmdrop
+    // barrier after publishing rq->curr and before user execution.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     activate_next_address_space(address_space, thread);
 }
 
