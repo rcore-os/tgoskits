@@ -451,7 +451,9 @@ impl Default for FileTable {
     }
 }
 
-struct FileLookupCache {
+const FILE_LOOKUP_CACHE_SLOTS: usize = 2;
+
+struct FileLookupCacheEntry {
     table: usize,
     fd: c_int,
     generation: usize,
@@ -460,13 +462,25 @@ struct FileLookupCache {
     file: Option<Weak<dyn FileLike>>,
 }
 
-impl FileLookupCache {
+impl FileLookupCacheEntry {
     const fn new() -> Self {
         Self {
             table: 0,
             fd: -1,
             generation: 0,
             file: None,
+        }
+    }
+}
+
+struct FileLookupCache {
+    entries: [FileLookupCacheEntry; FILE_LOOKUP_CACHE_SLOTS],
+}
+
+impl FileLookupCache {
+    const fn new() -> Self {
+        Self {
+            entries: [const { FileLookupCacheEntry::new() }; FILE_LOOKUP_CACHE_SLOTS],
         }
     }
 }
@@ -510,12 +524,14 @@ impl FileTableScope {
         // SAFETY: see the `Sync` contract above; this scope is active only on
         // the current task and this lookup is pinned by `LocalItem::with`.
         let cache = unsafe { &mut *self.cache.get() };
-        if cache.table == table_key
-            && cache.fd == fd
-            && cache.generation == generation
-            && let Some(file) = cache.file.as_ref().and_then(Weak::upgrade)
-        {
-            return Ok(file);
+        for entry in &cache.entries {
+            if entry.table == table_key
+                && entry.fd == fd
+                && entry.generation == generation
+                && let Some(file) = entry.file.as_ref().and_then(Weak::upgrade)
+            {
+                return Ok(file);
+            }
         }
 
         #[cfg(all(test, axtest))]
@@ -529,10 +545,13 @@ impl FileTableScope {
             .map(|fd| Arc::clone(&fd.inner))
             .ok_or(StarryError::BadFileDescriptor)?;
         let generation = self.generation.load(Ordering::Acquire);
-        cache.table = table_key;
-        cache.fd = fd;
-        cache.generation = generation;
-        cache.file = Some(Arc::downgrade(&file));
+        cache.entries.rotate_right(1);
+        cache.entries[0] = FileLookupCacheEntry {
+            table: table_key,
+            fd,
+            generation,
+            file: Some(Arc::downgrade(&file)),
+        };
         Ok(file)
     }
 }
@@ -914,6 +933,40 @@ fn stable_descriptor_lookup_avoids_repeated_read_lock_for_test() -> bool {
 }
 
 #[cfg(all(test, axtest))]
+fn alternating_descriptor_lookup_avoids_cache_thrashing_for_test() -> bool {
+    let (first_read, _first_write) = Pipe::new();
+    let (second_read, _second_write) = Pipe::new();
+    let scope = FileTableScope::new();
+    assert!(
+        scope
+            .table
+            .write()
+            .add(FileDescriptor {
+                inner: Arc::new(first_read),
+                cloexec: false,
+            })
+            .is_ok()
+    );
+    assert!(
+        scope
+            .table
+            .write()
+            .add(FileDescriptor {
+                inner: Arc::new(second_read),
+                cloexec: false,
+            })
+            .is_ok()
+    );
+    let before = FD_TABLE_LOOKUP_READ_LOCKS.load(Ordering::Relaxed);
+    scope.lookup(0).unwrap();
+    scope.lookup(1).unwrap();
+    scope.lookup(0).unwrap();
+    scope.lookup(1).unwrap();
+
+    FD_TABLE_LOOKUP_READ_LOCKS.load(Ordering::Relaxed) - before == 2
+}
+
+#[cfg(all(test, axtest))]
 fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
     let scope = FileTableScope::new();
     let (first_read, _first_write) = Pipe::new();
@@ -972,6 +1025,14 @@ mod tests {
         assert!(
             super::stable_descriptor_lookup_avoids_repeated_read_lock_for_test(),
             "a stable descriptor lookup must not update one shared reader-count cache line twice"
+        );
+    }
+
+    #[axtest::axtest]
+    fn alternating_descriptor_lookup_avoids_cache_thrashing() {
+        assert!(
+            super::alternating_descriptor_lookup_avoids_cache_thrashing_for_test(),
+            "two stable descriptors must not evict each other from the task-local lookup cache"
         );
     }
 
