@@ -90,12 +90,14 @@ impl WaitQueueWakeToken {
 
     fn notify_with_intent(&self, intent: WakeIntent) -> WaitQueueWakeOutcome {
         assert_task_context_notification();
-        let _preempt = PreemptScope::enter();
         let claim = match self.waiter.try_select() {
             WaiterSelection::Selected(claim) => claim,
             WaiterSelection::Retry => return WaitQueueWakeOutcome::Retry,
             WaiterSelection::Stale => return WaitQueueWakeOutcome::Stale,
         };
+        // Scheduler delivery enters `ThreadSchedulerActivity`, which pins the
+        // waker CPU exactly across Linux's try_to_wake_up-style transaction.
+        // This externally owned claim contains no CPU-local state before then.
         let delivery = self
             .waiter
             .wake
