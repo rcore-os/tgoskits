@@ -486,12 +486,13 @@ fn route_pit_irq(
     )
 }
 
+#[cfg(test)]
 fn route_pit_claim<C>(
     claim_pic: impl FnOnce() -> Option<C>,
     pic_vector: impl FnOnce(&C) -> u8,
     restore_pic: impl FnOnce(C),
     assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
-    mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+    inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
 ) -> X86VlapicResult {
     route_pit_claims(
         claim_pic,
