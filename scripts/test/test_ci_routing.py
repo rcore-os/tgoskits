@@ -508,6 +508,8 @@ def run_route(
             push_run_conclusion = (
                 "cancelled" if push_run_is_usable == "false" else "success"
             )
+            if push_run_status != "completed" and push_run_is_usable == "true":
+                push_run_conclusion = ""
         env.update(
             {
                 "EVENT_NAME": event_name,

@@ -145,9 +145,6 @@ jobs:
                   continue
                 fi
                 IFS=$'\t' read -r current_status push_run_is_successful <<< "$push_run_state"
-                if [ "$push_run_is_successful" != "true" ]; then
-                  continue
-                fi
 
                 # Push routing is canonical, so an unfinished matching run owns
                 # validation before GitHub materializes its matrix jobs.
@@ -155,6 +152,9 @@ jobs:
                   queued|in_progress|waiting|requested)
                     ;;
                   completed)
+                    if [ "$push_run_is_successful" != "true" ]; then
+                      continue
+                    fi
                     if ! active_matrix_jobs="$(
                       gh api \
                         --method GET \
