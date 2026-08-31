@@ -81,6 +81,10 @@ command/data completion；CARD_INT 本身仍按 signal-enable 判断是否可见
 由 owner drain 后 `rearm_and_check()` 闭合电平竞态。task-context 的“清旧状态、发布
 新 request generation、写 argument/command”与 hard-IRQ 的“采样、W1C、按 generation
 缓存”必须具有明确 exclusion/handoff，不能假设固定 CPU 会阻止本地硬中断抢占。
+与 Linux `sdhci.c` 一致，相邻 normal/error interrupt status、status-enable 和
+signal-enable 字段始终通过单次 32-bit MMIO 访问；不能拆成两次
+16-bit 交易，否则 DWC MSHC 集成可能丢失 command completion 而在卡识别阶段
+超时。
 
 ## 启动、等待和回滚
 
@@ -194,7 +198,10 @@ STA 连接由同一 owner 状态机串行推进：
    状态并返回 typed error，不发布假成功。
 
 EAPOL 是驱动内部控制流，不作为普通 Ethernet RX 向协议栈发布。固件 indication
-直接在本次有界 FIFO batch 中分派，不另设无界接收队列。
+直接在本次有界 FIFO batch 中分派，不另设无界接收队列。QoS control 标记 A-MSDU
+时，core 在同一有界 batch 内严格校验每个 subframe 的 DA/SA、big-endian length、
+LLC/SNAP 和 4-byte padding，再分别发布 Ethernet frame；畸形聚合整体丢弃，不能把
+subframe header 当作 LLC/SNAP 后静默丢包。
 
 DC 使用 V1 SDIO profile 和两个 Function，但仍只有一个 owner：Function 1 承载
 普通数据/管理帧，Function 2 承载 firmware mailbox。两者均由
@@ -223,6 +230,13 @@ Linux 为 `func`/`func_msg` 分别注册 handler 并 drain 两个 FIFO 的所有
 可信 UEFI RNG 或精确 32 字节 FDT `/chosen/rng-seed` 初始化。板级 runner 为每次
 运行生成临时 DTB 副本并注入新 seed；静态 DTB、时间、计数器、地址和 MAC 都不是
 随机源。缺少可信 seed 时安全连接 fail closed。
+
+普通 ostool `session_files` 继续走现有 HTTP 传输；它依赖 guest 已经联网，因此不能
+承载建立第一条 Wi-Fi 链路所需的凭据。只有声明 typed `[wifi]` sidecar 的 case 才把
+SSID、PMK、helper 和新 seed 编入启动 archive，并写入本次运行的临时 DTB 副本。
+仓库 DTB 不修改，临时副本随 session 清理。若未来 ostool 提供独立 FIT ramdisk 输入，
+可将 archive 迁到标准 initrd 交接；在此之前不能用串口命令、U-Boot 环境变量或
+网络后置下载替代启动前凭据通道。
 
 主机 session materializer 逐级拒绝 upload root 内的 symlink parent，目标文件在
 Unix 上以 `O_NOFOLLOW|O_CLOEXEC` 和 `0600` 打开。PMK/SSID 因此不能借由构建产物

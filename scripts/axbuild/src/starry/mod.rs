@@ -17,6 +17,7 @@ pub(crate) mod apk;
 pub mod app;
 mod args;
 pub mod board;
+mod board_assets;
 pub mod build;
 pub mod config;
 pub mod kmod;
@@ -545,7 +546,7 @@ impl Starry {
         cargo: Cargo,
         mut board_config: BoardRunConfig,
         board_config_path: PathBuf,
-        session_assets: Option<test::PreparedBoardSessionAssets>,
+        session_assets: Option<board_assets::PreparedBoardSessionAssets>,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         if let Some(assets) = &session_assets {

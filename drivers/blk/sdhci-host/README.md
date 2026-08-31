@@ -22,6 +22,8 @@ capability.
   use bounded `RegisterPending` retries.
 - `SdMmcIrqHost` controls the physical signal-enable registers. The hard IRQ
   never copies DMA data or completes an RDIF request.
+- Interrupt status, status-enable, and signal-enable are adjacent normal/error
+  pairs and use one 32-bit MMIO transaction, matching Linux `sdhci.c`.
 
 Traditional SDHCI has one in-flight hardware request, so
 `queue_depth = max_submit_batch = 1`. CQHCI/CQE is outside this crate.

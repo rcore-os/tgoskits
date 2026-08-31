@@ -37,73 +37,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
-/* Wireless-extensions ioctl numbers (from <linux/wireless.h>). */
-#define SIOCSIWCOMMIT     0x8B00
-#define SIOCSIWFREQ       0x8B04
-#define SIOCSIWMODE       0x8B06
-#define SIOCSIWESSID      0x8B1A
-#define SIOCSIWENCODEEXT  0x8B34
-
-/* iw_mode values. */
-#define IW_MODE_INFRA     2  /* Managed / Station */
-#define IW_MODE_MASTER    3  /* Master  / Access Point */
-#define IW_ENCODE_ALG_PMK 4
-#define IW_ENCODE_SEQ_MAX_SIZE 8
-
-#define IFNAMSIZ          16
-#define IW_ESSID_MAX_SIZE 32
-#define WPA2_PMK_SIZE     32
-
-/* Hand-rolled iw_point: { void *pointer; __u16 length; __u16 flags; }. */
-struct iw_point_compat {
-    void    *pointer;
-    uint16_t length;
-    uint16_t flags;
-};
-
-struct iw_freq_compat {
-    int32_t mantissa;
-    int16_t exponent;
-    uint8_t index;
-    uint8_t flags;
-};
-
-/*
- * Hand-rolled iwreq: 16-byte name union, then a 16-byte iwreq_data union.
- * We only ever use the u32 field (mode/freq) or the iw_point field (essid/key).
- */
-struct iwreq_compat {
-    char ifrn_name[IFNAMSIZ];
-    union {
-        uint32_t                mode;     /* SIOCSIWMODE */
-        struct iw_freq_compat   freq;     /* SIOCSIWFREQ */
-        struct iw_point_compat  essid;    /* SIOCSIWESSID / ...ENCODEEXT */
-        char                    pad[16];  /* keep the union exactly 16 bytes */
-    } u;
-};
-
-struct iw_encode_ext_compat {
-    uint32_t ext_flags;
-    uint8_t tx_seq[IW_ENCODE_SEQ_MAX_SIZE];
-    uint8_t rx_seq[IW_ENCODE_SEQ_MAX_SIZE];
-    struct sockaddr addr;
-    uint16_t alg;
-    uint16_t key_len;
-    uint8_t key[WPA2_PMK_SIZE];
-};
-
-_Static_assert(offsetof(struct iw_encode_ext_compat, alg) == 36,
-               "Linux iw_encode_ext alg offset");
-_Static_assert(offsetof(struct iw_encode_ext_compat, key_len) == 38,
-               "Linux iw_encode_ext key_len offset");
-_Static_assert(offsetof(struct iw_encode_ext_compat, key) == 40,
-               "Linux iw_encode_ext key offset");
-_Static_assert(sizeof(struct iwreq_compat) == 32, "Linux iwreq size on LP64");
-_Static_assert(offsetof(struct iwreq_compat, u) == 16, "Linux iwreq data offset");
-_Static_assert(offsetof(struct iwreq_compat, u.essid.length) == 24,
-               "Linux iw_point length offset");
-_Static_assert(offsetof(struct iwreq_compat, u.essid.flags) == 26,
-               "Linux iw_point flags offset");
+#include "../../../os/StarryOS/uapi/wireless_compat.h"
 
 static void wipe(void *memory, size_t length) {
     volatile unsigned char *bytes = memory;
@@ -138,9 +72,9 @@ static int do_set_essid(int fd, const char *ifname, const char *ssid) {
         return -1;
     }
     set_ifname(&req, ifname);
-    req.u.essid.pointer = (void *)ssid;
-    req.u.essid.length = (uint16_t)len;
-    req.u.essid.flags = 1; /* SSID active */
+    req.u.point.pointer = (void *)ssid;
+    req.u.point.length = (uint16_t)len;
+    req.u.point.flags = 1; /* SSID active */
     return wext(fd, SIOCSIWESSID, &req);
 }
 
@@ -152,9 +86,9 @@ static int do_set_pmk(int fd, const char *ifname, const uint8_t pmk[WPA2_PMK_SIZ
     encoded.key_len = WPA2_PMK_SIZE;
     memcpy(encoded.key, pmk, WPA2_PMK_SIZE);
     set_ifname(&req, ifname);
-    req.u.essid.pointer = &encoded;
-    req.u.essid.length = sizeof(encoded);
-    req.u.essid.flags = 0;
+    req.u.point.pointer = &encoded;
+    req.u.point.length = sizeof(encoded);
+    req.u.point.flags = 0;
     int result = wext(fd, SIOCSIWENCODEEXT, &req);
     wipe(&encoded, sizeof(encoded));
     return result;

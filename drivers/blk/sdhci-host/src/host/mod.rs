@@ -586,17 +586,17 @@ impl Sdhci {
     }
 }
 
-/// Read one of the SDHCI interrupt register pairs using the controller's
-/// required 32-bit MMIO access.  The low half is the normal interrupt field;
+/// Read one of the SDHCI interrupt register pairs with the 32-bit access used
+/// by Linux `sdhci_readl()`. The low half is the normal interrupt field and
 /// the high half is its corresponding error field.
 pub(crate) fn read_irq_register(base_addr: usize, off: usize) -> (u16, u16) {
     let value = unsafe { core::ptr::read_volatile((base_addr + off) as *const u32) };
     (value as u16, (value >> 16) as u16)
 }
 
-/// Write one of the SDHCI interrupt register pairs with a single 32-bit MMIO
-/// transaction.  CV181x/DWC MSHC implements these W1C/mask fields as a
-/// combined word; 16-bit writes can leave the latched status asserted.
+/// Write an adjacent normal/error interrupt pair with the Linux SDHCI 32-bit
+/// transaction. Splitting this into 16-bit writes can lose completion state on
+/// DWC MSHC integrations.
 pub(crate) fn write_irq_register(base_addr: usize, off: usize, normal: u16, error: u16) {
     let value = u32::from(normal) | (u32::from(error) << 16);
     unsafe { core::ptr::write_volatile((base_addr + off) as *mut u32, value) }

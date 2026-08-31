@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use core::time::Duration;
 
 use super::*;
@@ -215,13 +215,15 @@ impl AicDevice {
                     frame,
                     decryption_status,
                 } => {
-                    let Some(frame) = decapsulate_data_frame(&frame, decryption_status) else {
+                    let Some(frames) = decapsulate_data_frames(&frame, decryption_status) else {
                         continue;
                     };
-                    if frame.get(12..14) == Some(&ETHERTYPE_EAPOL) {
-                        self.consume_eapol(&frame)?;
-                    } else if self.data.events.len() < RX_CAPACITY {
-                        self.data.events.push_back(AicEvent::Receive(frame));
+                    for frame in frames {
+                        if frame.get(12..14) == Some(&ETHERTYPE_EAPOL) {
+                            self.consume_eapol(&frame)?;
+                        } else if self.data.events.len() < RX_CAPACITY {
+                            self.data.events.push_back(AicEvent::Receive(frame));
+                        }
                     }
                 }
                 ParsedFrame::Confirmation {
@@ -472,7 +474,7 @@ impl AicDevice {
 /// driver performs the same operation in `rwnx_rxdataind_aicwf`: management
 /// frames are consumed by the firmware control path, while station data is
 /// stripped of its MAC/crypto/LLC headers before delivery.
-fn decapsulate_data_frame(frame: &[u8], decryption_status: u8) -> Option<Vec<u8>> {
+fn decapsulate_data_frames(frame: &[u8], decryption_status: u8) -> Option<Vec<Vec<u8>>> {
     if frame.len() < 24 {
         return None;
     }
@@ -484,10 +486,10 @@ fn decapsulate_data_frame(frame: &[u8], decryption_status: u8) -> Option<Vec<u8>
     let from_ds = frame_control & 0x0200 != 0;
     let qos = ((frame_control >> 4) & 0x0f) >= 8;
     let has_ht_control = frame_control & 0x8000 != 0;
-    let header_len = 24
-        + usize::from(qos) * 2
-        + usize::from(to_ds && from_ds) * 6
-        + usize::from(has_ht_control) * 4;
+    let address4_len = usize::from(to_ds && from_ds) * 6;
+    let qos_offset = 24 + address4_len;
+    let is_amsdu = qos && frame.get(qos_offset).is_some_and(|value| value & 0x80 != 0);
+    let header_len = qos_offset + usize::from(qos) * 2 + usize::from(has_ht_control) * 4;
     let crypto_len = match decryption_status {
         0 => 0,
         1 => 4,
@@ -498,11 +500,13 @@ fn decapsulate_data_frame(frame: &[u8], decryption_status: u8) -> Option<Vec<u8>
         // header length for newer/unsupported suites.
         _ => return None,
     };
-    let llc = header_len.checked_add(crypto_len)?;
-    let ether_type = llc.checked_add(6)?;
-    let payload = ether_type.checked_add(2)?;
-    if frame.len() < payload || frame[llc..llc + 6] != [0xaa, 0xaa, 0x03, 0, 0, 0] {
+    let payload = header_len.checked_add(crypto_len)?;
+    if frame.len() < payload {
         return None;
+    }
+
+    if is_amsdu {
+        return decapsulate_amsdu(&frame[payload..]);
     }
 
     let (destination, source) = match (to_ds, from_ds) {
@@ -511,11 +515,53 @@ fn decapsulate_data_frame(frame: &[u8], decryption_status: u8) -> Option<Vec<u8>
         (false, true) => (&frame[4..10], &frame[16..22]),
         (true, true) => (&frame[16..22], &frame[24..30]),
     };
-    let mut ethernet = Vec::with_capacity(14 + frame.len() - payload);
+    ethernet_from_llc(destination, source, &frame[payload..]).map(|frame| vec![frame])
+}
+
+fn decapsulate_amsdu(aggregate: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let mut frames = Vec::new();
+    let mut offset = 0usize;
+    while offset < aggregate.len() {
+        let header_end = offset.checked_add(14)?;
+        if header_end > aggregate.len() {
+            return None;
+        }
+        let msdu_len =
+            u16::from_be_bytes([aggregate[offset + 12], aggregate[offset + 13]]) as usize;
+        let end = header_end.checked_add(msdu_len)?;
+        if msdu_len < 8 || end > aggregate.len() {
+            return None;
+        }
+        frames.push(ethernet_from_llc(
+            &aggregate[offset..offset + 6],
+            &aggregate[offset + 6..offset + 12],
+            &aggregate[header_end..end],
+        )?);
+        if end == aggregate.len() {
+            break;
+        }
+        let subframe_len = 14usize.checked_add(msdu_len)?;
+        let aligned_len = subframe_len.checked_add(3)? & !3;
+        offset = offset.checked_add(aligned_len)?;
+        if offset >= aggregate.len() {
+            return None;
+        }
+    }
+    (!frames.is_empty()).then_some(frames)
+}
+
+fn ethernet_from_llc(destination: &[u8], source: &[u8], llc: &[u8]) -> Option<Vec<u8>> {
+    if destination.len() != 6
+        || source.len() != 6
+        || llc.len() < 8
+        || llc[..6] != [0xaa, 0xaa, 0x03, 0, 0, 0]
+    {
+        return None;
+    }
+    let mut ethernet = Vec::with_capacity(12 + llc.len() - 6);
     ethernet.extend_from_slice(destination);
     ethernet.extend_from_slice(source);
-    ethernet.extend_from_slice(&frame[ether_type..payload]);
-    ethernet.extend_from_slice(&frame[payload..]);
+    ethernet.extend_from_slice(&llc[6..]);
     Some(ethernet)
 }
 
@@ -688,16 +734,49 @@ mod tests {
         let management = vec![
             0x80, 0x00, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8, 0, 9, 0, 10,
         ];
-        assert_eq!(decapsulate_data_frame(&management, 0), None);
+        assert_eq!(decapsulate_data_frames(&management, 0), None);
     }
 
     #[test]
     fn qos_data_mpdu_is_decapsulated_to_ethernet() {
         let frame = data_mpdu(0x0288, &[1, 2, 3]);
-        let ethernet = decapsulate_data_frame(&frame, 0).expect("valid QoS data");
+        let [ethernet] = decapsulate_data_frames(&frame, 0)
+            .expect("valid QoS data")
+            .try_into()
+            .expect("one MSDU");
         assert_eq!(&ethernet[..6], &[1, 2, 3, 4, 5, 6]);
         assert_eq!(&ethernet[6..12], &[0x21, 0x22, 0x23, 0x24, 0x25, 0x26]);
         assert_eq!(&ethernet[12..], &[0x08, 0x00, 1, 2, 3]);
+    }
+
+    #[test]
+    fn qos_amsdu_subframes_are_decapsulated_to_ethernet() {
+        let mut frame = data_mpdu(0x0288, &[]);
+        frame.truncate(26);
+        frame[24] = 0x80;
+        frame.extend_from_slice(&[1, 2, 3, 4, 5, 6]);
+        frame.extend_from_slice(&[0x21, 0x22, 0x23, 0x24, 0x25, 0x26]);
+        frame.extend_from_slice(&11u16.to_be_bytes());
+        frame.extend_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0x00, 9, 8, 7]);
+        frame.extend_from_slice(&[0; 3]);
+        frame.extend_from_slice(&[6, 5, 4, 3, 2, 1]);
+        frame.extend_from_slice(&[0x26, 0x25, 0x24, 0x23, 0x22, 0x21]);
+        frame.extend_from_slice(&10u16.to_be_bytes());
+        frame.extend_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x86, 0xdd, 6, 5]);
+
+        let ethernet = decapsulate_data_frames(&frame, 0).expect("valid A-MSDU subframes");
+        assert_eq!(
+            ethernet[0],
+            [
+                1, 2, 3, 4, 5, 6, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x08, 0x00, 9, 8, 7
+            ]
+        );
+        assert_eq!(
+            ethernet[1],
+            [
+                6, 5, 4, 3, 2, 1, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21, 0x86, 0xdd, 6, 5
+            ]
+        );
     }
 
     #[test]
@@ -705,7 +784,10 @@ mod tests {
         let mut frame = data_mpdu(0x0208, &[9, 8]);
         let llc = 24;
         frame.splice(llc..llc, [0, 1, 2, 3, 4, 5, 6, 7]);
-        let ethernet = decapsulate_data_frame(&frame, 3).expect("valid CCMP data");
+        let [ethernet] = decapsulate_data_frames(&frame, 3)
+            .expect("valid CCMP data")
+            .try_into()
+            .expect("one MSDU");
         assert_eq!(&ethernet[12..], &[0x08, 0x00, 9, 8]);
     }
 

@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     env, fs,
     io::ErrorKind,
     path::{Component, Path},
@@ -9,25 +8,31 @@ use anyhow::{Context, ensure};
 use pbkdf2::pbkdf2_hmac_array;
 use serde::Deserialize;
 use sha1::Sha1;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 const CONFIG_NAME: &str = ".session-env.toml";
+const WIFI_SSID_PATH: &str = "credentials/wifi-ssid";
+const WIFI_PMK_PATH: &str = "credentials/wifi-pmk";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionEnvConfig {
-    #[serde(default)]
-    pub inject_boot_entropy: bool,
-    #[serde(default)]
-    files: BTreeMap<String, String>,
     wifi: Option<WifiSessionConfig>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WifiSessionConfig {
-    ssid_file: String,
-    pmk_file: String,
+struct WifiSessionConfig {}
+
+#[derive(Debug, Default)]
+pub(super) struct PreparedSessionEnvironment {
+    wifi: Option<PreparedWifiSession>,
+}
+
+#[derive(Debug)]
+struct PreparedWifiSession {
+    ssid: Zeroizing<String>,
+    pmk: Zeroizing<[u8; 32]>,
 }
 
 impl SessionEnvConfig {
@@ -46,85 +51,50 @@ impl SessionEnvConfig {
                 .with_context(|| format!("failed to read {}", path.display()))?,
         )
         .with_context(|| format!("failed to parse {}", path.display()))?;
-        for (relative_path, variable) in &config.files {
-            super::test::validate_relative_path(Path::new(relative_path))?;
-            ensure!(
-                variable
-                    .bytes()
-                    .all(|byte| byte.is_ascii_uppercase() || byte == b'_' || byte.is_ascii_digit()),
-                "session environment mapping contains an invalid variable name"
-            );
-            ensure!(
-                !matches!(
-                    variable.as_str(),
-                    "STARRY_WIFI_SSID" | "STARRY_WIFI_PASSWORD"
-                ),
-                "Wi-Fi credentials must use the typed `[wifi]` session mapping"
-            );
-        }
-        if let Some(wifi) = &config.wifi {
-            super::test::validate_relative_path(Path::new(&wifi.ssid_file))?;
-            super::test::validate_relative_path(Path::new(&wifi.pmk_file))?;
-            ensure!(
-                wifi.ssid_file != wifi.pmk_file,
-                "Wi-Fi SSID and PMK session paths must differ"
-            );
-        }
+        ensure!(
+            config.wifi.is_some(),
+            "{CONFIG_NAME} must declare the typed `[wifi]` bootstrap capability"
+        );
         Ok(Some(config))
     }
 
-    pub(super) fn validate_environment(&self) -> anyhow::Result<()> {
-        for variable in self.files.values() {
-            let value = env::var(variable).map_err(|_| {
-                anyhow::anyhow!("required session environment variable `{variable}` is missing")
-            })?;
-            validate_value(variable, value.as_bytes())?;
-        }
-        if self.wifi.is_some() {
-            let ssid = env::var("STARRY_WIFI_SSID").map_err(|_| {
-                anyhow::anyhow!(
-                    "required session environment variable `STARRY_WIFI_SSID` is missing"
-                )
-            })?;
-            let password = Zeroizing::new(env::var("STARRY_WIFI_PASSWORD").map_err(|_| {
-                anyhow::anyhow!(
-                    "required session environment variable `STARRY_WIFI_PASSWORD` is missing"
-                )
-            })?);
-            validate_value("STARRY_WIFI_SSID", ssid.as_bytes())?;
-            validate_value("STARRY_WIFI_PASSWORD", password.as_bytes())?;
-        }
-        Ok(())
+    pub(super) fn capture_environment(self) -> anyhow::Result<PreparedSessionEnvironment> {
+        let wifi = self
+            .wifi
+            .map(|_| {
+                let ssid = Zeroizing::new(env::var("STARRY_WIFI_SSID").map_err(|_| {
+                    anyhow::anyhow!(
+                        "required session environment variable `STARRY_WIFI_SSID` is missing"
+                    )
+                })?);
+                let password = Zeroizing::new(env::var("STARRY_WIFI_PASSWORD").map_err(|_| {
+                    anyhow::anyhow!(
+                        "required session environment variable `STARRY_WIFI_PASSWORD` is missing"
+                    )
+                })?);
+                validate_value("STARRY_WIFI_SSID", ssid.as_bytes())?;
+                validate_value("STARRY_WIFI_PASSWORD", password.as_bytes())?;
+                Ok::<_, anyhow::Error>(PreparedWifiSession {
+                    pmk: Zeroizing::new(derive_wifi_pmk(ssid.as_bytes(), password.as_bytes())),
+                    ssid,
+                })
+            })
+            .transpose()?;
+        Ok(PreparedSessionEnvironment { wifi })
+    }
+}
+
+impl PreparedSessionEnvironment {
+    pub(super) fn is_bootstrap(&self) -> bool {
+        self.wifi.is_some()
     }
 
     pub(super) fn materialize(&self, upload_root: &Path) -> anyhow::Result<()> {
-        for (relative_path, variable) in &self.files {
-            let value = env::var(variable).map_err(|_| {
-                anyhow::anyhow!("required session environment variable `{variable}` is missing")
-            })?;
-            validate_value(variable, value.as_bytes())?;
-            write_session_asset(upload_root, relative_path, value.as_bytes())?;
-        }
-        if let Some(wifi) = &self.wifi {
-            let ssid = env::var("STARRY_WIFI_SSID").map_err(|_| {
-                anyhow::anyhow!(
-                    "required session environment variable `STARRY_WIFI_SSID` is missing"
-                )
-            })?;
-            let password = Zeroizing::new(env::var("STARRY_WIFI_PASSWORD").map_err(|_| {
-                anyhow::anyhow!(
-                    "required session environment variable `STARRY_WIFI_PASSWORD` is missing"
-                )
-            })?);
-            validate_value("STARRY_WIFI_SSID", ssid.as_bytes())?;
-            validate_value("STARRY_WIFI_PASSWORD", password.as_bytes())?;
-            let mut pmk = derive_wifi_pmk(ssid.as_bytes(), password.as_bytes());
-            write_session_asset(upload_root, &wifi.ssid_file, ssid.as_bytes())?;
-            let result = write_session_asset(upload_root, &wifi.pmk_file, &pmk);
-            pmk.zeroize();
-            result?;
-        }
-        Ok(())
+        let Some(wifi) = &self.wifi else {
+            return Ok(());
+        };
+        write_session_asset(upload_root, WIFI_SSID_PATH, wifi.ssid.as_bytes())?;
+        write_session_asset(upload_root, WIFI_PMK_PATH, wifi.pmk.as_ref())
     }
 }
 
@@ -136,7 +106,7 @@ fn write_session_asset(
     #[cfg(unix)]
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    super::test::validate_relative_path(Path::new(relative_path))?;
+    super::board_assets::validate_relative_path(Path::new(relative_path))?;
     let destination = upload_root.join(relative_path);
     let parent = destination
         .parent()
@@ -237,7 +207,32 @@ fn validate_value(variable: &str, value: &[u8]) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_wifi_pmk, validate_value, write_session_asset};
+    use std::fs;
+
+    use super::{
+        CONFIG_NAME, SessionEnvConfig, derive_wifi_pmk, validate_value, write_session_asset,
+    };
+
+    #[test]
+    fn sidecar_accepts_only_the_typed_wifi_capability() {
+        let case = tempfile::tempdir().unwrap();
+        let board_config = case.path().join("board-aka.toml");
+        fs::write(&board_config, "board_type = 'AKA'\n").unwrap();
+        let sidecar = case.path().join(CONFIG_NAME);
+        fs::write(&sidecar, "[wifi]\n").unwrap();
+
+        let config = SessionEnvConfig::load(case.path(), &board_config)
+            .unwrap()
+            .unwrap();
+        assert!(config.wifi.is_some());
+
+        fs::write(
+            &sidecar,
+            "inject_boot_entropy = true\n[files]\ncredential = 'SECRET'\n[wifi]\n",
+        )
+        .unwrap();
+        assert!(SessionEnvConfig::load(case.path(), &board_config).is_err());
+    }
 
     #[test]
     fn wifi_credentials_are_validated_without_echoing_values() {

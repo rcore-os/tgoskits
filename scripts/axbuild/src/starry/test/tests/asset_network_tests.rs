@@ -57,11 +57,18 @@ fn wifi_switch_reads_the_pmk_from_a_file_instead_of_argv() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source_path = workspace_root.join("apps/starry/picoclaw-cli/wifi_switch.c");
     let source = fs::read_to_string(&source_path).unwrap();
+    let helper =
+        fs::read_to_string(workspace_root.join("test-suit/starryos/common/wifi-session-helper.c"))
+            .unwrap();
 
     assert!(source.contains("read_pmk_file(pmk_file, pmk)"));
     assert!(source.contains("[pmk-file]"));
     assert!(!source.contains("[pmk-hex]"));
     assert!(!source.contains("decode_pmk"));
+    for wext_client in [&source, &helper] {
+        assert!(wext_client.contains("os/StarryOS/uapi/wireless_compat.h"));
+        assert!(!wext_client.contains("struct iwreq_compat {"));
+    }
 }
 
 #[test]

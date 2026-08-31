@@ -14,8 +14,10 @@ cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
 ```
 
 The board session provides both the address of the persistent iperf3 server and
-the script URL. For AKA, the per-boot DTB carries the session files into tmpfs
-before networking starts and the board profile supplies `STARRY_IPERF3_SCRIPT_PATH`.
+the script URL. For AKA, a session-scoped DTB copy carries only the typed Wi-Fi
+bootstrap archive and fresh entropy into tmpfs before networking starts; the
+repository DTB is never modified. The board profile supplies
+`STARRY_IPERF3_SCRIPT_PATH`.
 The app's `init.sh` is merged into `shell_init_cmd`, where it
 downloads and starts the benchmark script. The xtask command therefore needs
 neither a fixed IP address nor a separate board launcher.
