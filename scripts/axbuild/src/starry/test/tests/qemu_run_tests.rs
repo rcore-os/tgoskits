@@ -286,7 +286,20 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
             .contains(&"starry-kernel/plat-dyn".to_string())
     );
     assert!(cargo.features.contains(&"qemu".to_string()));
-    assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(
+        cargo.target,
+        "scripts/targets/bare/aarch64-unknown-none-softfloat.json"
+    );
+    assert_eq!(
+        cargo.env.get("AX_TARGET").map(String::as_str),
+        Some("aarch64-unknown-none-softfloat")
+    );
+    assert!(
+        cargo
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-Z", "json-target-spec"])
+    );
     assert!(
         cargo
             .args

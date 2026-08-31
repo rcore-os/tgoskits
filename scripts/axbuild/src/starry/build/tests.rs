@@ -502,7 +502,7 @@ fn load_cargo_config_keeps_sg2002_as_device_feature_without_static_platform_alia
 }
 
 #[test]
-fn load_cargo_config_keeps_original_bare_target_for_dynamic_platform_request() {
+fn load_cargo_config_uses_shared_bare_target_for_dynamic_platform_request() {
     let target = "aarch64-unknown-none-softfloat";
     let mut request = request(PathBuf::from("/tmp/.build.toml"), "aarch64", target);
     request.build_info_override = Some(StarryBuildInfo {
@@ -512,7 +512,8 @@ fn load_cargo_config_keeps_original_bare_target_for_dynamic_platform_request() {
 
     let cargo = load_cargo_config(&request).unwrap();
 
-    assert_eq!(cargo.target, target);
+    assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
+    assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
 }
 
 #[test]
@@ -542,7 +543,7 @@ fn load_cargo_config_uses_bare_no_std_pie_contract() {
     let cargo = load_cargo_config(&request).unwrap();
     let args = cargo.args.join("\n");
 
-    assert_eq!(cargo.target, target);
+    assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
     assert!(
         cargo
             .args
@@ -562,9 +563,17 @@ fn load_cargo_config_uses_bare_no_std_pie_contract() {
     }
     assert!(cargo.extra_config.is_none());
     assert!(cargo.pre_build_cmds.is_empty());
-    assert!(!cargo.target.contains("scripts/targets/std"));
-    assert!(!cargo.args.iter().any(|arg| arg == "json-target-spec"));
-    assert!(!cargo.env.contains_key("CARGO_UNSTABLE_JSON_TARGET_SPEC"));
+    assert!(cargo.target.starts_with("scripts/targets/bare/"));
+    assert!(
+        cargo
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-Z", "json-target-spec"])
+    );
+    assert_eq!(
+        cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
+        Some(&"true".to_string())
+    );
     assert!(
         cargo
             .features
@@ -585,16 +594,12 @@ fn load_cargo_config_derives_to_bin_from_original_bare_target() {
         request.build_info_override = Some(default_starry_build_info());
 
         let cargo = load_cargo_config(&request).unwrap();
-        if arch == "loongarch64" {
-            assert!(
-                cargo
-                    .target
-                    .ends_with("scripts/targets/bare/loongarch64-unknown-none-softfloat.json")
-            );
-        } else {
-            assert_eq!(cargo.target, target);
-        }
+        assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
         assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
+        assert_eq!(
+            cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
+            Some(&"true".to_string())
+        );
         assert_eq!(cargo.to_bin, expected_to_bin);
     }
 }

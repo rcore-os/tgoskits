@@ -1,7 +1,5 @@
 use std::{collections::HashMap, path::Path};
 
-const LOONGARCH64_SOFTFLOAT_TARGET: &str = "loongarch64-unknown-none-softfloat";
-
 /// Resolved Cargo inputs for a logical freestanding target.
 pub(crate) struct BareBuildTarget {
     pub(crate) target: String,
@@ -11,14 +9,6 @@ pub(crate) struct BareBuildTarget {
 
 /// Resolves target specifications shared by freestanding builds and Clippy.
 pub(crate) fn bare_build_target_for(target: &str) -> BareBuildTarget {
-    if target != LOONGARCH64_SOFTFLOAT_TARGET {
-        return BareBuildTarget {
-            target: target.to_string(),
-            cargo_args: vec!["-Z".to_string(), "build-std=core,alloc".to_string()],
-            env: HashMap::new(),
-        };
-    }
-
     BareBuildTarget {
         target: Path::new("scripts/targets/bare")
             .join(format!("{target}.json"))

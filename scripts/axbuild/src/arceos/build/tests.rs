@@ -41,13 +41,24 @@ fn request(package: &str, target: &str, build_info_path: PathBuf) -> ResolvedBui
 }
 
 #[test]
-fn build_cargo_args_use_builtin_target_and_build_std() {
-    let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
-    assert!(
-        args.windows(2)
-            .any(|pair| pair == ["-Z", "build-std=core,alloc"])
-    );
-    assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
+fn build_cargo_args_use_shared_bare_targets_and_build_std() {
+    for target in [
+        "x86_64-unknown-none",
+        "aarch64-unknown-none-softfloat",
+        "riscv64gc-unknown-none-elf",
+        "loongarch64-unknown-none-softfloat",
+    ] {
+        let args = ArceosBuildInfo::build_cargo_args(target, &[]);
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "json-target-spec"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
+        assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
+    }
 }
 
 #[test]
@@ -390,49 +401,43 @@ fn prepared_cargo_config_uses_unified_std_target() {
 }
 
 #[test]
-fn c_app_cargo_config_uses_shared_loongarch_bare_target_spec() {
-    let root = tempdir().unwrap();
-    let build_config = root
-        .path()
-        .join("build-loongarch64-unknown-none-softfloat.toml");
-    let build_info = ArceosBuildInfo {
-        features: vec!["ax-std".to_string()],
-        ..ArceosBuildInfo::default()
-    };
-    fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
-    let request = request(
-        "arceos-helloworld",
+fn c_app_cargo_configs_use_shared_bare_target_specs() {
+    for target in [
+        "x86_64-unknown-none",
+        "aarch64-unknown-none-softfloat",
+        "riscv64gc-unknown-none-elf",
         "loongarch64-unknown-none-softfloat",
-        build_config,
-    );
-    let cargo = load_c_app_cargo_config(&request).unwrap();
+    ] {
+        let root = tempdir().unwrap();
+        let build_config = root.path().join(format!("build-{target}.toml"));
+        let build_info = ArceosBuildInfo {
+            features: vec!["ax-std".to_string()],
+            ..ArceosBuildInfo::default()
+        };
+        fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
+        let request = request("arceos-helloworld", target, build_config);
+        let cargo = load_c_app_cargo_config(&request).unwrap();
 
-    assert!(
-        cargo
-            .target
-            .ends_with("scripts/targets/bare/loongarch64-unknown-none-softfloat.json")
-    );
-    assert_eq!(
-        cargo.env.get("AX_TARGET"),
-        Some(&"loongarch64-unknown-none-softfloat".to_string())
-    );
-    assert_eq!(
-        cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
-        Some(&"true".to_string())
-    );
-    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(
-        cargo
-            .args
-            .windows(2)
-            .any(|pair| pair == ["-Z", "build-std=core,alloc"])
-    );
-    assert!(
-        cargo
-            .args
-            .windows(2)
-            .any(|pair| pair == ["-Z", "json-target-spec"])
-    );
+        assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
+        assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
+        assert_eq!(
+            cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
+            Some(&"true".to_string())
+        );
+        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+        assert!(
+            cargo
+                .args
+                .windows(2)
+                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+        );
+        assert!(
+            cargo
+                .args
+                .windows(2)
+                .any(|pair| pair == ["-Z", "json-target-spec"])
+        );
+    }
 }
 
 #[test]
