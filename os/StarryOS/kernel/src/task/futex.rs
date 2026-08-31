@@ -132,6 +132,7 @@ struct WaitQueueInner {
 
 struct Waiter {
     task: UserTaskRef,
+    wake: scheduler::ThreadWakeHandle,
     bitset: u32,
     generation: u64,
 }
@@ -414,6 +415,7 @@ impl WaitQueue {
             };
             inner.queue.push_back(Waiter {
                 task: task.clone(),
+                wake: task.wake_handle(),
                 bitset,
                 generation,
             });
@@ -534,7 +536,7 @@ impl WaitQueue {
 
     fn push_wake(wakes: &mut WakeBatch, waiter: Waiter) {
         assert!(
-            wakes.push(waiter.task.wake_handle()),
+            wakes.push(waiter.wake),
             "one futex wait generation cannot enter two live wake batches"
         );
     }
@@ -916,6 +918,7 @@ impl ResolvedFutex {
                 key: self.key.clone(),
                 waiter: Waiter {
                     task: task.clone(),
+                    wake: task.wake_handle(),
                     bitset,
                     generation,
                 },
