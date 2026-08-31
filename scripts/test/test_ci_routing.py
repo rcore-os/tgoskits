@@ -270,6 +270,16 @@ class DuplicateEventRoutingTests(unittest.TestCase):
 
         self.assertEqual(result.should_run, "true")
 
+    def test_completed_failed_push_does_not_suppress_pull_request(self) -> None:
+        result = run_route(
+            event_name="pull_request",
+            push_runs="101\t11975\thttps://example.test/push/101",
+            has_active_matrix="true",
+            push_run_conclusion="failure",
+        )
+
+        self.assertEqual(result.should_run, "true")
+
     def test_later_active_push_suppresses_pull_request(self) -> None:
         result = run_route(
             event_name="pull_request",
@@ -473,6 +483,7 @@ def run_route(
     push_run_status: str = "completed",
     push_run_query_exit: str = "0",
     push_run_query_fail_ids: str = "",
+    push_run_conclusion: str | None = None,
     run_query_exit: str = "0",
     job_query_exit: str = "0",
     push_runs_after_query: int = 1,
@@ -493,6 +504,10 @@ def run_route(
         summary_file = temp_dir / "summary"
         gh_log = temp_dir / "gh.log"
         env = os.environ.copy()
+        if push_run_conclusion is None:
+            push_run_conclusion = (
+                "cancelled" if push_run_is_usable == "false" else "success"
+            )
         env.update(
             {
                 "EVENT_NAME": event_name,
@@ -512,6 +527,7 @@ def run_route(
                 "FAKE_PUSH_RUN_STATUS": push_run_status,
                 "FAKE_PUSH_RUN_QUERY_EXIT": push_run_query_exit,
                 "FAKE_PUSH_RUN_QUERY_FAIL_IDS": push_run_query_fail_ids,
+                "FAKE_PUSH_RUN_CONCLUSION": push_run_conclusion,
                 "FAKE_RUN_QUERY_EXIT": run_query_exit,
                 "FAKE_PUSH_RUNS_AFTER_QUERY": str(push_runs_after_query),
                 "FAKE_STATE_DIR": str(temp_dir),
@@ -751,9 +767,10 @@ if "/actions/runs/" in arguments and "/jobs" in arguments:
     sys.exit(int(os.environ["FAKE_JOB_QUERY_EXIT"]))
 if "/actions/runs/" in arguments:
     run_id = arguments.split("/actions/runs/", maxsplit=1)[1].split()[0]
+    conclusion = os.environ["FAKE_PUSH_RUN_CONCLUSION"]
     print(
         f'{os.environ["FAKE_PUSH_RUN_STATUS"]}\t'
-        f'{os.environ["FAKE_PUSH_RUN_IS_USABLE"]}'
+        f'{str(conclusion == "success").lower()}'
     )
     if run_id in os.environ["FAKE_PUSH_RUN_QUERY_FAIL_IDS"].split(","):
         sys.exit(1)

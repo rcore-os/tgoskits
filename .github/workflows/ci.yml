@@ -138,14 +138,14 @@ jobs:
                   gh api \
                     --method GET \
                     "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
-                    --jq '[.status, (.conclusion != "cancelled")] | @tsv' 2>&1
+                    --jq '[.status, (.conclusion == "success")] | @tsv' 2>&1
                 )"; then
                   echo "::warning::Failed to recheck branch push run #${run_number}: ${push_run_state}"
                   route_query_failed=true
                   continue
                 fi
-                IFS=$'\t' read -r current_status push_run_is_usable <<< "$push_run_state"
-                if [ "$push_run_is_usable" != "true" ]; then
+                IFS=$'\t' read -r current_status push_run_is_successful <<< "$push_run_state"
+                if [ "$push_run_is_successful" != "true" ]; then
                   continue
                 fi
 
