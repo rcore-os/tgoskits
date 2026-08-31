@@ -88,8 +88,17 @@ impl SchedulerPlacement {
     /// `finish_task()` so runnable activation and enqueue cannot overtake the
     /// previous stack's final scheduler publications.
     pub(in crate::system) fn wait_until_not_on_cpu(&self) {
-        while self.on_cpu().is_some() {
-            core::hint::spin_loop();
+        // Match Linux's `smp_cond_load_acquire()`: the first and final
+        // observations are Acquire, while a prolonged wait only polls the
+        // zero/non-zero publication with Relaxed loads. `finish_task()`'s
+        // Release store remains the synchronization point before activation.
+        while self.on_cpu.load(Ordering::Acquire) != 0 {
+            while self.on_cpu.load(Ordering::Relaxed) != 0 {
+                core::hint::spin_loop();
+            }
+            if self.on_cpu.load(Ordering::Acquire) == 0 {
+                return;
+            }
         }
     }
 
