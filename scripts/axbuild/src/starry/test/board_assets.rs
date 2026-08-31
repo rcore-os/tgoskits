@@ -21,12 +21,33 @@ use crate::{
 const C_SOURCE_DIR: &str = "c";
 const CMAKE_PROJECT_FILE: &str = "CMakeLists.txt";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::starry) enum SessionAssetDelivery {
+    /// Ordinary board assets use the session HTTP endpoint after networking.
+    Http,
+    /// Credentials and their bootstrap helpers must exist before networking.
+    BootArchive { inject_entropy: bool },
+}
+
+impl SessionAssetDelivery {
+    pub(in crate::starry) fn for_session_env(
+        config: Option<&crate::starry::session_env::SessionEnvConfig>,
+    ) -> Self {
+        match config {
+            Some(config) => Self::BootArchive {
+                inject_entropy: config.inject_boot_entropy,
+            },
+            None => Self::Http,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::starry) struct PreparedBoardSessionAssets {
     pub(crate) root: PathBuf,
     pub(crate) relative_paths: Vec<PathBuf>,
     cleanup_root: PathBuf,
-    pub(crate) inject_boot_entropy: bool,
+    delivery: SessionAssetDelivery,
 }
 
 pub(in crate::starry) struct SessionRunDirectoryGuard {
@@ -67,13 +88,13 @@ impl PreparedBoardSessionAssets {
         root: PathBuf,
         relative_paths: Vec<PathBuf>,
         cleanup_root: PathBuf,
-        inject_boot_entropy: bool,
+        delivery: SessionAssetDelivery,
     ) -> Self {
         Self {
             root,
             relative_paths,
             cleanup_root,
-            inject_boot_entropy,
+            delivery,
         }
     }
 
@@ -81,14 +102,17 @@ impl PreparedBoardSessionAssets {
         &self,
         board_config: &mut ostool::board::config::BoardRunConfig,
     ) -> anyhow::Result<()> {
-        if !self.inject_boot_entropy && self.relative_paths.is_empty() {
+        let SessionAssetDelivery::BootArchive { inject_entropy } = self.delivery else {
+            return Ok(());
+        };
+        if !inject_entropy && self.relative_paths.is_empty() {
             return Ok(());
         }
         let source = board_config
             .dtb_file
             .as_deref()
             .map(Path::new)
-            .ok_or_else(|| anyhow::anyhow!("boot entropy injection requires dtb_file"))?;
+            .ok_or_else(|| anyhow::anyhow!("boot session data requires dtb_file"))?;
         let mut fdt = fdt_edit::Fdt::from_bytes(
             &fs::read(source).with_context(|| format!("failed to read {}", source.display()))?,
         )?;
@@ -96,7 +120,7 @@ impl PreparedBoardSessionAssets {
             .get_by_path("/chosen")
             .map(|node| node.id())
             .ok_or_else(|| anyhow::anyhow!("DTB does not contain /chosen"))?;
-        if self.inject_boot_entropy {
+        if inject_entropy {
             let mut seed = [0; 32];
             getrandom::fill(&mut seed).context("host OS random source is unavailable")?;
             fdt.node_mut(chosen_id)
@@ -175,11 +199,17 @@ impl PreparedBoardSessionAssets {
         board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<BoardRunRequest> {
-        ensure!(
-            board_config.session_files.is_empty(),
-            "boot session files were not prepared before creating the board request"
-        );
-        Ok(BoardRunRequest::new(board_config, options))
+        match self.delivery {
+            SessionAssetDelivery::Http => BoardRunRequest::new(board_config, options)
+                .with_session_files(&self.root, &self.relative_paths),
+            SessionAssetDelivery::BootArchive { .. } => {
+                ensure!(
+                    board_config.session_files.is_empty(),
+                    "boot session files were not prepared before creating the board request"
+                );
+                Ok(BoardRunRequest::new(board_config, options))
+            }
+        }
     }
 }
 
@@ -272,6 +302,7 @@ pub(crate) async fn prepare_board_session_assets(
     let case_dir = case_dir.to_path_buf();
     let board_config_path = board_config_path.to_path_buf();
     let declared_session_files = declared_session_files.to_vec();
+    let delivery = SessionAssetDelivery::for_session_env(session_env.as_ref());
     let session_env = session_env.unwrap_or_default();
 
     let assets = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -306,7 +337,7 @@ pub(crate) async fn prepare_board_session_assets(
             layout.overlay_dir,
             relative_paths,
             cleanup.preserve(),
-            session_env.inject_boot_entropy,
+            delivery,
         ))
     })
     .await
@@ -462,12 +493,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        PreparedBoardSessionAssets, SessionRunDirectoryGuard, collect_upload_paths,
-        copy_declared_session_files,
+        PreparedBoardSessionAssets, SessionAssetDelivery, SessionRunDirectoryGuard,
+        collect_upload_paths, copy_declared_session_files,
     };
 
     #[test]
-    fn board_request_borrows_assets_without_dropping_the_boot_root() {
+    fn http_session_assets_do_not_require_a_dtb() {
         let root = tempdir().unwrap();
         let run_dir = root.path().join("run");
         let upload_root = run_dir.join("upload");
@@ -478,12 +509,25 @@ mod tests {
             upload_root,
             vec![PathBuf::from("bin/helper")],
             run_dir.clone(),
-            false,
+            SessionAssetDelivery::Http,
+        );
+
+        let mut board_config = ostool::board::config::BoardRunConfig {
+            session_files: vec![PathBuf::from("bin/helper")],
+            shell_init_cmd: Some("run '${sessionFile:bin/helper}'".to_owned()),
+            ..Default::default()
+        };
+        assets.prepare_boot_data(&mut board_config).unwrap();
+        assert!(board_config.dtb_file.is_none());
+        assert_eq!(board_config.session_files, [PathBuf::from("bin/helper")]);
+        assert_eq!(
+            board_config.shell_init_cmd.as_deref(),
+            Some("run '${sessionFile:bin/helper}'")
         );
 
         let _request = assets
             .attach_to_board_request(
-                ostool::board::config::BoardRunConfig::default(),
+                board_config,
                 ostool::board::RunBoardOptions {
                     board_type: None,
                     server: None,
@@ -530,7 +574,9 @@ mod tests {
             upload_root,
             vec![PathBuf::from("credential")],
             run_dir.clone(),
-            true,
+            SessionAssetDelivery::BootArchive {
+                inject_entropy: true,
+            },
         );
         board_config.session_files = vec![PathBuf::from("credential")];
         board_config.shell_init_cmd =

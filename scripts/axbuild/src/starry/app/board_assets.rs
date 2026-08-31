@@ -5,8 +5,8 @@ use anyhow::Context;
 use super::StarryAppBoardCase;
 use crate::{
     starry::test::{
-        PreparedBoardSessionAssets, SessionRunDirectoryGuard, collect_upload_paths,
-        copy_declared_session_files, starry_case_asset_config,
+        PreparedBoardSessionAssets, SessionAssetDelivery, SessionRunDirectoryGuard,
+        collect_upload_paths, copy_declared_session_files, starry_case_asset_config,
     },
     test::{
         build::{prepare_c_case_overlay_sync, prepare_rust_case_overlay_sync},
@@ -54,6 +54,7 @@ pub(in crate::starry) async fn prepare_app_board_session_assets(
     let case_dir = case.case_dir.clone();
     let board_config_path = case.board_config_path.clone();
     let declared_session_files = declared_session_files.to_vec();
+    let delivery = SessionAssetDelivery::for_session_env(session_env.as_ref());
     let session_env = session_env.unwrap_or_default();
 
     let assets = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -97,7 +98,7 @@ pub(in crate::starry) async fn prepare_app_board_session_assets(
             layout.overlay_dir,
             relative_paths,
             cleanup.preserve(),
-            session_env.inject_boot_entropy,
+            delivery,
         ))
     })
     .await

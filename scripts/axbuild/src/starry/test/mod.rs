@@ -15,8 +15,8 @@ pub use args::{ArgsTest, ArgsTestBoard, ArgsTestQemu, TestCommand};
 pub(crate) use assets::starry_case_asset_config;
 pub(crate) use board::collect_board_test_groups;
 pub(in crate::starry) use board_assets::{
-    PreparedBoardSessionAssets, SessionRunDirectoryGuard, collect_upload_paths,
-    copy_declared_session_files, validate_relative_path,
+    PreparedBoardSessionAssets, SessionAssetDelivery, SessionRunDirectoryGuard,
+    collect_upload_paths, copy_declared_session_files, validate_relative_path,
 };
 pub(crate) use qemu_discovery::{
     direct_starry_qemu_case_exists, discover_qemu_cases, parse_starry_qemu_case_selection,

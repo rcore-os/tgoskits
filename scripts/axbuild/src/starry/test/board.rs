@@ -108,7 +108,7 @@ impl Starry {
                 let board_request = match &session_assets {
                     Some(assets) => {
                         println!(
-                            "[axbuild] board boot-session root: {}",
+                            "[axbuild] board session asset root: {}",
                             assets.root.display()
                         );
                         assets.attach_to_board_request(board_config, options)?
