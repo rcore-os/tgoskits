@@ -714,3 +714,109 @@ fn duplicate_package_clippy_configuration_names_are_rejected() {
         "duplicate clippy configuration `aarch64-system` for `alpha`"
     );
 }
+
+#[test]
+fn starry_clippy_configurations_match_qemu_builds() {
+    let workspace_root = crate::context::find_workspace_root();
+    let manifest: StarryKernelManifest = toml::from_str(
+        &std::fs::read_to_string(workspace_root.join("os/StarryOS/kernel/Cargo.toml")).unwrap(),
+    )
+    .unwrap();
+
+    for (name, arch, relative_build_path) in [
+        (
+            "riscv64-system",
+            "riscv64",
+            "test-suit/starryos/qemu/build-riscv64gc-unknown-none-elf.toml",
+        ),
+        (
+            "aarch64-system",
+            "aarch64",
+            "test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml",
+        ),
+        (
+            "aarch64-system-rga",
+            "aarch64",
+            "test-suit/starryos/qemu-rga/build-aarch64-unknown-none-softfloat.toml",
+        ),
+        (
+            "loongarch64-system",
+            "loongarch64",
+            "test-suit/starryos/qemu/build-loongarch64-unknown-none-softfloat.toml",
+        ),
+        (
+            "x86_64-system",
+            "x86_64",
+            "test-suit/starryos/qemu/build-x86_64-unknown-none.toml",
+        ),
+    ] {
+        let build: StarryBuildConfiguration = toml::from_str(
+            &std::fs::read_to_string(workspace_root.join(relative_build_path)).unwrap(),
+        )
+        .unwrap();
+        let configuration = manifest
+            .package
+            .metadata
+            .clippy
+            .configurations
+            .iter()
+            .find(|configuration| configuration.name == name)
+            .unwrap();
+        let mut expected_features = build.features;
+        expected_features.push("smp".into());
+        expected_features.sort();
+        expected_features.dedup();
+
+        assert_eq!(configuration.features, expected_features);
+        assert_eq!(configuration.target, build.target);
+        assert_eq!(configuration.env.get("AX_ARCH"), Some(&arch.into()));
+        assert_eq!(
+            configuration.env.get("AX_TARGET"),
+            Some(&configuration.target)
+        );
+        assert_eq!(
+            configuration.env.get("AX_LOG"),
+            Some(&build.log.to_ascii_lowercase())
+        );
+        assert_eq!(
+            configuration.env.get("SMP"),
+            Some(&build.max_cpu_num.to_string())
+        );
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct StarryKernelManifest {
+    package: StarryKernelPackage,
+}
+
+#[derive(serde::Deserialize)]
+struct StarryKernelPackage {
+    metadata: StarryKernelMetadata,
+}
+
+#[derive(serde::Deserialize)]
+struct StarryKernelMetadata {
+    clippy: StarryClippyMetadata,
+}
+
+#[derive(serde::Deserialize)]
+struct StarryClippyMetadata {
+    configurations: Vec<StarryClippyConfiguration>,
+}
+
+#[derive(serde::Deserialize)]
+struct StarryClippyConfiguration {
+    name: String,
+    target: String,
+    features: Vec<String>,
+    env: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct StarryBuildConfiguration {
+    features: Vec<String>,
+    max_cpu_num: usize,
+    log: String,
+    target: String,
+}

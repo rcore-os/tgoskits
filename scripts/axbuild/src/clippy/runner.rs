@@ -54,7 +54,7 @@ pub(super) struct ProcessCargoRunner;
 
 impl CargoRunner for ProcessCargoRunner {
     fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
-        let args = check.cargo_args();
-        run_cargo_status_with_env(workspace_root, &args, &check.env)
+        let invocation = check.cargo_invocation();
+        run_cargo_status_with_env(workspace_root, &invocation.args, &invocation.env)
     }
 }

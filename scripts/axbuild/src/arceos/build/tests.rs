@@ -390,7 +390,7 @@ fn prepared_cargo_config_uses_unified_std_target() {
 }
 
 #[test]
-fn c_app_cargo_config_uses_builtin_bare_target_without_json_spec() {
+fn c_app_cargo_config_uses_shared_loongarch_bare_target_spec() {
     let root = tempdir().unwrap();
     let build_config = root
         .path()
@@ -407,14 +407,31 @@ fn c_app_cargo_config_uses_builtin_bare_target_without_json_spec() {
     );
     let cargo = load_c_app_cargo_config(&request).unwrap();
 
-    assert_eq!(cargo.target, "loongarch64-unknown-none-softfloat");
-    assert!(!cargo.env.contains_key("CARGO_UNSTABLE_JSON_TARGET_SPEC"));
+    assert!(
+        cargo
+            .target
+            .ends_with("scripts/targets/bare/loongarch64-unknown-none-softfloat.json")
+    );
+    assert_eq!(
+        cargo.env.get("AX_TARGET"),
+        Some(&"loongarch64-unknown-none-softfloat".to_string())
+    );
+    assert_eq!(
+        cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
+        Some(&"true".to_string())
+    );
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(
         cargo
             .args
             .windows(2)
             .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+    );
+    assert!(
+        cargo
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-Z", "json-target-spec"])
     );
 }
 

@@ -19,11 +19,13 @@ use sha2::{Digest, Sha256};
 
 use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
 
+mod bare_build;
 mod config_file;
 mod info;
 mod platform;
 mod std_build;
 
+pub(crate) use bare_build::bare_build_target_for;
 pub(crate) use config_file::{
     ensure_build_info, load_build_info, load_toml_with_rejector, read_toml_with_rejector,
     reject_arceos_app_c_field, reject_removed_std_field,

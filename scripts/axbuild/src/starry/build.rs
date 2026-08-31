@@ -12,6 +12,9 @@ use object::{Object as _, ObjectSection as _};
 use ostool::build::config::Cargo;
 
 use super::{Starry, board};
+mod future_incompat;
+
+use future_incompat::check_aarch64_future_incompat_report;
 pub type StarryBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 use crate::{
@@ -120,6 +123,7 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         BareKernelLinkMode::Pie,
     )?;
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
+    crate::build::append_cargo_rustflags(&mut cargo, &["-D", "warnings"]);
     Ok(cargo)
 }
 
@@ -160,6 +164,9 @@ pub(crate) async fn build_starry_artifact(
         .app
         .build(cargo.clone(), request.build_info_path.clone())
         .await?;
+    if request.arch == "aarch64" {
+        check_aarch64_future_incompat_report(output.cargo_artifact_dir())?;
+    }
     stage.done();
     postprocess_starry_artifact(starry.app.workspace_root(), request, &cargo, &output)?;
     Ok(output)

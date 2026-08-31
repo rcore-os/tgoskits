@@ -15,6 +15,7 @@ pub const STARRY_SNAPSHOT_FILE: &str = ".starry.toml";
 pub const DEFAULT_STARRY_ARCH: &str = "riscv64";
 pub const DEFAULT_STARRY_TARGET: &str = "riscv64gc-unknown-none-elf";
 pub const STARRY_PACKAGE: &str = "starryos";
+pub const STARRY_KERNEL_PACKAGE: &str = "starry-kernel";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuildCliArgs {

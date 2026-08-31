@@ -67,3 +67,24 @@ fn musl_toolchain_bindgen_args_pin_clang_to_musl_toolchain() -> anyhow::Result<(
     assert!(joined.contains(&gcc_include.display().to_string()));
     Ok(())
 }
+
+#[test]
+fn loongarch_bare_target_spec_keeps_softfloat_and_disables_ual() {
+    let target = bare_build_target_for("loongarch64-unknown-none-softfloat");
+    let path = crate::context::workspace_root_path()
+        .unwrap()
+        .join(&target.target);
+    let spec: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+
+    assert_eq!(spec["abi"], "softfloat");
+    assert_eq!(spec["llvm-abiname"], "lp64s");
+    assert_eq!(spec["features"], "-f,-d,-ual");
+    assert_eq!(
+        target.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
+        Some(&"true".to_string())
+    );
+    assert_eq!(
+        target.cargo_args,
+        ["-Z", "json-target-spec", "-Z", "build-std=core,alloc"]
+    );
+}

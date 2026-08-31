@@ -585,31 +585,47 @@ fn load_cargo_config_derives_to_bin_from_original_bare_target() {
         request.build_info_override = Some(default_starry_build_info());
 
         let cargo = load_cargo_config(&request).unwrap();
-        assert_eq!(cargo.target, target);
+        if arch == "loongarch64" {
+            assert!(
+                cargo
+                    .target
+                    .ends_with("scripts/targets/bare/loongarch64-unknown-none-softfloat.json")
+            );
+        } else {
+            assert_eq!(cargo.target, target);
+        }
+        assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
         assert_eq!(cargo.to_bin, expected_to_bin);
     }
 }
 
 #[test]
 fn load_cargo_config_applies_arch_specific_bare_pie_flags() {
-    for (arch, target, expected_flag) in [
-        (
-            "riscv64",
-            "riscv64gc-unknown-none-elf",
-            "-Clink-args=--no-relax",
-        ),
-        (
-            "loongarch64",
-            "loongarch64-unknown-none-softfloat",
-            "-Ctarget-feature=-ual",
-        ),
-    ] {
+    for (arch, target, expected_flag) in [(
+        "riscv64",
+        "riscv64gc-unknown-none-elf",
+        "-Clink-args=--no-relax",
+    )] {
         let mut request = request(PathBuf::from("/tmp/.build.toml"), arch, target);
         request.build_info_override = Some(default_starry_build_info());
 
         let cargo = load_cargo_config(&request).unwrap();
         assert!(cargo.args.join("\n").contains(expected_flag));
     }
+}
+
+#[test]
+fn load_cargo_config_denies_warnings() {
+    let mut request = request(
+        PathBuf::from("/tmp/.build.toml"),
+        "x86_64",
+        "x86_64-unknown-none",
+    );
+    request.build_info_override = Some(default_starry_build_info());
+
+    let cargo = load_cargo_config(&request).unwrap();
+
+    assert!(cargo.args.join("\n").contains("\"-D\", \"warnings\""));
 }
 
 #[test]
