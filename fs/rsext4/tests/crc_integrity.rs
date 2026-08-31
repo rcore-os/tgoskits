@@ -6,14 +6,12 @@
 //! File payload blocks themselves are not covered because this implementation
 //! does not currently expose a data-block CRC feature.
 
-// Host tests must link the external lock/task provider.
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeSet,
     rc::Rc,
 };
 
-use ax_runtime as _;
 use rsext4::{
     blockgroup_description::Ext4GroupDesc,
     bmalloc::{AbsoluteBN, InodeNumber},

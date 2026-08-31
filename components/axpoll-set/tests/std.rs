@@ -7,7 +7,6 @@ use core::{
     task::Waker,
 };
 
-use ax_runtime as _;
 use axpoll::{
     ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedObserver, SharedRegistrationSink,
 };

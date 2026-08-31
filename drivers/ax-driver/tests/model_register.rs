@@ -4,8 +4,6 @@ use ax_driver::{
     probe::OnProbeError,
     register::{ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
 };
-use ax_runtime as _;
-
 ax_driver::model_register!(
     name: "ax-driver model register test",
     level: ProbeLevel::PostKernel,

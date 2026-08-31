@@ -9,11 +9,6 @@
 
 extern crate alloc;
 
-// Host unit tests use the real external lock provider without installing a
-// fake task runtime. Test-only sleepable locks are replaced in `os::sync`.
-#[cfg(test)]
-use ax_runtime as _;
-
 #[macro_use]
 extern crate log;
 

@@ -1,9 +1,7 @@
 //! Deterministic directory cache-coherence regressions.
 
-// Host tests must link the external lock/task provider.
 use std::cell::Cell;
 
-use ax_runtime as _;
 use rsext4::{
     dir::{get_inode_with_num, insert_dir_entry},
     disknode::Ext4Inode,

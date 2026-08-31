@@ -17,11 +17,6 @@ default = []
 ax-crate-interface.workspace = true
 lock_api = { workspace = true, optional = true }
 
-[dev-dependencies]
-# Host tests must link the external lock provider; this crate deliberately
-# contains no in-crate host lock engine (see tests/thin_wrapper_contract.rs).
-ax-runtime = { path = "../axruntime", features = ["host-test"] }
-
 [[test]]
 name = "std"
 path = "tests/std.rs"

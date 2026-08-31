@@ -35,6 +35,7 @@ task-scheduler-owner-claim = ["task-runtime", "ax-std/qperf-metrics"]
 task-sleep = ["task-runtime"]
 task-smp-online = ["task-runtime", "ax-std/ipi"]
 task-stack-guard-page = ["task-runtime", "ax-std/paging", "ax-std/stack-guard-page"]
+task-mutex = ["task-runtime", "ax-std/alloc"]
 net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
 debug-backtrace = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
@@ -67,6 +68,7 @@ all = [
     "task-wait-queue-remote-wake",
     "task-ipi",
     "task-kernel-timer",
+    "task-mutex",
     "task-tls",
     "task-parallel",
     "task-pi-mutex",

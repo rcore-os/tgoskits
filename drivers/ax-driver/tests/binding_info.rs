@@ -8,7 +8,6 @@ use ax_driver::{
     BindingIrq, BindingIrqSource, binding_info_from_acpi_route, binding_info_from_fdt,
     binding_irq_from_named_fdt_interrupt,
 };
-use ax_runtime as _;
 use fdt_edit::{Fdt, Node, Phandle, Property};
 #[cfg(feature = "pci")]
 use rdrive::probe::pci::{PciAddress, PciInfo};

@@ -46,5 +46,4 @@ optional = true
 features = ["alloc", "lfn", "log_level_trace", "unicode"]
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
-ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 ax-sync = { workspace = true, features = ["host-test"] }

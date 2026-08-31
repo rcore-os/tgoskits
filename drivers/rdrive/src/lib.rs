@@ -8,8 +8,6 @@ extern crate log;
 use core::ptr::NonNull;
 
 use ax_lazyinit::OnceLock;
-#[cfg(test)]
-use ax_runtime as _;
 // The registry is not hard-IRQ safe, but it is also used by runtime discovery
 // paths that must not trigger task preemption hooks on lock release.
 use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};

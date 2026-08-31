@@ -1,5 +1,3 @@
-// Links the external spin provider into the host test binary.
-use ax_runtime as _;
 use axdevice_base::AccessWidth;
 use axvm_types::GuestPhysAddr;
 use riscv_vplic::{

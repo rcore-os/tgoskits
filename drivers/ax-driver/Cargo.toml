@@ -200,7 +200,6 @@ virtio-drivers = { workspace = true, optional = true }
 zerocopy = { workspace = true, optional = true }
 
 [dev-dependencies]
-ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]

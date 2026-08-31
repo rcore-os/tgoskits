@@ -1,8 +1,4 @@
 #![no_std]
-// Link the external host lock/task provider into unit-test binaries.
-#[cfg(test)]
-use ax_runtime as _;
-
 extern crate alloc;
 #[cfg(test)]
 extern crate std;

@@ -1,7 +1,5 @@
 #![cfg_attr(not(feature = "umod"), no_std)]
 extern crate alloc;
-#[cfg(test)]
-use ax_runtime as _;
 #[macro_use]
 extern crate log;
 #[macro_use]

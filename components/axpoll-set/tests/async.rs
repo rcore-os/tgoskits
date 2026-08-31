@@ -1,4 +1,3 @@
-// Link the external host lock provider (ax-runtime) into the test binary.
 use std::{
     future::Future,
     pin::Pin,
@@ -9,7 +8,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use ax_runtime as _;
 use axpoll::{IoEvents, PollRegistrar, SharedObserver};
 use axpoll_set::PollSet;
 use futures::future;

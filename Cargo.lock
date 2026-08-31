@@ -488,7 +488,6 @@ version = "0.6.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
- "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -822,7 +821,6 @@ dependencies = [
  "arm-scmi-rs",
  "ax-alloc",
  "ax-arm-pl031",
- "ax-runtime",
  "ax-sync",
  "axklib",
  "bitflags 2.13.1",
@@ -895,7 +893,6 @@ version = "0.9.3"
 dependencies = [
  "ax-io",
  "ax-lazyinit",
- "ax-runtime",
  "ax-sync",
  "axfs-ng-vfs",
  "axpoll",
@@ -1022,7 +1019,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-runtime",
  "ax-sync",
  "log",
  "page-table-generic",
@@ -1038,7 +1034,6 @@ dependencies = [
  "ax-hal",
  "ax-io",
  "ax-lazyinit",
- "ax-runtime",
  "ax-sync",
  "ax-task",
  "axpoll",
@@ -1208,7 +1203,6 @@ name = "ax-sync"
 version = "0.5.32"
 dependencies = [
  "ax-crate-interface",
- "ax-runtime",
  "lock_api",
 ]
 
@@ -1317,7 +1311,6 @@ dependencies = [
 name = "axdevice"
 version = "0.6.2"
 dependencies = [
- "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -1356,7 +1349,6 @@ dependencies = [
 name = "axfs-ng-vfs"
 version = "0.6.1"
 dependencies = [
- "ax-runtime",
  "ax-sync",
  "axpoll",
  "bitflags 2.13.1",
@@ -1442,7 +1434,6 @@ name = "axpoll-set"
 version = "0.1.0"
 dependencies = [
  "ax-lazyinit",
- "ax-runtime",
  "ax-sync",
  "axpoll",
  "futures",
@@ -2376,7 +2367,6 @@ name = "crab-usb"
 version = "0.11.0"
 dependencies = [
  "anyhow",
- "ax-runtime",
  "ax-sync",
  "bitflags 2.13.1",
  "crossbeam",
@@ -2988,7 +2978,6 @@ name = "dma-api"
 version = "0.10.1"
 dependencies = [
  "aarch64-cpu-ext",
- "ax-runtime",
  "ax-sync",
  "cfg-if",
  "derive_more",
@@ -6631,7 +6620,6 @@ version = "0.24.1"
 dependencies = [
  "acpi",
  "ax-lazyinit",
- "ax-runtime",
  "ax-sync",
  "fdt-edit",
  "fdt-raw",
@@ -6890,7 +6878,6 @@ dependencies = [
 name = "riscv_vplic"
 version = "0.5.1"
 dependencies = [
- "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -7020,7 +7007,6 @@ dependencies = [
 name = "rsext4"
 version = "0.8.1"
 dependencies = [
- "ax-runtime",
  "bitflags 2.13.1",
  "thiserror 2.0.20",
 ]

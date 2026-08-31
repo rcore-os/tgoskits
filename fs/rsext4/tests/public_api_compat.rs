@@ -1,9 +1,7 @@
 //! Behavioral regressions for the corrected public API names.
 
-// Host tests must link the external lock/task provider.
 use std::{cell::Cell, collections::BTreeMap};
 
-use ax_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     cache::bitmap::CacheKey,

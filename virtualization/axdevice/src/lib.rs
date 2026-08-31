@@ -25,8 +25,6 @@
 extern crate alloc;
 #[cfg(test)]
 extern crate std;
-#[cfg(all(feature = "host-test", not(target_os = "none")))]
-use ax_runtime as _;
 #[macro_use]
 extern crate log;
 

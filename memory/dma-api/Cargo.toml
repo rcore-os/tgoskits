@@ -24,8 +24,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
-# Host tests must link the external lock provider.
-ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"

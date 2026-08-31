@@ -1,6 +1,5 @@
 extern crate alloc;
 
-// Host tests must link the external lock/task provider.
 use alloc::{
     alloc::{alloc_zeroed, dealloc},
     boxed::Box,
@@ -13,7 +12,6 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_runtime as _;
 use dma_api::{
     DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
     DmaDomainId, DmaError, DmaMapHandle, DmaOp,

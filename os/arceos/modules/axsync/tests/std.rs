@@ -1,5 +1,3 @@
-// Host tests must link the external lock/task provider.
-use ax_runtime as _;
 use ax_sync::{SpinLock, SpinRwLock};
 
 #[test]

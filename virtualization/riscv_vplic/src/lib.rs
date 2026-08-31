@@ -23,11 +23,6 @@
 
 extern crate alloc;
 
-// Links the external spin provider into host lib tests; this crate contains
-// no in-crate host lock engine.
-#[cfg(all(test, not(target_os = "none")))]
-use ax_runtime as _;
-
 mod consts;
 mod devops_impl;
 mod error;

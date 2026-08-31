@@ -3,7 +3,6 @@ extern crate alloc;
 use ax_driver::{
     BindingInfo, BindingIrq, BindingIrqSource, Error, FdtIrqSpec, binding_info_from_acpi_route,
 };
-use ax_runtime as _;
 use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, HwIrq, IrqDomainId, IrqId,
     IrqSource,

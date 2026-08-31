@@ -13,7 +13,6 @@ use core::{
 };
 
 extern crate alloc;
-use ax_runtime as _;
 
 #[test]
 fn axfs_ng_vfs_path_rules_hold() {

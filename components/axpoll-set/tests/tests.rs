@@ -1,4 +1,3 @@
-// Link the external host lock provider (ax-runtime) into the test binary.
 use std::{
     boxed::Box,
     sync::{
@@ -11,7 +10,6 @@ use std::{
     time::Duration,
 };
 
-use ax_runtime as _;
 use axpoll::{
     ExclusiveConsumer, IoEvents, PollRegistrar, PollRegistration, PollSource, RegistrationMode,
     SharedObserver,

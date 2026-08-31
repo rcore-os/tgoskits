@@ -22,8 +22,6 @@
 //! owner; the host CPU-interface implementation is a checked backend.
 
 extern crate alloc;
-#[cfg(all(feature = "host-test", not(target_os = "none")))]
-use ax_runtime as _;
 
 mod arm_config;
 mod backend;

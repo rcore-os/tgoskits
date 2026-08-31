@@ -26,8 +26,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 ax-sync = { workspace = true, features = ["host-test"] }
-# Host tests must link the external lock provider.
-ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 
 [[test]]
 name = "std"

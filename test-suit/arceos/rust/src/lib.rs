@@ -64,6 +64,7 @@ pub mod net;
         feature = "task-ipi",
         feature = "task-irq",
         feature = "task-kernel-timer",
+        feature = "task-mutex",
         feature = "task-parallel",
         feature = "task-pi-mutex",
         feature = "task-preempt-guard",
@@ -153,6 +154,7 @@ test_runner!(
     run_task_kernel_timer,
     task::kernel_timer::run
 );
+test_runner!("task-mutex", run_task_mutex, task::mutex::run);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
 test_runner!("task-pi-mutex", run_task_pi_mutex, task::pi_mutex::run);
 test_runner!(
@@ -299,6 +301,8 @@ const SELECTED_TESTS: &[TestCase] = &[
         "shared kernel timer callbacks",
         run_task_kernel_timer,
     ),
+    #[cfg(feature = "task-mutex")]
+    TestCase::new("task-mutex", "mutex contention and wakeup", run_task_mutex),
     #[cfg(feature = "task-parallel")]
     TestCase::new("task-parallel", "parallel computation", run_task_parallel),
     #[cfg(feature = "task-pi-mutex")]

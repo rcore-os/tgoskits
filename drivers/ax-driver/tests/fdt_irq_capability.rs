@@ -4,7 +4,6 @@ use core::ptr::NonNull;
 use std::sync::Mutex;
 
 use ax_driver::{binding_info_from_fdt, binding_irq_from_named_fdt_interrupt};
-use ax_runtime as _;
 use fdt_edit::{Fdt, Node, Property};
 use rdrive::{
     Platform,

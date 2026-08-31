@@ -591,6 +591,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sleep")]
     #[test]
     fn blocking_pi_mutex_bridge_has_no_fallible_result() {
         if false {

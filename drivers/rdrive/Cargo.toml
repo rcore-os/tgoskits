@@ -33,15 +33,8 @@ rdif-pcie = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86.workspace = true
 
-[dev-dependencies]
-# Keep this path-only so Cargo strips the test-only reverse edge when publishing.
-# `ax-runtime` depends on `rdrive`; inheriting its workspace version would make
-# the two crates a publish-time dependency cycle.
-ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
-
 [features]
-# Pull ax-sync's std Spin/RwLock impls so the crate's host tests link off-target
-# under `cargo xtask test`.
+# Pull ax-sync's host-test interface for the crate's host-test composition.
 host-test = ["ax-sync/host-test"]
 
 [[test]]

@@ -16,6 +16,16 @@ StarryOS 测试由数据驱动。用例位于 `test-suit/starryos`，发现与�
 
 QEMU 用例构建 `starryos` 软件包，并运行对应体系结构的 `qemu-<arch>.toml`。板卡用例针对板卡目标构建 StarryOS，再通过板卡运行器执行 `board-<board>.toml`。
 
+## 与其他测试层的边界
+
+- 宿主 `std` 只验证算法、数据结构、状态机、协议解析和错误转换；不能用 fake runtime、fake IRQ、fake timer 或 shell prompt 代替 StarryOS 运行证据。
+- ArceOS 的真实调度、IPI、IRQ、timer、SMP、affinity 和上下文切换优先放在 `test-suit/arceos/rust`，使用 `cargo xtask arceos test qemu ...`。
+- Starry kernel 私有 Linux ABI、namespace、procfs、pipe、epoll 和内核生命周期语义保留在本 suite 或 Starry kernel axtest；Axvisor 和板卡专有行为分别使用 `cargo xtask ktest qemu`/`cargo xtask ktest board`。
+- 同一 crate 可以同时有 std 模型测试和 QEMU/axtest 集成测试，但同一断言只能由一个最接近真实语义的层负责；上层运行证据不能被低层 host 编译替代。
+
+宿主 `std` 允许列表和 profile 规则见 [`update-std-tests`](../update-std-tests/SKILL.md)，
+ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos-test-adapter/SKILL.md)。
+
 ## 工作流程
 
 1. 检查 `test-suit/starryos` 下的目标目录，以及 `scripts/axbuild/src/starry/test.rs` 中当前测试流程。

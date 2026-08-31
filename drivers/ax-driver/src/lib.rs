@@ -138,8 +138,6 @@ pub mod cpufreq {
     pub fn log_frequency_readout() {}
 }
 
-#[cfg(test)]
-use ax_runtime as _;
 #[cfg(feature = "pci")]
 pub use binding_info::PciIrqRequirement;
 pub use binding_info::{BindingInfo, BindingIrq, BindingIrqBinding, BindingIrqSource, FdtIrqSpec};

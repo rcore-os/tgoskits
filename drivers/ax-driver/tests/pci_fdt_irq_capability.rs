@@ -3,7 +3,6 @@
 use core::ptr::NonNull;
 
 use ax_driver::{BindingIrq, BindingIrqSource, DriverGeneric};
-use ax_runtime as _;
 use fdt_edit::{Fdt, Node, Phandle, Property};
 use rdrive::{
     Platform,

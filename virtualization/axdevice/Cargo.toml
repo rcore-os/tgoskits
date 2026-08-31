@@ -13,13 +13,12 @@ readme = "README.md"
 license = "Apache-2.0"
 
 [features]
-host-test = ["ax-sync/host-test", "dep:ax-runtime"]
+host-test = ["ax-sync/host-test"]
 
 [dependencies]
 log = "0.4"
 cfg-if = "1.0"
 ax-sync.workspace = true
-ax-runtime = { workspace = true, optional = true, features = ["host-test"] }
 
 # System independent crates provided by ArceOS.
 axdevice_base = { workspace = true }

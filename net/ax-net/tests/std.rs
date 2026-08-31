@@ -14,7 +14,6 @@ use ax_net::{
         UnixCredentials,
     },
 };
-use ax_runtime as _;
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr};
 
 #[test]

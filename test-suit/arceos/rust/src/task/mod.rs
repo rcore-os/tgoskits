@@ -10,6 +10,8 @@ pub mod ipi;
 pub mod irq;
 #[cfg(feature = "task-kernel-timer")]
 pub mod kernel_timer;
+#[cfg(feature = "task-mutex")]
+pub mod mutex;
 #[cfg(feature = "task-parallel")]
 pub mod parallel;
 #[cfg(feature = "task-pi-mutex")]
