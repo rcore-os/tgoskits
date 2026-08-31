@@ -1,0 +1,14 @@
+id = "2096-cow-rollback-test-bypasses-real-path"
+pr = 2096
+title = "COW 失败回滚测试绕过真实执行路径"
+remote = "https://github.com/rcore-os/tgoskits.git"
+base = "d1fa14a4c06c2e7ef79a581d8c616c86a1a0eeb7"
+head = "a2a0b67b15c7f50bfa1b9c43c7e5cbe5a7adb7e4"
+source = "https://github.com/rcore-os/tgoskits/pull/2096#discussion_r3801928026"
+
+[[expected]]
+id = "cow-rollback-test-never-exercises-real-clone-failure"
+path = "os/StarryOS/kernel/src/mm/aspace/backend/cow.rs"
+line = 810
+severity = "major"
+description = "新增测试只把地址写入 MockRollback，没有执行 CowBackend::clone_map 或 PageTableCowCloneRollback 的真实失败路径；即使真实回滚不解除子页表映射、不撤销内存计费或不递减帧引用计数，测试仍会通过，因此不能证明本次资源泄漏修复有效。"

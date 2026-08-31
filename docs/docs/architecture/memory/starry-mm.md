@@ -196,9 +196,9 @@ Starry `/dev/dma_heap` 和设备 import 使用 `dma-api` 高层 owner。fd、mma
 | fault result enum | `handle_page_fault()` 返回 `bool`，没有公共 `FaultOutcome` |
 | dirty-page writeback reclaim | page-cache reclaim 由注册 callback 提供，需保持锁外和有界 |
 
-这些限制若影响 syscall 或 procfs 的用户可见语义，修改时必须重新核对 Linux 行为和 `docs/guideline/starry_syscall.md`，并补充对应的系统级回归证据。
+这些限制若影响系统调用或 procfs 的用户可见语义，修改时必须按 `starry-syscall-compatibility` 技能重新核对 Linux 行为，并补充对应的系统级回归证据。
 
-增加用户可见内存语义时必须按 `docs/guideline/starry_syscall.md` 对齐 Linux 行为；unsupported 路径应返回明确错误，不能静默成功或仅靠 proc 占位值误报完整支持。
+增加用户可见内存语义时必须按 `starry-syscall-compatibility` 技能对齐 Linux 行为；不支持的路径应返回明确错误，不能静默成功或仅靠 proc 占位值误报完整支持。
 
 ## 8. 源码检查点
 
