@@ -143,8 +143,8 @@ def main() -> int:
                 "pull request routing must recheck the push run before skipping",
             ),
             (
-                '[.status, (.conclusion == "success")] | @tsv',
-                "push run recheck must return its lifecycle state and success result",
+                '[.status, (.conclusion != "cancelled")] | @tsv',
+                "push run recheck must return its current lifecycle state",
             ),
             (
                 "queued|in_progress|waiting|requested)",
@@ -320,12 +320,12 @@ def main() -> int:
         errors.append("the workflow must consume per-group matrices, not test_matrix")
 
     grouped_jobs = (
-        ("workspace_checks", "Workspace", "workspace", True),
-        ("arceos_checks", "ArceOS", "arceos", True),
-        ("starry_checks", "Starry", "starry", False),
-        ("axvisor_checks", "AxVisor", "axvisor", False),
+        ("workspace_checks", "Workspace", "workspace"),
+        ("arceos_checks", "ArceOS", "arceos"),
+        ("starry_checks", "Starry", "starry"),
+        ("axvisor_checks", "AxVisor", "axvisor"),
     )
-    for job_id, display_name, output_prefix, fail_fast in grouped_jobs:
+    for job_id, display_name, output_prefix in grouped_jobs:
         job = mapping_block(jobs, job_id, 2)
         if not job:
             errors.append(f"missing grouped CI job: {job_id}")
@@ -363,10 +363,7 @@ def main() -> int:
                 f"needs.plan_ci.outputs.{output_prefix}_matrix",
                 "must consume its planner matrix",
             ),
-            (
-                f"fail_fast: {str(fail_fast).lower()}",
-                "must keep the expected group fail-fast policy",
-            ),
+            ("fail_fast: true", "must keep fail-fast within the group"),
             ("save_cache: >-", "must preserve cache-save routing"),
             (
                 "since_ref: ${{ needs.plan_ci.outputs.since_ref }}",

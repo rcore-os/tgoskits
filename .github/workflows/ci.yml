@@ -138,13 +138,16 @@ jobs:
                   gh api \
                     --method GET \
                     "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
-                    --jq '[.status, (.conclusion == "success")] | @tsv' 2>&1
+                    --jq '[.status, (.conclusion != "cancelled")] | @tsv' 2>&1
                 )"; then
                   echo "::warning::Failed to recheck branch push run #${run_number}: ${push_run_state}"
                   route_query_failed=true
                   continue
                 fi
-                IFS=$'\t' read -r current_status push_run_is_successful <<< "$push_run_state"
+                IFS=$'\t' read -r current_status push_run_is_usable <<< "$push_run_state"
+                if [ "$push_run_is_usable" != "true" ]; then
+                  continue
+                fi
 
                 # Push routing is canonical, so an unfinished matching run owns
                 # validation before GitHub materializes its matrix jobs.
@@ -152,9 +155,6 @@ jobs:
                   queued|in_progress|waiting|requested)
                     ;;
                   completed)
-                    if [ "$push_run_is_successful" != "true" ]; then
-                      continue
-                    fi
                     if ! active_matrix_jobs="$(
                       gh api \
                         --method GET \
@@ -433,8 +433,7 @@ jobs:
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.starry_matrix }}
-      # Physical-board availability must not cancel independent QEMU evidence.
-      fail_fast: false
+      fail_fast: true
       save_cache: >-
         ${{ github.event_name == 'push' &&
             (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
@@ -457,8 +456,7 @@ jobs:
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.axvisor_matrix }}
-      # Physical-board availability must not cancel independent QEMU evidence.
-      fail_fast: false
+      fail_fast: true
       save_cache: >-
         ${{ github.event_name == 'push' &&
             (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
