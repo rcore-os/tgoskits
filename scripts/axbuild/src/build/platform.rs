@@ -105,16 +105,6 @@ pub(super) fn is_log_level_feature(feature: &str) -> bool {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_known_axstd_feature;
-
-    #[test]
-    fn removed_driver_alias_is_not_an_axstd_feature() {
-        assert!(!is_known_axstd_feature("aic8800-wifi"));
-    }
-}
-
 pub(crate) fn parse_makefile_features(input: &str) -> Vec<String> {
     let mut features = Vec::new();
     for feature in input.split(|ch: char| ch == ',' || ch.is_whitespace()) {

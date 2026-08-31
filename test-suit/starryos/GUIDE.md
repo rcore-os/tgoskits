@@ -543,9 +543,9 @@ cargo xtask starry board \
 检查点见 `.agents/skills/arch-platform-porting/references/boot-debugging.md`。
 
 `board-aka-00-sg2002/usb2-libuvc-init` 提供静态交叉编译固定版本上游 libuvc 的
-C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。AKA-00-SG2002 当前没有
-StarryOS 网络设备，无法从 session HTTP URL 下载程序，因此该模板不会被 board
-discovery 或 CI 启用。后续网络可用时移除 `.disabled` 后缀；其
+C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。该 USB 用例尚未完成
+AKA 实板验收，因此模板不会被 board discovery 或 CI 启用。完成验证后可移除
+`.disabled` 后缀；其
 `shell_init_cmd` 会使用 `wget` 下载程序，并只验证 `uvc_init` / `uvc_exit`，不枚举
 摄像头、不采集帧，也不验证 DWC2 isochronous 传输。
 

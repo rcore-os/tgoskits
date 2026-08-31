@@ -178,9 +178,10 @@ STA 连接由同一 owner 状态机串行推进：
    原生布局接收 `IW_ENCODE_ALG_PMK` 的 32 字节 PMK。这与 Linux
    `wpa_supplicant` `driver_wext` 的 PMK-offload 调用相同，但不声称通用 mainline
    cfg80211 WEXT backend 会接受 PMK；它是本设备支持的 Linux UAPI 子集。旧的
-   raw-passphrase pointer ABI 被直接删除，不提供双解析兼容层。板级 session runner
-   使用 RustCrypto `pbkdf2`/`sha1` 从环境变量中的 SSID/passphrase 派生每次会话的
-   PMK，guest 和驱动不持有明文密码。
+   raw-passphrase pointer ABI 被直接删除，不提供双解析兼容层。产品构建把
+   SSID/passphrase 编入 `ax-driver` 启动配置，OS Glue 在启动时使用 RustCrypto
+   `pbkdf2`/`sha1` 派生 PMK；凭据不再通过 DTB、session sidecar 或 guest helper
+   建立第二条配置通道。
 4. WPA2-PSK/AES 使用调用方熵生成 SNonce。AIC core 的密码学原语集中复用
    `no_std` RustCrypto：`hmac`/`sha1` 计算 PTK PRF 与 MIC，`aes-kw` 执行 RFC 3394
    GTK unwrap，`subtle` 做常量时间比较，`zeroize` 清除密钥。本地纯 core 只实现

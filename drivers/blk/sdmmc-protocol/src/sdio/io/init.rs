@@ -117,22 +117,16 @@ impl<H: SdMmcIrqHost + 'static> SdioCard<H> {
     ) -> Result<OperationProgress<SdioCardInfo>, Error> {
         match &mut request.active {
             InitActive::None => return Err(Error::InvalidArgument),
-            InitActive::Command => match self.host.advance_command_response(cause) {
-                Err(error) => {
-                    return Err(error);
-                }
-                Ok(CommandResponseProgress::Pending) => return Ok(OperationProgress::Pending),
-                Ok(CommandResponseProgress::Complete(response)) => {
+            InitActive::Command => match self.host.advance_command_response(cause)? {
+                CommandResponseProgress::Pending => return Ok(OperationProgress::Pending),
+                CommandResponseProgress::Complete(response) => {
                     request.active = InitActive::None;
                     self.consume_init_response(request, response)?;
                 }
             },
-            InitActive::Bus(bus_request) => match self.host.advance_bus_op(bus_request, cause) {
-                Err(error) => {
-                    return Err(error);
-                }
-                Ok(OperationProgress::Pending) => return Ok(OperationProgress::Pending),
-                Ok(OperationProgress::Complete(())) => {
+            InitActive::Bus(bus_request) => match self.host.advance_bus_op(bus_request, cause)? {
+                OperationProgress::Pending => return Ok(OperationProgress::Pending),
+                OperationProgress::Complete(()) => {
                     request.active = InitActive::None;
                     request.advance_after_bus()?;
                 }
@@ -163,7 +157,6 @@ impl<H: SdMmcIrqHost + 'static> SdioCard<H> {
         if !matches!(request.active, InitActive::None) {
             return Err(Error::Busy);
         }
-        log::info!("sdio: IO-card initialization state {:?}", request.state);
         let active = match request.state {
             InitState::ResetHost => self.submit_init_bus(SdMmcBusOp::ResetAll)?,
             InitState::PowerOn => self.submit_init_bus(SdMmcBusOp::PowerOn)?,

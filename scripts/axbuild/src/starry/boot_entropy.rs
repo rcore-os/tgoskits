@@ -76,7 +76,7 @@ fn prepare(
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsStr, fs};
+    use std::{ffi::OsStr, fs, path::Path};
 
     use fdt_edit::{Fdt, Node};
     use ostool::board::config::BoardRunConfig;
@@ -126,6 +126,4 @@ mod tests {
         drop(prepared);
         assert!(!Path::new(&temporary_path).exists());
     }
-
-    use std::path::Path;
 }

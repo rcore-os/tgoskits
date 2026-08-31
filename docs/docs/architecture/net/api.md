@@ -689,8 +689,8 @@ server。控制调用者不能直接借用 driver handle。
 Linux WEXT 的安全连接只接受原生 `iwreq -> iw_point -> iw_encode_ext` 的
 `SIOCSIWENCODEEXT` 布局和 `IW_ENCODE_ALG_PMK`。这是 Linux
 `wpa_supplicant` `driver_wext` 使用的 PMK-offload UAPI 子集，不是对任意 mainline
-cfg80211 WEXT backend 的兼容承诺。passphrase 到 PMK 的 PBKDF2 属于
-supplicant/session runner 边界。`Wpa2Pmk` 的 `Debug` 固定脱敏，drop 时清零；不保留
+cfg80211 WEXT backend 的兼容承诺。passphrase 到 PMK 的 PBKDF2 属于产品侧
+`ax-driver` 启动配置边界。`Wpa2Pmk` 的 `Debug` 固定脱敏，drop 时清零；不保留
 旧的 raw-passphrase pointer ABI 或 `WifiTransaction::connect(ssid, password)`
 兼容入口。
 

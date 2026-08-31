@@ -297,9 +297,6 @@ impl Sdhci {
     }
 
     pub(crate) fn abort_command(&mut self) -> Result<(), Error> {
-        if let Some(cmd_index) = self.active_command_index() {
-            self.log_status("aborting active command", cmd_index);
-        }
         self.write_interrupt_status(NORMAL_INT_CLEAR_ALL, ERROR_INT_CLEAR_ALL);
         self.clear_cached_irq_status();
         self.reset_cmd()?;
@@ -307,17 +304,6 @@ impl Sdhci {
         self.active_data_cmd = 0;
         self.command_state = CommandState::Idle;
         Ok(())
-    }
-
-    fn active_command_index(&self) -> Option<u8> {
-        match self.command_state {
-            CommandState::WaitingInhibit { cmd, .. }
-            | CommandState::Issued { cmd, .. }
-            | CommandState::WaitingBusy { cmd, .. } => Some(cmd.index),
-            CommandState::Idle | CommandState::Complete { .. } | CommandState::Failed { .. } => {
-                None
-            }
-        }
     }
 
     pub(crate) fn take_data_irq_status(&mut self) -> (u16, u16) {
