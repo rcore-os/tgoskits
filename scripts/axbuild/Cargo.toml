@@ -14,7 +14,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow = { workspace = true }
-boot-session-archive = { workspace = true, features = ["alloc"] }
 axvmconfig = { workspace = true, features = ["std"] }
 cargo_metadata = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
@@ -24,13 +23,12 @@ env_logger = { workspace = true }
 futures-util = "0.3"
 fdt-edit.workspace = true
 flate2 = { version = "1.0" }
-indicatif = "0.18"
 getrandom.workspace = true
+indicatif = "0.18"
 jkconfig = { version = "0.1" }
 log = "0.4"
 object = "0.38"
 ostool = { workspace = true }
-pbkdf2.workspace = true
 regex = { version = "1.12" }
 regex-automata = "0.4.16"
 reqwest = { version = "0.13", features = ["stream"] }
@@ -40,7 +38,6 @@ schemars = { workspace = true, features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }
-sha1.workspace = true
 tar = { version = "0.4" }
 tempfile = "3"
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
@@ -49,7 +46,6 @@ tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "std", "time"] }
 xz2 = "0.1"
-zeroize.workspace = true
 raw-cpuid = "11.0"
 proc-macro2 = { workspace = true, features = ["span-locations"] }
 quote = { workspace = true }

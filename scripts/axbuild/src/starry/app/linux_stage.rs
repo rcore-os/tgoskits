@@ -3,7 +3,7 @@ use ostool::board::config::BoardRunConfig;
 use super::ArgsAppBoard;
 use crate::{
     board::{SessionFileArg, connect_with_session_files},
-    starry::board_assets::PreparedBoardSessionAssets,
+    starry::test::PreparedBoardSessionAssets,
 };
 
 /// Upload the prepared app assets and connect to the board's default Linux.
@@ -16,7 +16,6 @@ pub(in crate::starry) async fn stage_in_default_linux(
     board_config: &BoardRunConfig,
     assets: &PreparedBoardSessionAssets,
 ) -> anyhow::Result<()> {
-    assets.ensure_linux_stage_allowed()?;
     let session_files = assets
         .relative_paths
         .iter()

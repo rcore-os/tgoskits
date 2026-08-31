@@ -50,17 +50,3 @@ pub fn get_chosen_bootargs() -> Option<&'static str> {
 
     *CACHED_BOOTARGS
 }
-
-/// Returns an uninterpreted property from the bootloader-provided `/chosen`
-/// node.
-///
-/// The returned bytes borrow the FDT mapping and therefore remain valid for
-/// the lifetime of the boot. Callers must validate any property-specific wire
-/// format before acting on it.
-pub fn get_chosen_property(name: &'static str) -> Option<&'static [u8]> {
-    get_fdt()?
-        .find_nodes("/chosen")
-        .next()?
-        .find_property(name)
-        .map(|property| property.raw_value())
-}

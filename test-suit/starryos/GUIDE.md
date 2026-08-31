@@ -421,20 +421,12 @@ session_files = [
 
 - `${boardServerIp}`：板端可访问的 ostool-server 地址。
 - `${boardServerHttpBaseUrl}`：板端可访问的 session HTTP 基础 URL。
-- `${sessionFile:<relative-path>}`：普通 board case 中是对应共享文件的完整 HTTP
-  下载 URL；存在以下 typed `.session-env.toml` 的 Wi-Fi case 中，是 boot archive
-  解包后的 `/tmp/starry-session/<relative-path>` guest 路径，因此可在网络建立前
-  读取凭据和 helper：
+- `${sessionFile:<relative-path>}`：对应共享文件的完整下载 URL。
 
-```toml
-[wifi]
-```
-
-Wi-Fi sidecar 固定读取 `STARRY_WIFI_SSID`、`STARRY_WIFI_PASSWORD`，并生成私有的
-`credentials/wifi-ssid` 与 `credentials/wifi-pmk`。它不提供任意环境变量到文件的
-映射。普通 session 文件仍复用 ostool HTTP；只有这类启动前资产使用临时 DTB 副本，
-仓库 DTB 保持不变并在 session 结束时删除副本。为避免凭据降级到 HTTP 上传，typed
-Wi-Fi sidecar 与 `starry app board --linux-stage` 不能组合使用。
+AKA 的安全 Wi-Fi board case 在构建时从 `STARRY_WIFI_SSID` 和
+`STARRY_WIFI_PASSWORD` 生成 AIC station 启动事务。凭据不使用额外 sidecar 或 guest
+helper；连接和 DHCP 完成后，脚本仍按上面的普通 HTTP session file 机制下载。runner
+只为可信 boot entropy 创建带 `/chosen/rng-seed` 的临时 DTB 副本，不修改仓库 DTB。
 
 普通 shell 变量（例如 `${HOME}`）保持原样。未解析的 session 保留变量会在上板运行
 前报错；无论上传、展开还是运行失败，xtask 都会释放 session。

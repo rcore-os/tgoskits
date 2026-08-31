@@ -7,19 +7,7 @@ fail() {
 }
 
 [ "$#" -eq 1 ] && [ -n "$1" ] || fail
-session_root=${0%/*}
-helper=$session_root/bin/wifi-session-helper
-ssid_file=$session_root/credentials/wifi-ssid
-pmk_file=$session_root/credentials/wifi-pmk
 server_ip=$1
-wifi_credential_cleanup() {
-    rm -f "$ssid_file" "$pmk_file"
-}
-trap wifi_credential_cleanup EXIT HUP INT TERM
-
-[ -x "$helper" ] && [ -s "$ssid_file" ] && [ -s "$pmk_file" ] || fail
-"$helper" "$ssid_file" "$pmk_file" || fail
-wifi_credential_cleanup
 
 attempt=1
 while [ "$attempt" -le 60 ]; do

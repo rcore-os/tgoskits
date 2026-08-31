@@ -29,7 +29,6 @@ members = [
     "components/axpanic",
     "components/axpoll",
     "components/ax-tracepoint",
-    "components/boot-session-archive",
     "components/axsched",
     "components/cpumask",
     "components/crate_interface",
@@ -176,7 +175,6 @@ xcover = { version = "0.1.3", default-features = false, features = ["alloc"] }
 ax-timer-list = { version = "0.3", path = "components/timer_list" }
 axaddrspace = { version = "0.5", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4", path = "components/axbacktrace" }
-boot-session-archive = { version = "0.1", path = "components/boot-session-archive", default-features = false }
 axbuild = { version = "0.5", path = "scripts/axbuild" }
 axdevice = { version = "0.6", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.7", path = "virtualization/axdevice_base" }

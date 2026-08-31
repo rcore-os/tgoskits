@@ -13,36 +13,59 @@
  *
  * Usage on the board:
  *   wifi_switch ap   <ssid> [channel]      # become open SoftAP (default ch 6)
- *   wifi_switch sta  <ssid> [pmk-file]     # join WPA2, or omit for open
+ *   wifi_switch sta  <ssid> [passphrase]   # join a network in station mode
  *
  * We deliberately avoid <linux/wireless.h> (the cross toolchain may lack it)
  * and lay out `struct iwreq` by hand. The layout below MUST match wext.rs:
  *   - ifr name      : offset 0,  16 bytes
  *   - iwreq_data    : offset 16, 16-byte union
- *   - MODE          : first u32 of the union
- *   - FREQ          : Linux iw_freq { s32 m; s16 e; u8 i; u8 flags; }
+ *   - MODE / FREQ   : first u32 of the union
  *   - ESSID/ENCODE  : iw_point { void *pointer; __u16 length; __u16 flags; }
  *                     pointer @ union+0 (8B on rv64), length @ union+8
- *   - ENCODE payload: Linux struct iw_encode_ext followed by a 32-byte PMK
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <stddef.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
-#include "../../../os/StarryOS/uapi/wireless_compat.h"
+/* Wireless-extensions ioctl numbers (from <linux/wireless.h>). */
+#define SIOCSIWCOMMIT     0x8B00
+#define SIOCSIWFREQ       0x8B04
+#define SIOCSIWMODE       0x8B06
+#define SIOCSIWESSID      0x8B1A
+#define SIOCSIWENCODEEXT  0x8B34
 
-static void wipe(void *memory, size_t length) {
-    volatile unsigned char *bytes = memory;
-    while (length-- != 0) *bytes++ = 0;
-}
+/* iw_mode values. */
+#define IW_MODE_INFRA     2  /* Managed / Station */
+#define IW_MODE_MASTER    3  /* Master  / Access Point */
+
+#define IFNAMSIZ          16
+#define IW_ESSID_MAX_SIZE 32
+
+/* Hand-rolled iw_point: { void *pointer; __u16 length; __u16 flags; }. */
+struct iw_point_compat {
+    void    *pointer;
+    uint16_t length;
+    uint16_t flags;
+};
+
+/*
+ * Hand-rolled iwreq: 16-byte name union, then a 16-byte iwreq_data union.
+ * We only ever use the u32 field (mode/freq) or the iw_point field (essid/key).
+ */
+struct iwreq_compat {
+    char ifrn_name[IFNAMSIZ];
+    union {
+        uint32_t                mode;     /* SIOCSIWMODE / SIOCSIWFREQ */
+        struct iw_point_compat  essid;    /* SIOCSIWESSID / ...ENCODEEXT */
+        char                    pad[16];  /* keep the union exactly 16 bytes */
+    } u;
+};
 
 static int wext(int fd, unsigned long cmd, struct iwreq_compat *req) {
     if (ioctl(fd, cmd, req) < 0) {
@@ -72,71 +95,25 @@ static int do_set_essid(int fd, const char *ifname, const char *ssid) {
         return -1;
     }
     set_ifname(&req, ifname);
-    req.u.point.pointer = (void *)ssid;
-    req.u.point.length = (uint16_t)len;
-    req.u.point.flags = 1; /* SSID active */
+    req.u.essid.pointer = (void *)ssid;
+    req.u.essid.length = (uint16_t)len;
+    req.u.essid.flags = 1; /* SSID active */
     return wext(fd, SIOCSIWESSID, &req);
 }
 
-static int do_set_pmk(int fd, const char *ifname, const uint8_t pmk[WPA2_PMK_SIZE]) {
+static int do_set_key(int fd, const char *ifname, const char *pass) {
     struct iwreq_compat req;
-    struct iw_encode_ext_compat encoded;
-    memset(&encoded, 0, sizeof(encoded));
-    encoded.alg = IW_ENCODE_ALG_PMK;
-    encoded.key_len = WPA2_PMK_SIZE;
-    memcpy(encoded.key, pmk, WPA2_PMK_SIZE);
     set_ifname(&req, ifname);
-    req.u.point.pointer = &encoded;
-    req.u.point.length = sizeof(encoded);
-    req.u.point.flags = 0;
-    int result = wext(fd, SIOCSIWENCODEEXT, &req);
-    wipe(&encoded, sizeof(encoded));
-    return result;
-}
-
-static int read_pmk_file(const char *path, uint8_t pmk[WPA2_PMK_SIZE]) {
-    int flags = O_RDONLY;
-#ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
-#endif
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    int pmk_fd = open(path, flags);
-    if (pmk_fd < 0) {
-        fprintf(stderr, "failed to open PMK file: %s\n", strerror(errno));
-        return -1;
-    }
-
-    size_t offset = 0;
-    while (offset < WPA2_PMK_SIZE) {
-        ssize_t count = read(pmk_fd, pmk + offset, WPA2_PMK_SIZE - offset);
-        if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) goto invalid;
-        offset += (size_t)count;
-    }
-
-    uint8_t extra;
-    ssize_t count;
-    do {
-        count = read(pmk_fd, &extra, sizeof(extra));
-    } while (count < 0 && errno == EINTR);
-    if (count != 0) goto invalid;
-    close(pmk_fd);
-    return 0;
-
-invalid:
-    fprintf(stderr, "PMK file must contain exactly %d raw bytes\n", WPA2_PMK_SIZE);
-    wipe(pmk, WPA2_PMK_SIZE);
-    close(pmk_fd);
-    return -1;
+    req.u.essid.pointer = (void *)pass;
+    req.u.essid.length = (uint16_t)strlen(pass);
+    req.u.essid.flags = 0;
+    return wext(fd, SIOCSIWENCODEEXT, &req);
 }
 
 static int do_set_channel(int fd, const char *ifname, uint32_t chan) {
     struct iwreq_compat req;
     set_ifname(&req, ifname);
-    req.u.freq.mantissa = (int32_t)chan;
-    req.u.freq.exponent = 0;
+    req.u.mode = chan; /* wext.rs reads first u32 of the union as channel */
     return wext(fd, SIOCSIWFREQ, &req);
 }
 
@@ -150,7 +127,7 @@ static void usage(const char *argv0) {
     fprintf(stderr,
         "usage:\n"
         "  %s ap  <ssid> [channel]      become open SoftAP (default channel 6)\n"
-        "  %s sta <ssid> [pmk-file]     join WPA2, or omit for open\n",
+        "  %s sta <ssid> [passphrase]   join a network in station mode\n",
         argv0, argv0);
 }
 
@@ -170,12 +147,11 @@ int main(int argc, char **argv) {
 
     const char *mode = argv[1];
     const char *ssid = argv[2];
-    uint8_t pmk[WPA2_PMK_SIZE] = {0};
     int rc = 1;
 
     if (strcmp(mode, "ap") == 0) {
         uint32_t chan = (argc >= 4) ? (uint32_t)atoi(argv[3]) : 6;
-        printf("[wifi_switch] %s -> SoftAP channel=%u\n", ifname, chan);
+        printf("[wifi_switch] %s -> SoftAP ssid=\"%s\" channel=%u\n", ifname, ssid, chan);
         if (do_set_mode(fd, ifname, IW_MODE_MASTER)) goto out;
         if (do_set_essid(fd, ifname, ssid)) goto out;
         if (do_set_channel(fd, ifname, chan)) goto out;
@@ -183,12 +159,12 @@ int main(int argc, char **argv) {
         printf("[wifi_switch] SoftAP commit OK\n");
         rc = 0;
     } else if (strcmp(mode, "sta") == 0) {
-        const char *pmk_file = (argc >= 4) ? argv[3] : "";
-        printf("[wifi_switch] %s -> Station (%s)\n", ifname, pmk_file[0] ? "wpa2" : "open");
-        if (pmk_file[0] && read_pmk_file(pmk_file, pmk)) goto out;
+        const char *pass = (argc >= 4) ? argv[3] : "";
+        printf("[wifi_switch] %s -> Station ssid=\"%s\" (%s)\n",
+               ifname, ssid, pass[0] ? "wpa2" : "open");
         if (do_set_mode(fd, ifname, IW_MODE_INFRA)) goto out;
         if (do_set_essid(fd, ifname, ssid)) goto out;
-        if (pmk_file[0] && do_set_pmk(fd, ifname, pmk)) goto out;
+        if (pass[0] && do_set_key(fd, ifname, pass)) goto out;
         if (do_commit(fd, ifname)) goto out;
         printf("[wifi_switch] Station commit OK\n");
         rc = 0;
@@ -198,7 +174,6 @@ int main(int argc, char **argv) {
     }
 
 out:
-    wipe(pmk, sizeof(pmk));
     close(fd);
     return rc;
 }

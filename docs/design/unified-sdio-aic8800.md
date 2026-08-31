@@ -224,32 +224,29 @@ Linux 为 `func`/`func_msg` 分别注册 handler 并 drain 两个 FIFO 的所有
 安全连接必须携带调用方拥有的 32 字节熵。熵缺失返回
 `EntropyUnavailable`，禁止用时间戳代替随机源。
 
-普通 WEXT 连接由 `ax-net` 在提交 owner transaction 前从运行时 CSPRNG 补齐熵；
-显式 `connect_wpa2_pmk_with_entropy` 保持优先。CSPRNG 只能由
+普通 WEXT 连接和编译期 station 启动事务都由 `ax-net` 在提交 owner transaction
+前从运行时 CSPRNG 补齐熵；显式 `connect_wpa2_pmk_with_entropy` 保持优先。CSPRNG 只能由
 `ax_hal::boot::boot_entropy()` 的
 可信 UEFI RNG 或精确 32 字节 FDT `/chosen/rng-seed` 初始化。板级 runner 为每次
 运行生成临时 DTB 副本并注入新 seed；静态 DTB、时间、计数器、地址和 MAC 都不是
 随机源。缺少可信 seed 时安全连接 fail closed。
 
-普通 ostool `session_files` 继续走现有 HTTP 传输；它依赖 guest 已经联网，因此不能
-承载建立第一条 Wi-Fi 链路所需的凭据。只有声明 typed `[wifi]` sidecar 的 case 才把
-SSID、PMK、helper 和新 seed 编入启动 archive，并写入本次运行的临时 DTB 副本。
-仓库 DTB 不修改，临时副本随 session 清理。若未来 ostool 提供独立 FIT ramdisk 输入，
-可将 archive 迁到标准 initrd 交接；在此之前不能用串口命令、U-Boot 环境变量或
-网络后置下载替代启动前凭据通道。
+AKA board build 直接读取 `STARRY_WIFI_SSID` 与 `STARRY_WIFI_PASSWORD`。输入校验位于
+`ax-driver` build support，因此半组变量、非法 SSID 或非法 WPA2 密码在申请板卡前
+失败；AIC OS Glue 用 RustCrypto PBKDF2-SHA1 派生 PMK，并通过已有
+`WifiTransaction` 发布 station 启动事务。portable AIC core 不读取环境变量、不解析
+产品配置，也不增加第二套连接 API。
 
-主机 session materializer 逐级拒绝 upload root 内的 symlink parent，目标文件在
-Unix 上以 `O_NOFOLLOW|O_CLOEXEC` 和 `0600` 打开。PMK/SSID 因此不能借由构建产物
-symlink 写出临时根目录；用户态 WEXT 示例也只从受保护文件读取 32-byte PMK，
-不再把 PMK 放入可由 `/proc/<pid>/cmdline` 观察的参数。这里的 upload root 是
-`axbuild` 创建并独占的私有临时目录；安全边界不允许其他进程在 materialize 期间
-并发替换目录项，若未来接收共享或不可信目录，必须改成 directory-fd-relative
-`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)` 一类原子解析。
+普通 ostool `session_files` 继续走现有 HTTP 传输；启动事务在内核网络初始化阶段完成
+WPA2 和 DHCP 后，iperf 脚本才使用该通道下载。凭据不经过 sidecar、boot archive、
+guest helper 或 Starry 专用内核文件协议。板级 runner 只在发现完整 Wi-Fi 环境变量时
+生成带新 `rng-seed` 的临时 DTB 副本；仓库 DTB 不修改，临时副本随 board run 的
+RAII guard 清理。
 
 ## FDT/ACPI 参数边界
 
 板级物理地址、IRQ、clock/reset/power-domain、pinctrl、DMA 地址宽度、总线频率
-和产品网络策略只允许出现在 OS Glue 的固件翻译层。当前 SG2002/CV181x 路径
+和产品网络策略只允许出现在 OS Glue 输入层。当前 SG2002/CV181x 硬件资源
 使用 FDT：SDIO consumer 节点通过 `reg-names` 提供 `sdio`、`syscon`、`crg`、
 `rtcsys-ctrl`、`rtcsys-io`，或者分别用 `cvitek,syscon`、`cvitek,crg`、
 `cvitek,rtcsys-ctrl`、`cvitek,rtcsys-io` phandle 引用 provider。缺少必要资源时
@@ -261,7 +258,8 @@ probe 显式失败，不回退到写死物理地址。
 `aic,control-timeout-ms`、`aic,queue-size` 和 `aic,max-frame-size`。可选启动 AP
 必须显式配置 `aic,startup-mode = "access-point"` 及 `aic,ap-ssid`、
 `aic,ap-channel`、`aic,ap-ipv4`、`aic,ap-prefix-length`；未配置时只注册
-`wlan0`，不偷偷采用产品 SSID/IP。
+`wlan0`。AKA 的 station 产品策略来自上述编译期环境变量；若同时配置 FDT 启动
+策略则 probe 显式拒绝，不能按隐式优先级覆盖。
 
 支持 ACPI 的平台使用 rdrive ACPI memory/IRQ/_CCA 资源构造同一 portable
 配置；CV181x 当前只存在 FDT probe，因此本次不伪造 ACPI 节点或默认资源。

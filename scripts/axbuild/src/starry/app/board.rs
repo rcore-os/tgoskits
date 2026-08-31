@@ -20,7 +20,6 @@ pub(crate) fn resolve_board_case(
     workspace_root: &Path,
     case_name: &str,
     explicit_board_config: Option<&Path>,
-    requested_board_type: Option<&str>,
 ) -> anyhow::Result<StarryAppBoardCase> {
     let case_name = validate_case_name(case_name)?;
     let apps_dir = apps_starry_dir(workspace_root);
@@ -56,7 +55,7 @@ pub(crate) fn resolve_board_case(
 
     let board_config_path = match explicit_board_config {
         Some(path) => resolve_explicit_board_config(&case_dir, path),
-        None => discover_case_board_config(&case_dir, requested_board_type)?,
+        None => discover_case_board_config(&case_dir)?,
     };
     let (build_config_path, target) =
         match default_build_config_for_board_config(workspace_root, &board_config_path)? {
@@ -85,26 +84,8 @@ pub(crate) fn merge_board_init_command(init_cmd: &str, board_prelude: Option<&st
     }
 }
 
-fn discover_case_board_config(
-    case_dir: &Path,
-    requested_board_type: Option<&str>,
-) -> anyhow::Result<PathBuf> {
+fn discover_case_board_config(case_dir: &Path) -> anyhow::Result<PathBuf> {
     let mut configs = collect_prefixed_toml_files(case_dir, "board-")?;
-    if let Some(board_type) = requested_board_type {
-        let requested_name = format!("board-{}.toml", board_type.to_ascii_lowercase());
-        return configs
-            .into_iter()
-            .find(|path| {
-                path.file_name().and_then(|name| name.to_str()) == Some(requested_name.as_str())
-            })
-            .with_context(|| {
-                format!(
-                    "Starry app case `{}` does not provide `{requested_name}` for board type \
-                     `{board_type}`",
-                    case_dir.display()
-                )
-            });
-    }
     match configs.len() {
         0 => bail!(
             "Starry app case `{}` does not provide a board-<board>.toml config",

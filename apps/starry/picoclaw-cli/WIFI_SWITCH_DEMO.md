@@ -4,7 +4,7 @@ A tiny userspace tool that drives StarryOS's wireless-extensions `ioctl` path
 to switch the `wlan0` interface (aic8800 on sg2002) between **SoftAP** and
 **Station** at runtime, without a reboot.
 
-It exercises the full control-plane chain:
+It exercises the full control-plane chain added in `feat/wifi-mode-switch`:
 
 ```
 wifi_switch (SIOCSIW* + COMMIT)
@@ -45,9 +45,8 @@ sudo chmod +x /tmp/sdpart/usr/bin/wifi_switch
 wifi_switch ap PicoClaw-Car
 wifi_switch ap PicoClaw-Car 11        # explicit channel
 
-# Join an existing network in station mode. The optional file contains the
-# 32-byte binary WPA2 PMK and should be readable only by its owner.
-wifi_switch sta MyHomeWifi /run/secrets/myhome.pmk # WPA2
+# Join an existing network in station mode.
+wifi_switch sta MyHomeWifi mypassword # WPA2
 wifi_switch sta OpenCafeWifi          # open network
 ```
 
@@ -63,7 +62,7 @@ server leasing `192.168.50.2`. A successful switch is observable as:
    (`dev N: reconfigured as STA, DHCP client enabled` /
    `... reconfigured as AP 192.168.50.1/24, DHCP server lease 192.168.50.2`).
 
-2. **STA mode** — after `wifi_switch sta <ssid> <pmk-file>`, the interface drops
+2. **STA mode** — after `wifi_switch sta <ssid> <pass>`, the interface drops
    its `192.168.50.1` SoftAP address and DHCP-discovers a new one from the
    joined AP. Watch the log for `DHCP acquired address <x>`; then a client on
    that LAN can be reached (e.g. `ping`/`wget` from the board).
@@ -79,7 +78,3 @@ server leasing `192.168.50.2`. A successful switch is observable as:
 > Note: a non-zero exit with `ioctl 0x8b00 failed` means COMMIT was rejected —
 > check that all of mode/ssid (and channel for AP) were staged first, and read
 > the kernel log for the `reconfigure_wifi` failure reason.
-
-The PMK is intentionally read from a file instead of a command-line value, so
-it is not exposed through `/proc/<pid>/cmdline`. Remove the file after the
-connection attempt if it is a temporary credential.

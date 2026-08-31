@@ -169,6 +169,8 @@ pub enum NetworkRuntimeError {
     IrqRegistration(#[from] PinnedNetIrqError),
     #[error("network DMA setup failed: {0}")]
     Device(#[from] NetError),
+    #[error("secure Wi-Fi startup entropy failed: {0}")]
+    StartupEntropy(#[from] crate::NetError),
 }
 
 /// Resolved driver source-id to physical IRQ mapping.
@@ -624,6 +626,8 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             protocol_owner_cpu,
         };
         for (handle, transaction) in startup_transactions {
+            let transaction =
+                prepare_startup_transaction(transaction, || super::next_wifi_connection_entropy())?;
             let policy = transaction.link_policy();
             handle.submit(transaction)?;
             if let Some(policy) = policy {
@@ -638,6 +642,17 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         }
         Ok((runtime, ports))
     }
+}
+
+fn prepare_startup_transaction(
+    mut transaction: WifiTransaction,
+    next_entropy: impl FnOnce() -> Result<[u8; 32], crate::NetError>,
+) -> Result<WifiTransaction, crate::NetError> {
+    if transaction.needs_connect_entropy() {
+        transaction.provide_connect_entropy(next_entropy()?);
+        log::info!("[wifi] secure startup connection entropy prepared");
+    }
+    Ok(transaction)
 }
 
 fn validate_and_collect_irq_sets(

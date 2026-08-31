@@ -6,7 +6,8 @@ use std::{
 
 use irq_framework::{HwIrq, IrqDomainId};
 use rd_net::{
-    DmaBuffer, NetControlEndpoint, NetDeviceInfo, PreparedNetDevice, RxCompletion,
+    DmaBuffer, NetControlEndpoint, NetDeviceInfo, PreparedNetDevice, RxCompletion, WifiOperation,
+    WifiTransaction, Wpa2Pmk,
     dma_api::{
         DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
         DmaDomainId, DmaError, DmaMapHandle, DmaOp,
@@ -525,4 +526,29 @@ fn hardware_retry_rearms_instead_of_immediately_rescheduling() {
 fn protocol_owner_uses_the_least_loaded_cpu() {
     assert_eq!(select_protocol_owner(&[0, 0, 1], 4), 2);
     assert_eq!(select_protocol_owner(&[0, 1, 2, 3], 4), 0);
+}
+
+#[test]
+fn secure_startup_transaction_receives_runtime_owned_entropy() {
+    let transaction = WifiTransaction::connect_wpa2_pmk("ssid", Wpa2Pmk::new([0x11; 32]));
+    let transaction =
+        prepare_startup_transaction(transaction, || Ok::<_, crate::NetError>([0x22; 32])).unwrap();
+
+    let WifiOperation::Connect { entropy, .. } = transaction.operation() else {
+        panic!("expected station transaction");
+    };
+    assert_eq!(entropy, &Some([0x22; 32]));
+}
+
+#[test]
+fn open_startup_transaction_does_not_consume_secure_entropy() {
+    let transaction = prepare_startup_transaction(
+        WifiTransaction::connect_open("ssid"),
+        || -> Result<[u8; 32], crate::NetError> {
+            panic!("open startup connection must not request secure entropy")
+        },
+    )
+    .unwrap();
+
+    assert!(!transaction.needs_connect_entropy());
 }

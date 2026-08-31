@@ -125,6 +125,24 @@ fn dma_address_mask(info: &FdtInfo<'_>) -> Result<u64, OnProbeError> {
 }
 
 fn startup_transaction(info: &FdtInfo<'_>) -> Result<Option<WifiTransaction>, OnProbeError> {
+    let build_transaction = super::startup_config::transaction().map_err(|error| {
+        OnProbeError::other(format!(
+            "[{}] invalid compile-time Wi-Fi startup configuration: {error}",
+            info.node.name()
+        ))
+    })?;
+    let firmware_transaction = fdt_startup_transaction(info)?;
+    match (build_transaction, firmware_transaction) {
+        (Some(_), Some(_)) => Err(OnProbeError::other(format!(
+            "[{}] compile-time station policy conflicts with FDT startup policy",
+            info.node.name()
+        ))),
+        (Some(transaction), None) | (None, Some(transaction)) => Ok(Some(transaction)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn fdt_startup_transaction(info: &FdtInfo<'_>) -> Result<Option<WifiTransaction>, OnProbeError> {
     let Some(mode) = fdt_string(info, "aic,startup-mode") else {
         return Ok(None);
     };

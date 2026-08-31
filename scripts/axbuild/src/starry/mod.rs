@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ostool::{
-    board::{RunBoardOptions, config::BoardRunConfig},
+    board::{BoardRunRequest, RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
 };
 
@@ -17,7 +17,7 @@ pub(crate) mod apk;
 pub mod app;
 mod args;
 pub mod board;
-mod board_assets;
+mod boot_entropy;
 pub mod build;
 pub mod config;
 pub mod kmod;
@@ -25,7 +25,6 @@ pub mod perf;
 pub mod quick_start;
 pub(crate) mod resolver;
 pub mod rootfs;
-mod session_env;
 pub mod test;
 #[cfg(test)]
 mod tests;
@@ -368,7 +367,6 @@ impl Starry {
             self.app.workspace_root(),
             &args.test_case,
             args.board_config.as_deref(),
-            args.board_type.as_deref(),
         )?;
         let request = self.prepare_request(
             StarryCliArgs {
@@ -546,34 +544,30 @@ impl Starry {
         cargo: Cargo,
         mut board_config: BoardRunConfig,
         board_config_path: PathBuf,
-        session_assets: Option<board_assets::PreparedBoardSessionAssets>,
+        session_assets: Option<test::PreparedBoardSessionAssets>,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
-        if let Some(assets) = &session_assets {
-            assets.prepare_boot_data(&mut board_config)?;
-        }
+        let _boot_entropy = boot_entropy::prepare_for_secure_wifi(&mut board_config)?;
         let output = self.build_artifact(request, cargo.clone()).await?;
-        let board_request = match &session_assets {
+        let board_request = match session_assets {
             Some(assets) => {
                 println!(
-                    "[axbuild] board session asset root: {}",
+                    "[axbuild] board session upload root: {}",
                     assets.root.display()
                 );
-                assets.attach_to_board_request(board_config, options)?
+                BoardRunRequest::new(board_config, options)
+                    .with_session_files(&assets.root, &assets.relative_paths)?
             }
             None => board_run_request(&board_config_path, board_config, options)?,
         };
-        let result = self
-            .app
+        self.app
             .board_prepared_elf_with_request(
                 output.elf_path().to_path_buf(),
                 cargo.to_bin,
                 request.build_info_path.clone(),
                 board_request,
             )
-            .await;
-        drop(session_assets);
-        result
+            .await
     }
 
     async fn run_qemu_request(

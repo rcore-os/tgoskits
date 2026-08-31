@@ -862,6 +862,7 @@ dependencies = [
  "log",
  "mmio-api",
  "nvme-driver",
+ "pbkdf2",
  "pcie",
  "phytium-mci-host",
  "rd-net",
@@ -893,6 +894,7 @@ dependencies = [
  "sdmmc-host",
  "sdmmc-protocol",
  "sg200x-bsp",
+ "sha1 0.11.0",
  "some-serial",
  "starfive-jh7110-dwmmc",
  "thiserror 2.0.20",
@@ -1310,7 +1312,6 @@ dependencies = [
  "addr2line 0.26.1",
  "anyhow",
  "axvmconfig",
- "boot-session-archive",
  "cargo_metadata",
  "chrono",
  "clap",
@@ -1326,7 +1327,6 @@ dependencies = [
  "log",
  "object 0.38.1",
  "ostool",
- "pbkdf2",
  "proc-macro2",
  "quote",
  "raw-cpuid 11.6.0",
@@ -1337,7 +1337,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha1 0.11.0",
  "sha2 0.10.9",
  "syn 3.0.4",
  "tar",
@@ -1350,7 +1349,6 @@ dependencies = [
  "walkdir",
  "windows-sys 0.59.0",
  "xz2",
- "zeroize",
 ]
 
 [[package]]
@@ -1906,13 +1904,6 @@ dependencies = [
  "futures-io",
  "futures-lite",
  "piper",
-]
-
-[[package]]
-name = "boot-session-archive"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -7954,7 +7945,6 @@ dependencies = [
  "axtest",
  "bitflags 2.13.1",
  "bitmaps",
- "boot-session-archive",
  "bytemuck",
  "cfg-if",
  "chrono",
