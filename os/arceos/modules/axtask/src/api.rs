@@ -663,12 +663,6 @@ mod tests {
     use core::cell::Cell;
 
     #[test]
-    #[cfg(feature = "host-test")]
-    fn host_atomic_context_query_does_not_require_cpu_local_state() {
-        assert!(!super::in_atomic_context());
-    }
-
-    #[test]
     fn task_initialization_precedes_scheduling() {
         let initialized = Cell::new(false);
 

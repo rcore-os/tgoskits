@@ -32,21 +32,57 @@ struct PackageFeatureProfile {
     expected_tests: &'static [&'static str],
 }
 
-const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
-    name: "host-test",
-    no_default_features: false,
-    features: &["host-test"],
-    name_filter: None,
-    expected_tests: &[
-        "api::std_tests::axtask_api_constants_hold",
-        "api::std_tests::axtask_api_scheduler_name_hold",
-        "api::std_tests::axtask_api_task_registry_functions_exist_hold",
-        "api::std_tests::axtask_api_type_aliases_hold",
-        "api::tests::task_initialization_precedes_scheduling",
-        "future::time::timer_regression_tests::due_future_work_is_not_republished_as_a_clockevent_deadline",
-        "future::time::timer_regression_tests::future_deadline_is_republished_after_the_due_pass_finishes",
-    ],
-}];
+const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test-api",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("api::"),
+        expected_tests: &[
+            "api::std_tests::axtask_api_constants_hold",
+            "api::std_tests::axtask_api_scheduler_name_hold",
+            "api::std_tests::axtask_api_task_registry_functions_exist_hold",
+            "api::std_tests::axtask_api_type_aliases_hold",
+            "api::tests::task_initialization_precedes_scheduling",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-timer-model",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("future::time::timer_regression_tests::"),
+        expected_tests: &[
+            "future::time::timer_regression_tests::due_future_work_is_not_republished_as_a_clockevent_deadline",
+            "future::time::timer_regression_tests::future_deadline_is_republished_after_the_due_pass_finishes",
+            "future::time::timer_regression_tests::future_timer_drop_cancels_the_registration_cpu_after_migration",
+            "future::time::timer_regression_tests::future_timer_poll_uses_the_registration_cpu_after_migration",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-lock-contract",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("sync::mutex::tests::"),
+        expected_tests: &[
+            "sync::mutex::tests::leaked_guard_can_be_released_by_owner_wrapper",
+            "sync::mutex::tests::lock_rejects_preemption_disabled_context",
+            "sync::mutex::tests::lock_reports_the_external_call_site_to_the_runtime",
+            "sync::mutex::tests::try_lock_is_nonblocking",
+            "sync::mutex::tests::wrong_owner_force_unlock_is_rejected",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-remote-reschedule",
+        no_default_features: false,
+        features: &["host-test", "smp", "ipi"],
+        name_filter: Some("run_queue::tests::"),
+        expected_tests: &[
+            "run_queue::tests::forced_remote_reschedule_bypasses_stale_pending",
+            "run_queue::tests::remote_reschedule_request_is_coalesced",
+            "run_queue::tests::remote_reschedule_send_failure_is_reported_and_keeps_pending",
+        ],
+    },
+];
 
 const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
@@ -1126,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn ax_task_uses_one_mandatory_runtime_profile() {
+    fn ax_task_uses_split_runtime_profiles() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-task".to_string()];
         let mut runner = FakeCargoRunner::succeeding().with_ax_task_discovery();
@@ -1148,10 +1184,65 @@ mod tests {
                     "ax-task",
                     "--features",
                     "host-test",
+                    "api::",
                     "--",
                     "--list"
                 ],
-                vec!["test", "-p", "ax-task", "--features", "host-test"],
+                vec!["test", "-p", "ax-task", "--features", "host-test", "api::"],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test",
+                    "future::time::timer_regression_tests::",
+                    "--",
+                    "--list"
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test",
+                    "future::time::timer_regression_tests::"
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test",
+                    "sync::mutex::tests::",
+                    "--",
+                    "--list"
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test",
+                    "sync::mutex::tests::"
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,smp,ipi",
+                    "run_queue::tests::",
+                    "--",
+                    "--list"
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,smp,ipi",
+                    "run_queue::tests::"
+                ],
             ]
         );
         assert!(!args.contains(&vec!["test".into(), "-p".into(), "ax-task".into()]));
@@ -1293,7 +1384,7 @@ mod tests {
 
     #[test]
     fn unfiltered_profile_discovery_accepts_additional_tests() {
-        let profile = &AX_TASK_FEATURE_PROFILES[0];
+        let profile = &AX_HAL_FEATURE_PROFILES[0];
         let mut tests = profile.expected_tests.to_vec();
         tests.push("timers::tests::an_additional_regression");
 
@@ -1336,6 +1427,6 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["ax-task", "ax-api"]);
-        assert_eq!(runner.invocations.len(), 3);
+        assert_eq!(runner.invocations.len(), 9);
     }
 }

@@ -2,7 +2,9 @@
 
 ## 概述
 
-使用 `cargo metadata --no-deps` 枚举工作区软件包，与 `scripts/test/std_crates.csv` 比较，再依据宿主机上完整 `cargo test -p <package>` 的结果分类缺失软件包。
+使用 `cargo metadata --no-deps` 枚举工作区软件包，与 `scripts/test/std_crates.csv` 比较，再依据宿主机上完整 `cargo test -p <package>` 或仓库正式 `cargo xtask test` profile 的结果分类缺失软件包。
+
+只把宿主可确定执行的算法、数据结构、状态机、协议解析和错误转换纳入 std。依赖假调度器、假 IRQ、假 timer、假 SMP 或假设备来证明真实运行时语义的测试不属于 std，应迁移到 ArceOS QEMU、Starry/Axvisor axtest 或板卡流程。纯协议测试可以使用局部数据夹具，但不得伪造 OS/runtime 行为。
 
 ## 候选来源
 
@@ -14,7 +16,7 @@
 
 - 把库软件包纳入审计候选集合。
 - 把示例或只有二进制目标的软件包纳入候选集合。
-- 使用完整 `cargo test -p <package>` 结果，不使用 `--no-run`。
+- 普通包使用完整 `cargo test -p <package>`，不使用 `--no-run`；带 `host-test`、固定 feature profile 或测试发现断言的软件包使用 `cargo xtask test` 的对应 profile。
 
 ## 默认排除
 

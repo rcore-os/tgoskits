@@ -386,8 +386,6 @@ impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
 
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
 mod host {
-    #[cfg(test)]
-    use core::sync::atomic::AtomicBool;
     use core::{
         panic::Location,
         sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
@@ -417,12 +415,6 @@ mod host {
     }
 
     static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
-    #[cfg(test)]
-    static WAIT_BOUNDARY_OWNER: AtomicUsize = AtomicUsize::new(0);
-    #[cfg(test)]
-    static WAIT_BOUNDARY_REACHED: AtomicBool = AtomicBool::new(false);
-    #[cfg(test)]
-    static WAIT_BOUNDARY_CONTINUE: AtomicBool = AtomicBool::new(false);
 
     std::thread_local! {
         static TASK_ID: Cell<u64> = const { Cell::new(0) };
@@ -459,14 +451,6 @@ mod host {
         fn wait_until_unlocked(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64) {
             let queue = ensure_wait_queue(wait_queue);
             queue.waiters.fetch_add(1, Ordering::AcqRel);
-            #[cfg(test)]
-            if WAIT_BOUNDARY_OWNER.load(Ordering::Acquire) == core::ptr::from_ref(owner_id) as usize
-            {
-                WAIT_BOUNDARY_REACHED.store(true, Ordering::Release);
-                while !WAIT_BOUNDARY_CONTINUE.load(Ordering::Acquire) {
-                    std::thread::yield_now();
-                }
-            }
             let mut state = queue.state.lock().expect("host wait queue poisoned");
             while owner_id.load(Ordering::Acquire) != 0 {
                 state = queue
@@ -545,26 +529,6 @@ mod host {
     #[cfg(test)]
     pub(super) fn last_might_sleep_caller() -> Option<&'static Location<'static>> {
         LAST_MIGHT_SLEEP_CALLER.get()
-    }
-
-    #[cfg(test)]
-    pub(super) fn pause_waiter_before_registration(owner_id: &AtomicU64) {
-        WAIT_BOUNDARY_REACHED.store(false, Ordering::Release);
-        WAIT_BOUNDARY_CONTINUE.store(false, Ordering::Release);
-        WAIT_BOUNDARY_OWNER.store(core::ptr::from_ref(owner_id) as usize, Ordering::Release);
-    }
-
-    #[cfg(test)]
-    pub(super) fn wait_for_registration_boundary() {
-        while !WAIT_BOUNDARY_REACHED.load(Ordering::Acquire) {
-            std::thread::yield_now();
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn resume_waiter_after_registration_boundary() {
-        WAIT_BOUNDARY_CONTINUE.store(true, Ordering::Release);
-        WAIT_BOUNDARY_OWNER.store(0, Ordering::Release);
     }
 }
 
@@ -661,45 +625,6 @@ mod tests {
             let _mutex_guard = mutex.lock();
         }));
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn contended_mutex_wakes_waiters_without_lost_wakeups() {
-        const THREADS: usize = 8;
-        const ITERATIONS: usize = 2_000;
-        let value = Arc::new(Mutex::new(0usize));
-        let mut workers = Vec::new();
-
-        for _ in 0..THREADS {
-            let value = value.clone();
-            workers.push(thread::spawn(move || {
-                for _ in 0..ITERATIONS {
-                    *value.lock() += 1;
-                }
-            }));
-        }
-
-        for worker in workers {
-            worker.join().expect("mutex worker panicked");
-        }
-        assert_eq!(*value.lock(), THREADS * ITERATIONS);
-    }
-
-    #[test]
-    fn unlock_before_waiter_registration_does_not_lose_wakeup() {
-        let value = Arc::new(Mutex::new(0usize));
-        let guard = value.lock();
-        host::pause_waiter_before_registration(&value.raw.owner_id);
-        let waiter_value = value.clone();
-        let waiter = thread::spawn(move || {
-            *waiter_value.lock() = 1;
-        });
-
-        host::wait_for_registration_boundary();
-        drop(guard);
-        host::resume_waiter_after_registration_boundary();
-        waiter.join().expect("boundary waiter panicked");
-        assert_eq!(*value.lock(), 1);
     }
 
     #[test]

@@ -11,6 +11,17 @@ axhvc
 ax-io
 axklib
 axpoll
+ax-cgroup
+ax-cpu
+ax-memory-addr
+ax-memory-set
+axpanic
+ax-percpu
+mmio-api
+page-table-generic
+ranges-ext
+rdif-base
+rdif-def
 ax-sched
 axvm
 axvmconfig

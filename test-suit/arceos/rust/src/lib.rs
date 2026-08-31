@@ -58,6 +58,7 @@ pub mod net;
         feature = "task-affinity",
         feature = "task-ipi",
         feature = "task-irq",
+        feature = "task-mutex",
         feature = "task-parallel",
         feature = "task-priority",
         feature = "task-sleep",
@@ -122,6 +123,7 @@ test_runner!("sched-rr", run_sched_rr, task::priority::run);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
 test_runner!("task-ipi", run_task_ipi, task::ipi::run);
 test_runner!("task-irq", run_task_irq, task::irq::run);
+test_runner!("task-mutex", run_task_mutex, task::mutex::run);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
 test_runner!("task-priority", run_task_priority, task::priority::run);
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
@@ -223,6 +225,8 @@ const SELECTED_TESTS: &[TestCase] = &[
     TestCase::new("task-ipi", "IPI callback delivery", run_task_ipi),
     #[cfg(feature = "task-irq")]
     TestCase::new("task-irq", "task IRQ state", run_task_irq),
+    #[cfg(feature = "task-mutex")]
+    TestCase::new("task-mutex", "mutex contention and wakeup", run_task_mutex),
     #[cfg(feature = "task-parallel")]
     TestCase::new("task-parallel", "parallel computation", run_task_parallel),
     #[cfg(all(

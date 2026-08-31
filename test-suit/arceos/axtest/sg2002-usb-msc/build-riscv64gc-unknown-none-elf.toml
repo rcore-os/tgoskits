@@ -4,7 +4,6 @@ features = [
   "ax-std",
   "paging",
   "ax-std/std-compat",
-  "ax-task/axtest",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
   "ax-driver/sg2002-dwc2",

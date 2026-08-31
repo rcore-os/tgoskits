@@ -18,6 +18,7 @@ task-affinity = ["ax-std"]
 task-wait-queue = ["ax-std"]
 task-wait-queue-remote-wake = ["ax-std", "ax-std/ipi"]
 task-ipi = ["ax-std", "ax-std/alloc", "ax-std/ipi"]
+task-mutex = ["ax-std", "ax-std/alloc"]
 task-irq = [
     "ax-std",
     "ax-std/sched-rr",
@@ -57,6 +58,7 @@ all = [
     "task-wait-queue",
     "task-wait-queue-remote-wake",
     "task-ipi",
+    "task-mutex",
     "task-tls",
     "task-parallel",
     "task-priority",

@@ -335,78 +335,50 @@ fn is_remote_cpu(cpu_id: usize) -> bool {
 mod tests {
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    // Host-test mode collapses the pending/count state into process-global
-    // atomics, so keep their assertions in one test.
+    // This test covers only the atomic publication edge. Scheduler handling
+    // and forced rotation require the real ArceOS IPI path; the task-ipi QEMU
+    // case is the runtime evidence boundary rather than a host fake scheduler.
     #[test]
-    fn remote_reschedule_request_is_coalesced_and_forced() {
-        const REMOTE_CPU: usize = 1;
-
-        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
-        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
-
-        super::kick_remote_cpu(REMOTE_CPU);
+    fn remote_reschedule_request_is_coalesced() {
+        let pending = AtomicBool::new(false);
+        let requests = AtomicUsize::new(0);
 
         assert_eq!(
-            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
-            1,
-            "remote CPU kicks must enqueue a scheduler-visible reschedule request",
+            super::request_remote_reschedule_if_not_pending(&pending, || {
+                requests.fetch_add(1, Ordering::Release);
+                Ok(ax_ipi::IpiNotification::Sent)
+            })
+            .unwrap(),
+            ax_ipi::IpiNotification::Sent,
         );
-        super::kick_remote_cpu(REMOTE_CPU);
-
         assert_eq!(
-            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+            super::request_remote_reschedule_if_not_pending(&pending, || {
+                requests.fetch_add(1, Ordering::Release);
+                Ok(ax_ipi::IpiNotification::Sent)
+            })
+            .unwrap(),
+            ax_ipi::IpiNotification::Coalesced,
+        );
+        assert_eq!(
+            requests.load(Ordering::Acquire),
             1,
-            "remote CPU kicks should coalesce identical pending reschedule requests",
+            "remote reschedule requests should coalesce while pending",
         );
 
-        assert!(super::take_remote_reschedule_pending_for_current_cpu());
-        super::kick_remote_cpu(REMOTE_CPU);
-
+        pending.store(false, Ordering::Release);
         assert_eq!(
-            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+            super::request_remote_reschedule_if_not_pending(&pending, || {
+                requests.fetch_add(1, Ordering::Release);
+                Ok(ax_ipi::IpiNotification::Sent)
+            })
+            .unwrap(),
+            ax_ipi::IpiNotification::Sent,
+        );
+        assert_eq!(
+            requests.load(Ordering::Acquire),
             2,
-            "remote CPU kicks must be accepted again after the pending bit is cleared",
+            "a cleared pending bit should permit a fresh request",
         );
-
-        #[cfg(feature = "preempt")]
-        crate::tests::run_in_test_scheduler(|| {
-            let curr = crate::current();
-
-            curr.set_preempt_pending(false);
-            curr.set_force_resched_pending(false);
-            super::REMOTE_RESCHEDULE_PENDING.store(true, Ordering::Release);
-
-            super::handle_ipi_reschedule();
-
-            assert!(
-                curr.force_resched_pending_for_test(),
-                "remote IPI reschedule must request forced rotation",
-            );
-            assert!(
-                !curr.preempt_pending_for_test(),
-                "remote IPI reschedule must not rely on ordinary RR preemption",
-            );
-            assert!(
-                !super::REMOTE_RESCHEDULE_PENDING.load(Ordering::Acquire),
-                "the runtime IPI handler must consume the scheduler pending bit",
-            );
-
-            curr.set_force_resched_pending(false);
-            curr.set_preempt_pending(false);
-        });
-
-        #[cfg(feature = "preempt")]
-        {
-            super::kick_remote_cpu(REMOTE_CPU);
-            assert_eq!(
-                super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
-                3,
-                "a delivered remote IPI must allow a later kick to arm a fresh edge",
-            );
-        }
-
-        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
-        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
     }
 
     #[test]

@@ -597,30 +597,6 @@ impl TaskInner {
     }
 
     #[inline]
-    #[cfg(all(
-        test,
-        feature = "preempt",
-        feature = "smp",
-        feature = "ipi",
-        feature = "host-test"
-    ))]
-    pub(crate) fn preempt_pending_for_test(&self) -> bool {
-        self.need_resched.load(Ordering::Acquire)
-    }
-
-    #[inline]
-    #[cfg(all(
-        test,
-        feature = "preempt",
-        feature = "smp",
-        feature = "ipi",
-        feature = "host-test"
-    ))]
-    pub(crate) fn force_resched_pending_for_test(&self) -> bool {
-        self.force_resched_pending()
-    }
-
-    #[inline]
     #[cfg(feature = "preempt")]
     fn take_force_resched_pending(&self) -> bool {
         self.force_resched.swap(false, Ordering::AcqRel)
