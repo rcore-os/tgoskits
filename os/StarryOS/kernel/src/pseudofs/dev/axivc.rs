@@ -98,6 +98,7 @@ impl AxivcRegistry {
             producer,
             consumer,
             sequence: AtomicU64::new(1),
+            closing: false,
         }) else {
             let _ = ivc::unpublish_channel(arg.channel_key as usize);
             return Err(VfsError::NoMemory);
@@ -114,8 +115,29 @@ impl AxivcRegistry {
     }
 
     fn unpublish(&self, arg: &IvcPublishArg) -> VfsResult<()> {
-        self.inner.lock().remove_publisher(arg.channel_key);
-        ivc::unpublish_channel(arg.channel_key as usize).map_err(hvc_error)
+        let mut inner = self.inner.lock();
+        let Some(state) = inner.publisher_mut(arg.channel_key) else {
+            return Err(VfsError::NoSuchDevice);
+        };
+        if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
+        state.closing = true;
+        drop(inner);
+
+        let result = ivc::unpublish_channel(arg.channel_key as usize).map_err(hvc_error);
+        match result {
+            Ok(()) => {
+                self.inner.lock().remove_publisher(arg.channel_key);
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(state) = self.inner.lock().publisher_mut(arg.channel_key) {
+                    state.closing = false;
+                }
+                Err(err)
+            }
+        }
     }
 
     fn subscribe(&self, arg: &mut IvcSubscribeArg) -> VfsResult<()> {
@@ -165,6 +187,7 @@ impl AxivcRegistry {
             producer,
             consumer,
             sequence: AtomicU64::new(1),
+            closing: false,
         }) else {
             unsubscribe_hvc(arg);
             return Err(VfsError::NoMemory);
@@ -181,11 +204,38 @@ impl AxivcRegistry {
     }
 
     fn unsubscribe(&self, arg: &IvcSubscribeArg) -> VfsResult<()> {
-        self.inner
-            .lock()
-            .remove_subscriber(arg.target_publisher_id as usize, arg.channel_key);
-        ivc::unsubscribe_channel(arg.target_publisher_id as usize, arg.channel_key as usize)
-            .map_err(hvc_error)
+        let mut inner = self.inner.lock();
+        let Some(state) = inner.subscriber_mut(arg.target_publisher_id as usize, arg.channel_key)
+        else {
+            return Err(VfsError::NoSuchDevice);
+        };
+        if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
+        state.closing = true;
+        drop(inner);
+
+        let result =
+            ivc::unsubscribe_channel(arg.target_publisher_id as usize, arg.channel_key as usize)
+                .map_err(hvc_error);
+        match result {
+            Ok(()) => {
+                self.inner
+                    .lock()
+                    .remove_subscriber(arg.target_publisher_id as usize, arg.channel_key);
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(state) = self
+                    .inner
+                    .lock()
+                    .subscriber_mut(arg.target_publisher_id as usize, arg.channel_key)
+                {
+                    state.closing = false;
+                }
+                Err(err)
+            }
+        }
     }
 }
 
@@ -247,6 +297,19 @@ impl RegistryInner {
         self.subscribers[index].take()
     }
 
+    fn publisher_mut(&mut self, key: u64) -> Option<&mut ChannelState> {
+        self.publishers
+            .iter_mut()
+            .flatten()
+            .find(|state| state.key == key)
+    }
+
+    fn subscriber_mut(&mut self, publisher_id: usize, key: u64) -> Option<&mut ChannelState> {
+        self.subscribers.iter_mut().flatten().find(|state| {
+            state.publisher_id == publisher_id && state.key == key
+        })
+    }
+
     fn channel_mut(&mut self, role: ChannelRole, index: usize) -> Option<&mut ChannelState> {
         match role {
             ChannelRole::Publisher => self.publishers.get_mut(index)?.as_mut(),
@@ -268,6 +331,7 @@ struct ChannelState {
     producer: IvcProducer<'static>,
     consumer: IvcConsumer<'static>,
     sequence: AtomicU64,
+    closing: bool,
 }
 
 pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
@@ -410,6 +474,9 @@ impl DeviceOps for AxivcChannel {
         let state = inner
             .channel_mut(self.role, self.index)
             .ok_or(VfsError::NoSuchDevice)?;
+        if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
         let message = state.consumer.try_recv(buf).map_err(ring_error)?;
         let Some(message) = message else {
             return Err(VfsError::WouldBlock);
@@ -441,6 +508,9 @@ impl DeviceOps for AxivcChannel {
         let state = inner
             .channel_mut(self.role, self.index)
             .ok_or(VfsError::NoSuchDevice)?;
+        if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
         let sequence = state.sequence.fetch_add(1, Ordering::Relaxed);
         let kind = match self.role {
             ChannelRole::Publisher => IvcMessageKind::Request,
