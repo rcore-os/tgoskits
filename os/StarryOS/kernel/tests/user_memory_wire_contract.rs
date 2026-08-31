@@ -7,6 +7,7 @@ const NET_IO: &str = include_str!("../src/syscall/net/io.rs");
 const RGA: &str = include_str!("../src/pseudofs/dev/rga.rs");
 const STAT: &str = include_str!("../src/syscall/fs/stat.rs");
 const SYS: &str = include_str!("../src/syscall/sys.rs");
+const TIME: &str = include_str!("../src/syscall/time.rs");
 
 #[test]
 fn bidirectional_user_buffer_splits_copy_in_and_copy_out_capabilities() {
@@ -112,6 +113,21 @@ fn stat_abi_fields_share_one_faultable_user_memory_transfer() {
     assert!(
         !write_stat.contains("write_field("),
         "stat must not repeat address-space preparation for every ABI field"
+    );
+}
+
+#[test]
+fn clock_gettime_timespec_uses_one_faultable_user_transfer() {
+    let write_timespec = section(
+        TIME,
+        "pub(crate) fn write_timespec(",
+        "\n}\n\nfn write_timeval",
+    );
+
+    assert!(write_timespec.contains("write_abi_fields"));
+    assert!(
+        !write_timespec.contains("write_field("),
+        "clock_gettime must not prepare user memory separately for tv_sec and tv_nsec"
     );
 }
 

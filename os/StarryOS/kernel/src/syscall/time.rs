@@ -1,4 +1,4 @@
-use core::mem::offset_of;
+use core::mem::{offset_of, size_of};
 
 use ax_runtime::hal::time::{
     NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
@@ -23,8 +23,11 @@ pub(crate) fn write_timespec(
     value: timespec,
 ) -> crate::StarryResult<()> {
     let user = UserPtr::from(user);
-    user.write_field(current, offset_of!(timespec, tv_sec), value.tv_sec)?;
-    user.write_field(current, offset_of!(timespec, tv_nsec), value.tv_nsec)
+    let mut bytes = [0_u8; size_of::<timespec>()];
+    user.write_abi_fields(current, &mut bytes, |fields| {
+        fields.put_field(offset_of!(timespec, tv_sec), &value.tv_sec)?;
+        fields.put_field(offset_of!(timespec, tv_nsec), &value.tv_nsec)
+    })
 }
 
 fn write_timeval(
