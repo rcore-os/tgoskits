@@ -348,14 +348,10 @@ impl AicDevice {
             .take()
             .ok_or(AicError::CompletionMismatch)?;
         match active.completion {
-            super::owner::TxCompletion::User(token) => {
-                if token.get() <= 2 {
-                    log::info!("[wifi] TX token {} completed its SDIO write", token.get());
-                }
-                self.data
-                    .events
-                    .push_back(AicEvent::TransmitComplete(token));
-            }
+            super::owner::TxCompletion::User(token) => self
+                .data
+                .events
+                .push_back(AicEvent::TransmitComplete(token)),
             super::owner::TxCompletion::Internal(super::owner::InternalTxKind::M2) => {}
             super::owner::TxCompletion::Internal(super::owner::InternalTxKind::M4) => {
                 let (station_index, _) = self.data.link.peer().ok_or(AicError::WpaProtocol)?;

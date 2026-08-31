@@ -65,9 +65,6 @@ impl OwnerOutputs {
         let frame = buffer.read_with_cpu(length, |bytes| bytes.to_vec());
         let token = TxToken::new(self.next_tx_token);
         self.next_tx_token = self.next_tx_token.wrapping_add(1).max(1);
-        if token.get() <= 8 {
-            log::info!("[wifi] TX token {} submitted to the AIC owner", token.get());
-        }
         self.tx_tokens.push_back((token, buffer));
         Some((token, frame))
     }
@@ -173,12 +170,6 @@ impl OwnerOutputs {
             .tx_tokens
             .remove(index)
             .ok_or(AicError::CompletionMismatch)?;
-        if token.get() <= 8 {
-            log::info!(
-                "[wifi] TX token {} returned to the network runtime",
-                token.get()
-            );
-        }
         match self.queues.tx_complete.try_push(buffer) {
             Ok(()) => {
                 self.queue_progress = true;
