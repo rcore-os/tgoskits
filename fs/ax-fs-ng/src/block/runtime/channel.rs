@@ -288,6 +288,17 @@ mod tests {
         }
     }
 
+    fn wait_for_blocked_sender_count<T>(channel: &BoundedChannel<T>, expected: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while channel.blocked_sender_count() != expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "senders did not reach the expected capacity wait set size"
+            );
+            thread::yield_now();
+        }
+    }
+
     #[test]
     fn notification_between_empty_check_and_sleep_is_not_lost() {
         crate::os::task::install_test_runtime_ops();
@@ -381,14 +392,7 @@ mod tests {
             }));
         }
         drop(done_tx);
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while channel.blocked_sender_count() != 4 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "senders did not enter the capacity wait set"
-            );
-            thread::yield_now();
-        }
+        wait_for_blocked_sender_count(&channel, 4);
 
         let mut received = VecDeque::new();
         assert_eq!(channel.try_recv_many(&mut received, 4), 4);
@@ -422,18 +426,14 @@ mod tests {
             }));
         }
         drop(done_tx);
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while channel.blocked_sender_count() != 4 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "senders did not enter the capacity wait set"
-            );
-            thread::yield_now();
-        }
+        wait_for_blocked_sender_count(&channel, 4);
 
         assert!(channel.try_recv().is_some());
         done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(channel.blocked_sender_count(), 3);
+        // A sender may have registered but not yet completed its predicate
+        // recheck when the slot is released. Wait for that losing contender
+        // to re-register before observing the stable blocked set.
+        wait_for_blocked_sender_count(&channel, 3);
         assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
         let mut received = VecDeque::new();
@@ -467,14 +467,7 @@ mod tests {
             );
             batch_tx.send(()).unwrap();
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while channel.blocked_sender_count() != 1 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "batch sender did not enter the capacity wait set"
-            );
-            thread::yield_now();
-        }
+        wait_for_blocked_sender_count(&channel, 1);
 
         let single_sender = Arc::clone(&channel);
         let (single_tx, single_rx) = mpsc::channel();
@@ -482,13 +475,7 @@ mod tests {
             assert!(single_sender.send(8, false).is_ok());
             single_tx.send(()).unwrap();
         });
-        while channel.blocked_sender_count() != 2 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "single sender did not enter the capacity wait set"
-            );
-            thread::yield_now();
-        }
+        wait_for_blocked_sender_count(&channel, 2);
 
         assert!(channel.try_recv().is_some());
         single_rx.recv_timeout(Duration::from_secs(1)).unwrap();
