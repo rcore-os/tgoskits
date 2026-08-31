@@ -143,8 +143,8 @@ def main() -> int:
                 "pull request routing must recheck the push run before skipping",
             ),
             (
-                '[.status, (.conclusion != "cancelled")] | @tsv',
-                "push run recheck must return its current lifecycle state",
+                '[.status, (.conclusion == "success")] | @tsv',
+                "push run recheck must return its lifecycle state and success result",
             ),
             (
                 "queued|in_progress|waiting|requested)",
