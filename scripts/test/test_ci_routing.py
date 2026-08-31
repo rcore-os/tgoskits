@@ -63,14 +63,16 @@ class MatrixParallelismTests(unittest.TestCase):
             r"(?ms)^      max_parallel:\n.*?^        default: (?:[2-9]|[1-9][0-9]+)$",
         )
 
-    def test_axvisor_board_failure_does_not_cancel_qemu_matrix(self) -> None:
+    def test_board_failure_does_not_cancel_qemu_matrices(self) -> None:
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
         jobs = mapping_block(workflow, "jobs", 0)
 
-        axvisor = mapping_block(jobs, "axvisor_checks", 2)
-        self.assertIn("fail_fast: false", axvisor)
+        for job_name in ("starry_checks", "axvisor_checks"):
+            with self.subTest(job_name=job_name):
+                job = mapping_block(jobs, job_name, 2)
+                self.assertIn("fail_fast: false", job)
 
-        for job_name in ("workspace_checks", "arceos_checks", "starry_checks"):
+        for job_name in ("workspace_checks", "arceos_checks"):
             with self.subTest(job_name=job_name):
                 job = mapping_block(jobs, job_name, 2)
                 self.assertIn("fail_fast: true", job)

@@ -322,7 +322,7 @@ def main() -> int:
     grouped_jobs = (
         ("workspace_checks", "Workspace", "workspace", True),
         ("arceos_checks", "ArceOS", "arceos", True),
-        ("starry_checks", "Starry", "starry", True),
+        ("starry_checks", "Starry", "starry", False),
         ("axvisor_checks", "AxVisor", "axvisor", False),
     )
     for job_id, display_name, output_prefix, fail_fast in grouped_jobs:
