@@ -48,7 +48,7 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 | `cargo xtask image` | TGOS rootfs/guest 镜像管理 | [镜像管理](./image) |
 | `cargo xtask ovmf` | 获取经校验的 OVMF CODE/VARS 路径 | 本节 |
 | `cargo xtask axloader` | UEFI bootloader 构建与 HTTP smoke 测试 | [Axloader](./axloader) |
-| `cargo xtask agent-review-bench` | 历史 PR 快照的离线 review benchmark | [Review Benchmark](./agent-review-bench) |
+| `cargo xtask agent-review-bench` | 历史拉取请求快照的离线评审基准 | [评审基准](./agent-review-bench) |
 | **OS 子系统** | | |
 | `cargo xtask arceos` | ArceOS 构建/运行/测试 | [ArceOS](./arceos/overview) |
 | `cargo xtask starry` | StarryOS 构建/运行/测试/app/perf/kmod | [StarryOS](./starry/overview) |
@@ -190,17 +190,17 @@ UEFI bootloader（axloader）构建与 HTTP smoke 测试。
 
 详见 [Axloader](./axloader)。
 
-### 4.6 Review Benchmark
+### 4.6 评审基准
 
-离线回放 `scripts/agent-review-bench/cases/*.toml` 中登记的历史 PR 快照，并对 review findings 评分。该命令面向维护 benchmark，而非日常构建：
+离线回放 `scripts/agent-review-bench/cases/*.toml` 中登记的历史拉取请求快照，并对评审问题评分。该命令用于维护评审基准，不参与日常构建：
 
 ```bash
 cargo xtask agent-review-bench list
 cargo xtask agent-review-bench check
-cargo xtask agent-review-bench run --case <id> --agent codex --min-recall 80
+cargo xtask agent-review-bench run --case <id> --agent codex --min-recall 100
 ```
 
-详见 [Review Benchmark](./agent-review-bench)。
+详见 [评审基准](./agent-review-bench)。
 
 ---
 

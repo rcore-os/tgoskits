@@ -534,16 +534,16 @@ mod tests {
     fn create_test_case(workspace: &Path) -> BenchCase {
         fs::write(workspace.join("AGENTS.md"), "current rules\n").unwrap();
         fs::write(workspace.join("CLAUDE.md"), "see AGENTS.md\n").unwrap();
-        fs::create_dir_all(workspace.join("docs/guideline")).unwrap();
-        fs::write(
-            workspace.join("docs/guideline/code-quality.md"),
-            "current guideline\n",
-        )
-        .unwrap();
         fs::create_dir_all(workspace.join(".agents/skills/review-single-pr")).unwrap();
         fs::write(
             workspace.join(".agents/skills/review-single-pr/SKILL.md"),
             "current review skill\n",
+        )
+        .unwrap();
+        fs::create_dir_all(workspace.join(".agents/skills/rust-code-quality")).unwrap();
+        fs::write(
+            workspace.join(".agents/skills/rust-code-quality/SKILL.md"),
+            "current code-quality skill\n",
         )
         .unwrap();
         git(workspace, &["init", "--quiet"]);

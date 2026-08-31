@@ -183,7 +183,7 @@ workspace 内消费者在同一提交完成迁移。关闭路径从 static key �
   是来源 PR，范围还包含大量 task/runtime 重构；
 - 当前 Starry 所有实际消费者、linker script 和 Cargo dependency 已枚举，迁移不存在
   仅保留旧名的 compatibility shim；
-- `docs/guideline/starry_syscall.md` 不适用：本次不改变 syscall 编号、参数、errno、检查
+- `starry-syscall-compatibility` 技能不适用：本次不改变系统调用编号、参数、错误码、检查
   顺序或 Linux ABI，仅替换既有 tracepoint 内部组件与损坏记录失败策略。
 
 ## 验证证据与剩余计划
@@ -206,4 +206,4 @@ workspace 内消费者在同一提交完成迁移。关闭路径从 static key �
 - 已 rebase 到验证时最新的 `origin/dev`（`8618959d29`）；提交 PR 后等待 CI terminal。
 
 由于本次新增公共 crate、unsafe linker 边界和跨 crate 依赖，按
-`feature-development.md` 归类为高风险功能，需要组件与 Starry 边界维护者独立审核。
+`feature-development` 技能归类为高风险功能，需要组件与 Starry 边界维护者独立审核。

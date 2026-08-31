@@ -13,7 +13,7 @@ use super::cases::BenchCase;
 
 const REVIEW_CONTRACT: &str = include_str!("../../../agent-review-bench/reviewer.md");
 const REVIEW_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/review.schema.json");
-const REVIEW_SKILL_PATH: &str = ".agents/skills/review-single-pr/SKILL.md";
+const PROJECT_SKILLS_PATH: &str = ".agents/skills";
 
 pub(super) struct ReviewSandbox {
     _root: TempDir,
@@ -89,29 +89,16 @@ fn extract_snapshot(
 }
 
 fn overlay_current_review_context(workspace_root: &Path, repo: &Path) -> anyhow::Result<()> {
-    fs::copy(workspace_root.join("AGENTS.md"), repo.join("AGENTS.md"))
+    replace_file(&workspace_root.join("AGENTS.md"), &repo.join("AGENTS.md"))
         .context("failed to copy current AGENTS.md into review sandbox")?;
-    fs::copy(workspace_root.join("CLAUDE.md"), repo.join("CLAUDE.md"))
+    replace_file(&workspace_root.join("CLAUDE.md"), &repo.join("CLAUDE.md"))
         .context("failed to copy current CLAUDE.md into review sandbox")?;
 
-    let guideline_destination = repo.join("docs/guideline");
-    if guideline_destination.exists() {
-        fs::remove_dir_all(&guideline_destination)?;
-    }
-    copy_tree(
-        &workspace_root.join("docs/guideline"),
-        &guideline_destination,
-    )?;
-
-    let current_skill = workspace_root.join(REVIEW_SKILL_PATH);
-    replace_review_skill(
-        &current_skill,
-        &repo.join(".claude/skills/review-single-pr"),
-    )?;
-    replace_review_skill(
-        &current_skill,
-        &repo.join(".agents/skills/review-single-pr"),
-    )?;
+    let current_skills = workspace_root.join(PROJECT_SKILLS_PATH);
+    ensure_directory(&repo.join(".agents"))?;
+    ensure_directory(&repo.join(".claude"))?;
+    replace_tree(&current_skills, &repo.join(".agents/skills"))?;
+    replace_tree(&current_skills, &repo.join(".claude/skills"))?;
 
     let context_dir = repo.join(".agent-review-context");
     fs::create_dir_all(&context_dir)?;
@@ -120,18 +107,13 @@ fn overlay_current_review_context(workspace_root: &Path, repo: &Path) -> anyhow:
     Ok(())
 }
 
-fn replace_review_skill(source: &Path, destination_dir: &Path) -> anyhow::Result<()> {
-    if destination_dir.exists() {
-        fs::remove_dir_all(destination_dir)?;
-    }
-    copy_file(source, &destination_dir.join("SKILL.md"))
+fn replace_tree(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    remove_path(destination)?;
+    copy_tree(source, destination)
 }
 
-fn copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    let parent = destination
-        .parent()
-        .context("review-context destination has no parent directory")?;
-    fs::create_dir_all(parent)?;
+fn replace_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    remove_path(destination)?;
     fs::copy(source, destination).with_context(|| {
         format!(
             "failed to copy review context {} to {}",
@@ -139,6 +121,31 @@ fn copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
             destination.display()
         )
     })?;
+    Ok(())
+}
+
+fn ensure_directory(path: &Path) -> anyhow::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => return Ok(()),
+        Ok(_) => remove_path(path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    fs::create_dir_all(path)?;
+    Ok(())
+}
+
+fn remove_path(path: &Path) -> anyhow::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
     Ok(())
 }
 
@@ -242,6 +249,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     use std::process::Command;
 
     use tempfile::tempdir;
@@ -254,18 +263,40 @@ mod tests {
         let workspace = tempdir().unwrap();
         fs::write(workspace.path().join("AGENTS.md"), "current rules\n").unwrap();
         fs::write(workspace.path().join("CLAUDE.md"), "see AGENTS.md\n").unwrap();
-        fs::create_dir_all(workspace.path().join("docs/guideline")).unwrap();
-        fs::write(
-            workspace.path().join("docs/guideline/code-quality.md"),
-            "current guideline\n",
-        )
-        .unwrap();
         fs::create_dir_all(workspace.path().join(".agents/skills/review-single-pr")).unwrap();
         fs::write(
             workspace
                 .path()
                 .join(".agents/skills/review-single-pr/SKILL.md"),
             "current review skill\n",
+        )
+        .unwrap();
+        fs::create_dir_all(
+            workspace
+                .path()
+                .join(".agents/skills/rust-code-quality/references"),
+        )
+        .unwrap();
+        fs::write(
+            workspace
+                .path()
+                .join(".agents/skills/rust-code-quality/SKILL.md"),
+            "current code-quality skill\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace
+                .path()
+                .join(".agents/skills/rust-code-quality/references/implementation.md"),
+            "current implementation rules\n",
+        )
+        .unwrap();
+        fs::create_dir_all(workspace.path().join(".claude/skills/obsolete-skill")).unwrap();
+        fs::write(
+            workspace
+                .path()
+                .join(".claude/skills/obsolete-skill/SKILL.md"),
+            "obsolete skill\n",
         )
         .unwrap();
         git(workspace.path(), ["init", "--quiet"]).unwrap();
@@ -315,15 +346,51 @@ mod tests {
             fs::read_to_string(sandbox.repo().join("CLAUDE.md")).unwrap(),
             "see AGENTS.md\n"
         );
-        for skill_path in [
-            ".claude/skills/review-single-pr/SKILL.md",
-            ".agents/skills/review-single-pr/SKILL.md",
-        ] {
+        for skill_root in [".agents/skills", ".claude/skills"] {
             assert_eq!(
-                fs::read_to_string(sandbox.repo().join(skill_path)).unwrap(),
+                fs::read_to_string(
+                    sandbox
+                        .repo()
+                        .join(skill_root)
+                        .join("review-single-pr/SKILL.md")
+                )
+                .unwrap(),
                 "current review skill\n"
             );
+            assert_eq!(
+                fs::read_to_string(
+                    sandbox
+                        .repo()
+                        .join(skill_root)
+                        .join("rust-code-quality/SKILL.md")
+                )
+                .unwrap(),
+                "current code-quality skill\n"
+            );
+            assert_eq!(
+                fs::read_to_string(
+                    sandbox
+                        .repo()
+                        .join(skill_root)
+                        .join("rust-code-quality/references/implementation.md")
+                )
+                .unwrap(),
+                "current implementation rules\n"
+            );
+            assert!(
+                !sandbox
+                    .repo()
+                    .join(skill_root)
+                    .join("obsolete-skill")
+                    .exists()
+            );
         }
+        assert!(
+            fs::symlink_metadata(sandbox.repo().join(".claude/skills/review-single-pr"))
+                .unwrap()
+                .is_dir()
+        );
+        assert!(!sandbox.repo().join("docs").join("guideline").exists());
         let diff = Command::new("git")
             .current_dir(sandbox.repo())
             .args(["diff", "bench-base", "HEAD", "--", "src/lib.rs"])
@@ -364,6 +431,58 @@ mod tests {
             .unwrap();
         assert!(cached_paths.status.success());
         assert!(cached_paths.stdout.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn context_replacement_unlinks_destinations_without_touching_external_targets() {
+        let root = tempdir().unwrap();
+        let external = tempdir().unwrap();
+
+        let source_file = root.path().join("current-agents.md");
+        fs::write(&source_file, "current rules\n").unwrap();
+        let external_file = external.path().join("historical-agents.md");
+        fs::write(&external_file, "external rules\n").unwrap();
+        let destination_file = root.path().join("AGENTS.md");
+        symlink(&external_file, &destination_file).unwrap();
+
+        replace_file(&source_file, &destination_file).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&destination_file).unwrap(),
+            "current rules\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&external_file).unwrap(),
+            "external rules\n"
+        );
+        assert!(
+            !fs::symlink_metadata(&destination_file)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        let source_tree = root.path().join("current-skills");
+        fs::create_dir(&source_tree).unwrap();
+        fs::write(source_tree.join("SKILL.md"), "current skill\n").unwrap();
+        let external_tree = external.path().join("historical-skills");
+        fs::create_dir(&external_tree).unwrap();
+        fs::write(external_tree.join("SKILL.md"), "external skill\n").unwrap();
+        let destination_tree = root.path().join("skills");
+        symlink(&external_tree, &destination_tree).unwrap();
+
+        replace_tree(&source_tree, &destination_tree).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination_tree.join("SKILL.md")).unwrap(),
+            "current skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(external_tree.join("SKILL.md")).unwrap(),
+            "external skill\n"
+        );
+        assert!(fs::symlink_metadata(&destination_tree).unwrap().is_dir());
     }
 
     fn rev_parse(repo: &Path, revision: &str) -> String {
