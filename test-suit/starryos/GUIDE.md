@@ -190,8 +190,7 @@ scripts/test/ltp-syscalls/generate-common.sh \
 
 这次接管的边界有意收缩：PR #1775 新增或修改过可执行 C 源码的 Starry cases 从发现
 流程中整项移除，由最终共同集中的官方 LTP 结果承担回归；原 C cases 中 LTP 没有表达的
-自定义断言不再保留，也不再宣称仍被覆盖。这个范围不包含 ArceOS C 测试和
-`apps/starry/wakeup-latency-bench`。
+自定义断言不再保留，也不再宣称仍被覆盖。ArceOS C 测试仍由 ArceOS 自己的测试入口维护。
 
 子测例 CMake 产物应安装到：
 
