@@ -12,9 +12,9 @@ use ax_hal::percpu::{
 use ax_task::{
     TaskError,
     runtime::{
-        ContextSwitch, ContextThreadBinding, CurrentThreadPublication, ExecutionContextHandle,
-        KernelContextRequest, RuntimeHandleResult, RuntimeStatus, StackHandle, ThreadIdentityV1,
-        UserContextRequest,
+        ContextThreadBinding, CurrentThreadPublication, ExecutionContextHandle,
+        KernelContextRequest, RuntimeHandleResult, RuntimeStatus, RuntimeSwitchPlan, StackHandle,
+        ThreadIdentityV1, UserContextRequest,
     },
 };
 
@@ -194,6 +194,49 @@ fn current_runtime_context(cpu_pin: &CpuPin) -> Result<&'static RuntimeContext, 
     Ok(context)
 }
 
+/// Immutable runtime identity captured by one safe user-execution object.
+#[cfg(feature = "uspace")]
+pub(super) struct RuntimeUserBinding {
+    context: NonNull<RuntimeContext>,
+    publication: CurrentThreadPublication,
+}
+
+#[cfg(feature = "uspace")]
+pub(super) fn bind_current_user_context(
+    cpu_pin: &CpuPin<'_>,
+) -> Result<RuntimeUserBinding, RuntimeStatus> {
+    let context = current_runtime_context(cpu_pin)?;
+    if context.has_switch_tail() {
+        return Err(RuntimeStatus::UnsafeContext);
+    }
+    // SAFETY: the publication is immutable after context binding and the
+    // current header keeps this runtime context alive.
+    let publication = unsafe { *context.publication.get() };
+    if !publication.identity().is_bound() || publication.owner().is_none() {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    Ok(RuntimeUserBinding {
+        context: NonNull::from(context),
+        publication,
+    })
+}
+
+#[cfg(feature = "uspace")]
+pub(super) fn validate_current_user_context(
+    cpu_pin: &CpuPin<'_>,
+    binding: &RuntimeUserBinding,
+) -> Result<(), RuntimeStatus> {
+    let context = current_runtime_context(cpu_pin)?;
+    if !ptr::eq(context, binding.context.as_ptr()) || context.has_switch_tail() {
+        return Err(RuntimeStatus::UnsafeContext);
+    }
+    // SAFETY: the current context owns this immutable publication.
+    if unsafe { *context.publication.get() } != binding.publication {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    Ok(())
+}
+
 pub(super) fn bind_bootstrap_runtime_context(
     cpu_pin: &CpuPin,
     handle: ExecutionContextHandle,
@@ -355,6 +398,7 @@ pub(super) fn scheduler_current_thread_identity() -> ThreadIdentityV1 {
 }
 
 /// Restores the current x86 userspace FPU image after the final no-work snapshot.
+#[cfg(feature = "uspace")]
 pub(crate) fn prepare_current_user_fp_return() -> Result<(), TaskError> {
     #[cfg(all(target_arch = "x86_64", feature = "fp-simd"))]
     {
@@ -522,10 +566,12 @@ pub(super) fn install_initial_fp_state(context: usize, fp_state: ax_hal::cpu::Fp
     unsafe { (*(*context).inner.get()).fp_state = fp_state };
 }
 
-pub(super) unsafe fn switch_runtime_context(switch: ContextSwitch) {
+pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
     crate::guard::assert_scheduler_switch_baton();
-    let previous_raw = switch.previous().into_raw();
-    let next_raw = switch.next().into_raw();
+    let previous_address_space = plan.previous_address_space();
+    let next_address_space = plan.next_address_space();
+    let previous_raw = plan.previous_context().into_raw();
+    let next_raw = plan.next_context().into_raw();
     let previous = ptr::with_exposed_provenance_mut::<RuntimeContext>(previous_raw);
     let next = ptr::with_exposed_provenance_mut::<RuntimeContext>(next_raw);
     // SAFETY: the active scheduler baton keeps local IRQs disabled for
@@ -548,11 +594,25 @@ pub(super) unsafe fn switch_runtime_context(switch: ContextSwitch) {
                 Some(next_context.header().as_non_null()),
                 "incoming architecture context retained a different current header"
             );
-            // All fallible CPU binding validation and FP preparation precede
-            // the irreversible baton transfer. Address-space activation is an
-            // independent ax-runtime transaction and is never repeated here.
+            let prepared_address_space =
+                super::address_space::prepare_runtime_address_space_switch(
+                    pin,
+                    previous_address_space,
+                    next_address_space,
+                    super::address_space::AddressSpaceTransitionPhase::ContextSwitch,
+                )
+                .unwrap_or_else(|status| {
+                    panic!("failed to prepare runtime address-space switch: {status:?}")
+                });
+            // All CPU binding, FP and active-mm validation precedes the
+            // irreversible baton transfer and both commits.
             let (prepared, previous_binding) =
                 prepare_runtime_thread_switch(pin, previous_context, next_context);
+            assert_eq!(
+                next_arch_context.context_header(),
+                Some(prepared.next_header()),
+                "prepared switch token must belong to the next task context",
+            );
             previous_arch_context.prepare_switch_to(next_arch_context);
             let tail = RuntimeSwitchTail {
                 previous: previous_context.header().as_non_null(),
@@ -561,10 +621,14 @@ pub(super) unsafe fn switch_runtime_context(switch: ContextSwitch) {
             next_context
                 .stage_switch_tail(tail)
                 .unwrap_or_else(|status| panic!("failed to stage runtime switch tail: {status:?}"));
+            // The active scheduler baton covers both context and active-mm
+            // commits. Once it is transferred, the next operation must enter
+            // current-context publication and the naked switch tail.
+            prepared_address_space.commit(pin);
             crate::guard::transfer_scheduler_switch_baton();
             // SAFETY: switch_to_prepared consumes the sole publication token
-            // and enters naked assembly without another fallible or
-            // ownership-sensitive Rust operation.
+            // immediately after the baton transfer and enters naked assembly
+            // without another fallible or ownership-sensitive Rust operation.
             previous_arch_context.switch_to_prepared(next_arch_context, prepared);
         })
     };
@@ -629,6 +693,7 @@ mod tests {
         .expect("modeled CPU must complete the switch tail");
     }
 
+    #[cfg(feature = "host-test")]
     #[test]
     fn switch_prepare_reuses_current_register_and_pinned_area_identity() {
         std::thread::spawn(|| {

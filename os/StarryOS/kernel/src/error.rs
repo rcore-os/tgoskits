@@ -43,7 +43,9 @@ pub enum StarryError {
     Mapping(#[from] MappingError),
     #[error(transparent)]
     Paging(#[from] PagingError),
-    #[error(transparent)]
+    /// A pending address-space TLB quarantine could not be confirmed before
+    /// the requested operation began.
+    #[error("pending address-space TLB quarantine blocked the operation: {0}")]
     TlbShootdown(#[from] TlbShootdownError),
     #[error(transparent)]
     Alloc(#[from] AllocError),
@@ -272,6 +274,7 @@ fn mm_errno(error: MmError) -> Errno {
         MmError::AlreadyExists => Errno::EEXIST,
         MmError::BadAddress | MmError::BadState(_) => Errno::EFAULT,
         MmError::Unsupported => Errno::ENOSYS,
+        MmError::TlbShootdown(error) => tlb_errno(error),
     }
 }
 
@@ -578,6 +581,10 @@ fn memory_errno_mappings_hold() -> bool {
         (MmError::BadAddress.into(), Errno::EFAULT),
         (MmError::BadState("test").into(), Errno::EFAULT),
         (MmError::Unsupported.into(), Errno::ENOSYS),
+        (
+            MmError::TlbShootdown(TlbShootdownError::Timeout).into(),
+            Errno::ETIMEDOUT,
+        ),
         (MappingError::InvalidParam.into(), Errno::EINVAL),
         (MappingError::AlreadyExists.into(), Errno::EEXIST),
         (MappingError::BadState.into(), Errno::EFAULT),

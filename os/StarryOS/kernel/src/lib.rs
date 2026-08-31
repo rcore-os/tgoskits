@@ -1,5 +1,15 @@
 //! The core functionality of a monolithic kernel, including loading user
 //! programs and managing processes.
+//!
+//! Published page tables have no external mutable escape hatch. Callers must
+//! use the address-space mutation APIs, which own TLB invalidation and deferred
+//! reclaim:
+//!
+//! ```compile_fail
+//! fn bypass_mm_owner(aspace: &mut starry_kernel::mm::AddrSpace) {
+//!     let _page_table = aspace.page_table_mut();
+//! }
+//! ```
 
 #![no_std]
 #![cfg_attr(not(axtest), feature(likely_unlikely))]

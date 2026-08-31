@@ -66,7 +66,7 @@ fn syscall_boundaries_only_publish_the_cpu_execution_mode() {
         .find("while !thr.pending_exit()")
         .expect("the user execution loop must exist");
     let first_run = USER_TASK[first_user_run..]
-        .find("uctx.run()")
+        .find(".enter()")
         .map(|offset| first_user_run + offset)
         .expect("the user execution loop must enter userspace");
     let initial_user_state = USER_TASK[..first_run]
@@ -82,7 +82,7 @@ fn inactive_ptrace_work_does_not_resolve_the_thread_tid() {
         .find("while !thr.pending_exit()")
         .expect("the user execution loop must exist")..];
     let before_first_run = &user_loop[..user_loop
-        .find("uctx.run()")
+        .find(".enter()")
         .expect("the user execution loop must enter userspace")];
     let singlestep_gate = before_first_run
         .find("has_ptrace_singlestep_work()")

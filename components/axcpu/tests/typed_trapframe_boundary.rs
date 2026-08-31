@@ -133,7 +133,7 @@ fn public_api_exposes_user_registers_but_not_the_internal_trap_layout() {
 #[test]
 fn x86_linux_current_installs_user_tls_only_at_user_owner_transitions() {
     let user = read_source("x86_64/uspace.rs");
-    let run = function_body(&user, "pub fn run");
+    let run = function_body(&user, "pub unsafe fn run_unchecked");
     assert!(!run.contains("write_user_thread_pointer"));
     assert!(!run.contains("write_thread_pointer"));
     assert!(!run.contains("KernelGsBase::write"));

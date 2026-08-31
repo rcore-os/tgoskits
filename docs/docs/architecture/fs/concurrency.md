@@ -106,7 +106,11 @@ mount callback 同样在 topology guard 外完成。测试用会重入 topology 
 
 ### 3.1 缓存锁序
 
-`CachedFileShared` 有三个 sleepable lock：`io_lock`、`page_cache`、`evict_listeners`。
+`CachedFileShared` 的主要 sleepable lock 是 `io_lock`、`page_cache`、`evict_listeners`；EOF discard
+另有只用于转移 retained-page 容器的 `discarded_pages` mutex。外部 callback 一律不持有
+`evict_listeners` 或 `discarded_pages`；truncate/reclaim callback 也不持有 `io_lock/page_cache`，
+容量替换 callback 则为保持 LRU pop/restore 原子性持有 `io_lock/page_cache`，只能执行非阻塞确认。
+`discard_transition` 是原子 try-enter gate，不等待另一个 owner，不能当成可嵌套 mutex。
 
 允许的局部顺序：
 
@@ -123,7 +127,26 @@ cached-file lock -> user-memory copy / page fault
 GLOBAL_CACHED_FILES spin lock -> cached-file sleep lock
 ```
 
-容量 LRU eviction 是一个特殊路径：`page_or_insert()` 仍持有 page-cache lock，`evict_cache()` 在 listener-list lock 下调用 callback；populate 发起者可能已经持有对应 `AddrSpace`，listener 必须使用非阻塞失效语义，返回值在该路径不决定驱逐，实际 unmap 由 populate callback 完成。全局 reclaim 则先从 cache 取出 candidate，释放 page-cache/global registry guard 后调用 listener；listener 拒绝时重新插回。新增 listener API 时必须明确属于哪一种调用上下文，不能假设所有 eviction callback 的锁环境相同。
+容量 LRU eviction 是一个特殊路径：`page_or_insert()` 仍持有 page-cache lock，但
+`evict_cache()` 只在 listener-list lock 下克隆 callback `Arc`，释放 registry lock 后才调用。
+snapshot 发生在旧页已脱离 cache 之后；其后登记的新 listener 只能在 page-cache lock 释放后映射
+replacement page，不会漏掉旧 frame 的确认。populate 发起者可能已经持有对应 `AddrSpace`，因此
+listener 以 address-space owner 分组。当前 populate 只排除自己的 owner，并在当前 `TlbGather` 中
+处理该 owner 的全部 VMA；其他 owner 必须各自完成 unmap/shootdown，任一 callback 返回 false
+都会让 cache 回插旧页并返回 `ResourceBusy`。替换页分配和 backing read、gather retained-page 容量
+预留都先于旧页脱离 cache；populate 取得旧页后立即把 `PageCache` 所有权移入 gather，再允许物理
+地址解析或安装新 PTE。顶层地址空间 mutation 无论 populate 成功或失败，都会在同一事务中完成
+当前 owner 的旧映射 unmap、跨 CPU shootdown 和延迟释放。全局 reclaim 则先从 cache 取出
+candidate，释放 page-cache/global registry guard 后调用 listener；listener 拒绝时重新插回。
+新增 listener API 时必须明确属于哪一种调用上下文，不能假设所有 eviction callback 的锁环境相同。
+
+truncate shrink 是另一种已发布事务：backing EOF 和 cache length 更新后，EOF 外页面才通知 mmap
+listener。listener 拒绝表示远端 TLB 尚未确认，不表示 truncate 可以回滚；页面转入
+`discarded_pages` 单槽 quarantine，syscall 保留已提交的成功结果。下一次 truncate 通过原子 gate
+在普通 task context 重试；page insert 不等待这个 gate，也不取得 retained frame，因此不会形成
+`discard_transition -> AddrSpace -> discard_transition` 环。确认前旧 frame 不回到 allocator，
+pending 容器只在 mutex 内 take/restore，listener 回调始终在 mutex 外；地址空间 teardown 仍先
+完成自己的 TLB quarantine，最后一个 file backend owner 消失后 cached-file quarantine 才可析构。
 
 `io_lock` 保护 backing I/O 与 page state 的复合变化，但大块 backing read 会主动释放 page-cache lock。返回后重新取得 cache lock逐页发布；并发者已经填入的 page 被保留，不覆盖新数据。
 

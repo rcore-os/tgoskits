@@ -112,8 +112,16 @@ impl_task_runtime! {
             if cpu != unsafe { Self::current_cpu_id() } {
                 return RuntimeStatus::InvalidArgument;
             }
-            crate::clock_event_runtime::take_current_clock_event_offline();
+            #[cfg(feature = "paging")]
+            if let Err(error) = crate::kernel_mapping::retry_kernel_tlb_reclaims() {
+                error!("failed to retry kernel TLB quarantine before CPU offline: {error}");
+                return RuntimeStatus::Platform;
+            }
+            // No recoverable work may follow this publication: it installs the
+            // safe root, clears the CPU-local active handle, and releases the
+            // logical address-space lease in one direction.
             release_current_active_address_space();
+            crate::clock_event_runtime::take_current_clock_event_offline();
             RuntimeStatus::Success
         }
 
@@ -493,14 +501,10 @@ impl_task_runtime! {
             }
         }
 
-        unsafe fn switch_context(switch: ContextSwitch) {
+        unsafe fn switch_context(plan: RuntimeSwitchPlan) {
             // SAFETY: the TaskRuntime contract passes one committed move-only
             // switch transaction under the active scheduler baton.
-            unsafe { switch_runtime_context(switch) };
-        }
-
-        fn activate_address_space(activation: AddressSpaceActivation) -> RuntimeStatus {
-            activate_runtime_address_space(activation)
+            unsafe { switch_runtime_context(plan) };
         }
 
         fn flush_tlb_local(_start: usize, _size: usize) {

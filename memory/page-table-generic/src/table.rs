@@ -11,6 +11,77 @@ use crate::{
 };
 
 const TARGETED_FLUSH_LIMIT: usize = 32;
+const MAX_DEFERRED_PAGE_TABLE_LEVELS: usize = 8;
+
+/// Intermediate page-table frames detached by one leaf removal.
+///
+/// The frames remain allocated until the stage-1 owner confirms that every
+/// CPU which could walk the old hierarchy has completed a TLB invalidation.
+/// Dropping this token without confirmation intentionally leaks the frames;
+/// reclaiming them early would turn a recoverable shootdown failure into a
+/// use-after-free in a remote hardware page-table walk.
+#[must_use = "detached page-table frames must be reclaimed only after TLB confirmation"]
+pub struct DeferredPageTableFrames<A: FrameAllocator> {
+    allocator: A,
+    frames: heapless::Vec<PhysAddr, MAX_DEFERRED_PAGE_TABLE_LEVELS>,
+}
+
+impl<A: FrameAllocator> core::fmt::Debug for DeferredPageTableFrames<A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DeferredPageTableFrames")
+            .field("frames", &self.frames)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<A: FrameAllocator> DeferredPageTableFrames<A> {
+    fn new(allocator: A) -> Self {
+        Self {
+            allocator,
+            frames: heapless::Vec::new(),
+        }
+    }
+
+    pub(crate) fn push(&mut self, frame: PhysAddr) {
+        self.frames
+            .push(frame)
+            .expect("one leaf cannot detach more page tables than the hierarchy depth");
+    }
+
+    /// Returns whether this removal detached no intermediate table frames.
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Returns the number of detached intermediate table frames.
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Reclaims the detached frames after all relevant CPUs confirm TLB
+    /// invalidation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prove that no CPU can retain a translation or hardware
+    /// page-walk reference through the detached page-table hierarchy.
+    pub unsafe fn reclaim(mut self) {
+        while let Some(frame) = self.frames.pop() {
+            self.allocator.dealloc_frame(frame);
+        }
+    }
+}
+
+impl<A: FrameAllocator> Drop for DeferredPageTableFrames<A> {
+    fn drop(&mut self) {
+        if !self.frames.is_empty() {
+            log::error!(
+                "leaking {} unconfirmed detached page-table frame(s)",
+                self.frames.len()
+            );
+        }
+    }
+}
 
 pub struct PageTable<T: TableMeta, A: FrameAllocator> {
     inner: PageTableRef<T, A>,
@@ -330,6 +401,32 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         Ok((paddr, config, page_size))
     }
 
+    /// Unmaps one occupied leaf without reclaiming detached intermediate
+    /// page-table frames.
+    ///
+    /// The returned ownership token must be retained by the stage-1 TLB gather
+    /// until every CPU that could use this page table confirms invalidation.
+    /// This method performs no TLB invalidation itself.
+    pub fn unmap_page_deferred(
+        &mut self,
+        vaddr: VirtAddr,
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize, DeferredPageTableFrames<A>)> {
+        if Frame::<T, A>::PT_LEVEL > MAX_DEFERRED_PAGE_TABLE_LEVELS {
+            return Err(PagingError::hierarchy_error(
+                "Page-table depth exceeds deferred reclaim capacity",
+            ));
+        }
+        let mut deferred = DeferredPageTableFrames::new(self.root.allocator.clone());
+        let (pte, level) =
+            self.root
+                .take_occupied_leaf_deferred(vaddr, Frame::<T, A>::PT_LEVEL, &mut deferred)?;
+        let page_size = Frame::<T, A>::level_size(level);
+        let is_dir = level > 1;
+        let paddr = pte.paddr(is_dir);
+        let config = pte.config(is_dir);
+        Ok((paddr, config, page_size, deferred))
+    }
+
     /// Changes one existing mapping's flags and returns its page size.
     pub fn protect_page(&mut self, vaddr: VirtAddr, config: PteConfigOf<T>) -> PagingResult<usize> {
         let page_size = self
@@ -397,6 +494,30 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             pte.config(level > 1),
             Frame::<T, A>::level_size(level),
         ))
+    }
+
+    /// Queries one occupied leaf, including a non-present software mapping.
+    ///
+    /// Unlike [`Self::query`], this method distinguishes an unused entry from
+    /// a leaf whose descriptor is retained while address translation is
+    /// disabled. It is intended for ownership, rollback, and destructive
+    /// page-table operations. Callers must not use a successful result as
+    /// proof that the virtual address is currently accessible.
+    pub fn query_occupied(
+        &self,
+        vaddr: VirtAddr,
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
+        if T::STRICT_ADDRESS_WIDTH && !Self::is_addr_in_width(vaddr.as_usize()) {
+            return Err(PagingError::address_overflow("query_occupied"));
+        }
+
+        let (pte, level) = self
+            .root
+            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)?;
+        let page_size = Frame::<T, A>::level_size(level);
+        let page_offset = vaddr.as_usize() % page_size;
+        let paddr = pte.paddr(level > 1) + page_offset;
+        Ok((paddr, pte.config(level > 1), page_size))
     }
 
     /// 映射虚拟地址范围到物理地址范围

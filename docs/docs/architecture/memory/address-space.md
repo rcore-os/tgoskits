@@ -285,7 +285,7 @@ StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 
 
 锁内可能执行页表操作和页帧分配，因此不能从硬中断上下文调用，也不能在持锁期间执行虚拟文件系统回调或不可控回收。
 
-跨 CPU Translation Lookaside Buffer（地址转换后备缓冲区）失效由页表和操作系统层协调，不由 `MemorySet` 发起。AArch64 硬件广播和其他架构的处理器间中断路径见[多架构内存实现](./architecture-support.md)。
+跨 CPU Translation Lookaside Buffer（地址转换后备缓冲区）失效由页表和操作系统层协调，不由 `MemorySet` 发起。四架构的软件 CPU footprint、处理器间中断和确认路径见[多架构内存实现](./architecture-support.md)。
 
 ## 9. 源码索引
 

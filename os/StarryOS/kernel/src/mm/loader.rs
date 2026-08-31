@@ -86,15 +86,9 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> StarryResult {
         // kernel portion to the user page table.
         let kspace = ax_mm::kernel_aspace().lock();
         // SAFETY: the global kernel address space outlives every user address
-        // space, whose managed regions are restricted to user-space addresses.
-        unsafe {
-            _aspace.page_table_mut().share_root_entries_from(
-                kspace.page_table(),
-                kspace.base(),
-                kspace.size(),
-            )
-        }
-        .map_err(|_| StarryError::BadState)?;
+        // space, whose managed regions are restricted to user-space addresses,
+        // and exec has not published this new address space yet.
+        unsafe { _aspace.initialize_kernel_root_entries_from(&kspace) }?;
     }
     Ok(())
 }
@@ -607,7 +601,7 @@ impl ElfLoader {
             }
         }
 
-        uspace.clear();
+        uspace.clear()?;
         map_trampoline(uspace)?;
 
         let entry = self.0.front().unwrap();

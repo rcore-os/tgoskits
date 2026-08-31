@@ -433,7 +433,8 @@ jobs:
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.starry_matrix }}
-      fail_fast: true
+      # Physical-board availability must not cancel independent QEMU evidence.
+      fail_fast: false
       save_cache: >-
         ${{ github.event_name == 'push' &&
             (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
@@ -456,7 +457,8 @@ jobs:
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.axvisor_matrix }}
-      fail_fast: true
+      # Physical-board availability must not cancel independent QEMU evidence.
+      fail_fast: false
       save_cache: >-
         ${{ github.event_name == 'push' &&
             (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}

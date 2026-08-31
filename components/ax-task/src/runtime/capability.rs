@@ -84,39 +84,60 @@ opaque_handle!(
     ExecutionContextHandle
 );
 
-/// Move-only runtime transaction for one committed context switch.
+/// Move-only runtime transaction for one committed scheduler switch.
 ///
 /// ax-task constructs this value only after the scheduler has committed two
-/// distinct live endpoints and released its internal locks. Consuming the
-/// transaction at the runtime boundary prevents a switch plan from being
-/// replayed or partially reinterpreted by callers.
+/// distinct live endpoints and released its internal locks. The execution
+/// contexts and logical address spaces travel through one runtime call, so a
+/// provider cannot activate an `mm` and then fail before preparing the matching
+/// architecture context. Consuming the transaction prevents replay.
 #[derive(Debug, Eq, PartialEq)]
 #[repr(C)]
-pub struct ContextSwitch {
-    previous: ExecutionContextHandle,
-    next: ExecutionContextHandle,
+pub struct RuntimeSwitchPlan {
+    previous_context: ExecutionContextHandle,
+    previous_address_space: AddressSpaceHandle,
+    next_context: ExecutionContextHandle,
+    next_address_space: AddressSpaceHandle,
 }
 
-impl ContextSwitch {
+impl RuntimeSwitchPlan {
     pub(crate) fn new(
-        previous: ExecutionContextHandle,
-        next: ExecutionContextHandle,
+        previous_context: ExecutionContextHandle,
+        previous_address_space: AddressSpaceHandle,
+        next_context: ExecutionContextHandle,
+        next_address_space: AddressSpaceHandle,
     ) -> Option<Self> {
-        if previous.is_none() || next.is_none() || previous == next {
+        if previous_context.is_none() || next_context.is_none() || previous_context == next_context
+        {
             None
         } else {
-            Some(Self { previous, next })
+            Some(Self {
+                previous_context,
+                previous_address_space,
+                next_context,
+                next_address_space,
+            })
         }
     }
 
     /// Returns the outgoing runtime context.
-    pub const fn previous(&self) -> ExecutionContextHandle {
-        self.previous
+    pub const fn previous_context(&self) -> ExecutionContextHandle {
+        self.previous_context
+    }
+
+    /// Returns the outgoing scheduler-selected logical address space.
+    pub const fn previous_address_space(&self) -> AddressSpaceHandle {
+        self.previous_address_space
     }
 
     /// Returns the incoming runtime context.
-    pub const fn next(&self) -> ExecutionContextHandle {
-        self.next
+    pub const fn next_context(&self) -> ExecutionContextHandle {
+        self.next_context
+    }
+
+    /// Returns the incoming scheduler-selected logical address space.
+    pub const fn next_address_space(&self) -> AddressSpaceHandle {
+        self.next_address_space
     }
 }
 opaque_handle!(
@@ -316,86 +337,6 @@ impl ThreadRuntimeBinding {
 
     pub(crate) const fn address_space(self) -> AddressSpaceHandle {
         self.address_space
-    }
-}
-
-/// Address-space state selected for the next scheduler context.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum AddressSpaceActivationKind {
-    /// A kernel thread borrows the CPU's current active address space.
-    KernelLazy = 0,
-    /// A user thread activates the supplied runtime-owned address space.
-    User       = 1,
-}
-
-/// Point at which an address-space activation releases the previous CPU lease.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum AddressSpaceActivationPhase {
-    /// The running task replaces its own address space without scheduling out.
-    CurrentTask   = 0,
-    /// The scheduler activates the incoming task before the raw context switch.
-    ContextSwitch = 1,
-}
-
-/// Explicit address-space transaction passed to the runtime switch boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub struct AddressSpaceActivation {
-    kind: AddressSpaceActivationKind,
-    phase: AddressSpaceActivationPhase,
-    address_space: AddressSpaceHandle,
-}
-
-impl AddressSpaceActivation {
-    /// Enters the architecture's current lazy kernel address-space state.
-    pub const KERNEL_LAZY: Self = Self {
-        kind: AddressSpaceActivationKind::KernelLazy,
-        phase: AddressSpaceActivationPhase::CurrentTask,
-        address_space: AddressSpaceHandle::NONE,
-    };
-
-    /// Selects one user address space.
-    pub const fn user(address_space: AddressSpaceHandle) -> Self {
-        assert!(
-            !address_space.is_none(),
-            "a user activation requires a runtime address-space handle"
-        );
-        Self {
-            kind: AddressSpaceActivationKind::User,
-            phase: AddressSpaceActivationPhase::CurrentTask,
-            address_space,
-        }
-    }
-
-    /// Derives the scheduler activation from a thread's nullable `mm` handle.
-    pub const fn for_thread(address_space: AddressSpaceHandle) -> Self {
-        let mut activation = if address_space.is_none() {
-            Self::KERNEL_LAZY
-        } else {
-            Self::user(address_space)
-        };
-        activation.phase = AddressSpaceActivationPhase::ContextSwitch;
-        activation
-    }
-
-    /// Returns the requested activation kind.
-    pub const fn kind(self) -> AddressSpaceActivationKind {
-        self.kind
-    }
-
-    /// Returns the boundary that owns release of the previous CPU lease.
-    pub const fn phase(self) -> AddressSpaceActivationPhase {
-        self.phase
-    }
-
-    /// Returns the user handle, if this activates a user address space.
-    pub const fn user_handle(self) -> Option<AddressSpaceHandle> {
-        match self.kind {
-            AddressSpaceActivationKind::KernelLazy => None,
-            AddressSpaceActivationKind::User => Some(self.address_space),
-        }
     }
 }
 
@@ -936,4 +877,30 @@ pub struct SchedSwitchRecord {
     pub timestamp_ns: u64,
     /// Policy-specific reason code defined by ax-task.
     pub reason: u32,
+}
+
+#[cfg(test)]
+mod switch_plan_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_switch_plan_keeps_context_and_logical_mm_in_one_transaction() {
+        // SAFETY: opaque values are never dereferenced by this value-only
+        // contract test.
+        let previous_context = unsafe { ExecutionContextHandle::from_raw(0x1000) };
+        // SAFETY: see above.
+        let next_context = unsafe { ExecutionContextHandle::from_raw(0x2000) };
+        // SAFETY: see above.
+        let previous_mm = unsafe { AddressSpaceHandle::from_raw(0x3000) };
+        // SAFETY: see above.
+        let next_mm = unsafe { AddressSpaceHandle::from_raw(0x4000) };
+
+        let plan = RuntimeSwitchPlan::new(previous_context, previous_mm, next_context, next_mm)
+            .expect("two distinct live contexts must form one runtime switch plan");
+
+        assert_eq!(plan.previous_context(), previous_context);
+        assert_eq!(plan.previous_address_space(), previous_mm);
+        assert_eq!(plan.next_context(), next_context);
+        assert_eq!(plan.next_address_space(), next_mm);
+    }
 }

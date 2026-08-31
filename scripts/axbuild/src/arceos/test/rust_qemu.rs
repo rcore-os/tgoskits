@@ -333,8 +333,8 @@ mod tests {
     use super::*;
     use crate::{
         arceos::test::{
-            ARCEOS_RUST_TASK_IRQ_FEATURE, ARCEOS_RUST_TEST_PACKAGE,
-            discovery::arceos_test_suit_case_qemu_config_path,
+            ARCEOS_RUST_MEM_STAGE1_TRANSITION_FEATURE, ARCEOS_RUST_TASK_IRQ_FEATURE,
+            ARCEOS_RUST_TEST_PACKAGE, discovery::arceos_test_suit_case_qemu_config_path,
         },
         test::case::TestQemuCase,
     };
@@ -371,6 +371,7 @@ mod tests {
             "fs-basic",
             "lockdep-baseline",
             ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
+            ARCEOS_RUST_MEM_STAGE1_TRANSITION_FEATURE,
             "net-loopback",
             "sched-cfs",
             "sched-rr",

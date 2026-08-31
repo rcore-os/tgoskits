@@ -16,6 +16,9 @@ use crate::{
 pub(super) const IOAPIC_GSI_COUNT: usize = 24;
 
 const PIT_TIMER_GSI: usize = 0;
+// MPS mixed PIC/IOAPIC tables conventionally route IRQ0 to INTIN2, while
+// the ACPI table used by the same machine routes it directly to GSI0.
+const MPS_PIT_TIMER_GSI: usize = 2;
 const COM1_GSI: usize = 4;
 type IoApicForwardingActivator = fn();
 
@@ -91,7 +94,7 @@ fn host_irq_forwarding_leases() -> IrqSafeMutexGuard<'static, Vec<HostIrqLease>>
 }
 
 fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
-    gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI && gsi != COM1_GSI
+    gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI && gsi != MPS_PIT_TIMER_GSI && gsi != COM1_GSI
 }
 
 fn host_irq_is_guest_assignable(
@@ -111,6 +114,12 @@ fn interrupt_domain_for_vm(vm: &crate::AxVM) -> Option<std::sync::Arc<X86Interru
         .services()
         .require::<X86InterruptDomainRuntimeKey>()
         .ok()
+}
+
+pub(super) fn vcpu_kick_for_vm(
+    vm: &crate::AxVM,
+) -> Option<std::sync::Arc<crate::irq::deferred::DeferredVcpuKick>> {
+    interrupt_domain_for_vm(vm).map(|domain| domain.vcpu_kick())
 }
 
 #[cfg(feature = "host-fs")]
@@ -921,11 +930,11 @@ mod tests {
     use axdevice::X86IoApicDeviceOps;
 
     use super::{
-        COM1_GSI, IOAPIC_GSI_COUNT, PIT_TIMER_GSI, acquire_host_irq_forwarding_lease, gsi_bit,
-        host_irq_forwarding_lease_count, host_irq_is_guest_assignable, host_irq_to_raw,
-        ioapic_irq_hook_gsis, raw_to_host_irq, release_host_irq_forwarding_leases_for_vm,
-        reset_host_irq_forwarding_leases, should_rearm_forwarded_host_gsi_after_eoi,
-        should_register_ioapic_gsi_hook,
+        COM1_GSI, IOAPIC_GSI_COUNT, MPS_PIT_TIMER_GSI, PIT_TIMER_GSI,
+        acquire_host_irq_forwarding_lease, gsi_bit, host_irq_forwarding_lease_count,
+        host_irq_is_guest_assignable, host_irq_to_raw, ioapic_irq_hook_gsis, raw_to_host_irq,
+        release_host_irq_forwarding_leases_for_vm, reset_host_irq_forwarding_leases,
+        should_rearm_forwarded_host_gsi_after_eoi, should_register_ioapic_gsi_hook,
     };
     use crate::{InterruptTriggerMode, arch::x86_64::X86InterruptDomain};
 
@@ -967,6 +976,16 @@ mod tests {
         assert_irq_safe_lock(&super::HOST_IRQ_FORWARDING_LEASES);
     }
 
+    #[test]
+    fn local_apic_timer_reuses_the_vm_owned_deferred_kick_publisher() {
+        let domain = new_domain();
+        let timer_kick = domain.vcpu_kick();
+
+        timer_kick.publish_from_irq(0).unwrap();
+
+        assert_eq!(domain.vcpu_kick().take_pending_for_test(), 1);
+    }
+
     fn reset_forwarding_routes() {
         crate::arch::x86_64::host_irq::reset_test_irq_enable_state();
         reset_host_irq_forwarding_leases();
@@ -982,6 +1001,7 @@ mod tests {
     #[test]
     fn pit_gsi_uses_synthetic_injection_not_host_irq_hook() {
         assert!(!should_register_ioapic_gsi_hook(PIT_TIMER_GSI));
+        assert!(!should_register_ioapic_gsi_hook(MPS_PIT_TIMER_GSI));
     }
 
     #[test]

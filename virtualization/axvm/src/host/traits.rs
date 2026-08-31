@@ -15,10 +15,11 @@ pub enum HostTimerAction {
 }
 
 /// Action returned by an explicitly hard-IRQ-safe host timer.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostHardTimerAction {
     Complete,
+    #[cfg(target_arch = "aarch64")]
     Disarm,
     Rearm(Duration),
 }
@@ -78,7 +79,7 @@ pub trait HostTimer {
     /// The callback must be bounded, allocation-free, non-sleeping, and use
     /// only IRQ-safe pre-bound capabilities. It may not perform destruction or
     /// registry lookup.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     unsafe fn register_hard_restartable_timer(
         &self,
         deadline: Duration,

@@ -431,11 +431,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
         vmcs::exit_info()
     }
 
-    /// Information for VM exits due to external interrupts.
-    pub fn interrupt_exit_info(&self) -> X86VcpuResult<vmcs::VmxInterruptInfo> {
-        vmcs::interrupt_exit_info()
-    }
-
     /// Information for VM exits due to I/O instructions.
     pub fn io_exit_info(&self) -> X86VcpuResult<vmcs::VmxIoExitInfo> {
         vmcs::io_exit_info()
@@ -976,6 +971,9 @@ impl<H: X86HostOps> VmxVcpu<H> {
 
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> X86VcpuResult {
+        if let Some(vector) = self.vlapic.take_pending_timer_interrupt() {
+            self.queue_event(vector, None);
+        }
         if self.injecting_event.is_some() {
             return Ok(());
         }
@@ -1896,6 +1894,25 @@ fn vmx_external_interrupt_allowed(rflags: u64, block_state: u32) -> bool {
         && block_state & (BLOCKING_BY_STI | BLOCKING_BY_MOV_SS) == 0
 }
 
+/// Transfers the IRQ vector acknowledged by VMX to the embedding host.
+///
+/// `ACK_INTERRUPT_ON_EXIT` consumes the physical interrupt and records its
+/// vector in `VMEXIT_INTERRUPTION_INFO`. Enabling host IRQs cannot recreate
+/// that interrupt, so the vector must remain explicit until the host performs
+/// action dispatch and LAPIC EOI, matching Linux KVM's
+/// `handle_external_interrupt_irqoff()` ownership transfer.
+fn handle_vmx_external_interrupt_exit<H: X86HostOps>() -> X86VcpuResult<X86VmExit> {
+    vmx_external_interrupt_exit::<H>(vmcs::interrupt_exit_info()?)
+}
+
+fn vmx_external_interrupt_exit<H: X86HostOps>(info: VmxInterruptInfo) -> X86VcpuResult<X86VmExit> {
+    if !info.valid || info.int_type != VmxInterruptionType::External {
+        return Err(X86VcpuError::InvalidData);
+    }
+    H::dispatch_acknowledged_host_interrupt(info.vector);
+    Ok(X86VmExit::Nothing)
+}
+
 impl<H: X86HostOps> Drop for VmxVcpu<H> {
     fn drop(&mut self) {
         unsafe { vmx::vmclear(self.vmcs.phys_addr().as_usize() as u64).unwrap() };
@@ -2131,13 +2148,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
                         self.io_exit_info()?,
                         exit_info.exit_instruction_length as u8,
                     )?,
-                    VmxExitReason::EXTERNAL_INTERRUPT => {
-                        let int_info = self.interrupt_exit_info()?;
-                        assert!(int_info.valid);
-                        X86VmExit::ExternalInterrupt {
-                            vector: int_info.vector as _,
-                        }
-                    }
+                    VmxExitReason::EXTERNAL_INTERRUPT => handle_vmx_external_interrupt_exit::<H>()?,
                     VmxExitReason::PREEMPTION_TIMER => {
                         self.handle_vmx_preemption_timer()?;
                         X86VmExit::PreemptionTimer
@@ -2280,6 +2291,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         self.injecting_event.is_some()
             || self.reinjection_event.is_some()
             || !self.pending_events.is_empty()
+            || self.vlapic.has_pending_timer_interrupt()
     }
 
     pub fn handle_eoi(&mut self) -> Option<u8> {
@@ -2387,6 +2399,47 @@ mod tests {
         let nmi_blocked = 1 << 3;
 
         assert!(vmx_external_interrupt_allowed(if_enabled, nmi_blocked));
+    }
+
+    #[test]
+    fn vmx_external_irq_is_dispatched_before_returning_to_the_vmm() {
+        crate::test_utils::mock::MockMmHal::run_test(|| {
+            let exit = vmx_external_interrupt_exit::<crate::test_utils::mock::MockMmHal>(
+                VmxInterruptInfo {
+                    vector: 0x20,
+                    int_type: VmxInterruptionType::External,
+                    err_code: None,
+                    valid: true,
+                },
+            )
+            .unwrap();
+
+            assert!(matches!(exit, X86VmExit::Nothing));
+            assert_eq!(
+                crate::test_utils::mock::MockMmHal::acknowledged_host_interrupt(),
+                Some(0x20)
+            );
+        });
+    }
+
+    #[test]
+    fn invalid_vmx_external_irq_is_rejected_before_host_dispatch() {
+        crate::test_utils::mock::MockMmHal::run_test(|| {
+            let result = vmx_external_interrupt_exit::<crate::test_utils::mock::MockMmHal>(
+                VmxInterruptInfo {
+                    vector: 0x20,
+                    int_type: VmxInterruptionType::NMI,
+                    err_code: None,
+                    valid: true,
+                },
+            );
+
+            assert!(matches!(result, Err(X86VcpuError::InvalidData)));
+            assert_eq!(
+                crate::test_utils::mock::MockMmHal::acknowledged_host_interrupt(),
+                None
+            );
+        });
     }
 
     #[test]

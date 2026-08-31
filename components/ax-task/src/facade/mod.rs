@@ -132,6 +132,20 @@ fn current_thread_identity() -> Result<crate::runtime::ThreadIdentityV1, TaskErr
     Err(TaskError::NoRunnableThread)
 }
 
+/// Returns the scheduler-selected logical address space of the current task.
+///
+/// This low-level runtime query is intended for the final user-entry
+/// validation. The returned opaque handle does not transfer ownership.
+#[doc(hidden)]
+pub fn current_address_space_handle() -> Result<crate::runtime::AddressSpaceHandle, TaskError> {
+    let current = current_thread_id()?;
+    let mut irq = RuntimeIrqGuard::enter();
+    let cpu = runtime_current_cpu_mut(&mut irq)?;
+    // SAFETY: `irq` owns the IRQ-off owner-CPU scope and the architecture
+    // current publication proved `current` belongs to this execution context.
+    unsafe { cpu.scheduler_current_address_space(current) }
+}
+
 fn current_thread_publication() -> Result<crate::runtime::CurrentThreadPublication, TaskError> {
     let publication = task_runtime::current_thread_publication();
     let identity = publication.identity();

@@ -82,6 +82,12 @@ pub(crate) fn map_mm_error(err: ax_mm::MmError) -> KlibError {
         ax_mm::MmError::BadAddress => KlibError::BadAddress,
         ax_mm::MmError::BadState(_) => KlibError::BadState,
         ax_mm::MmError::Unsupported => KlibError::Unsupported,
+        ax_mm::MmError::TlbShootdown(error) => match error {
+            ax_hal::cache::TlbShootdownError::CpuOffline
+            | ax_hal::cache::TlbShootdownError::Unsupported => KlibError::Unsupported,
+            ax_hal::cache::TlbShootdownError::Timeout => KlibError::TimedOut,
+            ax_hal::cache::TlbShootdownError::Platform => KlibError::Io,
+        },
     }
 }
 
@@ -183,11 +189,6 @@ impl_trait! {
                     Ok(alias) => alias,
                     Err(crate::kernel_mapping::MappingTransactionError::NotStarted(err)) => {
                         return DmaCoherentMappingOutcome::NotStarted(
-                            crate::error::runtime_error_to_klib_error(err),
-                        );
-                    }
-                    Err(crate::kernel_mapping::MappingTransactionError::StateUncertain(err)) => {
-                        return DmaCoherentMappingOutcome::StateUncertain(
                             crate::error::runtime_error_to_klib_error(err),
                         );
                     }

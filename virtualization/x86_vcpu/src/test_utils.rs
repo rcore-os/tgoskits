@@ -36,6 +36,7 @@ pub mod mock {
         memory_pool: [[u8; PAGE_SIZE_4K]; FRAME_COUNT],
         alloc_mask: u16,
         reset_counter: usize,
+        acknowledged_host_interrupt: Option<u8>,
     }
 
     impl MockMmHalState {
@@ -44,6 +45,7 @@ pub mod mock {
                 memory_pool: [[0; PAGE_SIZE_4K]; FRAME_COUNT],
                 alloc_mask: 0,
                 reset_counter: 0,
+                acknowledged_host_interrupt: None,
             }
         }
     }
@@ -143,6 +145,7 @@ pub mod mock {
             state.memory_pool = [[0; PAGE_SIZE_4K]; FRAME_COUNT];
             state.alloc_mask = 0;
             state.reset_counter += 1;
+            state.acknowledged_host_interrupt = None;
         }
 
         #[allow(dead_code)]
@@ -172,6 +175,11 @@ pub mod mock {
         pub fn reset_count() -> usize {
             let state = GLOBAL_LOCK.lock().unwrap();
             state.reset_counter
+        }
+
+        #[allow(dead_code)]
+        pub fn acknowledged_host_interrupt() -> Option<u8> {
+            GLOBAL_LOCK.lock().unwrap().acknowledged_host_interrupt
         }
 
         #[allow(dead_code)]
@@ -209,6 +217,13 @@ pub mod mock {
         }
 
         fn register_timer(
+            _deadline_nanos: u64,
+            _callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            Err(X86VlapicError::TimerUnavailable)
+        }
+
+        unsafe fn register_hard_timer(
             _deadline_nanos: u64,
             _callback: X86TimerCallback,
         ) -> X86VlapicResult<Self::TimerHandle> {
@@ -285,8 +300,10 @@ pub mod mock {
             nanos
         }
 
-        fn poll_host_interrupt() -> Option<u8> {
-            None
+        fn service_pending_host_interrupt() {}
+
+        fn dispatch_acknowledged_host_interrupt(vector: u8) {
+            GLOBAL_LOCK.lock().unwrap().acknowledged_host_interrupt = Some(vector);
         }
     }
 }

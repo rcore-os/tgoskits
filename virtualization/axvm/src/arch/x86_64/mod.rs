@@ -224,12 +224,6 @@ impl ArchOps for X86_64Arch {
                     access_flags: x86_access_flags_to_ax(access_flags),
                 },
             ),
-            X86VmExit::ExternalInterrupt { vector } => {
-                debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Defer(DeferredRunWork::ExternalInterrupt {
-                    vector: vector as usize,
-                }))
-            }
             X86VmExit::PreemptionTimer => {
                 Ok(BoundVcpuExit::Defer(DeferredRunWork::TimesliceExpired))
             }
@@ -378,6 +372,44 @@ impl X86VlapicHostOps for AxvmX86HostOps {
             .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
+    unsafe fn register_hard_timer(
+        deadline_nanos: u64,
+        mut callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle> {
+        let (vm_id, vcpu_id) =
+            with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())))
+                .ok_or(X86VlapicError::TimerUnavailable)?;
+        let kick = manager::with_vm(vm_id, |vm| irq::vcpu_kick_for_vm(vm))
+            .flatten()
+            .ok_or(X86VlapicError::TimerUnavailable)?;
+        let wake = crate::host::task::current_thread().wake_handle();
+        unsafe {
+            // SAFETY: x86_vlapic proves that its callback touches only atomic
+            // pending/deadline state and IRQ-safe registration locks. The
+            // owning vCPU wake handle and deferred kick publisher are
+            // pre-bound in task context and explicitly safe to invoke from
+            // hard IRQ. The kick is required when the host timer callback is
+            // observed outside the VMX exit that made the physical edge
+            // pending; the worker sends the target-vCPU IPI after the IRQ
+            // transaction has released its scheduler baton.
+            default_host().register_hard_restartable_timer(
+                Duration::from_nanos(deadline_nanos),
+                Box::new(move |now| {
+                    let action = callback(now.as_nanos() as u64);
+                    let _ = wake.wake();
+                    let _ = kick.publish_from_irq(vcpu_id);
+                    match action {
+                        X86TimerAction::Complete => HostHardTimerAction::Complete,
+                        X86TimerAction::Rearm(deadline) => {
+                            HostHardTimerAction::Rearm(Duration::from_nanos(deadline))
+                        }
+                    }
+                }),
+            )
+        }
+        .map_err(|_| X86VlapicError::TimerUnavailable)
+    }
+
     fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult {
         default_host()
             .cancel_timer(handle)
@@ -417,8 +449,12 @@ impl X86VlapicHostOps for AxvmX86HostOps {
             let devices = vm.get_devices().map_err(ax_error_to_vlapic)?;
             let pic = devices.services().require::<X86PicServiceKey>().ok();
             let ioapic = devices.services().require::<X86InterruptDomainKey>().ok();
+            let ioapic_interrupts = [
+                ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(0)),
+                ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(2)),
+            ];
 
-            route_pit_claim(
+            route_pit_claims(
                 || pic.as_ref().and_then(|pic| pic.claim_irq(0)),
                 PicInterruptClaim::vector,
                 |claim| {
@@ -426,7 +462,7 @@ impl X86VlapicHostOps for AxvmX86HostOps {
                         .expect("a PIC claim must retain its originating controller")
                         .restore_interrupt(claim)
                 },
-                || ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(0)),
+                ioapic_interrupts,
                 |vector, trigger| dispatch_pit_interrupt(vm, vcpu_id, vector, trigger),
             )
         })
@@ -449,18 +485,35 @@ fn route_pit_irq(
     )
 }
 
+#[cfg(test)]
 fn route_pit_claim<C>(
     claim_pic: impl FnOnce() -> Option<C>,
     pic_vector: impl FnOnce(&C) -> u8,
     restore_pic: impl FnOnce(C),
     assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
+    inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+) -> X86VlapicResult {
+    route_pit_claims(
+        claim_pic,
+        pic_vector,
+        restore_pic,
+        [assert_ioapic()],
+        inject,
+    )
+}
+
+fn route_pit_claims<C>(
+    claim_pic: impl FnOnce() -> Option<C>,
+    pic_vector: impl FnOnce(&C) -> u8,
+    restore_pic: impl FnOnce(C),
+    ioapic_interrupts: impl IntoIterator<Item = Option<IoApicInterrupt>>,
     mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
 ) -> X86VlapicResult {
     // KVM fans GSI 0 out to both in-kernel irqchips. Each controller owns its
     // mask/in-service state and independently decides whether this edge is
-    // currently deliverable.
+    // currently deliverable. The second IOAPIC input preserves the standard
+    // MPS IRQ0 -> INTIN2 route while the first preserves the ACPI GSI0 route.
     let pic_claim = claim_pic();
-    let ioapic_interrupt = assert_ioapic();
     let mut first_error = None;
 
     if let Some(claim) = pic_claim {
@@ -470,7 +523,7 @@ fn route_pit_claim<C>(
             first_error = Some(error);
         }
     }
-    if let Some(interrupt) = ioapic_interrupt {
+    for interrupt in ioapic_interrupts.into_iter().flatten() {
         let trigger = if interrupt.level_triggered {
             InterruptTriggerMode::LevelTriggered
         } else {
@@ -540,13 +593,16 @@ impl X86HostOps for AxvmX86HostOps {
         ax_std::os::arceos::modules::ax_hal::time::nanos_to_ticks(nanos)
     }
 
-    fn poll_host_interrupt() -> Option<u8> {
+    fn service_pending_host_interrupt() {
         let host_rflags = current_rflags();
         unsafe {
             asm!("sti", "nop", options(nomem, nostack));
         }
         restore_host_interrupt_flag(host_rflags);
-        None
+    }
+
+    fn dispatch_acknowledged_host_interrupt(vector: u8) {
+        crate::host::arceos::dispatch_host_irq(vector as usize);
     }
 }
 
@@ -819,6 +875,10 @@ impl X86InterruptDomain {
 
     pub(super) fn take_forwarding_hooks(&self) -> std::vec::Vec<host_irq::IrqHandle> {
         std::mem::take(&mut *self.forwarding_hooks())
+    }
+
+    fn vcpu_kick(&self) -> Arc<DeferredVcpuKick> {
+        Arc::clone(&self.wired.kick)
     }
 }
 

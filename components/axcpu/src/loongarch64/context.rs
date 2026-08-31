@@ -347,11 +347,6 @@ impl TaskContext {
         next_ctx: &Self,
         prepared: PreparedContextSwitch<'_>,
     ) {
-        assert_eq!(
-            next_ctx.context_header(),
-            Some(prepared.next_header()),
-            "prepared switch token must belong to the next task context",
-        );
         unsafe { prepared.commit() };
         unsafe { context_switch_raw(self, next_ctx) }
     }

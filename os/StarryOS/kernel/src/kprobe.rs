@@ -208,27 +208,20 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 
     fn alloc_kernel_exec_memory() -> *mut u8 {
-        let mut guard = ax_mm::kernel_aspace().lock();
-        let range = VirtAddrRange::new(guard.base(), guard.end());
-        let vaddr = guard
-            .find_free_area(guard.base(), PAGE_SIZE_4K, range)
-            .expect("kprobe: no free virtual address for exec memory");
-        guard
-            .map_alloc(
-                vaddr,
-                PAGE_SIZE_4K,
-                MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
-                true,
-            )
-            .expect("kprobe: map_alloc for exec memory failed");
+        let (hint, _) = ax_runtime::hal::mem::kernel_aspace();
+        let vaddr = ax_runtime::kernel_mapping::allocate_kernel_range(
+            hint,
+            PAGE_SIZE_4K,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
+            true,
+        )
+        .expect("kprobe: map_alloc for exec memory failed");
         vaddr.as_mut_ptr()
     }
 
     fn free_kernel_exec_memory(ptr: *mut u8) {
         let vaddr = VirtAddr::from(ptr as usize);
-        let mut guard = ax_mm::kernel_aspace().lock();
-        guard
-            .unmap(vaddr, PAGE_SIZE_4K)
+        ax_runtime::kernel_mapping::unmap_kernel_range(vaddr, PAGE_SIZE_4K)
             .expect("kprobe: unmap exec memory failed");
     }
 

@@ -704,14 +704,19 @@ impl TaskSystem {
     /// The scheduler frame must remain active until this function returns.
     pub(crate) unsafe fn commit_prepared_current_exit(
         &self,
-        mut cpu: Pin<&mut CpuLocal>,
+        cpu: Pin<&mut CpuLocal>,
         permit: CurrentExitPermit,
-    ) -> Result<ScheduleDecision, TaskError> {
-        self.ensure_owner_cpu_context(&cpu)?;
-        // SAFETY: propagated from this method's scheduler-frame contract.
-        unsafe { self.complete_context_switch_in_scheduler_frame(cpu.as_mut())? };
-        self.drain_owner_work(cpu.as_mut())?;
+    ) -> ScheduleDecision {
+        let exiting = permit.thread();
+        if self.ensure_owner_cpu_context(&cpu).is_err()
+            || cpu.as_ref().get_ref().switch_handoff().is_some()
+        {
+            task_runtime::fatal_invariant(0x4558_0014, exiting.as_u64() as usize);
+        }
         self.commit_current_exit_owner(cpu, permit, OwnerRqEntry::SchedulerFrame)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x4558_0015, exiting.as_u64() as usize)
+            })
     }
 
     /// Commits the non-returning half of current exit after owner work drained.
@@ -911,7 +916,41 @@ impl TaskSystem {
             || incoming.sched().placement().on_cpu() != Some(owner)
             || (migration_target.is_some() && rq_baton_retained)
         {
+            if runtime_tail_finished {
+                task_runtime::fatal_invariant(0x5357_0006, previous_core.id().as_u64() as usize);
+            }
             return Err(TaskError::InvalidConfiguration);
+        }
+
+        // Migration completion needs scheduler and deadline state that is only
+        // consistently observable under the owner rq transaction. Validate it
+        // before publishing the architecture runtime tail; once that tail is
+        // complete, the same checks are commit invariants rather than a
+        // recoverable retry boundary.
+        if migration_target.is_some() {
+            let placement = previous_core.sched().placement();
+            // SAFETY: propagated from this method's selected entry contract.
+            let sched = unsafe { rq_entry.lock_thread_sched(initial_handoff.previous().sched()) };
+            let remote = Arc::clone(cpu.remote());
+            // SAFETY: propagated from this method's selected entry contract.
+            let transaction = unsafe { rq_entry.begin(self, &remote) };
+            let validation = self.validate_switch_handoff_state(
+                owner,
+                transaction.deadline_bandwidth(),
+                initial_handoff,
+                placement,
+                &sched,
+            );
+            transaction.commit();
+            if let Err(error) = validation {
+                if runtime_tail_finished {
+                    task_runtime::fatal_invariant(
+                        0x5357_0007,
+                        previous_core.id().as_u64() as usize,
+                    );
+                }
+                return Err(error);
+            }
         }
         if !runtime_tail_finished {
             let reclaim_ready = task_runtime::finish_context_switch_tail();
@@ -923,17 +962,15 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x5357_0001, previous_core.id().as_u64() as usize);
             }
         }
-        let handoff = cpu
-            .as_ref()
-            .get_ref()
-            .switch_handoff()
-            .ok_or(TaskError::InvalidConfiguration)?;
+        let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5357_0002, previous_core.id().as_u64() as usize)
+        });
         let previous = handoff.previous().id();
         if !Arc::ptr_eq(handoff.previous(), &previous_core)
             || !Arc::ptr_eq(handoff.incoming(), &incoming)
             || incoming.id() == previous
         {
-            return Err(TaskError::InvalidConfiguration);
+            task_runtime::fatal_invariant(0x5357_0002, previous_core.id().as_u64() as usize);
         }
         let (migration_target, previous_exited, affinity_completed) = if migration_target.is_some()
         {
@@ -954,9 +991,9 @@ impl TaskSystem {
             );
             let (migration_target, previous_exited) = match validation {
                 Ok(validated) => validated,
-                Err(error) => {
+                Err(_) => {
                     transaction.commit();
-                    return Err(error);
+                    task_runtime::fatal_invariant(0x5357_0007, previous_core.id().as_u64() as usize)
                 }
             };
             if migration_target.is_some() && sched.deadline.bandwidth.reservation_owner().is_some()

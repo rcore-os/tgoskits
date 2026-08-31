@@ -457,23 +457,17 @@ pub trait TaskRuntime {
         action: RuntimeMembarrierAction,
     ) -> RuntimeStatus;
 
-    /// Consumes one committed context-switch transaction with local interrupts
-    /// disabled.
+    /// Consumes one committed scheduler-switch transaction with local
+    /// interrupts disabled.
     ///
     /// # Safety
     ///
-    /// Both handles in `switch` must identify live contexts owned by the
-    /// runtime. The caller must have committed scheduler state and released
-    /// runqueue locks. The provider must consume the transaction exactly once.
-    unsafe fn switch_context(switch: ContextSwitch);
-
-    /// Activates the next context's explicit address-space state.
-    ///
-    /// [`AddressSpaceActivationKind::KernelLazy`] follows the architecture's
-    /// current Linux lazy-TLB rule. The runtime keeps any borrowed active-mm
-    /// owner unreclaimable until a later user activation or CPU-offline
-    /// transaction releases that CPU lease.
-    fn activate_address_space(activation: AddressSpaceActivation) -> RuntimeStatus;
+    /// Both execution-context handles and every non-empty address-space handle
+    /// in `plan` must identify live runtime objects. The caller must have
+    /// committed scheduler state and released runqueue locks. The provider
+    /// must validate and prepare both transitions before committing either one,
+    /// then consume the plan exactly once.
+    unsafe fn switch_context(plan: RuntimeSwitchPlan);
 
     /// Flushes the current address space's local translation cache.
     fn flush_tlb_local(start: usize, size: usize);

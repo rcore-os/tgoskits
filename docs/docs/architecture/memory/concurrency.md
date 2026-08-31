@@ -155,7 +155,7 @@ sequenceDiagram
 7. 发布新的虚拟内存区域元数据并释放外层 owner。
 ```
 
-AArch64 的地址级 `tlbi vaae1is` 提供 inner-shareable 硬件广播（全量 `vmalle1` 仅本核）。x86_64、RISC-V 和 LoongArch64 的 `TableMeta::flush()` 只处理本 CPU；多 CPU consumer 解除共享内核映射时必须使用 `ax_hal::cache::flush_tlb_range_all_cpus()` 一类的软件 shootdown（基于 `axipi` 的 ready 状态机）。缺少有效 shootdown 时不能把本地失效当作系统完成。
+四架构的 `TableMeta::flush()` 都只处理本 CPU。多 CPU consumer 解除共享内核映射时必须使用 `ax_hal::cache::flush_tlb_range_all_cpus()` 一类的软件 shootdown（基于 `axipi` 的 ready 状态机）。AArch64 发起 CPU 在发送任何 IPI 前执行 `dsb ishst` 发布 PTE 写入，目标 CPU 再执行 `dsb nshst → TLBI → dsb nsh → isb`；仅在远端 CPU 上补屏障不能排序发起 CPU 的写入。缺少有效 shootdown 或写入发布边时，确认返回也不能作为 frame/VA 回收依据。
 
 ## 5. StarryOS 并发
 

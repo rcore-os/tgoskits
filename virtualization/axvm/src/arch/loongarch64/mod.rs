@@ -159,7 +159,7 @@ impl ArchOps for LoongArch64Arch {
     ) -> AxVmResult<VcpuRunAction> {
         match work {
             LoongArchDeferredRunWork::ExternalInterrupt { vector } => {
-                crate::architecture::exit::finish_external_interrupt(vector);
+                crate::host::arceos::dispatch_host_irq(vector);
             }
         }
         Ok(VcpuRunAction {

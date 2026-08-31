@@ -23,7 +23,7 @@ fn runtime_page_fault_handler(
         return false;
     }
 
-    ax_mm::kernel_aspace().lock().handle_page_fault(addr, flags)
+    crate::kernel_mapping::handle_kernel_page_fault(addr, flags)
 }
 
 /// Establishes scheduler ownership before code that may use task services.

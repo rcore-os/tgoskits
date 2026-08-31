@@ -6,9 +6,14 @@
 extern crate log;
 extern crate alloc;
 
+// Link the external host lock/task provider into unit-test binaries.
+#[cfg(test)]
+use ax_runtime as _;
+
 mod aspace;
 mod backend;
 mod error;
+mod tlb;
 
 use ax_hal::{
     mem::{IomapAttrs, IomapDecision, IomapError, MemRegionFlags, phys_to_virt},
@@ -20,7 +25,6 @@ use ax_sync::SpinLock;
 
 pub use self::{
     aspace::AddrSpace,
-    backend::Backend,
     error::{MmError, MmResult},
 };
 

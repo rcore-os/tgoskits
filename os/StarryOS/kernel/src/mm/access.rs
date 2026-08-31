@@ -11,7 +11,7 @@ use core::{
 use ax_io::prelude::*;
 #[cfg(feature = "user-access-fastpath")]
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_memory_addr::{MemoryAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
     cpu::{
         UserAccessError, UserAtomicError, UserAtomicU32Op,
@@ -882,22 +882,28 @@ where
     // Keeping that order avoids restoring saved IRQ state out of order.
     crate::stop_machine::stop_machine(
         move || -> StarryResult<()> {
-            let mut guard = ax_mm::kernel_aspace().lock();
-            if guard.contains_range(aligned_addr, aligned_length) {
-                let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+            let (kernel_base, kernel_size) = ax_runtime::hal::mem::kernel_aspace();
+            if VirtAddrRange::from_start_size(kernel_base, kernel_size)
+                .contains_range(VirtAddrRange::from_start_size(aligned_addr, aligned_length))
+            {
+                let (original_flags, _) =
+                    ax_runtime::kernel_mapping::query_kernel_mapping(aligned_addr)?;
 
-                guard.protect(
+                ax_runtime::kernel_mapping::protect_kernel_range(
                     aligned_addr,
                     aligned_length,
                     original_flags | MappingFlags::WRITE,
                 )?;
 
-                flush_tlb_range(aligned_addr, aligned_length);
                 action(addr.as_mut_ptr());
 
                 ax_runtime::hal::cache::clean_dcache_to_pou(addr, len);
 
-                guard.protect(aligned_addr, aligned_length, original_flags)?;
+                ax_runtime::kernel_mapping::protect_kernel_range(
+                    aligned_addr,
+                    aligned_length,
+                    original_flags,
+                )?;
                 return Ok(());
             }
 
@@ -926,27 +932,6 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> StarryResult<()> {
     patch_kernel_text(addr, data.len(), |dst| unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
     })
-}
-
-pub fn flush_tlb_range(start: VirtAddr, size: usize) {
-    ax_runtime::hal::cache::flush_tlb_range(start, size);
-}
-
-pub(crate) fn flush_tlb_range_on_cpus_sync(
-    cpu_mask: usize,
-    start: VirtAddr,
-    size: usize,
-) -> crate::StarryResult {
-    ax_runtime::hal::cache::flush_tlb_range_on_cpus(cpu_mask, start, size).map_err(
-        |err| match err {
-            ax_runtime::hal::cache::TlbShootdownError::CpuOffline
-            | ax_runtime::hal::cache::TlbShootdownError::Unsupported => {
-                crate::StarryError::Unsupported
-            }
-            ax_runtime::hal::cache::TlbShootdownError::Timeout => crate::StarryError::TimedOut,
-            ax_runtime::hal::cache::TlbShootdownError::Platform => crate::StarryError::Io,
-        },
-    )
 }
 
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {

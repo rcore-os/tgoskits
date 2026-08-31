@@ -43,7 +43,19 @@ static CACHED_FILE_BY_INODE: LazyLock<SleepMutex<InodeCacheIndex>> =
 type EvictListenerFn = Arc<dyn Fn(u32, &PageCache) -> bool + Send + Sync>;
 type WritebackProtectListenerFn = Arc<dyn Fn(u32) -> bool + Send + Sync>;
 
+/// Stable identity of the address-space owner behind one or more eviction listeners.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EvictListenerOwner(usize);
+
+impl EvictListenerOwner {
+    /// Derives an identity that remains stable while `owner` is alive.
+    pub fn from_arc<T>(owner: &Arc<T>) -> Self {
+        Self(Arc::as_ptr(owner).cast::<()>() as usize)
+    }
+}
+
 struct EvictListener {
+    owner: Option<EvictListenerOwner>,
     listener: EvictListenerFn,
     writeback_protect: WritebackProtectListenerFn,
     link: LinkedListAtomicLink,
@@ -54,10 +66,34 @@ intrusive_adapter!(EvictListenerAdapter = Box<EvictListener>: EvictListener { li
 struct CachedFileShared {
     page_cache: SleepMutex<LruCache<u32, PageCache>>,
     io_lock: SleepMutex<()>,
+    /// Try-enter gate for truncate-discard publication and retry. Contenders
+    /// fail instead of waiting across mmap callbacks and creating a reverse
+    /// AddrSpace lock dependency.
+    discard_transition: AtomicBool,
+    /// Pages beyond a committed EOF whose mapping listeners have not all
+    /// confirmed invalidation yet.
+    discarded_pages: SleepMutex<Option<Vec<(u32, PageCache)>>>,
     evict_listeners: SleepMutex<LinkedList<EvictListenerAdapter>>,
     backing: Option<FileNode>,
     len: AtomicU64,
     unlinked: AtomicBool,
+}
+
+struct DiscardTransitionGuard<'a>(&'a AtomicBool);
+
+impl<'a> DiscardTransitionGuard<'a> {
+    fn try_enter(state: &'a AtomicBool) -> Option<Self> {
+        state
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self(state))
+    }
+}
+
+impl Drop for DiscardTransitionGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl CachedFileShared {
@@ -67,6 +103,8 @@ impl CachedFileShared {
                 NonZeroUsize::new(DISK_PAGE_CACHE_CAP).unwrap(),
             )),
             io_lock: SleepMutex::new(()),
+            discard_transition: AtomicBool::new(false),
+            discarded_pages: SleepMutex::new(None),
             evict_listeners: SleepMutex::new(LinkedList::default()),
             backing: Some(backing),
             len: AtomicU64::new(len),
@@ -78,6 +116,8 @@ impl CachedFileShared {
         Self {
             page_cache: SleepMutex::new(LruCache::unbounded()),
             io_lock: SleepMutex::new(()),
+            discard_transition: AtomicBool::new(false),
+            discarded_pages: SleepMutex::new(None),
             evict_listeners: SleepMutex::new(LinkedList::default()),
             backing: None,
             len: AtomicU64::new(len),
@@ -113,6 +153,30 @@ impl CachedFileShared {
     #[cfg(all(feature = "ext4", feature = "vfs"))]
     fn mark_unlinked(&self) {
         self.unlinked.store(true, Ordering::Release);
+    }
+
+    /// Clones the callbacks that must acknowledge one eviction.
+    ///
+    /// Callers remove the page from `page_cache` before taking this snapshot.
+    /// A listener registered after that point can only map a replacement page,
+    /// so it must not be allowed to keep the registry lock held across an
+    /// arbitrary callback.
+    fn snapshot_evict_listeners(
+        &self,
+        excluded_owner: Option<EvictListenerOwner>,
+    ) -> VfsResult<Vec<EvictListenerFn>> {
+        let listeners = self.evict_listeners.lock();
+        let mut snapshot = Vec::new();
+        snapshot
+            .try_reserve(listeners.iter().count())
+            .map_err(|_| VfsError::NoMemory)?;
+        snapshot.extend(
+            listeners
+                .iter()
+                .filter(|listener| excluded_owner.is_none() || listener.owner != excluded_owner)
+                .map(|listener| Arc::clone(&listener.listener)),
+        );
+        Ok(snapshot)
     }
 
     #[cfg(test)]
@@ -304,7 +368,38 @@ impl CachedFile {
         E: Fn(u32, &PageCache) -> bool + Send + Sync + 'static,
         W: Fn(u32) -> bool + Send + Sync + 'static,
     {
+        self.add_page_listener_with_owner(None, evict, writeback_protect)
+    }
+
+    /// Registers callbacks owned by one address space.
+    ///
+    /// Capacity eviction may exclude this owner while that address space is
+    /// already locked; every other owner must still acknowledge invalidation.
+    pub fn add_owned_page_listener<E, W>(
+        &self,
+        owner: EvictListenerOwner,
+        evict: E,
+        writeback_protect: W,
+    ) -> usize
+    where
+        E: Fn(u32, &PageCache) -> bool + Send + Sync + 'static,
+        W: Fn(u32) -> bool + Send + Sync + 'static,
+    {
+        self.add_page_listener_with_owner(Some(owner), evict, writeback_protect)
+    }
+
+    fn add_page_listener_with_owner<E, W>(
+        &self,
+        owner: Option<EvictListenerOwner>,
+        evict: E,
+        writeback_protect: W,
+    ) -> usize
+    where
+        E: Fn(u32, &PageCache) -> bool + Send + Sync + 'static,
+        W: Fn(u32) -> bool + Send + Sync + 'static,
+    {
         let pointer = Box::new(EvictListener {
+            owner,
             listener: Arc::new(evict),
             writeback_protect: Arc::new(writeback_protect),
             link: LinkedListAtomicLink::new(),
@@ -324,14 +419,18 @@ impl CachedFile {
         cursor.remove();
     }
 
-    fn evict_cache(&self, file: &FileNode, pn: u32, page: &mut PageCache) -> VfsResult<()> {
-        for listener in self.shared.evict_listeners.lock().iter() {
-            // In the LRU-eviction path (triggered by page_or_insert), the
-            // populate process holds AddrSpace and handles the unmap via
-            // PopulateCallback.  The listener's return value is irrelevant
-            // here — if try_lock fails, the caller is the populate process
-            // itself and it will unmap the old page after inserting the new one.
-            let _ = (listener.listener)(pn, page);
+    fn evict_cache(
+        &self,
+        file: &FileNode,
+        pn: u32,
+        page: &mut PageCache,
+        excluded_owner: Option<EvictListenerOwner>,
+    ) -> VfsResult<()> {
+        let listeners = self.shared.snapshot_evict_listeners(excluded_owner)?;
+        for listener in listeners {
+            if !listener(pn, page) {
+                return Err(VfsError::ResourceBusy);
+            }
         }
         if page.dirty {
             let page_start = pn as u64 * PAGE_SIZE as u64;
@@ -350,21 +449,16 @@ impl CachedFile {
         cache: &'a mut LruCache<u32, PageCache>,
         pn: u32,
         read_backing: bool,
+        excluded_owner: Option<EvictListenerOwner>,
     ) -> VfsResult<(&'a mut PageCache, Option<(u32, PageCache)>)> {
         // TODO: Matching the result of `get_mut` confuses compiler. See
         // https://users.rust-lang.org/t/return-do-not-release-mutable-borrow/55757.
         if cache.contains(&pn) {
             return Ok((cache.get_mut(&pn).unwrap(), None));
         }
-        let mut evicted = None;
-        if cache.len() >= cache.cap().get() {
-            // Cache is full, remove the least recently used page
-            if let Some((pn, mut page)) = cache.pop_lru() {
-                self.evict_cache(file, pn, &mut page)?;
-                evicted = Some((pn, page));
-            }
-        }
-
+        // Prepare the replacement before removing the old page. Once another
+        // mapping owner acknowledges invalidation, failure must not drop the
+        // old frame before the caller can take deferred ownership of it.
         let mut page = PageCache::new()?;
         if self.in_memory || !read_backing {
             page.data().fill(0);
@@ -378,6 +472,18 @@ impl CachedFile {
             let read = file.read_at(page.data(), pn as u64 * PAGE_SIZE as u64)?;
             page.data()[read..].fill(0);
         }
+        let mut evicted = None;
+        if cache.len() >= cache.cap().get()
+            && let Some((evicted_pn, mut evicted_page)) = cache.pop_lru()
+        {
+            if let Err(error) =
+                self.evict_cache(file, evicted_pn, &mut evicted_page, excluded_owner)
+            {
+                cache.put(evicted_pn, evicted_page);
+                return Err(error);
+            }
+            evicted = Some((evicted_pn, evicted_page));
+        }
         cache.put(pn, page);
         Ok((cache.get_mut(&pn).unwrap(), evicted))
     }
@@ -390,7 +496,7 @@ impl CachedFile {
     fn populate_page_window(&self, file: &FileNode, pn: u32, window_pages: usize) -> VfsResult<()> {
         if self.in_memory {
             let mut guard = self.shared.page_cache.lock();
-            self.page_or_insert(file, &mut guard, pn, false)?;
+            self.page_or_insert(file, &mut guard, pn, false, None)?;
             return Ok(());
         }
 
@@ -448,7 +554,9 @@ impl CachedFile {
             if guard.contains(&page_number) {
                 continue;
             }
-            let page = self.page_or_insert(file, &mut guard, page_number, false)?.0;
+            let page = self
+                .page_or_insert(file, &mut guard, page_number, false, None)?
+                .0;
             let start = index * PAGE_SIZE;
             page.data().copy_from_slice(&data[start..start + PAGE_SIZE]);
         }
@@ -475,10 +583,42 @@ impl CachedFile {
         pn: u32,
         f: impl FnOnce(&mut PageCache, Option<(u32, PageCache)>) -> VfsResult<R>,
     ) -> VfsResult<R> {
+        self.with_page_or_insert_with_excluded_owner(None, pn, f)
+    }
+
+    /// Loads a page while deferring every mapping owned by `owner` to the
+    /// caller's address-space TLB transaction.
+    ///
+    /// # Safety
+    ///
+    /// If an eviction is returned, the caller must retain that page and
+    /// invalidate every mapping registered under `owner` before releasing the
+    /// page. The caller must not expose the excluded owner across a different
+    /// address-space transaction.
+    pub unsafe fn with_page_or_insert_excluding_owner<R>(
+        &self,
+        owner: EvictListenerOwner,
+        pn: u32,
+        f: impl FnOnce(&mut PageCache, Option<(u32, PageCache)>) -> VfsResult<R>,
+    ) -> VfsResult<R> {
+        self.with_page_or_insert_with_excluded_owner(Some(owner), pn, f)
+    }
+
+    fn with_page_or_insert_with_excluded_owner<R>(
+        &self,
+        excluded_owner: Option<EvictListenerOwner>,
+        pn: u32,
+        f: impl FnOnce(&mut PageCache, Option<(u32, PageCache)>) -> VfsResult<R>,
+    ) -> VfsResult<R> {
         let _io = self.shared.io_lock.lock();
         let mut guard = self.shared.page_cache.lock();
-        let (page, evicted) =
-            self.page_or_insert(self.inner.entry().as_file()?, &mut guard, pn, true)?;
+        let (page, evicted) = self.page_or_insert(
+            self.inner.entry().as_file()?,
+            &mut guard,
+            pn,
+            true,
+            excluded_owner,
+        )?;
         f(page, evicted)
     }
 
@@ -565,7 +705,9 @@ impl CachedFile {
             {
                 let mut guard = self.shared.page_cache.lock();
                 let read_backing = page_start < old_len && !(page_offset == 0 && n == PAGE_SIZE);
-                let page = self.page_or_insert(file, &mut guard, pn, read_backing)?.0;
+                let page = self
+                    .page_or_insert(file, &mut guard, pn, read_backing, None)?
+                    .0;
                 page.data()[page_offset..page_offset + n].copy_from_slice(&scratch.data()[..n]);
                 if !self.in_memory {
                     page.mark_dirty();

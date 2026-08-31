@@ -1700,7 +1700,8 @@ kernel worker 与 idle 不使用用户 TLS，这种做法仍会在用户线程�
 - `CpuUserTlsState` 位于 CPU area 的 architecture reserve，独占当前 CPU 已安装的物理镜像
   及非零 generation；只允许本 CPU 在 IRQ 关闭时访问；
 - scheduler switch 不搬运用户 TLS，kernel worker/idle 也不清零 TLS；
-- `UserContext::run()` 在最后一次返回 ring 3 的边界比较 task image 与 CPU image，只对变化
+- `UserExecutionContext::enter()` 在验证 runtime/current-mm/IRQ/preempt 状态后，紧邻架构
+  `UserContext::run_unchecked()` 的 ring-3 返回边界比较 task image 与 CPU image，只对变化
   的寄存器执行 `WRMSR`，更新完成后再发布 generation；
 - syscall/异常入口和 `enter_user` 汇编均不再含 TLS `RDMSR/WRMSR`。同一用户 owner 的稳态
   syscall 因而从上一检查点的 2 次 `WRMSR` 收敛为 0，迁移、clone、`arch_prctl` 或首次
@@ -3739,15 +3740,17 @@ thread flags；只要仍有工作就循环。最终无 work 的判断保持 IRQ 
 reschedule IPI，因此不能在最后一次快照与用户态返回之间重新打开一个内核 IRQ 窗口。
 
 旧 Starry/ax-runtime 在 IRQ-off 快照为 false 后先 `enable_irqs()`，再从 Rust helper 返回并调用
-`UserContext::run()`。远端若在这个窗口发布 Lazy，请求虽保持 sticky，却不会用 IPI 把该窗口
+架构 `UserContext::run()`。远端若在这个窗口发布 Lazy，请求虽保持 sticky，却不会用 IPI 把该窗口
 闭合，只能等后续 tick；1 秒节拍会把这类非 Linux 延迟直接放大。确定性真实 QEMU 回归在
 最终 false 快照处暂停目标 CPU，由另一 CPU 发布 Lazy。只加测试时，x86_64 稳定触发
 `the final no-work snapshot must remain IRQ-excluded through the architecture user return`。
 
 runtime 现在按 Linux 顺序循环：IRQ-off 读取两类请求，有 work 时开 IRQ 进入普通 task
-scheduler，返回后再次关 IRQ重读；最终 false 分支不再开 IRQ。Starry 紧接着调用四架构共用
-的 `UserContext::run()`，其 x86_64 `iretq/sysretq`、AArch64 `eret`、RISC-V `sret` 和
-LoongArch64 `ertn` 从保存的用户上下文恢复 IRQ 状态。修复没有把 Lazy 升级为 Immediate，
+scheduler，返回后再次关 IRQ重读；最终 false 分支不再开 IRQ。Starry 通过
+`UserExecutionContext::enter()` 验证 current execution-context、switch-tail、逻辑 mm、active
+root、IRQ/preempt 与用户权限镜像，并紧邻调用四架构的 unsafe `run_unchecked()`；x86_64
+`iretq/sysretq`、AArch64 `eret`、RISC-V `sret` 和 LoongArch64 `ertn` 从已验证的用户上下文恢复
+IRQ 状态。修复没有把 Lazy 升级为 Immediate，
 也没有增加轮询或 timeout；相同 1 秒节拍 QEMU 回归在最终代码上通过。
 
 ### 2026-08-25 Linux idle/nohz 退出先于调度

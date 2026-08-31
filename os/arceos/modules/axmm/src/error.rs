@@ -21,6 +21,10 @@ pub enum MmError {
     /// The platform cannot provide the requested mapping operation.
     #[error("memory-management operation is unsupported")]
     Unsupported,
+    /// A pending stage-1 TLB quarantine could not be confirmed before a new
+    /// mutation began. The requested mutation has not started.
+    #[error("pending stage-1 TLB quarantine blocked the mutation: {0}")]
+    TlbShootdown(ax_hal::cache::TlbShootdownError),
 }
 
 impl From<MappingError> for MmError {
@@ -59,6 +63,11 @@ mod tests {
             (
                 MmError::Unsupported,
                 "memory-management operation is unsupported",
+            ),
+            (
+                MmError::TlbShootdown(ax_hal::cache::TlbShootdownError::Timeout),
+                "pending stage-1 TLB quarantine blocked the mutation: cross-CPU TLB shootdown \
+                 timed out",
             ),
         ];
         for (error, message) in cases {

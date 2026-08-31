@@ -1193,6 +1193,9 @@ impl<H: X86HostOps> SvmVcpu<H> {
     }
 
     fn inject_pending_events(&mut self) -> X86VcpuResult {
+        if let Some(vector) = self.vlapic.take_pending_timer_interrupt() {
+            self.queue_event(vector, None);
+        }
         if self.injecting_event.is_some() {
             return Ok(());
         }
@@ -2031,7 +2034,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
                     // as a periodic VMM poll point after first letting the
                     // host consume the pending physical IRQ.
                     let vector = self.external_interrupt_exit_vector();
-                    H::poll_host_interrupt();
+                    H::service_pending_host_interrupt();
                     svm_intr_exit_reason(vector)
                 }
                 SvmExitCode::HLT => {
@@ -2106,6 +2109,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
         self.injecting_event.is_some()
             || self.reinjection_event.is_some()
             || !self.pending_events.is_empty()
+            || self.vlapic.has_pending_timer_interrupt()
     }
 
     pub fn handle_eoi(&mut self) -> Option<u8> {
