@@ -627,7 +627,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         };
         for (handle, transaction) in startup_transactions {
             let transaction =
-                prepare_startup_transaction(transaction, || super::next_wifi_connection_entropy())?;
+                prepare_startup_transaction(transaction, super::next_wifi_connection_entropy)?;
             let policy = transaction.link_policy();
             handle.submit(transaction)?;
             if let Some(policy) = policy {
