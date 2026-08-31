@@ -772,6 +772,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn hard_irq_exit_claim_distinguishes_outside_local_and_remote_guest() {
         let state = VcpuRunState::new();
 
