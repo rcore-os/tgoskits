@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 mod page;
 
-const BRIDGE_BUFFER_CAPACITY: usize = 4096;
+const BROWSER_INPUT_CAPACITY: usize = 4096;
 /// Browser-console routes served by Axvisor's optional HTTP listener.
 pub(super) fn router() -> Router {
     Router::new()
@@ -68,8 +68,8 @@ async fn upgrade_console(
         })?;
 
     Ok(upgrade
-        .max_message_size(BRIDGE_BUFFER_CAPACITY)
-        .max_frame_size(BRIDGE_BUFFER_CAPACITY)
+        .max_message_size(BROWSER_INPUT_CAPACITY)
+        .max_frame_size(BROWSER_INPUT_CAPACITY)
         .on_upgrade(move |browser| async move {
             if let Err(error) = bridge_console(browser, input, output).await {
                 warn!("{endpoint} browser console bridge stopped: {error:#}");
@@ -111,7 +111,6 @@ async fn bridge_console(
     std::thread::Builder::new()
         .name("browser-console-output".into())
         .spawn(move || {
-            crate::network_console::pin_current_task();
             if let Err(error) = run_browser_output(browser_sender, console_output) {
                 warn!("browser console output stopped: {error:#}");
             }

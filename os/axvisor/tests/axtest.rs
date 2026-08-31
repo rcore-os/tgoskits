@@ -9,6 +9,8 @@ use axvm as _;
 
 // Compile the production guest-console mux with narrow host/manager adapters
 // so its application-layer state machine is exercised by the kernel harness.
+#[path = "../src/network_console/delivery.rs"]
+mod browser_console_delivery;
 #[path = "../src/network_console/layout.rs"]
 mod browser_console_layout;
 mod guest_console_harness;
@@ -65,6 +67,114 @@ mod tests {
 
         ax_assert!(network_console::take_guest_output(1).is_empty());
         mux::remove(1);
+    }
+
+    #[test]
+    fn unterminated_guest_echo_reaches_browser_without_another_input() {
+        use crate::{guest_console_harness::mux, network_console};
+
+        network_console::reset();
+        network_console::set_guest_connected(1);
+        let backend = mux::serial_backend_factory(1).create();
+        mux::mark_running(1);
+
+        backend.write(b"./run_dual_pick.sh");
+
+        ax_assert_eq!(network_console::take_guest_output(1), b"./run_dual_pick.sh");
+        mux::remove(1);
+    }
+
+    #[test]
+    fn guest_byte_writes_reach_network_output_in_order() {
+        use crate::{guest_console_harness::mux, network_console};
+
+        network_console::reset();
+        network_console::set_guest_connected(2);
+        let backend = mux::serial_backend_factory(2).create();
+        mux::mark_running(2);
+
+        for byte in b"zephyr log line\n" {
+            backend.write(core::slice::from_ref(byte));
+        }
+
+        ax_assert_eq!(network_console::take_guest_output(2), b"zephyr log line\n");
+        mux::remove(2);
+    }
+
+    #[test]
+    fn browser_delivery_coalesces_ordered_dispatcher_batches() {
+        use crate::browser_console_delivery::DeliveryFrame;
+
+        let mut delivery = DeliveryFrame::with_capacity(16);
+
+        delivery.append(b"starry ", 0);
+        delivery.append(b"continues", 0);
+
+        ax_assert_eq!(delivery.len(), 16);
+        ax_assert_eq!(delivery.into_bytes(), b"starry continues");
+    }
+
+    #[test]
+    fn browser_delivery_reports_source_queue_overflow_before_preserved_bytes() {
+        use crate::browser_console_delivery::DeliveryFrame;
+
+        let mut delivery = DeliveryFrame::with_capacity(96);
+
+        delivery.append(b"preserved", 11);
+
+        let output = delivery.into_bytes();
+        ax_assert!(
+            output.starts_with(b"\r\n[Axvisor browser console dropped 11 queued bytes]\r\n")
+        );
+        ax_assert!(output.ends_with(b"preserved"));
+    }
+
+    #[test]
+    fn browser_delivery_queue_preserves_old_output_and_reports_new_overflow() {
+        use crate::browser_console_delivery::DeliveryQueue;
+
+        let mut delivery = DeliveryQueue::<8>::new();
+        delivery.enqueue(b"old");
+        delivery.enqueue(b"overflow");
+
+        let mut output = [0; 8];
+        let (len, dropped_bytes) = delivery.dequeue(&mut output);
+        ax_assert_eq!(&output[..len], b"old");
+        ax_assert_eq!(dropped_bytes, 8);
+    }
+
+    #[test]
+    fn browser_delivery_waits_for_notification_without_timer_polling() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        use std::{sync::Arc, thread, time::Duration};
+
+        use crate::browser_console_delivery::BlockingSignal;
+
+        let signal = Arc::new(BlockingSignal::new());
+        signal.notify_irq();
+        signal.drain();
+        let waiting = Arc::new(AtomicBool::new(false));
+        let woke = Arc::new(AtomicBool::new(false));
+        let worker_signal = Arc::clone(&signal);
+        let worker_waiting = Arc::clone(&waiting);
+        let worker_woke = Arc::clone(&woke);
+        let worker = thread::spawn(move || {
+            worker_waiting.store(true, Ordering::Release);
+            worker_signal.wait();
+            worker_woke.store(true, Ordering::Release);
+        });
+
+        while !waiting.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        thread::sleep(Duration::from_millis(30));
+        ax_assert!(!woke.load(Ordering::Acquire));
+
+        signal.notify();
+        worker
+            .join()
+            .expect("delivery waiter must exit after notify");
+        ax_assert!(woke.load(Ordering::Acquire));
     }
 
     #[test]
