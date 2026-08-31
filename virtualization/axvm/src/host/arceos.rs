@@ -198,8 +198,9 @@ impl HostCpu for ArceOsHost {
 }
 
 pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
-#[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsThreadWakeHandle = runtime_task::ThreadWakeHandle;
+#[cfg(target_arch = "x86_64")]
+pub(crate) type ArceOsWakeResult = runtime_task::WakeResult;
 pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
@@ -334,8 +335,8 @@ pub(crate) fn cpu_set_one(cpu_id: usize) -> ArceOsCpuSet {
     affinity
 }
 
-pub(crate) fn thread_cpu_id(thread: &ArceOsThreadHandle) -> Option<usize> {
-    thread.assigned_cpu().map(|cpu| cpu.as_usize())
+pub(crate) fn current_cpu_id() -> usize {
+    modules::ax_hal::percpu::this_cpu_id()
 }
 
 pub(crate) fn yield_now() {

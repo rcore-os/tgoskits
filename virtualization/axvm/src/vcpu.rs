@@ -14,7 +14,15 @@
 
 //! AxVM-owned architecture-independent vCPU wrapper.
 
-use std::{cell::UnsafeCell, format, mem::MaybeUninit};
+use std::{
+    cell::UnsafeCell,
+    format,
+    mem::MaybeUninit,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+};
 
 use ax_std::os::arceos::{
     guard::PreemptGuard,
@@ -96,6 +104,154 @@ struct AxVCpuInnerConst {
     guest_mpidr: Option<u64>,
 }
 
+const OUTSIDE_GUEST_MODE: usize = 0;
+const EXITING_GUEST_MODE_BIT: usize = 1;
+
+/// Architecture-independent ownership of one vCPU's guest-entry window.
+///
+/// The packed mode carries both the host CPU and whether an exit request has
+/// already claimed the running guest. `exit_requested` is sticky across the
+/// outside-guest window so a request racing the final entry check cannot be
+/// lost.
+pub(crate) struct VcpuRunState {
+    mode: AtomicUsize,
+    exit_requested: AtomicBool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(target_arch = "x86_64")]
+pub(crate) enum HardIrqExitClaim {
+    OutsideGuest,
+    LocalGuest,
+    RemoteGuest,
+    AlreadyClaimed,
+}
+
+impl VcpuRunState {
+    const fn new() -> Self {
+        Self {
+            mode: AtomicUsize::new(OUTSIDE_GUEST_MODE),
+            exit_requested: AtomicBool::new(false),
+        }
+    }
+
+    fn guest_mode(cpu_id: usize) -> usize {
+        cpu_id
+            .checked_add(1)
+            .and_then(|encoded| encoded.checked_shl(1))
+            .expect("host CPU id does not fit the vCPU guest-mode publication")
+    }
+
+    fn guest_cpu(mode: usize) -> usize {
+        (mode >> 1) - 1
+    }
+
+    fn enter(&self, cpu_id: usize) -> VcpuGuestEntry<'_> {
+        let guest_mode = Self::guest_mode(cpu_id);
+        self.mode
+            .compare_exchange(
+                OUTSIDE_GUEST_MODE,
+                guest_mode,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .unwrap_or_else(|mode| {
+                panic!("vCPU guest mode was not outside before entry: {mode:#x}")
+            });
+        VcpuGuestEntry {
+            run_state: self,
+            guest_mode,
+        }
+    }
+
+    pub(crate) fn publish_exit_request(&self) {
+        self.exit_requested.store(true, Ordering::Release);
+    }
+
+    /// Returns the remote CPU that must receive a guest-exit doorbell.
+    pub(crate) fn request_exit(&self, current_cpu: usize) -> Option<usize> {
+        loop {
+            let mode = self.mode.load(Ordering::Acquire);
+            if mode == OUTSIDE_GUEST_MODE || mode & EXITING_GUEST_MODE_BIT != 0 {
+                return None;
+            }
+            let target_cpu = Self::guest_cpu(mode);
+            if self
+                .mode
+                .compare_exchange(
+                    mode,
+                    mode | EXITING_GUEST_MODE_BIT,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return (target_cpu != current_cpu).then_some(target_cpu);
+            }
+        }
+    }
+
+    /// Classifies the guest-exit work left after a local hard IRQ.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn claim_hard_irq_exit(&self, current_cpu: usize) -> HardIrqExitClaim {
+        loop {
+            let mode = self.mode.load(Ordering::Acquire);
+            if mode == OUTSIDE_GUEST_MODE {
+                return HardIrqExitClaim::OutsideGuest;
+            }
+            if mode & EXITING_GUEST_MODE_BIT != 0 {
+                return HardIrqExitClaim::AlreadyClaimed;
+            }
+            if Self::guest_cpu(mode) != current_cpu {
+                return HardIrqExitClaim::RemoteGuest;
+            }
+            if self
+                .mode
+                .compare_exchange(
+                    mode,
+                    mode | EXITING_GUEST_MODE_BIT,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return HardIrqExitClaim::LocalGuest;
+            }
+        }
+    }
+}
+
+struct VcpuGuestEntry<'state> {
+    run_state: &'state VcpuRunState,
+    guest_mode: usize,
+}
+
+impl VcpuGuestEntry<'_> {
+    fn exit_requested(&self) -> bool {
+        self.run_state.exit_requested.swap(false, Ordering::AcqRel)
+            || self.run_state.mode.load(Ordering::Acquire) & EXITING_GUEST_MODE_BIT != 0
+    }
+}
+
+impl Drop for VcpuGuestEntry<'_> {
+    fn drop(&mut self) {
+        let previous = self
+            .run_state
+            .mode
+            .swap(OUTSIDE_GUEST_MODE, Ordering::Release);
+        assert!(
+            previous == self.guest_mode || previous == self.guest_mode | EXITING_GUEST_MODE_BIT,
+            "vCPU guest-mode owner changed during one entry: {previous:#x}"
+        );
+    }
+}
+
+pub(crate) enum VcpuRunResult<E> {
+    Retry,
+    ExitRequested,
+    VmExit(E),
+}
+
 #[allow(dead_code)]
 fn reserve_cpu_on_state(state: &mut VmVcpuState) -> AxVmResult {
     if *state != VmVcpuState::Free {
@@ -148,6 +304,7 @@ fn cpu_off_state(state: &mut VmVcpuState) -> AxVmResult {
 pub struct AxVCpu<A: VmArchVcpuOps> {
     inner_const: AxVCpuInnerConst,
     inner_mut: Mutex<AxVCpuInnerMut>,
+    run_state: Arc<VcpuRunState>,
     arch_vcpu: UnsafeCell<A>,
 }
 
@@ -170,6 +327,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             inner_mut: Mutex::new(AxVCpuInnerMut {
                 state: VmVcpuState::Created,
             }),
+            run_state: Arc::new(VcpuRunState::new()),
             arch_vcpu: UnsafeCell::new(
                 A::new(vm_id, vcpu_id, arch_config)
                     .map_err(|error| map_vcpu_backend_error("create vCPU", error))?,
@@ -216,6 +374,10 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// Returns the guest-visible MPIDR affinity for this vCPU, when the architecture has one.
     pub const fn guest_mpidr(&self) -> Option<u64> {
         self.inner_const.guest_mpidr
+    }
+
+    pub(crate) fn run_state(&self) -> Arc<VcpuRunState> {
+        Arc::clone(&self.run_state)
     }
 
     /// Returns the current vCPU state.
@@ -354,12 +516,26 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// the architecture backend remains loaded on one non-migrating host CPU,
     /// and must keep host IRQs disabled until this method returns. The x86 VMX
     /// backend uses that interval to switch host-owned syscall MSRs.
-    pub(crate) fn run_loaded(&self) -> AxVmResult<A::Exit> {
+    pub(crate) fn run_loaded(
+        &self,
+        retry_before_entry: impl FnOnce() -> bool,
+    ) -> AxVmResult<VcpuRunResult<A::Exit>> {
         self.transition_state(VmVcpuState::Ready, VmVcpuState::Running)?;
         self.with_state_transition(VmVcpuState::Running, VmVcpuState::Ready, || {
+            let guest_entry = self.run_state.enter(crate::host::task::current_cpu_id());
+            // Publish IN_GUEST before the final canonical-pending recheck.
+            // A producer before this point is observed by the recheck; a
+            // producer after it must observe IN_GUEST and request an exit.
+            if retry_before_entry() {
+                return Ok(VcpuRunResult::Retry);
+            }
+            if guest_entry.exit_requested() {
+                return Ok(VcpuRunResult::ExitRequested);
+            }
             let arch_vcpu = self.get_arch_vcpu();
             arch_vcpu
                 .run()
+                .map(VcpuRunResult::VmExit)
                 .map_err(|error| map_vcpu_backend_error("run vCPU", error))
         })
     }
@@ -594,6 +770,60 @@ fn map_interrupt_backend_error(operation: &'static str, error: VmBackendError) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hard_irq_exit_claim_distinguishes_outside_local_and_remote_guest() {
+        let state = VcpuRunState::new();
+
+        assert_eq!(state.claim_hard_irq_exit(2), HardIrqExitClaim::OutsideGuest);
+
+        let local_entry = state.enter(2);
+        assert!(!local_entry.exit_requested());
+        assert_eq!(state.claim_hard_irq_exit(2), HardIrqExitClaim::LocalGuest);
+        drop(local_entry);
+
+        let remote_entry = state.enter(5);
+        assert!(!remote_entry.exit_requested());
+        assert_eq!(state.claim_hard_irq_exit(2), HardIrqExitClaim::RemoteGuest);
+        drop(remote_entry);
+    }
+
+    #[test]
+    fn task_kick_claims_one_remote_guest_exit() {
+        let state = VcpuRunState::new();
+        let entry = state.enter(7);
+
+        state.publish_exit_request();
+        assert_eq!(state.request_exit(3), Some(7));
+        assert_eq!(state.request_exit(3), None);
+
+        drop(entry);
+    }
+
+    #[test]
+    fn local_exit_claim_cancels_the_pending_guest_entry() {
+        let state = VcpuRunState::new();
+        let entry = state.enter(7);
+
+        assert_eq!(state.request_exit(7), None);
+        assert!(entry.exit_requested());
+
+        drop(entry);
+    }
+
+    #[test]
+    fn outside_guest_request_aborts_the_next_entry_once() {
+        let state = VcpuRunState::new();
+        state.publish_exit_request();
+
+        let first = state.enter(1);
+        assert!(first.exit_requested());
+        drop(first);
+
+        let second = state.enter(4);
+        assert!(!second.exit_requested());
+        drop(second);
+    }
 
     #[test]
     fn vcpu_cpu_on_reservation_moves_free_to_starting() {

@@ -3,8 +3,9 @@
 use super::arceos;
 
 pub(crate) type ThreadHandle = arceos::ArceOsThreadHandle;
-#[cfg(target_arch = "aarch64")]
 pub(crate) type ThreadWakeHandle = arceos::ArceOsThreadWakeHandle;
+#[cfg(target_arch = "x86_64")]
+pub(crate) type WakeResult = arceos::ArceOsWakeResult;
 pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
 pub(crate) type ThreadExtensionBorrow<'thread> =
     ax_std::os::arceos::task::ThreadOsExtensionBorrow<'thread>;
@@ -58,8 +59,8 @@ pub(crate) fn cpu_set_from_raw_bits(bits: usize) -> CpuSet {
     arceos::cpu_set_from_raw_bits(bits)
 }
 
-pub(crate) fn thread_cpu_id(thread: &ThreadHandle) -> Option<usize> {
-    arceos::thread_cpu_id(thread)
+pub(crate) fn current_cpu_id() -> usize {
+    arceos::current_cpu_id()
 }
 
 #[cfg(target_arch = "aarch64")]

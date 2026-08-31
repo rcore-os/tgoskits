@@ -6,7 +6,7 @@ use ax_std::os::arceos::guard::IrqSaveGuard;
 use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
-use super::{BoundVcpuExit, VcpuRunAction};
+use super::{BoundVcpuExit, VcpuRunAction, VcpuRunOutcome};
 use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
 pub(crate) trait ArchOps {
@@ -137,7 +137,7 @@ pub(crate) trait ArchOps {
     fn run_vcpu(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-    ) -> AxVmResult<VcpuRunAction>
+    ) -> AxVmResult<VcpuRunOutcome>
     where
         Self: Sized,
     {
@@ -176,31 +176,42 @@ pub(crate) trait ArchOps {
                         // before the entry-only IRQ-disabled section.
                         Self::before_vcpu_run(vm, vcpu)?;
 
-                        // Match Linux KVM's request/entry ordering: after the
-                        // final queue check, keep local IRQs disabled through
-                        // guest entry. A request published before this check is
-                        // observed below; a later IPI remains pending until it
-                        // forces a guest exit.
+                        // Match Linux KVM's request/entry ordering: publish
+                        // IN_GUEST before the final canonical-pending recheck,
+                        // and keep local IRQs disabled through hardware entry.
+                        // A later remote request observes IN_GUEST and leaves
+                        // an IPI pending until hardware entry or VM exit.
                         let entry_irq_guard = IrqSaveGuard::new();
-                        if interrupt_runtime.as_ref().is_some_and(|runtime| {
-                            runtime
-                                .irq_dispatcher()
-                                .has_pending(vcpu_id, interrupt_owner)
-                        }) {
-                            drop(entry_irq_guard);
-                            continue;
+                        match vcpu.run_loaded(|| {
+                            interrupt_runtime.as_ref().is_some_and(|runtime| {
+                                runtime
+                                    .irq_dispatcher()
+                                    .has_pending(vcpu_id, interrupt_owner)
+                            })
+                        })? {
+                            crate::vcpu::VcpuRunResult::Retry => {
+                                drop(entry_irq_guard);
+                                continue;
+                            }
+                            crate::vcpu::VcpuRunResult::ExitRequested => {
+                                drop(entry_irq_guard);
+                                break Ok(None);
+                            }
+                            crate::vcpu::VcpuRunResult::VmExit(exit) => {
+                                Self::after_vcpu_run(vm, vcpu);
+                                drop(entry_irq_guard);
+                                break Ok(Some(exit));
+                            }
                         }
-
-                        let exit = vcpu.run_loaded();
-                        Self::after_vcpu_run(vm, vcpu);
-                        drop(entry_irq_guard);
-                        break exit;
                     }
                 })
             },
-            |exit| {
-                trace!("{exit:#x?}");
-                Self::handle_vcpu_exit_unbound(vm, vcpu, exit)
+            |exit| match exit {
+                Some(exit) => {
+                    trace!("{exit:#x?}");
+                    Self::handle_vcpu_exit_unbound(vm, vcpu, exit)
+                }
+                None => Ok(BoundVcpuExit::EntryCanceled),
             },
         );
 
@@ -208,22 +219,26 @@ pub(crate) trait ArchOps {
         match run_result {
             Ok(BoundVcpuExit::Complete(action)) => {
                 unbind_result?;
-                Ok(action)
+                Ok(VcpuRunOutcome::Entered(action))
             }
             Ok(BoundVcpuExit::Defer(work)) => {
                 unbind_result?;
-                Self::finish_deferred_run_work(vm, vcpu, work)
+                Self::finish_deferred_run_work(vm, vcpu, work).map(VcpuRunOutcome::Entered)
             }
             Ok(BoundVcpuExit::DeferHypercall(work)) => {
                 unbind_result?;
                 let return_value = crate::runtime::hvc::finish_deferred_hypercall(vm.clone(), work);
                 vcpu.set_return_value(return_value);
-                Ok(VcpuRunAction {
+                Ok(VcpuRunOutcome::Entered(VcpuRunAction {
                     waits_for_event: false,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
-                })
+                }))
+            }
+            Ok(BoundVcpuExit::EntryCanceled) => {
+                unbind_result?;
+                Ok(VcpuRunOutcome::EntryCanceled)
             }
             Ok(BoundVcpuExit::Continue) => unreachable!("continued exits do not leave run loop"),
             Err(err) => {

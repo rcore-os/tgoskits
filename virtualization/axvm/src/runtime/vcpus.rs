@@ -24,7 +24,7 @@ use std::{
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
     arch::current::CurrentArch,
-    architecture::{ArchOps, VcpuRunAction},
+    architecture::{ArchOps, VcpuRunAction, VcpuRunOutcome},
     ax_err_type,
     irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
@@ -161,7 +161,11 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
         return;
     };
     match vm.runtime_handle() {
-        Ok(runtime) => runtime.notify_one(),
+        Ok(runtime) => {
+            if let Err(err) = runtime.kick_vcpu(0) {
+                warn!("VM[{vm_id}] primary vCPU kick failed: {err:?}");
+            }
+        }
         Err(err) => warn!("VM[{vm_id}] vCPU runtime not found: {err:?}"),
     }
 }
@@ -176,7 +180,7 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
     if let Some(vm) = crate::get_vm_by_id(vm_id)
         && let Ok(runtime) = vm.runtime_handle()
     {
-        runtime.notify_all();
+        runtime.request_all_vcpus();
     }
 }
 
@@ -222,23 +226,19 @@ pub(crate) fn queue_physical_interrupt(
     Ok(())
 }
 
-/// Wake and kick a target vCPU after an architecture IRQ backend has
-/// published pending state outside the generic runtime queue.
-pub(crate) fn notify_vcpu(vm_id: usize, vcpu_id: usize) -> AxVmResult {
+/// Wake a vCPU after its architecture backend has published canonical state,
+/// and send a guest-exit doorbell only while a remote CPU owns the guest.
+pub(crate) fn kick_vcpu_from_published_state(vm_id: usize, vcpu_id: usize) -> AxVmResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
     if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
         return Err(ax_err_type!(
             BadState,
-            format!("VM[{vm_id}] is not accepting interrupts")
+            format!("VM[{vm_id}] is not accepting vCPU events")
         ));
     }
 
-    let runtime = vm.runtime_handle()?;
-    let cpu_id = runtime.vcpu_cpu_id(vcpu_id)?;
-    runtime.notify_all();
-    crate::host::task::send_ipi(cpu_id);
-    Ok(())
+    vm.runtime_handle()?.kick_vcpu(vcpu_id)
 }
 
 /// Cleans up VCpu resources for a VM that is being deleted.
@@ -402,7 +402,7 @@ pub(crate) fn vcpu_on(
             }
         };
         if runtime
-            .add_vcpu_task(vcpu_id, prepared.thread_handle())
+            .add_vcpu_task(vcpu_id, prepared.thread_handle(), vcpu.run_state())
             .is_err()
         {
             runtime.remove_cpu_on_start_ack(vcpu_id);
@@ -628,7 +628,8 @@ fn vcpu_run() {
         // broken wake path that only flips the status without ever re-entering
         // the guest cannot advance it either.
         let action = match CurrentArch::run_vcpu(&vm, &vcpu) {
-            Ok(action) => Some(action),
+            Ok(VcpuRunOutcome::Entered(action)) => Some(action),
+            Ok(VcpuRunOutcome::EntryCanceled) => None,
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
                 if let Err(err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {
@@ -827,7 +828,7 @@ mod tests {
         let notifier_runtime = runtime.clone();
         let notifier_published = request_published.clone();
         let notifier = std::thread::spawn(move || {
-            notifier_runtime.notify_device_poll();
+            notifier_runtime.publish_device_poll_request();
             notifier_published.wait();
         });
 
@@ -885,7 +886,7 @@ mod tests {
         let notifier_published = request_published.clone();
         let notifier = std::thread::spawn(move || {
             notifier_wait_boundary.wait();
-            notifier_runtime.notify_device_poll();
+            notifier_runtime.publish_device_poll_request();
             notifier_published.wait();
         });
 

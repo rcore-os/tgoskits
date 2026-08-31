@@ -225,8 +225,14 @@ pub(crate) struct VmRuntimeHandle {
 
 #[derive(Default)]
 struct VcpuThreadRegistry {
-    active: BTreeMap<usize, crate::ThreadHandle>,
-    retired: BTreeMap<usize, crate::ThreadHandle>,
+    active: BTreeMap<usize, VcpuThreadRuntime>,
+    retired: BTreeMap<usize, VcpuThreadRuntime>,
+}
+
+#[derive(Clone)]
+struct VcpuThreadRuntime {
+    thread: crate::ThreadHandle,
+    kick: crate::runtime::VcpuKickHandle,
 }
 
 pub(crate) struct VcpuEventWaitSnapshot {
@@ -274,16 +280,13 @@ fn clone_runtime_handle<R>(
 }
 
 pub(crate) fn dispatch_vcpu_interrupt_with(
-    enqueue: impl FnOnce() -> AxVmResult<Option<usize>>,
-    notify: impl FnOnce(),
-    send_ipi: impl FnOnce(usize),
+    enqueue: impl FnOnce() -> AxVmResult<bool>,
+    kick: impl FnOnce() -> AxVmResult,
 ) -> AxVmResult {
-    let Some(pcpu_id) = enqueue()? else {
+    if !enqueue()? {
         return Ok(());
-    };
-    notify();
-    send_ipi(pcpu_id);
-    Ok(())
+    }
+    kick()
 }
 
 fn pulse_interrupt_with_snapshot(
@@ -347,6 +350,7 @@ impl VmRuntimeHandle {
         &self,
         vcpu_id: usize,
         vcpu_thread: crate::ThreadHandle,
+        run_state: Arc<crate::vcpu::VcpuRunState>,
     ) -> AxVmResult {
         let mut threads = self.vcpu_threads.lock();
         if threads.active.contains_key(&vcpu_id) {
@@ -354,7 +358,14 @@ impl VmRuntimeHandle {
         }
         self.irq_dispatcher
             .register(vcpu_id, vcpu_thread.id().as_u64());
-        threads.active.insert(vcpu_id, vcpu_thread);
+        let kick = crate::runtime::VcpuKickHandle::new(run_state, vcpu_thread.wake_handle());
+        threads.active.insert(
+            vcpu_id,
+            VcpuThreadRuntime {
+                thread: vcpu_thread,
+                kick,
+            },
+        );
         Ok(())
     }
 
@@ -366,11 +377,12 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn remove_vcpu_task(&self, vcpu_id: usize) -> Option<crate::ThreadHandle> {
-        let thread = self.vcpu_threads.lock().active.remove(&vcpu_id);
-        if let Some(thread) = &thread {
-            self.irq_dispatcher.clear(vcpu_id, thread.id().as_u64());
+        let runtime = self.vcpu_threads.lock().active.remove(&vcpu_id);
+        if let Some(runtime) = &runtime {
+            self.irq_dispatcher
+                .clear(vcpu_id, runtime.thread.id().as_u64());
         }
-        thread
+        runtime.map(|runtime| runtime.thread)
     }
 
     /// Transfers a self-exiting vCPU thread out of the active registry.
@@ -379,9 +391,9 @@ impl VmRuntimeHandle {
     /// ownership of the retired handle and joins it from another thread.
     pub(crate) fn retire_vcpu_task(&self, vcpu_id: usize) {
         let mut threads = self.vcpu_threads.lock();
-        if let Some(thread) = threads.active.remove(&vcpu_id) {
-            let owner = thread.id().as_u64();
-            let replaced = threads.retired.insert(vcpu_id, thread);
+        if let Some(runtime) = threads.active.remove(&vcpu_id) {
+            let owner = runtime.thread.id().as_u64();
+            let replaced = threads.retired.insert(vcpu_id, runtime);
             debug_assert!(replaced.is_none(), "retired vCPU thread was not reaped");
             drop(threads);
             self.irq_dispatcher.clear(vcpu_id, owner);
@@ -390,8 +402,8 @@ impl VmRuntimeHandle {
 
     pub(crate) fn reap_retired_vcpu_task(&self, vcpu_id: usize) -> AxVmResult {
         let retired = self.vcpu_threads.lock().retired.remove(&vcpu_id);
-        if let Some(thread) = retired {
-            crate::host::task::join_thread(thread)
+        if let Some(runtime) = retired {
+            crate::host::task::join_thread(runtime.thread)
                 .map(|_exit_code| ())
                 .map_err(|error| AxVmError::host("join retired vCPU thread", error))?;
         }
@@ -461,58 +473,102 @@ impl VmRuntimeHandle {
             .cloned()
     }
 
-    pub(crate) fn vcpu_cpu_id(&self, vcpu_id: usize) -> AxVmResult<usize> {
-        let thread = self
-            .vcpu_threads
+    pub(crate) fn vcpu_kick_handle(
+        &self,
+        vcpu_id: usize,
+    ) -> AxVmResult<crate::runtime::VcpuKickHandle> {
+        self.vcpu_threads
             .lock()
             .active
             .get(&vcpu_id)
-            .cloned()
-            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
-        crate::host::task::thread_cpu_id(&thread).ok_or_else(|| {
-            AxVmError::invalid_state(
-                "resolve vCPU CPU",
-                format_args!("vCPU {vcpu_id} thread has no assigned CPU"),
-            )
-        })
+            .map(|runtime| runtime.kick.clone())
+            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))
     }
 
-    fn vcpu_dispatch_target(&self, vcpu_id: usize) -> AxVmResult<(u64, usize)> {
-        let thread = self
-            .vcpu_threads
+    pub(crate) fn kick_vcpu(&self, vcpu_id: usize) -> AxVmResult {
+        let kick = self.vcpu_kick_handle(vcpu_id)?;
+        self.notify_all();
+        let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
+        if let Some(cpu_id) = exit_cpu {
+            crate::host::task::send_ipi(cpu_id);
+        }
+        Ok(())
+    }
+
+    /// Publishes a generic entry request and kicks one target vCPU.
+    pub(crate) fn request_vcpu(&self, vcpu_id: usize) -> AxVmResult {
+        let kick = self.vcpu_kick_handle(vcpu_id)?;
+        kick.publish_entry_request();
+        self.notify_all();
+        let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
+        if let Some(cpu_id) = exit_cpu {
+            crate::host::task::send_ipi(cpu_id);
+        }
+        Ok(())
+    }
+
+    fn active_vcpu_kicks(&self) -> Vec<crate::runtime::VcpuKickHandle> {
+        self.vcpu_threads
             .lock()
             .active
-            .get(&vcpu_id)
-            .cloned()
-            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
-        let pcpu_id = crate::host::task::thread_cpu_id(&thread).ok_or_else(|| {
-            AxVmError::invalid_state(
-                "resolve vCPU dispatch target",
-                format_args!("vCPU {vcpu_id} thread has no assigned CPU"),
-            )
-        })?;
-        Ok((thread.id().as_u64(), pcpu_id))
+            .values()
+            .map(|runtime| runtime.kick.clone())
+            .collect()
     }
 
-    /// New delivery path: enqueue → notify → host IPI.
+    fn deliver_kicks(&self, kicks: Vec<crate::runtime::VcpuKickHandle>) {
+        self.notify_all();
+        if kicks.is_empty() {
+            return;
+        }
+        let current_cpu = crate::host::task::current_cpu_id();
+        for kick in kicks {
+            if let Some(cpu_id) = kick.kick_from_task(current_cpu) {
+                crate::host::task::send_ipi(cpu_id);
+            }
+        }
+    }
+
+    /// Wakes every active vCPU after canonical work has been published.
+    pub(crate) fn kick_all_vcpus(&self) {
+        self.deliver_kicks(self.active_vcpu_kicks());
+    }
+
+    /// Publishes a generic entry request and kicks every active vCPU.
     ///
-    /// The dispatcher releases its queue lock before this method notifies
-    /// waiters or invokes the host IPI boundary.
-    #[cfg_attr(
-        not(any(target_arch = "riscv64", target_arch = "x86_64")),
-        expect(
-            dead_code,
-            reason = "currently consumed by the RISC-V IPI router and x86 PIT"
-        )
-    )]
+    /// Lifecycle state is checked outside the architecture entry scope, so
+    /// the sticky request closes the window between that check and IN_GUEST.
+    pub(crate) fn request_all_vcpus(&self) {
+        let kicks = self.active_vcpu_kicks();
+        for kick in &kicks {
+            kick.publish_entry_request();
+        }
+        self.deliver_kicks(kicks);
+    }
+
+    fn vcpu_dispatch_target(
+        &self,
+        vcpu_id: usize,
+    ) -> AxVmResult<(u64, crate::runtime::VcpuKickHandle)> {
+        let runtime = self
+            .vcpu_threads
+            .lock()
+            .active
+            .get(&vcpu_id)
+            .cloned()
+            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
+        Ok((runtime.thread.id().as_u64(), runtime.kick))
+    }
+
+    /// Publishes one interrupt and then kicks only its target vCPU.
     pub(crate) fn dispatch_vcpu_interrupt(
         &self,
         vcpu_id: usize,
         interrupt: PendingVcpuInterrupt,
     ) -> AxVmResult {
+        let (owner, kick) = self.vcpu_dispatch_target(vcpu_id)?;
         dispatch_vcpu_interrupt_with(
             || {
-                let (owner, pcpu_id) = self.vcpu_dispatch_target(vcpu_id)?;
                 let needs_kick = self
                     .irq_dispatcher
                     .enqueue(vcpu_id, owner, interrupt)
@@ -522,10 +578,16 @@ impl VmRuntimeHandle {
                             format_args!("vCPU {vcpu_id} task generation changed"),
                         )
                     })?;
-                Ok(needs_kick.then_some(pcpu_id))
+                Ok(needs_kick)
             },
-            || self.notify_all(),
-            crate::host::task::send_ipi,
+            || {
+                self.notify_all();
+                let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
+                if let Some(cpu_id) = exit_cpu {
+                    crate::host::task::send_ipi(cpu_id);
+                }
+                Ok(())
+            },
         )
     }
 
@@ -536,9 +598,9 @@ impl VmRuntimeHandle {
         vector: usize,
         physical_irq: usize,
     ) -> AxVmResult {
+        let (owner, kick) = self.vcpu_dispatch_target(vcpu_id)?;
         dispatch_vcpu_interrupt_with(
             || {
-                let (owner, pcpu_id) = self.vcpu_dispatch_target(vcpu_id)?;
                 let needs_kick = self
                     .irq_dispatcher
                     .enqueue_physical(vcpu_id, owner, vector, physical_irq)
@@ -548,10 +610,16 @@ impl VmRuntimeHandle {
                             format_args!("vCPU {vcpu_id} task generation changed"),
                         )
                     })?;
-                Ok(needs_kick.then_some(pcpu_id))
+                Ok(needs_kick)
             },
-            || self.notify_all(),
-            crate::host::task::send_ipi,
+            || {
+                self.notify_all();
+                let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
+                if let Some(cpu_id) = exit_cpu {
+                    crate::host::task::send_ipi(cpu_id);
+                }
+                Ok(())
+            },
         )
     }
 
@@ -580,20 +648,14 @@ impl VmRuntimeHandle {
         }
     }
 
-    pub(crate) fn notify_one(&self) {
-        self.notification_generation.fetch_add(1, Ordering::Release);
-        self.wait_queue.notify_one();
-    }
-
     pub(crate) fn notify_all(&self) {
         self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_all();
     }
 
-    /// Publishes pending device work before waking the primary vCPU.
-    pub(crate) fn notify_device_poll(&self) {
+    /// Publishes pending device work before the caller kicks the primary vCPU.
+    pub(crate) fn publish_device_poll_request(&self) {
         self.device_poll_requested.store(true, Ordering::Release);
-        self.notify_one();
     }
 
     pub(crate) fn device_poll_requested(&self) -> bool {
@@ -677,19 +739,19 @@ impl VmRuntimeHandle {
         let threads = {
             let mut registry = self.vcpu_threads.lock();
             let mut joinable = Vec::new();
-            registry.active.retain(|vcpu_id, thread| {
-                if thread.id() == current_id {
+            registry.active.retain(|vcpu_id, runtime| {
+                if runtime.thread.id() == current_id {
                     true
                 } else {
-                    joinable.push((*vcpu_id, thread.clone()));
+                    joinable.push((*vcpu_id, runtime.thread.clone()));
                     false
                 }
             });
-            registry.retired.retain(|vcpu_id, thread| {
-                if thread.id() == current_id {
+            registry.retired.retain(|vcpu_id, runtime| {
+                if runtime.thread.id() == current_id {
                     true
                 } else {
-                    joinable.push((*vcpu_id, thread.clone()));
+                    joinable.push((*vcpu_id, runtime.thread.clone()));
                     false
                 }
             });
@@ -1241,8 +1303,12 @@ impl WakeAccessPort for AxVmDeviceAccessPorts {
                     operation: "wake vCPU from device access",
                     detail: format!("{error}"),
                 })?;
-        runtime.notify_all();
-        Ok(())
+        runtime
+            .request_vcpu(vcpu_id)
+            .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+                operation: "wake vCPU from device access",
+                detail: format!("{error}"),
+            })
     }
 }
 
@@ -1257,7 +1323,7 @@ impl StopAccessPort for AxVmDeviceAccessPorts {
             detail: format!("{error}"),
         })?;
         if let Ok(runtime) = vm.runtime_handle() {
-            runtime.notify_all();
+            runtime.request_all_vcpus();
         }
         Ok(())
     }
@@ -1632,8 +1698,9 @@ impl AxVM {
             Ok(())
         })?;
 
+        let primary_run_state = primary_vcpu.run_state();
         let prepared = crate::runtime::vcpus::prepare_vcpu_thread(self, primary_vcpu)?;
-        if let Err(error) = runtime.add_vcpu_task(0, prepared.thread_handle()) {
+        if let Err(error) = runtime.add_vcpu_task(0, prepared.thread_handle(), primary_run_state) {
             return match prepared.abort_and_join() {
                 Ok(()) => Err(error),
                 Err(rollback) => Err(AxVmError::lifecycle_rollback(
@@ -1787,13 +1854,13 @@ impl AxVM {
                 }
                 self.stop(reason)?;
                 if let Ok(runtime) = self.runtime_handle() {
-                    runtime.notify_all();
+                    runtime.request_all_vcpus();
                 }
                 self.wait_until_stopped()?;
             }
             VmStatus::Stopping => {
                 if let Ok(runtime) = self.runtime_handle() {
-                    runtime.notify_all();
+                    runtime.request_all_vcpus();
                 }
                 self.wait_until_stopped()?;
             }
@@ -2599,23 +2666,22 @@ mod tests {
     }
 
     #[test]
-    fn runtime_dispatch_orders_enqueue_before_notify_and_ipi() {
+    fn runtime_dispatch_orders_enqueue_before_kick() {
         let events = RefCell::new(Vec::new());
 
         dispatch_vcpu_interrupt_with(
             || {
                 events.borrow_mut().push("enqueue");
-                Ok(Some(3))
+                Ok(true)
             },
-            || events.borrow_mut().push("notify"),
-            |cpu_id| {
-                assert_eq!(cpu_id, 3);
-                events.borrow_mut().push("ipi");
+            || {
+                events.borrow_mut().push("kick");
+                Ok(())
             },
         )
         .unwrap();
 
-        assert_eq!(*events.borrow(), ["enqueue", "notify", "ipi"]);
+        assert_eq!(*events.borrow(), ["enqueue", "kick"]);
     }
 
     #[cfg(feature = "host-test")]
@@ -2632,34 +2698,35 @@ mod tests {
         dispatch_vcpu_interrupt_with(
             || {
                 let needs_kick = dispatcher.enqueue(0, 1, interrupt).unwrap();
-                Ok(needs_kick.then_some(3))
+                Ok(needs_kick)
             },
             || {
                 assert_eq!(
                     dispatcher.drain(0, 1),
                     std::vec![QueuedVcpuInterrupt::Virtual(interrupt)]
                 );
-                events.borrow_mut().push("notify");
+                events.borrow_mut().push("kick");
+                Ok(())
             },
-            |_| events.borrow_mut().push("ipi"),
         )
         .unwrap();
 
-        assert_eq!(*events.borrow(), ["notify", "ipi"]);
+        assert_eq!(*events.borrow(), ["kick"]);
     }
 
     #[cfg(feature = "host-test")]
     #[test]
     fn runtime_dispatch_coalesces_repeated_publication_before_drain() {
-        let notify_count = Cell::new(0);
-        let ipi_count = Cell::new(0);
+        let kick_count = Cell::new(0);
         let kick_pending = Cell::new(false);
 
         let dispatch = || {
             dispatch_vcpu_interrupt_with(
-                || Ok((!kick_pending.replace(true)).then_some(3)),
-                || notify_count.set(notify_count.get() + 1),
-                |_| ipi_count.set(ipi_count.get() + 1),
+                || Ok(!kick_pending.replace(true)),
+                || {
+                    kick_count.set(kick_count.get() + 1);
+                    Ok(())
+                },
             )
             .unwrap();
         };
@@ -2670,8 +2737,7 @@ mod tests {
         // the same physical delivery edge.
         dispatch();
 
-        assert_eq!(notify_count.get(), 1);
-        assert_eq!(ipi_count.get(), 1);
+        assert_eq!(kick_count.get(), 1);
     }
 
     #[test]
@@ -2683,8 +2749,10 @@ mod tests {
                 events.borrow_mut().push("enqueue");
                 Err(ax_err_type!(NotFound, "vCPU task not found"))
             },
-            || events.borrow_mut().push("notify"),
-            |_| events.borrow_mut().push("ipi"),
+            || {
+                events.borrow_mut().push("kick");
+                Ok(())
+            },
         );
 
         assert!(matches!(result, Err(AxVmError::ResourceUnavailable { .. })));
@@ -2696,9 +2764,22 @@ mod tests {
         let runtime = VmRuntimeHandle::new();
         let observed = runtime.notification_generation();
 
-        runtime.notify_one();
+        runtime.notify_all();
 
         assert_ne!(runtime.notification_generation(), observed);
+    }
+
+    #[test]
+    fn empty_vcpu_kicks_need_no_cpu_local_state() {
+        let runtime = VmRuntimeHandle::new();
+        let before_kick = runtime.notification_generation();
+
+        runtime.kick_all_vcpus();
+        let before_request = runtime.notification_generation();
+        runtime.request_all_vcpus();
+
+        assert_ne!(before_kick, before_request);
+        assert_ne!(before_request, runtime.notification_generation());
     }
 
     #[test]

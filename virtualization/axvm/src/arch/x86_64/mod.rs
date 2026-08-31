@@ -379,25 +379,32 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         let (vm_id, vcpu_id) =
             with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())))
                 .ok_or(X86VlapicError::TimerUnavailable)?;
-        let kick = manager::with_vm(vm_id, |vm| irq::vcpu_kick_for_vm(vm))
-            .flatten()
-            .ok_or(X86VlapicError::TimerUnavailable)?;
-        let wake = crate::host::task::current_thread().wake_handle();
+        let (deferred_kick, vcpu_kick) = manager::with_vm(vm_id, |vm| {
+            let deferred = irq::vcpu_kick_for_vm(vm)?;
+            let runtime = vm.runtime_handle().ok()?;
+            let kick = runtime.vcpu_kick_handle(vcpu_id).ok()?;
+            Some((deferred, kick))
+        })
+        .flatten()
+        .ok_or(X86VlapicError::TimerUnavailable)?;
+        let timer_cpu = crate::host::task::current_cpu_id();
         unsafe {
             // SAFETY: x86_vlapic proves that its callback touches only atomic
             // pending/deadline state and IRQ-safe registration locks. The
-            // owning vCPU wake handle and deferred kick publisher are
-            // pre-bound in task context and explicitly safe to invoke from
-            // hard IRQ. The kick is required when the host timer callback is
-            // observed outside the VMX exit that made the physical edge
-            // pending; the worker sends the target-vCPU IPI after the IRQ
-            // transaction has released its scheduler baton.
+            // owning vCPU kick capability and deferred remote-exit publisher
+            // are pre-bound in task context and explicitly safe to invoke
+            // from hard IRQ. A local host timer IRQ already exits the guest;
+            // only a vCPU still running on another CPU is handed to the
+            // task-context worker after the IRQ transaction releases its
+            // scheduler baton.
             default_host().register_hard_restartable_timer(
                 Duration::from_nanos(deadline_nanos),
                 Box::new(move |now| {
                     let action = callback(now.as_nanos() as u64);
-                    let _ = wake.wake();
-                    let _ = kick.publish_from_irq(vcpu_id);
+                    if vcpu_kick.kick_from_hard_irq(timer_cpu) == crate::runtime::HardIrqKick::Defer
+                    {
+                        let _ = deferred_kick.publish_from_irq(vcpu_id);
+                    }
                     match action {
                         X86TimerAction::Complete => HostHardTimerAction::Complete,
                         X86TimerAction::Rearm(deadline) => {
