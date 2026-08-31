@@ -1,0 +1,7 @@
+features = ["rt-poll-idle"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/qemu-rt-poll-idle/aarch64-linux-rt-poll-idle.toml"]
+
+[env]
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-rt-poll-idle/initramfs-aarch64.cpio.gz"

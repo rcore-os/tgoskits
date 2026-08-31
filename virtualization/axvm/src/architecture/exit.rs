@@ -3,7 +3,9 @@
 use axdevice_base::{BusKind, DeviceAccess, DeviceVcpuId};
 use axvm_types::VmArchVcpuOps;
 
-use super::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::{
+    BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuEventWait, VcpuRunAction,
+};
 use crate::{AxVmError, AxVmResult, StopReason};
 
 pub(crate) fn handle_mmio_read<V: VmArchVcpuOps, D>(
@@ -155,7 +157,7 @@ pub(crate) fn hvc_outcome_action(
             HyperCallExitAction::CompleteWithReturn {
                 return_value,
                 action: VcpuRunAction {
-                    waits_for_event: true,
+                    event_wait: VcpuEventWait::Poll,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
@@ -164,7 +166,7 @@ pub(crate) fn hvc_outcome_action(
         }
         crate::runtime::hvc::HyperCallOutcome::CpuOff => {
             HyperCallExitAction::Complete(VcpuRunAction {
-                waits_for_event: false,
+                event_wait: VcpuEventWait::None,
                 stop_reason: None,
                 resets_vm: false,
                 exits_vcpu: true,
@@ -172,7 +174,7 @@ pub(crate) fn hvc_outcome_action(
         }
         crate::runtime::hvc::HyperCallOutcome::SystemReset => {
             HyperCallExitAction::Complete(VcpuRunAction {
-                waits_for_event: false,
+                event_wait: VcpuEventWait::None,
                 stop_reason: None,
                 resets_vm: true,
                 exits_vcpu: false,
@@ -180,7 +182,7 @@ pub(crate) fn hvc_outcome_action(
         }
         crate::runtime::hvc::HyperCallOutcome::SystemOff => {
             HyperCallExitAction::Complete(VcpuRunAction {
-                waits_for_event: false,
+                event_wait: VcpuEventWait::None,
                 stop_reason: Some(StopReason::SystemDown),
                 resets_vm: false,
                 exits_vcpu: false,
@@ -226,7 +228,7 @@ pub(crate) fn handle_hypercall<V: VmArchVcpuOps, D>(
         }
     }
     Ok(BoundVcpuExit::Complete(VcpuRunAction {
-        waits_for_event: false,
+        event_wait: VcpuEventWait::None,
         stop_reason: None,
         resets_vm: false,
         exits_vcpu: false,
@@ -333,7 +335,7 @@ mod tests {
             HyperCallExitAction::CompleteWithReturn {
                 return_value: 0,
                 action: VcpuRunAction {
-                    waits_for_event: true,
+                    event_wait: VcpuEventWait::Poll,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
@@ -354,7 +356,7 @@ mod tests {
             HyperCallExitAction::CompleteWithReturn {
                 return_value: 0,
                 action: VcpuRunAction {
-                    waits_for_event: true,
+                    event_wait: VcpuEventWait::Poll,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
@@ -368,7 +370,7 @@ mod tests {
         assert_eq!(
             hvc_outcome_action(HyperCallOutcome::SystemReset),
             HyperCallExitAction::Complete(VcpuRunAction {
-                waits_for_event: false,
+                event_wait: VcpuEventWait::None,
                 stop_reason: None,
                 resets_vm: true,
                 exits_vcpu: false,
@@ -383,7 +385,7 @@ mod tests {
         assert_eq!(
             action,
             HyperCallExitAction::Complete(VcpuRunAction {
-                waits_for_event: false,
+                event_wait: VcpuEventWait::None,
                 stop_reason: None,
                 resets_vm: false,
                 exits_vcpu: true,

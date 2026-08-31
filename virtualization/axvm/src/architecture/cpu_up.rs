@@ -4,7 +4,7 @@ use axvm_types::GuestPhysAddr;
 
 use crate::{
     AxVmResult,
-    architecture::{Architecture, BoundVcpuExit, VcpuRunAction},
+    architecture::{Architecture, BoundVcpuExit, VcpuEventWait, VcpuRunAction},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -58,7 +58,7 @@ pub(crate) fn handle<A: CpuUpOps>(
         );
         vcpu.set_return_value(usize::MAX);
         return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
+            event_wait: VcpuEventWait::None,
             stop_reason: None,
             resets_vm: false,
             exits_vcpu: false,
@@ -78,7 +78,7 @@ pub(crate) fn handle<A: CpuUpOps>(
         }
     }
     Ok(BoundVcpuExit::Complete(VcpuRunAction {
-        waits_for_event: false,
+        event_wait: VcpuEventWait::None,
         stop_reason: None,
         resets_vm: false,
         exits_vcpu: false,

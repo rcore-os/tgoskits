@@ -44,6 +44,8 @@ mod manager;
 mod network_console;
 #[cfg(feature = "browser-console")]
 mod network_status;
+#[cfg(feature = "rt-poll-idle-observability")]
+mod realtime_observability;
 mod shell;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
@@ -81,7 +83,7 @@ fn init_atomic_output_panic_hook() {
 ///    console services so they are live before any guest boots — then the VM
 ///    lifecycle waiter and the physical-console shell.
 ///
-/// The vCPU tasks are pinned to the secondary CPUs via `phys_cpu_ids` in the
+/// The vCPU tasks are pinned to the secondary CPUs via `phys_cpu_sets` in the
 /// VM configs, while the management console stays on the primary CPU.
 fn main() {
     #[cfg(feature = "test-console-atomic-output")]
@@ -107,6 +109,9 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
+
+    #[cfg(feature = "rt-poll-idle-observability")]
+    realtime_observability::start();
 
     // The browser-console registry snapshots the successfully initialized
     // default VM set exactly once. Initialize it before HTTP so the browser's
@@ -167,7 +172,7 @@ fn main() {
     info!("[OK] Default guest initialized");
 
     // The management console runs on the primary CPU (Core 0) while the vCPU
-    // tasks are pinned to Core 1 via `phys_cpu_ids`, so it stays responsive
+    // tasks are pinned to Core 1 via `phys_cpu_sets`, so it stays responsive
     // regardless of guest behavior.
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 

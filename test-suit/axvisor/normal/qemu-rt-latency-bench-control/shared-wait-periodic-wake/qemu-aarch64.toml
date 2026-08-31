@@ -1,0 +1,19 @@
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=2",
+  "-smp", "3",
+  "-append", "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 axvisor.timer_case=rt-latency-bench-control",
+  "-m", "8g",
+]
+timeout = 180
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?m)^AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN\\s*$",
+  "(?m)^AXVISOR_RT_LATENCY_BENCH_FAILED\\s*$",
+  "(?m)^AXVISOR_RT_HOST_SCHED_FAILED\\b",
+]
+success_regex = ["(?m)^AXVISOR_RT_SHARED_WAIT_BENCH_PASSED\\s*$"]
+to_bin = true
+uefi = false

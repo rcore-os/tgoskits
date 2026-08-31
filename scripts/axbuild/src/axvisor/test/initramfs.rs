@@ -9,6 +9,7 @@ use std::{
     fs,
     io::Write,
     path::{Component, Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, bail, ensure};
@@ -20,6 +21,7 @@ use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::re
 
 const OUTPUT_ENV: &str = "AXVISOR_TEST_BUSYBOX_INITRAMFS";
 const OVMF_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
+const RT_BENCH_SOURCE_ENV: &str = "AXVISOR_TEST_RT_BENCH_SOURCE";
 const BUSYBOX_PATH: &str = "/bin/busybox";
 // These bounds are the fixed Q35 guest aperture used by the x86 AxVM provider;
 // the end bound is exclusive.
@@ -130,6 +132,15 @@ case "$cmdline" in
     exec /bin/busybox sh -i
     ;;
   *axvisor.timer_case=gicv3-its*) success_marker=AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED; require_its=1 ;;
+  *axvisor.timer_case=rt-latency-bench-control*)
+    if ! /bin/rt_latency_bench; then echo AXVISOR_RT_LATENCY_BENCH_FAILED; else echo AXVISOR_RT_SHARED_WAIT_BENCH_PASSED; fi
+    exec /bin/busybox sh -i
+    ;;
+  *axvisor.timer_case=rt-latency-bench-poll*)
+    if ! /bin/rt_latency_bench; then echo AXVISOR_RT_LATENCY_BENCH_FAILED; else echo AXVISOR_RT_POLL_IDLE_BENCH_COMPLETED; fi
+    exec /bin/busybox sh -i
+    ;;
+  *axvisor.timer_case=rt-poll-idle-gicv2*) success_marker=AXVISOR_RT_POLL_IDLE_TIMER_WAKE_PASSED; require_its=0 ;;
   *axvisor.timer_case=gicv2*) success_marker=AXVISOR_GICV2_TIMER_STRESS_PASSED; require_its=0 ;;
   *axvisor.timer_case=gicv3*) success_marker=AXVISOR_GICV3_TIMER_STRESS_PASSED; require_its=0 ;;
   *) echo AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN; exec /bin/busybox sh -i ;;
@@ -341,7 +352,19 @@ pub(super) async fn prepare_configured_busybox_initramfs(
     if let Some(configured_output) = cargo.env.get(OUTPUT_ENV) {
         let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
         let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, None)?;
-        prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
+        let benchmark = cargo
+            .env
+            .get(RT_BENCH_SOURCE_ENV)
+            .map(|source| resolve_output_path(workspace_root, source, RT_BENCH_SOURCE_ENV))
+            .transpose()?
+            .map(|source| compile_rt_latency_benchmark(&source, &request.arch))
+            .transpose()?;
+        prepare_busybox_initramfs(
+            &rootfs_path,
+            &output_path,
+            &request.arch,
+            benchmark.as_deref(),
+        )?;
         println!(
             "prepared Axvisor QEMU test initramfs: {}",
             output_path.display()
@@ -379,11 +402,12 @@ fn prepare_busybox_initramfs(
     rootfs_path: &Path,
     output_path: &Path,
     arch: &str,
+    benchmark: Option<&[u8]>,
 ) -> anyhow::Result<()> {
     let busybox = required_rootfs_file(rootfs_path, BUSYBOX_PATH)?;
     let loader_path = musl_loader_path(arch)?;
     let loader = required_rootfs_file(rootfs_path, loader_path)?;
-    let archive = build_busybox_initramfs(&busybox, loader_path, &loader)?;
+    let archive = build_busybox_initramfs(&busybox, loader_path, &loader, benchmark)?;
 
     let output_parent = output_path.parent().with_context(|| {
         format!(
@@ -413,6 +437,42 @@ fn prepare_busybox_initramfs(
     Ok(())
 }
 
+/// Compiles the architecture-specific Linux periodic wake benchmark injected
+/// into the minimal test initramfs.
+///
+/// The benchmark remains a test asset: normal AxVisor builds never invoke a
+/// host compiler. The caller supplies a workspace-relative source path through
+/// `AXVISOR_TEST_RT_BENCH_SOURCE`, so the QEMU case keeps the workload and its
+/// configuration together.
+fn compile_rt_latency_benchmark(source: &Path, arch: &str) -> anyhow::Result<Vec<u8>> {
+    let compiler = match arch {
+        "aarch64" => "aarch64-linux-musl-gcc",
+        unsupported => bail!("rt latency benchmark does not support architecture `{unsupported}`"),
+    };
+    let output =
+        tempfile::NamedTempFile::new().context("failed to allocate rt benchmark output")?;
+    let status = Command::new(compiler)
+        .arg("-static")
+        .args(["-Os", "-Wall", "-Wextra", "-Werror", "-std=c11"])
+        .arg("-D_POSIX_C_SOURCE=200809L")
+        .arg(source)
+        .arg("-o")
+        .arg(output.path())
+        .status()
+        .with_context(|| format!("failed to start {compiler} for {}", source.display()))?;
+    ensure!(
+        status.success(),
+        "{compiler} failed to compile rt latency benchmark {}",
+        source.display()
+    );
+    fs::read(output.path()).with_context(|| {
+        format!(
+            "failed to read compiled rt latency benchmark {}",
+            output.path().display()
+        )
+    })
+}
+
 fn required_rootfs_file(rootfs_path: &Path, guest_path: &str) -> anyhow::Result<Vec<u8>> {
     read_binary_file(rootfs_path, guest_path)?.with_context(|| {
         format!(
@@ -438,6 +498,7 @@ fn build_busybox_initramfs(
     busybox: &[u8],
     loader_path: &str,
     loader: &[u8],
+    benchmark: Option<&[u8]>,
 ) -> anyhow::Result<Vec<u8>> {
     let init_script = init_script();
     let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
@@ -458,6 +519,9 @@ fn build_busybox_initramfs(
         }
 
         archive.append_regular("bin/busybox", busybox)?;
+        if let Some(benchmark) = benchmark {
+            archive.append_regular("bin/rt_latency_bench", benchmark)?;
+        }
         archive.append_regular(loader_archive_path, loader)?;
         archive.append_regular("init", &init_script)?;
         for applet in [
@@ -592,7 +656,7 @@ mod tests {
     #[test]
     fn generated_archive_contains_busybox_loader_and_shell_applets() {
         let compressed =
-            build_busybox_initramfs(b"busybox", "/lib/ld-musl-test.so.1", b"loader").unwrap();
+            build_busybox_initramfs(b"busybox", "/lib/ld-musl-test.so.1", b"loader", None).unwrap();
         let mut archive = Vec::new();
         GzDecoder::new(compressed.as_slice())
             .read_to_end(&mut archive)
@@ -632,6 +696,19 @@ mod tests {
         assert!(
             init.windows(b"AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED".len())
                 .any(|window| window == b"AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED")
+        );
+        assert!(
+            init.windows(b"AXVISOR_RT_POLL_IDLE_TIMER_WAKE_PASSED".len())
+                .any(|window| window == b"AXVISOR_RT_POLL_IDLE_TIMER_WAKE_PASSED")
+        );
+        assert!(
+            init.windows(b"AXVISOR_RT_POLL_IDLE_BENCH_COMPLETED".len())
+                .any(|window| window == b"AXVISOR_RT_POLL_IDLE_BENCH_COMPLETED")
+        );
+        assert!(
+            !init
+                .windows(b"AXVISOR_RT_POLL_IDLE_BENCH_PASSED".len())
+                .any(|window| window == b"AXVISOR_RT_POLL_IDLE_BENCH_PASSED")
         );
         assert!(
             init.windows(b"AXVISOR_X86_DIRECT_ACPI_PASSED".len())
@@ -828,6 +905,28 @@ mod tests {
             .arg(config_path)
             .output()
             .unwrap()
+    }
+
+    #[test]
+    fn generated_archive_includes_the_configured_periodic_wake_benchmark() {
+        let compressed = build_busybox_initramfs(
+            b"busybox",
+            "/lib/ld-musl-test.so.1",
+            b"loader",
+            Some(b"rt-latency-benchmark"),
+        )
+        .unwrap();
+        let mut archive = Vec::new();
+        GzDecoder::new(compressed.as_slice())
+            .read_to_end(&mut archive)
+            .unwrap();
+
+        assert_eq!(
+            parse_newc_entries(&archive)
+                .get("bin/rt_latency_bench")
+                .unwrap(),
+            b"rt-latency-benchmark"
+        );
     }
 
     fn parse_newc_entries(archive: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {

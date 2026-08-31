@@ -99,7 +99,9 @@ impl DeferredVcpuKick {
             }
             let pending = self.pending_vcpus.swap(0, Ordering::AcqRel);
             for vcpu_id in SetBits(pending) {
-                if let Err(error) = crate::runtime::vcpus::notify_vcpu(self.vm_id, vcpu_id) {
+                if let Err(error) =
+                    crate::runtime::vcpus::notify_waiters_and_kick_vcpu(self.vm_id, vcpu_id)
+                {
                     trace!(
                         "VM[{}] deferred IRQ kick for vCPU {vcpu_id} was not delivered: {error:?}",
                         self.vm_id

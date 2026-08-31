@@ -21,12 +21,18 @@ echo "==> axvisor aarch64 gicv2 timer stress"
 cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
 echo "==> axvisor aarch64 gicv3 timer stress"
 cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
+echo "==> axvisor aarch64 rt-poll-idle timer wake"
+cargo xtask axvisor test qemu --arch aarch64 --test-case rt-poll-idle-timer-wake
+echo "==> axvisor aarch64 rt-poll-idle runtime policy"
+cargo xtask axvisor test qemu --arch aarch64 --test-case poll-idle-runtime-observation
+echo "==> axvisor aarch64 rt-poll-idle periodic wake completion"
+cargo xtask axvisor test qemu --arch aarch64 --test-case poll-idle-periodic-wake
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["smoke", "gicv2-timer-stress", "gicv3-timer-stress"]
+cases = ["smoke", "gicv2-timer-stress", "gicv3-timer-stress", "rt-poll-idle-timer-wake", "poll-idle-runtime-observation", "poll-idle-periodic-wake"]
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-panic-modes"

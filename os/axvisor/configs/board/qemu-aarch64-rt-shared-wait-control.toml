@@ -1,0 +1,6 @@
+# A/B control profile: preserve the shared wait-queue and broadcast wake path
+# while keeping guest topology, affinity, device mapping, and workload fixed.
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

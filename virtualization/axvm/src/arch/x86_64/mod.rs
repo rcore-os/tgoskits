@@ -218,7 +218,7 @@ impl ArchOps for X86_64Arch {
             X86VmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
+                    event_wait: VcpuEventWait::None,
                     stop_reason: Some(StopReason::SystemDown),
                     resets_vm: false,
                     exits_vcpu: false,
@@ -233,7 +233,7 @@ impl ArchOps for X86_64Arch {
                     vcpu.id()
                 );
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
+                    event_wait: VcpuEventWait::None,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
@@ -258,7 +258,7 @@ impl ArchOps for X86_64Arch {
 
 fn x86_halt_action() -> VcpuRunAction {
     VcpuRunAction {
-        waits_for_event: true,
+        event_wait: VcpuEventWait::Block,
         stop_reason: None,
         resets_vm: false,
         exits_vcpu: false,
@@ -978,7 +978,7 @@ fn handle_x86_nested_page_fault(
             exit.access_flags
         );
         Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
+            event_wait: VcpuEventWait::None,
             stop_reason: None,
             resets_vm: false,
             exits_vcpu: false,
@@ -1107,7 +1107,7 @@ mod tests {
 
     #[test]
     fn x86_halt_waits_until_an_interrupt_or_lifecycle_event() {
-        assert!(x86_halt_action().waits_for_event);
+        assert_eq!(x86_halt_action().event_wait, VcpuEventWait::Block);
     }
 
     #[test]

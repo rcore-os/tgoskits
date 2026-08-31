@@ -137,24 +137,19 @@ impl ArchOps for LoongArch64Arch {
             }
             LoongArchVmExit::Idle => {
                 trace!("VM[{}] run VCpu[{}] Idle", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                    resets_vm: false,
-                    exits_vcpu: false,
-                }))
+                Ok(BoundVcpuExit::Complete(loongarch_idle_action()))
             }
             LoongArchVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
+                    event_wait: VcpuEventWait::Block,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
                 }))
             }
             LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
+                event_wait: VcpuEventWait::None,
                 stop_reason: None,
                 resets_vm: false,
                 exits_vcpu: false,
@@ -177,7 +172,7 @@ impl ArchOps for LoongArch64Arch {
             }
         }
         Ok(VcpuRunAction {
-            waits_for_event: false,
+            event_wait: VcpuEventWait::None,
             stop_reason: None,
             resets_vm: false,
             exits_vcpu: false,
@@ -197,6 +192,15 @@ impl ArchOps for LoongArch64Arch {
             || vcpu.get_arch_vcpu().has_enabled_pending_interrupt(),
             |condition| runtime.wait_until(condition),
         );
+    }
+}
+
+fn loongarch_idle_action() -> VcpuRunAction {
+    VcpuRunAction {
+        event_wait: VcpuEventWait::Block,
+        stop_reason: None,
+        resets_vm: false,
+        exits_vcpu: false,
     }
 }
 
@@ -254,7 +258,7 @@ fn handle_loongarch_nested_page_fault(
             ax_flags
         );
         Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
+            event_wait: VcpuEventWait::None,
             stop_reason: None,
             resets_vm: false,
             exits_vcpu: false,
@@ -530,6 +534,11 @@ mod tests {
     #[test]
     fn axvm_loongarch_vcpu_uses_loongarch_exit_type() {
         assert_loongarch_exit_type::<AxvmLoongArchVcpu>();
+    }
+
+    #[test]
+    fn loongarch_idle_waits_for_a_runtime_event() {
+        assert_eq!(loongarch_idle_action().event_wait, VcpuEventWait::Block);
     }
 
     #[test]

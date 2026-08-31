@@ -155,6 +155,10 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     vm.prepare()
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
 
+    #[cfg(all(feature = "rt-poll-idle", target_arch = "aarch64"))]
+    vm.validate_rt_poll_cpu_placement()
+        .with_context(|| format!("validate dedicated host CPUs for VM[{vm_id}] rt-poll-idle"))?;
+
     if !axvm::register_vm(vm.clone()) {
         bail!("register VM[{vm_id}]: a VM with this ID already exists");
     }

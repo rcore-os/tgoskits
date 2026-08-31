@@ -1,0 +1,9 @@
+# Build the bounded AArch64 polling profile for the periodic wake benchmark.
+features = ["rt-poll-idle", "rt-poll-idle-observability"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/qemu-rt-latency-bench-poll/aarch64-linux-rt-latency-bench.toml"]
+
+[env]
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-rt-latency-bench-poll/initramfs-aarch64.cpio.gz"
+AXVISOR_TEST_RT_BENCH_SOURCE = "test-suit/axvisor/normal/qemu-rt-latency-bench-poll/periodic-wake/rt_latency_bench.c"

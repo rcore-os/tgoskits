@@ -1421,6 +1421,27 @@ impl AxVM {
             .collect()
     }
 
+    /// Verifies that this VM can use the bounded AArch64 idle-poll profile.
+    ///
+    /// The profile consumes host CPU time while an ordinary-idle vCPU remains
+    /// runnable. It therefore permits one explicitly pinned vCPU per
+    /// non-management host CPU and rejects configurations that would share a
+    /// poll-capable CPU. Call this before registering the VM so a rejected
+    /// candidate cannot become visible to the runtime.
+    #[cfg(feature = "rt-poll-idle")]
+    pub fn validate_rt_poll_cpu_placement(&self) -> AxVmResult {
+        let mut occupied_cpu_mask = 0;
+        for vm in crate::get_vm_list() {
+            if vm.id() == self.id() {
+                continue;
+            }
+            occupied_cpu_mask =
+                validate_rt_poll_vcpu_placement(vm.id(), &vm.vcpu_snapshots(), occupied_cpu_mask)?;
+        }
+        validate_rt_poll_vcpu_placement(self.id(), &self.vcpu_snapshots(), occupied_cpu_mask)
+            .map(|_| ())
+    }
+
     /// Returns the number of vCPUs whose task has entered the guest run loop
     /// and not yet finished exiting.
     ///
@@ -2339,6 +2360,59 @@ impl AxVM {
     }
 }
 
+#[cfg(feature = "rt-poll-idle")]
+fn validate_rt_poll_vcpu_placement(
+    vm_id: VMId,
+    vcpus: &[VcpuSnapshot],
+    occupied_cpu_mask: usize,
+) -> AxVmResult<usize> {
+    let mut occupied_cpu_mask = occupied_cpu_mask;
+    for vcpu in vcpus {
+        let cpu_mask = vcpu.phys_cpu_set.ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!(
+                    "VM[{vm_id}] vCPU[{}] requires an explicit dedicated host CPU mask for \
+                     rt-poll-idle",
+                    vcpu.id
+                )
+            )
+        })?;
+        if !cpu_mask.is_power_of_two() {
+            return ax_err!(
+                InvalidInput,
+                format!(
+                    "VM[{vm_id}] vCPU[{}] host CPU mask {cpu_mask:#x} must select exactly one CPU \
+                     for rt-poll-idle",
+                    vcpu.id
+                )
+            );
+        }
+        if cpu_mask == 1 {
+            return ax_err!(
+                InvalidInput,
+                format!(
+                    "VM[{vm_id}] vCPU[{}] cannot use host CPU0 reserved for Axvisor management \
+                     under rt-poll-idle",
+                    vcpu.id
+                )
+            );
+        }
+        if occupied_cpu_mask & cpu_mask != 0 {
+            return ax_err!(
+                InvalidInput,
+                format!(
+                    "VM[{vm_id}] vCPU[{}] host CPU mask {cpu_mask:#x} is already assigned to a \
+                     poll-capable vCPU",
+                    vcpu.id
+                )
+            );
+        }
+        occupied_cpu_mask |= cpu_mask;
+    }
+    Ok(occupied_cpu_mask)
+}
+
 impl Drop for AxVM {
     fn drop(&mut self) {
         info!("Dropping VM[{}]", self.id());
@@ -2817,6 +2891,64 @@ mod tests {
         assert!(
             entered.load(Ordering::Acquire),
             "vCPU task must have entered the guest run loop"
+        );
+    }
+
+    #[cfg(feature = "rt-poll-idle")]
+    #[test]
+    fn rt_poll_idle_rejects_missing_shared_primary_or_multiple_cpu_placement() {
+        let missing_cpu = [VcpuSnapshot {
+            id: 0,
+            state: VmVcpuState::Created,
+            phys_cpu_set: None,
+        }];
+        let missing_error = validate_rt_poll_vcpu_placement(2, &missing_cpu, 0).unwrap_err();
+        assert!(missing_error.to_string().contains("requires an explicit"));
+
+        let shared_cpu = [VcpuSnapshot {
+            id: 0,
+            state: VmVcpuState::Created,
+            phys_cpu_set: Some(0b10),
+        }];
+        let shared_error = validate_rt_poll_vcpu_placement(2, &shared_cpu, 0b10).unwrap_err();
+        assert!(shared_error.to_string().contains("already assigned"));
+
+        let primary_cpu = [VcpuSnapshot {
+            id: 0,
+            state: VmVcpuState::Created,
+            phys_cpu_set: Some(0b1),
+        }];
+        let primary_error = validate_rt_poll_vcpu_placement(2, &primary_cpu, 0).unwrap_err();
+        assert!(primary_error.to_string().contains("host CPU0"));
+
+        let multiple_cpus = [VcpuSnapshot {
+            id: 0,
+            state: VmVcpuState::Created,
+            phys_cpu_set: Some(0b110),
+        }];
+        let multiple_error = validate_rt_poll_vcpu_placement(2, &multiple_cpus, 0).unwrap_err();
+        assert!(multiple_error.to_string().contains("exactly one CPU"));
+    }
+
+    #[cfg(feature = "rt-poll-idle")]
+    #[test]
+    fn rt_poll_idle_accepts_one_dedicated_secondary_cpu_per_vcpu() {
+        let vcpus = [
+            VcpuSnapshot {
+                id: 0,
+                state: VmVcpuState::Created,
+                phys_cpu_set: Some(0b10),
+            },
+            VcpuSnapshot {
+                id: 1,
+                state: VmVcpuState::Created,
+                phys_cpu_set: Some(0b100),
+            },
+        ];
+
+        assert_eq!(
+            validate_rt_poll_vcpu_placement(2, &vcpus, 0).unwrap(),
+            0b110
         );
     }
 

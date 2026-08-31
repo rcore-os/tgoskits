@@ -142,7 +142,7 @@ impl ArchOps for Riscv64Arch {
                     vcpu.id()
                 );
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
+                    event_wait: VcpuEventWait::Block,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
@@ -151,7 +151,7 @@ impl ArchOps for Riscv64Arch {
             RiscvVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
+                    event_wait: VcpuEventWait::Block,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
@@ -160,14 +160,14 @@ impl ArchOps for Riscv64Arch {
             RiscvVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
+                    event_wait: VcpuEventWait::None,
                     stop_reason: Some(StopReason::SystemDown),
                     resets_vm: false,
                     exits_vcpu: false,
                 }))
             }
             RiscvVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
+                event_wait: VcpuEventWait::None,
                 stop_reason: None,
                 resets_vm: false,
                 exits_vcpu: false,
@@ -186,7 +186,7 @@ impl ArchOps for Riscv64Arch {
             }
         }
         Ok(VcpuRunAction {
-            waits_for_event: false,
+            event_wait: VcpuEventWait::None,
             stop_reason: None,
             resets_vm: false,
             exits_vcpu: false,
@@ -268,7 +268,7 @@ fn handle_riscv_nested_page_fault(
             ax_flags
         );
         Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
+            event_wait: VcpuEventWait::None,
             stop_reason: None,
             resets_vm: false,
             exits_vcpu: false,

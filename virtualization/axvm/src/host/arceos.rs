@@ -243,6 +243,12 @@ pub(crate) fn yield_now() {
     thread::yield_now();
 }
 
+/// Reports whether the current task must reach the runtime preemption safe point.
+#[cfg(all(feature = "rt-poll-idle", target_arch = "aarch64"))]
+pub(crate) fn preemption_pending() -> bool {
+    modules::ax_task::runtime_preemption_pending()
+}
+
 pub(crate) fn wait_queue_wait_until(
     queue: &api::task::AxWaitQueueHandle,
     condition: impl Fn() -> bool,

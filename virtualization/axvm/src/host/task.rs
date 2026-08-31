@@ -26,6 +26,11 @@ pub(crate) fn yield_now() {
     arceos::yield_now();
 }
 
+#[cfg(all(feature = "rt-poll-idle", target_arch = "aarch64"))]
+pub(crate) fn preemption_pending() -> bool {
+    arceos::preemption_pending()
+}
+
 pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> arceos::ArceOsCpuMask {
     arceos::cpu_mask_from_raw_bits(bits)
 }

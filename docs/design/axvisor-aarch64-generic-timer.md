@@ -163,6 +163,20 @@ Assigned physical SPI 使用经过所有权校验的 HW-backed LR：
 
 对于 WFI，`ArmTimerSnapshot::earliest_deadline` 同时考虑 CNTV 与 CNTP。Disabled、masked 或已经过期的 timer 不调度未来唤醒。
 
+`rt-poll-idle` 是 AArch64 build-wide profile，只改变普通 WFI/WFE 与 PSCI standby 的宿主等待策略：每个 vCPU 可在一个有限 polling 窗口内推进本 CPU 的 timer wheel；窗口到期，或运行时已经发布当前 CPU 的抢占请求时，必须回到既有共享 wait queue。同一 AxVisor binary 不能把该 profile 混用于部分 AArch64 VM，A/B 对比必须用相同 guest/topology 的独立 control 和 polling build。PSCI `CPU_OFF`、VM suspend、stop 与 reset 始终使用共享等待或生命周期路径，不能因为该 feature 变为 runnable；中断和设备事件仍通过共享 notification generation 与目标 pCPU IPI 传递。
+
+### `rt-poll-idle` 资源边界、启用与回滚
+
+该 profile 不把共享 pCPU 当作受支持的实时部署。每个 poll-capable vCPU 必须通过 `phys_cpu_sets` 指定一个且仅一个非 CPU0 的 host CPU；同一配置集合中的两个 vCPU 不得重叠。CPU0 保留给 Axvisor 管理、设备与中断路径，部署者也不得把其他长期 host workload 绑定到某个 polling vCPU 的 CPU。Axvisor 在注册 VM 前调用 AxVM placement validator，拒绝缺失 pin、multi-bit pin、CPU0 pin 或与已注册 polling vCPU 重叠的候选 VM，因此不会把不满足该边界的 VM 注册进运行时。
+
+设某个专用 pCPU 上普通 idle exit 的频率为 `r` 次/秒，单次 polling 的连续时间上限为 50 µs；它是当前 1 ms 周期 A/B workload 的 5%，选择目的是把单段 busy-wait 固定在一个小于周期的保守上限，而不是冒充 Linux 式自适应预算。在不考虑 shared-wait 时间的情况下，该 pCPU 的 polling CPU 时间上界为 `min(1, r × 50 µs)`。每个 pCPU 至多承载一个 polling vCPU，因而不会把多个 burst 叠加为未建模的 CPU 争用。这个上界不是延迟改进承诺；实际延迟仍取决于 host scheduler、timer interrupt、GIC 和设备路径。
+
+本轮实现比较三种可用边界：保留 shared wait 没有新增 CPU 成本，作为 control build；Linux 风格的自适应 polling 需要可靠读取 runnable host task 与 scheduler 状态，当前 AxVisor 接口尚未提供该判定；因此 profile 选择“固定短预算 + 专属 pCPU + 预算/抢占立即回退”。后续若引入可验证的 host runnable-state 能力，才可在不改变 guest ABI 的前提下替换为自适应预算；在此之前不支持共享 pCPU 或多个 polling vCPU 共置。
+
+启用条件是以 `rt-poll-idle` feature 重建并重启，同时满足上述 CPU placement 校验。每个 vCPU 首次同时观察到普通-idle bypass 与因 budget/preemption 返回 shared wait 时，输出 `AXVISOR_RT_POLL_IDLE_RUNTIME_PASSED poll_bypass_count=… poll_fallback_count=…`；部署前应保存该标记和 control build 的同配置日志。CI 的 timer-wake QEMU 回归验证启用该 feature 后客户机能从 idle 经 timer IRQ 恢复执行；预算回退由 AxVM 的确定性 unit test 验证。若 placement 被拒绝、目标负载出现不能接受的 deadline miss，或部署验证未观察到预期的轮询/回退决策，则移除该 feature、重新构建并重启回 shared-wait profile。该 profile 没有运行时热切换或状态迁移，回滚不改变 guest ABI、持久状态或 timer ownership。
+
+`shared-wait-periodic-wake` 与 `poll-idle-periodic-wake` 是同一个 AArch64 Linux guest、两个 vCPU（分别绑定 host pCPU1、pCPU2）和同一个 1 ms absolute-deadline workload 的独立 QEMU 数据采集入口。每轮 2,000 次、共三轮；guest 输出 wake latency 与 period jitter 的 p50/p95/p99/max、deadline miss、每个 guest CPU 的 `/proc/stat` tick 增量及 guest context-switch 总数。测试专用的 Axvisor observer 同时固定在 pCPU1，输出相同窗口内的 pCPU1/pCPU2 non-idle tick、context-switch 增量及 pCPU1 worker 的最大 sleep 延迟。该采集入口不作为 CI 的通过条件：QEMU/TCG 的 deadline miss 数据必须与同一平台上的 control build 比较，硬件实时结论仍须保留目标板卡的原始日志与环境信息，不能由嵌套仿真替代。
+
 每个已调度 callback 携带：
 
 - 一个由 `Aarch64TimerBinding` 分配的 WFI 等待代次；

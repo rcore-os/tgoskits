@@ -142,7 +142,7 @@ pub(crate) fn finish(
         }
     }
     Ok(VcpuRunAction {
-        waits_for_event: false,
+        event_wait: VcpuEventWait::None,
         stop_reason: None,
         resets_vm: false,
         exits_vcpu: false,

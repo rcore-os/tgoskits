@@ -75,6 +75,11 @@ const ARRAY_REPEAT_VALUE: MaybeUninit<NonNull<AxRunQueue>> = MaybeUninit::uninit
 pub(crate) static BUSY_TICKS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 
+#[cfg(feature = "scheduler-metrics")]
+pub(crate) static CONTEXT_SWITCHES: [core::sync::atomic::AtomicU64;
+    crate::build_info::CPU_CAPACITY] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
+
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
@@ -1160,6 +1165,9 @@ impl AxRunQueue {
         if prev_task.ptr_eq(&next_task) {
             return SchedulerFrameResult::Stayed;
         }
+
+        #[cfg(feature = "scheduler-metrics")]
+        CONTEXT_SWITCHES[self.cpu_id].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
         // Claim the task as running, we do this before switching to it
         // such that any running task will have this set.

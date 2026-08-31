@@ -25,12 +25,141 @@ use crate::{
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 
+#[cfg(all(feature = "rt-poll-idle", any(target_arch = "aarch64", test)))]
+// Five percent of the 1 ms periodic control workload used by the AxVisor
+// A/B regression. This bounds one contiguous busy-wait without presenting
+// the static profile as an adaptive scheduler policy.
+const IDLE_POLL_BUDGET_NS: u64 = 50_000;
+
+/// Per-vCPU runtime policy for the opt-in idle polling profile.
+///
+/// A polling interval is deliberately bounded: once its deadline expires the
+/// ordinary shared wait path resumes, so an idle vCPU cannot remain runnable
+/// indefinitely on a cooperative host scheduler.
+#[cfg(all(feature = "rt-poll-idle", any(target_arch = "aarch64", test)))]
+#[derive(Default)]
+struct IdlePollPolicy {
+    deadline_ns: Option<u64>,
+    poll_bypass_count: u64,
+    poll_fallback_count: u64,
+    reported_runtime_observation: bool,
+}
+
+/// Result of one ordinary-idle wait decision in the bounded polling profile.
+#[cfg(all(feature = "rt-poll-idle", any(target_arch = "aarch64", test)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IdlePollWaitDecision {
+    /// Keep the vCPU runnable inside its bounded polling interval.
+    BypassSharedWait,
+    /// Return to the ordinary shared wait queue for the stated reason.
+    SharedWait(IdlePollFallback),
+}
+
+/// Why an ordinary-idle vCPU left its bounded polling interval.
+#[cfg(all(feature = "rt-poll-idle", any(target_arch = "aarch64", test)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IdlePollFallback {
+    /// The guest requested a blocking lifecycle wait rather than ordinary idle.
+    GuestRequestedBlock,
+    /// The local host scheduler has requested preemption.
+    PreemptionPending,
+    /// The bounded polling interval elapsed.
+    BudgetExpired,
+}
+
+#[cfg(all(feature = "rt-poll-idle", any(target_arch = "aarch64", test)))]
+impl IdlePollPolicy {
+    /// Runs the shared event wait only when the current runtime policy requires it.
+    fn wait_for_event_if_required(
+        &mut self,
+        event_wait: crate::architecture::VcpuEventWait,
+        now_ns: u64,
+        preemption_pending: bool,
+        wait_for_event: impl FnOnce(),
+    ) -> IdlePollWaitDecision {
+        let decision = self.decide_wait(event_wait, now_ns, preemption_pending);
+        if matches!(decision, IdlePollWaitDecision::SharedWait(_)) {
+            wait_for_event();
+        }
+        self.record_decision(decision);
+        decision
+    }
+
+    /// Selects the host wait action for one vCPU exit.
+    fn decide_wait(
+        &mut self,
+        event_wait: crate::architecture::VcpuEventWait,
+        now_ns: u64,
+        preemption_pending: bool,
+    ) -> IdlePollWaitDecision {
+        use crate::architecture::VcpuEventWait;
+
+        match event_wait {
+            VcpuEventWait::None => {
+                self.deadline_ns = None;
+                IdlePollWaitDecision::BypassSharedWait
+            }
+            VcpuEventWait::Block => {
+                self.deadline_ns = None;
+                IdlePollWaitDecision::SharedWait(IdlePollFallback::GuestRequestedBlock)
+            }
+            VcpuEventWait::Poll if preemption_pending => {
+                self.deadline_ns = None;
+                IdlePollWaitDecision::SharedWait(IdlePollFallback::PreemptionPending)
+            }
+            VcpuEventWait::Poll if self.poll_budget_expired(now_ns) => {
+                IdlePollWaitDecision::SharedWait(IdlePollFallback::BudgetExpired)
+            }
+            VcpuEventWait::Poll => IdlePollWaitDecision::BypassSharedWait,
+        }
+    }
+
+    /// Records observable ordinary-idle profile decisions.
+    fn record_decision(&mut self, decision: IdlePollWaitDecision) {
+        match decision {
+            IdlePollWaitDecision::BypassSharedWait if self.deadline_ns.is_some() => {
+                self.poll_bypass_count = self.poll_bypass_count.saturating_add(1);
+            }
+            IdlePollWaitDecision::SharedWait(
+                IdlePollFallback::PreemptionPending | IdlePollFallback::BudgetExpired,
+            ) => {
+                self.poll_fallback_count = self.poll_fallback_count.saturating_add(1);
+            }
+            IdlePollWaitDecision::BypassSharedWait
+            | IdlePollWaitDecision::SharedWait(IdlePollFallback::GuestRequestedBlock) => {}
+        }
+
+        if !self.reported_runtime_observation
+            && self.poll_bypass_count != 0
+            && self.poll_fallback_count != 0
+        {
+            info!(
+                "AXVISOR_RT_POLL_IDLE_RUNTIME_PASSED poll_bypass_count={} poll_fallback_count={}",
+                self.poll_bypass_count, self.poll_fallback_count
+            );
+            self.reported_runtime_observation = true;
+        }
+    }
+
+    /// Returns whether a bounded polling interval has expired.
+    fn poll_budget_expired(&mut self, now_ns: u64) -> bool {
+        let deadline_ns = self
+            .deadline_ns
+            .get_or_insert_with(|| now_ns.saturating_add(IDLE_POLL_BUDGET_NS));
+        if now_ns >= *deadline_ns {
+            self.deadline_ns = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Blocks the current thread until the provided condition is met, using the wait queue
 /// associated with the VCpus of the specified VM.
 ///
 /// # Arguments
 ///
-/// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
 /// * `condition` - A closure that returns a boolean value indicating whether the condition is met.
 fn wait_for<F>(vm_vcpus: &VmRuntimeHandle, condition: F)
 where
@@ -100,9 +229,12 @@ pub(crate) fn queue_pending_interrupt(
     Ok(())
 }
 
-/// Wake and kick a target vCPU after an architecture IRQ backend has
-/// published pending state outside the generic runtime queue.
-pub(crate) fn notify_vcpu(vm_id: usize, vcpu_id: usize) -> AxVmResult {
+/// Notify every shared waiter, then kick the target vCPU's host CPU.
+///
+/// The vCPU ID selects the IPI destination only. The runtime wait queue is
+/// still VM-wide, so this function deliberately retains broadcast wake
+/// semantics until AxVM gains per-vCPU wait queues.
+pub(crate) fn notify_waiters_and_kick_vcpu(vm_id: usize, vcpu_id: usize) -> AxVmResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
     if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
@@ -481,6 +613,9 @@ fn vcpu_run() {
     // suspend below also re-enters the guest and is counted there, so the
     // control plane can prove the guest actually re-executed after resume/reset.
 
+    #[cfg(all(feature = "rt-poll-idle", target_arch = "aarch64"))]
+    let mut idle_poll_policy = IdlePollPolicy::default();
+
     loop {
         if vcpu_id == 0 {
             // Host services only publish a request and wake this task. Polling
@@ -560,11 +695,22 @@ fn vcpu_run() {
                     }
                     notify_all_vcpus(vm_id);
                 }
-                VcpuRunAction {
-                    waits_for_event: true,
-                    ..
-                } => CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime),
-                VcpuRunAction { .. } => {}
+                VcpuRunAction { event_wait, .. } => {
+                    #[cfg(all(feature = "rt-poll-idle", target_arch = "aarch64"))]
+                    idle_poll_policy.wait_for_event_if_required(
+                        event_wait,
+                        ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos(),
+                        crate::host::task::preemption_pending(),
+                        || CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime),
+                    );
+                    #[cfg(not(all(feature = "rt-poll-idle", target_arch = "aarch64")))]
+                    let requires_shared_wait = event_wait.uses_shared_wait();
+
+                    #[cfg(not(all(feature = "rt-poll-idle", target_arch = "aarch64")))]
+                    if requires_shared_wait {
+                        CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime);
+                    }
+                }
             }
         }
 
@@ -632,10 +778,9 @@ fn vcpu_run() {
             break;
         }
 
-        // AxVM may run on ArceOS's cooperative FIFO scheduler. Yield after
-        // every completed VM exit so host services such as the management
-        // console and virtual serial input can make progress alongside a
-        // continuously runnable guest.
+        // AxVM may run on ArceOS's cooperative FIFO scheduler. Polling does
+        // not enter the shared wait queue, but it still gives local host
+        // services a scheduling point after checking the timer wheel.
         crate::host::task::yield_now();
     }
 
@@ -681,6 +826,97 @@ fn poll_vm_dma_devices(vm: &VMRef) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn powered_down_vcpu_keeps_shared_wait_in_polling_profile() {
+        assert!(crate::architecture::VcpuEventWait::Block.uses_shared_wait());
+    }
+
+    #[test]
+    fn ordinary_idle_wait_uses_profile_selected_path() {
+        assert_eq!(
+            crate::architecture::VcpuEventWait::Poll.uses_shared_wait(),
+            !cfg!(feature = "rt-poll-idle")
+        );
+    }
+
+    #[cfg(all(feature = "rt-poll-idle", any(target_arch = "aarch64", test)))]
+    #[test]
+    fn idle_poll_policy_only_bypasses_shared_wait_within_the_poll_budget() {
+        use crate::architecture::VcpuEventWait;
+
+        let mut policy = IdlePollPolicy::default();
+        let shared_wait_count = std::cell::Cell::new(0);
+
+        let first_decision =
+            policy.wait_for_event_if_required(VcpuEventWait::Poll, 10, false, || {
+                shared_wait_count.set(shared_wait_count.get() + 1);
+            });
+        let second_decision =
+            policy.wait_for_event_if_required(VcpuEventWait::Poll, 10, false, || {
+                shared_wait_count.set(shared_wait_count.get() + 1);
+            });
+        assert_eq!(first_decision, IdlePollWaitDecision::BypassSharedWait);
+        assert_eq!(second_decision, IdlePollWaitDecision::BypassSharedWait);
+        assert_eq!(shared_wait_count.get(), 0);
+
+        let budget_decision = policy.wait_for_event_if_required(
+            VcpuEventWait::Poll,
+            10 + IDLE_POLL_BUDGET_NS,
+            false,
+            || {
+                shared_wait_count.set(shared_wait_count.get() + 1);
+            },
+        );
+        assert_eq!(
+            budget_decision,
+            IdlePollWaitDecision::SharedWait(IdlePollFallback::BudgetExpired)
+        );
+        assert_eq!(policy.poll_bypass_count, 2);
+        assert_eq!(policy.poll_fallback_count, 1);
+        policy.wait_for_event_if_required(VcpuEventWait::Block, 20, false, || {
+            shared_wait_count.set(shared_wait_count.get() + 1);
+        });
+        policy.wait_for_event_if_required(VcpuEventWait::None, 20, false, || {
+            shared_wait_count.set(shared_wait_count.get() + 1);
+        });
+        assert_eq!(shared_wait_count.get(), 2);
+    }
+
+    #[cfg(all(feature = "rt-poll-idle", any(target_arch = "aarch64", test)))]
+    #[test]
+    fn idle_poll_policy_retreats_when_the_scheduler_requests_preemption() {
+        use crate::architecture::VcpuEventWait;
+
+        let mut policy = IdlePollPolicy::default();
+        let shared_wait_count = std::cell::Cell::new(0);
+
+        policy.wait_for_event_if_required(VcpuEventWait::Poll, 10, false, || {});
+        policy.wait_for_event_if_required(VcpuEventWait::Poll, 11, true, || {
+            shared_wait_count.set(shared_wait_count.get() + 1);
+        });
+        assert_eq!(shared_wait_count.get(), 1);
+
+        policy.wait_for_event_if_required(VcpuEventWait::Poll, 12, false, || {
+            shared_wait_count.set(shared_wait_count.get() + 1);
+        });
+        assert_eq!(shared_wait_count.get(), 1);
+    }
+
+    #[cfg(all(feature = "rt-poll-idle", any(target_arch = "aarch64", test)))]
+    #[test]
+    fn idle_poll_policy_never_waits_for_non_idle_exits_when_preemption_is_pending() {
+        use crate::architecture::VcpuEventWait;
+
+        let mut policy = IdlePollPolicy::default();
+        let shared_wait_count = std::cell::Cell::new(0);
+
+        policy.wait_for_event_if_required(VcpuEventWait::None, 10, true, || {
+            shared_wait_count.set(shared_wait_count.get() + 1);
+        });
+
+        assert_eq!(shared_wait_count.get(), 0);
+    }
 
     #[test]
     fn vcpu_waits_for_runtime_registration_before_entering_guest() {

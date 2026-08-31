@@ -138,7 +138,7 @@ impl ArchOps for Aarch64Arch {
                 Aarch64DeferredRunWork::ExternalInterrupt { token },
             )),
             ArmVmExit::WaitForInterrupt => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: true,
+                event_wait: VcpuEventWait::Poll,
                 stop_reason: None,
                 resets_vm: false,
                 exits_vcpu: false,
@@ -149,12 +149,7 @@ impl ArchOps for Aarch64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                    resets_vm: false,
-                    exits_vcpu: false,
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::cpu_down()))
             }
             ArmVmExit::CpuUp {
                 target_cpu,
@@ -172,7 +167,7 @@ impl ArchOps for Aarch64Arch {
             ArmVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
+                    event_wait: VcpuEventWait::None,
                     stop_reason: Some(crate::StopReason::SystemDown),
                     resets_vm: false,
                     exits_vcpu: false,
@@ -187,7 +182,7 @@ impl ArchOps for Aarch64Arch {
                 Ok(BoundVcpuExit::Continue)
             }
             ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
+                event_wait: VcpuEventWait::None,
                 stop_reason: None,
                 resets_vm: false,
                 exits_vcpu: false,
@@ -213,7 +208,7 @@ impl ArchOps for Aarch64Arch {
             }
         }
         Ok(VcpuRunAction {
-            waits_for_event: false,
+            event_wait: VcpuEventWait::None,
             stop_reason: None,
             resets_vm: false,
             exits_vcpu: false,
@@ -696,6 +691,11 @@ mod tests {
     #[test]
     fn axvm_arm_vcpu_uses_arm_exit_type() {
         assert_arm_exit_type::<AxvmArmVcpu>();
+    }
+
+    #[test]
+    fn cpu_down_uses_the_blocking_event_wait() {
+        assert_eq!(VcpuRunAction::cpu_down().event_wait, VcpuEventWait::Block);
     }
 
     #[test]

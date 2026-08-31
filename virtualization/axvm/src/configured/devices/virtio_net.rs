@@ -258,7 +258,7 @@ impl WakeTarget for AxvmWakeTarget {
         // Wake only; vCPU0 polls DMA devices at the top of its next run-loop
         // iteration. Polling synchronously from the sender's device access
         // would let two VM device runtimes re-enter each other.
-        if let Err(error) = crate::notify_vm_vcpu(self.vm_id, 0) {
+        if let Err(error) = crate::kick_vm_vcpu(self.vm_id, 0) {
             warn!(
                 "failed to notify VM[{}] for virtio-net RX: {error:#}",
                 self.vm_id

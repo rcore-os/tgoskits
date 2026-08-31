@@ -147,6 +147,37 @@ const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePro
     expected_tests: &[],
 }];
 
+const AXVM_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: None,
+        expected_tests: &[],
+    },
+    PackageFeatureProfile {
+        name: "host-test+rt-poll-idle-runtime-policy",
+        no_default_features: true,
+        features: &["host-test", "rt-poll-idle"],
+        name_filter: Some("idle_poll_policy_"),
+        expected_tests: &[
+            "runtime::vcpus::tests::idle_poll_policy_never_waits_for_non_idle_exits_when_preemption_is_pending",
+            "runtime::vcpus::tests::idle_poll_policy_only_bypasses_shared_wait_within_the_poll_budget",
+            "runtime::vcpus::tests::idle_poll_policy_retreats_when_the_scheduler_requests_preemption",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test+rt-poll-idle-placement",
+        no_default_features: true,
+        features: &["host-test", "rt-poll-idle"],
+        name_filter: Some("rt_poll_idle_"),
+        expected_tests: &[
+            "vm::tests::rt_poll_idle_accepts_one_dedicated_secondary_cpu_per_vcpu",
+            "vm::tests::rt_poll_idle_rejects_missing_shared_primary_or_multiple_cpu_placement",
+        ],
+    },
+];
+
 const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "alloc",
     no_default_features: false,
@@ -518,7 +549,6 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "rsext4"
         | "scope-local"
         | "ax-sync"
-        | "axvm"
         | "ax-display"
         | "ax-input"
         | "ax-ipi"
@@ -530,6 +560,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-net"
         | "dma-api"
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
+        "axvm" => Some(AXVM_FEATURE_PROFILES),
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
@@ -1319,7 +1350,6 @@ mod tests {
     fn transitive_platform_consumers_use_host_test_feature_profile() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = [
-            "axvm",
             "ax-display",
             "ax-input",
             "ax-ipi",
@@ -1353,6 +1383,69 @@ mod tests {
                     ]
                 })
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn axvm_runs_the_rt_poll_idle_profile_and_discovers_its_runtime_policy_tests() {
+        let root = PathBuf::from("/tmp/workspace");
+        let packages = vec!["axvm".to_string()];
+        let mut runner =
+            FakeCargoRunner::succeeding().with_profile_discovery("axvm", AXVM_FEATURE_PROFILES);
+
+        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+
+        assert!(failed.is_empty());
+        let args = runner
+            .invocations
+            .iter()
+            .map(|(_, invocation)| invocation.args())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                vec!["test", "-p", "axvm", "--features", "host-test"],
+                vec![
+                    "test",
+                    "-p",
+                    "axvm",
+                    "--no-default-features",
+                    "--features",
+                    "host-test,rt-poll-idle",
+                    "idle_poll_policy_",
+                    "--",
+                    "--list",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "axvm",
+                    "--no-default-features",
+                    "--features",
+                    "host-test,rt-poll-idle",
+                    "idle_poll_policy_",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "axvm",
+                    "--no-default-features",
+                    "--features",
+                    "host-test,rt-poll-idle",
+                    "rt_poll_idle_",
+                    "--",
+                    "--list",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "axvm",
+                    "--no-default-features",
+                    "--features",
+                    "host-test,rt-poll-idle",
+                    "rt_poll_idle_",
+                ],
+            ]
         );
     }
 
