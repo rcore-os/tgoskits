@@ -13,7 +13,7 @@
  *
  * Usage on the board:
  *   wifi_switch ap   <ssid> [channel]      # become open SoftAP (default ch 6)
- *   wifi_switch sta  <ssid> [pmk-hex]      # join WPA2, or omit for open
+ *   wifi_switch sta  <ssid> [pmk-file]     # join WPA2, or omit for open
  *
  * We deliberately avoid <linux/wireless.h> (the cross toolchain may lack it)
  * and lay out `struct iwreq` by hand. The layout below MUST match wext.rs:
@@ -31,6 +31,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <sys/ioctl.h>
@@ -159,22 +160,42 @@ static int do_set_pmk(int fd, const char *ifname, const uint8_t pmk[WPA2_PMK_SIZ
     return result;
 }
 
-static int hex_nibble(char value) {
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-    return -1;
-}
-
-static int decode_pmk(const char *hex, uint8_t pmk[WPA2_PMK_SIZE]) {
-    if (strlen(hex) != WPA2_PMK_SIZE * 2) return -1;
-    for (size_t index = 0; index < WPA2_PMK_SIZE; index++) {
-        int high = hex_nibble(hex[index * 2]);
-        int low = hex_nibble(hex[index * 2 + 1]);
-        if (high < 0 || low < 0) return -1;
-        pmk[index] = (uint8_t)((high << 4) | low);
+static int read_pmk_file(const char *path, uint8_t pmk[WPA2_PMK_SIZE]) {
+    int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    int pmk_fd = open(path, flags);
+    if (pmk_fd < 0) {
+        fprintf(stderr, "failed to open PMK file: %s\n", strerror(errno));
+        return -1;
     }
+
+    size_t offset = 0;
+    while (offset < WPA2_PMK_SIZE) {
+        ssize_t count = read(pmk_fd, pmk + offset, WPA2_PMK_SIZE - offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) goto invalid;
+        offset += (size_t)count;
+    }
+
+    uint8_t extra;
+    ssize_t count;
+    do {
+        count = read(pmk_fd, &extra, sizeof(extra));
+    } while (count < 0 && errno == EINTR);
+    if (count != 0) goto invalid;
+    close(pmk_fd);
     return 0;
+
+invalid:
+    fprintf(stderr, "PMK file must contain exactly %d raw bytes\n", WPA2_PMK_SIZE);
+    wipe(pmk, WPA2_PMK_SIZE);
+    close(pmk_fd);
+    return -1;
 }
 
 static int do_set_channel(int fd, const char *ifname, uint32_t chan) {
@@ -195,7 +216,7 @@ static void usage(const char *argv0) {
     fprintf(stderr,
         "usage:\n"
         "  %s ap  <ssid> [channel]      become open SoftAP (default channel 6)\n"
-        "  %s sta <ssid> [pmk-hex]      join WPA2, or omit for open\n",
+        "  %s sta <ssid> [pmk-file]     join WPA2, or omit for open\n",
         argv0, argv0);
 }
 
@@ -228,15 +249,12 @@ int main(int argc, char **argv) {
         printf("[wifi_switch] SoftAP commit OK\n");
         rc = 0;
     } else if (strcmp(mode, "sta") == 0) {
-        const char *pmk_hex = (argc >= 4) ? argv[3] : "";
-        printf("[wifi_switch] %s -> Station (%s)\n", ifname, pmk_hex[0] ? "wpa2" : "open");
-        if (pmk_hex[0] && decode_pmk(pmk_hex, pmk)) {
-            fprintf(stderr, "pmk must contain exactly 64 hexadecimal digits\n");
-            goto out;
-        }
+        const char *pmk_file = (argc >= 4) ? argv[3] : "";
+        printf("[wifi_switch] %s -> Station (%s)\n", ifname, pmk_file[0] ? "wpa2" : "open");
+        if (pmk_file[0] && read_pmk_file(pmk_file, pmk)) goto out;
         if (do_set_mode(fd, ifname, IW_MODE_INFRA)) goto out;
         if (do_set_essid(fd, ifname, ssid)) goto out;
-        if (pmk_hex[0] && do_set_pmk(fd, ifname, pmk)) goto out;
+        if (pmk_file[0] && do_set_pmk(fd, ifname, pmk)) goto out;
         if (do_commit(fd, ifname)) goto out;
         printf("[wifi_switch] Station commit OK\n");
         rc = 0;

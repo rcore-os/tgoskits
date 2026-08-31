@@ -2,9 +2,9 @@
 //!
 //! `src/firmware/mod.rs` `include_bytes!`s the firmware from `OUT_DIR`, so
 //! the blobs never need to live in the crate source / package tarball. This
-//! keeps the published crate self-contained: a clean `cargo build` (e.g. when
-//! verifying a `cargo publish` tarball) provisions the blobs here without
-//! relying on the workspace `cargo xtask` pre-download side effect.
+//! keeps firmware out of the package while allowing a clean `cargo build` to
+//! provision it without a workspace `cargo xtask` side effect. The first build
+//! requires network access unless a verified local cache is supplied.
 //!
 //! Resolution order for each blob (first hit wins):
 //!   1. `OUT_DIR/firmware/<name>` — a verified output from an earlier run.

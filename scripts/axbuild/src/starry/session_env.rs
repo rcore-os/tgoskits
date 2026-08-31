@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, env, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    io::ErrorKind,
+    path::{Component, Path},
+};
 
 use anyhow::{Context, ensure};
 use pbkdf2::pbkdf2_hmac_array;
@@ -129,25 +134,82 @@ fn write_session_asset(
     bytes: &[u8],
 ) -> anyhow::Result<()> {
     #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+    super::test::validate_relative_path(Path::new(relative_path))?;
     let destination = upload_root.join(relative_path);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+    let parent = destination
+        .parent()
+        .context("session environment asset has no parent directory")?;
+    create_session_asset_parent(upload_root, parent)?;
+    if let Some(metadata) = symlink_metadata_if_present(&destination)? {
+        ensure!(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "session environment asset destination is not a regular file"
+        );
     }
     let mut options = fs::OpenOptions::new();
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
     use std::io::Write;
     let mut file = options
         .open(&destination)
         .context("failed to open session environment asset")?;
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .context("failed to restrict session environment asset permissions")?;
     file.write_all(bytes)
         .context("failed to write session environment asset")?;
     file.sync_all()
         .context("failed to persist session environment asset")
+}
+
+fn create_session_asset_parent(upload_root: &Path, parent: &Path) -> anyhow::Result<()> {
+    ensure_directory_is_not_a_symlink(upload_root)?;
+    let relative_parent = parent
+        .strip_prefix(upload_root)
+        .context("session environment asset escapes its upload root")?;
+    let mut current = upload_root.to_path_buf();
+    for component in relative_parent.components() {
+        let Component::Normal(component) = component else {
+            anyhow::bail!("session environment asset contains an invalid parent component");
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(_) => ensure_directory_is_not_a_symlink(&current)?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .with_context(|| format!("failed to create {}", current.display()))?;
+                ensure_directory_is_not_a_symlink(&current)?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect {}", current.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_directory_is_not_a_symlink(path: &Path) -> anyhow::Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "session environment asset parent is not a real directory"
+    );
+    Ok(())
+}
+
+fn symlink_metadata_if_present(path: &Path) -> anyhow::Result<Option<fs::Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
 }
 
 fn derive_wifi_pmk(ssid: &[u8], password: &[u8]) -> [u8; 32] {
@@ -175,7 +237,7 @@ fn validate_value(variable: &str, value: &[u8]) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_wifi_pmk, validate_value};
+    use super::{derive_wifi_pmk, validate_value, write_session_asset};
 
     #[test]
     fn wifi_credentials_are_validated_without_echoing_values() {
@@ -195,5 +257,22 @@ mod tests {
                 0x97, 0x10, 0xa1, 0x2e,
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_asset_rejects_a_symlinked_parent_without_overwriting_the_target() {
+        use std::{fs, os::unix::fs::symlink};
+
+        let upload_root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_pmk = outside.path().join("wifi-pmk");
+        fs::write(&outside_pmk, b"original").unwrap();
+        symlink(outside.path(), upload_root.path().join("credentials")).unwrap();
+
+        let result = write_session_asset(upload_root.path(), "credentials/wifi-pmk", &[0x5a; 32]);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(outside_pmk).unwrap(), b"original");
     }
 }

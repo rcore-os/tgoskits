@@ -89,7 +89,6 @@ net = [
     "fd",
 ]
 vsock = ["ax-runtime/vsock"]
-aic8800-wifi = ["ax-runtime/aic8800-wifi"]
 dns = ["net"]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.

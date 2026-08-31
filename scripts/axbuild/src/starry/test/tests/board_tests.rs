@@ -196,3 +196,53 @@ fn sg2002_board_cases_select_the_repository_dtb() {
         );
     }
 }
+
+#[test]
+fn aic8800_feature_is_owned_by_ax_driver() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for config_path in [
+        workspace_root.join("os/StarryOS/configs/board/aka-00-sg2002.toml"),
+        workspace_root.join("os/StarryOS/configs/board/licheerv-nano-sg2002-wifi.toml"),
+        workspace_root
+            .join("test-suit/starryos/board-aka-00-sg2002/build-riscv64gc-unknown-none-elf.toml"),
+    ] {
+        let config: toml::Value = toml::from_str(
+            &fs::read_to_string(&config_path)
+                .unwrap_or_else(|err| panic!("failed to read {}: {err}", config_path.display())),
+        )
+        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", config_path.display()));
+        let features = config
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .expect("board build config must declare features");
+
+        assert!(
+            features
+                .iter()
+                .any(|feature| feature.as_str() == Some("ax-driver/aic8800-wifi")),
+            "{} must select the AIC8800 driver at its owning ax-driver layer",
+            config_path.display()
+        );
+    }
+
+    for manifest_path in [
+        workspace_root.join("os/StarryOS/kernel/Cargo.toml"),
+        workspace_root.join("os/arceos/modules/axruntime/Cargo.toml"),
+        workspace_root.join("os/arceos/ulib/axstd/Cargo.toml"),
+    ] {
+        let manifest: toml::Value = toml::from_str(
+            &fs::read_to_string(&manifest_path)
+                .unwrap_or_else(|err| panic!("failed to read {}: {err}", manifest_path.display())),
+        )
+        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", manifest_path.display()));
+
+        assert!(
+            manifest
+                .get("features")
+                .and_then(|features| features.get("aic8800-wifi"))
+                .is_none(),
+            "{} must not retain a chip-specific forwarding feature",
+            manifest_path.display()
+        );
+    }
+}

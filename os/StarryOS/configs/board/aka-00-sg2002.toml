@@ -1,10 +1,11 @@
 features = [
-  "starry-kernel/sg2002-wifi",
+  "starry-kernel/sg2002",
   "starry-kernel/sg2002-cvi-usb-camera",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
   "ax-driver/sg2002-dwc2",
   "ax-driver/cv181x-sdhci",
+  "ax-driver/aic8800-wifi",
 ]
 log = "Info"
 target = "riscv64gc-unknown-none-elf"

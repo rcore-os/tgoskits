@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use super::StartupStage;
+use super::{StartupStage, map_debug_error};
 use crate::{
     common::HOST_START_APP_FNCALL,
     device::*,
@@ -18,7 +18,7 @@ use crate::{
     lmac::{RfTableSelection, rf_config_payload},
     protocol::{
         DBG_MEM_BLOCK_WRITE_REQ, DBG_MEM_MASK_WRITE_REQ, DBG_MEM_READ_REQ, DBG_MEM_WRITE_REQ,
-        DBG_START_APP_REQ, DebugConfirmationError, debug_memory_read, memory_block_write_payload,
+        DBG_START_APP_REQ, debug_memory_read, memory_block_write_payload,
         memory_mask_write_payload, memory_read_payload, memory_write_payload,
         require_debug_memory_write, require_debug_status, start_app_payload,
     },
@@ -831,21 +831,6 @@ fn nonzero_address(address: u32) -> Result<u32, AicError> {
     (address != 0)
         .then_some(address)
         .ok_or(AicError::InvalidFirmwareAsset)
-}
-
-fn map_debug_error(message_id: u16, error: DebugConfirmationError) -> AicError {
-    match error {
-        DebugConfirmationError::Malformed => AicError::MalformedResponse,
-        DebugConfirmationError::Rejected(status) => {
-            AicError::DebugFirmwareRejected { message_id, status }
-        }
-    }
-}
-
-impl From<DebugConfirmationError> for AicError {
-    fn from(error: DebugConfirmationError) -> Self {
-        map_debug_error(0, error)
-    }
 }
 
 #[cfg(test)]

@@ -51,12 +51,6 @@ net = [
   "dep:rd-net",
   "ax-driver/net",
 ]
-# SG2002 AIC8800 SoftAP Wi-Fi. The fixed-CPU network runtime supplies explicit
-# IRQ notifications and monotonic timestamps to the portable driver parts.
-aic8800-wifi = [
-  "net",
-  "ax-driver/aic8800-wifi",
-]
 vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 
 [dependencies]

@@ -50,6 +50,12 @@ D80X2、DW、AIC8801 和未知变体直接失败，不共享猜测性 profile。
 可选 adapter 不依赖 `ax-sync`、`ax-task`、`axruntime`，也不创建线程、休眠
 或自旋。两层没有独立发布和生命周期需求，因此不增加第二个 crate。
 
+具体芯片 feature 只由 `ax-driver/aic8800-wifi` 所有；AKA 和 LicheeRV 的板级
+构建配置直接选择该 feature，并独立选择通用 `starry-kernel/sg2002` 平台能力。
+`starry-kernel`、`axruntime` 和 `axstd` 不保留 `aic8800-wifi` 转发 alias；通用
+网络执行能力仍由 `ax-runtime/net` 提供。这样与其他网卡一致，板级策略不会把
+可移植驱动伪装成 Starry kernel 功能，也不会产生多层 feature 兼容入口。
+
 ## 事务与 IRQ 所有权
 
 `sdmmc-host` 定义 move-only `HostParts`；`SdMmcIrqHost::into_parts()` 一次性
@@ -157,6 +163,13 @@ STA 连接由同一 owner 状态机串行推进：
 2. owner 等待 `SM_CONNECT_IND`；只有 `status_code == 0` 才保存其中的 `vif_idx`
    和 AP station entry `ap_idx`。普通 TX descriptor 分别使用这两个索引；`0xff`
    只允许表示未关联/未知 station，不能用于已连接的数据 TX。
+   FULLMAC Ethernet TX descriptor 严格使用 vendor 28-byte `struct hostdesc`：VIF/STA
+   位于偏移 24/25；Linux 路径先把目的/源地址和 EtherType 写入 descriptor，再
+   `skb_pull(14)`，因此 descriptor 后只放 L3 payload，而不是重复完整 Ethernet
+   frame。host-to-device packet type 使用 vendor TX 值 `0x01`，不能复用 RX
+   aggregate 的 `0x00`；D80 CRC header
+   声明 descriptor+payload 的未对齐长度，DC/V1 则按 vendor 路径声明 word-aligned
+   aggregate 长度。
 3. Linux WEXT 边界按 UAPI 的 `iwreq -> iw_point -> struct iw_encode_ext + key[]`
    原生布局接收 `IW_ENCODE_ALG_PMK` 的 32 字节 PMK。这与 Linux
    `wpa_supplicant` `driver_wext` 的 PMK-offload 调用相同，但不声称通用 mainline
@@ -169,6 +182,10 @@ STA 连接由同一 owner 状态机串行推进：
    GTK unwrap，`subtle` 做常量时间比较，`zeroize` 清除密钥。本地纯 core 只实现
    802.11i 特有的 EAPOL-Key 编解码与 M1/M3 状态转换；M2/M4 经同一 SDIO owner TX
    路径发送，禁止在 mailbox、RDIF 或 OS glue 重复密码学逻辑。
+   AP 以相同 replay counter 和 ANonce 重发 M1 时，supplicant 必须重发相同 M2，
+   不能把合法丢包恢复误判为握手失败；不同 counter/ANonce 仍 fail closed。GTK KDE
+   只接受单个 16-byte CCMP GTK、合法 key-info 和零 reserved byte，截断、超长或
+   重复 KDE 都返回 typed error。
 5. owner 依次确认 PTK、GTK 安装和 `ME_SET_CONTROL_PORT_REQ(open=true)`，最后才
    发布 `ControlComplete`，外层随后提交 STA 配置并启动 DHCP。
 6. 主动断连等待空的 `SM_DISCONNECT_CFM`，异步 `SM_DISCONNECT_IND` 独立校验
@@ -206,6 +223,14 @@ Linux 为 `func`/`func_msg` 分别注册 handler 并 drain 两个 FIFO 的所有
 可信 UEFI RNG 或精确 32 字节 FDT `/chosen/rng-seed` 初始化。板级 runner 为每次
 运行生成临时 DTB 副本并注入新 seed；静态 DTB、时间、计数器、地址和 MAC 都不是
 随机源。缺少可信 seed 时安全连接 fail closed。
+
+主机 session materializer 逐级拒绝 upload root 内的 symlink parent，目标文件在
+Unix 上以 `O_NOFOLLOW|O_CLOEXEC` 和 `0600` 打开。PMK/SSID 因此不能借由构建产物
+symlink 写出临时根目录；用户态 WEXT 示例也只从受保护文件读取 32-byte PMK，
+不再把 PMK 放入可由 `/proc/<pid>/cmdline` 观察的参数。这里的 upload root 是
+`axbuild` 创建并独占的私有临时目录；安全边界不允许其他进程在 materialize 期间
+并发替换目录项，若未来接收共享或不可信目录，必须改成 directory-fd-relative
+`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)` 一类原子解析。
 
 ## FDT/ACPI 参数边界
 

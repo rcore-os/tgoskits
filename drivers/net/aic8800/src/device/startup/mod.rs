@@ -15,7 +15,10 @@ use crate::{
         stack_start_payload, start_payload, tx_power_level_payload,
     },
     profile::FirmwareProfile,
-    protocol::{DBG_MEM_READ_REQ, DBG_START_APP_REQ, memory_read_payload, start_app_payload},
+    protocol::{
+        DBG_MEM_READ_REQ, DBG_START_APP_REQ, DebugConfirmationError, memory_read_payload,
+        start_app_payload,
+    },
     registers::{INTERRUPTS_ENABLED, interface_ready},
 };
 
@@ -429,6 +432,21 @@ impl AicDevice {
         if let Some(startup) = self.lifecycle.startup.as_mut() {
             startup.stage = stage;
         }
+    }
+}
+
+fn map_debug_error(message_id: u16, error: DebugConfirmationError) -> AicError {
+    match error {
+        DebugConfirmationError::Malformed => AicError::MalformedResponse,
+        DebugConfirmationError::Rejected(status) => {
+            AicError::DebugFirmwareRejected { message_id, status }
+        }
+    }
+}
+
+impl From<DebugConfirmationError> for AicError {
+    fn from(error: DebugConfirmationError) -> Self {
+        map_debug_error(0, error)
     }
 }
 

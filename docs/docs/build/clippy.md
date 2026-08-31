@@ -209,4 +209,4 @@ cargo xtask clippy --package ax-cpu --package page-table-generic
 cargo xtask clippy --since origin/main
 ```
 
-> 在执行 `starry`、`clippy` 等可能触发 `aic8800` 编译的命令前，`lib.rs::run_root_cli` 会调用 `firmware::ensure_aic8800_firmware` 预拉 Wi-Fi 固件 blob，因此 clippy 命令本身不要求用户预先准备固件。
+> `aic8800` 的 crate build script 会根据固定 manifest 从本地 cache 读取并校验 Wi-Fi 固件 blob；cache 缺失时才从固定 upstream 下载。首次构建因此需要网络或预置且校验通过的 cache，后续 `starry`、`clippy` 等命令复用同一供应路径。

@@ -53,6 +53,18 @@ fn aka_wifi_configs_clean_credentials_on_entry_and_shell_exit() {
 }
 
 #[test]
+fn wifi_switch_reads_the_pmk_from_a_file_instead_of_argv() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source_path = workspace_root.join("apps/starry/picoclaw-cli/wifi_switch.c");
+    let source = fs::read_to_string(&source_path).unwrap();
+
+    assert!(source.contains("read_pmk_file(pmk_file, pmk)"));
+    assert!(source.contains("[pmk-file]"));
+    assert!(!source.contains("[pmk-hex]"));
+    assert!(!source.contains("decode_pmk"));
+}
+
+#[test]
 fn apk_curl_qemu_case_tries_cernet_before_upstream() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let case_dir = workspace_root.join("apps/starry/qemu/apk-curl");

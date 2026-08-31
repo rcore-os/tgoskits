@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use super::{
     START_STABILIZE, StartupStage,
     dc::{DcStage, DcStartupState},
+    map_debug_error,
 };
 use crate::{
     common::{CHIP_REV_ADDR, CHIP_REV_HIGH_SHIFT, CHIP_REV_MASK},
@@ -13,8 +14,8 @@ use crate::{
     lmac,
     profile::FirmwareProfile,
     protocol::{
-        DBG_MEM_BLOCK_WRITE_REQ, DBG_START_APP_REQ, DebugConfirmationError, debug_memory_read,
-        memory_block_write_payload, require_debug_status,
+        DBG_MEM_BLOCK_WRITE_REQ, DBG_START_APP_REQ, debug_memory_read, memory_block_write_payload,
+        require_debug_status,
     },
 };
 
@@ -150,15 +151,6 @@ impl AicDevice {
             }
             FirmwareProfile::Aic8800D80 => StartupStage::UploadMain(0),
         })
-    }
-}
-
-fn map_debug_error(message_id: u16, error: DebugConfirmationError) -> AicError {
-    match error {
-        DebugConfirmationError::Malformed => AicError::MalformedResponse,
-        DebugConfirmationError::Rejected(status) => {
-            AicError::DebugFirmwareRejected { message_id, status }
-        }
     }
 }
 

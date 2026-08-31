@@ -295,7 +295,7 @@ fn parse_pmk_encode_ext(encoded: &[u8]) -> StarryResult<ax_net::Wpa2Pmk> {
     let algorithm = u16::from_ne_bytes([encoded[36], encoded[37]]);
     let key_length = u16::from_ne_bytes([encoded[38], encoded[39]]) as usize;
     if algorithm != IW_ENCODE_ALG_PMK {
-        return Err(StarryError::Unsupported);
+        return Err(StarryError::OperationNotSupported);
     }
     if key_length != WPA2_PMK_SIZE
         || encoded.len() != IW_ENCODE_EXT_HEADER_SIZE + key_length
@@ -357,7 +357,7 @@ mod tests {
         encoded[36..38].copy_from_slice(&3u16.to_ne_bytes());
         assert!(matches!(
             super::parse_pmk_encode_ext(&encoded),
-            Err(crate::StarryError::Unsupported)
+            Err(crate::StarryError::OperationNotSupported)
         ));
     }
 
@@ -371,5 +371,8 @@ mod tests {
         frequency[..4].copy_from_slice(&2_437i32.to_ne_bytes());
         frequency[4..6].copy_from_slice(&6i16.to_ne_bytes());
         assert_eq!(super::parse_iw_frequency(&frequency).unwrap(), 6);
+
+        frequency[4..6].copy_from_slice(&(-1i16).to_ne_bytes());
+        assert!(super::parse_iw_frequency(&frequency).is_err());
     }
 }

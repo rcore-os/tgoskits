@@ -19,6 +19,14 @@ const KEY_ACK: u16 = 0x0080;
 const KEY_MIC: u16 = 0x0100;
 const KEY_SECURE: u16 = 0x0200;
 const KEY_ENCRYPTED: u16 = 0x1000;
+const M1_KEY_INFO: u16 = KEY_VERSION_HMAC_SHA1_AES | KEY_PAIRWISE | KEY_ACK;
+const M3_KEY_INFO: u16 = KEY_VERSION_HMAC_SHA1_AES
+    | KEY_PAIRWISE
+    | KEY_INSTALL
+    | KEY_ACK
+    | KEY_MIC
+    | KEY_SECURE
+    | KEY_ENCRYPTED;
 const EAPOL_HEADER: usize = 4;
 const KEY_HEADER: usize = 95;
 const MIC_OFFSET: usize = 81;
@@ -144,33 +152,35 @@ impl Wpa2Handshake {
 
     pub(crate) fn process(&mut self, frame: &[u8]) -> Result<HandshakeAction, WpaError> {
         let key = parse_eapol_key(frame)?;
-        let is_m1 = key.key_info & (KEY_ACK | KEY_MIC) == KEY_ACK;
-        let is_m3 = key.key_info & (KEY_ACK | KEY_MIC | KEY_INSTALL | KEY_ENCRYPTED)
-            == KEY_ACK | KEY_MIC | KEY_INSTALL | KEY_ENCRYPTED;
-        if is_m1 {
-            self.process_m1(key)
-        } else if is_m3 {
-            self.process_m3(key, frame)
-        } else {
-            Err(WpaError::UnexpectedMessage)
+        match key.key_info {
+            M1_KEY_INFO => self.process_m1(key),
+            M3_KEY_INFO => self.process_m3(key, frame),
+            _ => Err(WpaError::UnexpectedMessage),
         }
     }
 
     fn process_m1(&mut self, key: EapolKey<'_>) -> Result<HandshakeAction, WpaError> {
-        if self.state != HandshakeState::AwaitM1
-            || key.key_info & (KEY_PAIRWISE | 7) != KEY_PAIRWISE | KEY_VERSION_HMAC_SHA1_AES
-        {
+        if key.key_info != M1_KEY_INFO {
             return Err(WpaError::UnexpectedMessage);
         }
-        self.anonce = key.nonce;
-        self.replay_counter = key.replay_counter;
-        self.ptk = Some(derive_ptk(
-            &self.pmk,
-            &self.authenticator,
-            &self.supplicant,
-            &self.anonce,
-            &self.snonce,
-        ));
+        match self.state {
+            HandshakeState::AwaitM1 => {
+                self.anonce = key.nonce;
+                self.replay_counter = key.replay_counter;
+                self.ptk = Some(derive_ptk(
+                    &self.pmk,
+                    &self.authenticator,
+                    &self.supplicant,
+                    &self.anonce,
+                    &self.snonce,
+                ));
+                self.state = HandshakeState::AwaitM3;
+            }
+            HandshakeState::AwaitM3
+                if key.replay_counter == self.replay_counter && key.nonce == self.anonce => {}
+            HandshakeState::AwaitM3 => return Err(WpaError::ReplayCounter),
+            HandshakeState::KeysDerived => return Err(WpaError::UnexpectedMessage),
+        }
         let mut m2 = build_eapol_key(
             KEY_VERSION_HMAC_SHA1_AES | KEY_PAIRWISE | KEY_MIC,
             &self.replay_counter,
@@ -179,14 +189,11 @@ impl Wpa2Handshake {
         );
         let mic = compute_mic(&self.ptk.as_ref().ok_or(WpaError::InvalidState)?.kck, &m2);
         m2[MIC_OFFSET..MIC_OFFSET + MIC_LENGTH].copy_from_slice(&mic);
-        self.state = HandshakeState::AwaitM3;
         Ok(HandshakeAction::SendM2(m2))
     }
 
     fn process_m3(&mut self, key: EapolKey<'_>, frame: &[u8]) -> Result<HandshakeAction, WpaError> {
-        if self.state != HandshakeState::AwaitM3
-            || key.key_info & (KEY_PAIRWISE | 7) != KEY_PAIRWISE | KEY_VERSION_HMAC_SHA1_AES
-        {
+        if self.state != HandshakeState::AwaitM3 || key.key_info != M3_KEY_INFO {
             return Err(WpaError::InvalidState);
         }
         if key.replay_counter <= self.replay_counter || key.nonce != self.anonce {
@@ -356,6 +363,7 @@ fn aes_key_unwrap(kek: &[u8; 16], wrapped: &[u8]) -> Result<Vec<u8>, WpaError> {
 
 fn parse_gtk_kde(data: &[u8]) -> Result<(Vec<u8>, u8), WpaError> {
     let mut offset = 0;
+    let mut gtk = None;
     while offset < data.len() {
         if data[offset] == 0 {
             offset += 1;
@@ -370,14 +378,21 @@ fn parse_gtk_kde(data: &[u8]) -> Result<(Vec<u8>, u8), WpaError> {
             return Err(WpaError::InvalidKeyData);
         }
         if data[offset] == 0xdd
-            && length >= 6
+            && length >= 4
             && data[offset + 2..offset + 6] == [0x00, 0x0f, 0xac, 0x01]
         {
-            return Ok((data[offset + 8..end].to_vec(), data[offset + 6] & 3));
+            if length != 22
+                || data[offset + 6] & !0x07 != 0
+                || data[offset + 7] != 0
+                || gtk.is_some()
+            {
+                return Err(WpaError::InvalidKeyData);
+            }
+            gtk = Some((data[offset + 8..end].to_vec(), data[offset + 6] & 3));
         }
         offset = end;
     }
-    Err(WpaError::GtkMissing)
+    gtk.ok_or(WpaError::GtkMissing)
 }
 
 fn validate_rsn_ie(data: &[u8]) -> Result<(), WpaError> {
@@ -576,5 +591,87 @@ mod tests {
             replay_handshake.process(&replay),
             Err(WpaError::ReplayCounter)
         ));
+    }
+
+    #[test]
+    fn repeated_m1_with_the_same_replay_counter_retransmits_m2() {
+        let (mut handshake, anonce, first_m2) = handshake_after_m1();
+        let repeated_m1 = build_eapol_key(
+            KEY_VERSION_HMAC_SHA1_AES | KEY_PAIRWISE | KEY_ACK,
+            &1u64.to_be_bytes(),
+            &anonce,
+            &[],
+        );
+
+        let repeated_m2 = match handshake.process(&repeated_m1).unwrap() {
+            HandshakeAction::SendM2(frame) => frame,
+            HandshakeAction::InstallKeys(_) => panic!("repeated M1 must retransmit M2"),
+        };
+
+        assert_eq!(repeated_m2, first_m2);
+    }
+
+    #[test]
+    fn handshake_rejects_invalid_m1_and_m3_key_info() {
+        let anonce = core::array::from_fn(|index| index as u8);
+        let mut m1_handshake = Wpa2Handshake::new(
+            decode("f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e"),
+            [0x02, 0, 0, 0, 0, 1],
+            [0x02, 0, 0, 0, 0, 2],
+            core::array::from_fn(|index| index as u8 + 32),
+        );
+        let invalid_m1 = build_eapol_key(
+            KEY_VERSION_HMAC_SHA1_AES | KEY_PAIRWISE | KEY_ACK | KEY_INSTALL,
+            &1u64.to_be_bytes(),
+            &anonce,
+            &[],
+        );
+        assert_eq!(
+            m1_handshake.process(&invalid_m1).err(),
+            Some(WpaError::UnexpectedMessage)
+        );
+
+        let (mut m3_handshake, anonce, _) = handshake_after_m1();
+        let mut invalid_m3 = m3_with_rsn(&m3_handshake, &anonce, &crate::lmac::RSN_IE_CCMP_PSK);
+        let key_info = u16::from_be_bytes([invalid_m3[5], invalid_m3[6]]) & !KEY_SECURE;
+        invalid_m3[5..7].copy_from_slice(&key_info.to_be_bytes());
+        invalid_m3[MIC_OFFSET..MIC_OFFSET + MIC_LENGTH].fill(0);
+        let mic = compute_mic(&m3_handshake.ptk.as_ref().unwrap().kck, &invalid_m3);
+        invalid_m3[MIC_OFFSET..MIC_OFFSET + MIC_LENGTH].copy_from_slice(&mic);
+        assert_eq!(
+            m3_handshake.process(&invalid_m3).err(),
+            Some(WpaError::UnexpectedMessage)
+        );
+    }
+
+    #[test]
+    fn gtk_kde_rejects_reserved_bytes_overlong_keys_and_duplicates() {
+        let valid = [
+            0xdd, 22, 0x00, 0x0f, 0xac, 0x01, 0x01, 0x00, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
+            0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        ];
+        assert!(parse_gtk_kde(&valid).is_ok());
+
+        let mut reserved = valid;
+        reserved[7] = 1;
+        assert_eq!(
+            parse_gtk_kde(&reserved).err(),
+            Some(WpaError::InvalidKeyData)
+        );
+
+        let mut overlong = valid.to_vec();
+        overlong[1] = 23;
+        overlong.push(0x20);
+        assert_eq!(
+            parse_gtk_kde(&overlong).err(),
+            Some(WpaError::InvalidKeyData)
+        );
+
+        let mut duplicate = valid.to_vec();
+        duplicate.extend_from_slice(&valid);
+        assert_eq!(
+            parse_gtk_kde(&duplicate).err(),
+            Some(WpaError::InvalidKeyData)
+        );
     }
 }

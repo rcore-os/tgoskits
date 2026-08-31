@@ -24,11 +24,23 @@ src/
     owner.rs
     model.rs
     progress.rs
+    control.rs
+    data_plane.rs
+    link.rs
+    mailbox.rs
+    request.rs
     startup/
       mod.rs
+      dc.rs
       firmware.rs
       vendor.rs
-  firmware.rs
+  firmware/
+    mod.rs
+    dc_config.rs
+    dc_lmac_rf.rs
+    dc_rf.rs
+  lmac.rs
+  profile.rs
   protocol.rs
   registers.rs
   rdif/
@@ -37,10 +49,18 @@ src/
       mod.rs
       endpoints/
         mod.rs
+        control.rs
+        device.rs
+        irq.rs
+        startup.rs
     owner/
       mod.rs
+      operation.rs
+      output.rs
+      progress.rs
   rx.rs
   tx.rs
+  wpa2.rs
 ```
 
 无需 QEMU 的私有状态机测试放在对应源文件末尾；`tests/std.rs` 只通过公开

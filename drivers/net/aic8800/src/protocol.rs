@@ -2,7 +2,9 @@
 
 use alloc::{vec, vec::Vec};
 
-use crate::common::{DRV_TASK_ID, SDIO_TYPE_CFG_CMD_RSP, SDIO_TYPE_DATA, TASK_DBG, crc8_ponl_107};
+use crate::common::{
+    DRV_TASK_ID, SDIO_TYPE_CFG_CMD_RSP, SDIO_TYPE_DATA_TX, TASK_DBG, crc8_ponl_107,
+};
 
 pub(crate) const BLOCK_SIZE: usize = 512;
 pub(crate) const DBG_MEM_READ_REQ: u16 = 0x0400;
@@ -158,6 +160,9 @@ pub(crate) fn ethernet_tx_frame(
     if ethernet.len() < 14 {
         return Err(());
     }
+    // FULLMAC carries the Ethernet addresses and EtherType in `hostdesc`.
+    // Match vendor `rwnx_tx.c`: save those fields, pull the 14-byte Ethernet
+    // header, then submit only the remaining L3 payload after the descriptor.
     let payload = &ethernet[14..];
     let raw_len = SDIO_HEADER_SIZE + HOST_DESCRIPTOR_SIZE + payload.len();
     let aligned = align_up(raw_len, TX_ALIGNMENT);
@@ -167,10 +172,16 @@ pub(crate) fn ethernet_tx_frame(
         align_up(aligned + TAIL_SIZE, BLOCK_SIZE)
     };
     let mut frame = vec![0; final_len];
-    let advertised = aligned - SDIO_HEADER_SIZE;
+    // D80 preserves the unaligned FULLMAC packet length in its CRC-covered
+    // header. V1/DC rewrites the header after word-aligning the aggregate.
+    let advertised = if v3 {
+        HOST_DESCRIPTOR_SIZE + payload.len()
+    } else {
+        aligned - SDIO_HEADER_SIZE
+    };
     frame[0] = advertised as u8;
     frame[1] = ((advertised >> 8) & 0x0f) as u8;
-    frame[2] = SDIO_TYPE_DATA;
+    frame[2] = SDIO_TYPE_DATA_TX;
     frame[3] = if v3 { crc8_ponl_107(&frame[..3]) } else { 0 };
 
     let descriptor = &mut frame[SDIO_HEADER_SIZE..SDIO_HEADER_SIZE + HOST_DESCRIPTOR_SIZE];
@@ -230,5 +241,38 @@ mod tests {
         assert_eq!(&payload[4..8], &4_u32.to_le_bytes());
         assert_eq!(&payload[8..12], &[1, 2, 3, 4]);
         assert!(payload[12..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn d80_ethernet_tx_matches_the_vendor_fullmac_descriptor() {
+        let ethernet = [
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x08, 0x00,
+            0xaa, 0xbb, 0xcc,
+        ];
+
+        let frame = ethernet_tx_frame(&ethernet, 2, 7, true).unwrap();
+
+        assert_eq!(u16::from_le_bytes([frame[0], frame[1]]), 31);
+        assert_eq!(frame[2], 0x01);
+        assert_eq!(frame[3], crc8_ponl_107(&frame[..3]));
+        let descriptor = &frame[SDIO_HEADER_SIZE..SDIO_HEADER_SIZE + HOST_DESCRIPTOR_SIZE];
+        assert_eq!(&descriptor[..2], &3u16.to_le_bytes());
+        assert_eq!(&descriptor[8..14], &ethernet[..6]);
+        assert_eq!(&descriptor[14..20], &ethernet[6..12]);
+        assert_eq!(&descriptor[20..22], &ethernet[12..14]);
+        assert_eq!(descriptor[22], 0);
+        assert_eq!(descriptor[23], 0);
+        assert_eq!(descriptor[24], 2);
+        assert_eq!(descriptor[25], 7);
+        assert_eq!(&descriptor[26..28], &[0, 0]);
+        assert_eq!(
+            &frame[SDIO_HEADER_SIZE + HOST_DESCRIPTOR_SIZE..][..3],
+            &[0xaa, 0xbb, 0xcc]
+        );
+
+        let dc_frame = ethernet_tx_frame(&ethernet, 2, 7, false).unwrap();
+        assert_eq!(u16::from_le_bytes([dc_frame[0], dc_frame[1]]), 32);
+        assert_eq!(dc_frame[2], 0x01);
+        assert_eq!(dc_frame[3], 0);
     }
 }
