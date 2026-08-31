@@ -425,7 +425,14 @@ impl<H: SdMmcIrqHost + Send + 'static> AicOwner<H> {
     }
 
     fn protocol_wait(&self, now_nanos: u64) -> OwnerProgress {
-        match self.card.progress_wait() {
+        let retry_after = self
+            .init
+            .as_ref()
+            .and_then(SdioInitRequest::register_retry_after);
+        match retry_after
+            .map(|retry_after| HostProgressWait::Register { retry_after })
+            .unwrap_or_else(|| self.card.progress_wait())
+        {
             HostProgressWait::Irq => OwnerProgress::Wait(OwnerWait::Interrupt),
             HostProgressWait::Register { retry_after } => {
                 let nanos = u64::try_from(retry_after.as_nanos()).unwrap_or(u64::MAX);

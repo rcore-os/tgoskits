@@ -1,4 +1,4 @@
-use core::num::NonZeroU16;
+use core::{num::NonZeroU16, time::Duration};
 
 use sdmmc_host::ProgressCause;
 
@@ -21,6 +21,7 @@ use crate::{
 const OCR_3V2_3V4: u32 = 0x0030_0000;
 const MAX_CMD5_POLLS: u16 = 100;
 const MAX_CIS_TUPLES: u16 = 256;
+const POWER_STABILIZATION_DELAY: Duration = Duration::from_millis(10);
 
 const CCCR_SDIO_REVISION: u32 = 0x00;
 const CCCR_SD_REVISION: u32 = 0x01;
@@ -70,14 +71,17 @@ enum InitActive<H: SdMmcIrqHost + 'static> {
     None,
     Command,
     Bus(ProtocolBusRequest<H>),
+    Delay(Duration),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InitState {
     ResetHost,
     PowerOn,
+    PostPowerOnDelay,
     SetOneBitBus,
     SetIdentificationClock,
+    PostIdentificationClockDelay,
     QueryOcr,
     WaitForOcr,
     AssignRca,
@@ -131,6 +135,13 @@ impl<H: SdMmcIrqHost + 'static> SdioCard<H> {
                     request.advance_after_bus()?;
                 }
             },
+            InitActive::Delay(_) => {
+                if cause != ProgressCause::RegisterRetry {
+                    return Ok(OperationProgress::Pending);
+                }
+                request.active = InitActive::None;
+                request.advance_after_delay()?;
+            }
         }
 
         if request.state == InitState::Complete {
@@ -150,6 +161,7 @@ impl<H: SdMmcIrqHost + 'static> SdioCard<H> {
             InitActive::None => Ok(()),
             InitActive::Command => self.host.abort_command_request(),
             InitActive::Bus(mut bus_request) => self.host.abort_bus_request(&mut bus_request),
+            InitActive::Delay(_) => Ok(()),
         }
     }
 
@@ -165,6 +177,9 @@ impl<H: SdMmcIrqHost + 'static> SdioCard<H> {
             }
             InitState::SetIdentificationClock => {
                 self.submit_init_bus(SdMmcBusOp::SetClock(ClockSpeed::Identification))?
+            }
+            InitState::PostPowerOnDelay | InitState::PostIdentificationClockDelay => {
+                InitActive::Delay(POWER_STABILIZATION_DELAY)
             }
             InitState::SetFourBitHost => {
                 self.submit_init_bus(SdMmcBusOp::SetBusWidth(BusWidth::Bit4))?
@@ -254,9 +269,9 @@ impl<H: SdMmcIrqHost + 'static> SdioInitRequest<H> {
     fn advance_after_bus(&mut self) -> Result<(), Error> {
         self.state = match self.state {
             InitState::ResetHost => InitState::PowerOn,
-            InitState::PowerOn => InitState::SetOneBitBus,
+            InitState::PowerOn => InitState::PostPowerOnDelay,
             InitState::SetOneBitBus => InitState::SetIdentificationClock,
-            InitState::SetIdentificationClock => InitState::QueryOcr,
+            InitState::SetIdentificationClock => InitState::PostIdentificationClockDelay,
             InitState::SetFourBitHost => {
                 if self.bus_speed & BUS_SPEED_SUPPORT_HIGH_SPEED != 0 {
                     InitState::WriteHighSpeed
@@ -268,6 +283,28 @@ impl<H: SdMmcIrqHost + 'static> SdioInitRequest<H> {
             _ => return Err(Error::InvalidArgument),
         };
         Ok(())
+    }
+
+    fn advance_after_delay(&mut self) -> Result<(), Error> {
+        self.state = match self.state {
+            InitState::PostPowerOnDelay => InitState::SetOneBitBus,
+            InitState::PostIdentificationClockDelay => InitState::QueryOcr,
+            _ => return Err(Error::InvalidArgument),
+        };
+        Ok(())
+    }
+
+    /// Return the task-context delay required before the next init step.
+    ///
+    /// Linux applies the host power delay once after enabling card power and
+    /// again after starting the identification clock. Keeping the wait in the
+    /// request makes that ordering explicit without sleeping in the protocol
+    /// owner or relying on logging latency.
+    pub const fn register_retry_after(&self) -> Option<Duration> {
+        match self.active {
+            InitActive::Delay(delay) => Some(delay),
+            _ => None,
+        }
     }
 
     fn command_for_state(&self, state: InitState) -> Result<Command, Error> {
@@ -312,6 +349,9 @@ impl<H: SdMmcIrqHost + 'static> SdioInitRequest<H> {
                 CCCR_BUS_SPEED_SELECT,
                 self.bus_speed | BUS_SPEED_ENABLE_HIGH_SPEED,
             ),
+            InitState::PostPowerOnDelay | InitState::PostIdentificationClockDelay => {
+                return Err(Error::InvalidArgument);
+            }
             _ => return Err(Error::InvalidArgument),
         };
         Ok(command)
