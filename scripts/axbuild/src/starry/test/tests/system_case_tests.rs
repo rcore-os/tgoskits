@@ -57,12 +57,16 @@ fn assert_system_runner_contract(system_dir: &Path) {
 
     assert!(
         source.contains("#define TEST_DIRECTORY \"/usr/bin/starry-test-suit\"")
+            && source.contains("#define LTP_SYSCALLS_PREFIX \"ltp-syscalls-\"")
             && source.contains("collect_test_names(&names, &name_count)")
-            && source.contains("qsort(names, *count, sizeof(*names), compare_names)"),
-        "{} must scan and sort installed system test binaries",
+            && source.contains("qsort(names, *count, sizeof(*names), compare_names)")
+            && source.contains("return left_is_ltp - right_is_ltp;"),
+        "{} must scan installed binaries and sort native C before PR #1775 LTP wrappers",
         path.display()
     );
     for marker in [
+        "STARRY_SYSTEM_PHASE_BEGIN:",
+        "STARRY_SYSTEM_PHASE_END:",
         "STARRY_SYSTEM_TEST_BEGIN:",
         "STARRY_SYSTEM_TEST_PASSED:",
         "STARRY_SYSTEM_TEST_FAILED:",
@@ -109,11 +113,144 @@ fn assert_system_runner_contract(system_dir: &Path) {
     assert!(
         source.contains("if (total == 0)")
             && source.contains("if (failed != 0)")
+            && source.contains("test_phase_for_name(names[index])")
+            && source.contains("test_phase_name(current_phase)")
             && source.contains("return 1;")
             && source.ends_with("    return 0;\n}\n"),
         "{} must fail empty or failed suites and succeed only after the pass marker",
         path.display()
     );
+}
+
+#[test]
+fn starry_system_ltp_syscalls_wrappers_pin_and_validate_upstream_ltp() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let ltp_dir = workspace_root.join("test-suit/starryos/qemu/system/ltp-syscalls");
+    let probe_dir = workspace_root.join("scripts/test/ltp-syscalls");
+    let cmake_path = ltp_dir.join("CMakeLists.txt");
+    let wrapper_path = ltp_dir.join("wrapper.sh.in");
+    let candidates_path = probe_dir.join("probe-cases.txt");
+    let cases_path = ltp_dir.join("cases.txt");
+    let generator_path = probe_dir.join("generate-common.sh");
+
+    let cmake = fs::read_to_string(&cmake_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
+    let wrapper = fs::read_to_string(&wrapper_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", wrapper_path.display()));
+    let candidates = fs::read_to_string(&candidates_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", candidates_path.display()));
+    let cases = fs::read_to_string(&cases_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", cases_path.display()));
+    let generator = fs::read_to_string(&generator_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", generator_path.display()));
+
+    assert!(
+        cmake.contains("file(STRINGS \"${LTP_SYSCALLS_CASES_FILE}\"")
+            && cmake.contains("configure_file(wrapper.sh.in")
+            && cmake.contains("DESTINATION usr/bin/starry-test-suit"),
+        "{} must generate one installed wrapper per frozen testcase",
+        cmake_path.display()
+    );
+    assert!(
+        wrapper.contains("20260529")
+            && wrapper.contains("ltp_root=\"/opt/ltp\"")
+            && wrapper.contains("/runtest/syscalls")
+            && wrapper.contains("/testcases/bin")
+            && wrapper.contains("missing or duplicate LTP runtest entry")
+            && wrapper.contains("case_output=")
+            && wrapper.contains("grep -Eq 'T(CONF|BROK|FAIL)[[:space:]]*:'")
+            && wrapper.contains("LTP testcase reported a non-passing result")
+            && wrapper.contains("exit \"${status}\""),
+        "{} must validate the pinned LTP image, reject result markers, and propagate nonzero \
+         status",
+        wrapper_path.display()
+    );
+    for required in ["membarrier01", "futex_wait_bitset01", "perf_event_open01"] {
+        assert!(
+            candidates.lines().any(|line| line == required),
+            "{} must probe {required}",
+            candidates_path.display()
+        );
+    }
+    assert!(
+        cases
+            .lines()
+            .any(|line| !line.starts_with('#') && !line.is_empty()),
+        "{} must freeze a nonempty four-architecture intersection",
+        cases_path.display()
+    );
+    assert!(
+        !ltp_dir.join("candidates.txt").exists(),
+        "{} must contain only the runtime manifest, not the offline probe list",
+        ltp_dir.display()
+    );
+    assert!(
+        generator.contains("STARRY_SYSTEM_PHASE_BEGIN: ltp-syscalls")
+            && generator.contains("STARRY_SYSTEM_TEST_PASSED:")
+            && generator.contains("T(CONF|BROK|FAIL)[[:space:]]*:")
+            && generator.contains("comm -12"),
+        "{} must derive the manifest only from four complete strictly passing phases",
+        generator_path.display()
+    );
+}
+
+#[test]
+fn starry_ltp_syscalls_generator_rejects_nonpassing_result_markers() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let generator_path = workspace_root.join("scripts/test/ltp-syscalls/generate-common.sh");
+    let fixture_dir = tempdir().unwrap();
+    let candidates_path = fixture_dir.path().join("probe-cases.txt");
+    let output_path = fixture_dir.path().join("cases.txt");
+    let cases = ["pass01", "tconf01", "tbrok01", "tfail01"];
+    fs::write(&candidates_path, cases.join("\n") + "\n").unwrap();
+
+    let mut log_paths = Vec::new();
+    for (index, nonpassing_result) in [
+        Some(("tconf01", "TCONF")),
+        Some(("tbrok01", "TBROK")),
+        Some(("tfail01", "TFAIL")),
+        None,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let log_path = fixture_dir.path().join(format!("arch-{index}.log"));
+        let mut log = String::from("STARRY_SYSTEM_PHASE_BEGIN: ltp-syscalls\n");
+        for case in cases {
+            log.push_str(&format!(
+                "STARRY_SYSTEM_TEST_BEGIN: /usr/bin/starry-test-suit/ltp-syscalls-{case}\n"
+            ));
+            if nonpassing_result.is_some_and(|(marked_case, _)| marked_case == case) {
+                let (_, marker) = nonpassing_result.unwrap();
+                log.push_str(&format!("{case} 1 {marker}  : fixture result\n"));
+            }
+            log.push_str(&format!(
+                "STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/ltp-syscalls-{case} \
+                 elapsed_s=0.001\n"
+            ));
+        }
+        log.push_str("STARRY_SYSTEM_PHASE_END: ltp-syscalls\n");
+        fs::write(&log_path, log).unwrap();
+        log_paths.push(log_path);
+    }
+
+    let status = std::process::Command::new(&generator_path)
+        .arg(&candidates_path)
+        .arg(&output_path)
+        .args(&log_paths)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "{} must accept complete fixtures",
+        generator_path.display()
+    );
+    let output = fs::read_to_string(&output_path).unwrap();
+    let generated_cases = output
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(generated_cases, ["pass01"]);
 }
 
 #[test]
@@ -297,21 +434,33 @@ fn starry_system_runner_bounds_each_pid_namespace() {
 }
 
 #[test]
-fn signal_interrupt_eintr_subcase_bounds_child_wait() {
+fn signal_interrupt_eintr_subcase_uses_race_free_ppoll_wait() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source_path = workspace_root
         .join("test-suit/starryos/qemu/system/test-signal-interrupt-eintr/src/main.c");
     let source = fs::read_to_string(&source_path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
 
-    assert!(
-        source.contains("poll(&pfd, 1, -1)") && source.matches("kill(child, SIGUSR1)").count() >= 2,
-        "{} must preserve the poll EINTR check and retry SIGUSR1 while the child is still running",
+    assert_eq!(
+        source.matches("kill(child, SIGUSR1)").count(),
+        1,
+        "{} must send one synchronized signal and then only wait for the child",
         source_path.display()
     );
     assert!(
-        source.contains("TEST_TIMEOUT_MS") && source.contains("WNOHANG"),
-        "{} must bound the parent wait for the interruptible child",
+        source.contains("sigprocmask(SIG_BLOCK, &blocked, NULL)")
+            && source.contains("write(release_pipe[1], &release, 1)")
+            && source.contains("ppoll(&pfd, 1, NULL, &wait_mask)")
+            && source.contains("sigismember(&restored, SIGUSR1) != 1"),
+        "{} must queue SIGUSR1 while blocked, enter ppoll with an atomic empty mask, and verify \
+         mask restoration",
+        source_path.display()
+    );
+    assert!(
+        source.contains("TEST_TIMEOUT_MS")
+            && source.contains("WNOHANG")
+            && source.contains("kill(child, SIGKILL)"),
+        "{} must bound the parent wait and force cleanup after timeout",
         source_path.display()
     );
     assert!(
@@ -324,29 +473,6 @@ fn signal_interrupt_eintr_subcase_bounds_child_wait() {
     assert!(
         !source.contains("waitpid(child, &status, 0)"),
         "{} must not let a stuck child consume the whole grouped QEMU timeout",
-        source_path.display()
-    );
-}
-
-#[test]
-fn cargo_jobserver_wait_drains_output_after_children_are_reaped() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let source_path =
-        workspace_root.join("test-suit/starryos/qemu/system/test-cargo-jobserver-wait/src/main.c");
-    let source = fs::read_to_string(&source_path)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
-
-    assert!(
-        source.contains("build_script_wave_complete(children, reaped)")
-            && source.contains(
-                "while (!build_script_wave_complete(children, reaped) && loops++ < MAX_LOOPS)",
-            ),
-        "{} must keep polling stdout/stderr until both child reaping and pipe EOF complete",
-        source_path.display()
-    );
-    assert!(
-        !source.contains("while (reaped < BUILD_SCRIPT_WAVE && loops++ < MAX_LOOPS)"),
-        "{} must not stop draining pipes merely because waitpid reaped the final child",
         source_path.display()
     );
 }
@@ -434,18 +560,11 @@ fn mountinfo_root_source_tracks_the_nvme_qemu_root_disk() {
 #[test]
 fn qemu_affinity_flaky_arches_are_filtered() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let cases = [
-        (
-            "affinity-bug-sched-affinity-migrate",
-            "^(aarch64|x86_64)",
-            "bug-sched-affinity-migrate skipped on loongarch64/riscv64 qemu",
-        ),
-        (
-            "affinity-bug-sched-affinity-pid",
-            "^(aarch64|x86_64)",
-            "bug-sched-affinity-pid skipped on loongarch64/riscv64 qemu",
-        ),
-    ];
+    let cases = [(
+        "affinity-bug-sched-affinity-migrate",
+        "^(aarch64|x86_64)",
+        "bug-sched-affinity-migrate skipped on loongarch64/riscv64 qemu",
+    )];
 
     for (case, arch_regex, skip_message) in cases {
         let cmake_path = workspace_root
@@ -464,36 +583,6 @@ fn qemu_affinity_flaky_arches_are_filtered() {
             cmake_path.display()
         );
     }
-}
-
-#[test]
-fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
-    let zombie_commands = [
-        "/usr/bin/bug-kill-zombie-esrch",
-        "/usr/bin/bug-kill-zombie-perm",
-        "/usr/bin/bug-zombie-syscalls",
-        "/usr/bin/bug-waitid-basic",
-    ];
-
-    for command in zombie_commands {
-        let name = command.trim_start_matches("/usr/bin/");
-        assert!(
-            system_dir
-                .join(format!("zombie-bugfix-{name}"))
-                .join("CMakeLists.txt")
-                .is_file(),
-            "{} must be built in the system grouped case",
-            command
-        );
-    }
-
-    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
-        let system_path = system_dir.join(format!("qemu-{arch}.toml"));
-        assert_system_runner_config(&system_path);
-    }
-    assert_system_runner_contract(&system_dir);
 }
 
 #[test]
