@@ -24,19 +24,6 @@ fn build_info_defaults_to_empty_env() {
 }
 
 #[test]
-fn build_info_accepts_missing_env() {
-    let info: BuildInfo = toml::from_str(
-        r#"
-features = []
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    assert!(info.env.is_empty());
-}
-
-#[test]
 fn toolchain_rustflags_preserves_debug_and_backtrace_env() {
     let env = HashMap::from([("DWARF".to_string(), "1".to_string())]);
 

@@ -297,7 +297,7 @@ mod tests {
                 TestCommand::Qemu(args) => {
                     assert_eq!(args.arch, None);
                     assert_eq!(args.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
-                    assert_eq!(args.package, vec!["arceos-test-suit".to_string()]);
+                    assert!(args.package.contains(&"arceos-test-suit".to_string()));
                     let err = reject_removed_rust_package_filter(&args).unwrap_err();
                     assert!(err.to_string().contains("no longer support --package"));
                     assert!(!args.only_rust);

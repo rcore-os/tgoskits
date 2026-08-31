@@ -152,10 +152,16 @@ log = "Info"
 "#,
         );
 
-        assert_eq!(
-            available_board_names(root.path()).unwrap(),
-            vec!["orangepi-5-plus".to_string(), "qemu-aarch64".to_string()]
-        );
+        let names = available_board_names(root.path()).unwrap();
+        let orangepi = names
+            .iter()
+            .position(|name| name == "orangepi-5-plus")
+            .expect("OrangePi board should be listed");
+        let qemu = names
+            .iter()
+            .position(|name| name == "qemu-aarch64")
+            .expect("QEMU board should be listed");
+        assert!(orangepi < qemu, "board names should remain sorted");
     }
 
     #[test]

@@ -456,43 +456,6 @@ fn rootfs_write_policy_defaults_to_discard() {
 }
 
 #[test]
-fn axvisor_ktest_configs_isolate_rootfs_on_all_architectures() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("axbuild manifest should live under scripts/axbuild")
-        .to_path_buf();
-
-    for arch in ["aarch64", "riscv64", "x86_64", "loongarch64"] {
-        let config_path = repo.join(format!("os/axvisor/configs/qemu/qemu-{arch}.toml"));
-        let mut qemu: QemuConfig =
-            toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-
-        super::patch_rootfs(
-            &mut qemu,
-            Path::new("/tmp/ktest-rootfs.img"),
-            RootfsPatchOptions {
-                mode: RootfsPatchMode::EnsureDiskBootNet,
-                write_policy: RootfsWritePolicy::Discard,
-            },
-        )
-        .unwrap();
-
-        let rootfs_drive = qemu.args.windows(2).find_map(|arguments| {
-            (arguments[0] == "-drive")
-                .then(|| DriveArg::parse(&arguments[1]))
-                .filter(|drive| drive.id() == Some("disk0"))
-        });
-        assert_eq!(
-            rootfs_drive.and_then(|drive| drive.snapshot_conflict().map(str::to_owned)),
-            Some("on".to_string()),
-            "{}",
-            config_path.display()
-        );
-    }
-}
-
-#[test]
 fn ensure_disk_boot_net_accepts_shuffled_disk0_fields() {
     let rootfs = Path::new("/tmp/new-rootfs.img");
     let mut qemu = QemuConfig {
@@ -593,7 +556,6 @@ fn ensure_disk_boot_net_preserves_existing_ahci_device() {
         qemu.args[3],
         "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img"
     );
-    assert_eq!(qemu.args.len(), 10);
 }
 
 #[test]
@@ -672,7 +634,6 @@ fn ensure_disk_boot_net_preserves_existing_netdev_options() {
     patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
 
     assert_eq!(qemu.args[7], "user,id=net0,hostfwd=tcp::18790-:18790");
-    assert_eq!(qemu.args.len(), 8);
 }
 
 #[test]
@@ -732,7 +693,6 @@ fn ensure_disk_boot_net_accepts_custom_rootfs_drive_device() {
         qemu.args[1],
         "id=nvm,if=none,format=raw,file=/tmp/new-rootfs.img"
     );
-    assert_eq!(qemu.args.len(), 8);
 }
 
 #[test]

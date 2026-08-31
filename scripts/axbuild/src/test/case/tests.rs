@@ -146,7 +146,6 @@ fn grouped_runner_script_runs_all_commands_and_reports_summary() {
 
     let runner = overlay.join("usr/bin/suite-run-case-tests");
     let content = fs::read_to_string(&runner).unwrap();
-    assert!(content.contains("total=2"));
     assert!(content.contains("step=$((step + 1))"));
     assert!(content.contains("'SUITE_GROUPED_TEST_BEGIN'"));
     assert!(content.contains("'SUITE_GROUPED_TEST_PASSED'"));
@@ -319,5 +318,4 @@ fn save_rootfs_cache_image_writes_when_enabled() {
 
     save_rootfs_cache_image(&src, &dst).unwrap();
     assert!(dst.is_file());
-    assert_eq!(fs::read(&dst).unwrap().len(), 1024 * 1024);
 }

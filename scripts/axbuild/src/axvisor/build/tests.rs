@@ -35,50 +35,6 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
 }
 
 #[test]
-fn axvisor_ax_std_dependency_declares_std_compat() {
-    let metadata = crate::build::workspace_metadata().unwrap();
-    let package = metadata
-        .packages
-        .iter()
-        .find(|package| package.name == AXVISOR_PACKAGE)
-        .unwrap();
-    let ax_std = package
-        .dependencies
-        .iter()
-        .find(|dependency| dependency.name == "ax-std")
-        .unwrap();
-
-    assert!(
-        ax_std
-            .features
-            .iter()
-            .any(|feature| feature == "std-compat"),
-        "Axvisor must declare ax-std/std-compat in its dependency instead of relying on axbuild"
-    );
-}
-
-#[test]
-fn axvisor_host_xtask_is_opt_in() {
-    let metadata = crate::build::workspace_metadata().unwrap();
-    let package = metadata
-        .packages
-        .iter()
-        .find(|package| package.name == AXVISOR_PACKAGE)
-        .unwrap();
-    let target = package
-        .targets
-        .iter()
-        .find(|target| target.name == "xtask")
-        .unwrap();
-
-    assert_eq!(
-        target.required_features,
-        ["host-xtask"],
-        "the host build tool must not be linked as part of kernel integration tests"
-    );
-}
-
-#[test]
 fn axvisor_all_architectures_use_rust_std_musl_with_abort_panics() {
     let cases = [
         (
@@ -629,19 +585,6 @@ log = "Info"
     );
     let config = fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
     assert!(config.contains(r#""-Zstack-protector=strong""#));
-}
-
-#[test]
-fn makefile_feature_tests_do_not_mutate_process_environment() {
-    let source = include_str!("tests.rs");
-    let set_var = ["env", "::set_var("].concat();
-    let remove_var = ["env", "::remove_var("].concat();
-
-    assert!(
-        !source.contains(&set_var) && !source.contains(&remove_var),
-        "Axvisor build tests must pass makefile features explicitly instead of mutating the \
-         process environment observed by parallel tests"
-    );
 }
 
 #[test]

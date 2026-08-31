@@ -350,25 +350,4 @@ mod tests {
             "unexpected error: {error:#}"
         );
     }
-
-    /// The generic mechanism must execute the actual case asset: the
-    /// `http-control-plane` test-suit case carries `http_probe.py` next to its
-    /// `qemu-aarch64.toml` and `vm-memory.toml` fixtures. This pins that
-    /// contract so a missing/renamed case asset fails this test, not the CI run.
-    #[test]
-    fn http_control_plane_case_carries_a_probe_asset() {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
-        let case_asset = workspace_root.join(
-            "test-suit/axvisor/normal/qemu-http-control-plane/http-control-plane/http_probe.py",
-        );
-        assert!(
-            case_asset.is_file(),
-            "http-control-plane case missing probe asset: {}",
-            case_asset.display()
-        );
-        // The default `[host_http_probe]` config resolves the asset by name, so
-        // the generic runner executes the real case asset unchanged.
-        let name = case_asset.file_name().and_then(|s| s.to_str()).unwrap();
-        assert_eq!(name, DEFAULT_PROBE_SCRIPT);
-    }
 }

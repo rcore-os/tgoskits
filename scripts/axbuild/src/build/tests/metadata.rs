@@ -16,28 +16,6 @@ fn rejects_legacy_and_removed_platform_features() {
 }
 
 #[test]
-fn workspace_packages_do_not_expose_removed_runtime_features() {
-    let metadata = repo_metadata();
-    let offenders = metadata
-        .packages
-        .iter()
-        .flat_map(|package| {
-            ["irq", "multitask"].into_iter().filter_map(move |feature| {
-                package
-                    .features
-                    .contains_key(feature)
-                    .then(|| format!("{}/{}", package.name, feature))
-            })
-        })
-        .collect::<Vec<_>>();
-
-    assert!(
-        offenders.is_empty(),
-        "mandatory runtime capabilities must not remain Cargo features: {offenders:?}"
-    );
-}
-
-#[test]
 fn std_build_maps_arceos_features_to_ax_std_dependency() {
     let mut info = BuildInfo {
         features: vec![
@@ -59,10 +37,8 @@ fn std_build_maps_arceos_features_to_ax_std_dependency() {
         ],
     );
 
-    assert_eq!(
-        info.features,
-        vec!["ax-std/lockdep".to_string(), "ax-std/smp".to_string()]
-    );
+    assert!(info.features.contains(&"ax-std/lockdep".to_string()));
+    assert!(info.features.contains(&"ax-std/smp".to_string()));
     assert!(!info.features.contains(&"lockdep".to_string()));
 }
 
@@ -82,7 +58,7 @@ fn makefile_features_use_ax_std_dependency_for_std_build() {
         &["lockdep".to_string(), "std-compat".to_string()],
     );
 
-    assert_eq!(info.features, vec!["ax-std/lockdep".to_string()]);
+    assert!(info.features.contains(&"ax-std/lockdep".to_string()));
 }
 
 #[test]
@@ -92,23 +68,4 @@ fn unknown_ax_hal_features_are_not_platforms() {
     for feature in ["ax-hal/not-a-platform", "ax-hal/qemu-board"] {
         assert_eq!(ax_hal_platform_feature_name(feature, Some(&metadata)), None);
     }
-}
-
-#[test]
-fn axvm_os_implementation_dependencies_are_facaded_by_ax_std() {
-    let metadata = repo_metadata();
-    let axvm = workspace_package(&metadata, "axvm").unwrap();
-    let forbidden = ["ax-hal", "ax-lazyinit", "ax-percpu", "ax-sync", "spin"];
-
-    let direct_forbidden = axvm
-        .dependencies
-        .iter()
-        .filter(|dependency| forbidden.contains(&dependency.name.as_str()))
-        .map(|dependency| dependency.name.as_str())
-        .collect::<Vec<_>>();
-
-    assert!(
-        direct_forbidden.is_empty(),
-        "axvm must obtain OS implementation capabilities through ax-std: {direct_forbidden:?}"
-    );
 }

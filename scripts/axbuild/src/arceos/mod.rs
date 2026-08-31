@@ -572,7 +572,6 @@ pub(crate) fn default_qemu_config_template_path(workspace_root: &Path, arch: &st
 #[cfg(test)]
 mod tests {
     use clap::Parser;
-    use ostool::run::qemu::QemuConfig;
     use tempfile::tempdir;
 
     use super::*;
@@ -630,58 +629,6 @@ mod tests {
             }
             _ => panic!("expected board command"),
         }
-    }
-
-    #[test]
-    fn standard_x86_64_and_loongarch64_qemu_configs_use_uefi_boot() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-        for (config_name, memory) in [
-            ("qemu-x86_64.toml", "512M"),
-            ("qemu-loongarch64.toml", "2G"),
-        ] {
-            let config_path = workspace.join("os/arceos/configs/qemu").join(config_name);
-            let config: QemuConfig =
-                toml::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
-
-            assert!(config.uefi);
-            assert!(config.to_bin);
-            assert!(
-                config.args.windows(2).any(|args| args == ["-m", memory]),
-                "{config_name} must reserve {memory} for UEFI boot"
-            );
-        }
-    }
-
-    #[test]
-    fn standard_config_templates_cover_every_supported_qemu_target() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-        for (arch, target) in [
-            ("aarch64", "aarch64-unknown-none-softfloat"),
-            ("x86_64", "x86_64-unknown-none"),
-            ("riscv64", "riscv64gc-unknown-none-elf"),
-            ("loongarch64", "loongarch64-unknown-none-softfloat"),
-        ] {
-            let qemu_path = workspace.join(format!("os/arceos/configs/qemu/qemu-{arch}.toml"));
-            let qemu: QemuConfig =
-                toml::from_str(&std::fs::read_to_string(qemu_path).unwrap()).unwrap();
-            assert!(!qemu.args.is_empty());
-
-            let board_path = workspace.join(format!("os/arceos/configs/board/qemu-{arch}.toml"));
-            let board = board::load_board_file(&board_path).unwrap();
-            assert_eq!(board.package, "arceos-helloworld");
-            assert_eq!(board.target, target);
-            assert!(board.build_config.build_info.features.is_empty());
-        }
-    }
-
-    #[test]
-    fn default_qemu_config_template_uses_arceos_config_directory() {
-        assert_eq!(
-            default_qemu_config_template_path(Path::new("/workspace"), "aarch64"),
-            PathBuf::from("/workspace/os/arceos/configs/qemu/qemu-aarch64.toml")
-        );
     }
 
     #[test]

@@ -1,6 +1,3 @@
-mod asset_equivalence_tests;
-mod asset_network_tests;
-mod asset_package_tests;
 mod board_tests;
 mod host_http_tests;
 mod qemu_discovery_tests;

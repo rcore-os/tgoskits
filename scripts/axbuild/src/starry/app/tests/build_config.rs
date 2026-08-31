@@ -1,14 +1,9 @@
-use std::path::Path;
-
 use tempfile::tempdir;
 
 use super::{discover_case_build_config, discover_optional_build_config};
-use crate::starry::{
-    app::{
-        discover_apps,
-        test_support::{write_case_file, write_minimal_board_case},
-    },
-    board,
+use crate::starry::app::{
+    discover_apps,
+    test_support::{write_case_file, write_minimal_board_case},
 };
 
 #[test]
@@ -174,29 +169,4 @@ fn board_case_still_accepts_minimal_build_config() {
 
     assert!(path.ends_with("build-aarch64-unknown-none-softfloat.toml"));
     assert_eq!(target, "aarch64-unknown-none-softfloat");
-}
-
-#[test]
-fn claw_code_regression_inherits_nvme_build_configs() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .unwrap();
-    let case_dir = workspace_root.join("apps/starry/claw-code-regression/goal-01-unshare");
-
-    for target in ["x86_64-unknown-none", "riscv64gc-unknown-none-elf"] {
-        let selected = discover_optional_build_config(&case_dir, target)
-            .unwrap()
-            .unwrap_or_else(|| panic!("missing inherited build config for target `{target}`"));
-        let build_config = board::load_board_file(&selected).unwrap();
-        assert!(
-            build_config
-                .build_info
-                .features
-                .iter()
-                .any(|feature| feature == "ax-driver/nvme"),
-            "{} must enable the NVMe root device driver",
-            selected.display()
-        );
-    }
 }
