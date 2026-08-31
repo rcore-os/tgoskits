@@ -413,9 +413,11 @@ impl TaskSystem {
     ) -> WakeResult {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_direct_wake_attempt();
-        if core.state() == ThreadState::Exited {
-            return WakeResult::Exited;
-        }
+        // `ThreadCore::wake()` performs the lock-free exit fast path before
+        // entering this helper. Keep the state transition below as the
+        // authoritative revalidation: `publish_wake()` observes an exit that
+        // races with that precheck, and the scheduler lock checks it again
+        // before touching placement or runqueue state.
         let Some(activity) = core.try_scheduler_activity() else {
             return WakeResult::Exited;
         };
