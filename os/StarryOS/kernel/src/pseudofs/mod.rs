@@ -22,8 +22,6 @@ use ax_fs_ng::vfs::FsContext;
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
-#[cfg(axtest)]
-pub(crate) use tmp::failed_symlink_capacity_reservation_does_not_publish_name_for_test;
 
 pub use self::{device::*, dir::*, file::*, fs::*};
 use crate::StarryResult;

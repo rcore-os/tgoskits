@@ -884,8 +884,8 @@ impl Drop for MemoryNode {
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool {
+#[cfg(all(test, axtest))]
+fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool {
     let filesystem = MemoryFs::new_with_size_limit(3);
     let root = filesystem.root_dir();
     let Ok(directory) = root.as_dir() else {
@@ -921,4 +921,13 @@ pub(crate) fn failed_symlink_capacity_reservation_does_not_publish_name_for_test
         .is_ok_and(|target| target == "target");
 
     capacity_failure_is_atomic && successful_create_is_readable
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn failed_symlink_capacity_reservation_does_not_publish_name() {
+        assert!(super::failed_symlink_capacity_reservation_does_not_publish_name_for_test());
+    }
 }

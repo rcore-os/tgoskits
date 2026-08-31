@@ -89,6 +89,7 @@ pub(super) fn expand_clippy_checks(
                 kind: ClippyCheckKind::Configuration {
                     name: configuration.name,
                     features: configuration.features,
+                    rustflags: configuration.rustflags,
                 },
                 target: Some(configuration.target),
                 env: configuration.env,

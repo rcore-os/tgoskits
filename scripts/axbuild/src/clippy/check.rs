@@ -11,7 +11,11 @@ pub(super) struct ClippyCargoInvocation {
 pub(super) enum ClippyCheckKind {
     Base,
     Feature(String),
-    Configuration { name: String, features: Vec<String> },
+    Configuration {
+        name: String,
+        features: Vec<String>,
+        rustflags: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -81,7 +85,11 @@ impl ClippyCheck {
         if let Some(target) = target {
             args.extend(["--target".into(), target.to_string()]);
         }
-        args.extend(["--".into(), "-D".into(), "warnings".into()]);
+        args.push("--".into());
+        if let ClippyCheckKind::Configuration { rustflags, .. } = &self.kind {
+            args.extend(rustflags.clone());
+        }
+        args.extend(["-D".into(), "warnings".into()]);
         args
     }
 
@@ -119,7 +127,7 @@ impl ClippyCheck {
             ClippyCheckKind::Feature(feature) => {
                 format!("{} (feature: {}", self.package, feature)
             }
-            ClippyCheckKind::Configuration { name, features } => format!(
+            ClippyCheckKind::Configuration { name, features, .. } => format!(
                 "{} (configuration: {}, features: {}",
                 self.package,
                 name,

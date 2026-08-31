@@ -364,7 +364,7 @@ pub fn sys_fremovexattr(fd: i32, name: *const c_char) -> StarryResult<isize> {
     remove_xattr(resolve_fd(fd)?, name)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 fn xattr_name_and_value_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{XATTR_NAME_MAX, XATTR_SIZE_MAX};
 
@@ -379,7 +379,7 @@ fn xattr_name_and_value_validation_rules_hold_for_test() -> bool {
     true
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     #[test]
     fn xattr_name_and_value_validation_rules_hold() {
