@@ -514,6 +514,15 @@ mod tests {
 
     #[cfg_attr(axtest, axtest::axtest)]
     #[cfg_attr(not(axtest), test)]
+    fn registering_guest_preallocates_atomic_output_storage() {
+        let mut mux = GuestOutputMux::default();
+        mux.register_guest(7);
+
+        assert!(mux.guests[&7].pending.capacity() >= PER_GUEST_LOG_CAPACITY);
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn host_record_terminates_an_open_guest_line() {
         let mut mux = GuestOutputMux::default();
         assert_eq!(mux.format(1, false, b"guest> "), b"guest> ");

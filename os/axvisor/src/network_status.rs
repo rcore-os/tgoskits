@@ -70,11 +70,11 @@ fn ready_interface() -> Option<InterfaceAddress> {
 fn submit_access_banner(interface: &InterfaceAddress) {
     let address = interface.ipv4.address.address();
     let mut banner = String::new();
-    let _ = writeln!(banner, "\r\nAxvisor network ready:");
-    let _ = writeln!(banner, "  interface = {}", interface.name);
-    let _ = writeln!(
+    let _ = write!(banner, "\r\nAxvisor network ready:\r\n");
+    let _ = write!(banner, "  interface = {}\r\n", interface.name);
+    let _ = write!(
         banner,
-        "  ipv4 = {address}/{}",
+        "  ipv4 = {address}/{}\r\n",
         interface.ipv4.address.prefix_len()
     );
     append_web_console_endpoint(&mut banner, address, crate::http::bind_addr());
@@ -93,5 +93,5 @@ fn append_web_console_endpoint(
         IpAddr::V4(ip) if ip.is_unspecified() => assigned_address.to_string(),
         ip => ip.to_string(),
     };
-    let _ = writeln!(banner, "  web_console = http://{host}:{}/", bind.port());
+    let _ = write!(banner, "  web_console = http://{host}:{}/\r\n", bind.port());
 }

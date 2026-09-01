@@ -2,7 +2,7 @@
 
 use alloc::{collections::VecDeque, format, vec::Vec};
 
-const HOST_LOG_BACKLOG_CAPACITY: usize = 16 * 1024;
+const HOST_LOG_BACKLOG_CAPACITY: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct HostLogBacklog {
@@ -63,17 +63,23 @@ mod tests {
 
     #[cfg_attr(axtest, axtest::axtest)]
     #[cfg_attr(not(axtest), test)]
+    fn host_log_backlog_capacity_is_two_mib() {
+        assert_eq!(HOST_LOG_BACKLOG_CAPACITY, 2 * 1024 * 1024);
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn drops_oldest_complete_record_with_summary() {
         let mut backlog = HostLogBacklog::default();
-        let record = vec![b'x'; 1024];
-        for _ in 0..17 {
+        let record = vec![b'x'; HOST_LOG_BACKLOG_CAPACITY / 2];
+        for _ in 0..3 {
             backlog.push(&record);
         }
 
         let replay = backlog.drain();
-        assert_eq!(replay.len(), 17);
+        assert_eq!(replay.len(), 3);
         assert!(replay[0].starts_with(b"[Axvisor] dropped 1 host log records"));
-        assert!(replay[1..].iter().all(|record| record.len() == 1024));
+        assert!(replay[1..].iter().all(|retained| retained == &record));
     }
 
     #[cfg_attr(axtest, axtest::axtest)]
