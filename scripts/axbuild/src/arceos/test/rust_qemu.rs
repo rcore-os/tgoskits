@@ -127,7 +127,10 @@ fn rust_qemu_host_symbolize_success_regex(feature: Option<&str>) -> Vec<String> 
 fn apply_rust_qemu_feature_overrides(qemu: &mut QemuConfig, feature: Option<&str>) {
     match feature {
         Some(ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE) => {
-            qemu.success_regex = vec![r"BACKTRACE_BEGIN\b.*\bkind=panic\b".to_string()];
+            qemu.success_regex = vec![
+                r"(?s)ARCEOS_PANIC_EMERGENCY(?-u:\b).*(?-u:\b)BACKTRACE_BEGIN(?-u:\b).*(?-u:\b)kind=panic(?-u:\b)"
+                    .to_string(),
+            ];
             qemu.fail_regex = vec!["ARCEOS_TEST_FAIL".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
@@ -462,7 +465,9 @@ BT 0 ip=0x1 fp=0x2
         assert!(
             qemu.success_regex
                 .iter()
-                .any(|regex| regex.contains("BACKTRACE_BEGIN") && regex.contains("kind=panic"))
+                .any(|regex| regex.contains("ARCEOS_PANIC_EMERGENCY")
+                    && regex.contains("BACKTRACE_BEGIN")
+                    && regex.contains("kind=panic"))
         );
         assert!(
             qemu.fail_regex

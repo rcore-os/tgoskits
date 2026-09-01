@@ -34,6 +34,8 @@
 
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
 extern crate std;
+#[cfg(all(feature = "std-compat", not(feature = "host-test")))]
+extern crate std;
 
 #[macro_use]
 extern crate ax_log;
@@ -59,6 +61,8 @@ mod irq_time;
 #[cfg(feature = "paging")]
 pub mod kernel_mapping;
 mod klib;
+#[cfg(any(feature = "std-compat", target_os = "none"))]
+mod panic_output;
 
 /// Host-only adapters for testing runtime-owned capability providers.
 #[cfg(all(feature = "host-test", not(target_os = "none")))]

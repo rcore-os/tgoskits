@@ -1592,7 +1592,6 @@ dependencies = [
  "ax-hal",
  "ax-log",
  "ax-std",
- "axbacktrace",
  "axbuild",
  "axtest",
  "axum",

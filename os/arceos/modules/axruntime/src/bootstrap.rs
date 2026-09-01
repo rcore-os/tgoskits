@@ -111,6 +111,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     crate::boot_memory::init_allocator();
 
+    #[cfg(feature = "std-compat")]
+    crate::panic_output::install_std_hook();
+
     #[cfg(feature = "tls")]
     crate::task::initialize_early_bootstrap_tls()
         .expect("failed to initialize primary bootstrap TLS");
