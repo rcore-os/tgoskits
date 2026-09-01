@@ -39,7 +39,10 @@ use crate::{RuntimeError, RuntimeResult, sync::SpinLock};
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
 const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
-const LOG_SUBSCRIPTION_CAPACITY: usize = 64;
+// A subscriber can be unable to run while all secondary CPUs publish their
+// startup records. Keep enough whole-record slots for the bounded SMP burst so
+// activating a console owner does not immediately lose diagnostics.
+const LOG_SUBSCRIPTION_CAPACITY: usize = 128;
 
 static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
 static LOG_MAILBOX: OnceLock<Arc<LogMailbox>> = OnceLock::new();

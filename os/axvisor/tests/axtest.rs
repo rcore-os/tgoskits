@@ -14,6 +14,8 @@ mod browser_console_delivery;
 #[path = "../src/network_console/layout.rs"]
 mod browser_console_layout;
 mod guest_console_harness;
+#[path = "../src/guest_console/terminal.rs"]
+mod host_terminal;
 mod manager;
 mod network_console;
 
@@ -175,6 +177,28 @@ mod tests {
             .join()
             .expect("delivery waiter must exit after notify");
         ax_assert!(woke.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn host_terminal_converts_only_bare_lf_across_batches() {
+        use crate::host_terminal::TerminalNewlineNormalizer;
+
+        let mut normalizer = TerminalNewlineNormalizer::new();
+        let mut output = Vec::new();
+        normalizer
+            .write(b"banner\nline\r", |bytes| {
+                output.extend_from_slice(bytes);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        normalizer
+            .write(b"\nnext\n", |bytes| {
+                output.extend_from_slice(bytes);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        ax_assert_eq!(output, b"banner\r\nline\r\nnext\r\n");
     }
 
     #[test]
