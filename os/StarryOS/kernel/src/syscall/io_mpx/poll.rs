@@ -66,6 +66,12 @@ fn write_poll_revents(fds: UserPtr<pollfd>, poll_fds: &[pollfd]) -> StarryResult
     Ok(())
 }
 
+fn mask_poll_revents(ready: IoEvents, requested: IoEvents) -> IoEvents {
+    // Linux reports POLLERR and POLLHUP even when the caller did not request
+    // them. Other readiness classes, including POLLRDHUP, remain opt-in.
+    (ready & requested) | (ready & IoEvents::ALWAYS_POLL)
+}
+
 fn collect_ready_poll_events(
     fds: &FdPollSet,
     revent_indices: &[usize],
@@ -73,13 +79,7 @@ fn collect_ready_poll_events(
 ) -> usize {
     let mut res = 0usize;
     for ((fd, events), revent_index) in fds.0.iter().zip(revent_indices.iter()) {
-        let mut result = fd.poll();
-        // POSIX: POLLHUP and POLLERR are always reported in revents,
-        // even if not requested in events. They must NOT be masked out.
-        let always_report =
-            result & (IoEvents::HUP | IoEvents::ERR | IoEvents::RDHUP | IoEvents::NVAL);
-        result &= *events;
-        result |= always_report;
+        let result = mask_poll_revents(fd.poll(), *events);
 
         let revents = &mut poll_fds[*revent_index].revents;
         *revents = result.bits() as _;
@@ -206,11 +206,47 @@ fn poll_nfds_validation_rules_hold_for_test() -> bool {
 
     const { assert!(POLLNVAL != 0) }
 
-    true
+    // POLLRDHUP is only returned when explicitly requested, unlike POLLERR
+    // and POLLHUP. This catches accidental leakage from socket readiness.
+    let socket_ready = IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP;
+    let without_rdhup = mask_poll_revents(socket_ready, IoEvents::IN | IoEvents::OUT);
+    let with_rdhup = mask_poll_revents(socket_ready, IoEvents::IN | IoEvents::RDHUP);
+    let always_reported = mask_poll_revents(IoEvents::ERR | IoEvents::HUP, IoEvents::empty());
+
+    without_rdhup.bits() == (IoEvents::IN | IoEvents::OUT).bits()
+        && with_rdhup.bits() == (IoEvents::IN | IoEvents::RDHUP).bits()
+        && always_reported.bits() == (IoEvents::ERR | IoEvents::HUP).bits()
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(test)]
 mod tests {
+    use axpoll::IoEvents;
+
+    use super::mask_poll_revents;
+
+    #[test]
+    fn pollrdhup_is_only_reported_when_requested() {
+        let ready = IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP;
+
+        assert_eq!(
+            mask_poll_revents(ready, IoEvents::IN | IoEvents::OUT).bits(),
+            (IoEvents::IN | IoEvents::OUT).bits()
+        );
+        assert_eq!(
+            mask_poll_revents(ready, IoEvents::IN | IoEvents::RDHUP).bits(),
+            (IoEvents::IN | IoEvents::RDHUP).bits()
+        );
+    }
+
+    #[test]
+    fn pollerr_and_pollhup_are_reported_without_interest() {
+        assert_eq!(
+            mask_poll_revents(IoEvents::ERR | IoEvents::HUP, IoEvents::empty()).bits(),
+            (IoEvents::ERR | IoEvents::HUP).bits()
+        );
+    }
+
+    #[cfg(not(axtest))]
     #[test]
     fn poll_nfds_validation_rules_hold() {
         assert!(super::poll_nfds_validation_rules_hold_for_test());
