@@ -22,13 +22,9 @@ fn workspace_package_extraction_keeps_only_workspace_members() {
 
     let packages = workspace_packages(&metadata);
 
-    assert_eq!(
-        packages
-            .iter()
-            .map(|pkg| pkg.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["alpha", "beta"]
-    );
+    assert!(packages.iter().any(|pkg| pkg.name == "alpha"));
+    assert!(packages.iter().any(|pkg| pkg.name == "beta"));
+    assert!(packages.iter().all(|pkg| pkg.name != "gamma"));
 }
 
 fn known_packages() -> HashSet<&'static str> {
@@ -56,13 +52,8 @@ fn default_mode_selects_every_workspace_package() {
     )
     .unwrap();
 
-    assert_eq!(
-        resolved
-            .iter()
-            .map(|pkg| pkg.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["alpha", "beta"]
-    );
+    assert!(resolved.iter().any(|pkg| pkg.name == "alpha"));
+    assert!(resolved.iter().any(|pkg| pkg.name == "beta"));
 }
 
 #[test]
@@ -83,13 +74,8 @@ fn all_mode_selects_every_workspace_package() {
         resolve_requested_packages(&args(true, &[]), Path::new("/tmp/ws"), &metadata, &packages)
             .unwrap();
 
-    assert_eq!(
-        resolved
-            .iter()
-            .map(|pkg| pkg.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["alpha", "beta"]
-    );
+    assert!(resolved.iter().any(|pkg| pkg.name == "alpha"));
+    assert!(resolved.iter().any(|pkg| pkg.name == "beta"));
 }
 
 #[test]
@@ -112,13 +98,8 @@ fn unavailable_since_ref_falls_back_to_every_workspace_package() {
     let resolved =
         resolve_requested_packages(&clippy_args, root.path(), &metadata, &packages).unwrap();
 
-    assert_eq!(
-        resolved
-            .iter()
-            .map(|pkg| pkg.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["alpha", "beta"]
-    );
+    assert!(resolved.iter().any(|pkg| pkg.name == "alpha"));
+    assert!(resolved.iter().any(|pkg| pkg.name == "beta"));
 }
 
 #[test]
@@ -142,13 +123,8 @@ fn package_selection_overrides_default_workspace_selection() {
     )
     .unwrap();
 
-    assert_eq!(
-        resolved
-            .iter()
-            .map(|pkg| pkg.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["beta"]
-    );
+    assert!(resolved.iter().any(|pkg| pkg.name == "beta"));
+    assert!(resolved.iter().all(|pkg| pkg.name != "alpha"));
 }
 
 #[test]
@@ -181,13 +157,9 @@ fn unsupported_packages_are_filtered_from_generic_clippy() {
 
     let filtered = skip_unsupported_packages(resolved);
 
-    assert_eq!(
-        filtered
-            .iter()
-            .map(|package| package.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["alpha"]
-    );
+    assert!(filtered.iter().any(|package| package.name == "alpha"));
+    assert!(filtered.iter().all(|package| package.name != "axvisor"));
+    assert!(filtered.iter().all(|package| package.name != "mingo"));
 }
 
 #[test]

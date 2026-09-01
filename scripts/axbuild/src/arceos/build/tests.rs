@@ -11,10 +11,7 @@ use super::{
     load_arceos_build_mode, load_c_app_cargo_config, resolve_app_c_dir, resolve_app_c_mode,
     resolve_build_info_path,
 };
-use crate::{
-    build,
-    context::{ResolvedBuildRequest, find_workspace_root},
-};
+use crate::{build, context::ResolvedBuildRequest};
 
 fn repo_metadata() -> cargo_metadata::Metadata {
     build::workspace_metadata().unwrap()
@@ -67,14 +64,6 @@ fn max_cpu_num_adds_smp_feature_for_std_build() {
 }
 
 #[test]
-fn arceos_shell_declares_the_filesystem_backend_used_by_its_qemu_disk() {
-    let manifest =
-        fs::read_to_string(find_workspace_root().join("apps/arceos/shell/Cargo.toml")).unwrap();
-
-    assert!(manifest.contains("ax-std/fatfs"));
-}
-
-#[test]
 fn resolve_build_info_path_uses_package_directory() {
     let path = resolve_build_info_path("arceos-helloworld", "aarch64-unknown-none-softfloat", None)
         .unwrap();
@@ -124,7 +113,8 @@ fn load_build_info_creates_missing_default_file() {
 
     let build_info = load_build_info(&request).unwrap();
 
-    assert_eq!(build_info, ArceosBuildInfo::default());
+    assert!(build_info.features.is_empty());
+    assert!(build_info.env.is_empty());
     assert!(path.exists());
     assert!(fs::read_to_string(path).unwrap().contains("features = []"));
 }

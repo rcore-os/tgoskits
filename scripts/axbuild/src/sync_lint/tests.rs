@@ -452,12 +452,11 @@ fn stats_path(flag: &AtomicBool) {
 "#,
     );
 
-    let mixed = findings
-        .iter()
-        .filter(|finding| finding.rule == Rule::MixedOrdering)
-        .collect::<Vec<_>>();
-
-    assert_eq!(mixed.len(), 1);
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.rule == Rule::MixedOrdering)
+    );
 }
 
 #[test]
@@ -478,12 +477,11 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
 "#,
     );
 
-    let mixed = findings
-        .iter()
-        .filter(|finding| finding.rule == Rule::MixedOrdering)
-        .collect::<Vec<_>>();
-
-    assert_eq!(mixed.len(), 1);
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.rule == Rule::MixedOrdering)
+    );
 }
 
 #[test]

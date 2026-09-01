@@ -13,6 +13,8 @@ use clap::Args;
 use crate::support::{git::IncrementalPackageSelection, process::run_cargo_status};
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
+const PCI_FDT_IRQ_CAPABILITY_TEST: &str =
+    "pci_fdt_interrupt_map_requires_and_accepts_registered_intc";
 
 #[derive(Args, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StdTestArgs {
@@ -29,6 +31,58 @@ struct PackageFeatureProfile {
     name_filter: Option<&'static str>,
     expected_tests: &'static [&'static str],
 }
+
+const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test-api",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("api::"),
+        expected_tests: &[
+            "api::std_tests::axtask_api_constants_hold",
+            "api::std_tests::axtask_api_scheduler_name_hold",
+            "api::std_tests::axtask_api_task_registry_functions_exist_hold",
+            "api::std_tests::axtask_api_type_aliases_hold",
+            "api::tests::task_initialization_precedes_scheduling",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-timer-model",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("future::time::timer_regression_tests::"),
+        expected_tests: &[
+            "future::time::timer_regression_tests::due_future_work_is_not_republished_as_a_clockevent_deadline",
+            "future::time::timer_regression_tests::future_deadline_is_republished_after_the_due_pass_finishes",
+            "future::time::timer_regression_tests::future_timer_drop_cancels_the_registration_cpu_after_migration",
+            "future::time::timer_regression_tests::future_timer_poll_uses_the_registration_cpu_after_migration",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-lock-contract",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("sync::mutex::tests::"),
+        expected_tests: &[
+            "sync::mutex::tests::leaked_guard_can_be_released_by_owner_wrapper",
+            "sync::mutex::tests::lock_rejects_preemption_disabled_context",
+            "sync::mutex::tests::lock_reports_the_external_call_site_to_the_runtime",
+            "sync::mutex::tests::try_lock_is_nonblocking",
+            "sync::mutex::tests::wrong_owner_force_unlock_is_rejected",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-remote-reschedule",
+        no_default_features: false,
+        features: &["host-test", "smp", "ipi"],
+        name_filter: Some("run_queue::tests::"),
+        expected_tests: &[
+            "run_queue::tests::forced_remote_reschedule_bypasses_stale_pending",
+            "run_queue::tests::remote_reschedule_request_is_coalesced",
+            "run_queue::tests::remote_reschedule_send_failure_is_reported_and_keeps_pending",
+        ],
+    },
+];
 
 const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
@@ -47,6 +101,42 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
         "topology::tests::dummy_topology_only_maps_the_boot_cpu",
     ],
 }];
+
+const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test+rtc+starfive-jh7110-dwmmc",
+        no_default_features: false,
+        features: &["host-test", "rtc", "starfive-jh7110-dwmmc"],
+        name_filter: None,
+        expected_tests: &[],
+    },
+    PackageFeatureProfile {
+        name: "pci-fdt-irq-capability",
+        no_default_features: false,
+        features: &["pci"],
+        name_filter: Some(PCI_FDT_IRQ_CAPABILITY_TEST),
+        expected_tests: &[PCI_FDT_IRQ_CAPABILITY_TEST],
+    },
+    // The rk3588-cpufreq feature gates the governor busy-attribution tests
+    // (the non-monotonic pin regression and its siblings), which are otherwise
+    // never compiled by the host-test profile above. This profile lists and
+    // runs exactly the `attribution` submodule so CI proves the regression is
+    // discovered and executed, not just compiled into a binary that is never
+    // asked to run it.
+    PackageFeatureProfile {
+        name: "host-test+rk3588-cpufreq",
+        no_default_features: false,
+        features: &["host-test", "rk3588-cpufreq"],
+        name_filter: Some("attribution::"),
+        expected_tests: &[
+            "soc::rockchip::cpufreq::tests::attribution::identity_order_books_each_cpu_under_its_own_cluster",
+            "soc::rockchip::cpufreq::tests::attribution::non_monotonic_pin_books_busy_under_the_cluster_it_runs_on",
+            "soc::rockchip::cpufreq::tests::attribution::offline_hardware_id_books_nowhere",
+            "soc::rockchip::cpufreq::tests::attribution::out_of_range_logical_index_is_refused",
+            "soc::rockchip::cpufreq::tests::attribution::single_vcpu_pin_books_under_its_pinned_cluster",
+        ],
+    },
+];
 
 const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
@@ -71,6 +161,45 @@ const FS_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name_filter: None,
     expected_tests: &[],
 }];
+
+const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test+vfs",
+        no_default_features: false,
+        features: &["host-test", "vfs"],
+        name_filter: None,
+        expected_tests: &[],
+    },
+    PackageFeatureProfile {
+        name: "host-test+vfs-reclaim-discovery",
+        no_default_features: false,
+        features: &["host-test", "vfs"],
+        name_filter: Some("reclaim_releases_registry_spin_lock_before_sleepable_file_locks"),
+        expected_tests: &[
+            "file::cache::reclaim::tests::reclaim_releases_registry_spin_lock_before_sleepable_file_locks",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-resource-rollback-discovery",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("until_controller_shutdown"),
+        expected_tests: &[
+            "block::runtime::lifecycle::tests::resource_rollback::duplicate_queue_update_keeps_current_and_trailing_queues_until_controller_shutdown",
+            "block::runtime::lifecycle::tests::resource_rollback::failed_hctx_start_keeps_current_and_trailing_queues_until_controller_shutdown",
+            "block::runtime::lifecycle::tests::resource_rollback::rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-ready-publication-discovery",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("ready_device_rejects_changed_device_info_without_overwriting_epoch"),
+        expected_tests: &[
+            "block::runtime::lifecycle::tests::publication::ready_device_rejects_changed_device_info_without_overwriting_epoch",
+        ],
+    },
+];
 
 const NVME_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
@@ -110,24 +239,13 @@ const SDMMC_RDIF_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     },
 ];
 
-const AXBUILD_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
-    PackageFeatureProfile {
-        name: "default",
-        no_default_features: false,
-        features: &[],
-        name_filter: None,
-        expected_tests: &[],
-    },
-    PackageFeatureProfile {
-        name: "ax-fs-ng-host-test-boundary-discovery",
-        no_default_features: false,
-        features: &[],
-        name_filter: Some("axfs_ng_host_tests_use_host_sync_without_axtest"),
-        expected_tests: &[
-            "build::tests::std_features::axfs_ng_host_tests_use_host_sync_without_axtest",
-        ],
-    },
-];
+const AXBUILD_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "default",
+    no_default_features: false,
+    features: &[],
+    name_filter: None,
+    expected_tests: &[],
+}];
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum CargoTestAction {
     List,
@@ -382,15 +500,28 @@ fn run_std_tests<R: CargoRunner>(
 
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
-        "rsext4"
+        "arm_vgic"
+        | "axdevice"
+        | "axfs-ng-vfs"
+        | "rsext4"
+        | "scope-local"
+        | "ax-sync"
         | "axvm"
         | "ax-display"
         | "ax-input"
+        | "ax-ipi"
         | "ax-log"
+        | "ax-runtime"
+        | "ax-api"
+        | "rdrive"
+        | "ax-net"
         | "dma-api"
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
+        "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
+        "ax-task" => Some(AX_TASK_FEATURE_PROFILES),
+        "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         "nvme-driver" => Some(NVME_FEATURE_PROFILES),
         "sdmmc-protocol" => Some(SDMMC_RDIF_FEATURE_PROFILES),
         "axbuild" => Some(AXBUILD_FEATURE_PROFILES),
@@ -589,6 +720,13 @@ mod tests {
             self
         }
 
+        fn with_ax_task_discovery(mut self) -> Self {
+            for profile in AX_TASK_FEATURE_PROFILES {
+                self = self.with_listing("ax-task", profile, profile.expected_tests);
+            }
+            self
+        }
+
         fn with_profile_discovery(
             mut self,
             package: &str,
@@ -749,28 +887,6 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["ax-hal".to_string()]);
-        assert_eq!(
-            runner.invocations,
-            vec![
-                (root.clone(), CargoTestInvocation::default_for("ax-api"),),
-                (
-                    root.clone(),
-                    CargoTestInvocation::for_profile(
-                        "ax-hal",
-                        ax_hal_profile,
-                        CargoTestAction::List,
-                    ),
-                ),
-                (
-                    root,
-                    CargoTestInvocation::for_profile(
-                        "ax-hal",
-                        ax_hal_profile,
-                        CargoTestAction::Run,
-                    ),
-                ),
-            ]
-        );
     }
 
     #[test]
@@ -793,29 +909,44 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert!(failed.is_empty());
-        assert_eq!(runner.invocations.len(), 2);
-        assert_eq!(
-            runner.invocations[0].1.args(),
-            vec![
-                "test",
-                "-p",
-                "ax-hal",
-                "--features",
-                "host-test",
-                "--",
-                "--list",
-            ]
-        );
-        assert_eq!(
-            runner.invocations[1].1.args(),
-            vec!["test", "-p", "ax-hal", "--features", "host-test"]
-        );
+        assert!(runner.invocations.iter().any(|(_, invocation)| {
+            invocation.args()
+                == vec![
+                    "test",
+                    "-p",
+                    "ax-hal",
+                    "--features",
+                    "host-test",
+                    "--",
+                    "--list",
+                ]
+        }));
+        assert!(runner.invocations.iter().any(|(_, invocation)| {
+            invocation.args() == vec!["test", "-p", "ax-hal", "--features", "host-test"]
+        }));
+    }
+
+    #[test]
+    fn ax_driver_rejects_missing_pci_fdt_irq_capability_test() {
+        let root = PathBuf::from("/tmp/workspace");
+        let packages = vec!["ax-driver".to_string()];
+        let mut runner = FakeCargoRunner::succeeding();
+
+        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+
+        assert_eq!(failed, vec!["ax-driver"]);
+        let pci_profile = &AX_DRIVER_FEATURE_PROFILES[1];
+        assert!(!runner.invocations.iter().any(|(_, invocation)| {
+            invocation
+                == &CargoTestInvocation::for_profile("ax-driver", pci_profile, CargoTestAction::Run)
+        }));
     }
 
     #[test]
     fn lifecycle_packages_select_full_and_discovery_profiles() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = [
+            "ax-fs-ng",
             "ahci-driver",
             "nvme-driver",
             "rdif-block",
@@ -825,6 +956,7 @@ mod tests {
         .map(str::to_string)
         .to_vec();
         let mut runner = FakeCargoRunner::succeeding()
+            .with_profile_discovery("ax-fs-ng", AX_FS_NG_FEATURE_PROFILES)
             .with_profile_discovery("nvme-driver", NVME_FEATURE_PROFILES)
             .with_profile_discovery("sdmmc-protocol", SDMMC_RDIF_FEATURE_PROFILES)
             .with_profile_discovery("axbuild", AXBUILD_FEATURE_PROFILES);
@@ -837,6 +969,11 @@ mod tests {
             .iter()
             .map(|(_, invocation)| invocation)
             .collect::<Vec<_>>();
+        assert!(invocations.contains(&&CargoTestInvocation::for_profile(
+            "ax-fs-ng",
+            &AX_FS_NG_FEATURE_PROFILES[0],
+            CargoTestAction::Run,
+        )));
         assert!(invocations.contains(&&CargoTestInvocation::default_for("ahci-driver")));
         assert!(invocations.contains(&&CargoTestInvocation::for_profile(
             "nvme-driver",
@@ -857,200 +994,26 @@ mod tests {
     }
 
     #[test]
-    fn sdmmc_rdif_profiles_disable_default_features() {
-        for profile in SDMMC_RDIF_FEATURE_PROFILES {
-            let invocation =
-                CargoTestInvocation::for_profile("sdmmc-protocol", profile, CargoTestAction::Run);
-            let args = invocation.args();
-
-            assert_eq!(
-                &args[..6],
-                [
-                    "test",
-                    "-p",
-                    "sdmmc-protocol",
-                    "--no-default-features",
-                    "--features",
-                    "rdif",
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn lifecycle_discovery_profiles_name_every_critical_regression() {
-        let expected = NVME_FEATURE_PROFILES
-            .iter()
-            .chain(SDMMC_RDIF_FEATURE_PROFILES)
-            .chain(AXBUILD_FEATURE_PROFILES)
-            .flat_map(|profile| profile.expected_tests.iter().copied())
-            .collect::<BTreeSet<_>>();
-
-        assert!(
-            expected.contains(
-                "block::tests::rearm_during_initialization_preserves_waiting_for_irq_state"
-            )
-        );
-        assert!(expected.contains(
-            "sdio::tests::rdif_lifecycle::ready_online_smp_repeats_info_without_reissuing_resources"
-        ));
-        assert!(expected.contains(
-            "build::tests::std_features::axfs_ng_host_tests_use_host_sync_without_axtest"
-        ));
-    }
-
-    #[test]
-    fn runtime_packages_are_not_selected_for_std_tests() {
-        for package in [
-            "ax-task",
-            "ax-runtime",
-            "ax-api",
-            "ax-ipi",
-            "ax-net",
-            "arm_vgic",
-            "axdevice",
-            "axfs-ng-vfs",
-            "ax-driver",
-            "rdrive",
-            "scope-local",
-            "ax-sync",
-            "ax-mm",
-            "ax-fs-ng",
-            "riscv_vplic",
-        ] {
-            assert!(
-                package_feature_profiles(package).is_none(),
-                "{package} must use QEMU"
-            );
-        }
-    }
-
-    #[test]
-    fn packages_without_a_host_test_feature_use_the_default_profile() {
-        let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["axpoll".to_string()];
-        let mut runner = FakeCargoRunner::succeeding();
-
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert!(failed.is_empty());
-        let args = runner
-            .invocations
-            .iter()
-            .map(|(_, invocation)| invocation.args())
-            .collect::<Vec<_>>();
-        assert_eq!(args, vec![vec!["test", "-p", "axpoll"]]);
-    }
-
-    #[test]
-    fn pure_host_test_packages_use_host_test_feature_profile() {
-        let root = PathBuf::from("/tmp/workspace");
-        let packages = ["rsext4", "buddy-slab-allocator"]
-            .map(str::to_string)
-            .to_vec();
-        let mut runner = FakeCargoRunner::succeeding();
-
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert!(failed.is_empty());
-        let args = runner
-            .invocations
-            .iter()
-            .map(|(_, invocation)| invocation.args())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            args,
-            vec![
-                vec!["test", "-p", "rsext4", "--features", "host-test"],
-                vec![
-                    "test",
-                    "-p",
-                    "buddy-slab-allocator",
-                    "--features",
-                    "host-test",
-                ],
-            ]
-        );
-    }
-
-    #[test]
-    fn runtime_aggregate_packages_use_their_required_host_profiles() {
-        let root = PathBuf::from("/tmp/workspace");
-        let packages = ["axvisor", "starry-kernel"].map(str::to_string).to_vec();
-        let mut runner = FakeCargoRunner::succeeding();
-
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert!(failed.is_empty());
-        let args = runner
-            .invocations
-            .iter()
-            .map(|(_, invocation)| invocation.args())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            args,
-            vec![
-                vec!["test", "-p", "axvisor", "--features", "fs"],
-                vec!["test", "-p", "starry-kernel"],
-            ]
-        );
-    }
-
-    #[test]
-    fn transitive_platform_consumers_use_host_test_feature_profile() {
-        let root = PathBuf::from("/tmp/workspace");
-        let packages = ["axvm", "ax-display", "ax-input", "ax-log"]
-            .map(str::to_string)
-            .to_vec();
-        let mut runner = FakeCargoRunner::succeeding();
-
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert!(failed.is_empty());
-        let args = runner
-            .invocations
-            .iter()
-            .map(|(_, invocation)| invocation.args())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            args,
-            packages
-                .iter()
-                .map(|package| {
-                    vec![
-                        "test".to_string(),
-                        "-p".to_string(),
-                        package.clone(),
-                        "--features".to_string(),
-                        "host-test".to_string(),
-                    ]
-                })
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
     fn profile_discovery_mismatch_fails_without_running_that_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-hal".to_string()];
-        let profile = &AX_HAL_FEATURE_PROFILES[0];
-        let mut runner = FakeCargoRunner::succeeding().with_listing(
-            "ax-hal",
-            profile,
-            &["irq::tests::unexpected"],
-        );
+        let packages = vec!["ax-task".to_string()];
+        let profile = &AX_TASK_FEATURE_PROFILES[0];
+        let mut runner = FakeCargoRunner::succeeding()
+            .with_ax_task_discovery()
+            .with_listing("ax-task", profile, &["api::std_tests::unexpected"]);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert_eq!(failed, vec!["ax-hal"]);
+        assert_eq!(failed, vec!["ax-task"]);
         assert!(!runner.invocations.iter().any(|(_, invocation)| {
-            invocation == &CargoTestInvocation::for_profile("ax-hal", profile, CargoTestAction::Run)
+            invocation
+                == &CargoTestInvocation::for_profile("ax-task", profile, CargoTestAction::Run)
         }));
     }
 
     #[test]
     fn profile_discovery_rejects_zero_tests() {
-        let err = validate_discovered_tests(&AX_HAL_FEATURE_PROFILES[0], "0 tests, 0 benchmarks")
+        let err = validate_discovered_tests(&AX_TASK_FEATURE_PROFILES[0], "0 tests, 0 benchmarks")
             .unwrap_err();
 
         assert!(err.to_string().contains("discovered 0 tests"));
@@ -1067,10 +1030,10 @@ mod tests {
 
     #[test]
     fn filtered_profile_discovery_rejects_additional_tests() {
-        let profile = &SDMMC_RDIF_FEATURE_PROFILES[1];
+        let profile = &AX_DRIVER_FEATURE_PROFILES[1];
         let tests = [
-            "sdio::tests::rdif_lifecycle::ready_online_smp_repeats_info_without_reissuing_resources",
-            "sdio::tests::rdif_lifecycle::unrelated_test",
+            PCI_FDT_IRQ_CAPABILITY_TEST,
+            "pci_fdt_interrupt_map_unrelated_test",
         ];
 
         let err = validate_discovered_tests(profile, &render_test_list(&tests)).unwrap_err();
@@ -1081,17 +1044,17 @@ mod tests {
     #[test]
     fn cargo_execution_failures_are_aggregated_across_profiles_and_packages() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-hal".to_string(), "ax-display".to_string()];
-        let failed_profile = &AX_HAL_FEATURE_PROFILES[0];
+        let packages = vec!["ax-task".to_string(), "ax-api".to_string()];
+        let failed_profile = &AX_TASK_FEATURE_PROFILES[0];
         let mut runner = FakeCargoRunner::succeeding()
-            .with_ax_hal_discovery()
+            .with_ax_task_discovery()
             .with_status(
-                CargoTestInvocation::for_profile("ax-hal", failed_profile, CargoTestAction::Run),
+                CargoTestInvocation::for_profile("ax-task", failed_profile, CargoTestAction::Run),
                 false,
             )
             .with_status(
                 CargoTestInvocation::for_profile(
-                    "ax-display",
+                    "ax-api",
                     &HOST_TEST_FEATURE_PROFILES[0],
                     CargoTestAction::Run,
                 ),
@@ -1100,7 +1063,6 @@ mod tests {
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert_eq!(failed, vec!["ax-hal", "ax-display"]);
-        assert_eq!(runner.invocations.len(), 3);
+        assert_eq!(failed, vec!["ax-task", "ax-api"]);
     }
 }

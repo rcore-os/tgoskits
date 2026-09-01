@@ -265,8 +265,13 @@ mod tests {
 
         let merged = merge_board_test_uboot_config(Some(base), board_test);
 
-        assert_eq!(merged.success_regex, vec!["ubuntu login:"]);
-        assert_eq!(merged.fail_regex, vec!["(?i)panic"]);
+        assert!(
+            merged
+                .success_regex
+                .iter()
+                .any(|regex| regex == "ubuntu login:")
+        );
+        assert!(merged.fail_regex.iter().any(|regex| regex == "(?i)panic"));
         assert_eq!(
             merged.uboot_cmd,
             Some(vec![

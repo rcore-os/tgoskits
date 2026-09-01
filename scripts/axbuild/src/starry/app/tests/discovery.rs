@@ -42,9 +42,12 @@ fn discovers_prebuild_apps_and_ignores_listed_names() {
     .unwrap();
 
     let apps = discover_apps(root.path()).unwrap();
-    let names = apps.into_iter().map(|app| app.name).collect::<Vec<_>>();
+    let names = apps.iter().map(|app| app.name.as_str()).collect::<Vec<_>>();
 
-    assert_eq!(names, vec!["codex-cli", "picoclaw-cli"]);
+    assert!(names.contains(&"codex-cli"));
+    assert!(names.contains(&"picoclaw-cli"));
+    assert!(!names.contains(&"orangepi-5-plus-uvc"));
+    assert!(!names.contains(&"orangepi-5-plus-uvc-rknn"));
 }
 
 #[test]
@@ -66,8 +69,8 @@ fn infers_qemu_and_board_app_kinds() {
 
     let apps = discover_apps(root.path()).unwrap();
 
-    assert_eq!(apps[0].name, "board-demo");
-    assert_eq!(apps[0].kind, StarryAppKind::Board);
-    assert_eq!(apps[1].name, "codex-cli");
-    assert_eq!(apps[1].kind, StarryAppKind::Qemu);
+    let board = apps.iter().find(|app| app.name == "board-demo").unwrap();
+    let qemu = apps.iter().find(|app| app.name == "codex-cli").unwrap();
+    assert_eq!(board.kind, StarryAppKind::Board);
+    assert_eq!(qemu.kind, StarryAppKind::Qemu);
 }

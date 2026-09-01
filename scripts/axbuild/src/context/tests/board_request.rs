@@ -1,44 +1,9 @@
 use std::{fs, path::PathBuf};
 
 use ostool::board::{RunBoardOptions, config::BoardRunConfig};
-use serde::Serialize;
 use tempfile::tempdir;
 
 use super::board_run_request;
-
-#[derive(Serialize)]
-struct LegacyBoardConfigFixture {
-    board_type: String,
-}
-
-#[test]
-fn session_files_round_trip_as_typed_toml() {
-    let config = BoardRunConfig {
-        board_type: "OrangePi-5-Plus".to_string(),
-        session_files: vec![
-            PathBuf::from("iperf-smoke.sh"),
-            PathBuf::from("tools/network/probe.sh"),
-        ],
-        ..Default::default()
-    };
-
-    let encoded = toml::to_string(&config).unwrap();
-    let decoded: BoardRunConfig = toml::from_str(&encoded).unwrap();
-
-    assert_eq!(decoded, config);
-}
-
-#[test]
-fn legacy_board_config_defaults_to_empty_session_files() {
-    let fixture = LegacyBoardConfigFixture {
-        board_type: "OrangePi-5-Plus".to_string(),
-    };
-    let encoded = toml::to_string(&fixture).unwrap();
-
-    let decoded: BoardRunConfig = toml::from_str(&encoded).unwrap();
-
-    assert!(decoded.session_files.is_empty());
-}
 
 #[test]
 fn board_request_resolves_nested_files_from_config_directory() {

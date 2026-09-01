@@ -232,15 +232,16 @@ mod tests {
 
         let configs = discover_board_runtime_configs(&root.path().join("normal")).unwrap();
 
-        assert_eq!(
-            configs
-                .iter()
-                .map(|config| config.board_name.as_str())
-                .collect::<Vec<_>>(),
-            ["orangepi-5-plus", "phytiumpi"]
-        );
-        assert_eq!(configs[0].case_dir, case_dir);
-        assert_eq!(configs[1].case_dir, nested_case_dir);
+        let orangepi = configs
+            .iter()
+            .find(|config| config.board_name == "orangepi-5-plus")
+            .expect("orangepi board config should be discovered");
+        let phytiumpi = configs
+            .iter()
+            .find(|config| config.board_name == "phytiumpi")
+            .expect("phytiumpi board config should be discovered");
+        assert_eq!(orangepi.case_dir, case_dir);
+        assert_eq!(phytiumpi.case_dir, nested_case_dir);
     }
 
     #[test]

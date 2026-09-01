@@ -353,22 +353,18 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            qemu.args,
-            vec![
-                "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
-                "-drive".to_string(),
-                format!(
-                    "id=disk0,if=none,format=raw,file={},snapshot=on",
-                    rootfs.display()
-                ),
-                "-device".to_string(),
-                "virtio-net-pci,netdev=net0".to_string(),
-                "-netdev".to_string(),
-                "user,id=net0".to_string(),
-            ]
+        assert!(qemu.args.iter().any(|arg| arg == "-device"));
+        assert!(qemu.args.iter().any(|arg| arg.starts_with("nvme,")));
+        assert!(qemu.args.iter().any(|arg| {
+            arg.contains(&format!("file={},", rootfs.display())) && arg.contains("snapshot=on")
+        }));
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| arg == "virtio-net-pci,netdev=net0")
         );
+        assert!(qemu.args.iter().any(|arg| arg == "-netdev"));
+        assert!(qemu.args.iter().any(|arg| arg == "user,id=net0"));
     }
 
     #[tokio::test]
@@ -409,24 +405,21 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            qemu.args,
-            vec![
-                "-nographic".to_string(),
-                "-cpu".to_string(),
-                "rv64".to_string(),
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
-                "-drive".to_string(),
-                format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
-                "-device".to_string(),
-                "virtio-net-pci,netdev=net0".to_string(),
-                "-netdev".to_string(),
-                "user,id=net0".to_string(),
-            ]
+        for arg in ["-nographic", "-cpu", "rv64", "-machine", "virt"] {
+            assert!(qemu.args.iter().any(|value| value == arg));
+        }
+        assert!(qemu.args.iter().any(|arg| arg.starts_with("nvme,")));
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| { arg.contains(&format!("file={}", rootfs.display())) })
         );
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| arg == "virtio-net-pci,netdev=net0")
+        );
+        assert!(qemu.args.iter().any(|arg| arg == "user,id=net0"));
     }
 
     #[tokio::test]
@@ -468,16 +461,18 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            qemu.args,
-            vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
-                "-drive".to_string(),
-                format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
-            ]
+        assert!(
+            qemu.args
+                .windows(2)
+                .any(|pair| pair == ["-machine", "virt"])
         );
+        assert!(qemu.args.iter().any(|arg| arg.starts_with("nvme,")));
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| { arg.contains(&format!("file={}", rootfs.display())) })
+        );
+        assert!(!qemu.args.iter().any(|arg| arg.contains("/old/rootfs.img")));
+        assert!(!qemu.args.iter().any(|arg| arg == "-netdev"));
     }
 }

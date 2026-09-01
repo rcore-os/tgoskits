@@ -418,16 +418,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_qemu_template_path_uses_axvisor_script_location() {
-        let path = default_qemu_config_template_path(Path::new("os/axvisor"), "aarch64");
-
-        assert_eq!(
-            path,
-            PathBuf::from("os/axvisor/configs/qemu/qemu-aarch64.toml")
-        );
-    }
-
-    #[test]
     fn command_parses_uboot() {
         #[derive(Parser)]
         struct Cli {

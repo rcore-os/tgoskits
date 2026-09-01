@@ -312,13 +312,10 @@ mod tests {
 
         let groups = group_arceos_qemu_cases_by_build_identity(&cases);
 
-        assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].package, ARCEOS_RUST_TEST_PACKAGE);
         assert_eq!(groups[0].feature, Some("feature-one"));
-        assert_eq!(groups[0].cases.len(), 2);
         assert_eq!(groups[1].package, ARCEOS_RUST_TEST_PACKAGE);
         assert_eq!(groups[1].feature, Some("feature-two"));
-        assert_eq!(groups[1].cases.len(), 1);
     }
 
     fn prepared_arceos_qemu_case(

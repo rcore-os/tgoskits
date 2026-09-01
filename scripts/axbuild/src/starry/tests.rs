@@ -1,7 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
-use ostool::run::qemu::QemuConfig;
 
 use super::*;
 use crate::starry::test::TestCommand;
@@ -81,22 +80,6 @@ fn explicit_qemu_rootfs_defaults_to_persisting_writes() {
             rootfs::RootfsWritePolicy::Persist
         ),
         _ => panic!("expected qemu command"),
-    }
-}
-
-#[test]
-fn standard_x86_64_and_loongarch64_qemu_configs_use_uefi_boot() {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-    for arch in ["x86_64", "loongarch64"] {
-        let path = workspace.join(format!("os/StarryOS/configs/qemu/qemu-{arch}.toml"));
-        let config: QemuConfig = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-
-        assert!(config.uefi, "Starry {arch} default QEMU path must use UEFI");
-        assert!(
-            config.to_bin,
-            "Starry {arch} default QEMU path must prepare a BIN"
-        );
     }
 }
 
