@@ -43,6 +43,7 @@ static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::ne
 /// Requests larger than this are truncated; the hypercall ABI always writes
 /// the actual granted size back to the guest, so guests must check it.
 pub const MAX_IVC_CHANNEL_SIZE: usize = 0x100_0000;
+const IVC_NOTIFY_PEER: usize = usize::MAX;
 
 /// Allocates guest-physical bindings inside one graph-owned IVC MMIO aperture.
 pub(crate) trait IvcApertureAllocator: Send + Sync {
@@ -511,6 +512,22 @@ pub fn prepare_notify_channel(
     target_vm_id: usize,
 ) -> AxVmResult<IvcNotifyRoute> {
     let channels = IVC_CHANNELS.lock_unpoisoned();
+    prepare_notify_channel_from_channels(
+        &channels,
+        publisher_vm_id,
+        key,
+        source_vm_id,
+        target_vm_id,
+    )
+}
+
+fn prepare_notify_channel_from_channels<H: PagingHandler>(
+    channels: &BTreeMap<(usize, usize), IVCChannel<H>>,
+    publisher_vm_id: usize,
+    key: usize,
+    source_vm_id: usize,
+    mut target_vm_id: usize,
+) -> AxVmResult<IvcNotifyRoute> {
     let channel = channels.get(&(publisher_vm_id, key)).ok_or_else(|| {
         ax_err_type!(
             NotFound,
@@ -529,6 +546,18 @@ pub fn prepare_notify_channel(
                 publisher_vm_id, key
             )
         ));
+    }
+
+    if target_vm_id == IVC_NOTIFY_PEER {
+        target_vm_id = channel.peer_vm_id_for(source_vm_id).ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!(
+                    "VM[{}] has no notifiable peer on IVC channel publisher VM[{}] key {:#x}",
+                    source_vm_id, publisher_vm_id, key
+                )
+            )
+        })?;
     }
 
     let source_can_notify_target = if source_vm_id == publisher_vm_id {
@@ -737,6 +766,18 @@ impl<H: PagingHandler> IVCChannel<H> {
     pub fn has_subscriber(&self, subscriber_vm_id: usize) -> bool {
         self.subscriber
             .is_some_and(|binding| binding.vm_id == subscriber_vm_id && !binding.closing)
+    }
+
+    fn peer_vm_id_for(&self, source_vm_id: usize) -> Option<usize> {
+        if source_vm_id == self.publisher_vm_id {
+            self.subscriber
+                .filter(|binding| !binding.closing)
+                .map(|binding| binding.vm_id)
+        } else if self.has_subscriber(source_vm_id) {
+            Some(self.publisher_vm_id)
+        } else {
+            None
+        }
     }
 
     fn ensure_subscriber_available(&self, subscriber_vm_id: usize) -> AxVmResult<()> {
@@ -1188,6 +1229,72 @@ mod tests {
         assert!(channel.has_subscriber(3));
 
         assert!(teardown_vm_from_channels(&mut channels, 2).is_empty());
+    }
+
+    #[test]
+    fn notify_peer_sentinel_routes_publisher_to_subscriber() {
+        let publisher_vm_id = 1;
+        let subscriber_vm_id = 2;
+        let key = 0x210;
+        let mut channels = BTreeMap::new();
+        let mut channel = IVCChannel::<MockPagingHandler>::alloc(
+            publisher_vm_id,
+            key,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_0000),
+        )
+        .unwrap();
+        channel
+            .add_subscriber(subscriber_vm_id, GuestPhysAddr::from_usize(0x7100_0000))
+            .unwrap();
+        channels.insert((publisher_vm_id, key), channel);
+
+        let route = prepare_notify_channel_from_channels(
+            &channels,
+            publisher_vm_id,
+            key,
+            publisher_vm_id,
+            IVC_NOTIFY_PEER,
+        )
+        .unwrap();
+
+        assert_eq!(route.source_vm_id, publisher_vm_id);
+        assert_eq!(route.target_vm_id, subscriber_vm_id);
+        assert_eq!(route.publisher_vm_id, publisher_vm_id);
+        assert_eq!(route.key, key);
+    }
+
+    #[test]
+    fn notify_peer_sentinel_routes_subscriber_to_publisher() {
+        let publisher_vm_id = 1;
+        let subscriber_vm_id = 2;
+        let key = 0x211;
+        let mut channels = BTreeMap::new();
+        let mut channel = IVCChannel::<MockPagingHandler>::alloc(
+            publisher_vm_id,
+            key,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_0000),
+        )
+        .unwrap();
+        channel
+            .add_subscriber(subscriber_vm_id, GuestPhysAddr::from_usize(0x7100_0000))
+            .unwrap();
+        channels.insert((publisher_vm_id, key), channel);
+
+        let route = prepare_notify_channel_from_channels(
+            &channels,
+            publisher_vm_id,
+            key,
+            subscriber_vm_id,
+            IVC_NOTIFY_PEER,
+        )
+        .unwrap();
+
+        assert_eq!(route.source_vm_id, subscriber_vm_id);
+        assert_eq!(route.target_vm_id, publisher_vm_id);
+        assert_eq!(route.publisher_vm_id, publisher_vm_id);
+        assert_eq!(route.key, key);
     }
 
     #[test]

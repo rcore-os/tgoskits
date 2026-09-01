@@ -63,6 +63,11 @@ impl IvcRegion {
         self.publisher_id == publisher_id as u64 && self.key == key as u64
     }
 
+    /// Returns the host-provided publisher VM ID for this channel.
+    pub fn publisher_id(&self) -> usize {
+        self.publisher_id as usize
+    }
+
     /// Returns whether the protocol header is supported by this crate.
     pub fn protocol_header_matches(&self) -> bool {
         self.header.magic.load(Ordering::Acquire) == IVC_REGION_MAGIC

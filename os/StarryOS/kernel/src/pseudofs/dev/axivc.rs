@@ -92,6 +92,7 @@ impl AxivcRegistry {
                 return Err(err);
             }
         };
+        let publisher_id = region.publisher_id();
         region.initialize();
         let region: &'static IvcRegion = region;
         let (producer, consumer) = unsafe { region.publisher_endpoints() }.into_parts();
@@ -102,11 +103,12 @@ impl AxivcRegistry {
             return Err(VfsError::InvalidInput);
         }
         let Some(index) = inner.insert_publisher(ChannelState {
-            publisher_id: 0,
-            notify_target_vm_id: None,
+            publisher_id,
+            notify_target_vm_id: Some(ivc::IVC_NOTIFY_PEER),
             key: arg.channel_key,
             shm_base_gpa,
             shm_size,
+            mmap_anchor: Arc::new(()),
             producer,
             consumer,
             sequence: AtomicU64::new(1),
@@ -132,6 +134,9 @@ impl AxivcRegistry {
             return Err(VfsError::NoSuchDevice);
         };
         if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
+        if Arc::strong_count(&state.mmap_anchor) > 1 {
             return Err(VfsError::WouldBlock);
         }
         state.closing = true;
@@ -198,6 +203,7 @@ impl AxivcRegistry {
             key: arg.channel_key,
             shm_base_gpa,
             shm_size,
+            mmap_anchor: Arc::new(()),
             producer,
             consumer,
             sequence: AtomicU64::new(1),
@@ -224,6 +230,9 @@ impl AxivcRegistry {
             return Err(VfsError::NoSuchDevice);
         };
         if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
+        if Arc::strong_count(&state.mmap_anchor) > 1 {
             return Err(VfsError::WouldBlock);
         }
         state.closing = true;
@@ -352,6 +361,7 @@ struct ChannelState {
     key: u64,
     shm_base_gpa: usize,
     shm_size: usize,
+    mmap_anchor: Arc<()>,
     producer: IvcProducer<'static>,
     consumer: IvcConsumer<'static>,
     sequence: AtomicU64,
@@ -507,9 +517,7 @@ impl DeviceOps for AxivcChannel {
         };
 
         let len = message.len();
-        if matches!(self.role, ChannelRole::Subscriber) {
-            notify_peer(state, self.role_name());
-        }
+        notify_peer(state, self.role_name());
         info!(
             "axivc: read role={} key={:#x} seq={} kind={:?} len={}",
             self.role_name(),
@@ -545,9 +553,7 @@ impl DeviceOps for AxivcChannel {
             .producer
             .send(kind, sequence, buf)
             .map_err(ring_error)?;
-        if matches!(self.role, ChannelRole::Subscriber) {
-            notify_peer(state, self.role_name());
-        }
+        notify_peer(state, self.role_name());
         info!(
             "axivc: write role={} key={:#x} seq={} len={}",
             self.role_name(),
@@ -608,13 +614,15 @@ impl DeviceOps for AxivcChannel {
         if state.closing || offset >= state.shm_size {
             return DeviceMmap::None;
         }
+        let retainer: Arc<dyn Any + Send + Sync> = state.mmap_anchor.clone();
+        let retainer = Some(retainer);
         #[cfg(feature = "rknpu")]
         {
             let range = PhysAddrRange::from_start_size(
                 PhysAddr::from_usize(state.shm_base_gpa),
                 state.shm_size,
             );
-            DeviceMmap::PhysicalCached(range, None)
+            DeviceMmap::PhysicalCached(range, retainer)
         }
         #[cfg(not(feature = "rknpu"))]
         {
@@ -623,7 +631,7 @@ impl DeviceOps for AxivcChannel {
                 PhysAddr::from_usize(state.shm_base_gpa + offset),
                 length,
             );
-            DeviceMmap::PhysicalResolved(range, None)
+            DeviceMmap::PhysicalResolved(range, retainer)
         }
     }
 
