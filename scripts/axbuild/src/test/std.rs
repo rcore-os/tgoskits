@@ -231,7 +231,7 @@ const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
             "block::runtime::lifecycle::tests::teardown::member_shutdown_failure_quarantines_unstopped_group_controller",
             "block::runtime::lifecycle::tests::teardown::partial_group_irq_enable_with_failed_synchronize_quarantines_all_owners",
             "block::runtime::lifecycle::tests::teardown::provisional_group_terminal_waits_for_shared_irq_owner",
-            "block::runtime::lifecycle::tests::teardown::teardown_disables_controller_before_queue_memory_is_released",
+            "block::runtime::lifecycle::tests::teardown::teardown_accepts_repeated_device_info_and_releases_resources_in_order",
             "block::runtime::lifecycle::tests::teardown::teardown_releases_queue_when_quiesce_confirms_prior_watchdog_shutdown",
         ],
     },

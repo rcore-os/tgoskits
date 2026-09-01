@@ -67,6 +67,7 @@ fn last_device_handle_drop_owns_teardown_despite_internal_references() {
                 log: Arc::clone(&log),
             }),
             log: Arc::clone(&log),
+            repeat_device_info_on_quiesce: false,
         }),
     ))
     .unwrap();
@@ -286,6 +287,7 @@ fn failed_irq_registration_stops_controller_before_dropping_emitted_queue() {
             log: Arc::clone(&log),
         }),
         log: Arc::clone(&log),
+        repeat_device_info_on_quiesce: false,
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(11));
     let result = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
@@ -307,7 +309,7 @@ fn failed_irq_registration_stops_controller_before_dropping_emitted_queue() {
 }
 
 #[test]
-fn teardown_disables_controller_before_queue_memory_is_released() {
+fn teardown_accepts_repeated_device_info_and_releases_resources_in_order() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     let log = Arc::new(StdMutex::new(Vec::new()));
@@ -322,6 +324,7 @@ fn teardown_disables_controller_before_queue_memory_is_released() {
             log: Arc::clone(&log),
         }),
         log: Arc::clone(&log),
+        repeat_device_info_on_quiesce: true,
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(9));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
@@ -558,6 +561,7 @@ fn irq_synchronize_failure_blocks_hardware_shutdown() {
             log: Arc::clone(&log),
         }),
         log: Arc::clone(&log),
+        repeat_device_info_on_quiesce: false,
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(17));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
@@ -596,6 +600,7 @@ fn closed_submission_channel_is_retryable_only_while_device_is_ready() {
                 log: Arc::new(StdMutex::new(Vec::new())),
             }),
             log: Arc::new(StdMutex::new(Vec::new())),
+            repeat_device_info_on_quiesce: false,
         }),
     ))
     .unwrap();
@@ -645,6 +650,7 @@ fn late_hctx_failure_cannot_resurrect_a_stopped_device() {
             log: Arc::clone(&log),
         }),
         log,
+        repeat_device_info_on_quiesce: false,
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(

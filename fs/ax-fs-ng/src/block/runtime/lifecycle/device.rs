@@ -950,15 +950,19 @@ impl InstallUpdateTransaction {
         {
             let mut gate = self.device.lifecycle_gate.lock();
             if matches!(gate.phase, DevicePhase::Stopping | DevicePhase::Stopped) {
-                if self.prepared_hctxs.is_empty()
-                    && self.registrations.is_empty()
-                    && self.device_info.is_none()
+                if !self.prepared_hctxs.is_empty() || !self.registrations.is_empty() {
+                    drop(gate);
+                    return Err(self.fail(BlkError::Io));
+                }
+                if self
+                    .device_info
+                    .is_some_and(|info| info != self.device.device_info.lock().published())
                 {
                     drop(gate);
-                    return Ok(self.rearm_sources);
+                    return Err(self.fail(BlkError::InvalidRequest));
                 }
                 drop(gate);
-                return Err(self.fail(BlkError::Io));
+                return Ok(self.rearm_sources);
             }
             if gate.phase == DevicePhase::Failed && ready {
                 drop(gate);

@@ -318,6 +318,7 @@ impl BlockController for BatchingReadController {
 struct LifecycleController {
     queue: Option<LifecycleQueue>,
     log: Arc<StdMutex<Vec<&'static str>>>,
+    repeat_device_info_on_quiesce: bool,
 }
 
 struct TerminalBeforeShutdownController {
@@ -555,7 +556,12 @@ impl BlockController for LifecycleController {
             )),
             ControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("controller_quiesce");
-                Ok(ControllerUpdate::state(ControllerState::Ready))
+                let update = ControllerUpdate::state(ControllerState::Ready);
+                if self.repeat_device_info_on_quiesce {
+                    Ok(update.with_device_info(self.device_info()))
+                } else {
+                    Ok(update)
+                }
             }
             ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
                 self.log.lock().unwrap().push("controller_shutdown");
