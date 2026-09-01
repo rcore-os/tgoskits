@@ -21,6 +21,9 @@ pub(super) fn prepare_for_secure_wifi(
 }
 
 fn secure_wifi_requested(ssid: Option<&OsStr>, password: Option<&OsStr>) -> anyhow::Result<bool> {
+    if ssid.is_some_and(|ssid| ssid.is_empty()) {
+        return Ok(false);
+    }
     match (ssid, password) {
         (None, None) => Ok(false),
         (Some(_), Some(_)) => Ok(true),
@@ -91,6 +94,14 @@ mod tests {
         );
         assert!(secure_wifi_requested(Some(OsStr::new("ssid")), None).is_err());
         assert!(secure_wifi_requested(None, Some(OsStr::new("password"))).is_err());
+    }
+
+    #[test]
+    fn empty_wifi_ssid_does_not_request_boot_entropy() {
+        assert!(!secure_wifi_requested(Some(OsStr::new("")), None).unwrap());
+        assert!(
+            !secure_wifi_requested(Some(OsStr::new("")), Some(OsStr::new("password"))).unwrap()
+        );
     }
 
     #[test]

@@ -47,13 +47,15 @@ mod tests {
             StartupWifiConfigError::Incomplete
         );
         assert_eq!(
-            from_values(Some(""), Some("password")).unwrap_err(),
-            StartupWifiConfigError::InvalidSsid
-        );
-        assert_eq!(
             from_values(Some("ssid"), Some("short")).unwrap_err(),
             StartupWifiConfigError::InvalidPassword
         );
+    }
+
+    #[test]
+    fn empty_compile_time_ssid_disables_the_startup_station() {
+        assert_eq!(from_values(Some(""), None).unwrap(), None);
+        assert_eq!(from_values(Some(""), Some("password")).unwrap(), None);
     }
 
     #[test]
