@@ -31,8 +31,9 @@ mod types;
 mod workspace;
 
 pub(crate) use arch::{
-    CrossCompileSpec, arch_for_target_checked, cross_compile_spec_for_arch_checked,
-    default_rootfs_image_for_arch, resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
+    CrossCompileSpec, arch_for_target, arch_for_target_checked, arch_spec_for_target,
+    cross_compile_spec_for_arch_checked, default_rootfs_image_for_arch,
+    resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
     resolve_starry_arch_and_target, starry_arch_for_target_checked, starry_target_for_arch_checked,
     supported_arches, supported_targets, validate_supported_target,
 };
@@ -42,8 +43,8 @@ pub use types::{
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
     AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET,
     DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
-    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
-    STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
+    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_KERNEL_PACKAGE,
+    STARRY_PACKAGE, STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{

@@ -249,6 +249,10 @@ AKA board build 直接读取 `STARRY_WIFI_SSID` 与 `STARRY_WIFI_PASSWORD`。输
 `WifiTransaction` 发布 station 启动事务。portable AIC core 不读取环境变量、不解析
 产品配置，也不增加第二套连接 API。
 
+空 `STARRY_WIFI_SSID` 是唯一的关闭开关，只取消编译期 station 启动事务；此时密码值
+不参与校验，AIC8800 驱动仍完成 probe 并注册 `wlan0`。非空 SSID 仍要求有效密码，
+不能用空密码隐式关闭连接。
+
 普通 ostool `session_files` 继续走现有 HTTP 传输；启动事务在内核网络初始化阶段完成
 WPA2 和 DHCP 后，iperf 脚本才使用该通道下载。凭据不经过 sidecar、boot archive、
 guest helper 或 Starry 专用内核文件协议。板级 runner 只在发现完整 Wi-Fi 环境变量时

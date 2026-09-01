@@ -77,7 +77,7 @@ const _: () = {
     assert!(offset_of!(FiemapExtent, flags) == 40);
 };
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 fn ctl_ioctl_constants_hold_for_test() -> bool {
     // Verify ioctl command constants
     assert!(FIOCLEX == 0x5451);
@@ -1217,7 +1217,7 @@ pub fn sys_syncfs(fd: c_int) -> StarryResult<isize> {
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use core::cell::Cell;
 

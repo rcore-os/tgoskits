@@ -120,6 +120,7 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         BareKernelLinkMode::Pie,
     )?;
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
+    crate::build::append_cargo_rustflags(&mut cargo, &["-D", "warnings"]);
     Ok(cargo)
 }
 
@@ -156,10 +157,20 @@ pub(crate) async fn build_starry_artifact(
         "starry build package={} target={} arch={}",
         cargo.package, request.target, request.arch
     ));
-    let output = starry
+    let report_session = if request.arch == "aarch64" {
+        let target_dir =
+            crate::build::cargo_target_dir_for(starry.app.workspace_root(), &cargo.args)?;
+        Some(crate::build::start_future_incompat_report_session(
+            &target_dir,
+        )?)
+    } else {
+        None
+    };
+    let build_result = starry
         .app
         .build(cargo.clone(), request.build_info_path.clone())
-        .await?;
+        .await;
+    let output = crate::build::finish_future_incompat_report_session(report_session, build_result)?;
     stage.done();
     postprocess_starry_artifact(starry.app.workspace_root(), request, &cargo, &output)?;
     Ok(output)

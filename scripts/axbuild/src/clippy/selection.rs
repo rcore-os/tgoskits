@@ -8,8 +8,11 @@ use cargo_metadata::{Metadata, Package};
 
 use super::AXSTD_STD_PACKAGE;
 
-const INCREMENTAL_CLIPPY_OS_ROOT_PACKAGES: &[&str] =
-    &[AXSTD_STD_PACKAGE, crate::context::STARRY_PACKAGE];
+const INCREMENTAL_CLIPPY_OS_ROOT_PACKAGES: &[&str] = &[
+    AXSTD_STD_PACKAGE,
+    crate::context::STARRY_KERNEL_PACKAGE,
+    crate::context::STARRY_PACKAGE,
+];
 
 const UNSUPPORTED_CLIPPY_PACKAGES: &[(&str, &str)] = &[
     (

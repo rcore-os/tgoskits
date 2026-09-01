@@ -569,9 +569,14 @@ impl BuildInfo {
 
         let mut rustflags = toolchain_rustflags_for_features(&self.env, &self.features);
         rustflags.extend(link_mode.rustflags(target));
+        let bare_target = freestanding_build_target_for(target);
         let args = Self::build_cargo_args(target, &rustflags);
         let mut cargo =
-            self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args);
+            self.into_base_cargo_config_with_log(package.to_string(), bare_target.target, args);
+        cargo.env.extend(bare_target.env);
+        cargo
+            .env
+            .insert("AX_TARGET".to_string(), target.to_string());
         cargo.to_bin = bare_target_requires_bin(target);
         Ok(cargo)
     }
@@ -673,16 +678,23 @@ impl BuildInfo {
     }
 
     pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
-        let mut args = vec!["-Z".to_string(), "build-std=core,alloc".to_string()];
+        let bare_target = freestanding_build_target_for(target);
+        let mut args = bare_target.cargo_args;
+        args.extend(Self::rustflags_cargo_args(
+            &bare_target.target,
+            extra_rustflags,
+        ));
+        args
+    }
+
+    fn rustflags_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
+        let mut args = Vec::new();
         let target_key = Path::new(target)
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or(target);
 
-        let mut rustflags = extra_rustflags.to_vec();
-        if target_key.starts_with("loongarch64-") {
-            rustflags.push("-Ctarget-feature=-ual".to_string());
-        }
+        let rustflags = extra_rustflags.to_vec();
 
         if !rustflags.is_empty() {
             args.push("--config".to_string());

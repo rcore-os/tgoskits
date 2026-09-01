@@ -30,7 +30,7 @@ mod plan;
 #[cfg(test)]
 mod tests;
 
-const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
+pub(crate) const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
 const AXTEST_FEATURE: &str = "axtest";
 const AXTEST_SUITE_OK: &str = "AXTEST_SUITE_OK";
 const AXTEST_SUITE_FAIL: &str = "AXTEST_SUITE_FAIL";
@@ -302,7 +302,14 @@ async fn run_qemu_unit(
     apply_qemu_cargo_options(&mut cargo, args);
     app.set_debug_mode(false)?;
 
-    let output = app.build(cargo.clone(), build_config.clone()).await?;
+    let report_session = maybe_start_starry_future_incompat_report(
+        unit.runtime,
+        app.workspace_root(),
+        &unit.arch,
+        &cargo,
+    )?;
+    let build_result = app.build(cargo.clone(), build_config.clone()).await;
+    let output = crate::build::finish_future_incompat_report_session(report_session, build_result)?;
     maybe_postprocess_starry_artifact(
         KtestBuildContext {
             runtime: unit.runtime,
@@ -507,7 +514,10 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
                 board_config_path.display()
             )
         })?;
-    let output = app.build(cargo.clone(), build_config.clone()).await?;
+    let report_session =
+        maybe_start_starry_future_incompat_report(runtime, app.workspace_root(), arch, &cargo)?;
+    let build_result = app.build(cargo.clone(), build_config.clone()).await;
+    let output = crate::build::finish_future_incompat_report_session(report_session, build_result)?;
     maybe_postprocess_starry_artifact(
         KtestBuildContext {
             runtime,
@@ -1062,6 +1072,19 @@ fn maybe_postprocess_starry_artifact(
     }
     let request = starry_request(ctx.package, ctx.arch, ctx.target, ctx.build_config);
     starry::build::postprocess_starry_artifact(ctx.workspace_root, &request, cargo, output)
+}
+
+fn maybe_start_starry_future_incompat_report(
+    runtime: KtestRuntime,
+    workspace_root: &Path,
+    arch: &str,
+    cargo: &Cargo,
+) -> anyhow::Result<Option<crate::build::FutureIncompatReportSession>> {
+    if runtime != KtestRuntime::Starry || arch != "aarch64" {
+        return Ok(None);
+    }
+    let target_dir = crate::build::cargo_target_dir_for(workspace_root, &cargo.args)?;
+    crate::build::start_future_incompat_report_session(&target_dir).map(Some)
 }
 
 fn starry_request(

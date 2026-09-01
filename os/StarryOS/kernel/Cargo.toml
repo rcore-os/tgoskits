@@ -22,6 +22,28 @@ targets = [
 ]
 
 [[package.metadata.clippy.configurations]]
+name = "riscv64-system"
+target = "riscv64gc-unknown-none-elf"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/serial",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "ax-driver/xhci-pci",
+    "ax-runtime/rtc",
+    "smp",
+    "starry-kernel/input",
+]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "riscv64"
+AX_LOG = "warn"
+AX_TARGET = "riscv64gc-unknown-none-elf"
+SMP = "4"
+
+[[package.metadata.clippy.configurations]]
 name = "aarch64-system"
 target = "aarch64-unknown-none-softfloat"
 features = [
@@ -70,6 +92,130 @@ AX_ARCH = "aarch64"
 AX_LOG = "warn"
 AX_TARGET = "aarch64-unknown-none-softfloat"
 SMP = "4"
+
+[[package.metadata.clippy.configurations]]
+name = "loongarch64-system"
+target = "loongarch64-unknown-none-softfloat"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "smp",
+    "starry-kernel/input",
+]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "loongarch64"
+AX_LOG = "warn"
+AX_TARGET = "loongarch64-unknown-none-softfloat"
+SMP = "4"
+
+[[package.metadata.clippy.configurations]]
+name = "x86_64-system"
+target = "x86_64-unknown-none"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "ax-driver/xhci-pci",
+    "smp",
+    "starry-kernel/input",
+]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "x86_64"
+AX_LOG = "warn"
+AX_TARGET = "x86_64-unknown-none"
+SMP = "4"
+
+[[package.metadata.clippy.configurations]]
+name = "riscv64-axtest-source"
+target = "riscv64gc-unknown-none-elf"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/serial",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "ax-runtime/display",
+    "ax-runtime/rtc",
+    "axtest",
+    "smp",
+    "starry-kernel/input",
+    "starry-kernel/vsock",
+]
+rustflags = ["--cfg", "axtest", "--check-cfg", "cfg(axtest)"]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "riscv64"
+AX_LOG = "warn"
+AX_TARGET = "riscv64gc-unknown-none-elf"
+
+[[package.metadata.clippy.configurations]]
+name = "aarch64-axtest-source"
+target = "aarch64-unknown-none-softfloat"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "axtest",
+    "smp",
+    "starry-kernel/input",
+    "starry-kernel/vsock",
+]
+rustflags = ["--cfg", "axtest", "--check-cfg", "cfg(axtest)"]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "aarch64"
+AX_LOG = "warn"
+AX_TARGET = "aarch64-unknown-none-softfloat"
+
+[[package.metadata.clippy.configurations]]
+name = "loongarch64-axtest-source"
+target = "loongarch64-unknown-none-softfloat"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "axplat-dyn/efi",
+    "axtest",
+    "smp",
+]
+rustflags = ["--cfg", "axtest", "--check-cfg", "cfg(axtest)"]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "loongarch64"
+AX_LOG = "warn"
+AX_TARGET = "loongarch64-unknown-none-softfloat"
+
+[[package.metadata.clippy.configurations]]
+name = "x86_64-axtest-source"
+target = "x86_64-unknown-none"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "axplat-dyn/efi",
+    "axtest",
+    "smp",
+]
+rustflags = ["--cfg", "axtest", "--check-cfg", "cfg(axtest)"]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "x86_64"
+AX_LOG = "warn"
+AX_TARGET = "x86_64-unknown-none"
 
 [features]
 default = ["dynamic_debug"]

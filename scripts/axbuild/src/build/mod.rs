@@ -19,14 +19,21 @@ use sha2::{Digest, Sha256};
 
 use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
 
+mod bare_build;
 mod config_file;
+mod future_incompat;
 mod info;
 mod platform;
 mod std_build;
 
+pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
 pub(crate) use config_file::{
     ensure_build_info, load_build_info, load_toml_with_rejector, read_toml_with_rejector,
     reject_arceos_app_c_field, reject_removed_std_field,
+};
+pub(crate) use future_incompat::{
+    FutureIncompatReportSession, cargo_target_dir_for, finish_future_incompat_report_session,
+    finish_future_incompat_report_status, start_future_incompat_report_session,
 };
 #[cfg(test)]
 pub(crate) use info::toolchain_rustflags_for_features;
