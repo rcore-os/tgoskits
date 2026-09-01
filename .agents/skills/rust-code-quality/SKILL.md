@@ -19,6 +19,7 @@ description: 编写、修改、重构或审查本 TGOSKits 仓库中的 Rust 代
 - 锁、原子操作、异步执行、中断、任务调度或共享状态：`rust-concurrency-safety`；
 - `unsafe`、外部函数接口、用户内存、内存映射输入输出或直接内存访问：`rust-unsafe-safety`；
 - 新增或扩展用户可见行为、软件包、子系统、平台或硬件能力：`feature-development`；
+- 测试策略、层级选择、确定性回归、必要性或低价值测试审计：`test-quality`；
 - 可移植驱动、平台启动、系统调用或测试套件：继续读取命中的领域技能。
 
 ## 3. 项目验证

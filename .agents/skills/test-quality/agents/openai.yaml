@@ -1,0 +1,4 @@
+interface:
+  display_name: "测试质量与必要性"
+  short_description: "按风险设计测试层级，并识别、重写或删除不必要和低价值测试"
+  default_prompt: "请使用 $test-quality 设计或审查测试，说明必要风险、测试层级以及应删除或重写的低价值测试。"
