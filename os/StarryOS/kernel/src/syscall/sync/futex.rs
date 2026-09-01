@@ -52,10 +52,14 @@ struct FutexWaitDeadline {
 }
 
 impl FutexWaitDeadline {
-    fn from_remaining(remaining: Option<TimeValue>, now: TimeValue) -> Self {
+    fn from_remaining(
+        remaining: Option<TimeValue>,
+        monotonic_now: impl FnOnce() -> TimeValue,
+    ) -> Self {
         Self {
-            monotonic: remaining
-                .map(|timeout| MonotonicDeadline::from_duration(now.saturating_add(timeout))),
+            monotonic: remaining.map(|timeout| {
+                MonotonicDeadline::from_duration(monotonic_now().saturating_add(timeout))
+            }),
         }
     }
 
@@ -322,7 +326,7 @@ pub fn sys_futex(
         FutexCommand::Wait | FutexCommand::WaitBitset => {
             let deadline = FutexWaitDeadline::from_remaining(
                 futex_wait_timeout(current, &op, timeout)?,
-                monotonic_time(),
+                monotonic_time,
             )
             .monotonic();
 
@@ -527,9 +531,21 @@ fn futex_wake_completion_is_scheduler_driven_for_test() -> bool {
 fn futex_retry_keeps_original_deadline_for_test() -> bool {
     let first_now = TimeValue::from_secs(10);
     let retry_now = first_now + TimeValue::from_millis(25);
-    let timeout = FutexWaitDeadline::from_remaining(Some(TimeValue::from_millis(100)), first_now);
+    let timeout =
+        FutexWaitDeadline::from_remaining(Some(TimeValue::from_millis(100)), || first_now);
 
     timeout.deadline_for_attempt(first_now) == timeout.deadline_for_attempt(retry_now)
+}
+
+#[cfg(all(test, axtest))]
+fn futex_without_timeout_skips_clock_read_for_test() -> bool {
+    let clock_reads = core::cell::Cell::new(0);
+    let timeout = FutexWaitDeadline::from_remaining(None, || {
+        clock_reads.set(clock_reads.get() + 1);
+        TimeValue::ZERO
+    });
+
+    timeout.monotonic().is_none() && clock_reads.get() == 0
 }
 
 #[cfg(test)]
@@ -550,5 +566,11 @@ mod tests {
     #[axtest::axtest]
     fn futex_retry_keeps_original_deadline() {
         assert!(super::futex_retry_keeps_original_deadline_for_test());
+    }
+
+    #[cfg(axtest)]
+    #[axtest::axtest]
+    fn futex_without_timeout_skips_clock_read() {
+        assert!(super::futex_without_timeout_skips_clock_read_for_test());
     }
 }
