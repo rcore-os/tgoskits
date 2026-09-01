@@ -71,20 +71,40 @@ pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     true
 }
 
-// `#[inline(never)]` keeps `sysno` reachable as a real call target so a kprobe
-// planted at its symbol actually fires; its first-argument register also holds
-// the raw syscall id, letting a `profile`-style eBPF demo read the syscall
-// number directly off the probed register. In release builds LLVM would
-// otherwise inline it into `handle_syscall` and the planted `int3` would land
-// on a copy that never executes, so the probe would never trigger.
-#[inline(never)]
-pub fn sysno(id: usize) -> Option<Sysno> {
-    let Some(sysno) = Sysno::new(id) else {
-        warn!("Invalid syscall number: {}", id);
-        return None;
-    };
-    Some(sysno)
-}
+ax_tracepoint::define_event_trace!(
+    sys_enter,
+    TP_kops(crate::tracepoint::KernelTraceAux),
+    TP_system(raw_syscalls),
+    TP_PROTO(uctx: &UserContext, id: i64),
+    TP_STRUCT__entry {
+        id: i64,
+        args: [u64; 6],
+    },
+    TP_fast_assign {
+        id: id,
+        args: [
+            uctx.arg0() as u64,
+            uctx.arg1() as u64,
+            uctx.arg2() as u64,
+            uctx.arg3() as u64,
+            uctx.arg4() as u64,
+            uctx.arg5() as u64,
+        ],
+    },
+    TP_ident(__entry),
+    TP_printk({
+        alloc::format!(
+            "NR {} ({:x}, {:x}, {:x}, {:x}, {:x}, {:x})",
+            __entry.id,
+            __entry.args[0],
+            __entry.args[1],
+            __entry.args[2],
+            __entry.args[3],
+            __entry.args[4],
+            __entry.args[5],
+        )
+    })
+);
 
 /// Dispatches one syscall with the scheduler-owned current task capability.
 ///
@@ -95,11 +115,7 @@ pub fn sysno(id: usize) -> Option<Sysno> {
 /// the Rust lifetime that pins the Starry extension and scheduler record.
 pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallRestart {
     let thread = current.as_thread();
-    let Some(sysno) = sysno(uctx.sysno()) else {
-        uctx.set_retval(-Errno::ENOSYS.into_raw() as _);
-        return SyscallRestart::Allowed;
-    };
-    trace!("Syscall {sysno:?}");
+    let raw_sysno = uctx.sysno();
     match thread.evaluate_seccomp(uctx) {
         SeccompDecision::Allow => {}
         SeccompDecision::Errno(errno) => {
@@ -119,6 +135,18 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
             return SyscallRestart::Allowed;
         }
     }
+
+    // Linux emits raw_syscalls:sys_enter after seccomp and before dispatch.
+    // When no consumer is attached, the tracepoint reduces to its inline
+    // enabled check and does not collect the six arguments.
+    trace_sys_enter(uctx, raw_sysno as i64);
+
+    let Some(sysno) = Sysno::new(raw_sysno) else {
+        warn!("Invalid syscall number: {raw_sysno}");
+        uctx.set_retval(-Errno::ENOSYS.into_raw() as _);
+        return SyscallRestart::Allowed;
+    };
+    trace!("Syscall {sysno:?}");
 
     // Snapshot sepc before dispatching: if a signal handler is installed
     // during the syscall, the handler redirects uctx.ip() elsewhere.

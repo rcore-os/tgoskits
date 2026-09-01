@@ -1,44 +1,13 @@
-use aya::{maps::HashMap, programs::KProbe};
+use aya::{maps::HashMap, programs::TracePoint};
 use log::debug;
-use std::{
-    fs,
-    io::{BufRead, BufReader},
-};
-
 use tokio::time;
 
-// Resolve the (possibly mangled) kallsyms entry for
-// `starry_kernel::syscall::sysno`, the `#[inline(never)]` helper whose first
-// argument is the raw syscall number. Probing it (rather than `handle_syscall`,
-// whose arg0 is `&UserContext`) lets the eBPF program read the number straight
-// off `arg(0)` on every arch. The mangled symbol contains both `syscall` (the
-// module) and `sysno`; requiring both excludes `handle_syscall` (no `sysno`)
-// and the `UserContext::sysno` accessor (no `syscall`). The kernel's kprobe
-// lookup matches the kallsyms name exactly, so we hand aya the real symbol
-// string, not the source name.
-fn resolve_sysno() -> anyhow::Result<String> {
-    let buf = BufReader::new(fs::File::open("/proc/kallsyms")?);
-    for line in buf.lines() {
-        // Format: "<addr> <type> <name>".
-        if let Some(name) = line?.split_whitespace().nth(2)
-            && name.contains("syscall")
-            && name.contains("sysno")
-        {
-            return Ok(name.to_string());
-        }
-    }
-    anyhow::bail!("syscall::sysno not found in /proc/kallsyms")
-}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Warn)
         .format_timestamp(None)
         .init();
-
-    let target_syscall_entry = resolve_sysno()?;
-
-    println!("syscall_count: kprobe target symbol = {target_syscall_entry}");
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
@@ -60,10 +29,10 @@ async fn main() -> anyhow::Result<()> {
         "/syscall_count"
     )))?;
 
-    let program: &mut KProbe = ebpf.program_mut("syscall_ebpf").unwrap().try_into()?;
+    let program: &mut TracePoint = ebpf.program_mut("syscall_ebpf").unwrap().try_into()?;
     program.load()?;
-    program.attach(target_syscall_entry, 0)?;
-    log::info!("attacch the kprobe to syscall_entry ok");
+    program.attach("raw_syscalls", "sys_enter")?;
+    log::info!("attached raw_syscalls:sys_enter tracepoint");
 
     for _ in 0..64 {
         unsafe {
@@ -72,8 +41,7 @@ async fn main() -> anyhow::Result<()> {
         time::sleep(time::Duration::from_millis(10)).await;
     }
 
-    let syscall_list: HashMap<_, u32, u32> =
-        HashMap::try_from(ebpf.map("SYSCALL_LIST").unwrap())?;
+    let syscall_list: HashMap<_, u32, u32> = HashMap::try_from(ebpf.map("SYSCALL_LIST").unwrap())?;
     let mut total = 0u32;
     let mut distinct = 0u32;
     for item in syscall_list.iter() {

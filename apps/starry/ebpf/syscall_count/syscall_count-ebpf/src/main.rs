@@ -2,27 +2,27 @@
 #![no_main]
 
 use aya_ebpf::{
-    macros::{kprobe, map},
+    macros::{map, tracepoint},
     maps::HashMap,
-    programs::ProbeContext,
+    programs::TracePointContext,
 };
+use syscall_count_common::SYSCALL_ID_OFFSET;
 
-#[kprobe]
-pub fn syscall_ebpf(ctx: ProbeContext) -> u32 {
+#[tracepoint]
+pub fn syscall_ebpf(ctx: TracePointContext) -> u32 {
     try_syscall_ebpf(ctx).unwrap_or_else(|ret| ret)
 }
 
-fn try_syscall_ebpf(ctx: ProbeContext) -> Result<u32, u32> {
-    let syscall_num = ctx.arg::<usize>(0).unwrap();
-    if syscall_num != 1 {
+fn try_syscall_ebpf(ctx: TracePointContext) -> Result<u32, u32> {
+    let syscall_num = unsafe { ctx.read_at::<i64>(SYSCALL_ID_OFFSET) }.map_err(|_| 1u32)?;
+    if syscall_num >= 0 && syscall_num != 1 {
+        let syscall_num = syscall_num as u32;
         unsafe {
-            if let Some(v) = SYSCALL_LIST.get(&(syscall_num as u32)) {
+            if let Some(v) = SYSCALL_LIST.get(&syscall_num) {
                 let new_v = *v + 1;
-                SYSCALL_LIST
-                    .insert(&(syscall_num as u32), &new_v, 0)
-                    .unwrap();
+                SYSCALL_LIST.insert(&syscall_num, &new_v, 0).unwrap();
             } else {
-                SYSCALL_LIST.insert(&(syscall_num as u32), &1, 0).unwrap();
+                SYSCALL_LIST.insert(&syscall_num, &1, 0).unwrap();
             }
         }
     }
