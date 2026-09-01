@@ -319,9 +319,10 @@ impl RegistryInner {
     }
 
     fn subscriber_mut(&mut self, publisher_id: usize, key: u64) -> Option<&mut ChannelState> {
-        self.subscribers.iter_mut().flatten().find(|state| {
-            state.publisher_id == publisher_id && state.key == key
-        })
+        self.subscribers
+            .iter_mut()
+            .flatten()
+            .find(|state| state.publisher_id == publisher_id && state.key == key)
     }
 
     fn channel_mut(&mut self, role: ChannelRole, index: usize) -> Option<&mut ChannelState> {
@@ -607,17 +608,21 @@ impl DeviceOps for AxivcChannel {
         if state.closing || offset >= state.shm_size {
             return DeviceMmap::None;
         }
-        let length = length.min(state.shm_size - offset);
-        let range = PhysAddrRange::from_start_size(
-            PhysAddr::from_usize(state.shm_base_gpa + offset),
-            length,
-        );
         #[cfg(feature = "rknpu")]
         {
+            let range = PhysAddrRange::from_start_size(
+                PhysAddr::from_usize(state.shm_base_gpa),
+                state.shm_size,
+            );
             DeviceMmap::PhysicalCached(range, None)
         }
         #[cfg(not(feature = "rknpu"))]
         {
+            let length = length.min(state.shm_size - offset);
+            let range = PhysAddrRange::from_start_size(
+                PhysAddr::from_usize(state.shm_base_gpa + offset),
+                length,
+            );
             DeviceMmap::PhysicalResolved(range, None)
         }
     }
