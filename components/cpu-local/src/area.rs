@@ -123,6 +123,7 @@ impl CpuAreaHeader {
     }
 
     /// Returns the logical CPU index assigned to this area.
+    #[inline(always)]
     pub const fn cpu_index(&self) -> CpuIndex {
         match CpuIndex::from_u32(self.cpu_index) {
             Some(index) => index,
