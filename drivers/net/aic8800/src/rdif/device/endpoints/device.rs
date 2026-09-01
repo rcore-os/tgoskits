@@ -6,7 +6,7 @@ use rdif_eth::{
     NetIrqSourceId, NetPollGroupId, NetPollGroupParts, NetQueuePairParts, QueueConfig,
     WifiTransaction,
 };
-use sdmmc_protocol::sdio::SdMmcIrqHost;
+use sdmmc_protocol::sdio::CompletionIrqRearmHost;
 
 use super::{
     control::{AicNetControl, AicWifiControl},
@@ -84,13 +84,13 @@ impl AicRdifOptions {
 }
 
 /// Move-only portable AIC device before it is split into RDIF endpoints.
-pub struct AicRdifDevice<H: SdMmcIrqHost + 'static> {
+pub struct AicRdifDevice<H: CompletionIrqRearmHost + 'static> {
     host: H,
     options: AicRdifOptions,
     dma_mask: u64,
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> AicRdifDevice<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> AicRdifDevice<H> {
     /// Creates a portable adapter without issuing card or firmware commands.
     ///
     /// # Errors
@@ -118,13 +118,13 @@ impl<H: SdMmcIrqHost + Send + 'static> AicRdifDevice<H> {
     }
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> DriverGeneric for AicRdifDevice<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> DriverGeneric for AicRdifDevice<H> {
     fn name(&self) -> &str {
         "aic8800"
     }
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> NetDevice for AicRdifDevice<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> NetDevice for AicRdifDevice<H> {
     fn into_parts(self: Box<Self>) -> Result<NetDeviceParts, NetError> {
         let Self {
             host,

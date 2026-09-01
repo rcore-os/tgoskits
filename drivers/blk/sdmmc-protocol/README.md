@@ -112,6 +112,10 @@ Physical controllers implement `sdmmc_host::SdMmcHost` plus
 and optional card-IRQ capabilities through `sdmmc_host::HostParts`; it does not
 accept a task, waker, channel, or scheduling callback. Construct native-card
 protocol state with `SdMmcCard::new` and IO-card state with `SdioCard::new`.
+An SDIO device owner that must restore completion delivery and synchronously
+capture status from the masked window additionally requires
+`CompletionIrqRearmHost`. Ordinary block hosts do not implement that narrower
+capability.
 
 Initialization is a request state machine. Its `wait_kind()` result is a
 mandatory execution contract:

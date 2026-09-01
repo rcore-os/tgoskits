@@ -6,8 +6,8 @@ use sdmmc_host::ProgressCause;
 use sdmmc_protocol::{
     OperationProgress,
     sdio::{
-        CardIrqControl, CisInfo, CompletionIrqRearm, FunctionNumber, HostProgressWait,
-        SdMmcIrqHost, SdioCard, SdioCardInfo, io::SdioInitRequest,
+        CardIrqControl, CisInfo, CompletionIrqRearm, CompletionIrqRearmHost, FunctionNumber,
+        HostProgressWait, SdioCard, SdioCardInfo, io::SdioInitRequest,
     },
 };
 
@@ -44,7 +44,7 @@ enum CardIrqWait {
 }
 
 /// Sole task-context owner of the SDIO card, controller transactions and AIC core.
-pub(crate) struct AicOwner<H: SdMmcIrqHost + 'static> {
+pub(crate) struct AicOwner<H: CompletionIrqRearmHost + 'static> {
     card: SdioCard<H>,
     card_irq: Option<H::CardIrq>,
     init: Option<SdioInitRequest<H>>,
@@ -58,7 +58,7 @@ pub(crate) struct AicOwner<H: SdMmcIrqHost + 'static> {
     card_irq_wait: CardIrqWait,
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> AicOwner<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
     pub(crate) fn new(
         host: H,
         card_irq: Option<H::CardIrq>,

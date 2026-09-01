@@ -260,9 +260,15 @@ flowchart LR
     Route --> Loop["loopback: direct rx_buffer injection"]
     Route --> Eth["EthernetDevice::send() / ARP"]
     Eth --> Arp["ARP / next-hop MAC"]
-    Arp --> TxQ["TX-ready SPSC"]
+    Arp --> Qdisc["device TxQueueDiscipline"]
+    Qdisc --> TxQ["TX-ready SPSC"]
     TxQ --> Hw["fixed-CPU submit / NIC"]
 ```
+
+每个 `QueueFramePort` 直接拥有一个设备级 discipline。`NoQueue` 在 TX token 不可用时
+返回 `Again`；`Fifo { max_frames }` 按序保留 frame，并在 TX completion 激活下一轮
+protocol poll 后先 flush。FIFO 从零容量开始按需分配，limit 不与 hardware ring 或
+DMA token 数量合并，也不扩展为全局或 per-hardware-queue qdisc。
 
 普通 Ethernet 发送由 `EthernetDevice` 完成 ARP 和 frame 封装，再通过有界 SPSC 交给 queue owner。submit 失败的 typed error 必须归还原 token；TX completion 也通过 free ring 归还。loopback 不走外部 queue，仍可在同一个 protocol poll 周期内继续推进。
 

@@ -141,15 +141,6 @@ pub trait SdMmcIrqHost: sdmmc_host::SdMmcHost {
         Ok(())
     }
 
-    /// Restore completion-IRQ delivery and synchronously capture status that
-    /// became pending while delivery was masked.
-    ///
-    /// A host returning [`CompletionIrqRearm::Pending`] must have published the
-    /// captured status through the same mailbox consumed by an
-    /// `AcknowledgedIrq` progress step. This closes the edge-triggered parent
-    /// IRQ race without moving protocol progress into the IRQ top half.
-    fn rearm_completion_irq_and_check(&mut self) -> Result<CompletionIrqRearm, Error>;
-
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -163,6 +154,19 @@ pub trait SdMmcIrqHost: sdmmc_host::SdMmcHost {
     fn progress_wait_kind(&self) -> HostProgressWait {
         HostProgressWait::Irq
     }
+}
+
+/// Task-context completion-IRQ rearm required by SDIO devices whose owner
+/// closes the masked-delivery race before restoring card-interrupt delivery.
+pub trait CompletionIrqRearmHost: SdMmcIrqHost {
+    /// Restore completion-IRQ delivery and synchronously capture status that
+    /// became pending while delivery was masked.
+    ///
+    /// A host returning [`CompletionIrqRearm::Pending`] must publish the
+    /// captured status through the same mailbox consumed by an
+    /// `AcknowledgedIrq` progress step. This closes the edge-triggered parent
+    /// IRQ race without moving protocol progress into the IRQ top half.
+    fn rearm_completion_irq_and_check(&mut self) -> Result<CompletionIrqRearm, Error>;
 }
 
 /// Queue identifier used by single-queue SD/MMC block adapters.

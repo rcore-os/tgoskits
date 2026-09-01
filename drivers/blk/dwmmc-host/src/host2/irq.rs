@@ -53,19 +53,6 @@ impl SdMmcIrqHost for DwMmc {
         Ok(())
     }
 
-    fn rearm_completion_irq_and_check(
-        &mut self,
-    ) -> Result<sdmmc_protocol::sdio::CompletionIrqRearm, Error> {
-        self.enable_completion_irq();
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        Ok(match handle_irq_core(&self.irq).kind() {
-            HostEventKind::None | HostEventKind::CardInterrupt => {
-                sdmmc_protocol::sdio::CompletionIrqRearm::Idle
-            }
-            _ => sdmmc_protocol::sdio::CompletionIrqRearm::Pending,
-        })
-    }
-
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         DwMmc::disable_completion_irq(self);
         Ok(())

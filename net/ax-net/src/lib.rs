@@ -115,7 +115,7 @@ pub use self::{
     queue_runtime::{
         NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime, NetworkRuntimeBuilder,
         NetworkRuntimeError, PinnedNetIrqAction, PinnedNetIrqError, PinnedNetIrqOutcome,
-        PinnedNetIrqRegistrar, PinnedNetIrqRegistration, ResolvedNetIrqSource,
+        PinnedNetIrqRegistrar, PinnedNetIrqRegistration, ResolvedNetIrqSource, TxQueueDiscipline,
     },
     readiness::poll_socket_io,
     router::NetDevStats,

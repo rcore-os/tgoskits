@@ -148,12 +148,12 @@ fn decode_mac(value: u64) -> [u8; 6] {
 pub(crate) type OwnerSender<H> = HeapProd<AicOwner<H>>;
 pub(crate) type OwnerReceiver<H> = HeapCons<AicOwner<H>>;
 
-pub(crate) struct OwnerChannels<H: sdmmc_protocol::sdio::SdMmcIrqHost + 'static> {
+pub(crate) struct OwnerChannels<H: sdmmc_protocol::sdio::CompletionIrqRearmHost + 'static> {
     pub(crate) sender: OwnerSender<H>,
     pub(crate) receiver: OwnerReceiver<H>,
 }
 
-impl<H: sdmmc_protocol::sdio::SdMmcIrqHost + 'static> OwnerChannels<H> {
+impl<H: sdmmc_protocol::sdio::CompletionIrqRearmHost + 'static> OwnerChannels<H> {
     pub(crate) fn new() -> Self {
         let ring = HeapRb::new(1);
         let (sender, receiver) = ring.split();
