@@ -9,6 +9,7 @@ use core::{
 
 use ax_hal::mem::{DCacheOp, PhysAddr, VirtAddr, dcache_range, virt_to_phys};
 use ax_memory_addr::PhysAddrRange;
+use ax_task::current;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
 use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion};
@@ -19,6 +20,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     pseudofs::{Device, DeviceMmap, DeviceOps, DirMapping, SimpleFs},
     sync::Mutex,
+    task::AsThread,
 };
 
 const MAX_CHANNELS: usize = 16;
@@ -614,24 +616,20 @@ impl DeviceOps for AxivcChannel {
             _ => return Err(VfsError::NotATty),
         };
         let cache_arg = (arg as *const IvcCacheOpArg).vm_read().map_err(vm_error)?;
-        let inner = self.registry.inner.lock();
-        let state = inner
-            .channel(self.role, self.index)
-            .ok_or(VfsError::NoSuchDevice)?;
-        if state.closing {
-            return Err(VfsError::WouldBlock);
-        }
+        let (shm_base_gpa, shm_size) = {
+            let inner = self.registry.inner.lock();
+            let state = inner
+                .channel(self.role, self.index)
+                .ok_or(VfsError::NoSuchDevice)?;
+            if state.closing {
+                return Err(VfsError::WouldBlock);
+            }
+            (state.shm_base_gpa, state.shm_size)
+        };
         if cache_arg.size == 0 {
             return Ok(0);
         }
-        if cache_arg.addr == 0 || cache_arg.size > usize::MAX as u64 {
-            return Err(VfsError::InvalidInput);
-        }
-        dcache_range(
-            op,
-            VirtAddr::from_usize(cache_arg.addr as usize),
-            cache_arg.size as usize,
-        );
+        cache_op_user_range(op, shm_base_gpa, shm_size, cache_arg.addr, cache_arg.size)?;
         Ok(0)
     }
 
@@ -658,7 +656,7 @@ impl DeviceOps for AxivcChannel {
         let Some(state) = inner.channel(self.role, self.index) else {
             return DeviceMmap::None;
         };
-        if state.closing || offset >= state.shm_size {
+        if state.closing || offset != 0 {
             return DeviceMmap::None;
         }
         let retainer: Arc<dyn Any + Send + Sync> = state.mmap_anchor.clone();
@@ -740,7 +738,9 @@ impl Pollable for AxivcChannel {
         }
         if let Some(poll_set) = self.poll_set() {
             unsafe { poll_set.register(context.waker(), events) };
-            context.waker().wake_by_ref();
+            if self.ready_events().intersects(events | IoEvents::ALWAYS_POLL) {
+                context.waker().wake_by_ref();
+            }
         } else {
             context.waker().wake_by_ref();
         }
@@ -842,6 +842,50 @@ fn wake_pollers(poll_set: &PollSet, events: IoEvents) {
     unsafe {
         let _ = poll_set.wake(events);
     }
+}
+
+fn cache_op_user_range(
+    op: DCacheOp,
+    shm_base_gpa: usize,
+    shm_size: usize,
+    addr: u64,
+    size: u64,
+) -> VfsResult<()> {
+    let addr = usize::try_from(addr).map_err(|_| VfsError::InvalidInput)?;
+    let size = usize::try_from(size).map_err(|_| VfsError::InvalidInput)?;
+    if addr == 0 || size == 0 {
+        return Err(VfsError::InvalidInput);
+    }
+    let end = addr.checked_add(size).ok_or(VfsError::InvalidInput)?;
+    let shm_end = shm_base_gpa
+        .checked_add(shm_size)
+        .ok_or(VfsError::InvalidInput)?;
+
+    let aspace = current().as_thread().proc_data.aspace();
+    let aspace = aspace.lock();
+    let mut cursor = addr;
+    while cursor < end {
+        let (paddr, _flags, page_size) = aspace
+            .page_table()
+            .query(VirtAddr::from_usize(cursor))
+            .map_err(|_| VfsError::BadAddress)?;
+        if page_size == 0 {
+            return Err(VfsError::InvalidInput);
+        }
+        let page_offset = cursor % page_size;
+        let span = (end - cursor).min(page_size - page_offset);
+        let paddr_start = paddr.as_usize();
+        let paddr_end = paddr_start
+            .checked_add(span)
+            .ok_or(VfsError::InvalidInput)?;
+        if paddr_start < shm_base_gpa || paddr_end > shm_end {
+            return Err(VfsError::PermissionDenied);
+        }
+        cursor += span;
+    }
+
+    dcache_range(op, VirtAddr::from_usize(addr), size);
+    Ok(())
 }
 
 fn hvc_error(_err: ivc::IvcHyperCallError) -> VfsError {
