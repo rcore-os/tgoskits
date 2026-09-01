@@ -26,18 +26,7 @@ fn negotiated_queue_depth_may_shrink_but_never_grow() {
 #[test]
 fn register_retry_advances_only_register_state_and_posts_controller_event() {
     crate::os::task::install_test_runtime_ops();
-    let ops = runtime_ops().unwrap();
-    let state = HctxState {
-        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(1))),
-        submission_channels: IrqMutex::new(Vec::new()),
-        notification: ops.notification(),
-        lifecycle_notification: ops.notification(),
-        irq_latches: IrqMutex::new(Vec::new()),
-        quiescing: AtomicBool::new(false),
-        quiesced: AtomicBool::new(false),
-        stopping: AtomicBool::new(false),
-        terminated: AtomicBool::new(false),
-    };
+    let state = HctxState::test_new(test_queue_info(1), Vec::new());
     let retries = Arc::new(AtomicUsize::new(0));
     let drains = Arc::new(AtomicUsize::new(0));
     let mut queue = RegisterRetryQueue {
@@ -96,18 +85,8 @@ fn register_retry_advances_only_register_state_and_posts_controller_event() {
 #[test]
 fn terminal_state_rejects_an_already_due_register_retry() {
     crate::os::task::install_test_runtime_ops();
-    let ops = runtime_ops().unwrap();
-    let state = HctxState {
-        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(1))),
-        submission_channels: IrqMutex::new(Vec::new()),
-        notification: ops.notification(),
-        lifecycle_notification: ops.notification(),
-        irq_latches: IrqMutex::new(Vec::new()),
-        quiescing: AtomicBool::new(false),
-        quiesced: AtomicBool::new(false),
-        stopping: AtomicBool::new(true),
-        terminated: AtomicBool::new(false),
-    };
+    let state = HctxState::test_new(test_queue_info(1), Vec::new());
+    state.stopping.store(true, Ordering::Release);
     let retries = Arc::new(AtomicUsize::new(0));
     let drains = Arc::new(AtomicUsize::new(0));
     let mut queue = RegisterRetryQueue {
@@ -149,17 +128,7 @@ fn retry_backlog_does_not_starve_fresh_cpu_channel_submissions() {
     let notification = ops.notification();
     let channel =
         Arc::new(BoundedChannel::with_item_notification(4, Arc::clone(&notification)).unwrap());
-    let state = HctxState {
-        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(2))),
-        submission_channels: IrqMutex::new(vec![Arc::clone(&channel)]),
-        notification,
-        lifecycle_notification: ops.notification(),
-        irq_latches: IrqMutex::new(Vec::new()),
-        quiescing: AtomicBool::new(false),
-        quiesced: AtomicBool::new(false),
-        stopping: AtomicBool::new(false),
-        terminated: AtomicBool::new(false),
-    };
+    let state = HctxState::test_new(test_queue_info(2), vec![Arc::clone(&channel)]);
     let (_fresh_subscription, fresh) = flush_submission_at(100);
     assert!(channel.send(fresh, false).is_ok());
     let (_first_retry_subscription, first_retry) = flush_submission_at(1);
@@ -297,6 +266,10 @@ fn missing_irq_times_out_without_completion_drain() {
     assert_eq!(completed.result, Err(BlkError::TimedOut));
     hctx.stop();
 
+    assert!(
+        channel.is_closed(),
+        "a terminal hctx must seal its submission channel before exiting"
+    );
     assert_eq!(counters.drained.load(Ordering::Acquire), 0);
     assert_eq!(counters.shutdown.load(Ordering::Acquire), 1);
     assert_eq!(observer.failed.load(Ordering::Acquire), 1);

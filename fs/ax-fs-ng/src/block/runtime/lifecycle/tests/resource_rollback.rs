@@ -194,8 +194,19 @@ impl BlockController for RejectedQueueBatchController {
 
 #[test]
 fn rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown() {
+    let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .fail_enable_at
+        .store(usize::MAX, Ordering::Release);
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
     let initial_info = test_queue_info().device;
     let changed_info = DeviceInfo {
         num_blocks: initial_info.num_blocks + 1,

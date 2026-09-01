@@ -191,6 +191,15 @@ impl<T> BoundedChannel<T> {
         self.space_waiters.notify_all();
     }
 
+    pub(super) fn is_closed(&self) -> bool {
+        self.state.lock().closed
+    }
+
+    pub(super) fn is_closed_and_empty(&self) -> bool {
+        let state = self.state.lock();
+        state.closed && state.queue.is_empty()
+    }
+
     #[cfg(test)]
     fn blocked_sender_count(&self) -> usize {
         self.space_waiters.len()

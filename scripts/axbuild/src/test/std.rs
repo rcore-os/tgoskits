@@ -200,6 +200,41 @@ const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
             "block::runtime::lifecycle::tests::publication::ready_device_rejects_changed_device_info_without_overwriting_epoch",
         ],
     },
+    PackageFeatureProfile {
+        name: "host-test-ready-prefix-discovery",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("provisional_hctx_is_promoted_only_by_a_ready_update"),
+        expected_tests: &[
+            "block::runtime::lifecycle::tests::publication::provisional_hctx_is_promoted_only_by_a_ready_update",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test-lifecycle-teardown-discovery",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("block::runtime::lifecycle::tests::teardown::"),
+        expected_tests: &[
+            "block::runtime::lifecycle::tests::teardown::bootstrap_preserves_waiting_for_irq_controller_without_io_queue",
+            "block::runtime::lifecycle::tests::teardown::closed_submission_channel_is_retryable_only_while_device_is_ready",
+            "block::runtime::lifecycle::tests::teardown::controller_can_register_control_irq_before_creating_an_io_queue",
+            "block::runtime::lifecycle::tests::teardown::controller_group_enables_shared_irq_before_unmasking_sources_and_tears_down_once",
+            "block::runtime::lifecycle::tests::teardown::failed_terminal_teardown_quarantines_group_controller",
+            "block::runtime::lifecycle::tests::teardown::failed_terminal_teardown_quarantines_standalone_irq_registration",
+            "block::runtime::lifecycle::tests::teardown::failed_irq_registration_stops_controller_before_dropping_emitted_queue",
+            "block::runtime::lifecycle::tests::teardown::group_member_terminal_is_escalated_to_shared_irq_owner",
+            "block::runtime::lifecycle::tests::teardown::group_member_watchdog_terminal_is_escalated_to_shared_irq_owner",
+            "block::runtime::lifecycle::tests::teardown::group_teardown_wakes_every_concurrent_waiter",
+            "block::runtime::lifecycle::tests::teardown::irq_synchronize_failure_blocks_hardware_shutdown",
+            "block::runtime::lifecycle::tests::teardown::last_device_handle_drop_owns_teardown_despite_internal_references",
+            "block::runtime::lifecycle::tests::teardown::late_hctx_failure_cannot_resurrect_a_stopped_device",
+            "block::runtime::lifecycle::tests::teardown::member_shutdown_failure_quarantines_unstopped_group_controller",
+            "block::runtime::lifecycle::tests::teardown::partial_group_irq_enable_with_failed_synchronize_quarantines_all_owners",
+            "block::runtime::lifecycle::tests::teardown::provisional_group_terminal_waits_for_shared_irq_owner",
+            "block::runtime::lifecycle::tests::teardown::teardown_disables_controller_before_queue_memory_is_released",
+            "block::runtime::lifecycle::tests::teardown::teardown_releases_queue_when_quiesce_confirms_prior_watchdog_shutdown",
+        ],
+    },
 ];
 
 const NVME_FEATURE_PROFILES: &[PackageFeatureProfile] = &[

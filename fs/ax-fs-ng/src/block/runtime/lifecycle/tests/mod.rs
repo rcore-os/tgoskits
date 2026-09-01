@@ -94,6 +94,11 @@ struct LifecycleQueue {
     log: Arc<StdMutex<Vec<&'static str>>>,
 }
 
+struct IndexedLifecycleQueue {
+    id: usize,
+    log: Arc<StdMutex<Vec<&'static str>>>,
+}
+
 impl HardwareQueue for LifecycleQueue {
     fn id(&self) -> usize {
         0
@@ -101,6 +106,40 @@ impl HardwareQueue for LifecycleQueue {
 
     fn info(&self) -> QueueInfo {
         test_queue_info()
+    }
+
+    fn submit_batch_owned(
+        &mut self,
+        _requests: &mut OwnedRequestBatch,
+        _sink: &mut dyn SubmissionSink,
+    ) -> BatchSubmitResult {
+        BatchSubmitResult::new(0, BatchSubmitDisposition::QueueFull)
+    }
+
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        self.log.lock().unwrap().push("queue_shutdown");
+        Ok(())
+    }
+}
+
+impl HardwareQueue for IndexedLifecycleQueue {
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn info(&self) -> QueueInfo {
+        QueueInfo {
+            id: self.id,
+            ..test_queue_info()
+        }
     }
 
     fn submit_batch_owned(
@@ -286,6 +325,28 @@ struct TerminalBeforeShutdownController {
     terminal: bool,
 }
 
+struct ProvisionalGroupTerminalController {
+    queue: Option<LifecycleQueue>,
+}
+
+struct QuiesceFailureController {
+    queue: Option<LifecycleQueue>,
+}
+
+struct DropTrackedShutdownFailureGroup {
+    log: Arc<StdMutex<Vec<&'static str>>>,
+}
+
+struct GroupMemberShutdownFailureController {
+    queue: Option<LifecycleQueue>,
+    log: Arc<StdMutex<Vec<&'static str>>>,
+}
+
+struct DropTrackedMemberFailureGroup {
+    members: Option<Vec<BlockGroupMember>>,
+    log: Arc<StdMutex<Vec<&'static str>>>,
+}
+
 impl DriverGeneric for TerminalBeforeShutdownController {
     fn name(&self) -> &str {
         "terminal-before-shutdown-controller"
@@ -317,6 +378,147 @@ impl BlockController for TerminalBeforeShutdownController {
             }
             ControllerEvent::Shutdown => Err(BlkError::Io),
             _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+impl DriverGeneric for ProvisionalGroupTerminalController {
+    fn name(&self) -> &str {
+        "provisional-group-terminal-controller"
+    }
+}
+
+impl BlockController for ProvisionalGroupTerminalController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        1
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
+                Vec::new(),
+            )),
+            ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
+            _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+impl DriverGeneric for QuiesceFailureController {
+    fn name(&self) -> &str {
+        "quiesce-failure-controller"
+    }
+}
+
+impl BlockController for QuiesceFailureController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        1
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
+                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+            )),
+            ControllerEvent::QuiesceIrqs => Err(BlkError::Io),
+            ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
+            _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+impl Drop for DropTrackedShutdownFailureGroup {
+    fn drop(&mut self) {
+        self.log.lock().unwrap().push("group_controller_drop");
+    }
+}
+
+impl DriverGeneric for DropTrackedShutdownFailureGroup {
+    fn name(&self) -> &str {
+        "drop-tracked-shutdown-failure-group"
+    }
+}
+
+impl BlockControllerGroup for DropTrackedShutdownFailureGroup {
+    fn advance(&mut self, event: GroupControllerEvent) -> Result<GroupControllerUpdate, BlkError> {
+        match event {
+            GroupControllerEvent::Shutdown => Err(BlkError::Io),
+            _ => Ok(GroupControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+impl DriverGeneric for GroupMemberShutdownFailureController {
+    fn name(&self) -> &str {
+        "group-member-shutdown-failure-controller"
+    }
+}
+
+impl BlockController for GroupMemberShutdownFailureController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        1
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
+                Vec::new(),
+            )),
+            ControllerEvent::QuiesceIrqs => {
+                self.log.lock().unwrap().push("member_quiesce");
+                Ok(ControllerUpdate::state(ControllerState::Ready))
+            }
+            ControllerEvent::Shutdown => Err(BlkError::Io),
+            _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+impl Drop for DropTrackedMemberFailureGroup {
+    fn drop(&mut self) {
+        self.log.lock().unwrap().push("group_controller_drop");
+    }
+}
+
+impl DriverGeneric for DropTrackedMemberFailureGroup {
+    fn name(&self) -> &str {
+        "drop-tracked-member-failure-group"
+    }
+}
+
+impl BlockControllerGroup for DropTrackedMemberFailureGroup {
+    fn advance(&mut self, event: GroupControllerEvent) -> Result<GroupControllerUpdate, BlkError> {
+        match event {
+            GroupControllerEvent::Start => Ok(GroupControllerUpdate::with_resources(
+                ControllerState::Ready,
+                self.members.take().ok_or(BlkError::Io)?,
+                vec![SharedIrqEndpoint::new(0, Box::new(SharedSpuriousHandler))],
+            )),
+            GroupControllerEvent::Rearm { .. } | GroupControllerEvent::QuiesceIrqs => {
+                Ok(GroupControllerUpdate::state(ControllerState::Ready))
+            }
+            GroupControllerEvent::Shutdown => {
+                Ok(GroupControllerUpdate::state(ControllerState::Shutdown))
+            }
+            _ => Ok(GroupControllerUpdate::state(ControllerState::Ready)),
         }
     }
 }
@@ -368,6 +570,8 @@ struct GroupMemberController {
     name: &'static str,
     queue: Option<LifecycleQueue>,
     log: Arc<StdMutex<Vec<&'static str>>>,
+    terminal_on_rearm: bool,
+    rearm_count: usize,
 }
 
 impl DriverGeneric for GroupMemberController {
@@ -394,7 +598,12 @@ impl BlockController for GroupMemberController {
             )),
             ControllerEvent::Rearm { .. } => {
                 self.log.lock().unwrap().push("member_rearm");
-                Ok(ControllerUpdate::state(ControllerState::Ready))
+                self.rearm_count += 1;
+                if self.terminal_on_rearm && self.rearm_count > 1 {
+                    Ok(ControllerUpdate::state(ControllerState::Shutdown))
+                } else {
+                    Ok(ControllerUpdate::state(ControllerState::Ready))
+                }
             }
             ControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("member_quiesce");
@@ -410,6 +619,11 @@ impl BlockController for GroupMemberController {
 }
 
 struct TestControllerGroup {
+    members: Option<Vec<BlockGroupMember>>,
+    log: Arc<StdMutex<Vec<&'static str>>>,
+}
+
+struct TwoIrqControllerGroup {
     members: Option<Vec<BlockGroupMember>>,
     log: Arc<StdMutex<Vec<&'static str>>>,
 }
@@ -432,6 +646,36 @@ impl BlockControllerGroup for TestControllerGroup {
                 self.log.lock().unwrap().push("group_rearm");
                 Ok(GroupControllerUpdate::state(ControllerState::Ready))
             }
+            GroupControllerEvent::QuiesceIrqs => {
+                self.log.lock().unwrap().push("group_quiesce");
+                Ok(GroupControllerUpdate::state(ControllerState::Ready))
+            }
+            GroupControllerEvent::Shutdown => {
+                self.log.lock().unwrap().push("group_shutdown");
+                Ok(GroupControllerUpdate::state(ControllerState::Shutdown))
+            }
+            _ => Ok(GroupControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+impl DriverGeneric for TwoIrqControllerGroup {
+    fn name(&self) -> &str {
+        "two-irq-controller-group"
+    }
+}
+
+impl BlockControllerGroup for TwoIrqControllerGroup {
+    fn advance(&mut self, event: GroupControllerEvent) -> Result<GroupControllerUpdate, BlkError> {
+        match event {
+            GroupControllerEvent::Start => Ok(GroupControllerUpdate::with_resources(
+                ControllerState::Ready,
+                self.members.take().ok_or(BlkError::Io)?,
+                vec![
+                    SharedIrqEndpoint::new(0, Box::new(SharedSpuriousHandler)),
+                    SharedIrqEndpoint::new(1, Box::new(SharedSpuriousHandler)),
+                ],
+            )),
             GroupControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("group_quiesce");
                 Ok(GroupControllerUpdate::state(ControllerState::Ready))
@@ -546,13 +790,18 @@ struct TestIrqRegistrar {
     log: StdMutex<Option<Arc<StdMutex<Vec<&'static str>>>>>,
     action: StdMutex<Option<Arc<StdMutex<Option<BlockIrqAction>>>>>,
     fail_registration: AtomicBool,
+    next_registration: AtomicUsize,
+    fail_enable_at: AtomicUsize,
 }
 
 static TEST_IRQ_REGISTRAR: TestIrqRegistrar = TestIrqRegistrar {
     log: StdMutex::new(None),
     action: StdMutex::new(None),
     fail_registration: AtomicBool::new(false),
+    next_registration: AtomicUsize::new(0),
+    fail_enable_at: AtomicUsize::new(usize::MAX),
 };
+static TEST_IRQ_FAIL_SYNCHRONIZE: AtomicBool = AtomicBool::new(false);
 static TEST_IRQ_REGISTRAR_SERIAL: StdMutex<()> = StdMutex::new(());
 
 fn lock_test_irq_registrar() -> std::sync::MutexGuard<'static, ()> {
@@ -561,20 +810,42 @@ fn lock_test_irq_registrar() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn wait_for_device_teardown(device: &DeviceInner) {
+    loop {
+        if device.lifecycle_gate.lock().phase == DevicePhase::Stopped {
+            return;
+        }
+        device
+            .shutdown_waiters
+            .wait_while(|| device.lifecycle_gate.lock().phase != DevicePhase::Stopped)
+            .unwrap();
+    }
+}
+
 struct TestIrqRegistration {
     log: Arc<StdMutex<Vec<&'static str>>>,
     action: Arc<StdMutex<Option<BlockIrqAction>>>,
+    fail_enable: bool,
 }
 
 impl BlockIrqRegistration for TestIrqRegistration {
     fn enable(&self) -> BlockResult {
         self.log.lock().unwrap().push("irq_enable");
-        Ok(())
+        if self.fail_enable {
+            self.log.lock().unwrap().push("irq_enable_failed");
+            Err(BlockError::Io)
+        } else {
+            Ok(())
+        }
     }
 
     fn disable_and_synchronize(&self) -> BlockResult {
         self.log.lock().unwrap().push("irq_disable_sync");
-        Ok(())
+        if TEST_IRQ_FAIL_SYNCHRONIZE.load(Ordering::Acquire) {
+            Err(BlockError::Io)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -620,10 +891,15 @@ impl BlockIrqRegistrar for TestIrqRegistrar {
             log.lock().unwrap().push("irq_register_failed");
             return Err(BlockError::Io);
         }
+        let registration_index = self.next_registration.fetch_add(1, Ordering::AcqRel);
         log.lock().unwrap().push("irq_register_disabled");
         let action = Arc::new(StdMutex::new(Some(action)));
         *self.action.lock().unwrap() = Some(Arc::clone(&action));
-        Ok(Box::new(TestIrqRegistration { log, action }))
+        Ok(Box::new(TestIrqRegistration {
+            log,
+            action,
+            fail_enable: registration_index == self.fail_enable_at.load(Ordering::Acquire),
+        }))
     }
 }
 

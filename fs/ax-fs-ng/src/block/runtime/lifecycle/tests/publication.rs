@@ -19,6 +19,10 @@ struct MutableQueueInfoQueue {
     info: Arc<StdMutex<QueueInfo>>,
 }
 
+struct ReadyPrefixController {
+    queue: Option<IndexedLifecycleQueue>,
+}
+
 impl DriverGeneric for MutableQueueInfoQueue {
     fn name(&self) -> &str {
         "mutable-queue-info"
@@ -110,6 +114,36 @@ impl BlockController for MutableQueueInfoController {
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
                 vec![IrqEndpoint::new(0, 1, Box::new(QueueZeroHandler))],
+            )),
+            ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
+            }
+            _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+impl DriverGeneric for ReadyPrefixController {
+    fn name(&self) -> &str {
+        "ready-prefix-controller"
+    }
+}
+
+impl BlockController for ReadyPrefixController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        2
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
+                Vec::new(),
             )),
             ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::Shutdown))
@@ -221,6 +255,68 @@ fn idempotent_online_smp_is_serialized_without_replacing_cpu_channels() {
 }
 
 #[test]
+fn provisional_hctx_is_promoted_only_by_a_ready_update() {
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "ready-prefix",
+        [],
+        Box::new(ReadyPrefixController {
+            queue: Some(IndexedLifecycleQueue {
+                id: 0,
+                log: Arc::clone(&log),
+            }),
+        }),
+    ))
+    .unwrap();
+    assert_eq!(
+        handle
+            .inner
+            .lifecycle_gate
+            .lock()
+            .submission_ready_hctx_count,
+        1
+    );
+
+    let mut provisional = ControllerUpdate::with_resources(
+        ControllerState::WaitingForIrq,
+        vec![Box::new(IndexedLifecycleQueue { id: 1, log })],
+        Vec::new(),
+    );
+    assert_eq!(
+        handle
+            .inner
+            .install_update(&mut provisional, Arc::clone(&handle.inner.controller),),
+        Ok(Vec::new())
+    );
+    assert_eq!(handle.inner.hctxs.lock().len(), 2);
+    assert_eq!(
+        handle
+            .inner
+            .lifecycle_gate
+            .lock()
+            .submission_ready_hctx_count,
+        1
+    );
+
+    let mut ready = ControllerUpdate::state(ControllerState::Ready);
+    assert_eq!(
+        handle
+            .inner
+            .install_update(&mut ready, Arc::clone(&handle.inner.controller)),
+        Ok(Vec::new())
+    );
+    assert_eq!(
+        handle
+            .inner
+            .lifecycle_gate
+            .lock()
+            .submission_ready_hctx_count,
+        2
+    );
+}
+
+#[test]
 fn ready_device_rejects_changed_device_info_without_overwriting_epoch() {
     crate::os::task::install_test_runtime_ops();
     let initial_info = test_queue_info().device;
@@ -261,6 +357,10 @@ fn frozen_device_info_rejects_every_identity_and_geometry_change() {
         },
         DeviceInfo {
             logical_block_size: baseline.logical_block_size * 2,
+            ..baseline
+        },
+        DeviceInfo {
+            physical_block_size: baseline.physical_block_size * 2,
             ..baseline
         },
         DeviceInfo {
@@ -359,16 +459,9 @@ fn ready_hctx_rejects_changed_dma_coherency() {
         TEST_IRQ_REGISTRAR.run_registered_action(),
         BlockIrqOutcome::Wake
     );
-    while handle.inner.state.load(Ordering::Acquire) != DEVICE_FAILED {
-        assert!(
-            !handle
-                .inner
-                .state_notification
-                .wait_timeout(Duration::from_secs(1)),
-            "a submission-ready hctx accepted changed DMA coherency"
-        );
-    }
-    assert_eq!(handle.shutdown(), 1);
+    wait_for_device_teardown(&handle.inner);
+    assert!(handle.inner.controller.terminal_confirmed());
+    assert_eq!(handle.shutdown(), 0);
 }
 
 #[test]
@@ -418,7 +511,7 @@ fn runtime_admission_returns_request_with_mismatched_dma_coherency() {
         Err(error) => error,
     };
     assert_eq!(error.error, BlkError::InvalidRequest);
-    assert_eq!(handle.inner.active_data.load(Ordering::Acquire), 0);
+    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 0);
     let returned = error.into_request();
     assert!(returned.data.is_some());
     drop(crate::block::runtime::dma::complete_without_submit(

@@ -299,7 +299,8 @@ fn send_ipi_to_all_except_current(cpu_num: usize) {
 pub fn shutdown_host_filesystems() -> AxVmResult {
     modules::ax_fs_ng::shutdown_filesystems()
         .map_err(|error| AxVmError::host("shut down host filesystems", error))?;
-    let released = modules::ax_fs_ng::release_block_irqs_for_passthrough();
+    let released = modules::ax_fs_ng::release_block_irqs_for_passthrough()
+        .map_err(|error| AxVmError::host("release host filesystem block IRQs", error))?;
     if released != 0 {
         info!("Released {released} host filesystem block IRQ registration(s) during shutdown");
     }
