@@ -240,24 +240,13 @@ const SDMMC_RDIF_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     },
 ];
 
-const AXBUILD_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
-    PackageFeatureProfile {
-        name: "default",
-        no_default_features: false,
-        features: &[],
-        name_filter: None,
-        expected_tests: &[],
-    },
-    PackageFeatureProfile {
-        name: "ax-fs-ng-host-test-boundary-discovery",
-        no_default_features: false,
-        features: &[],
-        name_filter: Some("axfs_ng_host_tests_use_host_sync_without_axtest"),
-        expected_tests: &[
-            "build::tests::std_features::axfs_ng_host_tests_use_host_sync_without_axtest",
-        ],
-    },
-];
+const AXBUILD_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "default",
+    no_default_features: false,
+    features: &[],
+    name_filter: None,
+    expected_tests: &[],
+}];
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum CargoTestAction {
     List,
