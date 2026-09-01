@@ -217,6 +217,14 @@ impl UnixSocket {
             remote_addr: Mutex::new(Some(UnixSocketAddr::Unnamed)),
         }
     }
+
+    fn write_connected_peer_address(&self, from: Option<&mut SocketAddrEx>) {
+        if let Some(from) = from
+            && let Some(peer) = self.remote_addr.lock().clone()
+        {
+            *from = SocketAddrEx::Unix(peer);
+        }
+    }
 }
 impl Configurable for UnixSocket {
     fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool> {
@@ -287,7 +295,18 @@ impl SocketOps for UnixSocket {
         self.transport.send(src, options)
     }
 
-    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> NetResult<usize> {
+    fn recv(&self, dst: impl Write, mut options: RecvOptions<'_>) -> NetResult<usize> {
+        // Linux reports the connected peer in recvfrom/recvmsg for Unix
+        // stream sockets.  StreamTransport only moves bytes and ancillary
+        // data, so populate the address at the facade where the connection's
+        // logical peer identity is tracked.  Datagram-like transports keep
+        // filling this from each packet's sender below.
+        if matches!(&self.transport, Transport::Stream(_)) {
+            let from = options.from.take();
+            let received = self.transport.recv(dst, options)?;
+            self.write_connected_peer_address(from);
+            return Ok(received);
+        }
         self.transport.recv(dst, options)
     }
 
@@ -334,6 +353,22 @@ mod tests {
         assert!(matches!(
             connected.peer_addr(),
             Ok(SocketAddrEx::Unix(UnixSocketAddr::Unnamed))
+        ));
+    }
+
+    #[test]
+    fn stream_receive_peer_address_uses_logical_remote() {
+        let receiver = UnixSocket {
+            transport: StreamTransport::new(1).into(),
+            local_addr: Mutex::new(UnixSocketAddr::Unnamed),
+            remote_addr: Mutex::new(Some(UnixSocketAddr::Path(Arc::from("server.sock")))),
+        };
+
+        let mut from = SocketAddrEx::Unix(UnixSocketAddr::Unnamed);
+        receiver.write_connected_peer_address(Some(&mut from));
+        assert!(matches!(
+            from,
+            SocketAddrEx::Unix(UnixSocketAddr::Path(path)) if path.as_ref() == "server.sock"
         ));
     }
 }
