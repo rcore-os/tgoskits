@@ -266,6 +266,8 @@ capacity = "20GiB"
 
 #[test]
 fn ivc_channel_uses_catalog_and_planned_mmio_aperture() {
+    const IVC_APERTURE_SIZE: u64 = 0x100_0000;
+
     let config = GuestConfig::from_toml(
         r#"
 [devices]
@@ -294,7 +296,9 @@ model = "ivc-channel"
     }
 
     let mut pools = ResourcePools::new();
-    pools.add_auto_mmio(0x1000_0000..0x1002_0000).unwrap();
+    pools
+        .add_auto_mmio(0x1000_0000..0x1000_0000 + IVC_APERTURE_SIZE)
+        .unwrap();
     pools
         .add_auto_controller_inputs(
             InterruptControllerId::new(0),
@@ -307,7 +311,10 @@ model = "ivc-channel"
     let registers = ResourceSlot::new("registers").unwrap();
     let notify = ResourceSlot::new("notify").unwrap();
     let resources = graph.resources_for(&ivc_id).unwrap();
-    assert_eq!(resources.mmio(&registers).unwrap(), (0x1000_0000, 0x1_0000));
+    assert_eq!(
+        resources.mmio(&registers).unwrap(),
+        (0x1000_0000, IVC_APERTURE_SIZE)
+    );
     assert_eq!(resources.wired_irq(&notify).unwrap().input().value(), 32);
 
     let ivc_node = graph

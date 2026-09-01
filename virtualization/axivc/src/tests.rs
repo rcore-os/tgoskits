@@ -90,6 +90,33 @@ fn send_fails_when_ring_is_full() {
 }
 
 #[test]
+fn endpoint_readiness_tracks_ring_occupancy_without_consuming() {
+    let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
+    region.initialize();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut producer, _reply_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (_reply_producer, mut consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
+
+    assert!(producer.can_send());
+    assert!(!consumer.can_recv());
+
+    for sequence in 0..IVC_RING_CAPACITY as u64 {
+        producer
+            .send(IvcMessageKind::Request, sequence, b"x")
+            .unwrap();
+    }
+    assert!(!producer.can_send());
+    assert!(consumer.can_recv());
+
+    let mut payload = [0; IVC_SLOT_PAYLOAD_SIZE];
+    let message = consumer.try_recv(&mut payload).unwrap().unwrap();
+    assert_eq!(message.sequence(), 0);
+    assert!(producer.can_send());
+    assert!(consumer.can_recv());
+}
+
+#[test]
 fn region_headers_survive_ring_wraparound() {
     let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
     region.initialize();

@@ -3,6 +3,7 @@ use core::{
     any::Any,
     cell::UnsafeCell,
     sync::atomic::{AtomicU64, Ordering},
+    task::Context,
     time::Duration,
 };
 
@@ -11,6 +12,7 @@ use ax_memory_addr::PhysAddrRange;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
 use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion};
+use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::AnyBitPattern;
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -109,6 +111,8 @@ impl AxivcRegistry {
             shm_base_gpa,
             shm_size,
             mmap_anchor: Arc::new(()),
+            fd_refs: 0,
+            poll_set: Arc::new(PollSet::new()),
             producer,
             consumer,
             sequence: AtomicU64::new(1),
@@ -139,8 +143,13 @@ impl AxivcRegistry {
         if Arc::strong_count(&state.mmap_anchor) > 1 {
             return Err(VfsError::WouldBlock);
         }
+        if state.fd_refs != 0 {
+            return Err(VfsError::WouldBlock);
+        }
         state.closing = true;
+        let poll_set = state.poll_set.clone();
         drop(inner);
+        wake_pollers(&poll_set, IoEvents::ERR | IoEvents::HUP);
 
         let result = ivc::unpublish_channel(arg.channel_key as usize).map_err(hvc_error);
         match result {
@@ -204,6 +213,8 @@ impl AxivcRegistry {
             shm_base_gpa,
             shm_size,
             mmap_anchor: Arc::new(()),
+            fd_refs: 0,
+            poll_set: Arc::new(PollSet::new()),
             producer,
             consumer,
             sequence: AtomicU64::new(1),
@@ -235,8 +246,13 @@ impl AxivcRegistry {
         if Arc::strong_count(&state.mmap_anchor) > 1 {
             return Err(VfsError::WouldBlock);
         }
+        if state.fd_refs != 0 {
+            return Err(VfsError::WouldBlock);
+        }
         state.closing = true;
+        let poll_set = state.poll_set.clone();
         drop(inner);
+        wake_pollers(&poll_set, IoEvents::ERR | IoEvents::HUP);
 
         let result =
             ivc::unsubscribe_channel(arg.target_publisher_id as usize, arg.channel_key as usize)
@@ -347,6 +363,25 @@ impl RegistryInner {
             ChannelRole::Subscriber => self.subscribers.get(index)?.as_ref(),
         }
     }
+
+    fn open_channel(&mut self, role: ChannelRole, index: usize) -> VfsResult<()> {
+        let state = self.channel_mut(role, index).ok_or(VfsError::NoSuchDevice)?;
+        if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
+        state.fd_refs = state.fd_refs.checked_add(1).ok_or(VfsError::NoMemory)?;
+        Ok(())
+    }
+
+    fn close_channel(&mut self, role: ChannelRole, index: usize) -> Option<Arc<PollSet>> {
+        let state = self.channel_mut(role, index)?;
+        state.fd_refs = state.fd_refs.saturating_sub(1);
+        (state.closing && state.fd_refs == 0).then(|| state.poll_set.clone())
+    }
+
+    fn channel_poll_set(&self, role: ChannelRole, index: usize) -> Option<Arc<PollSet>> {
+        Some(self.channel(role, index)?.poll_set.clone())
+    }
 }
 
 fn insert_channel(channels: &mut [Option<ChannelState>], state: ChannelState) -> Option<usize> {
@@ -362,6 +397,8 @@ struct ChannelState {
     shm_base_gpa: usize,
     shm_size: usize,
     mmap_anchor: Arc<()>,
+    fd_refs: usize,
+    poll_set: Arc<PollSet>,
     producer: IvcProducer<'static>,
     consumer: IvcConsumer<'static>,
     sequence: AtomicU64,
@@ -517,6 +554,7 @@ impl DeviceOps for AxivcChannel {
         };
 
         let len = message.len();
+        let poll_set = state.poll_set.clone();
         notify_peer(state, self.role_name());
         info!(
             "axivc: read role={} key={:#x} seq={} kind={:?} len={}",
@@ -526,6 +564,8 @@ impl DeviceOps for AxivcChannel {
             message.kind(),
             len
         );
+        drop(inner);
+        wake_pollers(&poll_set, IoEvents::OUT);
         Ok(len)
     }
 
@@ -553,6 +593,7 @@ impl DeviceOps for AxivcChannel {
             .producer
             .send(kind, sequence, buf)
             .map_err(ring_error)?;
+        let poll_set = state.poll_set.clone();
         notify_peer(state, self.role_name());
         info!(
             "axivc: write role={} key={:#x} seq={} len={}",
@@ -561,6 +602,8 @@ impl DeviceOps for AxivcChannel {
             sequence,
             buf.len()
         );
+        drop(inner);
+        wake_pollers(&poll_set, IoEvents::IN);
         Ok(buf.len())
     }
 
@@ -593,7 +636,11 @@ impl DeviceOps for AxivcChannel {
     }
 
     fn flags(&self) -> NodeFlags {
-        NodeFlags::BLOCKING | NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+    }
+
+    fn as_pollable(&self) -> Option<&dyn Pollable> {
+        Some(self)
     }
 
     fn mmap(&self, offset: u64, length: u64) -> DeviceMmap {
@@ -626,6 +673,24 @@ impl DeviceOps for AxivcChannel {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn open(&self, _exclusive: bool) -> VfsResult<()> {
+        self.registry
+            .inner
+            .lock()
+            .open_channel(self.role, self.index)
+    }
+
+    fn close(&self, _exclusive: bool) {
+        let poll_set = self
+            .registry
+            .inner
+            .lock()
+            .close_channel(self.role, self.index);
+        if let Some(poll_set) = poll_set {
+            wake_pollers(&poll_set, IoEvents::ERR | IoEvents::HUP);
+        }
+    }
 }
 
 impl AxivcChannel {
@@ -633,6 +698,51 @@ impl AxivcChannel {
         match self.role {
             ChannelRole::Publisher => "publisher",
             ChannelRole::Subscriber => "subscriber",
+        }
+    }
+
+    fn ready_events(&self) -> IoEvents {
+        let inner = self.registry.inner.lock();
+        let Some(state) = inner.channel(self.role, self.index) else {
+            return IoEvents::ERR | IoEvents::HUP;
+        };
+        if state.closing {
+            return IoEvents::ERR | IoEvents::HUP;
+        }
+
+        let mut ready = IoEvents::empty();
+        if state.consumer.can_recv() {
+            ready |= IoEvents::IN;
+        }
+        if state.producer.can_send() {
+            ready |= IoEvents::OUT;
+        }
+        ready
+    }
+
+    fn poll_set(&self) -> Option<Arc<PollSet>> {
+        self.registry
+            .inner
+            .lock()
+            .channel_poll_set(self.role, self.index)
+    }
+}
+
+impl Pollable for AxivcChannel {
+    fn poll(&self) -> IoEvents {
+        self.ready_events()
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if self.ready_events().intersects(events | IoEvents::ALWAYS_POLL) {
+            context.waker().wake_by_ref();
+            return;
+        }
+        if let Some(poll_set) = self.poll_set() {
+            unsafe { poll_set.register(context.waker(), events) };
+            context.waker().wake_by_ref();
+        } else {
+            context.waker().wake_by_ref();
         }
     }
 }
@@ -725,6 +835,12 @@ fn notify_peer(state: &ChannelState, role_name: &str) {
             "axivc: notify failed role={} publisher={} key={:#x} target={} err={err}",
             role_name, state.publisher_id, state.key, target_vm_id
         );
+    }
+}
+
+fn wake_pollers(poll_set: &PollSet, events: IoEvents) {
+    unsafe {
+        let _ = poll_set.wake(events);
     }
 }
 
