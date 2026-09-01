@@ -1,5 +1,8 @@
 use alloc::{collections::VecDeque, string::String, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::{
+    num::NonZeroUsize,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 use ax_sync::SpinLock;
 use rd_net::{
@@ -7,12 +10,10 @@ use rd_net::{
     RxCompletion,
 };
 
-pub(super) const TX_BACKLOG_CAPACITY: usize = 64;
-
 use super::{
     COMMAND_QUARANTINE, COMMAND_STOP, COMMAND_WAIT, CPU_ROUND_BUDGET, PollGroupState, QUEUE_BUDGET,
     STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED, STATUS_FAILED, STATUS_READY,
-    SpscConsumer, SpscProducer,
+    SpscConsumer, SpscProducer, TxQueueDiscipline,
 };
 use crate::device::{EthernetFramePort, NetDeviceError, NetDeviceResult, ProtocolEthernetFrame};
 
@@ -87,10 +88,9 @@ pub(super) struct QueueFramePort {
     pub(super) name: String,
     pub(super) mac: Arc<SpinLock<[u8; 6]>>,
     pub(super) groups: Vec<ProtocolGroupPort>,
-    /// Bounded protocol-side backlog for transient queue exhaustion. Linux
-    /// qdiscs retain packets when a driver reports a busy queue; dropping the
-    /// packet at this boundary would make a short DMA stall look like a TCP
-    /// connection failure.
+    /// Device-level policy for handling a busy transmit queue.
+    pub(super) tx_queue_discipline: TxQueueDiscipline,
+    /// Lazily allocated FIFO storage used only by `TxQueueDiscipline::Fifo`.
     pub(super) pending_tx: VecDeque<ProtocolEthernetFrame>,
     pub(super) next_rx: usize,
     pub(super) next_tx: usize,
@@ -110,14 +110,19 @@ impl EthernetFramePort for QueueFramePort {
             return Err(NetDeviceError::Stopped);
         }
 
+        let TxQueueDiscipline::Fifo { max_frames } = self.tx_queue_discipline else {
+            debug_assert!(self.pending_tx.is_empty());
+            return self.try_transmit(frame);
+        };
+
         self.flush_pending_tx()?;
         if !self.pending_tx.is_empty() {
-            return self.enqueue_pending(frame);
+            return self.enqueue_pending(frame, max_frames);
         }
 
         match self.try_transmit(frame) {
             Ok(()) => Ok(()),
-            Err(NetDeviceError::Again) => self.enqueue_pending(frame),
+            Err(NetDeviceError::Again) => self.enqueue_pending(frame, max_frames),
             Err(error) => Err(error),
         }
     }
@@ -161,8 +166,12 @@ impl QueueFramePort {
         Err(NetDeviceError::Again)
     }
 
-    fn enqueue_pending(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
-        if self.pending_tx.len() >= TX_BACKLOG_CAPACITY {
+    fn enqueue_pending(
+        &mut self,
+        frame: &ProtocolEthernetFrame,
+        max_frames: NonZeroUsize,
+    ) -> NetDeviceResult {
+        if self.pending_tx.len() >= max_frames.get() {
             return Err(NetDeviceError::Again);
         }
         self.pending_tx.push_back(frame.clone());
@@ -711,25 +720,6 @@ pub(super) const fn requested_irq_synchronization(command: u8) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn protocol_tx_backlog_is_bounded() {
-        let mut port = QueueFramePort {
-            name: String::from("test0"),
-            mac: Arc::new(SpinLock::new([0; 6])),
-            groups: Vec::new(),
-            pending_tx: VecDeque::with_capacity(TX_BACKLOG_CAPACITY),
-            next_rx: 0,
-            next_tx: 0,
-        };
-        let frame = ProtocolEthernetFrame::new(60).unwrap();
-
-        for _ in 0..TX_BACKLOG_CAPACITY {
-            assert!(port.enqueue_pending(&frame).is_ok());
-        }
-        assert_eq!(port.pending_tx.len(), TX_BACKLOG_CAPACITY);
-        assert_eq!(port.enqueue_pending(&frame), Err(NetDeviceError::Again));
-    }
 
     #[test]
     fn idle_executor_waits_only_for_notification_without_a_deadline() {

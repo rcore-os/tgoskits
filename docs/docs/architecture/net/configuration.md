@@ -255,12 +255,34 @@ dns_servers()
 ## 6. 设备与运行期配置
 
 物理设备只能在网络启动阶段一次性发布。runtime 收集全部
-`NetworkDeviceInput { name, device, irq_sources }`，`NetworkRuntimeBuilder` 完成
-affinity domain、worker pin、DMA refill、IRQ registration/rearm 后，`init_network()`
-才分配接口 ID 并发布 `Service`。启动后新增/删除物理 NIC、无 IRQ 设备和周期 poll
-模式不在当前配置面中。
+`NetworkDeviceInput { name, device, irq_sources, tx_queue_discipline }`，
+`NetworkRuntimeBuilder` 完成 affinity domain、worker pin、DMA refill、IRQ
+registration/rearm 后，`init_network()` 才分配接口 ID 并发布 `Service`。启动后
+新增/删除物理 NIC、无 IRQ 设备和周期 poll 模式不在当前配置面中。
 
-### 6.1 Wi-Fi startup transaction
+### 6.1 TX queue discipline
+
+`tx_queue_discipline` 是每个设备必须显式选择的 protocol TX 策略，没有 `Default`：
+
+```rust
+pub enum TxQueueDiscipline {
+    NoQueue,
+    Fifo { max_frames: NonZeroUsize },
+}
+```
+
+- `NoQueue` 对应 Linux `noqueue` 的边界：只尝试直接提交，设备 busy 时立即返回
+  `Again`，不保留 frame，也不分配 backlog。
+- `Fifo` 对应 packet-limited FIFO qdisc：设备 busy 后按提交顺序保留 frame，达到
+  `max_frames` 后拒绝新 frame；backing storage 从零容量开始，在第一次入队时按需分配。
+
+当前一个 `QueueFramePort` 对应一个设备，所以 discipline 也按设备所有；它不是全局
+queue，也不表示已经实现 per-hardware-queue qdisc。`axruntime` 当前为生产网卡显式
+选择 `Fifo { max_frames: 64 }`，保持短暂 TX token 耗尽时的重试语义。该值不属于
+`NetworkConfig` 的 IP/DNS 配置，也不能与驱动 `QueueConfig::ring_size`、AIC
+`aic,queue-size` 或 DMA token 数量互相替代。
+
+### 6.2 Wi-Fi startup transaction
 
 Wi-Fi 驱动可以在 owned `WifiControl` 中提供一个 `startup_transaction()`。它不是
 probe 期间的直接 SDIO 调用：builder 等待 queue worker affinity-ready、注册并 enable
@@ -268,14 +290,14 @@ probe 期间的直接 SDIO 调用：builder 等待 queue worker affinity-ready�
 刷新完成后才发布接口。SoftAP 的初始静态地址与 DHCP server policy 同步写入 protocol
 配置。
 
-### 6.2 运行期 Wi-Fi transaction
+### 6.3 运行期 Wi-Fi transaction
 
 `reconfigure_wifi(ifname, WifiTransaction)` 只改变已发布 Wi-Fi 设备的 link policy。
 owner executor quiesce 所属 group、执行 STA connect/disconnect 或 open AP、原子
 rearm；随后唯一 protocol executor 提交 DHCP/static-address/DHCP-server 变化。该 API
 不能新增设备，也不能让调用者直接借用 SDIO/MMIO control handle。
 
-### 6.3 运行期 IPv4 地址
+### 6.4 运行期 IPv4 地址
 
 已注册的 Ethernet 接口还可通过 `set_interface_ipv4()` / `remove_interface_ipv4()` 修改地址。当前控制面有意保持单地址模型：
 
@@ -328,8 +350,9 @@ pub const LISTEN_QUEUE_SIZE: usize = 512;
 | `LISTEN_QUEUE_SIZE` | TCP listen backlog clamp 上限 |
 
 protocol frame port 使用预分配 SPSC move `DmaBuffer`；ring full 时 token 保留在
-`pending_*`，不会产生额外无界 queue。Ethernet ARP pending queue 保存二层帧，单槽
-容量为 `STANDARD_MTU + 14`；因此估算 pending 内存时不能只按 1500 B 计算。
+`pending_*`，不会产生额外无界 queue。设备级 TX `Fifo` 是另一层明确有界且按需分配
+的 frame backlog；`NoQueue` 不建立该 backlog。Ethernet ARP pending queue 保存二层帧，
+单槽容量为 `STANDARD_MTU + 14`；因此估算 pending 内存时不能只按 1500 B 计算。
 更完整的拷贝边界、队列满行为和内存预算见[内存与队列](memory.md)。
 
 ### 7.3 Unix 流缓冲区

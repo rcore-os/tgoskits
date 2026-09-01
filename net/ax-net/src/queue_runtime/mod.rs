@@ -11,7 +11,10 @@ mod state;
 mod tests;
 
 use alloc::{boxed::Box, collections::VecDeque, format, string::String, sync::Arc, vec, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::{
+    num::NonZeroUsize,
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+};
 
 use ax_sync::SpinLock;
 use ax_task::WaitQueue;
@@ -185,6 +188,16 @@ pub struct NetworkDeviceInput {
     pub name: String,
     pub device: PreparedNetDevice,
     pub irq_sources: Vec<ResolvedNetIrqSource>,
+    pub tx_queue_discipline: TxQueueDiscipline,
+}
+
+/// Protocol-side transmit queue policy for one network device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TxQueueDiscipline {
+    /// Submit directly to the device and return `Again` when it is busy.
+    NoQueue,
+    /// Retain frames in submission order while the device is busy.
+    Fifo { max_frames: NonZeroUsize },
 }
 
 /// Result of a bounded hard-IRQ callback.
@@ -458,7 +471,8 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 name: port_name,
                 mac: port_mac,
                 groups: protocol_groups,
-                pending_tx: VecDeque::with_capacity(TX_BACKLOG_CAPACITY),
+                tx_queue_discipline: input.tx_queue_discipline,
+                pending_tx: VecDeque::new(),
                 next_rx: 0,
                 next_tx: 0,
             }) as Box<dyn EthernetFramePort>);

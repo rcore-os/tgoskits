@@ -633,10 +633,16 @@ driver；同步成功但 shutdown 失败时同样隔离完整 poll group，而�
 ### 7.3 Runtime builder 与 fixed affinity
 
 ```rust
+pub enum TxQueueDiscipline {
+    NoQueue,
+    Fifo { max_frames: NonZeroUsize },
+}
+
 pub struct NetworkDeviceInput {
     pub name: String,
     pub device: PreparedNetDevice,
     pub irq_sources: Vec<ResolvedNetIrqSource>,
+    pub tx_queue_discipline: TxQueueDiscipline,
 }
 
 pub trait PinnedNetIrqRegistrar: Sync {
@@ -649,6 +655,10 @@ pub trait PinnedNetIrqRegistrar: Sync {
     ) -> Result<Box<dyn PinnedNetIrqRegistration>, PinnedNetIrqError>;
 }
 ```
+
+`NetworkDeviceInput` 的构造方必须逐设备选择 discipline。`NoQueue` 不建立 protocol
+backlog；`Fifo` 的 `max_frames` 是 packet limit，存储只在第一次 busy 入队时分配。
+该接口当前按设备生效，不是 per-hardware-queue 配置。
 
 `NetworkRuntimeBuilder` 一次性消费全部设备，构造 shared-IRQ affinity domain，等待
 worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ。owner startup、initial

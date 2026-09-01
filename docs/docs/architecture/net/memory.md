@@ -126,6 +126,19 @@ Ethernet framing 后写入 DMA token。
 这些复制是当前单协议 core 与 portable DMA boundary 的明确成本。loopback 直接注入
 Router RX buffer，不分配物理 DMA token。
 
+### 7.1 Device TX queue discipline
+
+每个物理设备的 `QueueFramePort` 都持有一个显式 `TxQueueDiscipline`。`NoQueue` 直接
+提交，busy 时返回 `Again`，其 `pending_tx` 始终为空且 `VecDeque` 不分配 backing。
+`Fifo { max_frames }` 在 busy 后复制完整 `ProtocolEthernetFrame` 并按序重试；构造时
+同样使用 `VecDeque::new()`，第一次真实入队前 capacity 为零。
+
+64 位目标上的一个 `ProtocolEthernetFrame` 是 2048 字节 payload 加 8 字节长度，
+因此 64 个 frame 的内容为 `64 * 2056 = 131584` 字节，即 128.5 KiB，不含 allocator
+metadata。当前 `axruntime` 为每个生产网卡显式选择 64 帧 FIFO；这部分内存只在该设备
+实际形成 backlog 后增长，不再由所有网卡在启动时预留。不同设备的 limit 和 backlog
+彼此独立；hardware ring、SPSC token pool 与 AIC queue size 仍按各自所有者另外计算。
+
 ## 8. Protocol/socket budgets
 
 协议常量仍集中在 `consts.rs`：

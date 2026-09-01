@@ -142,6 +142,9 @@ fn collect_net_devices() -> alloc::vec::Vec<ax_net::NetworkDeviceInput> {
             name,
             device: prepared,
             irq_sources,
+            tx_queue_discipline: ax_net::TxQueueDiscipline::Fifo {
+                max_frames: core::num::NonZeroUsize::new(64).unwrap(),
+            },
         });
     }
     devices

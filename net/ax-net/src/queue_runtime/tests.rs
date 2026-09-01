@@ -15,7 +15,7 @@ use rd_net::{
 };
 
 use super::*;
-use crate::device::NetDeviceError;
+use crate::device::{EthernetFramePort, NetDeviceError, ProtocolEthernetFrame};
 
 struct DropProbe(Arc<AtomicUsize>);
 
@@ -130,6 +130,120 @@ fn dma_buffer(capacity: usize, len: usize) -> DmaBuffer {
     );
     DmaBuffer::new(pool.alloc().unwrap(), len)
         .unwrap_or_else(|_| panic!("test DMA token length exceeds its allocation"))
+}
+
+fn tx_frame(marker: u8) -> ProtocolEthernetFrame {
+    let mut frame = ProtocolEthernetFrame::new(60).unwrap();
+    frame.packet_mut().fill(marker);
+    frame
+}
+
+fn tx_frame_marker(buffer: &DmaBuffer) -> u8 {
+    buffer.read_with_cpu(buffer.len(), |packet| packet[0])
+}
+
+fn tx_test_port(
+    tx_queue_discipline: TxQueueDiscipline,
+    initial_tx_tokens: usize,
+) -> (
+    QueueFramePort,
+    SpscConsumer<DmaBuffer>,
+    SpscProducer<DmaBuffer>,
+) {
+    let (_rx_ready_tx, rx_ready) = spsc_ring(1);
+    let (rx_recycle, _rx_recycle_rx) = spsc_ring(1);
+    let (tx_ready, tx_ready_rx) = spsc_ring(4);
+    let (mut tx_free_tx, tx_free) = spsc_ring(4);
+    for _ in 0..initial_tx_tokens {
+        tx_free_tx.push(dma_buffer(2048, 0)).unwrap();
+    }
+    let group = ProtocolGroupPort {
+        rx_ready,
+        rx_recycle,
+        tx_ready,
+        tx_free,
+        pending_recycle: Vec::new(),
+        tx_spares: Vec::new(),
+        shared: Arc::new(group_state(STATE_IDLE)),
+    };
+    (
+        QueueFramePort {
+            name: String::from("test0"),
+            mac: Arc::new(SpinLock::new([0; 6])),
+            groups: vec![group],
+            tx_queue_discipline,
+            pending_tx: VecDeque::new(),
+            next_rx: 0,
+            next_tx: 0,
+        },
+        tx_ready_rx,
+        tx_free_tx,
+    )
+}
+
+#[test]
+fn fifo_backlog_is_lazy_bounded_ordered_and_flushes_after_token_return() {
+    let (mut port, mut tx_ready, mut tx_free) = tx_test_port(
+        TxQueueDiscipline::Fifo {
+            max_frames: NonZeroUsize::new(2).unwrap(),
+        },
+        1,
+    );
+
+    assert_eq!(port.pending_tx.capacity(), 0);
+    assert_eq!(port.transmit(&tx_frame(1)), Ok(()));
+    assert_eq!(port.transmit(&tx_frame(2)), Ok(()));
+    assert_eq!(port.transmit(&tx_frame(3)), Ok(()));
+    assert_eq!(port.pending_tx.len(), 2);
+    assert_eq!(port.transmit(&tx_frame(4)), Err(NetDeviceError::Again));
+
+    let first = tx_ready.pop().unwrap();
+    assert_eq!(tx_frame_marker(&first), 1);
+    tx_free.push(first).unwrap();
+    assert!(matches!(port.receive(), Err(NetDeviceError::Again)));
+    assert_eq!(port.pending_tx.len(), 1);
+
+    let second = tx_ready.pop().unwrap();
+    assert_eq!(tx_frame_marker(&second), 2);
+    tx_free.push(second).unwrap();
+    assert!(matches!(port.receive(), Err(NetDeviceError::Again)));
+    assert!(port.pending_tx.is_empty());
+
+    let third = tx_ready.pop().unwrap();
+    assert_eq!(tx_frame_marker(&third), 3);
+}
+
+#[test]
+fn noqueue_never_retains_or_allocates_when_device_is_busy() {
+    let (mut port, _tx_ready, _tx_free) = tx_test_port(TxQueueDiscipline::NoQueue, 0);
+
+    assert_eq!(port.pending_tx.capacity(), 0);
+    assert_eq!(port.transmit(&tx_frame(1)), Err(NetDeviceError::Again));
+    assert!(port.pending_tx.is_empty());
+    assert_eq!(port.pending_tx.capacity(), 0);
+}
+
+#[test]
+fn device_qdisc_limits_and_backlogs_are_isolated() {
+    let (mut first, _first_ready, _first_free) = tx_test_port(
+        TxQueueDiscipline::Fifo {
+            max_frames: NonZeroUsize::new(1).unwrap(),
+        },
+        0,
+    );
+    let (mut second, _second_ready, _second_free) = tx_test_port(
+        TxQueueDiscipline::Fifo {
+            max_frames: NonZeroUsize::new(2).unwrap(),
+        },
+        0,
+    );
+
+    assert_eq!(first.transmit(&tx_frame(1)), Ok(()));
+    assert_eq!(first.transmit(&tx_frame(2)), Err(NetDeviceError::Again));
+    assert_eq!(second.transmit(&tx_frame(3)), Ok(()));
+    assert_eq!(second.transmit(&tx_frame(4)), Ok(()));
+    assert_eq!(first.pending_tx.len(), 1);
+    assert_eq!(second.pending_tx.len(), 2);
 }
 
 struct RecordingRegistration {
@@ -296,6 +410,7 @@ fn zero_cpu_topology_quarantines_prepared_device_ownership() {
             poll_groups: Vec::new(),
         },
         irq_sources: Vec::new(),
+        tx_queue_discipline: TxQueueDiscipline::NoQueue,
     };
 
     let result = NetworkRuntimeBuilder::new(vec![input], &UnexpectedRegistrar, 0).build();
