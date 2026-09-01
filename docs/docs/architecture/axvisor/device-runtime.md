@@ -83,7 +83,7 @@ AArch64 的默认 controller 从 vGIC service 的 core 取得；其他三种架�
 
 ### 3.3 poll 与 lifecycle
 
-vCPU0 是唯一的设备 poll owner，在主运行循环每轮调用 `poll_vm_devices()`：先轮询普通 pollables，再为 DMA-pollables 创建一次性的 `VmGuestMemoryAccess`。宿主控制台把输入入队后调用 `notify_vm()`，但其唤醒语义取决于 vCPU 数量。单 vCPU VM 走 `notify_device_poll()`，先设置可跨 WFI 保留的 pending poll request，再 `notify_one()`；vCPU0 下次进入循环时消费该 flag 并执行 poll。SMP VM 当前只对所有 vCPU 共享的 wait queue 调用 `notify_one()`，不发布 poll flag，也无法指定唤醒 vCPU0；如果被唤醒的是 secondary vCPU，空闲的 vCPU0 可能仍不运行，控制台输入会延迟到 vCPU0 因其他事件再次进入循环。无论哪条分支，控制台上下文都不直接调用 UART 或 vGIC。
+vCPU0 是唯一的设备 poll owner，在主运行循环每轮调用 `poll_vm_devices()`：先轮询普通 pollables，再为 DMA-pollables 创建一次性的 `VmGuestMemoryAccess`。宿主控制台把输入入队后调用 `notify_vm()`；runtime 先设置可跨 WFI 保留的 `device_poll_requested`，再通过线程世代绑定的 vCPU kick capability 定向唤醒 vCPU0。目标正在远端 CPU 的 guest mode 中时才发送 IPI，阻塞或尚未进入 guest 时只执行直接唤醒。因此单 vCPU 与 SMP VM 使用同一条 pending-before-kick 链路，secondary vCPU 不会误消费设备 poll 请求。控制台上下文仍不直接调用 UART 或 vGIC。
 
 lifecycle capability 的调用顺序由通用 runtime 固定：
 
@@ -269,7 +269,7 @@ guest EOI/DIR 使 vGIC 完成当前物理 activation。backend deactivate 在控
 | 显式 wired assert/deassert 的 sink 更新失败 | 返回 `IrqError`，aggregate 计数和 line 本地 asserted 状态回滚 | 调用方可重试 |
 | asserted `IrqLine` drop 时最后一次 sink deassert 失败 | 错误被忽略；source 移除已经提交，无法回滚或报告 | runtime 无法重试这次 drop 通知，sink 可能仍观察到旧电平 |
 | reset/suspend/resume 中 lifecycle 回调失败 | 立即停止后续回调并阻止 Machine 状态转换 | 不补偿已完成的前序回调；设备集合可能部分完成 |
-| 空闲 SMP guest 收到控制台输入 | `notify_vm()` 只 `notify_one()` 共享 wait queue，不设置 poll flag，可能唤醒 secondary vCPU | 不能保证 vCPU0 立即 poll；输入可能延迟到 vCPU0 的下一次退出或其他唤醒 |
+| 空闲 SMP guest 收到控制台输入 | `notify_vm()` 先发布 `device_poll_requested`，再定向 kick vCPU0 | vCPU0 被阻塞时直接唤醒；在远端 guest mode 时条件发送 IPI；secondary 不消费该请求 |
 | backend 不支持物理 backing | `Unsupported`，VM prepare/start 失败 | 不静默降级为近似语义 |
 | physical teardown 中 mask/deactivate/unbind 失败 | 保留可识别的 binding/claim；delivery state 按已完成阶段提交 | 允许重试；不会双重 deactivate 或提前归还 host ownership |
 

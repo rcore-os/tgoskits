@@ -683,16 +683,16 @@ impl HyperCall {
                         detail: "IVC notify target VM does not exist".into(),
                     }
                 })?;
-                let target_runtime = target_vm
-                    .runtime_handle()
-                    .map_err(|error| self.operation_error("wake IVC notify target VM", error))?;
-                target_runtime.notify_all();
                 let target_devices = target_vm.get_devices().map_err(|error| {
                     self.operation_error("get IVC notify target devices", error)
                 })?;
                 let notify_irq = ivc::notify_peer(&target_devices).map_err(|error| {
                     self.operation_error("notify IVC peer interrupt", error.into())
                 })?;
+                let target_runtime = target_vm
+                    .runtime_handle()
+                    .map_err(|error| self.operation_error("kick IVC notify target VM", error))?;
+                target_runtime.kick_all_vcpus();
                 info!(
                     "IVC notify source VM[{}] target VM[{}] publisher VM[{}] key {:#x} irq={:?}",
                     route.source_vm_id,

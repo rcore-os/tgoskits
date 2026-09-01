@@ -230,7 +230,7 @@ flowchart LR
 
 ## 7. 并发边界与当前限制
 
-控制台的并发正确性依赖几个显式约束：宿主输入单 reader、双锁固定顺序、vCPU0 独占设备 poll。下表逐条列出这些边界的当前保证与已知限制；SMP 唤醒限制是当前设计的已知约束而非实现缺陷，演进方向在本节末尾说明。
+控制台的并发正确性依赖几个显式约束：宿主输入单 reader、双锁固定顺序、vCPU0 独占设备 poll。下表逐条列出这些边界的当前保证与已知限制。
 
 | 边界 | 当前保证 | 限制 |
 | --- | --- | --- |
@@ -240,7 +240,7 @@ flowchart LR
 | VM notify | 入队后锁外 notify，不把 mux 锁带进 manager/scheduler | notify 失败只告警，字节等后续 poll |
 | 虚拟设备 poll | 只有 vCPU0 调用 `poll_vm_devices()`，它是串口 backend 的唯一 poll owner | secondary vCPU 不消费串口输入 |
 | 单 vCPU guest | `notify_vm()` 设置 Release 发布的 pending device-poll flag 并唤醒；vCPU0 用 Acquire/AcqRel 消费 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
-| SMP guest | 当前沿用共享 wait queue 的 `notify_one()`，不发布 shared poll flag | 无法定向唤醒 vCPU0，可能只唤醒 secondary；空闲 SMP guest 的输入会延迟到 vCPU0 下次 VM-exit 或其他唤醒 |
+| SMP guest | 与单 vCPU guest 一样先发布 pending device-poll flag，再通过线程世代绑定的 capability 定向 kick vCPU0 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
 | 输出并发 | `output_lock` 覆盖 format 与 ring replay；固定队列保持事务边界，只有 output worker 等待 UART | transport 满时丢弃当前完整事务；per-guest ring 淘汰最旧字节；两者均报告摘要且不阻塞 vCPU writer |
 | 网络输出 | 每端点独立 64 KiB 固定队列；有连接时 vCPU 只复制原始字节并通过 `IrqNotify` 唤醒对应网页输出任务 | 无连接时不保留历史也不获取网络队列锁；慢客户端只影响自身通道并最终触发该端点队列丢弃摘要 |
 
@@ -258,7 +258,7 @@ flowchart LR
 HTML、CSS 和 JavaScript 均编译进 Axvisor，不依赖 GitHub、CDN 或开发板根文件系统；
 不存在需要命令主机持续运行的网页代理路径。
 
-SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll 的 single-owner 假设。正确演进方向是为 vCPU0 提供可定向的 wait/wake 路径，再为 SMP 发布 pending poll 请求。
+SMP 路径仍不能让任意 vCPU poll，那会破坏设备 poll 的 single-owner 假设。线程世代绑定的 vCPU0 kick capability 只解决定向 wait/wake；设备 poll 的所有权仍固定在 vCPU0。
 
 ## 8. 故障定位
 
@@ -270,7 +270,7 @@ SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll �
 | 输入空闲时 shell 占用 CPU | `wait_for_host_event()` 是否走 `wait_event()` / `wait_readable()` | shell 不应以 `yield_now()` 轮询 task-console |
 | 宿主日志插入正在编辑的命令 | 是否取得唯一日志订阅；记录是否经 `route_host_log()`；drop 摘要是否增长 | shell 模式必须清行、输出完整记录并重画；guest 前台模式必须缓存而非直写 |
 | `vm console` 报错 | VM ID 是否存在，状态是否严格为 `Running` | attach 不接受 Ready、Paused、Stopping 或 Stopped |
-| 客户机不立即收到输入 | 输入队列是否满及 overflow warning；`notify_vm` warning；guest 是否 SMP 且 vCPU0 空闲 | 4096 字节尾部丢弃并按 drain 周期报告一次；SMP notify 不能定向 vCPU0 |
+| 客户机不立即收到输入 | 输入队列是否满及 overflow warning；`notify_vm` warning；vCPU0 是否持续产生可处理的 VM-exit | 4096 字节尾部丢弃并按 drain 周期报告一次；kick 会定向唤醒或退出 vCPU0 |
 | reset 后控制台永久无输入输出 | reset 前是否调用过 `mark_stopped()`；是否误以为 reset 会创建 backend | reset clone 同一 backend Arc，不会发布新 generation；已失效 generation 不会自动复活 |
 | replace/stop 后仍看到 late output | 应用路径是否真的调用 `mark_stopped()`/`remove()`；写入 backend generation 是否仍 current | 底层 stop/remove 不自动接入 mux；stale 写应在修改 output 前被拒绝 |
 | 多 VM 启动日志看似停住 | 对应 VM 是否只写了未结束片段 | BootMultiplex 在多 VM 时等完整 `\n` 行；切换 owner 才做物理补行 |

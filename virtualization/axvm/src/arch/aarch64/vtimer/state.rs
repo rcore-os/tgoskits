@@ -3,7 +3,7 @@
 use std::{
     boxed::Box,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -33,7 +33,17 @@ struct HostTimerActivation {
 struct ScheduledWaitTimer {
     handle: KernelTimerHandle,
     owner_cpu: usize,
+    owner_thread: crate::host::task::ThreadId,
     epoch: u64,
+}
+
+fn wait_timer_owner_matches(
+    owner_cpu: usize,
+    owner_thread: crate::host::task::ThreadId,
+    current_cpu: usize,
+    current_thread: crate::host::task::ThreadId,
+) -> bool {
+    owner_cpu == current_cpu && owner_thread == current_thread
 }
 
 pub(in crate::arch::aarch64) type Aarch64TimerWaitToken = crate::vm::VcpuTimerWaitToken;
@@ -44,7 +54,6 @@ struct Aarch64TimerWaitState {
     armed_timer_epoch: AtomicU64,
     next_timer_epoch: AtomicU64,
     active_timer_epoch: AtomicU64,
-    wake: OnceLock<crate::host::task::ThreadWakeHandle>,
 }
 
 impl Aarch64TimerWaitState {
@@ -55,13 +64,7 @@ impl Aarch64TimerWaitState {
             armed_timer_epoch: AtomicU64::new(0),
             next_timer_epoch: AtomicU64::new(0),
             active_timer_epoch: AtomicU64::new(0),
-            wake: OnceLock::new(),
         }
-    }
-
-    fn bind_current_thread_wake(&self) {
-        self.wake
-            .get_or_init(|| crate::host::task::current_thread().wake_handle());
     }
 
     fn arm(&self, deadline_counter: u64, timer_epoch: u64) -> Aarch64TimerWaitToken {
@@ -125,12 +128,6 @@ impl Aarch64TimerWaitState {
 
     fn invalidate(&self) -> bool {
         self.completion.invalidate()
-    }
-
-    fn wake_from_hard_timer(&self) {
-        if let Some(wake) = self.wake.get() {
-            let _result = wake.wake();
-        }
     }
 }
 
@@ -253,13 +250,19 @@ impl Aarch64TimerBinding {
             return Ok(None);
         };
 
-        self.wait_state.bind_current_thread_wake();
         let deadline_ns = host_deadline_ns(deadline_counter, now_counter, self.frequency);
         let deadline = Duration::from_nanos(deadline_ns);
         let current_cpu = default_host().this_cpu_id();
+        let current_thread = crate::host::task::current_thread();
+        let owner_thread = current_thread.id();
         let existing = *self.scheduled.lock();
         if let Some(existing) = existing
-            && existing.owner_cpu == current_cpu
+            && wait_timer_owner_matches(
+                existing.owner_cpu,
+                existing.owner_thread,
+                current_cpu,
+                owner_thread,
+            )
         {
             let wait_token = self.wait_state.arm(deadline_counter, existing.epoch);
             default_host()
@@ -282,6 +285,7 @@ impl Aarch64TimerBinding {
         let wait_token = self.wait_state.arm(deadline_counter, epoch);
         let frequency = self.frequency;
         let wait_state = Arc::clone(&self.wait_state);
+        let wake = current_thread.wake_handle();
         let registration = unsafe {
             // SAFETY: the stable callback reads only the architectural counter
             // and atomically published arm state, then invokes the prebound
@@ -305,7 +309,7 @@ impl Aarch64TimerBinding {
                         return HostHardTimerAction::Rearm(Duration::from_nanos(deadline_ns));
                     }
                     if wait_state.publish_completion_for_epoch(epoch, wait_token) {
-                        wait_state.wake_from_hard_timer();
+                        let _result = wake.wake();
                     }
                     HostHardTimerAction::Disarm
                 }),
@@ -322,6 +326,7 @@ impl Aarch64TimerBinding {
         *self.scheduled.lock() = Some(ScheduledWaitTimer {
             handle,
             owner_cpu: current_cpu,
+            owner_thread,
             epoch,
         });
         Ok(Some(wait_token))
@@ -407,6 +412,20 @@ impl Aarch64TimerBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_timer_reuse_requires_the_same_cpu_and_thread_generation() {
+        let owner = crate::host::task::ThreadId::from_parts(3, 7);
+
+        assert!(wait_timer_owner_matches(2, owner, 2, owner));
+        assert!(!wait_timer_owner_matches(
+            2,
+            owner,
+            2,
+            crate::host::task::ThreadId::from_parts(3, 8)
+        ));
+        assert!(!wait_timer_owner_matches(2, owner, 1, owner));
+    }
 
     #[test]
     fn stale_timer_epoch_cannot_complete_rearmed_wait() {
