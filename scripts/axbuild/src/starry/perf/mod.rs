@@ -95,21 +95,15 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     let kernel_bin = symbols::kernel_bin_path(starry.app.workspace_root(), &target, args.debug);
     let qemu_run = qemu::run_qemu_direct(&outputs, &args, &arch, &kernel_bin).await?;
     drop(prepared_test_case);
-    if !qemu_run.status.success() {
-        if !outputs::file_nonempty(&outputs.raw) {
-            bail!(
-                "qperf QEMU run failed before producing samples: {}",
-                qemu_run.status
-            );
-        }
-        if qemu_run.timed_out {
-            eprintln!("qperf: completed the configured sampling window after producing samples");
-        } else {
-            eprintln!(
-                "qperf: QEMU ended with {} after producing samples",
-                qemu_run.status
-            );
-        }
+    let samples_present = outputs::file_nonempty(&outputs.raw);
+    validate_qemu_completion(
+        qemu_run.status.success(),
+        qemu_run.status,
+        qemu_run.timed_out,
+        samples_present,
+    )?;
+    if qemu_run.timed_out {
+        eprintln!("qperf: completed the configured sampling window after producing samples");
     }
 
     analyzer::run_analyzer(analyzer::AnalyzerRun {
@@ -169,4 +163,48 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     )?;
     summary::print_report(&outputs, &args, &report_harness);
     Ok(())
+}
+
+fn validate_qemu_completion(
+    status_success: bool,
+    status: impl core::fmt::Display,
+    timed_out: bool,
+    samples_present: bool,
+) -> anyhow::Result<()> {
+    if !samples_present {
+        bail!("qperf QEMU run failed before producing samples: {status}");
+    }
+    if !status_success && !timed_out {
+        bail!("qperf QEMU run failed after producing partial samples: {status}");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_qemu_completion;
+
+    #[test]
+    fn partial_samples_do_not_turn_a_failed_qemu_run_into_a_report() {
+        let error = validate_qemu_completion(false, "exit status: 1", false, true).unwrap_err();
+
+        assert!(error.to_string().contains("exit status: 1"));
+    }
+
+    #[test]
+    fn configured_sampling_timeout_keeps_complete_samples() {
+        validate_qemu_completion(false, "exit status: 124", true, true).unwrap();
+    }
+
+    #[test]
+    fn successful_qemu_run_requires_samples() {
+        let error = validate_qemu_completion(true, "exit status: 0", false, false).unwrap_err();
+
+        assert!(error.to_string().contains("before producing samples"));
+    }
+
+    #[test]
+    fn successful_qemu_run_with_samples_is_accepted() {
+        validate_qemu_completion(true, "exit status: 0", false, true).unwrap();
+    }
 }
