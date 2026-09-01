@@ -475,13 +475,24 @@ fn cargo_build_module_rlib(workspace_root: &Path, cargo: &Cargo, debug: bool) ->
     command.current_dir(workspace_root);
     command.envs(&cargo.env);
 
-    let status = command
+    let report_session = if cargo.env.get("AX_ARCH").map(String::as_str) == Some("aarch64") {
+        Some(crate::build::start_future_incompat_report_session(
+            &workspace_root.join("target"),
+        )?)
+    } else {
+        None
+    };
+    let cargo_result = command
         .status()
-        .with_context(|| format!("invoke cargo build for {}", cargo.package))?;
-    if !status.success() {
-        bail!("cargo build failed for {}", cargo.package);
-    }
-    Ok(())
+        .with_context(|| format!("invoke cargo build for {}", cargo.package))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                bail!("cargo build failed for {}", cargo.package)
+            }
+        });
+    crate::build::finish_future_incompat_report_session(report_session, cargo_result)
 }
 
 fn effective_profile(cargo: &Cargo, debug: bool) -> CargoBuildProfile {

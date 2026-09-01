@@ -49,3 +49,34 @@ fn package_failures_abort_remaining_checks() {
         ]
     );
 }
+
+#[test]
+fn aarch64_clippy_rejects_unapproved_current_future_incompat_report() {
+    let root = tempfile::tempdir().unwrap();
+    let check = ClippyCheck {
+        package: "starry-kernel".into(),
+        kind: ClippyCheckKind::Base,
+        target: Some("aarch64-unknown-none-softfloat".into()),
+        env: Vec::new(),
+    };
+    let report = serde_json::json!({
+        "version": 0,
+        "next_id": 2,
+        "reports": [{
+            "id": 1,
+            "suggestion_message": "other@1.0.0",
+            "per_package": {
+                "other@1.0.0": "unexpected diagnostic",
+            },
+        }],
+    });
+    let mut runner =
+        FakeCargoRunner::new(&[(check.clone(), true)]).with_future_incompat_report(report);
+
+    let error = run_clippy_checks(&mut runner, root.path(), &[check]).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("unapproved future-incompatible package"),
+        "{error:#}"
+    );
+}

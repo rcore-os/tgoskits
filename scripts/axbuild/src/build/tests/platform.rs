@@ -35,7 +35,7 @@ fn build_cargo_args_use_json_target_and_build_std_for_all_bare_architectures() {
         "riscv64gc-unknown-none-elf",
         "loongarch64-unknown-none-softfloat",
     ] {
-        let resolved = bare_build_target_for(target);
+        let resolved = bare_build_target_for(target).unwrap();
         let args = BuildInfo::build_cargo_args(target, &[]);
 
         assert_eq!(

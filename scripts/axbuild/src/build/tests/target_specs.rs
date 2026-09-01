@@ -76,7 +76,7 @@ fn bare_build_targets_use_json_specs_for_all_architectures() {
         "riscv64gc-unknown-none-elf",
         "loongarch64-unknown-none-softfloat",
     ] {
-        let target = bare_build_target_for(target_name);
+        let target = bare_build_target_for(target_name).unwrap();
 
         assert_eq!(
             target.target,

@@ -197,6 +197,28 @@ fn clippy_uses_shared_bare_target_specs_for_all_architectures() {
 }
 
 #[test]
+fn clippy_preserves_non_bare_docs_rs_targets() {
+    let target = "x86_64-unknown-linux-gnu";
+    let check = ClippyCheck {
+        package: "host-package".into(),
+        kind: ClippyCheckKind::Base,
+        target: Some(target.into()),
+        env: Vec::new(),
+    };
+
+    let invocation = check.cargo_invocation();
+
+    assert!(
+        invocation
+            .args
+            .windows(2)
+            .any(|args| args == ["--target", target])
+    );
+    assert!(!invocation.args.iter().any(|arg| arg == "json-target-spec"));
+    assert!(invocation.env.is_empty());
+}
+
+#[test]
 fn incremental_selection_checks_changed_packages_and_affected_os_roots_only() {
     let selected = incremental_clippy_selections(
         vec!["shared".into()],

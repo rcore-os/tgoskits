@@ -437,6 +437,13 @@ fn c_app_cargo_configs_use_shared_bare_target_specs() {
                 .windows(2)
                 .any(|pair| pair == ["-Z", "json-target-spec"])
         );
+
+        let final_cargo = crate::arceos::cbuild::prepare_c_app_cargo_config(&request, &[]).unwrap();
+        assert_eq!(
+            final_cargo.target,
+            format!("scripts/targets/bare/{target}.json")
+        );
+        assert_eq!(final_cargo.env.get("AX_TARGET"), Some(&target.to_string()));
     }
 }
 

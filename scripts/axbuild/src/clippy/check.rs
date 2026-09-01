@@ -100,7 +100,12 @@ impl ClippyCheck {
                 env: self.env.clone(),
             };
         };
-        let target = crate::build::bare_build_target_for(target);
+        let Some(target) = crate::build::bare_build_target_for(target) else {
+            return ClippyCargoInvocation {
+                args: self.cargo_args(),
+                env: self.env.clone(),
+            };
+        };
         let mut args = self.cargo_args_for_target(Some(&target.target));
         let rustc_args_index = args
             .iter()
