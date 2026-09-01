@@ -515,6 +515,7 @@ pub(super) struct PreparedAddressSpaceSwitch<'switch> {
 
 impl PreparedAddressSpaceSwitch<'_> {
     /// Commits the active-mm transition without running fallible logic.
+    #[inline(always)]
     pub(super) fn commit(self, pin: &CpuPin<'_>) {
         match self.phase {
             #[cfg(feature = "uspace")]
