@@ -72,3 +72,15 @@ pub use vm::{
 
 /// The architecture-independent per-CPU type.
 pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::current::ArchPerCpu>;
+
+#[cfg(test)]
+mod host_link_symbols {
+    #[unsafe(no_mangle)]
+    static STACK_SIZE: usize = 0;
+    #[unsafe(no_mangle)]
+    static PAGE_SIZE: usize = 0;
+    #[unsafe(no_mangle)]
+    static __PERCPU_TEMPLATE_ALIGN_START: usize = 0;
+    #[unsafe(no_mangle)]
+    static __PERCPU_TEMPLATE_ALIGN_END: usize = 0;
+}
