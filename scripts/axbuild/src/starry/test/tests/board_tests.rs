@@ -10,6 +10,14 @@ fn discovers_board_test_group_and_build_mapping() {
     );
     let board_test_config =
         write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
+    fs::write(
+        board_test_config
+            .parent()
+            .unwrap()
+            .join("requirements.toml"),
+        "required_env = [\"BOARD_TOKEN\"]\n",
+    )
+    .unwrap();
 
     let groups = discover_board_test_groups(root.path(), None, None).unwrap();
 
@@ -21,6 +29,7 @@ fn discovers_board_test_group_and_build_mapping() {
     assert_eq!(group.target, "aarch64-unknown-none-softfloat");
     assert_eq!(group.build_config_path, build_config);
     assert_eq!(group.board_test_config_path, board_test_config);
+    assert_eq!(group.required_env, ["BOARD_TOKEN"]);
 }
 
 #[test]

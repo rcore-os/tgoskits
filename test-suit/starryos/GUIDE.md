@@ -15,6 +15,9 @@ test-suit/starryos/<build_wrapper>/<case>/<runtime-config>.toml
 
 - QEMU 用例通过 `<case>/qemu-<arch>.toml` 发现。
 - Board 用例通过 `<case>/board-<board>.toml` 发现。
+- 只在非空宿主环境变量存在时才能运行的 Board 用例，在同一 case 目录的
+  `requirements.toml` 中声明 `required_env = ["NAME", ...]`。缺失或空值会保留
+  `--list` 可见性并输出明确的 skipped 结果，不构建或占用板卡。
 - `<build_wrapper>` 用于共享构建配置，例如 `qemu`、`board-orangepi-5-plus`。
 - 构建配置位于 case 或最近的 build wrapper 中，文件名为 `build-<target>.toml`。
 - 如果目录自身同时包含 `build-*` 和 `qemu-*` / `board-*`，它本身也可以作为 case 被发现。
@@ -427,6 +430,8 @@ AKA 的安全 Wi-Fi board case 在构建时从 `STARRY_WIFI_SSID` 和
 `STARRY_WIFI_PASSWORD` 生成 AIC station 启动事务。凭据不使用额外 sidecar 或 guest
 helper；连接和 DHCP 完成后，脚本仍按上面的普通 HTTP session file 机制下载。runner
 只为可信 boot entropy 创建带 `/chosen/rng-seed` 的临时 DTB 副本，不修改仓库 DTB。
+空 `STARRY_WIFI_SSID` 只禁用 station 启动连接；AIC8800 驱动仍初始化并注册 `wlan0`，
+且其他 AKA board case 继续运行。只有 `wifi-iperf-smoke` 因无法联网而记为 skipped。
 
 普通 shell 变量（例如 `${HOME}`）保持原样。未解析的 session 保留变量会在上板运行
 前报错；无论上传、展开还是运行失败，xtask 都会释放 session。

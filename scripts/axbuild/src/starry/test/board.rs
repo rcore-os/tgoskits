@@ -34,6 +34,7 @@ pub(crate) fn collect_board_test_groups(
             target,
             build_config_path: info.build_config_path,
             board_test_config_path: info.board_test_config_path,
+            required_env: info.required_env,
         });
     }
 
@@ -66,6 +67,11 @@ impl Starry {
                     group_label,
                     anyhow::anyhow!("missing board test config `{board_test_config_summary}`"),
                 );
+                continue;
+            }
+            let missing_env = board_test::missing_required_env(&group.required_env);
+            if !missing_env.is_empty() {
+                run_state.skip_group(group_label, &missing_env);
                 continue;
             }
 

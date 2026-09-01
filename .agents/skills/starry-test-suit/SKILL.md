@@ -44,6 +44,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - Starry 测试套件不再使用 `normal`、`stress` 等一级测试分组。QEMU 和板卡用例直接从 `test-suit/starryos` 发现。
 - QEMU 配置位于 `test-suit/starryos/<case>/qemu-<arch>.toml`，或 `test-suit/starryos/<build-wrapper>/<case>/qemu-<arch>.toml`。
 - 板卡配置位于 `test-suit/starryos/<case>/board-<board>.toml`，或 `test-suit/starryos/<build-wrapper>/<case>/board-<board>.toml`。
+- 板卡用例依赖非空宿主环境变量时，在同一 case 目录的 `requirements.toml` 中以 `required_env = ["NAME", ...]` 声明。缺失或空值必须明确记为 skipped，不能从发现或 `--list` 中静默删除，也不能构建或占用板卡。
 - 构建配置位于用例目录或最近的构建包装目录，命名为 `build-<target>.toml`；存在时也识别 `build-<arch>.toml`。
 - 构建包装目录保存共享构建配置和多个用例。目录同时含 `build-*` 与 `qemu-*` 或 `board-*` 时，该目录本身也是用例。
 - QEMU 发现先选择具有匹配体系结构或目标构建配置的目录，再在该目录及其下级目录中发现 `qemu-<arch>.toml`。

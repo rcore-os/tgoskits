@@ -1,9 +1,13 @@
 use std::{
+    collections::BTreeSet,
+    env,
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow, bail, ensure};
+use serde::Deserialize;
 
 use crate::test::qemu;
 
@@ -25,6 +29,16 @@ pub(crate) struct BoardCaseBuildInfo {
     pub(crate) board_name: String,
     pub(crate) build_config_path: PathBuf,
     pub(crate) board_test_config_path: PathBuf,
+    pub(crate) required_env: Vec<String>,
+}
+
+const BOARD_TEST_REQUIREMENTS_FILE: &str = "requirements.toml";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoardTestRequirements {
+    #[serde(default)]
+    required_env: Vec<String>,
 }
 
 pub(crate) fn labeled_board_cases<T: BoardTestGroupInfo>(groups: Vec<T>) -> Vec<(String, String)> {
@@ -141,10 +155,61 @@ pub(crate) fn discover_board_case_build_infos(
             board_name: config.board_name,
             build_config_path: wrapper.build_config_path,
             board_test_config_path: config.config_path,
+            required_env: load_board_test_required_env(&config.case_dir)?,
         });
     }
 
     Ok(groups)
+}
+
+pub(crate) fn load_board_test_required_env(case_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let path = case_dir.join(BOARD_TEST_REQUIREMENTS_FILE);
+    let source = match fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let requirements: BoardTestRequirements =
+        toml::from_str(&source).with_context(|| format!("failed to parse {}", path.display()))?;
+    let mut names = BTreeSet::new();
+    for name in &requirements.required_env {
+        ensure!(
+            valid_environment_name(name),
+            "invalid required environment variable `{name}` in {}",
+            path.display()
+        );
+        ensure!(
+            names.insert(name.as_str()),
+            "duplicate required environment variable `{name}` in {}",
+            path.display()
+        );
+    }
+    Ok(requirements.required_env)
+}
+
+pub(crate) fn missing_required_env(required: &[String]) -> Vec<String> {
+    missing_required_env_with(required, |name| env::var_os(name))
+}
+
+fn missing_required_env_with(
+    required: &[String],
+    mut lookup: impl FnMut(&str) -> Option<OsString>,
+) -> Vec<String> {
+    required
+        .iter()
+        .filter(|name| lookup(name).is_none_or(|value| value.is_empty()))
+        .cloned()
+        .collect()
+}
+
+fn valid_environment_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
 }
 
 fn available_values<'a>(values: impl Iterator<Item = &'a str>) -> String {
@@ -160,9 +225,22 @@ fn available_values<'a>(values: impl Iterator<Item = &'a str>) -> String {
     }
 }
 
-pub(crate) fn finalize_board_test_run(suite_name: &str, failed: &[String]) -> anyhow::Result<()> {
+pub(crate) fn finalize_board_test_run(
+    suite_name: &str,
+    total: usize,
+    failed: &[String],
+    skipped: &[String],
+) -> anyhow::Result<()> {
     if failed.is_empty() {
-        println!("all {suite_name} board test groups passed");
+        if skipped.is_empty() {
+            println!("all {suite_name} board test groups passed");
+        } else {
+            println!(
+                "all {suite_name} board test groups completed: {} passed, {} skipped",
+                total - skipped.len(),
+                skipped.len()
+            );
+        }
         Ok(())
     } else {
         bail!(
@@ -177,6 +255,7 @@ pub(crate) struct BoardTestRunState<'a> {
     suite_name: &'a str,
     total: usize,
     failed: Vec<String>,
+    skipped: Vec<String>,
 }
 
 impl<'a> BoardTestRunState<'a> {
@@ -185,6 +264,7 @@ impl<'a> BoardTestRunState<'a> {
             suite_name,
             total,
             failed: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 
@@ -209,8 +289,17 @@ impl<'a> BoardTestRunState<'a> {
         self.failed.push(group_label);
     }
 
+    pub(crate) fn skip_group(&mut self, group_label: String, missing_env: &[String]) {
+        println!(
+            "skipped: {} (missing or empty required environment: {})",
+            group_label,
+            missing_env.join(", ")
+        );
+        self.skipped.push(group_label);
+    }
+
     pub(crate) fn finish(self) -> anyhow::Result<()> {
-        finalize_board_test_run(self.suite_name, &self.failed)
+        finalize_board_test_run(self.suite_name, self.total, &self.failed, &self.skipped)
     }
 }
 
@@ -257,6 +346,47 @@ mod tests {
         .to_string();
 
         assert_eq!(err, "no Starry board test groups found under /tmp/stress");
+    }
+
+    #[test]
+    fn board_requirements_load_required_environment_names() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("requirements.toml"),
+            "required_env = [\"STARRY_WIFI_SSID\", \"STARRY_WIFI_PASSWORD\"]\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_board_test_required_env(root.path()).unwrap(),
+            ["STARRY_WIFI_SSID", "STARRY_WIFI_PASSWORD"]
+        );
+    }
+
+    #[test]
+    fn required_environment_treats_absent_and_empty_values_as_missing() {
+        let required = vec![
+            "ABSENT".to_string(),
+            "EMPTY".to_string(),
+            "PRESENT".to_string(),
+        ];
+        let missing = missing_required_env_with(&required, |name| match name {
+            "EMPTY" => Some(std::ffi::OsString::new()),
+            "PRESENT" => Some(std::ffi::OsString::from("configured")),
+            _ => None,
+        });
+
+        assert_eq!(missing, ["ABSENT", "EMPTY"]);
+    }
+
+    #[test]
+    fn skipped_board_group_does_not_fail_the_run() {
+        let mut run = BoardTestRunState::new("starry", 1);
+
+        run.skip_group("wifi/board".to_string(), &["STARRY_WIFI_SSID".to_string()]);
+
+        assert_eq!(run.skipped, ["wifi/board"]);
+        assert!(run.finish().is_ok());
     }
 
     #[derive(Debug)]
