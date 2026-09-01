@@ -59,6 +59,13 @@ pub mod mmio;
     feature = "vsock"
 ))]
 mod registration;
+#[cfg(any(
+    feature = "aic8800-wifi",
+    feature = "cv181x-sdhci",
+    feature = "k230-sdhci",
+    feature = "rockchip-sdhci"
+))]
+mod sdhci_runtime;
 
 #[cfg(feature = "block")]
 pub mod block;

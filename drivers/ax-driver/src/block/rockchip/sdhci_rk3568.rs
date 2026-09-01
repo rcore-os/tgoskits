@@ -27,10 +27,7 @@ use sdmmc_protocol::{
     sdio::{SdMmcIrqHost, init::CardInitPreference},
 };
 
-use crate::{
-    block::{ProbeFdtBlock, sdhci_runtime::install_host_timer},
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap, sdhci_runtime::install_host_timer};
 
 const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
 const DWCMSHC_AREA1_MASK: u16 = 0x0fff;

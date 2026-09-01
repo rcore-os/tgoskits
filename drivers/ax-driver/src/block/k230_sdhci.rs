@@ -22,10 +22,7 @@ use rdrive::{
 use sdhci_host::{Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::sdio::{SdMmcIrqHost, init::CardInitPreference};
 
-use crate::{
-    block::{ProbeFdtBlock, sdhci_runtime::install_host_timer},
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap, sdhci_runtime::install_host_timer};
 
 crate::model_register!(
     name: "K230 SDHCI",

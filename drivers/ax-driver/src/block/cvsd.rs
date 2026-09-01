@@ -20,11 +20,12 @@ use sdmmc_protocol::{
 
 #[cfg(not(test))]
 use crate::{
-    block::{ProbeFdtBlock, sdhci_runtime::install_host_timer},
+    block::ProbeFdtBlock,
     cv181x::{
         SDHCI_MIN_MMIO_SIZE, SYSCON_MIN_MMIO_SIZE, controller_region, has_property, host_config,
         required_region,
     },
+    sdhci_runtime::install_host_timer,
 };
 
 #[cfg(not(test))]

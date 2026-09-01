@@ -33,10 +33,7 @@ use sdmmc_protocol::{
 use super::{
     card_init_preference, clock::enable_node_clocks, media_name, supports_block_card_protocol,
 };
-use crate::{
-    block::{ProbeFdtBlock, sdhci_runtime::install_host_timer},
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap, sdhci_runtime::install_host_timer};
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: hard IRQ only
 // acknowledges and caches status; the bound hctx advances command/data state.

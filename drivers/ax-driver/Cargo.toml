@@ -45,6 +45,7 @@ aic8800-wifi = [
     "aic8800/rdif",
     "dep:cv181x-sdhci",
     "dep:pbkdf2",
+    "dep:sdhci-host",
     "dep:sdmmc-host",
     "dep:sha1",
 ]
