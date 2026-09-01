@@ -410,7 +410,7 @@ impl HyperCall {
                     shm_base_gpa,
                     ivc_channel.base_hpa(),
                     actual_size,
-                    MappingFlags::READ | MappingFlags::WRITE,
+                    shared_memory_mapping_flags(),
                 ) {
                     if let Err(release_err) =
                         self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
@@ -540,12 +540,11 @@ impl HyperCall {
                     }
                 };
 
-                // TODO: separate the mapping flags of metadata and data.
                 if let Err(err) = self.vm.map_region(
                     shm_base_gpa,
                     base_hpa,
                     actual_size,
-                    MappingFlags::READ | MappingFlags::WRITE,
+                    shared_memory_mapping_flags(),
                 ) {
                     match ivc::unsubscribe_from_channel_of_publisher(
                         publisher_vm_id,

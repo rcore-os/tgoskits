@@ -28,8 +28,8 @@ use axdevice::{
 use axdevice_base::IrqLine;
 
 use crate::{
-    AxVmError, AxVmResult, GuestPhysAddr, HostPhysAddr, ax_err_type, host::PagingHandler,
-    sync::MutexExt,
+    AxVmError, AxVmResult, GuestPhysAddr, HostPhysAddr, MappingFlags, ax_err_type,
+    host::PagingHandler, sync::MutexExt,
 };
 
 /// A global btree map to store IVC channels,
@@ -44,6 +44,15 @@ static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::ne
 /// the actual granted size back to the guest, so guests must check it.
 pub const MAX_IVC_CHANNEL_SIZE: usize = 0x100_0000;
 const IVC_NOTIFY_PEER: usize = usize::MAX;
+
+/// Stage-2 attributes for AXIVC shared pages.
+///
+/// The shared region is CPU-owned Normal Write-Back memory. Guests that map the
+/// same physical pages through StarryOS, Linux or Zephyr must use compatible WB
+/// attributes; DEVICE/UNCACHED aliases are not part of the AXIVC contract.
+pub(crate) fn shared_memory_mapping_flags() -> MappingFlags {
+    MappingFlags::READ | MappingFlags::WRITE
+}
 
 /// Allocates guest-physical bindings inside one graph-owned IVC MMIO aperture.
 pub(crate) trait IvcApertureAllocator: Send + Sync {
@@ -724,6 +733,9 @@ impl<H: PagingHandler> IVCChannel<H> {
             header.publisher_id = publisher_vm_id as u64;
             header.key = key as u64;
         }
+        // Make the host-initialized channel header visible through the guest
+        // WB mappings before the shared pages are first exposed.
+        H::clean_dcache_range(shared_region_base, shared_region_size);
 
         debug!("Allocated IVCChannel: {channel:?}");
 
@@ -963,6 +975,7 @@ mod tests {
     static ALLOC_FRAMES_CALLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
     static DEALLOC_FRAME_CALLS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
     static DEALLOC_FRAMES_CALLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+    static DCACHE_CLEAN_CALLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
 
     fn arena_base() -> usize {
         static BASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -1021,6 +1034,42 @@ mod tests {
         fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
             VirtAddr::from_usize(paddr.as_usize())
         }
+
+        fn clean_dcache_range(paddr: PhysAddr, size: usize) {
+            DCACHE_CLEAN_CALLS
+                .lock()
+                .unwrap()
+                .push((paddr.as_usize(), size));
+        }
+    }
+
+    #[test]
+    fn ivc_stage2_mapping_flags_are_cacheable_normal_memory() {
+        let flags = shared_memory_mapping_flags();
+
+        assert!(flags.contains(MappingFlags::READ));
+        assert!(flags.contains(MappingFlags::WRITE));
+        assert!(!flags.contains(MappingFlags::DEVICE));
+        assert!(!flags.contains(MappingFlags::UNCACHED));
+    }
+
+    #[test]
+    fn allocation_cleans_shared_region_before_exposure() {
+        let channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            0x106,
+            2 * PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_6000),
+        )
+        .unwrap();
+        let base = channel.base_hpa();
+
+        assert!(
+            DCACHE_CLEAN_CALLS
+                .lock()
+                .unwrap()
+                .contains(&(base.as_usize(), 2 * PAGE_SIZE_4K))
+        );
     }
 
     #[test]

@@ -137,6 +137,20 @@ pub fn iomap(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
     }
 }
 
+/// Maps CPU-owned shared RAM as Normal Write-Back memory.
+///
+/// This is intended for coherent shared-memory windows whose peers also use
+/// cacheable Normal mappings. Device MMIO should continue to use [`iomap`].
+pub fn iomap_cached(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
+    if size == 0 {
+        return Err(MmError::InvalidInput("mapping size is zero"));
+    }
+    addr.as_usize()
+        .checked_add(size)
+        .ok_or(MmError::InvalidInput("physical address range overflows"))?;
+    iomap_generic(addr, size, MappingFlags::empty())
+}
+
 /// Maps a physical memory region as Normal Non-cacheable memory.
 ///
 /// This is intended for CPU-owned shared RAM, such as an inter-VM shared-memory

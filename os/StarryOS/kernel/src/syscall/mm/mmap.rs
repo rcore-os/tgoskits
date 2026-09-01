@@ -243,7 +243,6 @@ pub fn sys_mmap(
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    #[cfg(feature = "rknpu")]
                     Ok(DeviceMmap::PhysicalCached(..)) => false,
                     Ok(DeviceMmap::Physical(..))
                     | Ok(DeviceMmap::PhysicalResolved(..))
@@ -379,7 +378,6 @@ pub fn sys_mmap(
                             None => Backend::new_linear(start, pa_va_offset, true),
                         }
                     }
-                    #[cfg(feature = "rknpu")]
                     Ok(DeviceMmap::PhysicalCached(mut range, retain)) => {
                         range.start += offset;
                         if range.is_empty() {
@@ -471,7 +469,6 @@ pub fn sys_mmap(
                                             None => Backend::new_linear(start, pa_va_offset, true),
                                         }
                                     }
-                                    #[cfg(feature = "rknpu")]
                                     DeviceMmap::PhysicalCached(range, retain) => {
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);

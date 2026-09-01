@@ -616,23 +616,11 @@ impl DeviceOps for AxivcChannel {
         }
         let retainer: Arc<dyn Any + Send + Sync> = state.mmap_anchor.clone();
         let retainer = Some(retainer);
-        #[cfg(feature = "rknpu")]
-        {
-            let range = PhysAddrRange::from_start_size(
-                PhysAddr::from_usize(state.shm_base_gpa),
-                state.shm_size,
-            );
-            DeviceMmap::PhysicalCached(range, retainer)
-        }
-        #[cfg(not(feature = "rknpu"))]
-        {
-            let length = length.min(state.shm_size - offset);
-            let range = PhysAddrRange::from_start_size(
-                PhysAddr::from_usize(state.shm_base_gpa + offset),
-                length,
-            );
-            DeviceMmap::PhysicalResolved(range, retainer)
-        }
+        let range = PhysAddrRange::from_start_size(
+            PhysAddr::from_usize(state.shm_base_gpa),
+            state.shm_size,
+        );
+        DeviceMmap::PhysicalCached(range, retainer)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -671,15 +659,28 @@ impl HyperCallOutputSlot {
 }
 
 fn shared_page_mut(shm_base_gpa: usize, shm_size: usize) -> VfsResult<&'static mut IvcRegion> {
-    let vaddr = ax_mm::iomap_uncached(PhysAddr::from_usize(shm_base_gpa), shm_size)
-        .map_err(|_| VfsError::NoMemory)?;
+    check_shared_page_range(shm_base_gpa, shm_size)?;
+    // AXIVC shared memory is CPU-owned RAM. Keep the Starry kernel view on the
+    // same Normal WB contract as userspace mmap, Linux and Zephyr; mixing WB
+    // and uncached aliases for the same PA can corrupt ring/header visibility
+    // on ARM64.
+    let vaddr =
+        ax_mm::iomap_cached(PhysAddr::from_usize(shm_base_gpa), shm_size).map_err(|_| VfsError::NoMemory)?;
     Ok(unsafe { &mut *(vaddr.as_mut_ptr() as *mut IvcRegion) })
 }
 
 fn shared_page_ref(shm_base_gpa: usize, shm_size: usize) -> VfsResult<&'static IvcRegion> {
-    let vaddr = ax_mm::iomap_uncached(PhysAddr::from_usize(shm_base_gpa), shm_size)
-        .map_err(|_| VfsError::NoMemory)?;
+    check_shared_page_range(shm_base_gpa, shm_size)?;
+    let vaddr =
+        ax_mm::iomap_cached(PhysAddr::from_usize(shm_base_gpa), shm_size).map_err(|_| VfsError::NoMemory)?;
     Ok(unsafe { &*(vaddr.as_ptr() as *const IvcRegion) })
+}
+
+fn check_shared_page_range(shm_base_gpa: usize, shm_size: usize) -> VfsResult<()> {
+    if shm_size == 0 || shm_base_gpa.checked_add(shm_size).is_none() {
+        return Err(VfsError::InvalidInput);
+    }
+    Ok(())
 }
 
 fn wait_for_region_ready(region: &IvcRegion, publisher_id: usize, key: usize) -> VfsResult<()> {
