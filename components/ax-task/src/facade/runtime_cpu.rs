@@ -87,7 +87,7 @@ impl RuntimeCpuHandles {
         self.runtime_cpu
     }
 
-    fn claim(self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
+    fn remote(self) -> Result<&'static CpuRemote, TaskError> {
         let remote_raw = self.cpu_remote.into_raw();
         validate_handle::<CpuRemote>(remote_raw)?;
         // SAFETY: TaskRuntime guarantees this handle identifies the Arc-backed
@@ -96,6 +96,17 @@ impl RuntimeCpuHandles {
         if !remote.is_online() {
             return Err(TaskError::NotInitialized);
         }
+        if remote.owner().as_u32() != self.runtime_cpu.as_u32() {
+            return Err(TaskError::CpuOwnerMismatch {
+                expected: remote.owner().as_u32(),
+                actual: self.runtime_cpu.as_u32(),
+            });
+        }
+        Ok(remote)
+    }
+
+    fn claim(self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
+        let remote = self.remote()?;
 
         let local_raw = self.cpu_local.into_raw();
         validate_handle::<CpuLocal>(local_raw)?;
@@ -272,6 +283,19 @@ impl RuntimeSchedulerFrameGuard {
 
     pub(super) const fn cpu_id(&self) -> RuntimeCpuId {
         self.cpu.cpu_id()
+    }
+
+    /// Tests the scheduler request published for this frame's pinned CPU.
+    ///
+    /// Like Linux `need_resched()`, this reads the remotely publishable atomic
+    /// state without reacquiring the owner runqueue. The scheduler frame keeps
+    /// the CPU fixed, and `RuntimeCpuHandles::remote` revalidates that the
+    /// cached endpoint still names that CPU.
+    pub(super) fn scheduler_request_pending(
+        &self,
+        scope: SchedulerRequestScope,
+    ) -> Result<bool, TaskError> {
+        Ok(self.cpu.remote()?.scheduler_request_pending(scope))
     }
 }
 

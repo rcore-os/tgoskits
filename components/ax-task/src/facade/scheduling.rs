@@ -90,7 +90,7 @@ fn schedule_current_cpu_with_entry(
         let needs_reschedule = if let Some(request_pending) = no_switch_request_pending {
             request_pending
         } else {
-            runtime_current_cpu_mut(&mut scheduler_frame)?.scheduler_request_pending(request_scope)
+            scheduler_frame.scheduler_request_pending(request_scope)?
         };
         let repeat = preempt_schedule_needs_repeat(outcome, needs_reschedule);
         drop(scheduler_frame);
