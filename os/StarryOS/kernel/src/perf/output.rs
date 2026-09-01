@@ -134,7 +134,7 @@ impl PerfRingOutput {
     }
 
     /// Returns the number of records dropped at the bounded writer gate.
-    #[cfg(test)]
+    #[cfg(all(test, not(axtest)))]
     pub(crate) fn contention_drops(&self) -> u64 {
         self.state.lost_records.load(Ordering::Relaxed)
     }
