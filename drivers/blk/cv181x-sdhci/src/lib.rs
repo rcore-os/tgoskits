@@ -38,17 +38,11 @@ enum ControllerResources {
 
 struct Cv181xResetHook {
     mmio: Cv181xMmio,
-    config: Cv181xConfig,
-    controller: ControllerResources,
 }
 
 impl Cv181xResetHook {
-    const fn new(mmio: Cv181xMmio, config: Cv181xConfig, controller: ControllerResources) -> Self {
-        Self {
-            mmio,
-            config,
-            controller,
-        }
+    const fn new(mmio: Cv181xMmio) -> Self {
+        Self { mmio }
     }
 }
 
@@ -64,7 +58,7 @@ unsafe impl Sync for Cv181xResetHook {}
 
 impl HostResetHook for Cv181xResetHook {
     fn after_reset(&self, _host: &mut Sdhci) -> Result<(), ProtocolError> {
-        board::restore_controller_after_reset(self.mmio, self.config, self.controller);
+        board::restore_ds_hs_phy(self.mmio);
         Ok(())
     }
 }
@@ -90,7 +84,7 @@ impl Cv181xSdhci {
             .set_fixed_base_clock_hz(source_clock)
             .expect("a newly constructed SDHCI host must be idle");
         let controller = ControllerResources::Sd;
-        inner.set_reset_hook(Cv181xResetHook::new(mmio, config, controller));
+        inner.set_reset_hook(Cv181xResetHook::new(mmio));
         let mut this = Self {
             inner,
             mmio,
@@ -119,7 +113,7 @@ impl Cv181xSdhci {
             .set_fixed_base_clock_hz(source_clock)
             .expect("a newly constructed SDHCI host must be idle");
         let controller = ControllerResources::Sdio1(mmio);
-        inner.set_reset_hook(Cv181xResetHook::new(host, config, controller));
+        inner.set_reset_hook(Cv181xResetHook::new(host));
         let mut this = Self {
             inner,
             mmio: host,

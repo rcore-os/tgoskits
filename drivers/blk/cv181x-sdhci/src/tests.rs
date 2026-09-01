@@ -112,6 +112,61 @@ fn reset_hook_restores_vendor_phy_state() {
 }
 
 #[test]
+fn sdio1_inner_reset_hook_does_not_replay_board_resources() {
+    let mut core = FakeMmio::<0x400>::new();
+    let mut syscon = FakeMmio::<0x2000>::new();
+    let mut crg = FakeMmio::<0x1000>::new();
+    let mut rtcsys_ctrl = FakeMmio::<0x1000>::new();
+    let mut rtcsys_io = FakeMmio::<0x1000>::new();
+    let host_mmio = Cv181xMmio::new(core.base(), syscon.base());
+    let sdio1_mmio =
+        Cv181xSdio1Mmio::new(host_mmio, crg.base(), rtcsys_ctrl.base(), rtcsys_io.base());
+    let mut host = unsafe { Cv181xSdhci::new_sdio1(sdio1_mmio, Cv181xConfig::default()) };
+
+    core.write_u32(0x200, 0);
+    core.write_u32(0x240, 0);
+    core.write_u32(0x24c, 0);
+    crg.write_u32(0, 0);
+    rtcsys_ctrl.write_u32(0x18, 0);
+    syscon.write_u32(0x294, 0);
+
+    let mut request = unsafe {
+        sdmmc_host::SdMmcHost::submit_bus_op(host.inner_mut(), sdmmc_host::BusOp::ResetAll)
+    }
+    .unwrap();
+    assert!(matches!(
+        sdmmc_host::SdMmcHost::advance_bus_op(
+            host.inner_mut(),
+            &mut request,
+            ProgressCause::Submitted,
+        )
+        .unwrap(),
+        RequestProgress::RegisterPending { .. }
+    ));
+    unsafe {
+        core.base()
+            .as_ptr()
+            .add(REG_SOFTWARE_RESET)
+            .write_volatile(0);
+    }
+    assert_eq!(
+        sdmmc_host::SdMmcHost::advance_bus_op(
+            host.inner_mut(),
+            &mut request,
+            ProgressCause::RegisterRetry,
+        )
+        .unwrap(),
+        RequestProgress::Complete(Ok(())),
+    );
+
+    assert_eq!(core.read_u32(0x240), PHY_TX_RX_DLY_DS_HS);
+    assert_eq!(core.read_u32(0x24c), PHY_CONFIG_DS_HS);
+    assert_eq!(crg.read_u32(0), 0);
+    assert_eq!(rtcsys_ctrl.read_u32(0x18), 0);
+    assert_eq!(syscon.read_u32(0x294), 0);
+}
+
+#[test]
 fn sdio1_soc_setup_programs_pinmux_pull_clock_reset_and_card_detect() {
     let mut core = FakeMmio::<0x400>::new();
     let mut syscon = FakeMmio::<0x2000>::new();
