@@ -340,6 +340,7 @@ fn claim_preempt_exit_scheduler(origin: PreemptExitOrigin, irqs_were_enabled: bo
 /// outer rq/IRQ transaction covers its internal task-state locks, so those
 /// locks must not repeatedly mutate the suspended task's preemption word.
 #[cfg(not(any(test, feature = "host-test")))]
+#[inline(always)]
 pub(crate) fn enter_lock_preempt() -> Option<cpu_local::PreemptionToken> {
     if !ax_hal::asm::irqs_enabled() && read_state().owns_cpu_context() {
         return None;
@@ -560,6 +561,7 @@ fn in_hard_irq_on(pin: &cpu_local::CpuPin<'_>) -> bool {
     ax_hal::irq::in_irq_context_pinned(pin)
 }
 
+#[inline(always)]
 fn read_state() -> RuntimeGuardState {
     if !ax_hal::asm::irqs_enabled() {
         // Raw IRQ exclusion already fixes the CPU and prevents every local
@@ -576,6 +578,7 @@ fn current_preempt_depth() -> u32 {
     with_current_cpu_pin(current_preempt_depth_pinned)
 }
 
+#[inline(always)]
 fn current_preempt_depth_pinned(pin: &cpu_local::CpuPin<'_>) -> u32 {
     cpu_local::preemption_snapshot(pin)
         .unwrap_or_else(|error| panic!("architecture preemption state is invalid: {error}"))

@@ -299,6 +299,7 @@ pub fn enter_preemption() -> PreemptionToken {
 }
 
 /// Observes the current architecture-selected preemption state.
+#[inline(always)]
 pub fn preemption_snapshot(pin: &CpuPin<'_>) -> Result<PreemptionSnapshot, CpuLocalError> {
     Ok(selected_state(pin)?.snapshot())
 }
@@ -314,18 +315,21 @@ pub fn current_preemption_pending() -> Result<bool, CpuLocalError> {
 }
 
 /// Marks work pending at the current preemptible boundary.
+#[inline(always)]
 pub fn set_preemption_pending(pin: &CpuPin<'_>) -> Result<(), CpuLocalError> {
     selected_state(pin)?.set_pending();
     Ok(())
 }
 
 /// Clears the pending mark after the external owner has drained its work.
+#[inline(always)]
 pub fn clear_preemption_pending(pin: &CpuPin<'_>) -> Result<(), CpuLocalError> {
     selected_state(pin)?.clear_pending();
     Ok(())
 }
 
 /// Finishes the exact owner captured by [`enter_preemption`].
+#[inline(always)]
 pub fn finish_preemption(token: PreemptionToken) -> PreemptionExit {
     token.state().finish()
 }
@@ -403,6 +407,7 @@ pub fn release_initial_context_preemption(pin: &CpuPin<'_>) -> Result<bool, CpuL
     }
 }
 
+#[inline(always)]
 fn selected_state(pin: &CpuPin<'_>) -> Result<&'static PreemptionState, CpuLocalError> {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     {

@@ -248,22 +248,26 @@ impl CpuAreaRef {
     }
 
     /// Returns this area's logical CPU index.
+    #[inline(always)]
     pub const fn cpu_index(self) -> CpuIndex {
         self.prefix().header().cpu_index()
     }
 
     /// Returns the exact runtime prefix address used as area identity.
+    #[inline(always)]
     pub fn base(self) -> usize {
         self.prefix.as_ptr() as usize
     }
 
     /// Returns the initialized fixed prefix.
+    #[inline(always)]
     pub const fn prefix(self) -> &'static CpuAreaPrefix {
         // SAFETY: construction requires a shutdown-lifetime mapping.
         unsafe { self.prefix.as_ref() }
     }
 
     /// Returns this area's runtime/trap anchor.
+    #[inline(always)]
     pub fn runtime_anchor(self) -> &'static CpuRuntimeAnchor {
         self.prefix().runtime_anchor()
     }

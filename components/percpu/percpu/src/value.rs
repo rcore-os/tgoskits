@@ -126,6 +126,7 @@ where
     S: PerCpuObjectSymbol<T>,
 {
     /// Borrows a shared current-CPU object for one non-escaping callback.
+    #[inline(always)]
     pub fn with_current<R>(
         &self,
         pin: &CpuPin<'_>,
@@ -149,6 +150,7 @@ where
     /// callback and exclude every conflicting mutation of this object. Offline
     /// CPU bootstrap satisfies the same contract before interrupt publication.
     #[doc(hidden)]
+    #[inline(always)]
     pub unsafe fn with_current_cpu_area<R>(
         &self,
         operation: impl for<'value> FnOnce(&'value T) -> R,
@@ -205,11 +207,13 @@ where
     S: PerCpuPrimitiveSymbol<T>,
 {
     /// Loads the current CPU's atomic scalar with relaxed ordering.
+    #[inline(always)]
     pub fn read_current(&self, pin: &CpuPin<'_>) -> T {
         unsafe { T::load(S::current_ptr(pin)) }
     }
 
     /// Stores the current CPU's atomic scalar with relaxed ordering.
+    #[inline(always)]
     pub fn write_current(&self, pin: &CpuPin<'_>, value: T) {
         unsafe { T::store(S::current_ptr(pin), value) }
     }
