@@ -7,6 +7,8 @@ sidebar_label: "板卡管理"
 
 `cargo xtask board` 是顶层板卡管理命令，封装了与 `ostool-server` 的交互。`ostool-server` 运行在连接物理板卡的宿主机上，提供板卡分配、固件部署和串口交互的 API。本命令用于**分配/查看/连接**远程板卡，与 `cargo xtask <os> board`（在板卡上运行 OS，详见 [Axvisor 运行](./axvisor/runtime) 或 [StarryOS 运行](./starry/runtime)）是两个不同层次：前者管板子，后者把编译产物刷到板子上跑。
 
+公网开发板租赁平台涉及普通用户账号、OAuth 浏览器授权、租赁和管理员后台操作，相关说明见[开发板租赁平台](./development-board-rental/overview.md)；本文仍是 TGOSKits `cargo xtask board` 的命令参考。
+
 ## 1. 服务架构
 
 板卡管理涉及三个角色：开发者的 axbuild 进程、ostool-server（板卡宿主机上的服务）、物理板卡。`cargo xtask board` 命令是前两者的桥梁，通过 HTTP API 与 ostool-server 交互完成板卡分配和串口连接。
@@ -85,7 +87,7 @@ struct ArgsConnect {
 
 `Command::Connect` 是最常用的交互命令。流程：加载全局配置 → 解析服务器 → `connect_board` 向 ostool-server 请求分配一块指定类型的板卡 → 分配成功后把板卡串口透传到当前终端（stdin/stdout 透传），开发者获得与板卡串口的直接交互能力。
 
-`connect` 会**占用**板卡资源（其他用户在该板卡被释放前无法使用），因此使用完毕后需通过退出终端（Ctrl+C / Ctrl+D）释放板卡。
+`connect` 会**占用**板卡资源（其他用户在该板卡被释放前无法使用）。进入 ostool 串口终端后，按 `Ctrl+A`，松开后再按 `x` 退出，使客户端有机会正常释放开发板。
 
 `--session-file RELATIVE_PATH=LOCAL_PATH` 可在串口会话开始前上传一个本地文件，并在终端输出板卡可访问的 HTTP URL。该参数可重复，适合临时把内核、脚本或诊断资产挂到一次手工调试会话中。
 
