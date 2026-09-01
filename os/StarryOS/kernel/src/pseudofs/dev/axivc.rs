@@ -1,4 +1,9 @@
-use alloc::{format, string::String, sync::Arc, vec::Vec};
+use alloc::{
+    format,
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
     cell::UnsafeCell,
@@ -8,7 +13,11 @@ use core::{
 };
 
 use ax_hal::mem::{DCacheOp, PhysAddr, VirtAddr, dcache_range, virt_to_phys};
+use ax_lazyinit::OnceLock;
 use ax_memory_addr::PhysAddrRange;
+use ax_runtime::hal::irq::{
+    AutoEnable, IrqError, IrqHandle, IrqId, IrqRequest, IrqReturn, ShareMode,
+};
 use ax_task::current;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
@@ -29,6 +38,7 @@ const AXIVC_PUBLISHER_MINOR_BASE: u32 = 241;
 const AXIVC_SUBSCRIBER_MINOR_BASE: u32 = 257;
 const REGION_READY_RETRIES: usize = 100;
 const REGION_READY_DELAY_MS: u64 = 10;
+const AXIVC_COMPATIBLES: &[&str] = &["axvisor,ivc-channel"];
 
 const IVC_PUBLISH_CHANNEL: u32 = 0x4050_0000;
 const IVC_UNPUBLISH_CHANNEL: u32 = 0x4050_0001;
@@ -62,13 +72,76 @@ struct IvcCacheOpArg {
 
 struct AxivcRegistry {
     inner: Mutex<RegistryInner>,
+    publisher_poll_sets: Vec<Arc<PollSet>>,
+    subscriber_poll_sets: Vec<Arc<PollSet>>,
+    notify_irq: Option<IrqId>,
+    irq_handle: OnceLock<IrqHandle>,
 }
 
 impl AxivcRegistry {
     fn new(channel_count: usize) -> Self {
+        Self::new_with_notify_irq(channel_count, probe_notify_irq())
+    }
+
+    fn new_with_notify_irq(channel_count: usize, notify_irq: Option<IrqId>) -> Self {
         Self {
             inner: Mutex::new(RegistryInner::new(channel_count)),
+            publisher_poll_sets: new_poll_sets(channel_count),
+            subscriber_poll_sets: new_poll_sets(channel_count),
+            notify_irq,
+            irq_handle: OnceLock::new(),
         }
+    }
+
+    fn register_notify_irq(self: &Arc<Self>) {
+        let Some(irq) = self.notify_irq else {
+            debug!(
+                "axivc: axvisor,ivc-channel notify IRQ not found; blocking poll waits need peer-side polling"
+            );
+            return;
+        };
+
+        let registry = Arc::downgrade(self);
+        let request = IrqRequest::new(move |_| notify_irq_handler(&registry))
+            .share_mode(ShareMode::Shared)
+            .auto_enable(AutoEnable::No);
+        match ax_runtime::hal::irq::request_irq(irq, request) {
+            Ok(handle) => {
+                self.irq_handle.call_once(|| handle);
+                if let Some(handle) = self.irq_handle.get().copied()
+                    && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
+                {
+                    warn!("axivc: failed to enable notify IRQ {irq:?}: {err:?}");
+                }
+            }
+            Err(err) => {
+                warn!("axivc: failed to register notify IRQ {irq:?}: {err:?}");
+            }
+        }
+    }
+
+    fn handle_notify_irq(&self) -> IrqReturn {
+        // The notify IRQ reports peer progress but does not carry a channel id.
+        // Wake every slot poll set and let `poll()` re-check exact ring state.
+        let woke = self
+            .publisher_poll_sets
+            .iter()
+            .chain(self.subscriber_poll_sets.iter())
+            .map(|poll_set| poll_set.wake_from_irq(IoEvents::IN | IoEvents::OUT))
+            .sum::<usize>();
+        if woke == 0 {
+            IrqReturn::Handled
+        } else {
+            IrqReturn::Wake
+        }
+    }
+
+    fn poll_set(&self, role: ChannelRole, index: usize) -> Option<Arc<PollSet>> {
+        match role {
+            ChannelRole::Publisher => self.publisher_poll_sets.get(index),
+            ChannelRole::Subscriber => self.subscriber_poll_sets.get(index),
+        }
+        .cloned()
     }
 
     fn publish(&self, arg: &mut IvcPublishArg) -> VfsResult<()> {
@@ -106,7 +179,15 @@ impl AxivcRegistry {
             let _ = ivc::unpublish_channel(arg.channel_key as usize);
             return Err(VfsError::InvalidInput);
         }
-        let Some(index) = inner.insert_publisher(ChannelState {
+        let Some(index) = inner.free_publisher_index() else {
+            let _ = ivc::unpublish_channel(arg.channel_key as usize);
+            return Err(VfsError::NoMemory);
+        };
+        let Some(poll_set) = self.poll_set(ChannelRole::Publisher, index) else {
+            let _ = ivc::unpublish_channel(arg.channel_key as usize);
+            return Err(VfsError::NoMemory);
+        };
+        inner.insert_publisher_at(index, ChannelState {
             publisher_id,
             notify_target_vm_id: Some(ivc::IVC_NOTIFY_PEER),
             key: arg.channel_key,
@@ -114,15 +195,12 @@ impl AxivcRegistry {
             shm_size,
             mmap_anchor: Arc::new(()),
             fd_refs: 0,
-            poll_set: Arc::new(PollSet::new()),
+            poll_set,
             producer,
             consumer,
             sequence: AtomicU64::new(1),
             closing: false,
-        }) else {
-            let _ = ivc::unpublish_channel(arg.channel_key as usize);
-            return Err(VfsError::NoMemory);
-        };
+        });
         write_device_name(
             &mut arg.device_name,
             &channel_device_path(ChannelRole::Publisher, index),
@@ -208,7 +286,15 @@ impl AxivcRegistry {
             unsubscribe_hvc(arg);
             return Err(VfsError::InvalidInput);
         }
-        let Some(index) = inner.insert_subscriber(ChannelState {
+        let Some(index) = inner.free_subscriber_index() else {
+            unsubscribe_hvc(arg);
+            return Err(VfsError::NoMemory);
+        };
+        let Some(poll_set) = self.poll_set(ChannelRole::Subscriber, index) else {
+            unsubscribe_hvc(arg);
+            return Err(VfsError::NoMemory);
+        };
+        inner.insert_subscriber_at(index, ChannelState {
             publisher_id: arg.target_publisher_id as usize,
             notify_target_vm_id: Some(arg.target_publisher_id as usize),
             key: arg.channel_key,
@@ -216,15 +302,12 @@ impl AxivcRegistry {
             shm_size,
             mmap_anchor: Arc::new(()),
             fd_refs: 0,
-            poll_set: Arc::new(PollSet::new()),
+            poll_set,
             producer,
             consumer,
             sequence: AtomicU64::new(1),
             closing: false,
-        }) else {
-            unsubscribe_hvc(arg);
-            return Err(VfsError::NoMemory);
-        };
+        });
         write_device_name(
             &mut arg.device_name,
             &channel_device_path(ChannelRole::Subscriber, index),
@@ -280,6 +363,74 @@ impl AxivcRegistry {
     }
 }
 
+impl Drop for AxivcRegistry {
+    fn drop(&mut self) {
+        if let Some(handle) = self.irq_handle.get().copied() {
+            let _ = ax_runtime::hal::irq::disable_irq(handle);
+            let _ = ax_runtime::hal::irq::free_irq(handle);
+        }
+    }
+}
+
+fn new_poll_sets(channel_count: usize) -> Vec<Arc<PollSet>> {
+    let mut poll_sets = Vec::with_capacity(channel_count);
+    for _ in 0..channel_count {
+        poll_sets.push(Arc::new(PollSet::new()));
+    }
+    poll_sets
+}
+
+fn notify_irq_handler(registry: &Weak<AxivcRegistry>) -> IrqReturn {
+    let Some(registry) = registry.upgrade() else {
+        return IrqReturn::Unhandled;
+    };
+    registry.handle_notify_irq()
+}
+
+fn probe_notify_irq() -> Option<IrqId> {
+    rdrive::with_fdt(|fdt| {
+        fdt.find_compatible(AXIVC_COMPATIBLES)
+            .into_iter()
+            .find_map(resolve_notify_irq_from_node)
+    })
+    .flatten()
+}
+
+fn resolve_notify_irq_from_node(node: rdrive::probe::fdt::NodeType<'_>) -> Option<IrqId> {
+    if matches!(
+        node.as_node().status(),
+        Some(rdrive::probe::fdt::Status::Disabled)
+    ) {
+        return None;
+    }
+    let interrupts = node.interrupts();
+    match decode_fdt_irq(&interrupts) {
+        Ok(irq) => irq,
+        Err(err) => {
+            warn!(
+                "axivc: failed to resolve notify IRQ for {}: {err:?}",
+                node.name()
+            );
+            None
+        }
+    }
+}
+
+fn decode_fdt_irq(
+    interrupts: &[rdrive::probe::fdt::InterruptRef],
+) -> Result<Option<IrqId>, IrqError> {
+    let Some(interrupt) = interrupts.first() else {
+        return Ok(None);
+    };
+    let controller = rdrive::fdt_phandle_to_device_id(interrupt.interrupt_parent)
+        .ok_or(IrqError::Unsupported)?;
+    ax_runtime::irq::resolve_binding_irq(ax_driver::BindingIrq::fdt_interrupt_with_controller(
+        controller,
+        interrupt.specifier.clone(),
+    ))
+    .map(Some)
+}
+
 struct RegistryInner {
     publishers: Vec<Option<ChannelState>>,
     subscribers: Vec<Option<ChannelState>>,
@@ -313,12 +464,28 @@ impl RegistryInner {
             .any(|state| state.publisher_id == publisher_id && state.key == key)
     }
 
-    fn insert_publisher(&mut self, state: ChannelState) -> Option<usize> {
-        insert_channel(&mut self.publishers, state)
+    fn free_publisher_index(&self) -> Option<usize> {
+        self.publishers.iter().position(Option::is_none)
     }
 
-    fn insert_subscriber(&mut self, state: ChannelState) -> Option<usize> {
-        insert_channel(&mut self.subscribers, state)
+    fn free_subscriber_index(&self) -> Option<usize> {
+        self.subscribers.iter().position(Option::is_none)
+    }
+
+    fn insert_publisher_at(&mut self, index: usize, state: ChannelState) {
+        debug_assert!(self
+            .publishers
+            .get(index)
+            .is_some_and(|entry| entry.is_none()));
+        self.publishers[index] = Some(state);
+    }
+
+    fn insert_subscriber_at(&mut self, index: usize, state: ChannelState) {
+        debug_assert!(self
+            .subscribers
+            .get(index)
+            .is_some_and(|entry| entry.is_none()));
+        self.subscribers[index] = Some(state);
     }
 
     fn remove_publisher(&mut self, key: u64) -> Option<ChannelState> {
@@ -386,12 +553,6 @@ impl RegistryInner {
     }
 }
 
-fn insert_channel(channels: &mut [Option<ChannelState>], state: ChannelState) -> Option<usize> {
-    let index = channels.iter().position(Option::is_none)?;
-    channels[index] = Some(state);
-    Some(index)
-}
-
 struct ChannelState {
     publisher_id: usize,
     notify_target_vm_id: Option<usize>,
@@ -409,6 +570,7 @@ struct ChannelState {
 
 pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
     let registry = Arc::new(AxivcRegistry::new(MAX_CHANNELS));
+    registry.register_notify_irq();
     root.add(
         "axivc",
         Device::new(
@@ -902,5 +1064,69 @@ fn ring_error(err: axivc::IvcRingError) -> VfsError {
         axivc::IvcRingError::PayloadTooLarge { .. } => VfsError::InvalidInput,
         axivc::IvcRingError::BufferTooSmall { .. } => VfsError::InvalidInput,
         axivc::IvcRingError::UnknownMessageKind(_) => VfsError::InvalidData,
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    extern crate std;
+
+    use super::*;
+    use std::{
+        sync::{
+            Arc as StdArc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Wake, Waker},
+    };
+
+    struct Counter(AtomicUsize);
+
+    impl Counter {
+        fn new() -> StdArc<Self> {
+            StdArc::new(Self(AtomicUsize::new(0)))
+        }
+
+        fn count(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Wake for Counter {
+        fn wake(self: StdArc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn wake_by_ref(self: &StdArc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn register_waiter(poll_set: &PollSet, interests: IoEvents) -> StdArc<Counter> {
+        let counter = Counter::new();
+        let waker = Waker::from(counter.clone());
+        unsafe { poll_set.register(&waker, interests) };
+        counter
+    }
+
+    #[test]
+    fn notify_irq_bridge_wakes_registered_channel_pollers() {
+        let registry = AxivcRegistry::new_with_notify_irq(2, None);
+        let publisher_poll_set = registry.poll_set(ChannelRole::Publisher, 0).unwrap();
+        let subscriber_poll_set = registry.poll_set(ChannelRole::Subscriber, 1).unwrap();
+
+        let writer = register_waiter(&publisher_poll_set, IoEvents::OUT);
+        let reader = register_waiter(&subscriber_poll_set, IoEvents::IN);
+
+        assert_eq!(registry.handle_notify_irq(), IrqReturn::Wake);
+        assert_eq!(writer.count(), 1);
+        assert_eq!(reader.count(), 1);
+    }
+
+    #[test]
+    fn notify_irq_bridge_reports_handled_without_waiters() {
+        let registry = AxivcRegistry::new_with_notify_irq(2, None);
+
+        assert_eq!(registry.handle_notify_irq(), IrqReturn::Handled);
     }
 }
