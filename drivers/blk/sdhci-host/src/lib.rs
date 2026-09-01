@@ -75,8 +75,8 @@ use sdmmc_protocol::{
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
     sdio::host::{
-        BusWidth, CardIrqControl, ClockSpeed, HostEvent, HostEventKind, HostEventSource,
-        SdMmcIrqHandle, SdMmcIrqHost, SignalVoltage,
+        BusWidth, CardIrqControl, ClockSpeed, CompletionIrqRearm, CompletionIrqRearmHost,
+        HostEvent, HostEventKind, HostEventSource, SdMmcIrqHandle, SdMmcIrqHost, SignalVoltage,
     },
 };
 
@@ -277,12 +277,6 @@ impl SdMmcIrqHost for Sdhci {
         Ok(())
     }
 
-    fn rearm_completion_irq_and_check(
-        &mut self,
-    ) -> Result<sdmmc_protocol::sdio::CompletionIrqRearm, Error> {
-        Ok(Sdhci::rearm_completion_irq_and_check(self))
-    }
-
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         Sdhci::disable_completion_irq(self);
         Ok(())
@@ -294,6 +288,12 @@ impl SdMmcIrqHost for Sdhci {
 
     fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::HostProgressWait {
         Sdhci::progress_wait_kind(self)
+    }
+}
+
+impl CompletionIrqRearmHost for Sdhci {
+    fn rearm_completion_irq_and_check(&mut self) -> Result<CompletionIrqRearm, Error> {
+        Ok(Sdhci::rearm_completion_irq_and_check(self))
     }
 }
 
@@ -430,14 +430,12 @@ impl Sdhci {
         }
     }
 
-    fn rearm_completion_irq_and_check(&mut self) -> sdmmc_protocol::sdio::CompletionIrqRearm {
+    fn rearm_completion_irq_and_check(&mut self) -> CompletionIrqRearm {
         self.enable_completion_irq();
         fence(Ordering::SeqCst);
         match handle_irq_core(&self.irq).kind() {
-            HostEventKind::None | HostEventKind::CardInterrupt => {
-                sdmmc_protocol::sdio::CompletionIrqRearm::Idle
-            }
-            _ => sdmmc_protocol::sdio::CompletionIrqRearm::Pending,
+            HostEventKind::None | HostEventKind::CardInterrupt => CompletionIrqRearm::Idle,
+            _ => CompletionIrqRearm::Pending,
         }
     }
 }

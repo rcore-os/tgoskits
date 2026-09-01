@@ -6,7 +6,7 @@ use rdif_eth::{
     NetRearmResult,
 };
 use ringbuf::traits::{Consumer, Producer};
-use sdmmc_protocol::sdio::SdMmcIrqHost;
+use sdmmc_protocol::sdio::CompletionIrqRearmHost;
 
 use crate::rdif::{
     device::{OwnerReceiver, OwnerSender, WifiProgressSignal},
@@ -14,7 +14,7 @@ use crate::rdif::{
     owner::{AicOwner, OwnerProgress, OwnerWait},
 };
 
-pub(super) struct AicOwnerStartup<H: SdMmcIrqHost + Send + 'static> {
+pub(super) struct AicOwnerStartup<H: CompletionIrqRearmHost + Send + 'static> {
     owner: Option<AicOwner<H>>,
     owner_sender: OwnerSender<H>,
     startup_delay: Duration,
@@ -24,7 +24,7 @@ pub(super) struct AicOwnerStartup<H: SdMmcIrqHost + Send + 'static> {
     started: bool,
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> AicOwnerStartup<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> AicOwnerStartup<H> {
     pub(super) fn new(
         owner: AicOwner<H>,
         owner_sender: OwnerSender<H>,
@@ -83,7 +83,7 @@ const fn startup_wait(wait: OwnerWait, timeout_deadline: u64) -> NetOwnerStartup
     }
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> NetOwnerStartup for AicOwnerStartup<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> NetOwnerStartup for AicOwnerStartup<H> {
     fn start(&mut self, now_nanos: u64) -> Result<NetOwnerStartupProgress, NetError> {
         let timeout = u64::try_from(self.startup_timeout.as_nanos()).unwrap_or(u64::MAX);
         self.timeout_deadline = Some(now_nanos.saturating_add(timeout));
@@ -204,13 +204,13 @@ fn shutdown_owner<T, E>(
     Ok(())
 }
 
-pub(super) struct AicPollIrqControl<H: SdMmcIrqHost + Send + 'static> {
+pub(super) struct AicPollIrqControl<H: CompletionIrqRearmHost + Send + 'static> {
     owner: Option<AicOwner<H>>,
     owner_receiver: OwnerReceiver<H>,
     wifi_progress_signal: Arc<WifiProgressSignal>,
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> AicPollIrqControl<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> AicPollIrqControl<H> {
     pub(super) fn new(
         owner_receiver: OwnerReceiver<H>,
         wifi_progress_signal: Arc<WifiProgressSignal>,
@@ -230,7 +230,7 @@ impl<H: SdMmcIrqHost + Send + 'static> AicPollIrqControl<H> {
     }
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> NetPollIrqControl for AicPollIrqControl<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> NetPollIrqControl for AicPollIrqControl<H> {
     fn quiesce(&mut self) -> Result<(), NetError> {
         self.owner()?.quiesce().map_err(NetError::from)
     }

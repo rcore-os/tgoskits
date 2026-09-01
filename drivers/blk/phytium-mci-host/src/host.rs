@@ -8,9 +8,7 @@ use dma_api::{DeviceDma, DmaConstraints};
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::host::{
-        BusWidth, CompletionIrqRearm, HostEvent, HostEventKind, SdMmcIrqHandle, SignalVoltage,
-    },
+    sdio::host::{BusWidth, SdMmcIrqHandle, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
@@ -464,15 +462,6 @@ impl PhytiumMci {
                 | crate::MCI_INT_ERROR_MASK,
         );
         self.regs.ctrl().update(|r| r.with_int_enable(true));
-    }
-
-    pub(crate) fn rearm_completion_irq_and_check(&mut self) -> CompletionIrqRearm {
-        self.enable_completion_irq();
-        atomic::fence(Ordering::SeqCst);
-        match handle_irq_core(&self.irq).kind() {
-            HostEventKind::None | HostEventKind::CardInterrupt => CompletionIrqRearm::Idle,
-            _ => CompletionIrqRearm::Pending,
-        }
     }
 
     pub fn disable_completion_irq(&mut self) {

@@ -64,6 +64,13 @@ D80X2、DW、AIC8801 和未知变体直接失败，不共享猜测性 profile。
 独占 `bus`、`card_irq`、`SdioCard` 与 `AicDevice`，只有它能推进协议、完成
 DMA、处理 FIFO 或修改 Function 状态。
 
+通用 `SdMmcIrqHost` 只提供 SD/MMC 协议和块运行时共同需要的 endpoint、
+completion enable/disable、DMA 与等待类型。AIC 的 owner 直接要求更窄的
+`CompletionIrqRearmHost`：它在任务上下文恢复 completion delivery，同步采集
+masked window 内已经 latch 的状态，并把状态发布到 hard IRQ 使用的同一 mailbox。
+当前只有 `Sdhci` 和显式委托的 `Cv181xSdhci` 提供该能力；DWMMC、Phytium MCI
+和 StarFive wrapper 不承担 AIC 的 rearm 契约。
+
 命令完成、DMA、错误和 `CARD_INT` 可同时到达；adapter 先把 CARD_INT 事实
 交给核心，再用同一 acknowledged snapshot 推进活动 host 事务。CMD53 使用
 拥有型 `PreparedDma`，完成或 abort 后才恢复 `CompletedDma`。RDIF
@@ -78,7 +85,9 @@ SDHCI 的 `*_INT_STATUS_ENABLE` 定义本驱动拥有并捕获的 latch，
 `*_INT_SIGNAL_ENABLE` 只控制外部 IRQ line。因 CARD_INT 进入 hard IRQ 时，即使
 completion signal 临时 masked，也必须按 status-enable 读取、确认并缓存同一代
 command/data completion；CARD_INT 本身仍按 signal-enable 判断是否可见并立即 mask，
-由 owner drain 后 `rearm_and_check()` 闭合电平竞态。task-context 的“清旧状态、发布
+由 owner drain 后 `rearm_and_check()` 闭合电平竞态。owner 必须先调用
+`CompletionIrqRearmHost::rearm_completion_irq_and_check()`，再恢复 CARD_INT，
+确保同一窗口内的 completion 和 card 事实都进入 latch。task-context 的“清旧状态、发布
 新 request generation、写 argument/command”与 hard-IRQ 的“采样、W1C、按 generation
 缓存”必须具有明确 exclusion/handoff，不能假设固定 CPU 会阻止本地硬中断抢占。
 与 Linux `sdhci.c` 一致，相邻 normal/error interrupt status、status-enable 和

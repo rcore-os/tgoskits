@@ -3,7 +3,7 @@
 use dma_api::DeviceDma;
 use sdhci_host::Sdhci;
 use sdmmc_host::{ClockHz, ProgressCause, RequestProgress, SignalVoltage};
-use sdmmc_protocol::sdio::host::SdMmcIrqHost;
+use sdmmc_protocol::sdio::host::{CompletionIrqRearmHost, SdMmcIrqHost};
 
 use super::*;
 
@@ -19,12 +19,6 @@ impl SdMmcIrqHost for Cv181xSdhci {
     fn enable_completion_irq(&mut self) -> Result<(), ProtocolError> {
         self.inner.enable_completion_irq();
         Ok(())
-    }
-
-    fn rearm_completion_irq_and_check(
-        &mut self,
-    ) -> Result<sdmmc_protocol::sdio::CompletionIrqRearm, ProtocolError> {
-        <Sdhci as SdMmcIrqHost>::rearm_completion_irq_and_check(&mut self.inner)
     }
 
     fn disable_completion_irq(&mut self) -> Result<(), ProtocolError> {
@@ -58,6 +52,14 @@ impl SdMmcIrqHost for Cv181xSdhci {
 
     fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::HostProgressWait {
         <Sdhci as SdMmcIrqHost>::progress_wait_kind(&self.inner)
+    }
+}
+
+impl CompletionIrqRearmHost for Cv181xSdhci {
+    fn rearm_completion_irq_and_check(
+        &mut self,
+    ) -> Result<sdmmc_protocol::sdio::CompletionIrqRearm, ProtocolError> {
+        <Sdhci as CompletionIrqRearmHost>::rearm_completion_irq_and_check(&mut self.inner)
     }
 }
 

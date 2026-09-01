@@ -100,7 +100,8 @@ fn completion_rearm_captures_status_latched_while_signal_is_masked() {
     // when SIGNAL_ENABLE is restored.
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
     assert_eq!(
-        sdmmc_protocol::sdio::SdMmcIrqHost::rearm_completion_irq_and_check(&mut host).unwrap(),
+        sdmmc_protocol::sdio::CompletionIrqRearmHost::rearm_completion_irq_and_check(&mut host)
+            .unwrap(),
         sdmmc_protocol::sdio::CompletionIrqRearm::Pending
     );
 

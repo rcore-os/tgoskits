@@ -419,11 +419,6 @@ impl SdMmcIrqHost for MockHost {
         Ok(())
     }
 
-    fn rearm_completion_irq_and_check(&mut self) -> Result<CompletionIrqRearm, Error> {
-        self.completion_irq_enabled = true;
-        Ok(CompletionIrqRearm::Idle)
-    }
-
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         self.completion_irq_enabled = false;
         Ok(())
@@ -518,7 +513,10 @@ fn protocol_error_to_host(error: Error) -> sdmmc_host::Error {
 }
 
 #[test]
-fn sdio_host_irq_methods_default_to_noop() {
+fn base_irq_host_does_not_require_completion_rearm() {
+    fn assert_base_irq_host<H: SdMmcIrqHost>() {}
+
+    assert_base_irq_host::<MockHost>();
     let mut host = MockHost::new(Vec::new());
 
     assert_eq!(host.enable_completion_irq(), Ok(()));

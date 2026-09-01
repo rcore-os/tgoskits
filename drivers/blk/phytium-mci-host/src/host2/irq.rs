@@ -28,12 +28,6 @@ impl SdMmcIrqHost for PhytiumMci {
         Ok(())
     }
 
-    fn rearm_completion_irq_and_check(
-        &mut self,
-    ) -> Result<sdmmc_protocol::sdio::CompletionIrqRearm, Error> {
-        Ok(PhytiumMci::rearm_completion_irq_and_check(self))
-    }
-
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         PhytiumMci::disable_completion_irq(self);
         Ok(())

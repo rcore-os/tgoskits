@@ -5,8 +5,8 @@ use sdmmc_host::{ClockHz, ProgressCause, RequestProgress};
 use sdmmc_protocol::{
     Error, ErrorContext, OperationProgress, Phase,
     sdio::{
-        SdMmcIrqHost, SdioBlockSizeRequest, SdioCard, SdioDirectRequest, SdioDmaTransferRequest,
-        SdioFunctionEnableRequest, SdioInterruptEnableRequest,
+        CompletionIrqRearmHost, SdioBlockSizeRequest, SdioCard, SdioDirectRequest,
+        SdioDmaTransferRequest, SdioFunctionEnableRequest, SdioInterruptEnableRequest,
     },
 };
 
@@ -18,7 +18,7 @@ pub(crate) struct OperationCompletion {
     pub(crate) response: SdioResponse,
 }
 
-pub(crate) enum ActiveOperation<H: SdMmcIrqHost + 'static> {
+pub(crate) enum ActiveOperation<H: CompletionIrqRearmHost + 'static> {
     Direct {
         request_id: u64,
         request: SdioDirectRequest,
@@ -46,7 +46,7 @@ pub(crate) enum ActiveOperation<H: SdMmcIrqHost + 'static> {
     },
 }
 
-impl<H: SdMmcIrqHost + Send + 'static> ActiveOperation<H> {
+impl<H: CompletionIrqRearmHost + Send + 'static> ActiveOperation<H> {
     pub(crate) fn submit(card: &mut SdioCard<H>, operation: SdioRequest) -> Result<Self, Error> {
         let request_id = operation.id;
         match operation.kind {

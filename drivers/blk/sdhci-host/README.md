@@ -20,8 +20,10 @@ capability.
 - Command and data completion advance only after the boxed hard-IRQ endpoint
   has acknowledged and cached status. Register-only reset/clock transitions
   use bounded `RegisterPending` retries.
-- `SdMmcIrqHost` controls the physical signal-enable registers. The hard IRQ
-  never copies DMA data or completes an RDIF request.
+- `SdMmcIrqHost` controls the physical signal-enable registers.
+  `CompletionIrqRearmHost` additionally restores completion delivery and
+  publishes status captured from the masked window. The hard IRQ never copies
+  DMA data or completes an RDIF request.
 - Interrupt status, status-enable, and signal-enable are adjacent normal/error
   pairs and use one 32-bit MMIO transaction, matching Linux `sdhci.c`.
 
@@ -66,7 +68,9 @@ transferred to the protocol/runtime owner.
 3. Build the correct `DeviceDma` domain/mask and call `configure_dma`.
 4. Keep completion IRQ signaling masked until the runtime owns the boxed IRQ
    handler. `BlockQueue` enables it through `SdMmcIrqHost`.
-5. Use `SdMmcCard::new` plus `rdif::initializing_device`; do not run a local
+5. Require `CompletionIrqRearmHost` only for an SDIO owner that closes the
+   masked completion-delivery window before rearming `CARD_INT`.
+6. Use `SdMmcCard::new` plus `rdif::initializing_device`; do not run a local
    initialization or completion polling loop.
 
 ## Validation
