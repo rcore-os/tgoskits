@@ -65,13 +65,14 @@ pub(super) const INDEX_HTML: &str = r##"<!doctype html>
           this.cursorVisible = true;
           this.renderPaused = false;
           this.renderPending = false;
+          this.renderScheduled = false;
           this.render();
         }
         write(payload) {
           const text = typeof payload === 'string' ? payload : this.decoder.decode(payload, { stream: true });
           for (const character of text) this.consume(character);
           this.trim();
-          this.render();
+          this.scheduleRender();
         }
         consume(character) {
           if (this.mode === 'csi') {
@@ -160,8 +161,20 @@ pub(super) const INDEX_HTML: &str = r##"<!doctype html>
           this.renderPaused = false;
           if (this.renderPending) {
             this.renderPending = false;
-            this.render();
+            this.scheduleRender();
           }
+        }
+        scheduleRender() {
+          if (this.renderPaused) {
+            this.renderPending = true;
+            return;
+          }
+          if (this.renderScheduled) return;
+          this.renderScheduled = true;
+          requestAnimationFrame(() => {
+            this.renderScheduled = false;
+            this.render();
+          });
         }
         trim() {
           if (this.lines.length <= 4000) return;

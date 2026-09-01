@@ -81,8 +81,6 @@ fn init_atomic_output_panic_hook() {
 ///    console services so they are live before any guest boots — then the VM
 ///    lifecycle waiter and the physical-console shell.
 ///
-/// The vCPU tasks are pinned to the secondary CPUs via `phys_cpu_ids` in the
-/// VM configs, while the management console stays on the primary CPU.
 fn main() {
     #[cfg(feature = "test-console-atomic-output")]
     init_atomic_output_panic_hook();
@@ -119,14 +117,10 @@ fn main() {
     // own task so neither the shell nor the VMM blocks it. The console registry
     // is already complete when this task is enqueued, but the server's bind
     // still races guest task scheduling because spawning only enqueues work.
-    #[cfg(any(feature = "browser-console", feature = "http-axum"))]
+    #[cfg(feature = "browser-console")]
     std::thread::Builder::new()
         .name("axvisor-http".into())
         .spawn(|| {
-            #[cfg(feature = "browser-console")]
-            network_console::pin_current_task();
-
-            #[cfg(feature = "browser-console")]
             if let Err(error) = http::serve() {
                 let message = format!(
                     "\r\nAxvisor web console unavailable:\r\n  bind = {}\r\n  error = {error:#}\r\n",
@@ -134,8 +128,13 @@ fn main() {
                 );
                 guest_console::submit_host_bytes(message.as_bytes());
             }
+        })
+        .unwrap_or_else(|error| panic!("failed to start Axvisor HTTP server: {error}"));
 
-            #[cfg(all(feature = "http-axum", not(feature = "browser-console")))]
+    #[cfg(all(feature = "http-axum", not(feature = "browser-console")))]
+    std::thread::Builder::new()
+        .name("axvisor-http".into())
+        .spawn(|| {
             http::serve().unwrap_or_else(|error| panic!("Axvisor HTTP server failed: {error:#}"));
         })
         .unwrap_or_else(|error| panic!("failed to start Axvisor HTTP server: {error}"));
@@ -166,9 +165,6 @@ fn main() {
     #[cfg(not(feature = "no-auto-start"))]
     info!("[OK] Default guest initialized");
 
-    // The management console runs on the primary CPU (Core 0) while the vCPU
-    // tasks are pinned to Core 1 via `phys_cpu_ids`, so it stays responsive
-    // regardless of guest behavior.
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 
     shell::console_init();

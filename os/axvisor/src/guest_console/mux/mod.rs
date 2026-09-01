@@ -422,13 +422,11 @@ impl ConsoleCore {
                 .checked_add(1)
                 .expect("guest serial backend generation exhausted");
             let generation = BackendGeneration(state.next_backend_generation);
-            state.guests.insert(
-                vm_id,
-                GuestState {
-                    backend_generation: Some(generation),
-                    ..GuestState::default()
-                },
-            );
+            let guest = GuestState {
+                backend_generation: Some(generation),
+                ..GuestState::default()
+            };
+            state.guests.insert(vm_id, guest);
             state.output.reset_guest(vm_id);
             state.output.register_guest(vm_id);
             generation
@@ -483,26 +481,12 @@ impl ConsoleCore {
         Some(state.output.format(vm_id, multiple_running, bytes))
     }
 
-    fn write_guest_output(&self, vm_id: VMId, generation: BackendGeneration, bytes: &[u8]) {
+    fn write_guest_output(&self, vm_id: VMId, generation: BackendGeneration, bytes: &[u8]) -> bool {
         if bytes.is_empty() {
-            return;
+            return false;
         }
 
-        #[cfg(any(feature = "browser-console", all(test, axtest)))]
-        if crate::network_console::guest_output_connected(vm_id) {
-            let is_current = {
-                let state = self.lock_state();
-                state
-                    .guests
-                    .get(&vm_id)
-                    .is_some_and(|guest| guest.backend_generation == Some(generation))
-            };
-            if !is_current {
-                return;
-            }
-            crate::network_console::submit_guest_output(vm_id, bytes);
-        }
-
+        let mut accepted = false;
         let _output_guard = self.lock_output();
         submit_host_transaction(|emit| {
             let mut state = self.lock_state();
@@ -513,12 +497,15 @@ impl ConsoleCore {
             if guest.backend_generation != Some(generation) {
                 return;
             }
+            accepted = true;
             let formatted =
                 state
                     .output
                     .format_registered_into(vm_id, multiple_running, bytes, emit);
             debug_assert!(formatted, "active backend output state must be registered");
         });
+        drop(_output_guard);
+        accepted
     }
 
     #[cfg(any(feature = "browser-console", test, axtest))]
@@ -538,8 +525,16 @@ impl ConsoleCore {
 
 impl SerialBackend for GuestSerialBackend {
     fn write(&self, bytes: &[u8]) {
-        self.core
-            .write_guest_output(self.vm_id, self.generation, bytes);
+        if !self
+            .core
+            .write_guest_output(self.vm_id, self.generation, bytes)
+        {
+            return;
+        }
+        #[cfg(any(feature = "browser-console", all(test, axtest)))]
+        if crate::network_console::guest_output_connected(self.vm_id) {
+            crate::network_console::submit_guest_output(self.vm_id, bytes);
+        }
     }
 
     fn read(&self, buffer: &mut [u8]) -> usize {

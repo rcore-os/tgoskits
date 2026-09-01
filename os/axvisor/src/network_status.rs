@@ -31,14 +31,18 @@ pub(crate) fn start() {
           no reachable web console address yet\r\n\
           VM startup will continue while network configuration completes\r\n",
     );
-    thread::Builder::new()
+    if let Err(error) = thread::Builder::new()
         .name("axvisor-network-status".into())
         .spawn(wait_for_ready_interface)
-        .expect("failed to start Axvisor network status reporter");
+    {
+        let message = format!(
+            "\r\nAxvisor web console address monitor unavailable:\r\n  error = {error}\r\n"
+        );
+        guest_console::submit_host_bytes(message.as_bytes());
+    }
 }
 
 fn wait_for_ready_interface() {
-    crate::network_console::pin_current_task();
     loop {
         thread::sleep(ADDRESS_POLL_INTERVAL);
         if let Some(interface) = ready_interface() {

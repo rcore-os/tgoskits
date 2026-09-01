@@ -18,6 +18,9 @@ pub(crate) fn guest_output_connected(vm_id: VMId) -> bool {
 }
 
 pub(crate) fn submit_guest_output(vm_id: VMId, bytes: &[u8]) {
+    if !CONNECTED_GUESTS.lock().contains(&vm_id) {
+        return;
+    }
     GUEST_OUTPUT
         .lock()
         .entry(vm_id)

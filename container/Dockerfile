@@ -15,6 +15,7 @@ RUN apt-get update \
         build-essential \
         clang \
         cmake \
+        cpio \
         curl \
         dosfstools \
         e2fsprogs \
