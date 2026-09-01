@@ -249,6 +249,12 @@ impl SdMmcIrqHost for Jh7110DwMmc {
         Ok(())
     }
 
+    fn rearm_completion_irq_and_check(
+        &mut self,
+    ) -> Result<sdmmc_protocol::sdio::CompletionIrqRearm, Error> {
+        <DwMmc as SdMmcIrqHost>::rearm_completion_irq_and_check(&mut self.inner)
+    }
+
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         self.inner.disable_completion_irq();
         Ok(())

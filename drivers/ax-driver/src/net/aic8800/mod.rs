@@ -35,6 +35,7 @@ use rdrive::{
 use crate::{binding_info_from_fdt, net::PlatformDeviceNet};
 
 mod fdt;
+mod startup_config;
 
 use fdt::AicFdtProfile;
 

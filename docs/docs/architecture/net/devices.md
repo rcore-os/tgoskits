@@ -192,10 +192,11 @@ static/DHCP-server state。
 
 当前 variant policy：
 
-- AIC8801：V2 block/byte status；function-1 FIFO；
-- AIC8800D80/D80X2：V3 queue encoding、software IRQ bit 清源、function-1 FIFO；
-- AIC8800DC/DW：本地 vendor source 与旧实现的 command/FIFO function ownership
-  冲突，probe fail-closed。
+- AIC8800D80：V3 queue encoding、software IRQ bit 清源、Function 1 command/data
+  FIFO；
+- AIC8800DC：V1 queue/status，Function 1 data FIFO、Function 2 firmware mailbox；
+- AIC8801、AIC8800D80X2、AIC8800DW 和未知变体：缺少经验证的 profile 或固件，
+  probe fail-closed。
 
 任何 variant 都没有 OOB callback、独立 RX/TX task 或 kicker。
 

@@ -179,7 +179,17 @@ fn sg2002_board_tests_pin_the_repository_dtb() {
         let groups = discover_board_test_groups(&workspace_root, None, Some(board_name)).unwrap();
         assert!(!groups.is_empty(), "missing board tests for {board_name}");
         if board_name == "aka-00-sg2002" {
-            assert_eq!(groups.len(), 3, "all public SG2002 board cases must run");
+            let group_names = groups
+                .iter()
+                .map(|group| group.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                group_names,
+                ["boot", "tennis-yolo", "usb2-lsusb", "wifi-iperf-smoke"]
+                    .into_iter()
+                    .collect(),
+                "all public SG2002 board cases must run"
+            );
         }
 
         for group in groups {

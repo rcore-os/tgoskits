@@ -3,7 +3,7 @@
 use alloc::{format, string::String};
 use core::time::Duration;
 
-use aic8800::{AicRdifOptions, ChipVariant};
+use aic8800::AicRdifOptions;
 use rd_net::{NetIrqSourceId, WifiLinkPolicy, WifiTransaction};
 use rdrive::{probe::OnProbeError, register::FdtInfo};
 
@@ -56,8 +56,8 @@ impl AicFdtProfile {
             RTCSYS_IO_PHANDLE,
             RTCSYS_IO_MIN_MMIO_SIZE,
         )?;
-        let mut options = AicRdifOptions::new(chip_variant(info)?, NetIrqSourceId::new(0))
-            .with_startup_delay(startup_delay(info));
+        let mut options =
+            AicRdifOptions::new(NetIrqSourceId::new(0)).with_startup_delay(startup_delay(info));
         if let Some(timeout) = duration_millis(info, "aic,startup-timeout-ms") {
             options = options.with_startup_timeout(timeout);
         }
@@ -84,16 +84,6 @@ impl AicFdtProfile {
             dma_address_mask: dma_address_mask(info)?,
             options,
         })
-    }
-}
-
-fn chip_variant(info: &FdtInfo<'_>) -> Result<ChipVariant, OnProbeError> {
-    match fdt_string(info, "aic,chip-variant").as_deref() {
-        None | Some("aic8800d80") => Ok(ChipVariant::Aic8800D80),
-        Some(other) => Err(OnProbeError::other(format!(
-            "[{}] unsupported aic,chip-variant '{other}'; this driver supports aic8800d80 only",
-            info.node.name()
-        ))),
     }
 }
 
@@ -135,6 +125,24 @@ fn dma_address_mask(info: &FdtInfo<'_>) -> Result<u64, OnProbeError> {
 }
 
 fn startup_transaction(info: &FdtInfo<'_>) -> Result<Option<WifiTransaction>, OnProbeError> {
+    let build_transaction = super::startup_config::transaction().map_err(|error| {
+        OnProbeError::other(format!(
+            "[{}] invalid compile-time Wi-Fi startup configuration: {error}",
+            info.node.name()
+        ))
+    })?;
+    let firmware_transaction = fdt_startup_transaction(info)?;
+    match (build_transaction, firmware_transaction) {
+        (Some(_), Some(_)) => Err(OnProbeError::other(format!(
+            "[{}] compile-time station policy conflicts with FDT startup policy",
+            info.node.name()
+        ))),
+        (Some(transaction), None) | (None, Some(transaction)) => Ok(Some(transaction)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn fdt_startup_transaction(info: &FdtInfo<'_>) -> Result<Option<WifiTransaction>, OnProbeError> {
     let Some(mode) = fdt_string(info, "aic,startup-mode") else {
         return Ok(None);
     };

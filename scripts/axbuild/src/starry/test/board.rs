@@ -77,9 +77,11 @@ impl Starry {
                     SnapshotPersistence::Discard,
                 )?;
                 let cargo = build::load_cargo_config(&request)?;
-                let (board_config, board_config_path) = self
+                let (mut board_config, board_config_path) = self
                     .load_board_config(&cargo, Some(board_test_config.as_path()))
                     .await?;
+                let _boot_entropy =
+                    crate::starry::boot_entropy::prepare_for_secure_wifi(&mut board_config)?;
                 let options = RunBoardOptions {
                     board_type: args.board_type.clone(),
                     server: args.server.clone(),

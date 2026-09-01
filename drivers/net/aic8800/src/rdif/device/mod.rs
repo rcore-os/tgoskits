@@ -8,6 +8,6 @@ pub use endpoints::{AicRdifDevice, AicRdifOptions};
 pub(crate) use queues::QueueOwnerPorts;
 pub(crate) use shared::{
     IrqLatch, MacAddressState, OwnerChannels, OwnerReceiver, OwnerSender, WifiChannels,
-    WifiProgressReceiver, WifiProgressSender, WifiRequestReceiver, WifiRequestSender,
-    shared_irq_latch,
+    WifiProgressReceiver, WifiProgressSender, WifiProgressSignal, WifiRequestReceiver,
+    WifiRequestSender, shared_irq_latch,
 };

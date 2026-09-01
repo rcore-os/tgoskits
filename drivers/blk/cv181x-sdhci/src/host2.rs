@@ -21,6 +21,12 @@ impl SdMmcIrqHost for Cv181xSdhci {
         Ok(())
     }
 
+    fn rearm_completion_irq_and_check(
+        &mut self,
+    ) -> Result<sdmmc_protocol::sdio::CompletionIrqRearm, ProtocolError> {
+        <Sdhci as SdMmcIrqHost>::rearm_completion_irq_and_check(&mut self.inner)
+    }
+
     fn disable_completion_irq(&mut self) -> Result<(), ProtocolError> {
         self.inner.disable_completion_irq();
         Ok(())
@@ -31,6 +37,7 @@ impl SdMmcIrqHost for Cv181xSdhci {
             inner,
             mmio,
             config,
+            controller,
         } = self;
         let parts = <Sdhci as SdMmcIrqHost>::into_parts(inner);
         sdmmc_host::HostParts {
@@ -38,6 +45,7 @@ impl SdMmcIrqHost for Cv181xSdhci {
                 inner: parts.bus,
                 mmio,
                 config,
+                controller,
             },
             irq: parts.irq,
             card_irq: parts.card_irq,

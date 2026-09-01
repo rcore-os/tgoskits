@@ -38,11 +38,16 @@ ureq = "3"
 sha2 = "0.10"
 
 [dependencies]
+aes-kw.workspace = true
 dma-api = { workspace = true, optional = true }
+hmac.workspace = true
 log = { workspace = true }
 rdif-eth = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"], optional = true }
 sdmmc-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
+sha1.workspace = true
+subtle.workspace = true
 thiserror = { workspace = true }
 tock-registers = { workspace = true }
+zeroize.workspace = true

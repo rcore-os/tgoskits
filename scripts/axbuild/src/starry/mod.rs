@@ -17,6 +17,7 @@ pub(crate) mod apk;
 pub mod app;
 mod args;
 pub mod board;
+mod boot_entropy;
 pub mod build;
 pub mod config;
 pub mod kmod;
@@ -545,11 +546,12 @@ impl Starry {
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: Cargo,
-        board_config: BoardRunConfig,
+        mut board_config: BoardRunConfig,
         board_config_path: PathBuf,
         session_assets: Option<test::PreparedBoardSessionAssets>,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
+        let _boot_entropy = boot_entropy::prepare_for_secure_wifi(&mut board_config)?;
         let output = self.build_artifact(request, cargo.clone()).await?;
         let board_request = match session_assets {
             Some(assets) => {

@@ -30,6 +30,10 @@ on:
     secrets:
       CLAW_API_KEY:
         required: false
+      STARRY_WIFI_SSID:
+        required: false
+      STARRY_WIFI_PASSWORD:
+        required: false
 
 jobs:
   run:
@@ -123,10 +127,17 @@ jobs:
           STARRY_APK_REGION: ${{ matrix.apk_region }}
           SINCE_REF: ${{ inputs.since_ref }}
           CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+          STARRY_WIFI_SSID: ${{ matrix.wifi_secrets && secrets.STARRY_WIFI_SSID || '' }}
+          STARRY_WIFI_PASSWORD: ${{ matrix.wifi_secrets && secrets.STARRY_WIFI_PASSWORD || '' }}
+          WIFI_SECRETS: ${{ matrix.wifi_secrets }}
           REUSABLE_COMMAND: ${{ matrix.command }}
           USE_XTASK_BIN: ${{ matrix.download_xtask_bin_artifact }}
         run: |
           set -eo pipefail
+
+          if [ "${WIFI_SECRETS}" != "true" ]; then
+            unset STARRY_WIFI_SSID STARRY_WIFI_PASSWORD
+          fi
 
           command_text="${REUSABLE_COMMAND}"
           if [ "${USE_XTASK_BIN}" = "true" ] && [[ "${command_text}" != *$'\n'* ]]; then

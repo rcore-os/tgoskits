@@ -27,15 +27,28 @@ pub struct Cv181xSdhci {
     inner: Sdhci,
     mmio: Cv181xMmio,
     config: Cv181xConfig,
+    controller: ControllerResources,
+}
+
+#[derive(Clone, Copy)]
+enum ControllerResources {
+    Sd,
+    Sdio1(Cv181xSdio1Mmio),
 }
 
 struct Cv181xResetHook {
     mmio: Cv181xMmio,
+    config: Cv181xConfig,
+    controller: ControllerResources,
 }
 
 impl Cv181xResetHook {
-    const fn new(mmio: Cv181xMmio) -> Self {
-        Self { mmio }
+    const fn new(mmio: Cv181xMmio, config: Cv181xConfig, controller: ControllerResources) -> Self {
+        Self {
+            mmio,
+            config,
+            controller,
+        }
     }
 }
 
@@ -51,7 +64,7 @@ unsafe impl Sync for Cv181xResetHook {}
 
 impl HostResetHook for Cv181xResetHook {
     fn after_reset(&self, _host: &mut Sdhci) -> Result<(), ProtocolError> {
-        board::restore_ds_hs_phy(self.mmio);
+        board::restore_controller_after_reset(self.mmio, self.config, self.controller);
         Ok(())
     }
 }
@@ -76,11 +89,13 @@ impl Cv181xSdhci {
         inner
             .set_fixed_base_clock_hz(source_clock)
             .expect("a newly constructed SDHCI host must be idle");
-        inner.set_reset_hook(Cv181xResetHook::new(mmio));
+        let controller = ControllerResources::Sd;
+        inner.set_reset_hook(Cv181xResetHook::new(mmio, config, controller));
         let mut this = Self {
             inner,
             mmio,
             config,
+            controller,
         };
         this.restore_ds_hs_phy();
         this
@@ -95,8 +110,24 @@ impl Cv181xSdhci {
     /// returned controller lifetime. The runtime must observe
     /// [`CV181X_SDIO1_RESET_SETTLE`] before issuing the first card command.
     pub unsafe fn new_sdio1(mmio: Cv181xSdio1Mmio, config: Cv181xConfig) -> Self {
-        mmio.initialize();
-        unsafe { Self::new(mmio.host(), config) }
+        let config = config.normalized();
+        let host = mmio.host();
+        let mut inner = unsafe { Sdhci::new(host.core()) };
+        let source_clock = NonZeroU32::new(config.src_frequency_hz)
+            .expect("normalized CV181x source clock must be non-zero");
+        inner
+            .set_fixed_base_clock_hz(source_clock)
+            .expect("a newly constructed SDHCI host must be idle");
+        let controller = ControllerResources::Sdio1(mmio);
+        inner.set_reset_hook(Cv181xResetHook::new(host, config, controller));
+        let mut this = Self {
+            inner,
+            mmio: host,
+            config,
+            controller,
+        };
+        this.restore_controller_after_reset();
+        this
     }
 
     pub const fn config(&self) -> Cv181xConfig {

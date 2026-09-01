@@ -10,4 +10,4 @@ mod error;
 mod owner;
 
 pub use device::{AicRdifDevice, AicRdifOptions};
-pub use error::AicRdifError;
+pub use error::{AicRdifError, AicSdioIdentity};

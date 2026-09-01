@@ -44,6 +44,19 @@ impl IrqLatch {
         if flags == 0 {
             return false;
         }
+        self.publish_flags(flags);
+        true
+    }
+
+    pub(crate) fn publish_card_pending(&self) {
+        self.publish_flags(IRQ_CARD);
+    }
+
+    pub(crate) fn publish_completion_pending(&self) {
+        self.publish_flags(IRQ_TRANSFER);
+    }
+
+    fn publish_flags(&self, flags: u8) {
         let mut current = self.state.load(Ordering::Relaxed);
         loop {
             let sequence = ((current >> IRQ_FLAG_BITS).wrapping_add(1)) & IRQ_SEQUENCE_MASK;
@@ -58,7 +71,6 @@ impl IrqLatch {
                 Err(observed) => current = observed,
             }
         }
-        true
     }
 
     pub(crate) fn take(&self) -> Option<IrqSnapshot> {
@@ -97,6 +109,11 @@ impl IrqLatch {
 
     pub(crate) fn has_pending(&self) -> bool {
         self.state.load(Ordering::Acquire) & IRQ_FLAG_MASK != 0
+    }
+
+    pub(crate) fn diagnostic(&self) -> (u64, bool) {
+        let state = self.state.load(Ordering::Acquire);
+        (state >> IRQ_FLAG_BITS, state & IRQ_FLAG_MASK != 0)
     }
 }
 
@@ -151,11 +168,45 @@ pub(crate) type WifiProgressSender =
 pub(crate) type WifiProgressReceiver =
     HeapCons<Result<rdif_eth::WifiControlProgress, crate::AicError>>;
 
+/// Monotonic accounting for progress items crossing the owner/control split.
+///
+/// The owner can publish a completion while the control endpoint is waiting
+/// for an SDIO IRQ.  Counting published and consumed items lets the poll
+/// endpoint report that work is ready even when no new hardware IRQ arrives,
+/// without making the bounded progress ring unbounded or coupling the owner
+/// to the queue-runtime wake primitive.
+pub(crate) struct WifiProgressSignal {
+    published: AtomicU64,
+    consumed: AtomicU64,
+}
+
+impl WifiProgressSignal {
+    pub(crate) fn new() -> Self {
+        Self {
+            published: AtomicU64::new(0),
+            consumed: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn publish(&self) {
+        self.published.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn consume(&self) {
+        self.consumed.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn has_pending(&self) -> bool {
+        self.published.load(Ordering::Acquire) != self.consumed.load(Ordering::Acquire)
+    }
+}
+
 pub(crate) struct WifiChannels {
     pub(crate) requests_tx: WifiRequestSender,
     pub(crate) requests_rx: WifiRequestReceiver,
     pub(crate) progress_tx: WifiProgressSender,
     pub(crate) progress_rx: WifiProgressReceiver,
+    pub(crate) progress_signal: Arc<WifiProgressSignal>,
 }
 
 impl WifiChannels {
@@ -169,6 +220,7 @@ impl WifiChannels {
             requests_rx,
             progress_tx,
             progress_rx,
+            progress_signal: Arc::new(WifiProgressSignal::new()),
         }
     }
 }
@@ -213,5 +265,18 @@ mod tests {
         assert_eq!(state.load(), [2, 1, 2, 3, 4, 5]);
         state.publish([6, 7, 8, 9, 10, 11]);
         assert_eq!(state.load(), [6, 7, 8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn progress_signal_tracks_each_item_until_control_consumes_it() {
+        let signal = WifiProgressSignal::new();
+        assert!(!signal.has_pending());
+        signal.publish();
+        signal.publish();
+        assert!(signal.has_pending());
+        signal.consume();
+        assert!(signal.has_pending());
+        signal.consume();
+        assert!(!signal.has_pending());
     }
 }

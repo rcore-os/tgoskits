@@ -30,7 +30,7 @@ pub use self::{
     router::NetDevStats,
 };
 pub use error::{NetError, NetResult};
-pub use rd_net::{WifiLinkPolicy, WifiOperation, WifiTransaction};
+pub use rd_net::{WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk};
 ```
 
 re-export 列表构成调用方可依赖的稳定表面，内部 `Service`、Router queue 与 smoltcp handle 均未公开。API 分层据此按能力和生命周期组织这些类型，而不是按内部模块目录暴露实现。
@@ -681,11 +681,25 @@ refill/rearm、IRQ enable 与 startup transaction 任一步失败都会反向回
 
 ```rust
 pub enum WifiOperation {
-    Connect { ssid: String, password: String },
+    Connect {
+        ssid: String,
+        pmk: Option<Wpa2Pmk>,
+        entropy: Option<[u8; 32]>,
+    },
     Disconnect,
     StartOpenAccessPoint { ssid: Vec<u8>, channel: u8 },
 }
 
+pub fn WifiTransaction::connect_open(ssid: impl Into<String>) -> WifiTransaction;
+pub fn WifiTransaction::connect_wpa2_pmk(
+    ssid: impl Into<String>,
+    pmk: Wpa2Pmk,
+) -> WifiTransaction;
+pub fn WifiTransaction::connect_wpa2_pmk_with_entropy(
+    ssid: impl Into<String>,
+    pmk: Wpa2Pmk,
+    entropy: [u8; 32],
+) -> WifiTransaction;
 pub fn reconfigure_wifi(name: &str, transaction: WifiTransaction) -> NetResult<()>;
 ```
 
@@ -693,6 +707,14 @@ Wi-Fi control endpoint 随设备 parts 绑定到 queue owner。调用者只提�
 transaction；executor quiesce group，在 owner CPU 访问 SDIO/MMIO，rearm 后才返回。
 transaction 成功后，唯一 protocol executor 更新 STA DHCP 或 SoftAP 静态地址/DHCP
 server。控制调用者不能直接借用 driver handle。
+
+Linux WEXT 的安全连接只接受原生 `iwreq -> iw_point -> iw_encode_ext` 的
+`SIOCSIWENCODEEXT` 布局和 `IW_ENCODE_ALG_PMK`。这是 Linux
+`wpa_supplicant` `driver_wext` 使用的 PMK-offload UAPI 子集，不是对任意 mainline
+cfg80211 WEXT backend 的兼容承诺。passphrase 到 PMK 的 PBKDF2 属于产品侧
+`ax-driver` 启动配置边界。`Wpa2Pmk` 的 `Debug` 固定脱敏，drop 时清零；不保留
+旧的 raw-passphrase pointer ABI 或 `WifiTransaction::connect(ssid, password)`
+兼容入口。
 
 ## 8. Unix 命名空间 API
 

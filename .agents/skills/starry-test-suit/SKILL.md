@@ -23,6 +23,9 @@ QEMU 用例构建 `starryos` 软件包，并运行对应体系结构的 `qemu-<a
 - Starry kernel 私有 Linux ABI、namespace、procfs、pipe、epoll 和内核生命周期语义保留在本 suite 或 Starry kernel axtest；Axvisor 和板卡专有行为分别使用 `cargo xtask ktest qemu`/`cargo xtask ktest board`。
 - 同一 crate 可以同时有 std 模型测试和 QEMU/axtest 集成测试，但同一断言只能由一个最接近真实语义的层负责；上层运行证据不能被低层 host 编译替代。
 
+用例的目标风险、必要性、缺陷敏感度与跨层去重先按
+[`test-quality`](../test-quality/SKILL.md) 判断；本技能只补充 Starry 测试套件的目录、发现、文件流水线和运行器契约。
+
 宿主 `std` 允许列表和 profile 规则见 [`update-std-tests`](../update-std-tests/SKILL.md)，
 ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos-test-adapter/SKILL.md)。
 

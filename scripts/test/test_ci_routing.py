@@ -64,6 +64,16 @@ class MatrixParallelismTests(unittest.TestCase):
         )
 
 
+class WifiSecretRoutingTests(unittest.TestCase):
+    def test_non_wifi_matrix_rows_remove_empty_wifi_environment(self) -> None:
+        workflow = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
+        step = named_step_block(workflow, "Run command")
+
+        self.assertIn("WIFI_SECRETS: ${{ matrix.wifi_secrets }}", step)
+        self.assertIn('if [ "${WIFI_SECRETS}" != "true" ]; then', step)
+        self.assertIn("unset STARRY_WIFI_SSID STARRY_WIFI_PASSWORD", step)
+
+
 class ForkCleanupPermissionTests(unittest.TestCase):
     def test_main_cleanup_skips_fork_pull_requests(self) -> None:
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")

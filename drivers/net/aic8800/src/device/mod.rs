@@ -2,6 +2,7 @@
 
 mod control;
 mod data_plane;
+mod link;
 mod mailbox;
 mod model;
 mod owner;
@@ -10,6 +11,7 @@ mod request;
 mod startup;
 
 use control::ControlState;
+use link::LinkState;
 use mailbox::MailboxState;
 pub use model::*;
 use model::{IoPurpose, PendingIo};

@@ -6,6 +6,7 @@ features = [
   "ax-driver/serial",
   "ax-driver/sg2002-dwc2",
   "ax-driver/cv181x-sdhci",
+  "ax-driver/aic8800-wifi",
 ]
 log = "Info"
 max_cpu_num = 1

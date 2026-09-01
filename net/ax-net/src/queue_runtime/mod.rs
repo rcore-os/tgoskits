@@ -170,12 +170,14 @@ pub enum NetworkRuntimeError {
         #[source]
         source: ax_task::TaskError,
     },
-    #[error("network queue initialization failed")]
-    QueueInit,
+    #[error("network queue initialization failed: {0}")]
+    QueueInit(NetError),
     #[error("network IRQ registration failed: {0}")]
     IrqRegistration(#[from] PinnedNetIrqError),
     #[error("network DMA setup failed: {0}")]
     Device(#[from] NetError),
+    #[error("secure Wi-Fi startup entropy failed: {0}")]
+    StartupEntropy(#[from] crate::NetError),
 }
 
 /// Resolved driver source-id to physical IRQ mapping.
@@ -469,6 +471,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 name: port_name,
                 mac: port_mac,
                 groups: protocol_groups,
+                pending_tx: VecDeque::with_capacity(TX_BACKLOG_CAPACITY),
                 next_rx: 0,
                 next_tx: 0,
             }) as Box<dyn EthernetFramePort>);
@@ -484,6 +487,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 command: AtomicU8::new(COMMAND_WAIT),
                 affinity_status: AtomicU8::new(STATUS_PENDING),
                 startup_status: AtomicU8::new(STATUS_PENDING),
+                startup_error: SpinLock::new(None),
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
             });
             let mut affinity = CpuSet::empty(topology_len);
@@ -615,6 +619,12 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         for executor in &executors {
             wait_status(&executor.control.startup_status);
             if executor.control.startup_status.load(Ordering::Acquire) != STATUS_READY {
+                let error = executor
+                    .control
+                    .startup_error
+                    .lock_irqsave()
+                    .take()
+                    .unwrap_or(NetError::InvalidParts);
                 let irq_synchronized = release_registrations(registrations);
                 stop_executors(&mut executors, irq_synchronized);
                 release_runtime_side_resources(
@@ -629,7 +639,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     ),
                     irq_synchronized,
                 );
-                return Err(NetworkRuntimeError::QueueInit);
+                return Err(NetworkRuntimeError::QueueInit(error));
             }
         }
         let protocol_owner_cpu = select_protocol_owner(&group_owners, &active_cpus);
@@ -643,6 +653,8 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             protocol_owner_cpu,
         };
         for (handle, transaction) in startup_transactions {
+            let transaction =
+                prepare_startup_transaction(transaction, super::next_wifi_connection_entropy)?;
             let policy = transaction.link_policy();
             handle.submit(transaction)?;
             if let Some(policy) = policy {
@@ -657,6 +669,17 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         }
         Ok((runtime, ports))
     }
+}
+
+fn prepare_startup_transaction(
+    mut transaction: WifiTransaction,
+    next_entropy: impl FnOnce() -> Result<[u8; 32], crate::NetError>,
+) -> Result<WifiTransaction, crate::NetError> {
+    if transaction.needs_connect_entropy() {
+        transaction.provide_connect_entropy(next_entropy()?);
+        log::info!("[wifi] secure startup connection entropy prepared");
+    }
+    Ok(transaction)
 }
 
 fn validate_and_collect_irq_sets(

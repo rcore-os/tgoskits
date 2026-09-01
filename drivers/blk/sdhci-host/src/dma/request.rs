@@ -504,8 +504,7 @@ impl Sdhci {
         let was_irq_enabled = self.completion_irq_enabled();
         self.active_data_cmd = 0;
         self.command_state = CommandState::Idle;
-        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-        self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+        self.write_interrupt_status(NORMAL_INT_CLEAR_ALL, ERROR_INT_CLEAR_ALL);
         self.clear_cached_irq_status();
 
         let cmd = self.reset_cmd();
@@ -514,8 +513,7 @@ impl Sdhci {
             (Ok(()), Ok(())) => Ok(()),
             (Err(err), _) | (_, Err(err)) => {
                 let fallback = self.reset_all();
-                self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-                self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+                self.write_interrupt_status(NORMAL_INT_CLEAR_ALL, ERROR_INT_CLEAR_ALL);
                 self.clear_cached_irq_status();
                 self.restore_completion_irq_after_reset(was_irq_enabled);
                 fallback.map_err(|_| err)

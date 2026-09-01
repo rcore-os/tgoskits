@@ -60,7 +60,8 @@ register_bitfields! [
     pub MSHC_CTRL [
         DS_HS_BIT_1 OFFSET(1) NUMBITS(1) [],
         DS_HS_BIT_8 OFFSET(8) NUMBITS(1) [],
-        DS_HS_BIT_9 OFFSET(9) NUMBITS(1) []
+        DS_HS_BIT_9 OFFSET(9) NUMBITS(1) [],
+        SD1_SEL OFFSET(16) NUMBITS(1) []
     ],
 
     pub PINMUX32 [

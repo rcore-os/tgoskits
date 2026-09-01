@@ -13,9 +13,9 @@ pub(crate) mod transport;
 use core::num::NonZeroU16;
 
 pub use host::{
-    BusWidth, CardIrqControl, ClockSpeed, HostEvent, HostEventKind, HostEventSource,
-    HostProgressWait, SDMMC_BLOCK_QUEUE_ID, SdMmcBusOp, SdMmcIrqHandle, SdMmcIrqHost,
-    SignalVoltage, block_queue_ready_from_host_event,
+    BusWidth, CardIrqControl, ClockSpeed, CompletionIrqRearm, HostEvent, HostEventKind,
+    HostEventSource, HostProgressWait, SDMMC_BLOCK_QUEUE_ID, SdMmcBusOp, SdMmcIrqHandle,
+    SdMmcIrqHost, SignalVoltage, block_queue_ready_from_host_event,
 };
 pub use init::{
     CardInitPreference, MmcSwitchRequest, SdMmcInitRequest, SdMmcInitScratch, SdMmcInitWait,

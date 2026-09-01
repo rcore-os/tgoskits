@@ -74,7 +74,9 @@ impl AicDevice {
                 }
                 if snapshot.sequence > self.io.last_irq_sequence {
                     self.io.last_irq_sequence = snapshot.sequence;
-                    self.io.irq_pending |= snapshot.card_interrupt;
+                    if snapshot.card_interrupt {
+                        self.request_receive_scan();
+                    }
                 }
                 Ok(())
             }
@@ -112,14 +114,24 @@ impl AicDevice {
                 self.lifecycle.control = None;
                 self.lifecycle.mailbox = None;
                 self.lifecycle.cancel_pending = false;
+                self.data.link.clear_peer();
+                self.data.internal_tx.clear();
                 Ok(())
             }
             operation => {
                 if self.lifecycle.state != AicState::Ready || self.lifecycle.control.is_some() {
                     return Err(AicError::Busy);
                 }
-                self.lifecycle.control =
-                    Some(super::control::build(operation, self.data.mac_address)?);
+                let mac = self
+                    .data
+                    .link
+                    .mac_address()
+                    .ok_or(AicError::InvalidMacAddress)?;
+                self.lifecycle.control = Some(super::control::build(
+                    operation,
+                    mac,
+                    self.data.link.interface_index(),
+                )?);
                 Ok(())
             }
         }
@@ -147,18 +159,16 @@ impl AicDevice {
         let response = completion.result.map_err(AicError::Sdio)?;
         match pending.purpose {
             IoPurpose::Startup => self.consume_startup_response(response, now),
-            IoPurpose::MailboxFlow
-            | IoPurpose::MailboxWrite
-            | IoPurpose::MailboxCount
-            | IoPurpose::MailboxRead => {
+            IoPurpose::MailboxFlow | IoPurpose::MailboxWrite => {
                 self.consume_mailbox_response(pending.purpose, response, now)
             }
-            IoPurpose::ReceiveCount => self.consume_receive_count(response),
-            IoPurpose::ReceiveData => self.consume_receive_data(response),
+            IoPurpose::ReceiveCount(path) => self.consume_receive_count(path, response),
+            IoPurpose::ReceiveByteLength(path) => self.consume_receive_byte_length(path, response),
+            IoPurpose::ReceiveData(path) => self.consume_receive_data(path, response),
             IoPurpose::TransmitFlow => self.consume_transmit_flow(response, now),
             IoPurpose::TransmitData => self.consume_transmit_data(response),
             IoPurpose::Shutdown => {
-                expect_unit(response)?;
+                expect_write_readback(response, 0)?;
                 self.lifecycle.state = AicState::Stopped;
                 self.data.events.push_back(AicEvent::Stopped);
                 Ok(())
@@ -179,7 +189,6 @@ impl AicDevice {
                 request_id: pending.id,
             };
         }
-        self.data.rx.clear();
         let tokens: Vec<_> = self.data.tx.drain_tokens().collect();
         for token in tokens {
             self.data
@@ -188,7 +197,7 @@ impl AicDevice {
         }
         self.emit(
             IoPurpose::Shutdown,
-            write_byte(1, self.registers.interrupt_enable, 0),
+            write_byte(self.data_function(), self.registers().interrupt_enable, 0),
         )
     }
 
@@ -196,6 +205,8 @@ impl AicDevice {
         self.lifecycle.cancel_pending = false;
         self.lifecycle.mailbox = None;
         self.lifecycle.control = None;
+        self.data.link.clear_peer();
+        self.data.internal_tx.clear();
         if self.lifecycle.state == AicState::Starting {
             self.lifecycle.startup = None;
             self.lifecycle.state = AicState::Stopped;
@@ -209,11 +220,15 @@ impl AicDevice {
         self.io.next = None;
         self.lifecycle.mailbox = None;
         self.lifecycle.control = None;
-        if let Some(active) = self.data.active_tx.take() {
+        self.data.link.clear_peer();
+        if let Some(active) = self.data.active_tx.take()
+            && let super::owner::TxCompletion::User(token) = active.completion
+        {
             self.data
                 .events
-                .push_back(AicEvent::TransmitComplete(active.token));
+                .push_back(AicEvent::TransmitComplete(token));
         }
+        self.data.internal_tx.clear();
         let tokens: Vec<_> = self.data.tx.drain_tokens().collect();
         self.data
             .events
@@ -228,7 +243,54 @@ impl AicDevice {
     }
 
     pub(super) const fn command_function(&self) -> u8 {
-        1
+        self.profile.command_function()
+    }
+
+    pub(super) const fn data_function(&self) -> u8 {
+        self.profile.data_function()
+    }
+
+    pub(super) const fn transport_uses_header_crc(&self) -> bool {
+        self.profile.transport_header().uses_crc()
+    }
+
+    pub(super) const fn registers(&self) -> crate::registers::RegisterMap {
+        self.profile.registers()
+    }
+
+    pub(super) const fn transport_generation(&self) -> crate::profile::TransportGeneration {
+        self.profile.transport()
+    }
+
+    pub(super) const fn firmware_profile(&self) -> crate::profile::FirmwareProfile {
+        self.profile.firmware()
+    }
+
+    pub(super) const fn mailbox_flow_policy(&self) -> crate::profile::MailboxFlowPolicy {
+        self.profile.mailbox_flow()
+    }
+
+    pub(super) const fn data_tx_flow_policy(&self) -> crate::profile::DataTxFlowPolicy {
+        self.profile.data_tx_flow()
+    }
+
+    pub(super) const fn startup_function(&self, index: usize) -> Option<u8> {
+        self.profile.function(index)
+    }
+
+    pub(super) const fn receive_path(&self, index: usize) -> Option<RxPath> {
+        match index {
+            0 => Some(RxPath::Command),
+            1 if self.command_function() != self.data_function() => Some(RxPath::Data),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn receive_function(&self, path: RxPath) -> u8 {
+        match path {
+            RxPath::Command => self.command_function(),
+            RxPath::Data => self.data_function(),
+        }
     }
 }
 
@@ -255,30 +317,112 @@ mod tests {
 
     #[test]
     fn startup_begins_with_protocol_owned_function_lifecycle() {
-        let mut device = AicDevice::new(ChipVariant::Aic8801).unwrap();
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.start(time(0)).unwrap();
-        let AicAction::SubmitSdio(enable) = device.advance(AicInput::tick(time(0))) else {
+        let AicAction::SubmitSdio(block_size) = device.advance(AicInput::tick(time(0))) else {
+            panic!("expected block-size configuration")
+        };
+        assert!(matches!(
+            block_size.kind,
+            SdioRequestKind::SetBlockSize { function, block_size }
+                if function.get() == 1 && block_size.get() == SDIOWIFI_FUNC_BLOCKSIZE
+        ));
+        let AicAction::SubmitSdio(enable) =
+            device.advance(complete(&block_size, SdioResponse::Unit, time(0)))
+        else {
             panic!("expected function enable")
         };
         assert!(matches!(
             enable.kind,
             SdioRequestKind::EnableFunction(number) if number.get() == 1
         ));
-        let AicAction::SubmitSdio(block_size) =
-            device.advance(complete(&enable, SdioResponse::Unit, time(0)))
+    }
+
+    #[test]
+    fn dc_configures_both_sdio_functions_before_vendor_setup() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+        device.start(time(0)).unwrap();
+
+        let AicAction::SubmitSdio(function_one_block) = device.advance(AicInput::tick(time(0)))
         else {
-            panic!("expected block-size configuration")
+            panic!("expected function-one block-size configuration")
         };
         assert!(matches!(
-            block_size.kind,
-            SdioRequestKind::SetBlockSize { block_size, .. }
-                if block_size.get() == SDIOWIFI_FUNC_BLOCKSIZE
+            function_one_block.kind,
+            SdioRequestKind::SetBlockSize { function, .. } if function.get() == 1
+        ));
+
+        let AicAction::SubmitSdio(function_one_enable) =
+            device.advance(complete(&function_one_block, SdioResponse::Unit, time(0)))
+        else {
+            panic!("expected function-one enable")
+        };
+        assert!(matches!(
+            function_one_enable.kind,
+            SdioRequestKind::EnableFunction(function) if function.get() == 1
+        ));
+
+        let AicAction::SubmitSdio(function_two_block) =
+            device.advance(complete(&function_one_enable, SdioResponse::Unit, time(0)))
+        else {
+            panic!("expected function-two block-size configuration")
+        };
+        assert!(matches!(
+            function_two_block.kind,
+            SdioRequestKind::SetBlockSize { function, .. } if function.get() == 2
+        ));
+    }
+
+    #[test]
+    fn dc_enables_cccr_interrupts_for_both_functions() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+        device.start(time(0)).unwrap();
+
+        let AicAction::SubmitSdio(function_one_block) = device.advance(AicInput::tick(time(0)))
+        else {
+            panic!("expected function-one block-size configuration")
+        };
+        let AicAction::SubmitSdio(function_one_enable) =
+            device.advance(complete(&function_one_block, SdioResponse::Unit, time(0)))
+        else {
+            panic!("expected function-one enable")
+        };
+        let AicAction::SubmitSdio(function_two_block) =
+            device.advance(complete(&function_one_enable, SdioResponse::Unit, time(0)))
+        else {
+            panic!("expected function-two block-size configuration")
+        };
+        let AicAction::SubmitSdio(function_two_enable) =
+            device.advance(complete(&function_two_block, SdioResponse::Unit, time(0)))
+        else {
+            panic!("expected function-two enable")
+        };
+        let AicAction::SubmitSdio(function_one_interrupt) =
+            device.advance(complete(&function_two_enable, SdioResponse::Unit, time(0)))
+        else {
+            panic!("expected function-one CCCR interrupt enable")
+        };
+        assert!(matches!(
+            function_one_interrupt.kind,
+            SdioRequestKind::EnableFunctionInterrupt(function) if function.get() == 1
+        ));
+
+        let AicAction::SubmitSdio(function_two_interrupt) = device.advance(complete(
+            &function_one_interrupt,
+            SdioResponse::Unit,
+            time(0),
+        )) else {
+            panic!("expected function-two CCCR interrupt enable")
+        };
+        assert!(matches!(
+            function_two_interrupt.kind,
+            SdioRequestKind::EnableFunctionInterrupt(function) if function.get() == 2
         ));
     }
 
     #[test]
     fn retry_deadline_does_not_advance_early() {
-        let mut device = AicDevice::new(ChipVariant::Aic8801).unwrap();
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.start(time(0)).unwrap();
         device.lifecycle.retry_at = Some(time(10));
         assert_eq!(
@@ -289,7 +433,7 @@ mod tests {
 
     #[test]
     fn cancellation_requests_abort_for_the_exact_active_transaction() {
-        let mut device = AicDevice::new(ChipVariant::Aic8801).unwrap();
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.start(time(0)).unwrap();
         let AicAction::SubmitSdio(request) = device.advance(AicInput::tick(time(0))) else {
             panic!("expected request")
@@ -308,7 +452,7 @@ mod tests {
 
     #[test]
     fn aborted_completion_finishes_cancellation_without_failing_device() {
-        let mut device = AicDevice::new(ChipVariant::Aic8801).unwrap();
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.start(time(0)).unwrap();
         let AicAction::SubmitSdio(request) = device.advance(AicInput::tick(time(0))) else {
             panic!("expected request")
@@ -336,7 +480,7 @@ mod tests {
 
     #[test]
     fn non_monotonic_input_fails_closed() {
-        let mut device = AicDevice::new(ChipVariant::Aic8801).unwrap();
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.start(time(2)).unwrap();
         assert_eq!(
             device.advance(AicInput::tick(time(1))),
@@ -346,12 +490,12 @@ mod tests {
 
     #[test]
     fn failure_reclaims_active_and_queued_transmit_tokens_before_terminal_error() {
-        let mut device = AicDevice::new(ChipVariant::Aic8801).unwrap();
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.lifecycle.state = AicState::Ready;
         let active = TxToken::new(7);
         let queued = TxToken::new(8);
         device.data.active_tx = Some(ActiveTx {
-            token: active,
+            completion: super::owner::TxCompletion::User(active),
             wire_frame: vec![1],
         });
         device.data.tx.enqueue(queued, vec![2]).unwrap();

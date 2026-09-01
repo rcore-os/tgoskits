@@ -440,6 +440,8 @@ jobs:
       since_ref: ${{ needs.plan_ci.outputs.since_ref }}
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+      STARRY_WIFI_SSID: ${{ secrets.STARRY_WIFI_SSID }}
+      STARRY_WIFI_PASSWORD: ${{ secrets.STARRY_WIFI_PASSWORD }}
 
   axvisor_checks:
     name: AxVisor

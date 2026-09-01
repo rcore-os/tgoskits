@@ -1,10 +1,10 @@
 //! Provision AIC8800 vendor firmware blobs into `OUT_DIR` at build time.
 //!
-//! `src/firmware.rs` `include_bytes!`s the firmware from `OUT_DIR`, so
+//! `src/firmware/mod.rs` `include_bytes!`s the firmware from `OUT_DIR`, so
 //! the blobs never need to live in the crate source / package tarball. This
-//! keeps the published crate self-contained: a clean `cargo build` (e.g. when
-//! verifying a `cargo publish` tarball) provisions the blobs here without
-//! relying on the workspace `cargo xtask` pre-download side effect.
+//! keeps firmware out of the package while allowing a clean `cargo build` to
+//! provision it without a workspace `cargo xtask` side effect. The first build
+//! requires network access unless a verified local cache is supplied.
 //!
 //! Resolution order for each blob (first hit wins):
 //!   1. `OUT_DIR/firmware/<name>` — a verified output from an earlier run.
@@ -32,17 +32,52 @@ struct FirmwareFile {
     sha256: &'static str,
 }
 
-/// The exact set of blobs referenced by `src/firmware.rs`.
+/// The exact set of blobs referenced by `src/firmware/mod.rs`.
 const FIRMWARE_FILES: &[FirmwareFile] = &[
     FirmwareFile {
-        name: "fmacfw.bin",
-        remote_path: "aic8800_and_aic8800D80/fmacfw.bin",
-        sha256: "2c6e70726df10ef74d9b1a657c74fdcfaeb88855b96b2c9bc8e0e603ac7c4cc3",
+        name: "fmacfw_patch_8800dc_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_8800dc_u02.bin",
+        sha256: "69d3ac2038da3b8e652ed1ec5079598ceb6df51db7b87b1d33f6d3c820c86a6f",
     },
     FirmwareFile {
-        name: "fmacfw_patch.bin",
-        remote_path: "aic8800_and_aic8800D80/fmacfw_patch.bin",
-        sha256: "6c8126ad655e9971f05ca03dc60fa82cb6d48c3b02cf3ba960137566ce2e28d5",
+        name: "fmacfw_patch_tbl_8800dc_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_tbl_8800dc_u02.bin",
+        sha256: "62d53a223eda1ea064ba82a6fe67829d0720e9f4e87d26763fd13316ccd2a90b",
+    },
+    FirmwareFile {
+        name: "fmacfw_patch_8800dc_h_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_8800dc_h_u02.bin",
+        sha256: "f388dcb419a0f677c777a1eaad798156eabdfbb72c512a4d993df0dbc4f351d1",
+    },
+    FirmwareFile {
+        name: "fmacfw_patch_tbl_8800dc_h_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_tbl_8800dc_h_u02.bin",
+        sha256: "0469686691b72fa8296ff7abd1669ba978bdc0f115137fd392aa00a2717ff887",
+    },
+    FirmwareFile {
+        name: "fmacfw_calib_8800dc_u02.bin",
+        remote_path: "aic8800DC/fmacfw_calib_8800dc_u02.bin",
+        sha256: "db3c90ba2336f71b87f2e2b92e71b6b395422e146e64e6863013d553baa90b48",
+    },
+    FirmwareFile {
+        name: "fmacfw_calib_8800dc_h_u02.bin",
+        remote_path: "aic8800DC/fmacfw_calib_8800dc_h_u02.bin",
+        sha256: "12bdcdd48e41b33bfd74834bffa326b4469bea82e7134de079392fbc2508acc7",
+    },
+    FirmwareFile {
+        name: "fmacfw_patch_8800dc_hbt_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_8800dc_hbt_u02.bin",
+        sha256: "d8cd9f2d4e7f6dafc1d221dbb1174bf21b64ae29b23efc118fc565872d184317",
+    },
+    FirmwareFile {
+        name: "fmacfw_patch_tbl_8800dc_hbt_u02.bin",
+        remote_path: "aic8800DC/fmacfw_patch_tbl_8800dc_hbt_u02.bin",
+        sha256: "0ac8a2d85c86e3d9cb04cf5a27178c1d5bd6b1b4396c8a72af16b19b3e08c8d6",
+    },
+    FirmwareFile {
+        name: "fmacfw_calib_8800dc_hbt_u02.bin",
+        remote_path: "aic8800DC/fmacfw_calib_8800dc_hbt_u02.bin",
+        sha256: "11e4cbf3985e5cd924a48774fd8a2a7c2c3fd0bdddcff4500d1d00d534af54d0",
     },
     FirmwareFile {
         name: "fmacfw_8800d80_u02.bin",

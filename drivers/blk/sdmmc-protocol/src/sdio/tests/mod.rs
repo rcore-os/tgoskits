@@ -419,6 +419,11 @@ impl SdMmcIrqHost for MockHost {
         Ok(())
     }
 
+    fn rearm_completion_irq_and_check(&mut self) -> Result<CompletionIrqRearm, Error> {
+        self.completion_irq_enabled = true;
+        Ok(CompletionIrqRearm::Idle)
+    }
+
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         self.completion_irq_enabled = false;
         Ok(())

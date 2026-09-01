@@ -476,6 +476,11 @@ session_files = [
 - `${boardServerHttpBaseUrl}`：板端可访问的 session HTTP 基础 URL。
 - `${sessionFile:<relative-path>}`：对应共享文件的完整下载 URL。
 
+AKA 的安全 Wi-Fi board case 在构建时从 `STARRY_WIFI_SSID` 和
+`STARRY_WIFI_PASSWORD` 生成 AIC station 启动事务。凭据不使用额外 sidecar 或 guest
+helper；连接和 DHCP 完成后，脚本仍按上面的普通 HTTP session file 机制下载。runner
+只为可信 boot entropy 创建带 `/chosen/rng-seed` 的临时 DTB 副本，不修改仓库 DTB。
+
 普通 shell 变量（例如 `${HOME}`）保持原样。未解析的 session 保留变量会在上板运行
 前报错；无论上传、展开还是运行失败，xtask 都会释放 session。
 
@@ -591,9 +596,9 @@ cargo xtask starry board \
 检查点见 `.agents/skills/arch-platform-porting/references/boot-debugging.md`。
 
 `board-aka-00-sg2002/usb2-libuvc-init` 提供静态交叉编译固定版本上游 libuvc 的
-C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。AKA-00-SG2002 当前没有
-StarryOS 网络设备，无法从 session HTTP URL 下载程序，因此该模板不会被 board
-discovery 或 CI 启用。后续网络可用时移除 `.disabled` 后缀；其
+C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。该 USB 用例尚未完成
+AKA 实板验收，因此模板不会被 board discovery 或 CI 启用。完成验证后可移除
+`.disabled` 后缀；其
 `shell_init_cmd` 会使用 `wget` 下载程序，并只验证 `uvc_init` / `uvc_exit`，不枚举
 摄像头、不采集帧，也不验证 DWC2 isochronous 传输。
 

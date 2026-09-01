@@ -23,10 +23,12 @@ pub(in crate::queue_runtime) struct ActiveWifiRequest {
 enum WifiWait {
     Ready,
     Interrupt {
-        generation: u64,
+        irq_generation: u64,
+        owner_poll_generation: u64,
     },
     InterruptUntil {
-        generation: u64,
+        irq_generation: u64,
+        owner_poll_generation: u64,
         deadline_nanos: u64,
     },
     Deadline {
@@ -71,6 +73,9 @@ fn start_wifi_request(
         slot.control
             .start(request.transaction.operation(), now_nanos)
     });
+    if progress.is_ok() {
+        group.shared.schedule_task();
+    }
     finish_wifi_step(slot, group, request, progress);
 }
 
@@ -131,6 +136,7 @@ fn finish_wifi_step(
             slot.active = Some(ActiveWifiRequest { request, wait });
         }
         Err(error) => {
+            log::error!("Wi-Fi owner transaction failed: {error:?}");
             let _ = slot.control.cancel();
             request.completion.complete(Err(error));
         }
@@ -142,10 +148,12 @@ impl WifiWait {
         match progress {
             WifiControlProgress::Complete => Self::Ready,
             WifiControlProgress::WaitForInterrupt => Self::Interrupt {
-                generation: group.shared.stats.irq.load(Ordering::Acquire),
+                irq_generation: group.shared.stats.irq.load(Ordering::Acquire),
+                owner_poll_generation: group.shared.stats.poll_batches.load(Ordering::Acquire),
             },
             WifiControlProgress::WaitForInterruptUntil { deadline_nanos } => Self::InterruptUntil {
-                generation: group.shared.stats.irq.load(Ordering::Acquire),
+                irq_generation: group.shared.stats.irq.load(Ordering::Acquire),
+                owner_poll_generation: group.shared.stats.poll_batches.load(Ordering::Acquire),
                 deadline_nanos,
             },
             WifiControlProgress::RetryAt { deadline_nanos } => Self::Deadline { deadline_nanos },
@@ -155,15 +163,26 @@ impl WifiWait {
     fn is_ready(&self, group: &QueueGroupExecutor, now_nanos: u64) -> bool {
         match self {
             Self::Ready => true,
-            Self::Interrupt { generation } => {
-                group.shared.stats.irq.load(Ordering::Acquire) != *generation
-            }
+            Self::Interrupt {
+                irq_generation,
+                owner_poll_generation,
+            } => owner_progress_ready(
+                *irq_generation,
+                group.shared.stats.irq.load(Ordering::Acquire),
+                *owner_poll_generation,
+                group.shared.stats.poll_batches.load(Ordering::Acquire),
+            ),
             Self::InterruptUntil {
-                generation,
+                irq_generation,
+                owner_poll_generation,
                 deadline_nanos,
             } => {
-                group.shared.stats.irq.load(Ordering::Acquire) != *generation
-                    || now_nanos >= *deadline_nanos
+                owner_progress_ready(
+                    *irq_generation,
+                    group.shared.stats.irq.load(Ordering::Acquire),
+                    *owner_poll_generation,
+                    group.shared.stats.poll_batches.load(Ordering::Acquire),
+                ) || now_nanos >= *deadline_nanos
             }
             Self::Deadline { deadline_nanos } => now_nanos >= *deadline_nanos,
         }
@@ -177,6 +196,16 @@ impl WifiWait {
             Self::Ready | Self::Interrupt { .. } => None,
         }
     }
+}
+
+const fn owner_progress_ready(
+    irq_generation: u64,
+    current_irq_generation: u64,
+    owner_poll_generation: u64,
+    current_owner_poll_generation: u64,
+) -> bool {
+    current_irq_generation != irq_generation
+        || current_owner_poll_generation != owner_poll_generation
 }
 
 impl WifiExecutorSlot {
@@ -207,5 +236,15 @@ impl WifiExecutorSlot {
             active.request.completion.complete(Err(NetError::Stopped));
         }
         self.queue.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::owner_progress_ready;
+
+    #[test]
+    fn owner_poll_wakes_control_progress_without_another_irq() {
+        assert!(owner_progress_ready(7, 7, 11, 12));
     }
 }

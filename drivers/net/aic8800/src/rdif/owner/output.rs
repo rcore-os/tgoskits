@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use rdif_eth::{DmaBuffer, RxCompletion, WifiControlProgress};
 use ringbuf::traits::{Consumer, Observer, Producer};
@@ -6,7 +6,7 @@ use ringbuf::traits::{Consumer, Observer, Producer};
 use crate::{
     AicError, AicEvent, ControlRequest, TxToken,
     rdif::{
-        device::{QueueOwnerPorts, WifiProgressSender},
+        device::{QueueOwnerPorts, WifiProgressSender, WifiProgressSignal},
         error::AicRdifError,
     },
 };
@@ -15,27 +15,38 @@ use crate::{
 pub(super) struct OwnerOutputs {
     queues: QueueOwnerPorts,
     wifi_progress: WifiProgressSender,
+    wifi_progress_signal: Arc<WifiProgressSignal>,
     tx_tokens: VecDeque<(TxToken, DmaBuffer)>,
     pending_tx_completion: Option<DmaBuffer>,
     pending_rx_frame: Option<Vec<u8>>,
     pending_rx_completion: Option<RxCompletion>,
     pending_wifi_progress: Option<Result<WifiControlProgress, AicError>>,
     terminal_error: Option<AicError>,
+    /// A queue completion became visible to the runtime and needs another
+    /// bounded poll to reclaim it.  This is separate from Wi-Fi control
+    /// progress because data queues are consumed by the network runtime.
+    queue_progress: bool,
     next_tx_token: u64,
     wifi_active: bool,
 }
 
 impl OwnerOutputs {
-    pub(super) fn new(queues: QueueOwnerPorts, wifi_progress: WifiProgressSender) -> Self {
+    pub(super) fn new(
+        queues: QueueOwnerPorts,
+        wifi_progress: WifiProgressSender,
+        wifi_progress_signal: Arc<WifiProgressSignal>,
+    ) -> Self {
         Self {
             queues,
             wifi_progress,
+            wifi_progress_signal,
             tx_tokens: VecDeque::new(),
             pending_tx_completion: None,
             pending_rx_frame: None,
             pending_rx_completion: None,
             pending_wifi_progress: None,
             terminal_error: None,
+            queue_progress: false,
             next_tx_token: 1,
             wifi_active: false,
         }
@@ -66,6 +77,12 @@ impl OwnerOutputs {
                 self.wifi_active = false;
                 blocked
             }
+            AicEvent::ControlFailed(error) => {
+                log::error!("[wifi] AIC control operation failed: {error}");
+                let blocked = !self.publish_wifi_progress(Err(error));
+                self.wifi_active = false;
+                blocked
+            }
             AicEvent::Receive(frame) => !self.publish_rx(frame)?,
             AicEvent::TransmitComplete(token) => !self.publish_tx_completion(token)?,
             AicEvent::Failed(error) => {
@@ -87,23 +104,31 @@ impl OwnerOutputs {
     }
 
     pub(super) fn flush(&mut self) -> Result<bool, AicRdifError> {
-        if let Some(buffer) = self.pending_tx_completion.take()
-            && let Err(buffer) = self.queues.tx_complete.try_push(buffer)
-        {
-            self.pending_tx_completion = Some(buffer);
+        if let Some(buffer) = self.pending_tx_completion.take() {
+            match self.queues.tx_complete.try_push(buffer) {
+                Ok(()) => {
+                    // The flag is consumed by `rearm_and_advance`, which
+                    // schedules the queue runtime to reclaim the returned DMA
+                    // token.
+                    self.queue_progress = true;
+                }
+                Err(buffer) => self.pending_tx_completion = Some(buffer),
+            }
         }
         if let Some(frame) = self.pending_rx_frame.take() {
             let _ = self.publish_rx(frame)?;
         }
-        if let Some(completion) = self.pending_rx_completion.take()
-            && let Err(completion) = self.queues.rx_complete.try_push(completion)
-        {
-            self.pending_rx_completion = Some(completion);
+        if let Some(completion) = self.pending_rx_completion.take() {
+            match self.queues.rx_complete.try_push(completion) {
+                Ok(()) => self.queue_progress = true,
+                Err(completion) => self.pending_rx_completion = Some(completion),
+            }
         }
-        if let Some(progress) = self.pending_wifi_progress.take()
-            && let Err(progress) = self.wifi_progress.try_push(progress)
-        {
-            self.pending_wifi_progress = Some(progress);
+        if let Some(progress) = self.pending_wifi_progress.take() {
+            match self.wifi_progress.try_push(progress) {
+                Ok(()) => self.wifi_progress_signal.publish(),
+                Err(progress) => self.pending_wifi_progress = Some(progress),
+            }
         }
         if self.has_pending() {
             return Ok(false);
@@ -128,6 +153,10 @@ impl OwnerOutputs {
             || (self.pending_rx_frame.is_some() && !self.queues.rx_submit.is_empty())
     }
 
+    pub(super) fn take_queue_progress(&mut self) -> bool {
+        core::mem::take(&mut self.queue_progress)
+    }
+
     fn publish_tx_completion(&mut self, token: TxToken) -> Result<bool, AicRdifError> {
         if self.pending_tx_completion.is_some() {
             return Ok(false);
@@ -142,7 +171,10 @@ impl OwnerOutputs {
             .remove(index)
             .ok_or(AicError::CompletionMismatch)?;
         match self.queues.tx_complete.try_push(buffer) {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                self.queue_progress = true;
+                Ok(true)
+            }
             Err(buffer) => {
                 self.pending_tx_completion = Some(buffer);
                 Ok(false)
@@ -169,7 +201,10 @@ impl OwnerOutputs {
             packet_len: frame.len(),
         };
         match self.queues.rx_complete.try_push(completion) {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                self.queue_progress = true;
+                Ok(true)
+            }
             Err(completion) => {
                 self.pending_rx_completion = Some(completion);
                 Ok(false)
@@ -178,11 +213,25 @@ impl OwnerOutputs {
     }
 
     fn publish_wifi_progress(&mut self, progress: Result<WifiControlProgress, AicError>) -> bool {
-        if !self.wifi_active || self.pending_wifi_progress.is_some() {
+        if !self.wifi_active {
             return !self.wifi_active;
         }
+        let terminal = matches!(progress, Ok(WifiControlProgress::Complete) | Err(_));
+        if !terminal && self.pending_wifi_progress.is_some() {
+            return false;
+        }
+        if terminal {
+            // A wait/retry item is only advisory.  Once the owner has a
+            // terminal result, retain that result even when the bounded
+            // progress ring is still blocked by older wait notifications.
+            self.pending_wifi_progress = None;
+            log::info!("[wifi] control result queued for network runtime");
+        }
         match self.wifi_progress.try_push(progress) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.wifi_progress_signal.publish();
+                true
+            }
             Err(progress) => {
                 self.pending_wifi_progress = Some(progress);
                 false
@@ -213,8 +262,9 @@ mod tests {
             requests_rx: _,
             progress_tx,
             mut progress_rx,
+            progress_signal,
         } = WifiChannels::new();
-        let mut outputs = OwnerOutputs::new(queues, progress_tx);
+        let mut outputs = OwnerOutputs::new(queues, progress_tx, progress_signal);
         outputs.begin_control(&ControlRequest::Scan { ssid: None });
 
         for _ in 0..8 {
@@ -240,6 +290,38 @@ mod tests {
     }
 
     #[test]
+    fn terminal_wifi_progress_supersedes_a_pending_wait() {
+        let (_, _, queues) = queue_parts(QueueConfig {
+            dma_mask: u64::MAX,
+            align: 4,
+            buf_size: 2048,
+            ring_size: 2,
+        });
+        let WifiChannels {
+            progress_tx,
+            progress_signal,
+            ..
+        } = WifiChannels::new();
+        let mut outputs = OwnerOutputs::new(queues, progress_tx, progress_signal);
+        outputs.begin_control(&ControlRequest::Scan { ssid: None });
+
+        for _ in 0..8 {
+            outputs.publish_wait_progress(WifiControlProgress::WaitForInterrupt);
+        }
+        outputs.publish_wait_progress(WifiControlProgress::RetryAt { deadline_nanos: 17 });
+        assert!(matches!(
+            outputs.pending_wifi_progress,
+            Some(Ok(WifiControlProgress::RetryAt { deadline_nanos: 17 }))
+        ));
+
+        assert!(outputs.consume_event(AicEvent::ControlComplete).unwrap());
+        assert!(matches!(
+            outputs.pending_wifi_progress,
+            Some(Ok(WifiControlProgress::Complete))
+        ));
+    }
+
+    #[test]
     fn unknown_transmit_completion_is_rejected() {
         let (_, _, queues) = queue_parts(QueueConfig {
             dma_mask: u64::MAX,
@@ -247,8 +329,12 @@ mod tests {
             buf_size: 2048,
             ring_size: 2,
         });
-        let WifiChannels { progress_tx, .. } = WifiChannels::new();
-        let mut outputs = OwnerOutputs::new(queues, progress_tx);
+        let WifiChannels {
+            progress_tx,
+            progress_signal,
+            ..
+        } = WifiChannels::new();
+        let mut outputs = OwnerOutputs::new(queues, progress_tx, progress_signal);
 
         assert!(matches!(
             outputs.consume_event(AicEvent::TransmitComplete(TxToken::new(99))),
@@ -264,8 +350,12 @@ mod tests {
             buf_size: 2048,
             ring_size: 2,
         });
-        let WifiChannels { progress_tx, .. } = WifiChannels::new();
-        let mut outputs = OwnerOutputs::new(queues, progress_tx);
+        let WifiChannels {
+            progress_tx,
+            progress_signal,
+            ..
+        } = WifiChannels::new();
+        let mut outputs = OwnerOutputs::new(queues, progress_tx, progress_signal);
 
         assert!(matches!(
             outputs.consume_event(AicEvent::Receive(vec![0; 2049])),
@@ -281,8 +371,12 @@ mod tests {
             buf_size: 2048,
             ring_size: 2,
         });
-        let WifiChannels { progress_tx, .. } = WifiChannels::new();
-        let mut outputs = OwnerOutputs::new(queues, progress_tx);
+        let WifiChannels {
+            progress_tx,
+            progress_signal,
+            ..
+        } = WifiChannels::new();
+        let mut outputs = OwnerOutputs::new(queues, progress_tx, progress_signal);
 
         assert!(
             outputs
@@ -291,5 +385,27 @@ mod tests {
         );
         assert!(outputs.has_pending());
         assert!(!outputs.has_runnable_pending());
+    }
+
+    #[test]
+    fn queue_progress_signal_is_consumed_once() {
+        let (_, _, queues) = queue_parts(QueueConfig {
+            dma_mask: u64::MAX,
+            align: 4,
+            buf_size: 2048,
+            ring_size: 2,
+        });
+        let WifiChannels {
+            progress_tx,
+            progress_signal,
+            ..
+        } = WifiChannels::new();
+        let mut outputs = OwnerOutputs::new(queues, progress_tx, progress_signal);
+
+        // A completion publication must wake exactly one follow-up queue
+        // poll; it must not leave the endpoint permanently runnable.
+        outputs.queue_progress = true;
+        assert!(outputs.take_queue_progress());
+        assert!(!outputs.take_queue_progress());
     }
 }

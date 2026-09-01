@@ -514,10 +514,14 @@ AP/STA confirmation 已由同一 owner executor 中的 command/RX 有限状态�
 - top half 只 mask `CARD_INT` signal、发布 pending/snapshot 并激活本地 group。
 - RX FIFO、TX queue、firmware command completion 和 card-side clear 由 owner executor 推进。
 - 删除 `set_rx_wake`、全局 raw callback、RX/TX kicker 和独立 RX/TX data tasks。
-- 当前仅发布已验证的 AIC8800D80 V3 queue/status 路径，RX FIFO 通过 physical function 1 drain。8801、D80X2、DC/DW 在取得逐变体协议和板级证据前 fail-closed。
+- 当前发布 AIC8800D80 的 V3 queue/status 路径，以及 AKA 实板使用的 AIC8800DC
+  V1 双 Function 路径。D80 的 command/data FIFO 都在 Function 1；DC 的 data FIFO
+  在 Function 1，firmware mailbox 在 Function 2。8801、D80X2、DW 和未知变体仍
+  fail-closed。
 - SDHCI rearm 是一个 task-context 原子操作：unmask CARD_INT 后立即读 controller status，若 level 已经挂起则重新 mask 并返回 `WorkPending`，不依赖重新产生 edge。
 - shutdown 在 owner CPU 先 mask CARD_INT，按 variant 清除 chip interrupt-enable register，再禁用 SDHCI interrupt signal；任一步无法确认时整个 executor graph 进入隔离。
-- DC/DW 的 command/FIFO function ownership 与当前本地 vendor 源证据冲突，因此 probe 明确失败；不提供 kicker 或 polling fallback。
+- D80/DC 都不提供 kicker 或 polling fallback；缺少对应 profile、固件或 CIS 身份证据
+  的变体在 probe 阶段明确失败。
 - SDHCI 的 PIO command/data completion 仍是 host transaction 语义，不能误当成 network queue IRQ。
 
 ## 15. 公共错误与失败策略

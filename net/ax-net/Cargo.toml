@@ -35,6 +35,8 @@ heapless.workspace = true
 irq-framework = { workspace = true }
 log = { workspace = true }
 rd-net = { workspace = true }
+rand_chacha.workspace = true
+rand_core.workspace = true
 rdif-vsock = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 syscalls.workspace = true

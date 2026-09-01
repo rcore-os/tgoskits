@@ -13,7 +13,7 @@ use tock_registers::{
 
 use crate::{
     Cv181xMmio,
-    platform::{PINMUX32, SD_CTRL_OPT},
+    platform::{MSHC_CTRL, PINMUX32, SD_CTRL_OPT},
 };
 
 pub const CV181X_SDIO1_RESET_SETTLE: Duration = Duration::from_millis(1);
@@ -118,6 +118,10 @@ impl Cv181xSdio1Mmio {
     /// Apply the SDIO1 silicon setup without sleeping or issuing card
     /// commands. The caller schedules the documented reset-settle deadline.
     pub fn initialize(self) {
+        self.host
+            .core_registers()
+            .mshc_ctrl
+            .modify(MSHC_CTRL::SD1_SEL::SET);
         let syscon = self.host.syscon_registers();
         let crg = self.crg_registers();
         let rtcsys_ctrl = self.rtcsys_ctrl_registers();

@@ -1,7 +1,56 @@
 use super::*;
-use crate::response::{SdioOcrResponse, SdioRwResponse};
+use crate::{
+    response::{SdioOcrResponse, SdioRwResponse},
+    sdio::io::SdioInitRequest,
+};
 
 const SDIO_READY: u32 = (1 << 31) | (1 << 28) | 0x0030_0000;
+
+#[test]
+fn io_only_init_paces_after_identification_clock_before_cmd5() {
+    let mut card = SdioCard::new(MockHost::new(std::vec![r4(SDIO_READY)]));
+    let mut request = card.submit_init().unwrap();
+
+    for _ in 0..2 {
+        assert!(matches!(
+            card.advance_init_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq,),
+            Ok(OperationProgress::Pending)
+        ));
+    }
+    assert_eq!(
+        request.register_retry_after(),
+        Some(core::time::Duration::from_millis(10))
+    );
+    assert_eq!(card.host().last_clock, None);
+
+    assert!(matches!(
+        card.advance_init_request(&mut request, sdmmc_host::ProgressCause::RegisterRetry,),
+        Ok(OperationProgress::Pending)
+    ));
+    for _ in 0..2 {
+        assert!(matches!(
+            card.advance_init_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq,),
+            Ok(OperationProgress::Pending)
+        ));
+    }
+
+    assert_eq!(card.host().last_clock, Some(ClockSpeed::Identification));
+    assert_eq!(
+        request.register_retry_after(),
+        Some(core::time::Duration::from_millis(10))
+    );
+    assert!(
+        card.host().commands.is_empty(),
+        "CMD5 must not be submitted until the post-clock power stabilization delay expires"
+    );
+
+    assert!(matches!(
+        card.advance_init_request(&mut request, sdmmc_host::ProgressCause::RegisterRetry,),
+        Ok(OperationProgress::Pending)
+    ));
+    assert_eq!(card.host().commands.len(), 1);
+    assert_eq!(card.host().commands[0].index, 5);
+}
 
 #[test]
 fn io_only_init_enumerates_cccr_fbr_and_cis_without_host_protocol_duplication() {
@@ -140,7 +189,7 @@ fn combo_card_is_rejected_before_rca_assignment() {
     let mut request = card.submit_init().unwrap();
 
     loop {
-        match card.advance_init_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq) {
+        match advance_init(&mut card, &mut request) {
             Ok(OperationProgress::Pending) => {}
             Err(error) => {
                 assert_eq!(error, Error::UnsupportedComboCard);
@@ -254,15 +303,24 @@ fn initialized_io_only_card(
     let mut card = SdioCard::new(MockHost::new(replies));
     let mut request = card.submit_init().unwrap();
     let info = loop {
-        match card
-            .advance_init_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq)
-            .unwrap()
-        {
+        match advance_init(&mut card, &mut request).unwrap() {
             OperationProgress::Pending => {}
             OperationProgress::Complete(info) => break info,
         }
     };
     (card, info)
+}
+
+fn advance_init(
+    card: &mut SdioCard<MockHost>,
+    request: &mut SdioInitRequest<MockHost>,
+) -> Result<OperationProgress<SdioCardInfo>, Error> {
+    let cause = if request.register_retry_after().is_some() {
+        sdmmc_host::ProgressCause::RegisterRetry
+    } else {
+        sdmmc_host::ProgressCause::AcknowledgedIrq
+    };
+    card.advance_init_request(request, cause)
 }
 
 fn r4(raw: u32) -> Response {

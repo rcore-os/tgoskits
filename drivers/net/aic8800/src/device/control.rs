@@ -1,9 +1,16 @@
-use alloc::{collections::VecDeque, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, vec, vec::Vec};
 
-use super::{AicError, ControlRequest, Entropy};
+use super::{AicError, ControlRequest, Entropy, Pmk};
+use crate::{
+    lmac::{
+        ME_SET_CONTROL_PORT_CFM, ME_SET_CONTROL_PORT_REQ, MM_KEY_ADD_CFM, MM_KEY_ADD_REQ,
+        SM_CONNECT_CFM, SM_CONNECT_REQ, SM_DISCONNECT_CFM, SM_DISCONNECT_REQ, TASK_ME, TASK_MM,
+        TASK_SM, connect_payload, control_port_payload, disconnect_payload, key_add_payload,
+    },
+    wpa2::{HandshakeAction, Wpa2Handshake, WpaError},
+};
 
 const MAX_SSID_LENGTH: usize = 32;
-const MAX_PASSWORD_LENGTH: usize = 63;
 
 pub(super) struct ControlCommand {
     pub message_id: u16,
@@ -14,13 +21,194 @@ pub(super) struct ControlCommand {
 
 pub(super) struct ControlState {
     pub commands: VecDeque<ControlCommand>,
-    _wpa_nonce: Option<Entropy>,
+    pub operation: ControlOperation,
 }
 
-pub(super) fn build(request: ControlRequest, mac: [u8; 6]) -> Result<ControlState, AicError> {
+pub(super) enum ControlOperation {
+    Commands,
+    Connect(Box<PendingConnect>),
+    Disconnect,
+}
+
+pub(super) struct PendingConnect {
+    pub pmk: Option<Pmk>,
+    pub entropy: Option<Entropy>,
+    pub phase: ConnectPhase,
+    handshake: Option<Wpa2Handshake>,
+    pending_m4: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ConnectPhase {
+    /// Clear a possible association left in firmware across a warm host reset.
+    /// Linux keeps this state in cfg80211; the bare-metal owner must establish
+    /// the same invariant explicitly before issuing a new connect request.
+    Resetting,
+    AwaitConfirmation,
+    AwaitIndication,
+    AwaitHandshake,
+    InstallingKeys(u8),
+    AwaitM4Transmit,
+    AwaitControlPort,
+}
+
+pub(super) enum ControlEffect {
+    None,
+    TransmitEapol(Vec<u8>),
+}
+
+impl ControlState {
+    pub(super) fn accept_connect_indication(
+        &mut self,
+        station_index: u8,
+        bssid: [u8; 6],
+        local_mac: [u8; 6],
+    ) -> Result<(), AicError> {
+        let ControlOperation::Connect(connect) = &mut self.operation else {
+            return Err(AicError::CompletionMismatch);
+        };
+        if connect.phase != ConnectPhase::AwaitIndication {
+            return Err(AicError::CompletionMismatch);
+        }
+        if connect.pmk.is_none() {
+            self.commands.push_back(ControlCommand {
+                message_id: ME_SET_CONTROL_PORT_REQ,
+                destination: TASK_ME,
+                expected_message_id: ME_SET_CONTROL_PORT_CFM,
+                payload: control_port_payload(station_index, true).to_vec(),
+            });
+            connect.phase = ConnectPhase::AwaitControlPort;
+            Ok(())
+        } else {
+            let entropy = connect.entropy.take().ok_or(AicError::EntropyUnavailable)?;
+            let pmk = connect.pmk.take().ok_or(AicError::WpaProtocol)?;
+            connect.handshake = Some(Wpa2Handshake::new(
+                *pmk.bytes(),
+                bssid,
+                local_mac,
+                *entropy.bytes(),
+            ));
+            connect.phase = ConnectPhase::AwaitHandshake;
+            Ok(())
+        }
+    }
+
+    pub(super) fn process_eapol(
+        &mut self,
+        interface_index: u8,
+        station_index: u8,
+        eapol: &[u8],
+    ) -> Result<ControlEffect, AicError> {
+        let ControlOperation::Connect(connect) = &mut self.operation else {
+            return Err(AicError::CompletionMismatch);
+        };
+        if connect.phase != ConnectPhase::AwaitHandshake {
+            return Err(AicError::WpaProtocol);
+        }
+        log::info!("[wifi] WPA2 EAPOL frame consumed by handshake state machine");
+        let action = connect
+            .handshake
+            .as_mut()
+            .ok_or(AicError::WpaProtocol)?
+            .process(eapol)
+            .map_err(map_wpa_error)?;
+        match action {
+            HandshakeAction::SendM2(frame) => Ok(ControlEffect::TransmitEapol(frame)),
+            HandshakeAction::InstallKeys(keys) => {
+                self.commands.push_back(ControlCommand {
+                    message_id: MM_KEY_ADD_REQ,
+                    destination: TASK_MM,
+                    expected_message_id: MM_KEY_ADD_CFM,
+                    payload: key_add_payload(
+                        interface_index,
+                        station_index,
+                        true,
+                        0,
+                        &keys.temporal_key,
+                    )?
+                    .to_vec(),
+                });
+                self.commands.push_back(ControlCommand {
+                    message_id: MM_KEY_ADD_REQ,
+                    destination: TASK_MM,
+                    expected_message_id: MM_KEY_ADD_CFM,
+                    payload: key_add_payload(
+                        interface_index,
+                        u8::MAX,
+                        false,
+                        keys.group_key_index,
+                        &keys.group_key,
+                    )?
+                    .to_vec(),
+                });
+                connect.pending_m4 = Some(keys.m4.clone());
+                connect.phase = ConnectPhase::InstallingKeys(2);
+                Ok(ControlEffect::None)
+            }
+        }
+    }
+
+    pub(super) fn accept_key_confirmation(&mut self) -> Result<Option<Vec<u8>>, AicError> {
+        let ControlOperation::Connect(connect) = &mut self.operation else {
+            return Err(AicError::CompletionMismatch);
+        };
+        let ConnectPhase::InstallingKeys(remaining) = connect.phase else {
+            return Err(AicError::CompletionMismatch);
+        };
+        if remaining > 1 {
+            connect.phase = ConnectPhase::InstallingKeys(remaining - 1);
+            Ok(None)
+        } else {
+            connect.phase = ConnectPhase::AwaitM4Transmit;
+            connect
+                .pending_m4
+                .take()
+                .map(Some)
+                .ok_or(AicError::WpaProtocol)
+        }
+    }
+
+    pub(super) fn accept_m4_transmit(&mut self, station_index: u8) -> Result<(), AicError> {
+        let ControlOperation::Connect(connect) = &mut self.operation else {
+            return Err(AicError::CompletionMismatch);
+        };
+        if connect.phase != ConnectPhase::AwaitM4Transmit {
+            return Err(AicError::CompletionMismatch);
+        }
+        self.commands.push_back(ControlCommand {
+            message_id: ME_SET_CONTROL_PORT_REQ,
+            destination: TASK_ME,
+            expected_message_id: ME_SET_CONTROL_PORT_CFM,
+            payload: control_port_payload(station_index, true).to_vec(),
+        });
+        connect.phase = ConnectPhase::AwaitControlPort;
+        Ok(())
+    }
+}
+
+fn map_wpa_error(error: WpaError) -> AicError {
+    match error {
+        WpaError::Mic => AicError::WpaMic,
+        WpaError::ReplayCounter => AicError::WpaReplay,
+        WpaError::Rsn => AicError::WpaRsn,
+        WpaError::InvalidKeyData | WpaError::KeyUnwrap | WpaError::GtkMissing => {
+            AicError::WpaKeyData
+        }
+        WpaError::FrameTooShort
+        | WpaError::InvalidLength
+        | WpaError::InvalidDescriptor
+        | WpaError::UnexpectedMessage
+        | WpaError::InvalidState => AicError::WpaProtocol,
+    }
+}
+
+pub(super) fn build(
+    request: ControlRequest,
+    mac: [u8; 6],
+    interface_index: Option<u8>,
+) -> Result<ControlState, AicError> {
     let mut commands = VecDeque::new();
-    let mut nonce = None;
-    match request {
+    let operation = match request {
         ControlRequest::Scan { ssid } => {
             if ssid
                 .as_ref()
@@ -29,42 +217,62 @@ pub(super) fn build(request: ControlRequest, mac: [u8; 6]) -> Result<ControlStat
                 return Err(AicError::InvalidControlRequest);
             }
             commands.push_back(scan_command(ssid.as_deref()));
+            ControlOperation::Commands
         }
-        ControlRequest::Connect {
-            ssid,
-            password,
-            entropy,
-        } => {
-            if ssid.is_empty()
-                || ssid.len() > MAX_SSID_LENGTH
-                || password.len() > MAX_PASSWORD_LENGTH
-            {
+        ControlRequest::Connect { ssid, pmk, entropy } => {
+            if ssid.is_empty() || ssid.len() > MAX_SSID_LENGTH {
                 return Err(AicError::InvalidControlRequest);
             }
-            if !password.is_empty() {
-                nonce = Some(entropy.ok_or(AicError::EntropyUnavailable)?);
-            }
-            commands.push_back(connect_command(&ssid, !password.is_empty()));
+            let entropy = if pmk.is_none() {
+                None
+            } else {
+                Some(entropy.ok_or(AicError::EntropyUnavailable)?)
+            };
+            let interface_index = interface_index.ok_or(AicError::InvalidControlRequest)?;
+            commands.push_back(ControlCommand {
+                message_id: SM_DISCONNECT_REQ,
+                destination: TASK_SM,
+                expected_message_id: SM_DISCONNECT_CFM,
+                payload: disconnect_payload(interface_index).to_vec(),
+            });
+            commands.push_back(ControlCommand {
+                message_id: SM_CONNECT_REQ,
+                destination: TASK_SM,
+                expected_message_id: SM_CONNECT_CFM,
+                payload: connect_payload(&ssid, pmk.is_some(), interface_index),
+            });
+            ControlOperation::Connect(Box::new(PendingConnect {
+                pmk,
+                entropy,
+                phase: ConnectPhase::Resetting,
+                handshake: None,
+                pending_m4: None,
+            }))
         }
-        ControlRequest::Disconnect => commands.push_back(ControlCommand {
-            message_id: 0x1803,
-            destination: 6,
-            expected_message_id: 0x1804,
-            payload: vec![3, 0, 0],
-        }),
+        ControlRequest::Disconnect => {
+            let interface_index = interface_index.ok_or(AicError::InvalidControlRequest)?;
+            commands.push_back(ControlCommand {
+                message_id: SM_DISCONNECT_REQ,
+                destination: TASK_SM,
+                expected_message_id: SM_DISCONNECT_CFM,
+                payload: disconnect_payload(interface_index).to_vec(),
+            });
+            ControlOperation::Disconnect
+        }
         ControlRequest::StartOpenAccessPoint { ssid, channel } => {
             if ssid.is_empty() || ssid.len() > MAX_SSID_LENGTH || !(1..=14).contains(&channel) {
                 return Err(AicError::InvalidControlRequest);
             }
             commands.extend(open_access_point_commands(&ssid, channel, mac));
+            ControlOperation::Commands
         }
         ControlRequest::Cancel | ControlRequest::Shutdown => {
             return Err(AicError::InvalidControlRequest);
         }
-    }
+    };
     Ok(ControlState {
         commands,
-        _wpa_nonce: nonce,
+        operation,
     })
 }
 
@@ -99,27 +307,7 @@ fn scan_command(ssid: Option<&[u8]>) -> ControlCommand {
     ControlCommand {
         message_id: 0x1000,
         destination: 4,
-        expected_message_id: 0x1009,
-        payload,
-    }
-}
-
-fn connect_command(ssid: &[u8], secured: bool) -> ControlCommand {
-    let mut payload = vec![0; 320];
-    payload[0] = ssid.len() as u8;
-    payload[1..1 + ssid.len()].copy_from_slice(ssid);
-    payload[34..40].fill(0xff);
-    payload[40..42].copy_from_slice(&0xffffu16.to_le_bytes());
-    if secured {
-        payload[48..52].copy_from_slice(&0x0000_000du32.to_le_bytes());
-    }
-    payload[52..54].copy_from_slice(&0x888eu16.to_be_bytes());
-    payload[56..58].copy_from_slice(&1u16.to_le_bytes());
-    payload[61] = 0;
-    ControlCommand {
-        message_id: 0x1800,
-        destination: 6,
-        expected_message_id: 0x1801,
+        expected_message_id: 0x1001,
         payload,
     }
 }
@@ -139,7 +327,7 @@ fn open_access_point_commands(ssid: &[u8], channel: u8, mac: [u8; 6]) -> VecDequ
         message_id: 0x0002,
         destination: 0,
         expected_message_id: 0x0003,
-        payload: vec![0; 70],
+        payload: crate::lmac::start_payload().to_vec(),
     });
     commands.push_back(ControlCommand {
         message_id: 0x000e,
@@ -211,10 +399,11 @@ mod tests {
             build(
                 ControlRequest::Connect {
                     ssid: b"network".to_vec(),
-                    password: b"password".to_vec(),
+                    pmk: Some(Pmk::new([3; 32])),
                     entropy: None,
                 },
-                [0; 6]
+                [0; 6],
+                Some(0),
             )
             .err(),
             Some(AicError::EntropyUnavailable)
@@ -223,12 +412,48 @@ mod tests {
             build(
                 ControlRequest::Connect {
                     ssid: b"network".to_vec(),
-                    password: b"password".to_vec(),
+                    pmk: Some(Pmk::new([3; 32])),
                     entropy: Some(Entropy::new([7; 32])),
                 },
-                [0; 6]
+                [0; 6],
+                Some(0)
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn connect_request_carries_the_firmware_interface_index() {
+        let state = build(
+            ControlRequest::Connect {
+                ssid: b"network".to_vec(),
+                pmk: Some(Pmk::new([3; 32])),
+                entropy: Some(Entropy::new([7; 32])),
+            },
+            [2, 0, 0, 0, 0, 1],
+            Some(6),
+        )
+        .unwrap();
+
+        let connect = state
+            .commands
+            .iter()
+            .find(|command| command.message_id == SM_CONNECT_REQ)
+            .expect("connect command follows the stale-association reset");
+        assert_eq!(connect.payload[61], 6);
+        assert_eq!(
+            state.commands.front().unwrap().message_id,
+            SM_DISCONNECT_REQ
+        );
+    }
+
+    #[test]
+    fn disconnect_waits_for_confirmation_not_the_async_indication() {
+        let state = build(ControlRequest::Disconnect, [2, 0, 0, 0, 0, 1], Some(6)).unwrap();
+        let command = state.commands.front().unwrap();
+
+        assert_eq!(command.message_id, SM_DISCONNECT_REQ);
+        assert_eq!(command.expected_message_id, SM_DISCONNECT_CFM);
+        assert_eq!(command.payload, [3, 0, 6, 0]);
     }
 }

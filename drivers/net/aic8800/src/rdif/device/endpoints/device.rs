@@ -13,15 +13,10 @@ use super::{
     irq::AicHardIrq,
     startup::{AicOwnerStartup, AicPollIrqControl},
 };
-use crate::{
-    ChipVariant,
-    rdif::{
-        device::{
-            MacAddressState, OwnerChannels, WifiChannels, queues::queue_parts, shared_irq_latch,
-        },
-        error::AicRdifError,
-        owner::AicOwner,
-    },
+use crate::rdif::{
+    device::{MacAddressState, OwnerChannels, WifiChannels, queues::queue_parts, shared_irq_latch},
+    error::AicRdifError,
+    owner::AicOwner,
 };
 
 const GROUP_ID: NetPollGroupId = NetPollGroupId::new(0);
@@ -33,8 +28,6 @@ const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Construction policy for one portable AIC RDIF device.
 #[derive(Clone, Debug)]
 pub struct AicRdifOptions {
-    /// Supported AIC chip variant selected by platform probe.
-    pub chip: ChipVariant,
     /// Driver-local physical IRQ source identity.
     pub irq_source: NetIrqSourceId,
     /// Optional board-selected operation executed after device startup.
@@ -52,10 +45,9 @@ pub struct AicRdifOptions {
 }
 
 impl AicRdifOptions {
-    /// Creates the default bounded queue policy for one chip and IRQ source.
-    pub const fn new(chip: ChipVariant, irq_source: NetIrqSourceId) -> Self {
+    /// Creates the default bounded queue policy for one IRQ source.
+    pub const fn new(irq_source: NetIrqSourceId) -> Self {
         Self {
-            chip,
             irq_source,
             startup_transaction: None,
             queue_size: DEFAULT_QUEUE_SIZE,
@@ -150,16 +142,15 @@ impl<H: SdMmcIrqHost + Send + 'static> NetDevice for AicRdifDevice<H> {
         let mac = Arc::new(MacAddressState::new([0; 6]));
         let parts = host.into_parts();
         let wifi_channels = WifiChannels::new();
+        let progress_signal = Arc::clone(&wifi_channels.progress_signal);
         let (owner, wifi_requests, wifi_progress) = AicOwner::new(
             parts.bus,
             parts.card_irq,
-            options.chip,
             queue_ports,
             wifi_channels,
             Arc::clone(&irq_latch),
             Arc::clone(&mac),
-        )
-        .map_err(NetError::from)?;
+        );
         let OwnerChannels {
             sender: owner_sender,
             receiver: owner_receiver,
@@ -171,6 +162,7 @@ impl<H: SdMmcIrqHost + Send + 'static> NetDevice for AicRdifDevice<H> {
             wifi_control: Some(Box::new(AicWifiControl::new(
                 wifi_requests,
                 wifi_progress,
+                Arc::clone(&progress_signal),
                 options.startup_transaction,
                 options.control_timeout,
             ))),
@@ -180,7 +172,7 @@ impl<H: SdMmcIrqHost + Send + 'static> NetDevice for AicRdifDevice<H> {
                     tx: Box::new(tx),
                     rx: Box::new(rx),
                 },
-                irq_control: Box::new(AicPollIrqControl::new(owner_receiver)),
+                irq_control: Box::new(AicPollIrqControl::new(owner_receiver, progress_signal)),
                 owner_startup: Some(Box::new(AicOwnerStartup::new(
                     owner,
                     owner_sender,

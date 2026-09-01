@@ -11,19 +11,22 @@ extern crate alloc;
 pub mod common;
 mod device;
 mod firmware;
+mod lmac;
+mod profile;
 mod protocol;
 #[cfg(feature = "rdif")]
 mod rdif;
 mod registers;
 mod rx;
 mod tx;
+mod wpa2;
 
 pub use common::ChipVariant;
 pub use device::{
     AicAction, AicDevice, AicError, AicEvent, AicInput, AicInputEvent, AicState, ControlRequest,
-    Entropy, IrqSnapshot, MonotonicTime, SdioCompletion, SdioFailure, SdioRequest, SdioRequestKind,
-    SdioResponse, TxToken,
+    Entropy, IrqSnapshot, MailboxRequest, MailboxWaitPhase, MonotonicTime, Pmk, SdioCompletion,
+    SdioFailure, SdioRequest, SdioRequestKind, SdioResponse, TxToken,
 };
 #[cfg(feature = "rdif")]
-pub use rdif::{AicRdifDevice, AicRdifError, AicRdifOptions};
+pub use rdif::{AicRdifDevice, AicRdifError, AicRdifOptions, AicSdioIdentity};
 pub use sdmmc_protocol::sdio::io::{AddressMode, FunctionNumber, IoAddress, TransferMode};

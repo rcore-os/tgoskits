@@ -1,103 +1,37 @@
+//! Firmware-independent startup confirmations and the D80 image upload path.
+
 use alloc::vec::Vec;
 
-use super::{START_STABILIZE, StartupStage};
+use super::{
+    START_STABILIZE, StartupStage,
+    dc::{DcStage, DcStartupState},
+    map_debug_error,
+};
 use crate::{
-    common::{CHIP_REV_MASK, ChipVariant},
+    common::{CHIP_REV_ADDR, CHIP_REV_HIGH_SHIFT, CHIP_REV_MASK},
     device::*,
-    firmware::{
-        CONFIG_BASE_OFFSET, MAIN_ADDRESS, MASKED_SYSTEM_CONFIG, PATCH_ADDRESS,
-        PATCH_ADDRESS_REGISTER, PATCH_COUNT_REGISTER, PATCH_TABLE, PATCH_TABLE_ADDRESS,
-        SYSTEM_CONFIG, UPLOAD_CHUNK, images,
-    },
+    firmware::{D80_MAIN_ADDRESS, FIRMWARE_UPLOAD_CHUNK, d80_main_image},
+    lmac,
+    profile::FirmwareProfile,
     protocol::{
-        DBG_MEM_BLOCK_WRITE_REQ, DBG_MEM_MASK_WRITE_REQ, DBG_MEM_READ_REQ, DBG_MEM_WRITE_REQ,
-        memory_block_write_payload, memory_mask_write_payload, memory_read_payload,
-        memory_write_payload,
+        DBG_MEM_BLOCK_WRITE_REQ, DBG_START_APP_REQ, debug_memory_read, memory_block_write_payload,
+        require_debug_status,
     },
 };
 
 impl AicDevice {
-    pub(super) fn drive_system_config(&mut self, index: usize, now: MonotonicTime) -> AicAction {
-        if let Some(&(address, value)) = SYSTEM_CONFIG.get(index) {
-            self.begin_debug_mailbox(
-                DBG_MEM_WRITE_REQ,
-                &memory_write_payload(address, value),
-                now,
-            );
-            self.drive_mailbox(now)
-        } else {
-            self.set_startup_stage(StartupStage::UploadMain(0));
-            self.drive_startup(now)
-        }
-    }
-
     pub(super) fn drive_main_upload(&mut self, offset: usize, now: MonotonicTime) -> AicAction {
-        let (main, _) = images(self.chip).expect("constructor validated the firmware image");
+        let main = d80_main_image();
         if offset >= main.len() {
-            self.set_startup_stage(StartupStage::UploadPatch(0));
+            self.set_startup_stage(StartupStage::StartApplication);
             return self.drive_startup(now);
         }
-        let end = (offset + UPLOAD_CHUNK).min(main.len());
+        let end = (offset + FIRMWARE_UPLOAD_CHUNK).min(main.len());
         let payload = memory_block_write_payload(
-            MAIN_ADDRESS.wrapping_add(offset as u32),
+            D80_MAIN_ADDRESS.wrapping_add(offset as u32),
             &main[offset..end],
         );
         self.begin_debug_mailbox(DBG_MEM_BLOCK_WRITE_REQ, &payload, now);
-        self.drive_mailbox(now)
-    }
-
-    pub(super) fn drive_patch_upload(&mut self, offset: usize, now: MonotonicTime) -> AicAction {
-        let (_, patch) = images(self.chip).expect("constructor validated the firmware image");
-        if offset >= patch.len() {
-            self.set_startup_stage(if self.chip == ChipVariant::Aic8801 {
-                StartupStage::ReadConfigBase
-            } else {
-                StartupStage::StartApplication
-            });
-            return self.drive_startup(now);
-        }
-        let end = (offset + UPLOAD_CHUNK).min(patch.len());
-        let payload = memory_block_write_payload(
-            PATCH_ADDRESS.wrapping_add(offset as u32),
-            &patch[offset..end],
-        );
-        self.begin_debug_mailbox(DBG_MEM_BLOCK_WRITE_REQ, &payload, now);
-        self.drive_mailbox(now)
-    }
-
-    pub(super) fn drive_patch_metadata(&mut self, index: usize, now: MonotonicTime) -> AicAction {
-        let Some((address, value)) = self.patch_metadata(index) else {
-            self.set_startup_stage(StartupStage::MaskedConfig(0));
-            return self.drive_startup(now);
-        };
-        self.begin_debug_mailbox(
-            DBG_MEM_WRITE_REQ,
-            &memory_write_payload(address, value),
-            now,
-        );
-        self.drive_mailbox(now)
-    }
-
-    pub(super) fn drive_masked_config(&mut self, index: usize, now: MonotonicTime) -> AicAction {
-        if let Some(&(address, mask, value)) = MASKED_SYSTEM_CONFIG.get(index) {
-            self.begin_debug_mailbox(
-                DBG_MEM_MASK_WRITE_REQ,
-                &memory_mask_write_payload(address, mask, value),
-                now,
-            );
-            self.drive_mailbox(now)
-        } else {
-            self.set_startup_stage(StartupStage::SlowClock);
-            self.drive_startup(now)
-        }
-    }
-
-    pub(super) fn drive_config_base_read(&mut self, now: MonotonicTime) -> AicAction {
-        self.begin_debug_mailbox(
-            DBG_MEM_READ_REQ,
-            &memory_read_payload(MAIN_ADDRESS + CONFIG_BASE_OFFSET),
-            now,
-        );
         self.drive_mailbox(now)
     }
 
@@ -105,82 +39,154 @@ impl AicDevice {
         &mut self,
         result: Vec<u8>,
     ) -> Result<(), AicError> {
+        let stage = self
+            .lifecycle
+            .startup
+            .as_ref()
+            .map(|startup| startup.stage)
+            .ok_or(AicError::CompletionMismatch)?;
+        let next = match stage {
+            StartupStage::ReadRevision => self.complete_revision_read(&result)?,
+            StartupStage::UploadMain(offset) => {
+                require_debug_status(&result)
+                    .map_err(|error| map_debug_error(DBG_MEM_BLOCK_WRITE_REQ + 1, error))?;
+                StartupStage::UploadMain(
+                    (offset + FIRMWARE_UPLOAD_CHUNK).min(d80_main_image().len()),
+                )
+            }
+            StartupStage::Dc(stage) => self.complete_dc_mailbox(stage, result)?,
+            StartupStage::StartApplication => {
+                require_debug_status(&result)
+                    .map_err(|error| map_debug_error(DBG_START_APP_REQ + 1, error))?;
+                self.lifecycle.retry_at = Some(self.lifecycle.last_time.after(START_STABILIZE));
+                StartupStage::Stabilize
+            }
+            StartupStage::StackStart => {
+                if result.len() != 2 {
+                    return Err(AicError::MalformedResponse);
+                }
+                match self.firmware_profile() {
+                    FirmwareProfile::Aic8800Dc => StartupStage::RfConfig(0),
+                    FirmwareProfile::Aic8800D80 => StartupStage::TxPowerLevel,
+                }
+            }
+            StartupStage::TxPowerLevel => {
+                lmac::require_empty(lmac::MM_SET_TXPWR_IDX_LVL_CFM, &result)?;
+                StartupStage::RfCalibration
+            }
+            StartupStage::RfConfig(index) => {
+                lmac::require_empty(lmac::MM_SET_RF_CONFIG_CFM, &result)?;
+                if index == 3 {
+                    StartupStage::RfCalibration
+                } else {
+                    StartupStage::RfConfig(index + 1)
+                }
+            }
+            StartupStage::RfCalibration => {
+                match self.firmware_profile() {
+                    FirmwareProfile::Aic8800Dc => {
+                        lmac::require_empty(lmac::MM_SET_RF_CALIB_CFM, &result)?;
+                    }
+                    FirmwareProfile::Aic8800D80 if result.len() == 16 => {}
+                    FirmwareProfile::Aic8800D80 => return Err(AicError::MalformedResponse),
+                }
+                StartupStage::ReadMacAddress
+            }
+            StartupStage::ReadMacAddress => {
+                self.data.link.install_mac(lmac::parse_mac(&result)?)?;
+                StartupStage::FirmwareReset
+            }
+            StartupStage::FirmwareReset => {
+                lmac::require_empty(lmac::MM_RESET_CFM, &result)?;
+                StartupStage::ConfigureMac
+            }
+            StartupStage::ConfigureMac => {
+                lmac::require_empty(lmac::ME_CONFIG_CFM, &result)?;
+                StartupStage::ConfigureChannels
+            }
+            StartupStage::ConfigureChannels => {
+                lmac::require_empty(lmac::ME_CHAN_CONFIG_CFM, &result)?;
+                StartupStage::AddStationInterface
+            }
+            StartupStage::AddStationInterface => {
+                let index = lmac::parse_add_interface(&result)?;
+                self.data.link.install_interface(index)?;
+                StartupStage::StartMac
+            }
+            StartupStage::StartMac => {
+                lmac::require_empty(lmac::MM_START_CFM, &result)?;
+                StartupStage::SetFilter
+            }
+            StartupStage::SetFilter => {
+                lmac::require_empty(lmac::MM_SET_FILTER_CFM, &result)?;
+                StartupStage::ArmChipInterrupt
+            }
+            _ => return Err(AicError::CompletionMismatch),
+        };
+        self.lifecycle
+            .startup
+            .as_mut()
+            .expect("startup state was checked above")
+            .stage = next;
+        Ok(())
+    }
+
+    fn complete_revision_read(&mut self, result: &[u8]) -> Result<StartupStage, AicError> {
+        let raw = debug_memory_read(result, CHIP_REV_ADDR)?;
+        let revision = ((raw >> CHIP_REV_HIGH_SHIFT) & CHIP_REV_MASK) as u8;
+        if !matches!(revision, 1 | 3 | 7) {
+            return Err(AicError::UnsupportedRevision(revision));
+        }
+        let profile = self.firmware_profile();
         let startup = self
             .lifecycle
             .startup
             .as_mut()
             .ok_or(AicError::CompletionMismatch)?;
-        startup.stage = match startup.stage {
-            StartupStage::ReadRevision => {
-                if result.len() < 8 {
-                    return Err(AicError::MalformedResponse);
-                }
-                let raw = u32::from_le_bytes([result[4], result[5], result[6], result[7]]);
-                let revision = (raw & CHIP_REV_MASK) as u8;
-                if !matches!(revision, 1 | 3 | 7) {
-                    return Err(AicError::UnsupportedRevision(revision));
-                }
-                startup.revision = Some(revision);
-                if self.chip == ChipVariant::Aic8801 {
-                    StartupStage::SystemConfig(0)
-                } else {
-                    StartupStage::UploadMain(0)
-                }
+        startup.revision = Some(revision);
+        Ok(match profile {
+            FirmwareProfile::Aic8800Dc => {
+                startup.dc = Some(DcStartupState::from_chip_word(raw)?);
+                StartupStage::Dc(DcStage::ReadSubId)
             }
-            StartupStage::SystemConfig(index) => StartupStage::SystemConfig(index + 1),
-            StartupStage::UploadMain(offset) => {
-                let (main, _) =
-                    images(self.chip).expect("constructor validated the firmware image");
-                StartupStage::UploadMain((offset + UPLOAD_CHUNK).min(main.len()))
-            }
-            StartupStage::UploadPatch(offset) => {
-                let (_, patch) =
-                    images(self.chip).expect("constructor validated the firmware image");
-                StartupStage::UploadPatch((offset + UPLOAD_CHUNK).min(patch.len()))
-            }
-            StartupStage::ReadConfigBase => {
-                if result.len() < 8 {
-                    return Err(AicError::MalformedResponse);
-                }
-                startup.config_base = Some(u32::from_le_bytes([
-                    result[4], result[5], result[6], result[7],
-                ]));
-                StartupStage::PatchMetadata(0)
-            }
-            StartupStage::PatchMetadata(index) => StartupStage::PatchMetadata(index + 1),
-            StartupStage::MaskedConfig(index) => StartupStage::MaskedConfig(index + 1),
-            StartupStage::StartApplication => {
-                if self.chip == ChipVariant::Aic8801 {
-                    StartupStage::FastClock
-                } else {
-                    self.lifecycle.retry_at = Some(self.lifecycle.last_time.after(START_STABILIZE));
-                    StartupStage::Stabilize
-                }
-            }
-            StartupStage::StackStart => StartupStage::ArmChipInterrupt,
-            _ => return Err(AicError::CompletionMismatch),
-        };
-        Ok(())
+            FirmwareProfile::Aic8800D80 => StartupStage::UploadMain(0),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::ChipVariant;
+
+    #[test]
+    fn dc_revision_enters_the_dc_owner_state_machine() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+        device.lifecycle.state = AicState::Starting;
+        device.lifecycle.startup = Some(super::super::StartupState::new());
+        device.set_startup_stage(StartupStage::ReadRevision);
+        let mut confirmation = Vec::new();
+        confirmation.extend_from_slice(&CHIP_REV_ADDR.to_le_bytes());
+        confirmation.extend_from_slice(&(3u32 << 16).to_le_bytes());
+
+        assert_eq!(device.complete_startup_mailbox(confirmation), Ok(()));
+        assert!(matches!(
+            device.lifecycle.startup.as_ref().map(|state| state.stage),
+            Some(StartupStage::Dc(DcStage::ReadSubId))
+        ));
     }
 
-    fn patch_metadata(&self, index: usize) -> Option<(u32, u32)> {
-        match index {
-            0 => Some((PATCH_ADDRESS_REGISTER, PATCH_TABLE_ADDRESS)),
-            1 => Some((PATCH_COUNT_REGISTER, (PATCH_TABLE.len() * 2) as u32)),
-            _ => {
-                let pair = (index - 2) / 2;
-                let field = (index - 2) % 2;
-                let entry = PATCH_TABLE.get(pair)?;
-                let config_base = self.lifecycle.startup.as_ref()?.config_base?;
-                Some((
-                    PATCH_TABLE_ADDRESS + (index as u32 - 2) * 4,
-                    if field == 0 {
-                        entry[0].wrapping_add(config_base)
-                    } else {
-                        entry[1]
-                    },
-                ))
-            }
-        }
+    #[test]
+    fn dc_empty_rf_calibration_confirmation_advances_to_mac_read() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+        device.lifecycle.state = AicState::Starting;
+        device.lifecycle.startup = Some(super::super::StartupState::new());
+        device.set_startup_stage(StartupStage::RfCalibration);
+
+        assert_eq!(device.complete_startup_mailbox(Vec::new()), Ok(()));
+        assert!(matches!(
+            device.lifecycle.startup.as_ref().map(|state| state.stage),
+            Some(StartupStage::ReadMacAddress)
+        ));
     }
 }

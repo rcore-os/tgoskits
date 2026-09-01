@@ -80,7 +80,6 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "fatfs"
             | "net"
             | "vsock"
-            | "aic8800-wifi"
             | "dns"
             | "display"
             | "input"
