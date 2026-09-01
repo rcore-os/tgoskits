@@ -92,6 +92,8 @@ impl SchedulerPlacement {
         // observations are Acquire, while a prolonged wait only polls the
         // zero/non-zero publication with Relaxed loads. `finish_task()`'s
         // Release store remains the synchronization point before activation.
+        // sync-lint: ignore suspicious_relaxed_wait_condition
+        // sync-lint: ignore suspicious_relaxed_mixed_ordering
         while self.on_cpu.load(Ordering::Acquire) != 0 {
             while self.on_cpu.load(Ordering::Relaxed) != 0 {
                 core::hint::spin_loop();
