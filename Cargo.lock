@@ -998,6 +998,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-media"
+version = "0.1.0"
+dependencies = [
+ "ax-alloc",
+ "ax-memory-addr",
+ "ax-mm",
+ "ax-runtime",
+ "ax-sync",
+ "ax-task",
+ "axpoll",
+ "bitflags 2.13.1",
+ "log",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "ax-memory-addr"
 version = "0.7.0"
 
@@ -5038,6 +5054,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 
 [[package]]
+name = "media-uvc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ax-media",
+ "ax-sync",
+ "ax-task",
+ "axpoll",
+ "bitflags 2.13.1",
+ "crab-usb",
+ "log",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7819,6 +7849,7 @@ dependencies = [
 name = "starry-kernel"
 version = "0.8.3"
 dependencies = [
+ "anyhow",
  "ax-alloc",
  "ax-cgroup",
  "ax-cpu",
@@ -7832,6 +7863,7 @@ dependencies = [
  "ax-ipi",
  "ax-lazyinit",
  "ax-log",
+ "ax-media",
  "ax-memory-addr",
  "ax-memory-set",
  "ax-mm",
@@ -7839,12 +7871,11 @@ dependencies = [
  "ax-percpu",
  "ax-runtime",
  "ax-std",
+ "ax-sync",
  "ax-task",
  "ax-tracepoint",
  "axbacktrace",
  "axfs-ng-vfs",
- "axhvc",
- "axivc",
  "axklib",
  "axplat-dyn",
  "axpoll",
@@ -7876,6 +7907,7 @@ dependencies = [
  "linux-raw-sys 0.12.1",
  "lock_api",
  "lwprintf-rs",
+ "media-uvc",
  "num_enum",
  "ouroboros",
  "rand 0.10.2",

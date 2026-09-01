@@ -1,0 +1,20 @@
+[package]
+name = "media-uvc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ax-media = { workspace = true }
+crab-usb = { workspace = true }
+ax-sync = { workspace = true, features = ["sleep"] }
+ax-task = { workspace = true }
+axpoll = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+bitflags = { workspace = true }
+
+[dev-dependencies]
+# host 单测：ax_task 调度器（host-test 提供宿主机链接后端）。
+ax-task = { workspace = true, features = ["test"] }
+ax-sync = { workspace = true, features = ["host-test"] }

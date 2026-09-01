@@ -42,6 +42,10 @@ mod cvi_usb_camera;
 
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_vdec;
+#[cfg(feature = "uvc")]
+mod uvc_camera;
+#[cfg(feature = "uvc")]
+mod video;
 
 use alloc::{format, sync::Arc};
 use core::{
@@ -815,6 +819,36 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                     Arc::new(cvi_vdec::CviVdec::new(jpu)),
                 ),
             );
+        }
+    }
+    #[cfg(feature = "uvc")]
+    {
+        let mut video_idx = 0u32;
+        for snap in uvc_camera::collect_uvc_snapshots() {
+            match uvc_camera::create_camera_driver(&snap) {
+                Ok(cam_driver) => {
+                    let events = cam_driver.event_source();
+                    let driver: Arc<ax_sync::Mutex<dyn ax_media::V4L2DriverOps>> =
+                        Arc::new(ax_sync::Mutex::new(cam_driver));
+                    let vdev = ax_media::VideoDevice::new(driver, "uvc");
+                    root.add(
+                        format!("video{video_idx}"),
+                        Device::new(
+                            fs.clone(),
+                            NodeType::CharacterDevice,
+                            DeviceId::new(81, video_idx),
+                            Arc::new(video::V4l2DevNode::from_input(vdev, events)),
+                        ),
+                    );
+                    video_idx += 1;
+                }
+                Err(err) => {
+                    warn!(
+                        "uvc: failed to create camera driver for bus {} dev {}: {:?}",
+                        snap.bus_num, snap.device_num, err
+                    );
+                }
+            }
         }
     }
     SimpleDir::new_maker(fs, Arc::new(root))

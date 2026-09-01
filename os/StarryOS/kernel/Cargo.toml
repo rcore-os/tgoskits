@@ -116,6 +116,8 @@ sg2002-cvi-usb-camera = [
     "dep:cvi-vdec-uapi",
     "dep:sg200x-jpu",
 ]
+v4l2 = ["dep:ax-media"]
+uvc = ["v4l2", "dep:media-uvc"]
 smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
@@ -156,6 +158,10 @@ k230-kpu = { workspace = true, optional = true }
 crab-usb.workspace = true
 usb-serial.workspace = true
 rdrive.workspace = true
+ax-media = { workspace = true, optional = true }
+media-uvc = { workspace = true, optional = true }
+ax-sync = { workspace = true, features = ["sleep"] }
+anyhow.workspace = true
 
 axbacktrace = { workspace = true }
 ax-cgroup = { workspace = true }
