@@ -18,6 +18,8 @@ use std::sync::{Mutex, OnceLock};
 
 use axvisor::console_mux::HostOutputQueue;
 
+use super::terminal::TerminalNewlineNormalizer;
+
 const HOST_OUTPUT_QUEUE_CAPACITY: usize = 64 * 1024;
 const HOST_OUTPUT_BATCH_CAPACITY: usize = 512;
 
@@ -103,16 +105,18 @@ pub(crate) fn read_host_byte() -> Option<u8> {
 }
 
 pub(crate) fn read_host_log() -> Option<ConsoleLogRecord> {
-    host_console()?.logs.as_ref()?.try_read()
+    host_log_subscription()?.try_read()
 }
 
 pub(crate) fn take_host_log_drops() -> ConsoleLogDropReport {
-    host_console()
-        .and_then(|console| console.logs.as_ref())
-        .map_or_else(
-            ConsoleLogDropReport::default,
-            ConsoleLogSubscription::dropped,
-        )
+    host_log_subscription().map_or_else(
+        ConsoleLogDropReport::default,
+        ConsoleLogSubscription::dropped,
+    )
+}
+
+fn host_log_subscription() -> Option<&'static ConsoleLogSubscription> {
+    host_console()?.logs.as_ref()
 }
 
 /// Sleeps until physical input or a host log record is published.
@@ -121,7 +125,8 @@ pub(crate) fn wait_for_host_event() {
     let Some(console) = host_console() else {
         park_console_task();
     };
-    let result = match (&console.input, &console.logs) {
+    let logs = host_log_subscription();
+    let result = match (&console.input, logs) {
         (Some(input), Some(logs)) => input.wait_event(logs),
         (Some(input), None) => input.wait_readable(),
         (None, Some(logs)) => logs.wait_readable(),
@@ -161,6 +166,7 @@ pub(crate) fn submit_host_transaction(transaction: impl FnOnce(&mut dyn FnMut(&[
 }
 
 fn run_host_output_worker(output: TaskConsoleOutput) {
+    let mut terminal = TerminalNewlineNormalizer::new();
     loop {
         if let Err(error) = HOST_OUTPUT.ready.wait() {
             HOST_OUTPUT.failed.store(true, Ordering::Release);
@@ -177,10 +183,10 @@ fn run_host_output_worker(output: TaskConsoleOutput) {
             if batch.is_empty() {
                 break;
             }
-            if let Err(error) = write_host_output_batch(&output, &batch) {
+            if let Err(error) = write_host_output_batch(&output, &mut terminal, &batch) {
                 HOST_OUTPUT.failed.store(true, Ordering::Release);
                 let _ = emergency_console::write_fmt(format_args!(
-                    "\nAxvisor host console output stopped: {error}\n"
+                    "\r\nAxvisor host console output stopped: {error}\r\n"
                 ));
                 return;
             }
@@ -188,16 +194,23 @@ fn run_host_output_worker(output: TaskConsoleOutput) {
     }
 }
 
-fn write_host_output_batch(output: &TaskConsoleOutput, batch: &HostOutputBatch) -> RuntimeResult {
+fn write_host_output_batch(
+    output: &TaskConsoleOutput,
+    terminal: &mut TerminalNewlineNormalizer,
+    batch: &HostOutputBatch,
+) -> RuntimeResult {
     if batch.dropped_bytes != 0 {
         let report = format!(
             "\n[Axvisor host console dropped {} queued bytes]\n",
             batch.dropped_bytes
         );
-        output.write_all(report.as_bytes())?;
+        terminal.write(report.as_bytes(), |bytes| {
+            output.write_all(bytes).map(|_| ())
+        })?;
     }
-    output.write_all(&batch.bytes[..batch.len])?;
-    Ok(())
+    terminal.write(&batch.bytes[..batch.len], |bytes| {
+        output.write_all(bytes).map(|_| ())
+    })
 }
 
 impl HostOutput {

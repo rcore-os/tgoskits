@@ -2,6 +2,7 @@
 
 mod host;
 mod mux;
+mod terminal;
 
 #[cfg(feature = "test-console-atomic-output")]
 pub(crate) use host::fill_runtime_output_queue;
