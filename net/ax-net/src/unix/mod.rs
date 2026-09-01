@@ -197,7 +197,7 @@ pub struct UnixSocket {
     /// Public local Unix address.
     local_addr: Mutex<UnixSocketAddr>,
     /// Public remote Unix address.
-    remote_addr: Mutex<UnixSocketAddr>,
+    remote_addr: Mutex<Option<UnixSocketAddr>>,
 }
 impl UnixSocket {
     /// Create a new Unix socket with the given transport.
@@ -205,7 +205,16 @@ impl UnixSocket {
         Self {
             transport: transport.into(),
             local_addr: Mutex::new(UnixSocketAddr::Unnamed),
-            remote_addr: Mutex::new(UnixSocketAddr::Unnamed),
+            remote_addr: Mutex::new(None),
+        }
+    }
+
+    /// Create one endpoint of an already-connected anonymous socket pair.
+    pub fn new_connected(transport: impl Into<Transport>) -> Self {
+        Self {
+            transport: transport.into(),
+            local_addr: Mutex::new(UnixSocketAddr::Unnamed),
+            remote_addr: Mutex::new(Some(UnixSocketAddr::Unnamed)),
         }
     }
 }
@@ -236,13 +245,13 @@ impl SocketOps for UnixSocket {
         let local_addr = self.local_addr.lock().clone();
         let accept_poll = {
             let mut guard = self.remote_addr.lock();
-            if !matches!(&*guard, UnixSocketAddr::Unnamed) {
+            if guard.is_some() {
                 return Err(NetError::InvalidInput);
             }
             let accept_poll = with_slot(&remote_addr, |slot| {
                 self.transport.connect(slot, &local_addr)
             })?;
-            *guard = remote_addr;
+            *guard = Some(remote_addr);
             accept_poll
         };
         self.transport.finish_connect(accept_poll);
@@ -269,7 +278,7 @@ impl SocketOps for UnixSocket {
         Ok(Self {
             transport,
             local_addr: Mutex::new(self.local_addr.lock().clone()),
-            remote_addr: Mutex::new(peer_addr),
+            remote_addr: Mutex::new(Some(peer_addr)),
         }
         .into())
     }
@@ -287,7 +296,11 @@ impl SocketOps for UnixSocket {
     }
 
     fn peer_addr(&self) -> NetResult<SocketAddrEx> {
-        Ok(SocketAddrEx::Unix(self.remote_addr.lock().clone()))
+        self.remote_addr
+            .lock()
+            .clone()
+            .map(SocketAddrEx::Unix)
+            .ok_or(NetError::NotConnected)
     }
 
     fn shutdown(&self, how: Shutdown) -> NetResult {
@@ -302,5 +315,25 @@ impl Pollable for UnixSocket {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         self.transport.register(context, events);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_address_distinguishes_unconnected_and_socketpair() {
+        let unconnected = UnixSocket::new(DgramTransport::new(1));
+        assert!(matches!(
+            unconnected.peer_addr(),
+            Err(NetError::NotConnected)
+        ));
+
+        let connected = UnixSocket::new_connected(DgramTransport::new(1));
+        assert!(matches!(
+            connected.peer_addr(),
+            Ok(SocketAddrEx::Unix(UnixSocketAddr::Unnamed))
+        ));
     }
 }
