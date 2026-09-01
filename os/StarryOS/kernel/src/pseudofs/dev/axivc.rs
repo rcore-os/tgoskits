@@ -6,7 +6,8 @@ use core::{
     time::Duration,
 };
 
-use ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys};
+use ax_hal::mem::{DCacheOp, PhysAddr, VirtAddr, dcache_range, virt_to_phys};
+use ax_memory_addr::PhysAddrRange;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
 use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion};
@@ -14,7 +15,7 @@ use bytemuck::AnyBitPattern;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    pseudofs::{Device, DeviceOps, DirMapping, SimpleFs},
+    pseudofs::{Device, DeviceMmap, DeviceOps, DirMapping, SimpleFs},
     sync::Mutex,
 };
 
@@ -29,6 +30,8 @@ const IVC_PUBLISH_CHANNEL: u32 = 0x4050_0000;
 const IVC_UNPUBLISH_CHANNEL: u32 = 0x4050_0001;
 const IVC_SUBSCRIBE_CHANNEL: u32 = 0x4050_0002;
 const IVC_UNSUBSCRIBE_CHANNEL: u32 = 0x4050_0003;
+const IVC_CACHE_FLUSH: u32 = 0x4010_0004;
+const IVC_CACHE_INVALIDATE: u32 = 0x4010_0005;
 
 #[repr(C)]
 #[derive(Clone, Copy, AnyBitPattern)]
@@ -44,6 +47,13 @@ struct IvcSubscribeArg {
     target_publisher_id: u64,
     channel_key: u64,
     device_name: [u8; 64],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, AnyBitPattern)]
+struct IvcCacheOpArg {
+    addr: u64,
+    size: u64,
 }
 
 struct AxivcRegistry {
@@ -95,6 +105,8 @@ impl AxivcRegistry {
             publisher_id: 0,
             notify_target_vm_id: None,
             key: arg.channel_key,
+            shm_base_gpa,
+            shm_size,
             producer,
             consumer,
             sequence: AtomicU64::new(1),
@@ -184,6 +196,8 @@ impl AxivcRegistry {
             publisher_id: arg.target_publisher_id as usize,
             notify_target_vm_id: Some(arg.target_publisher_id as usize),
             key: arg.channel_key,
+            shm_base_gpa,
+            shm_size,
             producer,
             consumer,
             sequence: AtomicU64::new(1),
@@ -316,6 +330,13 @@ impl RegistryInner {
             ChannelRole::Subscriber => self.subscribers.get_mut(index)?.as_mut(),
         }
     }
+
+    fn channel(&self, role: ChannelRole, index: usize) -> Option<&ChannelState> {
+        match role {
+            ChannelRole::Publisher => self.publishers.get(index)?.as_ref(),
+            ChannelRole::Subscriber => self.subscribers.get(index)?.as_ref(),
+        }
+    }
 }
 
 fn insert_channel(channels: &mut [Option<ChannelState>], state: ChannelState) -> Option<usize> {
@@ -328,6 +349,8 @@ struct ChannelState {
     publisher_id: usize,
     notify_target_vm_id: Option<usize>,
     key: u64,
+    shm_base_gpa: usize,
+    shm_size: usize,
     producer: IvcProducer<'static>,
     consumer: IvcConsumer<'static>,
     sequence: AtomicU64,
@@ -534,8 +557,69 @@ impl DeviceOps for AxivcChannel {
         Ok(buf.len())
     }
 
+    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+        let op = match cmd {
+            IVC_CACHE_FLUSH => DCacheOp::Clean,
+            IVC_CACHE_INVALIDATE => DCacheOp::Invalidate,
+            _ => return Err(VfsError::NotATty),
+        };
+        let cache_arg = (arg as *const IvcCacheOpArg).vm_read().map_err(vm_error)?;
+        let inner = self.registry.inner.lock();
+        let state = inner
+            .channel(self.role, self.index)
+            .ok_or(VfsError::NoSuchDevice)?;
+        if state.closing {
+            return Err(VfsError::WouldBlock);
+        }
+        if cache_arg.size == 0 {
+            return Ok(0);
+        }
+        if cache_arg.addr == 0 || cache_arg.size > usize::MAX as u64 {
+            return Err(VfsError::InvalidInput);
+        }
+        dcache_range(
+            op,
+            VirtAddr::from_usize(cache_arg.addr as usize),
+            cache_arg.size as usize,
+        );
+        Ok(0)
+    }
+
     fn flags(&self) -> NodeFlags {
         NodeFlags::BLOCKING | NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+    }
+
+    fn mmap(&self, offset: u64, length: u64) -> DeviceMmap {
+        let Ok(offset) = usize::try_from(offset) else {
+            return DeviceMmap::None;
+        };
+        let Ok(length) = usize::try_from(length) else {
+            return DeviceMmap::None;
+        };
+        if length == 0 {
+            return DeviceMmap::None;
+        }
+
+        let inner = self.registry.inner.lock();
+        let Some(state) = inner.channel(self.role, self.index) else {
+            return DeviceMmap::None;
+        };
+        if state.closing || offset >= state.shm_size {
+            return DeviceMmap::None;
+        }
+        let length = length.min(state.shm_size - offset);
+        let range = PhysAddrRange::from_start_size(
+            PhysAddr::from_usize(state.shm_base_gpa + offset),
+            length,
+        );
+        #[cfg(feature = "rknpu")]
+        {
+            DeviceMmap::PhysicalCached(range, None)
+        }
+        #[cfg(not(feature = "rknpu"))]
+        {
+            DeviceMmap::PhysicalResolved(range, None)
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
