@@ -22,6 +22,7 @@ pub mod namespace;
 pub(crate) mod stream;
 
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_io::{IoBuf, Read, Write};
 use ax_lazyinit::LazyLock;
@@ -204,6 +205,12 @@ pub struct UnixSocket {
     local_addr: SpinLock<UnixSocketAddr>,
     /// Public remote Unix address.
     remote_addr: SpinLock<Option<UnixSocketAddr>>,
+    /// Whether this socket owns the namespace binding in `local_addr`.
+    ///
+    /// Accepted sockets inherit the listener's local address but not ownership
+    /// of its namespace entry, while duplicated descriptors share this whole
+    /// socket object and therefore release the entry only on the final close.
+    owns_bind: AtomicBool,
 }
 impl UnixSocket {
     /// Create a new Unix socket with the given transport.
@@ -212,6 +219,7 @@ impl UnixSocket {
             transport: transport.into(),
             local_addr: SpinLock::new(UnixSocketAddr::Unnamed),
             remote_addr: SpinLock::new(None),
+            owns_bind: AtomicBool::new(false),
         }
     }
 
@@ -221,6 +229,7 @@ impl UnixSocket {
             transport: transport.into(),
             local_addr: SpinLock::new(UnixSocketAddr::Unnamed),
             remote_addr: SpinLock::new(Some(UnixSocketAddr::Unnamed)),
+            owns_bind: AtomicBool::new(false),
         }
     }
 
@@ -248,6 +257,7 @@ impl SocketOps for UnixSocket {
         if matches!(&*guard, UnixSocketAddr::Unnamed) {
             with_slot_or_insert(&local_addr, |slot| self.transport.bind(slot, &local_addr))?;
             *guard = local_addr;
+            self.owns_bind.store(true, Ordering::Release);
         } else {
             return Err(NetError::InvalidInput);
         }
@@ -286,6 +296,7 @@ impl SocketOps for UnixSocket {
             transport,
             local_addr: SpinLock::new(self.local_addr.lock().clone()),
             remote_addr: SpinLock::new(Some(peer_addr)),
+            owns_bind: AtomicBool::new(false),
         }
         .into())
     }
@@ -322,6 +333,21 @@ impl SocketOps for UnixSocket {
 
     fn shutdown(&self, how: Shutdown) -> NetResult {
         self.transport.shutdown(how)
+    }
+}
+
+impl Drop for UnixSocket {
+    fn drop(&mut self) {
+        if !self.owns_bind.load(Ordering::Acquire) {
+            return;
+        }
+        let UnixSocketAddr::Abstract(name) = self.local_addr.get_mut() else {
+            // Pathname socket nodes persist after close and are removed only by
+            // an explicit filesystem unlink, matching Linux.
+            return;
+        };
+        let removed = ABSTRACT_BINDS.lock().remove(name);
+        drop(removed);
     }
 }
 
@@ -368,6 +394,7 @@ mod tests {
             transport: StreamTransport::new(1).into(),
             local_addr: SpinLock::new(UnixSocketAddr::Unnamed),
             remote_addr: SpinLock::new(Some(UnixSocketAddr::Path(Arc::from("server.sock")))),
+            owns_bind: AtomicBool::new(false),
         };
 
         let mut from = SocketAddrEx::Unix(UnixSocketAddr::Unnamed);
@@ -376,5 +403,17 @@ mod tests {
             from,
             SocketAddrEx::Unix(UnixSocketAddr::Path(path)) if path.as_ref() == "server.sock"
         ));
+    }
+
+    #[test]
+    fn abstract_bind_is_released_on_final_socket_drop() {
+        let address = UnixSocketAddr::Abstract(Arc::from(&b"rebind-after-close"[..]));
+        {
+            let first = UnixSocket::new(DgramTransport::new(1));
+            first.bind(SocketAddrEx::Unix(address.clone())).unwrap();
+        }
+
+        let second = UnixSocket::new(DgramTransport::new(2));
+        second.bind(SocketAddrEx::Unix(address)).unwrap();
     }
 }
