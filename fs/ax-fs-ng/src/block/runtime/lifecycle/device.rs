@@ -44,17 +44,13 @@ impl DeviceInner {
 
     /// Completes member-local resource teardown after a shared group has
     /// already synchronized and stopped its physical IRQ owner.
-    pub(super) fn finish_group_member_shutdown(&self) {
+    pub(super) fn finish_group_member_shutdown(&self) -> BlockResult {
         let hctxs = self.hctxs.lock().clone();
         let detached_queues = core::mem::take(&mut *self.detached_queues.lock());
         quiesce_hctxs(&hctxs);
-        stop_hctxs(&hctxs);
-        shutdown_detached_queues(detached_queues);
-        let mut gate = self.lifecycle_gate.lock();
-        gate.phase = DevicePhase::Stopped;
-        gate.teardown_in_progress = false;
-        drop(gate);
-        self.shutdown_waiters.notify_all();
+        let result = Self::shutdown_queues_after_controller_stop(&hctxs, detached_queues)
+            .map_err(BlockError::from);
+        self.finish_terminal_teardown(result)
     }
 
     pub(super) fn join_controller_thread(&self) {
@@ -442,7 +438,7 @@ impl DeviceInner {
     pub(super) fn shutdown_result(&self) -> BlockResult<usize> {
         if !self.claim_teardown()? {
             self.join_controller_thread();
-            return Ok(0);
+            return self.terminal_teardown_error().map_or(Ok(0), Err);
         }
         self.notify_all_barrier_waiters();
 
@@ -473,32 +469,29 @@ impl DeviceInner {
         drop(registrations);
         quiesce_hctxs(&hctxs);
 
-        let detached_queues = core::mem::take(&mut *self.detached_queues.lock());
         let controller_terminal = quiesce_state == ControllerState::Shutdown;
         if !controller_terminal {
             match self.controller.call(ControllerEvent::Shutdown) {
                 Ok(ControllerState::Shutdown) => {}
                 Ok(state) => {
                     warn!("block controller shutdown was not confirmed: {state:?}");
-                    *self.detached_queues.lock() = detached_queues;
                     return self.finish_teardown(Err(BlockError::Io));
                 }
                 Err(_) if self.controller.terminal_confirmed() => {}
                 Err(error) => {
-                    *self.detached_queues.lock() = detached_queues;
                     return self.finish_teardown(Err(error.into()));
                 }
             }
         }
 
-        stop_hctxs(&hctxs);
-        shutdown_detached_queues(detached_queues);
+        let detached_queues = core::mem::take(&mut *self.detached_queues.lock());
+        let queue_result = Self::shutdown_queues_after_controller_stop(&hctxs, detached_queues);
         self.controller.commands.close();
         let thread = self.controller_thread.lock().take();
         if let Some(thread) = thread {
             thread.join();
         }
-        self.finish_teardown(Ok(count))
+        self.finish_terminal_teardown(queue_result.map(|()| count).map_err(BlockError::from))
     }
 
     fn claim_teardown(&self) -> BlockResult<bool> {
@@ -544,10 +537,10 @@ impl DeviceInner {
         }
         quiesce_hctxs(&hctxs);
         let detached_queues = core::mem::take(&mut *self.detached_queues.lock());
-        stop_hctxs(&hctxs);
-        shutdown_detached_queues(detached_queues);
+        let queue_result = Self::shutdown_queues_after_controller_stop(&hctxs, detached_queues);
         drop(registrations);
-        let _ = self.finish_teardown(Ok(count));
+        let _ =
+            self.finish_terminal_teardown(queue_result.map(|()| count).map_err(BlockError::from));
     }
 
     fn begin_teardown(&self, gate: &mut LifecycleGateState) {
@@ -568,6 +561,34 @@ impl DeviceInner {
         }
         self.shutdown_waiters.notify_all();
         result
+    }
+
+    fn finish_terminal_teardown<T>(&self, result: BlockResult<T>) -> BlockResult<T> {
+        let error = result.as_ref().err().copied();
+        let terminal_error = {
+            let mut gate = self.lifecycle_gate.lock();
+            gate.phase = DevicePhase::Stopped;
+            gate.teardown_in_progress = false;
+            if gate.terminal_teardown_error.is_none() {
+                gate.terminal_teardown_error = error;
+            }
+            gate.terminal_teardown_error
+        };
+        self.shutdown_waiters.notify_all();
+        terminal_error.map_or(result, Err)
+    }
+
+    pub(super) fn terminal_teardown_error(&self) -> Option<BlockError> {
+        self.lifecycle_gate.lock().terminal_teardown_error
+    }
+
+    fn shutdown_queues_after_controller_stop(
+        hctxs: &[Arc<Hctx>],
+        detached_queues: Vec<Box<dyn HardwareQueue>>,
+    ) -> Result<(), BlkError> {
+        let hctx_result = stop_hctxs(hctxs);
+        let detached_result = shutdown_detached_queues(detached_queues);
+        hctx_result.and(detached_result)
     }
 }
 
@@ -789,6 +810,13 @@ impl InstallUpdateTransaction {
     }
 
     fn prepare(&mut self) -> Result<(), BlkError> {
+        let teardown_started = matches!(
+            self.device.lifecycle_gate.lock().phase,
+            DevicePhase::Stopping | DevicePhase::Stopped
+        );
+        if teardown_started && (!self.queues.is_empty() || !self.endpoints.is_empty()) {
+            return Err(self.fail(BlkError::Io));
+        }
         let online_cpus = runtime_ops()
             .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
             .online_cpu_count()

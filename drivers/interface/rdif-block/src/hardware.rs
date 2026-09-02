@@ -136,8 +136,9 @@ pub trait HardwareQueue: Send + 'static {
 
     /// Quiesces the queue and returns every request whose DMA is safe to reuse.
     ///
-    /// Backing still reachable by hardware must be quarantined by the driver
-    /// instead of being reported as completed.
+    /// Backing still reachable by hardware must not be reported as completed.
+    /// If this method returns an error, the queue may still own DMA-visible
+    /// backing, so the caller must keep the entire queue alive.
     ///
     /// # Errors
     ///

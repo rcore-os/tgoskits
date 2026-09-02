@@ -35,7 +35,7 @@ fn out_of_order_irq_completions_reach_the_right_subscriptions() {
     assert_eq!(usize::from(first.recv().unwrap().id), 1);
     assert_eq!(usize::from(second.recv().unwrap().id), 2);
     assert_eq!(counters.drained.load(Ordering::Acquire), 1);
-    hctx.stop();
+    hctx.stop().unwrap();
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn dropped_subscription_does_not_cancel_hardware_ownership() {
     }
 
     assert_eq!(counters.drained.load(Ordering::Acquire), 1);
-    hctx.stop();
+    hctx.stop().unwrap();
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn partial_batch_is_committed_and_remaining_request_is_retried_after_irq() {
     assert!(second.recv().unwrap().result.is_ok());
     assert_eq!(counters.submitted.load(Ordering::Acquire), 2);
     assert_eq!(counters.committed.load(Ordering::Acquire), 2);
-    hctx.stop();
+    hctx.stop().unwrap();
 }
 
 #[test]
@@ -160,10 +160,11 @@ fn malformed_acceptance_report_still_terminates_every_runtime_request() {
         );
         thread::yield_now();
     }
-    hctx.stop();
+    assert_eq!(hctx.stop(), Err(BlkError::Io));
 
     assert_eq!(counters.committed.load(Ordering::Acquire), 1);
     assert_eq!(counters.shutdown.load(Ordering::Acquire), 1);
+    assert_eq!(counters.dropped.load(Ordering::Acquire), 1);
     assert_eq!(observer.completed.load(Ordering::Acquire), 2);
 }
 
@@ -210,7 +211,7 @@ fn accepted_prefix_is_committed_before_fatal_batch_teardown() {
         );
         thread::yield_now();
     }
-    hctx.stop();
+    hctx.stop().unwrap();
 
     assert_eq!(counters.submitted.load(Ordering::Acquire), 1);
     assert_eq!(counters.committed.load(Ordering::Acquire), 1);
@@ -252,7 +253,7 @@ fn commit_failure_terminates_every_accepted_request() {
 
     assert_eq!(first.recv().unwrap().result, Err(BlkError::Io));
     assert_eq!(second.recv().unwrap().result, Err(BlkError::Io));
-    hctx.stop();
+    hctx.stop().unwrap();
 
     assert_eq!(counters.submitted.load(Ordering::Acquire), 2);
     assert_eq!(counters.committed.load(Ordering::Acquire), 1);
@@ -294,7 +295,7 @@ fn unexpected_completion_fails_hctx_and_preserves_pending_ownership() {
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
 
     assert_eq!(subscription.recv().unwrap().result, Err(BlkError::Io));
-    hctx.stop();
+    hctx.stop().unwrap();
 
     assert_eq!(counters.drained.load(Ordering::Acquire), 1);
     assert_eq!(counters.shutdown.load(Ordering::Acquire), 1);

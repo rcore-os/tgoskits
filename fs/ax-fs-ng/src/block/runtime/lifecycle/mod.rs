@@ -202,13 +202,25 @@ impl BlockRuntime {
 
     fn release_irqs_for_passthrough(&self) -> BlockResult<usize> {
         let mut released = 0;
+        let mut first_error = None;
         for group in &self.groups {
-            released += group.shutdown_result()?;
+            match group.shutdown_result() {
+                Ok(count) => released += count,
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
         }
         for device in &self.devices {
-            released += device.inner.shutdown_result()?;
+            if device.inner.group_owner.is_some() {
+                continue;
+            }
+            match device.inner.shutdown_result() {
+                Ok(count) => released += count,
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
         }
-        Ok(released)
+        first_error.map_or(Ok(released), Err)
     }
 }
 
@@ -498,7 +510,11 @@ impl BlockGroupHandle {
                             member.inner.join_controller_thread();
                         }
                     }
-                    return Ok(0);
+                    return self
+                        .members
+                        .iter()
+                        .find_map(|member| member.inner.terminal_teardown_error())
+                        .map_or(Ok(0), Err);
                 }
                 GROUP_RUNNING => {
                     if self
@@ -585,15 +601,26 @@ impl BlockGroupHandle {
             }
         }
         drop(controller);
+        let mut first_error = None;
         for member in &self.members {
-            member.inner.finish_group_member_shutdown();
+            if let Err(error) = member.inner.finish_group_member_shutdown()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
-        let result = self.finish_shutdown(Ok(count));
+        let result = self.finish_terminal_shutdown(first_error.map_or(Ok(count), Err));
         for member in &self.members {
             if member.inner.member_id != origin_member {
                 member.inner.join_controller_thread();
             }
         }
+        result
+    }
+
+    fn finish_terminal_shutdown(&self, result: BlockResult<usize>) -> BlockResult<usize> {
+        self.teardown_state.store(GROUP_STOPPED, Ordering::Release);
+        self.teardown_waiters.notify_all();
         result
     }
 
@@ -697,16 +724,19 @@ fn abort_group_start(
     }
     drop(controller);
     for (_, member) in &members {
-        member.inner.finish_group_member_shutdown();
+        let _ = member.inner.finish_group_member_shutdown();
         member.inner.join_controller_thread();
     }
 }
 
 impl Drop for BlockGroupHandle {
     fn drop(&mut self) {
-        if let Err(error) = self.shutdown_result() {
+        if let Err(error) = self.shutdown_result()
+            && self.teardown_state.load(Ordering::Acquire) != GROUP_STOPPED
+        {
             warn!(
-                "{}: quarantining block group after terminal teardown failed: {error:?}",
+                "{}: quarantining block group because teardown did not reach a safe terminal \
+                 state: {error:?}",
                 self.name
             );
             let controller = self.controller.lock().take();
@@ -803,7 +833,8 @@ pub fn online_smp() -> Result<(), BlkError> {
 /// # Errors
 ///
 /// Returns an error if any IRQ registration cannot be disabled and
-/// synchronized or if the owning controller cannot confirm shutdown.
+/// synchronized, the owning controller cannot confirm shutdown, or a hardware
+/// queue cannot be quiesced completely.
 pub fn release_block_irqs_for_passthrough() -> BlockResult<usize> {
     BLOCK_RUNTIME
         .get()
@@ -818,11 +849,15 @@ pub struct BlockDeviceHandle {
 impl Drop for BlockDeviceHandle {
     fn drop(&mut self) {
         if let Err(error) = self.inner.shutdown_result() {
-            warn!(
-                "{}: quarantining block device after terminal teardown failed: {error:?}",
-                self.inner.name
-            );
-            self.inner.quarantine_resources();
+            let terminal = self.inner.lifecycle_gate.lock().phase == DevicePhase::Stopped;
+            if !terminal {
+                warn!(
+                    "{}: quarantining block device because teardown did not reach a safe terminal \
+                     state: {error:?}",
+                    self.inner.name
+                );
+                self.inner.quarantine_resources();
+            }
         }
     }
 }
@@ -885,6 +920,7 @@ struct LifecycleGateState {
     active_data: usize,
     flush_active: bool,
     teardown_in_progress: bool,
+    terminal_teardown_error: Option<BlockError>,
 }
 
 impl LifecycleGateState {
@@ -895,6 +931,7 @@ impl LifecycleGateState {
             active_data: 0,
             flush_active: false,
             teardown_in_progress: false,
+            terminal_teardown_error: None,
         }
     }
 }
@@ -1262,10 +1299,16 @@ fn sectors_for_blocks(logical_block_size: usize, block_count: u32) -> u64 {
         .div_ceil(512)
 }
 
-fn stop_hctxs(hctxs: &[Arc<Hctx>]) {
+fn stop_hctxs(hctxs: &[Arc<Hctx>]) -> Result<(), BlkError> {
+    let mut first_error = None;
     for hctx in hctxs {
-        hctx.stop();
+        if let Err(error) = hctx.stop()
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn quiesce_hctxs(hctxs: &[Arc<Hctx>]) {
@@ -1282,11 +1325,22 @@ impl CompletionSink for DetachedCompletionSink {
     }
 }
 
-fn shutdown_detached_queues(queues: Vec<Box<dyn HardwareQueue>>) {
+fn shutdown_detached_queues(queues: Vec<Box<dyn HardwareQueue>>) -> Result<(), BlkError> {
     let mut sink = DetachedCompletionSink;
+    let mut first_error = None;
     for mut queue in queues {
-        let _ = queue.shutdown(&mut sink);
+        if let Err(error) = queue.shutdown(&mut sink) {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+            warn!(
+                "quarantining detached block queue {} after shutdown failed: {error:?}",
+                queue.id()
+            );
+            core::mem::forget(queue);
+        }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 trait IrqRegistrationControl {

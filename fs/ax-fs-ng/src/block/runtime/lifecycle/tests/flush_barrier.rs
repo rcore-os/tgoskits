@@ -35,6 +35,7 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
             active_data: 0,
             flush_active: false,
             teardown_in_progress: false,
+            terminal_teardown_error: None,
         }),
         shutdown_waiters: TaskWaiters::new(),
         member_id: None,

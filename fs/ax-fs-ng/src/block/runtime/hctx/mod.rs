@@ -104,6 +104,7 @@ struct HctxState {
     quiesced: AtomicBool,
     stopping: AtomicBool,
     terminated: AtomicBool,
+    teardown_error: IrqMutex<Option<BlkError>>,
     activation: AtomicU8,
     activation_notification: Arc<dyn BlockNotification>,
     prepared_queue: IrqMutex<Option<Box<dyn HardwareQueue>>>,
@@ -127,6 +128,7 @@ impl HctxState {
             quiesced: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             terminated: AtomicBool::new(false),
+            teardown_error: IrqMutex::new(None),
             activation: AtomicU8::new(HCTX_ACTIVE),
             activation_notification: ops.notification(),
             prepared_queue: IrqMutex::new(None),
@@ -182,6 +184,7 @@ impl Hctx {
             quiesced: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             terminated: AtomicBool::new(false),
+            teardown_error: IrqMutex::new(None),
             activation: AtomicU8::new(HCTX_PREPARED),
             activation_notification,
             prepared_queue: IrqMutex::new(None),
@@ -402,7 +405,7 @@ impl Hctx {
             .map_err(|_| BlkError::NoMemory)
     }
 
-    pub(super) fn stop(&self) {
+    pub(super) fn stop(&self) -> Result<(), BlkError> {
         if !self.state.stopping.swap(true, Ordering::AcqRel) {
             self.state
                 .submission_channels_sealed
@@ -415,7 +418,10 @@ impl Hctx {
         let thread = self.thread.lock().take();
         if let Some(thread) = thread {
             thread.join();
+        } else if !self.state.terminated.load(Ordering::Acquire) {
+            return Err(BlkError::Io);
         }
+        self.state.teardown_error.lock().map_or(Ok(()), Err)
     }
 
     /// Stops queue mutation while retaining the hardware queue and its DMA
@@ -668,8 +674,10 @@ fn run_hctx(
     } else {
         Err(BlkError::Io)
     };
-    if (shutdown_result.is_err() || unexpected_completion) && fatal_error.is_none() {
-        fatal_error = Some(BlkError::Io);
+    let queue_shutdown_error = shutdown_result.err();
+    let teardown_error = queue_shutdown_error.or(unexpected_completion.then_some(BlkError::Io));
+    if fatal_error.is_none() {
+        fatal_error = teardown_error;
     }
     if let Some(error) = fatal_error
         && let Some(observer) = observer.upgrade()
@@ -715,15 +723,18 @@ fn run_hctx(
             Err(terminal_error),
         );
     }
-    state.terminated.store(true, Ordering::Release);
-    state.lifecycle_notification.notify();
-    if !controller_stopped {
+    if let Some(error) = queue_shutdown_error {
         warn!(
-            "leaking block queue {} because controller shutdown was not confirmed",
-            queue.id()
+            "quarantining block queue {} after shutdown failed: {error:?}",
+            queue.id(),
         );
         core::mem::forget(queue);
+    } else {
+        drop(queue);
     }
+    *state.teardown_error.lock() = teardown_error;
+    state.terminated.store(true, Ordering::Release);
+    state.lifecycle_notification.notify();
 }
 
 fn prune_closed_submission_channels(state: &HctxState) {

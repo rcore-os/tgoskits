@@ -1,13 +1,14 @@
 use super::*;
 
-struct DropTrackedQueue {
+pub(super) struct DropTrackedQueue {
     info: QueueInfo,
     drop_event: &'static str,
     log: Arc<StdMutex<Vec<&'static str>>>,
+    shutdown_error: Option<BlkError>,
 }
 
 impl DropTrackedQueue {
-    fn startable(
+    pub(super) fn startable(
         id: usize,
         drop_event: &'static str,
         log: Arc<StdMutex<Vec<&'static str>>>,
@@ -19,6 +20,24 @@ impl DropTrackedQueue {
             },
             drop_event,
             log,
+            shutdown_error: None,
+        }
+    }
+
+    pub(super) fn shutdown_failure(
+        id: usize,
+        drop_event: &'static str,
+        log: Arc<StdMutex<Vec<&'static str>>>,
+        error: BlkError,
+    ) -> Self {
+        Self {
+            info: QueueInfo {
+                id,
+                ..test_queue_info()
+            },
+            drop_event,
+            log,
+            shutdown_error: Some(error),
         }
     }
 
@@ -37,6 +56,7 @@ impl DropTrackedQueue {
             info,
             drop_event,
             log,
+            shutdown_error: None,
         }
     }
 }
@@ -73,7 +93,7 @@ impl HardwareQueue for DropTrackedQueue {
     }
 
     fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        Ok(())
+        self.shutdown_error.take().map_or(Ok(()), Err)
     }
 }
 

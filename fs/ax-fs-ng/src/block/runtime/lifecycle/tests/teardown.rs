@@ -1,4 +1,152 @@
-use super::*;
+use super::{resource_rollback::DropTrackedQueue, *};
+
+struct BlockingGate {
+    state: StdMutex<BlockingGateState>,
+    changed: std::sync::Condvar,
+}
+
+struct BlockingGateState {
+    entered: bool,
+    released: bool,
+}
+
+impl BlockingGate {
+    fn new() -> Self {
+        Self {
+            state: StdMutex::new(BlockingGateState {
+                entered: false,
+                released: false,
+            }),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn enter_and_wait(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.entered = true;
+        self.changed.notify_all();
+        while !state.released {
+            state = self.changed.wait(state).unwrap();
+        }
+    }
+
+    fn wait_until_entered(&self, timeout: Duration) -> bool {
+        let state = self.state.lock().unwrap();
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| !state.entered)
+            .unwrap();
+        state.entered
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.released = true;
+        self.changed.notify_all();
+    }
+}
+
+struct BlockingIrqRegistration {
+    disable_gate: Arc<BlockingGate>,
+}
+
+impl BlockIrqRegistration for BlockingIrqRegistration {
+    fn enable(&self) -> BlockResult {
+        Ok(())
+    }
+
+    fn disable_and_synchronize(&self) -> BlockResult {
+        self.disable_gate.enter_and_wait();
+        Ok(())
+    }
+}
+
+struct LateRollbackController {
+    active_queue: Option<Box<dyn HardwareQueue>>,
+    late_queue: Option<Box<dyn HardwareQueue>>,
+    update_gate: Arc<BlockingGate>,
+}
+
+impl DriverGeneric for LateRollbackController {
+    fn name(&self) -> &str {
+        "late-rollback-controller"
+    }
+}
+
+impl BlockController for LateRollbackController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        2
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![self.active_queue.take().ok_or(BlkError::Io)?],
+                Vec::new(),
+            )),
+            ControllerEvent::Irq(_) => {
+                self.update_gate.enter_and_wait();
+                Ok(ControllerUpdate::with_resources(
+                    ControllerState::Ready,
+                    vec![self.late_queue.take().ok_or(BlkError::Io)?],
+                    vec![IrqEndpoint::new(0, 1 << 1, Box::new(SpuriousHandler))],
+                ))
+            }
+            ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
+            _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+struct QueueTeardownController {
+    start_queue: Option<Box<dyn HardwareQueue>>,
+    shutdown_queue: Option<Box<dyn HardwareQueue>>,
+}
+
+impl DriverGeneric for QueueTeardownController {
+    fn name(&self) -> &str {
+        "queue-teardown-controller"
+    }
+}
+
+impl BlockController for QueueTeardownController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        1
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![self.start_queue.take().ok_or(BlkError::Io)?],
+                Vec::new(),
+            )),
+            ControllerEvent::Shutdown => Ok(self.shutdown_queue.take().map_or_else(
+                || ControllerUpdate::state(ControllerState::Shutdown),
+                |queue| {
+                    ControllerUpdate::with_resources(
+                        ControllerState::Shutdown,
+                        vec![queue],
+                        Vec::new(),
+                    )
+                },
+            )),
+            ControllerEvent::Watchdog { .. } => {
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
+            }
+            _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
 
 fn wait_for_group_teardown(group: &BlockGroupHandle) {
     while group.teardown_state.load(Ordering::Acquire) != GROUP_STOPPED {
@@ -80,6 +228,486 @@ fn last_device_handle_drop_owns_teardown_despite_internal_references() {
         "the last user-facing handle must own teardown"
     );
     drop(temporary_internal_owner);
+}
+
+#[test]
+fn active_queue_shutdown_failure_is_reported_and_quarantined() {
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "active-queue-shutdown-failure",
+        [],
+        Box::new(QueueTeardownController {
+            start_queue: Some(Box::new(DropTrackedQueue::shutdown_failure(
+                0,
+                "failed_active_queue_drop",
+                Arc::clone(&log),
+                BlkError::TimedOut,
+            ))),
+            shutdown_queue: None,
+        }),
+    ))
+    .unwrap();
+    let controller = Arc::downgrade(&handle.inner.controller);
+
+    assert_eq!(handle.inner.shutdown_result(), Err(BlockError::TimedOut));
+    assert_eq!(handle.inner.shutdown_result(), Err(BlockError::TimedOut));
+    assert!(
+        !log.lock().unwrap().contains(&"failed_active_queue_drop"),
+        "a queue that may still be DMA-visible must remain quarantined"
+    );
+    drop(handle);
+    assert!(!log.lock().unwrap().contains(&"failed_active_queue_drop"));
+    assert!(
+        controller.upgrade().is_none(),
+        "terminal queue failure must not leak the quiesced controller"
+    );
+}
+
+#[test]
+fn detached_queue_shutdown_failure_is_reported_and_quarantined() {
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "detached-queue-shutdown-failure",
+        [],
+        Box::new(QueueTeardownController {
+            start_queue: Some(Box::new(DropTrackedQueue::startable(
+                0,
+                "active_queue_drop",
+                Arc::clone(&log),
+            ))),
+            shutdown_queue: None,
+        }),
+    ))
+    .unwrap();
+    handle.inner.detached_queues.lock().extend([
+        Box::new(DropTrackedQueue::shutdown_failure(
+            1,
+            "failed_detached_queue_drop",
+            Arc::clone(&log),
+            BlkError::TimedOut,
+        )) as Box<dyn HardwareQueue>,
+        Box::new(DropTrackedQueue::shutdown_failure(
+            2,
+            "second_failed_detached_queue_drop",
+            Arc::clone(&log),
+            BlkError::InvalidRequest,
+        )),
+        Box::new(DropTrackedQueue::startable(
+            3,
+            "successful_detached_queue_drop",
+            Arc::clone(&log),
+        )),
+    ]);
+
+    let first_result = handle.inner.shutdown_result();
+    let second_result = handle.inner.shutdown_result();
+    let detached_is_empty = handle.inner.detached_queues.lock().is_empty();
+    let (active_dropped, successful_dropped, failed_dropped, second_failed_dropped) = {
+        let log = log.lock().unwrap();
+        (
+            log.contains(&"active_queue_drop"),
+            log.contains(&"successful_detached_queue_drop"),
+            log.contains(&"failed_detached_queue_drop"),
+            log.contains(&"second_failed_detached_queue_drop"),
+        )
+    };
+    drop(handle);
+    assert_eq!(first_result, Err(BlockError::TimedOut));
+    assert_eq!(second_result, Err(BlockError::TimedOut));
+    assert!(detached_is_empty);
+    assert!(active_dropped);
+    assert!(successful_dropped);
+    assert!(
+        !failed_dropped,
+        "a failed detached queue must remain owned by the quarantine"
+    );
+    assert!(!second_failed_dropped);
+    assert!(!log.lock().unwrap().contains(&"failed_detached_queue_drop"));
+    assert!(
+        !log.lock()
+            .unwrap()
+            .contains(&"second_failed_detached_queue_drop")
+    );
+}
+
+#[test]
+fn teardown_shutdowns_queue_rolled_back_while_shutdown_is_queued() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .fail_enable_at
+        .store(usize::MAX, Ordering::Release);
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+    let disable_gate = Arc::new(BlockingGate::new());
+    let update_gate = Arc::new(BlockingGate::new());
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "late-rollback-during-shutdown",
+        [BlockIrqSource {
+            source_id: 0,
+            irq: IrqId::new(IrqDomainId(1), HwIrq(26)),
+        }],
+        Box::new(LateRollbackController {
+            active_queue: Some(Box::new(DropTrackedQueue::startable(
+                0,
+                "active_queue_drop",
+                Arc::clone(&log),
+            ))),
+            late_queue: Some(Box::new(DropTrackedQueue::shutdown_failure(
+                1,
+                "late_queue_drop",
+                Arc::clone(&log),
+                BlkError::TimedOut,
+            ))),
+            update_gate: Arc::clone(&update_gate),
+        }),
+    ))
+    .unwrap();
+    let (_, controller_token) = handle.inner.controller.prepare_irq_target(0);
+    handle
+        .inner
+        .irq_registrations
+        .lock()
+        .push(InstalledIrqRegistration {
+            registration: Box::new(BlockingIrqRegistration {
+                disable_gate: Arc::clone(&disable_gate),
+            }),
+            hctx_tokens: Vec::new(),
+            controller_token,
+        });
+
+    let device = Arc::clone(&handle.inner);
+    let shutdown = thread::spawn(move || device.shutdown_result());
+    if !disable_gate.wait_until_entered(Duration::from_secs(1)) {
+        disable_gate.release();
+        update_gate.release();
+        panic!("shutdown did not begin IRQ synchronization");
+    }
+    handle
+        .inner
+        .controller
+        .post(ControllerEvent::Irq(ControlEvent::new(0, 1)));
+    if !update_gate.wait_until_entered(Duration::from_secs(1)) {
+        disable_gate.release();
+        update_gate.release();
+        panic!("controller did not begin the late IRQ update");
+    }
+    disable_gate.release();
+    let queued_deadline = Instant::now() + Duration::from_secs(1);
+    while handle.inner.controller.commands.queued_len() == 0 && Instant::now() < queued_deadline {
+        thread::yield_now();
+    }
+    let shutdown_was_queued = handle.inner.controller.commands.queued_len() != 0;
+    update_gate.release();
+
+    let result = shutdown.join().unwrap();
+    let detached_is_empty = handle.inner.detached_queues.lock().is_empty();
+    let registrations_are_empty = handle.inner.irq_registrations.lock().is_empty();
+    let (active_dropped, late_irq_registered, late_queue_dropped) = {
+        let log = log.lock().unwrap();
+        (
+            log.contains(&"active_queue_drop"),
+            log.contains(&"irq_register_disabled"),
+            log.contains(&"late_queue_drop"),
+        )
+    };
+    drop(handle);
+    assert!(
+        shutdown_was_queued,
+        "shutdown was not queued behind the late IRQ update"
+    );
+    assert_eq!(result, Err(BlockError::TimedOut));
+    assert!(detached_is_empty);
+    assert!(registrations_are_empty);
+    assert!(active_dropped);
+    assert!(!late_irq_registered);
+    assert!(!late_queue_dropped);
+    assert!(!log.lock().unwrap().contains(&"late_queue_drop"));
+}
+
+#[test]
+fn runtime_teardown_continues_after_terminal_device_error() {
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    let runtime = BlockRuntime::from_rdif_sources(
+        [
+            RdifBlockDevice::new_with_irqs(
+                "failed-runtime-device",
+                [],
+                Box::new(QueueTeardownController {
+                    start_queue: Some(Box::new(DropTrackedQueue::shutdown_failure(
+                        0,
+                        "failed_runtime_queue_drop",
+                        Arc::clone(&log),
+                        BlkError::TimedOut,
+                    ))),
+                    shutdown_queue: None,
+                }),
+            ),
+            RdifBlockDevice::new_with_irqs(
+                "healthy-runtime-device",
+                [],
+                Box::new(QueueTeardownController {
+                    start_queue: Some(Box::new(DropTrackedQueue::startable(
+                        0,
+                        "healthy_runtime_queue_drop",
+                        Arc::clone(&log),
+                    ))),
+                    shutdown_queue: None,
+                }),
+            ),
+        ],
+        Vec::new(),
+    );
+
+    let result = runtime.release_irqs_for_passthrough();
+    let (failed_dropped, healthy_dropped) = {
+        let log = log.lock().unwrap();
+        (
+            log.contains(&"failed_runtime_queue_drop"),
+            log.contains(&"healthy_runtime_queue_drop"),
+        )
+    };
+    drop(runtime);
+
+    assert_eq!(result, Err(BlockError::TimedOut));
+    assert!(!failed_dropped);
+    assert!(
+        healthy_dropped,
+        "one terminal device error must not skip later devices"
+    );
+}
+
+#[test]
+fn group_queue_shutdown_failure_is_reported_and_quarantined() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .fail_enable_at
+        .store(usize::MAX, Ordering::Release);
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+    let failed_member = BlockGroupMember::new(
+        0,
+        Box::new(QueueTeardownController {
+            start_queue: Some(Box::new(DropTrackedQueue::shutdown_failure(
+                0,
+                "failed_group_queue_drop",
+                Arc::clone(&log),
+                BlkError::TimedOut,
+            ))),
+            shutdown_queue: None,
+        }),
+    );
+    let successful_member = BlockGroupMember::new(
+        1,
+        Box::new(QueueTeardownController {
+            start_queue: Some(Box::new(DropTrackedQueue::startable(
+                0,
+                "successful_group_queue_drop",
+                Arc::clone(&log),
+            ))),
+            shutdown_queue: None,
+        }),
+    );
+    let trailing_member = BlockGroupMember::new(
+        0,
+        Box::new(QueueTeardownController {
+            start_queue: Some(Box::new(DropTrackedQueue::startable(
+                0,
+                "trailing_group_queue_drop",
+                Arc::clone(&log),
+            ))),
+            shutdown_queue: None,
+        }),
+    );
+    let runtime = BlockRuntime::from_rdif_sources(
+        [RdifBlockDevice::new_with_irqs(
+            "post-group-healthy-device",
+            [],
+            Box::new(QueueTeardownController {
+                start_queue: Some(Box::new(DropTrackedQueue::startable(
+                    0,
+                    "post_group_device_queue_drop",
+                    Arc::clone(&log),
+                ))),
+                shutdown_queue: None,
+            }),
+        )],
+        [
+            RdifBlockGroup::new_with_irqs(
+                "group-queue-shutdown-failure",
+                [BlockIrqSource {
+                    source_id: 0,
+                    irq: IrqId::new(IrqDomainId(1), HwIrq(25)),
+                }],
+                Box::new(TestControllerGroup {
+                    members: Some(vec![failed_member, successful_member]),
+                    log: Arc::clone(&log),
+                }),
+            ),
+            RdifBlockGroup::new_with_irqs(
+                "trailing-healthy-group",
+                [BlockIrqSource {
+                    source_id: 0,
+                    irq: IrqId::new(IrqDomainId(1), HwIrq(27)),
+                }],
+                Box::new(TestControllerGroup {
+                    members: Some(vec![trailing_member]),
+                    log: Arc::clone(&log),
+                }),
+            ),
+        ],
+    );
+    let successful_member = Arc::downgrade(&runtime.groups[0].members[1].inner);
+    let trailing_member = Arc::downgrade(&runtime.groups[1].members[0].inner);
+
+    let first_result = runtime.release_irqs_for_passthrough();
+    let first_group_stopped =
+        runtime.groups[0].teardown_state.load(Ordering::Acquire) == GROUP_STOPPED;
+    let second_result = runtime.release_irqs_for_passthrough();
+    let (successful_dropped, trailing_dropped, device_dropped, failed_dropped) = {
+        let log = log.lock().unwrap();
+        (
+            log.contains(&"successful_group_queue_drop"),
+            log.contains(&"trailing_group_queue_drop"),
+            log.contains(&"post_group_device_queue_drop"),
+            log.contains(&"failed_group_queue_drop"),
+        )
+    };
+    drop(runtime);
+    assert_eq!(first_result, Err(BlockError::TimedOut));
+    assert!(first_group_stopped);
+    assert_eq!(second_result, Err(BlockError::TimedOut));
+    assert!(successful_dropped);
+    assert!(
+        trailing_dropped,
+        "one terminal group error must not skip later groups"
+    );
+    assert!(
+        device_dropped,
+        "a terminal group error must not skip standalone devices"
+    );
+    assert!(
+        !failed_dropped,
+        "one failed member must not prevent the group from quarantining its queue"
+    );
+    assert!(!log.lock().unwrap().contains(&"failed_group_queue_drop"));
+    assert!(
+        successful_member.upgrade().is_none(),
+        "one failed queue must not leak successful group members"
+    );
+    assert!(trailing_member.upgrade().is_none());
+}
+
+#[test]
+fn group_irq_failure_does_not_bypass_shared_owner() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .fail_enable_at
+        .store(usize::MAX, Ordering::Release);
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+    let member = GroupMemberController {
+        name: "group-irq-failure-member",
+        queue: Some(LifecycleQueue {
+            log: Arc::clone(&log),
+        }),
+        log: Arc::clone(&log),
+        terminal_on_rearm: false,
+        rearm_count: 0,
+    };
+    let runtime = BlockRuntime::from_rdif_sources(
+        Vec::new(),
+        [RdifBlockGroup::new_with_irqs(
+            "group-irq-failure",
+            [BlockIrqSource {
+                source_id: 0,
+                irq: IrqId::new(IrqDomainId(1), HwIrq(28)),
+            }],
+            Box::new(TestControllerGroup {
+                members: Some(vec![BlockGroupMember::new(0, Box::new(member))]),
+                log: Arc::clone(&log),
+            }),
+        )],
+    );
+
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(true, Ordering::Release);
+    let result = runtime.release_irqs_for_passthrough();
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(false, Ordering::Release);
+    let (quiesce_count, member_shutdown) = {
+        let log = log.lock().unwrap();
+        (
+            log.iter()
+                .filter(|event| **event == "member_quiesce")
+                .count(),
+            log.contains(&"member_shutdown"),
+        )
+    };
+    drop(runtime);
+
+    assert_eq!(result, Err(BlockError::Io));
+    assert_eq!(
+        quiesce_count, 1,
+        "runtime teardown must not bypass a member's shared IRQ owner"
+    );
+    assert!(!member_shutdown);
+}
+
+#[test]
+fn rejected_shutdown_update_keeps_emitted_queue_quarantined() {
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "shutdown-update-queue",
+        [],
+        Box::new(QueueTeardownController {
+            start_queue: Some(Box::new(DropTrackedQueue::startable(
+                0,
+                "active_queue_drop",
+                Arc::clone(&log),
+            ))),
+            shutdown_queue: Some(Box::new(DropTrackedQueue::startable(
+                1,
+                "shutdown_update_queue_drop",
+                Arc::clone(&log),
+            ))),
+        }),
+    ))
+    .unwrap();
+
+    let result = handle.inner.shutdown_result();
+    let detached_count = handle.inner.detached_queues.lock().len();
+    let queue_dropped = log.lock().unwrap().contains(&"shutdown_update_queue_drop");
+    drop(handle);
+    assert_eq!(result, Err(BlockError::Io));
+    assert_eq!(detached_count, 1);
+    assert!(
+        !queue_dropped,
+        "a queue rejected during shutdown installation must remain quarantined"
+    );
+    assert!(!log.lock().unwrap().contains(&"shutdown_update_queue_drop"));
 }
 
 #[test]
