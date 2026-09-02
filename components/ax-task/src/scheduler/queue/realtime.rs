@@ -4,9 +4,13 @@ use alloc::{boxed::Box, sync::Arc};
 use core::{fmt, ptr::NonNull};
 
 use super::{EnqueueReason, LinkedPickedThread, QueuedThread, QueuedThreadSnapshot};
-use crate::{SchedulePolicy, SchedulingEntity, ThreadId};
+use crate::{
+    SchedulePolicy, SchedulingEntity, ThreadId,
+    scheduler::rt_priority::{
+        RT_PRIORITY_LEVELS, bitmap_highest_rt_priority, rt_priority_from_index, rt_priority_index,
+    },
+};
 
-const RT_PRIORITY_LEVELS: usize = 99;
 const FIXED_PRIORITY_LEVELS: usize = RT_PRIORITY_LEVELS;
 const RT_PRIORITY_BITMAP: u128 = (1_u128 << RT_PRIORITY_LEVELS) - 1;
 
@@ -121,7 +125,7 @@ pub(super) struct RealtimeQueueKey {
 
 impl RealtimeQueueKey {
     const fn index(self) -> usize {
-        (self.priority - 1) as usize
+        rt_priority_index(self.priority)
     }
 }
 
@@ -421,7 +425,7 @@ impl RealtimeRunQueue {
     }
 
     pub(super) fn highest_rt_priority(&self) -> Option<u8> {
-        bitmap_highest_priority(self.active_bitmap & RT_PRIORITY_BITMAP)
+        bitmap_highest_rt_priority(self.active_bitmap & RT_PRIORITY_BITMAP)
     }
 
     pub(super) const fn has_pushable(&self) -> bool {
@@ -506,7 +510,8 @@ impl RealtimeRunQueue {
     pub(super) fn count_at_priority(&self, priority: u8) -> usize {
         priority
             .checked_sub(1)
-            .and_then(|index| self.active.get(index as usize))
+            .filter(|_| priority <= RT_PRIORITY_LEVELS as u8)
+            .and_then(|_| self.active.get(rt_priority_index(priority)))
             .map_or(0, |level| level.len)
     }
 
@@ -521,7 +526,7 @@ impl RealtimeRunQueue {
             .rt_priority()
             .expect("RT priority array requires FIFO or RR policy")
             .get();
-        let index = (priority - 1) as usize;
+        let index = rt_priority_index(priority);
         if thread.rt_quota_exempt {
             self.exempt_count[index] = self.exempt_count[index].saturating_add(1);
             self.exempt_bitmap |= 1_u128 << index;
@@ -575,7 +580,6 @@ impl RealtimeRunQueue {
             .iter()
             .enumerate()
             .take(RT_PRIORITY_LEVELS)
-            .rev()
             .find_map(|(index, level)| {
                 level.iter().find_map(|pushable| {
                     let active = pushable.active();
@@ -588,7 +592,7 @@ impl RealtimeRunQueue {
                             .rt_priority()
                             .expect("RT active node must retain a fixed priority")
                             .get() as usize,
-                        index + 1,
+                        rt_priority_from_index(index) as usize,
                     );
                     predicate(active.thread()).then(|| QueuedThreadSnapshot::from(active.thread()))
                 })
@@ -597,7 +601,7 @@ impl RealtimeRunQueue {
 
     pub(super) fn select(&self) -> Option<LinkedPickedThread> {
         let priority = self.highest_rt_priority()?;
-        let index = (priority - 1) as usize;
+        let index = rt_priority_index(priority);
         self.active[index]
             .head
             .as_deref()
@@ -733,8 +737,4 @@ impl RealtimeRunQueue {
         };
         (node.thread().id == key.thread).then_some(node)
     }
-}
-
-fn bitmap_highest_priority(bitmap: u128) -> Option<u8> {
-    (bitmap != 0).then(|| (u128::BITS - bitmap.leading_zeros()) as u8)
 }

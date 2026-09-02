@@ -7,6 +7,7 @@ mod fair;
 mod fair_queue;
 mod queue;
 mod rt;
+mod rt_priority;
 
 pub(crate) use admission::*;
 pub use clock::*;

@@ -4,7 +4,7 @@
 
 本文是 `codex/refactor-ax-task-from-1596` 分支的任务系统审计台账。它记录设计不变量、Linux 对照、已确认缺陷、确定性红绿测试和里程碑验证，不把历史 QEMU 结果冒充为当前提交的通过结果。
 
-分支每次推送前都要 rebase 当时最新的 `origin/dev`。Starry 的 PID/zombie 生命周期以 dev 的 `ProcessIdentity` 为唯一权威，状态为：
+本分支是破坏性重构，PR head 自身是唯一代码基线；不再要求与 `origin/dev` 保持实现兼容或在每次推送前 rebase。Starry 的 PID/zombie 生命周期以本分支的 `ProcessIdentity` 为唯一权威，状态为：
 
 ```text
 Live -> Zombie -> Reaping -> Reaped
@@ -4967,7 +4967,7 @@ collect_futex_wakes (0xffffffff800171e0)
 
 ## 2026-09-02：唤醒选核 ownership 成本复核
 
-本检查点基于代码提交 `8da8754c0d`。在保持 Linux RT 状态事务的前提下，
+本检查点基于当前代码提交 `c306f2ece7`。在保持 Linux RT 状态事务的前提下，
 `ThreadLifecycle::consume_wake_and_transition()`（`components/ax-task/src/thread/state.rs:125-163`）
 把 wake publication 消费和 `Blocked -> Waking` 合并为一个 CAS；
 `TaskSystem::consume_wake_locked()`（`components/ax-task/src/system/task_system/dispatch/wake.rs:130-142`）
