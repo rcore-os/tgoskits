@@ -15,11 +15,6 @@ const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
 pub enum ThreadState {
     /// Allocated but not admitted to a run queue.
     New     = 0,
-    /// Legacy runnable encoding retained for trace and API compatibility.
-    ///
-    /// The scheduler does not publish this value. New runnable states use
-    /// [`ThreadState::Running`] and placement distinguishes queued/current.
-    Ready   = 1,
     /// Linux-style `TASK_RUNNING`, whether queued or executing on a CPU.
     Running = 2,
     /// Publishing a block operation while racing with wake-up.
@@ -166,7 +161,6 @@ impl ThreadLifecycle {
 pub(crate) fn decode_state(packed: u8) -> ThreadState {
     match packed & STATE_MASK {
         0 => ThreadState::New,
-        1 => ThreadState::Ready,
         2 => ThreadState::Running,
         3 => ThreadState::Parking,
         4 => ThreadState::Blocked,
@@ -180,10 +174,6 @@ pub(crate) const fn transition_is_valid(from: ThreadState, to: ThreadState) -> b
     matches!(
         (from, to),
         (ThreadState::New, ThreadState::Running | ThreadState::Exited)
-            | (
-                ThreadState::Ready,
-                ThreadState::Running | ThreadState::Exited
-            )
             | (
                 ThreadState::Running,
                 ThreadState::Parking | ThreadState::Exited
@@ -275,6 +265,15 @@ mod tests {
         lifecycle
             .state
             .store(WAKE_PENDING | STATE_MASK, Ordering::Relaxed);
+
+        let _ = lifecycle.state();
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid thread lifecycle publication: raw=0x01")]
+    fn reserved_state_encoding_is_rejected() {
+        let lifecycle = ThreadLifecycle::new();
+        lifecycle.state.store(1, Ordering::Relaxed);
 
         let _ = lifecycle.state();
     }

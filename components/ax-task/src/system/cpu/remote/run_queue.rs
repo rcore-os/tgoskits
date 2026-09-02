@@ -270,14 +270,28 @@ impl CpuRunQueueState {
         reason: EnqueueReason,
         current_fair: Option<FairEntity>,
     ) -> Result<OwnerRqEnqueue, TaskError> {
-        let runtime_timer_required_before = self.current_runtime_timer_required();
-        let runtime_timer_delta_before = runtime_timer_required_before
+        // Linux RT enqueue does not alter the current task's runtime
+        // deadline. Avoid deriving Fair/EEVDF clockevent state for the common
+        // FIFO/RR wake while keeping the same class enqueue and rq accounting.
+        let realtime = thread.active.policy().rt_priority().is_some();
+        let runtime_timer_required_before = if realtime {
+            false
+        } else {
+            self.current_runtime_timer_required()
+        };
+        let runtime_timer_delta_before = (!realtime)
             .then(|| self.current_runtime_timer_delta_ns())
             .flatten();
         let entity = self.queue.enqueue_task(thread, reason, current_fair)?;
-        self.tighten_current_fair_slice_protection(&entity);
-        let runtime_timer_required_after = self.current_runtime_timer_required();
-        let runtime_timer_delta_after = runtime_timer_required_after
+        if !realtime {
+            self.tighten_current_fair_slice_protection(&entity);
+        }
+        let runtime_timer_required_after = if realtime {
+            false
+        } else {
+            self.current_runtime_timer_required()
+        };
+        let runtime_timer_delta_after = (!realtime)
             .then(|| self.current_runtime_timer_delta_ns())
             .flatten();
         Ok(OwnerRqEnqueue {

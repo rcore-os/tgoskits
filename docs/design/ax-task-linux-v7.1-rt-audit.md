@@ -4923,3 +4923,44 @@ nice 0，旧/新到期判定在数学上相同，因此不能把这次波动归�
 6. PR 新进度评论同步问题、修改、设计依据、红绿证据和当前未完成项，不改写 PR 正文。
 
 最终完成要求：审计矩阵内无未处理的任务调度 finding，正常 IRQ 生命周期不依赖裸指针或永久泄漏兜底，四架构 QEMU 与 GitHub CI terminal 全绿。显式 `mem::forget` 等协议破坏仍以泄漏而非 UAF 失效。范围外问题必须有可接续的 issue 证据，而不是通过跳过或放宽测试隐藏。
+
+## 2026-09-02：direct-wake 热路径重构与 GDB 顺序核对
+
+本轮按 Linux v7.1 PREEMPT_RT 的 `try_to_wake_up()` → `ttwu_runnable()` /
+`ttwu_do_activate()` 语义收敛 Starry 的唤醒路径。`ThreadCore::wake()` 不再在进入任务锁前
+重复读取退出状态；direct wake 由 `Arc<ThreadCore>` 持有生命周期，以 `PreemptScope` 固定当前
+CPU，再由任务调度锁串行化状态、placement 与 rq 事务，等价于 Linux 的 `p->pi_lock` 所有权边界。
+等待侧 claim 也使用同一抢占范围和 CPU 采样。删除不再发布的 `ThreadState::Ready` 编码，保留
+`New/Running/Parking/Blocked/Waking/Exited` 单一生命周期；保留值 `0x01` 现在确定性 panic，
+避免第二套可观察状态。
+
+调度类分支只在 Fair 任务上更新虚拟时间、延迟 Fair 节点和当前 Fair slice；FIFO/RR 入队不再
+读取或收紧 Fair runtime timer。RT direct wake 仍执行同一 rq 入队、优先级抢占与 owner-work
+发布，不绕过 Linux 所需的 bandwidth/PI 状态。Deadline 只有在确实激活 Deadline entity 时
+读取 wall clock 并重建实体。
+
+使用 release ELF 的高半内核地址（`KImage = 0xffffffff80000000`）接入 QEMU gdbstub。
+断点与调用栈实测顺序如下：
+
+```
+collect_futex_wakes (0xffffffff800171e0)
+  -> ResolvedFutex::wake
+  -> ThreadWakeBatch::wake_all
+  -> TaskSystem::wake_thread_from_current_cpu (0xffffffff803e8d50)
+  -> TaskSystem::activate_waking_thread_locked (0xffffffff803e9450)
+```
+
+另一次同一场景的等待竞态由 `wake_wait_claim_from_current_cpu` 取得激活所有权后进入同一
+`activate_waking_thread_locked`，没有观察到 `Running`、`Waking`、rq 入队或抢占发布的逆序。
+在激活函数入口执行 `si` 逐条单步，PC 依次为 `+1/+3/+5/+7` 的栈保存指令；`bt` 始终保留
+`activate_waking_thread_locked` 的 direct-wake 或 wait-claim caller，随后 `finish` 返回 caller
+并继续运行。GDB 临时断点只用于采样，未改变提交代码。
+
+最终无插桩 `qemu q35/tcg/smp2` 基准（20,000 handoff、10,000 timer）均输出
+`WAKEUP_LATENCY_PASSED`。本轮 p50（ns）为：OTHER same/cross/process/timer
+`100124/94496/97390/235769`，FIFO same/cross/process/timer
+`68910/96340/96714/276536`。相对本轮前检查点，futex same/cross/process 分别下降约
+24%/15%/23%（OTHER），FIFO same 下降约 9%；timer 受 clockevent/切换固定成本影响未改善，
+整体仍高于 Linux PREEMPT_RT 的约 15--28 µs 参考值，尚未达到 90% 目标。下一检查点应继续
+围绕 scheduler deadline、IPI consume 与 context-switch tail 的通用固定开销取样，而不是再给
+唤醒路径增加特例。

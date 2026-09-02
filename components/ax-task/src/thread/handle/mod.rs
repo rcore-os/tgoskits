@@ -284,9 +284,6 @@ impl ThreadWakeHandle {
 
 impl ThreadCore {
     fn wake(self: &Arc<Self>, intent: WakeIntent) -> WakeResult {
-        if self.state() == ThreadState::Exited {
-            return WakeResult::Exited;
-        }
         crate::facade::wake_thread_from_current_cpu(self, intent)
     }
 }

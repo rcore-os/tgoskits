@@ -23,7 +23,7 @@ use crate::{
 /// GRUB activity of one admitted Deadline reservation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeadlineActivity {
-    /// Ready or executing, and therefore contributing active utilization.
+    /// Runnable or executing, and therefore contributing active utilization.
     ActiveContending,
     /// Blocked before zero-lag while still contributing active utilization.
     ActiveNonContending,

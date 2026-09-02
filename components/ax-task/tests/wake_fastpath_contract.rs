@@ -12,7 +12,7 @@ fn task_system_wake_does_not_repeat_thread_handle_exit_check() {
 
     assert!(
         !wake_thread.contains("if core.state() == ThreadState::Exited"),
-        "ThreadCore::wake already performs the fast exit check; keep the scheduler path to one \
-         atomic precheck"
+        "the task scheduler lock is the authoritative exit check; keep wake to one state \
+         publication"
     );
 }

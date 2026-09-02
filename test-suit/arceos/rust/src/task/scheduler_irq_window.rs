@@ -75,7 +75,7 @@ pub fn run() -> crate::TestResult {
     assert!(worker_ids.iter().all(|thread| {
         matches!(
             thread_handle(*thread).map(|handle| handle.state()),
-            Ok(ThreadState::Ready | ThreadState::Running)
+            Ok(ThreadState::Running)
         )
     }));
 

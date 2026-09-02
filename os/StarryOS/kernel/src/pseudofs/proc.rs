@@ -349,7 +349,7 @@ fn render_stat() -> VfsResult<String> {
         user_ms += u.as_millis();
         sys_ms += s.as_millis();
         match task.state() {
-            ThreadState::New | ThreadState::Ready | ThreadState::Running | ThreadState::Waking => {
+            ThreadState::New | ThreadState::Running | ThreadState::Waking => {
                 procs_running += 1
             }
             ThreadState::Parking | ThreadState::Blocked => procs_blocked += 1,
@@ -801,7 +801,7 @@ fn render_thread_status(
 
 fn task_status_state(task: &UserTaskRef) -> &'static str {
     match task.state() {
-        ThreadState::New | ThreadState::Ready | ThreadState::Running | ThreadState::Waking => {
+        ThreadState::New | ThreadState::Running | ThreadState::Waking => {
             "R (running)"
         }
         ThreadState::Parking | ThreadState::Blocked => "S (sleeping)",
@@ -1987,10 +1987,7 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                 .filter(|task| {
                     matches!(
                         task.state(),
-                        ThreadState::New
-                            | ThreadState::Ready
-                            | ThreadState::Running
-                            | ThreadState::Waking
+                        ThreadState::New | ThreadState::Running | ThreadState::Waking
                     )
                 })
                 .count();

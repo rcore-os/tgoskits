@@ -79,7 +79,7 @@ impl TaskStat {
         let comm = task.name();
         let comm = comm[..comm.len().min(16)].to_owned();
         let state = match task.state() {
-            ThreadState::Ready | ThreadState::Running | ThreadState::Waking => 'R',
+            ThreadState::Running | ThreadState::Waking => 'R',
             ThreadState::Parking | ThreadState::Blocked => 'S',
             ThreadState::New => 'R',
             ThreadState::Exited => 'Z',
