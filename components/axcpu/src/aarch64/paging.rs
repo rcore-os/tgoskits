@@ -24,6 +24,8 @@ bitflags::bitflags! {
         const INNER = 1 << 8;
         const SHAREABLE = 1 << 9;
         const AF = 1 << 10;
+        /// Non-global translation: the TLB entry is scoped by its ASID.
+        const NON_GLOBAL = 1 << 11;
         const PXN = 1 << 53;
         const UXN = 1 << 54;
     }
@@ -95,6 +97,11 @@ impl A64Pte {
         A64DescriptorAttr::from_bits_retain(self.0 & attr_mask)
     }
 
+    #[cfg(test)]
+    pub(crate) const fn raw_for_test(self) -> u64 {
+        self.0
+    }
+
     fn leaf_attr(config: MappingFlags) -> A64DescriptorAttr {
         let mem_attr = if config.contains(MappingFlags::DEVICE) {
             A64MemAttr::Device
@@ -113,7 +120,9 @@ impl A64Pte {
         #[cfg(not(feature = "arm-el2"))]
         {
             if config.contains(MappingFlags::USER) {
-                attr |= A64DescriptorAttr::AP_EL0 | A64DescriptorAttr::PXN;
+                attr |= A64DescriptorAttr::AP_EL0
+                    | A64DescriptorAttr::NON_GLOBAL
+                    | A64DescriptorAttr::PXN;
                 if !config.contains(MappingFlags::EXECUTE) {
                     attr |= A64DescriptorAttr::UXN;
                 }

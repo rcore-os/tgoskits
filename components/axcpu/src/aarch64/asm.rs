@@ -5,6 +5,8 @@ use core::arch::asm;
 use aarch64_cpu::{asm::barrier, registers::*};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
+#[cfg(not(feature = "arm-el2"))]
+use super::asid::configured_tag_capacity;
 #[cfg(feature = "tls")]
 use crate::KernelTlsBase;
 #[cfg(feature = "uspace")]
@@ -12,10 +14,10 @@ use crate::{InstalledAddressSpace, InstalledAddressSpaceMode};
 
 /// Returns the number of AArch64 ASIDs, including reserved ASID 0.
 ///
-/// `ID_AA64MMFR0_EL1.ASIDBits` encoding 2 selects 16-bit ASIDs; every other
-/// architectural value uses the mandatory 8-bit form. EL2 builds retain the
-/// conservative full-flush path because their userspace translation register
-/// contract is different from TTBR0_EL1.
+/// The result reflects both the hardware capability and the ASID width selected
+/// by the boot owner in `TCR_EL1.AS`. EL2 builds retain the conservative
+/// full-flush path because their userspace translation register contract is
+/// different from TTBR0_EL1.
 pub fn address_space_tag_capacity(_cpu_count: usize) -> u32 {
     #[cfg(feature = "arm-el2")]
     {
@@ -23,11 +25,10 @@ pub fn address_space_tag_capacity(_cpu_count: usize) -> u32 {
     }
     #[cfg(not(feature = "arm-el2"))]
     {
-        if ID_AA64MMFR0_EL1.read(ID_AA64MMFR0_EL1::ASIDBits) == 2 {
-            1 << 16
-        } else {
-            1 << 8
-        }
+        configured_tag_capacity(
+            ID_AA64MMFR0_EL1.read(ID_AA64MMFR0_EL1::ASIDBits),
+            TCR_EL1.read(TCR_EL1::AS),
+        )
     }
 }
 
