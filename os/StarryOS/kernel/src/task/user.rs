@@ -11,9 +11,8 @@ use syscalls::Sysno;
 use super::unaligned::{UnalignedEmulationResult, emulate_user_unaligned};
 use super::{
     SignalCheckOutcome, SyscallRestartInfo, SyscallTraceState, Thread, TidNumber, TimerState,
-    check_signals, check_signals_with_outcome, current_user_task, poll_process_timers,
-    ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state,
-    wait_existing_ptrace_stop_current,
+    check_signals, check_signals_with_outcome, current_user_task, ptrace_stop_current,
+    ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state, wait_existing_ptrace_stop_current,
 };
 use crate::{
     mm::{VmMutPtr, VmPtr},
@@ -362,9 +361,6 @@ pub fn new_user_task(
             }
 
             if !thr.unblock_next_signal_check() {
-                // POSIX timers are also driven by the alarm task, but polling
-                // here closes the window where an expired timer is only noticed
-                // after the current syscall returns to userspace.
                 let eintr_code = -(crate::Errno::EINTR.into_raw() as isize);
                 let restart = if is_syscall
                     && (uctx.retval() as isize) == eintr_code
@@ -382,7 +378,6 @@ pub fn new_user_task(
                 // whether to restart. Subsequent signals in the same
                 // loop must not re-apply the decision.
                 let mut pending_restart = restart.as_ref();
-                let mut poll_timer = true;
                 let mut deferred_mask_restore = thr.take_deferred_signal_mask_restore();
                 loop {
                     // Match Linux's recalc_sigpending()/TIF_SIGPENDING
@@ -392,10 +387,6 @@ pub fn new_user_task(
                     // pass, so returning to userspace cannot erase the sole
                     // wake reason for a subsequent interruptible syscall.
                     let interrupt_snapshot = thr.interrupt_snapshot();
-                    if poll_timer {
-                        poll_process_timers(&thr.proc_data);
-                        poll_timer = false;
-                    }
                     loop {
                         let outcome = check_signals_with_outcome(
                             &curr,

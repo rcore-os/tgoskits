@@ -293,19 +293,6 @@ pub(crate) fn poll_process_cpu_timers_from_scheduler_tick(proc_data: &ProcessDat
     }
 }
 
-/// Polls process interval and POSIX timers from a retained process view.
-pub(crate) fn poll_process_timers(proc_data: &ProcessData) {
-    poll_interval_timers(proc_data, None);
-    if proc_data.posix_timers().has_armed_timers() {
-        proc_data.posix_timers().poll_expired(
-            AlarmTarget::Process(Arc::downgrade(&proc_data.identity())),
-            |sig| {
-                let _ = send_signal_to_process(proc_data.proc.pid_number(), Some(sig));
-            },
-        );
-    }
-}
-
 pub(crate) fn poll_process_timer_for_alarm(identity: &Arc<PidIdentity>, token: &AlarmToken) {
     if let Some(proc_data) = identity.live_data() {
         poll_interval_timers(&proc_data, Some(token));
@@ -322,7 +309,6 @@ pub(crate) fn poll_process_timer_for_alarm(identity: &Arc<PidIdentity>, token: &
 /// Sets the current thread's user/kernel accounting state.
 pub(crate) fn set_timer_state(thr: &Thread, state: TimerState) {
     thr.set_cpu_time_state(state);
-    poll_interval_timers(&thr.proc_data, None);
 }
 
 #[repr(C)]

@@ -418,17 +418,6 @@ impl PosixTimerTable {
         Ok((timer.interval_ns, remaining))
     }
 
-    /// Check all timers for expiry and return signals to deliver.
-    /// Called from the alarm_task via poll_timer.
-    /// `task` is the user task that owns these timers (needed to
-    /// re-register alarms for periodic timers).
-    pub fn poll_expired(&self, target: AlarmTarget, mut emitter: impl FnMut(SignalInfo)) {
-        if !self.has_armed_timers() {
-            return;
-        }
-        self.poll_expired_at(target, None, clock_now_ns, &mut emitter);
-    }
-
     pub(crate) fn poll_expired_for(
         &self,
         target: AlarmTarget,
