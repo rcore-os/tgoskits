@@ -609,7 +609,7 @@ fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
         .resolve_monotonic(SleepClockSnapshot::new(monotonic_now, realtime_now))
 }
 
-fn wall_deadline_to_monotonic_deadline(deadline: TimeValue) -> MonotonicDeadline {
+pub(crate) fn wall_deadline_to_monotonic_deadline(deadline: TimeValue) -> MonotonicDeadline {
     monotonic_deadline_from_time(wall_deadline_to_monotonic(deadline))
 }
 

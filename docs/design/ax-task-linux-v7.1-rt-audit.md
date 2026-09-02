@@ -5050,3 +5050,18 @@ yield handoff 均向下移动；TCG 调度噪声仍然较大，timer p50 未改�
 clippy 或新增本提交测试；格式化和 `git diff --check` 已在本检查点完成。仍未达到 Linux RT
 约 15--28µs 参考区间的 90% 目标，下一优先级是 qperf 已显示的 context-switch tail、
 clockevent publication 和 owner-rq 观测固定成本。
+
+## 2026-09-02：绝对 sleep 直接进入 scheduler park
+
+进一步对照 Linux `schedule_hrtimeout_range_clock()`，`sys_clock_nanosleep` 的纯 pending
+future 不再经过 `LocalExecutor::run` 和一次无意义的 future poll。`sleep_until()` 直接把
+单调/实时时限解析为 `MonotonicDeadline`，通过局部 `WaitQueue::wait_until_deadline()` 注册
+park；中断条件仍调用同一 `UserTaskRef::take_interrupt()`，并保持“中断优先于到期”的返回
+语义。这个路径只影响确实没有可完成 future 的 nanosleep/clock_nanosleep，不改变通用
+`block_on_user_until` 的 IO/信号等待。
+
+合并 RT bitmap 优先级修复后的同一 `q35/TCG/smp2` 完整 benchmark 输出
+`WAKEUP_LATENCY_PASSED`。直接 park 后本轮 timer p50 为 OTHER `220125 ns`、FIFO
+`209883 ns`；与前一精确 head 的 `221072/217440 ns` 相比，OTHER 在 TCG 噪声内，FIFO
+约下降 3.5%，说明 timer 固定成本仍主要位于物理 clockevent、唤醒和 switch tail，而非
+future poll。该改动保留为语义收敛和小幅收益，下一轮不再围绕 future 层做特例优化。

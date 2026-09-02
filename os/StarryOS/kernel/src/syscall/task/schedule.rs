@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use ax_runtime::hal::{self, time::TimeValue};
-use ax_std::os::arceos::task as scheduler;
+use ax_std::os::arceos::task::{self as scheduler, WaitQueue};
 use bytemuck::{Pod, Zeroable};
 #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
 use linux_raw_sys::general::__kernel_timespec;
@@ -23,7 +23,7 @@ use crate::{
     syscall::time::write_timespec,
     task::{
         Cred, PgidNumber, PidNumber, PidView, ProcessData, Tgid, TidNumber, UserTaskRef,
-        future::{UserWaitOutcome, block_on_user_until, block_on_user_until_wall},
+        future::wall_deadline_to_monotonic_deadline,
         get_task_by_number, processes,
     },
     time::{SleepDeadline, TimeValueLike},
@@ -80,20 +80,24 @@ fn sleep_until(
     deadline: SleepDeadline,
 ) -> crate::StarryResult<()> {
     debug!("sleep_until <= {deadline:?}");
-    let outcome = match deadline {
-        SleepDeadline::Monotonic(deadline) => block_on_user_until(
-            current,
-            Some(crate::task::future::monotonic_deadline_from_time(deadline)),
-            core::future::pending::<()>(),
-        ),
-        SleepDeadline::Realtime(deadline) => {
-            block_on_user_until_wall(current, Some(deadline), core::future::pending::<()>())
+    let deadline = match deadline {
+        SleepDeadline::Monotonic(deadline) => {
+            crate::task::future::monotonic_deadline_from_time(deadline)
         }
+        SleepDeadline::Realtime(deadline) => wall_deadline_to_monotonic_deadline(deadline),
     };
-    match outcome {
-        UserWaitOutcome::TimedOut => Ok(()),
-        UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
-        UserWaitOutcome::Ready(()) => unreachable!("a pending sleep future cannot complete"),
+    let interrupted = core::cell::Cell::new(false);
+    let timed_out = WaitQueue::new().wait_until_deadline(deadline, || {
+        let pending = current.take_interrupt();
+        interrupted.set(pending);
+        pending
+    });
+    if interrupted.get() {
+        Err(crate::StarryError::Interrupted)
+    } else if timed_out {
+        Ok(())
+    } else {
+        unreachable!("a scheduler sleep must end by timeout or interruption")
     }
 }
 
