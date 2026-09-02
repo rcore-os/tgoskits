@@ -8,6 +8,7 @@ pub(crate) struct SwitchHandoff {
     phase: SwitchHandoffPhase,
     previous: Arc<ThreadCore>,
     incoming: Arc<ThreadCore>,
+    switch_timestamp_ns: u64,
     migration: Option<PreparedMigrationDelivery>,
     rq_baton: Option<RqSwitchBaton>,
 }
@@ -19,8 +20,8 @@ enum SwitchHandoffPhase {
 }
 
 pub(crate) struct CompletedSwitchHandoff {
-    pub(crate) previous: Arc<ThreadCore>,
     pub(crate) incoming: Arc<ThreadCore>,
+    pub(crate) switch_timestamp_ns: u64,
     pub(crate) migration: Option<PreparedMigrationDelivery>,
     pub(crate) reclaim_ready: bool,
 }
@@ -35,6 +36,7 @@ impl SwitchHandoff {
             phase: SwitchHandoffPhase::Prepared,
             previous,
             incoming,
+            switch_timestamp_ns: 0,
             migration,
             rq_baton: None,
         }
@@ -77,25 +79,39 @@ impl SwitchHandoff {
         matches!(self.phase, SwitchHandoffPhase::RuntimeTailFinished { .. })
     }
 
-    pub(crate) fn finish_runtime_tail(mut self, reclaim_ready: bool) -> Result<Self, TaskError> {
+    pub(crate) fn finish_runtime_tail(
+        mut self,
+        reclaim_ready: bool,
+        switch_timestamp_ns: u64,
+    ) -> Result<Self, TaskError> {
         if self.phase != SwitchHandoffPhase::Prepared {
             return Err(TaskError::InvalidConfiguration);
         }
+        self.switch_timestamp_ns = switch_timestamp_ns;
         self.phase = SwitchHandoffPhase::RuntimeTailFinished { reclaim_ready };
         Ok(self)
     }
 
     pub(crate) fn into_runtime_finished(self) -> Result<CompletedSwitchHandoff, TaskError> {
-        if self.rq_baton.is_some() {
+        let SwitchHandoff {
+            previous,
+            incoming,
+            switch_timestamp_ns,
+            migration,
+            rq_baton,
+            phase,
+        } = self;
+        if rq_baton.is_some() {
             return Err(TaskError::InvalidConfiguration);
         }
-        let SwitchHandoffPhase::RuntimeTailFinished { reclaim_ready } = self.phase else {
+        let SwitchHandoffPhase::RuntimeTailFinished { reclaim_ready } = phase else {
             return Err(TaskError::InvalidConfiguration);
         };
+        drop(previous);
         Ok(CompletedSwitchHandoff {
-            previous: self.previous,
-            incoming: self.incoming,
-            migration: self.migration,
+            incoming,
+            switch_timestamp_ns,
+            migration,
             reclaim_ready,
         })
     }

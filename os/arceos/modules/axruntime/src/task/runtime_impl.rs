@@ -225,7 +225,7 @@ impl_task_runtime! {
             }
         }
 
-        fn finish_context_switch_tail() -> bool {
+        fn finish_context_switch_tail() -> (bool, u64) {
             finish_runtime_context_switch_tail()
         }
 

@@ -96,9 +96,9 @@ impl CpuTimeAccounting {
             .set_mode(state.scheduler_tick_mode());
     }
 
-    pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool) {
+    pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool, observed_ns: u64) {
         let _writer = self.begin_write();
-        self.scheduler_switch_in_locked(realtime_policy, monotonic_time_nanos() as u64)
+        self.scheduler_switch_in_locked(realtime_policy, observed_ns)
     }
 
     pub(crate) fn scheduler_switch_out(&self, reason: scheduler::SwitchReason, observed_ns: u64) {

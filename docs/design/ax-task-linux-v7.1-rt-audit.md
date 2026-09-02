@@ -5161,3 +5161,33 @@ TCG 仍造成 timer `not_parked` 与尾延迟抖动，不能据此宣称达到 L
 继续审查 `execute_switch_plan()` 和 `finish_context_switch_tail()` 中可由已发布
 handoff 事实替代的重复读取，保持 Linux `finish_task_switch()` 的 release-before-unlock
 顺序。
+
+## 2026-09-02：切换尾部复用发布事实并按 Linux vtime 采样
+
+本检查点继续处理 `execute_switch_plan()` 到切换回调之间的通用固定成本。owner CPU 的
+`CpuRemote` 原先在每个 rq 事务入口都克隆一次 `Arc`，但 owner capability 已经固定
+`CpuLocal` 的生命周期，事务只需要不可变 endpoint；现由 `remote_for_owner()` 借用同一
+发布对象，保留 owner rq 串行化和 `on_cpu` release 顺序。`complete_context_switch_owner()`
+也不再为普通尾部额外保留 previous/incoming 的引用：迁移分支仅在必须跨越可变 CPU-local
+操作时短暂持有 previous，最终 handoff 直接转移 incoming 所有权。
+
+Linux `vtime_task_switch()` 在新上下文建立后采样 `sched_clock()`。此前 Starry 的切换入
+扩展钩子再次读取物理时钟，既重复读取又可能把架构尾部时间归入错误边界。现在 runtime
+切换尾部在 `finish_switch_tail()` 后只采样一次单调时钟，并随 `SwitchHandoff` 传给
+`on_switch_in` 与 `CpuTimeAccounting::scheduler_switch_in()`；切换出仍使用已提交的 owner
+rq 时间戳。与此同时删除 `finish_owner_dispatch_commit()` 中未使用的第二次
+`clock.wall()` 读取，避免无效时钟访问。
+
+验证使用相同 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 配置。完整无插桩 QEMU benchmark
+再次输出 `WAKEUP_LATENCY_PASSED`；已记录的 FIFO p50（ns）为同核 futex `69437`、跨核
+线程 `101155`、跨核进程 `100374`、绝对 timer `266264`、yield handoff `37814`，timer
+出现 `missed_deadlines=32`，说明 TCG 抖动仍然存在。短 qperf 同核窗口在相同 workload
+下由本轮 `current-focus4b` 的 `277777 ns`（初始 `current-focus4` 基线 `293047 ns`）稳定落在
+`278--279 us`，但不能把单轮 TCG 数字外推为硬件比例；当前仍远低于 Linux RT 约
+`15--28 us` 参考区间，未达到 90% 目标。
+
+本轮没有新增测试，也没有执行 clippy；在功能 benchmark 已通过后统一执行了 `cargo fmt`
+和 `git diff --check`。曾尝试把所有 owner 路径改成裸 remote 借用，导致 FIFO 后续阶段
+无输出，该宽泛试验已撤回；提交中只保留经过完整 benchmark 验证的 owner switch-tail
+路径。下一步继续用单步路径和窄 qperf 检查 `context-switch tail`、clockevent publication
+及用户返回边界的固定成本。

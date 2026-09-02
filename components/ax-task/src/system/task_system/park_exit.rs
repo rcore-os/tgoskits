@@ -132,7 +132,9 @@ impl TaskSystem {
             return Err(TaskError::StaleThreadId);
         }
         self.ensure_owner_cpu_context(&cpu)?;
-        let remote = Arc::clone(cpu.remote());
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint for the complete park transaction.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         if let Some(registration) = token.deadline()
             && let Some(event) = cpu.as_mut().take_buffered_expiration(registration)
         {
@@ -151,7 +153,7 @@ impl TaskSystem {
             && let Some(commit) = self.try_commit_park_in_rq(
                 cpu.as_mut(),
                 token,
-                &remote,
+                remote,
                 current,
                 initial_request,
                 rq_entry,
@@ -163,12 +165,11 @@ impl TaskSystem {
         // SAFETY: propagated from the selected entry contract.
         let mut previous_sched = unsafe { rq_entry.lock_thread_sched(current.sched()) };
         // SAFETY: propagated from the selected entry contract.
-        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+        let mut transaction = unsafe { rq_entry.begin(self, remote) };
 
         transaction.adopt_scheduler_request(initial_request);
         let scheduler_request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
+        let now_ns = transaction.clock().wall().as_nanos();
 
         if transaction.current_thread() != Some(token.thread()) {
             transaction.commit_and_finish_scheduler_request();
@@ -298,11 +299,7 @@ impl TaskSystem {
         if resumed {
             transaction.commit_and_finish_scheduler_request();
             drop(previous_sched);
-            self.finish_owner_dispatch_commit(
-                cpu.as_mut(),
-                dispatch_commit,
-                clock.wall().as_nanos(),
-            );
+            self.finish_owner_dispatch_commit(dispatch_commit);
             cpu.finish_park_preemption(true);
             token.mark_resolved();
             return Ok(ParkCommit::Notified);
@@ -350,7 +347,7 @@ impl TaskSystem {
             SwitchReason::Blocked,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
+        self.finish_owner_dispatch_commit(dispatch_commit);
         let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
         token.mark_resolved();
@@ -370,7 +367,7 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         token: &mut ParkTicket,
-        remote: &Arc<CpuRemote>,
+        remote: &CpuRemote,
         previous_core: &Arc<ThreadCore>,
         initial_request: crate::system::cpu::SchedulerRequestClaim,
         rq_entry: OwnerRqEntry,
@@ -407,8 +404,7 @@ impl TaskSystem {
 
         transaction.adopt_scheduler_request(initial_request);
         let scheduler_request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
+        let now_ns = transaction.clock().wall().as_nanos();
 
         if previous_core.park_generation() != token.generation() {
             transaction.commit_and_finish_scheduler_request();
@@ -452,11 +448,7 @@ impl TaskSystem {
         {
             drop(publication);
             transaction.commit_and_finish_scheduler_request();
-            self.finish_owner_dispatch_commit(
-                cpu.as_mut(),
-                dispatch_commit,
-                clock.wall().as_nanos(),
-            );
+            self.finish_owner_dispatch_commit(dispatch_commit);
             cpu.finish_park_preemption(true);
             token.mark_resolved();
             return Ok(Some(ParkCommit::Notified));
@@ -569,7 +561,7 @@ impl TaskSystem {
             SwitchReason::Blocked,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
+        self.finish_owner_dispatch_commit(dispatch_commit);
         let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
         token.mark_resolved();
@@ -754,14 +746,15 @@ impl TaskSystem {
             record.callbacks.validate_prepare_exit()?;
         }
 
-        let remote = Arc::clone(cpu.remote());
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint while this exit transaction and switch tail are live.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         // SAFETY: propagated from the selected entry contract.
         let mut exited_sched = unsafe { rq_entry.lock_thread_sched(exited_core.sched()) };
         // SAFETY: propagated from the selected entry contract.
-        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
+        let mut transaction = unsafe { rq_entry.begin(self, remote) };
+        let now_ns = transaction.clock().wall().as_nanos();
         if transaction.current_thread() != Some(exiting)
             || transaction
                 .current_core()
@@ -840,7 +833,7 @@ impl TaskSystem {
             SwitchReason::Exited,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
+        self.finish_owner_dispatch_commit(dispatch_commit);
 
         {
             let mut state = self.state.lock();
@@ -905,19 +898,20 @@ impl TaskSystem {
             return Ok(SwitchInCompletion::NONE);
         };
         let owner = cpu.owner();
-        let previous_core = Arc::clone(initial_handoff.previous());
+        let previous_id = initial_handoff.previous().id();
+        let previous_ptr = Arc::as_ptr(initial_handoff.previous());
         let incoming_id = initial_handoff.incoming().id();
         let migration_target = initial_handoff.migration_target();
         let runtime_tail_finished = initial_handoff.runtime_tail_is_finished();
         let rq_baton_retained = initial_handoff.has_rq_baton();
-        if previous_core.id() == incoming_id
-            || previous_core.sched().placement().on_cpu() != Some(owner)
+        if previous_id == incoming_id
+            || initial_handoff.previous().sched().placement().on_cpu() != Some(owner)
             || initial_handoff.incoming().sched().placement().queued_cpu() != Some(owner)
             || initial_handoff.incoming().sched().placement().on_cpu() != Some(owner)
             || (migration_target.is_some() && rq_baton_retained)
         {
             if runtime_tail_finished {
-                task_runtime::fatal_invariant(0x5357_0006, previous_core.id().as_u64() as usize);
+                task_runtime::fatal_invariant(0x5357_0006, previous_id.as_u64() as usize);
             }
             return Err(TaskError::InvalidConfiguration);
         }
@@ -928,6 +922,7 @@ impl TaskSystem {
         // complete, the same checks are commit invariants rather than a
         // recoverable retry boundary.
         if migration_target.is_some() {
+            let previous_core = Arc::clone(initial_handoff.previous());
             let placement = previous_core.sched().placement();
             // SAFETY: propagated from this method's selected entry contract.
             let sched = unsafe { rq_entry.lock_thread_sched(initial_handoff.previous().sched()) };
@@ -943,43 +938,57 @@ impl TaskSystem {
             transaction.commit();
             if let Err(error) = validation {
                 if runtime_tail_finished {
-                    task_runtime::fatal_invariant(
-                        0x5357_0007,
-                        previous_core.id().as_u64() as usize,
-                    );
+                    task_runtime::fatal_invariant(0x5357_0007, previous_id.as_u64() as usize);
                 }
                 return Err(error);
             }
         }
         if !runtime_tail_finished {
-            let reclaim_ready = task_runtime::finish_context_switch_tail();
+            let (reclaim_ready, switch_timestamp_ns) = task_runtime::finish_context_switch_tail();
             if cpu
                 .as_mut()
-                .finish_switch_runtime_tail(previous_core.id(), migration_target, reclaim_ready)
+                .finish_switch_runtime_tail(
+                    previous_id,
+                    migration_target,
+                    reclaim_ready,
+                    switch_timestamp_ns,
+                )
                 .is_err()
             {
-                task_runtime::fatal_invariant(0x5357_0001, previous_core.id().as_u64() as usize);
+                task_runtime::fatal_invariant(0x5357_0001, previous_id.as_u64() as usize);
             }
         }
-        let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5357_0002, previous_core.id().as_u64() as usize)
-        });
-        let previous = handoff.previous().id();
-        if !Arc::ptr_eq(handoff.previous(), &previous_core)
-            || handoff.incoming().id() != incoming_id
-            || incoming_id == previous
-        {
-            task_runtime::fatal_invariant(0x5357_0002, previous_core.id().as_u64() as usize);
-        }
+        let previous = {
+            let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
+            });
+            let previous = handoff.previous().id();
+            if Arc::as_ptr(handoff.previous()) != previous_ptr
+                || handoff.incoming().id() != incoming_id
+                || incoming_id == previous
+            {
+                task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize);
+            }
+            previous
+        };
         let (migration_target, previous_exited, affinity_completed) = if migration_target.is_some()
         {
+            let previous_core = {
+                let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
+                });
+                Arc::clone(handoff.previous())
+            };
             let placement = previous_core.sched().placement();
 
             // SAFETY: propagated from this method's selected entry contract.
-            let mut sched = unsafe { rq_entry.lock_thread_sched(handoff.previous().sched()) };
+            let mut sched = unsafe { rq_entry.lock_thread_sched(previous_core.sched()) };
             // SAFETY: propagated from this method's selected entry contract.
             let mut transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
 
+            let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
+            });
             let validation = self.validate_switch_handoff_state(
                 owner,
                 transaction.deadline_bandwidth(),
@@ -1026,22 +1035,31 @@ impl TaskSystem {
             // through the rq owner's inbox, while current-task changes request
             // migration and rescheduling before reaching this tail.
             let previous_exited = if rq_baton_retained {
-                let previous_exited = previous_core.state() == ThreadState::Exited;
-
-                previous_core.sched().placement().finish_task(owner);
-                if cpu.as_mut().finish_switch_rq_baton(previous_core.id()) != Ok(true) {
-                    task_runtime::fatal_invariant(
-                        0x5357_0005,
-                        previous_core.id().as_u64() as usize,
-                    );
+                let previous_exited = {
+                    let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
+                    });
+                    let previous_core = handoff.previous();
+                    let previous_exited = previous_core.state() == ThreadState::Exited;
+                    previous_core.sched().placement().finish_task(owner);
+                    previous_exited
+                };
+                if cpu.as_mut().finish_switch_rq_baton(previous_id) != Ok(true) {
+                    task_runtime::fatal_invariant(0x5357_0005, previous_id.as_u64() as usize);
                 }
                 previous_exited
             } else {
                 // SAFETY: propagated from this method's selected entry contract.
                 let transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
-                let previous_exited = previous_core.state() == ThreadState::Exited;
-
-                previous_core.sched().placement().finish_task(owner);
+                let previous_exited = {
+                    let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
+                    });
+                    let previous_core = handoff.previous();
+                    let previous_exited = previous_core.state() == ThreadState::Exited;
+                    previous_core.sched().placement().finish_task(owner);
+                    previous_exited
+                };
                 transaction.commit();
                 previous_exited
             };
@@ -1050,7 +1068,10 @@ impl TaskSystem {
         };
 
         if affinity_completed {
-            previous_core.notify_affinity_waiters();
+            let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
+            });
+            handoff.previous().notify_affinity_waiters();
         }
         let consumed = cpu.as_mut().take_switch_handoff().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5357_0003, previous.as_u64() as usize)
@@ -1064,9 +1085,7 @@ impl TaskSystem {
         let completed = consumed.into_runtime_finished().unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize)
         });
-        if !Arc::ptr_eq(&completed.previous, &previous_core)
-            || completed.incoming.id() != incoming_id
-        {
+        if completed.incoming.id() != incoming_id {
             task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize)
         }
         if let Some(migration) = completed.migration {
@@ -1078,7 +1097,8 @@ impl TaskSystem {
         if previous_exited {
             self.task_work.publish();
         }
-        let completion = SwitchInCompletion::for_core(&completed.incoming);
+        let completion =
+            SwitchInCompletion::for_core(&completed.incoming, completed.switch_timestamp_ns);
         Ok(completion)
     }
 

@@ -928,6 +928,7 @@ unsafe extern "Rust" fn starry_user_task_switch_in(
     data: usize,
     thread: scheduler::ThreadId,
     base_policy: scheduler::SchedulePolicy,
+    observed_ns: u64,
 ) {
     let extension = unsafe { extension_data_from_raw(data) };
     // SAFETY: scheduler extension hooks run with local IRQs disabled from the
@@ -937,7 +938,7 @@ unsafe extern "Rust" fn starry_user_task_switch_in(
             CURRENT_USER_EXTENSION.write_current(pin, data);
             extension
                 .thread
-                .scheduler_switch_in(thread, is_realtime_policy(base_policy), pin);
+                .scheduler_switch_in(thread, is_realtime_policy(base_policy), observed_ns, pin);
         })
         .unwrap_or_else(|_| panic!("Starry switch-in has no bound per-CPU area"));
     }
@@ -1149,6 +1150,7 @@ mod tests {
         _data: usize,
         _thread: scheduler::ThreadId,
         _policy: scheduler::SchedulePolicy,
+        _observed_ns: u64,
     ) {
     }
 

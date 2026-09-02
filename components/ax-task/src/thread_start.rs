@@ -326,11 +326,12 @@ unsafe extern "Rust" fn kernel_thread_switch_in(
     data: usize,
     thread: ThreadId,
     policy: SchedulePolicy,
+    observed_ns: u64,
 ) {
     let data = unsafe { kernel_thread_data_from_raw(data) };
     if let Some(extension) = data.os_extension.as_ref() {
         // SAFETY: the outer extension owns and forwards the inner callback.
-        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, policy) };
+        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, policy, observed_ns) };
     }
 }
 
@@ -628,6 +629,7 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         _policy: SchedulePolicy,
+        _observed_ns: u64,
     ) {
     }
 

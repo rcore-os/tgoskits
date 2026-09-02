@@ -1450,6 +1450,7 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         _policy: SchedulePolicy,
+        _observed_ns: u64,
     ) {
     }
 

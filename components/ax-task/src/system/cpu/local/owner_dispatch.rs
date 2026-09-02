@@ -199,6 +199,7 @@ impl CpuLocal {
         previous: ThreadId,
         migration_target: Option<CpuId>,
         reclaim_ready: bool,
+        switch_timestamp_ns: u64,
     ) -> Result<(), TaskError> {
         let handoff = self
             .as_mut()
@@ -213,7 +214,7 @@ impl CpuLocal {
             return Err(TaskError::InvalidConfiguration);
         }
         self.dispatch_state_mut().switch_handoff =
-            Some(handoff.finish_runtime_tail(reclaim_ready)?);
+            Some(handoff.finish_runtime_tail(reclaim_ready, switch_timestamp_ns)?);
         Ok(())
     }
 

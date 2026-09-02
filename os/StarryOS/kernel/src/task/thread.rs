@@ -499,6 +499,7 @@ impl Thread {
         &self,
         id: ax_std::os::arceos::task::ThreadId,
         realtime_policy: bool,
+        observed_ns: u64,
         cpu_pin: &CpuPin<'_>,
     ) {
         if self.validate_scheduler_id(id).is_err() {
@@ -506,7 +507,7 @@ impl Thread {
         }
         self.accounting
             .cpu_time
-            .scheduler_switch_in(realtime_policy);
+            .scheduler_switch_in(realtime_policy, observed_ns);
         // SAFETY: the scheduler switch baton pins this CPU and retains the
         // thread-owned ProcessData until the matching switch-out callback.
         unsafe { self.scope.activate_pinned(cpu_pin) };

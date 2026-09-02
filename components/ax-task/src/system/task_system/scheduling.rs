@@ -67,7 +67,6 @@ struct RequestedPreemptionCommit {
     decision: ScheduleDecision,
     dispatch: OwnerDispatchCommit,
     deadline_rq_observation: SchedulerDeadlineRqObservation,
-    wall_now_ns: u64,
 }
 
 struct RequestedPreemptionState {
@@ -127,7 +126,6 @@ impl TaskSystem {
             decision,
             dispatch: state.dispatch,
             deadline_rq_observation,
-            wall_now_ns: state.now_ns,
         }
     }
 
@@ -136,7 +134,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         commit: RequestedPreemptionCommit,
     ) -> SchedulerOutcome {
-        self.finish_owner_dispatch_commit(cpu.as_mut(), commit.dispatch, commit.wall_now_ns);
+        self.finish_owner_dispatch_commit(commit.dispatch);
         SchedulerOutcome::Decision(self.finish_owner_selection(
             cpu.as_mut(),
             commit.decision,
@@ -375,8 +373,11 @@ impl TaskSystem {
         if !cpu.is_online() {
             return Err(TaskError::CpuOffline(cpu.owner().as_u32()));
         }
-        let remote = Arc::clone(cpu.remote());
-        let mut transaction = OwnerRqTxn::begin(self, &remote);
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint while this scheduling transaction and all dispatch-tail
+        // mutations are live.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
+        let mut transaction = OwnerRqTxn::begin(self, remote);
         if transaction.current().is_none() {
             transaction.commit();
             return Err(TaskError::NoRunnableThread);
@@ -417,8 +418,11 @@ impl TaskSystem {
         if !cpu.is_online() {
             return Err(TaskError::CpuOffline(cpu.owner().as_u32()));
         }
-        let remote = Arc::clone(cpu.remote());
-        let mut transaction = OwnerRqTxn::begin(self, &remote);
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint while this scheduling transaction and all dispatch-tail
+        // mutations are live.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
+        let mut transaction = OwnerRqTxn::begin(self, remote);
         let clock = transaction.clock();
         let Some(thread) = transaction.current_thread() else {
             transaction.commit();
@@ -456,8 +460,11 @@ impl TaskSystem {
         if !cpu.is_online() {
             return Err(TaskError::CpuOffline(cpu.owner().as_u32()));
         }
-        let remote = Arc::clone(cpu.remote());
-        let mut transaction = OwnerRqTxn::begin(self, &remote);
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint while this scheduling transaction and all dispatch-tail
+        // mutations are live.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
+        let mut transaction = OwnerRqTxn::begin(self, remote);
         let clock = transaction.clock();
         let Some(thread) = transaction.current_thread() else {
             transaction.commit();
@@ -494,8 +501,10 @@ impl TaskSystem {
         if !cpu.is_online() {
             return Err(TaskError::CpuOffline(cpu.owner().as_u32()));
         }
-        let remote = Arc::clone(cpu.remote());
-        let mut transaction = OwnerRqTxn::begin(self, &remote);
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint for the complete accounting transaction.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
+        let mut transaction = OwnerRqTxn::begin(self, remote);
         let clock = transaction.clock();
         let Some(thread) = transaction.current_thread() else {
             transaction.commit();
@@ -533,8 +542,10 @@ impl TaskSystem {
         if !cpu.is_online() {
             return Err(TaskError::CpuOffline(cpu.owner().as_u32()));
         }
-        let remote = Arc::clone(cpu.remote());
-        let mut transaction = OwnerRqTxn::begin(self, &remote);
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint for the complete accounting transaction.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
+        let mut transaction = OwnerRqTxn::begin(self, remote);
         let clock = transaction.clock();
         let Some(thread) = transaction.current_thread() else {
             transaction.commit();
@@ -588,7 +599,9 @@ impl TaskSystem {
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        let remote = Arc::clone(cpu.remote());
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint while this scheduling transaction and switch tail are live.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
@@ -601,9 +614,8 @@ impl TaskSystem {
         });
         // SAFETY: the public task entry chooses irqsave; the scheduler-frame
         // entry is exposed only by its unsafe wrapper below.
-        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
+        let mut transaction = unsafe { rq_entry.begin(self, remote) };
+        let now_ns = transaction.clock().wall().as_nanos();
         transaction.adopt_scheduler_request(initial_request);
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
@@ -667,7 +679,7 @@ impl TaskSystem {
             reason,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
+        self.finish_owner_dispatch_commit(dispatch_commit);
         let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
         Ok(decision)
     }
@@ -716,7 +728,9 @@ impl TaskSystem {
         request_scope: SchedulerRequestScope,
     ) -> Result<SchedulerOutcome, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        let remote = Arc::clone(cpu.remote());
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint while this scheduling transaction and switch tail are live.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         let initial_request = remote.claim_scheduler_request(request_scope);
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
@@ -727,7 +741,7 @@ impl TaskSystem {
         // never acquires p->pi_lock; task scheduler state is needed only after
         // this transaction proves that put_prev_task() will run.
         // SAFETY: propagated from the selected entry contract.
-        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+        let mut transaction = unsafe { rq_entry.begin(self, remote) };
         transaction.adopt_scheduler_request(initial_request);
         if transaction.current().is_some() {
             let _settled = transaction.settle_current(0);
@@ -815,7 +829,7 @@ impl TaskSystem {
         // SAFETY: propagated from the selected entry contract.
         let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
-        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+        let mut transaction = unsafe { rq_entry.begin(self, remote) };
         transaction.adopt_scheduler_request(request);
         if transaction.current().is_some() {
             let _settled = transaction.settle_current(0);
@@ -824,8 +838,7 @@ impl TaskSystem {
         if !request.preemption_requested() {
             task_runtime::fatal_invariant(0x5343_120a, cpu.owner().as_u32() as usize);
         }
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
+        let now_ns = transaction.clock().wall().as_nanos();
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
@@ -896,7 +909,9 @@ impl TaskSystem {
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        let remote = Arc::clone(cpu.remote());
+        // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
+        // endpoint while this scheduling transaction and switch tail are live.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
@@ -907,7 +922,7 @@ impl TaskSystem {
         // ordinary sched_yield path holds only rq->lock; task state is needed
         // only for migration, Deadline, or other task-control work.
         // SAFETY: propagated from the selected entry contract.
-        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+        let mut transaction = unsafe { rq_entry.begin(self, remote) };
         transaction.adopt_scheduler_request(initial_request);
 
         if transaction.current().is_some() {
@@ -933,10 +948,9 @@ impl TaskSystem {
         // SAFETY: propagated from the selected entry contract.
         let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
-        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+        let mut transaction = unsafe { rq_entry.begin(self, remote) };
         transaction.adopt_scheduler_request(request);
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
+        let now_ns = transaction.clock().wall().as_nanos();
         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let previous = transaction.current_thread();
@@ -983,11 +997,7 @@ impl TaskSystem {
                     SwitchReason::Yield,
                     now_ns,
                 );
-                self.finish_owner_dispatch_commit(
-                    cpu.as_mut(),
-                    dispatch_commit,
-                    clock.wall().as_nanos(),
-                );
+                self.finish_owner_dispatch_commit(dispatch_commit);
                 let decision =
                     self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
@@ -1087,7 +1097,7 @@ impl TaskSystem {
             reason,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
+        self.finish_owner_dispatch_commit(dispatch_commit);
         let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
         Ok(decision)
@@ -1100,8 +1110,7 @@ impl TaskSystem {
         mut transaction: OwnerRqTxn<'_>,
         previous_core_hint: &ThreadCore,
     ) -> ScheduleDecision {
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
+        let now_ns = transaction.clock().wall().as_nanos();
         let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
@@ -1134,11 +1143,7 @@ impl TaskSystem {
                 SwitchReason::Yield,
                 now_ns,
             );
-            self.finish_owner_dispatch_commit(
-                cpu.as_mut(),
-                dispatch_commit,
-                clock.wall().as_nanos(),
-            );
+            self.finish_owner_dispatch_commit(dispatch_commit);
             let decision =
                 self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
@@ -1178,7 +1183,7 @@ impl TaskSystem {
             SwitchReason::Yield,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
+        self.finish_owner_dispatch_commit(dispatch_commit);
         self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation)
     }
 }

@@ -218,12 +218,12 @@ pub trait TaskRuntime {
     /// disabled and before the scheduler clears the outgoing thread's
     /// `on_cpu` publication. The implementation must not allocate, block,
     /// invoke callbacks, consume the scheduler baton, or re-enter ax-task. It
-    /// returns `true` only when address-space activation claimed a deferred
-    /// resource-release edge; ax-task publishes that edge after clearing the
-    /// outgoing thread's `on_cpu` claim. Any failure is an unrecoverable
-    /// runtime invariant: the raw switch has already committed, so there is no
-    /// compatibility retry path.
-    fn finish_context_switch_tail() -> bool;
+    /// returns the deferred resource-release edge and the post-switch
+    /// monotonic clock sample used for incoming CPU-time accounting. Sampling
+    /// after the incoming context binding matches Linux `vtime_task_switch()`.
+    /// Any failure is an unrecoverable runtime invariant: the raw switch has
+    /// already committed, so there is no compatibility retry path.
+    fn finish_context_switch_tail() -> (bool, u64);
 
     /// Consumes the CPU-local scheduler switch baton on a fresh context.
     ///

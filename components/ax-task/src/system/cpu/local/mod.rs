@@ -74,4 +74,18 @@ impl CpuLocal {
     pub(crate) fn remote(&self) -> &Arc<CpuRemote> {
         &self.remote
     }
+
+    /// Borrows the owner CPU's immutable runqueue endpoint independently of
+    /// the pinned `CpuLocal` dispatch fields.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain the owner capability for the complete borrow and
+    /// must not drop or replace this `CpuLocal`. The endpoint is owned by the
+    /// same pinned allocation and remains immutable after CPU publication.
+    pub(crate) unsafe fn remote_for_owner(&self) -> &'static CpuRemote {
+        // SAFETY: the owner capability pins this allocation and its Arc-backed
+        // endpoint until the caller releases every derived transaction.
+        unsafe { &*Arc::as_ptr(&self.remote) }
+    }
 }

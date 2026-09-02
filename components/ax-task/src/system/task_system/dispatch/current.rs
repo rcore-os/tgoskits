@@ -77,9 +77,7 @@ impl TaskSystem {
 
     pub(in crate::system::task_system) fn finish_owner_dispatch_commit(
         &self,
-        _cpu: Pin<&mut CpuLocal>,
         commit: OwnerDispatchCommit,
-        _wall_now_ns: u64,
     ) {
         if let Some(core) = commit.overrun_work {
             let mut sched = core.sched().lock();
