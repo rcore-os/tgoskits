@@ -5270,3 +5270,48 @@ Linux `schedule()` baton 的地方。该重复探测位于每次 futex/timer par
 没有追加格式化；仅由 benchmark 编译运行并通过 `git diff --check`。下一步继续定位
 `commit_park_owner` 中 Linux `try_to_block_task` 对应的重复 rq observation 与 Fair
 delayed reactivation 树遍历。
+
+## 2026-09-02：timer、用户返回与 CPU-time 写者按 Linux owner 边界收敛
+
+本检查点修复三个同属“事件只由其 owner 推进”的通用差异。Starry 原先在每次
+user/kernel 状态切换和用户返回信号循环中扫描进程 interval/POSIX timer；现在墙上时钟
+timer 只由已注册的 alarm worker 到期路径推进，VIRTUAL/PROF CPU timer 只由 scheduler
+tick 推进。Linux v7.1 的墙上时钟 POSIX timer 同样由
+`kernel/time/posix-timers.c::posix_timer_fn()` 的 hrtimer expiry 投递，而不是在每次 syscall
+返回时遍历 timer 表。
+
+`UserExecutionContext` 现在把 task-owned `RuntimeContext` 作为不可跨任务移动的返回能力。
+bind/exec refresh 仍检查 scheduler 选中的 address space 与硬件 root；最终
+`prepare_user_return()` 在 IRQ-off 状态确认没有调度工作后，直接使用该 binding 恢复 FPU
+并进入架构返回，不再通过 `current_context()` 重建两次相同的 current/publication/mm
+身份。对应 Linux v7.1 `kernel/entry/common.c::__exit_to_user_mode_loop()`：处理 pending work，
+关闭本地 IRQ 并重读 flags；最终 flags 清空后直接交给架构返回。
+
+GDB/qperf 随后暴露了更严重的 owner 破坏：`CpuTimeAccounting::account_now()` 可以在普通
+可抢占 task context 将 sequence 置为奇数；若此时 timer IRQ 触发调度，同一线程的
+`scheduler_switch_out()` 会等待自己留下的奇数 sequence，形成永久自旋。出错运行的
+3449 个样本中，约 `63%` 停在 `scheduler_switch_out+0x20/+0x22`，反汇编对应 pause 与
+sequence load。Linux v7.1 `include/linux/seqlock.h::write_seqcount_begin()` 明确要求 writer
+串行且不可抢占；hardirq reader/writer 可进入时还必须关闭相应中断。现在所有 CPU-time
+writer 在 claim sequence 前统一取得 `NoPreemptIrqSave`，RAII drop 先发布偶数 sequence，
+再恢复原 IRQ/抢占状态。scheduler switch 原本已处于 IRQ-off baton，只继承原状态；普通
+accounting/policy writer 则获得缺失的本地 owner，跨 CPU writer 继续由同一 sequence 串行。
+
+修复后相同 qperf workload 完成 20,000 次同核 futex 并输出
+`WAKEUP_LATENCY_PASSED`；2671 个样本的前 40 热点中不再出现
+`scheduler_switch_out` sequence 自旋。随后使用
+`cargo xtask starry app qemu -t wakeup-latency-bench --arch x86_64` 跑完整无插桩矩阵，
+此前卡住的 FIFO `sched_yield_handoff` 完成 20,000/20,000，最终输出
+`WAKEUP_LATENCY_APP_PASSED`。本轮 p50（ns）为：
+
+| 策略 | 同核 futex | 跨核线程 futex | 跨核进程 futex | 绝对 timer | yield handoff |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| OTHER | 104933 | 91427 | 98455 | 256208 | 44844 |
+| FIFO | 73796 | 91604 | 94324 | 238691 | 40399 |
+
+端到端中位数仍处于既有 TCG 波动范围，不能宣称已接近 Linux RT 的 `15--28 us` 参考区间，
+也尚未达到 90% 目标；本检查点的确定收益是消除调度 accounting 自死锁、删除 syscall
+返回 timer 全表扫描，以及移除重复 current/mm 身份重建。按阶段要求没有新增测试、没有
+执行 clippy；完整 benchmark 通过后才统一执行 `cargo fmt` 和 `git diff --check`。下一步
+继续从 timer park 的 owner transaction、clockevent rearm 与重复 rq observation 中寻找
+最大固定成本。
