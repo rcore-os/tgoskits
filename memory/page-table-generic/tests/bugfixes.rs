@@ -132,12 +132,11 @@ fn test_huge_page_offset_calculation() {
     println!("✅ 大页偏移计算测试通过！");
 }
 
-/// A checked resolver may describe a sparse/device range.  The mapper must
-/// fall back to base-page leaves when a would-be block is not physically
-/// contiguous, rather than rejecting the whole operation or aliasing the
-/// second page through a block descriptor.
+/// A checked resolver may describe a sparse/device range. The resolver API
+/// installs base-page leaves and therefore cannot alias the second page
+/// through a block descriptor.
 #[test]
-fn test_checked_mapping_falls_back_for_non_contiguous_pages() {
+fn test_checked_mapping_preserves_non_contiguous_pages() {
     let mut pg = PageTable::<T4kL3, Fram4k>::new(Fram4k).unwrap();
     let start = VirtAddr::from_usize(0);
     let first = PhysAddr::from_usize(0x0040_0000);
@@ -157,7 +156,6 @@ fn test_checked_mapping_falls_back_for_non_contiguous_pages() {
         },
         size,
         PteImpl::user_mode_config(),
-        true,
     )
     .unwrap();
 
@@ -485,7 +483,6 @@ fn map_region_rejects_virtual_overflow_before_mapping() {
         |_| PhysAddr::from_usize(0x10_0000),
         0x3000,
         MappingFlags::READ.into(),
-        false,
     );
 
     assert!(matches!(result, Err(PagingError::AddressOverflow { .. })));
@@ -517,7 +514,6 @@ fn map_region_rolls_back_prefix_after_late_conflict() {
         |vaddr| requested_paddr + (vaddr - start_vaddr),
         0x2000,
         MappingFlags::READ.into(),
-        false,
     );
 
     assert!(matches!(result, Err(PagingError::MappingConflict { .. })));

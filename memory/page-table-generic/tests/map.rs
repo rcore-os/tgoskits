@@ -1138,7 +1138,6 @@ fn map_region_rejects_unaligned_range_before_mapping() {
             |_| PhysAddr::from_usize(0x40_0000),
             0x1000,
             MappingFlags::READ.into(),
-            false,
         ),
         Err(PagingError::AlignmentError { .. })
     ));
@@ -1151,7 +1150,6 @@ fn map_region_rejects_unaligned_range_before_mapping() {
             |_| PhysAddr::from_usize(0x50_0000),
             0x1001,
             MappingFlags::READ.into(),
-            false,
         ),
         Err(PagingError::AlignmentError { .. })
     ));

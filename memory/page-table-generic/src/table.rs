@@ -12,6 +12,12 @@ use crate::{
 
 const TARGETED_FLUSH_LIMIT: usize = 32;
 
+#[derive(Clone, Copy)]
+enum RegionPageSelection {
+    BasePages,
+    Linear { allow_huge: bool },
+}
+
 /// A move-only, pre-zeroed child-table reservation.
 ///
 /// This raw allocation token never crosses the public API.  Callers receive a
@@ -357,7 +363,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
         start_paddr.as_usize().checked_add(size).ok_or_else(|| {
             PagingError::address_overflow("Physical address overflow in map_linear_pages")
         })?;
-        self.map_region_checked(
+        self.map_region_with_selection(
             start_vaddr,
             |vaddr| {
                 let offset = vaddr
@@ -375,7 +381,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
             },
             size,
             config,
-            allow_huge,
+            RegionPageSelection::Linear { allow_huge },
         )
     }
 
@@ -611,41 +617,57 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         })
     }
 
-    /// Maps a contiguous virtual region, choosing large pages when possible.
+    /// Maps a virtual region from a per-base-page physical resolver.
+    ///
+    /// The resolver may return a non-contiguous physical page sequence, so this
+    /// API deliberately installs only base-page leaves. Use
+    /// [`Self::map_linear_pages`] when the physical range is known to be
+    /// contiguous and block mappings are allowed.
+    ///
     /// Mappings installed by this call are rolled back if a later page fails.
-    /// TLB invalidation is deferred and batched until the region has been updated.
+    /// TLB invalidation is deferred and batched until the region has been
+    /// updated.
     pub fn map_region(
         &mut self,
         start_vaddr: VirtAddr,
         get_paddr: impl Fn(VirtAddr) -> PhysAddr,
         size: usize,
         config: PteConfigOf<T>,
-        allow_huge: bool,
     ) -> PagingResult {
-        self.map_region_checked(
-            start_vaddr,
-            |vaddr| Ok(get_paddr(vaddr)),
-            size,
-            config,
-            allow_huge,
-        )
+        self.map_region_checked(start_vaddr, |vaddr| Ok(get_paddr(vaddr)), size, config)
     }
 
     /// Maps a virtual region using a fallible physical-address resolver.
     ///
     /// The resolver is evaluated before each PTE write.  If it rejects a
     /// later page, mappings already installed by this invocation are rolled
-    /// back and the resolver error is returned.  This is the capability used
-    /// by linear/device mappings: address arithmetic must remain checked all
-    /// the way through the page-table walker instead of relying on a
-    /// saturating closure that can alias a different physical page.
+    /// back and the resolver error is returned. This is the capability used
+    /// by allocation-backed or sparse device mappings: address resolution
+    /// must remain checked all the way through the page-table walker. Because
+    /// the resolver does not prove contiguity, this API uses base-page leaves.
     pub fn map_region_checked(
+        &mut self,
+        start_vaddr: VirtAddr,
+        get_paddr: impl FnMut(VirtAddr) -> PagingResult<PhysAddr>,
+        size: usize,
+        config: PteConfigOf<T>,
+    ) -> PagingResult {
+        self.map_region_with_selection(
+            start_vaddr,
+            get_paddr,
+            size,
+            config,
+            RegionPageSelection::BasePages,
+        )
+    }
+
+    fn map_region_with_selection(
         &mut self,
         start_vaddr: VirtAddr,
         mut get_paddr: impl FnMut(VirtAddr) -> PagingResult<PhysAddr>,
         size: usize,
         config: PteConfigOf<T>,
-        allow_huge: bool,
+        page_selection: RegionPageSelection,
     ) -> PagingResult {
         if size == 0 {
             return Err(PagingError::invalid_size("Region size cannot be zero"));
@@ -708,87 +730,11 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                     Err(rollback_err) => Err(rollback_err),
                 };
             }
-            let remaining = size - offset;
-            let candidate = largest_page_size::<T, A>(vaddr, paddr, remaining, allow_huge);
-            // A resolver is allowed to describe device pages, so do not infer
-            // physical contiguity from the first page alone.  Before writing
-            // a block descriptor, probe every base page in the candidate and
-            // require the exact checked address progression.  This keeps a
-            // sparse/non-contiguous range on 4 KiB leaves (or rejects it) and
-            // prevents a huge PTE from aliasing unrelated frames.
-            let page_size = if candidate > T::PAGE_SIZE {
-                let mut probe_offset = T::PAGE_SIZE;
-                let mut continuity_error = None;
-                let mut non_contiguous = false;
-                while probe_offset < candidate {
-                    let probe_vaddr = match vaddr.as_usize().checked_add(probe_offset) {
-                        Some(value) => VirtAddr::from_usize(value),
-                        None => {
-                            continuity_error = Some(PagingError::address_overflow(
-                                "Virtual address overflow while validating a block mapping",
-                            ));
-                            break;
-                        }
-                    };
-                    let probe_paddr = match get_paddr(probe_vaddr) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            continuity_error = Some(error);
-                            break;
-                        }
-                    };
-                    let expected = match paddr.as_usize().checked_add(probe_offset) {
-                        Some(value) => PhysAddr::from_usize(value),
-                        None => {
-                            continuity_error = Some(PagingError::address_overflow(
-                                "Physical address overflow while validating a block mapping",
-                            ));
-                            break;
-                        }
-                    };
-                    if probe_paddr != expected {
-                        // A resolver may intentionally describe sparse device
-                        // pages.  That is not an error for the mapping as a
-                        // whole; it only means that this candidate cannot be
-                        // represented by one block descriptor.  Fall back to
-                        // base-page mappings and let the next iteration query
-                        // each page independently.  Resolver failures and
-                        // checked-arithmetic failures remain hard errors.
-                        non_contiguous = true;
-                        break;
-                    }
-                    probe_offset = match probe_offset.checked_add(T::PAGE_SIZE) {
-                        Some(value) => value,
-                        None => {
-                            continuity_error = Some(PagingError::address_overflow(
-                                "Block-page probe offset overflow",
-                            ));
-                            break;
-                        }
-                    };
+            let page_size = match page_selection {
+                RegionPageSelection::BasePages => T::PAGE_SIZE,
+                RegionPageSelection::Linear { allow_huge } => {
+                    largest_page_size::<T, A>(vaddr, paddr, size - offset, allow_huge)
                 }
-                if let Some(error) = continuity_error {
-                    let rollback_result = if offset == 0 {
-                        Ok(())
-                    } else {
-                        self.unmap_with_config(&UnmapConfig {
-                            start_vaddr,
-                            size: offset,
-                            flush: false,
-                        })
-                    };
-                    break match rollback_result {
-                        Ok(()) => Err(error),
-                        Err(rollback_err) => Err(rollback_err),
-                    };
-                }
-                if non_contiguous {
-                    T::PAGE_SIZE
-                } else {
-                    candidate
-                }
-            } else {
-                candidate
             };
             if let Err(err) = self.map(&MapConfig {
                 vaddr: vaddr.align_down(page_size),

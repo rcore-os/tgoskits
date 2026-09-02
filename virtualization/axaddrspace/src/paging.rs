@@ -63,11 +63,11 @@ pub trait NestedPageTableOps {
         vaddr: GuestPhysAddr,
     ) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)>;
 
-    /// Maps a range, optionally using huge mappings.
-    fn map_region(
+    /// Maps a physically contiguous range, optionally using huge mappings.
+    fn map_linear(
         &mut self,
         vaddr: GuestPhysAddr,
-        get_paddr: impl Fn(GuestPhysAddr) -> PhysAddr,
+        paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
         allow_huge: bool,

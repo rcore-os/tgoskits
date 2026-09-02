@@ -207,8 +207,7 @@ impl Backend {
         } else {
             // Map to a empty entry for on-demand mapping.
             let flags = MappingFlags::empty();
-            pt.map_region(start, |_| 0.into(), size, flags, false)
-                .is_ok()
+            pt.map_region(start, |_| 0.into(), size, flags).is_ok()
         }
     }
 

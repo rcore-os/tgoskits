@@ -153,13 +153,7 @@ fn partial_protect_splits_a_huge_leaf_without_changing_neighbors() {
     let protected = OpaqueConfig { domain: 0x7f };
 
     page_table
-        .map_region(
-            vaddr,
-            |current| paddr + (current - vaddr),
-            BLOCK_SIZE_2M,
-            original,
-            true,
-        )
+        .map_linear_pages(vaddr, paddr, BLOCK_SIZE_2M, original, true)
         .unwrap();
     assert_eq!(page_table.query(vaddr).unwrap().2, BLOCK_SIZE_2M);
 
@@ -205,15 +199,15 @@ fn query_reports_arbitrary_base_page_size() {
 }
 
 #[test]
-fn map_region_selects_page_sizes_from_table_levels() {
+fn map_linear_pages_selects_page_sizes_from_table_levels() {
     let mut page_table = PageTable::<T16kL4, Fram16k>::new(Fram16k).unwrap();
     let vaddr = VirtAddr::from_usize(BLOCK_SIZE_32M);
     let paddr = PhysAddr::from_usize(BLOCK_SIZE_32M);
 
     page_table
-        .map_region(
+        .map_linear_pages(
             vaddr,
-            |current| paddr + (current - vaddr),
+            paddr,
             BLOCK_SIZE_32M,
             MappingFlags::READ.into(),
             true,
@@ -223,4 +217,24 @@ fn map_region_selects_page_sizes_from_table_levels() {
     let (mapped_paddr, _, page_size) = page_table.query(vaddr + PAGE_SIZE_16K).unwrap();
     assert_eq!(mapped_paddr, paddr + PAGE_SIZE_16K);
     assert_eq!(page_size, BLOCK_SIZE_32M);
+}
+
+#[test]
+fn resolver_mapping_does_not_infer_physical_contiguity() {
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(BLOCK_SIZE_2M);
+    let paddr = PhysAddr::from_usize(BLOCK_SIZE_2M * 2);
+
+    page_table
+        .map_region(
+            vaddr,
+            |current| paddr + (current - vaddr),
+            BLOCK_SIZE_2M,
+            OpaqueConfig { domain: 0x2a },
+        )
+        .unwrap();
+
+    let (mapped_paddr, _, page_size) = page_table.query(vaddr + OpaqueMeta::PAGE_SIZE).unwrap();
+    assert_eq!(mapped_paddr, paddr + OpaqueMeta::PAGE_SIZE);
+    assert_eq!(page_size, OpaqueMeta::PAGE_SIZE);
 }

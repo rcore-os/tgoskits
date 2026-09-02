@@ -22,16 +22,25 @@ impl Backend {
         pa_va_offset: usize,
         allow_huge: bool,
     ) -> bool {
-        let va_to_pa = |va: VirtAddr| PhysAddr::from(va.as_usize() - pa_va_offset);
+        let Some((end, start_paddr, end_paddr)) = start
+            .as_usize()
+            .checked_sub(pa_va_offset)
+            .map(PhysAddr::from_usize)
+            .and_then(|start_paddr| {
+                Some((
+                    VirtAddr::from_usize(start.as_usize().checked_add(size)?),
+                    start_paddr,
+                    PhysAddr::from_usize(start_paddr.as_usize().checked_add(size)?),
+                ))
+            })
+        else {
+            return false;
+        };
         debug!(
             "map_linear: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
-            start,
-            start + size,
-            va_to_pa(start),
-            va_to_pa(start + size),
-            flags
+            start, end, start_paddr, end_paddr, flags
         );
-        pt.map_region(start, va_to_pa, size, flags, allow_huge)
+        pt.map_linear_pages(start, start_paddr, size, flags, allow_huge)
             .is_ok()
     }
 

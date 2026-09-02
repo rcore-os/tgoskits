@@ -199,25 +199,23 @@ impl NestedPageTableOps for MockNestedPageTable {
         Ok((paddr, flags, PageSize::Size4K))
     }
 
-    fn map_region(
+    fn map_linear(
         &mut self,
         vaddr: GuestPhysAddr,
-        get_paddr: impl Fn(GuestPhysAddr) -> PhysAddr,
+        paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
-        _allow_huge: bool,
+        allow_huge: bool,
     ) -> AddrSpaceResult {
-        let paddr = get_paddr(vaddr);
         Ok(self
             .inner
-            .map(&ptg::MapConfig {
-                vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            .map_linear_pages(
+                ptg::VirtAddr::from_usize(vaddr.as_usize()),
                 paddr,
                 size,
-                pte: flags,
-                allow_huge: false,
-                flush: false,
-            })
+                flags,
+                allow_huge,
+            )
             .map_err(Self::convert_err)?)
     }
 
