@@ -106,17 +106,6 @@ fn is_reserved_memory_path(node_path: &str) -> bool {
     node_path == "/reserved-memory" || node_path.starts_with("/reserved-memory/")
 }
 
-fn is_pci_host_node(node: &Node) -> bool {
-    node.name().starts_with("pci@")
-        || node
-            .get_property("device_type")
-            .and_then(|property| property.as_str())
-            == Some("pci")
-        || node
-            .compatibles()
-            .any(|compatible| compatible.contains("pci-host"))
-}
-
 fn reserve_unassigned_pci_hosts(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<String> {
     let mut paths = Vec::new();
     let mut reserved_ranges = Vec::new();
@@ -130,7 +119,7 @@ fn reserve_unassigned_pci_hosts(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<Strin
         let Some(node) = fdt.node(node_id) else {
             continue;
         };
-        if !is_pci_host_node(node) {
+        if !node.is_pci() {
             continue;
         }
 
@@ -930,6 +919,9 @@ mod tests {
             .set_property(prop_u32("#size-cells", 2));
         let soc = fdt.add_node(root, Node::new("soc"));
         let pci = fdt.add_node(soc, Node::new("pci@30000000"));
+        fdt.node_mut(pci)
+            .unwrap()
+            .set_property(super::super::tree::prop_string("device_type", "pci"));
         fdt.view_typed_mut(pci)
             .unwrap()
             .set_regs(&[RegInfo::new(0x3000_0000, Some(0x1000_0000))]);
