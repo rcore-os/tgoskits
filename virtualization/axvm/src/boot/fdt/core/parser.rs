@@ -129,22 +129,7 @@ fn reserve_unassigned_pci_hosts(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<Strin
             continue;
         }
         vm_cfg.exclude_device_path(path.clone());
-        for reg in node_regs(fdt, node_id) {
-            push_reserved_address_range(
-                &mut reserved_ranges,
-                &path,
-                reg.address as usize,
-                reg.size.unwrap_or(0) as usize,
-            );
-        }
-        for range in node_pci_ranges(fdt, node_id) {
-            push_reserved_address_range(
-                &mut reserved_ranges,
-                &path,
-                range.cpu_address as usize,
-                range.size as usize,
-            );
-        }
+        collect_node_reserved_ranges(fdt, node_id, &path, &mut reserved_ranges);
         paths.push(path);
     }
     for range in reserved_ranges {
@@ -340,24 +325,7 @@ pub fn reserve_excluded_device_ranges(
         }
 
         exclude_node_interrupt_sources(vm_cfg, &fdt, node_id, decode_interrupt);
-
-        for reg in node_regs(&fdt, node_id) {
-            push_reserved_address_range(
-                &mut reserved_ranges,
-                &node_path,
-                reg.address as usize,
-                reg.size.unwrap_or(0) as usize,
-            );
-        }
-
-        for range in node_pci_ranges(&fdt, node_id) {
-            push_reserved_address_range(
-                &mut reserved_ranges,
-                &node_path,
-                range.cpu_address as usize,
-                range.size as usize,
-            );
-        }
+        collect_node_reserved_ranges(&fdt, node_id, &node_path, &mut reserved_ranges);
     }
 
     reserved_ranges.sort_by_key(|range| range.base_gpa);
@@ -366,6 +334,31 @@ pub fn reserve_excluded_device_ranges(
     }
 
     Ok(())
+}
+
+fn collect_node_reserved_ranges(
+    fdt: &Fdt,
+    node_id: usize,
+    node_path: &str,
+    reserved_ranges: &mut Vec<ReservedAddressConfig>,
+) {
+    for reg in node_regs(fdt, node_id) {
+        push_reserved_address_range(
+            reserved_ranges,
+            node_path,
+            reg.address as usize,
+            reg.size.unwrap_or(0) as usize,
+        );
+    }
+
+    for range in node_pci_ranges(fdt, node_id) {
+        push_reserved_address_range(
+            reserved_ranges,
+            node_path,
+            range.cpu_address as usize,
+            range.size as usize,
+        );
+    }
 }
 
 fn exclude_node_interrupt_sources(
