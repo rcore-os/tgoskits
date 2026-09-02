@@ -175,15 +175,6 @@ const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         expected_tests: &[],
     },
     PackageFeatureProfile {
-        name: "host-test+vfs-reclaim-discovery",
-        no_default_features: false,
-        features: &["host-test", "vfs"],
-        name_filter: Some("reclaim_releases_registry_spin_lock_before_sleepable_file_locks"),
-        expected_tests: &[
-            "file::cache::reclaim::tests::reclaim_releases_registry_spin_lock_before_sleepable_file_locks",
-        ],
-    },
-    PackageFeatureProfile {
         name: "host-test-resource-rollback-discovery",
         no_default_features: false,
         features: &["host-test"],

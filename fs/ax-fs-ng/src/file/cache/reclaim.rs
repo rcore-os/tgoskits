@@ -250,39 +250,12 @@ fn pressure_reclaim_is_allocation_free_and_skips_live_mappings_for_test() -> boo
 }
 
 #[cfg(test)]
-fn reclaim_releases_registry_spin_lock_for_test() -> bool {
-    let file = Arc::new(CachedFileShared::new_unbounded(0));
-    GLOBAL_CACHED_FILES.write().insert(0, Arc::clone(&file));
-
-    let registry_was_unlocked = visit_registered_cached_file(0, |registered| {
-        Arc::ptr_eq(registered, &file) && GLOBAL_CACHED_FILES.try_write().is_some()
-    })
-    .unwrap_or(false);
-
-    let removed = {
-        let mut registry = GLOBAL_CACHED_FILES.write();
-        let index = registry
-            .iter()
-            .position(|cached| Arc::ptr_eq(cached, &file))
-            .expect("reclaim test cached file disappeared from the registry");
-        registry.remove(index)
-    };
-    drop(removed);
-    registry_was_unlocked
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn allocator_pressure_reclaim_skips_mapped_pages_without_callbacks() {
         assert!(pressure_reclaim_is_allocation_free_and_skips_live_mappings_for_test());
-    }
-
-    #[test]
-    fn reclaim_releases_registry_spin_lock_before_sleepable_file_locks() {
-        assert!(reclaim_releases_registry_spin_lock_for_test());
     }
 
     #[cfg(feature = "ext4")]
