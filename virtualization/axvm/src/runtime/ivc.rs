@@ -28,8 +28,8 @@ use axdevice::{
 use axdevice_base::IrqLine;
 
 use crate::{
-    AxVmError, AxVmResult, GuestPhysAddr, HostPhysAddr, ax_err_type, host::PagingHandler,
-    sync::MutexExt,
+    AxVmError, AxVmResult, GuestPhysAddr, HostPhysAddr, MappingFlags, ax_err_type,
+    host::PagingHandler, sync::MutexExt,
 };
 
 /// A global btree map to store IVC channels,
@@ -42,7 +42,17 @@ static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::ne
 ///
 /// Requests larger than this are truncated; the hypercall ABI always writes
 /// the actual granted size back to the guest, so guests must check it.
-pub const MAX_IVC_CHANNEL_SIZE: usize = 0x10_0000;
+pub const MAX_IVC_CHANNEL_SIZE: usize = 0x100_0000;
+const IVC_NOTIFY_PEER: usize = usize::MAX;
+
+/// Stage-2 attributes for AXIVC shared pages.
+///
+/// The shared region is CPU-owned Normal Write-Back memory. Guests that map the
+/// same physical pages through StarryOS, Linux or Zephyr must use compatible WB
+/// attributes; DEVICE/UNCACHED aliases are not part of the AXIVC contract.
+pub(crate) fn shared_memory_mapping_flags() -> MappingFlags {
+    MappingFlags::READ | MappingFlags::WRITE
+}
 
 /// Allocates guest-physical bindings inside one graph-owned IVC MMIO aperture.
 pub(crate) trait IvcApertureAllocator: Send + Sync {
@@ -451,15 +461,13 @@ fn prepare_subscribe_channel_from_channels<H: PagingHandler>(
     Ok(channel.size())
 }
 
-/// Subcribe to a channel of a publisher VM with the given key,
-/// return the shared region base address and size.
-pub fn subscribe_to_channel_of_publisher(
+fn subscribe_to_channel_from_channels<H: PagingHandler>(
+    channels: &mut BTreeMap<(usize, usize), IVCChannel<H>>,
     publisher_vm_id: usize,
     key: usize,
     subscriber_vm_id: usize,
     subscriber_gpa: GuestPhysAddr,
 ) -> AxVmResult<(HostPhysAddr, usize)> {
-    let mut channels = IVC_CHANNELS.lock_unpoisoned();
     let channel = channels.get_mut(&(publisher_vm_id, key)).ok_or_else(|| {
         ax_err_type!(
             NotFound,
@@ -483,6 +491,24 @@ pub fn subscribe_to_channel_of_publisher(
     // protocol's one-subscriber invariant.
     channel.add_subscriber(subscriber_vm_id, subscriber_gpa)?;
     Ok((channel.base_hpa(), channel.size()))
+}
+
+/// Subcribe to a channel of a publisher VM with the given key,
+/// return the shared region base address and size.
+pub fn subscribe_to_channel_of_publisher(
+    publisher_vm_id: usize,
+    key: usize,
+    subscriber_vm_id: usize,
+    subscriber_gpa: GuestPhysAddr,
+) -> AxVmResult<(HostPhysAddr, usize)> {
+    let mut channels = IVC_CHANNELS.lock_unpoisoned();
+    subscribe_to_channel_from_channels(
+        &mut channels,
+        publisher_vm_id,
+        key,
+        subscriber_vm_id,
+        subscriber_gpa,
+    )
 }
 
 /// Unsubscribe from a channel of a publisher VM with the given key,
@@ -511,6 +537,22 @@ pub fn prepare_notify_channel(
     target_vm_id: usize,
 ) -> AxVmResult<IvcNotifyRoute> {
     let channels = IVC_CHANNELS.lock_unpoisoned();
+    prepare_notify_channel_from_channels(
+        &channels,
+        publisher_vm_id,
+        key,
+        source_vm_id,
+        target_vm_id,
+    )
+}
+
+fn prepare_notify_channel_from_channels<H: PagingHandler>(
+    channels: &BTreeMap<(usize, usize), IVCChannel<H>>,
+    publisher_vm_id: usize,
+    key: usize,
+    source_vm_id: usize,
+    mut target_vm_id: usize,
+) -> AxVmResult<IvcNotifyRoute> {
     let channel = channels.get(&(publisher_vm_id, key)).ok_or_else(|| {
         ax_err_type!(
             NotFound,
@@ -529,6 +571,18 @@ pub fn prepare_notify_channel(
                 publisher_vm_id, key
             )
         ));
+    }
+
+    if target_vm_id == IVC_NOTIFY_PEER {
+        target_vm_id = channel.peer_vm_id_for(source_vm_id).ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!(
+                    "VM[{}] has no notifiable peer on IVC channel publisher VM[{}] key {:#x}",
+                    source_vm_id, publisher_vm_id, key
+                )
+            )
+        })?;
     }
 
     let source_can_notify_target = if source_vm_id == publisher_vm_id {
@@ -678,6 +732,13 @@ impl<H: PagingHandler> IVCChannel<H> {
             .ok_or(AxVmError::OutOfMemory {
             operation: "allocate IVC shared region frames",
         })?;
+        unsafe {
+            core::ptr::write_bytes(
+                H::phys_to_virt(shared_region_base).as_mut_ptr(),
+                0,
+                shared_region_size,
+            );
+        }
 
         let mut channel = IVCChannel {
             publisher_vm_id,
@@ -695,6 +756,9 @@ impl<H: PagingHandler> IVCChannel<H> {
             header.publisher_id = publisher_vm_id as u64;
             header.key = key as u64;
         }
+        // Make the host-initialized channel header visible through the guest
+        // WB mappings before the shared pages are first exposed.
+        H::clean_dcache_range(shared_region_base, shared_region_size);
 
         debug!("Allocated IVCChannel: {channel:?}");
 
@@ -737,6 +801,18 @@ impl<H: PagingHandler> IVCChannel<H> {
     pub fn has_subscriber(&self, subscriber_vm_id: usize) -> bool {
         self.subscriber
             .is_some_and(|binding| binding.vm_id == subscriber_vm_id && !binding.closing)
+    }
+
+    fn peer_vm_id_for(&self, source_vm_id: usize) -> Option<usize> {
+        if source_vm_id == self.publisher_vm_id {
+            self.subscriber
+                .filter(|binding| !binding.closing)
+                .map(|binding| binding.vm_id)
+        } else if self.has_subscriber(source_vm_id) {
+            Some(self.publisher_vm_id)
+        } else {
+            None
+        }
     }
 
     fn ensure_subscriber_available(&self, subscriber_vm_id: usize) -> AxVmResult<()> {
@@ -909,7 +985,7 @@ mod tests {
 
     use super::*;
 
-    const TEST_ARENA_SIZE: usize = 8 * 1024 * 1024;
+    const TEST_ARENA_SIZE: usize = 128 * 1024 * 1024;
 
     /// A [`PagingHandler`] backed by a bump allocator over one leaked arena.
     ///
@@ -922,6 +998,7 @@ mod tests {
     static ALLOC_FRAMES_CALLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
     static DEALLOC_FRAME_CALLS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
     static DEALLOC_FRAMES_CALLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+    static DCACHE_CLEAN_CALLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
 
     fn arena_base() -> usize {
         static BASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -942,6 +1019,16 @@ mod tests {
             return None;
         }
         Some(PhysAddr::from_usize(arena_base() + offset))
+    }
+
+    fn poison_allocated_pages(base: PhysAddr, num_pages: usize) {
+        unsafe {
+            core::ptr::write_bytes(
+                VirtAddr::from_usize(base.as_usize()).as_mut_ptr(),
+                0xA5,
+                num_pages * PAGE_SIZE_4K,
+            );
+        }
     }
 
     fn teardown_bindings(teardowns: &[IvcTeardown]) -> Vec<IvcGuestBinding> {
@@ -980,6 +1067,105 @@ mod tests {
         fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
             VirtAddr::from_usize(paddr.as_usize())
         }
+
+        fn clean_dcache_range(paddr: PhysAddr, size: usize) {
+            DCACHE_CLEAN_CALLS
+                .lock()
+                .unwrap()
+                .push((paddr.as_usize(), size));
+        }
+    }
+
+    struct DirtyPagingHandler;
+
+    impl PagingHandler for DirtyPagingHandler {
+        fn alloc_frame() -> Option<PhysAddr> {
+            let paddr = bump_alloc_pages(1)?;
+            poison_allocated_pages(paddr, 1);
+            Some(paddr)
+        }
+
+        fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr> {
+            assert!(align <= PAGE_SIZE_4K);
+            let paddr = bump_alloc_pages(num)?;
+            poison_allocated_pages(paddr, num);
+            Some(paddr)
+        }
+
+        fn dealloc_frame(paddr: PhysAddr) {
+            DEALLOC_FRAME_CALLS.lock().unwrap().push(paddr.as_usize());
+        }
+
+        fn dealloc_frames(paddr: PhysAddr, num: usize) {
+            DEALLOC_FRAMES_CALLS
+                .lock()
+                .unwrap()
+                .push((paddr.as_usize(), num));
+        }
+
+        fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+            VirtAddr::from_usize(paddr.as_usize())
+        }
+
+        fn clean_dcache_range(paddr: PhysAddr, size: usize) {
+            DCACHE_CLEAN_CALLS
+                .lock()
+                .unwrap()
+                .push((paddr.as_usize(), size));
+        }
+    }
+
+    #[test]
+    fn ivc_stage2_mapping_flags_are_cacheable_normal_memory() {
+        let flags = shared_memory_mapping_flags();
+
+        assert!(flags.contains(MappingFlags::READ));
+        assert!(flags.contains(MappingFlags::WRITE));
+        assert!(!flags.contains(MappingFlags::DEVICE));
+        assert!(!flags.contains(MappingFlags::UNCACHED));
+    }
+
+    #[test]
+    fn allocation_cleans_shared_region_before_exposure() {
+        let channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            0x106,
+            2 * PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_6000),
+        )
+        .unwrap();
+        let base = channel.base_hpa();
+
+        assert!(
+            DCACHE_CLEAN_CALLS
+                .lock()
+                .unwrap()
+                .contains(&(base.as_usize(), 2 * PAGE_SIZE_4K))
+        );
+    }
+
+    #[test]
+    fn allocation_clears_dirty_reused_shared_region_before_exposure() {
+        let channel = IVCChannel::<DirtyPagingHandler>::alloc(
+            1,
+            0x107,
+            2 * PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_7000),
+        )
+        .unwrap();
+        let header = channel.header();
+        let region = unsafe {
+            std::slice::from_raw_parts(
+                DirtyPagingHandler::phys_to_virt(channel.base_hpa())
+                    .as_ptr()
+                    .add(core::mem::size_of::<IVCChannelHeader>()),
+                channel.size() - core::mem::size_of::<IVCChannelHeader>(),
+            )
+        };
+
+        assert_eq!(header.publisher_id, 1);
+        assert_eq!(header.key, 0x107);
+        assert!(region.iter().all(|&byte| byte == 0));
     }
 
     #[test]
@@ -1064,6 +1250,65 @@ mod tests {
         assert!(second.is_err());
         assert!(channel.has_subscriber(2));
         assert!(!channel.has_subscriber(3));
+    }
+
+    #[test]
+    fn prepared_subscriber_can_lose_the_race_to_late_registration() {
+        let publisher_vm_id = 1;
+        let key = 0x108;
+        let first_subscriber_vm_id = 2;
+        let second_subscriber_vm_id = 3;
+        let first_subscriber_gpa = GuestPhysAddr::from_usize(0x7100_0000);
+        let second_subscriber_gpa = GuestPhysAddr::from_usize(0x7200_0000);
+
+        let mut channels: BTreeMap<(usize, usize), IVCChannel<MockPagingHandler>> = BTreeMap::new();
+        channels.insert(
+            (publisher_vm_id, key),
+            IVCChannel::<MockPagingHandler>::alloc(
+                publisher_vm_id,
+                key,
+                PAGE_SIZE_4K,
+                GuestPhysAddr::from_usize(0x7000_8000),
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(
+            prepare_subscribe_channel_from_channels(
+                &channels,
+                publisher_vm_id,
+                key,
+                first_subscriber_vm_id,
+            )
+            .unwrap(),
+            PAGE_SIZE_4K
+        );
+
+        assert_eq!(
+            subscribe_to_channel_from_channels(
+                &mut channels,
+                publisher_vm_id,
+                key,
+                second_subscriber_vm_id,
+                second_subscriber_gpa,
+            )
+            .unwrap()
+            .1,
+            PAGE_SIZE_4K
+        );
+
+        assert!(
+            subscribe_to_channel_from_channels(
+                &mut channels,
+                publisher_vm_id,
+                key,
+                first_subscriber_vm_id,
+                first_subscriber_gpa,
+            )
+            .is_err(),
+            "the final subscribe step must re-check the channel and lose the race to the first \
+             registrant"
+        );
     }
 
     #[test]
@@ -1188,6 +1433,72 @@ mod tests {
         assert!(channel.has_subscriber(3));
 
         assert!(teardown_vm_from_channels(&mut channels, 2).is_empty());
+    }
+
+    #[test]
+    fn notify_peer_sentinel_routes_publisher_to_subscriber() {
+        let publisher_vm_id = 1;
+        let subscriber_vm_id = 2;
+        let key = 0x210;
+        let mut channels = BTreeMap::new();
+        let mut channel = IVCChannel::<MockPagingHandler>::alloc(
+            publisher_vm_id,
+            key,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_0000),
+        )
+        .unwrap();
+        channel
+            .add_subscriber(subscriber_vm_id, GuestPhysAddr::from_usize(0x7100_0000))
+            .unwrap();
+        channels.insert((publisher_vm_id, key), channel);
+
+        let route = prepare_notify_channel_from_channels(
+            &channels,
+            publisher_vm_id,
+            key,
+            publisher_vm_id,
+            IVC_NOTIFY_PEER,
+        )
+        .unwrap();
+
+        assert_eq!(route.source_vm_id, publisher_vm_id);
+        assert_eq!(route.target_vm_id, subscriber_vm_id);
+        assert_eq!(route.publisher_vm_id, publisher_vm_id);
+        assert_eq!(route.key, key);
+    }
+
+    #[test]
+    fn notify_peer_sentinel_routes_subscriber_to_publisher() {
+        let publisher_vm_id = 1;
+        let subscriber_vm_id = 2;
+        let key = 0x211;
+        let mut channels = BTreeMap::new();
+        let mut channel = IVCChannel::<MockPagingHandler>::alloc(
+            publisher_vm_id,
+            key,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_0000),
+        )
+        .unwrap();
+        channel
+            .add_subscriber(subscriber_vm_id, GuestPhysAddr::from_usize(0x7100_0000))
+            .unwrap();
+        channels.insert((publisher_vm_id, key), channel);
+
+        let route = prepare_notify_channel_from_channels(
+            &channels,
+            publisher_vm_id,
+            key,
+            subscriber_vm_id,
+            IVC_NOTIFY_PEER,
+        )
+        .unwrap();
+
+        assert_eq!(route.source_vm_id, subscriber_vm_id);
+        assert_eq!(route.target_vm_id, publisher_vm_id);
+        assert_eq!(route.publisher_vm_id, publisher_vm_id);
+        assert_eq!(route.key, key);
     }
 
     #[test]

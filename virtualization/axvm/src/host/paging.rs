@@ -27,6 +27,8 @@ pub trait PagingHandler {
     fn dealloc_frames(paddr: PhysAddr, num: usize);
 
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr;
+
+    fn clean_dcache_range(paddr: PhysAddr, size: usize);
 }
 
 /// Paging handler backed by the AxVM private ArceOS host adapter.
@@ -59,6 +61,15 @@ impl PagingHandler for HostPagingHandler {
 
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
         default_host().phys_to_virt(paddr)
+    }
+
+    fn clean_dcache_range(paddr: PhysAddr, size: usize) {
+        let vaddr = default_host().phys_to_virt(paddr);
+        ax_std::os::arceos::modules::ax_hal::mem::dcache_range(
+            ax_std::os::arceos::modules::ax_hal::mem::DCacheOp::Clean,
+            vaddr,
+            size,
+        );
     }
 }
 

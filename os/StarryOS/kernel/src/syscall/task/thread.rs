@@ -116,7 +116,12 @@ pub fn sys_arch_prctl(
             uctx.gs_base = addr as _;
             Ok(0)
         }
-        ArchPrctlCode::GetCpuid => Ok(0),
+        // Linux get_cpuid_mode() returns 1 (ARCH_CPUID_ENABLE) when the CPUID
+        // instruction is enabled for the thread and 0 when it faults. StarryOS
+        // never installs CPUID faulting, so CPUID is always enabled and GET must
+        // report 1 rather than a hardcoded 0. SET stays ENODEV: without faulting
+        // support Linux rejects every requested mode.
+        ArchPrctlCode::GetCpuid => Ok(1),
         ArchPrctlCode::SetCpuid => Err(crate::StarryError::NoSuchDevice),
     }
 }

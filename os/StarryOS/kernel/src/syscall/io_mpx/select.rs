@@ -118,11 +118,15 @@ fn do_select(
                 for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
                     let events = fd.poll();
                     let always_report = events & IoEvents::ALWAYS_POLL;
+                    // Linux fs/select.c: POLLIN_SET carries HUP|ERR but
+                    // POLLOUT_SET carries only ERR, so a hangup makes a fd
+                    // readable (read returns EOF) yet never writable.
+                    let write_report = events & IoEvents::ERR;
                     let selected = events & *interested;
                     let selected_read = selected.contains(IoEvents::IN)
                         || (read_set.0.get(index) && !always_report.is_empty());
                     let selected_write = selected.contains(IoEvents::OUT)
-                        || (write_set.0.get(index) && !always_report.is_empty());
+                        || (write_set.0.get(index) && !write_report.is_empty());
                     let selected_except =
                         selected.contains(IoEvents::ERR) && except_set.0.get(index);
 

@@ -5,6 +5,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
+use crate::structured_log::{RuntimeLogContext, write_structured_prefix};
+
 pub(crate) const LOG_RECORD_BYTES: usize = 1024;
 pub(super) const LOG_SLOTS_PER_CPU: usize = 64;
 
@@ -115,13 +117,14 @@ impl LogRecord {
                 truncated: false,
             };
             if meta.kind == LogRecordKind::Log {
-                let seconds = meta.timestamp_nanos / 1_000_000_000;
-                let micros = meta.timestamp_nanos % 1_000_000_000 / 1_000;
-                if let Some(task_id) = meta.task_id {
-                    write!(formatter, "[{seconds:>3}.{micros:06} {cpu_id}:{task_id} ")?;
-                } else {
-                    write!(formatter, "[{seconds:>3}.{micros:06} {cpu_id} ")?;
-                }
+                write_structured_prefix(
+                    &mut formatter,
+                    RuntimeLogContext::new(
+                        core::time::Duration::from_nanos(meta.timestamp_nanos),
+                        Some(cpu_id),
+                        meta.task_id,
+                    ),
+                )?;
             }
             formatter.write_fmt(args)?;
             formatter.finish();
@@ -874,7 +877,10 @@ mod tests {
 
         let mut reader = mailbox.reader();
         let record = reader.take(OWNER).unwrap().record;
-        assert_eq!(record.bytes(), b"[ 12.345678 0:42 module:7] message\r\n");
+        assert_eq!(
+            record.bytes(),
+            b"\x1b[37m[ 12.345678 0:42 module:7] message\r\n"
+        );
         assert_eq!(record.kind(), LogRecordKind::Log);
     }
 }

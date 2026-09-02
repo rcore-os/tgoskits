@@ -18,6 +18,7 @@
 //! `timeout` remains the backstop if the probe or its QMP quit fails.
 
 use std::{
+    io::Write,
     net::TcpStream,
     path::{Path, PathBuf},
     sync::{
@@ -33,11 +34,32 @@ use anyhow::{Context, bail};
 
 use super::types::AxvisorHttpProbeConfig;
 
-/// The probe callback invoked by the guard once the forwarded port accepts
-/// connections. Returns the verdict (`Ok` = pass, `Err` = fail). The probe is a
-/// `FnOnce` so it may own everything it needs (base address, token, config
-/// paths) and runs on the guard's worker thread.
-pub(crate) type HostHttpProbeFn = Box<dyn FnOnce() -> anyhow::Result<()> + Send + 'static>;
+/// Captured probe output and its pass/fail verdict.
+pub(crate) struct HostHttpProbeOutcome {
+    pub(crate) output: Vec<u8>,
+    pub(crate) verdict: anyhow::Result<()>,
+}
+
+impl HostHttpProbeOutcome {
+    pub(crate) fn failed(error: anyhow::Error) -> Self {
+        Self {
+            output: Vec::new(),
+            verdict: Err(error),
+        }
+    }
+
+    fn append_diagnostic(&mut self, args: core::fmt::Arguments<'_>) {
+        if !self.output.is_empty() && !self.output.ends_with(b"\n") {
+            self.output.push(b'\n');
+        }
+        let _ = writeln!(&mut self.output, "{args}");
+    }
+}
+
+/// The probe callback invoked by the guard once the forwarded port accepts.
+/// The probe is a `FnOnce` so it may own everything it needs and runs on the
+/// guard's worker thread without writing to QEMU's terminal stream.
+pub(crate) type HostHttpProbeFn = Box<dyn FnOnce() -> HostHttpProbeOutcome + Send + 'static>;
 
 /// Sleep between readiness retries.
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
@@ -57,7 +79,7 @@ const QMP_QUIT_RETRIES: usize = 4;
 
 pub(crate) struct HostHttpProbeGuard {
     stop: Arc<AtomicBool>,
-    result: Arc<Mutex<Option<anyhow::Result<()>>>>,
+    result: Arc<Mutex<Option<HostHttpProbeOutcome>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -99,7 +121,7 @@ impl HostHttpProbeGuard {
             // The guard waits for the forwarded port (guest boot + network
             // init); the probe then runs the HTTP assertions. The probe is
             // consumed exactly once.
-            let verdict = (|| -> anyhow::Result<()> {
+            let mut outcome = (|| -> anyhow::Result<HostHttpProbeOutcome> {
                 wait_for_port_ready(&thread_addr, connect_timeout, &thread_stop).with_context(
                     || {
                         format!(
@@ -107,9 +129,9 @@ impl HostHttpProbeGuard {
                         )
                     },
                 )?;
-                probe()
-            })();
-            *thread_result.lock().unwrap() = Some(verdict);
+                Ok(probe())
+            })()
+            .unwrap_or_else(HostHttpProbeOutcome::failed);
             // Quit QEMU so a successful run ends promptly on the probe verdict
             // instead of the serial-timeout path. The runner owns the QEMU
             // child, so it decides whether QEMU actually exits: a `quit` that
@@ -118,10 +140,11 @@ impl HostHttpProbeGuard {
             if let Some(socket) = qmp_socket
                 && let Err(err) = request_qmp_quit(&socket)
             {
-                eprintln!(
+                outcome.append_diagnostic(format_args!(
                     "  host http probe: {thread_case_name}: failed to quit QEMU via QMP: {err:#}"
-                );
+                ));
             }
+            *thread_result.lock().unwrap() = Some(outcome);
         });
 
         if ready_rx.recv_timeout(Duration::from_secs(1)).is_err() {
@@ -137,21 +160,26 @@ impl HostHttpProbeGuard {
         })
     }
 
-    /// Take the probe's stored verdict, if the thread produced one.
+    /// Stop and join the worker, then take its captured output and verdict.
     ///
-    /// Called once, after QEMU has exited. The probe always stores a verdict
-    /// *before* it quits QEMU, so a clean QEMU exit implies a verdict exists.
-    pub(crate) fn take_result(&self) -> Option<anyhow::Result<()>> {
+    /// On an early QEMU failure, setting `stop` makes a running probe terminate
+    /// and publish its partial capture before this method reads the outcome.
+    pub(crate) fn finish(mut self) -> Option<HostHttpProbeOutcome> {
+        self.stop_and_join();
         self.result.lock().unwrap().take()
+    }
+
+    fn stop_and_join(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
 impl Drop for HostHttpProbeGuard {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.stop_and_join();
     }
 }
 
@@ -294,4 +322,51 @@ fn request_qmp_quit(socket: &Path) -> anyhow::Result<()> {
 #[cfg(not(unix))]
 fn request_qmp_quit(_socket: &Path) -> anyhow::Result<()> {
     bail!("QMP unix sockets are not supported on this host")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finish_joins_the_worker_before_taking_a_late_outcome() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let result = Arc::new(Mutex::new(None));
+        let thread_stop = stop.clone();
+        let thread_result = result.clone();
+        let thread = thread::spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            *thread_result.lock().unwrap() = Some(HostHttpProbeOutcome {
+                output: b"partial probe output\n".to_vec(),
+                verdict: Err(anyhow::anyhow!("probe stopped")),
+            });
+        });
+        let guard = HostHttpProbeGuard {
+            stop,
+            result,
+            thread: Some(thread),
+        };
+
+        let outcome = guard.finish().expect("late probe outcome");
+
+        assert_eq!(outcome.output, b"partial probe output\n");
+        assert!(outcome.verdict.is_err());
+    }
+
+    #[test]
+    fn qmp_failure_diagnostic_is_buffered_with_probe_output() {
+        let mut outcome = HostHttpProbeOutcome {
+            output: b"probe output without newline".to_vec(),
+            verdict: Ok(()),
+        };
+
+        outcome.append_diagnostic(format_args!("QMP quit failed: connection refused"));
+
+        assert_eq!(
+            outcome.output,
+            b"probe output without newline\nQMP quit failed: connection refused\n"
+        );
+    }
 }

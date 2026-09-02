@@ -68,7 +68,7 @@ flowchart LR
 形成两个 reader 拆分输入流。
 
 日志订阅只在完整 record 边界切换。shell 未附着 guest 时，mux 先清除当前编辑行、输出宿主
-日志，再重画 prompt、内容和光标；guest 位于前台时，宿主日志按完整记录进入 16 KiB 有界
+日志，再重画 prompt、内容和光标；guest 位于前台时，宿主日志按完整记录进入 2 MiB 有界
 backlog，返回管理 shell 后再回放。底层 64 条 record 队列和 mux backlog 的溢出都以摘要
 报告，不把宿主日志字节注入 guest 虚拟 UART。
 

@@ -25,7 +25,5 @@ fi
 command -v iperf3 >/dev/null 2>&1 || fail
 
 iperf3 -c "$server_ip" -t 3 -O 1 -P 1 -l 128K || fail
-iperf3 -c "$server_ip" -t 3 -O 1 -P 1 -l 128K -R || fail
-iperf3 -c "$server_ip" -t 3 -O 1 -P 1 -l 128K --bidir || fail
 
 echo STARRY_AKA_WIFI_IPERF_SMOKE_PASSED

@@ -133,8 +133,36 @@ pub fn iomap(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
         .ok_or(MmError::InvalidInput("physical address range overflows"))?;
     match ax_hal::mem::prepare_iomap(addr, size, IomapAttrs::DEVICE).map_err(map_iomap_error)? {
         IomapDecision::Mapped(vaddr) => Ok(vaddr),
-        IomapDecision::UseGeneric(paddr) => iomap_generic(paddr, size),
+        IomapDecision::UseGeneric(paddr) => iomap_generic(paddr, size, MappingFlags::DEVICE),
     }
+}
+
+/// Maps CPU-owned shared RAM as Normal Write-Back memory.
+///
+/// This is intended for coherent shared-memory windows whose peers also use
+/// cacheable Normal mappings. Device MMIO should continue to use [`iomap`].
+pub fn iomap_cached(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
+    if size == 0 {
+        return Err(MmError::InvalidInput("mapping size is zero"));
+    }
+    addr.as_usize()
+        .checked_add(size)
+        .ok_or(MmError::InvalidInput("physical address range overflows"))?;
+    iomap_generic(addr, size, MappingFlags::empty())
+}
+
+/// Maps a physical memory region as Normal Non-cacheable memory.
+///
+/// This is intended for CPU-owned shared RAM, such as an inter-VM shared-memory
+/// window. Device MMIO should continue to use [`iomap`].
+pub fn iomap_uncached(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
+    if size == 0 {
+        return Err(MmError::InvalidInput("mapping size is zero"));
+    }
+    addr.as_usize()
+        .checked_add(size)
+        .ok_or(MmError::InvalidInput("physical address range overflows"))?;
+    iomap_generic(addr, size, MappingFlags::UNCACHED)
 }
 
 fn map_iomap_error(err: IomapError) -> MmError {
@@ -152,7 +180,7 @@ fn checked_align_up_4k(addr: usize) -> MmResult<PhysAddr> {
     Ok(PhysAddr::from_usize(aligned))
 }
 
-fn iomap_generic(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
+fn iomap_generic(addr: PhysAddr, size: usize, mem_flags: MappingFlags) -> MmResult<VirtAddr> {
     let end = addr
         .as_usize()
         .checked_add(size)
@@ -164,7 +192,7 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
     let size_aligned = checked_align_up_4k(end)? - addr_aligned;
     let offset = addr - addr_aligned;
 
-    let flags = MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE;
+    let flags = mem_flags | MappingFlags::READ | MappingFlags::WRITE;
     let mut tb = kernel_aspace().lock_irqsave();
 
     let mapped = if tb.contains_range(virt_aligned, size_aligned) {

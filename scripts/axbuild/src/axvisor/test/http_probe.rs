@@ -27,27 +27,30 @@
 //! AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
 //! ```
 //!
-//! Exit code 0 is a pass; any nonzero exit fails the case. The asset streams
-//! its own progress to the runner's stdout/stderr so CI logs show the steps.
+//! Exit code 0 is a pass; any nonzero exit fails the case. The asset's combined
+//! stdout/stderr is captured for replay after QEMU exits, so its diagnostics do
+//! not interleave with the live serial stream.
 
 use std::{
+    io::{self, Read},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
 use anyhow::{Context, bail};
 
-use super::types::AxvisorHttpProbeConfig;
+use super::{host_probe::HostHttpProbeOutcome, types::AxvisorHttpProbeConfig};
 use crate::support::process::retry_text_file_busy;
 
 /// Poll interval while waiting for the probe asset to exit.
 const PROBE_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
 
 /// Run the case's HTTP probe asset against one boot.
 ///
@@ -61,29 +64,110 @@ pub(crate) fn run(
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
     stop: Arc<AtomicBool>,
-) -> anyhow::Result<()> {
+) -> HostHttpProbeOutcome {
     let script = case_dir.join(&config.probe_script);
-    ensure_probe_asset(&script)?;
-    if stop.load(Ordering::Acquire) {
-        bail!(
-            "probe asset {} was not started because the case had already stopped",
-            script.display()
-        );
+    let captured = (|| -> anyhow::Result<(Vec<u8>, Option<ExitStatus>)> {
+        ensure_probe_asset(&script)?;
+        if stop.load(Ordering::Acquire) {
+            bail!(
+                "probe asset {} was not started because the case had already stopped",
+                script.display()
+            );
+        }
+        let (mut child, output_capture) = spawn_probe_asset(&script, addr, config, case_dir)?;
+        let status = wait_probe_asset(&mut child, &stop);
+        let bytes = output_capture.finish()?;
+        Ok((bytes, status))
+    })();
+
+    match captured {
+        Ok((output, Some(status))) if status.success() => HostHttpProbeOutcome {
+            output,
+            verdict: Ok(()),
+        },
+        Ok((output, Some(status))) => HostHttpProbeOutcome {
+            output,
+            verdict: Err(anyhow::anyhow!(
+                "probe asset {} exited with code {}",
+                script.display(),
+                status.code().unwrap_or(-1)
+            )),
+        },
+        Ok((output, None)) => HostHttpProbeOutcome {
+            output,
+            verdict: Err(anyhow::anyhow!(
+                "probe asset {} was killed",
+                script.display()
+            )),
+        },
+        Err(error) => HostHttpProbeOutcome::failed(error),
     }
-    println!(
-        "  host http probe: running probe asset {}",
-        script.display()
-    );
-    let mut child = spawn_probe_asset(&script, addr, config, case_dir)?;
-    match wait_probe_asset(&mut child, &stop) {
-        Some(status) if status.success() => Ok(()),
-        Some(status) => bail!(
-            "probe asset {} exited with code {}",
-            script.display(),
-            status.code().unwrap_or(-1)
-        ),
-        None => bail!("probe asset {} was killed", script.display()),
+}
+
+#[derive(Default)]
+struct BoundedProbeOutput {
+    bytes: Vec<u8>,
+    dropped_bytes: usize,
+}
+
+impl BoundedProbeOutput {
+    fn append(&mut self, chunk: &[u8]) {
+        let remaining = MAX_PROBE_OUTPUT_BYTES.saturating_sub(self.bytes.len());
+        let keep = remaining.min(chunk.len());
+        self.bytes.extend_from_slice(&chunk[..keep]);
+        self.dropped_bytes = self
+            .dropped_bytes
+            .saturating_add(chunk.len().saturating_sub(keep));
     }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.dropped_bytes != 0 {
+            use std::io::Write as _;
+            let _ = writeln!(
+                self.bytes,
+                "\n[probe output truncated: dropped {} bytes]",
+                self.dropped_bytes
+            );
+        }
+        self.bytes
+    }
+}
+
+struct ProbeOutputCapture {
+    reader: JoinHandle<io::Result<BoundedProbeOutput>>,
+}
+
+impl ProbeOutputCapture {
+    fn start(reader: os_pipe::PipeReader) -> Self {
+        Self {
+            reader: spawn_output_reader(reader),
+        }
+    }
+
+    fn finish(self) -> anyhow::Result<Vec<u8>> {
+        let output = self
+            .reader
+            .join()
+            .map_err(|_| anyhow::anyhow!("probe output reader thread panicked"))?
+            .context("failed to drain probe output pipe")?;
+        Ok(output.finish())
+    }
+}
+
+fn spawn_output_reader(
+    mut reader: impl Read + Send + 'static,
+) -> JoinHandle<io::Result<BoundedProbeOutput>> {
+    thread::spawn(move || {
+        let mut output = BoundedProbeOutput::default();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                return Ok(output);
+            }
+            output.append(&buffer[..read]);
+        }
+    })
 }
 
 /// Fail fast when the configured probe asset is missing, so a case that
@@ -102,13 +186,18 @@ fn ensure_probe_asset(script: &Path) -> anyhow::Result<()> {
 
 /// Spawn the probe asset with the forwarded base URL, token, and timeouts as
 /// environment. The asset is executed directly so its shebang picks the
-/// interpreter; stdout/stderr are inherited so CI logs show the asset's steps.
+/// interpreter; stdout/stderr share one pipe drained by a bounded reader so a
+/// noisy probe cannot grow temporary storage or block on a full pipe.
 fn spawn_probe_asset(
     script: &Path,
     addr: &str,
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
-) -> anyhow::Result<Child> {
+) -> anyhow::Result<(Child, ProbeOutputCapture)> {
+    let (reader, stdout) = os_pipe::pipe().context("failed to create probe output pipe")?;
+    let stderr = stdout
+        .try_clone()
+        .context("failed to clone probe output pipe")?;
     let mut command = Command::new(script);
     command
         .env("AXVISOR_HTTP_BASE", format!("http://{addr}"))
@@ -126,10 +215,11 @@ fn spawn_probe_asset(
             config.request_timeout_secs.to_string(),
         )
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    retry_text_file_busy(|| command.spawn())
-        .with_context(|| format!("failed to spawn probe asset {}", script.display()))
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    let child = retry_text_file_busy(|| command.spawn())
+        .with_context(|| format!("failed to spawn probe asset {}", script.display()))?;
+    Ok((child, ProbeOutputCapture::start(reader)))
 }
 
 /// Wait for the probe asset to exit, killing it if the runner marks the case
@@ -233,6 +323,36 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
+    fn write_output_fixture_probe(dir: &Path, name: &str) -> PathBuf {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let path = dir.join(name);
+        fs::write(
+            &path,
+            "#!/bin/sh\nprintf 'probe stdout\\n'\nprintf 'probe stderr\\n' >&2\n",
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_large_output_fixture_probe(dir: &Path, name: &str) -> PathBuf {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let path = dir.join(name);
+        fs::write(
+            &path,
+            format!(
+                "#!/usr/bin/env python3\nimport os, \
+                 sys\nprint(os.readlink('/proc/self/fd/1'))\nsys.stdout.write('x' * {})\n",
+                MAX_PROBE_OUTPUT_BYTES + 64 * 1024
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
     #[test]
     fn probe_script_defaults_to_http_probe_py() {
         let config = parse_probe_section("[host_http_probe]\ntoken = \"t\"\n");
@@ -256,6 +376,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn captured_probe_output_is_bounded_without_changing_execution_verdict() {
+        let mut output = BoundedProbeOutput::default();
+        output.append(&vec![b'x'; MAX_PROBE_OUTPUT_BYTES + 1]);
+        let output = output.finish();
+
+        assert!(output.starts_with(&vec![b'x'; MAX_PROBE_OUTPUT_BYTES]));
+        assert!(output.ends_with(b"\n[probe output truncated: dropped 1 bytes]\n"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn run_executes_the_case_probe_asset_with_env() {
@@ -264,9 +394,13 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let result = run("127.0.0.1:12345", &config, dir.path(), stop);
+        let outcome = run("127.0.0.1:12345", &config, dir.path(), stop);
 
-        assert!(result.is_ok(), "probe asset should pass: {result:?}");
+        assert!(
+            outcome.verdict.is_ok(),
+            "probe asset should pass: {:?}",
+            outcome.verdict
+        );
         // The generic mechanism really executed the asset and forwarded the
         // env the asset needs to dial the guest API.
         let recorded = std::fs::read_to_string(dir.path().join("env.txt")).unwrap();
@@ -279,13 +413,53 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn run_captures_probe_output_for_deferred_replay() {
+        let dir = fixture_dir();
+        write_output_fixture_probe(dir.path(), "http_probe.py");
+        let config = test_config(PathBuf::from("http_probe.py"));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let outcome = run("127.0.0.1:12345", &config, dir.path(), stop);
+
+        assert!(outcome.verdict.is_ok());
+        assert_eq!(
+            String::from_utf8(outcome.output).unwrap(),
+            "probe stdout\nprobe stderr\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_bounds_a_real_probe_while_it_writes_to_a_pipe() {
+        let dir = fixture_dir();
+        write_large_output_fixture_probe(dir.path(), "http_probe.py");
+        let config = test_config(PathBuf::from("http_probe.py"));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let outcome = run("127.0.0.1:12345", &config, dir.path(), stop);
+
+        assert!(outcome.verdict.is_ok());
+        assert!(outcome.output.starts_with(b"pipe:["));
+        assert!(
+            outcome
+                .output
+                .windows(b"[probe output truncated: dropped ".len())
+                .any(|window| window == b"[probe output truncated: dropped ")
+        );
+        assert!(outcome.output.len() <= MAX_PROBE_OUTPUT_BYTES + 80);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn run_propagates_nonzero_probe_exit() {
         let dir = fixture_dir();
         write_fixture_probe(dir.path(), "http_probe.py", 1);
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
+        let error = run("127.0.0.1:12345", &config, dir.path(), stop)
+            .verdict
+            .unwrap_err();
         assert!(
             error.to_string().contains("exited with code 1"),
             "unexpected probe error: {error:#}"
@@ -298,7 +472,9 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
+        let error = run("127.0.0.1:12345", &config, dir.path(), stop)
+            .verdict
+            .unwrap_err();
         assert!(error.to_string().contains("does not exist"));
     }
 
@@ -325,7 +501,7 @@ mod tests {
         }
         stop.store(true, Ordering::Release);
 
-        let error = probe_thread.join().unwrap().unwrap_err();
+        let error = probe_thread.join().unwrap().verdict.unwrap_err();
         assert!(
             error.to_string().contains("was killed"),
             "unexpected error: {error:#}"
@@ -341,7 +517,9 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(true));
 
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
+        let error = run("127.0.0.1:12345", &config, dir.path(), stop)
+            .verdict
+            .unwrap_err();
 
         assert!(
             error

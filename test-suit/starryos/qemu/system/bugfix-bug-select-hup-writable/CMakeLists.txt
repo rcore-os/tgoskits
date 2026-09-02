@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-select-hup-writable C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-select-hup-writable src/main.c)
+target_compile_options(bug-select-hup-writable PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-select-hup-writable RUNTIME DESTINATION usr/bin/starry-test-suit)
