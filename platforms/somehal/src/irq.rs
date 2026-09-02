@@ -287,6 +287,17 @@ impl ActiveIrq {
         resolve_irq_route(Plat::active_irq_id(&self.inner))
     }
 
+    /// Detaches the deactivate half of one AArch64 GIC SPI transaction.
+    ///
+    /// The priority drop is completed before this method returns. The caller
+    /// must eventually transfer the returned claim to an accepting sink or call
+    /// [`Aarch64GicSpiClaim::complete`] on the same CPU.
+    #[cfg(target_arch = "aarch64")]
+    pub fn defer_aarch64_gic_spi_completion(&mut self) -> Option<Aarch64GicSpiClaim> {
+        crate::arch::take_gic_spi_completion(&mut self.inner)
+            .map(|intid| Aarch64GicSpiClaim { intid })
+    }
+
     /// Detaches one RISC-V PLIC completion from this trap transaction.
     ///
     /// The returned claim captures the PLIC context that performed the claim;
@@ -296,6 +307,40 @@ impl ActiveIrq {
     pub fn defer_riscv_plic_completion(&mut self) -> Option<RiscvPlicClaim> {
         crate::arch::take_plic_claim(&mut self.inner)
             .map(|(context, source)| RiscvPlicClaim { context, source })
+    }
+}
+
+/// A priority-dropped AArch64 GIC SPI awaiting physical deactivation.
+#[cfg(target_arch = "aarch64")]
+#[must_use = "the GIC SPI claim must be completed or transferred to its sink"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct Aarch64GicSpiClaim {
+    intid: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Aarch64GicSpiClaim {
+    /// Returns the architectural GIC INTID.
+    pub const fn intid(&self) -> u32 {
+        self.intid
+    }
+
+    /// Transfers deactivation ownership to a hypervisor sink and returns the
+    /// GIC INTID.
+    ///
+    /// Callers must invoke this only after a hardware-backed guest delivery
+    /// has accepted the physical claim.
+    pub const fn transfer_to_sink(self) -> u32 {
+        self.intid
+    }
+
+    /// Deactivates this physical SPI on the current CPU.
+    pub fn complete(self) -> Result<(), IrqError> {
+        if crate::arch::complete_deferred_gic_spi(self.intid) {
+            Ok(())
+        } else {
+            Err(IrqError::Controller)
+        }
     }
 }
 

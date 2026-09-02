@@ -205,6 +205,24 @@ UVC_RKNN_BENCH_PROFILE_RESULT profile_samples=... perf_run_query_errors=... tota
 Use `RKNN_BENCH_PROFILE_FRAMES=1` or `--profile-frames` for one
 `RKNN_PROFILE` line per inference.
 
+For a single-factor RK3588 NPU comparison, run the matching core-0 config and
+the all-core config without changing the camera, model, threshold, or duration:
+
+```bash
+cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
+  --board-config configs/board-orangepi-5-plus-bench-core0.toml \
+  -b OrangePi-5-Plus
+
+cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
+  --board-config configs/board-orangepi-5-plus-bench.toml \
+  -b OrangePi-5-Plus
+```
+
+For a five-pair comparison, retain every console log and bind each accepted
+summary to the RKNN binary, model, board configuration, and staged rootfs
+hashes. Reject duplicate runs or undeclared configuration drift; keep these
+generated evidence artifacts outside the code branch.
+
 The same bounded smoke-test command is also stored in
 `board-orangepi-5-plus.toml`, so this direct board command runs the default
 example as well:

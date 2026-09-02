@@ -1,0 +1,18 @@
+features = [
+  "sdmmc",
+  "rockchip-dwmmc",
+  "rockchip-soc",
+  "fs",
+  "rt-trace",
+  "ax-std/sched-rr",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "scripts/benchmark/axvisor-rt/config/starry-orangepi-5-plus-smp2-partitioned.toml",
+]
+max_cpu_num = 4
+
+[host_noise]
+cpu = 3
+max_duration_ms = 180000

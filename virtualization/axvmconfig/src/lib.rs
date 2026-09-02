@@ -31,8 +31,10 @@ pub use axvm_types::{
 };
 
 mod error;
+mod partition;
 
 pub use error::*;
+pub use partition::*;
 
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, serde_repr::Serialize_repr, serde_repr::Deserialize_repr)]
@@ -288,6 +290,57 @@ pub struct VMBaseConfig {
     ///
     ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
+    /// Whether the physical CPUs assigned to this VM are dedicated (partition scheduling).
+    ///
+    /// When `true`, the pCPUs this VM's vCPUs are pinned to are treated as exclusive:
+    /// no other VM's vCPU task is allowed to run on them. This gives real-time VMs a
+    /// dedicated pCPU under the cooperative FIFO scheduler, removing cross-VM interference.
+    /// Defaults to `false` (shared scheduling, original behavior).
+    #[serde(default)]
+    pub dedicated_cpus: bool,
+}
+
+impl VMBaseConfig {
+    /// Validates the vCPU affinity shape and dedicated-CPU requirements.
+    pub fn validate_cpu_placement(&self) -> AxVmConfigResult {
+        let Some(phys_cpu_sets) = &self.phys_cpu_sets else {
+            if self.dedicated_cpus {
+                return Err(AxVmConfigError::MissingDedicatedCpuAffinity {
+                    vm_id: self.id,
+                    vcpu_id: 0,
+                });
+            }
+            return Ok(());
+        };
+
+        if phys_cpu_sets.len() != self.cpu_num {
+            return Err(AxVmConfigError::CpuAffinityCountMismatch {
+                vm_id: self.id,
+                cpu_num: self.cpu_num,
+                affinity_count: phys_cpu_sets.len(),
+            });
+        }
+
+        if self.dedicated_cpus {
+            if phys_cpu_sets.is_empty() {
+                return Err(AxVmConfigError::MissingDedicatedCpuAffinity {
+                    vm_id: self.id,
+                    vcpu_id: 0,
+                });
+            }
+            if let Some((vcpu_id, _)) = phys_cpu_sets
+                .iter()
+                .enumerate()
+                .find(|(_, affinity)| **affinity == 0)
+            {
+                return Err(AxVmConfigError::EmptyCpuAffinity {
+                    vm_id: self.id,
+                    vcpu_id,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The configuration structure for the guest VM kernel.
@@ -690,6 +743,7 @@ impl GuestConfig {
     /// Deserialize and validate a guest TOML configuration.
     pub fn from_toml(raw_cfg_str: &str) -> AxVmConfigResult<Self> {
         let mut config: Self = toml::from_str(raw_cfg_str)?;
+        config.base.validate_cpu_placement()?;
         config.kernel.validate_boot_config()?;
         config.devices.validate()?;
         config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();

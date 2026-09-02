@@ -17,7 +17,7 @@ pub(crate) trait ArchOps {
     fn has_hardware_support() -> bool;
 
     #[allow(dead_code)]
-    fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, _vcpu_id: usize, arg: usize) {
+    fn set_vcpu_on_args(vcpu: &mut Self::VCpu, _vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(0, arg);
     }
 
@@ -40,18 +40,14 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
+    fn before_vcpu_task_exit(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
     fn wait_for_vcpu_event(
-        vm: &crate::AxVMRef,
+        _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        runtime: &crate::vm::VmRuntimeHandle,
+        _runtime: &crate::vm::VmRuntimeHandle,
+        event_channel: &crate::vm::VcpuEventChannel,
     ) {
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
-        crate::vm::wait_for_vcpu_event_if_idle(
-            runtime,
-            &wait_snapshot,
-            || vm.running(),
-            |condition| runtime.wait_until(condition),
-        );
+        event_channel.wait();
     }
 
     fn inject_pending_interrupt(

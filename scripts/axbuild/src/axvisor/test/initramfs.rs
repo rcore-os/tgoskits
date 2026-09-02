@@ -21,6 +21,7 @@ use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::re
 const OUTPUT_ENV: &str = "AXVISOR_TEST_BUSYBOX_INITRAMFS";
 const OVMF_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
 const BUSYBOX_PATH: &str = "/bin/busybox";
+const LINUX_KERNEL_PATH: &str = "/guest/linux/linux-qemu";
 // These bounds are the fixed Q35 guest aperture used by the x86 AxVM provider;
 // the end bound is exclusive.
 // Keep them synchronized with `virtualization/axvm/src/arch/x86_64/pci_config.rs`.
@@ -116,6 +117,16 @@ run_pci_enumeration_check() {
   fi
 }
 
+run_dedicated_smp2_check() {
+  online=$(/bin/busybox cat /sys/devices/system/cpu/online 2>/dev/null)
+  if [ "$online" = "0-1" ]; then
+    echo AXVISOR_DEDICATED_PARTITION_PASS
+    echo "AXVISOR_DEDICATED_PARTITION_ONLINE=$online"
+  else
+    echo "AXVISOR_DEDICATED_PARTITION_FAIL online=$online expected=0-1"
+  fi
+}
+
 cmdline=$(/bin/busybox cat /proc/cmdline)
 case "$cmdline" in
   *axvisor.acpi_case=direct*) run_x86_acpi_check AXVISOR_X86_DIRECT_ACPI_PASSED; exec /bin/busybox sh -i ;;
@@ -129,6 +140,7 @@ case "$cmdline" in
     fi
     exec /bin/busybox sh -i
     ;;
+  *axvisor.smp_case=dedicated-smp2*) run_dedicated_smp2_check; exec /bin/busybox sh -i ;;
   *axvisor.timer_case=gicv3-its*) success_marker=AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED; require_its=1 ;;
   *axvisor.timer_case=gicv2*) success_marker=AXVISOR_GICV2_TIMER_STRESS_PASSED; require_its=0 ;;
   *axvisor.timer_case=gicv3*) success_marker=AXVISOR_GICV3_TIMER_STRESS_PASSED; require_its=0 ;;
@@ -341,7 +353,13 @@ pub(super) async fn prepare_configured_busybox_initramfs(
     if let Some(configured_output) = cargo.env.get(OUTPUT_ENV) {
         let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
         let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, None)?;
+        let kernel_output_path = qemu_linux_kernel_output_path(workspace_root, &request.arch);
+        prepare_linux_kernel(&rootfs_path, &kernel_output_path)?;
         prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
+        println!(
+            "prepared Axvisor QEMU test Linux kernel: {}",
+            kernel_output_path.display()
+        );
         println!(
             "prepared Axvisor QEMU test initramfs: {}",
             output_path.display()
@@ -385,9 +403,25 @@ fn prepare_busybox_initramfs(
     let loader = required_rootfs_file(rootfs_path, loader_path)?;
     let archive = build_busybox_initramfs(&busybox, loader_path, &loader)?;
 
+    install_generated_file(output_path, &archive)
+}
+
+fn qemu_linux_kernel_output_path(workspace_root: &Path, arch: &str) -> PathBuf {
+    workspace_root
+        .join("tmp/axbuild/images")
+        .join(format!("qemu-{arch}"))
+        .join("linux/linux-qemu")
+}
+
+fn prepare_linux_kernel(rootfs_path: &Path, output_path: &Path) -> anyhow::Result<()> {
+    let kernel = required_rootfs_file(rootfs_path, LINUX_KERNEL_PATH)?;
+    install_generated_file(output_path, &kernel)
+}
+
+fn install_generated_file(output_path: &Path, contents: &[u8]) -> anyhow::Result<()> {
     let output_parent = output_path.parent().with_context(|| {
         format!(
-            "initramfs output path has no parent: {}",
+            "generated output path has no parent: {}",
             output_path.display()
         )
     })?;
@@ -399,12 +433,12 @@ fn prepare_busybox_initramfs(
     })?;
     let mut temporary = NamedTempFile::new_in(output_parent).with_context(|| {
         format!(
-            "failed to create temporary initramfs in {}",
+            "failed to create temporary output in {}",
             output_parent.display()
         )
     })?;
     temporary
-        .write_all(&archive)
+        .write_all(contents)
         .with_context(|| format!("failed to write {}", output_path.display()))?;
     temporary
         .persist(output_path)
@@ -567,12 +601,11 @@ fn write_padding(writer: &mut impl Write, written: usize) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use std::fs;
-    use std::io::Read;
-    #[cfg(unix)]
     use std::process::Command;
+    use std::{fs, io::Read, path::Path};
 
     use flate2::read::GzDecoder;
+    use ostool::run::qemu::QemuConfig;
     use tempfile::tempdir;
 
     use super::*;
@@ -587,6 +620,17 @@ mod tests {
         );
         assert!(resolve_output_path(root.path(), "../outside", OUTPUT_ENV).is_err());
         assert!(resolve_output_path(root.path(), "/tmp/outside", OUTPUT_ENV).is_err());
+    }
+
+    #[test]
+    fn linux_kernel_output_uses_the_configured_qemu_image_layout() {
+        let root = tempdir().unwrap();
+
+        assert_eq!(
+            qemu_linux_kernel_output_path(root.path(), "aarch64"),
+            root.path()
+                .join("tmp/axbuild/images/qemu-aarch64/linux/linux-qemu")
+        );
     }
 
     #[test]
@@ -828,6 +872,47 @@ mod tests {
             .arg(config_path)
             .output()
             .unwrap()
+    }
+
+    #[test]
+    fn dedicated_smp2_qemu_case_uses_initramfs_assertion() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let qemu_path = workspace_root
+            .join("test-suit/axvisor/normal/qemu-partition/dedicated-smp2/qemu-aarch64.toml");
+        let qemu: QemuConfig = toml::from_str(&fs::read_to_string(&qemu_path).unwrap()).unwrap();
+        let guest_path =
+            workspace_root.join("os/axvisor/configs/vms/qemu/aarch64/linux-smp2-dedicated.toml");
+        let guest: toml::Value = toml::from_str(&fs::read_to_string(&guest_path).unwrap()).unwrap();
+        let cmdline = guest["kernel"]["cmdline"]
+            .as_str()
+            .expect("dedicated SMP guest should provide a kernel command line");
+
+        assert!(cmdline.contains("axvisor.smp_case=dedicated-smp2"));
+        assert!(qemu.shell_prefix.is_none());
+        assert!(qemu.shell_init_cmd.is_none());
+        assert_eq!(
+            qemu.success_regex,
+            [r"(?m)^AXVISOR_DEDICATED_PARTITION_PASS\s*$"]
+        );
+        assert!(
+            qemu.fail_regex
+                .iter()
+                .any(|regex| regex.contains("AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN"))
+        );
+        let init_script = init_script();
+        for required_script_contract in [
+            b"axvisor.smp_case=dedicated-smp2".as_slice(),
+            b"AXVISOR_DEDICATED_PARTITION_PASS".as_slice(),
+            b"AXVISOR_DEDICATED_PARTITION_FAIL".as_slice(),
+        ] {
+            assert!(
+                init_script
+                    .windows(required_script_contract.len())
+                    .any(|window| window == required_script_contract),
+                "generated initramfs should contain `{}`",
+                String::from_utf8_lossy(required_script_contract)
+            );
+        }
     }
 
     fn parse_newc_entries(archive: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {

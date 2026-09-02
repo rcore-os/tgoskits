@@ -119,7 +119,7 @@ pause/resume 保存 HCR、VMCR、APR 和全部 LR。主线虚拟 timer、mainten
 
 ## 物理 SPI
 
-物理 SPI 在计划阶段固定，强制 `guest INTID == host INTID`。host IRQ identity、物理 trigger 和 route 对客户机不可修改。host acknowledge 后进入同一 VGIC 状态，只有客户机 EOI/DIR 后才执行正确的 host deactivate。
+物理 SPI 在计划阶段固定，强制 `guest INTID == host INTID`。host IRQ identity、物理 trigger 和 route 对客户机不可修改。无论中断命中 guest 汇编入口还是已恢复 host `VBAR_EL2` 的普通入口，host acknowledge 后都必须先查询预注册 route；已分配 SPI 只执行 priority drop，再进入同一 VGIC 状态，直到客户机 EOI/DIR 才执行正确的 host deactivate。route 在交接竞争中消失时，IRQ 栈上的 RAII claim 会在 host dispatch 之后补做 `DIR`；未分配 IRQ 保持普通 host EOI/DIR 路径。
 
 host route 使用 AArch64 平台现有 route slot 和 VM 生命周期状态，不增加第二个通用 host IRQ registry。重复物理 SPI 在 VM 可运行前失败。停止、quiesce、drain、deactivate 和销毁沿用主线生命周期。
 
@@ -133,7 +133,7 @@ VGIC runtime 与 FDT 使用同一个不可变 profile/config：
 - phandle 保持或一致重写；
 - host replacement 与物理 SPI 保持地址和 INTID 身份。
 
-普通设备固件模型读取解析后的 MMIO/IRQ/MSI slot，不重新分配。固件中出现的每个数字必须能回溯到 `ResolvedDeviceGraph` 或不可变架构计划。
+普通设备固件模型读取解析后的 MMIO/IRQ/MSI slot，不重新分配。machine patch 不得按配置 model 名称预建这些节点；graph composer 在架构拓扑安装完成后统一生成节点，并在默认 GIC 无 phandle 时先分配 phandle，再写入 `interrupt-parent`。固件中出现的每个数字必须能回溯到 `ResolvedDeviceGraph` 或不可变架构计划。
 
 ## 锁顺序与锁外动作
 

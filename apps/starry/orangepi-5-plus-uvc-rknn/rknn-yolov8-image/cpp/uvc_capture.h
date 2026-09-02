@@ -77,6 +77,7 @@ struct UvcApi {
 
 struct LatestFrame {
     uint64_t id = 0;
+    uint64_t captured_at_us = 0;
     uint32_t sequence = 0;
     int width = 0;
     int height = 0;

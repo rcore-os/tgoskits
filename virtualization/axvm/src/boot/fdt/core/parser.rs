@@ -1160,7 +1160,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             ..Default::default()
         });
         let crate_cfg = GuestConfig {
@@ -1187,7 +1187,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             ..Default::default()
         });
 
@@ -1214,7 +1214,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/serial@10001000".to_string(),
                 ..Default::default()
@@ -1262,7 +1262,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/serial@10001000".to_string(),
                 ..Default::default()
@@ -1299,7 +1299,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             ..Default::default()
         });
         let crate_cfg = GuestConfig {
@@ -1328,7 +1328,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/peripherals".to_string(),
                 ..Default::default()
@@ -1367,7 +1367,7 @@ mod tests {
         let mut generated_vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/peripherals".to_string(),
                 ..Default::default()
@@ -1402,7 +1402,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/console-bus".to_string(),
                 ..Default::default()
@@ -1435,7 +1435,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 2,
             name: "virtualized".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/ethernet@10001000".to_string(),
                 ..Default::default()
@@ -1466,7 +1466,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 3,
             name: "passthrough".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/".to_string(),
                 ..Default::default()
@@ -1500,7 +1500,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 4,
             name: "passthrough".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/".to_string(),
                 ..Default::default()
@@ -1554,7 +1554,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 1,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/virtio_mmio@10001000".to_string(),
                 ..Default::default()
@@ -1590,7 +1590,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 1,
             name: "passthrough".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             pass_through_devices: vec![HostDeviceAssignment {
                 name: "/".to_string(),
                 ..Default::default()

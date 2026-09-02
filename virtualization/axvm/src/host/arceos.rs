@@ -86,6 +86,16 @@ impl HostTime for ArceOsHost {
     fn monotonic_time(&self) -> Duration {
         modules::ax_hal::time::monotonic_time()
     }
+
+    #[cfg(feature = "rt-trace")]
+    fn current_ticks(&self) -> u64 {
+        modules::ax_hal::time::current_ticks()
+    }
+
+    #[cfg(feature = "rt-trace")]
+    fn ticks_to_nanos(&self, ticks: u64) -> u64 {
+        modules::ax_hal::time::ticks_to_nanos(ticks)
+    }
 }
 
 impl HostTimer for ArceOsHost {
@@ -194,6 +204,8 @@ pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
 
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
+    #[cfg(feature = "rt-trace")]
+    modules::ax_task::finish_current_idle_wait(modules::ax_hal::time::current_ticks());
     modules::ax_hal::irq::handle_irq(vector);
 }
 
@@ -207,6 +219,11 @@ impl HostCpu for ArceOsHost {
     fn this_cpu_id(&self) -> usize {
         modules::ax_hal::percpu::this_cpu_id()
     }
+
+    #[cfg(feature = "rt-trace")]
+    fn idle_time_ticks(&self, cpu_id: usize, now_ticks: u64) -> Option<u64> {
+        modules::ax_task::idle_time_ticks(cpu_id, now_ticks)
+    }
 }
 
 pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> api::task::AxCpuMask {
@@ -217,6 +234,7 @@ pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
 pub(crate) type ArceOsAxTaskExt = modules::ax_task::AxTaskExt;
 pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
 pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
+pub(crate) type ArceOsPreparedTask = modules::ax_task::PreparedTask;
 pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
 #[cfg(target_arch = "aarch64")]
@@ -232,15 +250,25 @@ pub(crate) fn spawn_task(task: ArceOsTaskInner) -> ArceOsAxTaskRef {
     modules::ax_task::spawn_task(task)
 }
 
-pub(crate) fn spawn_task_with(
+pub(crate) fn prepare_task_with_initial_cpu(
     task: ArceOsTaskInner,
-    initialize: impl FnOnce(&ArceOsAxTaskRef),
-) -> ArceOsAxTaskRef {
-    modules::ax_task::spawn_task_with(task, initialize)
+    initial_cpu: usize,
+) -> modules::ax_task::future::TaskResult<ArceOsPreparedTask> {
+    modules::ax_task::prepare_task_with_initial_cpu(task, initial_cpu)
+}
+
+pub(crate) fn activate_task(
+    task: ArceOsPreparedTask,
+) -> modules::ax_task::future::TaskResult<ArceOsAxTaskRef> {
+    modules::ax_task::activate_task(task)
 }
 
 pub(crate) fn yield_now() {
     thread::yield_now();
+}
+
+pub(crate) const fn scheduler_preempts_runnable_tasks() -> bool {
+    modules::ax_task::scheduler_preempts_runnable_tasks()
 }
 
 pub(crate) fn wait_queue_wait_until(
@@ -296,9 +324,19 @@ fn send_ipi_to_all_except_current(cpu_num: usize) {
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
-pub fn shutdown_host_filesystems() -> AxVmResult {
+/// Flushes cached host filesystem data while retaining block IRQ ownership.
+///
+/// Call [`shutdown_host_filesystems`] before handing the block device to a
+/// guest or removing board power.
+pub fn sync_host_filesystems() -> AxVmResult {
     modules::ax_fs_ng::shutdown_filesystems()
-        .map_err(|error| AxVmError::host("shut down host filesystems", error))?;
+        .map_err(|error| AxVmError::host("sync host filesystems", error))
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+/// Flushes host filesystems and releases their block IRQ registrations.
+pub fn shutdown_host_filesystems() -> AxVmResult {
+    sync_host_filesystems()?;
     let released = modules::ax_fs_ng::release_block_irqs_for_passthrough();
     if released != 0 {
         info!("Released {released} host filesystem block IRQ registration(s) during shutdown");

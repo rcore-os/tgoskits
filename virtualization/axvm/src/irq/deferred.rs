@@ -4,6 +4,8 @@
 //! Architecture interrupt controllers own that state.  A hard-IRQ producer
 //! publishes only the target-vCPU bit and wakes one pre-created worker.
 
+#[cfg(feature = "rt-trace")]
+use core::sync::atomic::AtomicU64;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -19,6 +21,8 @@ const KICK_WORKER_STACK_SIZE: usize = 0x20_000;
 pub(crate) struct DeferredVcpuKick {
     vm_id: usize,
     pending_vcpus: AtomicUsize,
+    #[cfg(feature = "rt-trace")]
+    pending_trace_tokens: [AtomicU64; usize::BITS as usize],
     worker_started: AtomicBool,
     stopping: AtomicBool,
     notify: IrqNotify,
@@ -31,6 +35,8 @@ impl DeferredVcpuKick {
         Arc::new(Self {
             vm_id,
             pending_vcpus: AtomicUsize::new(0),
+            #[cfg(feature = "rt-trace")]
+            pending_trace_tokens: [const { AtomicU64::new(0) }; usize::BITS as usize],
             worker_started: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             notify: IrqNotify::new(),
@@ -72,6 +78,14 @@ impl DeferredVcpuKick {
                 )
             );
         };
+        #[cfg(feature = "rt-trace")]
+        if let Some(token) = crate::wake_trace::begin_vcpu_wake(
+            self.vm_id,
+            vcpu_id,
+            crate::rt_trace::VcpuWakeSource::DeferredIrq,
+        ) {
+            self.pending_trace_tokens[vcpu_id].store(token.raw(), Ordering::Release);
+        }
         self.pending_vcpus.fetch_or(bit, Ordering::Release);
         if self.worker_started.load(Ordering::Acquire) {
             self.notify.notify_irq();
@@ -89,6 +103,10 @@ impl DeferredVcpuKick {
             worker.join();
         }
         self.pending_vcpus.store(0, Ordering::Release);
+        #[cfg(feature = "rt-trace")]
+        for token in &self.pending_trace_tokens {
+            token.store(0, Ordering::Release);
+        }
     }
 
     fn run_worker(&self) {
@@ -99,7 +117,19 @@ impl DeferredVcpuKick {
             }
             let pending = self.pending_vcpus.swap(0, Ordering::AcqRel);
             for vcpu_id in SetBits(pending) {
-                if let Err(error) = crate::runtime::vcpus::notify_vcpu(self.vm_id, vcpu_id) {
+                #[cfg(feature = "rt-trace")]
+                let notify_result = {
+                    let raw = self.pending_trace_tokens[vcpu_id].swap(0, Ordering::AcqRel);
+                    if let Some(token) = crate::wake_trace::VcpuWakeTraceToken::from_raw(raw) {
+                        crate::wake_trace::record_deferred_worker(token, self.vm_id, vcpu_id);
+                        crate::runtime::vcpus::notify_vcpu_traced(self.vm_id, vcpu_id, token)
+                    } else {
+                        crate::runtime::vcpus::notify_vcpu(self.vm_id, vcpu_id)
+                    }
+                };
+                #[cfg(not(feature = "rt-trace"))]
+                let notify_result = crate::runtime::vcpus::notify_vcpu(self.vm_id, vcpu_id);
+                if let Err(error) = notify_result {
                     trace!(
                         "VM[{}] deferred IRQ kick for vCPU {vcpu_id} was not delivered: {error:?}",
                         self.vm_id

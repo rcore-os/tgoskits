@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "turbojpeg.h"
+#include "detection_validation.h"
 #include "uvc_capture.h"
 #include "image_drawing.h"
 #include "yolov8.h"
@@ -51,7 +52,10 @@ struct Options {
     int serial_fps = 0;
     int log_every = 10;
     int min_confidence = 55;
+    int decision_split_permille = 500;
+    int decision_ttl_us = 1000000;
     bool draw_result = true;
+    bool closed_loop = false;
     const char *model_path = "model/yolov8.rknn";
     const char *label_path = "model/coco_80_labels_list.txt";
 };
@@ -131,6 +135,16 @@ static double monotonic_sec()
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+
+static uint64_t monotonic_us()
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0 || ts.tv_sec < 0 || ts.tv_nsec < 0) {
+        return 0;
+    }
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000) +
+           (uint64_t)ts.tv_nsec / UINT64_C(1000);
 }
 
 static int clamp_int(int value, int low, int high)
@@ -267,6 +281,45 @@ static void publish_http_frame(HttpFrameState *state, uint64_t frame_id, int wid
     state->height = height;
     state->detections = detections;
     state->updated.notify_all();
+}
+
+static bool publish_inference_frame(HttpFrameState *state,
+                                    image_buffer_t *image,
+                                    const object_detect_result_list *results,
+                                    uint64_t frame_id,
+                                    int jpeg_quality,
+                                    int publish_width,
+                                    int publish_height,
+                                    bool draw_result)
+{
+    object_detect_result_list display_results = make_display_results(results);
+    const int source_width = image->width;
+    const int source_height = image->height;
+    if (publish_width > 0 && publish_height > 0 &&
+        (publish_width != image->width || publish_height != image->height)) {
+        if (resize_rgb_nearest(image, publish_width, publish_height) != 0) {
+            return false;
+        }
+        scale_display_results(&display_results,
+                              source_width,
+                              source_height,
+                              image->width,
+                              image->height);
+    }
+    if (draw_result) {
+        draw_detection_results(image, &display_results);
+    }
+    std::vector<unsigned char> jpeg;
+    if (encode_jpeg(image, jpeg_quality, &jpeg) != 0) {
+        return false;
+    }
+    publish_http_frame(state,
+                       frame_id,
+                       image->width,
+                       image->height,
+                       display_results.count,
+                       jpeg);
+    return true;
 }
 
 static void *display_publisher_thread(void *arg)
@@ -1120,8 +1173,12 @@ static void print_usage(const char *argv0)
     printf("  --push-port <PORT>      relay ingest UDP port [default: 18080]\n");
     printf("  --push-fps <FPS>        max relay push FPS [default: 3]\n");
     printf("  --serial-fps <FPS>      print annotated JPEG frames as base64 on stdout [default: 0]\n");
+    printf("                            closed-loop mode prints every exact inference frame\n");
     printf("  --log-every <N>         print YOLO_RESULT every N inferences [default: 10]\n");
     printf("  --min-confidence <PCT>  detection threshold percentage [default: 55]\n");
+    printf("  --closed-loop           emit one typed decision and exact inference JPEG per frame\n");
+    printf("  --decision-split-permille <N> left/right split [default: 500]\n");
+    printf("  --decision-ttl-us <US>  decision lifetime, at most 5000000 [default: 1000000]\n");
     printf("  --jpeg-quality <1-100>  MJPEG JPEG quality [default: 75]\n");
     printf("  --no-draw-result        publish raw frames without result boxes/text\n");
 }
@@ -1256,6 +1313,22 @@ static bool parse_args(int argc, char **argv, Options *options)
                 return false;
             }
             ++i;
+        } else if (strcmp(arg, "--closed-loop") == 0) {
+            options->closed_loop = true;
+        } else if (strcmp(arg, "--decision-split-permille") == 0 && value != NULL) {
+            if (!parse_int_arg(arg, value, &options->decision_split_permille)) return false;
+            if (options->decision_split_permille >= 1000) {
+                printf("invalid value for %s: %s\n", arg, value);
+                return false;
+            }
+            ++i;
+        } else if (strcmp(arg, "--decision-ttl-us") == 0 && value != NULL) {
+            if (!parse_int_arg(arg, value, &options->decision_ttl_us)) return false;
+            if (options->decision_ttl_us > 5000000) {
+                printf("invalid value for %s: %s\n", arg, value);
+                return false;
+            }
+            ++i;
         } else if (strcmp(arg, "--jpeg-quality") == 0 && value != NULL) {
             if (!parse_int_arg(arg, value, &options->jpeg_quality)) return false;
             if (options->jpeg_quality < 1 || options->jpeg_quality > 100) {
@@ -1287,7 +1360,7 @@ int main(int argc, char **argv)
 
     printf("YOLOv8 UVC Streaming Detection\n");
     printf("===============================\n");
-    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d max_inferences=%d http_port=%d http_fps=%d publish_size=%dx%d push_host=%s push_port=%d push_fps=%d serial_fps=%d log_every=%d min_confidence=%d jpeg_quality=%d draw_result=%d\n",
+    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d max_inferences=%d http_port=%d http_fps=%d publish_size=%dx%d push_host=%s push_port=%d push_fps=%d serial_fps=%d log_every=%d min_confidence=%d jpeg_quality=%d draw_result=%d closed_loop=%d decision_split_permille=%d decision_ttl_us=%d\n",
            options.model_path,
            options.label_path,
            options.device,
@@ -1308,7 +1381,10 @@ int main(int argc, char **argv)
            options.log_every,
            options.min_confidence,
            options.jpeg_quality,
-           options.draw_result ? 1 : 0);
+           options.draw_result ? 1 : 0,
+           options.closed_loop ? 1 : 0,
+           options.decision_split_permille,
+           options.decision_ttl_us);
 
     int ret = init_post_process(options.label_path);
     if (ret != 0) {
@@ -1352,6 +1428,7 @@ int main(int argc, char **argv)
     bool push_started = false;
     SerialPublisher serial_publisher;
     bool serial_started = false;
+    const bool serial_direct = options.closed_loop && options.serial_fps > 0;
     DisplayPublisher display_publisher;
     bool display_started = false;
     if (options.http_port > 0 || options.push_host != NULL || options.serial_fps > 0) {
@@ -1379,7 +1456,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    if (options.serial_fps > 0) {
+    if (options.serial_fps > 0 && !serial_direct) {
         serial_started = start_serial_publisher(&serial_publisher, &http_frames, options.serial_fps);
         if (!serial_started) {
             if (push_started) {
@@ -1394,7 +1471,11 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    if (http_started || push_started || serial_started) {
+    if (serial_direct) {
+        printf("stream-rknn: serial exact-inference publisher enabled requested_fps=%d\n",
+               options.serial_fps);
+    }
+    if ((http_started || push_started || serial_started) && !options.closed_loop) {
         int display_fps = options.serial_fps > 0 ? options.serial_fps : (options.push_host != NULL ? options.push_fps : options.http_fps);
         display_started = start_display_publisher(&display_publisher, state, &result_state, &http_frames,
                                                   display_fps, options.jpeg_quality,
@@ -1468,6 +1549,66 @@ int main(int argc, char **argv)
                     result_state.results = results;
                     result_state.frame_id = frame.id;
                 }
+                if (options.closed_loop) {
+                    const uint64_t inference_finished_at_us = monotonic_us();
+                    if (frame.captured_at_us == 0 ||
+                        inference_finished_at_us < frame.captured_at_us) {
+                        printf("stream-rknn: invalid frame clock frame=%llu captured_at_us=%llu inference_finished_at_us=%llu\n",
+                               (unsigned long long)frame.id,
+                               (unsigned long long)frame.captured_at_us,
+                               (unsigned long long)inference_finished_at_us);
+                        inference_errors++;
+                    } else {
+                        const std::vector<rknn_validation::DetectionEntry> detections =
+                            rknn_validation::ConvertDetections(results);
+                        const int split_x =
+                            image.width * options.decision_split_permille / 1000;
+                        const rknn_validation::SortingDecision decision =
+                            rknn_validation::SelectSortingDecision(detections, 32, split_x);
+                        const std::string decision_record =
+                            rknn_validation::FormatVisionDecisionRecord(
+                                frame.id,
+                                frame.captured_at_us,
+                                inference_finished_at_us,
+                                (uint32_t)options.decision_ttl_us,
+                                decision);
+                        printf("VISION_CAPTURE_IDENTITY version=1 frame_id=%llu camera_sequence=%u captured_at_us=%llu\n",
+                               (unsigned long long)frame.id,
+                               frame.sequence,
+                               (unsigned long long)frame.captured_at_us);
+                        printf("%s\n", decision_record.c_str());
+                        if (http_started || push_started || serial_started || serial_direct) {
+                            if (!publish_inference_frame(&http_frames,
+                                                         &image,
+                                                         &results,
+                                                         frame.id,
+                                                         options.jpeg_quality,
+                                                         options.publish_width,
+                                                         options.publish_height,
+                                                         options.draw_result)) {
+                                printf("stream-rknn: publish exact inference frame failed frame=%llu\n",
+                                       (unsigned long long)frame.id);
+                                inference_errors++;
+                            } else if (serial_direct) {
+                                std::vector<unsigned char> serial_jpeg;
+                                {
+                                    std::lock_guard<std::mutex> guard(http_frames.mutex);
+                                    if (http_frames.frame_id == frame.id) {
+                                        serial_jpeg = http_frames.jpeg;
+                                    }
+                                }
+                                if (serial_jpeg.empty()) {
+                                    printf("stream-rknn: exact serial frame unavailable frame=%llu\n",
+                                           (unsigned long long)frame.id);
+                                    inference_errors++;
+                                } else {
+                                    print_serial_jpeg_frame(frame.id, serial_jpeg);
+                                }
+                            }
+                        }
+                        fflush(stdout);
+                    }
+                }
                 if (options.log_every > 0 && (inferences == 1 || inferences % options.log_every == 0)) {
                     printf("stream-rknn: decode_ms=%.2f ", (infer_start - decode_start) * 1000.0);
                     print_result(inferences, frame.id, frame.sequence, (infer_end - infer_start) * 1000.0, &results);
@@ -1510,7 +1651,7 @@ int main(int argc, char **argv)
         stop_push_client(&push_client, &http_frames);
     } else if (serial_started) {
         stop_serial_publisher(&serial_publisher, &http_frames);
-    } else if (http_started) {
+    } else if (http_started || serial_direct) {
         std::lock_guard<std::mutex> guard(http_frames.mutex);
         http_frames.running = false;
         http_frames.updated.notify_all();

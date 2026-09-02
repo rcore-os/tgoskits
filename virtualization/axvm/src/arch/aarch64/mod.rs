@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use arm_vcpu::*;
 use arm_vgic::{GicV3VcpuBinding, IntId, VgicCore};
+use ax_std::os::arceos::guard::{IrqSaveGuard, PreemptGuard};
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 
 use super::*;
@@ -15,6 +16,7 @@ use crate::{
     AxVmResult,
     architecture::cpu_up::{self, CpuUpExit, CpuUpOps},
     ax_err,
+    host::{HostCpu, default_host},
 };
 
 mod capabilities;
@@ -68,6 +70,17 @@ impl ArchOps for Aarch64Arch {
         vcpu.get_arch_vcpu().prepare_timer_run()
     }
 
+    fn before_vcpu_task_exit(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+        let byte_len = vm.quiesce_local_reset_memory_cache();
+        if byte_len != 0 {
+            info!(
+                "VM[{}] VCpu[{}] quiesced {byte_len} bytes of reset-memory cache state on pCPU{}",
+                vm.id(),
+                vcpu.id(),
+                default_host().this_cpu_id()
+            );
+        }
+    }
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -224,12 +237,15 @@ impl ArchOps for Aarch64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         runtime: &crate::vm::VmRuntimeHandle,
+        event_channel: &crate::vm::VcpuEventChannel,
     ) {
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_snapshot = event_channel.snapshot();
         if !vm.running() {
             return;
         }
-        if wait_snapshot.has_pending_event(runtime) {
+        if wait_snapshot.has_pending_event(event_channel)
+            || (vcpu.id() == 0 && runtime.device_poll_requested())
+        {
             return;
         }
         match vcpu.get_arch_vcpu().has_pending_interrupt() {
@@ -269,9 +285,9 @@ impl ArchOps for Aarch64Arch {
         }
 
         crate::vm::wait_for_vcpu_event_if_idle_with(
-            runtime,
+            event_channel,
             &wait_snapshot,
-            || vm.running(),
+            || vm.running() && (vcpu.id() != 0 || !runtime.device_poll_requested()),
             || timer_wait.is_some_and(|token| vcpu.get_arch_vcpu().timer_wait_completed(token)),
             |condition| vcpu.get_arch_vcpu().wait_for_timer_event(condition),
         );
@@ -285,6 +301,7 @@ fn vgic_runtime(vm: &crate::AxVM) -> AxVmResult<Arc<vgic::Aarch64VgicRuntime>> {
         .require::<Aarch64VgicRuntimeKey>()?)
 }
 
+#[derive(Debug)]
 struct AxvmArmHostOps;
 
 impl ArmHostOps for AxvmArmHostOps {
@@ -297,15 +314,31 @@ impl ArmHostOps for AxvmArmHostOps {
     }
 
     fn handle_current_host_irq() {
+        #[cfg(feature = "rt-trace")]
+        ax_std::os::arceos::modules::ax_task::finish_current_idle_wait(
+            ax_std::os::arceos::modules::ax_hal::time::current_ticks(),
+        );
+
+        // Keep the acknowledged GIC transaction indivisible from the host
+        // scheduler's point of view. The dynamic IRQ registry takes inner
+        // preemption guards; without this outer guard, an RR timer tick can
+        // switch tasks as an inner guard drops, before the physical token is
+        // deactivated. The outer IRQ guard also prevents a newly pending
+        // level-triggered source from recursively entering that switch tail.
+        let irq_guard = IrqSaveGuard::new();
+        let preempt_guard = PreemptGuard::new();
         if let Some(token) = gic::acknowledge_host_irq()
             && let Err(error) = gic::route_acknowledged_host_irq(token)
         {
             warn!("{error}");
         }
+        drop(preempt_guard);
+        drop(irq_guard);
     }
 }
 
 pub(crate) struct AxvmArmVcpu {
+    vm_id: usize,
     inner: ArmVcpu<AxvmArmHostOps>,
     vgic: Option<Arc<VgicCore>>,
     vgic_binding: Option<GicV3VcpuBinding>,
@@ -330,13 +363,14 @@ impl AxvmArmVcpu {
             host_virtual_timer_intid,
         } = irq_binding;
         let timer_binding = vtimer::Aarch64TimerBinding::new(
+            self.vm_id,
             vgic.clone(),
             backend,
             binding.vcpu(),
             virtual_timer_ppi,
             physical_timer_ppi,
             host_virtual_timer_intid,
-            timer_config.frequency(),
+            timer_config,
         )
         .map_err(|error| crate::AxVmError::interrupt("bind host virtual-timer PPI", error))?;
         self.vgic = Some(vgic);
@@ -475,6 +509,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(|inner| Self {
+            vm_id,
             inner,
             vgic: None,
             vgic_binding: None,

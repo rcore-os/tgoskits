@@ -153,6 +153,30 @@ impl GuestConsoleMux {
         state.output.register_guest(vm_id);
     }
 
+    fn restore_after_restart(&self, vm_id: VMId, restore_attachment: bool) -> Option<Vec<u8>> {
+        let _output_guard = self.core.lock_output();
+        let mut state = self.core.lock_state();
+        state.running.insert(vm_id);
+        state.guests.entry(vm_id).or_default();
+
+        if !restore_attachment
+            || state
+                .attached
+                .is_some_and(|attached_vm| attached_vm != vm_id)
+        {
+            return None;
+        }
+
+        state.attached = Some(vm_id);
+        state.last_attached = Some(vm_id);
+        state.shortcut_prefix_pending = false;
+        let multiple_running = state.running.len() > 1;
+        let replay = state.output.resume_boot_multiplex(vm_id, multiple_running);
+        drop(state);
+        submit_host_bytes(&replay);
+        Some(replay)
+    }
+
     fn mark_stopped(&self, vm_id: VMId) -> bool {
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
@@ -645,6 +669,14 @@ pub fn activate(vm_id: VMId) {
 /// Record a VM transition to Running.
 pub fn mark_running(vm_id: VMId) {
     GUEST_CONSOLE_MUX.mark_running(vm_id);
+}
+
+/// Records a completed VM restart and restores its prior foreground attachment.
+///
+/// A different foreground attachment selected while the VM was restarting is
+/// preserved instead of being overwritten.
+pub fn restore_after_restart(vm_id: VMId, restore_attachment: bool) {
+    GUEST_CONSOLE_MUX.restore_after_restart(vm_id, restore_attachment);
 }
 
 /// Record a VM transition away from Running.

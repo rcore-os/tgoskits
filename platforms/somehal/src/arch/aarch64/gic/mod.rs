@@ -19,6 +19,13 @@ enum GicBackend {
 
 static GIC_BACKEND: AtomicU8 = AtomicU8::new(GicBackend::None as u8);
 
+const SPI_INTID_START: u32 = 32;
+const SPI_INTID_END: u32 = 1020;
+
+const fn is_spi_intid(intid: u32) -> bool {
+    intid >= SPI_INTID_START && intid < SPI_INTID_END
+}
+
 fn set_backend(backend: GicBackend) {
     GIC_BACKEND.store(backend as u8, Ordering::Release);
 }
@@ -182,6 +189,21 @@ impl ActiveIrq {
             Self::V2(active) => active.id(),
             Self::V3(active) => active.id(),
         }
+    }
+
+    pub(super) fn defer_spi_completion(&mut self) -> Option<u32> {
+        match self {
+            Self::V2(active) => active.defer_spi_completion(),
+            Self::V3(active) => active.defer_spi_completion(),
+        }
+    }
+}
+
+pub(super) fn complete_deferred_spi(intid: u32) -> bool {
+    match backend() {
+        GicBackend::V2 => v2::complete_deferred_spi(intid),
+        GicBackend::V3 => v3::complete_deferred_spi(intid),
+        GicBackend::None => false,
     }
 }
 

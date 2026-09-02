@@ -6,7 +6,7 @@ src_dir="${case_dir}/rknn-yolov8-image"
 build_dir="${src_dir}/build-rk3588-aarch64"
 host_test_build_dir="${src_dir}/build-host-selftest"
 install_dir="${src_dir}/install/rk3588_linux_aarch64/rknn_yolov8_image"
-cross_prefix="${CROSS_COMPILE:-aarch64-linux-gnu-}"
+cross_prefix="${IVC_LINUX_CROSS_COMPILE:-${CROSS_COMPILE:-aarch64-linux-gnu-}}"
 cc="${CC:-${cross_prefix}gcc}"
 cxx="${CXX:-${cross_prefix}g++}"
 host_cc="${HOST_CC:-cc}"
@@ -31,7 +31,7 @@ cmake -S "${src_dir}" -B "${host_test_build_dir}" \
   -DTARGET_SOC=rk3588
 cmake --build "${host_test_build_dir}" \
   --target image_utils_jpeg_selftest uvc_capture_layout_selftest uvc_capture_mjpeg_selftest \
-  -j"$(nproc)"
+    detection_validation_selftest -j"$(nproc)"
 ctest --test-dir "${host_test_build_dir}" --output-on-failure
 
 cmake -S "${src_dir}" -B "${build_dir}" \

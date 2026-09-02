@@ -187,15 +187,16 @@ impl ArchOps for LoongArch64Arch {
     fn wait_for_vcpu_event(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        runtime: &crate::vm::VmRuntimeHandle,
+        _runtime: &crate::vm::VmRuntimeHandle,
+        event_channel: &crate::vm::VcpuEventChannel,
     ) {
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_snapshot = event_channel.snapshot();
         crate::vm::wait_for_vcpu_event_if_idle_with(
-            runtime,
+            event_channel,
             &wait_snapshot,
             || vm.running(),
             || vcpu.get_arch_vcpu().has_enabled_pending_interrupt(),
-            |condition| runtime.wait_until(condition),
+            |condition| event_channel.wait_until(condition),
         );
     }
 }

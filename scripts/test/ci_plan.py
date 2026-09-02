@@ -41,6 +41,8 @@ MAIN_MANIFESTS = (
 )
 STARRY_APPS_MANIFEST = CHECKS_ROOT / "starry-apps.toml"
 RUNNER_PROFILES_MANIFEST = CHECKS_ROOT.parent / "runner-profiles.toml"
+UPSTREAM_OWNER = "rcore-os"
+UPSTREAM_REPOSITORY = "rcore-os/tgoskits"
 
 SUPPORTED_PHASES = {"static", "test", "starry_apps"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
@@ -628,7 +630,9 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
     if fetch_depth == "full":
         fetch_depth = "2" if "self-hosted" in runs_on and not fallback else "0"
 
-    container_image = _container_image(environment, context.repository)
+    container_image = _container_image(
+        environment, _container_repository(context)
+    )
     preflight = check.get("container_preflight")
     if preflight is None:
         preflight = "full" if container_image else "none"
@@ -685,6 +689,12 @@ def _matrix_rows(outputs: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(value, dict) and isinstance(value.get("include"), list)
         for row in value["include"]
     ]
+
+
+def _container_repository(context: PlanContext) -> str:
+    if context.repository_owner.casefold() != UPSTREAM_OWNER:
+        return UPSTREAM_REPOSITORY
+    return context.repository
 
 
 def _parse_args() -> argparse.Namespace:

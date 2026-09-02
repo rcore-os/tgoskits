@@ -1,4 +1,10 @@
-const VIRTIO_DEV_FEATURES: &[&str] = &["virtio-gpu", "virtio-input", "virtio-net", "virtio-socket"];
+const VIRTIO_DEV_FEATURES: &[&str] = &[
+    "virtio-blk",
+    "virtio-gpu",
+    "virtio-input",
+    "virtio-net",
+    "virtio-socket",
+];
 
 #[path = "build_support/wifi.rs"]
 mod wifi;

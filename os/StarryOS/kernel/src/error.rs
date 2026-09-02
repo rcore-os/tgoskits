@@ -313,6 +313,7 @@ fn cgroup_errno(error: CgroupError) -> Errno {
 
 fn task_errno(error: TaskError) -> Errno {
     match error {
+        TaskError::InvalidInput => Errno::EINVAL,
         TaskError::Interrupted(_) => Errno::EINTR,
         TaskError::Elapsed(_) => Errno::ETIMEDOUT,
         TaskError::WouldBlock => Errno::EAGAIN,
@@ -749,6 +750,7 @@ fn leaf_errno_mappings_hold() -> bool {
         (StarryError::WriteZero, Errno::EIO),
         (StarryError::Format(core::fmt::Error), Errno::EINVAL),
         (StarryError::TaskInterrupted(Interrupted), Errno::EINTR),
+        (StarryError::Task(TaskError::InvalidInput), Errno::EINVAL),
         (StarryError::Task(TaskError::WouldBlock), Errno::EAGAIN),
         (
             StarryError::Runtime(RuntimeError::SerialNotStarted),

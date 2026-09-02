@@ -22,5 +22,6 @@ pub(crate) use mux::attach_default;
 pub(crate) use mux::route_network_input;
 pub(crate) use mux::{
     ConsoleInputEvent, activate, attach, attached_vm, mark_running, mark_stopped,
-    reconcile_vm_states, remove, route_host_byte, route_host_log, serial_backend_factory,
+    reconcile_vm_states, remove, restore_after_restart, route_host_byte, route_host_log,
+    serial_backend_factory,
 };

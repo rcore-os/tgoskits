@@ -37,6 +37,8 @@ mod config;
 ))]
 mod console_regression;
 mod guest_console;
+mod guest_restart;
+mod host_noise;
 #[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
 mod manager;
@@ -45,6 +47,11 @@ mod network_console;
 #[cfg(feature = "browser-console")]
 mod network_status;
 mod shell;
+
+#[cfg(feature = "rk3588-npu-handoff")]
+const NPU_HANDOFF_MARKER_COPIES: usize = 5;
+#[cfg(feature = "rk3588-npu-handoff")]
+const NPU_HANDOFF_MARKER_INTERVAL_MS: u64 = 100;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
 fn init_panic_hook() {
@@ -76,7 +83,7 @@ fn init_atomic_output_panic_hook() {
 /// 1. Configure the sole runtime host-console owner.
 /// 2. Print the startup banner through its output worker.
 /// 3. Check and enable hardware virtualization on every CPU.
-/// 4. Build the default guest VMs.
+/// 4. Build the default guest VMs and capture any requested reset state.
 /// 5. Spawn the management plane first — the configured HTTP and network
 ///    console services so they are live before any guest boots — then the VM
 ///    lifecycle waiter and the physical-console shell.
@@ -101,6 +108,10 @@ fn main() {
     guest_console::submit_host_bytes(banner::STARTUP);
 
     info!("Starting virtualization...");
+    #[cfg(feature = "rk3588-npu-handoff")]
+    ax_driver::soc::require_rk3588_npu_handoff();
+    #[cfg(feature = "rk3588-npu-handoff")]
+    write_rk3588_npu_handoff_markers();
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
@@ -152,14 +163,38 @@ fn main() {
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
     #[cfg(not(feature = "no-auto-start"))]
+    let guest_restart = guest_restart::GuestRestartPreparation::prepare_configured()
+        .unwrap_or_else(|error| panic!("failed to prepare guest restart: {error:#}"));
+    #[cfg(not(feature = "no-auto-start"))]
+    let host_noise = host_noise::HostNoiseTask::start_configured()
+        .unwrap_or_else(|error| panic!("failed to start host interference: {error:#}"));
+    #[cfg(not(feature = "no-auto-start"))]
     let started_vms = manager.launch_default_vms();
     #[cfg(not(feature = "no-auto-start"))]
     guest_console::attach_default(started_vms);
+    #[cfg(not(feature = "no-auto-start"))]
+    let guest_restart = guest_restart
+        .map(guest_restart::GuestRestartPreparation::start)
+        .transpose()
+        .unwrap_or_else(|error| panic!("failed to start guest restart: {error:#}"));
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()
         .name("axvisor-vm-wait".into())
-        .spawn(manager::AxvmManager::wait_for_default_vms)
+        .spawn(move || {
+            manager::AxvmManager::wait_for_default_vms();
+            if let Some(guest_restart) = guest_restart {
+                guest_restart
+                    .join_and_publish()
+                    .unwrap_or_else(|error| panic!("guest restart validation failed: {error:#}"));
+            }
+            if let Some(host_noise) = host_noise {
+                host_noise.stop_and_publish().unwrap_or_else(|error| {
+                    panic!("host interference validation failed: {error:#}")
+                });
+            }
+            shell::publish_automation_ready();
+        })
         .unwrap_or_else(|error| panic!("failed to start VM completion waiter: {error}"));
 
     #[cfg(not(feature = "no-auto-start"))]
@@ -168,4 +203,18 @@ fn main() {
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 
     shell::console_init();
+}
+
+#[cfg(feature = "rk3588-npu-handoff")]
+fn write_rk3588_npu_handoff_markers() {
+    for copy_index in 0..NPU_HANDOFF_MARKER_COPIES {
+        ax_driver::soc::report_rk3588_npu_handoff();
+        if copy_index + 1 < NPU_HANDOFF_MARKER_COPIES {
+            // Early boot logs from multiple CPUs share this UART. Spacing the
+            // copies keeps one complete contract observable across a lossy burst.
+            std::thread::sleep(core::time::Duration::from_millis(
+                NPU_HANDOFF_MARKER_INTERVAL_MS,
+            ));
+        }
+    }
 }

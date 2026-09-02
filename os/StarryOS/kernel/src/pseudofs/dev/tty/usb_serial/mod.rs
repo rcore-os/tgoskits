@@ -145,19 +145,23 @@ impl UsbSerialBackendState {
 
         let port = find_usb_serial_port(self.index).ok_or(StarryError::NoSuchDevice)?;
         let handle = usbfs::acquire_usb_device(port.bus_num, port.device_num)?;
-        handle.claim_interface(port.interface(), 0)?;
+        port.claim_interfaces(&handle)?;
         let baudrate = self.baudrate.load(Ordering::Acquire);
         if let Err(err) = port.init(&handle, baudrate) {
-            let _ = handle.release_interface(port.interface());
+            port.release_interfaces(&handle);
             return Err(err);
         }
         info!(
-            "usb-serial: ttyUSB{} attached to {} device {}:{} iface {} in={:#04x} out={:#04x}",
+            concat!(
+                "usb-serial: ttyUSB{} attached to {} device {}:{} ",
+                "control_iface={} data_iface={} in={:#04x} out={:#04x}"
+            ),
             self.index,
             port.name(),
             port.bus_num,
             port.device_num,
-            port.interface(),
+            port.control_interface(),
+            port.data_interface(),
             port.bulk_in(),
             port.bulk_out()
         );
@@ -549,6 +553,6 @@ impl TtyWrite for UsbSerialWriter {
 
 impl Drop for UsbSerialSession {
     fn drop(&mut self) {
-        let _ = self.handle.release_interface(self.port.interface());
+        self.port.release_interfaces(&self.handle);
     }
 }

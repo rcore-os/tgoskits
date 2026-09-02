@@ -1297,7 +1297,7 @@ mod tests {
         )))
         .unwrap();
         let vm_cfg = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, Some(std::vec![0]), None),
+            phys_cpu_ls: PhysCpuList::new(1, Some(std::vec![0]), None, false),
             pass_through_devices: std::vec![HostDeviceAssignment {
                 name: "/".into(),
                 ..Default::default()

@@ -2,9 +2,10 @@
 
 ## 问题与成功标准
 
-Axvisor 必须能够启动两个 ArceOS 客户机，为每个客户机提供一个 VirtIO MMIO
-网络设备，并在二者之间转发以太网帧。完成标准是两个客户机都能发现设备，
-并通过确定性的双向网络测试；测试期间不得发生 MMIO fault、队列停滞或描述符泄漏。
+Axvisor 必须能够启动多个 ArceOS 客户机，为每个客户机提供一个 VirtIO MMIO
+网络设备，并且只在配置相同的交换网段内转发以太网帧。完成标准是同网段的两个
+客户机通过确定性的双向网络测试，而独立配置的第三个客户机无法访问该网段；
+测试期间不得发生 MMIO fault、队列停滞或描述符泄漏。
 
 初始范围只包含进程内二层交换机。物理宿主网卡上联、多队列 VirtIO、卸载、
 在线迁移和直通均不在本设计范围内。
@@ -94,4 +95,13 @@ vCPU0 设备轮询
 
   QEMU runner 必须同时看到 `VM1_VIRTIO_NET_PASS` 和 `VM2_VIRTIO_NET_PASS`；
   任一 `*_FAIL` 标记或 panic 都表示失败。
+- 运行三客户机负向用例，其中 VM1/VM2 使用 segment 1，VM3 使用 segment 2：
+
+  ```bash
+  bash apps/arceos/virtio-net-peer/run-isolation.sh
+  ```
+
+  VM3 必须没有默认路由，并发送 100 个定向广播探测包。VM1 在七秒观察窗口内
+  不得收到任何探测包，同时 VM1/VM2 仍需完成 64 KiB TCP 交换。QEMU 原始日志、
+  环境信息与哈希应作为外部测试制品保存，不提交到代码分支。
 - 对每个改动的 crate 运行 `cargo fmt` 和定向 clippy。

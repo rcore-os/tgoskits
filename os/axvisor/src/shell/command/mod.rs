@@ -14,6 +14,7 @@
 
 mod base;
 mod history;
+mod host;
 mod vm;
 
 pub use base::*;
@@ -371,6 +372,7 @@ fn build_command_tree() -> BTreeMap<String, CommandNode> {
     let mut tree = BTreeMap::new();
 
     build_base_cmd(&mut tree);
+    host::build_host_cmd(&mut tree);
     build_vm_cmd(&mut tree);
 
     tree
@@ -565,6 +567,8 @@ pub fn show_available_commands() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "fs")]
+    use super::build_command_tree;
     use super::{CommandParser, ParseError};
 
     #[test]
@@ -639,5 +643,11 @@ mod tests {
         let tokens = CommandParser::tokenize("help\t'vm' start").unwrap();
 
         assert_eq!(tokens, ["help", "vm", "start"]);
+    }
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn shutdown_command_is_registered_when_filesystem_is_enabled() {
+        assert!(build_command_tree().contains_key("shutdown"));
     }
 }

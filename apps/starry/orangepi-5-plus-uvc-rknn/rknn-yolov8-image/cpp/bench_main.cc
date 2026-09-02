@@ -76,6 +76,26 @@ static double monotonic_sec()
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
 }
 
+static uint64_t monotonic_us()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000) + (uint64_t)ts.tv_nsec / UINT64_C(1000);
+}
+
+static const char *sorting_action_name(rknn_validation::SortingAction action)
+{
+    switch (action) {
+    case rknn_validation::SortingAction::Hold:
+        return "hold";
+    case rknn_validation::SortingAction::SortLeft:
+        return "left";
+    case rknn_validation::SortingAction::SortRight:
+        return "right";
+    }
+    return "unknown";
+}
+
 static void print_usage(const char *argv0)
 {
     printf("Usage: %s [OPTIONS]\n", argv0);
@@ -488,6 +508,7 @@ static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
            options.write_expected_path != NULL ? "write_expected" : "compare_expected");
 
     for (size_t i = 0; i < images.size(); i++) {
+        const uint64_t captured_at_us = monotonic_us();
         image_buffer_t image;
         memset(&image, 0, sizeof(image));
         int ret = read_image(images[i].path.c_str(), &image);
@@ -498,6 +519,8 @@ static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
                    ret);
             return 1;
         }
+
+        const uint64_t inference_finished_at_us = monotonic_us();
 
         object_detect_result_list results;
         memset(&results, 0, sizeof(results));
@@ -537,6 +560,25 @@ static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
         }
 
         std::vector<rknn_validation::DetectionEntry> actual = rknn_validation::ConvertDetections(results);
+        const rknn_validation::SortingDecision sorting =
+            rknn_validation::SelectSortingDecision(actual, 32, 625);
+        const rknn_validation::DetectionEntry &target = sorting.detection;
+        printf("VISION_DECISION_RECORD version=1 frame_id=%llu captured_at_us=%llu "
+               "inference_finished_at_us=%llu ttl_us=5000000 requested_action=%s "
+               "safe_action=hold detection_present=%d class_id=%d confidence_q10000=%d "
+               "region_id=%d left=%d top=%d right=%d bottom=%d\n",
+               (unsigned long long)(i + 1),
+               (unsigned long long)captured_at_us,
+               (unsigned long long)inference_finished_at_us,
+               sorting_action_name(sorting.action),
+               sorting.detection_present ? 1 : 0,
+               sorting.detection_present ? target.cls_id : 65535,
+               sorting.detection_present ? target.score_q10000 : 0,
+               sorting.detection_present ? (int)sorting.action : 0,
+               sorting.detection_present ? target.left : 0,
+               sorting.detection_present ? target.top : 0,
+               sorting.detection_present ? target.right : 0,
+               sorting.detection_present ? target.bottom : 0);
         printf("UVC_RKNN_VALIDATE_IMAGE index=%llu path=%s width=%d height=%d detections=%d\n",
                (unsigned long long)i,
                images[i].path.c_str(),

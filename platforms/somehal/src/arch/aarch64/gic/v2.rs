@@ -95,22 +95,51 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
 pub struct ActiveIrq {
     irq: rdrive::IrqId,
-    ack: Ack,
+    ack: Option<Ack>,
 }
 
 impl ActiveIrq {
     pub fn id(&self) -> rdrive::IrqId {
         self.irq
     }
+
+    pub(super) fn defer_spi_completion(&mut self) -> Option<u32> {
+        if !TRAP.eoi_mode_ns() {
+            return None;
+        }
+        let Ack::Other(intid) = self.ack? else {
+            return None;
+        };
+        let raw = intid.to_u32();
+        if !super::is_spi_intid(raw) {
+            return None;
+        }
+        self.ack = None;
+        TRAP.eoi(Ack::Other(intid));
+        Some(raw)
+    }
 }
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
-        TRAP.eoi(self.ack);
-        if TRAP.eoi_mode_ns() {
-            TRAP.dir(self.ack);
+        if let Some(ack) = self.ack.take() {
+            TRAP.eoi(ack);
+            if TRAP.eoi_mode_ns() {
+                TRAP.dir(ack);
+            }
         }
     }
+}
+
+pub(super) fn complete_deferred_spi(intid: u32) -> bool {
+    if !super::is_spi_intid(intid) || !TRAP.eoi_mode_ns() {
+        return false;
+    }
+    let Ok(intid) = checked_intid(intid, super::SPI_INTID_END) else {
+        return false;
+    };
+    TRAP.dir(Ack::Other(intid));
+    true
 }
 
 pub fn begin_irq() -> Option<ActiveIrq> {
@@ -127,7 +156,7 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     let irq_num: u32 = irq_num.into();
     Some(ActiveIrq {
         irq: (irq_num as usize).into(),
-        ack,
+        ack: Some(ack),
     })
 }
 

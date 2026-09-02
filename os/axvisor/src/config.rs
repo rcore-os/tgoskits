@@ -22,7 +22,7 @@
 ))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
 use axvm::{boot::*, config::*, *};
@@ -155,9 +155,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     vm.prepare()
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
 
-    if !axvm::register_vm(vm.clone()) {
-        bail!("register VM[{vm_id}]: a VM with this ID already exists");
-    }
+    axvm::register_vm(vm.clone()).with_context(|| format!("register VM[{vm_id}]"))?;
 
     #[cfg(all(
         feature = "fs",
@@ -202,6 +200,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
             cfg.base.cpu_num,
             cfg.base.phys_cpu_ids.clone(),
             cfg.base.phys_cpu_sets.clone(),
+            cfg.base.dedicated_cpus,
         ),
         cpu_config: AxVCpuConfig {
             bsp_entry: GuestPhysAddr::from(cfg.kernel.entry_point),
@@ -227,6 +226,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
         boot_policy: GuestBootPolicy::KeepConfigured,
         serial_profile: Some(serial_profile),
         serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
+        virtio_block_image_provider: Some(alloc::sync::Arc::new(AxvisorBootImageProvider)),
         virtual_device_requests: cfg.devices.virtual_device_requests().to_vec(),
         virtual_device_catalog: alloc::sync::Arc::new(virtual_device_catalog),
     }))
@@ -262,6 +262,7 @@ pub fn host_filesystem_release_required() -> bool {
     HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
 }
 
+#[derive(Clone, Copy, Debug)]
 struct AxvisorBootImageProvider;
 
 impl BootImageProvider for AxvisorBootImageProvider {
@@ -294,6 +295,22 @@ impl BootImageProvider for AxvisorBootImageProvider {
     fn file_size(&self, file_name: &str) -> AxVmResult<usize> {
         crate::manager::AxvmManager::file_size(file_name)
             .map_err(|error| boot_file_error("inspect guest image file", file_name, error))
+    }
+}
+
+impl VirtioBlockImageProvider for AxvisorBootImageProvider {
+    fn read_image(&self, path: &str) -> AxVmResult<alloc::vec::Vec<u8>> {
+        #[cfg(feature = "fs")]
+        {
+            crate::manager::AxvmManager::read_file(path)
+                .map_err(|error| boot_file_error("read virtio block image", path, error))
+        }
+
+        #[cfg(not(feature = "fs"))]
+        Err(AxVmError::Unsupported {
+            operation: "load virtio block image",
+            detail: format!("`{path}` requires the Axvisor `fs` feature"),
+        })
     }
 }
 
@@ -343,5 +360,11 @@ mod tests {
         assert_eq!(regions[1].gpa, 0x110000);
         assert_eq!(regions[1].size, 0x10000);
         assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
+    }
+    #[test]
+    fn build_axvm_config_does_not_invent_passthrough_irqs() {
+        let vm_config = build_axvm_config(&GuestConfig::default());
+
+        assert!(vm_config.pass_through_irqs().is_empty());
     }
 }

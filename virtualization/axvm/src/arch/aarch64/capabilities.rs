@@ -23,6 +23,14 @@ impl BootImagePlatform for Aarch64Arch {
         );
     }
 
+    fn quiesce_guest_memory_cache(addr: VirtAddr, size: usize) {
+        aarch64_cpu_ext::cache::dcache_range(
+            aarch64_cpu_ext::cache::CacheOp::CleanAndInvalidate,
+            addr.as_usize(),
+            size,
+        );
+    }
+
     fn load_guest_dtb(
         loader: &crate::boot::images::ImageLoaderCore<'_>,
         dtb: &crate::boot::fdt::GuestDtbImage,

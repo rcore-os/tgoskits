@@ -1,0 +1,15 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "AXVISOR_SHELL_READY"
+shell_init_cmd = "sync-host"
+success_regex = [
+  "(?m)^AXVISOR_HOST_FILESYSTEM_SYNCED\\r*$",
+]
+fail_regex = [
+  "(?m)^.*AXVISOR_RT_STARRY_COMPAT_FAILED .*$",
+  "(?m)^.*Failed to initialize guest VM.*$",
+  "(?m)^.*VM\\[[0-9]+\\] run VCpu\\[[0-9]+\\] get error .*$",
+  "(?m)^.*AXVISOR_HOST_FILESYSTEM_SYNC_FAILED:.*$",
+  "(?m)^.*Unhandled synchronous exception from current EL:.*$",
+  "(?mi)^.*panicked at.*$",
+]
+timeout = 300

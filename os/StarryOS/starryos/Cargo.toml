@@ -28,6 +28,8 @@ qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
 qperf-metrics = []
 smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 lockdep = ["ax-std/lockdep"]
+rt-irq-trace = ["starry-kernel/rt-irq-trace"]
+rt-irq-trace-soak = ["rt-irq-trace", "starry-kernel/rt-irq-trace-soak"]
 
 k230 = [
   "starry-kernel/k230-kpu",

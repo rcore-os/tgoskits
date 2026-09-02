@@ -360,3 +360,51 @@ fn rejects_invalid_toml_with_public_error() {
     let result = GuestConfig::from_toml("[base");
     assert!(matches!(result, Err(AxVmConfigError::TomlParse { .. })));
 }
+
+#[test]
+fn dedicated_cpu_placement_requires_explicit_nonempty_masks() {
+    let missing = VMBaseConfig {
+        id: 7,
+        cpu_num: 1,
+        dedicated_cpus: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        missing.validate_cpu_placement(),
+        Err(AxVmConfigError::MissingDedicatedCpuAffinity {
+            vm_id: 7,
+            vcpu_id: 0,
+        })
+    );
+
+    let empty = VMBaseConfig {
+        phys_cpu_sets: Some(vec![0]),
+        ..missing
+    };
+    assert_eq!(
+        empty.validate_cpu_placement(),
+        Err(AxVmConfigError::EmptyCpuAffinity {
+            vm_id: 7,
+            vcpu_id: 0,
+        })
+    );
+}
+
+#[test]
+fn cpu_placement_rejects_affinity_count_mismatch() {
+    let base = VMBaseConfig {
+        id: 9,
+        cpu_num: 2,
+        phys_cpu_sets: Some(vec![0b0001]),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        base.validate_cpu_placement(),
+        Err(AxVmConfigError::CpuAffinityCountMismatch {
+            vm_id: 9,
+            cpu_num: 2,
+            affinity_count: 1,
+        })
+    );
+}

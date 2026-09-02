@@ -24,6 +24,7 @@ fn test_vm_with_machine(
         config: SleepMutex::new(config),
         machine: IrqSafeMutex::new(machine),
         fw_cfg_payload: Arc::new(FwCfgPayloadSlot::new()),
+        reset_memory_snapshot: IrqSafeMutex::new(None),
     })
 }
 
@@ -171,7 +172,7 @@ fn with_config_remains_available_without_machine_resources() {
 
 #[test]
 fn runtime_handle_returns_without_machine_lock() {
-    let runtime = Arc::new(VmRuntimeHandle::new());
+    let runtime = Arc::new(VmRuntimeHandle::new(1));
     let vm = test_vm_with_machine(
         7,
         Machine::Stopping {

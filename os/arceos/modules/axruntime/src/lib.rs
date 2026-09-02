@@ -64,6 +64,8 @@ mod error;
 mod fs;
 pub mod irq;
 mod registers;
+#[cfg(feature = "rt-irq-trace")]
+pub mod rt_irq_trace;
 pub mod serial;
 pub mod sync;
 
@@ -415,6 +417,8 @@ fn init_allocator() {
 }
 
 fn init_interrupt() {
+    #[cfg(feature = "rt-irq-trace")]
+    rt_irq_trace::start();
     init_percpu_irq(ax_hal::percpu::this_cpu_id());
 
     // Enable IRQs before starting app
@@ -600,6 +604,10 @@ impl ax_task::ClockEventControl for ClockEventControlImpl {
 }
 
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
+    #[cfg(feature = "rt-irq-trace")]
+    let pending_trace =
+        rt_irq_trace::begin_timer_irq(ctx.cpu.0, ctx.irq.hwirq.0, ax_hal::time::current_ticks());
+    #[cfg(not(feature = "rt-irq-trace"))]
     let _ = ctx;
     let token = with_local_clock_event(|exclusive| {
         LOCAL_CLOCK_EVENT.with_current_mut(exclusive, |event| event.claim_irq())
@@ -625,6 +633,10 @@ fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
         deadline
     );
     commit_clock_event_action(action);
+    #[cfg(feature = "rt-irq-trace")]
+    if let Some(pending_trace) = pending_trace {
+        pending_trace.finish(ax_hal::time::current_ticks());
+    }
     ax_hal::irq::IrqReturn::Handled
 }
 

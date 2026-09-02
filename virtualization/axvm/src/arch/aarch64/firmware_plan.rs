@@ -6,6 +6,7 @@ use crate::{config::*, machine::*, *};
 
 pub(super) struct Aarch64FirmwarePlan {
     gic: GuestGicProfile,
+    interrupt_controller: axdevice_base::InterruptControllerId,
     console: GuestSerialProfile,
     serials: std::vec::Vec<ResolvedSerialDevice>,
     serial_identity: Option<GuestSerialFdtIdentity>,
@@ -44,6 +45,7 @@ impl Aarch64FirmwarePlan {
         };
         Ok(Self {
             gic,
+            interrupt_controller: vgic.controller_id(),
             console: console_profile,
             serials,
             serial_identity,
@@ -54,6 +56,10 @@ impl Aarch64FirmwarePlan {
 
     pub(super) const fn gic(&self) -> &GuestGicProfile {
         &self.gic
+    }
+
+    pub(super) const fn interrupt_controller(&self) -> axdevice_base::InterruptControllerId {
+        self.interrupt_controller
     }
 
     pub(super) const fn serial(&self) -> GuestSerialProfile {

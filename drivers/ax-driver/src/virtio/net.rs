@@ -14,22 +14,20 @@ use rd_net::{
     NetIrqSourceId, NetPollGroupId, NetPollGroupParts, NetPollIrqControl, NetQueueId,
     NetQueuePairParts, NetRearmResult, QueueConfig, RxCompletion, SubmitError,
 };
-use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(feature = "pci")]
-use virtio_drivers::transport::DeviceType;
+use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError, register::ProbeKind};
 use virtio_drivers::{
     Error as VirtIoError,
     device::net::VirtIONetRaw,
-    transport::{InterruptStatus, Transport},
+    transport::{DeviceType, InterruptStatus, Transport},
 };
 
-#[cfg(feature = "pci")]
-use crate::{PciIrqRequirement, binding_info_from_pci};
 use crate::{
-    binding_info_from_fdt,
+    BindingInfo, binding_info_from_fdt,
     net::PlatformDeviceNet,
     virtio::{self, VirtIoHalImpl, VirtIoTransport},
 };
+#[cfg(feature = "pci")]
+use crate::{PciIrqRequirement, binding_info_from_pci};
 
 const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
@@ -38,13 +36,22 @@ const GROUP_ID0: NetPollGroupId = NetPollGroupId::new(0);
 const IRQ_SOURCE0: NetIrqSourceId = NetIrqSourceId::new(0);
 
 #[cfg(feature = "pci")]
+const VIRTIO_NET_PROBE_KINDS: &[ProbeKind] = &[
+    ProbeKind::Pci {
+        on_probe: probe_pci,
+    },
+    ProbeKind::Fdt {
+        compatibles: &["virtio,mmio"],
+        on_probe: probe_fdt,
+    },
+];
+
+#[cfg(feature = "pci")]
 crate::model_register!(
     name: "VirtIO Net",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Pci {
-        on_probe: probe_pci,
-    }],
+    probe_kinds: VIRTIO_NET_PROBE_KINDS,
 );
 
 struct VirtIoNetDevice<T: VirtIoTransport> {
@@ -410,9 +417,27 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
     register_pci_transport(probe, transport)
 }
 
+fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
+    let binding_info = binding_info_from_fdt(&info)?;
+    let (ty, transport) = crate::virtio::probe_fdt_mmio_device(&info)?;
+    if ty != DeviceType::Network {
+        return Err(OnProbeError::NotMatch);
+    }
+    register_transport_with_info(plat_dev, transport, binding_info)
+}
+
 pub fn register_transport<T: Transport + 'static>(
     plat_dev: PlatformDevice,
     transport: T,
+) -> Result<(), OnProbeError> {
+    register_transport_with_info(plat_dev, transport, BindingInfo::empty())
+}
+
+fn register_transport_with_info<T: Transport + 'static>(
+    plat_dev: PlatformDevice,
+    transport: T,
+    info: BindingInfo,
 ) -> Result<(), OnProbeError> {
     let net = make_net(transport)?;
     let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
@@ -420,7 +445,7 @@ pub fn register_transport<T: Transport + 'static>(
         dma_api::DmaCoherency::NonCoherent,
         dma_api::DmaConstraints::new(u64::MAX),
     ));
-    let irq = plat_dev.register_net("virtio-net", net, dma);
+    let irq = plat_dev.register_net_with_info("virtio-net", net, dma, info);
     log::info!("registered virtio network device irq={irq:?}");
     Ok(())
 }
@@ -484,7 +509,19 @@ mod tests {
 
     use rd_net::NetHardIrqResult;
 
-    use super::{VirtioNetAccessGuard, irq_gate_miss};
+    use super::{ProbeKind, VIRTIO_NET_PROBE_KINDS, VirtioNetAccessGuard, irq_gate_miss};
+
+    #[cfg(feature = "pci")]
+    #[test]
+    fn registers_an_fdt_probe_for_virtio_mmio_network_devices() {
+        assert!(VIRTIO_NET_PROBE_KINDS.iter().any(|kind| {
+            matches!(
+                kind,
+                ProbeKind::Fdt { compatibles, .. }
+                    if compatibles.contains(&"virtio,mmio")
+            )
+        }));
+    }
 
     #[test]
     fn irq_access_returns_none_when_task_access_is_active() {

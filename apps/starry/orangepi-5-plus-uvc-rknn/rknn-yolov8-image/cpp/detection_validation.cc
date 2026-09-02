@@ -176,6 +176,11 @@ DetectionEntry::DetectionEntry(int cls_id_value, int score_value, int left_value
 {
 }
 
+SortingDecision::SortingDecision()
+    : action(SortingAction::Hold), detection_present(false), detection()
+{
+}
+
 ValidationImage::ValidationImage()
     : index(0), width(0), height(0)
 {
@@ -424,6 +429,69 @@ std::vector<DetectionEntry> ConvertDetections(const object_detect_result_list &r
             result.box.bottom));
     }
     return detections;
+}
+
+SortingDecision SelectSortingDecision(const std::vector<DetectionEntry> &detections,
+                                      int target_class_id,
+                                      int calibration_x)
+{
+    SortingDecision decision;
+    for (size_t i = 0; i < detections.size(); ++i) {
+        const DetectionEntry &candidate = detections[i];
+        if (candidate.cls_id != target_class_id ||
+            (decision.detection_present &&
+             candidate.score_q10000 <= decision.detection.score_q10000)) {
+            continue;
+        }
+        decision.detection_present = true;
+        decision.detection = candidate;
+    }
+    if (decision.detection_present) {
+        const int center_x =
+            decision.detection.left + (decision.detection.right - decision.detection.left) / 2;
+        decision.action = center_x < calibration_x ? SortingAction::SortLeft :
+                                                     SortingAction::SortRight;
+    }
+    return decision;
+}
+
+const char *SortingActionName(SortingAction action)
+{
+    switch (action) {
+    case SortingAction::Hold:
+        return "hold";
+    case SortingAction::SortLeft:
+        return "left";
+    case SortingAction::SortRight:
+        return "right";
+    }
+    return "hold";
+}
+
+std::string FormatVisionDecisionRecord(uint64_t frame_id,
+                                       uint64_t captured_at_us,
+                                       uint64_t inference_finished_at_us,
+                                       uint32_t ttl_us,
+                                       const SortingDecision &decision)
+{
+    const DetectionEntry &target = decision.detection;
+    std::ostringstream output;
+    output << "VISION_DECISION_RECORD version=1"
+           << " frame_id=" << frame_id
+           << " captured_at_us=" << captured_at_us
+           << " inference_finished_at_us=" << inference_finished_at_us
+           << " ttl_us=" << ttl_us
+           << " requested_action=" << SortingActionName(decision.action)
+           << " safe_action=hold"
+           << " detection_present=" << (decision.detection_present ? 1 : 0)
+           << " class_id=" << (decision.detection_present ? target.cls_id : 65535)
+           << " confidence_q10000=" << (decision.detection_present ? target.score_q10000 : 0)
+           << " region_id=" << (decision.detection_present ? (int)decision.action : 0)
+           << " left=" << (decision.detection_present ? target.left : 0)
+           << " top=" << (decision.detection_present ? target.top : 0)
+           << " right=" << (decision.detection_present ? target.right : 0)
+           << " bottom=" << (decision.detection_present ? target.bottom : 0);
+    return output.str();
 }
 
 double DetectionIoU(const DetectionEntry &a, const DetectionEntry &b)

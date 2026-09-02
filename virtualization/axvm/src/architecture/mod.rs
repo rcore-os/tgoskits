@@ -1,5 +1,7 @@
 //! Architecture-neutral contracts shared by target implementations.
 
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) mod aarch64_stage2;
 pub(crate) mod capabilities;
 #[cfg_attr(
     not(any(target_arch = "aarch64", target_arch = "riscv64")),
@@ -13,6 +15,7 @@ pub(crate) mod exit;
 pub(crate) mod ops;
 pub(crate) mod sysreg;
 mod types;
+mod vcpu_startup;
 
 pub(crate) use capabilities::{
     BootImagePlatform, GuestBootPlatform, MachinePlatform, minimum_recorded_target_cpu_capability,
@@ -23,6 +26,7 @@ pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write};
 pub(crate) use exit::{try_handle_mmio_read, try_handle_mmio_write};
 pub(crate) use ops::ArchOps;
 pub(crate) use types::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+pub(crate) use vcpu_startup::configure_reserved_vcpu_startup;
 
 /// Complete compile-time contract implemented by every selected guest architecture.
 ///

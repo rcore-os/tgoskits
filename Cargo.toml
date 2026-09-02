@@ -111,6 +111,7 @@ members = [
     "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
     "tools/qperf/analyzer",
+    "tools/ivcproto",
     "xtask",
     "os/StarryOS/lkm/*",
 ]
@@ -189,6 +190,7 @@ axvirtio-blk = { version = "0.2", path = "virtualization/axvirtio-blk" }
 axvirtio-common = { version = "0.2", path = "virtualization/axvirtio-common" }
 axvirtio-net = { version = "0.2", path = "virtualization/axvirtio-net" }
 axvm = { version = "0.6", path = "virtualization/axvm", default-features = false }
+axvm-net = { version = "0.1", path = "virtualization/axvm-net" }
 axvm-types = { version = "0.7", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8", path = "virtualization/axvmconfig", default-features = false }
 ahci-driver = { version = "0.2", path = "drivers/blk/ahci-driver" }

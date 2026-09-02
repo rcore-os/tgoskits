@@ -61,6 +61,21 @@ impl FdtTree {
             .collect()
     }
 
+    pub(crate) fn remove_cpu_idle_states(&mut self) {
+        let cpu_ids = self
+            .node_paths()
+            .into_iter()
+            .filter_map(|(id, path)| path.starts_with("/cpus/cpu@").then_some(id))
+            .collect::<Vec<_>>();
+
+        for cpu_id in cpu_ids {
+            if let Some(cpu) = self.fdt.node_mut(cpu_id) {
+                cpu.remove_property("cpu-idle-states");
+            }
+        }
+        self.fdt.remove_by_path("/cpus/idle-states");
+    }
+
     pub(crate) fn ensure_path(&mut self, path: &str) -> AxVmResult<NodeId> {
         if let Some(id) = self.fdt.get_by_path_id(path) {
             return Ok(id);

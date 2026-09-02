@@ -43,6 +43,7 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
             "api::std_tests::axtask_api_scheduler_name_hold",
             "api::std_tests::axtask_api_task_registry_functions_exist_hold",
             "api::std_tests::axtask_api_type_aliases_hold",
+            "api::tests::initial_cpu_must_exist_and_be_allowed_by_affinity",
             "api::tests::task_initialization_precedes_scheduling",
         ],
     },

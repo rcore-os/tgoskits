@@ -140,7 +140,7 @@ mod tests {
     }
 
     fn runtime(cpu_id: Option<usize>) -> Arc<VmRuntimeHandle> {
-        let runtime = Arc::new(VmRuntimeHandle::new());
+        let runtime = Arc::new(VmRuntimeHandle::new(1));
         if let Some(cpu_id) = cpu_id {
             runtime.irq_dispatcher().register_test_vcpu(0, cpu_id);
         }
@@ -171,7 +171,10 @@ mod tests {
                         events.borrow_mut().push("enqueue");
                         Ok(cpu_id)
                     },
-                    || events.borrow_mut().push("notify"),
+                    || {
+                        events.borrow_mut().push("notify");
+                        Ok(())
+                    },
                     |_| events.borrow_mut().push("ipi"),
                 )
             },

@@ -238,6 +238,194 @@ log = "Info"
 }
 
 #[test]
+fn load_cargo_config_injects_bounded_host_noise_contract() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("host-noise.toml");
+    fs::write(
+        &config_path,
+        r#"
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-std/sched-rr"]
+log = "Info"
+max_cpu_num = 4
+
+[host_noise]
+cpu = 3
+max_duration_ms = 180000
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(
+        config_path,
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+    ))
+    .unwrap();
+
+    assert_eq!(
+        cargo.env.get("AXVISOR_HOST_NOISE_CPU").map(String::as_str),
+        Some("3")
+    );
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_HOST_NOISE_MAX_DURATION_MS")
+            .map(String::as_str),
+        Some("180000")
+    );
+}
+
+#[test]
+fn load_cargo_config_injects_bounded_guest_restart_contract() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("guest-restart.toml");
+    fs::write(
+        &config_path,
+        r#"
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-std/sched-rr"]
+log = "Info"
+max_cpu_num = 4
+
+[guest_restart]
+vm_id = 1
+cpu = 3
+delay_ms = 12000
+ready_timeout_ms = 30000
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(
+        config_path,
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+    ))
+    .unwrap();
+
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_GUEST_RESTART_VM_ID")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_GUEST_RESTART_CPU")
+            .map(String::as_str),
+        Some("3")
+    );
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_GUEST_RESTART_DELAY_MS")
+            .map(String::as_str),
+        Some("12000")
+    );
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_GUEST_RESTART_READY_TIMEOUT_MS")
+            .map(String::as_str),
+        Some("30000")
+    );
+}
+
+#[test]
+fn load_cargo_config_rejects_invalid_host_noise_contracts() {
+    for (cpu, max_duration_ms, expected) in [
+        (3, 0, "host_noise.max_duration_ms must be positive"),
+        (4, 180_000, "host_noise.cpu 4 is outside max_cpu_num 4"),
+    ] {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join("host-noise-invalid.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-std/sched-rr"]
+log = "Info"
+max_cpu_num = 4
+
+[host_noise]
+cpu = {cpu}
+max_duration_ms = {max_duration_ms}
+"#
+            ),
+        )
+        .unwrap();
+
+        let error = load_cargo_config(&request(
+            config_path,
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        ))
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected validation error: {error:#}"
+        );
+    }
+}
+
+#[test]
+fn load_cargo_config_rejects_invalid_guest_restart_contracts() {
+    for (cpu, delay_ms, ready_timeout_ms, expected) in [
+        (3, 0, 30_000, "guest_restart.delay_ms must be positive"),
+        (
+            3,
+            12_000,
+            0,
+            "guest_restart.ready_timeout_ms must be positive",
+        ),
+        (
+            4,
+            12_000,
+            30_000,
+            "guest_restart.cpu 4 is outside max_cpu_num 4",
+        ),
+    ] {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join("guest-restart-invalid.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-std/sched-rr"]
+log = "Info"
+max_cpu_num = 4
+
+[guest_restart]
+vm_id = 1
+cpu = {cpu}
+delay_ms = {delay_ms}
+ready_timeout_ms = {ready_timeout_ms}
+"#
+            ),
+        )
+        .unwrap();
+
+        let error = load_cargo_config(&request(
+            config_path,
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+        ))
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected validation error: {error:#}"
+        );
+    }
+}
+
+#[test]
 fn load_cargo_config_does_not_select_an_x86_backend() {
     let root = tempdir().unwrap();
     let config_path = root.path().join("build-x86_64.toml");

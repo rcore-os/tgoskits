@@ -540,6 +540,30 @@ pub(crate) fn select_run_queue<G: GuardState>(task: &AxTaskRef) -> AxRunQueueRef
     }
 }
 
+/// Returns the run queue for an already validated initial CPU placement.
+#[inline]
+pub(crate) fn run_queue_for_cpu<G: GuardState>(cpu_id: usize) -> AxRunQueueRef<G> {
+    let irq_state = G::acquire();
+    #[cfg(not(feature = "smp"))]
+    {
+        let _ = cpu_id;
+        AxRunQueueRef {
+            // SAFETY: `irq_state` retains G's exclusive scheduler guard.
+            inner: unsafe { RunQueueAccess::new(current_run_queue_pointer()) },
+            state: irq_state,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+    #[cfg(feature = "smp")]
+    {
+        AxRunQueueRef {
+            inner: get_run_queue(cpu_id),
+            state: irq_state,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
 /// Selects a run queue for waking a blocked task.
 ///
 /// Unlike new task placement, wakeups prefer the CPU that performs the wakeup

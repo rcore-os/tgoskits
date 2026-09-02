@@ -39,7 +39,7 @@ impl ArchOps for Riscv64Arch {
     type DeferredRunWork = RiscvDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
-    fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, vcpu_id: usize, arg: usize) {
+    fn set_vcpu_on_args(vcpu: &mut Self::VCpu, vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(RiscvGprIndex::A0 as usize, vcpu_id);
         vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
     }

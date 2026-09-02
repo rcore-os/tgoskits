@@ -8,6 +8,8 @@ use virtio_drivers::{
     transport::{DeviceType, Transport, mmio::MmioTransport},
 };
 
+#[cfg(feature = "virtio-blk")]
+pub mod block;
 #[cfg(feature = "virtio-gpu")]
 pub mod display;
 #[cfg(feature = "virtio-input")]
@@ -55,6 +57,7 @@ pub struct VirtIoHalImpl(PhantomData<()>);
 
 pub const fn has_static_mmio_drivers() -> bool {
     cfg!(any(
+        feature = "virtio-blk",
         feature = "virtio-net",
         feature = "virtio-gpu",
         feature = "virtio-input",
@@ -125,6 +128,19 @@ pub fn register_static_mmio(
     let Some((ty, transport)) = probe_mmio_device(mmio.as_ptr(), size) else {
         return Err(rdrive::probe::OnProbeError::NotMatch);
     };
+    #[cfg(feature = "virtio-blk")]
+    if ty == DeviceType::Block {
+        let irq_mmio = axklib::mmio::ioremap_raw(base.into(), size).map_err(|err| {
+            rdrive::probe::OnProbeError::other(alloc::format!(
+                "failed to map virtio-blk IRQ registers {base:#x}: {err:?}",
+            ))
+        })?;
+        let Some((DeviceType::Block, irq_transport)) = probe_mmio_device(irq_mmio.as_ptr(), size)
+        else {
+            return Err(rdrive::probe::OnProbeError::NotMatch);
+        };
+        return block::register_mmio_transport(plat_dev, transport, irq_transport);
+    }
     register_static_transport(plat_dev, ty, transport)
 }
 

@@ -22,6 +22,8 @@
 
 调试设备或中断缺失时，从 `DeviceModel::requirements()` 的一个资源槽，追踪到 `ResolvedDeviceGraph`，再追踪到扁平设备树或高级配置与电源接口计划及 `DeviceBuildContext`。运行时设备必须使用已解析地址和 `IrqLine.input()`。图保留的同一动态模型执行构建，所有 `ResourceClaimSet` 槽都成为租约后才能封装运行时。对 `console0`，先确认最终模型和固定绑定来自机器后备、宿主固件快照还是同标识用户覆盖。内存映射输入输出或端口输入输出退出只能执行一次可选分派；先 `find_*` 再第二次分派说明仍有陈旧路由。
 
+AArch64 的常规虚拟设备 FDT 节点只能在公共控制器、定时器和串口补丁之后发布，并使用每个图模型的 `DeviceFirmwareSpec` 与该节点的 `ResolvedDeviceResources`。Linux 或 Starry DTB 模板若已包含相同常规模型，应视为陈旧并明确失败，不能生成两个设备。对 Zephyr 等通过构建叠加层把驱动资源编译进映像的客户机，应把编译后的 MMIO 与 SPI 元组和确定性图槽比较，并确认运行时 DTB 包含由图生成的节点。
+
 x86 直接启动 Linux 时，修改内核命令行策略前核验：
 
 - 高级配置与电源接口映像完整位于 `0xe0000..0x100000`，根系统描述指针按 16 字节对齐；
@@ -74,7 +76,7 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 ## AArch64 Axvisor 异常级 2 检查
 
-- `arm_vcpu` 替换当前物理处理器正在使用的 `VBAR_EL2` 时，先发布当前异常级宿主中断处理函数，再写入 `VBAR_EL2` 并执行指令同步屏障，随后更新 `HCR_EL2` 并再次执行指令同步屏障。否则异常可能观察到从未设计为同时生效的向量、处理函数和控制寄存器组合。当前异常级同步异常的内核恐慌报告至少包含 `ESR_EL2`、`FAR_EL2`、`ELR_EL2`、`SPSR_EL2` 和 `HCR_EL2`，以便把偶发宿主地址转换错误追溯到第一次无效访问，而不是只根据综合征分类。
+- 启用 `HCR_EL2.VM` 前发布当前异常级宿主 IRQ 回调，并在 HCR 更新前后执行 `ISB`。普通宿主 `VBAR_EL2` 在虚拟处理器执行之外保持安装；客户机进入只在世界切换窗口保存它并安装虚拟处理器向量，每个客户机退出都在宿主 Rust 运行前恢复它。否则异常可能观察到从未设计为同时生效的向量、回调和控制寄存器组合。当前异常级同步异常的内核恐慌报告至少包含 `ESR_EL2`、`FAR_EL2`、`ELR_EL2`、`SPSR_EL2` 和 `HCR_EL2`，以便把偶发宿主地址转换错误追溯到第一次无效访问，而不是只根据综合征分类。
 - Axvisor `hv` 功能链只在 AArch64 选择 `ax-cpu/arm-el2`。保持 `ax-hal/hv -> axplat-dyn/hv -> somehal/hv`；`somehal` 的 AArch64 可选 `ax-cpu` 依赖拥有 `arm-el2` 边。编译成功不证明已选中异常级 2 寄存器实现，无条件依赖又会错误影响其他体系结构。
 - 异常级 2 映像若编译了异常级 1 页表路径，`ax-mm` 可能看似成功初始化，却把新页表根写入 `TTBR1_EL1`。活动 `TTBR0_EL2` 仍指向 someboot 页表，第一次访问动态映射设备时就会错误或挂起。PhytiumPi 的典型停点是 `rdrive` 扁平设备树初始化消息后的第一次 GIC 分发器读取。
 - 确认运行时报告 `EL: 2`，检查已解析的 `ax-cpu` 功能集含 `arm-el2`，并在插桩驱动前验证 `ioremap` 后的设备访问。
@@ -203,6 +205,21 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
 - 输出到 `Exiting UEFI boot services...` 后停止时，在 `ExitBootServices`、内存映射交接、退出后第一次控制台调用和内存管理单元或陷阱设置前后立即插桩。
 - 容器通过后，如果持续集成或开发流程依赖该映像，仍需编写与宿主无关的文档。
 - 客户机控制台失败时区分宿主串口和机器所有客户机串口。宿主串口不得进入客户机直通集合。先检查固定 LoongArch 客户机资源、生成的扁平设备树或固件表、虚拟 PCH-PIC 电平状态和 Axvisor 控制台多路复用器，再修改宿主中断路由。
+
+## Axvisor 实体板关机交接
+
+- Axvisor 板卡构建启用 `fs` 时，在外部复位或断电前使用管理 shell 的独立 `shutdown` 命令。等待精确的 `AXVISOR_HOST_FILESYSTEM_SYNCED` 标记；它证明平台断电前已写回宿主文件系统缓存并释放块设备中断注册。
+- 把 `AXVISOR_HOST_FILESYSTEM_SYNC_FAILED:` 视为硬停止。保存串口日志且不要自动断电，因为宿主文件系统仍可能含有脏状态。
+- Axvisor shell 不解释 `;` 等 shell 运算符；板卡自动化必须单独发送 `shutdown`，不能发送 Linux 风格的 `sync; ...` 命令行。
+- Axvisor 挂载物理根分区后，禁止把同一分区暴露给客户机。客户机必须使用独立映像或设备，避免宿主和客户机同时修改一个文件系统。
+
+## Orange Pi 5 Plus Axvisor 证据注意事项
+
+- 通过稳定选择器（例如 `PARTUUID=<uuid>`）向板卡运行器传入 Linux 根分区。已验证板卡在 Linux 中显示为 `/dev/mmcblk1p2`，但该名称不是可移植的 Axvisor 或 U-Boot 根选择器，不能作为硬件不变量复制进启动参数。
+- 本地修补 `uboot-shell` 提示符时，补丁 crate 版本必须与 `Cargo.lock` 选中的版本完全一致。即使源路径正确，版本不满足锁定依赖时 Cargo 也会忽略 `[patch]`。板卡运行前后保留并恢复既有的脏锁文件。
+- 有限运行的 RT-Thread 或 FreeRTOS 证据客户机应先输出终止结果，等待 UART 记录排空，再重复紧凑关机标记并调用 PSCI `SYSTEM_OFF`。客户机仍在轮询时不得快照；等待 Axvisor 报告客户机已停止且管理 shell 可用。
+- 仅在所有证据虚拟机到达终止状态后使用 Axvisor shell 的块快照命令。要求 `AXVISOR_SNAPSHOT_SYNC_OK`，用 fsck 验证复制映像，交叉核对客户机、UART 与采集 CSV 的散列，恢复 Linux，最后确认物理 ext4 根分区以读写方式挂载。
+- WSL 从 Windows 检出的仓库执行板卡脚本时，脚本必须使用 LF。通过 `git ls-files --eol` 和 `bash -n` 检查可执行脚本；CRLF 的 `set -eu` 会在任何板卡或客户机断言运行前导致 BusyBox 失败。
 
 ## QEMU 调试模式
 

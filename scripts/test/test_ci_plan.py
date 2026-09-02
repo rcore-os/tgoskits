@@ -89,8 +89,8 @@ class CiPlanTests(unittest.TestCase):
         self,
     ) -> None:
         context = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
+            repository="contributor/tgoskits",
+            repository_owner="contributor",
             event_name="pull_request",
             base_ref="dev",
             impact=ci_plan.CiImpact(
@@ -569,7 +569,7 @@ command = "true"
         self.assertEqual(static_rows["check-formatting"]["runs_on"], ["ubuntu-latest"])
         self.assertEqual(
             static_rows["check-formatting"]["container_image"],
-            "ghcr.io/contributor/tgoskits-container:latest",
+            "ghcr.io/rcore-os/tgoskits-container:latest",
         )
         self.assertFalse(static_rows["check-formatting"]["download_xtask_bin_artifact"])
         clippy = test_rows["run-clippy"]

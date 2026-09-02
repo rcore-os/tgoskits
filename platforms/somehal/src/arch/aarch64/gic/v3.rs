@@ -111,22 +111,49 @@ pub fn is_support_icc() -> bool {
 
 pub struct ActiveIrq {
     irq: rdrive::IrqId,
-    ack: IntId,
+    ack: Option<IntId>,
 }
 
 impl ActiveIrq {
     pub fn id(&self) -> rdrive::IrqId {
         self.irq
     }
+
+    pub(super) fn defer_spi_completion(&mut self) -> Option<u32> {
+        if !eoi_mode() {
+            return None;
+        }
+        let ack = self.ack?;
+        let raw = ack.to_u32();
+        if !super::is_spi_intid(raw) {
+            return None;
+        }
+        self.ack = None;
+        eoi1(ack);
+        Some(raw)
+    }
 }
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
-        eoi1(self.ack);
-        if eoi_mode() {
-            dir(self.ack);
+        if let Some(ack) = self.ack.take() {
+            eoi1(ack);
+            if eoi_mode() {
+                dir(ack);
+            }
         }
     }
+}
+
+pub(super) fn complete_deferred_spi(intid: u32) -> bool {
+    if !super::is_spi_intid(intid) || !eoi_mode() {
+        return false;
+    }
+    let Ok(intid) = checked_intid(intid, super::SPI_INTID_END) else {
+        return false;
+    };
+    dir(intid);
+    true
 }
 
 pub fn begin_irq() -> Option<ActiveIrq> {
@@ -137,7 +164,7 @@ pub fn begin_irq() -> Option<ActiveIrq> {
 
     Some(ActiveIrq {
         irq: (ack.to_u32() as usize).into(),
-        ack,
+        ack: Some(ack),
     })
 }
 

@@ -67,6 +67,7 @@ extern crate alloc;
 #[macro_use]
 mod run_queue;
 mod api;
+mod idle_accounting;
 mod interrupt;
 mod irq_notify;
 #[cfg(feature = "lockdep")]
@@ -87,5 +88,6 @@ pub use self::run_queue::handle_ipi_reschedule;
 pub use self::sched_tracepoint::SchedTracepoint;
 pub use self::{
     api::{sleep, sleep_until, yield_now, *},
+    idle_accounting::{finish_current_idle_wait, idle_time_ticks},
     irq_notify::IrqNotify,
 };

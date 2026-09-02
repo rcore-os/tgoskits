@@ -1,9 +1,13 @@
 //! AxVM runtime services backed by the default ArceOS host.
 
-use std::{collections::BTreeMap, vec::Vec};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 
 use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
 use axvm_types::VMId;
+use axvmconfig::{CpuPartitionPlan, VcpuTaskAffinity, VmCpuPartitionInput};
 
 use crate::{
     AxVmError, AxVmResult,
@@ -22,37 +26,141 @@ pub struct AxvmRuntime {
     _private: (),
 }
 
-static VM_REGISTRY: Mutex<BTreeMap<VMId, AxVMRef>> = Mutex::new(BTreeMap::new());
+struct VmRegistry {
+    vms: BTreeMap<VMId, AxVMRef>,
+    cpu_partition_inputs: BTreeMap<VMId, VmCpuPartitionInput>,
+    cpu_partition: CpuPartitionPlan,
+    frozen_affinity_vms: BTreeSet<VMId>,
+}
 
-/// Register an externally initialized VM and return whether it was inserted.
-pub(crate) fn push_existing_vm(vm: AxVMRef) -> bool {
-    let vm_id = vm.id();
-    let mut registry = VM_REGISTRY.lock();
-    if registry.contains_key(&vm_id) {
-        warn!("VM[{vm_id}] already exists, push VM failed");
-        return false;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct VcpuTaskPlacement {
+    pub(crate) affinity: VcpuTaskAffinity,
+    pub(crate) initial_cpu: usize,
+}
+
+impl VmRegistry {
+    const fn new() -> Self {
+        Self {
+            vms: BTreeMap::new(),
+            cpu_partition_inputs: BTreeMap::new(),
+            cpu_partition: CpuPartitionPlan::empty(),
+            frozen_affinity_vms: BTreeSet::new(),
+        }
     }
-    registry.insert(vm_id, vm.clone());
+    fn insert(&mut self, vm: AxVMRef, cpu_partition_input: VmCpuPartitionInput) -> AxVmResult {
+        let vm_id = vm.id();
+        if self.vms.contains_key(&vm_id) {
+            return Err(AxVmError::resource_conflict(
+                "VM registry",
+                format!("VM[{vm_id}] is already registered"),
+            ));
+        }
+
+        let mut candidate_inputs = self
+            .cpu_partition_inputs
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        candidate_inputs.push(cpu_partition_input.clone());
+        let candidate_partition = build_cpu_partition_plan(&candidate_inputs)?;
+        self.ensure_frozen_affinities_unchanged(&candidate_partition)?;
+
+        self.vms.insert(vm_id, vm);
+        self.cpu_partition_inputs.insert(vm_id, cpu_partition_input);
+        self.cpu_partition = candidate_partition;
+        Ok(())
+    }
+
+    fn ensure_frozen_affinities_unchanged(
+        &self,
+        candidate_partition: &CpuPartitionPlan,
+    ) -> AxVmResult {
+        for vm_id in &self.frozen_affinity_vms {
+            let vm = self
+                .vms
+                .get(vm_id)
+                .expect("a frozen CPU affinity must belong to a registered VM");
+            for vcpu_id in 0..vm.vcpu_num() {
+                let current = task_placement(&self.cpu_partition, vm.id(), vcpu_id);
+                let candidate = task_placement(candidate_partition, vm.id(), vcpu_id);
+                if current != candidate {
+                    return Err(AxVmError::resource_conflict(
+                        "guest CPU partition",
+                        format!(
+                            "registering a VM would change frozen VM[{}] vCPU[{vcpu_id}] \
+                             placement from {current:?} to {candidate:?}",
+                            vm.id()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn rebuild_cpu_partition(&mut self) {
+        let inputs = self
+            .cpu_partition_inputs
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.cpu_partition = build_cpu_partition_plan(&inputs)
+            .expect("removing a VM from a valid CPU partition must preserve validity");
+    }
+}
+
+static VM_REGISTRY: Mutex<VmRegistry> = Mutex::new(VmRegistry::new());
+
+fn vm_cpu_partition_input(vm: &AxVMRef) -> VmCpuPartitionInput {
+    let affinities = vm
+        .get_vcpu_affinities_pcpu_ids()
+        .into_iter()
+        .map(|(_, affinity, _)| affinity)
+        .collect();
+    VmCpuPartitionInput::new(vm.id(), vm.cpus_dedicated(), affinities)
+}
+
+fn build_cpu_partition_plan(inputs: &[VmCpuPartitionInput]) -> AxVmResult<CpuPartitionPlan> {
+    CpuPartitionPlan::build(crate::percpu::enabled_cpu_mask(), inputs).map_err(Into::into)
+}
+
+/// Validate and register an externally initialized VM.
+pub(crate) fn push_existing_vm(vm: AxVMRef) -> AxVmResult {
+    let vm_id = vm.id();
+    let cpu_partition_input = vm_cpu_partition_input(&vm);
+    let mut registry = VM_REGISTRY.lock();
+    if let Err(error) = registry.insert(vm.clone(), cpu_partition_input) {
+        warn!("VM[{vm_id}] registration rejected: {error}");
+        return Err(error);
+    }
     drop(registry);
     crate::arch::current::register_vm_platform_resources(&vm);
-    true
+    Ok(())
 }
 
 /// Remove a VM from the process-wide AxVM runtime registry.
 pub(crate) fn remove_existing_vm(vm_id: VMId) -> Option<AxVMRef> {
     crate::arch::current::unregister_vm_platform_resources(vm_id);
     crate::runtime::vcpus::cleanup_vm_vcpus(vm_id);
-    VM_REGISTRY.lock().remove(&vm_id)
+    let mut registry = VM_REGISTRY.lock();
+    let removed = registry.vms.remove(&vm_id);
+    if removed.is_some() {
+        registry.cpu_partition_inputs.remove(&vm_id);
+        registry.frozen_affinity_vms.remove(&vm_id);
+        registry.rebuild_cpu_partition();
+    }
+    removed
 }
 
 /// Return a VM from the process-wide AxVM runtime registry.
 pub fn get_vm_by_id(vm_id: VMId) -> Option<AxVMRef> {
-    VM_REGISTRY.lock().get(&vm_id).cloned()
+    VM_REGISTRY.lock().vms.get(&vm_id).cloned()
 }
 
 /// Return all VMs known to the process-wide AxVM runtime registry.
 pub fn get_vm_list() -> Vec<AxVMRef> {
-    VM_REGISTRY.lock().values().cloned().collect()
+    VM_REGISTRY.lock().vms.values().cloned().collect()
 }
 
 /// Run an operation with a VM selected from the process-wide runtime registry.
@@ -60,8 +168,29 @@ pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
 where
     F: FnOnce(&AxVMRef) -> R,
 {
-    let vm = VM_REGISTRY.lock().get(&vm_id).cloned();
+    let vm = VM_REGISTRY.lock().vms.get(&vm_id).cloned();
     vm.map(|vm| f(&vm))
+}
+
+/// Return the validated affinity and initial host CPU for a registered vCPU.
+pub(crate) fn vcpu_task_placement(vm_id: VMId, vcpu_id: usize) -> Option<VcpuTaskPlacement> {
+    let mut registry = VM_REGISTRY.lock();
+    let placement = task_placement(&registry.cpu_partition, vm_id, vcpu_id);
+    if placement.is_some() {
+        registry.frozen_affinity_vms.insert(vm_id);
+    }
+    placement
+}
+
+fn task_placement(
+    plan: &CpuPartitionPlan,
+    vm_id: VMId,
+    vcpu_id: usize,
+) -> Option<VcpuTaskPlacement> {
+    Some(VcpuTaskPlacement {
+        affinity: plan.task_affinity(vm_id, vcpu_id)?,
+        initial_cpu: plan.task_initial_cpu(vm_id, vcpu_id)?,
+    })
 }
 
 /// Return the active-vCPU mask for a VM.
@@ -184,6 +313,11 @@ impl AxvmRuntime {
         crate::runtime::reset_vm(vm_id)
     }
 
+    /// Reset a VM while delegating each stop-wait iteration to the caller.
+    pub fn reset_vm_with_wait(vm_id: VMId, wait_step: impl FnMut()) -> AxVmResult {
+        crate::runtime::reset_vm_with_wait(vm_id, wait_step)
+    }
+
     /// Wake the primary vCPU of a VM.
     pub fn notify_vm(vm_id: VMId) -> AxVmResult {
         crate::runtime::notify_vm(vm_id)
@@ -196,6 +330,6 @@ impl AxvmRuntime {
 }
 
 /// Register a prepared VM in the AxVM runtime.
-pub fn register_vm(vm: AxVMRef) -> bool {
+pub fn register_vm(vm: AxVMRef) -> AxVmResult {
     crate::runtime::register_vm(vm)
 }
