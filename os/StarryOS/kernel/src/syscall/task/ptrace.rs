@@ -1041,7 +1041,7 @@ fn ptrace_pokedata(pid: PtraceTarget, addr: usize, data: usize) -> StarryResult<
 }
 
 fn ptrace_read_word(tracee: &ProcessData, addr: usize) -> StarryResult<usize> {
-    let aspace = tracee.aspace();
+    let aspace = tracee.pin_aspace()?;
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::READ)?;
     let mut bytes = [0u8; size_of::<usize>()];
@@ -1050,7 +1050,7 @@ fn ptrace_read_word(tracee: &ProcessData, addr: usize) -> StarryResult<usize> {
 }
 
 fn ptrace_write_word(tracee: &ProcessData, addr: usize, data: usize) -> StarryResult {
-    let aspace = tracee.aspace();
+    let aspace = tracee.pin_aspace()?;
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, size_of::<usize>(), MappingFlags::WRITE)?;
     aspace.write(VirtAddr::from_usize(addr), &data.to_ne_bytes())?;
@@ -1239,7 +1239,7 @@ fn skip_empty_iovecs(iovecs: &[IoVec], idx: &mut usize, offset: &mut usize) {
 }
 
 fn remote_read(tracee: &ProcessData, addr: usize, len: usize) -> StarryResult<Vec<u8>> {
-    let aspace = tracee.aspace();
+    let aspace = tracee.pin_aspace()?;
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, len, MappingFlags::READ)?;
     let mut data = vec![0; len];
@@ -1248,7 +1248,7 @@ fn remote_read(tracee: &ProcessData, addr: usize, len: usize) -> StarryResult<Ve
 }
 
 fn remote_write(tracee: &ProcessData, addr: usize, data: &[u8]) -> StarryResult {
-    let aspace = tracee.aspace();
+    let aspace = tracee.pin_aspace()?;
     let mut aspace = aspace.lock();
     ptrace_populate_remote_range(&mut aspace, addr, data.len(), MappingFlags::WRITE)?;
     aspace.write(VirtAddr::from_usize(addr), data)?;
@@ -1308,7 +1308,10 @@ pub fn ptrace_setup_singlestep(
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     let pc = uctx.ip();
-    let aspace = tracee.aspace();
+    let Ok(aspace) = tracee.pin_aspace() else {
+        tracee.set_ptrace_ss_saved_insn_for(tid, None);
+        return;
+    };
     let mut aspace = aspace.lock();
 
     let saved = tracee.take_ptrace_ss_saved_insn_for(tid);
@@ -1369,7 +1372,10 @@ pub fn ptrace_setup_singlestep(
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     let pc = uctx.ip();
-    let aspace = tracee.aspace();
+    let Ok(aspace) = tracee.pin_aspace() else {
+        tracee.set_ptrace_ss_saved_insn_for(tid, None);
+        return;
+    };
     let mut aspace = aspace.lock();
 
     let saved = tracee.take_ptrace_ss_saved_insn_for(tid);
@@ -1414,7 +1420,10 @@ pub fn ptrace_setup_singlestep(
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     let pc = uctx.ip();
-    let aspace = tracee.aspace();
+    let Ok(aspace) = tracee.pin_aspace() else {
+        tracee.set_ptrace_ss_saved_insn_for(tid, None);
+        return;
+    };
     let mut aspace = aspace.lock();
 
     let saved = tracee.take_ptrace_ss_saved_insn_for(tid);
@@ -1458,7 +1467,10 @@ pub fn ptrace_restore_singlestep_insn(
     addr: usize,
     insn: usize,
 ) -> bool {
-    let aspace = tracee.aspace();
+    let Ok(aspace) = tracee.pin_aspace() else {
+        tracee.set_ptrace_ss_saved_insn_for(tid, Some((addr, insn)));
+        return false;
+    };
     let mut aspace = aspace.lock();
     let restored = ptrace_write_u16_unlocked(&mut aspace, addr, insn as u16).is_ok();
     let synced = aspace
@@ -1477,7 +1489,10 @@ pub fn ptrace_restore_singlestep_insn(
     addr: usize,
     insn: usize,
 ) -> bool {
-    let aspace = tracee.aspace();
+    let Ok(aspace) = tracee.pin_aspace() else {
+        tracee.set_ptrace_ss_saved_insn_for(tid, Some((addr, insn)));
+        return false;
+    };
     let mut aspace = aspace.lock();
     let restored = ptrace_write_u32_unlocked(&mut aspace, addr, insn as u32).is_ok();
     let synced = aspace
@@ -2416,9 +2431,9 @@ fn ptrace_read_stopped_user_area_x86_64(
     let mut data_size = 0usize;
     let mut stack_size = 0usize;
     let mut start_stack = regs.rsp as usize;
-    let aspace = tracee.aspace();
+    let aspace = tracee.pin_aspace()?;
     let mm = aspace.lock();
-    for area in mm.areas() {
+    for area in mm.vma_inspection_records()? {
         let flags = area.flags();
         if flags.contains(MappingFlags::EXECUTE) {
             start_code = start_code.min(area.start().as_usize());
@@ -2426,12 +2441,7 @@ fn ptrace_read_stopped_user_area_x86_64(
         } else if flags.contains(MappingFlags::WRITE) {
             data_size = data_size.saturating_add(area.size());
         }
-        if area
-            .backend()
-            .file_info()
-            .ok()
-            .is_some_and(|info| info.path == "[stack]")
-        {
+        if area.file_info().path == "[stack]" {
             stack_size = area.size();
             start_stack = area.end().as_usize();
         }

@@ -15,7 +15,7 @@ use linux_raw_sys::general::{
     __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
     FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
 };
-use starry_vm::{VmMutPtr, VmPtr};
+use starry_vm::{VmMutPtr, VmPtr, vm_load};
 use syscalls::Sysno;
 
 use super::memfd::{
@@ -29,7 +29,7 @@ use crate::{
         memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
     },
     ipc::mqueue::MqDescriptor,
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
+    mm::{IoVec, IoVectorBuf, VmBytesMut, prepare_user_read, vm_load_path_string},
     task::AsThread,
 };
 
@@ -123,9 +123,9 @@ pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
     file_like.validate_write_len(len)?;
-    // `copy_user_read_buf` validates the buffer itself (via `get_as_slice`), so a
-    // separate `validate_user_read_buf` here was a redundant second `check_region`
-    // (aspace lock + can_access_range + populate) on every write — dropped. Copy
+    // `copy_user_read_buf` validates and imports the buffer through `vm_read`, so
+    // a separate `validate_user_read_buf` here would repeat the same fault-in
+    // and permission check on every write. Copy
     // (which faults a bad buffer as EFAULT) runs *before* the memfd seal check
     // (EPERM), matching Linux `generic_perform_write` (prefault precedes the
     // shmem seal check) and `sys_writev`, so a sealed memfd + bad buffer still
@@ -624,7 +624,7 @@ fn copy_user_read_buf(buf: *const u8, len: usize) -> StarryResult<Vec<u8>> {
     if len == 0 {
         return Ok(Vec::new());
     }
-    Ok(UserConstPtr::<u8>::from(buf).get_as_slice(len)?.to_vec())
+    Ok(vm_load(buf, len)?)
 }
 
 /// `access_ok`-style validation without copying payload (may surface `BadAddress` / EFAULT).
@@ -632,7 +632,7 @@ fn validate_user_read_buf(buf: *const u8, len: usize) -> StarryResult<()> {
     if len == 0 {
         return Ok(());
     }
-    UserConstPtr::<u8>::from(buf).get_as_slice(len)?;
+    prepare_user_read(buf as usize, len)?;
     Ok(())
 }
 
@@ -669,7 +669,7 @@ fn validate_user_iov_buf_regions(iov: *const IoVec, iovcnt: usize) -> StarryResu
             return Err(StarryError::InvalidInput);
         }
         let seg = iov.iov_len as usize;
-        UserConstPtr::<u8>::from(iov.iov_base.cast_const()).get_as_slice(seg)?;
+        prepare_user_read(iov.iov_base as usize, seg)?;
         total = total.checked_add(seg).ok_or(StarryError::InvalidInput)?;
     }
     Ok(total)

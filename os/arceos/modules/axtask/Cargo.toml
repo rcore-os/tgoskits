@@ -21,7 +21,8 @@ default = []
 ipi = ["ax-hal/ipi", "dep:ax-ipi"]
 preempt = []
 smp = []
-stack-guard-page = ["dep:ax-alloc", "dep:ax-mm", "ax-hal/paging"]
+vmap-task-stack = ["dep:ax-mm", "ax-hal/paging"]
+stack-guard-page = ["vmap-task-stack"]
 lockdep = ["dep:axpanic"]
 lock-api = ["dep:lock_api"]
 task-ext = ["dep:extern-trait"]
@@ -44,7 +45,7 @@ host-test = [
 test = ["host-test"]
 
 [dependencies]
-ax-alloc = {workspace = true, optional = true}
+ax-alloc.workspace = true
 ax-cpumask.workspace = true
 ax-crate-interface.workspace = true
 ax-hal.workspace = true

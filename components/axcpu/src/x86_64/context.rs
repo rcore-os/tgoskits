@@ -8,6 +8,8 @@ use core::{
 use ax_memory_addr::VirtAddr;
 use cpu_local::{ExecutionContextHeader, PreparedContextSwitch};
 
+#[cfg(feature = "uspace")]
+use crate::InstalledAddressSpace;
 use crate::{KernelTlsBase, TaskLocalState};
 
 /// Saved registers when a trap (interrupt or exception) occurs.
@@ -370,9 +372,9 @@ pub struct TaskContext {
     rsp: u64,
     /// Architecture-neutral current-header and kernel-TLS switch state.
     task_local: TaskLocalState,
-    /// The `CR3` value restored for this task's userspace address space.
+    /// Complete identity projected to `CR3` at the architecture boundary.
     #[cfg(feature = "uspace")]
-    page_table_root: ax_memory_addr::PhysAddr,
+    address_space: InstalledAddressSpace,
     /// Extended states, i.e., FP/SIMD states.
     #[cfg(feature = "fp-simd")]
     ext_state: ExtendedState,
@@ -402,7 +404,7 @@ impl TaskContext {
             rsp: 0,
             task_local: TaskLocalState::new(),
             #[cfg(feature = "uspace")]
-            page_table_root: crate::asm::read_kernel_page_table(),
+            address_space: InstalledAddressSpace::default(),
             #[cfg(feature = "fp-simd")]
             ext_state: ExtendedState::default(),
         }
@@ -441,10 +443,22 @@ impl TaskContext {
         self.task_local.context_header()
     }
 
-    /// Changes the page table root restored for this task.
+    /// Changes the complete address space restored for this task.
     #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, page_table_root: ax_memory_addr::PhysAddr) {
-        self.page_table_root = page_table_root;
+    pub fn set_address_space(&mut self, address_space: InstalledAddressSpace) {
+        self.address_space = address_space;
+    }
+
+    /// Writes this context's materialized userspace root immediately.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own the current CPU context and prevent a concurrent
+    /// scheduler switch while the hardware root is being replaced.
+    #[cfg(feature = "uspace")]
+    pub unsafe fn activate_address_space(&self) {
+        self.address_space.validate_architecture_support();
+        unsafe { crate::asm::install_user_address_space(self.address_space) };
     }
 
     /// Completes every helper operation that must precede current publication.
@@ -455,10 +469,10 @@ impl TaskContext {
             _next_ctx.ext_state.restore();
         }
         #[cfg(feature = "uspace")]
-        if self.page_table_root != _next_ctx.page_table_root {
+        if self.address_space != _next_ctx.address_space {
+            _next_ctx.address_space.validate_architecture_support();
             // SAFETY: the scheduler owns both contexts with IRQs disabled.
-            unsafe { crate::asm::write_user_page_table(_next_ctx.page_table_root) };
-            // Writing CR3 flushes the non-global TLB entries.
+            unsafe { crate::asm::install_user_address_space(_next_ctx.address_space) };
         }
     }
 

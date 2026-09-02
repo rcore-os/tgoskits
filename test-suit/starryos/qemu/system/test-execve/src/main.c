@@ -445,8 +445,13 @@ static void test_multithread_exec_keeps_retiring_page_table_roots_alive(void)
 
             int created = 0;
             for (; created < EXEC_ASPACE_RACE_THREADS; ++created) {
-                if (pthread_create(&siblings[created], NULL,
-                                   exec_aspace_sibling, &race) != 0) {
+                int create_error = pthread_create(&siblings[created], NULL,
+                                                  exec_aspace_sibling, &race);
+                if (create_error != 0) {
+                    fprintf(stderr,
+                            "multithread exec pthread_create failed: "
+                            "round=%d created=%d error=%d\n",
+                            round, created, create_error);
                     atomic_store_explicit(&race.keep_running, false,
                                           memory_order_release);
                     for (int i = 0; i < created; ++i) {

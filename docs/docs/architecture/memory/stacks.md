@@ -19,7 +19,7 @@ TGOSKits 没有把物理 RAM 静态切成一个“栈区”和一个“堆区”
 | --- | --- | --- | --- |
 | CPU0 最早期 linker 栈 | `STACK_SIZE = 0x40000`，256 KiB | kernel `.bss` / `KImage` | 启动早期，镜像范围始终保留 |
 | 每 CPU boot/main 栈 | `someboot::mem::stack_size()`，默认 256 KiB | early bump 的 per-CPU 区 | 系统生命周期，`TaskStack::Borrowed` 不释放 |
-| 普通内核任务栈 | 默认 `0x40000`，可由构建配置覆盖 | `GlobalAlloc` 或显式页 allocation | task owner Drop 时释放 |
+| 普通内核任务栈 | 默认 `0x40000`，可由构建配置覆盖 | bare-metal 使用显式页 allocation；host test 使用宿主 byte allocator | task owner Drop 时释放 |
 | idle 特殊栈 | 取决于构建 feature，部分配置为 16 KiB | task allocator | idle task 生命周期 |
 | Starry 用户栈 | loader/应用程序二进制接口选择的虚拟内存区域大小 | 用户地址空间 backend，按需填页 | exec/exit/unmap 时回收 |
 
@@ -31,7 +31,7 @@ TGOSKits 没有把物理 RAM 静态切成一个“栈区”和一个“堆区”
 
 ![内核与用户栈资源来源](./images/stack-architecture.svg)
 
-普通任务栈默认 256 KiB，超过 2048 B Slab 上限，因此 plain 模式最终由 Buddy 提供大对象页。启用 guard page 后则直接使用显式连续页 API。
+普通任务栈默认 256 KiB。bare-metal 的 plain 与 guard-page 模式都直接使用显式连续页 API；两者的 owner 和统计类别相同，区别只是 guard 模式多持有一页并撤销其 direct-map 映射。只有 host test 为避免依赖已初始化的内核页分配器而使用宿主 byte allocator。
 
 ### 1.3 架构差异
 
@@ -93,7 +93,8 @@ CPU0 在 allocator、完整页表和 per-CPU 映射可用之前就需要栈。�
 | Owner 状态 | `TaskStackKind` | Drop 行为 |
 | --- | --- | --- |
 | boot/main/secondary stack | `Borrowed` | 不释放，仅由启动层持有物理范围 |
-| plain task allocation | `Alloc` | 用原 `Layout` 归还 `GlobalAlloc` |
+| bare-metal plain task allocation | `PageAlloc` | 按原页数归还 page allocator |
+| host-test plain task allocation | `HostAlloc` | 用原 `Layout` 归还宿主 allocator |
 | guard-page task allocation | `GuardedAlloc` | 恢复 guard 页表项后归还全部页 |
 
 `Borrowed` 表达“任务使用但不拥有”。这防止 scheduler 在 main task 结束或重建时把 early bump 的系统级 stack 错误释放给 Buddy。
@@ -104,13 +105,17 @@ CPU0 在 allocator、完整页表和 per-CPU 映射可用之前就需要栈。�
 
 ### 4.1 普通分配
 
-未启用 `stack-guard-page` 时，`TaskStack::alloc_plain()` 使用 `Layout::from_size_align(size, TASK_STACK_ALIGN)` 和 Rust allocator 分配。默认 256 KiB 请求走 Buddy 大对象路径。
+未启用 `stack-guard-page` 时，bare-metal 的 `TaskStack::alloc_pages()` 按页对齐逻辑大小，通过 `global_allocator().alloc_pages(..., UsageKind::TaskStack)` 申请连续 backing。`TaskStackKind::PageAlloc` 保存起点与精确请求页数，Drop 使用同一 usage kind 归还。host test 单独使用 `HostAlloc` 与宿主 `Layout`，不把未初始化的内核页分配器引入测试进程。
 
 | 操作 | 实现 | 失败语义 |
 | --- | --- | --- |
-| allocation | `alloc::alloc::alloc(layout)` | null 时当前代码 assert/panic |
+| checked sizing | 非零、checked page alignment | `TaskCreateError::InvalidStackSize` |
+| bare-metal allocation | `alloc_pages(num_pages, PAGE_SIZE_4K, TaskStack)` | `TaskCreateError::StackAllocation`；页分配入口可以按已注册策略回收 clean page cache |
+| user-task publication | `TaskInner::try_new()` 成功后才进入 clone transaction | Starry 转换为 Linux `ENOMEM`，不发布半个 task |
 | bottom canary | `STACK_END_MAGIC` 写入 stack bottom | 调度检查可发现覆盖 |
-| release | `alloc::alloc::dealloc(ptr, layout)` | 必须使用原 size/align |
+| release | `dealloc_pages(ptr, count, TaskStack)` | 必须使用原起点、页数和 usage kind |
+
+`TaskInner::new()` 保留给 boot、idle 和内核 helper 等无法恢复的内部创建路径；Linux ABI 可达的 fork/clone 路径使用 `TaskInner::try_new()`。这对应 Linux `dup_task_struct()` 在 thread-stack page allocation 失败时展开并返回错误的原则。任意 Rust heap allocation 不会隐式调用可睡眠页缓存回收，因为调用者可能正持有 VFS/page-cache 锁；需要回收能力的资源必须像 `TaskStack` 一样显式选择 page allocation 契约。
 
 Canary 能检测已经写到栈底的溢出，但不能阻止继续破坏相邻内存。需要立即 fault 的配置应启用 guard page。
 
@@ -258,17 +263,17 @@ base                                                           base + 0x41000
 关键分配代码直接使用显式页 API，而不是先从 `GlobalAlloc` 分配后再猜测页边界。
 
 ```rust
-let usable_size = align_up_4k(size);
+let usable_size = checked_stack_size(size)?;
 let guarded_size = usable_size
     .checked_add(PAGE_SIZE_4K)
-    .expect("guarded task stack size overflow");
+    .ok_or(TaskCreateError::InvalidStackSize)?;
 let pages = guarded_size / PAGE_SIZE_4K;
 let base = ax_alloc::global_allocator()
-    .alloc_pages(pages, PAGE_SIZE_4K, UsageKind::Global)
-.expect("guarded task stack allocation failed");
+    .alloc_pages(pages, PAGE_SIZE_4K, UsageKind::TaskStack)
+    .map_err(TaskCreateError::StackAllocation)?;
 ```
 
-源码实际把 内存不足 作为 task creation 的不可恢复初始化失败处理。guard page建立后必须执行本地或远端地址转换后备缓冲区失效，不能只删除页表项。
+可恢复调用方在建立 guard page 前就能观察 allocation failure；内部 infallible wrapper 才把它视为初始化失败。guard page建立后必须执行本地或远端地址转换后备缓冲区失效，不能只删除页表项。
 
 ```mermaid
 sequenceDiagram
@@ -288,15 +293,15 @@ Drop 时顺序相反：先 remap guard page并完成地址转换后备缓冲区�
 
 ### 8.3 普通任务栈
 
-未启用 guard feature 时，`TaskStack::alloc_plain()` 用 `Layout(size, TASK_STACK_ALIGN)` 进入 Rust allocator。默认 256 KiB 超过 Slab 上限，最终使用 Buddy large allocation，但所有权仍表现为 byte allocation。
+未启用 guard feature 时，bare-metal 的 `TaskStack::alloc_pages()` 直接请求 page-aligned backing。默认 256 KiB 为 64 页；当前 Buddy 仍要求连续 order-6 block，但申请失败会先进入页级 reclaim 协议，而不会从 Rust heap allocation-error handler 终止内核。
 
-| 属性 | Plain stack | Guarded stack |
-| --- | --- | --- |
-| 入口 | `alloc::alloc::alloc(Layout)` | `global_allocator().alloc_pages(num, align, usage)` |
-| 下层 | large `GlobalAlloc` → Buddy | Buddy pages |
-| overflow 检测 | bottom canary | unmapped guard + canary |
-| Drop | `alloc::alloc::dealloc()` | remap guard后 raw page deallocation |
-| 可否混用释放 | 否 | 否 |
+| 属性 | Plain bare-metal stack | Guarded stack | Host-test stack |
+| --- | --- | --- | --- |
+| 入口 | `global_allocator().alloc_pages(num, align, TaskStack)` | 同一页 API，多请求一页 | `alloc::alloc::alloc(Layout)` |
+| 下层 | Buddy pages + registered page reclaim | Buddy pages + registered page reclaim | host allocator |
+| overflow 检测 | bottom canary | unmapped guard + canary | bottom canary |
+| Drop | raw page deallocation | remap guard 后 raw page deallocation | `alloc::alloc::dealloc()` |
+| owner kind | `PageAlloc` | `GuardedAlloc` | `HostAlloc` |
 
 `TaskStackKind::Borrowed` 两种 feature 下都不释放 backing。main task借用 someboot 预分配 stack，Drop 只能结束 task owner，不能把 early Reserved 区交给 runtime allocator。
 

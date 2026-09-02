@@ -3,7 +3,7 @@
 use std::sync::{Arc, Weak};
 
 use crate::{
-    host::task::{TaskExt, TaskInner},
+    host::task::{SchedulerAddressSpaceActivation, TaskExt, TaskInner},
     vm::{AxVCpuRef, AxVMRef},
 };
 

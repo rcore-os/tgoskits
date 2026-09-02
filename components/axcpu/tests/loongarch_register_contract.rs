@@ -177,11 +177,10 @@ fn current_scheduler_installs_address_space_before_the_raw_switch() {
         "pub unsafe fn switch_to_prepared",
     );
     assert!(
-        TASK_CONTEXT.contains("page_table_root: usize")
-            && TASK_CONTEXT.contains("pub fn set_page_table_root")
-            && prepare.contains("write_user_page_table")
-            && prepare.contains("flush_tlb"),
-        "the existing axtask model must retain task-owned address-space selection"
+        TASK_CONTEXT.contains("address_space: InstalledAddressSpace")
+            && TASK_CONTEXT.contains("pub fn set_address_space")
+            && prepare.contains("install_user_address_space"),
+        "the scheduler must retain the complete installed address-space identity"
     );
 
     let raw_switch = section(
@@ -190,7 +189,9 @@ fn current_scheduler_installs_address_space_before_the_raw_switch() {
         "ret\",",
     );
     assert!(
-        !raw_switch.contains("write_user_page_table") && !raw_switch.contains("flush_tlb"),
+        !raw_switch.contains("install_user_address_space")
+            && !raw_switch.contains("write_user_page_table")
+            && !raw_switch.contains("flush_tlb"),
         "fallible or policy-bearing address-space work must precede current-register publication"
     );
 }

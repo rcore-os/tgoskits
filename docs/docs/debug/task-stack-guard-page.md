@@ -60,8 +60,9 @@ vmalloc/vmap 虚拟区间，在栈边界保留未映射页面。guard page 只�
 
 第一阶段采用最小实现：只增强动态分配的普通任务栈。
 
-当前 `TaskStack::alloc()` 使用普通 byte allocator 分配栈空间，只要求
-`TASK_STACK_ALIGN`，并不保证栈底是独占页。第一阶段应改为页粒度分配：
+当前 bare-metal `TaskStack` 无论是否启用 guard feature，都使用可失败的页粒度
+owner；host test 才使用宿主 byte allocator。guard feature 在相同 owner 契约上
+增加一页并撤销其 direct-map 映射：
 
 1. 对外仍接受逻辑栈大小 `stack_size`。
 2. 实际申请 `stack_size + PAGE_SIZE_4K`。
@@ -133,12 +134,12 @@ borrowed stack，仍需要 canary 兜底。因此第一阶段不应移除 `stack
 
 ## 当前覆盖边界
 
-当前 guard page 机制覆盖的是 `TaskStack::alloc()` 创建并由 `ax-task`
+当前 guard page 机制覆盖的是 `TaskStack::try_alloc()` 创建并由 `ax-task`
 拥有生命周期的动态任务栈。典型路径是：
 
 ```text
-TaskInner::new()
-  -> TaskStack::alloc()
+TaskInner::try_new()
+  -> TaskStack::try_alloc()
   -> TaskStack::alloc_guarded()
   -> unmap_guard_page()
 ```
@@ -147,7 +148,7 @@ TaskInner::new()
 CPU 上通过 `TaskInner::new()` 创建的独立 idle task，都会在启用
 `stack-guard-page` 后获得 guard page。
 
-这个覆盖边界与动态平台无直接绑定。只要栈来自 `TaskStack::alloc()`，
+这个覆盖边界与动态平台无直接绑定。只要栈来自 `TaskStack::try_alloc()`，
 就会走 guarded allocation；只要栈来自
 `TaskStack::borrowed()`，当前就不会做 guard page。
 
@@ -176,13 +177,13 @@ guarded stack，就会间接受 guard page 保护。
 
 但如果后续引入独立的 per-CPU IRQ stack、exception stack、overflow
 stack、NMI/double-fault stack 或其他架构专用栈，这些栈不会自动继承
-`TaskStack::alloc()` 的 guard page 机制，需要单独建模。
+`TaskStack::try_alloc()` 的 guard page 机制，需要单独建模。
 
 综上，当前覆盖矩阵为：
 
 | 栈类型 | 来源 | 当前 guard page 覆盖 |
 | --- | --- | --- |
-| 动态任务栈，`TaskStack::alloc()` | `ax-task` 拥有并分配 | 是 |
+| 动态任务栈，`TaskStack::try_alloc()` | `ax-task` 拥有并分配 | 是 |
 | 主 CPU boot/main borrowed 栈 | 平台入口或 somehal metadata | 否 |
 | secondary CPU borrowed boot/idle 栈 | somehal metadata 或平台 bring-up | 否 |
 | 独立 IRQ / exception / overflow stack | 若引入需单独处理 | 否 |
@@ -333,7 +334,9 @@ vmap-style 栈的目标不是替换第一阶段的检查语义，而是降低物
   物理页回收问题。
 
 这一步需要先解决 kernel vmap 虚拟地址空间管理，再把 `TaskStack`
-从 direct-map contiguous allocation 迁移到 vmap allocation。
+从 direct-map contiguous allocation 迁移到 vmap allocation。当前 plain 与
+guarded backing 已共享 `TaskCreateError`、`UsageKind::TaskStack` 和页级 RAII
+释放契约，因此迁移只替换 backing provider，不改变调用方的 fallible 创建接口。
 
 ### 3. Stack area metadata
 

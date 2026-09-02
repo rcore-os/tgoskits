@@ -1,32 +1,66 @@
 //! Memory mapping backends.
 use alloc::{
-    boxed::Box,
     string::{String, ToString},
     sync::Arc,
+    vec::Vec,
 };
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_alloc::{UsageKind, global_allocator};
-use ax_memory_addr::{DynPageIter, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_fs_ng::{file::CachedFileIdentity, vfs::CachedFile};
+use ax_memory_addr::{DynPageIter, MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_memory_set::MappingBackend;
 use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{MappingFlags, PageTable},
+    paging::{MappingFlags, PageTable, PagingError},
 };
-use enum_dispatch::enum_dispatch;
+use scope_local::scope_local;
 
-use crate::{StarryError, StarryResult, sync::Mutex};
+use crate::{StarryError, StarryResult};
 
 mod cow;
 mod file;
 mod linear;
 mod shared;
 
-pub use self::shared::SharedPages;
+pub use self::shared::SharedMemoryObject;
 pub use super::accounting::RssKind;
-use super::{
-    AddrSpace,
-    accounting::{CloneMapAccounting, MemoryAccounting},
-};
+use super::{AddressSpaceId, vma::{MappingId, VmaDescriptor}};
+
+scope_local! {
+    static DEFER_TLB_RETIRE: AtomicUsize = AtomicUsize::new(0);
+}
+
+/// Marks one backend-unmap scope as owned by an outer address-space receipt.
+///
+/// The guard is scope-local rather than global: another CPU or a nested
+/// rollback must never inherit a decision to skip its immediate invalidation.
+/// The outer caller has already reserved and retained every affected mapping
+/// owner before entering this scope.
+pub(crate) struct DeferredTlbRetireGuard {
+    previous: usize,
+    _not_send: core::marker::PhantomData<*mut ()>,
+}
+
+impl DeferredTlbRetireGuard {
+    pub(crate) fn enter() -> Self {
+        let previous = DEFER_TLB_RETIRE.with(|state| state.swap(1, Ordering::AcqRel));
+        Self {
+            previous,
+            _not_send: core::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for DeferredTlbRetireGuard {
+    fn drop(&mut self) {
+        DEFER_TLB_RETIRE.with(|state| state.store(self.previous, Ordering::Release));
+    }
+}
+
+pub(super) fn tlb_retire_is_deferred() -> bool {
+    DEFER_TLB_RETIRE.with(|state| state.load(Ordering::Acquire) != 0)
+}
 
 fn divide_page(size: usize, page_size: usize) -> usize {
     assert!(size.is_multiple_of(page_size), "unaligned");
@@ -58,29 +92,313 @@ fn pages_in(range: VirtAddrRange, align: usize) -> StarryResult<DynPageIter<Virt
     DynPageIter::new(range.start, range.end, align).ok_or(StarryError::InvalidInput)
 }
 
-type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
+/// How one backend PTE operation changed the software owner expected at a
+/// virtual address.
+///
+/// The backend already owns the exact [`PageObject`] when it installs or
+/// replaces a PTE.  Returning that object keeps `AddrSpace` from reconstructing
+/// ownership later from a raw PFN.  `Updated` means the PTE still names the
+/// same object but permissions or resident classification changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PteOwnerTransition {
+    Installed,
+    Replaced,
+    Updated,
+}
 
-#[enum_dispatch]
-pub trait BackendOps {
+/// Provider-side state that must be consumed only after the MappingSlot/rmap
+/// has been published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProviderPublication {
+    Complete,
+    Pending,
+}
+
+/// Exact software owner prepared by one materialized PTE operation.
+///
+/// This is the Rust equivalent of carrying a referenced folio through Linux's
+/// fault path: the PTE address is still rechecked under the address-space
+/// mutation gate, but the owner is never rediscovered from the PTE PFN.
+pub(super) struct PreparedPteOwner {
+    pub va: VirtAddr,
+    /// Materialized physical address for this leaf.  This is identity data,
+    /// not an owning token; `page: Arc<PageObject>` remains the sole frame
+    /// owner and bounds-checks this address during publication.
+    pub paddr: PhysAddr,
+    pub page_size: usize,
+    pub page: Arc<super::objects::PageObject>,
+    pub resident_kind: Option<RssKind>,
+    pub transition: PteOwnerTransition,
+    pub provider_publication: ProviderPublication,
+}
+
+impl PreparedPteOwner {
+    pub(super) fn installed(
+        va: VirtAddr,
+        paddr: PhysAddr,
+        page_size: usize,
+        page: Arc<super::objects::PageObject>,
+        resident_kind: Option<RssKind>,
+        provider_publication: ProviderPublication,
+    ) -> Self {
+        Self {
+            va,
+            paddr,
+            page_size,
+            page,
+            resident_kind,
+            transition: PteOwnerTransition::Installed,
+            provider_publication,
+        }
+    }
+
+    pub(super) fn replaced(
+        va: VirtAddr,
+        paddr: PhysAddr,
+        page_size: usize,
+        page: Arc<super::objects::PageObject>,
+        resident_kind: Option<RssKind>,
+        provider_publication: ProviderPublication,
+    ) -> Self {
+        Self {
+            va,
+            paddr,
+            page_size,
+            page,
+            resident_kind,
+            transition: PteOwnerTransition::Replaced,
+            provider_publication,
+        }
+    }
+
+    pub(super) fn updated(
+        va: VirtAddr,
+        paddr: PhysAddr,
+        page_size: usize,
+        page: Arc<super::objects::PageObject>,
+        resident_kind: Option<RssKind>,
+    ) -> Self {
+        Self {
+            va,
+            paddr,
+            page_size,
+            page,
+            resident_kind,
+            transition: PteOwnerTransition::Updated,
+            provider_publication: ProviderPublication::Complete,
+        }
+    }
+}
+
+/// Materialized-PTE result returned by every backend operation.
+///
+/// `satisfied_pages` preserves Linux fault/populate return semantics, while
+/// `owners` contains only PTEs whose owner or resident classification changed
+/// in this operation.  The vector is fully reserved by the producer before
+/// returning, so publication does not need to rediscover any page identity.
+#[derive(Default)]
+pub(super) struct PteMaterialization {
+    satisfied_pages: usize,
+    owners: Vec<PreparedPteOwner>,
+}
+
+/// Typed request for materializing one VMA range.
+///
+/// Bulk population retains the backend's native granule. A fault request also
+/// carries the exact faulting address so an anonymous transparent-huge
+/// allocation can fall back to the correct 4 KiB page without smuggling that
+/// address through an aligned range endpoint.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PopulateRequest {
+    range: VirtAddrRange,
+    preferred_leaf_size: usize,
+    fault_address: Option<VirtAddr>,
+    fallback: FaultFallback,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FaultFallback {
+    Forbidden,
+    BasePage,
+}
+
+impl PopulateRequest {
+    pub(super) fn area(
+        range: VirtAddrRange,
+        preferred_leaf_size: usize,
+    ) -> StarryResult<Self> {
+        Self::new(
+            range,
+            preferred_leaf_size,
+            None,
+            FaultFallback::Forbidden,
+        )
+    }
+
+    pub(super) fn fault(
+        range: VirtAddrRange,
+        preferred_leaf_size: usize,
+        fault_address: VirtAddr,
+        fallback: FaultFallback,
+    ) -> StarryResult<Self> {
+        Self::new(range, preferred_leaf_size, Some(fault_address), fallback)
+    }
+
+    fn new(
+        range: VirtAddrRange,
+        preferred_leaf_size: usize,
+        fault_address: Option<VirtAddr>,
+        fallback: FaultFallback,
+    ) -> StarryResult<Self> {
+        if range.is_empty()
+            || preferred_leaf_size < PAGE_SIZE_4K
+            || !preferred_leaf_size.is_power_of_two()
+            || !preferred_leaf_size.is_multiple_of(PAGE_SIZE_4K)
+            || fault_address.is_some_and(|address| !range.contains(address))
+        {
+            return Err(StarryError::InvalidInput);
+        }
+        Ok(Self {
+            range,
+            preferred_leaf_size,
+            fault_address,
+            fallback,
+        })
+    }
+
+    pub(super) const fn range(self) -> VirtAddrRange {
+        self.range
+    }
+
+    pub(super) const fn preferred_leaf_size(self) -> usize {
+        self.preferred_leaf_size
+    }
+
+    pub(super) const fn fault_address(self) -> Option<VirtAddr> {
+        self.fault_address
+    }
+
+    pub(super) const fn fallback(self) -> FaultFallback {
+        self.fallback
+    }
+}
+
+impl PteMaterialization {
+    pub(super) const fn empty() -> Self {
+        Self {
+            satisfied_pages: 0,
+            owners: Vec::new(),
+        }
+    }
+
+    pub(super) fn with_capacity(capacity: usize) -> StarryResult<Self> {
+        let mut owners = Vec::new();
+        owners
+            .try_reserve(capacity)
+            .map_err(|_| StarryError::NoMemory)?;
+        Ok(Self {
+            satisfied_pages: 0,
+            owners,
+        })
+    }
+
+    pub(super) const fn satisfied_pages(&self) -> usize {
+        self.satisfied_pages
+    }
+
+    pub(super) fn set_satisfied_pages(&mut self, pages: usize) {
+        self.satisfied_pages = pages;
+    }
+
+    pub(super) fn increment_satisfied(&mut self, pages: usize) -> StarryResult {
+        self.satisfied_pages = self
+            .satisfied_pages
+            .checked_add(pages)
+            .ok_or(StarryError::NoMemory)?;
+        Ok(())
+    }
+
+    pub(super) fn push(&mut self, owner: PreparedPteOwner) {
+        self.owners.push(owner);
+    }
+
+    pub(super) fn append(&mut self, mut other: Self) -> StarryResult {
+        self.satisfied_pages = self
+            .satisfied_pages
+            .checked_add(other.satisfied_pages)
+            .ok_or(StarryError::NoMemory)?;
+        self.owners
+            .try_reserve(other.owners.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        self.owners.append(&mut other.owners);
+        Ok(())
+    }
+
+    pub(super) fn into_owners(self) -> Vec<PreparedPteOwner> {
+        self.owners
+    }
+}
+
+pub(super) trait MappingExecution {
     /// Returns the page size of the backend.
     fn page_size(&self) -> usize;
+
+    /// Describe the logical mapping represented by this backend.  The
+    /// descriptor is pure metadata and must not perform file I/O; it is used
+    /// while publishing an immutable VMA snapshot.
+    fn vma_descriptor(&self, area_start: VirtAddr) -> VmaDescriptor;
 
     /// Map a memory region.
     fn map(
         &self,
         range: VirtAddrRange,
         flags: MappingFlags,
-        acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> StarryResult;
+    ) -> StarryResult<PteMaterialization>;
+
+    /// Read-only map preflight.  Lazy backends may accept an empty page table;
+    /// resident/device backends should reject malformed or conflicting leaves
+    /// before an overlapping replacement removes the old VMA.
+    fn validate_map(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        let Ok(mut pages) = pages_in(range, self.page_size()) else {
+            return false;
+        };
+        pages.all(|va| matches!(pt.query(va), Err(PagingError::NotMapped)))
+    }
 
     /// Unmap a memory region.
     fn unmap(
         &self,
         range: VirtAddrRange,
-        acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
     ) -> StarryResult;
+
+    /// Read-only unmap preflight. `NotMapped` is valid for lazy mappings;
+    /// malformed page-table walks are rejected before any leaf is detached.
+    fn validate_unmap(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        let Ok(mut pages) = pages_in(range, self.page_size()) else {
+            return false;
+        };
+        pages.all(|va| match pt.query(va) {
+            Ok((_, _, page_size)) => page_size == self.page_size(),
+            Err(PagingError::NotMapped) => true,
+            Err(_) => false,
+        })
+    }
+
+    /// Read-only protection preflight. A non-resident lazy page is legal, but
+    /// every resident leaf must be structurally queryable and use one backend
+    /// page size.
+    fn validate_protect(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        let Ok(mut pages) = pages_in(range, self.page_size()) else {
+            return false;
+        };
+        pages.all(|va| match pt.query(va) {
+            Ok((_, _, page_size)) => page_size == self.page_size(),
+            Err(PagingError::NotMapped) => true,
+            Err(_) => false,
+        })
+    }
 
     /// Called before a memory region is protected.
     fn on_protect(
@@ -99,30 +417,28 @@ pub trait BackendOps {
     /// treat it as populated.
     fn populate(
         &self,
-        _range: VirtAddrRange,
+        _space_id: AddressSpaceId,
+        _request: PopulateRequest,
         _flags: MappingFlags,
         _access_flags: MappingFlags,
-        _acct: Option<&MemoryAccounting>,
         _pt: &mut PageTable,
-    ) -> StarryResult<(usize, Option<PopulateCallback>)> {
-        Ok((0, None))
+    ) -> StarryResult<PteMaterialization> {
+        Ok(PteMaterialization::empty())
     }
 
     /// Duplicates this mapping for use in a different page table.
     ///
     /// This differs from `clone`, which is designed for splitting a mapping
-    /// within the same table.
-    ///
-    /// [`BackendOps::map`] will be latter called to the returned backend.
+    /// within the same table. Eager backends must install every resident child
+    /// leaf before returning; lazy backends may return metadata that can
+    /// reconstruct a missing leaf from [`MappingExecution::populate`].
     fn clone_map(
         &self,
         range: VirtAddrRange,
         flags: MappingFlags,
         old_pt: &mut PageTable,
         new_pt: &mut PageTable,
-        new_aspace: &Arc<Mutex<AddrSpace>>,
-        acct: CloneMapAccounting<'_>,
-    ) -> StarryResult<Backend>;
+    ) -> StarryResult<(MappingOperation, PteMaterialization)>;
 
     /// Splits the backend into two at the given position, and returns the backend for the upper part.
     ///
@@ -130,26 +446,80 @@ pub trait BackendOps {
     ///
     /// Returns `None` if the given position is not in the memory area, or one
     /// of the parts is empty after splitting.
-    fn split(&mut self, align_diff: usize) -> Option<Backend>;
+    fn split(&mut self, align_diff: usize) -> Option<MappingOperation>;
 
     /// Shrinks the backend from the left by the given size.
-    fn shrink_left(&mut self, _shrink_size: usize);
+    fn shrink_left(&mut self, _shrink_size: usize) -> bool;
 
     /// Shrinks the backend from the right by the given size.
-    fn shrink_right(&mut self, _shrink_size: usize);
+    fn shrink_right(&mut self, _shrink_size: usize) -> bool;
 }
 
-/// A unified enum type for different memory mapping backends.
+/// Executable mapping policy retained privately by one immutable VMA node.
+///
+/// The closed dispatch enum is deliberately private.  Callers observe logical
+/// mapping metadata through `VmaDescriptor`/`MappingSource` and invoke named
+/// capabilities on this value; they cannot recover a second public source-kind
+/// enum and make ownership decisions from it.  This mirrors Linux's split
+/// between immutable VMA metadata and the mapping operations used to
+/// materialize or retire PTEs.
 #[derive(Clone)]
-#[enum_dispatch(BackendOps)]
-pub enum Backend {
+pub struct MappingOperation {
+    kind: MappingOperationKind,
+}
+
+#[derive(Clone)]
+enum MappingOperationKind {
     Linear(linear::LinearBackend),
     Cow(cow::CowBackend),
     Shared(shared::SharedBackend),
     File(file::FileBackend),
 }
 
-pub struct BackendFileInfo {
+/// Stable ownership domain used by a process-shared futex key.
+///
+/// Linux keys shared futexes by the backing shmem object or inode rather than
+/// by a VMA fragment.  These typed identities provide the same stability
+/// across VMA splits, relocation and independently opened cached-file handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SharedFutexRegion {
+    SharedMemory(MappingId),
+    File(CachedFileIdentity),
+}
+
+/// Logical location of a futex within one shared backing object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedFutexIdentity {
+    region: SharedFutexRegion,
+    offset: usize,
+}
+
+impl SharedFutexIdentity {
+    const fn shared_memory(mapping: MappingId, offset: usize) -> Self {
+        Self {
+            region: SharedFutexRegion::SharedMemory(mapping),
+            offset,
+        }
+    }
+
+    const fn file(cache: CachedFileIdentity, offset: usize) -> Self {
+        Self {
+            region: SharedFutexRegion::File(cache),
+            offset,
+        }
+    }
+
+    pub const fn region(self) -> SharedFutexRegion {
+        self.region
+    }
+
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MappingFileInfo {
     pub path: String,
     pub offset: Option<u64>,
     pub inode: Option<u64>,
@@ -157,28 +527,413 @@ pub struct BackendFileInfo {
     pub shared: bool,
 }
 
-impl Backend {
+/// Owned shared-file capability that may outlive the VMA publication lock.
+/// It retains the file/cache executor but exposes only operations valid for a
+/// shared file mapping; callers cannot recover the closed mapping-operation
+/// dispatch type from it.
+#[derive(Clone)]
+pub(crate) struct SharedFileMappingLease {
+    backend: file::FileBackend,
+}
+
+impl SharedFileMappingLease {
+    pub(crate) fn check_flags(&self, flags: MappingFlags) -> StarryResult {
+        self.backend.check_flags(flags)
+    }
+
+    pub(crate) fn cache(&self) -> &CachedFile {
+        self.backend.cache()
+    }
+
+    pub(crate) fn cache_location(&self) -> &axfs_ng_vfs::Location {
+        self.backend.cache_location()
+    }
+
+    pub(crate) fn file_offset_at(&self, address: VirtAddr) -> u64 {
+        self.backend.file_offset_at(address)
+    }
+
+    pub(crate) fn writeback_range(&self, start: VirtAddr, end: VirtAddr) -> StarryResult {
+        self.backend.writeback_range(start, end)
+    }
+
+    pub(crate) fn pageout_range(
+        &self,
+        start: VirtAddr,
+        end: VirtAddr,
+    ) -> StarryResult<ax_fs_ng::file::CachePageoutResult> {
+        self.backend.pageout_range(start, end)
+    }
+}
+
+/// Exact materialized leaf retained by a mapping preimage.
+///
+/// Grouping identity, PTE shape and accounting ownership prevents rollback
+/// callers from accidentally restoring only a subset of one resident fact.
+pub(crate) struct ResidentLeafRestore<'a> {
+    pub va: VirtAddr,
+    pub paddr: PhysAddr,
+    pub page_size: usize,
+    pub flags: MappingFlags,
+    pub page: Option<&'a Arc<super::objects::PageObject>>,
+}
+
+impl MappingOperation {
+    fn from_linear(backend: linear::LinearBackend) -> Self {
+        Self {
+            kind: MappingOperationKind::Linear(backend),
+        }
+    }
+
+    fn from_cow(backend: cow::CowBackend) -> Self {
+        Self {
+            kind: MappingOperationKind::Cow(backend),
+        }
+    }
+
+    fn from_shared(backend: shared::SharedBackend) -> Self {
+        Self {
+            kind: MappingOperationKind::Shared(backend),
+        }
+    }
+
+    fn from_file(backend: file::FileBackend) -> Self {
+        Self {
+            kind: MappingOperationKind::File(backend),
+        }
+    }
+
+    /// Page granularity required by the execution policy.
+    pub fn page_size(&self) -> usize {
+        MappingExecution::page_size(self)
+    }
+
+    pub(crate) fn validate_map_range(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        MappingExecution::validate_map(self, range, pt)
+    }
+
+    pub(super) fn map_range(
+        &self,
+        range: VirtAddrRange,
+        flags: MappingFlags,
+        pt: &mut PageTable,
+    ) -> StarryResult<PteMaterialization> {
+        MappingExecution::map(self, range, flags, pt)
+    }
+
+    pub(crate) fn validate_protect_range(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        MappingExecution::validate_protect(self, range, pt)
+    }
+
+    pub(crate) fn protect_range(
+        &self,
+        range: VirtAddrRange,
+        new_flags: MappingFlags,
+        pt: &mut PageTable,
+    ) -> StarryResult {
+        MappingExecution::on_protect(self, range, new_flags, pt)?;
+        let pte_flags = match &self.kind {
+            MappingOperationKind::Cow(cow) => cow.pte_flags_for_protect(new_flags),
+            _ => new_flags,
+        };
+        pt.protect_region(range.start, range.size(), pte_flags)?;
+        Ok(())
+    }
+
+    /// Returns the execution policy for one contained VMA fragment.
+    ///
+    /// Backend split/shrink operations update source coordinates but do not
+    /// touch PTEs. The original value remains a complete rollback preimage.
+    pub(crate) fn fragment(
+        &self,
+        source: VirtAddrRange,
+        fragment: VirtAddrRange,
+    ) -> StarryResult<Self> {
+        if fragment.is_empty()
+            || fragment.start < source.start
+            || fragment.end > source.end
+        {
+            return Err(StarryError::InvalidInput);
+        }
+        let mut operation = self.clone();
+        if fragment.start > source.start {
+            let offset = fragment
+                .start
+                .checked_sub_addr(source.start)
+                .ok_or(StarryError::InvalidInput)?;
+            operation = MappingExecution::split(&mut operation, offset)
+                .ok_or(StarryError::BadState)?;
+        }
+        if fragment.end < source.end {
+            let shrink = source
+                .end
+                .checked_sub_addr(fragment.end)
+                .ok_or(StarryError::InvalidInput)?;
+            if !MappingExecution::shrink_right(&mut operation, shrink) {
+                return Err(StarryError::BadState);
+            }
+        }
+        Ok(operation)
+    }
+
+    /// Returns a capability only when this operation represents a shared file
+    /// VMA. Private file mappings execute through COW and intentionally do not
+    /// expose shared writeback or hole-punch operations.
+    pub(crate) fn shared_file_lease(&self) -> Option<SharedFileMappingLease> {
+        match &self.kind {
+            MappingOperationKind::File(backend) if backend.is_shared_file_map() => {
+                Some(SharedFileMappingLease {
+                    backend: backend.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn shared_memory_object(&self) -> Option<Arc<SharedMemoryObject>> {
+        match &self.kind {
+            MappingOperationKind::Shared(backend) => Some(backend.object().clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn mremap_alignment(&self) -> usize {
+        match &self.kind {
+            MappingOperationKind::Shared(shared) => shared.mapping_alignment(),
+            MappingOperationKind::Linear(_)
+            | MappingOperationKind::Cow(_)
+            | MappingOperationKind::File(_) => PAGE_SIZE_4K,
+        }
+    }
+
+    pub(crate) fn supports_mremap_dontunmap(&self) -> bool {
+        matches!(&self.kind, MappingOperationKind::Cow(cow) if cow.is_anonymous())
+    }
+
+    pub(crate) fn is_linear(&self) -> bool {
+        matches!(&self.kind, MappingOperationKind::Linear(_))
+    }
+
+    pub(crate) fn is_private_anonymous(&self) -> bool {
+        self.supports_mremap_dontunmap()
+    }
+
+    /// Derive the Linux `VM_MAY*`-equivalent permission envelope from the
+    /// executable mapping capability rather than exposing its concrete kind.
+    pub(crate) fn maximum_mapping_flags(&self, current: MappingFlags) -> MappingFlags {
+        let permission_bits = MappingFlags::READ
+            | MappingFlags::WRITE
+            | MappingFlags::EXECUTE
+            | MappingFlags::USER;
+        let attributes = current - permission_bits;
+        match &self.kind {
+            MappingOperationKind::Cow(_) | MappingOperationKind::Shared(_) => {
+                attributes | permission_bits
+            }
+            MappingOperationKind::File(file) => {
+                let mut maximum = attributes
+                    | MappingFlags::READ
+                    | MappingFlags::EXECUTE
+                    | MappingFlags::USER;
+                if file.check_flags(MappingFlags::WRITE).is_ok() {
+                    maximum |= MappingFlags::WRITE;
+                }
+                maximum
+            }
+            MappingOperationKind::Linear(_) => current,
+        }
+    }
+
+    pub(crate) fn check_mprotect_flags(&self, flags: MappingFlags) -> StarryResult {
+        match &self.kind {
+            MappingOperationKind::File(file) => file.check_flags(flags),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn validate_discard_fragment(&self, range: VirtAddrRange) -> StarryResult {
+        match &self.kind {
+            MappingOperationKind::Linear(_) => Err(StarryError::InvalidInput),
+            MappingOperationKind::Shared(_) if !range.start.is_aligned(self.page_size())
+                || !range.end.is_aligned(self.page_size()) =>
+            {
+                Err(StarryError::OperationNotSupported)
+            }
+            MappingOperationKind::Cow(_)
+            | MappingOperationKind::Shared(_)
+            | MappingOperationKind::File(_) => Ok(()),
+        }
+    }
+
+    pub(crate) fn pin_file_cache_owner_for_mapping(
+        &self,
+        address: VirtAddr,
+        paddr: PhysAddr,
+    ) -> StarryResult<Option<ax_fs_ng::file::CachedPagePin>> {
+        match &self.kind {
+            MappingOperationKind::File(file) => {
+                file.pin_cache_owner_for_mapping(address, paddr).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(super) fn populate(
+        &self,
+        space_id: AddressSpaceId,
+        request: PopulateRequest,
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        pt: &mut PageTable,
+    ) -> StarryResult<PteMaterialization> {
+        MappingExecution::populate(self, space_id, request, flags, access_flags, pt)
+    }
+
+    pub(super) fn clone_map(
+        &self,
+        range: VirtAddrRange,
+        flags: MappingFlags,
+        old_pt: &mut PageTable,
+        new_pt: &mut PageTable,
+    ) -> StarryResult<(Self, PteMaterialization)> {
+        MappingExecution::clone_map(self, range, flags, old_pt, new_pt)
+    }
+
+    pub(crate) fn validate_unmap_range(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        MappingExecution::validate_unmap(self, range, pt)
+    }
+
+    pub(crate) fn unmap_range(
+        &self,
+        range: VirtAddrRange,
+        pt: &mut PageTable,
+    ) -> StarryResult {
+        MappingExecution::unmap(self, range, pt)
+    }
+
+    /// Resolve a process-shared futex against its backing object rather than
+    /// against the current VMA fragment.
+    pub(crate) fn shared_futex_identity(
+        &self,
+        address: VirtAddr,
+    ) -> Option<SharedFutexIdentity> {
+        match &self.kind {
+            MappingOperationKind::Shared(shared) => shared.shared_futex_identity(address),
+            MappingOperationKind::File(file) => file.shared_futex_identity(address),
+            MappingOperationKind::Linear(_) | MappingOperationKind::Cow(_) => None,
+        }
+    }
+
+    /// Returns whether fork must remove write permission from resident parent
+    /// PTEs before the child address space can be published.
+    pub(crate) const fn requires_fork_write_protect(&self) -> bool {
+        matches!(&self.kind, MappingOperationKind::Cow(_))
+    }
+
+    pub(crate) fn mapping_id(&self) -> super::vma::MappingId {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => backend.mapping_id(),
+            MappingOperationKind::Cow(backend) => backend.mapping_id(),
+            MappingOperationKind::Shared(backend) => backend.object().mapping_id(),
+            MappingOperationKind::File(backend) => backend.mapping_id(),
+        }
+    }
+
+    /// Completes a provider's temporary PTE-to-PageObject identity
+    /// reservation after the MappingSlot and rmap are published.
+    pub(crate) fn finish_page_publication(
+        &self,
+        va: VirtAddr,
+        page: &Arc<super::objects::PageObject>,
+    ) -> StarryResult {
+        match &self.kind {
+            MappingOperationKind::Cow(cow) => cow.publish_page_object(page),
+            MappingOperationKind::File(file) => file.finish_page_publication(va, page),
+            MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => Ok(()),
+        }
+    }
+
+    /// Restores one exact resident leaf retained by a mutation preimage.
+    /// MappingOperation reference accounting is re-established before the PTE becomes
+    /// visible; failures undo that reservation rather than publishing a leaf
+    /// whose frame owner has already retired.
+    pub(crate) fn restore_resident_preimage(
+        &self,
+        leaf: ResidentLeafRestore<'_>,
+        pt: &mut PageTable,
+    ) -> StarryResult {
+        let ResidentLeafRestore {
+            va,
+            paddr,
+            page_size,
+            flags,
+            page,
+        } = leaf;
+        match &self.kind {
+            MappingOperationKind::Cow(cow) => {
+                let page = page.ok_or(StarryError::BadState)?;
+                cow.restore_page_identity(page)?;
+            }
+            MappingOperationKind::File(file) => {
+                let page = page.ok_or(StarryError::BadState)?;
+                file.ensure_page_identity(va, page)?;
+            }
+            MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => {}
+        }
+
+        if let Err(error) = pt.map_page(va, paddr, page_size, flags) {
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    /// Returns whether a fault may report an object/address SIGBUS when no
+    /// page can be supplied (for example a file mapping beyond EOF).
+    pub fn is_file_backed(&self) -> bool {
+        match &self.kind {
+            MappingOperationKind::Cow(backend) => !backend.is_anonymous(),
+            MappingOperationKind::File(_) => true,
+            MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => false,
+        }
+    }
+
+    /// Reports page-cache residency without performing I/O or installing a
+    /// PTE.  `mincore` uses this after releasing the address-space metadata
+    /// lock so cache and VMA locks never nest.
+    pub(crate) fn page_cache_resident(&self, va: VirtAddr) -> bool {
+        match &self.kind {
+            MappingOperationKind::Cow(cow) => cow.page_cache_resident(va),
+            MappingOperationKind::File(file) => file.page_cache_resident(va),
+            MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => false,
+        }
+    }
+
+    /// Return the immutable VMA descriptor for this backend.
+    pub(crate) fn vma_descriptor(&self, area_start: VirtAddr) -> VmaDescriptor {
+        MappingExecution::vma_descriptor(self, area_start)
+    }
+
     /// Returns the file information if this is a file-backed mapping, or `None` otherwise.
     ///
     /// The returned tuple contains the file name, offset, inode and whether the mapping is shared.
-    pub fn file_info(&self) -> StarryResult<BackendFileInfo> {
-        match self {
-            Backend::Cow(b) => b.file_info(),
-            Backend::Linear(b) => Ok(BackendFileInfo {
+    pub fn file_info(&self) -> StarryResult<MappingFileInfo> {
+        match &self.kind {
+            MappingOperationKind::Cow(b) => b.file_info(),
+            MappingOperationKind::Linear(b) => Ok(MappingFileInfo {
                 path: "".to_string(),
                 offset: None,
                 inode: None,
                 dev: None,
                 shared: b.is_shared(),
             }),
-            Backend::Shared(_) => Ok(BackendFileInfo {
+            MappingOperationKind::Shared(_) => Ok(MappingFileInfo {
                 path: "".to_string(),
                 offset: None,
                 inode: None,
                 dev: None,
                 shared: true,
             }),
-            Backend::File(b) => b.file_info(),
+            MappingOperationKind::File(b) => b.file_info(),
         }
     }
 
@@ -189,31 +944,275 @@ impl Backend {
         &self,
         new_start: VirtAddr,
         src_offset: usize,
-        aspace: &Arc<Mutex<AddrSpace>>,
     ) -> StarryResult<Self> {
         let adjusted = new_start
             .as_usize()
             .checked_sub(src_offset)
             .map(VirtAddr::from)
             .ok_or(StarryError::InvalidInput)?;
-        Ok(match self {
-            Self::Cow(cb) => Self::Cow(cb.with_start(adjusted)),
-            Self::Shared(sb) => Self::Shared(sb.with_start(adjusted)),
-            Self::Linear(_) => return Err(StarryError::OperationNotSupported),
-            Self::File(fb) => Self::File(fb.with_start(adjusted, aspace)),
+        Ok(match &self.kind {
+            MappingOperationKind::Cow(cb) => Self::from_cow(cb.with_start(adjusted)),
+            MappingOperationKind::Shared(sb) => Self::from_shared(sb.with_start(adjusted)),
+            MappingOperationKind::Linear(_) => return Err(StarryError::OperationNotSupported),
+            MappingOperationKind::File(fb) => Self::from_file(fb.with_start(adjusted)?),
+        })
+    }
+
+    /// Adjusts the logical extent for an `mremap` destination.  The operation
+    /// is checked before any VMA/PTE publication; backends that cannot grow
+    /// (for example an externally supplied shared buffer) return a typed
+    /// unsupported error instead of silently exposing a shorter mapping.
+    pub fn resized(&self, size: usize) -> StarryResult<Self> {
+        if size == 0 {
+            return Err(StarryError::InvalidInput);
+        }
+        Ok(match &self.kind {
+            MappingOperationKind::Cow(cow) => Self::from_cow(cow.for_extent(size)?),
+            MappingOperationKind::Shared(shared) => Self::from_shared(shared.with_size(size)?),
+            MappingOperationKind::Linear(_) => return Err(StarryError::OperationNotSupported),
+            MappingOperationKind::File(file) => Self::from_file(file.clone()),
         })
     }
 }
 
-impl MappingBackend for Backend {
+impl MappingExecution for MappingOperation {
+    fn page_size(&self) -> usize {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => MappingExecution::page_size(backend),
+            MappingOperationKind::Cow(backend) => MappingExecution::page_size(backend),
+            MappingOperationKind::Shared(backend) => MappingExecution::page_size(backend),
+            MappingOperationKind::File(backend) => MappingExecution::page_size(backend),
+        }
+    }
+
+    fn vma_descriptor(&self, area_start: VirtAddr) -> VmaDescriptor {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::vma_descriptor(backend, area_start)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::vma_descriptor(backend, area_start)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::vma_descriptor(backend, area_start)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::vma_descriptor(backend, area_start)
+            }
+        }
+    }
+
+    fn map(
+        &self,
+        range: VirtAddrRange,
+        flags: MappingFlags,
+        pt: &mut PageTable,
+    ) -> StarryResult<PteMaterialization> {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::map(backend, range, flags, pt)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::map(backend, range, flags, pt)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::map(backend, range, flags, pt)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::map(backend, range, flags, pt)
+            }
+        }
+    }
+
+    fn validate_map(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::validate_map(backend, range, pt)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::validate_map(backend, range, pt)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::validate_map(backend, range, pt)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::validate_map(backend, range, pt)
+            }
+        }
+    }
+
+    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::unmap(backend, range, pt)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::unmap(backend, range, pt)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::unmap(backend, range, pt)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::unmap(backend, range, pt)
+            }
+        }
+    }
+
+    fn validate_unmap(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::validate_unmap(backend, range, pt)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::validate_unmap(backend, range, pt)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::validate_unmap(backend, range, pt)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::validate_unmap(backend, range, pt)
+            }
+        }
+    }
+
+    fn validate_protect(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::validate_protect(backend, range, pt)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::validate_protect(backend, range, pt)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::validate_protect(backend, range, pt)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::validate_protect(backend, range, pt)
+            }
+        }
+    }
+
+    fn on_protect(
+        &self,
+        range: VirtAddrRange,
+        new_flags: MappingFlags,
+        pt: &mut PageTable,
+    ) -> StarryResult {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::on_protect(backend, range, new_flags, pt)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::on_protect(backend, range, new_flags, pt)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::on_protect(backend, range, new_flags, pt)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::on_protect(backend, range, new_flags, pt)
+            }
+        }
+    }
+
+    fn populate(
+        &self,
+        space_id: AddressSpaceId,
+        request: PopulateRequest,
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        pt: &mut PageTable,
+    ) -> StarryResult<PteMaterialization> {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::populate(backend, space_id, request, flags, access_flags, pt)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::populate(backend, space_id, request, flags, access_flags, pt)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::populate(backend, space_id, request, flags, access_flags, pt)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::populate(backend, space_id, request, flags, access_flags, pt)
+            }
+        }
+    }
+
+    fn clone_map(
+        &self,
+        range: VirtAddrRange,
+        flags: MappingFlags,
+        old_pt: &mut PageTable,
+        new_pt: &mut PageTable,
+    ) -> StarryResult<(MappingOperation, PteMaterialization)> {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::clone_map(backend, range, flags, old_pt, new_pt)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::clone_map(backend, range, flags, old_pt, new_pt)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::clone_map(backend, range, flags, old_pt, new_pt)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::clone_map(backend, range, flags, old_pt, new_pt)
+            }
+        }
+    }
+
+    fn split(&mut self, align_diff: usize) -> Option<MappingOperation> {
+        match &mut self.kind {
+            MappingOperationKind::Linear(backend) => MappingExecution::split(backend, align_diff),
+            MappingOperationKind::Cow(backend) => MappingExecution::split(backend, align_diff),
+            MappingOperationKind::Shared(backend) => MappingExecution::split(backend, align_diff),
+            MappingOperationKind::File(backend) => MappingExecution::split(backend, align_diff),
+        }
+    }
+
+    fn shrink_left(&mut self, shrink_size: usize) -> bool {
+        match &mut self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::shrink_left(backend, shrink_size)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::shrink_left(backend, shrink_size)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::shrink_left(backend, shrink_size)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::shrink_left(backend, shrink_size)
+            }
+        }
+    }
+
+    fn shrink_right(&mut self, shrink_size: usize) -> bool {
+        match &mut self.kind {
+            MappingOperationKind::Linear(backend) => {
+                MappingExecution::shrink_right(backend, shrink_size)
+            }
+            MappingOperationKind::Cow(backend) => {
+                MappingExecution::shrink_right(backend, shrink_size)
+            }
+            MappingOperationKind::Shared(backend) => {
+                MappingExecution::shrink_right(backend, shrink_size)
+            }
+            MappingOperationKind::File(backend) => {
+                MappingExecution::shrink_right(backend, shrink_size)
+            }
+        }
+    }
+}
+
+impl MappingBackend for MappingOperation {
     type Addr = VirtAddr;
     type Flags = MappingFlags;
     type PageTable = PageTable;
 
     fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        let acct = super::accounting::bridge_rss_accounting();
-        if let Err(err) = BackendOps::map(self, range, flags, acct, pt) {
+        if let Err(err) = MappingExecution::map(self, range, flags, pt) {
             warn!("Failed to map area: {:?}", err);
             false
         } else {
@@ -221,15 +1220,34 @@ impl MappingBackend for Backend {
         }
     }
 
+    fn validate_map(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        _flags: MappingFlags,
+        pt: &PageTable,
+    ) -> bool {
+        let Some(range) = VirtAddrRange::try_from_start_size(start, size) else {
+            return false;
+        };
+        MappingExecution::validate_map(self, range, pt)
+    }
+
     fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        let acct = super::accounting::bridge_rss_accounting();
-        if let Err(err) = BackendOps::unmap(self, range, acct, pt) {
+        if let Err(err) = MappingExecution::unmap(self, range, pt) {
             warn!("Failed to unmap area: {:?}", err);
             false
         } else {
             true
         }
+    }
+
+    fn validate_unmap(&self, start: VirtAddr, size: usize, pt: &PageTable) -> bool {
+        let Some(range) = VirtAddrRange::try_from_start_size(start, size) else {
+            return false;
+        };
+        MappingExecution::validate_unmap(self, range, pt)
     }
 
     fn protect(
@@ -240,26 +1258,39 @@ impl MappingBackend for Backend {
         pt: &mut Self::PageTable,
     ) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        if let Err(err) = BackendOps::on_protect(self, range, new_flags, pt) {
+        if let Err(err) = MappingExecution::on_protect(self, range, new_flags, pt) {
             warn!("Failed to protect area: {:?}", err);
             return false;
         }
-        let pte_flags = match self {
-            Backend::Cow(c) => c.pte_flags_for_protect(new_flags),
+        let pte_flags = match &self.kind {
+            MappingOperationKind::Cow(c) => c.pte_flags_for_protect(new_flags),
             _ => new_flags,
         };
         pt.protect_region(start, size, pte_flags).is_ok()
     }
 
+    fn validate_protect(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        _new_flags: MappingFlags,
+        pt: &PageTable,
+    ) -> bool {
+        let Some(range) = VirtAddrRange::try_from_start_size(start, size) else {
+            return false;
+        };
+        MappingExecution::validate_protect(self, range, pt)
+    }
+
     fn split(&mut self, align_diff: usize) -> Option<Self> {
-        BackendOps::split(self, align_diff)
+        MappingExecution::split(self, align_diff)
     }
 
-    fn shrink_left(&mut self, shrink_size: usize) {
-        BackendOps::shrink_left(self, shrink_size)
+    fn shrink_left(&mut self, shrink_size: usize) -> bool {
+        MappingExecution::shrink_left(self, shrink_size)
     }
 
-    fn shrink_right(&mut self, shrink_size: usize) {
-        BackendOps::shrink_right(self, shrink_size)
+    fn shrink_right(&mut self, shrink_size: usize) -> bool {
+        MappingExecution::shrink_right(self, shrink_size)
     }
 }

@@ -18,12 +18,19 @@
 #endif
 
 #include "test_framework.h"
+#include <limits.h>
 #include <stdint.h>
 #include <errno.h>
+#include <sched.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
+#include <sys/wait.h>
 
 /* ============================================================
  * RAW SYSCALL TESTS - Verify Linux brk syscall ABI directly
@@ -135,6 +142,73 @@ static void test_raw_brk_roundtrip(void)
 
     unsigned long final = syscall(SYS_brk, 0);
     CHECK(final == base, "raw brk(0) confirms base restored");
+}
+
+struct clone_vm_brk_args {
+    int result_fd;
+    unsigned long target;
+};
+
+static int clone_vm_brk_child(void *opaque)
+{
+    struct clone_vm_brk_args *args = opaque;
+    unsigned long result = syscall(SYS_brk, args->target);
+    unsigned char success = result == args->target;
+    (void)write(args->result_fd, &success, sizeof(success));
+    return success ? 0 : 1;
+}
+
+static void test_clone_vm_shares_brk_state(void)
+{
+    enum { CLONE_STACK_SIZE = 64 * 1024 };
+    unsigned long original = syscall(SYS_brk, 0);
+    CHECK(original > 0, "get current break for CLONE_VM test");
+
+    void *stack = mmap(NULL, CLONE_STACK_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(stack != MAP_FAILED, "allocate CLONE_VM child stack");
+    if (stack == MAP_FAILED) {
+        return;
+    }
+
+    int result_pipe[2];
+    int pipe_result = pipe(result_pipe);
+    CHECK(pipe_result == 0, "create CLONE_VM result pipe");
+    if (pipe_result != 0) {
+        munmap(stack, CLONE_STACK_SIZE);
+        return;
+    }
+
+    struct clone_vm_brk_args args = {
+        .result_fd = result_pipe[1],
+        .target = original + 4096,
+    };
+    pid_t child = clone(clone_vm_brk_child,
+                        (char *)stack + CLONE_STACK_SIZE,
+                        CLONE_VM | SIGCHLD, &args);
+    CHECK(child > 0, "clone(CLONE_VM|SIGCHLD) succeeds");
+    close(result_pipe[1]);
+
+    unsigned char child_success = 0;
+    ssize_t received = read(result_pipe[0], &child_success,
+                            sizeof(child_success));
+    close(result_pipe[0]);
+    int status = 0;
+    if (child > 0) {
+        CHECK(waitpid(child, &status, 0) == child,
+              "wait for CLONE_VM child");
+    }
+    CHECK(received == (ssize_t)sizeof(child_success) && child_success == 1,
+          "CLONE_VM child publishes requested break");
+    CHECK(child > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "CLONE_VM child exits successfully");
+
+    unsigned long observed = syscall(SYS_brk, 0);
+    CHECK(observed == args.target,
+          "parent observes brk stored in shared MM, not process-local mirror");
+    CHECK(syscall(SYS_brk, original) == original,
+          "restore break after CLONE_VM sharing test");
+    munmap(stack, CLONE_STACK_SIZE);
 }
 
 /* ============================================================
@@ -310,6 +384,102 @@ static void test_raw_brk_rlimit_data(void)
     CHECK(setrlimit(RLIMIT_DATA, &old_rlim) == 0, "restore RLIMIT_DATA");
 }
 
+static int read_proc_stat_data_layout(unsigned long *start_data,
+                                      unsigned long *end_data,
+                                      unsigned long *start_brk)
+{
+    char line[4096];
+    FILE *file = fopen("/proc/self/stat", "r");
+    if (file == NULL) return -1;
+    if (fgets(line, sizeof(line), file) == NULL) {
+        fclose(file);
+        return -1;
+    }
+    fclose(file);
+
+    /* comm may contain spaces and parentheses; fields after its final ')' are
+     * unambiguous.  The first token there is field 3 (state). */
+    char *cursor = strrchr(line, ')');
+    if (cursor == NULL || cursor[1] != ' ') return -1;
+    cursor += 2;
+
+    char *save = NULL;
+    char *token = strtok_r(cursor, " \n", &save);
+    unsigned int field = 3;
+    int found = 0;
+    while (token != NULL) {
+        if (field == 45) {
+            *start_data = strtoul(token, NULL, 10);
+            found |= 1;
+        } else if (field == 46) {
+            *end_data = strtoul(token, NULL, 10);
+            found |= 2;
+        } else if (field == 47) {
+            *start_brk = strtoul(token, NULL, 10);
+            found |= 4;
+            break;
+        }
+        token = strtok_r(NULL, " \n", &save);
+        field++;
+    }
+    return found == 7 ? 0 : -1;
+}
+
+static void test_raw_brk_rlimit_includes_elf_data(void)
+{
+    unsigned long start_data = 0;
+    unsigned long end_data = 0;
+    unsigned long start_brk = 0;
+    int parsed = read_proc_stat_data_layout(&start_data, &end_data, &start_brk);
+    CHECK(parsed == 0, "read ELF data layout from /proc/self/stat");
+    if (parsed != 0) return;
+
+    CHECK(start_data != 0 && end_data >= start_data && start_brk != 0,
+          "/proc/self/stat publishes ELF data and brk bounds");
+    if (start_data == 0 || end_data < start_data || start_brk == 0) return;
+
+    unsigned long current = syscall(SYS_brk, 0);
+    CHECK(current >= start_brk, "current break is not below start_brk");
+    if (current < start_brk) return;
+
+    unsigned long data_span = end_data - start_data;
+    unsigned long heap_delta = current - start_brk;
+    CHECK(data_span <= ULONG_MAX - heap_delta - 1,
+          "RLIMIT_DATA boundary arithmetic is representable");
+    if (data_span > ULONG_MAX - heap_delta - 1) return;
+
+    struct rlimit old_rlim;
+    CHECK(getrlimit(RLIMIT_DATA, &old_rlim) == 0,
+          "get RLIMIT_DATA for ELF data boundary");
+    unsigned long exact_current = data_span + heap_delta;
+    CHECK(old_rlim.rlim_max == RLIM_INFINITY ||
+          exact_current + 1 <= old_rlim.rlim_max,
+          "RLIMIT_DATA hard limit admits boundary test");
+    if (old_rlim.rlim_max != RLIM_INFINITY &&
+        exact_current + 1 > old_rlim.rlim_max) return;
+
+    struct rlimit limit = {
+        .rlim_cur = exact_current,
+        .rlim_max = old_rlim.rlim_max,
+    };
+    CHECK(setrlimit(RLIMIT_DATA, &limit) == 0,
+          "set RLIMIT_DATA to ELF data plus current heap");
+    unsigned long ret = syscall(SYS_brk, current + 1);
+    CHECK(ret == current,
+          "RLIMIT_DATA counts ELF data before one-byte heap growth");
+
+    limit.rlim_cur = exact_current + 1;
+    CHECK(setrlimit(RLIMIT_DATA, &limit) == 0,
+          "raise RLIMIT_DATA by one byte");
+    ret = syscall(SYS_brk, current + 1);
+    CHECK(ret == current + 1,
+          "one-byte RLIMIT_DATA increase admits one-byte heap growth");
+    CHECK(syscall(SYS_brk, current) == current,
+          "restore break after ELF data boundary test");
+    CHECK(setrlimit(RLIMIT_DATA, &old_rlim) == 0,
+          "restore RLIMIT_DATA after ELF data boundary test");
+}
+
 static void test_libc_brk_rlimit_data(void)
 {
     struct rlimit old_rlim;
@@ -355,7 +525,9 @@ int main(void)
     test_raw_brk_failure();
     test_raw_brk_below_base();
     test_raw_brk_roundtrip();
+    test_clone_vm_shares_brk_state();
     test_raw_brk_rlimit_data();
+    test_raw_brk_rlimit_includes_elf_data();
 
     printf("\n--- libc wrapper tests ---\n\n");
 

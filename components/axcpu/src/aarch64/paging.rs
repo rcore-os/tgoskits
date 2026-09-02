@@ -17,6 +17,8 @@ bitflags::bitflags! {
     struct A64DescriptorAttr: u64 {
         const VALID = 1 << 0;
         const NON_BLOCK = 1 << 1;
+        /// MAIR attribute index field, encoded in descriptor bits [4:2].
+        const ATTR_INDEX = 0b111 << 2;
         const AP_EL0 = 1 << 6;
         const AP_RO = 1 << 7;
         const INNER = 1 << 8;

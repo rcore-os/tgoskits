@@ -13,10 +13,11 @@ use ax_driver::rknpu::{
     RknpuSubmit,
 };
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
-use ax_runtime::hal::{cpu::asm::user_copy, time::monotonic_time_nanos};
+use ax_runtime::hal::time::monotonic_time_nanos;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
+use starry_vm::{vm_load, vm_write_slice};
 
 use super::drm::{DrmUnique, DrmVersion};
 use crate::{
@@ -339,24 +340,25 @@ fn elapsed_us(start_ns: u64, end_ns: u64) -> u64 {
 
 /// Copies data from user space to kernel space
 pub fn copy_from_user(dst: *mut u8, src: *const u8, size: usize) -> Result<(), VfsError> {
-    let ret = unsafe { user_copy(dst, src, size) };
-
-    if ret != 0 {
-        warn!("[rknpu]: copy_from_user failed, ret={}", ret);
-        return Err(VfsError::InvalidData);
-    }
+    let bytes = vm_load(src, size).map_err(|err| {
+        warn!("[rknpu]: copy_from_user failed: {err:?}");
+        VfsError::InvalidData
+    })?;
+    // SAFETY: ioctl dispatch supplies a live kernel destination at least
+    // `size` bytes long. The user source is now an owned kernel buffer.
+    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, size) };
     Ok(())
 }
 
 /// Copies data from kernel space to user space
 pub fn copy_to_user(dst: *mut u8, src: *const u8, size: usize) -> Result<(), VfsError> {
-    let ret = unsafe { user_copy(dst, src, size) };
-
-    if ret != 0 {
-        warn!("[rknpu]: copy_to_user failed, ret={}", ret);
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
+    // SAFETY: ioctl dispatch supplies a live initialized kernel source at
+    // least `size` bytes long for this synchronous copy.
+    let bytes = unsafe { core::slice::from_raw_parts(src, size) };
+    vm_write_slice(dst, bytes).map_err(|err| {
+        warn!("[rknpu]: copy_to_user failed: {err:?}");
+        VfsError::InvalidData
+    })
 }
 
 /// Handles RKNPU action ioctl commands

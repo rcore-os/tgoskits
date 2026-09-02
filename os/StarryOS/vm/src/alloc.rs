@@ -33,6 +33,37 @@ fn is_zero<T: Pod>(value: &T) -> bool {
 }
 
 const MAX_BYTES: usize = 131072;
+const LOAD_CHUNK_SIZE: usize = 32;
+
+fn next_load_chunk(
+    pointer: usize,
+    loaded_elements: usize,
+    element_size: usize,
+) -> VmResult<(usize, usize)> {
+    if element_size == 0 {
+        return Err(VmError::TooLong);
+    }
+    let max_elements = MAX_BYTES / element_size;
+    if loaded_elements >= max_elements {
+        return Err(VmError::TooLong);
+    }
+
+    let loaded_bytes = loaded_elements
+        .checked_mul(element_size)
+        .ok_or(VmError::BadAddress)?;
+    let start = pointer
+        .checked_add(loaded_bytes)
+        .ok_or(VmError::BadAddress)?;
+    let bytes_to_boundary = LOAD_CHUNK_SIZE - start % LOAD_CHUNK_SIZE;
+    let remaining_elements = max_elements - loaded_elements;
+    let elements_to_boundary = bytes_to_boundary.div_ceil(element_size).max(1);
+    let chunk_elements = elements_to_boundary.min(remaining_elements);
+    let chunk_bytes = chunk_elements
+        .checked_mul(element_size)
+        .ok_or(VmError::BadAddress)?;
+    start.checked_add(chunk_bytes).ok_or(VmError::BadAddress)?;
+    Ok((start, chunk_elements))
+}
 
 /// Loads elements from the given pointer until a zero element is found.
 pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
@@ -45,11 +76,7 @@ pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
     let mut vm = VmImpl::new();
 
     loop {
-        const CHUNK_SIZE: usize = 32;
-
-        let start = ptr.addr() + result.len() * size;
-        let end = (start + 1).next_multiple_of(CHUNK_SIZE);
-        let len = (end - start) / size;
+        let (start, len) = next_load_chunk(ptr.addr(), result.len(), size)?;
 
         result.reserve(len);
         let buf = &mut result.spare_capacity_mut()[..len];
@@ -93,5 +120,30 @@ mod tests {
     #[test]
     fn allocation_constants_and_zero_value_helpers_hold() {
         assert!(super::vm_alloc_is_zero_and_max_bytes_rules_hold_for_test());
+    }
+
+    #[test]
+    fn load_chunk_rejects_address_overflow() {
+        assert_eq!(
+            super::next_load_chunk(usize::MAX, 0, 1),
+            Err(crate::VmError::BadAddress)
+        );
+    }
+
+    #[test]
+    fn load_chunk_rejects_zero_sized_and_exhausted_inputs() {
+        assert_eq!(
+            super::next_load_chunk(0x1000, 0, 0),
+            Err(crate::VmError::TooLong)
+        );
+        assert_eq!(
+            super::next_load_chunk(0x1000, super::MAX_BYTES, 1),
+            Err(crate::VmError::TooLong)
+        );
+    }
+
+    #[test]
+    fn load_chunk_reads_at_least_one_large_element() {
+        assert_eq!(super::next_load_chunk(0x1001, 0, 64), Ok((0x1001, 1)));
     }
 }

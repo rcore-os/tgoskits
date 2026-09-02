@@ -1,6 +1,8 @@
 //! Source contracts for the LoongArch TLB refill vector retained after boot.
 
 const LOONGARCH_TRAP: &str = include_str!("../src/arch/loongarch64/trap.rs");
+const LOONGARCH_ARCH: &str = include_str!("../src/arch/loongarch64/mod.rs");
+const LOONGARCH_ADDRSPACE: &str = include_str!("../src/arch/loongarch64/addrspace.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start = source
@@ -11,6 +13,46 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
         .find(end)
         .unwrap_or_else(|| panic!("missing section end `{end}` after `{start}`"));
     &tail[..end]
+}
+
+fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("missing function `{signature}`"));
+    let source = &source[start..];
+    let open = source.find('{').expect("function body must start");
+    let mut depth = 0;
+    for (offset, character) in source[open..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[open..=open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unterminated function `{signature}`")
+}
+
+#[test]
+fn kernel_page_table_domain_excludes_direct_mapping_windows() {
+    assert!(
+        LOONGARCH_ADDRSPACE
+            .contains("pub const KERNEL_PAGE_TABLE_BASE: usize = 0xffff_8000_0000_0000;"),
+        "LoongArch needs an explicit canonical page-table-backed kernel range"
+    );
+    let kernel_space = function_body(
+        LOONGARCH_ARCH,
+        "fn kernel_space() -> core::ops::Range<usize>",
+    );
+    assert!(kernel_space.contains("addrspace::KERNEL_PAGE_TABLE_BASE..usize::MAX"));
+    assert!(
+        !kernel_space.contains("addrspace::PAGE_OFFSET..usize::MAX"),
+        "DMW addresses bypass PGDH and cannot host vmalloc-style mappings"
+    );
 }
 
 #[test]

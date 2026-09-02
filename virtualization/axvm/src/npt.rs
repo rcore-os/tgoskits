@@ -422,6 +422,7 @@ pub(crate) fn map_error(err: ptg::PagingError) -> MappingError {
         | ptg::PagingError::InvalidRange { .. } => MappingError::InvalidParam,
         ptg::PagingError::NoMemory
         | ptg::PagingError::HierarchyError { .. }
+        | ptg::PagingError::StaleHugeSplit { .. }
         | ptg::PagingError::NotMapped => MappingError::BadState,
     }
 }

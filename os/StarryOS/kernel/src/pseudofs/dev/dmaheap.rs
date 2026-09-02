@@ -9,11 +9,11 @@
 //! base that `/dev/mpp_service` programs into the decoder.
 
 use alloc::sync::Arc;
-use core::{any::Any, mem::size_of};
+use core::any::Any;
 
-use ax_runtime::hal::cpu::asm::user_copy;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 use linux_raw_sys::general::O_CLOEXEC;
+use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     file::{add_file_like, close_file_like, dmabuf::DmaBufFile},
@@ -103,29 +103,14 @@ impl DeviceOps for DmaHeap {
 }
 
 fn copy_in(dst: &mut DmaHeapAllocData, uaddr: usize) -> VfsResult<()> {
-    let ret = unsafe {
-        user_copy(
-            dst as *mut DmaHeapAllocData as *mut u8,
-            uaddr as *const u8,
-            size_of::<DmaHeapAllocData>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
+    // SAFETY: the dma-heap ABI record consists only of integer fields.
+    *dst = unsafe { (uaddr as *const DmaHeapAllocData).vm_read_any() }
+        .map_err(|_| VfsError::InvalidData)?;
     Ok(())
 }
 
 fn copy_out(src: &DmaHeapAllocData, uaddr: usize) -> VfsResult<()> {
-    let ret = unsafe {
-        user_copy(
-            uaddr as *mut u8,
-            src as *const DmaHeapAllocData as *const u8,
-            size_of::<DmaHeapAllocData>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
+    (uaddr as *mut DmaHeapAllocData)
+        .vm_write(*src)
+        .map_err(|_| VfsError::InvalidData)
 }

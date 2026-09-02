@@ -14,7 +14,7 @@ use ringbuf::{
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
 #[cfg(target_arch = "riscv64")]
-use crate::mm::UserPtr;
+use starry_vm::vm_load_any;
 use crate::{
     Errno, StarryError, StarryResult,
     sync::Mutex,
@@ -755,6 +755,7 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> StarryResult<isize> {
         + usages.get(ax_alloc::UsageKind::VirtMem)
         + usages.get(ax_alloc::UsageKind::PageCache)
         + usages.get(ax_alloc::UsageKind::PageTable)
+        + usages.get(ax_alloc::UsageKind::TaskStack)
         + usages.get(ax_alloc::UsageKind::Dma)
         + usages.get(ax_alloc::UsageKind::Global);
     let free = total.saturating_sub(used);
@@ -1061,8 +1062,11 @@ pub fn sys_riscv_hwprobe(
         return Err(StarryError::InvalidInput);
     }
 
-    let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
-    for pair in pairs {
+    let user_pairs = pairs.cast::<RiscvHwprobe>();
+    // SAFETY: RiscvHwprobe contains only integer fields, so every copied bit
+    // pattern is a valid value.
+    let mut pairs = unsafe { vm_load_any(user_pairs.cast_const(), pair_count)? };
+    for pair in &mut pairs {
         if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
             pair.value = value;
         } else {
@@ -1070,6 +1074,7 @@ pub fn sys_riscv_hwprobe(
             pair.value = 0;
         }
     }
+    vm_write_slice(user_pairs, &pairs)?;
 
     Ok(0)
 }

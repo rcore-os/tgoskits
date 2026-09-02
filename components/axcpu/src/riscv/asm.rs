@@ -8,6 +8,84 @@ use riscv::{
 
 #[cfg(feature = "tls")]
 use crate::KernelTlsBase;
+#[cfg(feature = "uspace")]
+use crate::{InstalledAddressSpace, InstalledAddressSpaceMode};
+
+/// Probes the implemented SATP ASID width and returns its capacity, including
+/// reserved ASID 0.
+///
+/// Linux enables the allocator only when the hardware exposes more than twice
+/// the possible CPU count. The write/readback probe is restored immediately
+/// and followed by a complete fence because probing itself can create tagged
+/// TLB state.
+pub fn address_space_tag_capacity(cpu_count: usize) -> u32 {
+    let original = satp::read();
+    // SAFETY: the original root and mode remain installed; only the ASID field
+    // is probed and the complete register is restored below.
+    unsafe { satp::set(original.mode(), u16::MAX as usize, original.ppn()) };
+    let mask = satp::read().asid();
+    // SAFETY: restore the exact architectural mode, ASID, and root preimage.
+    unsafe { satp::set(original.mode(), original.asid(), original.ppn()) };
+    asm::sfence_vma_all();
+
+    let capacity = mask
+        .checked_add(1)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(1);
+    if capacity as usize > cpu_count.saturating_mul(2) {
+        capacity
+    } else {
+        1
+    }
+}
+
+#[cfg(feature = "uspace")]
+fn flush_tlb_asid(asid: u16) {
+    // A literal x0 in rs1 means every address; the register in rs2 selects one
+    // ASID. Passing numeric zero through the generic wrapper would select ASID
+    // zero instead of the architectural all-ASID encoding.
+    unsafe {
+        core::arch::asm!(
+            "sfence.vma x0, {asid}",
+            asid = in(reg) usize::from(asid),
+            options(nostack),
+        )
+    }
+}
+
+/// Installs one complete userspace identity into SATP.
+///
+/// Tagged installation writes the root and then invalidates the incoming ASID.
+/// Unsupported or explicitly full-flush identities use ASID 0 and a complete
+/// `SFENCE.VMA`.
+///
+/// # Safety
+///
+/// The caller must own the current CPU with interrupts disabled and the root
+/// must remain alive for the complete activation lease.
+#[cfg(feature = "uspace")]
+pub unsafe fn install_user_address_space(address_space: InstalledAddressSpace) {
+    // The allocator issues `Tagged` only after the BSP SATP write/readback
+    // probe passes Linux's ASID-count threshold. RISC-V requires secondary
+    // harts to expose a compatible SATP format.
+    let tagged = matches!(address_space.mode(), InstalledAddressSpaceMode::Tagged);
+    let asid = if tagged {
+        usize::from(address_space.hardware_tag())
+    } else {
+        0
+    };
+    // Preserve the boot-selected translation mode. Linux likewise replaces
+    // only ASID and PPN when switching an MM; assuming Sv39 would corrupt an
+    // Sv48/Sv57 kernel context.
+    let mode = satp::read().mode();
+    // SAFETY: the root is page-aligned and the typed tag fits SATP.ASID.
+    unsafe { satp::set(mode, asid, address_space.root().as_usize() >> 12) };
+    if tagged {
+        flush_tlb_asid(address_space.hardware_tag());
+    } else {
+        asm::sfence_vma_all();
+    }
+}
 
 /// Allows the current CPU to respond to interrupts.
 #[inline]
@@ -77,7 +155,8 @@ pub fn read_kernel_page_table() -> PhysAddr {
 /// This function is unsafe as it changes the virtual memory address space.
 #[inline]
 pub unsafe fn write_user_page_table(root_paddr: PhysAddr) {
-    unsafe { satp::set(satp::Mode::Sv39, 0, root_paddr.as_usize() >> 12) };
+    let mode = satp::read().mode();
+    unsafe { satp::set(mode, 0, root_paddr.as_usize() >> 12) };
 }
 
 /// Writes the register to update the current page table root for user space
@@ -109,7 +188,14 @@ pub fn flush_icache_all() {
 #[inline]
 pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     if let Some(vaddr) = vaddr {
-        asm::sfence_vma(0, vaddr.as_usize())
+        // A literal x0 in rs2 invalidates this address for every ASID.
+        unsafe {
+            core::arch::asm!(
+                "sfence.vma {addr}, x0",
+                addr = in(reg) vaddr.as_usize(),
+                options(nostack),
+            )
+        }
     } else {
         asm::sfence_vma_all();
     }
@@ -188,7 +274,7 @@ unsafe extern "C" {
 }
 
 /// Lock-free EL0/user access probe. No hardware address-translation probe is
-/// wired up on this architecture yet, so always report "not fast-path eligible"
+/// wired up on this architecture yet, so always report a present-page probe miss
 /// and let the caller take the locked slow path (correctness preserved).
 ///
 /// # Safety
@@ -198,6 +284,6 @@ unsafe extern "C" {
 /// IRQs-off), so callers can use one `unsafe` block across all targets.
 #[cfg(feature = "uspace")]
 #[inline]
-pub unsafe fn user_access_ok_page(_vaddr: usize, _write: bool) -> bool {
+pub unsafe fn user_access_ok_page(_vaddr: usize, _access: crate::UserAccessType) -> bool {
     false
 }

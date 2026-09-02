@@ -28,7 +28,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
-    mm::{AddrSpace, Backend, IoVec},
+    mm::{AddrSpace, IoVec, MappingOperation, MmPin},
     sync::{Mutex, RwLock},
     syscall::signal::check_sigset_size,
     task::{AsThread, PidIdentityId, with_blocked_signals},
@@ -173,7 +173,7 @@ struct AioContextInner {
 struct AioContext {
     id: AioContextId,
     owner: PidIdentityId,
-    aspace: Arc<Mutex<AddrSpace>>,
+    aspace: MmPin,
     ring_vaddr: VirtAddr,
     ring_size: usize,
     ring_events: u32,
@@ -193,7 +193,7 @@ impl AioContext {
     fn new(
         id: AioContextId,
         owner: PidIdentityId,
-        aspace: Arc<Mutex<AddrSpace>>,
+        aspace: MmPin,
         ring_vaddr: VirtAddr,
         ring_size: usize,
         ring_events: u32,
@@ -283,7 +283,7 @@ fn allocate_aio_ring(aspace: &mut AddrSpace, ring_size: usize) -> StarryResult<V
         )
         .ok_or(StarryError::NoMemory)?;
 
-    let backend = Backend::new_alloc(ring_vaddr, PAGE_SIZE_4K, "aio_ring");
+    let backend = MappingOperation::new_alloc(ring_vaddr, PAGE_SIZE_4K, "aio_ring");
     let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
     aspace.map(ring_vaddr, ring_size, flags, true, backend)?;
     Ok(ring_vaddr)
@@ -418,7 +418,7 @@ fn u64_to_offset(value: i64) -> StarryResult<u64> {
 
 // Fault in and validate a user memory range before worker access.
 fn prepare_user_region(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &MmPin,
     start: VirtAddr,
     len: usize,
     flags: MappingFlags,
@@ -441,7 +441,7 @@ fn prepare_user_region(
 
 // Copy a linear user buffer into owned kernel memory.
 fn read_user_region(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &MmPin,
     start: VirtAddr,
     len: usize,
 ) -> StarryResult<Vec<u8>> {
@@ -459,7 +459,7 @@ fn read_user_region(
 
 // Build a one-segment user buffer descriptor.
 fn user_buffer_from_linear(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &MmPin,
     ptr: u64,
     len: usize,
     flags: MappingFlags,
@@ -500,7 +500,7 @@ fn read_iov(iov: *const IoVec, iovcnt: usize) -> StarryResult<Vec<UserSegment>> 
 
 // Build a multi-segment user buffer from an iovec array.
 fn user_buffer_from_iov(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &MmPin,
     iov: *const IoVec,
     iovcnt: usize,
     flags: MappingFlags,
@@ -521,7 +521,7 @@ fn user_buffer_from_iov(
 }
 
 // Copy all user segments into a contiguous kernel buffer.
-fn read_user_segments(aspace: &Arc<Mutex<AddrSpace>>, buf: &UserBuffer) -> StarryResult<Vec<u8>> {
+fn read_user_segments(aspace: &MmPin, buf: &UserBuffer) -> StarryResult<Vec<u8>> {
     let mut data = vec![0; buf.len];
     let mut offset = 0usize;
     let guard = aspace.lock();
@@ -537,7 +537,7 @@ fn read_user_segments(aspace: &Arc<Mutex<AddrSpace>>, buf: &UserBuffer) -> Starr
 
 // Copy a kernel buffer back into user segments.
 fn write_user_segments(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &MmPin,
     buf: &UserBuffer,
     data: &[u8],
 ) -> StarryResult<()> {
@@ -1247,7 +1247,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> StarryResult<isi
     // Allocate the user ring before publishing the context globally.
     let (ring_size, ring_events) = aio_ring_layout(nr_events)?;
     let curr = ax_task::current();
-    let aspace = curr.as_thread().proc_data.aspace();
+    let aspace = curr.as_thread().proc_data.pin_aspace()?;
     let ring_vaddr = {
         let mut guard = aspace.lock();
         allocate_aio_ring(&mut guard, ring_size)?
@@ -1258,18 +1258,18 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> StarryResult<isi
     let context = Arc::new(AioContext::new(
         ctx_id,
         current_process_identity_id(),
-        aspace.clone(),
+        aspace,
         ring_vaddr,
         ring_size,
         ring_events,
     ));
-    AIO_CONTEXTS.write().insert(ctx_id, context);
+    AIO_CONTEXTS.write().insert(ctx_id, context.clone());
 
     // If writing ctxp fails, roll back both the global entry and mapping.
     let ctx_value = ring_vaddr.as_usize();
     if let Err(err) = ctxp.vm_write(ctx_value) {
         AIO_CONTEXTS.write().remove(&ctx_id);
-        let _ = aspace.lock().unmap(ring_vaddr, ring_size);
+        let _ = context.aspace.lock().unmap(ring_vaddr, ring_size);
         return Err(err.into());
     }
     debug!(

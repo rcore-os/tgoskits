@@ -11,7 +11,7 @@ use linux_raw_sys::general::{
     timespec,
 };
 use starry_signal::SignalSet;
-use starry_vm::{vm_read_slice, vm_write_slice};
+use starry_vm::{VmPtr, vm_read_slice, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
@@ -19,7 +19,7 @@ use crate::{
         FileLike,
         epoll::{Epoll, EpollEvent, EpollFlags},
     },
-    mm::{UserConstPtr, UserPtr, check_access, nullable},
+    mm::check_access,
     syscall::signal::check_sigset_size,
     task::with_blocked_signals,
     time::TimeValueLike,
@@ -33,11 +33,11 @@ const EPOLLEXCLUSIVE_OK_BITS: u32 = IoEvents::IN.bits()
     | EpollFlags::EDGE_TRIGGER.bits()
     | EpollFlags::EXCLUSIVE.bits();
 
-fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> StarryResult<()> {
+fn check_epoll_events_access(events: *mut epoll_event, maxevents: usize) -> StarryResult<()> {
     let len = maxevents
         .checked_mul(size_of::<epoll_event>())
         .ok_or(StarryError::BadAddress)?;
-    let start = events.as_ptr() as usize;
+    let start = events as usize;
     start.checked_add(len).ok_or(StarryError::BadAddress)?;
     check_access(start, len)?;
     Ok(())
@@ -56,7 +56,7 @@ fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> 
 /// address that is `4 (mod 8)`. Reading through a typed `*const epoll_event`
 /// (which the generic VM helpers reject when the pointer is unaligned) would
 /// then fail with `EFAULT`. Copy at byte granularity to mirror Linux.
-fn read_epoll_event(event: UserConstPtr<epoll_event>) -> StarryResult<epoll_event> {
+fn read_epoll_event(event: *const epoll_event) -> StarryResult<epoll_event> {
     let mut buf = MaybeUninit::<epoll_event>::uninit();
     let dst = unsafe {
         core::slice::from_raw_parts_mut(
@@ -64,7 +64,7 @@ fn read_epoll_event(event: UserConstPtr<epoll_event>) -> StarryResult<epoll_even
             size_of::<epoll_event>(),
         )
     };
-    vm_read_slice(event.address().as_ptr(), dst)?;
+    vm_read_slice(event.cast::<u8>(), dst)?;
     // SAFETY: all bytes were just initialized by the copy above and any bit
     // pattern is a valid `epoll_event` (plain old data).
     Ok(unsafe { buf.assume_init() })
@@ -78,11 +78,11 @@ fn read_epoll_event(event: UserConstPtr<epoll_event>) -> StarryResult<epoll_even
 /// Linux's `__put_user` of each field has no alignment requirement, so we copy
 /// at byte granularity to match.
 fn write_epoll_event(
-    events: UserPtr<epoll_event>,
+    events: *mut epoll_event,
     index: usize,
     event: &epoll_event,
 ) -> StarryResult<()> {
-    let dst = events.as_ptr().wrapping_add(index) as *mut u8;
+    let dst = events.wrapping_add(index) as *mut u8;
     let src = unsafe {
         core::slice::from_raw_parts(
             event as *const epoll_event as *const u8,
@@ -122,7 +122,7 @@ pub fn sys_epoll_ctl(
     epfd: i32,
     op: u32,
     fd: i32,
-    event: UserConstPtr<epoll_event>,
+    event: *const epoll_event,
 ) -> StarryResult<isize> {
     let epoll = Epoll::from_fd(epfd)?;
     debug!("sys_epoll_ctl <= epfd: {epfd}, op: {op}, fd: {fd}");
@@ -175,10 +175,10 @@ pub fn sys_epoll_ctl(
 
 fn do_epoll_wait(
     epfd: i32,
-    events: UserPtr<epoll_event>,
+    events: *mut epoll_event,
     maxevents: i32,
     timeout: Option<Duration>,
-    sigmask: UserConstPtr<SignalSet>,
+    sigmask: *const SignalSet,
     sigsetsize: usize,
 ) -> StarryResult<isize> {
     if !sigmask.is_null() {
@@ -200,8 +200,15 @@ fn do_epoll_wait(
     }
     check_epoll_events_access(events, maxevents)?;
 
+    let sigmask = sigmask
+        .nullable()
+        .map(|sigmask| {
+            // SAFETY: SignalSet is a transparent integer bit mask.
+            unsafe { sigmask.vm_read_any() }
+        })
+        .transpose()?;
     let count = with_blocked_signals(
-        nullable!(sigmask.get_as_ref())?.copied(),
+        sigmask,
         || match block_on(future::timeout(
             timeout,
             poll_io(epoll.as_ref(), IoEvents::IN, false, || {
@@ -222,10 +229,10 @@ fn do_epoll_wait(
 
 pub fn sys_epoll_pwait(
     epfd: i32,
-    events: UserPtr<epoll_event>,
+    events: *mut epoll_event,
     maxevents: i32,
     timeout: i32,
-    sigmask: UserConstPtr<SignalSet>,
+    sigmask: *const SignalSet,
     sigsetsize: usize,
 ) -> StarryResult<isize> {
     let timeout = if timeout < 0 {
@@ -240,22 +247,28 @@ pub fn sys_epoll_pwait(
 #[cfg(target_arch = "x86_64")]
 pub fn sys_epoll_wait(
     epfd: i32,
-    events: UserPtr<epoll_event>,
+    events: *mut epoll_event,
     maxevents: i32,
     timeout: i32,
 ) -> StarryResult<isize> {
-    sys_epoll_pwait(epfd, events, maxevents, timeout, 0usize.into(), 0)
+    sys_epoll_pwait(epfd, events, maxevents, timeout, core::ptr::null(), 0)
 }
 
 pub fn sys_epoll_pwait2(
     epfd: i32,
-    events: UserPtr<epoll_event>,
+    events: *mut epoll_event,
     maxevents: i32,
-    timeout: UserConstPtr<timespec>,
-    sigmask: UserConstPtr<SignalSet>,
+    timeout: *const timespec,
+    sigmask: *const SignalSet,
     sigsetsize: usize,
 ) -> StarryResult<isize> {
-    let timeout = nullable!(timeout.get_as_ref())?
+    let timeout = timeout
+        .nullable()
+        .map(|timeout| {
+            // SAFETY: Linux `timespec` contains only signed integer fields.
+            unsafe { timeout.vm_read_any() }
+        })
+        .transpose()?
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
     do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)

@@ -63,6 +63,10 @@ pub enum AddrSpaceError {
     /// The mapping layer is not in a state that permits the operation.
     #[error("guest address mapping state does not permit the operation")]
     MappingState,
+    /// A partially applied mapping could not be proven restored and must be
+    /// quarantined until the nested page-table owner repairs it.
+    #[error("guest address mapping requires repair before reuse")]
+    NeedsRepair,
     /// A guest address cannot be translated.
     #[error("guest address {address:#x} is not mapped")]
     Unmapped {
@@ -92,6 +96,7 @@ impl From<MappingError> for AddrSpaceError {
             MappingError::InvalidParam => Self::InvalidMapping,
             MappingError::AlreadyExists => Self::MappingConflict,
             MappingError::BadState => Self::MappingState,
+            MappingError::NeedsRepair => Self::NeedsRepair,
         }
     }
 }

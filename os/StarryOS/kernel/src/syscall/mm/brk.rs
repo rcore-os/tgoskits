@@ -1,21 +1,41 @@
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, align_up_4k};
-use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
 use linux_raw_sys::general::RLIMIT_DATA;
 
 use crate::{
-    StarryResult,
-    config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
-    mm::Backend,
+    StarryError, StarryResult,
+    config::{USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
+    mm::AddressSpaceMutationOutcome,
     task::AsThread,
 };
 
 pub fn sys_brk(addr: usize) -> StarryResult<isize> {
     let curr = current();
-    let proc_data = &curr.as_thread().proc_data;
-    let current_top = proc_data.get_heap_top() as usize;
+    let thread = curr.as_thread();
+    let proc_data = &thread.proc_data;
 
-    // brk(0) returns current heap top
+    // Bind MM selection to exec's address-space swap. The actual brk scalar is
+    // owned by AddrSpace and protected by its mutation lock, like Linux
+    // `mm->brk` under `mmap_lock`; this outer lock only prevents selecting the
+    // old MM while exec publishes a replacement.
+    let _mm_transaction = loop {
+        if let Some(guard) = proc_data.exec_lock.try_lock() {
+            break guard;
+        }
+        if thread.has_exit_request() {
+            return Err(StarryError::Interrupted);
+        }
+        ax_task::yield_now();
+    };
+
+    // Read process policy before taking the address-space lock. No MM path
+    // takes rlim after entering an opposite lock order.
+    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current;
+    let aspace_pin = proc_data.pin_aspace()?;
+    let mut aspace = aspace_pin.lock();
+    let current_top = aspace.heap_break();
+
+    // brk(0) is an MM query and must observe the same MM/scalar publication as
+    // expansion and shrink.
     if addr == 0 {
         return Ok(current_top as isize);
     }
@@ -25,67 +45,52 @@ pub fn sys_brk(addr: usize) -> StarryResult<isize> {
     // - Failure: return current break address (NOT -1, no errno)
 
     // Check address is within valid heap range
-    if !(USER_HEAP_BASE..=USER_HEAP_BASE + USER_HEAP_SIZE_MAX).contains(&addr) {
+    let heap_start = aspace.heap_start();
+    let Some(heap_end) = heap_start.checked_add(USER_HEAP_SIZE_MAX) else {
+        return Ok(current_top as isize);
+    };
+    if !(heap_start..=heap_end).contains(&addr) {
         return Ok(current_top as isize);
     }
 
-    // Check RLIMIT_DATA: Linux limits heap expansion by RLIMIT_DATA.
-    // The limit applies to (new_brk - start_brk) + (end_data - start_data).
-    // Since we don't have end_data - start_data, we approximate by checking
-    // (addr - USER_HEAP_BASE) against the soft limit.
+    // Linux v7.1 `check_data_rlimit()` applies the byte-precise limit before
+    // page alignment: (new_brk - start_brk) + (end_data - start_data).
     // RLIM_INFINITY (u64::MAX) means unlimited.
-    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current;
     if rlimit_data != u64::MAX {
-        let heap_size = addr.saturating_sub(USER_HEAP_BASE);
-        if heap_size > rlimit_data as usize {
+        let Some(heap_size) = addr.checked_sub(heap_start) else {
+            return Ok(current_top as isize);
+        };
+        let Some(data_size) = aspace.executable_data_size() else {
+            return Ok(current_top as isize);
+        };
+        let exceeds_limit = u64::try_from(heap_size)
+            .ok()
+            .and_then(|heap| {
+                u64::try_from(data_size)
+                    .ok()
+                    .and_then(|data| heap.checked_add(data))
+            })
+            .is_none_or(|usage| usage > rlimit_data);
+        if exceeds_limit {
             return Ok(current_top as isize);
         }
     }
 
-    let new_top_aligned = align_up_4k(addr);
-    let current_top_aligned = align_up_4k(current_top);
     // Initial heap region end address (already mapped during ELF loading)
-    let initial_heap_end = USER_HEAP_BASE + USER_HEAP_SIZE;
+    let Some(initial_heap_end) = heap_start.checked_add(USER_HEAP_SIZE) else {
+        return Ok(current_top as isize);
+    };
 
-    // Only map new pages when expanding beyond already mapped region
-    // Expansion start should be the greater of initial_heap_end and current_top_aligned
-    if new_top_aligned > current_top_aligned {
-        let expand_start = VirtAddr::from(initial_heap_end.max(current_top_aligned));
-        let expand_size = new_top_aligned.saturating_sub(expand_start.as_usize());
-
-        if expand_size > 0 {
-            let aspace_arc = proc_data.aspace();
-            let mut aspace = aspace_arc.lock();
-            if aspace
-                .map(
-                    expand_start,
-                    expand_size,
-                    MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-                    false,
-                    Backend::new_alloc(expand_start, PAGE_SIZE_4K, "[heap]"),
-                )
-                .is_err()
-            {
-                return Ok(current_top as isize);
-            }
-            drop(aspace);
+    match aspace.resize_heap_break(addr, initial_heap_end) {
+        Ok(AddressSpaceMutationOutcome::Complete) => Ok(addr as isize),
+        Ok(AddressSpaceMutationOutcome::PublishedPendingTlb(error)) => {
+            // Publication cannot be rolled back while a target CPU may retain
+            // the old translation. The typed receipt owns the pending work and
+            // the matching break is already visible in this MM.
+            Err(error)
         }
-    } else if new_top_aligned < current_top_aligned {
-        // Only unmap pages beyond the initially mapped heap region.
-        let shrink_start = VirtAddr::from(initial_heap_end.max(new_top_aligned));
-        let shrink_size = current_top_aligned.saturating_sub(shrink_start.as_usize());
-
-        if shrink_size > 0
-            && proc_data
-                .aspace()
-                .lock()
-                .unmap(shrink_start, shrink_size)
-                .is_err()
-        {
-            return Ok(current_top as isize);
-        }
+        // Linux brk reports an ordinary unpublished failure by returning the
+        // old break, without setting errno.
+        Err(_) => Ok(current_top as isize),
     }
-
-    proc_data.set_heap_top(addr);
-    Ok(addr as isize) // Linux brk syscall returns new break address on success
 }

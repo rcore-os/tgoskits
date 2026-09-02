@@ -9,9 +9,11 @@
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
@@ -29,6 +31,18 @@
 #endif
 #ifndef MAP_SHARED_VALIDATE
 #define MAP_SHARED_VALIDATE 0x03
+#endif
+#ifndef MAP_HUGETLB
+#define MAP_HUGETLB 0x40000
+#endif
+#ifndef MAP_HUGE_SHIFT
+#define MAP_HUGE_SHIFT 26
+#endif
+#ifndef MAP_HUGE_1GB
+#define MAP_HUGE_1GB (30 << MAP_HUGE_SHIFT)
+#endif
+#ifndef PR_THP_DISABLE_EXCEPT_ADVISED
+#define PR_THP_DISABLE_EXCEPT_ADVISED (1UL << 1)
 #endif
 
 /* mmap 失败 → MAP_FAILED + errno 期望值 */
@@ -71,6 +85,10 @@ static int write_faults(volatile char *p)
 
 int main(void)
 {
+    if (getenv("STARRY_THP_EXEC_CHECK") != NULL) {
+        return prctl(PR_GET_THP_DISABLE, 0UL, 0UL, 0UL, 0UL) == 1 ? 0 : 120;
+    }
+
     TEST_START("mmap/munmap/mprotect");
 
     long pagesize = sysconf(_SC_PAGESIZE);
@@ -112,11 +130,124 @@ int main(void)
     CHECK_MMAP_ERR(mmap(NULL, ps, PROT_READ, MAP_PRIVATE, 999, 0),
                    EBADF, "mmap 文件背景 + 无效 fd → EBADF");
 
+    /* Starry only exposes the PMD-sized split/deposit contract today. A 1 GiB
+     * hugetlb request must fail explicitly instead of creating a 4 KiB mapping
+     * that cannot honor later partial operations. */
+    {
+        errno = 0;
+        void *huge = mmap(NULL, 1UL << 30, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB |
+                              MAP_HUGE_1GB,
+                          -1, 0);
+        CHECK(huge == MAP_FAILED && errno == EOPNOTSUPP,
+              "unsupported MAP_HUGE_1GB fails explicitly");
+        if (huge != MAP_FAILED) {
+            munmap(huge, 1UL << 30);
+        }
+    }
+
+    /* Linux stores PR_SET_THP_DISABLE in mm_struct: a forked MM inherits the
+     * value but can change it independently, and exec preserves it. */
+    {
+        CHECK_RET(prctl(PR_SET_THP_DISABLE, 1UL, 0UL, 0UL, 0UL), 0,
+                  "PR_SET_THP_DISABLE completely disables current MM");
+        CHECK_RET(prctl(PR_GET_THP_DISABLE, 0UL, 0UL, 0UL, 0UL), 1,
+                  "PR_GET_THP_DISABLE reports complete disable");
+
+        pid_t child = fork();
+        CHECK(child >= 0, "fork THP-policy inheritance child");
+        if (child == 0) {
+            if (prctl(PR_GET_THP_DISABLE, 0UL, 0UL, 0UL, 0UL) != 1) _exit(121);
+            if (prctl(PR_SET_THP_DISABLE, 1UL,
+                      PR_THP_DISABLE_EXCEPT_ADVISED, 0UL, 0UL) != 0) _exit(122);
+            if (prctl(PR_GET_THP_DISABLE, 0UL, 0UL, 0UL, 0UL) != 3) _exit(123);
+            _exit(0);
+        } else if (child > 0) {
+            int status = 0;
+            CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                      WEXITSTATUS(status) == 0,
+                  "fork child inherits then independently changes THP policy");
+            CHECK_RET(prctl(PR_GET_THP_DISABLE, 0UL, 0UL, 0UL, 0UL), 1,
+                      "fork child THP change does not mutate parent MM");
+        }
+
+        child = fork();
+        CHECK(child >= 0, "fork THP-policy exec child");
+        if (child == 0) {
+            if (setenv("STARRY_THP_EXEC_CHECK", "1", 1) != 0) _exit(124);
+            execl("/proc/self/exe", "syscall-test-mmap-family", NULL);
+            _exit(125);
+        } else if (child > 0) {
+            int status = 0;
+            CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                      WEXITSTATUS(status) == 0,
+                  "exec preserves MM THP disable policy");
+        }
+
+        CHECK_RET(prctl(PR_SET_THP_DISABLE, 0UL, 0UL, 0UL, 0UL), 0,
+                  "PR_SET_THP_DISABLE re-enables current MM");
+        CHECK_RET(prctl(PR_GET_THP_DISABLE, 0UL, 0UL, 0UL, 0UL), 0,
+                  "PR_GET_THP_DISABLE reports enabled state");
+    }
+
     /* MAP_FIXED_NOREPLACE 覆盖已映射区间 → EEXIST
      * p 已经成功映射在 ps 的地址上，用 FIXED_NOREPLACE 指向 p 应该 EEXIST。*/
     CHECK_MMAP_ERR(mmap(p, ps, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0),
                    EEXIST, "mmap FIXED_NOREPLACE 覆盖已映射 → EEXIST");
+
+    /* A non-fixed hint is rounded independently from the requested length.
+     * Keep only the middle page free: Linux rounds (middle + 1) down to the
+     * middle page and maps exactly one page there. A kernel that includes the
+     * hint's low bits in the length incorrectly asks for two pages and has to
+     * place the mapping elsewhere. */
+    {
+        unsigned char *window = mmap(NULL, 3 * ps, PROT_NONE,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(window != MAP_FAILED,
+              "mmap 3-page window for unaligned non-fixed hint");
+        if (window != MAP_FAILED) {
+            CHECK_RET(munmap(window + ps, ps), 0,
+                      "unmap middle page for unaligned hint");
+            errno = 0;
+            void *hinted = (void *)syscall(
+                SYS_mmap, window + ps + 1, ps, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, (off_t)0);
+            CHECK(hinted == window + ps,
+                  "non-fixed unaligned hint maps one page at rounded hint");
+            if (hinted != MAP_FAILED) {
+                /* The buggy implementation allocated two pages; unmapping two
+                 * is safe here because the expected second page is our guard. */
+                munmap(hinted, 2 * ps);
+            }
+            munmap(window, ps);
+            munmap(window + 2 * ps, ps);
+        }
+    }
+
+    /* MAP_FIXED does not permit the kernel to round the requested address.
+     * Direct syscall avoids any libc normalization and also proves that the
+     * rejected request leaves the old two-page mapping intact. */
+    {
+        unsigned char *fixed = mmap(NULL, 2 * ps, PROT_READ | PROT_WRITE,
+                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(fixed != MAP_FAILED,
+              "mmap 2 pages for unaligned MAP_FIXED rejection");
+        if (fixed != MAP_FAILED) {
+            fixed[0] = 0x4d;
+            fixed[ps] = 0x5e;
+            errno = 0;
+            long rc = syscall(SYS_mmap, fixed + 1, ps,
+                              PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                              -1, (off_t)0);
+            CHECK(rc == -1 && errno == EINVAL,
+                  "unaligned MAP_FIXED address is rejected with EINVAL");
+            CHECK(fixed[0] == 0x4d && fixed[ps] == 0x5e,
+                  "failed unaligned MAP_FIXED preserves prior mapping");
+            munmap(fixed, 2 * ps);
+        }
+    }
 
     /* mmap addr+length 溢出 → 被拒绝, 而非环绕成功 (回归)
      * MAP_FIXED 指向接近地址空间顶端、`addr + length` 回绕的请求。关键不变量:
@@ -207,16 +338,13 @@ int main(void)
             CHECK_RET(munmap(hole + ps, ps), 0, "munmap 中间页造洞");
             CHECK_ERR(mprotect(hole, 3 * ps, PROT_READ),
                       ENOMEM, "mprotect 跨中段空洞 → ENOMEM");
-            /* 原子性: StarryOS 用 can_access_range 在改任何权限前先校验整段,
-             * 命中空洞即原子拒绝、一页都不改, 故左右两页保持原 RW。
-             * 注: 真 Linux 在此并非原子 —— 它把保护位应用到空洞前的前缀页(左页
-             * 会变成 PROT_READ)再返回 ENOMEM; StarryOS 选择更安全的原子语义。
-             * 本断言锁住该原子行为: 若日后把 pre-check 挪到逐页 protect 之后,
-             * 左页会被半改成只读, 这里立刻抓住。*/
-            CHECK(write_faults(hole) == 0,
-                  "失败 mprotect 后左页仍可写 (StarryOS 原子拒绝, 未半改)");
+            /* Linux changes each VMA fragment in address order. The first
+             * mapped prefix is already PROT_READ when the walk reaches the
+             * hole and returns ENOMEM; the mapped suffix is untouched. */
+            CHECK(write_faults(hole) != 0,
+                  "跨洞 mprotect 返回 ENOMEM 前已提交左侧前缀权限");
             CHECK(write_faults(hole + 2 * ps) == 0,
-                  "失败 mprotect 后右页仍可写 (空洞之后, 任何实现都不应改)");
+                  "跨洞 mprotect 未修改空洞之后的右侧映射");
             munmap(hole, ps);
             munmap(hole + 2 * ps, ps);
         }
@@ -316,6 +444,28 @@ int main(void)
         CHECK(np != MAP_FAILED, "mmap PROT_NONE 映射成功");
         if (np != MAP_FAILED) {
             CHECK_RET(munmap(np, ps), 0, "munmap PROT_NONE 映射");
+        }
+    }
+
+    /* musl pthread stack: reserve guard+stack as PROT_NONE, then enable only
+     * the stack body. The initial protection is not the VMA's VM_MAY* limit. */
+    {
+        unsigned char *guarded = mmap(NULL, 3 * ps, PROT_NONE,
+                                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(guarded != MAP_FAILED,
+              "mmap PROT_NONE guard+stack reservation succeeds");
+        if (guarded != MAP_FAILED) {
+            int rc = mprotect(guarded + ps, 2 * ps,
+                              PROT_READ | PROT_WRITE);
+            CHECK_RET(rc, 0,
+                      "mprotect upgrades PROT_NONE stack body to READ|WRITE");
+            if (rc == 0) {
+                guarded[ps] = 0x5a;
+                CHECK(guarded[ps] == 0x5a,
+                      "upgraded PROT_NONE stack body is writable");
+            }
+            CHECK_RET(munmap(guarded, 3 * ps), 0,
+                      "munmap upgraded guard+stack reservation");
         }
     }
 
@@ -446,6 +596,61 @@ int main(void)
         }
     }
 
+    /* 同一文件的两个 MAP_SHARED alias：单侧 partial munmap 只能撤销当前
+     * 地址空间/VA 的 MappingSlot，不能使另一 alias 的 PageObject 失效。 */
+    {
+        const char *path = "/tmp/mmap_family_shared_partial_unmap";
+        int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+        CHECK(fd >= 0, "open shared partial-unmap fixture");
+        if (fd >= 0) {
+            CHECK_RET(ftruncate(fd, 3 * ps), 0,
+                      "ftruncate shared partial-unmap fixture");
+            unsigned char *first = mmap(NULL, 3 * ps,
+                                        PROT_READ | PROT_WRITE,
+                                        MAP_SHARED, fd, 0);
+            unsigned char *second = mmap(NULL, 3 * ps,
+                                         PROT_READ | PROT_WRITE,
+                                         MAP_SHARED, fd, 0);
+            CHECK(first != MAP_FAILED && second != MAP_FAILED,
+                  "map two aliases of one shared file range");
+            if (first != MAP_FAILED && second != MAP_FAILED) {
+                first[0] = 0x31;
+                first[ps] = 0x32;
+                first[2 * ps] = 0x33;
+                CHECK(second[0] == 0x31 && second[ps] == 0x32 &&
+                          second[2 * ps] == 0x33,
+                      "both aliases observe the same resident file pages");
+
+                CHECK_RET(munmap(first + ps, ps), 0,
+                          "partial munmap removes only middle page of first alias");
+                CHECK(first[0] == 0x31 && first[2 * ps] == 0x33,
+                      "first alias keeps head and tail after middle unmap");
+                CHECK(write_faults((volatile char *)(first + ps)),
+                      "first alias middle page is unmapped");
+
+                second[ps] = 0x5a;
+                CHECK(second[ps] == 0x5a,
+                      "second alias remains writable after first alias unmap");
+                CHECK_RET(msync(second, 3 * ps, MS_SYNC), 0,
+                          "msync surviving shared alias");
+                unsigned char persisted = 0;
+                CHECK_RET(pread(fd, &persisted, 1, (off_t)ps), 1,
+                          "pread middle page after shared partial unmap");
+                CHECK(persisted == 0x5a,
+                      "surviving alias write persists after partial unmap");
+
+                munmap(first, ps);
+                munmap(first + 2 * ps, ps);
+                munmap(second, 3 * ps);
+            } else {
+                if (first != MAP_FAILED) { munmap(first, 3 * ps); }
+                if (second != MAP_FAILED) { munmap(second, 3 * ps); }
+            }
+            close(fd);
+            unlink(path);
+        }
+    }
+
     /* EACCES: O_RDONLY fd + MAP_SHARED + PROT_WRITE → EACCES (man 2 mmap)
      * 因为文件以 O_RDONLY 打开, MAP_SHARED 写回需要写权限。*/
     {
@@ -566,6 +771,69 @@ int main(void)
                       "close(fd) 后映射内容依然可读");
                 munmap(mp, ps);
             }
+            unlink(path);
+        }
+    }
+
+    /* ===================== mincore ===================== */
+
+    {
+        errno = 0;
+        long rc = syscall(SYS_mincore, (void *)ps, 0, NULL);
+        CHECK(rc == 0,
+              "mincore length=0 不访问空 vec (no-op success)");
+
+        errno = 0;
+        rc = syscall(SYS_mincore, (void *)(ps + 1), 0, NULL);
+        CHECK(rc == -1 && errno == EINVAL,
+              "mincore length=0 仍优先检查起始地址对齐");
+
+        errno = 0;
+        rc = syscall(SYS_mincore, (void *)(~(ps - 1UL)), ps, NULL);
+        CHECK(rc == -1 && errno == ENOMEM,
+              "mincore 溢出输入范围先返回 ENOMEM, 不误报 vec EFAULT");
+    }
+
+    {
+        unsigned char residency = 0xff;
+        unsigned char *lazy = mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(lazy != MAP_FAILED, "mmap lazy anonymous for mincore");
+        if (lazy != MAP_FAILED) {
+            CHECK_RET(syscall(SYS_mincore, lazy, ps, &residency), 0,
+                      "mincore lazy anonymous before fault");
+            CHECK((residency & 1) == 0,
+                  "未触发缺页的匿名页 mincore resident=0");
+            lazy[0] = 0x6d;
+            residency = 0;
+            CHECK_RET(syscall(SYS_mincore, lazy, ps, &residency), 0,
+                      "mincore anonymous after fault");
+            CHECK((residency & 1) == 1,
+                  "已触发缺页的匿名页 mincore resident=1");
+            munmap(lazy, ps);
+        }
+    }
+
+    {
+        const char *path = "/tmp/mmap_family_mincore_cache";
+        int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+        CHECK(fd >= 0, "open page-cache mincore fixture");
+        if (fd >= 0) {
+            CHECK_RET(ftruncate(fd, ps), 0, "size page-cache mincore fixture");
+            unsigned char byte = 0;
+            CHECK_RET(pread(fd, &byte, 1, 0), 1,
+                      "pread fixture into page cache before mmap fault");
+            unsigned char *cached = mmap(NULL, ps, PROT_READ, MAP_SHARED, fd, 0);
+            CHECK(cached != MAP_FAILED, "mmap cached file without MAP_POPULATE");
+            if (cached != MAP_FAILED) {
+                unsigned char residency = 0;
+                CHECK_RET(syscall(SYS_mincore, cached, ps, &residency), 0,
+                          "mincore file mapping without present PTE");
+                CHECK((residency & 1) == 1,
+                      "page-cache resident file page reports resident before PTE fault");
+                munmap(cached, ps);
+            }
+            close(fd);
             unlink(path);
         }
     }

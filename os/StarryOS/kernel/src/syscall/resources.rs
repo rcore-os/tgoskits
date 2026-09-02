@@ -71,15 +71,16 @@ struct Rusage {
 }
 
 impl Rusage {
-    fn from_thread(thread: &Thread) -> Self {
+    fn from_thread(thread: &Thread) -> StarryResult<Self> {
         let (utime, stime) = thread.time.borrow().output();
-        let max_rss_kb = thread.proc_data.aspace().lock().rss().hiwater_rss_pages()
-            * (PAGE_SIZE_4K as u64 / 1024);
-        Self {
+        let mm = thread.proc_data.pin_aspace()?;
+        let max_rss_pages = mm.lock().resident_hiwater_pages();
+        let max_rss_kb = max_rss_pages * (PAGE_SIZE_4K as u64 / 1024);
+        Ok(Self {
             utime,
             stime,
             max_rss_kb,
-        }
+        })
     }
 
     fn collate(mut self, other: Rusage) -> Self {
@@ -115,30 +116,30 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> StarryResult<isize> {
                 .proc
                 .threads()
                 .into_iter()
-                .fold(Rusage::default(), |acc, tid| {
+                .try_fold(Rusage::default(), |acc, tid| -> StarryResult<Rusage> {
                     if let Ok(task) = get_task_by_number(tid) {
-                        acc.collate(Rusage::from_thread(task.as_thread()))
+                        Ok(acc.collate(Rusage::from_thread(task.as_thread())?))
                     } else {
-                        acc
+                        Ok(acc)
                     }
-                })
+                })?
         }
         RUSAGE_CHILDREN => {
             thr.proc_data
                 .proc
                 .threads()
                 .into_iter()
-                .fold(Rusage::default(), |acc, child| {
+                .try_fold(Rusage::default(), |acc, child| -> StarryResult<Rusage> {
                     if let Ok(task) = get_task_by_number(child)
                         && !curr.ptr_eq(&task)
                     {
-                        acc.collate(Rusage::from_thread(task.as_thread()))
+                        Ok(acc.collate(Rusage::from_thread(task.as_thread())?))
                     } else {
-                        acc
+                        Ok(acc)
                     }
-                })
+                })?
         }
-        RUSAGE_THREAD => Rusage::from_thread(thr),
+        RUSAGE_THREAD => Rusage::from_thread(thr)?,
         _ => return Err(StarryError::InvalidInput),
     };
     usage.vm_write(result.into())?;

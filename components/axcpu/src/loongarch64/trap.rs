@@ -1,5 +1,5 @@
 use loongArch64::register::{
-    badv,
+    badi, badv,
     estat::{self, Exception, Trap},
 };
 
@@ -159,9 +159,11 @@ unsafe extern "C" fn loongarch64_trap_handler(raw: *mut RawTrapFrame) {
             let snapshot = tf.snapshot();
             let bt = snapshot.backtrace();
             panic!(
-                "Unhandled trap {:?} @ {:#x}:\n{:#x?}\n{}",
+                "Unhandled trap {:?} @ {:#x} (BADV={:#x}, BADI={:#010x}):\n{:#x?}\n{}",
                 trap,
                 tf.raw.0.era,
+                badv::read().vaddr(),
+                badi::read().inst(),
                 snapshot,
                 bt.kind("trap")
             );

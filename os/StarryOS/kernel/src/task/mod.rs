@@ -27,7 +27,10 @@ use core::{
 };
 
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
-use ax_task::{TaskExt, TaskInner};
+use ax_task::{
+    AddressSpaceSwitchProof, CpuOfflineRootSwitchProof, TaskAddressSpace, TaskAddressSpaceMode,
+    SchedulerAddressSpaceActivation, TaskExt, TaskInner,
+};
 use axpoll::{IoEvents, PollSet};
 use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
@@ -43,7 +46,11 @@ pub use self::{
 };
 pub(crate) use self::{pid::*, process_identity::*};
 use crate::{
-    StarryResult,
+    StarryError, StarryResult,
+    mm::{
+        ActivationError, ActivationLease, InstalledAddressSpace, MmHandle, MmPin, TagMode,
+        TransparentHugePageMode,
+    },
     sync::{ContextSwitchRwLock, IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock, SpinLock},
 };
 
@@ -96,8 +103,6 @@ impl PtraceEventMessage {
         }
     }
 }
-use crate::mm::AddrSpace;
-
 ///  A wrapper type that assumes the inner type is `Sync`.
 #[repr(transparent)]
 pub struct AssumeSync<T>(pub T);
@@ -142,13 +147,14 @@ pub struct Thread {
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
 
-    /// Keeps the page-table object backing this task's active root alive.
+    /// Keeps the address-space ownership alive while this task can still run
+    /// kernel continuations after its process owner has been dropped.
     ///
-    /// The process slot may clear retired user mappings once no thread can
-    /// access them, but a task finishing kernel exit can still execute with
-    /// that root installed. This lease prevents the page-table root from being
-    /// reclaimed before the scheduler reclaims the task itself.
-    page_table_lease: IrqMutex<Arc<Mutex<AddrSpace>>>,
+    /// The process owner may enter retirement while a task finishing kernel
+    /// exit can still execute with that root installed. This pin prevents the
+    /// page-table root from being reclaimed before the scheduler reclaims the
+    /// task itself.
+    mm_pin: IrqMutex<Option<MmPin>>,
 
     /// Resources whose sharing is controlled by clone/unshare flags.
     ///
@@ -275,7 +281,9 @@ impl Thread {
         scope: Scope,
     ) -> Box<Self> {
         let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
-        let page_table_lease = proc_data.aspace();
+        let mm_pin = proc_data
+            .pin_aspace()
+            .expect("a newly-created thread must pin a live address space");
         let tid = identity
             .visible_number(&ROOT_PID_NS)
             .expect("every Starry PID identity is visible from the root namespace")
@@ -291,7 +299,7 @@ impl Thread {
                 signal_mask,
             ),
             proc_data,
-            page_table_lease: IrqMutex::new(page_table_lease),
+            mm_pin: IrqMutex::new(Some(mm_pin)),
             scope: ContextSwitchRwLock::new(scope),
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
@@ -344,13 +352,39 @@ impl Thread {
         ret
     }
 
-    /// Replaces the page-table lease associated with the current task.
+    /// Replaces the short-lived MM pin associated with the current task.
     ///
     /// The retired owner is returned so its destructor runs outside the
     /// IRQ-disabled lock and only after the caller switches page tables.
-    fn replace_page_table_lease(&self, new_aspace: Arc<Mutex<AddrSpace>>) -> Arc<Mutex<AddrSpace>> {
-        let mut guard = self.page_table_lease.lock();
-        core::mem::replace(&mut *guard, new_aspace)
+    fn replace_mm_pin(&self, new_aspace: MmPin) -> MmPin {
+        let mut guard = self.mm_pin.lock();
+        guard
+            .replace(new_aspace)
+            .expect("a running exec caller must own an MM pin")
+    }
+
+    /// Releases the task-local MM pin after the scheduler marks it exited.
+    ///
+    /// `TaskExt::on_exit` invokes this only after the task can no longer become
+    /// runnable. The task may still be executing on the old hardware root
+    /// until the scheduler switches away; its non-cloneable
+    /// [`ActivationLease`] keeps that root live across this final interval.
+    /// Retaining an additional `MmPin` until asynchronous task GC would keep
+    /// every anonymous frame belonging to an already-reaped process alive.
+    fn release_mm_pin_after_task_exit(&self) {
+        let pin = self.mm_pin.lock().take();
+        drop(pin);
+    }
+
+    fn activation_for_switch(
+        &self,
+        cpu: usize,
+    ) -> Result<ActivationLease, ActivationError> {
+        self.mm_pin
+            .lock()
+            .as_ref()
+            .ok_or(ActivationError::Retired)?
+            .activation_for_switch(cpu)
     }
 
     /// Returns the root-namespace TID for this thread.
@@ -509,7 +543,7 @@ impl Thread {
     }
 
     /// Set the accessing user memory flag.
-    pub fn set_accessing_user_memory(&self, accessing: bool) {
+    pub(crate) fn set_accessing_user_memory(&self, accessing: bool) {
         self.accessing_user_memory
             .store(accessing, Ordering::Release);
     }
@@ -715,6 +749,30 @@ impl Thread {
     }
 }
 
+/// Type-erased scheduler token backed by Starry's exact MM activation lease.
+/// The scheduler owns this value per CPU, independently of any particular
+/// thread, so kernel tasks can retain a lazy address space without keeping an
+/// untracked page-table borrow.
+struct StarrySchedulerActivation(ActivationLease);
+
+impl SchedulerAddressSpaceActivation for StarrySchedulerActivation {
+    fn installed(&self) -> TaskAddressSpace {
+        task_address_space(self.0.installed())
+    }
+
+    fn release_after_root_switch(self: Box<Self>, proof: AddressSpaceSwitchProof) {
+        let Self(lease) = *self;
+        assert_eq!(lease.cpu(), proof.cpu());
+        lease.release_after_root_switch();
+    }
+
+    fn release_after_kernel_switch(self: Box<Self>, proof: CpuOfflineRootSwitchProof) {
+        let Self(lease) = *self;
+        assert_eq!(lease.cpu(), proof.cpu());
+        lease.release_after_kernel_switch();
+    }
+}
+
 #[extern_trait]
 impl TaskExt for Box<Thread> {
     fn on_enter(&self) {
@@ -736,6 +794,40 @@ impl TaskExt for Box<Thread> {
         ActiveScope::set_global();
         unsafe { self.scope.release_context_switch_reader() };
     }
+
+    fn on_exit(&self) {
+        self.release_mm_pin_after_task_exit();
+    }
+
+    fn acquire_address_space_activation(
+        &self,
+        cpu: usize,
+    ) -> Option<Box<dyn SchedulerAddressSpaceActivation>> {
+        let lease = self.activation_for_switch(cpu).unwrap_or_else(|error| {
+            panic!(
+                "address-space activation invariant violated for tid {} on cpu {}: {:?}",
+                self.tid_number(),
+                cpu,
+                error
+            )
+        });
+        Some(Box::new(StarrySchedulerActivation(lease)))
+    }
+}
+
+fn task_address_space(installed: InstalledAddressSpace) -> TaskAddressSpace {
+    TaskAddressSpace::user(
+        installed.space_id().get(),
+        installed.root(),
+        installed.tag().hardware_tag,
+        installed.tag().generation,
+        installed.epoch().get(),
+        match installed.tag().mode {
+            TagMode::Tagged => TaskAddressSpaceMode::Tagged,
+            TagMode::FullFlush => TaskAddressSpaceMode::FullFlush,
+        },
+    )
+    .expect("typed Starry address-space installation must remain valid")
 }
 
 /// Helper trait to access the thread from a task.
@@ -879,11 +971,10 @@ impl ProcessImage {
 /// Fallible resources and ABI metadata prepared before publishing a process.
 pub struct ProcessDataInit {
     pub image: ProcessImage,
-    pub aspace: Arc<Mutex<AddrSpace>>,
+    pub aspace: MmHandle,
     pub signal_actions: Arc<SpinLock<SignalActions>>,
     pub exit_signal: Option<Signo>,
     pub wait_parent_tid: TidNumber,
-    pub vm_aspace_shared: bool,
 }
 
 pub struct ProcessData {
@@ -907,7 +998,7 @@ pub struct ProcessData {
     pub cwd_path: RwLock<String>,
     /// The virtual memory address space.
     // TODO: scopify
-    aspace: IrqMutex<Arc<Mutex<AddrSpace>>>,
+    aspace: IrqMutex<MmHandle>,
     /// The per-process uprobe manager. Each process has its own because user
     /// code can be modified independently.
     pub uprobe_manager: crate::kprobe::KprobeManager,
@@ -917,9 +1008,6 @@ pub struct ProcessData {
     pub(crate) nsproxy: IrqMutex<crate::namespace::NsProxy>,
     /// Authoritative cgroup membership shared by every thread in the process.
     pub cgroup: RwLock<Arc<ax_cgroup::CgroupNode>>,
-    /// The user heap top
-    heap_top: AtomicUsize,
-
     /// The resource limits
     pub rlim: RwLock<Rlimits>,
 
@@ -970,11 +1058,6 @@ pub struct ProcessData {
     /// be forbidden from leaving core dumps").
     /// Linux stores this on `mm_struct`; StarryOS keeps it process-wide.
     dumpable: AtomicI32,
-
-    /// PR_GET_THP_DISABLE / PR_SET_THP_DISABLE value.
-    /// StarryOS does not implement transparent huge pages, but userspace may
-    /// set this as a compatibility hint and later query it.
-    thp_disable: AtomicU32,
 
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
@@ -1039,19 +1122,6 @@ pub struct ProcessData {
     /// Process-wide `ITIMER_REAL` state shared by all threads.
     real_timer: IrqMutex<ProcessRealTimer>,
 
-    /// `true` when this process shares its [`AddrSpace`] with a parent/sibling
-    /// (`CLONE_VM`, e.g. vfork / posix_spawn). In that case the last thread must
-    /// **not** clear the address space on exit — the co-owner may still be
-    /// running.
-    ///
-    /// `false` for normal `fork()` children and after a successful `execve`
-    /// installs a private address space.
-    vm_aspace_shared: AtomicBool,
-
-    /// Set after [`Self::release_aspace_slot_if_needed`] runs so `Drop` does not
-    /// double-decrement [`AddrSpace::process_slots`].
-    aspace_slot_released: AtomicBool,
-
     /// Job-control state (stop flag + pending parent report) under one lock.
     job_control: IrqMutex<JobControl>,
 
@@ -1113,7 +1183,6 @@ impl ProcessData {
             signal_actions,
             exit_signal,
             wait_parent_tid,
-            vm_aspace_shared,
         } = init;
         let exit_event: Arc<PollSet> = Arc::default();
         let this = Arc::new(Self {
@@ -1129,8 +1198,6 @@ impl ProcessData {
             aspace: IrqMutex::new(aspace),
             uprobe_manager: crate::kprobe::KprobeManager::new(),
             uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
-            heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
-
             rlim: RwLock::default(),
 
             child_exit_event: Arc::default(),
@@ -1156,7 +1223,6 @@ impl ProcessData {
             nice: AtomicI32::new(0),
             membarrier_state: AtomicU32::new(0),
             dumpable: AtomicI32::new(1),
-            thp_disable: AtomicU32::new(0),
 
             children_cpu_time: IrqMutex::new((TimeValue::ZERO, TimeValue::ZERO)),
 
@@ -1181,19 +1247,10 @@ impl ProcessData {
             posix_timers: Arc::new(PosixTimerTable::default()),
             real_timer: IrqMutex::new(ProcessRealTimer::default()),
 
-            vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
-            aspace_slot_released: AtomicBool::new(false),
-
             job_control: IrqMutex::new(JobControl::default()),
             cont_event: Arc::default(),
         });
         identity.bind_process(proc, exit_event, Arc::downgrade(&this));
-        // Clone the Arc in a separate statement: a temporary `IrqMutex` guard
-        // from `lock()` lives until the end of the statement, so calling
-        // `attach_process_slot` (which locks `Mutex<AddrSpace>`) in the same
-        // expression would nest a sleepable lock inside atomic context.
-        let aspace_arc = this.aspace.lock().clone();
-        crate::mm::attach_process_slot(&aspace_arc);
         this
     }
 
@@ -1231,42 +1288,18 @@ impl ProcessData {
             .expect("process TGID lease transferred twice")
     }
 
-    /// Whether this process shares its VM address space (`CLONE_VM`).
-    #[inline]
-    pub fn vm_aspace_shared(&self) -> bool {
-        self.vm_aspace_shared.load(Ordering::Acquire)
-    }
-
-    /// Called after `execve` commits a fresh private address space so exit
-    /// teardown may clear VMAs without touching a vfork parent's mappings.
-    #[inline]
-    pub fn mark_vm_aspace_private_after_exec(&self) {
-        self.vm_aspace_shared.store(false, Ordering::Release);
-    }
-
-    /// Release this process's [`AddrSpace::process_slots`] entry.
+    /// Retire this process's address-space owner without reclaiming mappings.
     ///
-    /// Invoked from the last-thread exit path so inode-scoped accounting (memfd
-    /// shared-writable counts, etc.) is torn down before `waitpid` returns, and
-    /// again from `Drop` if not already run. Uses reference counting: only the
-    /// last slot holder triggers [`AddrSpace::clear`], so `CLONE_VM` co-owners
-    /// are unaffected.
-    pub fn release_aspace_slot_if_needed(&self) {
-        if self.aspace_slot_released.swap(true, Ordering::AcqRel) {
-            return;
+    /// Reclamation is intentionally deferred until all [`MmPin`] and
+    /// [`ActivationLease`] values have gone away.
+    pub fn retire_mm_owner(&self) {
+        let permit = {
+            let guard = self.aspace.lock();
+            guard.release_user_ref()
+        };
+        if let Some(permit) = permit {
+            crate::mm::enqueue_retire(permit);
         }
-        let aspace = self.aspace.lock().clone();
-        crate::mm::release_process_slot(&aspace);
-    }
-
-    /// Get the top address of the user heap.
-    pub fn get_heap_top(&self) -> usize {
-        self.heap_top.load(Ordering::Acquire)
-    }
-
-    /// Set the top address of the user heap.
-    pub fn set_heap_top(&self, top: usize) {
-        self.heap_top.store(top, Ordering::Release)
     }
 
     /// Linux manual: A "clone" child is one which delivers no signal, or a
@@ -1322,14 +1355,18 @@ impl ProcessData {
         self.dumpable.store(dumpable, Ordering::SeqCst);
     }
 
-    /// Get the transparent huge page disable state (PR_GET_THP_DISABLE).
-    pub fn thp_disable(&self) -> u32 {
-        self.thp_disable.load(Ordering::SeqCst)
+    /// Returns the transparent-huge-page policy owned by the current MM.
+    pub fn transparent_huge_page_mode(&self) -> TransparentHugePageMode {
+        self.aspace.lock().transparent_huge_page_mode()
     }
 
-    /// Set the transparent huge page disable state (PR_SET_THP_DISABLE).
-    pub fn set_thp_disable(&self, thp_disable: u32) {
-        self.thp_disable.store(thp_disable, Ordering::SeqCst);
+    /// Changes the current MM's THP policy under its fault serialization lock.
+    pub fn set_transparent_huge_page_mode(
+        &self,
+        mode: TransparentHugePageMode,
+    ) -> StarryResult<()> {
+        self.pin_aspace()?.set_transparent_huge_page_mode(mode);
+        Ok(())
     }
 
     /// Returns true if the process is currently job-control stopped.
@@ -2198,48 +2235,62 @@ impl ProcessData {
         self.personality.swap(personality, Ordering::AcqRel)
     }
 
-    /// Returns a clone of the address space Arc.
-    pub fn aspace(&self) -> Arc<Mutex<AddrSpace>> {
-        self.aspace.lock().clone()
+    /// Duplicates the process's address-space ownership for `CLONE_VM`,
+    /// `vfork`, or another operation that intentionally shares an MM.
+    pub fn clone_aspace_user_ref(&self) -> Result<MmHandle, crate::mm::CloneUserRefError> {
+        self.aspace.lock().clone_user_ref()
+    }
+
+    /// Pins the current address space for a kernel continuation without
+    /// manufacturing another process owner.  The handle lock is held only for
+    /// the atomic pin transition and is released before the returned pin is
+    /// used.
+    pub fn pin_aspace(&self) -> StarryResult<MmPin> {
+        self.aspace.lock().pin().map_err(|_| StarryError::BadState)
     }
 
     /// Replace this process's address space with a new one.
     ///
     /// # Why `mem::replace` instead of `*guard = new_aspace`
     ///
-    /// `self.aspace` is a `IrqMutex<Arc<Mutex<AddrSpace>>>`. Locking it
-    /// disables IRQs and increments `preempt_count`, putting us in atomic
-    /// context. A plain assignment (`*guard = new_aspace`) would drop the
-    /// **old** `Arc<Mutex<AddrSpace>>` while the `IrqMutex` guard is still
-    /// alive. If that was the last strong reference (e.g. after a
-    /// `CLONE_VM` + `execve`), the destructor chain would be:
+    /// `self.aspace` is an `IrqMutex<MmHandle>`. Locking it disables IRQs and
+    /// increments `preempt_count`. A plain assignment would run the old
+    /// handle's last-user transition while this atomic guard is live.
+    /// `MmHandle::drop` never clears a page table, but it may change the MM to
+    /// `Retiring` and enqueue a reclaim candidate; those lifecycle effects do
+    /// not belong inside the process-owner lock.
     ///
-    /// ```text
-    /// Arc::drop → Mutex<AddrSpace>::drop → AddrSpace::drop
-    ///   → self.clear() → areas.clear() → FileBackendInner::drop
-    ///     → cache.remove_evict_listener()
-    ///       → evict_listeners.lock()        ← sleeping Mutex
-    ///         → might_sleep()               ← PANIC (atomic context)
-    /// ```
-    ///
-    /// `mem::replace` moves the old Arc out of the guard so it is dropped
-    /// **after** the `IrqMutex` guard, in normal preemptible context. The old
-    /// address space must also stay alive until the current task has switched
-    /// away from its page table.
-    pub fn replace_current_aspace(&self, current: &TaskInner, new_aspace: Arc<Mutex<AddrSpace>>) {
-        let new_page_table_root = new_aspace.lock().page_table_root();
-        crate::mm::attach_process_slot(&new_aspace);
+    /// `mem::replace` moves the old owner out, then the task installs the new
+    /// `MmPin`, activation and complete `InstalledAddressSpace`. Only after the
+    /// hardware root switch is proved do we release the old activation and
+    /// let the old owner/pin transitions run in normal preemptible context.
+    pub fn replace_current_aspace(&self, current: &TaskInner, new_handle: MmHandle) {
+        let new_process_owner = new_handle
+            .clone_user_ref()
+            .expect("a fresh exec address space must accept its process owner");
         let old_process_aspace = {
             let mut guard = self.aspace.lock();
-            core::mem::replace(&mut *guard, new_aspace.clone())
+            core::mem::replace(&mut *guard, new_process_owner)
         };
-        let old_page_table_lease = current.as_thread().replace_page_table_lease(new_aspace);
-        current.switch_page_table(new_page_table_root);
+        let old_mm_pin = current
+            .as_thread()
+            .replace_mm_pin(
+                new_handle
+                    .pin()
+                    .expect("exec must install a live replacement address space"),
+            );
+        let new_activation = new_handle
+            .activation_for_switch(ax_hal::percpu::this_cpu_id())
+            .expect("exec replacement must activate a live address space");
+        current.replace_address_space_activation(Box::new(StarrySchedulerActivation(
+            new_activation,
+        )));
         // Every retired sibling has completed its user-memory exit work before
-        // leaving the thread group. This may clear its user VMAs; each task's
-        // lease still keeps the installed page-table root alive until reclaim.
-        crate::mm::release_process_slot(&old_process_aspace);
-        drop(old_page_table_lease);
+        // leaving the thread group. This may clear its user VMAs; the per-CPU
+        // scheduler activation still keeps the installed root alive until the
+        // hardware switch above is published.
+        drop(old_process_aspace);
+        drop(old_mm_pin);
     }
 
     /// Set the vfork completion (called on the child after a vfork,
@@ -2330,7 +2381,7 @@ impl ProcessData {
 
 impl Drop for ProcessData {
     fn drop(&mut self) {
-        self.release_aspace_slot_if_needed();
+        self.retire_mm_owner();
     }
 }
 
@@ -2387,7 +2438,7 @@ mod tests {
 
     #[cfg(axtest)]
     #[axtest::axtest]
-    fn thread_page_table_lease_follows_task_lifetime() {
+    fn thread_mm_pin_follows_task_lifetime() {
         crate::cgroup::init();
         let identity = PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader)
             .unwrap()
@@ -2400,7 +2451,7 @@ mod tests {
         let mut old_aspace = crate::mm::new_user_aspace_empty().unwrap();
         crate::mm::copy_from_kernel(&mut old_aspace).unwrap();
         let old_aspace = Arc::new(Mutex::new(old_aspace));
-        let old_page_table_root = old_aspace.lock().page_table_root();
+        let old_space_id = old_aspace.lock().address_space_id();
         let old_aspace_weak = Arc::downgrade(&old_aspace);
         let process_data = ProcessData::new(
             process,
@@ -2415,11 +2466,10 @@ mod tests {
                     String::new(),
                     String::new(),
                 ),
-                aspace: old_aspace.clone(),
+                aspace: MmHandle::from_arc(old_aspace.clone()).unwrap(),
                 signal_actions: Arc::default(),
                 exit_signal: None,
                 wait_parent_tid: TidNumber::from(identity.root_number()),
-                vm_aspace_shared: false,
             },
         );
         let thread = Thread::new(
@@ -2431,21 +2481,29 @@ mod tests {
             Scope::new(),
         );
 
-        let replacement = Arc::new(Mutex::new(crate::mm::new_user_aspace_empty().unwrap()));
-        crate::mm::attach_process_slot(&replacement);
+        let replacement = MmHandle::from_arc(Arc::new(Mutex::new(
+            crate::mm::new_user_aspace_empty().unwrap(),
+        )))
+        .unwrap();
         let retired = {
             let mut guard = process_data.aspace.lock();
             core::mem::replace(&mut *guard, replacement)
         };
-        crate::mm::release_process_slot(&retired);
         drop(retired);
         drop(old_aspace);
 
         assert!(old_aspace_weak
             .upgrade()
-            .is_some_and(|aspace| aspace.lock().page_table_root() == old_page_table_root));
+            .is_some_and(|aspace| aspace.lock().address_space_id() == old_space_id));
         identity.mark_task_exited();
         drop(thread);
+
+        // Dropping the final pin publishes a RetirePermit; it deliberately
+        // does not perform fallible page-table/backend destruction in Drop.
+        // Drive the sleepable reaper here so the test observes the complete
+        // Retiring -> Retired -> Reclaiming -> Freed lifecycle.
+        let (_, failed) = crate::mm::reap_retired(usize::MAX);
+        assert_eq!(failed, 0);
         assert!(old_aspace_weak.upgrade().is_none());
         drop(process_data);
     }

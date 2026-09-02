@@ -5,15 +5,173 @@ use ax_memory_addr::MemoryAddr;
 use crate::{
     FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf, TableMeta,
     VirtAddr,
-    frame::Frame,
+    frame::{DetachedPageTableFrame, Frame, HugeSplitFill},
     map::{MapConfig, MapRecursiveConfig, UnmapConfig, UnmapRecursiveConfig},
     walk::{PageTableWalker, WalkConfig},
 };
 
 const TARGETED_FLUSH_LIMIT: usize = 32;
 
+/// A move-only, pre-zeroed child-table reservation.
+///
+/// This raw allocation token never crosses the public API.  Callers receive a
+/// [`HugeSplitDeposit`] that also binds the frame to the huge leaf observed
+/// during prepare.
+struct ReservedTable<T: TableMeta, A: FrameAllocator> {
+    frame: Option<Frame<T, A>>,
+}
+
+/// A child-table deposit bound to one observed huge leaf.
+///
+/// This is the page-table-generic equivalent of Linux's deposited PTE page:
+/// allocation happens before the mutation critical section, dropping an
+/// unpublished deposit releases the frame, and apply consumes it only if the
+/// root and huge-leaf identity still match.  The target address is deliberately
+/// not accepted by apply, so a deposit cannot be redirected to another leaf.
+pub struct HugeSplitDeposit<T: TableMeta, A: FrameAllocator> {
+    table: ReservedTable<T, A>,
+    root_paddr: PhysAddr,
+    block_vaddr: VirtAddr,
+    block_paddr: PhysAddr,
+    block_config: PteConfigOf<T>,
+    block_size: usize,
+}
+
+/// Failed structural apply that returns the still-unpublished deposit to its
+/// caller.  Transactional users must not lose the only child-table owner merely
+/// because the observed huge leaf became stale before apply.
+pub struct HugeSplitApplyError<T: TableMeta, A: FrameAllocator> {
+    error: PagingError,
+    deposit: HugeSplitDeposit<T, A>,
+}
+
+impl<T: TableMeta, A: FrameAllocator> HugeSplitApplyError<T, A> {
+    pub const fn error(&self) -> &PagingError {
+        &self.error
+    }
+
+    pub fn into_parts(self) -> (PagingError, HugeSplitDeposit<T, A>) {
+        (self.error, self.deposit)
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for HugeSplitApplyError<T, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HugeSplitApplyError")
+            .field("error", &self.error)
+            .field("deposit", &self.deposit)
+            .finish()
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> HugeSplitDeposit<T, A> {
+    pub const fn block_vaddr(&self) -> VirtAddr {
+        self.block_vaddr
+    }
+
+    pub const fn block_paddr(&self) -> PhysAddr {
+        self.block_paddr
+    }
+
+    pub const fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    pub const fn block_config(&self) -> PteConfigOf<T> {
+        self.block_config
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for HugeSplitDeposit<T, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HugeSplitDeposit")
+            .field("root_paddr", &self.root_paddr)
+            .field("block_vaddr", &self.block_vaddr)
+            .field("block_paddr", &self.block_paddr)
+            .field("block_size", &self.block_size)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Receipt proving that one deposited child table is now reachable from the
+/// page-table tree.
+///
+/// The receipt does not own mapped data frames.  Its metadata is retained by a
+/// higher-level mutation receipt when rollback, reverse mappings, or delayed
+/// page-table-frame reclamation must be coordinated with a TLB obligation.
+pub struct InstalledHugeSplit<T: TableMeta> {
+    root_paddr: PhysAddr,
+    block_vaddr: VirtAddr,
+    block_paddr: PhysAddr,
+    block_config: PteConfigOf<T>,
+    block_size: usize,
+    child_table_paddr: PhysAddr,
+}
+
+impl<T: TableMeta> InstalledHugeSplit<T> {
+    pub const fn root_paddr(&self) -> PhysAddr {
+        self.root_paddr
+    }
+
+    pub const fn block_vaddr(&self) -> VirtAddr {
+        self.block_vaddr
+    }
+
+    pub const fn block_paddr(&self) -> PhysAddr {
+        self.block_paddr
+    }
+
+    pub const fn block_config(&self) -> PteConfigOf<T> {
+        self.block_config
+    }
+
+    pub const fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    pub const fn child_table_paddr(&self) -> PhysAddr {
+        self.child_table_paddr
+    }
+}
+
+impl<T: TableMeta> core::fmt::Debug for InstalledHugeSplit<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InstalledHugeSplit")
+            .field("root_paddr", &self.root_paddr)
+            .field("block_vaddr", &self.block_vaddr)
+            .field("block_paddr", &self.block_paddr)
+            .field("block_size", &self.block_size)
+            .field("child_table_paddr", &self.child_table_paddr)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> ReservedTable<T, A> {
+    fn frame(&self) -> Frame<T, A> {
+        match self.frame.as_ref() {
+            Some(frame) => frame.clone(),
+            None => unreachable!("a reserved table is consumed at most once"),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.frame = None;
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> Drop for ReservedTable<T, A> {
+    fn drop(&mut self) {
+        if let Some(frame) = self.frame.take() {
+            frame.allocator.dealloc_frame(frame.paddr);
+        }
+    }
+}
+
 pub struct PageTable<T: TableMeta, A: FrameAllocator> {
     inner: PageTableRef<T, A>,
+    /// Set once ownership of all page-table frames has been transferred to
+    /// detached tokens.  `Drop` must not release them a second time.
+    detached: bool,
     #[cfg(feature = "copy-from")]
     borrowed_root_entries: Option<Range<usize>>,
 }
@@ -26,6 +184,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
         let inner = unsafe { PageTableRef::new(allocator) }?;
         Ok(Self {
             inner,
+            detached: false,
             #[cfg(feature = "copy-from")]
             borrowed_root_entries: None,
         })
@@ -33,6 +192,191 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
 
     pub const fn root_paddr(&self) -> PhysAddr {
         self.inner.root.paddr
+    }
+
+    /// Preallocates and retains the root directories covering `range`.
+    ///
+    /// This is the page-table analogue of Linux preallocating the vmalloc
+    /// directory levels before process roots copy the kernel half. A process
+    /// root may subsequently borrow these entries once; all later mappings
+    /// are published below the stable shared directories.
+    ///
+    /// Callers must finish this operation before sharing the affected root
+    /// entries or otherwise publishing this page table. Allocation failure may
+    /// leave a prefix installed, but that private prefix remains owned by this
+    /// page table and is reclaimed by its normal destructor.
+    pub fn preallocate_shared_root_entries(
+        &mut self,
+        start_vaddr: VirtAddr,
+        size: usize,
+    ) -> PagingResult {
+        let Some(entries) = Self::root_entry_range(start_vaddr, size)? else {
+            return Ok(());
+        };
+        let span = RootEntrySpan {
+            start: entries.start,
+            end: entries.end,
+        };
+        if self
+            .inner
+            .retained_root_entries
+            .is_some_and(|retained| retained != span)
+        {
+            return Err(PagingError::hierarchy_error(
+                "Page table already retains a different root-entry range",
+            ));
+        }
+        self.inner.retained_root_entries = Some(span);
+
+        for index in entries {
+            let current = self.inner.root.as_slice()[index];
+            if current.unused() {
+                let child = Frame::<T, A>::new(self.inner.root.allocator.clone())?;
+                self.inner.root.as_slice_mut()[index] = T::P::new_table(child.paddr);
+                continue;
+            }
+            if !current.present() || current.huge(true) {
+                return Err(PagingError::hierarchy_error(
+                    "Shared root entry is not a child page table",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Detaches every page-table frame owned by this table and transfers the
+    /// release capability to `release`.  Mapped data frames are never touched.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have stopped all page-table users and completed the
+    /// required local/remote TLB invalidations before reclaiming the returned
+    /// tokens.  The table is unusable after this call; its `Drop` implementation
+    /// intentionally skips frame release to prevent a double free.
+    pub unsafe fn detach(&mut self, mut release: impl FnMut(DetachedPageTableFrame<A>)) {
+        if self.detached {
+            return;
+        }
+        #[cfg(feature = "copy-from")]
+        self.detach_borrowed_root_entries();
+        // Publish the inert state before invoking caller code. If a callback
+        // unwinds after consuming a prefix of tokens, Drop must leak the
+        // undispatched suffix rather than recursively double-free that prefix.
+        self.detached = true;
+        self.inner
+            .root
+            .detach_recursive(Frame::<T, A>::PT_LEVEL, &mut release);
+    }
+
+    /// Releases the owning table exactly once.  `PageTableRef` remains a
+    /// copyable view for the legacy walker API, so the detached guard belongs
+    /// to this owning wrapper rather than to the view itself.
+    unsafe fn deallocate_inner(&mut self) {
+        if self.detached {
+            return;
+        }
+        // SAFETY: callers of this helper are the owning `Drop` path; the
+        // caller has exclusive access to the page-table tree.
+        self.inner
+            .root
+            .deallocate_recursive(Frame::<T, A>::PT_LEVEL);
+        self.detached = true;
+    }
+
+    /// Releases all page-table frames and permanently invalidates this
+    /// owning table.  Calling it more than once is harmless; the detached bit
+    /// makes the operation idempotent for teardown/recovery code.
+    ///
+    /// # Safety
+    ///
+    /// No CPU or walker may still use the table when this method is called.
+    pub unsafe fn deallocate(&mut self) {
+        // SAFETY: the precondition is carried by this public unsafe API.
+        unsafe {
+            self.deallocate_inner();
+        }
+    }
+
+    /// Consumes the owning table after releasing its page-table frames.
+    /// Mapped data frames are intentionally left to the mapping owner.
+    ///
+    /// # Safety
+    ///
+    /// The caller must establish the same quiescence requirements as
+    /// [`Self::deallocate`].
+    pub unsafe fn destroy(mut self) {
+        // SAFETY: forwarded from the method's quiescence contract.
+        unsafe {
+            self.deallocate_inner();
+        }
+    }
+
+    /// Abandons the allocator capability for this table without attempting a
+    /// fallible teardown.
+    ///
+    /// This is intentionally an explicit leak used only when an owning
+    /// address-space destructor discovers that mappings or a TLB quarantine
+    /// are still live.  `Drop` must not reclaim page-table frames in that
+    /// state: doing so could let a stale CPU walk a frame that has already
+    /// been reused.  The caller must retain an out-of-band repair record if
+    /// those frames are to be reclaimed after the missing quiescence is fixed.
+    pub fn leak(&mut self) {
+        #[cfg(feature = "copy-from")]
+        self.detach_borrowed_root_entries();
+        self.detached = true;
+    }
+
+    /// Returns the occupied leaf PTE and the level at which it was found.
+    /// Unlike `translate_recursive_with_level`, this also reports a retained
+    /// non-present leaf, which is needed by rollback and quarantine code.
+    pub fn query_occupied(&self, vaddr: VirtAddr) -> PagingResult<(T::P, usize)> {
+        self.inner
+            .root
+            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)
+    }
+
+    /// Convenience wrapper for a VA→PA mapping.  The endpoint arithmetic is
+    /// checked before any PTE is written.  Contiguous ranges may use block
+    /// descriptors; sparse/device ranges are represented by base-page leaves.
+    pub fn map_linear_pages(
+        &mut self,
+        start_vaddr: VirtAddr,
+        start_paddr: PhysAddr,
+        size: usize,
+        config: PteConfigOf<T>,
+        allow_huge: bool,
+    ) -> PagingResult {
+        if size == 0 || !size.is_multiple_of(T::PAGE_SIZE) {
+            return Err(PagingError::invalid_size(
+                "Linear mapping size must be base-page aligned",
+            ));
+        }
+        start_vaddr.as_usize().checked_add(size).ok_or_else(|| {
+            PagingError::address_overflow("Virtual address overflow in map_linear_pages")
+        })?;
+        start_paddr.as_usize().checked_add(size).ok_or_else(|| {
+            PagingError::address_overflow("Physical address overflow in map_linear_pages")
+        })?;
+        self.map_region_checked(
+            start_vaddr,
+            |vaddr| {
+                let offset = vaddr
+                    .as_usize()
+                    .checked_sub(start_vaddr.as_usize())
+                    .ok_or_else(|| {
+                        PagingError::address_overflow(
+                            "Virtual address precedes linear mapping start",
+                        )
+                    })?;
+                let paddr = start_paddr.as_usize().checked_add(offset).ok_or_else(|| {
+                    PagingError::address_overflow("Physical address overflow in linear mapping")
+                })?;
+                Ok(PhysAddr::from_usize(paddr))
+            },
+            size,
+            config,
+            allow_huge,
+        )
     }
 
     /// Deep-copies source root entries that are absent from this page table.
@@ -145,11 +489,14 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
 
 impl<T: TableMeta, A: FrameAllocator> Drop for PageTable<T, A> {
     fn drop(&mut self) {
+        if self.detached {
+            return;
+        }
         #[cfg(feature = "copy-from")]
         self.detach_borrowed_root_entries();
         unsafe {
             // 释放所有页表帧，但不释放映射的物理页
-            self.deallocate();
+            self.deallocate_inner();
         }
     }
 }
@@ -168,9 +515,19 @@ impl<T: TableMeta, A: FrameAllocator> DerefMut for PageTable<T, A> {
     }
 }
 
-#[derive(Clone, Copy)]
 pub struct PageTableRef<T: TableMeta, A: FrameAllocator> {
-    pub root: Frame<T, A>,
+    pub(crate) root: Frame<T, A>,
+    /// Root directories that must remain installed after their last leaf is
+    /// removed. Kernel page tables use this for ranges shared into process
+    /// roots: later mappings remain visible through the already-shared child
+    /// directory instead of requiring root-entry propagation.
+    retained_root_entries: Option<RootEntrySpan>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RootEntrySpan {
+    start: usize,
+    end: usize,
 }
 
 impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTableRef<T, A>
@@ -196,14 +553,34 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     /// # Safety
     ///
     /// 调用者必须确保提供的FrameAllocator是有效的，并且在页表生命周期内保持有效
-    pub unsafe fn new(allocator: A) -> PagingResult<Self> {
+    pub(crate) unsafe fn new(allocator: A) -> PagingResult<Self> {
         let root = Frame::new_root(allocator)?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            retained_root_entries: None,
+        })
     }
 
-    pub fn from_paddr(paddr: PhysAddr, allocator: A) -> Self {
+    /// Creates a non-owning view of an existing page-table root.
+    ///
+    /// The returned view may inspect and mutate page-table entries, but it
+    /// never owns or releases any page-table frame. Only [`PageTable`] carries
+    /// the corresponding frame-reclamation capability.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `paddr` names an aligned, initialized root
+    /// table for `T`, that every table frame reachable from it remains mapped
+    /// by `allocator` for the entire use of this value, and that all mutable
+    /// access is serialized with hardware walkers and other page-table users.
+    /// The caller must also ensure that the owning page table outlives this
+    /// view.
+    pub unsafe fn from_paddr(paddr: PhysAddr, allocator: A) -> Self {
         let root = Frame::from_root_paddr(paddr, allocator);
-        Self { root }
+        Self {
+            root,
+            retained_root_entries: None,
+        }
     }
 
     /// Maps one page with the requested page size.
@@ -245,6 +622,31 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         config: PteConfigOf<T>,
         allow_huge: bool,
     ) -> PagingResult {
+        self.map_region_checked(
+            start_vaddr,
+            |vaddr| Ok(get_paddr(vaddr)),
+            size,
+            config,
+            allow_huge,
+        )
+    }
+
+    /// Maps a virtual region using a fallible physical-address resolver.
+    ///
+    /// The resolver is evaluated before each PTE write.  If it rejects a
+    /// later page, mappings already installed by this invocation are rolled
+    /// back and the resolver error is returned.  This is the capability used
+    /// by linear/device mappings: address arithmetic must remain checked all
+    /// the way through the page-table walker instead of relying on a
+    /// saturating closure that can alias a different physical page.
+    pub fn map_region_checked(
+        &mut self,
+        start_vaddr: VirtAddr,
+        mut get_paddr: impl FnMut(VirtAddr) -> PagingResult<PhysAddr>,
+        size: usize,
+        config: PteConfigOf<T>,
+        allow_huge: bool,
+    ) -> PagingResult {
         if size == 0 {
             return Err(PagingError::invalid_size("Region size cannot be zero"));
         }
@@ -267,10 +669,127 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             if offset >= size {
                 break Ok(());
             }
-            let vaddr = start_vaddr + offset;
-            let paddr = get_paddr(vaddr);
+            let vaddr =
+                VirtAddr::from_usize(start_vaddr.as_usize().checked_add(offset).ok_or_else(
+                    || PagingError::address_overflow("Virtual address overflow in map_region"),
+                )?);
+            let paddr = match get_paddr(vaddr) {
+                Ok(paddr) => paddr,
+                Err(error) => {
+                    let rollback_result = if offset == 0 {
+                        Ok(())
+                    } else {
+                        self.unmap_with_config(&UnmapConfig {
+                            start_vaddr,
+                            size: offset,
+                            flush: false,
+                        })
+                    };
+                    break match rollback_result {
+                        Ok(()) => Err(error),
+                        Err(rollback_err) => Err(rollback_err),
+                    };
+                }
+            };
+            if !paddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
+                let rollback_result = if offset == 0 {
+                    Ok(())
+                } else {
+                    self.unmap_with_config(&UnmapConfig {
+                        start_vaddr,
+                        size: offset,
+                        flush: false,
+                    })
+                };
+                break match rollback_result {
+                    Ok(()) => Err(PagingError::alignment_error(
+                        "Physical resolver returned an unaligned base page",
+                    )),
+                    Err(rollback_err) => Err(rollback_err),
+                };
+            }
             let remaining = size - offset;
-            let page_size = largest_page_size::<T, A>(vaddr, paddr, remaining, allow_huge);
+            let candidate = largest_page_size::<T, A>(vaddr, paddr, remaining, allow_huge);
+            // A resolver is allowed to describe device pages, so do not infer
+            // physical contiguity from the first page alone.  Before writing
+            // a block descriptor, probe every base page in the candidate and
+            // require the exact checked address progression.  This keeps a
+            // sparse/non-contiguous range on 4 KiB leaves (or rejects it) and
+            // prevents a huge PTE from aliasing unrelated frames.
+            let page_size = if candidate > T::PAGE_SIZE {
+                let mut probe_offset = T::PAGE_SIZE;
+                let mut continuity_error = None;
+                let mut non_contiguous = false;
+                while probe_offset < candidate {
+                    let probe_vaddr = match vaddr.as_usize().checked_add(probe_offset) {
+                        Some(value) => VirtAddr::from_usize(value),
+                        None => {
+                            continuity_error = Some(PagingError::address_overflow(
+                                "Virtual address overflow while validating a block mapping",
+                            ));
+                            break;
+                        }
+                    };
+                    let probe_paddr = match get_paddr(probe_vaddr) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            continuity_error = Some(error);
+                            break;
+                        }
+                    };
+                    let expected = match paddr.as_usize().checked_add(probe_offset) {
+                        Some(value) => PhysAddr::from_usize(value),
+                        None => {
+                            continuity_error = Some(PagingError::address_overflow(
+                                "Physical address overflow while validating a block mapping",
+                            ));
+                            break;
+                        }
+                    };
+                    if probe_paddr != expected {
+                        // A resolver may intentionally describe sparse device
+                        // pages.  That is not an error for the mapping as a
+                        // whole; it only means that this candidate cannot be
+                        // represented by one block descriptor.  Fall back to
+                        // base-page mappings and let the next iteration query
+                        // each page independently.  Resolver failures and
+                        // checked-arithmetic failures remain hard errors.
+                        non_contiguous = true;
+                        break;
+                    }
+                    probe_offset = match probe_offset.checked_add(T::PAGE_SIZE) {
+                        Some(value) => value,
+                        None => {
+                            continuity_error = Some(PagingError::address_overflow(
+                                "Block-page probe offset overflow",
+                            ));
+                            break;
+                        }
+                    };
+                }
+                if let Some(error) = continuity_error {
+                    let rollback_result = if offset == 0 {
+                        Ok(())
+                    } else {
+                        self.unmap_with_config(&UnmapConfig {
+                            start_vaddr,
+                            size: offset,
+                            flush: false,
+                        })
+                    };
+                    break match rollback_result {
+                        Ok(()) => Err(error),
+                        Err(rollback_err) => Err(rollback_err),
+                    };
+                }
+                if non_contiguous {
+                    T::PAGE_SIZE
+                } else {
+                    candidate
+                }
+            } else {
+                candidate
+            };
             if let Err(err) = self.map(&MapConfig {
                 vaddr: vaddr.align_down(page_size),
                 paddr: paddr.align_down(page_size),
@@ -297,7 +816,19 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 full_flush = true;
                 flush_addrs.clear();
             }
-            offset += page_size;
+            offset = match offset.checked_add(page_size) {
+                Some(offset) => offset,
+                None => {
+                    let _ = self.unmap_with_config(&UnmapConfig {
+                        start_vaddr,
+                        size: offset,
+                        flush: false,
+                    });
+                    break Err(PagingError::address_overflow(
+                        "Mapping offset overflow in map_region",
+                    ));
+                }
+            };
         };
 
         if full_flush {
@@ -328,6 +859,186 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             flush: true,
         })?;
         Ok((paddr, config, page_size))
+    }
+
+    /// Returns the huge block covering `vaddr` without changing the table.
+    /// Retained non-present blocks are reported when the PTE format preserves
+    /// their descriptor state.
+    pub fn peek_huge_block(&self, vaddr: VirtAddr) -> Option<(PhysAddr, PteConfigOf<T>, usize)> {
+        let (pte, level) = self
+            .root
+            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)
+            .ok()?;
+        let is_dir = level > 1;
+        pte.huge(is_dir).then(|| {
+            (
+                pte.paddr(is_dir),
+                pte.config(is_dir),
+                Frame::<T, A>::level_size(level),
+            )
+        })
+    }
+
+    /// Allocates a pre-zeroed child table and binds it to the currently
+    /// observed huge leaf.
+    ///
+    /// The returned deposit may be stored by a mapping owner until a future
+    /// partial operation needs to split the leaf.  Apply revalidates the root,
+    /// virtual range, physical frame, configuration, and size before touching
+    /// any descriptor.
+    pub fn prepare_huge_split(&self, vaddr: VirtAddr) -> PagingResult<HugeSplitDeposit<T, A>> {
+        let (block_paddr, block_config, block_size) = self
+            .peek_huge_block(vaddr)
+            .ok_or_else(PagingError::not_mapped)?;
+        let block_vaddr = vaddr.align_down(block_size);
+        let table = ReservedTable {
+            frame: Some(Frame::<T, A>::new(self.root.allocator.clone())?),
+        };
+        Ok(HugeSplitDeposit {
+            table,
+            root_paddr: self.root_paddr(),
+            block_vaddr,
+            block_paddr,
+            block_config,
+            block_size,
+        })
+    }
+
+    fn validate_huge_split_deposit(&self, deposit: &HugeSplitDeposit<T, A>) -> PagingResult
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        let current = self.peek_huge_block(deposit.block_vaddr);
+        if self.root_paddr() != deposit.root_paddr
+            || !current.is_some_and(|(paddr, config, size)| {
+                paddr == deposit.block_paddr
+                    && config == deposit.block_config
+                    && size == deposit.block_size
+            })
+        {
+            return Err(PagingError::stale_huge_split(deposit.block_vaddr));
+        }
+        Ok(())
+    }
+
+    fn try_apply_huge_split_deposit(
+        &mut self,
+        mut deposit: HugeSplitDeposit<T, A>,
+        fill: HugeSplitFill,
+    ) -> Result<InstalledHugeSplit<T>, HugeSplitApplyError<T, A>>
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        if let Err(error) = self.validate_huge_split_deposit(&deposit) {
+            return Err(HugeSplitApplyError { error, deposit });
+        }
+        let child_table_paddr = deposit.table.frame().paddr;
+        let frame = deposit.table.frame();
+        let (block_paddr, block_config, block_size) = match self.root.split_huge_page_recursive(
+            deposit.block_vaddr,
+            Frame::<T, A>::PT_LEVEL,
+            frame,
+            fill,
+        ) {
+            Ok(installed) => installed,
+            Err(error) => return Err(HugeSplitApplyError { error, deposit }),
+        };
+        // The child frame is now reachable from the tree.  Disarm immediately
+        // after the structural apply so no later receipt construction can
+        // accidentally free a live page-table frame.
+        deposit.table.disarm();
+        Ok(InstalledHugeSplit {
+            root_paddr: deposit.root_paddr,
+            block_vaddr: deposit.block_vaddr,
+            block_paddr,
+            block_config,
+            block_size,
+            child_table_paddr,
+        })
+    }
+
+    /// Consumes a bound deposit and splits its huge block into inherited finer
+    /// leaves.  No allocation occurs during apply.
+    pub fn split_huge_page_with(
+        &mut self,
+        deposit: HugeSplitDeposit<T, A>,
+    ) -> PagingResult<InstalledHugeSplit<T>>
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        self.try_split_huge_page_with(deposit)
+            .map_err(|failure| failure.into_parts().0)
+    }
+
+    /// Transactional variant of [`Self::split_huge_page_with`].  On failure the
+    /// caller receives the still-owned deposit and can put it back into its
+    /// mapping slot without allocating during recovery.
+    pub fn try_split_huge_page_with(
+        &mut self,
+        deposit: HugeSplitDeposit<T, A>,
+    ) -> Result<InstalledHugeSplit<T>, HugeSplitApplyError<T, A>>
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        self.try_apply_huge_split_deposit(deposit, HugeSplitFill::Inherit)
+    }
+
+    /// Splits a huge block and installs an empty child table for a caller that
+    /// will materialize non-contiguous finer leaves under the same mutation
+    /// domain. The old block metadata is returned for rollback/accounting.
+    pub fn split_huge_block_to_empty_table(
+        &mut self,
+        deposit: HugeSplitDeposit<T, A>,
+    ) -> PagingResult<InstalledHugeSplit<T>>
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        self.try_apply_huge_split_deposit(deposit, HugeSplitFill::Empty)
+            .map_err(|failure| failure.into_parts().0)
+    }
+
+    /// Rolls an installed split back to the exact huge descriptor captured by
+    /// its receipt and returns ownership of the withdrawn child table.
+    ///
+    /// No allocation occurs.  The returned deposit is bound to the restored
+    /// block and can either be retained for a retry or dropped to release the
+    /// now-unpublished page-table frame.  This is the inverse of
+    /// [`Self::split_huge_page_with`] used by unpublished transaction aborts.
+    pub fn restore_huge_split(
+        &mut self,
+        installed: InstalledHugeSplit<T>,
+    ) -> PagingResult<HugeSplitDeposit<T, A>> {
+        if self.root_paddr() != installed.root_paddr {
+            return Err(PagingError::stale_huge_split(installed.block_vaddr));
+        }
+        let frame = self.root.restore_huge_page_recursive(
+            installed.block_vaddr,
+            installed.block_paddr,
+            installed.block_config,
+            installed.block_size,
+            installed.child_table_paddr,
+            Frame::<T, A>::PT_LEVEL,
+        )?;
+        Ok(HugeSplitDeposit {
+            table: ReservedTable { frame: Some(frame) },
+            root_paddr: installed.root_paddr,
+            block_vaddr: installed.block_vaddr,
+            block_paddr: installed.block_paddr,
+            block_config: installed.block_config,
+            block_size: installed.block_size,
+        })
+    }
+
+    /// Prepares and performs an inherited huge split. Transactional callers
+    /// should retain [`HugeSplitDeposit`] from [`Self::prepare_huge_split`]
+    /// before entering their mutation critical section.
+    pub fn split_huge_page(&mut self, vaddr: VirtAddr) -> PagingResult<usize>
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        let deposit = self.prepare_huge_split(vaddr)?;
+        self.split_huge_page_with(deposit)
+            .map(|installed| installed.block_size())
     }
 
     /// Changes one existing mapping's flags and returns its page size.
@@ -367,8 +1078,24 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         let mut vaddr = start_vaddr;
         while vaddr.as_usize() < end {
             match self.protect_page(vaddr, config) {
-                Ok(page_size) => vaddr += page_size,
-                Err(PagingError::NotMapped) => vaddr += T::PAGE_SIZE,
+                Ok(page_size) => {
+                    vaddr = vaddr
+                        .as_usize()
+                        .checked_add(page_size)
+                        .map(VirtAddr::from_usize)
+                        .ok_or_else(|| {
+                            PagingError::address_overflow("protect_region address advance")
+                        })?;
+                }
+                Err(PagingError::NotMapped) => {
+                    vaddr = vaddr
+                        .as_usize()
+                        .checked_add(T::PAGE_SIZE)
+                        .map(VirtAddr::from_usize)
+                        .ok_or_else(|| {
+                            PagingError::address_overflow("protect_region address advance")
+                        })?;
+                }
                 Err(err) => return Err(err),
             }
         }
@@ -414,10 +1141,16 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         }
         self.validate_address_width(config.vaddr, config.size, "map")?;
 
+        let end_vaddr = config
+            .vaddr
+            .as_usize()
+            .checked_add(config.size)
+            .map(VirtAddr::from_usize)
+            .ok_or_else(|| PagingError::address_overflow("Virtual address overflow in map"))?;
         self.root.map_range_recursive(MapRecursiveConfig {
             start_vaddr: config.vaddr,
             start_paddr: config.paddr,
-            end_vaddr: config.vaddr + config.size,
+            end_vaddr,
             level: Frame::<T, A>::PT_LEVEL,
             allow_huge: config.allow_huge,
             flush: config.flush,
@@ -462,6 +1195,9 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             end_vaddr,
             level: Frame::<T, A>::PT_LEVEL,
             flush: true, // 默认刷新TLB确保一致性
+            retained_root_entries: self
+                .retained_root_entries
+                .map(|entries| (entries.start, entries.end)),
         })?;
 
         Ok(())
@@ -486,6 +1222,9 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             end_vaddr,
             level: Frame::<T, A>::PT_LEVEL,
             flush: config.flush,
+            retained_root_entries: self
+                .retained_root_entries
+                .map(|entries| (entries.start, entries.end)),
         })?;
 
         Ok(())
@@ -573,7 +1312,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 "Virtual address range overflow",
             ));
         };
-        let last = end.saturating_sub(1);
+        let last = end - 1;
         if !Self::is_addr_in_width(start_vaddr.as_usize()) || !Self::is_addr_in_width(last) {
             return Err(PagingError::address_overflow(operation));
         }
@@ -598,60 +1337,6 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             return true;
         }
         addr < (1usize << valid_bits)
-    }
-
-    /// 销毁整个页表结构
-    ///
-    /// 此方法会：
-    /// 1. 递归释放根帧及所有子页表帧
-    /// 2. 清除所有页表项（设为invalid）
-    /// 3. 不释放映射的物理页（数据页/大页）
-    ///
-    /// # Safety
-    /// 调用者必须确保：
-    /// - 没有其他代码在访问这个页表
-    /// - 没有CPU正在使用这个页表进行地址翻译
-    /// - 调用后不再使用这个PageTable实例
-    pub unsafe fn destroy(mut self) {
-        self.root.deallocate_recursive(Frame::<T, A>::PT_LEVEL);
-    }
-
-    /// 释放页表占用的所有页表帧
-    ///
-    /// 与destroy()不同，这个方法保留PageTable结构，
-    /// 但释放所有关联的页表帧。调用后PageTable不再可用。
-    ///
-    /// 释放行为：
-    /// - 释放所有页表帧
-    /// - 清除所有页表项（设为invalid）
-    /// - 不释放映射的物理页（数据页/大页）
-    ///
-    /// # Safety
-    /// 调用者必须确保：
-    /// - 没有其他代码在访问这个页表
-    /// - 没有CPU正在使用这个页表进行地址翻译
-    pub unsafe fn deallocate(&mut self) {
-        self.root.deallocate_recursive(Frame::<T, A>::PT_LEVEL);
-    }
-
-    /// 释放页表中的指定映射区域
-    ///
-    /// 释放指定虚拟地址范围内的所有页表项和子页表帧
-    /// 在释放前将相关PTE设为invalid
-    pub fn deallocate_range(&mut self, start_vaddr: VirtAddr, end_vaddr: VirtAddr) -> PagingResult {
-        if start_vaddr >= end_vaddr {
-            return Err(PagingError::invalid_range(
-                "Start address must be less than end address",
-            ));
-        }
-
-        // TODO: 实现范围释放逻辑
-        // 这里需要实现：
-        // 1. 遍历指定虚拟地址范围
-        // 2. 释放对应的页表项和子页表
-        // 3. 处理部分页表项的情况
-
-        Ok(())
     }
 
     /// 通过虚拟地址查询页表项

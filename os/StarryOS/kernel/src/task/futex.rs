@@ -2,7 +2,7 @@
 
 use alloc::{
     collections::{btree_map::BTreeMap, vec_deque::VecDeque},
-    sync::{Arc, Weak},
+    sync::Arc,
     vec::Vec,
 };
 use core::{
@@ -24,7 +24,7 @@ use hashbrown::HashMap;
 
 use crate::{
     StarryError, StarryResult,
-    mm::{AddrSpace, Backend, SharedPages},
+    mm::{AddrSpace, SharedFutexIdentity, SharedFutexRegion},
     sync::{LockdepMutexExt, Mutex},
     task::{AsThread, ProcessData},
 };
@@ -481,10 +481,8 @@ pub enum FutexKey {
 
     /// A futex in a shared memory region.
     Shared {
-        /// The offset of the futex within the shared memory region.
-        offset: usize,
-        /// The shared memory region.
-        region: Result<Weak<SharedPages>, Weak<()>>,
+        /// Stable backing-object identity and logical byte offset.
+        identity: SharedFutexIdentity,
     },
 }
 
@@ -501,23 +499,9 @@ impl FutexKey {
     /// Creates a new `FutexKey`.
     pub fn new(aspace: &AddrSpace, address: usize, mode: FutexKeyMode) -> Self {
         if matches!(mode, FutexKeyMode::Auto)
-            && let Some(area) = aspace.find_area(VirtAddr::from_usize(address))
+            && let Some(identity) = aspace.shared_futex_identity(VirtAddr::from_usize(address))
         {
-            match area.backend() {
-                Backend::Shared(backend) => {
-                    return Self::Shared {
-                        offset: address - area.start().as_usize(),
-                        region: Ok(Arc::downgrade(backend.pages())),
-                    };
-                }
-                Backend::File(file) => {
-                    return Self::Shared {
-                        offset: address - area.start().as_usize(),
-                        region: Err(file.futex_handle()),
-                    };
-                }
-                _ => {}
-            }
+            return Self::Shared { identity };
         }
         Self::Private { address }
     }
@@ -530,30 +514,28 @@ impl FutexKey {
     /// paths that also hold the aspace lock across long page-table operations,
     /// which could otherwise deadlock with concurrent CLONE_THREAD futex
     /// wait/wake pairs.
-    pub fn new_current(address: usize, mode: FutexKeyMode) -> Self {
+    pub fn new_current(address: usize, mode: FutexKeyMode) -> StarryResult<Self> {
         if matches!(mode, FutexKeyMode::Private) {
-            return Self::Private { address };
+            return Ok(Self::Private { address });
         }
         let curr = current();
-        let aspace_arc = curr.as_thread().proc_data.aspace();
+        let aspace_arc = curr.as_thread().proc_data.pin_aspace()?;
         let aspace = aspace_arc.lock();
-        Self::new(&aspace, address, mode)
+        Ok(Self::new(&aspace, address, mode))
     }
 
     /// Teardown variant that is anchored to the exiting process instead of
     /// whatever scheduler task is currently running on this CPU.
-    pub fn new_for_process_teardown(proc_data: &ProcessData, address: usize) -> Self {
-        let aspace_arc = proc_data.aspace();
-        let Some(aspace) = aspace_arc.try_lock() else {
-            return Self::Private { address };
-        };
-        Self::new(&aspace, address, FutexKeyMode::Auto)
+    pub fn new_for_process_teardown(proc_data: &ProcessData, address: usize) -> Option<Self> {
+        let aspace_arc = proc_data.pin_aspace().ok()?;
+        let aspace = aspace_arc.try_lock()?;
+        Some(Self::new(&aspace, address, FutexKeyMode::Auto))
     }
 
     fn as_usize(&self) -> usize {
         match self {
             FutexKey::Private { address } => *address,
-            FutexKey::Shared { offset, .. } => *offset,
+            FutexKey::Shared { identity } => identity.offset(),
         }
     }
 }
@@ -688,7 +670,7 @@ impl Drop for FutexGuard<'_> {
 }
 
 struct FutexTables {
-    map: BTreeMap<usize, Arc<FutexTable>>,
+    map: BTreeMap<SharedFutexRegion, Arc<FutexTable>>,
     operations: usize,
 }
 impl FutexTables {
@@ -699,7 +681,7 @@ impl FutexTables {
         }
     }
 
-    fn get_or_insert(&mut self, key: usize) -> Arc<FutexTable> {
+    fn get_or_insert(&mut self, key: SharedFutexRegion) -> Arc<FutexTable> {
         self.operations += 1;
         if self.operations == 100 {
             self.operations = 0;
@@ -725,13 +707,9 @@ pub fn futex_table_for(key: &FutexKey) -> Arc<FutexTable> {
 pub fn futex_table_for_process(proc_data: &ProcessData, key: &FutexKey) -> Arc<FutexTable> {
     match key {
         FutexKey::Private { .. } => proc_data.futex_table.clone(),
-        FutexKey::Shared { region, .. } => {
-            let ptr = match region {
-                Ok(pages) => Weak::as_ptr(pages) as usize,
-                Err(key) => Weak::as_ptr(key) as usize,
-            };
-            SHARED_FUTEX_TABLES.lock().get_or_insert(ptr)
-        }
+        FutexKey::Shared { identity } => SHARED_FUTEX_TABLES
+            .lock()
+            .get_or_insert(identity.region()),
     }
 }
 
@@ -814,5 +792,62 @@ mod tests {
         assert!(fault_in_unlocked.get());
         assert_eq!(source.inner.lock().queue.len(), 1);
         assert!(!state.woken.load(AtomicOrdering::SeqCst));
+    }
+}
+
+#[cfg(all(test, axtest))]
+mod axtests {
+    use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+    use ax_runtime::hal::paging::MappingFlags;
+
+    use super::*;
+    use crate::mm::{MappingOperation, SharedMemoryObject};
+
+    fn shared_offset(key: FutexKey) -> usize {
+        match key {
+            FutexKey::Shared { identity } => identity.offset(),
+            FutexKey::Private { .. } => panic!("shared mapping produced a private futex key"),
+        }
+    }
+
+    #[axtest::axtest]
+    fn shared_futex_key_survives_vma_split() {
+        let start = VirtAddr::from_usize(0x7100_0000);
+        let second_page = start.checked_add(PAGE_SIZE_4K).unwrap();
+        let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+        let pages = Arc::new(
+            SharedMemoryObject::allocate(PAGE_SIZE_4K * 2, PAGE_SIZE_4K).unwrap(),
+        );
+        let mut aspace = AddrSpace::new_empty(start, PAGE_SIZE_4K * 2).unwrap();
+        aspace
+            .map(
+                start,
+                PAGE_SIZE_4K * 2,
+                flags,
+                false,
+                MappingOperation::new_shared(start, pages),
+            )
+            .unwrap();
+
+        let before = shared_offset(FutexKey::new(
+            &aspace,
+            second_page.as_usize(),
+            FutexKeyMode::Auto,
+        ));
+        aspace
+            .protect(
+                second_page,
+                PAGE_SIZE_4K,
+                MappingFlags::READ | MappingFlags::USER,
+            )
+            .unwrap();
+        let after = shared_offset(FutexKey::new(
+            &aspace,
+            second_page.as_usize(),
+            FutexKeyMode::Auto,
+        ));
+
+        aspace.reset_uninstalled_for_loader().unwrap();
+        assert_eq!(before, after, "VMA split changed shared futex identity");
     }
 }

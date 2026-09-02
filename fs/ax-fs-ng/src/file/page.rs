@@ -4,6 +4,9 @@ use crate::os::memory::{FsPage, PAGE_SIZE};
 
 pub struct PageCache {
     page: Option<FsPage>,
+    /// Transient users that hold the frame identity outside the cache-index
+    /// lock while publishing or validating a PTE.
+    pub(super) pins: usize,
     pub(super) dirty: bool,
     pub(super) dirty_generation: u64,
     pub(super) writeback_protecting: bool,
@@ -18,11 +21,24 @@ impl PageCache {
         })?;
         Ok(Self {
             page: Some(page),
+            pins: 0,
             dirty: false,
             dirty_generation: 0,
             writeback_protecting: false,
             dirty_during_writeback: false,
         })
+    }
+
+    #[cfg(all(test, feature = "vfs"))]
+    pub(super) const fn detached_for_test() -> Self {
+        Self {
+            page: None,
+            pins: 0,
+            dirty: false,
+            dirty_generation: 0,
+            writeback_protecting: false,
+            dirty_during_writeback: false,
+        }
     }
 
     /// Returns the physical address of this page.

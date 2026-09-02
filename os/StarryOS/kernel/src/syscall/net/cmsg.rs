@@ -1,11 +1,11 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 
 use linux_raw_sys::net::{SCM_RIGHTS, SOL_SOCKET, cmsghdr};
+use starry_vm::vm_write_slice;
 
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, get_file_like},
-    mm::{UserConstPtr, UserPtr},
 };
 
 fn cmsg_align(len: usize) -> usize {
@@ -27,17 +27,16 @@ pub enum CMsg {
     Rights { fds: Vec<Arc<dyn FileLike>> },
 }
 impl CMsg {
-    pub fn parse(hdr: &cmsghdr) -> StarryResult<Self> {
+    pub fn parse(hdr: &cmsghdr, data: &[u8]) -> StarryResult<Self> {
         if hdr.cmsg_len < size_of::<cmsghdr>() {
             return Err(StarryError::InvalidInput);
         }
-
-        let data =
-            UserConstPtr::<u8>::from((hdr as *const cmsghdr as usize) + size_of::<cmsghdr>())
-                .get_as_slice(hdr.cmsg_len - size_of::<cmsghdr>())?;
+        if data.len() != hdr.cmsg_len - size_of::<cmsghdr>() {
+            return Err(StarryError::InvalidInput);
+        }
         Ok(match (hdr.cmsg_level as u32, hdr.cmsg_type as u32) {
             (SOL_SOCKET, SCM_RIGHTS) => {
-                if data.len() % size_of::<i32>() != 0 {
+                if !data.len().is_multiple_of(size_of::<i32>()) {
                     return Err(StarryError::InvalidInput);
                 }
                 // Linux caps a single SCM_RIGHTS at SCM_MAX_FD (253) fds;
@@ -64,24 +63,26 @@ impl CMsg {
 }
 
 pub struct CMsgBuilder<'a> {
-    hdr: UserPtr<cmsghdr>,
+    user_buffer: *mut u8,
     len: &'a mut usize,
     capacity: usize,
-    written: usize,
+    data: Vec<u8>,
 }
 impl<'a> CMsgBuilder<'a> {
-    pub fn new(msg: UserPtr<cmsghdr>, len: &'a mut usize) -> Self {
+    pub fn new(msg: *mut cmsghdr, len: &'a mut usize) -> Self {
         let capacity = *len;
         Self {
-            hdr: msg,
+            user_buffer: msg.cast(),
             len,
             capacity,
-            written: 0,
+            data: Vec::new(),
         }
     }
 
-    pub fn finish(self) {
-        *self.len = self.written;
+    pub fn finish(self) -> StarryResult<()> {
+        vm_write_slice(self.user_buffer, &self.data)?;
+        *self.len = self.data.len();
+        Ok(())
     }
 
     /// Number of SCM_RIGHTS fds that still fit in the remaining control space.
@@ -89,7 +90,7 @@ impl<'a> CMsgBuilder<'a> {
     /// matching Linux net/core/scm.c scm_detach_fds.
     pub fn rights_capacity(&self) -> usize {
         self.capacity
-            .checked_sub(self.written)
+            .checked_sub(self.data.len())
             .and_then(|remaining| cmsg_align_down(remaining).checked_sub(size_of::<cmsghdr>()))
             .map_or(0, |body_cap| body_cap / size_of::<i32>())
     }
@@ -103,7 +104,7 @@ impl<'a> CMsgBuilder<'a> {
     ) -> StarryResult<bool> {
         let Some(body_capacity) = self
             .capacity
-            .checked_sub(self.written)
+            .checked_sub(self.data.len())
             .and_then(|remaining| cmsg_align_down(remaining).checked_sub(size_of::<cmsghdr>()))
         else {
             return Ok(false);
@@ -112,23 +113,29 @@ impl<'a> CMsgBuilder<'a> {
             return Ok(false);
         }
 
-        let hdr_addr = self.hdr.address().as_usize();
-        let hdr = self.hdr.get_as_mut()?;
-        hdr.cmsg_level = level as _;
-        hdr.cmsg_type = ty as _;
-
-        let data =
-            UserPtr::<u8>::from(hdr_addr + size_of::<cmsghdr>()).get_as_mut_slice(body_len)?;
-        let written = body(data)?;
+        let mut body_data = vec![0; body_len];
+        let written = body(&mut body_data)?;
         debug_assert_eq!(written, body_len);
 
         let Some(cmsg_len) = size_of::<cmsghdr>().checked_add(body_len) else {
             return Err(StarryError::InvalidInput);
         };
-        hdr.cmsg_len = cmsg_len;
+        let hdr = cmsghdr {
+            cmsg_len,
+            cmsg_level: level as _,
+            cmsg_type: ty as _,
+        };
         let cmsg_space = cmsg_align(cmsg_len);
-        self.hdr = UserPtr::from(hdr_addr + cmsg_space);
-        self.written += cmsg_space;
+        // SAFETY: `hdr` remains alive for the copy and `cmsghdr` is a C ABI
+        // record made only of initialized integer fields.
+        self.data.extend_from_slice(unsafe {
+            core::slice::from_raw_parts(
+                (&hdr as *const cmsghdr).cast::<u8>(),
+                size_of::<cmsghdr>(),
+            )
+        });
+        self.data.extend_from_slice(&body_data);
+        self.data.resize(self.data.len() + cmsg_space - cmsg_len, 0);
         Ok(true)
     }
 }

@@ -57,9 +57,55 @@ impl MappingBackend for MockBackend {
         Some(self.clone())
     }
 
-    fn shrink_left(&mut self, _shrink_size: usize) {}
+    fn shrink_left(&mut self, _shrink_size: usize) -> bool {
+        true
+    }
 
-    fn shrink_right(&mut self, _shrink_size: usize) {}
+    fn shrink_right(&mut self, _shrink_size: usize) -> bool {
+        true
+    }
+}
+
+#[derive(Clone)]
+struct FailingUnmapBackend;
+
+impl MappingBackend for FailingUnmapBackend {
+    type Addr = VirtAddr;
+    type Flags = MockFlags;
+    type PageTable = MockPageTable;
+
+    fn map(&self, start: VirtAddr, size: usize, flags: MockFlags, pt: &mut MockPageTable) -> bool {
+        for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
+            *entry = flags;
+        }
+        true
+    }
+
+    fn unmap(&self, _start: VirtAddr, _size: usize, _pt: &mut MockPageTable) -> bool {
+        false
+    }
+
+    fn protect(
+        &self,
+        _start: VirtAddr,
+        _size: usize,
+        _new_flags: MockFlags,
+        _pt: &mut MockPageTable,
+    ) -> bool {
+        true
+    }
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        Some(Self)
+    }
+
+    fn shrink_left(&mut self, _shrink_size: usize) -> bool {
+        true
+    }
+
+    fn shrink_right(&mut self, _shrink_size: usize) -> bool {
+        true
+    }
 }
 
 macro_rules! assert_ok {
@@ -158,6 +204,118 @@ fn test_map_unmap() {
     for &e in &pt[0..MAX_ADDR] {
         assert_eq!(e, 0);
     }
+}
+
+#[test]
+fn prepared_area_publication_does_not_reapply_backend_mapping() {
+    let mut set = MockMemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    let start = VirtAddr::from(0x2000);
+    let size = 0x1000;
+
+    // Model fork's apply phase: the child leaf exists before its unpublished
+    // MemorySet metadata is assembled.
+    pt[start.as_usize()..start.as_usize() + size].fill(7);
+    assert_ok!(set.insert_prepared_area(MemoryArea::new(start, size, 7, MockBackend,)));
+    assert!(
+        pt[start.as_usize()..start.as_usize() + size]
+            .iter()
+            .all(|entry| *entry == 7)
+    );
+
+    assert_err!(
+        set.insert_prepared_area(MemoryArea::new(start, size, 7, MockBackend)),
+        AlreadyExists
+    );
+}
+
+#[test]
+fn exact_backend_transition_and_unmap_do_not_split_the_area() {
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct StatefulBackend(u8);
+
+    impl MappingBackend for StatefulBackend {
+        type Addr = VirtAddr;
+        type Flags = MockFlags;
+        type PageTable = MockPageTable;
+
+        fn map(
+            &self,
+            start: VirtAddr,
+            size: usize,
+            flags: MockFlags,
+            pt: &mut MockPageTable,
+        ) -> bool {
+            for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
+                *entry = flags;
+            }
+            true
+        }
+
+        fn unmap(&self, start: VirtAddr, size: usize, pt: &mut MockPageTable) -> bool {
+            for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
+                *entry = 0;
+            }
+            true
+        }
+
+        fn protect(
+            &self,
+            _start: VirtAddr,
+            _size: usize,
+            _new_flags: MockFlags,
+            _pt: &mut MockPageTable,
+        ) -> bool {
+            true
+        }
+
+        fn split(&mut self, _align_diff: usize) -> Option<Self> {
+            None
+        }
+    }
+
+    let mut set = MemorySet::<StatefulBackend>::new();
+    let mut pt = [0; MAX_ADDR];
+    let start = VirtAddr::from(0x2000);
+    let size = 0x2000;
+    assert_ok!(set.map(
+        MemoryArea::new(start, size, 7, StatefulBackend(1)),
+        &mut pt,
+        false,
+    ));
+
+    let old = set
+        .replace_exact_backend(start, size, StatefulBackend(2))
+        .unwrap();
+    assert_eq!(old, StatefulBackend(1));
+    assert_eq!(set.find(start).unwrap().backend(), &StatefulBackend(2));
+    assert_err!(
+        set.replace_exact_backend(start, size / 2, StatefulBackend(3)),
+        InvalidParam
+    );
+
+    assert_ok!(set.unmap_exact(start, size, &mut pt));
+    assert!(set.is_empty());
+    assert!(
+        pt[start.as_usize()..start.as_usize() + size]
+            .iter()
+            .all(|entry| *entry == 0)
+    );
+}
+
+#[test]
+fn unmap_backend_failure_is_returned_without_panicking() {
+    let mut set = MemorySet::<FailingUnmapBackend>::new();
+    let mut pt = [0; MAX_ADDR];
+    assert_ok!(set.map(
+        MemoryArea::new(0x1000.into(), 0x1000, 1, FailingUnmapBackend),
+        &mut pt,
+        false,
+    ));
+
+    assert_err!(set.unmap(0x1000.into(), 0x1000, &mut pt), BadState);
+    assert_eq!(set.len(), 1);
+    assert_eq!(pt[0x1000], 1);
 }
 
 #[test]

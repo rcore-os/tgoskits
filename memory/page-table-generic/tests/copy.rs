@@ -76,6 +76,70 @@ fn copied_root_entries_remain_shared_and_borrowed() {
 }
 
 #[test]
+fn detaching_borrower_reclaims_only_its_owned_root() {
+    const FIRST_PAGE: usize = 0x20_0000;
+    const SECOND_PAGE: usize = FIRST_PAGE + PAGE_SIZE;
+
+    let allocator = TrackedFram4k::new();
+    let mut source = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    map_page(&mut source, FIRST_PAGE, 0x40_0000);
+    let source_frames = allocator.allocated_count();
+
+    let mut target = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    unsafe { target.share_root_entries_from(&source, VirtAddr::from_usize(0), ROOT_ENTRY_SIZE) }
+        .unwrap();
+    assert_eq!(allocator.allocated_count(), source_frames + 1);
+
+    let mut detached = Vec::new();
+    // SAFETY: this test owns `target` exclusively and never installs its root
+    // in hardware. Reclaiming the returned tokens is therefore immediately
+    // safe and must not touch the root entries borrowed from `source`.
+    unsafe {
+        target.detach(|token| detached.push(token));
+    }
+    assert_eq!(detached.len(), 1, "only the target root is owned");
+    for token in detached {
+        token.reclaim();
+    }
+    assert_eq!(allocator.allocated_count(), source_frames);
+
+    map_page(&mut source, SECOND_PAGE, 0x80_0000);
+    assert_eq!(
+        source.translate_phys(VirtAddr::from_usize(SECOND_PAGE)),
+        Ok(PhysAddr::from_usize(0x80_0000))
+    );
+}
+
+#[test]
+fn preallocated_root_entry_survives_empty_unmap_and_later_publication() {
+    const FIRST_PAGE: usize = 0x20_0000;
+    const SECOND_PAGE: usize = 0x40_0000;
+
+    let allocator = TrackedFram4k::new();
+    let mut source = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    source
+        .preallocate_shared_root_entries(VirtAddr::from_usize(0), ROOT_ENTRY_SIZE)
+        .unwrap();
+
+    let mut target = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    unsafe { target.share_root_entries_from(&source, VirtAddr::from_usize(0), ROOT_ENTRY_SIZE) }
+        .unwrap();
+
+    map_page(&mut source, FIRST_PAGE, 0x40_0000);
+    assert_eq!(
+        target.translate_phys(VirtAddr::from_usize(FIRST_PAGE)),
+        Ok(PhysAddr::from_usize(0x40_0000))
+    );
+
+    source.unmap_page(VirtAddr::from_usize(FIRST_PAGE)).unwrap();
+    map_page(&mut source, SECOND_PAGE, 0x80_0000);
+    assert_eq!(
+        target.translate_phys(VirtAddr::from_usize(SECOND_PAGE)),
+        Ok(PhysAddr::from_usize(0x80_0000))
+    );
+}
+
+#[test]
 fn cloned_missing_root_entries_preserve_boot_only_kernel_mappings() {
     const DIRECT_PAGE: usize = KERNEL_SPACE_BASE + 0x20_0000;
     const KERNEL_IMAGE_PAGE: usize = KERNEL_IMAGE_BASE + 0x40_0000;

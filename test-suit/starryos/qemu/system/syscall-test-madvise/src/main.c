@@ -1,9 +1,10 @@
 /*
- * !test-madvise — madvise(2) MADV_FREE / MADV_REMOVE / MADV_DONTNEED 穷尽测试
+ * !test-madvise — madvise(2) FREE / REMOVE / DONTNEED / PAGEOUT 测试
  *
- * ground truth: man 2 madvise + Linux v7.2 mm/madvise.c。覆盖浏览器内存管理:
+ * ground truth: man 2 madvise + Linux v7.1 mm/madvise.c。覆盖浏览器内存管理:
  * MADV_FREE(V8/分配器惰性回收, 仅私有匿名) / MADV_REMOVE(shmem 打洞释放共享内存) /
- * MADV_DONTNEED(立即丢弃) + errno(EINVAL 映射类型不符 / 未对齐 / 非法 advice, ENOMEM 未映射)。
+ * MADV_DONTNEED(立即丢弃) / MADV_PAGEOUT(文件页 best-effort reclaim) +
+ * errno(EINVAL 映射类型不符 / 未对齐 / 非法 advice, ENOMEM 未映射)。
  *
  * =====================================================================
  * 语义 (man 2 madvise)
@@ -16,7 +17,7 @@
  *   addr 须页对齐否则 EINVAL; 非法 advice -> EINVAL; 范围含未映射 -> ENOMEM。
  *
  * =====================================================================
- * Linux v7.2 源码对齐 (mm/madvise.c)
+ * Linux v7.1 源码对齐 (mm/madvise.c)
  * =====================================================================
  *   madvise_remove L1000: !VM_LOCKED, 无文件后备(!f||!f_mapping||!host) -> EINVAL;
  *     否则 vfs_fallocate PUNCH_HOLE。
@@ -33,6 +34,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -216,32 +218,156 @@ static int test_dontneed_file_backed(void)
     TEST_DONE();
 }
 
-/* ===== G. 合法但 no-op 的 advice hint 逐一返回 0 ===== */
-static int test_noop_advice(void)
+/* ===== G. Linux VMA walk: hole returns ENOMEM without rolling back mapped VMAs ===== */
+static int test_dontneed_hole_keeps_prefix_and_suffix_effects(void)
 {
-    TEST_START("G. 合法 no-op advice hint -> 0");
+    TEST_START("G. MADV_DONTNEED 跨 hole: ENOMEM + 已映射 VMA 保留效果");
+    unsigned char *p = mmap(NULL, (size_t)PS * 3,
+                            PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { CHECK(0, "mmap 三页"); TEST_DONE(); }
+
+    memset(p, 0x31, (size_t)PS);
+    memset(p + PS * 2, 0x73, (size_t)PS);
+    CHECK(munmap(p + PS, (size_t)PS) == 0, "解除中间页形成 VMA hole");
+
+    errno = 0;
+    long rc = syscall(SYS_madvise, p, (size_t)PS * 3, MADV_DONTNEED);
+    CHECK(rc == -1 && errno == ENOMEM,
+          "跨未映射 hole 返回 ENOMEM");
+    CHECK(*(volatile unsigned char *)p == 0,
+          "hole 前已映射 VMA 的 DONTNEED 效果不回滚");
+    CHECK(*(volatile unsigned char *)(p + PS * 2) == 0,
+          "Linux VMA walk 越过 hole 后继续处理后续 VMA");
+
+    munmap(p, (size_t)PS);
+    munmap(p + PS * 2, (size_t)PS);
+    TEST_DONE();
+}
+
+/* ===== H. 未实现 advice 必须显式 EOPNOTSUPP ===== */
+static int test_advice_contracts(void)
+{
+    TEST_START("H. advice capability contract");
     void *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) { CHECK(0, "mmap"); TEST_DONE(); }
     memset(p, 0x77, (size_t)PS);
 
-    /* man: 这些 hint 不改变语义, 合法映射上一律返回 0。与"非法 advice -> EINVAL"
-     * 形成对照, 防白名单误删回归无法捕获。 */
-    CHECK(madvise(p, (size_t)PS, MADV_NORMAL) == 0, "MADV_NORMAL -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_RANDOM) == 0, "MADV_RANDOM -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_SEQUENTIAL) == 0, "MADV_SEQUENTIAL -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_WILLNEED) == 0, "MADV_WILLNEED -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_DONTFORK) == 0, "MADV_DONTFORK -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_DOFORK) == 0, "MADV_DOFORK -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_HUGEPAGE) == 0, "MADV_HUGEPAGE -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_NOHUGEPAGE) == 0, "MADV_NOHUGEPAGE -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_DONTDUMP) == 0, "MADV_DONTDUMP -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_DODUMP) == 0, "MADV_DODUMP -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_COLD) == 0, "MADV_COLD -> 0");
-    CHECK(madvise(p, (size_t)PS, MADV_PAGEOUT) == 0, "MADV_PAGEOUT -> 0");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_NORMAL) == -1 && errno == EOPNOTSUPP,
+          "MADV_NORMAL without policy owner -> EOPNOTSUPP");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_RANDOM) == -1 && errno == EOPNOTSUPP,
+          "MADV_RANDOM without policy owner -> EOPNOTSUPP");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_SEQUENTIAL) == -1 && errno == EOPNOTSUPP,
+          "MADV_SEQUENTIAL without policy owner -> EOPNOTSUPP");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_WILLNEED) == -1 && errno == EOPNOTSUPP,
+          "MADV_WILLNEED without prefetch owner -> EOPNOTSUPP");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_DONTFORK) == -1 && errno == EOPNOTSUPP,
+          "MADV_DONTFORK without fork policy -> EOPNOTSUPP");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_DOFORK) == -1 && errno == EOPNOTSUPP,
+          "MADV_DOFORK without fork policy -> EOPNOTSUPP");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_DONTDUMP) == -1 && errno == EOPNOTSUPP,
+          "MADV_DONTDUMP without dump policy -> EOPNOTSUPP");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_DODUMP) == -1 && errno == EOPNOTSUPP,
+          "MADV_DODUMP without dump policy -> EOPNOTSUPP");
 
-    CHECK(*(volatile unsigned char *)p == 0x77, "no-op hint 后内容不变(0x77 持久)");
+    /* Linux records THP advice in the VMA flags.  It does not require an
+     * already-materialized huge page, nor does MADV_NOHUGEPAGE eagerly split
+     * an aligned huge mapping. */
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_HUGEPAGE) == 0,
+          "MADV_HUGEPAGE records a VMA preference");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_NOHUGEPAGE) == 0,
+          "MADV_NOHUGEPAGE records a VMA prohibition");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_NOHUGEPAGE) == 0,
+          "repeating identical THP advice is a successful no-op");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_COLD) == -1 && errno == EOPNOTSUPP,
+          "MADV_COLD unsupported -> EOPNOTSUPP");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_PAGEOUT) == -1 && errno == EOPNOTSUPP,
+          "MADV_PAGEOUT without anonymous reclaim backend -> EOPNOTSUPP");
+
+    CHECK(*(volatile unsigned char *)p == 0x77, "advice 后内容不变(0x77 持久)");
     munmap(p, (size_t)PS);
+    TEST_DONE();
+}
+
+/* ===== I. MADV_PAGEOUT 对磁盘文件 clean page 执行同步 reclaim ===== */
+static int test_pageout_clean_file(void)
+{
+    TEST_START("I. MADV_PAGEOUT 磁盘文件 clean page reclaim");
+    const char *path = "/madv-pageout-test.bin";
+    unlink(path);
+    int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+    if (fd < 0) { CHECK(0, "创建磁盘后备文件"); TEST_DONE(); }
+    CHECK(ftruncate(fd, PS) == 0, "扩展磁盘后备文件");
+    unsigned char pattern = 0x4D;
+    CHECK(pwrite(fd, &pattern, 1, 0) == 1, "写入文件 pattern");
+    CHECK(fsync(fd) == 0, "PAGEOUT 前文件已同步为 clean");
+
+    unsigned char *p = mmap(NULL, (size_t)PS, PROT_READ, MAP_SHARED, fd, 0);
+    CHECK(p != MAP_FAILED, "mmap clean file page");
+    if (p != MAP_FAILED) {
+        CHECK(*(volatile unsigned char *)p == pattern, "fault clean file page");
+        unsigned char resident = 0;
+        CHECK(mincore(p, (size_t)PS, &resident) == 0 && (resident & 1) != 0,
+              "PAGEOUT 前 PTE/page cache resident");
+
+        errno = 0;
+        long rc = syscall(SYS_madvise, p, (size_t)PS, MADV_PAGEOUT);
+        CHECK(rc == 0, "MADV_PAGEOUT clean file mapping -> 成功");
+        resident = 1;
+        CHECK(mincore(p, (size_t)PS, &resident) == 0 && (resident & 1) == 0,
+              "MADV_PAGEOUT 撤销 PTE 并回收 clean cache page");
+        CHECK(*(volatile unsigned char *)p == pattern,
+              "PAGEOUT 后 fault 从文件恢复原值");
+        munmap(p, (size_t)PS);
+    }
+    close(fd);
+    unlink(path);
+    TEST_DONE();
+}
+
+/* ===== J. MADV_PAGEOUT 脏文件页是 best-effort，不向 ABI 泄漏内部 Busy ===== */
+static int test_pageout_dirty_file(void)
+{
+    TEST_START("J. MADV_PAGEOUT 脏文件页 best-effort reclaim");
+    const char *path = "/madv-pageout-dirty-test.bin";
+    unlink(path);
+    int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+    if (fd < 0) { CHECK(0, "创建磁盘后备文件"); TEST_DONE(); }
+    CHECK(ftruncate(fd, PS) == 0, "扩展磁盘后备文件");
+
+    unsigned char *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, fd, 0);
+    CHECK(p != MAP_FAILED, "mmap shared writable file page");
+    if (p != MAP_FAILED) {
+        *(volatile unsigned char *)p = 0x6B;
+        errno = 0;
+        long rc = syscall(SYS_madvise, p, (size_t)PS, MADV_PAGEOUT);
+        CHECK(rc == 0,
+              "MADV_PAGEOUT dirty file mapping is a successful best-effort request");
+        CHECK(*(volatile unsigned char *)p == 0x6B,
+              "dirty data survives PAGEOUT and any following refault");
+        CHECK(fsync(fd) == 0, "PAGEOUT 后仍可同步文件");
+        unsigned char stored = 0;
+        CHECK(pread(fd, &stored, 1, 0) == 1 && stored == 0x6B,
+              "dirty data remains owned until successful writeback");
+        munmap(p, (size_t)PS);
+    }
+    close(fd);
+    unlink(path);
     TEST_DONE();
 }
 
@@ -258,7 +384,10 @@ int main(void)
     fail |= test_madv_remove_shmem();
     fail |= test_dontneed_and_errno();
     fail |= test_dontneed_file_backed();
-    fail |= test_noop_advice();
+    fail |= test_dontneed_hole_keeps_prefix_and_suffix_effects();
+    fail |= test_advice_contracts();
+    fail |= test_pageout_clean_file();
+    fail |= test_pageout_dirty_file();
     printf("\n==== test-madvise 汇总: %s ====\n", fail ? "FAIL" : "PASS");
     return fail;
 }

@@ -9,8 +9,8 @@ fn x86_task_context_switches_tls_only_in_the_naked_window() {
     let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch_raw"#);
 
     assert!(!rust_switch.contains("write_thread_pointer"));
-    assert!(rust_switch.contains("write_user_page_table"));
-    assert!(!naked_switch.contains("write_user_page_table"));
+    assert!(rust_switch.contains("install_user_address_space"));
+    assert!(!naked_switch.contains("install_user_address_space"));
     assert!(naked_switch.contains("rdmsr"));
     assert!(naked_switch.contains("wrmsr"));
     assert!(naked_switch.contains("kernel_tls_offset"));
@@ -25,8 +25,8 @@ fn aarch64_task_context_restores_current_and_tls_in_the_naked_window() {
     let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch_raw"#);
 
     assert!(!rust_switch.contains("write_thread_pointer"));
-    assert!(rust_switch.contains("write_user_page_table"));
-    assert!(!naked_switch.contains("write_user_page_table"));
+    assert!(rust_switch.contains("install_user_address_space"));
+    assert!(!naked_switch.contains("install_user_address_space"));
     assert!(naked_switch.contains("tpidr_el0"));
     assert!(naked_switch.contains("sp_el0"));
     assert!(naked_switch.contains("context_header_offset"));

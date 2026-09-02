@@ -94,12 +94,14 @@ impl GlobalAllocator {
 
     /// Allocate arbitrary number of bytes.
     pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
-        let ptr = self
-            .inner
-            .lock_irqsave()
-            .tlsf
-            .allocate(layout)
-            .ok_or(crate::AllocError::NoMemory)?;
+        let ptr =
+            crate::retry_after_registered_reclaim(crate::layout_reclaim_pages(layout), || {
+                self.inner
+                    .lock_irqsave()
+                    .tlsf
+                    .allocate(layout)
+                    .ok_or(crate::AllocError::NoMemory)
+            })?;
         self.inner.lock_irqsave().used_bytes += layout.size();
         self.usages
             .lock_irqsave()
@@ -128,16 +130,19 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let size = num_pages * PAGE_SIZE;
+        let size = num_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(crate::AllocError::InvalidParam)?;
         let align = alignment.max(PAGE_SIZE);
         let layout =
             Layout::from_size_align(size, align).map_err(|_| crate::AllocError::InvalidParam)?;
-        let ptr = self
-            .inner
-            .lock_irqsave()
-            .tlsf
-            .allocate(layout)
-            .ok_or(crate::AllocError::NoMemory)?;
+        let ptr = crate::retry_after_registered_reclaim(num_pages, || {
+            self.inner
+                .lock_irqsave()
+                .tlsf
+                .allocate(layout)
+                .ok_or(crate::AllocError::NoMemory)
+        })?;
         self.inner.lock_irqsave().used_bytes += size;
         if !matches!(kind, UsageKind::RustHeap) {
             self.usages.lock_irqsave().alloc(kind, size);

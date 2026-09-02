@@ -22,6 +22,8 @@ pub enum Ext4ErrorKind {
     ReadOnly,
     #[error("no space is available")]
     NoSpace,
+    #[error("memory allocation failed")]
+    NoMemory,
     #[error("quota limit exceeded")]
     QuotaExceeded,
     #[error("link count limit exceeded")]
@@ -139,6 +141,10 @@ impl Ext4Error {
         Self::new(Ext4ErrorKind::NoSpace)
     }
 
+    pub const fn no_memory() -> Self {
+        Self::new(Ext4ErrorKind::NoMemory)
+    }
+
     pub const fn too_many_links() -> Self {
         Self::new(Ext4ErrorKind::TooManyLinks)
     }
@@ -250,5 +256,12 @@ mod tests {
                 bits: 0x8000_0000,
             })
         );
+    }
+
+    #[test]
+    fn allocation_failure_has_a_distinct_domain_error() {
+        let error = Ext4Error::no_memory();
+        assert_eq!(error.kind(), Ext4ErrorKind::NoMemory);
+        assert_eq!(error.to_string(), "memory allocation failed: None");
     }
 }

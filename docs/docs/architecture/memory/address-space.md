@@ -250,7 +250,7 @@ backend 额外状态：常数
 
 ### 7.2 StarryOS
 
-`os/StarryOS/kernel/src/mm/aspace/` 保留 Linux 专属状态，并通过 `MemoryAccounting`、COW frame table 与文件 backend 把页表变化和用户可见统计关联起来。
+`os/StarryOS/kernel/src/mm/aspace/` 保留 Linux 专属状态。`VmaMap` 是 VMA metadata 的 publication owner，`PageObject`/`FrameLease`/`MappingSlot`/`RmapSet` 共同表达 resident ownership，`MutationReceipt` 把页表变化、统计 generation 与 TLB retirement 关联起来。
 
 - 写时复制；
 - anonymous、file、shared mapping；
@@ -259,9 +259,9 @@ backend 额外状态：常数
 - mremap、fork 和缺页恢复；
 - signal/errno 转换。
 
-这些状态依赖进程地址空间外层锁和 Linux ABI 规则，不能下沉为所有 `MemorySet` 消费者都必须承担的字段。
+这些状态依赖 Linux ABI、进程 MM 生命周期和 active CPU 集合，不能下沉为所有 `MemorySet` 消费者都必须承担的字段。
 
-StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 一并传入。这个边界维护“页表变化必须同步更新常驻页统计”的 StarryOS 不变量，不是通用事务 plan。
+StarryOS 不再把通用 `MemorySet` 的直接 backend 调用当作 VMA 事实源。syscall 先准备 immutable VMA successor、PTE/slot preimage 与资源 reservation，再由 `AddrSpace` 的 mutation protocol 发布 root、mapping graph、resident delta 和 epoch。当前 RSS 从 published slot 派生，历史峰值由 `ResidentWatermark` 保存。
 
 ### 7.3 Axvisor axaddrspace
 
@@ -271,19 +271,17 @@ StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 
 
 ## 8. 锁与并发
 
-`MemorySet` 本身不提供内部同步，调用方必须在进入 map、unmap、protect 或 clear 之前取得对应地址空间的唯一修改权。下表列出三个生产消费者实际使用的外层同步边界。
-
-`MemorySet` 自身不包含锁。所有修改要求调用方持有地址空间锁：
+`MemorySet` 本身不提供内部同步，直接使用它的 ArceOS/Axvisor 调用方必须在 map、unmap、protect 或 clear 前取得唯一修改权。Starry 使用自己的 VMA publication 与 receipt protocol，生命周期 capability 和 mutation lock 也不是同一个对象。
 
 | 消费者 | 外层同步 |
 | --- | --- |
 | ArceOS kernel address space | `kernel_aspace()` 外层锁 |
-| StarryOS process address space | `Arc<Mutex<AddrSpace>>` |
+| StarryOS process address space | `MmHandle`/`MmPin`/`ActivationLease`；内部 `Mutex<AddrSpace>` + `MutationGate` + PTE stripe |
 | Axvisor guest address space | VM/地址空间所有者的外层锁 |
 
 外层锁只串行化软件状态；页表项对其他 CPU 或虚拟处理器的可见性仍需由 Stage-1 或 Stage-2 失效协议完成。
 
-锁内可能执行页表操作和页帧分配，因此不能从硬中断上下文调用，也不能在持锁期间执行虚拟文件系统回调或不可控回收。
+锁内可能执行 bounded 页表操作和已预留资源的 publication，因此不能从硬中断上下文调用。Starry 在进入文件 I/O、`.await`、未知 callback 或 user-copy 前必须释放 VMA publication、PTE stripe、rmap 和 page-cache index lock，并在返回后重检 identity。
 
 跨 CPU Translation Lookaside Buffer（地址转换后备缓冲区）失效由页表和操作系统层协调，不由 `MemorySet` 发起。AArch64 硬件广播和其他架构的处理器间中断路径见[多架构内存实现](./architecture-support.md)。
 

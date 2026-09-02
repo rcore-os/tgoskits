@@ -1,31 +1,31 @@
 use ax_net::SocketOps;
 use linux_raw_sys::net::{sockaddr, socklen_t};
+use starry_vm::{VmMutPtr, VmPtr};
 
 use super::addr::{SocketAddrExt, socket_addr_ex_for_user_name};
 use crate::{
     StarryResult,
     file::{FileLike, PacketSocket, Socket, netlink::NetlinkSocket},
-    mm::UserPtr,
 };
 
 pub fn sys_getsockname(
     fd: i32,
-    addr: UserPtr<sockaddr>,
-    addrlen: UserPtr<socklen_t>,
+    addr: *mut sockaddr,
+    addrlen: *mut socklen_t,
 ) -> StarryResult<isize> {
+    let mut output_len = addrlen.vm_read()?;
     if let Ok(packet) = PacketSocket::from_fd(fd) {
         let local_addr = packet.local_addr();
-        local_addr.write_to_user(
-            addr.address().as_usize() as *mut sockaddr,
-            addrlen.get_as_mut()?,
-        )?;
+        local_addr.write_to_user(addr, &mut output_len)?;
+        addrlen.vm_write(output_len)?;
         return Ok(0);
     }
 
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         let local_addr = socket.local_addr();
         debug!("sys_getsockname <= fd: {fd}, netlink_addr: {local_addr:?}");
-        super::addr::write_netlink_addr(&local_addr, addr, addrlen.get_as_mut()?)?;
+        super::addr::write_netlink_addr(&local_addr, addr, &mut output_len)?;
+        addrlen.vm_write(output_len)?;
         return Ok(0);
     }
 
@@ -33,19 +33,22 @@ pub fn sys_getsockname(
     let local_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.local_addr()?);
     debug!("sys_getsockname <= fd: {fd}, addr: {local_addr:?}");
 
-    local_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+    local_addr.write_to_user(addr, &mut output_len)?;
+    addrlen.vm_write(output_len)?;
     Ok(0)
 }
 
 pub fn sys_getpeername(
     fd: i32,
-    addr: UserPtr<sockaddr>,
-    addrlen: UserPtr<socklen_t>,
+    addr: *mut sockaddr,
+    addrlen: *mut socklen_t,
 ) -> StarryResult<isize> {
+    let mut output_len = addrlen.vm_read()?;
     let socket = Socket::from_fd(fd)?;
     let peer_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.peer_addr()?);
     debug!("sys_getpeername <= fd: {fd}, addr: {peer_addr:?}");
 
-    peer_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+    peer_addr.write_to_user(addr, &mut output_len)?;
+    addrlen.vm_write(output_len)?;
     Ok(0)
 }

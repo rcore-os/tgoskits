@@ -14,7 +14,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, resolve_at},
-    mm::{UserPtr, vm_load_path_string},
+    mm::vm_load_path_string,
     task::AsThread,
 };
 
@@ -37,6 +37,7 @@ const ST_RDONLY: u32 = 1;
 const ST_RELATIME: u32 = 1 << 12;
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct FileHandleHeader {
     handle_bytes: u32,
     handle_type: i32,
@@ -325,23 +326,24 @@ pub fn sys_name_to_handle_at(
         .ok_or(StarryError::InvalidInput)?;
     let stat = loc.metadata()?;
 
-    let header = UserPtr::<FileHandleHeader>::from(handle).get_as_mut()?;
+    // SAFETY: FileHandleHeader contains only integer fields.
+    let mut header = unsafe { handle.cast_const().vm_read_any()? };
     let capacity = header.handle_bytes as usize;
     header.handle_bytes = FILE_HANDLE_BYTES as u32;
+    handle.vm_write(header)?;
     if capacity < FILE_HANDLE_BYTES {
         return Err(StarryError::from(Errno::EOVERFLOW));
     }
 
     header.handle_type = FILE_HANDLE_TYPE_DEV_INO;
+    handle.vm_write(header)?;
     let mut bytes = [0u8; FILE_HANDLE_BYTES];
     bytes[..size_of::<u64>()].copy_from_slice(&stat.device.to_ne_bytes());
     bytes[size_of::<u64>()..].copy_from_slice(&stat.inode.to_ne_bytes());
     let data_ptr = (handle as usize)
         .checked_add(size_of::<FileHandleHeader>())
         .ok_or(StarryError::InvalidInput)? as *mut u8;
-    UserPtr::<u8>::from(data_ptr)
-        .get_as_mut_slice(FILE_HANDLE_BYTES)?
-        .copy_from_slice(&bytes);
+    starry_vm::vm_write_slice(data_ptr, &bytes)?;
 
     let resolved_mount_id = c_int::try_from(loc.mountpoint().mount_id())
         .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;

@@ -277,7 +277,7 @@ fn mapping_errno(error: &MappingError) -> Errno {
     match error {
         MappingError::InvalidParam => Errno::EINVAL,
         MappingError::AlreadyExists => Errno::EEXIST,
-        MappingError::BadState => Errno::EFAULT,
+        MappingError::BadState | MappingError::NeedsRepair => Errno::EFAULT,
     }
 }
 
@@ -285,6 +285,7 @@ fn tlb_errno(error: TlbShootdownError) -> Errno {
     match error {
         TlbShootdownError::CpuOffline | TlbShootdownError::Unsupported => Errno::ENOSYS,
         TlbShootdownError::Timeout => Errno::ETIMEDOUT,
+        TlbShootdownError::GenerationExhausted => Errno::EOVERFLOW,
         TlbShootdownError::Platform => Errno::EIO,
     }
 }
@@ -553,6 +554,10 @@ fn memory_errno_mappings_hold() -> bool {
         (TlbShootdownError::Timeout.into(), Errno::ETIMEDOUT),
         (TlbShootdownError::Unsupported.into(), Errno::ENOSYS),
         (TlbShootdownError::Platform.into(), Errno::EIO),
+        (
+            TlbShootdownError::GenerationExhausted.into(),
+            Errno::EOVERFLOW,
+        ),
         (AllocError::InvalidParam.into(), Errno::EINVAL),
         (AllocError::AlreadyInitialized.into(), Errno::EFAULT),
         (AllocError::MemoryOverlap.into(), Errno::EEXIST),

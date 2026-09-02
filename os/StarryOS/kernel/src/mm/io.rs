@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::mem::{self, MaybeUninit};
 
 use ax_io::{IoError, IoResult, prelude::*};
@@ -16,8 +17,7 @@ pub struct IoVec {
 
 #[derive(Default)]
 pub struct IoVectorBuf {
-    iovs: *const IoVec,
-    iovcnt: usize,
+    iovs: Vec<IoVec>,
     len: usize,
 }
 
@@ -26,6 +26,7 @@ impl IoVectorBuf {
         if iovcnt > 1024 {
             return Err(StarryError::InvalidInput);
         }
+        let mut owned_iovs = Vec::with_capacity(iovcnt);
         let mut len = 0usize;
         for i in 0..iovcnt {
             let iov = iovs.wrapping_add(i).vm_read()?;
@@ -41,8 +42,12 @@ impl IoVectorBuf {
                 .checked_add(iov_len)
                 .filter(|len| *len <= isize::MAX as usize)
                 .ok_or(StarryError::InvalidInput)?;
+            owned_iovs.push(iov);
         }
-        Ok(Self { iovs, iovcnt, len })
+        Ok(Self {
+            iovs: owned_iovs,
+            len,
+        })
     }
 
     pub fn into_io(self) -> IoVectorBufIo {
@@ -62,13 +67,8 @@ pub struct IoVectorBufIo {
 
 impl IoVectorBufIo {
     fn skip_empty(&mut self) -> IoResult<()> {
-        while self.start < self.inner.iovcnt {
-            let iov = self
-                .inner
-                .iovs
-                .wrapping_add(self.start)
-                .vm_read()
-                .map_err(vm_error_to_io_error)?;
+        while self.start < self.inner.iovs.len() {
+            let iov = self.inner.iovs[self.start];
             if iov.iov_len as usize > self.offset {
                 break;
             }
@@ -84,15 +84,10 @@ impl Read for IoVectorBufIo {
         let mut count = 0;
         loop {
             self.skip_empty()?;
-            if self.start >= self.inner.iovcnt {
+            if self.start >= self.inner.iovs.len() {
                 break;
             }
-            let iov = self
-                .inner
-                .iovs
-                .wrapping_add(self.start)
-                .vm_read()
-                .map_err(vm_error_to_io_error)?;
+            let iov = self.inner.iovs[self.start];
             let len = (iov.iov_len as usize - self.offset).min(buf.len() - count);
             if len == 0 {
                 break;
@@ -114,15 +109,10 @@ impl Write for IoVectorBufIo {
         let mut count = 0;
         loop {
             self.skip_empty()?;
-            if self.start >= self.inner.iovcnt {
+            if self.start >= self.inner.iovs.len() {
                 break;
             }
-            let iov = self
-                .inner
-                .iovs
-                .wrapping_add(self.start)
-                .vm_read()
-                .map_err(vm_error_to_io_error)?;
+            let iov = self.inner.iovs[self.start];
             let len = (iov.iov_len as usize - self.offset).min(buf.len() - count);
             if len == 0 {
                 break;

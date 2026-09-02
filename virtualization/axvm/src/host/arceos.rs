@@ -219,6 +219,7 @@ pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
 pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
 pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
+pub(crate) use modules::ax_task::SchedulerAddressSpaceActivation as ArceOsSchedulerAddressSpaceActivation;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;

@@ -21,10 +21,9 @@ use starry_vm::{VmError, vm_load_until_nul};
 
 use crate::{
     StarryError, StarryResult,
-    config::USER_HEAP_BASE,
     file::{ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{
-        MAX_EXEC_ARG_BYTES, copy_from_kernel, load_user_app, new_user_aspace_empty,
+        MAX_EXEC_ARG_BYTES, MmHandle, load_user_app, new_user_image_builder,
         validate_exec_arg_size, vm_load_string,
     },
     sync::Mutex,
@@ -244,12 +243,11 @@ fn do_execve(
     // also acts as the bprm-equivalent: the executable contents are
     // pinned now, so the post-teardown commit phase doesn't re-resolve
     // the pathname (the FS could change while siblings are being reaped).
-    let mut new_aspace = new_user_aspace_empty()?;
-    copy_from_kernel(&mut new_aspace)?;
-    let (entry_point, user_stack_base, auxv) =
-        match load_user_app(&mut new_aspace, loc, &path, &args, &envs) {
-            Ok(result) => result,
-            Err(StarryError::InvalidExecutable) => {
+    let mut image_builder = new_user_image_builder()?;
+    let loaded_image = match load_user_app(&mut image_builder, loc, &path, &args, &envs) {
+        Ok(image) => image,
+        Err(error) => match error {
+                StarryError::InvalidExecutable => {
                 // ENOEXEC fallback: retry via /bin/sh.
                 // In Linux this retry is done by user-space (execvp / busybox),
                 // not by the kernel. This is a pragmatic workaround until
@@ -263,10 +261,19 @@ fn do_execve(
                 args = iter::once(String::from(shell_path))
                     .chain(args.iter().cloned())
                     .collect();
-                load_user_app(&mut new_aspace, shell_loc, shell_path, &args, &envs)?
-            }
-            Err(e) => return Err(e),
-        };
+                    load_user_app(
+                        &mut image_builder,
+                        shell_loc,
+                        shell_path,
+                        &args,
+                        &envs,
+                    )?
+                }
+                error => return Err(error),
+            },
+    };
+    let prepared_image = image_builder.finish(loaded_image)?;
+    let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
 
     // ----------------------------------------------------------------
     // Sibling teardown (multi-thread only).
@@ -336,17 +343,22 @@ fn do_execve(
         }));
     }
 
+    // Finish constructing and registering the replacement MM before the
+    // process transaction crosses its point of no return.
+    let inherited_thp_mode = proc_data.transparent_huge_page_mode();
+    let newaspace_arc = Arc::new(Mutex::new(new_aspace));
+    let new_mm = MmHandle::from_arc(newaspace_arc).map_err(|_| StarryError::BadState)?;
+    new_mm.set_transparent_huge_page_mode(inherited_thp_mode);
+
     // ----------------------------------------------------------------
     // Phase 2: point of no return — commit all changes.
     // Nothing below may fail; errors here would leave the process broken.
     // ----------------------------------------------------------------
 
-    // Replace the aspace Arc so the parent's shared Arc<Mutex<AddrSpace>>
-    // (from CLONE_VM) is never touched. The parent's page table register
-    // keeps pointing at the original still-live AddrSpace.
-    let newaspace_arc = Arc::new(Mutex::new(new_aspace));
-    proc_data.replace_current_aspace(&curr, newaspace_arc);
-    proc_data.mark_vm_aspace_private_after_exec();
+    // Replace only this process's typed MM owner. A CLONE_VM peer keeps its
+    // original MmHandle, pin and activation; the old root cannot retire until
+    // all of those independent capabilities have been released.
+    proc_data.replace_current_aspace(&curr, new_mm);
 
     // PR_SET_KEEPCAPS is deliberately not inherited by a new executable
     // image. Do this only after crossing the point of no return so a failed
@@ -365,8 +377,6 @@ fn do_execve(
     let auxv_len = auxv.len();
     let has_ldso = auxv.iter().any(|e| e.get_type() == AuxType::BASE);
     *proc_data.auxv.write() = auxv;
-
-    proc_data.set_heap_top(USER_HEAP_BASE);
 
     // Reset signal state for the new image, per POSIX/Linux semantics
     // (see `flush_signal_handlers` + `do_execveat_common` in Linux):

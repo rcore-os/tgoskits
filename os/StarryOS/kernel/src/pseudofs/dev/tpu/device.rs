@@ -47,6 +47,7 @@ use sg2002_tpu::{
         },
     },
 };
+use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     file::{get_file_like, ion::IonBufferFile},
@@ -343,8 +344,9 @@ impl TpuDevice {
 
     /// 提交 DMA buffer 任务：解析 fd → 入队 → 唤醒 worker → 立即返回。
     fn submit_dmabuf(&self, arg: usize) -> Result<usize, TpuError> {
-        // 从用户空间读取参数
-        let submit_arg = unsafe { &*(arg as *const CviSubmitDmaArg) };
+        // SAFETY: the ioctl ABI record consists only of integer fields.
+        let submit_arg = unsafe { (arg as *const CviSubmitDmaArg).vm_read_any() }
+            .map_err(|_| TpuError::InvalidDmabuf)?;
 
         debug!(
             "[TPU] submit dmabuf: fd={}, seq_no={}",
@@ -397,7 +399,12 @@ impl TpuDevice {
     /// 取结果。用调用 runtime task identity 与用户 seq_no 组成复合键，隔离跨线程的相同
     /// seq_no——否则两个进程都从 seq 0 开始会互相取走对方的完成项。
     fn wait_dmabuf(&self, arg: usize) -> Result<usize, TpuError> {
-        let wait_arg = unsafe { &mut *(arg as *mut CviWaitDmaArg) };
+        let wait_ptr = arg as *mut CviWaitDmaArg;
+        // Copy the request before sleeping so no user-memory reference lives
+        // across the wait queue operation.
+        // SAFETY: the ioctl ABI record consists only of integer fields.
+        let mut wait_arg = unsafe { wait_ptr.vm_read_any() }
+            .map_err(|_| TpuError::InvalidDmabuf)?;
         let seq_no = wait_arg.seq_no;
         let task_id = ax_task::current().id();
 
@@ -421,6 +428,9 @@ impl TpuDevice {
         match found {
             Some(task) => {
                 wait_arg.ret = task.ret;
+                wait_ptr
+                    .vm_write(wait_arg)
+                    .map_err(|_| TpuError::InvalidDmabuf)?;
                 if task.ret != 0 {
                     return Err(TpuError::Timeout);
                 }
@@ -428,6 +438,9 @@ impl TpuDevice {
             }
             None => {
                 wait_arg.ret = -1;
+                wait_ptr
+                    .vm_write(wait_arg)
+                    .map_err(|_| TpuError::InvalidDmabuf)?;
                 warn!(
                     "[TPU] wait dmabuf: (task_id={task_id:?}, seq_no={seq_no}) not found \
                      (timed_out={timed_out})"
@@ -439,14 +452,18 @@ impl TpuDevice {
 
     /// 刷新 DMA buffer 缓存 (通过物理地址)
     fn cache_flush(&self, arg: usize) -> Result<usize, TpuError> {
-        let flush_arg = unsafe { &*(arg as *const CviCacheOpArg) };
+        // SAFETY: the ioctl ABI record consists only of integer fields.
+        let flush_arg = unsafe { (arg as *const CviCacheOpArg).vm_read_any() }
+            .map_err(|_| TpuError::InvalidDmabuf)?;
         self.hw.cache_flush_paddr(flush_arg.paddr, flush_arg.size)?;
         Ok(0)
     }
 
     /// 无效化 DMA buffer 缓存 (通过物理地址)
     fn cache_invalidate(&self, arg: usize) -> Result<usize, TpuError> {
-        let invalidate_arg = unsafe { &*(arg as *const CviCacheOpArg) };
+        // SAFETY: the ioctl ABI record consists only of integer fields.
+        let invalidate_arg = unsafe { (arg as *const CviCacheOpArg).vm_read_any() }
+            .map_err(|_| TpuError::InvalidDmabuf)?;
         self.hw
             .cache_invalidate_paddr(invalidate_arg.paddr, invalidate_arg.size)?;
         Ok(0)

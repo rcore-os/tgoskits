@@ -3,7 +3,7 @@ use ax_runtime::hal::cpu::{
     trap::PageFaultFlags,
     uspace::{ExceptionKind, ReturnReason, UserContext},
 };
-use ax_task::TaskInner;
+use ax_task::{TaskCreateError, TaskInner};
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
@@ -16,6 +16,7 @@ use super::{
     set_timer_state, unblock_next_signal, wait_existing_ptrace_stop_current,
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
+use crate::{StarryError, StarryResult, mm::FaultResult};
 
 fn handle_user_page_fault(
     thread: &Thread,
@@ -28,37 +29,41 @@ fn handle_user_page_fault(
     // addresses are counted separately in the mm page-fault handler.
     crate::mm::PAGE_FAULT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // Classify si_code while holding the aspace lock: an existing mapping
-    // that rejected the access is a permission violation (SEGV_ACCERR),
-    // otherwise the address is unmapped (SEGV_MAPERR), matching Linux's
-    // do_user_addr_fault().
-    let si_code = {
-        let aspace = thread.proc_data.aspace();
-        let mut aspace = aspace.lock();
-        if aspace.handle_page_fault(address, flags) {
-            None
-        } else if aspace.find_area(address).is_some() {
-            Some(SEGV_ACCERR)
-        } else {
-            Some(SEGV_MAPERR)
+    // Classify the result while holding the aspace lock.  File faults past EOF
+    // are SIGBUS/BUS_ADRERR on Linux; collapsing them into SIGSEGV makes mmap'd
+    // databases and runtimes mis-handle truncation.  A transient eviction
+    // conflict is left retryable and does not publish a signal.
+    let signal = {
+        let Ok(aspace) = thread.proc_data.pin_aspace() else {
+            return;
+        };
+        match aspace.handle_page_fault_result(address, flags) {
+            FaultResult::Handled | FaultResult::Retry => None,
+            FaultResult::PermissionDenied => Some((Signo::SIGSEGV, SEGV_ACCERR)),
+            FaultResult::Unmapped => Some((Signo::SIGSEGV, SEGV_MAPERR)),
+            FaultResult::Sigbus(code) => Some((Signo::SIGBUS, code as i32)),
         }
     };
-    if let Some(si_code) = si_code {
+    if let Some((signo, si_code)) = signal {
         warn!(
-            "{:?}: segmentation fault at {:#x} {:?}",
+            "{:?}: synchronous {signo:?} memory fault at {:#x} {:?}",
             thread.proc_data.proc, address, flags
         );
         raise_signal_fatal(
-            SignalInfo::new_fault(Signo::SIGSEGV, si_code, address.as_usize()),
+            SignalInfo::new_fault(signo, si_code, address.as_usize()),
             context,
         )
-        .expect("Failed to send SIGSEGV");
+        .expect("Failed to send synchronous memory-fault signal");
     }
 }
 
 /// Create a new user task.
-pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) -> TaskInner {
-    TaskInner::new(
+pub fn new_user_task(
+    name: &str,
+    mut uctx: UserContext,
+    set_child_tid: usize,
+) -> StarryResult<TaskInner> {
+    TaskInner::try_new(
         move || {
             let curr = ax_task::current();
 
@@ -382,6 +387,11 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
         name.into(),
         crate::config::KERNEL_STACK_SIZE,
     )
+    .map_err(|error| match error {
+        TaskCreateError::InvalidStackSize => StarryError::InvalidInput,
+        TaskCreateError::StackAllocation(error) => StarryError::Alloc(error),
+        TaskCreateError::StackMapping(_) => StarryError::NoMemory,
+    })
 }
 
 fn ptrace_exit_event_code(sysno: usize, arg0: usize) -> Option<i32> {

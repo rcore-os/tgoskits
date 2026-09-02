@@ -13,7 +13,7 @@ use starry_vm::VmMutPtr;
 use crate::{
     StarryError, StarryResult,
     file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
-    mm::copy_from_kernel,
+    mm::{MmHandle, copy_from_kernel},
     sync::SpinLock,
     task::{
         AsThread, PidIdentity, PidReservation, PidReservationKind, Process, ProcessData,
@@ -289,7 +289,7 @@ impl CloneArgs {
             return Err(StarryError::OperationNotPermitted);
         }
 
-        let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
+        let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid)?;
         #[cfg(target_arch = "riscv64")]
         {
             let mut fp_state = ax_cpu::FpState::default();
@@ -371,9 +371,6 @@ impl CloneArgs {
         });
 
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
-            new_task
-                .ctx_mut()
-                .set_page_table_root(old_proc_data.aspace().lock().page_table_root());
             old_proc_data.clone()
         } else {
             let proc = if flags.contains(CloneFlags::PARENT) {
@@ -388,17 +385,15 @@ impl CloneArgs {
             clone_transaction.process = Some(proc.clone());
 
             let aspace = if flags.contains(CloneFlags::VM) {
-                old_proc_data.aspace()
+                old_proc_data
+                    .clone_aspace_user_ref()
+                    .map_err(|_| StarryError::InvalidInput)?
             } else {
-                let aspace_arc = old_proc_data.aspace();
-                let aspace = aspace_arc.lock().try_clone()?;
+                let parent_mm = old_proc_data.pin_aspace()?;
+                let aspace = parent_mm.lock().try_clone()?;
                 copy_from_kernel(&mut aspace.lock())?;
-                aspace
+                MmHandle::from_arc(aspace).map_err(|_| StarryError::BadState)?
             };
-            new_task
-                .ctx_mut()
-                .set_page_table_root(aspace.lock().page_table_root());
-
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
@@ -433,13 +428,11 @@ impl CloneArgs {
                     signal_actions,
                     exit_signal,
                     wait_parent_tid: curr_thread.tid_number(),
-                    vm_aspace_shared: flags.contains(CloneFlags::VM),
                 },
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
             *proc_data.cgroup.write() = child_cgroup.clone();
-            proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
             // fork/clone copies mm->dumpable from parent; without this, a
@@ -448,7 +441,9 @@ impl CloneArgs {
             // supposed to enforce. Verified via Linux host: parent sets 0,
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
-            proc_data.set_thp_disable(old_proc_data.thp_disable());
+            proc_data.set_transparent_huge_page_mode(
+                old_proc_data.transparent_huge_page_mode(),
+            )?;
 
             *proc_data.nsproxy.lock() = prepared_nsproxy
                 .take()

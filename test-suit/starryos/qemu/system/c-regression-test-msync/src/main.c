@@ -98,6 +98,10 @@ int main(void) {
                 rc = msync(p, 4096, MS_ASYNC);
                 CHECK(rc == 0, "msync(MS_ASYNC) alone succeeds");
 
+                errno = 0;
+                rc = msync(p, 4096, 0);
+                CHECK(rc == 0, "msync(flags=0) follows Linux non-waiting semantics");
+
                 munmap(p, file_size);
             }
         }
@@ -370,6 +374,43 @@ int main(void) {
                     CHECK(all_0x22, "data matches last alias write (0x22)");
                 }
             }
+        }
+    }
+
+    /* ---- T11: MS_INVALIDATE is a supported modifier ---- */
+    printf("\n--- T11: MS_SYNC|MS_INVALIDATE succeeds and preserves data ---\n");
+    fflush(stdout);
+    {
+        unlink(tmpfile);
+        int fd = create_temp_file(tmpfile, 4096);
+        CHECK(fd >= 0, "create invalidate temp file");
+        if (fd >= 0) {
+            unsigned char *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                                    MAP_SHARED, fd, 0);
+            CHECK(p != MAP_FAILED, "mmap invalidate fixture");
+            if (p != MAP_FAILED) {
+                memset(p, 0x5A, 4096);
+                errno = 0;
+                int rc = msync(p, 4096, MS_SYNC | MS_INVALIDATE);
+                CHECK(rc == 0,
+                      "msync(MS_SYNC|MS_INVALIDATE) succeeds for unlocked mapping");
+
+                unsigned char buf[4096];
+                ssize_t n = pread(fd, buf, sizeof(buf), 0);
+                CHECK(n == (ssize_t)sizeof(buf),
+                      "read back invalidate fixture");
+                int all_match = 1;
+                for (int i = 0; i < (int)sizeof(buf); i++) {
+                    if (buf[i] != 0x5A) {
+                        all_match = 0;
+                        break;
+                    }
+                }
+                CHECK(all_match,
+                      "MS_INVALIDATE does not discard synchronized data");
+                munmap(p, 4096);
+            }
+            close(fd);
         }
     }
 

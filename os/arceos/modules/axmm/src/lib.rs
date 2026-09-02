@@ -5,10 +5,13 @@
 #[macro_use]
 extern crate log;
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod aspace;
 mod backend;
 mod error;
+mod kernel_alloc;
 
 use ax_hal::{
     mem::{IomapAttrs, IomapDecision, IomapError, MemRegionFlags, phys_to_virt},
@@ -18,10 +21,16 @@ use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_sync::SpinLock;
 
+#[cfg(feature = "copy")]
+pub use self::aspace::RootEntryShare;
 pub use self::{
     aspace::AddrSpace,
-    backend::Backend,
+    backend::{Backend, KernelVirtualAllocationState},
     error::{MmError, MmResult},
+    kernel_alloc::{
+        KernelVirtualAllocation, KernelVirtualAllocationLayout, KernelVirtualQuarantineRetry,
+        KernelVirtualReleaseError, retry_kernel_virtual_quarantines,
+    },
 };
 
 static KERNEL_ASPACE: LazyInit<SpinLock<AddrSpace>> = LazyInit::new();
@@ -61,8 +70,11 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> MmResult<AddrSpace> {
 /// Creates a new address space for kernel itself.
 pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
     let (base, size) = ax_hal::mem::kernel_aspace();
+    // SAFETY: the architecture boot code installed this root before entering
+    // Rust. It stays mapped for the lifetime of the kernel address space, and
+    // initialization runs before concurrent page-table mutation begins.
     let boot_page_table =
-        PageTableRef::from_paddr(ax_hal::asm::read_kernel_page_table(), PagingAllocator);
+        unsafe { PageTableRef::from_paddr(ax_hal::asm::read_kernel_page_table(), PagingAllocator) };
     let mut aspace = AddrSpace::new_empty(base, size)?;
     for r in ax_hal::mem::memory_regions() {
         // mapped range should contain the whole region if it is not aligned.
@@ -86,6 +98,19 @@ pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
             PagingError::NoMemory => MmError::NoMemory,
             _ => MmError::BadState("failed to clone boot page-table entries"),
         })?;
+    if ax_hal::mem::user_aspace_needs_kernel_mappings() {
+        // x86_64 and RISC-V process roots borrow the kernel half once. Keep
+        // every top-level directory stable so later vmap/ioremap mutations are
+        // made below shared directories, matching Linux's preallocated
+        // vmalloc-directory invariant without a second address-space registry.
+        aspace
+            .page_table_mut()
+            .preallocate_shared_root_entries(base, size)
+            .map_err(|err| match err {
+                PagingError::NoMemory => MmError::NoMemory,
+                _ => MmError::BadState("failed to preallocate shared kernel root entries"),
+            })?;
+    }
     Ok(aspace)
 }
 
@@ -94,8 +119,7 @@ pub fn kernel_aspace() -> &'static SpinLock<AddrSpace> {
     &KERNEL_ASPACE
 }
 
-/// Returns the root physical address of the kernel page table.
-pub fn kernel_page_table_root() -> PhysAddr {
+fn kernel_page_table_root() -> PhysAddr {
     KERNEL_ASPACE.lock_irqsave().page_table_root()
 }
 

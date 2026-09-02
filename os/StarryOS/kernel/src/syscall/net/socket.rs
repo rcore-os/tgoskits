@@ -20,6 +20,7 @@ use linux_raw_sys::{
     },
     netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE},
 };
+use starry_vm::{VmMutPtr, VmPtr};
 
 use super::addr::{
     SocketAddrExt, normalize_socket_addr_ex_for_ip_stack, socket_addr_ex_for_user_name,
@@ -27,7 +28,6 @@ use super::addr::{
 use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
-    mm::{UserConstPtr, UserPtr},
     task::AsThread,
 };
 
@@ -138,7 +138,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
     socket.add_to_fd_table(cloexec).map(|fd| fd as isize)
 }
 
-pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryResult<isize> {
+pub fn sys_bind(fd: i32, addr: *const sockaddr, addrlen: u32) -> StarryResult<isize> {
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
         if addr.nl_pid == 0 {
@@ -155,8 +155,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryRe
     }
 
     if let Ok(packet) = PacketSocket::from_fd(fd) {
-        let addr =
-            SockAddrLl::read_from_user(addr.address().as_usize() as *const sockaddr, addrlen)?;
+        let addr = SockAddrLl::read_from_user(addr, addrlen)?;
         packet.bind_ll(addr)?;
         return Ok(0);
     }
@@ -196,7 +195,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryRe
     Ok(0)
 }
 
-pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryResult<isize> {
+pub fn sys_connect(fd: i32, addr: *const sockaddr, addrlen: u32) -> StarryResult<isize> {
     let socket = Socket::from_fd(fd)?;
     let mut addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     if socket.ip_domain() == AF_INET6 {
@@ -229,16 +228,16 @@ pub fn sys_listen(fd: i32, backlog: i32) -> StarryResult<isize> {
 
 pub fn sys_accept(
     fd: i32,
-    addr: UserPtr<sockaddr>,
-    addrlen: UserPtr<socklen_t>,
+    addr: *mut sockaddr,
+    addrlen: *mut socklen_t,
 ) -> StarryResult<isize> {
     sys_accept4(fd, addr, addrlen, 0)
 }
 
 pub fn sys_accept4(
     fd: i32,
-    addr: UserPtr<sockaddr>,
-    addrlen: UserPtr<socklen_t>,
+    addr: *mut sockaddr,
+    addrlen: *mut socklen_t,
     flags: u32,
 ) -> StarryResult<isize> {
     debug!("sys_accept <= fd: {fd}, flags: {flags}");
@@ -250,6 +249,11 @@ pub fn sys_accept4(
     }
 
     let cloexec = flags & O_CLOEXEC != 0;
+    let mut output_len = if addr.is_null() {
+        None
+    } else {
+        Some(addrlen.vm_read()?)
+    };
 
     let listener = Socket::from_fd(fd)?;
     let socket = Socket::new(listener.accept()?, listener.ip_domain());
@@ -258,13 +262,13 @@ pub fn sys_accept4(
     }
 
     let remote_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.peer_addr()?);
-    let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
-    debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
-
-    if !addr.is_null() {
-        remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+    if let Some(output_len) = output_len.as_mut() {
+        remote_addr.write_to_user(addr, output_len)?;
+        addrlen.vm_write(*output_len)?;
     }
 
+    let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
+    debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
     Ok(fd)
 }
 
@@ -285,7 +289,7 @@ pub fn sys_socketpair(
     domain: u32,
     raw_ty: u32,
     proto: u32,
-    fds: UserPtr<[i32; 2]>,
+    fds: *mut [i32; 2],
 ) -> StarryResult<isize> {
     debug!("sys_socketpair <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     let ty = raw_ty & 0xFF;
@@ -322,10 +326,10 @@ pub fn sys_socketpair(
     }
     let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    *fds.get_as_mut()? = [
+    fds.vm_write([
         sock1.add_to_fd_table(cloexec)?,
         sock2.add_to_fd_table(cloexec)?,
-    ];
+    ])?;
     Ok(0)
 }
 

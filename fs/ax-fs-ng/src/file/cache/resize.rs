@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use axfs_ng_vfs::{FileNode, FileRangeOperation, PreallocationMode, VfsError, VfsResult};
 
-use super::{CachedFile, PAGE_SIZE, PageCache};
+use super::{CacheMappingEvent, CacheMappingResult, CachedFile, PAGE_SIZE, PageCache};
 
 struct PreparedPageWrite {
     page_number: u32,
@@ -19,9 +19,13 @@ impl CachedFile {
         let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
         let file = self.inner.entry().as_file()?;
         let _io = self.shared.io_lock.lock();
+        let next_epoch = (mode == PreallocationMode::ExtendSize && end > self.shared.len())
+            .then(|| self.shared.prepare_mapping_epoch())
+            .transpose()?;
         file.preallocate(offset, len, mode)?;
-        if mode == PreallocationMode::ExtendSize {
+        if let Some(next_epoch) = next_epoch {
             self.shared.update_len_max(end);
+            self.shared.publish_mapping_epoch(next_epoch);
         }
         Ok(())
     }
@@ -92,6 +96,7 @@ impl CachedFile {
                 }
             }
 
+            let next_epoch = self.shared.prepare_mapping_epoch()?;
             file.operate_range(offset, len, operation)?;
             let mut guard = self.shared.page_cache.lock();
             for page_number in affected_pages {
@@ -112,6 +117,7 @@ impl CachedFile {
             if operation == FileRangeOperation::ZeroRange(PreallocationMode::ExtendSize) {
                 self.shared.update_len_max(end);
             }
+            self.shared.publish_mapping_epoch(next_epoch);
             return Ok(());
         }
     }
@@ -151,32 +157,40 @@ impl CachedFile {
             if final_affected_pages != affected_pages {
                 continue;
             }
-            if !self.in_memory {
+            let cache_busy = {
                 let mut guard = self.shared.page_cache.lock();
-                if final_affected_pages
-                    .iter()
-                    .any(|page_number| guard.get(page_number).is_some_and(|page| page.dirty))
-                {
-                    continue;
-                }
+                final_affected_pages.iter().any(|page_number| {
+                    guard
+                        .get(page_number)
+                        .is_some_and(|page| page.pins != 0 || (!self.in_memory && page.dirty))
+                })
+            };
+            if cache_busy {
+                return Err(VfsError::ResourceBusy);
             }
-
-            file.operate_range(offset, len, operation)?;
-            self.shared.set_len(new_len);
             let discarded = {
                 let mut guard = self.shared.page_cache.lock();
                 final_affected_pages
                     .into_iter()
                     .filter_map(|page_number| {
-                        guard.pop(&page_number).map(|mut page| {
-                            page.dirty = false;
-                            (page_number, page)
-                        })
+                        guard.pop(&page_number).map(|page| (page_number, page))
                     })
                     .collect::<Vec<_>>()
             };
             drop(io);
-            self.notify_discarded_pages(file, discarded)?;
+            self.notify_discarded_pages(discarded)?;
+
+            // Invalidators can take address-space locks, so the I/O lock was
+            // deliberately released. Recheck both the file generation and
+            // cache index before making the backing shift irreversible.
+            let _io = self.shared.io_lock.lock();
+            if self.shared.len() != observed_len || !self.cached_pages_from(start_page).is_empty() {
+                continue;
+            }
+            let next_epoch = self.shared.prepare_mapping_epoch()?;
+            file.operate_range(offset, len, operation)?;
+            self.shared.set_len(new_len);
+            self.shared.publish_mapping_epoch(next_epoch);
             return Ok(());
         }
     }
@@ -201,7 +215,9 @@ impl CachedFile {
         zero_end: usize,
     ) -> VfsResult<()> {
         let mut guard = self.shared.page_cache.lock();
-        let page = self.page_or_insert(file, &mut guard, page_number, true)?.0;
+        let page = self
+            .page_or_insert(file, &mut guard, page_number, true, false)?
+            .0;
         page.data()[zero_start..zero_end].fill(0);
         if !self.in_memory {
             page.mark_dirty();
@@ -218,7 +234,9 @@ impl CachedFile {
         persist_end: usize,
     ) -> VfsResult<PreparedPageWrite> {
         let mut guard = self.shared.page_cache.lock();
-        let page = self.page_or_insert(file, &mut guard, page_number, true)?.0;
+        let page = self
+            .page_or_insert(file, &mut guard, page_number, true, false)?
+            .0;
         let was_dirty = page.dirty;
         let original_data = page.data()[zero_start..zero_end].to_vec();
         page.data()[zero_start..zero_end].fill(0);
@@ -322,7 +340,7 @@ impl CachedFile {
         }
     }
 
-    fn take_discarded_pages_locked(&self, len: u64) -> Vec<(u32, PageCache)> {
+    fn take_discarded_pages_locked(&self, len: u64) -> VfsResult<Vec<(u32, PageCache)>> {
         let first_discarded_page = len.div_ceil(PAGE_SIZE as u64);
         let mut guard = self.shared.page_cache.lock();
         let keys = guard
@@ -330,25 +348,53 @@ impl CachedFile {
             .map(|(page_number, _)| *page_number)
             .filter(|page_number| u64::from(*page_number) >= first_discarded_page)
             .collect::<Vec<_>>();
-        keys.into_iter()
-            .filter_map(|page_number| {
-                guard.pop(&page_number).map(|mut page| {
-                    // Pages wholly beyond the new EOF must never be written
-                    // back after the truncate.
-                    page.dirty = false;
-                    (page_number, page)
-                })
-            })
-            .collect()
+        if keys
+            .iter()
+            .any(|page_number| guard.get(page_number).is_some_and(|page| page.pins != 0))
+        {
+            return Err(VfsError::ResourceBusy);
+        }
+        Ok(keys
+            .into_iter()
+            .filter_map(|page_number| guard.pop(&page_number).map(|page| (page_number, page)))
+            .collect())
     }
 
-    fn notify_discarded_pages(
-        &self,
-        file: &FileNode,
-        pages: Vec<(u32, PageCache)>,
-    ) -> VfsResult<()> {
-        for (page_number, mut page) in pages {
-            self.evict_cache(file, page_number, &mut page)?;
+    fn notify_discarded_pages(&self, pages: Vec<(u32, PageCache)>) -> VfsResult<()> {
+        let mut busy = Vec::new();
+        let mut failed = false;
+        busy.try_reserve(pages.len())
+            .map_err(|_| VfsError::NoMemory)?;
+        for (page_number, page) in pages {
+            let result = page
+                .paddr()
+                .map(|paddr| {
+                    self.shared.publish_mapping_event(CacheMappingEvent::Evict(
+                        self.cache_page_identity(page_number, paddr),
+                    ))
+                })
+                .unwrap_or(CacheMappingResult::Failed);
+            match result {
+                CacheMappingResult::Retired => drop(page),
+                CacheMappingResult::Busy | CacheMappingResult::Quarantined => {
+                    busy.push((page_number, page));
+                }
+                CacheMappingResult::Protected | CacheMappingResult::Failed => {
+                    busy.push((page_number, page));
+                    failed = true;
+                }
+            }
+        }
+        if !busy.is_empty() {
+            let mut guard = self.shared.page_cache.lock();
+            for (page_number, page) in busy {
+                guard.put(page_number, page);
+            }
+            return Err(if failed {
+                VfsError::BadState
+            } else {
+                VfsError::ResourceBusy
+            });
         }
         Ok(())
     }
@@ -358,6 +404,16 @@ impl CachedFile {
         let file = self.inner.entry().as_file()?;
         loop {
             let observed_len = self.shared.len();
+            // Reserve the infallible publication value before callbacks,
+            // cache removal, zeroing, or backing-file mutation.  In
+            // particular an exhausted epoch must not evict pages and only
+            // then report ValueOverflow.
+            let prepared_epoch = (observed_len != len)
+                .then(|| self.shared.prepare_mapping_epoch())
+                .transpose()?;
+            let _mapping_update = (observed_len != len)
+                .then(|| self.begin_mapping_update())
+                .transpose()?;
             let affected_page =
                 if observed_len < len && !observed_len.is_multiple_of(PAGE_SIZE as u64) {
                     Some((observed_len / PAGE_SIZE as u64) as u32)
@@ -375,13 +431,37 @@ impl CachedFile {
                     .protect_dirty_pages_before_writeback(&[page_number])?;
             }
 
-            let io = self.shared.io_lock.lock();
+            if len < observed_len {
+                let io = self.shared.io_lock.lock();
+                if self.shared.len() != observed_len
+                    || prepared_epoch
+                        .is_some_and(|epoch| !self.shared.prepared_mapping_epoch_is_current(epoch))
+                {
+                    continue;
+                }
+                let discarded = self.take_discarded_pages_locked(len)?;
+                drop(io);
+                // Revoke every mapping and complete its TLB obligation before
+                // the backing truncate can make those pages invalid.
+                self.notify_discarded_pages(discarded)?;
+                if let Some(page_number) = affected_page
+                    && !self.invalidate_page_mappings(page_number)?
+                {
+                    return Err(VfsError::ResourceBusy);
+                }
+            }
+
+            let _io = self.shared.io_lock.lock();
             let old_len = self.shared.len();
-            if old_len != observed_len {
+            if old_len != observed_len
+                || prepared_epoch
+                    .is_some_and(|epoch| !self.shared.prepared_mapping_epoch_is_current(epoch))
+            {
                 continue;
             }
 
             if old_len < len {
+                let next_epoch = prepared_epoch.ok_or(VfsError::BadState)?;
                 let prepared = if let Some(page_number) = affected_page {
                     let page_start = u64::from(page_number) * PAGE_SIZE as u64;
                     let old_page_offset = (old_len - page_start) as usize;
@@ -415,6 +495,7 @@ impl CachedFile {
                 }
 
                 self.shared.set_len(len);
+                self.shared.publish_mapping_epoch(next_epoch);
                 if let Some(prepared) = prepared.as_ref() {
                     self.finish_prepared_page(prepared);
                 }
@@ -422,6 +503,15 @@ impl CachedFile {
             }
 
             if len < old_len {
+                if !self
+                    .cached_pages_from(len.div_ceil(PAGE_SIZE as u64))
+                    .is_empty()
+                {
+                    // A reader populated a page while mapping invalidators ran.
+                    // Restart and revoke that page before touching backing.
+                    continue;
+                }
+                let next_epoch = prepared_epoch.ok_or(VfsError::BadState)?;
                 let prepared = if let Some(page_number) = affected_page {
                     let page_start = u64::from(page_number) * PAGE_SIZE as u64;
                     let old_page_len = (old_len - page_start).min(PAGE_SIZE as u64) as usize;
@@ -454,12 +544,10 @@ impl CachedFile {
                 }
 
                 self.shared.set_len(len);
+                self.shared.publish_mapping_epoch(next_epoch);
                 if let Some(prepared) = prepared.as_ref() {
                     self.finish_prepared_page(prepared);
                 }
-                let discarded = self.take_discarded_pages_locked(len);
-                drop(io);
-                self.notify_discarded_pages(file, discarded)?;
                 return Ok(());
             }
 

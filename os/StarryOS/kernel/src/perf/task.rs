@@ -827,19 +827,19 @@ fn sideband_target(ptc: &PerTaskCounter, thread: &Thread) -> Option<SidebandTarg
 /// `MMAP2` records. Collected under the aspace lock and returned owned, so the
 /// caller writes the ring (which masks IRQs) without holding that lock.
 fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
-    let aspace = thr.proc_data.aspace();
+    let Ok(aspace) = thr.proc_data.pin_aspace() else {
+        return Vec::new();
+    };
     let mm = aspace.lock();
     let mut maps = Vec::new();
-    for area in mm.areas() {
+    for area in mm.vma_inspection_records().unwrap_or_default() {
         let flags = area.flags();
         if !flags.contains(MappingFlags::EXECUTE) {
             continue;
         }
         // Only file-backed areas can be symbolized (perf opens the file). An
         // anonymous executable mapping (JIT) has no file and is skipped.
-        let Ok(fi) = area.backend().file_info() else {
-            continue;
-        };
+        let fi = area.file_info();
         let mut prot = 0u32;
         if flags.contains(MappingFlags::READ) {
             prot |= PROT_READ;
@@ -857,7 +857,7 @@ fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
             ino: fi.inode.unwrap_or(0),
             prot,
             flags: if fi.shared { MAP_SHARED } else { MAP_PRIVATE },
-            filename: fi.path,
+            filename: fi.path.clone(),
         });
     }
     maps

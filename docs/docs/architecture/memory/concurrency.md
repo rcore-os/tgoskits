@@ -38,11 +38,11 @@ sidebar_label: "锁与并发"
 | remote-free atomics | `buddy-slab-allocator/src/slab/page.rs` | 跨 CPU 归还的 object 链 | 释放者只发布节点，owner CPU drain |
 | `SpinLock<Usages>` | `ax-alloc/src/buddy_slab.rs` | `UsageKind` 字节计数 | 统计锁不发布资源，释放正确性由 allocator 锁和 owner 协议保证 |
 | `SpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
-| `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个进程地址空间、虚拟内存区域与页表 | fault、map、clone 通过同一 owner 串行化 |
+| `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个 MM 的短期 mutation serialization | 生命周期由 `MmHandle`/`MmPin`/`ActivationLease` 表达；锁不代表 CPU root 已失活 |
 | `Mutex<Machine<...>>`（`IrqSafeMutex` 别名） | `axvm/src/vm/mod.rs` | AxVM 生命周期资源、`axaddrspace` 与嵌套页表 | map、fault、客户机访问和 clear 均在同一虚拟机 owner 下执行 |
-| `AtomicU64` 汇总计数 | `os/StarryOS/kernel/src/mm/aspace/accounting.rs` | 单地址空间匿名页、文件页、共享内存页和峰值 | 映射操作由地址空间锁串行化；原子只提供无锁统计快照 |
-| `IrqMutex<FrameTableRefCount>` | Starry 写时复制 backend | 写时复制物理页索引；每个 frame 再用 `IrqMutex<FrameRefCnt>` 保存 `u8` 引用计数 | 不在外层表锁内执行外部 I/O；归还物理页前释放表锁 |
-| `AtomicU64/AtomicI64` | Starry kernel mm stat/accounting | RSS/VSS 与峰值 | 原子顺序按统计语义选择；当前 `/proc/meminfo` 的 `Committed_AS` 固定展示 0 |
+| `PageObject::mapping_graph` | Starry `kernel/src/mm/aspace/objects.rs` | `MappingSlot`、rmap 与 mapping reference 的同一次变更 | 不在 graph lock 内发布 VMA、发 TLB IPI 或执行文件 I/O |
+| `ResidentWatermark` | `os/StarryOS/kernel/src/mm/aspace/accounting.rs` | 已发布 `MappingSlot` 派生出的历史 RSS 峰值 | 不保存当前 RSS 或按 VA charge map |
+| `AtomicU64/AtomicI64` | Starry kernel mm stat/accounting | VSS、commit 与历史统计 | 当前 RSS 从 slot graph 派生；当前 `/proc/meminfo` 的 `Committed_AS` 固定展示 0 |
 
 表中的同步对象保护不同层级状态，不能组成一个长期持有的全局锁链。尤其是 allocator、地址空间和文件 backend 之间需要在资源准备与状态提交阶段缩短临界区。
 
@@ -136,7 +136,7 @@ sequenceDiagram
 | --- | --- | --- |
 | ArceOS kernel | `SpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | 不睡眠、不调用文件系统，完成 map/unmap/protect 后释放 |
 | ArceOS user address space | 由进程/调用链持有可变访问 | 不允许另一个线程并发修改同一实例 |
-| StarryOS process | `Arc<Mutex<AddrSpace>>` | 虚拟内存区域、页表和记账作为一个状态转换提交 |
+| StarryOS process | `MmHandle`、`MmPin`、`ActivationLease` 与内部 `Mutex<AddrSpace>` | user owner、kernel pin、CPU root 存活分别计数；修改经 receipt 提交 |
 | Axvisor guest | `Mutex<Machine<AxVMResources, ...>>`（`IrqSafeMutex`） | 客户机映射修改、缺页和内存访问由同一虚拟机 owner 串行化；销毁前停止虚拟处理器 |
 
 `ax-memory-set` 不提供通用 undo 日志。单个 backend 必须清理本次 map 新建的资源；需要专用恢复的写时复制 clone、页连续填充或页表移动由 Starry 策略层维护局部记录。Axvisor 的具体锁闭包和 slice 生命周期见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
@@ -146,36 +146,38 @@ sequenceDiagram
 页表锁只保护软件数据结构，CPU 可能仍缓存旧翻译。安全的替换或解除映射顺序如下。
 
 ```text
-1. 持有地址空间 owner，阻止并发修改。
-2. 写入或清除页表项。
-3. 执行架构要求的页表写入屏障。
-4. 使所有可能运行该地址空间的 CPU 的 TLB 条目失效。
-5. 等待远程失效完成。
-6. 释放旧物理页或降低 COW 引用计数。
-7. 发布新的虚拟内存区域元数据并释放外层 owner。
+1. 在已发布快照之外准备 VMA successor、PTE preimage、slot/rmap 与 TLB 容量。
+2. 持有地址空间 mutation owner，并按固定顺序取得 PTE stripe。
+3. 应用 PTE delta；失败时逆序恢复，不能证明恢复时进入 `NeedsRepair`。
+4. 原子发布 VMA root、slot/rmap、resident delta、epoch 与 `MutationReceipt`。
+5. 执行架构屏障，并向 receipt 记录的 active CPU 发出 TLB 失效。
+6. 等待远程确认；等待期间 detached frame 和页表节点留在 `TlbQuarantine`。
+7. 全部确认后退休 receipt，才允许释放旧 owner 或复用 frame。
 ```
 
 AArch64 的地址级 `tlbi vaae1is` 提供 inner-shareable 硬件广播（全量 `vmalle1` 仅本核）。x86_64、RISC-V 和 LoongArch64 的 `TableMeta::flush()` 只处理本 CPU；多 CPU consumer 解除共享内核映射时必须使用 `ax_hal::cache::flush_tlb_range_all_cpus()` 一类的软件 shootdown（基于 `axipi` 的 ready 状态机）。缺少有效 shootdown 时不能把本地失效当作系统完成。
 
 ## 5. StarryOS 并发
 
-StarryOS 的缺页、映射和进程克隆涉及可睡眠对象，因此以 `Arc<Mutex<AddrSpace>>` 为主要串行化边界。`MemoryAccounting` 只维护匿名页、文件页、共享内存页和峰值的原子汇总，不再维护按虚拟地址索引的第二套分类表。
+StarryOS 的缺页、映射和进程克隆涉及可睡眠对象。进程 owner、临时 kernel pin 与 CPU root activation 分别由 `MmHandle`、`MmPin` 和 `ActivationLease` 表达；内部 `Mutex<AddrSpace>` 只串行化一次 mutation 的组合过程。最后一个 `MmHandle` 只把 MM 转为 `Retiring`，只有 pin、activation 和 active CPU mask 都清零后，`RetirePermit` 才允许可睡眠 reclaimer 清理页表与后端。
 
 ### 5.1 地址空间与文件后端
 
-持有 `AddrSpace` Mutex 时可以修改虚拟内存区域和页表，但应避免等待文件 I/O。文件后端把自身状态放在单独 Mutex 中，listener 在不能立即取得地址空间锁时使用 `try_lock()` 避免锁顺序反转。
+fault 先取得 immutable `VmaSnapshot` 并复制私有 `MappingOperation`，释放 metadata owner 后预留 `PageObject`/cache entry 并执行文件 I/O，最后取得 PTE stripe、复核 VMA/PTE identity 并提交 receipt。任何一个快照都不能携带跨锁存活的 `&MemoryArea`。
 
-需要访问页缓存或文件系统的 fault 路径应先取得外部数据，再重新验证地址空间状态并提交。不能长期同时持有文件对象锁和地址空间锁。
+eviction 先取得 `EvictionLease` 并把 `PageObject` 标成 `Evicting`，释放 page-cache index lock 后遍历 `RmapSet`，对每个地址空间取得短期 `MmPin` 并发起撤销事务。地址空间不再注册 `Weak<AddrSpace>` listener，也不按 VMA 扫描反向查找映射。
 
-### 5.2 写时复制帧表
+### 5.2 页对象和反向映射
 
-全局 `FRAME_TABLE` 当前是 `IrqMutex<FrameTableRefCount>`，内部用 `BTreeMap<PhysAddr, Arc<IrqMutex<FrameRefCnt>>>` 保存每个 COW frame 的 `u8` 引用计数。引用增加、释放和分类读取需要检查这个两级锁结构；物理页释放应在不持有外层 frame table 锁时执行。
+`FrameLease` 是物理 frame 的释放 capability，`PageObject` 是共享页状态的 owner，每个已安装 PTE 对应一个 `MappingSlot` 和一个 `RmapSet` entry。slot publication 在 `PageObject::mapping_graph` 内同时增加 rmap 与 mapping reference；detach 以相反状态转换撤销，不能只更新一个裸物理地址引用计数。
 
-当前写时复制 frame table 使用 `BTreeMap<PhysAddr, Arc<IrqMutex<FrameRefCnt>>>` 和 `u8` 引用计数。clone 流程逐区域调用 backend `clone_map()` 并在 child `MemorySet` 发布 metadata；失败路径依赖 backend 和 fresh child 清理已经建立的映射。锁顺序仍应保持地址空间 Mutex、`FRAME_TABLE`、allocator，释放物理页时不持有 `FRAME_TABLE`。
+fork 让父子 slot 指向同一 `PageObject`；私有写 fault 用一次事务把当前 slot 替换成匿名对象。大页 split 保留同一 `PageObject`，并用 `MappingSlot::frame_offset` 表示每个基础 PTE 对应的物理子范围。多映射 cardinality 不再受 `u8` 计数上限或全局 frame 表锁序约束。
 
 ### 5.3 记账与提交策略
 
-`MemoryAccounting` 用原子保存匿名页、文件页、共享内存页和峰值，同时用地址空间锁下访问的 charge map 记录 COW resident 页分类。File/Shared backend 的分类由 backend 类型确定；文件私有页第一次写入时通过 `cow_file_write_to_anon()` 在地址空间锁内把统计从 File 迁移为 Anon。当前减少操作使用 `fetch_sub` 并只在 debug build 断言下溢，不是发布构建的 checked error。
+当前 RSS 的 Anon/File/Shmem 分类属于 published `MappingSlot`。`AddrSpace` 从 slot graph 派生当前 RSS，`ResidentWatermark` 只保存历史峰值；不存在第二份按 VA charge map。文件私有页第一次写入时，slot 的 File→Anon 分类与其 `PageObject` 替换由同一个 mutation publication 完成。
+
+`MutationGate` 线性化 epoch 和 receipt 状态，不承担长时间的 PTE walk 或文件操作。publish 后的 TLB timeout 是 `PublishedPendingTlb`，相关 owner 留在 quarantine；无法证明 inverse 或 retirement 完整时进入 `NeedsRepair`，不能返回普通 rollback 成功。
 
 当前 StarryOS 没有独立的全局 commit admission 对象；`RLIMIT_AS`、overcommit 展示和 mmap/brk 准入由 Starry kernel syscall/resource 代码处理，`/proc/meminfo` 的 `Committed_AS` 仍固定为 0。
 
@@ -215,8 +217,8 @@ allocate/map
 ```text
 process/task owner
   -> address-space Mutex or irq-save SpinLock
-    -> backend-local state
-      -> page-table cursor / COW frame reference
+    -> PTE stripe or backend-local state
+      -> PageObject mapping graph / page-table structure cursor
         -> ax-alloc per-CPU Slab or Buddy lock
 ```
 
@@ -234,6 +236,6 @@ process/task owner
 | remote-free 尚未 drain 就归还 Slab backing | 原子链指向已复用物理页 |
 | 复制 DMA free/unmap token | 重复释放或设备仍在使用时释放 |
 | 硬中断中触发 Slab miss 或 Buddy 高阶搜索 | 无确定延迟并扩大禁止中断窗口 |
-| 同时持文件 backend Mutex 与地址空间 Mutex 执行可睡眠 I/O | 文件回调或 listener 反向取锁 |
+| 同时持 page-cache index、VMA publication、PTE stripe 或 rmap lock 执行可睡眠 I/O | fault、eviction 与地址空间事务形成锁环 |
 
 遇到这些组合时，应调整所有权阶段、预分配资源或拆分锁区间，不能通过增加重试、关闭锁检查或延长禁止中断时间掩盖问题。

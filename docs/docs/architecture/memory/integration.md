@@ -203,22 +203,24 @@ ArceOS 不经过 Starry kernel `mm/`，也不需要 Linux 常驻内存集大小�
 
 ### 6.2 Starry 匿名映射
 
-Starry 的 16 KiB `MAP_PRIVATE | MAP_ANONYMOUS | PROT_READ | PROT_WRITE` 先通过 syscall 应用程序二进制接口验证，再由 `MemorySet<Backend>` 发布 Cow 虚拟内存区域。未使用 `MAP_POPULATE` 时，建立 mapping不立即消耗四个 resident frame。
+Starry 的 16 KiB `MAP_PRIVATE | MAP_ANONYMOUS | PROT_READ | PROT_WRITE` 先通过 syscall 应用程序二进制接口验证，再由 `AddrSpace::map_with_permissions_publication()` 构造并发布 persistent `VmaMap` successor。未使用 `MAP_POPULATE` 时，建立 mapping 不立即消耗四个 resident frame。
 
 ```text
 sys_mmap
   -> validate flags, fd, offset and user range
-  -> AddrSpace::map / MemorySet direct backend operation
+  -> prepare VmaMap successor and MutationReceipt
+  -> publish VMA root and VmEpoch
   -> return user 虚拟地址
 
 later write fault
   -> AddrSpace::handle_page_fault
-  -> CowBackend::populate
-  -> ax-alloc Normal × VirtMem
-  -> map 页表项 + record 常驻内存集大小 Anon
+  -> snapshot VMA / clone MappingOperation / release metadata owner
+  -> prepare PageObject(FrameLease) via ax-alloc Normal × VirtMem
+  -> lock PTE stripe and revalidate identity
+  -> install PTE + publish MappingSlot/rmap + receipt
 ```
 
-mapping 成功时 `ProcessVmStat` 的虚拟内存大小增加 16 KiB，常驻内存集大小仍可能为 0；每个首次写 fault 再使常驻内存集大小 Anon增加一页。syscall 返回值和 errno由 Starry kernel处理。
+mapping 成功时 `ProcessVmStat` 的虚拟内存大小增加 16 KiB，常驻内存集大小仍可能为 0；每个首次写 fault 发布一个 Anon `MappingSlot`，RSS 从这些 slot 派生。syscall 返回值和 errno 由 Starry kernel 处理，已发布但尚未完成 TLB retirement 的状态由 receipt/quarantine 保留，不能伪装成未发生。
 
 ### 6.3 Axvisor 客户机内存
 

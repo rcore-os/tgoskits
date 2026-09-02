@@ -74,6 +74,7 @@ fn rsext4_crc_and_error_rules_hold() {
         (Ext4Error::busy(), Ext4ErrorKind::Busy),
         (Ext4Error::not_empty(), Ext4ErrorKind::NotEmpty),
         (Ext4Error::no_space(), Ext4ErrorKind::NoSpace),
+        (Ext4Error::no_memory(), Ext4ErrorKind::NoMemory),
         (Ext4Error::read_only(), Ext4ErrorKind::ReadOnly),
         (Ext4Error::unsupported(), Ext4ErrorKind::Unsupported),
         (Ext4Error::timeout(), Ext4ErrorKind::Timeout),

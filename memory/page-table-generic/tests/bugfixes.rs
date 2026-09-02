@@ -6,6 +6,42 @@ use page_table_generic::*;
 mod mocks;
 use mocks::*;
 
+const TABLE_SOURCE: &str = include_str!("../src/table.rs");
+const FRAME_SOURCE: &str = include_str!("../src/frame.rs");
+
+#[test]
+fn borrowed_page_table_view_does_not_export_raw_frame_ownership() {
+    let frame_definition = FRAME_SOURCE
+        .split_once("pub struct Frame<T: TableMeta, A: FrameAllocator> {")
+        .and_then(|(_, suffix)| suffix.split_once("}\n\nimpl"))
+        .map(|(definition, _)| definition)
+        .expect("Frame definition must remain inspectable");
+    let borrowed_impl = TABLE_SOURCE
+        .split_once("impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {")
+        .map(|(_, implementation)| implementation)
+        .expect("PageTableRef implementation must remain inspectable");
+
+    assert!(
+        TABLE_SOURCE.contains("pub struct PageTableRef")
+            && TABLE_SOURCE.contains("pub(crate) root: Frame<T, A>")
+            && borrowed_impl.contains("pub unsafe fn from_paddr"),
+        "a borrowed page-table view must hide its root frame and require an unsafe construction \
+         proof",
+    );
+    assert!(
+        !frame_definition.contains("pub paddr: PhysAddr")
+            && !frame_definition.contains("pub allocator: A")
+            && !FRAME_SOURCE.contains("pub fn as_slice_mut"),
+        "external callers must not obtain allocator ownership or mutable PTE slices from a frame",
+    );
+    assert!(
+        !borrowed_impl.contains("pub unsafe fn destroy(mut self)")
+            && !borrowed_impl.contains("pub unsafe fn deallocate(&mut self)")
+            && !borrowed_impl.contains("pub fn deallocate_range"),
+        "a borrowed page-table view must not carry owning deallocation operations",
+    );
+}
+
 #[derive(Clone, Copy, Debug)]
 struct AddressOnlyDirectoryPte(PteImpl);
 
@@ -132,6 +168,43 @@ fn test_huge_page_offset_calculation() {
     println!("✅ 大页偏移计算测试通过！");
 }
 
+/// A checked resolver may describe a sparse/device range.  The mapper must
+/// fall back to base-page leaves when a would-be block is not physically
+/// contiguous, rather than rejecting the whole operation or aliasing the
+/// second page through a block descriptor.
+#[test]
+fn test_checked_mapping_falls_back_for_non_contiguous_pages() {
+    let mut pg = PageTable::<T4kL3, Fram4k>::new(Fram4k).unwrap();
+    let start = VirtAddr::from_usize(0);
+    let first = PhysAddr::from_usize(0x0040_0000);
+    let size = 2 * MB;
+
+    pg.map_region_checked(
+        start,
+        |vaddr| {
+            let offset = vaddr.as_usize();
+            if offset == 0 {
+                Ok(first)
+            } else {
+                // Deliberately break the physical progression at the second
+                // page; the remaining pages retain a valid, checked address.
+                Ok(PhysAddr::from_usize(0x0080_0000usize + offset))
+            }
+        },
+        size,
+        PteImpl::user_mode_config(),
+        true,
+    )
+    .unwrap();
+
+    let (first_pa, _, first_size) = pg.query(start).unwrap();
+    let (second_pa, _, second_size) = pg.query(VirtAddr::from_usize(0x1000)).unwrap();
+    assert_eq!(first_size, T4kL3::PAGE_SIZE);
+    assert_eq!(second_size, T4kL3::PAGE_SIZE);
+    assert_eq!(first_pa, first);
+    assert_eq!(second_pa, PhysAddr::from_usize(0x0080_1000));
+}
+
 /// 测试多级别大页的正确处理
 ///
 /// 验证不同级别的大页（如果架构支持）都能正确计算偏移
@@ -221,7 +294,8 @@ fn test_walk_address_comparison() {
 /// 实际上无效项不应该影响回收判断
 #[test]
 fn test_unmap_reclaim_logic() {
-    let mut pg = PageTable::<T4kL4, TrackedFram4k>::new(TrackedFram4k::new()).unwrap();
+    let allocator = TrackedFram4k::new();
+    let mut pg = PageTable::<T4kL4, TrackedFram4k>::new(allocator.clone()).unwrap();
 
     let base_addr = 0x10000000usize;
     let size = 0x3000; // 3个页面
@@ -237,7 +311,6 @@ fn test_unmap_reclaim_logic() {
     })
     .unwrap();
 
-    let allocator = pg.root.allocator;
     let allocated_before = allocator.allocated_count();
     println!("取消映射前分配的帧数: {}", allocated_before);
 
@@ -652,8 +725,8 @@ fn test_mixed_huge_and_normal_pages() {
 /// 验证在大量操作下的稳定性和正确性
 #[test]
 fn test_stress_mapping_unmapping() {
-    let mut pg = PageTable::<T4kL3, TrackedFram4k>::new(TrackedFram4k::new()).unwrap();
-    let allocator = pg.root.allocator;
+    let allocator = TrackedFram4k::new();
+    let mut pg = PageTable::<T4kL3, TrackedFram4k>::new(allocator.clone()).unwrap();
 
     // 创建多个映射
     for i in 0..100 {

@@ -133,11 +133,10 @@ fn task_context_owns_kernel_tls_and_preserves_current_address_space_model() {
         "pub unsafe fn switch_to_prepared",
     );
     assert!(
-        task_fields.contains("page_table_root: ax_memory_addr::PhysAddr")
-            && CONTEXT.contains("pub fn set_page_table_root")
-            && prepare.contains("write_user_page_table")
-            && prepare.contains("flush_tlb"),
-        "the existing axtask model must retain task-owned address-space selection"
+        task_fields.contains("address_space: InstalledAddressSpace")
+            && CONTEXT.contains("pub fn set_address_space")
+            && prepare.contains("install_user_address_space"),
+        "the scheduler must retain the complete installed address-space identity"
     );
 
     let raw_switches = CONTEXT
@@ -145,7 +144,9 @@ fn task_context_owns_kernel_tls_and_preserves_current_address_space_model() {
         .expect("raw context switch")
         .1;
     assert!(
-        !raw_switches.contains("write_user_page_table") && !raw_switches.contains("flush_tlb"),
+        !raw_switches.contains("install_user_address_space")
+            && !raw_switches.contains("write_user_page_table")
+            && !raw_switches.contains("flush_tlb"),
         "address-space work must complete before current-register publication and raw transfer"
     );
 }

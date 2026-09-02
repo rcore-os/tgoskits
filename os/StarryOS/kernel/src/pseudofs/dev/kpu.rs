@@ -1,12 +1,11 @@
 use core::{
     any::Any,
-    mem::{MaybeUninit, size_of},
+    mem::size_of,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
-use ax_runtime::hal::cpu::asm::user_copy;
 use ax_task::WaitQueue;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use k230_kpu::{
@@ -18,6 +17,7 @@ use k230_kpu::{
     KPU_MMAP_RUNTIME_DDR_OFFSET, KPU_MMAP_RUNTIME_DIRECT_IO_OFFSET, KPU_MMAP_RUNTIME_RDATA_OFFSET,
     Kpu, KpuInfo,
 };
+use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::pseudofs::{
     DeviceMmap, DeviceOps,
@@ -501,33 +501,16 @@ fn copy_from_user<T: Copy>(arg: usize) -> VfsResult<T> {
     if arg == 0 {
         return Err(VfsError::InvalidInput);
     }
-    let mut value = MaybeUninit::<T>::uninit();
-    let ret = unsafe {
-        user_copy(
-            value.as_mut_ptr().cast::<u8>(),
-            arg as *const u8,
-            size_of::<T>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(unsafe { value.assume_init() })
+    // SAFETY: this private helper is used only for the KPU ABI records above;
+    // they consist solely of integer fields and accept every bit pattern.
+    unsafe { (arg as *const T).vm_read_any() }.map_err(|_| VfsError::InvalidData)
 }
 
 fn copy_to_user<T: Copy>(arg: usize, value: &T) -> VfsResult<()> {
     if arg == 0 {
         return Err(VfsError::InvalidInput);
     }
-    let ret = unsafe {
-        user_copy(
-            arg as *mut u8,
-            (value as *const T).cast::<u8>(),
-            size_of::<T>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
+    (arg as *mut T)
+        .vm_write(*value)
+        .map_err(|_| VfsError::InvalidData)
 }

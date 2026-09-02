@@ -47,4 +47,23 @@ mod trap;
 mod uprobe;
 
 pub use error::{DmaOperation, StarryError, StarryResult};
+// The staged MM ownership and transaction types are intentionally reachable
+// from the kernel boundary so migration call sites do not need a second
+// compatibility facade.
+pub use mm::{
+    ActivationError, ActivationLease, AddressSpaceCpuState, AddressSpaceId, AddressSpaceTag,
+    AppliedMutation,
+    CloneUserRefError, CpuMask, EvictionError, EvictionLease, EvictionResult, FrameLease,
+    InstalledAddressSpace, InstalledPageTableRoot, MappingGroup, MappingPermissions,
+    AnonymousSource, ExternalSource, FileSource, LinearSource, MappingId, MappingSlot,
+    MappingSlotKey, MappingSource, MappingDelta, MmHandle, MmPin, MmState,
+    MutationError, MutationGate, MutationReceipt, MutationState, PageId, PageObject, PageOrder,
+    PageOffset, PageSizePolicy, PageState, PinError, PreparedMutation, PublishEvent, PublishedMutation,
+    PublishedPendingTlb, PteDelta, ReclaimError, ResidentDelta, RetirePermit, RmapSet, SlotState,
+    TagMode, TlbQuarantine, TlbRange, TlbRequest, QuarantineError, QuarantineFailure,
+    UnsupportedSwap, VmaDelta, VmaId, VmaMap,
+    Vma, VmaSnapshot, MappingRights, SwapError, SwapProvider, SwapToken, WritebackError,
+    WritebackLease, allocate_vma_id,
+    RepairPermit, take_repair_candidates, request_repair_retry,
+};
 pub use syscalls::Errno;

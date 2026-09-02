@@ -214,7 +214,10 @@ fn robust_futex_address(entry: *mut RobustList, offset: i64) -> StarryResult<usi
 }
 
 fn wake_robust_futex(proc_data: &ProcessData, address: usize) {
-    let key = FutexKey::new_for_process_teardown(proc_data, address);
+    let Some(key) = FutexKey::new_for_process_teardown(proc_data, address) else {
+        warn!("robust futex wake skipped because the process MM is unavailable");
+        return;
+    };
 
     let futex_table = futex_table_for_process(proc_data, &key);
 
@@ -379,11 +382,14 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(0).is_ok() {
-        let key = FutexKey::new_for_process_teardown(&thr.proc_data, clear_child_tid as usize);
-        let table = futex_table_for_process(&thr.proc_data, &key);
-        let guard = table.get(&key);
-        if let Some(futex) = guard {
-            futex.wq.wake(1, u32::MAX);
+        if let Some(key) =
+            FutexKey::new_for_process_teardown(&thr.proc_data, clear_child_tid as usize)
+        {
+            let table = futex_table_for_process(&thr.proc_data, &key);
+            let guard = table.get(&key);
+            if let Some(futex) = guard {
+                futex.wq.wake(1, u32::MAX);
+            }
         }
         ax_task::yield_now();
     }
@@ -456,15 +462,20 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // A parent that observes this child as a zombie must not see IPC
         // resources that still belong to the exiting process. In particular,
         // a vfork parent resumes only after this cleanup.
-        crate::syscall::clear_proc_shm(
-            process_identity_id,
-            process.identity().snapshot(),
-            &thr.proc_data.aspace(),
-        );
+        if let Ok(aspace) = thr.proc_data.pin_aspace() {
+            crate::syscall::clear_proc_shm(
+                process_identity_id,
+                process.identity().snapshot(),
+                &aspace,
+            );
+        } else {
+            warn!("shared-memory exit cleanup skipped for an unavailable MM");
+        }
 
-        // Drop memfd inode accounting before waitpid returns (SMP); use
-        // process_slots refcounting — not vm_aspace_shared + clear().
-        thr.proc_data.release_aspace_slot_if_needed();
+        // Release the process owner before publishing the zombie.  The typed
+        // MM lifecycle defers reclaim until all kernel pins and activations
+        // have quiesced, so this path cannot clear a root still in use.
+        thr.proc_data.retire_mm_owner();
 
         publish_zombie(
             &thr.proc_data,
@@ -597,11 +608,10 @@ pub fn zap_thread(tid: TidNumber) -> StarryResult<()> {
         .try_as_thread()
         .ok_or(StarryError::OperationNotPermitted)?;
     thr.set_exit_request();
-    // `interrupt()` alone is a no-op for a thread parked on a raw `WaitQueue`
-    // (pipe read, futex wait) — no interrupt waker is registered there — so a
-    // SIGKILLed sibling would linger until async GC, deferring `clear()` and
-    // its frame reclaim. `wake_task` force-unblocks the parked thread so it
-    // returns, observes the pending pending exit, and runs `do_exit` synchronously.
+    // Poll-based I/O registers an interrupt waker, but some kernel waits can
+    // still park directly on a raw `WaitQueue`. `wake_task` covers both forms:
+    // the sibling is made runnable, observes the pending exit request, and
+    // completes `do_exit` without depending on an unrelated future wakeup.
     ax_task::wake_task(&task);
     Ok(())
 }

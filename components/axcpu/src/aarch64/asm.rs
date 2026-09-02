@@ -7,6 +7,71 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 
 #[cfg(feature = "tls")]
 use crate::KernelTlsBase;
+#[cfg(feature = "uspace")]
+use crate::{InstalledAddressSpace, InstalledAddressSpaceMode};
+
+/// Returns the number of AArch64 ASIDs, including reserved ASID 0.
+///
+/// `ID_AA64MMFR0_EL1.ASIDBits` encoding 2 selects 16-bit ASIDs; every other
+/// architectural value uses the mandatory 8-bit form. EL2 builds retain the
+/// conservative full-flush path because their userspace translation register
+/// contract is different from TTBR0_EL1.
+pub fn address_space_tag_capacity(_cpu_count: usize) -> u32 {
+    #[cfg(feature = "arm-el2")]
+    {
+        1
+    }
+    #[cfg(not(feature = "arm-el2"))]
+    {
+        if ID_AA64MMFR0_EL1.read(ID_AA64MMFR0_EL1::ASIDBits) == 2 {
+            1 << 16
+        } else {
+            1 << 8
+        }
+    }
+}
+
+#[cfg(all(feature = "uspace", not(feature = "arm-el2")))]
+fn flush_tlb_asid(asid: u16) {
+    let operand = u64::from(asid) << 48;
+    // SAFETY: the caller runs at EL1. The barriers match Linux's ASID
+    // invalidation ordering: page-table stores, TLBI, completion, then fetch.
+    unsafe {
+        asm!(
+            "dsb ishst; tlbi aside1is, {operand}; dsb ish; isb",
+            operand = in(reg) operand,
+        )
+    }
+}
+
+/// Installs one complete userspace identity into TTBR0_EL1.
+///
+/// Tagged installation invalidates the incoming ASID before publishing the
+/// root. Full-flush and EL2 fallback paths install ASID 0 and invalidate every
+/// stage-1 translation.
+///
+/// # Safety
+///
+/// The caller must own the current CPU with interrupts disabled and the root
+/// must remain alive for the complete activation lease.
+#[cfg(feature = "uspace")]
+pub unsafe fn install_user_address_space(address_space: InstalledAddressSpace) {
+    #[cfg(not(feature = "arm-el2"))]
+    if matches!(address_space.mode(), InstalledAddressSpaceMode::Tagged) {
+        let capacity = address_space_tag_capacity(1);
+        if u32::from(address_space.hardware_tag()) < capacity {
+            flush_tlb_asid(address_space.hardware_tag());
+            let value = address_space.root().as_usize() as u64
+                | (u64::from(address_space.hardware_tag()) << 48);
+            TTBR0_EL1.set(value);
+            barrier::isb(barrier::SY);
+            return;
+        }
+    }
+
+    TTBR0_EL1.set(address_space.root().as_usize() as u64);
+    flush_tlb(None);
+}
 
 /// Allows the current CPU to respond to interrupts.
 ///
@@ -72,7 +137,8 @@ pub fn read_kernel_page_table() -> PhysAddr {
 /// Returns the physical address of the page table root.
 #[inline]
 pub fn read_user_page_table() -> PhysAddr {
-    let root = TTBR0_EL1.get();
+    const TTBR_BADDR_MASK: u64 = (1 << 48) - 1;
+    let root = TTBR0_EL1.get() & TTBR_BADDR_MASK;
     pa!(root as usize)
 }
 
@@ -292,7 +358,7 @@ unsafe extern "C" {
 /// the *current* user translation regime (`TTBR0_EL1`), without taking any lock.
 ///
 /// Uses the `AT S1E0R` / `AT S1E0W` address-translation instruction, which asks
-/// the MMU to translate `vaddr` for an EL0 read (or write, when `write`) access
+/// the MMU to translate `vaddr` for the requested EL0 read or write access
 /// and reports the result in `PAR_EL1`. `PAR_EL1.F == 0` means the translation
 /// succeeded and the access is permitted — exactly the permission the CPU itself
 /// enforces for a user-mode access, read lock-free. A not-present page or one
@@ -313,13 +379,13 @@ unsafe extern "C" {
 /// function is `unsafe` so every call site must establish it.
 #[cfg(all(feature = "uspace", not(feature = "arm-el2")))]
 #[inline]
-pub unsafe fn user_access_ok_page(vaddr: usize, write: bool) -> bool {
+pub unsafe fn user_access_ok_page(vaddr: usize, access: crate::UserAccessType) -> bool {
     let par: u64;
     // SAFETY: `AT` reads the current translation tables and writes `PAR_EL1`;
     // `mrs` reads it back. No memory is accessed and no flags are clobbered. The
     // caller holds IRQs off so the `AT`/`mrs` pair is not split by another `AT`.
     unsafe {
-        if write {
+        if access == crate::UserAccessType::Write {
             asm!(
                 "at s1e0w, {vaddr}",
                 "isb",
@@ -353,6 +419,6 @@ pub unsafe fn user_access_ok_page(vaddr: usize, write: bool) -> bool {
 /// IRQs-off), so callers can use one `unsafe` block across all targets.
 #[cfg(all(feature = "uspace", feature = "arm-el2"))]
 #[inline]
-pub unsafe fn user_access_ok_page(_vaddr: usize, _write: bool) -> bool {
+pub unsafe fn user_access_ok_page(_vaddr: usize, _access: crate::UserAccessType) -> bool {
     false
 }

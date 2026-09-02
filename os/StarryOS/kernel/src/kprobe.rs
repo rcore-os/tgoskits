@@ -145,13 +145,15 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             // write. The text page is already resident (the loader executes the
             // probed function before arming).
             let task = uprobe_target_task(pid);
-            let aspace = task.as_thread().proc_data.aspace();
+            let Ok(aspace) = task.as_thread().proc_data.pin_aspace() else {
+                warn!("kprobe copy_memory: target address space is retiring");
+                return;
+            };
             let mm = aspace.lock();
-            let pt = mm.page_table();
             let mut copied = 0;
             while copied < len {
                 let vaddr = VirtAddr::from(src as usize + copied);
-                let Ok((paddr, ..)) = pt.query(vaddr) else {
+                let Ok(paddr) = mm.translate(vaddr) else {
                     warn!(
                         "kprobe copy_memory: user addr {:#x} not mapped",
                         vaddr.as_usize()
@@ -189,12 +191,14 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             // lock is fine. The instruction patch (≤ a few bytes) stays within
             // the resolved page.
             let task = uprobe_target_task(pid);
-            let aspace = task.as_thread().proc_data.aspace();
+            let Ok(aspace) = task.as_thread().proc_data.pin_aspace() else {
+                warn!("uprobe patch skipped: target address space is retiring");
+                return;
+            };
             let mm = aspace.lock();
             let vaddr = VirtAddr::from(address);
-            let (paddr, ..) = mm
-                .page_table()
-                .query(vaddr)
+            let paddr = mm
+                .translate(vaddr)
                 .expect("uprobe: target address not mapped");
             let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
             action(kvaddr.as_mut_ptr());
@@ -238,13 +242,17 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         // that instruction through the kernel alias of the freshly-mapped frame.
         let pid = pid.expect("uprobe: alloc_user_exec_memory needs a pid");
         let task = uprobe_target_task(pid);
-        let aspace = task.as_thread().proc_data.aspace();
+        let Ok(aspace) = task.as_thread().proc_data.pin_aspace() else {
+            warn!("uprobe exec allocation rejected for a retiring address space");
+            return core::ptr::null_mut();
+        };
         let mut mm = aspace.lock();
         let range = VirtAddrRange::new(mm.base(), mm.end());
         let vaddr = mm
             .find_free_area(mm.base(), PAGE_SIZE_4K, range, PAGE_SIZE_4K)
             .expect("uprobe: no free user va for exec memory");
-        let backend = crate::mm::Backend::new_alloc(vaddr, PAGE_SIZE_4K, "uprobe-ols");
+        let backend =
+            crate::mm::MappingOperation::new_alloc(vaddr, PAGE_SIZE_4K, "uprobe-ols");
         mm.map(
             vaddr,
             PAGE_SIZE_4K,
@@ -253,9 +261,8 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             backend,
         )
         .expect("uprobe: map user exec memory failed");
-        let (paddr, ..) = mm
-            .page_table()
-            .query(vaddr)
+        let paddr = mm
+            .translate(vaddr)
             .expect("uprobe: exec page not mapped after populate");
         let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
         action(kvaddr.as_mut_ptr());
@@ -266,7 +273,10 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     fn free_user_exec_memory(pid: Option<i32>, ptr: *mut u8) {
         let pid = pid.expect("uprobe: free_user_exec_memory needs a pid");
         let task = uprobe_target_task(pid);
-        let aspace = task.as_thread().proc_data.aspace();
+        let Ok(aspace) = task.as_thread().proc_data.pin_aspace() else {
+            warn!("uprobe exec free skipped for a retiring address space");
+            return;
+        };
         let mut mm = aspace.lock();
         mm.unmap(VirtAddr::from(ptr as usize), PAGE_SIZE_4K)
             .expect("uprobe: unmap user exec memory failed");

@@ -9,14 +9,50 @@ use crate::{MappingBackend, MappingError, MappingResult};
 ///
 /// The target physical memory frames are determined by [`MappingBackend`] and
 /// may not be contiguous.
+#[derive(Clone)]
 pub struct MemoryArea<B: MappingBackend> {
     va_range: AddrRange<B::Addr>,
     flags: B::Flags,
     reported_flags: B::Flags,
+    max_flags: B::Flags,
     backend: B,
 }
 
 impl<B: MappingBackend> MemoryArea<B> {
+    /// Fallible counterpart of [`Self::new`].  New code that receives
+    /// untrusted address/length pairs should use this constructor so an
+    /// overflow is represented as a mapping error instead of a panic.
+    pub fn try_new(
+        start: B::Addr,
+        size: usize,
+        flags: B::Flags,
+        backend: B,
+    ) -> MappingResult<Self> {
+        Self::try_new_with_reported_flags(start, size, flags, flags, backend)
+    }
+
+    /// Fallible constructor with separate operational and reported flags.
+    pub fn try_new_with_reported_flags(
+        start: B::Addr,
+        size: usize,
+        flags: B::Flags,
+        reported_flags: B::Flags,
+        backend: B,
+    ) -> MappingResult<Self> {
+        let va_range = ax_memory_addr::AddrRange::try_from_start_size(start, size)
+            .ok_or(MappingError::InvalidParam)?;
+        if va_range.is_empty() {
+            return Err(MappingError::InvalidParam);
+        }
+        Ok(Self {
+            va_range,
+            flags,
+            reported_flags,
+            max_flags: flags,
+            backend,
+        })
+    }
+
     /// Creates a new memory area.
     ///
     /// # Panics
@@ -45,8 +81,55 @@ impl<B: MappingBackend> MemoryArea<B> {
             va_range: AddrRange::from_start_size(start, size),
             flags,
             reported_flags,
+            max_flags: flags,
             backend,
         }
+    }
+
+    /// Creates an area with an explicit maximum permission envelope.
+    pub fn new_with_permissions(
+        start: B::Addr,
+        size: usize,
+        flags: B::Flags,
+        reported_flags: B::Flags,
+        max_flags: B::Flags,
+        backend: B,
+    ) -> Self {
+        Self {
+            va_range: AddrRange::from_start_size(start, size),
+            flags,
+            reported_flags,
+            max_flags,
+            backend,
+        }
+    }
+
+    /// Fallible constructor with an explicit maximum permission envelope.
+    ///
+    /// This is the constructor used at syscall boundaries.  The older
+    /// infallible constructors remain available for trusted boot-time
+    /// mappings, but user supplied `start + size` pairs must not be allowed to
+    /// wrap through `AddrRange::from_start_size`.
+    pub fn try_new_with_permissions(
+        start: B::Addr,
+        size: usize,
+        flags: B::Flags,
+        reported_flags: B::Flags,
+        max_flags: B::Flags,
+        backend: B,
+    ) -> MappingResult<Self> {
+        let va_range =
+            AddrRange::try_from_start_size(start, size).ok_or(MappingError::InvalidParam)?;
+        if va_range.is_empty() {
+            return Err(MappingError::InvalidParam);
+        }
+        Ok(Self {
+            va_range,
+            flags,
+            reported_flags,
+            max_flags,
+            backend,
+        })
     }
 
     /// Returns the virtual address range.
@@ -62,6 +145,11 @@ impl<B: MappingBackend> MemoryArea<B> {
     /// Returns the permission flags reported to user-visible introspection.
     pub const fn reported_flags(&self) -> B::Flags {
         self.reported_flags
+    }
+
+    /// Returns the maximum permissions retained for this mapping.
+    pub const fn max_flags(&self) -> B::Flags {
+        self.max_flags
     }
 
     /// Returns the start address of the memory area.
@@ -86,6 +174,10 @@ impl<B: MappingBackend> MemoryArea<B> {
 }
 
 impl<B: MappingBackend> MemoryArea<B> {
+    pub(crate) fn replace_backend(&mut self, backend: B) -> B {
+        core::mem::replace(&mut self.backend, backend)
+    }
+
     /// Changes backend/page-table flags and reported flags together.
     pub(crate) fn set_flags_with_reported_flags(
         &mut self,
@@ -104,10 +196,24 @@ impl<B: MappingBackend> MemoryArea<B> {
             .ok_or(MappingError::BadState)
     }
 
+    pub(crate) fn validate_map(&self, page_table: &B::PageTable) -> MappingResult {
+        self.backend
+            .validate_map(self.start(), self.size(), self.flags, page_table)
+            .then_some(())
+            .ok_or(MappingError::BadState)
+    }
+
     /// Unmaps the whole memory area in the page table.
     pub(crate) fn unmap_area(&self, page_table: &mut B::PageTable) -> MappingResult {
         self.backend
             .unmap(self.start(), self.size(), page_table)
+            .then_some(())
+            .ok_or(MappingError::BadState)
+    }
+
+    pub(crate) fn validate_unmap(&self, page_table: &B::PageTable) -> MappingResult {
+        self.backend
+            .validate_unmap(self.start(), self.size(), page_table)
             .then_some(())
             .ok_or(MappingError::BadState)
     }
@@ -119,90 +225,51 @@ impl<B: MappingBackend> MemoryArea<B> {
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         self.backend
-            .protect(self.start(), self.size(), new_flags, page_table);
-        Ok(())
-    }
-
-    /// Shrinks the memory area at the left side.
-    ///
-    /// The memory area is shrunk to `new_size`, and the left-side part is
-    /// unmapped.
-    ///
-    /// The start address is increased by `old_size - new_size`.
-    ///
-    /// `new_size` must be greater than 0 and less than the current size.
-    pub(crate) fn shrink_left(
-        &mut self,
-        new_size: usize,
-        page_table: &mut B::PageTable,
-    ) -> MappingResult {
-        assert!(new_size > 0 && new_size < self.size());
-
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-
-        if !self.backend.unmap(self.start(), unmap_size, page_table) {
-            return Err(MappingError::BadState);
-        }
-        // Use wrapping_add to avoid overflow check.
-        // Safety: `unmap_size` is less than the current size, so it will never
-        // overflow.
-        self.va_range.start = self.va_range.start.wrapping_add(unmap_size);
-        self.backend.shrink_left(unmap_size);
-        Ok(())
+            .protect(self.start(), self.size(), new_flags, page_table)
+            .then_some(())
+            .ok_or(MappingError::BadState)
     }
 
     /// Shrinks the memory area at the left side without touching the page
     /// table.
-    pub(crate) fn shrink_left_metadata(&mut self, new_size: usize) {
-        assert!(new_size > 0 && new_size < self.size());
-
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-        self.va_range.start = self.va_range.start.wrapping_add(unmap_size);
-        self.backend.shrink_left(unmap_size);
-    }
-
-    /// Shrinks the memory area at the right side.
-    ///
-    /// The memory area is shrunk to `new_size`, and the right-side part is
-    /// unmapped.
-    ///
-    /// The end address is decreased by `old_size - new_size`.
-    ///
-    /// `new_size` must be greater than 0 and less than the current size.
-    pub(crate) fn shrink_right(
-        &mut self,
-        new_size: usize,
-        page_table: &mut B::PageTable,
-    ) -> MappingResult {
-        assert!(new_size > 0 && new_size < self.size());
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-
-        // Use wrapping_add to avoid overflow check.
-        // Safety: `new_size` is less than the current size, so it will never overflow.
-        let unmap_start = self.start().wrapping_add(new_size);
-
-        if !self.backend.unmap(unmap_start, unmap_size, page_table) {
-            return Err(MappingError::BadState);
+    pub(crate) fn shrink_left_metadata(&mut self, new_size: usize) -> MappingResult {
+        if new_size == 0 || new_size >= self.size() {
+            return Err(MappingError::InvalidParam);
         }
 
-        // Use wrapping_sub to avoid overflow check, same as above.
-        self.va_range.end = self.va_range.end.wrapping_sub(unmap_size);
-        self.backend.shrink_right(unmap_size);
+        let old_size = self.size();
+        let unmap_size = old_size - new_size;
+        let new_start = self
+            .va_range
+            .start
+            .checked_add(unmap_size)
+            .ok_or(MappingError::InvalidParam)?;
+        if !self.backend.shrink_left(unmap_size) {
+            return Err(MappingError::BadState);
+        }
+        self.va_range.start = new_start;
         Ok(())
     }
 
     /// Shrinks the memory area at the right side without touching the page
     /// table.
-    pub(crate) fn shrink_right_metadata(&mut self, new_size: usize) {
-        assert!(new_size > 0 && new_size < self.size());
+    pub(crate) fn shrink_right_metadata(&mut self, new_size: usize) -> MappingResult {
+        if new_size == 0 || new_size >= self.size() {
+            return Err(MappingError::InvalidParam);
+        }
         let old_size = self.size();
         let unmap_size = old_size - new_size;
 
-        self.va_range.end = self.va_range.end.wrapping_sub(unmap_size);
-        self.backend.shrink_right(unmap_size);
+        let new_end = self
+            .va_range
+            .end
+            .checked_sub(unmap_size)
+            .ok_or(MappingError::InvalidParam)?;
+        if !self.backend.shrink_right(unmap_size) {
+            return Err(MappingError::BadState);
+        }
+        self.va_range.end = new_end;
+        Ok(())
     }
 
     /// Inverse of [`shrink_right`]: extends the end by `additional_size`
@@ -212,12 +279,12 @@ impl<B: MappingBackend> MemoryArea<B> {
         additional_size: usize,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
-        assert!(additional_size > 0);
-        assert!(
-            self.end().is_aligned_4k()
-                && additional_size.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K),
-            "grow_right: end and additional_size must be page-aligned"
-        );
+        if additional_size == 0
+            || !self.end().is_aligned_4k()
+            || !additional_size.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K)
+        {
+            return Err(MappingError::InvalidParam);
+        }
         let map_start = self.end();
         let new_end = self
             .va_range
@@ -226,9 +293,25 @@ impl<B: MappingBackend> MemoryArea<B> {
             .ok_or(MappingError::InvalidParam)?;
         if !self
             .backend
-            .map(map_start, additional_size, self.flags, page_table)
+            .validate_map(map_start, additional_size, self.flags, page_table)
         {
             return Err(MappingError::BadState);
+        }
+        if !self
+            .backend
+            .map(map_start, additional_size, self.flags, page_table)
+        {
+            // A backend is allowed to materialize a prefix before reporting
+            // failure.  Use its inverse while the original metadata is still
+            // intact; if that inverse cannot prove a full cleanup, expose the
+            // indeterminate state instead of returning a recoverable error.
+            return Err(
+                if self.backend.unmap(map_start, additional_size, page_table) {
+                    MappingError::BadState
+                } else {
+                    MappingError::NeedsRepair
+                },
+            );
         }
         self.va_range.end = new_end;
         Ok(())
@@ -241,28 +324,29 @@ impl<B: MappingBackend> MemoryArea<B> {
     ///
     /// Returns `None` if the given position is not in the memory area, or one
     /// of the parts is empty after splitting.
-    pub(crate) fn split(&mut self, pos: B::Addr) -> Option<Self> {
+    pub(crate) fn split(&mut self, pos: B::Addr) -> MappingResult<Option<Self>> {
         if self.start() < pos && pos < self.end() {
             let align_diff = pos.sub_addr(self.start());
 
             let right = self
                 .backend
                 .split(align_diff)
-                .expect("backend should be splittable");
+                .ok_or(MappingError::BadState)?;
 
-            let new_area = Self::new_with_reported_flags(
+            let mut new_area = Self::new_with_reported_flags(
                 pos,
-                // Use wrapping_sub_addr to avoid overflow check. It is safe because
-                // `pos` is within the memory area.
-                self.end().wrapping_sub_addr(pos),
+                self.end()
+                    .checked_sub_addr(pos)
+                    .ok_or(MappingError::InvalidParam)?,
                 self.flags,
                 self.reported_flags,
                 right,
             );
+            new_area.max_flags = self.max_flags;
             self.va_range.end = pos;
-            Some(new_area)
+            Ok(Some(new_area))
         } else {
-            None
+            Ok(None)
         }
     }
 }
@@ -277,6 +361,7 @@ where
             .field("va_range", &self.va_range)
             .field("flags", &self.flags)
             .field("reported_flags", &self.reported_flags)
+            .field("max_flags", &self.max_flags)
             .finish()
     }
 }

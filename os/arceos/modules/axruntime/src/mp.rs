@@ -98,13 +98,18 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // handlers or pending per-CPU IRQ enables.
     super::init_percpu_irq(cpu_id);
 
+    #[cfg(feature = "paging")]
+    let tlb_preparation = ax_hal::cache::prepare_current_cpu_tlb()
+        .expect("secondary CPU failed to prepare TLB capability");
+
     ax_hal::asm::enable_irqs();
 
     #[cfg(feature = "ipi")]
-    {
-        ax_hal::asm::flush_tlb(None);
-        ax_ipi::mark_current_cpu_ready();
-    }
+    ax_ipi::mark_current_cpu_ready();
+
+    #[cfg(feature = "paging")]
+    ax_hal::cache::publish_current_cpu_tlb_ready(tlb_preparation)
+        .expect("secondary CPU failed to publish TLB readiness");
 
     // Publishing a log record is safe as soon as the per-CPU area exists, but
     // waking the owner worker may select a run queue or send an IPI. Publish

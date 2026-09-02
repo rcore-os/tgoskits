@@ -8,7 +8,10 @@ pub(crate) type CurrentTask = arceos::ArceOsCurrentTask;
 pub(crate) type TaskInner = arceos::ArceOsTaskInner;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
-pub(crate) use arceos::ArceOsTaskExt as TaskExt;
+pub(crate) use arceos::{
+    ArceOsSchedulerAddressSpaceActivation as SchedulerAddressSpaceActivation,
+    ArceOsTaskExt as TaskExt,
+};
 
 pub(crate) fn current_task() -> CurrentTask {
     arceos::current_task()

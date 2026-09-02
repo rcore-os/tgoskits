@@ -1,6 +1,13 @@
 //! Cache, TLB, and modified-text synchronization helpers.
 
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+
+static KERNEL_TLB_GENERATION: AtomicU64 = AtomicU64::new(0);
+static KERNEL_TLB_READY_CPUS: AtomicUsize = AtomicUsize::new(0);
+static ADDRESS_SPACE_TAG_CAPACITY: AtomicU32 = AtomicU32::new(u32::MAX);
+static FROZEN_ADDRESS_SPACE_TAG_CAPACITY: AtomicU32 = AtomicU32::new(0);
 
 // The range API is normalized to 4 KiB pages. x86_64 and RISC-V use the
 // current Linux defaults; the other backends keep the page-table engine's
@@ -48,6 +55,218 @@ pub enum TlbShootdownError {
     /// The platform rejected the cross-CPU operation.
     #[error("platform rejected the cross-CPU TLB shootdown")]
     Platform,
+    /// The monotonic kernel TLB generation can no longer advance.
+    #[error("kernel TLB generation is exhausted")]
+    GenerationExhausted,
+}
+
+fn advance_kernel_tlb_generation() -> Result<u64, TlbShootdownError> {
+    KERNEL_TLB_GENERATION
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            generation.checked_add(1)
+        })
+        .map(|previous| previous + 1)
+        .map_err(|_| TlbShootdownError::GenerationExhausted)
+}
+
+fn publish_cpu_tlb_ready_with(
+    cpu_id: usize,
+    generation: &AtomicU64,
+    ready_cpus: &AtomicUsize,
+    mut flush_all: impl FnMut(),
+) -> Result<(), TlbShootdownError> {
+    let cpu_bit = 1usize
+        .checked_shl(cpu_id as u32)
+        .ok_or(TlbShootdownError::Platform)?;
+    loop {
+        let observed = generation.load(Ordering::Acquire);
+        flush_all();
+        ready_cpus.fetch_or(cpu_bit, Ordering::AcqRel);
+        if generation.load(Ordering::Acquire) == observed {
+            return Ok(());
+        }
+        // A page-table publisher raced with this transition and may have
+        // snapshotted the ready mask before our bit became visible. Withdraw
+        // the bit, flush the newer generation, and publish again.
+        ready_cpus.fetch_and(!cpu_bit, Ordering::AcqRel);
+    }
+}
+
+fn withdraw_cpu_tlb_ready_with(
+    cpu_id: usize,
+    generation: &AtomicU64,
+    ready_cpus: &AtomicUsize,
+    mut flush_all: impl FnMut(),
+) -> Result<(), TlbShootdownError> {
+    let cpu_bit = 1usize
+        .checked_shl(cpu_id as u32)
+        .ok_or(TlbShootdownError::Platform)?;
+    ready_cpus.fetch_and(!cpu_bit, Ordering::AcqRel);
+    loop {
+        let observed = generation.load(Ordering::Acquire);
+        flush_all();
+        if generation.load(Ordering::Acquire) == observed
+            && ready_cpus.load(Ordering::Acquire) & cpu_bit == 0
+        {
+            return Ok(());
+        }
+        // A re-online transition or a kernel mapping publication raced with
+        // the flush. Keep the CPU excluded and cover the newer generation.
+        ready_cpus.fetch_and(!cpu_bit, Ordering::AcqRel);
+    }
+}
+
+fn publish_address_space_tag_capacity_with(
+    capacity: u32,
+    aggregate: &AtomicU32,
+) -> Result<u32, TlbShootdownError> {
+    if capacity == 0 || !capacity.is_power_of_two() {
+        return Err(TlbShootdownError::Platform);
+    }
+    let previous = aggregate.fetch_min(capacity, Ordering::AcqRel);
+    Ok(previous.min(capacity))
+}
+
+fn publish_current_cpu_address_space_tag_capacity() -> Result<u32, TlbShootdownError> {
+    let local_capacity = ax_cpu::asm::address_space_tag_capacity(crate::cpu_num());
+    let aggregate =
+        publish_address_space_tag_capacity_with(local_capacity, &ADDRESS_SPACE_TAG_CAPACITY)?;
+    let frozen = FROZEN_ADDRESS_SPACE_TAG_CAPACITY.load(Ordering::Acquire);
+    if frozen != 0 && local_capacity < frozen {
+        // The allocator may already have issued tags that this CPU cannot
+        // represent. Linux rejects an ASID-width mismatch instead of silently
+        // truncating a live context; keep this CPU outside the ready mask.
+        return Err(TlbShootdownError::Platform);
+    }
+    Ok(aggregate)
+}
+
+/// A current-CPU capability probe completed while the CPU was still
+/// unavailable to normal tasks and cross-CPU TLB requests.
+#[must_use = "the CPU remains unavailable for TLB requests until this token is published"]
+pub struct CurrentCpuTlbPreparation {
+    cpu_id: usize,
+}
+
+impl CurrentCpuTlbPreparation {
+    /// Returns the logical CPU covered by this preparation.
+    pub const fn cpu_id(&self) -> usize {
+        self.cpu_id
+    }
+}
+
+/// Probes the current CPU's address-space-tag capability before it is online.
+///
+/// Architectures such as RISC-V discover the implemented ASID width by
+/// temporarily writing the address-space register. The caller must therefore
+/// invoke this after per-CPU state exists but before enabling local interrupts
+/// or making the CPU available to the scheduler.
+pub fn prepare_current_cpu_tlb() -> Result<CurrentCpuTlbPreparation, TlbShootdownError> {
+    let cpu_id = crate::percpu::this_cpu_id();
+    let _ = 1usize
+        .checked_shl(cpu_id as u32)
+        .ok_or(TlbShootdownError::Platform)?;
+    publish_current_cpu_address_space_tag_capacity()?;
+    Ok(CurrentCpuTlbPreparation { cpu_id })
+}
+
+/// A CPU has left the kernel TLB-ready set after switching away from every
+/// userspace root and covering a stable kernel mapping generation.
+#[must_use = "dropping this token deliberately leaves the CPU offline"]
+pub struct CurrentCpuTlbOffline {
+    cpu_id: usize,
+}
+
+impl CurrentCpuTlbOffline {
+    /// Returns the logical CPU withdrawn by this token.
+    pub const fn cpu_id(&self) -> usize {
+        self.cpu_id
+    }
+
+    /// Re-probes this CPU before a future re-online transition.
+    ///
+    /// The caller must satisfy the same interrupt and scheduler exclusion
+    /// requirements as [`prepare_current_cpu_tlb`].
+    pub fn prepare_online(self) -> Result<CurrentCpuTlbPreparation, TlbShootdownError> {
+        if crate::percpu::this_cpu_id() != self.cpu_id {
+            return Err(TlbShootdownError::Platform);
+        }
+        prepare_current_cpu_tlb()
+    }
+}
+
+/// Returns the address-space-tag capacity shared by every prepared CPU.
+///
+/// Capacity includes reserved tag zero. A value of one selects the portable
+/// full-flush mode. Before any CPU publishes a capability, this function also
+/// returns one rather than exposing the internal uninitialized sentinel.
+pub fn address_space_tag_capacity() -> u32 {
+    let frozen = FROZEN_ADDRESS_SPACE_TAG_CAPACITY.load(Ordering::Acquire);
+    if frozen != 0 {
+        return frozen;
+    }
+    match ADDRESS_SPACE_TAG_CAPACITY.load(Ordering::Acquire) {
+        u32::MAX => 1,
+        capacity => capacity,
+    }
+}
+
+/// Freezes the system-wide tag capacity before the first MM tag allocation.
+///
+/// CPUs prepared after this point must support at least this many tags or they
+/// cannot enter the TLB-ready set. This mirrors Linux's rule that one live ASID
+/// allocator cannot mix incompatible CPU ASID widths.
+pub fn freeze_address_space_tag_capacity() -> u32 {
+    let discovered = address_space_tag_capacity();
+    match FROZEN_ADDRESS_SPACE_TAG_CAPACITY.compare_exchange(
+        0,
+        discovered,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => discovered,
+        Err(frozen) => frozen,
+    }
+}
+
+/// Publishes that the current CPU may access dynamic kernel mappings.
+///
+/// The runtime must initialize synchronous IPI delivery after obtaining
+/// `preparation` and before calling this function. A full local flush is
+/// performed before the ready bit becomes visible, and a generation recheck
+/// closes the race with an in-progress kernel mapping mutation. CPUs not
+/// present in the ready mask are excluded from shootdown snapshots.
+pub fn publish_current_cpu_tlb_ready(
+    preparation: CurrentCpuTlbPreparation,
+) -> Result<(), TlbShootdownError> {
+    if crate::percpu::this_cpu_id() != preparation.cpu_id {
+        return Err(TlbShootdownError::Platform);
+    }
+    publish_cpu_tlb_ready_with(
+        preparation.cpu_id,
+        &KERNEL_TLB_GENERATION,
+        &KERNEL_TLB_READY_CPUS,
+        || ax_cpu::asm::flush_tlb(None),
+    )
+}
+
+/// Withdraws the current CPU from kernel TLB shootdown snapshots.
+///
+/// # Safety
+///
+/// The caller must already have installed the permanent kernel root, released
+/// every userspace activation lease for this CPU, and disabled migration. The
+/// CPU must not access mappings that can be retired after this function. IPI
+/// delivery must remain operational until the stable-generation flush returns.
+pub unsafe fn withdraw_current_cpu_tlb_ready() -> Result<CurrentCpuTlbOffline, TlbShootdownError> {
+    let cpu_id = crate::percpu::this_cpu_id();
+    withdraw_cpu_tlb_ready_with(
+        cpu_id,
+        &KERNEL_TLB_GENERATION,
+        &KERNEL_TLB_READY_CPUS,
+        || ax_cpu::asm::flush_tlb(None),
+    )?;
+    Ok(CurrentCpuTlbOffline { cpu_id })
 }
 
 /// Flushes the TLB entries covering a virtual-address range on the current CPU.
@@ -79,23 +298,28 @@ pub fn update_mmu_cache(vaddr: VirtAddr) {
     update_mmu_cache_with(vaddr, ax_cpu::asm::update_mmu_cache);
 }
 
-/// Flushes the TLB entries covering a virtual-address range on all available CPUs.
+/// Flushes a virtual-address range on the caller and every TLB-ready CPU.
+///
+/// The caller advances the kernel mapping generation before selecting the
+/// ready mask. A CPU publishes itself ready only after a local full flush and
+/// rechecks that generation, so a CPU racing with this update cannot miss it.
 pub fn flush_tlb_range_all_cpus(start: VirtAddr, size: usize) -> Result<(), TlbShootdownError> {
     #[cfg(feature = "ipi")]
     let _guard = ax_sync::PreemptGuard::new();
-    let cpu_count = crate::cpu_num().min(usize::BITS as usize);
-    let cpu_mask = if cpu_count == usize::BITS as usize {
-        usize::MAX
-    } else {
-        (1usize << cpu_count) - 1
-    };
+    advance_kernel_tlb_generation()?;
+    let current_cpu = crate::percpu::this_cpu_id();
+    let current_bit = 1usize
+        .checked_shl(current_cpu as u32)
+        .ok_or(TlbShootdownError::Platform)?;
+    let cpu_mask = KERNEL_TLB_READY_CPUS.load(Ordering::Acquire) | current_bit;
     flush_tlb_range_on_cpus_with(&AxHalTlbShootdown, cpu_mask, start, size)
 }
 
 /// Flushes a TLB range on the CPUs selected by `cpu_mask`.
 ///
-/// Bit `n` targets logical CPU `n`. Offline CPUs are skipped because CPU
-/// teardown installs the offline root before withdrawing their online state.
+/// Bit `n` targets logical CPU `n`. Every selected CPU must be online. An
+/// offline target is rejected before any invalidation is performed so callers
+/// cannot acknowledge an address-space receipt for a CPU that did not flush.
 pub fn flush_tlb_range_on_cpus(
     cpu_mask: usize,
     start: VirtAddr,
@@ -104,6 +328,17 @@ pub fn flush_tlb_range_on_cpus(
     #[cfg(feature = "ipi")]
     let _guard = ax_sync::PreemptGuard::new();
     flush_tlb_range_on_cpus_with(&AxHalTlbShootdown, cpu_mask, start, size)
+}
+
+/// Flushes every address translation on the CPUs selected by `cpu_mask`.
+///
+/// Keeping a distinct entry point makes a full-flush obligation explicit to
+/// callers that have no finite virtual range (for example a root replacement
+/// or an address-space tag rollover).  The implementation still goes through
+/// the same synchronous shootdown protocol, so timeout/offline/unsupported
+/// errors remain observable.
+pub fn flush_tlb_all_on_cpus(cpu_mask: usize) -> Result<(), TlbShootdownError> {
+    flush_tlb_range_on_cpus(cpu_mask, VirtAddr::from(0), usize::MAX)
 }
 
 trait TlbShootdown {
@@ -182,7 +417,13 @@ fn flush_tlb_range_on_cpus_with(
     let current_cpu = runtime.current_cpu();
     for cpu_id in 0..runtime.cpu_count() {
         let selected = cpu_id < usize::BITS as usize && cpu_mask & (1usize << cpu_id) != 0;
-        if !selected || cpu_id == current_cpu || !runtime.cpu_online(cpu_id) {
+        if selected && !runtime.cpu_online(cpu_id) {
+            return Err(TlbShootdownError::CpuOffline);
+        }
+    }
+    for cpu_id in 0..runtime.cpu_count() {
+        let selected = cpu_id < usize::BITS as usize && cpu_mask & (1usize << cpu_id) != 0;
+        if !selected || cpu_id == current_cpu {
             continue;
         }
         runtime.flush_remote(cpu_id, start, size)?;
@@ -333,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn all_cpu_tlb_shootdown_skips_offline_cpus_then_flushes_local() {
+    fn selected_offline_cpu_cannot_be_silently_acknowledged() {
         let runtime = ModelShootdown {
             online: [true, false, true],
             remote_error: None,
@@ -344,9 +585,30 @@ mod tests {
         let result =
             flush_tlb_range_on_cpus_with(&runtime, usize::MAX, VirtAddr::from(0x4000), 0x2000);
 
-        assert_eq!(result, Ok(()));
-        assert_eq!(runtime.remote_cpu.get(), Some(2));
-        assert!(runtime.local_flushed.get());
+        assert_eq!(result, Err(TlbShootdownError::CpuOffline));
+        assert_eq!(runtime.remote_cpu.get(), None);
+        assert!(!runtime.local_flushed.get());
+    }
+
+    #[test]
+    fn targeted_tlb_shootdown_rejects_selected_offline_cpu() {
+        let runtime = ModelShootdown {
+            online: [true, false, true],
+            remote_error: None,
+            remote_cpu: Cell::new(None),
+            local_flushed: Cell::new(false),
+        };
+
+        let result = flush_tlb_range_on_cpus_with(
+            &runtime,
+            (1usize << 0) | (1usize << 1),
+            VirtAddr::from(0x4000),
+            0x2000,
+        );
+
+        assert_eq!(result, Err(TlbShootdownError::CpuOffline));
+        assert_eq!(runtime.remote_cpu.get(), None);
+        assert!(!runtime.local_flushed.get());
     }
 
     #[test]
@@ -377,5 +639,67 @@ mod tests {
             tlb_range_flush_mode((TLB_SINGLE_PAGE_FLUSH_CEILING + 1) * PAGE_SIZE_4K),
             TlbRangeFlushMode::Full
         );
+    }
+
+    #[test]
+    fn cpu_ready_publication_reflushes_a_racing_generation() {
+        let generation = AtomicU64::new(7);
+        let ready_cpus = AtomicUsize::new(0);
+        let flushes = Cell::new(0);
+
+        publish_cpu_tlb_ready_with(1, &generation, &ready_cpus, || {
+            let current = flushes.get();
+            flushes.set(current + 1);
+            if current == 0 {
+                generation.fetch_add(1, Ordering::Release);
+            }
+        })
+        .unwrap();
+
+        assert_eq!(flushes.get(), 2);
+        assert_eq!(ready_cpus.load(Ordering::Acquire), 1usize << 1);
+    }
+
+    #[test]
+    fn cpu_ready_publication_rejects_unrepresentable_cpu_ids() {
+        let generation = AtomicU64::new(0);
+        let ready_cpus = AtomicUsize::new(0);
+        assert_eq!(
+            publish_cpu_tlb_ready_with(usize::BITS as usize, &generation, &ready_cpus, || {}),
+            Err(TlbShootdownError::Platform)
+        );
+    }
+
+    #[test]
+    fn cpu_offline_withdrawal_reflushes_a_racing_generation() {
+        let generation = AtomicU64::new(11);
+        let ready_cpus = AtomicUsize::new(1usize << 1);
+        let flushes = Cell::new(0);
+
+        withdraw_cpu_tlb_ready_with(1, &generation, &ready_cpus, || {
+            let current = flushes.get();
+            flushes.set(current + 1);
+            if current == 0 {
+                generation.fetch_add(1, Ordering::Release);
+            }
+        })
+        .unwrap();
+
+        assert_eq!(flushes.get(), 2);
+        assert_eq!(ready_cpus.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn tag_capacity_uses_the_smallest_online_cpu_capability() {
+        let capacity = AtomicU32::new(u32::MAX);
+        assert_eq!(
+            publish_address_space_tag_capacity_with(1 << 16, &capacity),
+            Ok(1 << 16)
+        );
+        assert_eq!(
+            publish_address_space_tag_capacity_with(1 << 8, &capacity),
+            Ok(1 << 8)
+        );
+        assert_eq!(capacity.load(Ordering::Acquire), 1 << 8);
     }
 }

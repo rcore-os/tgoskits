@@ -46,9 +46,12 @@
  * 同时挂 SIGSEGV 兜底, 保证测例本身不会因信号默认动作而崩溃. */
 static sigjmp_buf g_jb;
 static volatile sig_atomic_t g_sig;
-static void on_fault(int sig)
+static volatile sig_atomic_t g_code;
+static void on_fault(int sig, siginfo_t *info, void *context)
 {
+    (void)context;
     g_sig = sig;
+    g_code = info ? info->si_code : 0;
     siglongjmp(g_jb, 1);
 }
 
@@ -56,11 +59,13 @@ static void on_fault(int sig)
 static int read_fault_signal(volatile unsigned char *p, unsigned char *out)
 {
     struct sigaction sa = {0}, old_bus, old_segv;
-    sa.sa_handler = on_fault;
+    sa.sa_sigaction = on_fault;
+    sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGBUS, &sa, &old_bus);
     sigaction(SIGSEGV, &sa, &old_segv);
     g_sig = 0;
+    g_code = 0;
     if (sigsetjmp(g_jb, 1) == 0) {
         unsigned char v = *p;
         if (out)
@@ -127,22 +132,66 @@ int main(void)
         CHECK(0, mb);
     }
 
-    /* (c) offset 4096 (>= eof_page=1) 落在 EOF 之外 → 必须故障(未被预分配) */
+    /* (c) offset 4096 (>= eof_page=1) 落在 EOF 之外 → SIGBUS */
     unsigned char v = 0xFF;
     int sig = read_fault_signal(p + PAGE, &v);
-    CHECK(sig != 0, "access at offset 4096 (beyond EOF) faults (page not preallocated)");
-    /* #1164 的保证是"EOF 外页不预分配、真实访问会故障"——上面已断言。具体信号:
-     * Linux 对越过文件映射 EOF 的访问发 SIGBUS; StarryOS 目前对任何无后备缺页统一发
-     * SIGSEGV(handle_page_fault 尚无 Bus 分支, 属独立 fault-handler gap, 另行修复)。
-     * 此处仅记录(不门控)实际信号, 避免把独立的信号语义 gap 混入本 OOM-bound 修复。 */
-    printf("  INFO | beyond-EOF fault signal=%d (Linux: SIGBUS=%d; StarryOS now SIGSEGV=%d)\n",
-           sig, SIGBUS, SIGSEGV);
+    CHECK(sig == SIGBUS, "access at offset 4096 (beyond EOF) raises SIGBUS");
 
-    /* (d) 稀疏区深处(接近 256MB 末尾)同样未预分配 → 访问故障 */
+    /* (d) 稀疏区深处(接近 256MB 末尾)同样未预分配 → SIGBUS */
     int sig2 = read_fault_signal(p + (HUGE_LEN - PAGE), NULL);
-    CHECK(sig2 != 0, "access near end of huge sparse mapping faults (never preallocated)");
+    CHECK(sig2 == SIGBUS, "access near end of huge sparse mapping raises SIGBUS");
 
     munmap(m, HUGE_LEN);
+
+    /* Truncate must revoke already-resident PTEs before publishing the new
+     * file epoch. The new partial last page keeps its prefix and exposes a
+     * zero tail; the following whole page faults with BUS_ADRERR. */
+    unsigned char resident[PAGE * 3];
+    memset(resident, 0x5c, sizeof(resident));
+    CHECK_RET(ftruncate(fd, sizeof(resident)), 0,
+              "grow truncate fixture to three pages");
+    CHECK_RET(pwrite(fd, resident, sizeof(resident), 0),
+              (long)sizeof(resident), "fill truncate fixture");
+    volatile unsigned char *trunc_map = mmap(NULL, sizeof(resident),
+                                             PROT_READ | PROT_WRITE,
+                                             MAP_SHARED, fd, 0);
+    CHECK(trunc_map != MAP_FAILED, "map three-page truncate fixture");
+    if (trunc_map != MAP_FAILED) {
+        CHECK(trunc_map[0] == 0x5c && trunc_map[PAGE] == 0x5c &&
+                  trunc_map[PAGE * 2] == 0x5c,
+              "fault all truncate fixture pages before shrink");
+        CHECK_RET(ftruncate(fd, PAGE + 17), 0,
+                  "shrink resident mapping to a partial second page");
+
+        int prefix_ok = 1;
+        for (unsigned long i = PAGE; i < PAGE + 17; i++) {
+            if (trunc_map[i] != 0x5c) {
+                prefix_ok = 0;
+                break;
+            }
+        }
+        CHECK(prefix_ok, "truncate preserves bytes before the new partial EOF");
+
+        int truncated_tail_zero = 1;
+        for (unsigned long i = PAGE + 17; i < PAGE * 2; i++) {
+            if (trunc_map[i] != 0) {
+                truncated_tail_zero = 0;
+                break;
+            }
+        }
+        CHECK(truncated_tail_zero,
+              "truncate invalidates resident partial page and zeroes its tail");
+
+        int truncate_sig = read_fault_signal(trunc_map + PAGE * 2, NULL);
+        CHECK(truncate_sig == SIGBUS && g_code == BUS_ADRERR,
+              "truncate invalidates resident whole page with SIGBUS/BUS_ADRERR");
+
+        CHECK_RET(ftruncate(fd, sizeof(resident)), 0,
+                  "extend truncated mapping back to three pages");
+        CHECK(trunc_map[PAGE + 17] == 0 && trunc_map[PAGE * 2] == 0,
+              "extended holes fault back as zero after truncate epoch change");
+        munmap((void *)trunc_map, sizeof(resident));
+    }
     close(fd);
     unlink(path);
     TEST_DONE();

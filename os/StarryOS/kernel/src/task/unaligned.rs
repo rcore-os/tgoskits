@@ -22,7 +22,12 @@ pub(super) fn emulate_user_unaligned(
     let flags = page_fault_flags(access.access_type());
 
     let result = if access.access_type() == UnalignedAccessType::Write {
-        let aspace = thread.proc_data.aspace();
+        let Ok(aspace) = thread.proc_data.pin_aspace() else {
+            return Ok(UnalignedEmulationResult::PageFault {
+                address: VirtAddr::from_usize(fault_address),
+                flags,
+            });
+        };
         let mut aspace = aspace.lock();
         if let Err(address) = prepare_write_range(&mut aspace, &access) {
             return Ok(UnalignedEmulationResult::PageFault { address, flags });

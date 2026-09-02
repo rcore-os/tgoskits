@@ -39,6 +39,21 @@ pub trait VmPtr: Copy {
         // SAFETY: `AnyBitPattern`
         Ok(unsafe { uninit.assume_init() })
     }
+
+    /// Reads a value whose validity cannot be expressed with
+    /// [`AnyBitPattern`].
+    ///
+    /// # Safety
+    ///
+    /// Every possible bit pattern copied from the virtual address must be a
+    /// valid value of `Self::Target`. This is suitable for C ABI records made
+    /// only of integers and raw pointers, but not for references, enums,
+    /// booleans, or other types with invalid representations.
+    unsafe fn vm_read_any(self) -> VmResult<Self::Target> {
+        let uninit = self.vm_read_uninit()?;
+        // SAFETY: guaranteed by the caller's all-bit-patterns-valid contract.
+        Ok(unsafe { uninit.assume_init() })
+    }
 }
 
 impl<T> VmPtr for *const T {

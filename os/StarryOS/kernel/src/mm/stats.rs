@@ -17,7 +17,8 @@ pub struct ProcessMemStats {
     pub vss_pages: u64,
     /// Executable VMA pages excluding the stack mapping.
     pub text_pages: u64,
-    /// Writable data VMA pages excluding stack and pure executable regions.
+    /// Writable data VMA pages excluding stack and pure executable regions
+    /// (`VmData`; Linux `statm.data` adds `stack_pages` at read time).
     pub data_pages: u64,
     /// Stack VMA pages (`[stack]` name or USER_STACK range).
     pub stack_pages: u64,
@@ -130,22 +131,13 @@ impl ProcessMemStats {
     /// Collect memory statistics by iterating the address-space VMA list.
     ///
     /// Current VSS / VMA breakdown comes from a VMA walk; VmPeak from
-    /// [`AddrSpace::vm_stat`]; resident RSS from [`AddrSpace::rss`].
+    /// [`AddrSpace::vm_stat`]; resident RSS from the published MappingSlot set.
     pub fn collect(aspace: &AddrSpace) -> Self {
         let mut stats = Self::default();
-        for area in aspace.areas() {
+        for area in aspace.vma_inspection_records().unwrap_or_default() {
             let pages = (area.size() / PAGE_SIZE_4K) as u64;
             let flags = area.flags();
-            let file_info = area
-                .backend()
-                .file_info()
-                .unwrap_or(super::BackendFileInfo {
-                    path: String::new(),
-                    offset: None,
-                    inode: None,
-                    dev: None,
-                    shared: false,
-                });
+            let file_info = area.file_info();
             accumulate_vma(
                 &mut stats,
                 pages,
@@ -156,24 +148,12 @@ impl ProcessMemStats {
                 file_info.shared,
             );
         }
-        stats.resident_pages = aspace.rss().rss_total_pages();
-        aspace.rss().sync_rss_atomics_from_charges();
-        let (charged_anon, charged_file, charged_shmem) = aspace.rss().snapshot_resident_charges();
-        let atomic_file = aspace.rss().rss_file_pages();
-        let atomic_shmem = aspace.rss().rss_shmem_pages();
-        // Cow pages are authoritative in the charge map; File-backend page-cache
-        // pages only bump atomics.
-        let file_only = atomic_file.saturating_sub(charged_file);
-        let shmem_only = atomic_shmem.saturating_sub(charged_shmem);
-        stats.rss_anon_pages = charged_anon;
-        stats.rss_file_pages = charged_file.saturating_add(file_only);
-        stats.rss_shmem_pages = charged_shmem.saturating_add(shmem_only);
-        stats.resident_pages = stats
-            .rss_anon_pages
-            .saturating_add(stats.rss_file_pages)
-            .saturating_add(stats.rss_shmem_pages)
-            .max(stats.resident_pages);
-        stats.hiwater_rss_pages = aspace.rss().hiwater_rss_pages();
+        let resident = aspace.resident_page_counts();
+        stats.rss_anon_pages = resident.anon;
+        stats.rss_file_pages = resident.file;
+        stats.rss_shmem_pages = resident.shmem;
+        stats.resident_pages = resident.total();
+        stats.hiwater_rss_pages = aspace.resident_hiwater_pages();
         stats.peak_pages = aspace.vm_stat.peak_vss_pages().max(stats.vss_pages);
         stats
     }
@@ -196,7 +176,11 @@ impl ProcessMemStats {
         let shared_rss = self.rss_file_pages + self.rss_shmem_pages;
         format!(
             "{} {} {} {} 0 {} 0\n",
-            self.vss_pages, self.resident_pages, shared_rss, self.text_pages, self.data_pages,
+            self.vss_pages,
+            self.resident_pages,
+            shared_rss,
+            self.text_pages,
+            self.data_pages.saturating_add(self.stack_pages),
         )
     }
 
@@ -414,7 +398,7 @@ mod tests {
             hiwater_rss_pages: 30,
             ..Default::default()
         };
-        assert_eq!(stats.format_statm(), "100 30 10 10 0 40 0\n");
+        assert_eq!(stats.format_statm(), "100 30 10 10 0 60 0\n");
     }
 
     #[test]

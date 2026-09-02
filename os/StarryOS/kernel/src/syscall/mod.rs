@@ -444,31 +444,31 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // io mpx
         #[cfg(target_arch = "x86_64")]
-        Sysno::pause => sys_ppoll(0usize.into(), 0, 0usize.into(), 0usize.into(), 0),
+        Sysno::pause => sys_ppoll(core::ptr::null_mut(), 0, core::ptr::null(), core::ptr::null(), 0),
         #[cfg(target_arch = "x86_64")]
-        Sysno::poll => sys_poll(uctx.arg0().into(), uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::poll => sys_poll(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::ppoll => sys_ppoll(
-            uctx.arg0().into(),
+            uctx.arg0() as _,
             uctx.arg1() as _,
-            uctx.arg2().into(),
-            uctx.arg3().into(),
+            uctx.arg2() as _,
+            uctx.arg3() as _,
             uctx.arg4() as _,
         ),
         #[cfg(target_arch = "x86_64")]
         Sysno::select => sys_select(
             uctx.arg0() as _,
-            uctx.arg1().into(),
-            uctx.arg2().into(),
-            uctx.arg3().into(),
-            uctx.arg4().into(),
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
         ),
         Sysno::pselect6 => sys_pselect6(
             uctx.arg0() as _,
-            uctx.arg1().into(),
-            uctx.arg2().into(),
-            uctx.arg3().into(),
-            uctx.arg4().into(),
-            uctx.arg5().into(),
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
         #[cfg(target_arch = "x86_64")]
         Sysno::epoll_create => sys_epoll_create(uctx.arg0() as _),
@@ -477,29 +477,29 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
-            uctx.arg3().into(),
+            uctx.arg3() as _,
         ),
         #[cfg(target_arch = "x86_64")]
         Sysno::epoll_wait => sys_epoll_wait(
             uctx.arg0() as _,
-            uctx.arg1().into(),
+            uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
         Sysno::epoll_pwait => sys_epoll_pwait(
             uctx.arg0() as _,
-            uctx.arg1().into(),
+            uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
-            uctx.arg4().into(),
+            uctx.arg4() as _,
             uctx.arg5() as _,
         ),
         Sysno::epoll_pwait2 => sys_epoll_pwait2(
             uctx.arg0() as _,
-            uctx.arg1().into(),
+            uctx.arg1() as _,
             uctx.arg2() as _,
-            uctx.arg3().into(),
-            uctx.arg4().into(),
+            uctx.arg3() as _,
+            uctx.arg4() as _,
             uctx.arg5() as _,
         ),
 
@@ -646,6 +646,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::msync => sys_msync(uctx.arg0(), uctx.arg1() as _, uctx.arg2() as _),
         Sysno::mlock => sys_mlock(uctx.arg0(), uctx.arg1() as _),
         Sysno::mlock2 => sys_mlock2(uctx.arg0(), uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::munlock => sys_munlock(uctx.arg0(), uctx.arg1() as _),
 
         // task info
         Sysno::getpid => sys_getpid(),
@@ -939,7 +940,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         // shm
         Sysno::shmget => sys_shmget(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::shmat => sys_shmat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
-        Sysno::shmctl => sys_shmctl(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2().into()),
+        Sysno::shmctl => sys_shmctl(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::shmdt => sys_shmdt(uctx.arg0() as _),
 
         // net
@@ -948,22 +949,22 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
-            uctx.arg3().into(),
+            uctx.arg3() as _,
         ),
-        Sysno::bind => sys_bind(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2() as _),
-        Sysno::connect => sys_connect(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2() as _),
+        Sysno::bind => sys_bind(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::connect => sys_connect(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::getsockname => {
-            sys_getsockname(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2().into())
+            sys_getsockname(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
         }
         Sysno::getpeername => {
-            sys_getpeername(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2().into())
+            sys_getpeername(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
         }
         Sysno::listen => sys_listen(uctx.arg0() as _, uctx.arg1() as _),
-        Sysno::accept => sys_accept(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2().into()),
+        Sysno::accept => sys_accept(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::accept4 => sys_accept4(
             uctx.arg0() as _,
-            uctx.arg1().into(),
-            uctx.arg2().into(),
+            uctx.arg1() as _,
+            uctx.arg2() as _,
             uctx.arg3() as _,
         ),
         Sysno::shutdown => sys_shutdown(uctx.arg0() as _, uctx.arg1() as _),
@@ -972,7 +973,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
-            uctx.arg4().into(),
+            uctx.arg4() as _,
             uctx.arg5() as _,
         ),
         Sysno::recvfrom => sys_recvfrom(
@@ -980,36 +981,36 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
-            uctx.arg4().into(),
-            uctx.arg5().into(),
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
-        Sysno::sendmsg => sys_sendmsg(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2() as _),
-        Sysno::recvmsg => sys_recvmsg(uctx.arg0() as _, uctx.arg1().into(), uctx.arg2() as _),
+        Sysno::sendmsg => sys_sendmsg(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::recvmsg => sys_recvmsg(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::sendmmsg => sys_sendmmsg(
             uctx.arg0() as _,
-            uctx.arg1().into(),
+            uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
         Sysno::recvmmsg => sys_recvmmsg(
             uctx.arg0() as _,
-            uctx.arg1().into(),
+            uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
-            uctx.arg4().into(),
+            uctx.arg4() as _,
         ),
         Sysno::getsockopt => sys_getsockopt(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
-            uctx.arg3().into(),
-            uctx.arg4().into(),
+            uctx.arg3() as _,
+            uctx.arg4() as _,
         ),
         Sysno::setsockopt => sys_setsockopt(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
-            uctx.arg3().into(),
+            uctx.arg3() as _,
             uctx.arg4() as _,
         ),
 

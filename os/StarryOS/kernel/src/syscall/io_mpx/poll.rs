@@ -13,13 +13,12 @@ use ax_task::{
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{POLLNVAL, RLIMIT_NOFILE, pollfd, timespec};
 use starry_signal::SignalSet;
-use starry_vm::{vm_read_slice, vm_write_slice};
+use starry_vm::{VmPtr, vm_read_slice, vm_write_slice};
 
 use super::FdPollSet;
 use crate::{
     StarryError, StarryResult,
     file::get_file_like,
-    mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
     task::{AsThread, with_blocked_signals},
     time::TimeValueLike,
@@ -38,7 +37,7 @@ fn nfds_within_limit(nfds: usize, nofile: u64) -> bool {
     nfds as u64 <= nofile
 }
 
-fn read_poll_fds(fds: UserPtr<pollfd>, nfds: usize) -> StarryResult<Vec<pollfd>> {
+fn read_poll_fds(fds: *mut pollfd, nfds: usize) -> StarryResult<Vec<pollfd>> {
     check_nfds_limit(nfds)?;
     if nfds == 0 {
         return Ok(Vec::new());
@@ -46,18 +45,18 @@ fn read_poll_fds(fds: UserPtr<pollfd>, nfds: usize) -> StarryResult<Vec<pollfd>>
 
     let mut buf = Vec::with_capacity(nfds);
     buf.resize_with(nfds, MaybeUninit::uninit);
-    vm_read_slice(fds.as_ptr(), &mut buf)?;
+    vm_read_slice(fds, &mut buf)?;
     Ok(buf
         .into_iter()
         .map(|fd| unsafe { fd.assume_init() })
         .collect())
 }
 
-fn write_poll_revents(fds: UserPtr<pollfd>, poll_fds: &[pollfd]) -> StarryResult<()> {
+fn write_poll_revents(fds: *mut pollfd, poll_fds: &[pollfd]) -> StarryResult<()> {
     let revents_offset = offset_of!(pollfd, revents);
 
     for (index, poll_fd) in poll_fds.iter().enumerate() {
-        let revents_ptr = (fds.as_ptr().wrapping_add(index) as *mut u8)
+        let revents_ptr = (fds.wrapping_add(index) as *mut u8)
             .wrapping_add(revents_offset)
             .cast::<_>();
         vm_write_slice(revents_ptr, core::slice::from_ref(&poll_fd.revents))?;
@@ -152,7 +151,7 @@ fn do_poll(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> StarryResult<isize> {
+pub fn sys_poll(fds: *mut pollfd, nfds: u32, timeout: i32) -> StarryResult<isize> {
     let nfds = nfds as usize;
     let mut poll_fds = read_poll_fds(fds, nfds)?;
     let timeout = if timeout < 0 {
@@ -170,10 +169,10 @@ pub fn sys_poll(fds: UserPtr<pollfd>, nfds: u32, timeout: i32) -> StarryResult<i
 }
 
 pub fn sys_ppoll(
-    fds: UserPtr<pollfd>,
+    fds: *mut pollfd,
     nfds: i32,
-    timeout: UserConstPtr<timespec>,
-    sigmask: UserConstPtr<SignalSet>,
+    timeout: *const timespec,
+    sigmask: *const SignalSet,
     sigsetsize: usize,
 ) -> StarryResult<isize> {
     if !sigmask.is_null() {
@@ -181,13 +180,26 @@ pub fn sys_ppoll(
     }
     let nfds = nfds.try_into().map_err(|_| StarryError::InvalidInput)?;
     let mut poll_fds = read_poll_fds(fds, nfds)?;
-    let timeout = nullable!(timeout.get_as_ref())?
+    let timeout = timeout
+        .nullable()
+        .map(|timeout| {
+            // SAFETY: Linux `timespec` contains only signed integer fields.
+            unsafe { timeout.vm_read_any() }
+        })
+        .transpose()?
         .map(|ts| ts.try_into_time_value())
+        .transpose()?;
+    let sigmask = sigmask
+        .nullable()
+        .map(|sigmask| {
+            // SAFETY: SignalSet is a transparent integer bit mask.
+            unsafe { sigmask.vm_read_any() }
+        })
         .transpose()?;
     let res = do_poll(
         &mut poll_fds,
         timeout,
-        nullable!(sigmask.get_as_ref())?.copied(),
+        sigmask,
     );
     // Match poll(2): interruption does not leave the caller's old revents
     // values visible, and a failed writeback is reported as EFAULT.

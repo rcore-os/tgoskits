@@ -12,7 +12,7 @@ use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
-    mm::VmBytes,
+    mm::{TransparentHugePageMode, VmBytes},
     task::{AsThread, Cred, TidNumber, get_user_task_by_number},
 };
 
@@ -589,21 +589,21 @@ pub fn sys_prctl(
             if arg4 != 0 || arg5 != 0 {
                 return Err(StarryError::InvalidInput);
             }
-            // StarryOS does not implement transparent huge pages, but userspace
-            // may use this prctl as a compatibility hint and query it later.
             // Linux returns 0, 1, or 3 from PR_GET_THP_DISABLE:
             //   0: enabled, 1: disabled, 3: disabled except advised mappings.
-            let thp_disable = match (arg2, arg3) {
-                (0, 0) => 0,
+            let mode = match (arg2, arg3) {
+                (0, 0) => TransparentHugePageMode::Enabled,
                 (0, _) => return Err(StarryError::InvalidInput),
-                (_, 0) => 1,
-                (_, PR_THP_DISABLE_EXCEPT_ADVISED) => 1 | PR_THP_DISABLE_EXCEPT_ADVISED,
+                (_, 0) => TransparentHugePageMode::Disabled,
+                (_, PR_THP_DISABLE_EXCEPT_ADVISED) => {
+                    TransparentHugePageMode::ExceptAdvised
+                }
                 _ => return Err(StarryError::InvalidInput),
             };
             current()
                 .as_thread()
                 .proc_data
-                .set_thp_disable(thp_disable as u32);
+                .set_transparent_huge_page_mode(mode)?;
         }
         PR_GET_THP_DISABLE => {
             // PR_GET_THP_DISABLE takes no additional arguments and returns the
@@ -611,7 +611,11 @@ pub fn sys_prctl(
             if arg2 != 0 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
                 return Err(StarryError::InvalidInput);
             }
-            return Ok(current().as_thread().proc_data.thp_disable() as isize);
+            return Ok(current()
+                .as_thread()
+                .proc_data
+                .transparent_huge_page_mode()
+                .prctl_value() as isize);
         }
         PR_SET_MM => {
             // not implemented; but avoid annoying warnings

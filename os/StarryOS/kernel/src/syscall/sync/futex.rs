@@ -252,7 +252,7 @@ pub fn sys_futex(
         return Err(StarryError::InvalidInput);
     }
 
-    let key = FutexKey::new_current(uaddr.addr(), op.key_mode);
+    let key = FutexKey::new_current(uaddr.addr(), op.key_mode)?;
 
     let futex_table = futex_table_for(&key);
 
@@ -316,7 +316,7 @@ pub fn sys_futex(
             }
             validate_futex_word(uaddr2)?;
 
-            let key2 = FutexKey::new_current(uaddr2.addr(), op.key_mode);
+            let key2 = FutexKey::new_current(uaddr2.addr(), op.key_mode)?;
             let table2 = futex_table_for(&key2);
             let target = table2.get_or_insert(&key2);
             let target_cleanup = table2.cleanup_for(&key2);
@@ -365,7 +365,7 @@ pub fn sys_futex(
             let operation = parse_futex_wake_op(value3)?;
             validate_futex_word(uaddr)?;
 
-            let key2 = FutexKey::new_current(uaddr2.addr(), op.key_mode);
+            let key2 = FutexKey::new_current(uaddr2.addr(), op.key_mode)?;
             let table2 = futex_table_for(&key2);
 
             let count = retry_futex_nofault(

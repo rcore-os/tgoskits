@@ -417,14 +417,19 @@ fn init_allocator() {
 fn init_interrupt() {
     init_percpu_irq(ax_hal::percpu::this_cpu_id());
 
+    #[cfg(feature = "paging")]
+    let tlb_preparation = ax_hal::cache::prepare_current_cpu_tlb()
+        .expect("primary CPU failed to prepare TLB capability");
+
     // Enable IRQs before starting app
     ax_hal::asm::enable_irqs();
 
     #[cfg(feature = "ipi")]
-    {
-        ax_hal::asm::flush_tlb(None);
-        ax_ipi::mark_current_cpu_ready();
-    }
+    ax_ipi::mark_current_cpu_ready();
+
+    #[cfg(feature = "paging")]
+    ax_hal::cache::publish_current_cpu_tlb_ready(tlb_preparation)
+        .expect("primary CPU failed to publish TLB readiness");
 }
 
 pub(crate) fn init_percpu_irq(cpu_id: usize) {

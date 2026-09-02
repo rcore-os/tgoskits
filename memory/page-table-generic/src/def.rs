@@ -28,6 +28,8 @@ pub enum PagingError {
     InvalidRange { details: &'static str },
     #[error("Address not mapped")]
     NotMapped,
+    #[error("Huge split deposit is stale for virtual address {vaddr:#x}")]
+    StaleHugeSplit { vaddr: VirtAddr },
 }
 
 impl PagingError {
@@ -61,6 +63,10 @@ impl PagingError {
     pub fn not_mapped() -> Self {
         Self::NotMapped
     }
+
+    pub fn stale_huge_split(vaddr: VirtAddr) -> Self {
+        Self::StaleHugeSplit { vaddr }
+    }
 }
 
 impl core::fmt::Debug for PagingError {
@@ -84,6 +90,9 @@ impl core::fmt::Debug for PagingError {
             Self::HierarchyError { details } => write!(f, "HierarchyError: {details}"),
             Self::InvalidRange { details } => write!(f, "InvalidRange: {details}"),
             Self::NotMapped => write!(f, "NotMapped"),
+            Self::StaleHugeSplit { vaddr } => {
+                write!(f, "StaleHugeSplit: vaddr={:#x}", vaddr.as_usize())
+            }
         }
     }
 }

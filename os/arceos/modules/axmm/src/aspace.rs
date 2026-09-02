@@ -1,5 +1,8 @@
 use core::{fmt, ptr::NonNull};
 
+use ax_alloc::UsageKind;
+#[cfg(feature = "copy")]
+use ax_hal::paging::PagingError;
 use ax_hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageTable, PagingAllocator},
@@ -10,7 +13,13 @@ use ax_memory_addr::{
 };
 use ax_memory_set::{MemoryArea, MemorySet};
 
-use crate::{MmError, MmResult, backend::Backend};
+use crate::{
+    MmError, MmResult,
+    backend::{
+        Backend, KernelVirtualAllocationBackend, KernelVirtualAllocationId,
+        KernelVirtualAllocationState, alloc::kernel_virtual_mapped_range,
+    },
+};
 
 #[derive(Clone, Copy)]
 enum LinearMappingKind {
@@ -29,6 +38,31 @@ pub struct AddrSpace {
     pt: PageTable,
 }
 
+/// Borrowed capability for installing a bounded set of root page-table
+/// entries into another page table.
+///
+/// The source table remains private to [`AddrSpace`]. Consumers can perform
+/// only the root-entry sharing operation and cannot issue arbitrary queries or
+/// mutations through this value.
+#[cfg(feature = "copy")]
+pub struct RootEntryShare<'a> {
+    source: &'a PageTable,
+    range: VirtAddrRange,
+}
+
+#[cfg(feature = "copy")]
+impl RootEntryShare<'_> {
+    /// Installs the shared root entries into `target`.
+    ///
+    /// # Safety
+    ///
+    /// The source address space must outlive `target`, and `target` must never
+    /// modify or unmap the shared range.
+    pub unsafe fn install_into(self, target: &mut PageTable) -> Result<(), PagingError> {
+        unsafe { target.share_root_entries_from(self.source, self.range.start, self.range.size()) }
+    }
+}
+
 impl AddrSpace {
     /// Returns the address space base.
     pub const fn base(&self) -> VirtAddr {
@@ -45,9 +79,23 @@ impl AddrSpace {
         self.va_range.size()
     }
 
-    /// Returns the reference to the inner page table.
-    pub const fn page_table(&self) -> &PageTable {
-        &self.pt
+    /// Borrows the bounded root-entry sharing capability for this address
+    /// space without exposing its page table.
+    #[cfg(feature = "copy")]
+    pub const fn root_entry_share(&self) -> RootEntryShare<'_> {
+        RootEntryShare {
+            source: &self.pt,
+            range: self.va_range,
+        }
+    }
+
+    /// Returns the flags of one materialized kernel mapping without exposing
+    /// page-table traversal to intent-level callers.
+    pub fn mapping_flags(&self, vaddr: VirtAddr) -> MmResult<MappingFlags> {
+        self.pt
+            .query(vaddr)
+            .map(|(_, flags, _)| flags)
+            .map_err(|_| MmError::BadAddress)
     }
 
     pub(crate) const fn page_table_mut(&mut self) -> &mut PageTable {
@@ -55,7 +103,7 @@ impl AddrSpace {
     }
 
     /// Returns the root physical address of the inner page table.
-    pub const fn page_table_root(&self) -> PhysAddr {
+    pub(crate) const fn page_table_root(&self) -> PhysAddr {
         self.pt.root_paddr()
     }
 
@@ -272,6 +320,174 @@ impl AddrSpace {
         let area = MemoryArea::new(start, size, flags, Backend::new_alloc(populate));
         self.areas.map(area, &mut self.pt, false)?;
         Ok(())
+    }
+
+    pub(crate) fn map_kernel_virtual_allocation(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        usage: UsageKind,
+        leading_guard_pages: usize,
+    ) -> MmResult<KernelVirtualAllocationId> {
+        if !self.contains_range(start, size) {
+            return Err(MmError::InvalidInput(
+                "kernel virtual allocation is outside address space",
+            ));
+        }
+        if !start.is_aligned_4k() || !is_aligned_4k(size) {
+            return Err(MmError::InvalidInput(
+                "kernel virtual allocation is not page aligned",
+            ));
+        }
+        let (_, mapped_size) = kernel_virtual_mapped_range(start, size, leading_guard_pages)
+            .ok_or(MmError::InvalidInput(
+                "kernel virtual allocation has no usable pages",
+            ))?;
+
+        let backend = Backend::new_kernel_virtual_allocation(
+            usage,
+            leading_guard_pages,
+            mapped_size / PAGE_SIZE_4K,
+        )
+        .ok_or(MmError::NoMemory)?;
+        let id = backend
+            .kernel_virtual_allocation()
+            .ok_or(MmError::BadState(
+                "kernel virtual allocation backend lost its identity",
+            ))?
+            .id();
+
+        let area = MemoryArea::new(start, size, flags, backend);
+        self.areas
+            .map(area, &mut self.pt, false)
+            .map_err(|error| match error {
+                // This backend installs a fresh, metadata-nonoverlapping range.
+                // Its backing frames were reserved by the builder; this apply
+                // phase can fail only while reserving a page-table node or
+                // installing one of those preallocated leaves.
+                ax_memory_set::MappingError::BadState => MmError::NoMemory,
+                other => other.into(),
+            })?;
+        Ok(id)
+    }
+
+    fn exact_kernel_virtual_allocation(
+        &self,
+        id: KernelVirtualAllocationId,
+        start: VirtAddr,
+        size: usize,
+    ) -> MmResult<KernelVirtualAllocationBackend> {
+        let area = self
+            .areas
+            .find(start)
+            .filter(|area| area.start() == start && area.size() == size)
+            .ok_or(MmError::BadAddress)?;
+        let allocation = area
+            .backend()
+            .kernel_virtual_allocation()
+            .filter(|allocation| allocation.id() == id)
+            .ok_or(MmError::BadAddress)?;
+        Ok(allocation.clone())
+    }
+
+    pub(crate) fn mark_kernel_virtual_retiring(
+        &mut self,
+        id: KernelVirtualAllocationId,
+        start: VirtAddr,
+        size: usize,
+    ) -> MmResult {
+        let allocation = self.exact_kernel_virtual_allocation(id, start, size)?;
+        if allocation.state() == KernelVirtualAllocationState::Live {
+            self.areas.replace_exact_backend(
+                start,
+                size,
+                Backend::KernelVirtualAllocation(
+                    allocation.with_state(KernelVirtualAllocationState::Retiring),
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_kernel_virtual_release(
+        &mut self,
+        id: KernelVirtualAllocationId,
+        start: VirtAddr,
+        size: usize,
+    ) -> MmResult<VirtAddrRange> {
+        let allocation = self.exact_kernel_virtual_allocation(id, start, size)?;
+        let (mapped_start, mapped_size) =
+            kernel_virtual_mapped_range(start, size, allocation.leading_guard_pages()).ok_or(
+                MmError::BadState("kernel virtual allocation range is invalid"),
+            )?;
+
+        match allocation.state() {
+            KernelVirtualAllocationState::Live => {
+                return Err(MmError::BadState(
+                    "kernel virtual allocation was not marked retiring",
+                ));
+            }
+            KernelVirtualAllocationState::Retiring => {
+                let previous = self.areas.replace_exact_backend(
+                    start,
+                    size,
+                    Backend::KernelVirtualAllocation(
+                        allocation.with_state(KernelVirtualAllocationState::Quarantined),
+                    ),
+                )?;
+                debug_assert_eq!(
+                    previous
+                        .kernel_virtual_allocation()
+                        .map(KernelVirtualAllocationBackend::id),
+                    Some(id)
+                );
+            }
+            KernelVirtualAllocationState::Quarantined => {}
+        }
+
+        // Retain each physical address in a non-present leaf. The backend and
+        // metadata remain published, so neither the VA nor the frame owner can
+        // be reused until a synchronous shootdown acknowledges this transition.
+        self.pt
+            .protect_region(mapped_start, mapped_size, MappingFlags::empty())
+            .map_err(|_| {
+                MmError::BadState("failed to quarantine kernel virtual allocation leaves")
+            })?;
+        Ok(VirtAddrRange::from_start_size(mapped_start, mapped_size))
+    }
+
+    pub(crate) fn retire_kernel_virtual_allocation(
+        &mut self,
+        id: KernelVirtualAllocationId,
+        start: VirtAddr,
+        size: usize,
+    ) -> MmResult {
+        let allocation = self.exact_kernel_virtual_allocation(id, start, size)?;
+        if allocation.state() != KernelVirtualAllocationState::Quarantined {
+            return Err(MmError::BadState(
+                "kernel virtual allocation was not quarantined",
+            ));
+        }
+        self.areas.unmap_exact(start, size, &mut self.pt)?;
+        Ok(())
+    }
+
+    pub(crate) fn next_kernel_virtual_retire_after(
+        &self,
+        after: Option<VirtAddr>,
+    ) -> Option<(KernelVirtualAllocationId, VirtAddr, usize)> {
+        self.areas.iter().find_map(|area| {
+            if after.is_some_and(|cursor| area.start() <= cursor) {
+                return None;
+            }
+            let allocation = area.backend().kernel_virtual_allocation()?;
+            matches!(
+                allocation.state(),
+                KernelVirtualAllocationState::Retiring | KernelVirtualAllocationState::Quarantined
+            )
+            .then_some((allocation.id(), area.start(), area.size()))
+        })
     }
 
     /// Removes mappings within the specified virtual address range.

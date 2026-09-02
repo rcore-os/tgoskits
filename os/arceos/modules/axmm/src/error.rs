@@ -29,6 +29,7 @@ impl From<MappingError> for MmError {
             MappingError::InvalidParam => Self::InvalidInput("mapping parameters"),
             MappingError::AlreadyExists => Self::AlreadyExists,
             MappingError::BadState => Self::BadState("mapping backend"),
+            MappingError::NeedsRepair => Self::BadState("mapping backend requires repair"),
         }
     }
 }

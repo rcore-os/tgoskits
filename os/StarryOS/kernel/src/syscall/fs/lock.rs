@@ -37,11 +37,11 @@ use linux_raw_sys::general::{
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
     SEEK_SET, flock64,
 };
+use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     Errno, StarryError, StarryResult,
     file::{File, FileLike, get_file_like},
-    mm::UserPtr,
     sync::RwLock,
     task::{AsThread, PidIdentityId, PidNamespaceId, PidSnapshot, futex::WaitQueue},
 };
@@ -584,7 +584,9 @@ fn try_setlk_once(
 /// (returning `EINTR` per POSIX). When `wait` is false, conflicts return
 /// `EAGAIN` immediately.
 pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult<isize> {
-    let fl = UserPtr::<flock64>::from(arg).get_as_mut()?;
+    let fl_ptr = arg as *const flock64;
+    // SAFETY: Linux flock64 contains only integer fields.
+    let fl = unsafe { fl_ptr.vm_read_any()? };
     // POSIX.1-2024 / Linux: F_OFD_SETLK{,W} require l_pid to be 0.
     if ofd && fl.l_pid != 0 {
         return Err(StarryError::InvalidInput);
@@ -683,7 +685,9 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult
 /// first conflicting lock, or sets `l_type = F_UNLCK` if the requested
 /// range is free.
 pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> StarryResult<isize> {
-    let fl = UserPtr::<flock64>::from(arg).get_as_mut()?;
+    let fl_ptr = arg as *mut flock64;
+    // SAFETY: Linux flock64 contains only integer fields.
+    let mut fl = unsafe { fl_ptr.cast_const().vm_read_any()? };
     // POSIX.1-2024 / Linux: F_OFD_GETLK requires l_pid to be 0.
     if ofd && fl.l_pid != 0 {
         return Err(StarryError::InvalidInput);
@@ -744,6 +748,8 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> StarryResult<isize> {
     } else {
         fl.l_type = F_UNLCK as i16;
     }
+    drop(table);
+    fl_ptr.vm_write(fl)?;
     Ok(0)
 }
 

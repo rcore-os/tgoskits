@@ -103,12 +103,14 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
         Some(self.clone())
     }
 
-    fn shrink_left(&mut self, _shrink_size: usize) {
+    fn shrink_left(&mut self, _shrink_size: usize) -> bool {
         // backend can be trivially shrunk since it does not have any state.
+        true
     }
 
-    fn shrink_right(&mut self, _shrink_size: usize) {
+    fn shrink_right(&mut self, _shrink_size: usize) -> bool {
         // backend can be trivially shrunk since it does not have any state.
+        true
     }
 }
 

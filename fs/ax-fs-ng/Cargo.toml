@@ -24,6 +24,7 @@ cfg-if = { workspace = true }
 chrono = { workspace = true }
 dma-api = { workspace = true }
 hashbrown = "0.16"
+heapless.workspace = true
 intrusive-collections = "0.9"
 irq-framework = { workspace = true }
 log = { workspace = true }

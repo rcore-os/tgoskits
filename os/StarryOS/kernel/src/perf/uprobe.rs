@@ -3,7 +3,7 @@
 //! `perf_event_open(PERF_TYPE_UPROBE)` carries the target ELF path (`name`), an
 //! in-file `offset`, and the target `pid`. We resolve the offset to a live user
 //! virtual address by finding the VMA in the target process that is backed by
-//! that ELF (`Backend::file_info().path`), then register a uprobe on
+//! that ELF (`MappingOperation::file_info().path`), then register a uprobe on
 //! `vma.start() + offset` in that process' per-process manager.
 //!
 //! Out-of-line single-step, breakpoint insertion and the eBPF callback are
@@ -44,14 +44,12 @@ fn perf_probe_arg_to_uprobe_builder(
         PerfEventTarget::Thread(tid) => get_user_task_by_number(tid)?,
     };
     let target = UprobeTargetLease::register(task.as_thread().pid_identity())?;
-    let aspace = task.as_thread().proc_data.aspace();
+    let aspace = task.as_thread().proc_data.pin_aspace()?;
     let mm = aspace.lock();
 
     let mut virt_base = None;
-    for area in mm.areas() {
-        if let Ok(info) = area.backend().file_info()
-            && &info.path == elf
-        {
+    for area in mm.vma_inspection_records()? {
+        if &area.file_info().path == elf {
             virt_base = Some(area.start());
             break;
         }

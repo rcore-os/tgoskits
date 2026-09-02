@@ -6,12 +6,12 @@ use ax_task::current;
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
 pub(crate) use crate::file::memfd::{
+    apply_shared_writable_deltas as memfd_apply_shared_writable_deltas,
     check_write_seal_for_shared_file_backend as memfd_check_write_seal_for_shared_file_backend,
     collect_metas_touching_mprotect_range as memfd_collect_metas_touching_mprotect_range,
     on_after_map as memfd_on_after_map,
-    on_aspace_replace_metadata as memfd_on_aspace_replace_metadata,
-    on_aspace_unmap_range as memfd_on_aspace_unmap_range,
-    release_all_shared_writable_counts_for_aspace as memfd_release_all_shared_writable_counts_for_aspace,
+    prepare_aspace_replace_deltas as memfd_prepare_aspace_replace_deltas,
+    prepare_aspace_unmap_deltas as memfd_prepare_aspace_unmap_deltas,
     resync_shared_writable_counts_after_mprotect as memfd_resync_shared_writable_counts_after_mprotect,
 };
 use crate::{

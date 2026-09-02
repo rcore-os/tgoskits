@@ -712,10 +712,17 @@ static void test_fork_rw_file_read_child_write(long page_size)
     snprintf(child_status, sizeof(child_status), "/proc/%d/status", child);
     child_rss_file = read_status_kb_from(child_status, "RssFile");
     child_rss_anon = read_status_kb_from(child_status, "RssAnon");
-    expect(child_rss_file == child_after_write.rss_file_kb,
-           "child self and /proc RssFile agree after COW write");
-    expect(child_rss_anon == child_after_write.rss_anon_kb,
-           "child self and /proc RssAnon agree after COW write");
+    /* Linux task_mem() explicitly permits inconsistent samples.  The child
+     * executes the pipe handoff between its self sample and this parent-side
+     * sample, so architecture-specific instruction faults may legitimately
+     * move a few pages into RSS.  Keep the comparison bounded while the
+     * same-snapshot File -> Anon checks below remain exact to one page. */
+    expect(rss_kb_within_tolerance(child_after_write.rss_file_kb,
+                                   child_rss_file, page_kb),
+           "child self and /proc RssFile stay bounded after COW write");
+    expect(rss_kb_within_tolerance(child_after_write.rss_anon_kb,
+                                   child_rss_anon, page_kb),
+           "child self and /proc RssAnon stay bounded after COW write");
 
     expect(child_after_write.rss_anon_kb >=
                child_before_write.rss_anon_kb + page_kb,
@@ -1328,6 +1335,10 @@ static void test_self_proc_memory(long page_size)
     expect(statm_resident <= statm_size, "statm resident must not exceed size");
     expect(statm_size == (unsigned long)vm_size_kb * 1024UL / (unsigned long)page_size,
            "statm size matches VmSize");
+    expect(statm_data ==
+               (unsigned long)(vm_data_kb + vm_stk_kb) * 1024UL /
+                   (unsigned long)page_size,
+           "statm data includes VmData and VmStk");
 
     vsize = read_stat_field_after_comm_from("/proc/self/stat", 20);
     rss = read_stat_field_after_comm_from("/proc/self/stat", 21);

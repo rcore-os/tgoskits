@@ -96,7 +96,10 @@ impl TaskStat {
         let cutime = (cutime_tv.as_millis() / 10) as u64;
         let cstime = (cstime_tv.as_millis() / 10) as u64;
 
-        let mem = ProcessMemStats::collect(&proc_data.aspace().lock());
+        let aspace = proc_data.pin_aspace()?;
+        let aspace = aspace.lock();
+        let mem = ProcessMemStats::collect(&aspace);
+        let (start_data, end_data) = aspace.executable_data_bounds();
 
         Ok(Self {
             pid: pid.get(),
@@ -115,7 +118,9 @@ impl TaskStat {
             start_code: mem.start_code,
             end_code: mem.end_code,
             start_stack: mem.start_stack,
-            start_brk: proc_data.get_heap_top() as u64,
+            start_data: start_data as u64,
+            end_data: end_data as u64,
+            start_brk: aspace.heap_start() as u64,
             exit_signal: proc_data.exit_signal.unwrap_or(Signo::SIGCHLD) as u8,
             processor: task.cpu_id(),
             exit_code: proc.exit_code(),

@@ -6,7 +6,7 @@ use ax_cpu::paging::ArchPagingMeta;
 pub use ax_cpu::paging::MappingFlags;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use page_table_generic::FrameAllocator;
-pub use page_table_generic::{PagingError, PagingResult};
+pub use page_table_generic::{PageTableEntry, PagingError, PagingResult};
 
 use crate::mem::{phys_to_virt, virt_to_phys};
 
@@ -44,3 +44,10 @@ impl FrameAllocator for PagingAllocator {
 pub type PageTable = page_table_generic::PageTable<ArchPagingMeta, PagingAllocator>;
 /// A non-owning reference to an architecture-specific page table.
 pub type PageTableRef = page_table_generic::PageTableRef<ArchPagingMeta, PagingAllocator>;
+/// A pre-zeroed child table bound to one architecture-specific huge leaf.
+pub type HugeSplitDeposit = page_table_generic::HugeSplitDeposit<ArchPagingMeta, PagingAllocator>;
+/// Recoverable apply error that returns an uninstalled [`HugeSplitDeposit`].
+pub type HugeSplitApplyError =
+    page_table_generic::HugeSplitApplyError<ArchPagingMeta, PagingAllocator>;
+/// Receipt for a child table installed by consuming a [`HugeSplitDeposit`].
+pub type InstalledHugeSplit = page_table_generic::InstalledHugeSplit<ArchPagingMeta>;

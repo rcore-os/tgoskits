@@ -237,7 +237,7 @@ impl ArchTrait for Arch {
     }
 
     fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::PAGE_OFFSET..usize::MAX
+        addrspace::KERNEL_PAGE_TABLE_BASE..usize::MAX
     }
 
     fn is_mmu_enabled() -> bool {
