@@ -29,10 +29,20 @@ use crate::{
     boot::images::load_vm_image_from_memory,
 };
 
+#[cfg(test)]
 pub fn create_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
     crate_config: &GuestConfig,
+) -> AxVmResult<Vec<u8>> {
+    create_guest_fdt_with_hidden_paths(fdt, passthrough_device_names, crate_config, &[])
+}
+
+pub(crate) fn create_guest_fdt_with_hidden_paths(
+    fdt: &Fdt,
+    passthrough_device_names: &[String],
+    crate_config: &GuestConfig,
+    hidden_device_paths: &[String],
 ) -> AxVmResult<Vec<u8>> {
     let phys_cpu_ids = crate_config
         .base
@@ -53,6 +63,7 @@ pub fn create_guest_fdt(
         phys_cpu_ids,
         machine_interrupt_providers: &machine_interrupt_providers,
         disabled_devices: &crate_config.devices.disabled,
+        hidden_device_paths,
     };
     let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         policy.should_keep(node_id, path, node)
@@ -67,6 +78,7 @@ struct GeneratedNodePolicy<'a> {
     phys_cpu_ids: &'a [usize],
     machine_interrupt_providers: &'a [String],
     disabled_devices: &'a [axvmconfig::PhysicalDeviceRef],
+    hidden_device_paths: &'a [String],
 }
 
 impl GeneratedNodePolicy<'_> {
@@ -102,6 +114,15 @@ impl GeneratedNodePolicy<'_> {
             node_path == device.path
                 || node_path
                     .strip_prefix(&device.path)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        }) {
+            return false;
+        }
+
+        if self.hidden_device_paths.iter().any(|path| {
+            node_path == path
+                || node_path
+                    .strip_prefix(path)
                     .is_some_and(|suffix| suffix.starts_with('/'))
         }) {
             return false;
