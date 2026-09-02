@@ -28,17 +28,16 @@ pub use alloc::{KernelVirtualAllocationBackend, KernelVirtualAllocationId};
 pub enum Backend {
     /// Linear mapping backend.
     ///
-    /// The offset between the virtual address and the physical address is
-    /// constant, which is specified by `pa_va_offset`. For example, the virtual
-    /// address `vaddr` is mapped to the physical address `vaddr - pa_va_offset`.
+    /// The signed delta from physical to virtual addresses is constant. The
+    /// physical address for `vaddr` is `vaddr - pa_to_va_delta`.
     Linear {
-        /// `vaddr - paddr`.
-        pa_va_offset: usize,
+        /// `vaddr as i128 - paddr as i128`.
+        pa_to_va_delta: i128,
     },
     /// Immutable linear mapping backend for the boot-time kernel direct map.
     BootLinear {
-        /// `vaddr - paddr`.
-        pa_va_offset: usize,
+        /// `vaddr as i128 - paddr as i128`.
+        pa_to_va_delta: i128,
     },
     /// Allocation mapping backend.
     ///
@@ -68,11 +67,11 @@ impl MappingBackend for Backend {
     type PageTable = PageTable;
     fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
         match *self {
-            Self::Linear { pa_va_offset } => {
-                self.map_linear(start, size, flags, pt, pa_va_offset, false)
+            Self::Linear { pa_to_va_delta } => {
+                self.map_linear(start, size, flags, pt, pa_to_va_delta, false)
             }
-            Self::BootLinear { pa_va_offset } => {
-                self.map_linear(start, size, flags, pt, pa_va_offset, true)
+            Self::BootLinear { pa_to_va_delta } => {
+                self.map_linear(start, size, flags, pt, pa_to_va_delta, true)
             }
             Self::Alloc { populate } => self.map_alloc(start, size, flags, pt, populate),
             Self::KernelVirtualAllocation(_) => {
@@ -83,8 +82,8 @@ impl MappingBackend for Backend {
 
     fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
         match *self {
-            Self::Linear { pa_va_offset } | Self::BootLinear { pa_va_offset } => {
-                self.unmap_linear(start, size, pt, pa_va_offset)
+            Self::Linear { pa_to_va_delta } | Self::BootLinear { pa_to_va_delta } => {
+                self.unmap_linear(start, size, pt, pa_to_va_delta)
             }
             Self::Alloc { populate } => self.unmap_alloc(start, size, pt, populate),
             Self::KernelVirtualAllocation(_) => {

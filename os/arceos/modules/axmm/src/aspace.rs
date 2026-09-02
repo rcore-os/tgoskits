@@ -186,10 +186,9 @@ impl AddrSpace {
             return Err(MmError::InvalidInput("mapping range is not page aligned"));
         }
 
-        let offset = start_vaddr.as_usize() - start_paddr.as_usize();
         let backend = match kind {
-            LinearMappingKind::Mutable => Backend::new_linear(offset),
-            LinearMappingKind::Boot => Backend::new_boot_linear(offset),
+            LinearMappingKind::Mutable => Backend::new_linear(start_vaddr, start_paddr),
+            LinearMappingKind::Boot => Backend::new_boot_linear(start_vaddr, start_paddr),
         };
         let area = MemoryArea::new(start_vaddr, size, flags, backend);
         self.areas.map(area, &mut self.pt, unmap_overlap)?;
