@@ -65,6 +65,25 @@ fn on_rq_revalidation(scheduler_owned: bool) -> OnRqRevalidation {
     }
 }
 
+/// Returns the scheduler policy needed by the on-rq wake path.
+///
+/// A concurrent dequeue invalidates the scheduler-owned state before the
+/// waker acquires the run-queue transaction. That `ActivateOffRq` path must
+/// therefore not require a policy; only the still-queued path needs it for
+/// class-specific accounting and preemption.
+fn wake_policy_for_revalidation(
+    scheduling_policy: Option<&SchedulePolicy>,
+    revalidation: OnRqRevalidation,
+) -> Option<(SchedulePolicy, bool)> {
+    match revalidation {
+        OnRqRevalidation::ActivateOffRq => None,
+        OnRqRevalidation::CommitOnRq => scheduling_policy.map(|policy| {
+            let policy = *policy;
+            (policy, matches!(policy, SchedulePolicy::Fair { .. }))
+        }),
+    }
+}
+
 /// Mirrors the generic Linux `select_task_rq()` gate before scheduler-class
 /// placement runs.
 fn wake_target_selection(affinity: &CpuSet) -> WakeTargetSelection {
@@ -682,15 +701,13 @@ impl TaskSystem {
             }
             let mut run_queue = OwnerRqTxn::begin_nested(self, remote, &irq_owner);
             let scheduling_state = run_queue.scheduling_state(core.id());
-            let policy = scheduling_state
-                .as_ref()
-                .map(|(policy, _entity)| *policy)
-                .unwrap_or_else(|| {
-                    task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize)
-                });
-            let fair_wake = matches!(policy, SchedulePolicy::Fair { .. });
+            let revalidation = on_rq_revalidation(scheduling_state.is_some());
+            let wake_policy = wake_policy_for_revalidation(
+                scheduling_state.as_ref().map(|(policy, _entity)| policy),
+                revalidation,
+            );
 
-            match on_rq_revalidation(scheduling_state.is_some()) {
+            match revalidation {
                 OnRqRevalidation::ActivateOffRq => {
                     if sched.placement.queued_cpu().is_some()
                         || sched.placement.committed_migration_target().is_some()
@@ -701,6 +718,9 @@ impl TaskSystem {
                     None
                 }
                 OnRqRevalidation::CommitOnRq => {
+                    let (policy, fair_wake) = wake_policy.unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize)
+                    });
                     if sched.placement.queued_cpu() != Some(target) {
                         task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize);
                     }
@@ -1191,5 +1211,13 @@ mod tests {
     #[test]
     fn linux_on_rq_wake_falls_back_after_a_concurrent_dequeue() {
         assert_eq!(on_rq_revalidation(false), OnRqRevalidation::ActivateOffRq,);
+    }
+
+    #[test]
+    fn linux_on_rq_wake_does_not_require_policy_after_a_concurrent_dequeue() {
+        assert_eq!(
+            wake_policy_for_revalidation(None, OnRqRevalidation::ActivateOffRq),
+            None,
+        );
     }
 }
