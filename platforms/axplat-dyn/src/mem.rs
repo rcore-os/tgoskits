@@ -1,7 +1,7 @@
 use ax_lazyinit::OnceLock;
 use ax_plat::mem::{
     CpuSharedMemoryModel, DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr,
-    RawRange, VirtAddr,
+    RawRange, VirtAddr, VirtAddrRange, VirtualAddressSpaceError, VirtualAddressSpaceLayout,
 };
 use heapless::Vec;
 use someboot::ArchTrait;
@@ -10,6 +10,9 @@ use somehal::mem::MemoryType;
 static FREE_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
 static RESERVED_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
 static MMIO_LIST: OnceLock<Vec<RawRange, 16>> = OnceLock::new();
+static VIRTUAL_ADDRESS_SPACE: OnceLock<
+    Result<VirtualAddressSpaceLayout, VirtualAddressSpaceError>,
+> = OnceLock::new();
 
 #[cfg(target_arch = "x86_64")]
 const X86_FIXED_MMIO_RANGES: &[RawRange] = &[
@@ -174,9 +177,25 @@ impl MemIf for MemIfImpl {
         somehal::mem::virt_to_phys(vaddr.as_ptr()).into()
     }
 
-    fn kernel_aspace() -> (VirtAddr, usize) {
-        let range = somehal::mem::kernel_space();
-        (range.start.into(), range.len())
+    fn virtual_address_space() -> Result<VirtualAddressSpaceLayout, VirtualAddressSpaceError> {
+        *VIRTUAL_ADDRESS_SPACE.call_once(|| {
+            let source = somehal::mem::virtual_address_space().map_err(|error| match error {
+                someboot::mem::VirtualAddressSpaceError::InvalidRange => {
+                    VirtualAddressSpaceError::InvalidRange
+                }
+                someboot::mem::VirtualAddressSpaceError::OverlappingRanges => {
+                    VirtualAddressSpaceError::OverlappingRanges
+                }
+                someboot::mem::VirtualAddressSpaceError::UnsupportedAddressWidth { valen } => {
+                    VirtualAddressSpaceError::UnsupportedAddressWidth { valen }
+                }
+            })?;
+            let user = VirtAddrRange::try_from(source.user())
+                .map_err(|()| VirtualAddressSpaceError::InvalidRange)?;
+            let kernel = VirtAddrRange::try_from(source.kernel())
+                .map_err(|()| VirtualAddressSpaceError::InvalidRange)?;
+            VirtualAddressSpaceLayout::try_new(user, kernel)
+        })
     }
 
     fn user_aspace_needs_kernel_mappings() -> bool {

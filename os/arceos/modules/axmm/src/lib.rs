@@ -69,7 +69,11 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> MmResult<AddrSpace> {
 
 /// Creates a new address space for kernel itself.
 pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
-    let (base, size) = ax_hal::mem::kernel_aspace();
+    let kernel = ax_hal::mem::virtual_address_space()
+        .map_err(|_| MmError::Unsupported)?
+        .kernel();
+    let base = kernel.start;
+    let size = kernel.size();
     // SAFETY: the architecture boot code installed this root before entering
     // Rust. It stays mapped for the lifetime of the kernel address space, and
     // initialization runs before concurrent page-table mutation begins.

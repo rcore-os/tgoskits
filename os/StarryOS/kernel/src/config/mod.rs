@@ -29,9 +29,9 @@ mod tests {
     #[test]
     fn user_stack_layout_is_inside_user_space() {
         const {
-            assert!(USER_SPACE_BASE < USER_STACK_TOP);
+            assert!(USER_SPACE_BASE < USER_STACK_TOP_MAX);
             assert!(USER_STACK_SIZE > 0);
-            assert!(USER_STACK_TOP <= USER_SPACE_BASE + USER_SPACE_SIZE);
+            assert!(USER_STACK_TOP_MAX <= USER_SPACE_BASE + USER_SPACE_MAX_SIZE);
         }
     }
 

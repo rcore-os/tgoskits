@@ -86,8 +86,12 @@ impl ArchTrait for Arch {
         paging::virt_to_phys(vaddr)
     }
 
-    fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::KERNEL_SPACE_BASE..usize::MAX
+    fn virtual_address_space()
+    -> Result<crate::mem::VirtualAddressSpaceLayout, crate::mem::VirtualAddressSpaceError> {
+        crate::mem::VirtualAddressSpaceLayout::try_new(
+            crate::mem::configured_user_space(1usize << 47),
+            addrspace::KERNEL_SPACE_BASE..usize::MAX,
+        )
     }
 
     fn is_mmu_enabled() -> bool {

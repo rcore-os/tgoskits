@@ -106,6 +106,7 @@ description: 为 ArceOS、StarryOS、Axvisor、someboot、动态统一可扩展�
 - RK3576 ROCK 4D 的固件、设备树、串口、对称多处理、时钟复位单元、电源管理单元和板卡验证遵循 `references/boot-debugging.md`，未确认完整交接契约前不要诊断存储或次处理器。
 - 页表覆盖体系结构需要的身份或固件访问、直接映射、内核高地址、设备资源和逐处理器数据；页表写入、启动参数和次处理器释放周围执行地址转换缓存、缓存维护和体系结构屏障。
 - 把硬件内存管理单元启用、直接映射或内核空间可寻址、最终内核重定位视为不同状态。通用重定位检测使用最终 `VM_LOAD_ADDRESS`，不能使用更宽的体系结构内核或直接映射范围。AArch64 从 SCTLR.M 启用到跳入重定位入口之间禁止串口日志，仍在重定位前路径执行时地址辅助函数不得切到重定位地址。LoongArch 直接映射窗口只提供早期可寻址，执行到最终高地址 `VM_LOAD_ADDRESS` 后才能认定重定位完成。
+- LoongArch 的四级 4 KiB 页表 walker 是构建期契约，CPUCFG `VALEN` 是运行期 canonical 地址能力，两者不能混为动态页表层数。平台按 Linux 的 `vm_map_base = 0 - (1 << cpu_vabits)` 原理发布类型化 lower/upper half：CPUCFG wrapper 返回的 `VALEN` 先减一得到 `cpu_vabits`；PGDL/PGDH 由 `VA[VALEN-1]` 选择。用户 `TASK_SIZE` 和 page-table-backed kernel allocator 必须消费同一不可变布局，不得用板卡 feature 维护第二套地址常量；位宽超出 walker 时返回类型化不支持并停止启动。DMW 的 `PABITS`、缓存属性和物理直映所有权保持独立，不能随 `VALEN` 裁剪。
 - LoongArch 运行时替换普通异常入口后可能保留 someboot 的 `TLBRENTRY`。someboot 与 axcpu 的填充遍历必须一致：遇到零中间目录项立即停止并写入两个零 `TLBRELO`，使原始装载、存储或取指错误进入虚拟内存处理器。不得从物理地址零继续 `lddir` 或 `ldpte`，也不得把含错误虚拟页号的 `TLBREHI` 当作 EntryLo。以延迟 `mmap` 后第一次存储回归和分配器测试验证。
 - `ExitBootServices` 之后不得调用启动服务。退出前重试必须使用正确内存映射键序列。
 

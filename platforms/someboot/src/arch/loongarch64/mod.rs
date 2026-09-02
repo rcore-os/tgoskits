@@ -14,6 +14,7 @@ pub(crate) mod pte;
 mod register;
 mod relocate;
 mod trap;
+mod virtual_address;
 
 use core::{hint::spin_loop, ptr::null};
 
@@ -236,8 +237,18 @@ impl ArchTrait for Arch {
         cpuid::read().core_id()
     }
 
-    fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::KERNEL_PAGE_TABLE_BASE..usize::MAX
+    fn virtual_address_space()
+    -> Result<crate::mem::VirtualAddressSpaceLayout, crate::mem::VirtualAddressSpaceError> {
+        let geometry = virtual_address::LoongArchVirtualAddressLayout::from_valen(
+            loongArch64::cpu::get_valen(),
+        )
+        .map_err(|error| {
+            crate::mem::VirtualAddressSpaceError::UnsupportedAddressWidth { valen: error.valen }
+        })?;
+        crate::mem::VirtualAddressSpaceLayout::try_new(
+            crate::mem::configured_user_space(geometry.lower_end()),
+            geometry.upper_start()..usize::MAX,
+        )
     }
 
     fn is_mmu_enabled() -> bool {

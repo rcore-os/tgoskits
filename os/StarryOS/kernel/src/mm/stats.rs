@@ -2,7 +2,7 @@
 
 use alloc::{format, string::String};
 
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::MappingFlags;
 
 use super::AddrSpace;
@@ -55,17 +55,16 @@ enum VmaClass {
     Other,
 }
 
-fn user_stack_range() -> (usize, usize) {
-    let top = crate::config::USER_STACK_TOP;
+fn user_stack_range(top: usize) -> (usize, usize) {
     let size = crate::config::USER_STACK_SIZE;
     (top.saturating_sub(size), top)
 }
 
-fn is_stack_vma(path: &str, start: VirtAddr) -> bool {
+fn is_stack_vma(path: &str, start: VirtAddr, stack_top: usize) -> bool {
     if path == STACK_VMA_NAME {
         return true;
     }
-    let (stack_start, stack_end) = user_stack_range();
+    let (stack_start, stack_end) = user_stack_range(stack_top);
     let start = start.as_usize();
     start >= stack_start && start < stack_end
 }
@@ -74,8 +73,13 @@ fn is_named_anon(path: &str) -> bool {
     path == STACK_VMA_NAME || path == HEAP_VMA_NAME
 }
 
-fn classify_vma(path: &str, flags: MappingFlags, start: VirtAddr) -> VmaClass {
-    if is_stack_vma(path, start) {
+fn classify_vma(
+    path: &str,
+    flags: MappingFlags,
+    start: VirtAddr,
+    stack_top: usize,
+) -> VmaClass {
+    if is_stack_vma(path, start, stack_top) {
         return VmaClass::Stack;
     }
     if flags.contains(MappingFlags::EXECUTE) {
@@ -92,16 +96,18 @@ fn accumulate_vma(
     pages: u64,
     path: &str,
     flags: MappingFlags,
-    start: VirtAddr,
-    end: VirtAddr,
+    range: VirtAddrRange,
     shared: bool,
+    stack_top: usize,
 ) {
+    let start = range.start;
+    let end = range.end;
     stats.vss_pages += pages;
     if shared {
         stats.shared_vss_pages += pages;
     }
 
-    let class = classify_vma(path, flags, start);
+    let class = classify_vma(path, flags, start, stack_top);
     match class {
         VmaClass::Stack => stats.stack_pages += pages,
         VmaClass::Text => {
@@ -134,6 +140,7 @@ impl ProcessMemStats {
     /// [`AddrSpace::vm_stat`]; resident RSS from the published MappingSlot set.
     pub fn collect(aspace: &AddrSpace) -> Self {
         let mut stats = Self::default();
+        let stack_top = aspace.stack_top().as_usize();
         for area in aspace.vma_inspection_records().unwrap_or_default() {
             let pages = (area.size() / PAGE_SIZE_4K) as u64;
             let flags = area.flags();
@@ -143,9 +150,9 @@ impl ProcessMemStats {
                 pages,
                 &file_info.path,
                 flags,
-                area.start(),
-                area.end(),
+                VirtAddrRange::new(area.start(), area.end()),
                 file_info.shared,
+                stack_top,
             );
         }
         let resident = aspace.resident_page_counts();
@@ -209,14 +216,20 @@ impl ProcessMemStats {
 
 #[cfg(all(test, not(axtest)))]
 fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
+    let stack_top = crate::config::USER_STACK_TOP_MAX;
     // Heap is classified as Data (writable, non-stack, non-exec).
     matches!(
-        classify_vma(HEAP_VMA_NAME, MappingFlags::READ | MappingFlags::WRITE, VirtAddr::from(0)),
+        classify_vma(
+            HEAP_VMA_NAME,
+            MappingFlags::READ | MappingFlags::WRITE,
+            VirtAddr::from(0),
+            stack_top,
+        ),
         VmaClass::Data,
     )
     // Empty path + READ-only + non-EXEC + non-WRITE falls through to Other.
     && matches!(
-        classify_vma("", MappingFlags::READ, VirtAddr::from(0)),
+        classify_vma("", MappingFlags::READ, VirtAddr::from(0), stack_top),
         VmaClass::Other,
     )
     // Stack takes precedence over EXEC/WRITE flag-based classification.
@@ -225,6 +238,7 @@ fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
             STACK_VMA_NAME,
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
             VirtAddr::from(0),
+            stack_top,
         ),
         VmaClass::Stack,
     )
@@ -237,9 +251,9 @@ fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
             2,
             "/bin/app",
             MappingFlags::READ | MappingFlags::EXECUTE,
-            VirtAddr::from(0x4000),
-            VirtAddr::from(0x6000),
+            VirtAddrRange::new(VirtAddr::from(0x4000), VirtAddr::from(0x6000)),
             true,
+            stack_top,
         );
         // Accumulating another text mapping expands start_code/end_code.
         accumulate_vma(
@@ -247,9 +261,9 @@ fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
             1,
             "/lib/libc.so",
             MappingFlags::READ | MappingFlags::EXECUTE,
-            VirtAddr::from(0x1000),
-            VirtAddr::from(0x2000),
+            VirtAddrRange::new(VirtAddr::from(0x1000), VirtAddr::from(0x2000)),
             false,
+            stack_top,
         );
         stats.vss_pages == 3
             && stats.shared_vss_pages == 2
@@ -267,24 +281,27 @@ fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
             1,
             "",
             MappingFlags::READ | MappingFlags::EXECUTE,
-            VirtAddr::from(0x1000),
-            VirtAddr::from(0x2000),
+            VirtAddrRange::new(VirtAddr::from(0x1000), VirtAddr::from(0x2000)),
             false,
+            stack_top,
         );
         stats.text_pages == 1 && stats.exe_pages == 0
     }
     && {
         // Accumulating a stack VMA records start_stack on the first stack seen.
         let mut stats = ProcessMemStats::default();
-        let (stack_start, _stack_end) = user_stack_range();
+        let (stack_start, _stack_end) = user_stack_range(stack_top);
         accumulate_vma(
             &mut stats,
             4,
             "",
             MappingFlags::READ | MappingFlags::WRITE,
-            VirtAddr::from(stack_start + PAGE_SIZE_4K),
-            VirtAddr::from(stack_start + 5 * PAGE_SIZE_4K),
+            VirtAddrRange::new(
+                VirtAddr::from(stack_start + PAGE_SIZE_4K),
+                VirtAddr::from(stack_start + 5 * PAGE_SIZE_4K),
+            ),
             false,
+            stack_top,
         );
         stats.stack_pages == 4
             && stats.start_stack == (stack_start + PAGE_SIZE_4K) as u64
@@ -304,6 +321,7 @@ mod tests {
                 STACK_VMA_NAME,
                 MappingFlags::READ | MappingFlags::WRITE,
                 VirtAddr::from(0x1000),
+                crate::config::USER_STACK_TOP_MAX,
             ),
             VmaClass::Stack,
         );
@@ -311,12 +329,13 @@ mod tests {
 
     #[test]
     fn classify_stack_by_address_range() {
-        let (stack_start, _) = user_stack_range();
+        let (stack_start, _) = user_stack_range(crate::config::USER_STACK_TOP_MAX);
         assert_eq!(
             classify_vma(
                 "",
                 MappingFlags::READ | MappingFlags::WRITE,
                 VirtAddr::from(stack_start + PAGE_SIZE_4K),
+                crate::config::USER_STACK_TOP_MAX,
             ),
             VmaClass::Stack,
         );
@@ -328,7 +347,8 @@ mod tests {
             classify_vma(
                 "",
                 MappingFlags::READ | MappingFlags::EXECUTE,
-                VirtAddr::from(0)
+                VirtAddr::from(0),
+                crate::config::USER_STACK_TOP_MAX,
             ),
             VmaClass::Text,
         );
@@ -336,7 +356,8 @@ mod tests {
             classify_vma(
                 "",
                 MappingFlags::READ | MappingFlags::WRITE,
-                VirtAddr::from(0)
+                VirtAddr::from(0),
+                crate::config::USER_STACK_TOP_MAX,
             ),
             VmaClass::Data,
         );
@@ -350,27 +371,35 @@ mod tests {
             4,
             STACK_VMA_NAME,
             MappingFlags::READ | MappingFlags::WRITE,
-            VirtAddr::from(crate::config::USER_STACK_TOP - crate::config::USER_STACK_SIZE),
-            VirtAddr::from(crate::config::USER_STACK_TOP),
+            VirtAddrRange::new(
+                VirtAddr::from(
+                    crate::config::USER_STACK_TOP_MAX - crate::config::USER_STACK_SIZE,
+                ),
+                VirtAddr::from(crate::config::USER_STACK_TOP_MAX),
+            ),
             false,
+            crate::config::USER_STACK_TOP_MAX,
         );
         accumulate_vma(
             &mut stats,
             2,
             "/bin/app",
             MappingFlags::READ | MappingFlags::EXECUTE,
-            VirtAddr::from(0x1000),
-            VirtAddr::from(0x3000),
+            VirtAddrRange::new(VirtAddr::from(0x1000), VirtAddr::from(0x3000)),
             false,
+            crate::config::USER_STACK_TOP_MAX,
         );
         accumulate_vma(
             &mut stats,
             3,
             HEAP_VMA_NAME,
             MappingFlags::READ | MappingFlags::WRITE,
-            VirtAddr::from(crate::config::USER_HEAP_BASE),
-            VirtAddr::from(crate::config::USER_HEAP_BASE + 3 * PAGE_SIZE_4K),
+            VirtAddrRange::new(
+                VirtAddr::from(crate::config::USER_HEAP_BASE),
+                VirtAddr::from(crate::config::USER_HEAP_BASE + 3 * PAGE_SIZE_4K),
+            ),
             false,
+            crate::config::USER_STACK_TOP_MAX,
         );
 
         assert_eq!(stats.vss_pages, 9);

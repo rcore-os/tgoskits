@@ -246,7 +246,20 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     init_allocator();
 
-    let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
+    let virtual_address_space = ax_hal::mem::virtual_address_space()
+        .unwrap_or_else(|error| panic!("unsupported platform virtual-address layout: {error}"));
+    let user_space = virtual_address_space.user();
+    let kernel_space = virtual_address_space.kernel();
+    let kernel_space_start = kernel_space.start;
+    let kernel_space_size = kernel_space.size();
+
+    info!(
+        "virtual address layout: user [{:#x}, {:#x}), kernel [{:#x}, {:#x})",
+        user_space.start.as_usize(),
+        user_space.end.as_usize(),
+        kernel_space.start.as_usize(),
+        kernel_space.end.as_usize(),
+    );
 
     {
         use core::ops::Range;

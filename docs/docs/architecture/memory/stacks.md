@@ -307,10 +307,10 @@ Drop 时顺序相反：先 remap guard page并完成地址转换后备缓冲区�
 
 ### 8.4 Starry 用户栈
 
-x86_64 当前用户栈顶部为 `0x0400_0000_0000`，虚拟内存区域大小为 8 MiB，因此起点是 `0x03ff_ff80_0000`。loader 先建立完整 `[stack]` 虚拟内存区域，再只 populate 初始 argv/envp/auxv 实际覆盖的尾部页。
+用户栈顶部来自当前 `AddrSpace` 捕获的不可变 `UserVirtualAddressLayout`。x86_64 的策略上限为 `0x0400_0000_0000`；LoongArch64 还会把该上限裁剪到 CPUCFG `VALEN` 给出的 lower canonical half，和 Linux 的 `STACK_TOP_MAX = TASK_SIZE64` 原理一致。例如实际 `VALEN=40` 时，`TASK_SIZE` 和栈顶都是 `0x80_0000_0000`。虚拟内存区域大小为 8 MiB；loader 先建立完整 `[stack]` 虚拟内存区域，再只 populate 初始 argv/envp/auxv 实际覆盖的尾部页。
 
 ```rust
-let ustack_top = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
+let ustack_top = uspace.stack_top();
 let ustack_size = crate::config::USER_STACK_SIZE;
 let ustack_start = ustack_top - ustack_size;
 uspace.map(
@@ -318,7 +318,7 @@ uspace.map(
     ustack_size,
     MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
     false,
-    Backend::new_alloc(ustack_start, PageSize::Size4K, "[stack]"),
+    MappingOperation::new_alloc(ustack_start, PAGE_SIZE_4K, "[stack]"),
 )?;
 ```
 
@@ -329,6 +329,6 @@ uspace.map(
 | 虚拟内存区域 | 8 MiB |
 | 初始 stack data | 13 KiB |
 | 初始 resident upper bound | 16 KiB / 4 页 |
-| 初始 SP | `USER_STACK_TOP - 13 KiB`，再满足应用程序二进制接口 alignment |
+| 初始 SP | 当前 MM 的 `stack_top - 13 KiB`，再满足应用程序二进制接口 alignment |
 
 Starry 当前使用固定大小 stack 虚拟内存区域，不实现 Linux `VM_GROWSDOWN`。非 FIXED mmap 的上界还会避开 `STACK_GUARD_GAP`，但这不是一个已映射的物理 guard page；两种 guard 语义不能混用。

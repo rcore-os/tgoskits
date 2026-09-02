@@ -5,7 +5,7 @@ use core::{
     ops::{Deref, DerefMut, Range},
 };
 
-pub use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, pa, va};
+pub use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, pa, va};
 
 bitflags::bitflags! {
     /// Attributes requested for an MMIO mapping.
@@ -40,6 +40,57 @@ pub enum IomapError {
     /// The requested mapping attributes are not supported.
     #[error("I/O mapping attributes are not supported")]
     Unsupported,
+}
+
+/// Platform virtual-address geometry cannot be represented by this build.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum VirtualAddressSpaceError {
+    /// A platform supplied an invalid half-open address range.
+    #[error("invalid virtual-address-space range")]
+    InvalidRange,
+    /// The user-capable and kernel page-table ranges overlap.
+    #[error("user and kernel virtual-address-space ranges overlap")]
+    OverlappingRanges,
+    /// The hardware address width exceeds the configured page-table contract.
+    #[error("unsupported virtual-address width: VALEN={valen}")]
+    UnsupportedAddressWidth {
+        /// Architectural virtual-address length, including the sign bit.
+        valen: usize,
+    },
+}
+
+/// Immutable platform capability for page-table-backed virtual addresses.
+///
+/// `user` describes the lower range available to an OS user address space;
+/// `kernel` describes the range available to the generic kernel virtual
+/// allocator. Architecture direct-map windows are intentionally excluded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VirtualAddressSpaceLayout {
+    user: VirtAddrRange,
+    kernel: VirtAddrRange,
+}
+
+impl VirtualAddressSpaceLayout {
+    /// Validates and constructs one platform layout.
+    pub fn try_new(
+        user: VirtAddrRange,
+        kernel: VirtAddrRange,
+    ) -> Result<Self, VirtualAddressSpaceError> {
+        if user.overlaps(kernel) {
+            return Err(VirtualAddressSpaceError::OverlappingRanges);
+        }
+        Ok(Self { user, kernel })
+    }
+
+    /// Returns the lower range available to user page tables.
+    pub const fn user(self) -> VirtAddrRange {
+        self.user
+    }
+
+    /// Returns the page-table-backed kernel allocation range.
+    pub const fn kernel(self) -> VirtAddrRange {
+        self.kernel
+    }
 }
 
 /// Data-cache maintenance operation for a virtual address range.
@@ -237,8 +288,8 @@ pub trait MemIf {
     /// It **cannot** be used to translate arbitrary virtual addresses.
     fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr;
 
-    /// Returns the kernel address space base virtual address and size.
-    fn kernel_aspace() -> (VirtAddr, usize);
+    /// Returns the immutable page-table-backed virtual-address layout.
+    fn virtual_address_space() -> Result<VirtualAddressSpaceLayout, VirtualAddressSpaceError>;
 
     /// Returns whether a newly-created user address space must copy kernel mappings.
     fn user_aspace_needs_kernel_mappings() -> bool;

@@ -14,8 +14,10 @@ use zerocopy::IntoBytes;
 
 use crate::{
     StarryError, StarryResult,
-    config::{USER_SPACE_BASE, USER_SPACE_SIZE},
-    mm::aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
+    mm::{
+        UserVirtualAddressLayout,
+        aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
+    },
     sync::Mutex,
 };
 
@@ -73,7 +75,7 @@ const MAX_INTERPRETER_PATH_LEN: u64 = 4096;
 
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> StarryResult<AddrSpace> {
-    AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
+    AddrSpace::new_user(UserVirtualAddressLayout::platform_default()?)
 }
 
 /// An exec address space that is still private to the loader.
@@ -752,14 +754,14 @@ impl ElfLoader {
             (entry, None)
         };
 
-        let elf = map_elf(uspace, crate::config::USER_SPACE_BASE, elf)?;
+        let elf = map_elf(uspace, uspace.base().as_usize(), elf)?;
         let (start_data, end_data) = executable_data_layout(&elf)?;
         uspace.set_executable_data_layout(start_data, end_data)?;
         let ldso = if ldso.is_some() {
             let max_end = uspace
                 .max_mapped_end()
                 .map(VirtAddr::as_usize)
-                .unwrap_or(crate::config::USER_SPACE_BASE);
+                .unwrap_or_else(|| uspace.base().as_usize());
             let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
             ldso.map(|elf| map_elf(uspace, interp_base, elf))
                 .transpose()?
@@ -938,7 +940,7 @@ fn load_user_app_with_depth(
         }
     };
 
-    let ustack_top = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
+    let ustack_top = uspace.stack_top();
     let ustack_size = crate::config::USER_STACK_SIZE;
     let ustack_start = ustack_top - ustack_size;
     debug!("Mapping user stack: {ustack_start:#x?} -> {ustack_top:#x?}");

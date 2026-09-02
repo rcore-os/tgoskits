@@ -20,6 +20,72 @@ pub const MB: usize = 1024 * KB;
 pub const GB: usize = 1024 * MB;
 pub const KIMAGE_MAP_ALIGN: usize = 2 * MB;
 
+/// Invalid platform virtual-address geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum VirtualAddressSpaceError {
+    /// One of the half-open address ranges has its end below its start.
+    #[error("invalid virtual-address-space range")]
+    InvalidRange,
+    /// The user-capable and kernel page-table ranges overlap.
+    #[error("user and kernel virtual-address-space ranges overlap")]
+    OverlappingRanges,
+    /// CPUCFG reports an address width unsupported by the configured walker.
+    #[error("unsupported virtual-address width: VALEN={valen}")]
+    UnsupportedAddressWidth {
+        /// Architectural VALEN value, including the sign bit.
+        valen: usize,
+    },
+}
+
+/// Platform-owned page-table virtual-address layout.
+///
+/// Direct-map windows that bypass the page-table walker are deliberately not
+/// part of `kernel`. An empty `user` range means that the current build does
+/// not expose a user page table even if the architecture could support one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VirtualAddressSpaceLayout {
+    user: Range<usize>,
+    kernel: Range<usize>,
+}
+
+impl VirtualAddressSpaceLayout {
+    /// Validates and constructs a platform layout.
+    pub fn try_new(
+        user: Range<usize>,
+        kernel: Range<usize>,
+    ) -> Result<Self, VirtualAddressSpaceError> {
+        if user.start > user.end || kernel.start > kernel.end {
+            return Err(VirtualAddressSpaceError::InvalidRange);
+        }
+        if user.start < kernel.end && kernel.start < user.end {
+            return Err(VirtualAddressSpaceError::OverlappingRanges);
+        }
+        Ok(Self { user, kernel })
+    }
+
+    /// Returns the lower range available to a user page table.
+    pub fn user(&self) -> Range<usize> {
+        self.user.clone()
+    }
+
+    /// Returns the page-table-backed kernel allocation range.
+    pub fn kernel(&self) -> Range<usize> {
+        self.kernel.clone()
+    }
+}
+
+pub(crate) fn configured_user_space(end: usize) -> Range<usize> {
+    #[cfg(uspace)]
+    {
+        0..end
+    }
+    #[cfg(not(uspace))]
+    {
+        let _ = end;
+        0..0
+    }
+}
+
 static mut VM_LOAD_OFFSET: isize = 0;
 static MEMORY_MAP: StaticCell<MemoryMap> = StaticCell::new(MemoryMap::new());
 
@@ -250,8 +316,8 @@ pub(crate) fn add_memory_descriptor(
     unsafe { MEMORY_MAP.update(|mem| mem.merge_add(desc)) }
 }
 
-pub fn kernel_space() -> Range<usize> {
-    Arch::kernel_space()
+pub fn virtual_address_space() -> Result<VirtualAddressSpaceLayout, VirtualAddressSpaceError> {
+    Arch::virtual_address_space()
 }
 
 #[cfg(test)]

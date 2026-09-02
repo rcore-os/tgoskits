@@ -103,8 +103,12 @@ impl MemIf for DummyMem {
         pa!(0)
     }
 
-    fn kernel_aspace() -> (ax_memory_addr::VirtAddr, usize) {
-        (va!(0), 0)
+    fn virtual_address_space()
+    -> Result<ax_plat::mem::VirtualAddressSpaceLayout, ax_plat::mem::VirtualAddressSpaceError> {
+        ax_plat::mem::VirtualAddressSpaceLayout::try_new(
+            ax_memory_addr::VirtAddrRange::new(va!(0), va!(1usize << 47)),
+            ax_memory_addr::VirtAddrRange::new(va!(0), va!(0)),
+        )
     }
 
     fn user_aspace_needs_kernel_mappings() -> bool {

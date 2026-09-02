@@ -4,13 +4,6 @@ include!(concat!(env!("OUT_DIR"), "/defines.rs"));
 
 pub const PABITS: usize = 48;
 
-/// Lowest canonical kernel address translated through PGDH.
-///
-/// DMW addresses bypass the page-table walker, so vmalloc-style mappings must
-/// live in this disjoint range. The four-level 4-KiB geometry covers 48 virtual
-/// address bits, making the sign-extended upper half start at bit 47.
-pub const KERNEL_PAGE_TABLE_BASE: usize = 0xffff_8000_0000_0000;
-
 const TO_PHYS_MASK: usize = (1 << PABITS) - 1;
 
 pub const fn to_phys(addr: usize) -> usize {

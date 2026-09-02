@@ -131,7 +131,7 @@ LS2K1000 启动链路由早期引导、动态平台、中断控制器、设备�
 | CPU 与动态平台 | `ax-cpu`、`axplat-dyn`、`ax-hal` | `components/axcpu/src/loongarch64/`、`platforms/axplat-dyn/` | 提供 LoongArch64 上下文、陷阱和动态平台接口 |
 | 中断控制器 | `loongarch-intc-driver`、`somehal`、`rdif-intc`、`irq-framework` | `drivers/intc/loongarch-intc-driver/`；`platforms/somehal/src/arch/loongarch64/` | OS 无关 crate 驱动 EIOINTC、PCH-PIC 与 LIOINTC；`somehal` 负责 FDT/ACPI、映射、domain、注册和级联 |
 | 驱动发现 | `rdrive`、`ax-driver` | `drivers/ax-driver/` | 根据 FDT 探测并注册板载设备 |
-| 用户地址空间 | `starry-kernel` | `starry-kernel` feature `loongarch64-low-va` | 使用符合 2K1000 40-bit VA 限制的用户地址布局 |
+| 虚拟地址布局 | `someboot`、`axplat-dyn`、`starry-kernel` | CPUCFG `VALEN`、`VirtualAddressSpaceLayout`、`UserVirtualAddressLayout` | 启动时按硬件位宽发布 canonical lower/upper half；每个 Starry MM 固化裁剪后的 Linux 风格 `TASK_SIZE`，不使用板卡 feature |
 | 串口 | `ax-driver`、`some-serial`、`rdif-serial` | `ax-driver` feature `serial`；`drivers/ax-driver/src/serial/ns16550.rs` | 驱动 NS16550，并注册运行期 `ttyS0` |
 | RTC | `ax-driver` | `ax-driver` feature `rtc`；`drivers/ax-driver/src/time/loongson.rs` | 探测 `loongson,ls2k1000-rtc` |
 | SATA | `ax-driver`、`dma-api`、`rdif-block` | `ax-driver` feature `ls2k1000-ahci`；`drivers/ax-driver/src/block/ahci/` | 通过 IRQ 驱动的单槽硬件队列向文件系统提供 block device |

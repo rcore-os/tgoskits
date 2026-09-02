@@ -15,7 +15,13 @@ use starry_vm::vm_write_slice;
 
 use crate::{StarryError, StarryResult, task::AsThread};
 
-fn validate_mincore_request(addr: usize, length: usize, vec_is_null: bool) -> StarryResult<usize> {
+fn validate_mincore_request(
+    addr: usize,
+    length: usize,
+    vec_is_null: bool,
+    user_base: usize,
+    user_end: usize,
+) -> StarryResult<usize> {
     let start = VirtAddr::from(addr);
     if !start.is_aligned(PAGE_SIZE_4K) {
         return Err(StarryError::InvalidInput);
@@ -27,11 +33,8 @@ fn validate_mincore_request(addr: usize, length: usize, vec_is_null: bool) -> St
         return Ok(0);
     }
 
-    let user_end = crate::config::USER_SPACE_BASE
-        .checked_add(crate::config::USER_SPACE_SIZE)
-        .ok_or(StarryError::NoMemory)?;
     let end = addr.checked_add(length).ok_or(StarryError::NoMemory)?;
-    if addr < crate::config::USER_SPACE_BASE || end > user_end {
+    if addr < user_base || end > user_end {
         return Err(StarryError::NoMemory);
     }
     let pages = length.div_ceil(PAGE_SIZE_4K);
@@ -70,7 +73,14 @@ fn validate_mincore_request(addr: usize, length: usize, vec_is_null: bool) -> St
 /// - ENOMEM: length > (TASK_SIZE - addr), negative length, or unmapped memory
 pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isize> {
     let start_addr = VirtAddr::from(addr);
-    let page_count = validate_mincore_request(addr, length, vec.is_null())?;
+    let curr = current();
+    let aspace_pin = curr.as_thread().proc_data.pin_aspace()?;
+    let (user_base, user_end) = {
+        let aspace = aspace_pin.lock();
+        (aspace.base().as_usize(), aspace.end().as_usize())
+    };
+    let page_count =
+        validate_mincore_request(addr, length, vec.is_null(), user_base, user_end)?;
 
     debug!("sys_mincore <= addr: {addr:#x}, length: {length:#x}, vec: {vec:?}");
 
@@ -83,9 +93,7 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isi
 
     {
         // Get current address space
-        let curr = current();
-        let aspace_arc = curr.as_thread().proc_data.pin_aspace()?;
-        let aspace = aspace_arc.lock();
+        let aspace = aspace_pin.lock();
         let mut i = 0;
 
         while i < page_count {
@@ -186,7 +194,7 @@ mod tests {
     #[test]
     fn zero_length_does_not_validate_output_pointer() {
         assert_eq!(
-            super::validate_mincore_request(0x1000, 0, true).unwrap(),
+            super::validate_mincore_request(0x1000, 0, true, 0x1000, 0x20_0000).unwrap(),
             0
         );
     }
@@ -194,7 +202,13 @@ mod tests {
     #[test]
     fn overflowing_range_precedes_output_pointer_validation() {
         assert!(matches!(
-            super::validate_mincore_request(usize::MAX & !(4096 - 1), 4096, true),
+            super::validate_mincore_request(
+                usize::MAX & !(4096 - 1),
+                4096,
+                true,
+                0x1000,
+                0x20_0000,
+            ),
             Err(StarryError::NoMemory)
         ));
     }

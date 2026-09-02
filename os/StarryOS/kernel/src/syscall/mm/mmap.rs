@@ -329,14 +329,16 @@ pub fn sys_mmap(
     } else {
         let align = page_size;
         // Defense-in-depth (#242): cap the search upper bound to
-        // `USER_STACK_TOP - STACK_GUARD_GAP` so a non-FIXED mmap (e.g. V8's
-        // 4 GiB PROT_NONE pointer-compression cage reservation) can never
-        // land in the slot immediately above the user stack. Linux uses an
-        // analogous `stack_guard_gap` (default 256 pages) in
-        // `mm/mmap.c::vma_compute_gap`. Explicit MAP_FIXED requests are
-        // unaffected.
+        // the current MM's `stack_top - STACK_GUARD_GAP` so a non-FIXED mmap
+        // (e.g. V8's 4 GiB PROT_NONE pointer-compression cage reservation) can
+        // never land in the slot immediately above the user stack. Linux uses
+        // an analogous `stack_guard_gap` (default 256 pages) in
+        // `mm/mmap.c::vma_compute_gap`. Explicit MAP_FIXED requests are unaffected.
         const STACK_GUARD_GAP: usize = 0x10_0000; // 1 MiB
-        let upper = crate::config::USER_STACK_TOP.saturating_sub(STACK_GUARD_GAP);
+        let upper = aspace
+            .stack_top()
+            .as_usize()
+            .saturating_sub(STACK_GUARD_GAP);
         let limit = VirtAddrRange::new(aspace.base(), VirtAddr::from(upper));
         aspace
             .find_free_area(VirtAddr::from(aligned), length, limit, align)

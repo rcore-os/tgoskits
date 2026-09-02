@@ -245,8 +245,12 @@ impl ArchTrait for Arch {
         vaddr
     }
 
-    fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::PAGE_OFFSET..usize::MAX
+    fn virtual_address_space()
+    -> Result<crate::mem::VirtualAddressSpaceLayout, crate::mem::VirtualAddressSpaceError> {
+        crate::mem::VirtualAddressSpaceLayout::try_new(
+            crate::mem::configured_user_space(1usize << 38),
+            addrspace::PAGE_OFFSET..usize::MAX,
+        )
     }
 
     fn is_mmu_enabled() -> bool {

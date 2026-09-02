@@ -27,7 +27,7 @@ use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_wr
 
 use crate::{
     StarryError, StarryResult,
-    config::{USER_SPACE_BASE, USER_SPACE_SIZE},
+    mm::UserVirtualAddressLayout,
     task::{AsThread, Thread},
 };
 
@@ -497,8 +497,12 @@ struct Vm;
 
 /// Briefly checks if the given memory region is valid user memory.
 pub fn check_access(start: usize, len: usize) -> VmResult {
-    const USER_SPACE_END: usize = USER_SPACE_BASE + USER_SPACE_SIZE;
-    let ok = (USER_SPACE_BASE..USER_SPACE_END).contains(&start) && (USER_SPACE_END - start) >= len;
+    let layout = UserVirtualAddressLayout::platform_default()
+        .map_err(|_| VmError::AccessDenied)?;
+    let user = layout.range();
+    let user_base = user.start.as_usize();
+    let user_end = user.end.as_usize();
+    let ok = (user_base..user_end).contains(&start) && (user_end - start) >= len;
     if unlikely(!ok) {
         Err(VmError::AccessDenied)
     } else {
@@ -743,8 +747,9 @@ fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
 
 #[cfg(all(test, not(axtest)))]
 fn user_access_range_rules_hold_for_test() -> bool {
-    let user_base = USER_SPACE_BASE;
-    let user_end = USER_SPACE_BASE + USER_SPACE_SIZE;
+    let user_base = crate::config::USER_SPACE_BASE;
+    let user_size = crate::config::USER_SPACE_MAX_SIZE;
+    let user_end = user_base + user_size;
     // check_access accepts zero-length access anywhere in user space,
     // including exactly at USER_SPACE_BASE and one byte before USER_SPACE_END.
     check_access(user_base, 0).is_ok()
@@ -759,8 +764,8 @@ fn user_access_range_rules_hold_for_test() -> bool {
         && check_access(user_end, 0).is_err()
         && check_access(user_end - 1, 2).is_err()
         // Lengths that would wrap the end pointer are rejected.
-        && check_access(user_base, USER_SPACE_SIZE).is_ok()
-        && check_access(user_base, USER_SPACE_SIZE + 1).is_err()
+        && check_access(user_base, user_size).is_ok()
+        && check_access(user_base, user_size + 1).is_err()
         && check_access(user_end - 1, usize::MAX).is_err()
 }
 
@@ -785,7 +790,7 @@ mod tests {
     #[cfg(all(test, not(axtest)))]
     #[test]
     fn user_access_page_span_is_checked_and_bounded() {
-        let page = USER_SPACE_BASE.next_multiple_of(PAGE_SIZE_4K);
+        let page = crate::config::USER_SPACE_BASE.next_multiple_of(PAGE_SIZE_4K);
         let cross_page = UserAccessRange::new(page + PAGE_SIZE_4K - 1, 2).unwrap();
         assert_eq!(
             cross_page.page_span(),
@@ -834,7 +839,7 @@ mod tests {
         // SAFETY: the address is aligned and belongs to the configured user
         // range. It is intentionally unmapped to exercise exception fixup.
         assert!(matches!(
-            unsafe { user_read_u32(USER_SPACE_BASE as *const u32) },
+            unsafe { user_read_u32(crate::config::USER_SPACE_BASE as *const u32) },
             Err(UserAccessError::Fault)
         ));
     }

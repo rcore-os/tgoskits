@@ -16,7 +16,7 @@ use ax_runtime::hal::{
 use crate::{
     StarryError, StarryResult,
     config::USER_HEAP_BASE,
-    mm::{ProcessVmStat, ProcessVmStatSnapshot},
+    mm::{ProcessVmStat, ProcessVmStatSnapshot, UserVirtualAddressLayout},
     sync::{IrqMutex, LockdepMutexExt, Mutex},
 };
 
@@ -462,7 +462,8 @@ pub(crate) enum EvictMappingOutcome {
 /// The virtual memory address space.
 pub struct AddrSpace {
     id: AddressSpaceId,
-    va_range: VirtAddrRange,
+    /// Immutable ABI and hardware address limits captured at MM creation.
+    layout: UserVirtualAddressLayout,
     /// The sole VMA metadata and executable-operation publication owner.
     /// Readers receive metadata-only snapshots; mutations path-copy a complete
     /// successor before any PTE apply phase begins.
@@ -507,17 +508,22 @@ pub struct AddrSpace {
 impl AddrSpace {
     /// Returns the address space base.
     pub const fn base(&self) -> VirtAddr {
-        self.va_range.start
+        self.layout.range().start
     }
 
     /// Returns the address space end.
     pub const fn end(&self) -> VirtAddr {
-        self.va_range.end
+        self.layout.task_size()
     }
 
     /// Returns the address space size.
     pub fn size(&self) -> usize {
-        self.va_range.size()
+        self.layout.range().size()
+    }
+
+    /// Returns the initial-stack ceiling captured by this MM.
+    pub const fn stack_top(&self) -> VirtAddr {
+        self.layout.stack_top()
     }
 
     /// Returns the immutable heap start recorded for `/proc/[pid]/stat` and
@@ -539,7 +545,7 @@ impl AddrSpace {
         end: usize,
     ) -> StarryResult {
         let layout = ExecutableDataLayout::try_new(start, end)?;
-        if start < self.va_range.start.as_usize() || end > self.va_range.end.as_usize() {
+        if start < self.base().as_usize() || end > self.end().as_usize() {
             return Err(StarryError::MalformedExecutable);
         }
         self.executable_data = layout;
@@ -1058,19 +1064,23 @@ impl AddrSpace {
         let Some(range) = VirtAddrRange::try_from_start_size(start, size) else {
             return false;
         };
-        range.start >= self.va_range.start && range.end <= self.va_range.end
+        range.start >= self.base() && range.end <= self.end()
     }
 
     /// Creates a new empty address space.
     pub fn new_empty(base: VirtAddr, size: usize) -> StarryResult<Self> {
-        let va_range = VirtAddrRange::try_from_start_size(base, size)
-            .ok_or(StarryError::InvalidInput)?;
-        if va_range.is_empty() {
-            return Err(StarryError::InvalidInput);
-        }
+        Self::new_with_layout(UserVirtualAddressLayout::from_range(base, size)?)
+    }
+
+    /// Creates a user MM from one already validated immutable layout.
+    pub(crate) fn new_user(layout: UserVirtualAddressLayout) -> StarryResult<Self> {
+        Self::new_with_layout(layout)
+    }
+
+    fn new_with_layout(layout: UserVirtualAddressLayout) -> StarryResult<Self> {
         Ok(Self {
             id: AddressSpaceId::allocate(),
-            va_range,
+            layout,
             vma_root: Arc::new(VmaMap::default()),
             heap: HeapState::new(USER_HEAP_BASE),
             executable_data: ExecutableDataLayout::default(),
@@ -4647,7 +4657,7 @@ impl AddrSpace {
         if entry
             .end()
             .checked_add(additional_size)
-            .is_none_or(|new_end| new_end > self.va_range.end)
+            .is_none_or(|new_end| new_end > self.end())
         {
             return Err(StarryError::NoMemory);
         }
@@ -4917,7 +4927,7 @@ impl AddrSpace {
     /// not publish an epoch or side-band event by itself.
     fn clear_quiescent_contents(&mut self) -> StarryResult {
         self.ensure_quiescent_for_content_clear()?;
-        let range = self.va_range;
+        let range = self.layout.range();
         let operations = self.mapping_operation_fragments(range, false)?;
         if operations.iter().any(|(fragment, operation)| {
             !operation.validate_unmap_range(*fragment, &self.pt)
@@ -4976,7 +4986,7 @@ impl AddrSpace {
     /// unpublished semantics: no [`MutationReceipt`] and no epoch advance.
     pub(crate) fn reset_uninstalled_for_loader(&mut self) -> StarryResult {
         self.ensure_quiescent_for_content_clear()?;
-        let range = self.va_range;
+        let range = self.layout.range();
         let memfd_deltas = crate::syscall::memfd_prepare_aspace_unmap_deltas(
             self,
             range.start,
@@ -4995,7 +5005,7 @@ impl AddrSpace {
         self.ensure_quiescent_for_content_clear()?;
         let base_epoch = self.vm_epoch();
         base_epoch.checked_next().ok_or(StarryError::BadState)?;
-        let range = self.va_range;
+        let range = self.layout.range();
         let removed_vmas = self.vma_root.len();
         let detached_slots = self.mapping_slots.len();
         let resident_pages = self
@@ -5186,7 +5196,7 @@ impl AddrSpace {
         access_flags: PageFaultFlags,
         thp_mode: TransparentHugePageMode,
     ) -> FaultResult {
-        if !self.va_range.contains(vaddr) {
+        if !self.layout.range().contains(vaddr) {
             return FaultResult::Unmapped;
         }
         let access_flags = MappingFlags::from(access_flags);
@@ -5607,7 +5617,7 @@ impl AddrSpace {
         // constructing the child. No published parent state changes in this
         // phase, so a child preparation failure is a true abort.
         let parent_mutation = self.prepare_fork_parent_mutation()?;
-        let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
+        let new_aspace = Arc::new(Mutex::new(Self::new_with_layout(self.layout)?));
 
         // The caller holds the source AddrSpace lock while this fresh AddrSpace
         // is being populated. The new lock is not published yet, so this is a
@@ -5753,7 +5763,7 @@ impl fmt::Debug for AddrSpace {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("AddrSpace")
             .field("id", &self.id)
-            .field("va_range", &self.va_range)
+            .field("layout", &self.layout)
             .field("page_table_root", &self.pt.root_paddr())
             .field("vma_root", &self.vma_root)
             .field("vm_epoch", &self.vm_epoch())

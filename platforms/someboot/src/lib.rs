@@ -98,7 +98,8 @@ pub trait ArchTrait {
         true
     }
 
-    fn kernel_space() -> core::ops::Range<usize>;
+    fn virtual_address_space()
+    -> Result<mem::VirtualAddressSpaceLayout, mem::VirtualAddressSpaceError>;
     fn is_kernel_relocated_at(addr: usize) -> bool {
         (crate::consts::VM_LOAD_ADDRESS..usize::MAX).contains(&addr)
     }
