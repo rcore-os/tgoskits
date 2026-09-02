@@ -76,7 +76,9 @@ let
     extraModules = generatedAssert ++ extraFromRecord;
   };
 
-  nixos = mkNixosSystem ([ systemModule ] ++ extraModules);
+  systemModules = [ systemModule ] ++ extraModules ++ [ (import ./lib/final-baseline-guard.nix) ];
+
+  nixos = mkNixosSystem systemModules;
   toplevel = nixos.config.system.build.toplevel;
   rootfs = mkRootfs toplevel;
   qemu = lib.getExe' pkgs.qemu_test "qemu-system-x86_64";

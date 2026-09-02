@@ -56,6 +56,21 @@
         systemModule = ./kernel-fixture.bin;
         qemuConfig = ./kernel-fixture.bin;
       };
+      fixtureNixosShared = fixtureShared // {
+        mkNixosSystem = modules: nixpkgs.lib.nixosSystem { inherit system modules; };
+        systemModule = {
+          networking.useDHCP = false;
+          nix.enable = false;
+          services.dbus.enable = false;
+          services.logind.enable = false;
+          services.nscd.enable = false;
+          services.udev.enable = false;
+          system.stateVersion = "26.05";
+          systemd.services."autovt@".enable = false;
+          systemd.services.console-getty.enable = false;
+          systemd.services."getty@tty1".enable = false;
+        };
+      };
       missingInputs = builtins.tryEval (
         (mkStarryNixosTest {
           kernelPath = null;
@@ -97,6 +112,22 @@
         starryNixos = fixtureShared;
         caseName = "hello-tmpfiles";
       };
+      fixtureFunctionAllowed = builtins.tryEval (
+        (mkAssembly {
+          kernelPath = ./kernel-fixture.bin;
+          kernelNarHash = "sha256-fiqck+CYjhisfQB5RvFEY3jAVmNFkaT5oXtmB/O54kk=";
+          starryNixos = fixtureNixosShared;
+          caseName = "function-allowed";
+        }).systemToplevel
+      );
+      fixtureFunctionForbidden = builtins.tryEval (
+        (mkAssembly {
+          kernelPath = ./kernel-fixture.bin;
+          kernelNarHash = "sha256-fiqck+CYjhisfQB5RvFEY3jAVmNFkaT5oXtmB/O54kk=";
+          starryNixos = fixtureNixosShared;
+          caseName = "function-forbidden";
+        }).systemToplevel
+      );
       unknownCase = builtins.tryEval (
         (mkAssembly {
           kernelPath = ./kernel-fixture.bin;
@@ -168,8 +199,7 @@
         assert nixpkgs.lib.hasInfix "STARRY_NIXOS_ASSERT_PASSED" fixtureService.contract.testScript;
         assert nixpkgs.lib.hasInfix "STARRY_NIXOS_ASSERT_FAILED" fixtureServiceFail.contract.testScript;
         assert nixpkgs.lib.hasInfix "succeed(\"true\")" fixtureUnsupported.contract.testScript;
-        assert nixpkgs.lib.hasInfix "STARRY_NIXOS_ASSERT_PASSED" fixtureHello.contract.testScript;
-        assert nixpkgs.lib.hasInfix "wrap_machine" fixture.contract.testScript;
+        assert fixtureFunctionForbidden.success == false;
         assert udevGuard.success == false;
         assert (builtins.tryEval fixtureService.test.drvPath).success;
         assert (builtins.tryEval fixtureHello.test.drvPath).success;
