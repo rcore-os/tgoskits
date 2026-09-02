@@ -31,6 +31,13 @@ struct FairQueueKey {
     thread: ThreadId,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct FairMembership {
+    generation: u32,
+    key: FairQueueKey,
+    delayed: bool,
+}
+
 impl FairQueueKey {
     fn for_thread(thread: &QueuedThread) -> Self {
         let fair = fair_entity(thread);
@@ -141,7 +148,7 @@ impl FairNode {
 #[derive(Debug)]
 pub(super) struct FairRunQueue {
     root: FairLink,
-    keys: Vec<Option<(u32, FairQueueKey)>>,
+    keys: Vec<Option<FairMembership>>,
     zero_vruntime: u64,
     sum_weighted_delta: i128,
     total_weight: i128,
@@ -228,6 +235,7 @@ impl FairRunQueue {
 
     fn insert_entry(&mut self, thread: QueuedThread) {
         let key = FairQueueKey::for_thread(&thread);
+        let delayed = fair_entity(&thread).is_delayed();
         let slot = thread.id.slot() as usize;
         assert!(
             self.keys.len() > slot,
@@ -235,7 +243,11 @@ impl FairRunQueue {
         );
         assert!(
             self.keys[slot]
-                .replace((thread.id.generation(), key))
+                .replace(FairMembership {
+                    generation: thread.id.generation(),
+                    key,
+                    delayed,
+                })
                 .is_none(),
             "fair runqueue cannot contain one thread twice"
         );
@@ -246,13 +258,13 @@ impl FairRunQueue {
                 .checked_add(1)
                 .expect("fair idle count must fit usize");
         }
-        if fair_entity(&thread).is_delayed() {
+        if delayed {
             self.delayed_count = self
                 .delayed_count
                 .checked_add(1)
                 .expect("fair delayed count must fit usize");
         }
-        if thread.migration_capable && !fair_entity(&thread).is_delayed() {
+        if thread.migration_capable && !delayed {
             self.migratable_count = self
                 .migratable_count
                 .checked_add(1)
@@ -274,13 +286,15 @@ impl FairRunQueue {
     }
 
     fn remove_entry(&mut self, thread: ThreadId) -> Option<QueuedThread> {
-        let key = self
-            .keys
+        let key = self.membership(thread)?.key;
+        self.remove_entry_with_key(thread, key, |_| true)
+    }
+
+    fn membership(&self, thread: ThreadId) -> Option<FairMembership> {
+        self.keys
             .get(thread.slot() as usize)
             .and_then(|entry| *entry)
-            .filter(|(generation, _)| *generation == thread.generation())
-            .map(|(_, key)| key)?;
-        self.remove_entry_with_key(thread, key, |_| true)
+            .filter(|entry| entry.generation == thread.generation())
     }
 
     fn remove_entry_with_key(
@@ -293,7 +307,7 @@ impl FairRunQueue {
             .keys
             .get(thread.slot() as usize)
             .and_then(|entry| *entry)?;
-        if indexed.0 != thread.generation() || indexed.1 != key {
+        if indexed.generation != thread.generation() || indexed.key != key {
             return None;
         }
         let (root, removed, found) = remove_node_if(self.root.take(), key, &mut should_remove);
@@ -312,8 +326,9 @@ impl FairRunQueue {
             .get(slot)
             .and_then(|entry| *entry)
             .expect("removed fair node must remain indexed");
-        assert_eq!(indexed.0, removed_thread.id.generation());
-        assert_eq!(indexed.1, removed.key);
+        assert_eq!(indexed.generation, removed_thread.id.generation());
+        assert_eq!(indexed.key, removed.key);
+        debug_assert_eq!(indexed.delayed, fair_entity(removed_thread).is_delayed());
         self.keys[slot] = None;
         let removed = Self::return_removed(removed);
         self.remove_weighted_entity(fair_entity(&removed));
@@ -323,13 +338,13 @@ impl FairRunQueue {
                 .checked_sub(1)
                 .expect("fair idle count must match queue membership");
         }
-        if fair_entity(&removed).is_delayed() {
+        if indexed.delayed {
             self.delayed_count = self
                 .delayed_count
                 .checked_sub(1)
                 .expect("fair delayed count must match queue membership");
         }
-        if removed.migration_capable && !fair_entity(&removed).is_delayed() {
+        if removed.migration_capable && !indexed.delayed {
             self.migratable_count = self
                 .migratable_count
                 .checked_sub(1)
@@ -364,13 +379,7 @@ impl FairRunQueue {
         current: ThreadId,
         virtual_time: u64,
     ) -> Option<QueuedThread> {
-        let (generation, key) = self
-            .keys
-            .get(current.slot() as usize)
-            .and_then(|entry| *entry)?;
-        if generation != current.generation() {
-            return None;
-        }
+        let key = self.membership(current)?.key;
         self.remove_entry_with_key(current, key, |node| {
             protected_current_is_eligible(fair_entity(node.thread()), virtual_time)
         })
@@ -381,26 +390,15 @@ impl FairRunQueue {
     }
 
     pub(super) fn is_delayed(&self, thread: ThreadId) -> bool {
-        let Some((generation, key)) = self
-            .keys
-            .get(thread.slot() as usize)
-            .and_then(|entry| *entry)
-        else {
-            return false;
-        };
-        generation == thread.generation()
-            && find_node(self.root.as_deref(), key)
-                .is_some_and(|node| fair_entity(node.thread()).is_delayed())
+        self.membership(thread).is_some_and(|entry| entry.delayed)
     }
 
     pub(super) fn take_delayed(&mut self, thread: ThreadId) -> Option<QueuedThread> {
-        let key = self
-            .keys
-            .get(thread.slot() as usize)
-            .and_then(|entry| *entry)
-            .filter(|(generation, _)| *generation == thread.generation())
-            .map(|(_, key)| key)?;
-        self.remove_entry_with_key(thread, key, |node| fair_entity(node.thread()).is_delayed())
+        let membership = self.membership(thread)?;
+        if !membership.delayed {
+            return None;
+        }
+        self.remove_entry_with_key(thread, membership.key, |_| true)
     }
 
     pub(super) fn finish_delayed_dequeue(
@@ -425,10 +423,11 @@ impl FairRunQueue {
         current: Option<FairEntity>,
         timing_granularity_ns: u64,
     ) -> Option<SchedulingEntity> {
-        let (generation, key) = self.keys.get(id.slot() as usize).and_then(|entry| *entry)?;
-        if generation != id.generation() {
+        let membership = self.membership(id)?;
+        if !membership.delayed {
             return None;
         }
+        let key = membership.key;
         let fair = fair_entity(
             find_node(self.root.as_deref(), key)
                 .expect("fair identity index must match its tree")
@@ -455,6 +454,10 @@ impl FairRunQueue {
                 };
                 fair.clear_delayed()
                     .expect("the indexed Fair entity was observed delayed under the same rq lock");
+                self.keys[id.slot() as usize]
+                    .as_mut()
+                    .expect("reactivated fair entity must remain indexed")
+                    .delayed = false;
                 (thread.active.entity().clone(), thread.migration_capable)
             };
             if migration_capable {
@@ -486,16 +489,14 @@ impl FairRunQueue {
     }
 
     pub(super) fn update_affinity(&mut self, id: ThreadId, affinity: Arc<CpuSet>) -> bool {
-        let Some((generation, key)) = self.keys.get(id.slot() as usize).and_then(|entry| *entry)
-        else {
+        let Some(membership) = self.membership(id) else {
             return false;
         };
-        if generation != id.generation() {
-            return false;
-        }
+        let key = membership.key;
+        let delayed = membership.delayed;
         let node = find_node_mut(self.root.as_deref_mut(), key)
             .expect("fair identity index must match its tree");
-        let delayed = fair_entity(node.thread()).is_delayed();
+        debug_assert_eq!(delayed, fair_entity(node.thread()).is_delayed());
         let counted = node.thread().migration_capable && !delayed;
         let migration_capable = affinity.is_migration_capable();
         let next_counted = migration_capable && !delayed;
@@ -519,16 +520,15 @@ impl FairRunQueue {
     }
 
     pub(super) fn mark_balance_candidate(&mut self, id: ThreadId, scan_epoch: u64) -> bool {
-        let Some((generation, key)) = self.keys.get(id.slot() as usize).and_then(|entry| *entry)
-        else {
+        let Some(membership) = self.membership(id) else {
             return false;
         };
-        if generation != id.generation() {
-            return false;
-        }
+        let key = membership.key;
+        let delayed = membership.delayed;
         let node = find_node_mut(self.root.as_deref_mut(), key)
             .expect("fair identity index must match its tree");
-        if fair_entity(node.thread()).is_delayed() {
+        debug_assert_eq!(delayed, fair_entity(node.thread()).is_delayed());
+        if delayed {
             return false;
         }
         node.thread

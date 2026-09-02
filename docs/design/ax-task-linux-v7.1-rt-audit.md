@@ -5218,3 +5218,31 @@ runtime context publication 和 active-mm/hardware-root 校验，直接对应 Li
 本轮没有新增测试、没有执行 clippy；在 benchmark 完成后统一执行了 `cargo fmt` 和
 `git diff --check`。当前仍未达到 Linux RT 约 `15--28 us` 参考区间的 90% 目标，下一步
 继续检查用户返回后的 syscall/信号边界以及 `context-switch tail` 的重复 publication。
+
+## 2026-09-02：Fair delayed 状态按队列成员事实直接采样
+
+Linux `sched_entity` 的 delayed 状态是实体自身的队列成员事实；原实现的 Fair 身份索引
+只保存 generation 和 AVL key，`is_delayed(ThreadId)` 每次都沿 AVL 树回查节点。该查询位于
+owner rq 的 task-state 采样、wake revalidation 和 delayed dequeue 判定中，导致每次只需
+确认状态也支付一次 O(log n) 遍历。
+
+现将索引统一为 `{ generation, key, delayed }`，插入和 delayed reactivation 同步维护标志。
+`is_delayed`、`take_delayed` 以及依赖 delayed 计数的状态判断直接消费该索引事实；真正移除
+仍按 key 只做一次 AVL 删除，并在删除时用断言校验索引与实体状态一致。这样保留 generation
+防 ABA、key 保证树身份和 Linux delayed 生命周期，同时去掉只读状态的树遍历；没有引入
+Fair 专用旁路或兼容实现。
+
+同一 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 配置下运行完整无插桩 benchmark，输出
+`WAKEUP_LATENCY_PASSED`，所有 futex 样本 `not_parked=0`。本轮 p50（ns）为：
+
+| 策略 | 同核 futex | 跨核线程 futex | 跨核进程 futex | 绝对 timer | mismatch | wake-empty |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| OTHER | 107538 | 101990 | 108584 | 215863 | 8792 | 7919 |
+| FIFO | 66963 | 106010 | 110457 | 212955 | 8889 | 7547 |
+
+相对上一检查点，FIFO 同核样本下降，但 OTHER 同核和两个跨核样本处于 TCG 跨轮噪声范围，
+短 mismatch/wake-empty 路径没有稳定改善；因此只确认语义路径已从 O(log n) 状态回查改为
+O(1) 成员读取，不把单轮数字解释成整体性能提升。该变化没有新增测试、没有执行 clippy，
+也没有在本 checkpoint 追加格式化；仅由 benchmark 编译验证并通过 `git diff --check`。
+Linux RT 约 `15--28 us` 参考区间仍未达到，下一步继续拆解 Fair AVL 的资格选择、删除和
+delayed reactivation 中真正不可避免的树遍历。
