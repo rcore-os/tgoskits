@@ -130,18 +130,29 @@ impl FileLike for Signalfd {
         if dst.remaining_mut() < SIGNALFD_SIGINFO_SIZE {
             return Err(StarryError::InvalidInput);
         }
+        let max_records = dst.remaining_mut() / SIGNALFD_SIGINFO_SIZE;
 
         let task = current_user_task();
         block_on_user(
             &task,
             poll_io(self, IoEvents::IN, self.nonblocking(), || {
-                if let Some(sig_info) = self.dequeue_signal() {
-                    // Convert SignalInfo to SignalfdSiginfo
-                    let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
+                if let Some(mut sig_info) = self.dequeue_signal() {
+                    let mut written = 0;
 
-                    // Write the structure to the destination buffer
-                    let bytes = sfd_info.as_bytes();
-                    dst.write(bytes)?;
+                    loop {
+                        let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
+                        dst.write(sfd_info.as_bytes())?;
+                        written += SIGNALFD_SIGINFO_SIZE;
+
+                        if written / SIGNALFD_SIGINFO_SIZE == max_records {
+                            break;
+                        }
+
+                        let Some(next_sig_info) = self.dequeue_signal() else {
+                            break;
+                        };
+                        sig_info = next_sig_info;
+                    }
 
                     // Wake up other waiters if there are more signals pending
                     if self.has_pending_signals() {
@@ -149,7 +160,7 @@ impl FileLike for Signalfd {
                         unsafe { self.poll_rx.wake(IoEvents::IN) };
                     }
 
-                    Ok(SIGNALFD_SIGINFO_SIZE)
+                    Ok(written)
                 } else {
                     Err(crate::StarryError::WouldBlock)
                 }
