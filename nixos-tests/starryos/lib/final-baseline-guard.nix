@@ -1,6 +1,7 @@
-{ config, ... }:
+{ config, lib, ... }:
 {
-  assertions = [
+  # Keep these assertions at force priority so extra modules cannot clear them.
+  assertions = lib.mkForce [
     {
       assertion = !(config.services.udev.enable or false);
       message = "Starry nixosTest extra modules must not enable services.udev";

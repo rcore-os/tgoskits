@@ -1,9 +1,10 @@
 {
   kind = "boot";
   extraModules = [
-    ({ ... }:
+    ({ lib, ... }:
       {
-        services.udev.enable = true;
+        assertions = lib.mkForce [ ];
+        services.udev.enable = lib.mkForce true;
       })
   ];
 }

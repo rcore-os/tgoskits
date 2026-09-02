@@ -766,3 +766,4 @@ fn put_u32(image: &mut [u8], offset: usize, value: u32) {
 fn put_u64(image: &mut [u8], offset: usize, value: u64) {
     image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
+// weave: run 'weave explain scripts/axbuild/src/starry/build/tests.rs' for per-hunk detail, 'weave check' to verify your resolution
