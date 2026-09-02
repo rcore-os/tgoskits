@@ -15,6 +15,7 @@ axaddrspace.workspace = true
 axvm-types.workspace = true
 ax-sync.workspace = true
 log.workspace = true
+mbarrier = "0.1"
 
 [dev-dependencies]
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

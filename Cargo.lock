@@ -1571,6 +1571,7 @@ dependencies = [
  "axaddrspace",
  "axvm-types",
  "log",
+ "mbarrier",
 ]
 
 [[package]]

@@ -176,7 +176,7 @@ let config = VirtioBlockConfig {
 | Feature | Status | Description |
 |---------|--------|-------------|
 | `VIRTIO_F_VERSION_1` | ✅ | VirtIO 1.0+ compliance |
-| `VIRTIO_F_RING_EVENT_IDX` | ✅ | Event index support |
+| `VIRTIO_F_RING_EVENT_IDX` | ✅ | Split-ring event-index notification suppression |
 | `VIRTIO_BLK_F_SIZE_MAX` | ✅ | Maximum segment size |
 | `VIRTIO_BLK_F_SEG_MAX` | ✅ | Maximum segments per request |
 | `VIRTIO_BLK_F_BLK_SIZE` | ✅ | Block size reporting |

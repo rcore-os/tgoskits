@@ -528,6 +528,7 @@ mod mmio_device_tests {
     const MMIO_MAGIC: u32 = 0x74726976; // "virt" in little endian
     const MMIO_VERSION: u32 = 2; // VirtIO 1.0+
     const VIRTIO_DEVICE_BLOCK: u32 = 2;
+    const VIRTIO_F_RING_EVENT_IDX: u32 = 1 << 29;
 
     fn create_test_device() -> VirtioMmioBlockDevice<MockBlockBackend, MockGuestMemoryAccessor> {
         let backend = MockBlockBackend::new(2048, 512); // 1MB device
@@ -662,6 +663,24 @@ mod mmio_device_tests {
             .unwrap();
         let high_features = device.mmio_read(features_addr, AccessWidth::Dword);
         assert!(high_features.is_ok());
+    }
+
+    #[test]
+    fn default_features_advertise_implemented_event_idx() {
+        let device = create_test_device();
+        let base_ipa = GuestPhysAddr::from(0x0a000000);
+        let features_sel_addr =
+            GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_DEVICE_FEATURES_SEL as usize);
+        let features_addr =
+            GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_DEVICE_FEATURES as usize);
+
+        device
+            .mmio_write(features_sel_addr, AccessWidth::Dword, 0)
+            .unwrap();
+        let advertised_features =
+            device.mmio_read(features_addr, AccessWidth::Dword).unwrap() as u32;
+
+        assert_ne!(advertised_features & VIRTIO_F_RING_EVENT_IDX, 0);
     }
 
     #[test]
