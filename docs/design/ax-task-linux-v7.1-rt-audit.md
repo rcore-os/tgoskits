@@ -5138,3 +5138,26 @@ TCG 调度噪声仍大于单次引用计数优化的预期量，且本轮出现 
 `not_parked`、OTHER timer 48 个 `not_parked`，所以只记录为路径检查点，不把中位数差异
 当作稳定性能结论。下一步仍聚焦 switch-tail 中剩余的重复状态读取和物理 clockevent
 固定工作，并继续保持 Linux 的 rq baton 与 `on_cpu` release 顺序。
+
+## 2026-09-02：switch-tail 直接借用 owner remote
+
+`complete_context_switch_owner()` 的 migration 与普通尾部事务原先都先克隆
+`Arc<CpuRemote>`，再把引用传给 `OwnerRqTxn::begin()`；事务内部实际只保存
+`&CpuRemote`，且在事务提交前不再需要独立的 remote 所有权。现统一直接借用
+`CpuLocal::remote()`，让 owner rq 锁和 scheduler baton 继续成为同一 CPU 的唯一串行化
+边界，删除每次 switch-tail 的一次 remote 引用计数增减。该变化不触碰 task lock → rq
+锁顺序、`on_cpu` release 或 migration deadline 处理。
+
+同一 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 完整 QEMU benchmark 输出
+`WAKEUP_LATENCY_PASSED`；本轮 p50（ns）为：
+
+| 策略 | 同核 futex | 跨核线程 futex | 跨核进程 futex | 同核绝对 timer | yield handoff |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| OTHER | 94067 | 94496 | 97238 | 228828 | 42251 |
+| FIFO | 64412 | 93329 | 95721 | 253024 | 36610 |
+
+相对上一轮单轮结果，OTHER 的四个唤醒/timer 中位数下降，FIFO futex/yield 基本持平；
+TCG 仍造成 timer `not_parked` 与尾延迟抖动，不能据此宣称达到 Linux RT 90%。下一步
+继续审查 `execute_switch_plan()` 和 `finish_context_switch_tail()` 中可由已发布
+handoff 事实替代的重复读取，保持 Linux `finish_task_switch()` 的 release-before-unlock
+顺序。

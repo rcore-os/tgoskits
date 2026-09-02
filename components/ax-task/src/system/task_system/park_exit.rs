@@ -931,9 +931,8 @@ impl TaskSystem {
             let placement = previous_core.sched().placement();
             // SAFETY: propagated from this method's selected entry contract.
             let sched = unsafe { rq_entry.lock_thread_sched(initial_handoff.previous().sched()) };
-            let remote = Arc::clone(cpu.remote());
             // SAFETY: propagated from this method's selected entry contract.
-            let transaction = unsafe { rq_entry.begin(self, &remote) };
+            let transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
             let validation = self.validate_switch_handoff_state(
                 owner,
                 transaction.deadline_bandwidth(),
@@ -978,9 +977,8 @@ impl TaskSystem {
 
             // SAFETY: propagated from this method's selected entry contract.
             let mut sched = unsafe { rq_entry.lock_thread_sched(handoff.previous().sched()) };
-            let remote = Arc::clone(cpu.remote());
             // SAFETY: propagated from this method's selected entry contract.
-            let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+            let mut transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
 
             let validation = self.validate_switch_handoff_state(
                 owner,
@@ -1001,7 +999,7 @@ impl TaskSystem {
                 Self::detach_owner_deadline_bandwidth_in_rq(
                     &previous_core,
                     &mut sched,
-                    &remote,
+                    cpu.remote(),
                     &mut transaction,
                 );
             }
@@ -1039,9 +1037,8 @@ impl TaskSystem {
                 }
                 previous_exited
             } else {
-                let remote = Arc::clone(cpu.remote());
                 // SAFETY: propagated from this method's selected entry contract.
-                let transaction = unsafe { rq_entry.begin(self, &remote) };
+                let transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
                 let previous_exited = previous_core.state() == ThreadState::Exited;
 
                 previous_core.sched().placement().finish_task(owner);
