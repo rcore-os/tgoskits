@@ -33,6 +33,8 @@
 #define FUTEX_CLOCK_REALTIME 256
 #endif
 
+#define FUTEX_UNKNOWN_OPTION 0x40000000
+
 #ifndef FUTEX_OP_SET
 #define FUTEX_OP_SET 0
 #endif
@@ -404,6 +406,38 @@ static void test_wake_op_validation(void)
           "invalid comparison is rejected before modifying uaddr2");
 }
 
+static void test_wake_validation(void)
+{
+    printf("\n--- FUTEX_WAKE validation ---\n");
+    const size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    uint32_t *bad_page = mmap(NULL, page_size, PROT_NONE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(bad_page != MAP_FAILED, "mmap creates an inaccessible futex page");
+    if (bad_page == MAP_FAILED) {
+        return;
+    }
+
+    CHECK_ERR(raw_futex(&wake_word,
+                        FUTEX_WAIT | FUTEX_PRIVATE_FLAG | FUTEX_UNKNOWN_OPTION,
+                        0, NULL, NULL, 0),
+              ENOSYS, "unknown futex option bits return ENOSYS");
+    CHECK_ERR(raw_futex(bad_page, FUTEX_WAKE, (uint32_t)-1,
+                        NULL, NULL, 0),
+              EFAULT, "invalid uaddr takes priority over the wake limit");
+    CHECK_RET(raw_futex((uint32_t *)(uintptr_t)0x10000,
+                        FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 0, NULL, NULL, 0),
+              0, "private wake on an unmapped address is a no-op");
+    CHECK_RET(raw_futex((uint32_t *)(uintptr_t)0x10000,
+                        FUTEX_WAKE | FUTEX_PRIVATE_FLAG, (uint32_t)-1,
+                        NULL, NULL, 0),
+              0, "private wake treats -1 as a large wake limit");
+    CHECK_RET(raw_futex(&wake_word, FUTEX_WAKE, (uint32_t)-1,
+                        NULL, NULL, 0),
+              0, "shared wake treats -1 as a large wake limit");
+    CHECK(munmap(bad_page, page_size) == 0,
+          "munmap releases the inaccessible futex page");
+}
+
 static void test_wake_op_fault_retry_and_transaction(void)
 {
     printf("\n--- FUTEX_WAKE_OP nofault retry and failure transaction ---\n");
@@ -466,6 +500,7 @@ int main(void)
     test_wake_op_comparison_controls_second_wake();
     test_wake_op_comparisons();
     test_wake_op_validation();
+    test_wake_validation();
     test_wake_op_fault_retry_and_transaction();
 
     TEST_DONE();
