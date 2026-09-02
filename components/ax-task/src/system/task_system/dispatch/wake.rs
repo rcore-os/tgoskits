@@ -702,10 +702,6 @@ impl TaskSystem {
             let mut run_queue = OwnerRqTxn::begin_nested(self, remote, &irq_owner);
             let scheduling_state = run_queue.scheduling_state(core.id());
             let revalidation = on_rq_revalidation(scheduling_state.is_some());
-            let wake_policy = wake_policy_for_revalidation(
-                scheduling_state.as_ref().map(|(policy, _entity)| policy),
-                revalidation,
-            );
 
             match revalidation {
                 OnRqRevalidation::ActivateOffRq => {
@@ -718,7 +714,11 @@ impl TaskSystem {
                     None
                 }
                 OnRqRevalidation::CommitOnRq => {
-                    let (policy, fair_wake) = wake_policy.unwrap_or_else(|| {
+                    let (policy, fair_wake) = wake_policy_for_revalidation(
+                        scheduling_state.as_ref().map(|(policy, _entity)| policy),
+                        revalidation,
+                    )
+                    .unwrap_or_else(|| {
                         task_runtime::fatal_invariant(0x574b_0016, core.id().as_u64() as usize)
                     });
                     if sched.placement.queued_cpu() != Some(target) {
