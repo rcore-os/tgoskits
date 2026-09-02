@@ -64,7 +64,7 @@
 #endif
 
 #define FUTEX_INVALID_OP 0x7f
-#define FUTEX_UNKNOWN_OPTION 0x200
+#define FUTEX_UNKNOWN_OPTION 0x40000000
 #define NS_PER_SEC 1000000000L
 
 struct local_robust_list {
@@ -341,7 +341,7 @@ static void test_futex_op_flag_validation(void)
     CHECK_ERR(raw_futex((uint32_t *)&futex_word,
                         FUTEX_WAIT | FUTEX_PRIVATE_FLAG | FUTEX_UNKNOWN_OPTION,
                         0, &rel_timeout, NULL, 0),
-              EINVAL, "Linux ABI: unknown futex option bits return EINVAL");
+              ENOSYS, "Linux ABI: unknown futex option bits return ENOSYS");
     CHECK_ERR(raw_futex((uint32_t *)&futex_word,
                         FUTEX_WAIT | FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME,
                         0, &rel_timeout, NULL, 0),
@@ -392,9 +392,22 @@ static void test_futex_address_and_count_validation(void)
               EFAULT, "Linux ABI: FUTEX_WAKE(NULL) returns EFAULT");
     CHECK_ERR(raw_futex(unaligned, FUTEX_WAKE, 1, NULL, NULL, 0),
               EINVAL, "Linux ABI: FUTEX_WAKE rejects an unaligned uaddr");
-    CHECK_ERR(raw_futex((uint32_t *)&futex_word, FUTEX_WAKE,
+    CHECK_ERR(raw_futex(bad_page, FUTEX_WAKE,
                         (uint32_t)-1, NULL, NULL, 0),
-              EINVAL, "Linux ABI: FUTEX_WAKE rejects a negative count");
+              EFAULT,
+              "Linux ABI: invalid uaddr takes priority over negative wake count");
+    CHECK_RET(raw_futex((uint32_t *)(uintptr_t)0x10000,
+                        FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 0, NULL, NULL, 0),
+              0,
+              "Linux ABI: private FUTEX_WAKE on an unmapped uaddr with zero count is a no-op");
+    CHECK_RET(raw_futex((uint32_t *)(uintptr_t)0x10000,
+                        FUTEX_WAKE | FUTEX_PRIVATE_FLAG, (uint32_t)-1,
+                        NULL, NULL, 0),
+              0,
+              "Linux ABI: private FUTEX_WAKE treats -1 as a large wake limit");
+    CHECK_RET(raw_futex((uint32_t *)&futex_word, FUTEX_WAKE,
+                        (uint32_t)-1, NULL, NULL, 0),
+              0, "Linux ABI: FUTEX_WAKE treats -1 as a large wake limit");
     CHECK_ERR(raw_futex((uint32_t *)&futex_word, FUTEX_REQUEUE,
                         (uint32_t)-1, futex_count_arg(0),
                         (uint32_t *)&requeue_dst, 0),
