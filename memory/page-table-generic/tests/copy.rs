@@ -7,8 +7,22 @@ use page_table_generic::*;
 
 const PAGE_SIZE: usize = 0x1000;
 const ROOT_ENTRY_SIZE: usize = 1 << 39;
+const SV39_ROOT_BLOCK_SIZE: usize = 1 << 30;
 const KERNEL_SPACE_BASE: usize = 0xffff_8000_0000_0000;
 const KERNEL_IMAGE_BASE: usize = 0xffff_ffff_8000_0000;
+
+#[derive(Debug, Clone, Copy)]
+struct T4kL3RootBlocks;
+
+impl TableMeta for T4kL3RootBlocks {
+    type P = PteImpl;
+
+    const PAGE_SIZE: usize = PAGE_SIZE;
+    const LEVEL_BITS: &[usize] = &[9, 9, 9];
+    const MAX_BLOCK_LEVEL: usize = 3;
+
+    fn flush(_vaddr: Option<VirtAddr>) {}
+}
 
 fn map_page<A: FrameAllocator>(page_table: &mut PageTable<T4kL4, A>, vaddr: usize, paddr: usize) {
     page_table
@@ -136,6 +150,63 @@ fn preallocated_root_entry_survives_empty_unmap_and_later_publication() {
     assert_eq!(
         target.translate_phys(VirtAddr::from_usize(SECOND_PAGE)),
         Ok(PhysAddr::from_usize(0x80_0000))
+    );
+}
+
+#[test]
+fn preallocated_root_entry_splits_existing_root_block() {
+    const REPLACED_PAGE: usize = 0x20_0000;
+    const ROOT_BLOCK_PADDR: usize = 0x4000_0000;
+    const REPLACEMENT_PADDR: usize = 0x9000_0000;
+
+    let allocator = TrackedFram4k::new();
+    let mut source = PageTable::<T4kL3RootBlocks, TrackedFram4k>::new(allocator).unwrap();
+    source
+        .map_linear_pages(
+            VirtAddr::from_usize(0),
+            PhysAddr::from_usize(ROOT_BLOCK_PADDR),
+            SV39_ROOT_BLOCK_SIZE,
+            (MappingFlags::READ | MappingFlags::WRITE).into(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        source.query(VirtAddr::from_usize(REPLACED_PAGE)).unwrap().2,
+        SV39_ROOT_BLOCK_SIZE
+    );
+
+    source
+        .preallocate_shared_root_entries(VirtAddr::from_usize(0), SV39_ROOT_BLOCK_SIZE)
+        .unwrap();
+    let (split_paddr, split_config, split_size) =
+        source.query(VirtAddr::from_usize(REPLACED_PAGE)).unwrap();
+    assert_eq!(
+        split_paddr,
+        PhysAddr::from_usize(ROOT_BLOCK_PADDR + REPLACED_PAGE)
+    );
+    assert_eq!(split_config, MappingFlags::READ | MappingFlags::WRITE);
+    assert_eq!(split_size, 0x20_0000);
+
+    let mut target = PageTable::<T4kL3RootBlocks, TrackedFram4k>::new(allocator).unwrap();
+    unsafe {
+        target.share_root_entries_from(&source, VirtAddr::from_usize(0), SV39_ROOT_BLOCK_SIZE)
+    }
+    .unwrap();
+
+    source
+        .unmap_page(VirtAddr::from_usize(REPLACED_PAGE))
+        .unwrap();
+    source
+        .map_page(
+            VirtAddr::from_usize(REPLACED_PAGE),
+            PhysAddr::from_usize(REPLACEMENT_PADDR),
+            PAGE_SIZE,
+            (MappingFlags::READ | MappingFlags::WRITE).into(),
+        )
+        .unwrap();
+    assert_eq!(
+        target.translate_phys(VirtAddr::from_usize(REPLACED_PAGE)),
+        Ok(PhysAddr::from_usize(REPLACEMENT_PADDR))
     );
 }
 

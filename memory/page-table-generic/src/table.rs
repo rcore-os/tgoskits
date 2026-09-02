@@ -215,7 +215,10 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
         &mut self,
         start_vaddr: VirtAddr,
         size: usize,
-    ) -> PagingResult {
+    ) -> PagingResult
+    where
+        PteConfigOf<T>: PartialEq,
+    {
         let Some(entries) = Self::root_entry_range(start_vaddr, size)? else {
             return Ok(());
         };
@@ -234,17 +237,32 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
         }
         self.inner.retained_root_entries = Some(span);
 
-        for index in entries {
+        let root_entry_size = Frame::<T, A>::level_size(Frame::<T, A>::PT_LEVEL);
+        let first_entry_vaddr = start_vaddr.align_down(root_entry_size);
+        for (entry_offset, index) in entries.enumerate() {
             let current = self.inner.root.as_slice()[index];
             if current.unused() {
                 let child = Frame::<T, A>::new(self.inner.root.allocator.clone())?;
                 self.inner.root.as_slice_mut()[index] = T::P::new_table(child.paddr);
                 continue;
             }
-            if !current.present() || current.huge(true) {
+            if !current.present() {
                 return Err(PagingError::hierarchy_error(
                     "Shared root entry is not a child page table",
                 ));
+            }
+            if current.huge(true) {
+                let offset = entry_offset.checked_mul(root_entry_size).ok_or_else(|| {
+                    PagingError::address_overflow("shared root entry virtual address")
+                })?;
+                let entry_vaddr = first_entry_vaddr
+                    .as_usize()
+                    .checked_add(offset)
+                    .map(VirtAddr::from_usize)
+                    .ok_or_else(|| {
+                        PagingError::address_overflow("shared root entry virtual address")
+                    })?;
+                self.split_huge_page(entry_vaddr)?;
             }
         }
         Ok(())
