@@ -25,16 +25,26 @@ int main(void)
     errno = 0;
     ssize_t result = write(signal_fd, &value, sizeof(value));
     int write_errno = errno;
-    close(signal_fd);
-
     if (result != -1 || write_errno != EINVAL) {
         fprintf(stderr,
                 "FAIL: signalfd write: result=%zd errno=%d (%s), expected EINVAL\n",
                 result, write_errno, strerror(write_errno));
+        close(signal_fd);
         return EXIT_FAILURE;
     }
 
-    puts("PASS: signalfd write returns EINVAL");
+    errno = 0;
+    result = syscall(SYS_write, signal_fd, NULL, 128);
+    write_errno = errno;
+    close(signal_fd);
+    if (result != -1 || write_errno != EINVAL) {
+        fprintf(stderr,
+                "FAIL: signalfd write with NULL buffer: result=%zd errno=%d (%s), expected EINVAL\n",
+                result, write_errno, strerror(write_errno));
+        return EXIT_FAILURE;
+    }
+
+    puts("PASS: signalfd writes return EINVAL before buffer validation");
     puts("STARRY_SIGNALFD_WRITE_EINVAL_PASSED");
     puts("STARRY_GROUPED_TEST_PASSED: bugfix-signalfd-write-einval");
     return EXIT_SUCCESS;

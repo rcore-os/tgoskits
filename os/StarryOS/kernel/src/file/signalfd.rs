@@ -127,6 +127,13 @@ impl Signalfd {
 }
 
 impl FileLike for Signalfd {
+    fn validate_write_access(&self) -> StarryResult {
+        // Linux rejects signalfd writes because the descriptor has no write
+        // operation. This check precedes user-buffer validation, so EINVAL
+        // also takes priority over EFAULT for an invalid source pointer.
+        Err(StarryError::InvalidInput)
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < SIGNALFD_SIGINFO_SIZE {
             return Err(StarryError::InvalidInput);
