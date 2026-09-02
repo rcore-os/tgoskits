@@ -5114,3 +5114,27 @@ TCG 调度抖动影响（本轮 FIFO 记录 `missed_deadlines=13`，跨核线程
 `not_parked` 样本），因此不能把单轮数字解释为稳定比例提升。该结果确认通用路径没有
 功能失败，下一优先级仍是 `execute_switch_plan()` 前后的 owner-rq/context-switch tail，
 并需要在相同硬件或多轮 QEMU 中重新测量 90% 目标。
+
+## 2026-09-02：切换尾部复用 incoming 所有权
+
+`complete_context_switch_owner()` 原先在读取 `SwitchHandoff` 后立即克隆 incoming
+`Arc<ThreadCore>`，但整个尾部只需要其 ID、placement 事实和最终的 `SwitchInCompletion`；
+handoff 本身随后仍会把同一个 incoming 所有权转移出去。现改为在 IRQ-off scheduler baton
+下读取 `incoming_id`，尾部校验直接使用 handoff 中的引用，最终从已经完成的 handoff 构造
+`SwitchInCompletion`，每次真正切换删除一对无意义的引用计数增减。previous 仍保留独立
+所有权，因为 migration/placement 完成和 rq baton 释放会跨越可变的 CPU-local 操作；这与
+Linux `finish_task_switch()` 持有 prev 指针、只在完成 release-store 后释放 rq 的语义一致。
+
+本轮没有改变 task state、`on_cpu` release、migration 验证或 baton 生命周期。相同
+`q35,accel=tcg,-cpu max,-smp 2,-m 512M` 完整 QEMU benchmark 输出
+`WAKEUP_LATENCY_PASSED`；最新 p50（ns）为：
+
+| 策略 | 同核 futex | 跨核线程 futex | 跨核进程 futex | 同核绝对 timer | yield handoff |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| OTHER | 92202 | 91021 | 106070 | 257595 | 44866 |
+| FIFO | 67522 | 99019 | 106489 | 251645 | 38186 |
+
+TCG 调度噪声仍大于单次引用计数优化的预期量，且本轮出现 OTHER 同核 1 个
+`not_parked`、OTHER timer 48 个 `not_parked`，所以只记录为路径检查点，不把中位数差异
+当作稳定性能结论。下一步仍聚焦 switch-tail 中剩余的重复状态读取和物理 clockevent
+固定工作，并继续保持 Linux 的 rq baton 与 `on_cpu` release 顺序。

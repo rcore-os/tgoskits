@@ -906,14 +906,14 @@ impl TaskSystem {
         };
         let owner = cpu.owner();
         let previous_core = Arc::clone(initial_handoff.previous());
-        let incoming = Arc::clone(initial_handoff.incoming());
+        let incoming_id = initial_handoff.incoming().id();
         let migration_target = initial_handoff.migration_target();
         let runtime_tail_finished = initial_handoff.runtime_tail_is_finished();
         let rq_baton_retained = initial_handoff.has_rq_baton();
-        if previous_core.id() == incoming.id()
+        if previous_core.id() == incoming_id
             || previous_core.sched().placement().on_cpu() != Some(owner)
-            || incoming.sched().placement().queued_cpu() != Some(owner)
-            || incoming.sched().placement().on_cpu() != Some(owner)
+            || initial_handoff.incoming().sched().placement().queued_cpu() != Some(owner)
+            || initial_handoff.incoming().sched().placement().on_cpu() != Some(owner)
             || (migration_target.is_some() && rq_baton_retained)
         {
             if runtime_tail_finished {
@@ -967,8 +967,8 @@ impl TaskSystem {
         });
         let previous = handoff.previous().id();
         if !Arc::ptr_eq(handoff.previous(), &previous_core)
-            || !Arc::ptr_eq(handoff.incoming(), &incoming)
-            || incoming.id() == previous
+            || handoff.incoming().id() != incoming_id
+            || incoming_id == previous
         {
             task_runtime::fatal_invariant(0x5357_0002, previous_core.id().as_u64() as usize);
         }
@@ -1059,7 +1059,7 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x5357_0003, previous.as_u64() as usize)
         });
         if consumed.previous().id() != previous
-            || consumed.incoming().id() != incoming.id()
+            || consumed.incoming().id() != incoming_id
             || consumed.migration_target() != migration_target
         {
             task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize);
@@ -1068,7 +1068,7 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize)
         });
         if !Arc::ptr_eq(&completed.previous, &previous_core)
-            || !Arc::ptr_eq(&completed.incoming, &incoming)
+            || completed.incoming.id() != incoming_id
         {
             task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize)
         }
@@ -1081,7 +1081,7 @@ impl TaskSystem {
         if previous_exited {
             self.task_work.publish();
         }
-        let completion = SwitchInCompletion::for_core(&incoming);
+        let completion = SwitchInCompletion::for_core(&completed.incoming);
         Ok(completion)
     }
 
