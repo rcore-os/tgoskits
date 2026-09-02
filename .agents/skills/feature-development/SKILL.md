@@ -9,7 +9,7 @@ description: 在 TGOSKits 中设计、实现、重构或审查新增与扩展的
 
 新增能力、扩大既有行为、引入共享边界或改变平台与硬件支持时使用本技能。是否适用按真实行为判断，不按“修复”“重构”或“清理”等标题判断。纯粹恢复既有明确语义且不扩大接口的错误修复，使用通用代码质量与相应领域技能即可。
 
-开始设计或审查前完整阅读 [风险与研究](references/risk-and-research.md)。确定方案、实现范围、验证和交付时完整阅读 [设计与交付](references/design-and-delivery.md)。公共接口、并发、`unsafe`、驱动、平台或系统调用语义同时读取对应专项技能。
+开始设计或审查前完整阅读 [风险与研究](references/risk-and-research.md)。确定方案、实现范围、验证和交付时完整阅读 [设计与交付](references/design-and-delivery.md)。公共接口、并发、`unsafe`、驱动、平台或系统调用语义同时读取对应专项技能；同一能力涉及多个目标架构的分层复用与特异边界时还要读取 `multi-arch-layering`。
 
 ## 2. 强制顺序
 

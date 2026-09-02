@@ -16,6 +16,7 @@ description: 编写、修改、重构或审查本 TGOSKits 仓库中的 Rust 代
 本技能只提供通用基线。下列语义出现时还要读取对应技能：
 
 - 公共或共享接口、类型、错误、软件包、模块、依赖或宏边界：`rust-api-design`；
+- 同一能力跨多个目标架构的共同性、能力子集、默认实现或编译期后端选择：`multi-arch-layering`；
 - 锁、原子操作、异步执行、中断、任务调度或共享状态：`rust-concurrency-safety`；
 - `unsafe`、外部函数接口、用户内存、内存映射输入输出或直接内存访问：`rust-unsafe-safety`；
 - 新增或扩展用户可见行为、软件包、子系统、平台或硬件能力：`feature-development`；

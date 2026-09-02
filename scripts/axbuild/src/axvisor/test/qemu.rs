@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
@@ -426,13 +427,27 @@ impl Axvisor {
 
         // Joins the probe thread now that QEMU has exited.
         let probe_configured = host_probe_guard.is_some();
-        let probe_result = host_probe_guard
-            .as_ref()
-            .and_then(|guard| guard.take_result());
-        drop(host_probe_guard);
+        let probe_outcome = host_probe_guard.and_then(host_probe::HostHttpProbeGuard::finish);
+        let probe_result = match probe_outcome {
+            Some(outcome) => {
+                replay_probe_output(&outcome.output)?;
+                Some(outcome.verdict)
+            }
+            None => None,
+        };
 
         combine_results(qemu_result, probe_configured, probe_result)
     }
+}
+
+fn replay_probe_output(output: &[u8]) -> anyhow::Result<()> {
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(output)
+        .context("failed to replay host HTTP probe output")?;
+    stdout
+        .flush()
+        .context("failed to flush host HTTP probe output")
 }
 
 /// Combine the QEMU runner result and the HTTP probe verdict into the final

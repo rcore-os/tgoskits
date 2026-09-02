@@ -63,6 +63,7 @@ pub mod kernel_mapping;
 mod klib;
 #[cfg(any(feature = "std-compat", target_os = "none"))]
 mod panic_output;
+mod structured_log;
 
 /// Host-only adapters for testing runtime-owned capability providers.
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
@@ -155,11 +156,13 @@ impl ax_log::LogIf for LogIfImpl {
         if let Some(status) = serial::try_publish_record(meta, args) {
             return status;
         }
-        if let Some(status) = console::try_publish_without_runtime(args) {
+        let context = structured_log::with_runtime_log_context(core::convert::identity)
+            .unwrap_or_else(|_| structured_log::fallback_runtime_log_context(meta));
+        if let Some(status) = console::try_publish_without_runtime(meta, context, args) {
             return status;
         }
         let mut writer = PlatformConsoleWriter::default();
-        if core::fmt::write(&mut writer, args).is_ok() {
+        if structured_log::write_record(&mut writer, meta, context, args).is_ok() {
             ax_log::PublishStatus::Published
         } else {
             ax_log::PublishStatus::Dropped

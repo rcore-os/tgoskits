@@ -191,22 +191,34 @@ impl Log for Logger {
 
         cfg_if::cfg_if! {
             if #[cfg(feature = "std")] {
-                publish_fmt(RecordMeta::log(), with_color!(
-                    ColorCode::White,
-                    "[{time} {path}:{line}] {args}\n",
-                    time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.6f"),
-                    path = path,
-                    line = line,
-                    args = with_color!(args_color, "{}", record.args()),
-                ));
+                publish_fmt(
+                    RecordMeta::log(),
+                    format_args!(
+                        "{}\n",
+                        with_color!(
+                            ColorCode::White,
+                            "[{time} {path}:{line}] {args}",
+                            time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.6f"),
+                            path = path,
+                            line = line,
+                            args = with_color!(args_color, "{}", record.args()),
+                        )
+                    ),
+                );
             } else {
-                publish_fmt(RecordMeta::log(), with_color!(
-                    ColorCode::White,
-                    "{path}:{line}] {args}\n",
-                    path = path,
-                    line = line,
-                    args = with_color!(args_color, "{}", record.args()),
-                ));
+                publish_fmt(
+                    RecordMeta::log(),
+                    format_args!(
+                        "{}\n",
+                        with_color!(
+                            ColorCode::White,
+                            "{path}:{line}] {args}",
+                            path = path,
+                            line = line,
+                            args = with_color!(args_color, "{}", record.args()),
+                        )
+                    ),
+                );
             }
         }
     }
@@ -270,7 +282,29 @@ pub fn set_max_level(level: &str) {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
+    use std::format;
+
     use super::*;
+
+    #[test]
+    fn structured_log_resets_color_before_the_terminal_newline() {
+        let rendered = format!(
+            "{}",
+            format_args!(
+                "{}\n",
+                with_color!(
+                    ColorCode::White,
+                    "module:7] {}",
+                    with_color!(ColorCode::Green, "message")
+                )
+            )
+        );
+
+        assert!(rendered.ends_with("\u{1b}[m\n"));
+        assert!(!rendered.contains("\n\u{1b}[m"));
+    }
 
     #[test]
     fn metadata_distinguishes_prints_from_structured_logs() {

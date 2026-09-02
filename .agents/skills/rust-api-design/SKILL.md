@@ -15,7 +15,7 @@ description: 设计、修改、重构或审查 TGOSKits 的公共与共享 Rust 
 
 先确定调用方、所有者、有效状态、失败语义和兼容边界，再选择类型和方法。现有项目边界能够表达所需语义时优先扩展，不并行创建第二套登记表、错误体系或配置来源。
 
-新增或扩展能力时同时使用 `feature-development`。锁、原子操作、异步执行或共享生命周期使用 `rust-concurrency-safety`；接口要求调用方维护内存安全前置条件时使用 `rust-unsafe-safety`；驱动与操作系统适配边界继续使用 `cross-kernel-driver`。
+新增或扩展能力时同时使用 `feature-development`。同一契约需要跨多个目标架构归纳共同性、保留特异性或集中条件编译选择时使用 `multi-arch-layering`。锁、原子操作、异步执行或共享生命周期使用 `rust-concurrency-safety`；接口要求调用方维护内存安全前置条件时使用 `rust-unsafe-safety`；驱动与操作系统适配边界继续使用 `cross-kernel-driver`。
 
 ## 3. 验收条件
 

@@ -626,7 +626,7 @@ fn run_debugfs_script_with_program(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{env, fs, path::Path};
 
     use tempfile::tempdir;
 
@@ -733,7 +733,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn non_root_extraction_starts_debugfs_inside_fakeroot() {
-        let root = tempdir().unwrap();
+        let root = executable_helper_tempdir();
         let fakeroot = root.path().join("fakeroot");
         let debugfs = root.path().join("debugfs");
         let marker = root.path().join("debugfs-ran-inside-fakeroot");
@@ -828,7 +828,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn debugfs_script_discards_normal_stdout_and_receives_all_commands() {
-        let root = tempdir().unwrap();
+        let root = executable_helper_tempdir();
         let debugfs = root.path().join("debugfs");
         let received_commands = root.path().join("received-commands");
         write_executable(
@@ -852,6 +852,19 @@ mod tests {
             fs::read_to_string(received_commands).unwrap(),
             "rm /usr/bin/app\nwrite app /usr/bin/app\nquit\n"
         );
+    }
+
+    #[cfg(unix)]
+    fn executable_helper_tempdir() -> tempfile::TempDir {
+        let test_binary = env::current_exe().expect("test binary path must be available");
+        let test_binary_dir = test_binary
+            .parent()
+            .expect("test binary path must have a parent directory");
+
+        tempfile::Builder::new()
+            .prefix("axbuild-rootfs-test-")
+            .tempdir_in(test_binary_dir)
+            .expect("test binary directory must accept temporary helper scripts")
     }
 
     #[cfg(unix)]

@@ -28,6 +28,7 @@ indicatif = "0.18"
 jkconfig = { version = "0.1" }
 log = "0.4"
 object = "0.38"
+os_pipe = "1"
 ostool = { workspace = true }
 regex = { version = "1.12" }
 regex-automata = "0.4.16"
