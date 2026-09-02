@@ -5,10 +5,13 @@ mod qemu_run_tests;
 mod summary_tests;
 mod system_case_tests;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    process::Command,
     time::Duration,
 };
 
@@ -244,4 +247,46 @@ fn write_test_image_config(workspace_root: &Path) {
         extract_dir: workspace_root.join(".tgos-images"),
     };
     crate::image::config::ImageConfig::write_config(workspace_root, &config).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn aka_wifi_smoke_runs_one_connectivity_transfer() {
+    let fake_bin = tempdir().unwrap();
+    let invocation_log = fake_bin.path().join("iperf3-invocations");
+    let ip = fake_bin.path().join("ip");
+    let iperf3 = fake_bin.path().join("iperf3");
+
+    fs::write(&ip, "#!/bin/sh\necho '2: wlan0    inet 192.0.2.2/24'\n").unwrap();
+    fs::write(
+        &iperf3,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$IPERF_INVOCATION_LOG\"\n",
+    )
+    .unwrap();
+    for executable in [&ip, &iperf3] {
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-suit/starryos/board-aka-00-sg2002/wifi-iperf-smoke/iperf-smoke.sh");
+    let output = Command::new("/bin/sh")
+        .arg(script)
+        .arg("192.0.2.1")
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", fake_bin.path().display()),
+        )
+        .env("IPERF_INVOCATION_LOG", &invocation_log)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "smoke script failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(invocation_log).unwrap(),
+        "-c 192.0.2.1 -t 3 -O 1 -P 1 -l 128K\n"
+    );
 }
