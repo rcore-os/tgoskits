@@ -4964,3 +4964,52 @@ collect_futex_wakes (0xffffffff800171e0)
 整体仍高于 Linux PREEMPT_RT 的约 15--28 µs 参考值，尚未达到 90% 目标。下一检查点应继续
 围绕 scheduler deadline、IPI consume 与 context-switch tail 的通用固定开销取样，而不是再给
 唤醒路径增加特例。
+
+## 2026-09-02：唤醒选核 ownership 成本复核
+
+本检查点基于代码提交 `8da8754c0d`。在保持 Linux RT 状态事务的前提下，
+`ThreadLifecycle::consume_wake_and_transition()`（`components/ax-task/src/thread/state.rs:125-163`）
+把 wake publication 消费和 `Blocked -> Waking` 合并为一个 CAS；
+`TaskSystem::consume_wake_locked()`（`components/ax-task/src/system/task_system/dispatch/wake.rs:130-142`）
+与 `consume_on_rq_wake_locked()`（`:151-158`）分别对应 off-rq 和 `ttwu_runnable()` 的状态边界。
+`select_wake_target()`（`:160-244`）现在只为 Deadline 读取 detached entity，RT/Fair 直接使用
+`ThreadCore::effective_policy_snapshot()`；共享的 `select_priority_cpu()`（
+`components/ax-task/src/system/task_system/switch.rs:476-526`）以 `Option<&SchedulingEntity>` 表示
+该 Linux 语义差异，避免为 RT/Fair 做一次无意义的 detached `Box` ownership 往返。x86 的
+`cpu_local::current_cpu_index()`（`components/cpu-local/src/register/x86_64.rs:18-34`）通过 GS
+标量读取 CPU index，`ArceOsTaskRuntime::current_cpu_id()`（
+`os/arceos/modules/axruntime/src/task/runtime_impl.rs:92-97`）不再构造 `CpuPin` 快照。
+
+同一 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 配置下，release ELF
+`target/x86_64-unknown-none/release/starryos` 的 SHA-256 为
+`a7894fa67674d1495c3be8efab973b2acfac0acd6b90115cf5bf514b17c681b3`。无断点完整基准输出
+`WAKEUP_LATENCY_PASSED`，本轮 p50（ns）为：
+
+| 策略 | 同核 futex | 跨核线程 futex | 跨核进程 futex | 同核绝对 timer |
+| --- | ---: | ---: | ---: | ---: |
+| OTHER | 105081 | 100146 | 109050 | 237857 |
+| FIFO | 71988 | 107477 | 104018 | 227913 |
+
+与前一轮同样的 TCG 运行相比，futex p50 在约 72–107 微秒范围内波动，没有可重复的显著
+下降；因此这项 ownership 优化只记录为固定成本削减，不能宣称端到端收益。当前结果仍明显
+高于 Linux PREEMPT_RT 约 15–28 微秒参考区间，尚未达到 90% 目标。下一个优先级是
+`OwnerRqTxn`/rq lock 到 `execute_switch_plan()` 的通用切换尾部，而不是继续增加唤醒特例。
+
+最新 ELF 接入 QEMU gdbstub 后，窄断点命中顺序保持 Linux 的 wake-up transaction：
+
+```text
+collect_futex_wakes (0xffffffff800171e0)
+  -> TaskSystem::wake_thread_from_current_cpu (0xffffffff803e8ab0)
+  -> ThreadLifecycle::consume_wake_and_transition (0xffffffff80436b60)
+  -> TaskSystem::activate_waking_thread_locked (0xffffffff803e9060)
+```
+
+跨核 workload 使用 `/usr/bin/wakeup-latency-bench --case thread_futex_cross_cpu --policy other`，
+每个断点只记录一次并立即禁用；`bt` 没有出现 wake 前的 rq 入队或逆序状态发布。激活入口用
+`set scheduler-locking step` 单步，PC 依次为 `+0/+1/+3/+5/+7` 的连续栈保存指令，随后恢复
+`scheduler-locking off` 并继续运行。GDB/QEMU 仅使用临时断点，未写入产品代码；同一 ELF
+在没有断点的完整运行中仍输出正式成功标志。
+
+功能回归使用 `cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64`，
+结果为 `AXTEST_SUMMARY pass=87 fail=0 skip=0 total=87` 与 `AXTEST_SUITE_OK`。按本轮要求
+未执行 clippy，格式化和 `git diff --check` 在功能验证完成后统一通过。
