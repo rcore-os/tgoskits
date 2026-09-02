@@ -193,15 +193,15 @@ static void test_buffer_size(void) {
     close(fd);
 }
 
-/* ─── 7. write → EBADF ───────────────────────────────────────── */
+/* ─── 7. write → EINVAL ──────────────────────────────────────── */
 
 static void test_write_rejected(void) {
     int fd = signalfd4_new(0, 0);
     CHECK(fd >= 0, "create signalfd for write test");
 
     uint64_t val = 1;
-    CHECK_ERR(write(fd, &val, sizeof(val)), EBADF,
-              "write to signalfd → EBADF");
+    CHECK_ERR(write(fd, &val, sizeof(val)), EINVAL,
+              "write to signalfd → EINVAL");
 
     close(fd);
 }

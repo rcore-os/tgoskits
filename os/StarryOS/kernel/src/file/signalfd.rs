@@ -155,8 +155,9 @@ impl FileLike for Signalfd {
     }
 
     fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
-        // signalfd is read-only
-        Err(StarryError::BadFileDescriptor)
+        // Linux signalfd descriptors reject write(2) through the file
+        // operation with EINVAL, rather than treating the live fd as bad.
+        Err(StarryError::InvalidInput)
     }
 
     fn nonblocking(&self) -> bool {
