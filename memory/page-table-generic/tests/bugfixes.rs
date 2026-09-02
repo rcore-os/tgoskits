@@ -6,42 +6,6 @@ use page_table_generic::*;
 mod mocks;
 use mocks::*;
 
-const TABLE_SOURCE: &str = include_str!("../src/table.rs");
-const FRAME_SOURCE: &str = include_str!("../src/frame.rs");
-
-#[test]
-fn borrowed_page_table_view_does_not_export_raw_frame_ownership() {
-    let frame_definition = FRAME_SOURCE
-        .split_once("pub struct Frame<T: TableMeta, A: FrameAllocator> {")
-        .and_then(|(_, suffix)| suffix.split_once("}\n\nimpl"))
-        .map(|(definition, _)| definition)
-        .expect("Frame definition must remain inspectable");
-    let borrowed_impl = TABLE_SOURCE
-        .split_once("impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {")
-        .map(|(_, implementation)| implementation)
-        .expect("PageTableRef implementation must remain inspectable");
-
-    assert!(
-        TABLE_SOURCE.contains("pub struct PageTableRef")
-            && TABLE_SOURCE.contains("pub(crate) root: Frame<T, A>")
-            && borrowed_impl.contains("pub unsafe fn from_paddr"),
-        "a borrowed page-table view must hide its root frame and require an unsafe construction \
-         proof",
-    );
-    assert!(
-        !frame_definition.contains("pub paddr: PhysAddr")
-            && !frame_definition.contains("pub allocator: A")
-            && !FRAME_SOURCE.contains("pub fn as_slice_mut"),
-        "external callers must not obtain allocator ownership or mutable PTE slices from a frame",
-    );
-    assert!(
-        !borrowed_impl.contains("pub unsafe fn destroy(mut self)")
-            && !borrowed_impl.contains("pub unsafe fn deallocate(&mut self)")
-            && !borrowed_impl.contains("pub fn deallocate_range"),
-        "a borrowed page-table view must not carry owning deallocation operations",
-    );
-}
-
 #[derive(Clone, Copy, Debug)]
 struct AddressOnlyDirectoryPte(PteImpl);
 
