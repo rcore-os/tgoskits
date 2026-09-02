@@ -128,6 +128,51 @@ pub fn read_midr_el1() -> u64 {
     value
 }
 
+/// Which CPU cluster (microarchitecture) a core belongs to, decoded from
+/// `MIDR_EL1`. RK3588 is big.LITTLE: Cortex-A76 "big" + Cortex-A55 "LITTLE".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterId {
+    /// Cortex-A55 ("LITTLE"), `MIDR_EL1` partnum `0xD05`.
+    Little,
+    /// Cortex-A76 ("big"), `MIDR_EL1` partnum `0xD0B`.
+    Big,
+    /// Any other implementation (e.g. QEMU `virt`'s Cortex-A53 `0xD03`); the
+    /// raw partnum is carried for diagnostics.
+    Other(u16),
+}
+
+/// `MIDR_EL1.Implementer` value for Arm Limited.
+const MIDR_IMPLEMENTER_ARM: u64 = 0x41;
+/// `MIDR_EL1.PartNum` for Cortex-A55.
+const MIDR_PARTNUM_CORTEX_A55: u64 = 0xD05;
+/// `MIDR_EL1.PartNum` for Cortex-A76.
+const MIDR_PARTNUM_CORTEX_A76: u64 = 0xD0B;
+
+/// Classify a raw `MIDR_EL1` value into a [`ClusterId`].
+///
+/// Mirrors Linux's `MIDR_CPU_MODEL_MASK` comparison (implementer + partnum;
+/// variant/revision excluded). Pure so it is host-unit-testable.
+pub fn classify_midr(midr: u64) -> ClusterId {
+    let implementer = (midr >> 24) & 0xff;
+    let partnum = (midr >> 4) & 0xfff;
+    if implementer != MIDR_IMPLEMENTER_ARM {
+        return ClusterId::Other(partnum as u16);
+    }
+    match partnum {
+        MIDR_PARTNUM_CORTEX_A55 => ClusterId::Little,
+        MIDR_PARTNUM_CORTEX_A76 => ClusterId::Big,
+        other => ClusterId::Other(other as u16),
+    }
+}
+
+/// Classify the current core into a [`ClusterId`] from `MIDR_EL1`.
+///
+/// Must be called *on* the core being classified — `MIDR_EL1` reflects only the
+/// executing PE.
+pub fn cluster_id() -> ClusterId {
+    classify_midr(read_midr_el1())
+}
+
 /// Self-check guarding against firmware / `MDCR_EL2` issues that keep the cycle
 /// counter frozen.
 ///
@@ -476,6 +521,16 @@ pub mod counter {
         }
     }
 
+    /// Disables every counter at once (`PMCNTENCLR_EL0 = 0xFFFF_FFFF`), the
+    /// programmable counters and the cycle counter (bit 31). Used by the
+    /// per-core clean-slate bring-up so a freshly-entered secondary core starts
+    /// with nothing counting.
+    pub fn disable_all() {
+        unsafe {
+            asm!("msr PMCNTENCLR_EL0, {}", in(reg) 0xFFFF_FFFFu64);
+        }
+    }
+
     /// Resets counter `n` (`PMEVCNTRn_EL0 = 0`).
     ///
     /// Out-of-range `n` is a no-op (debug builds assert).
@@ -590,6 +645,24 @@ pub mod overflow {
         }
         unsafe {
             asm!("msr PMINTENCLR_EL1, {}", in(reg) 1u64 << n);
+        }
+    }
+
+    /// Masks the overflow interrupt for every counter
+    /// (`PMINTENCLR_EL1 = 0xFFFF_FFFF`). Used by the per-core clean-slate
+    /// bring-up so a freshly-entered secondary core has no overflow IRQ armed.
+    pub fn disable_all_irq() {
+        unsafe {
+            asm!("msr PMINTENCLR_EL1, {}", in(reg) 0xFFFF_FFFFu64);
+        }
+    }
+
+    /// Clears every overflow-status flag (`PMOVSCLR_EL0 = 0xFFFF_FFFF`,
+    /// write-1-to-clear). Used by the per-core clean-slate bring-up so a stale
+    /// overflow flag cannot raise a spurious PMU interrupt.
+    pub fn clear_all() {
+        unsafe {
+            asm!("msr PMOVSCLR_EL0, {}", in(reg) 0xFFFF_FFFFu64);
         }
     }
 }

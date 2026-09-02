@@ -243,9 +243,8 @@ pub fn sys_mmap(
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
                 {
-                    #[cfg(feature = "rknpu")]
-                    Ok(DeviceMmap::PhysicalCached(..)) => false,
-                    Ok(DeviceMmap::Physical(..))
+                    Ok(DeviceMmap::PhysicalCached(..))
+                    | Ok(DeviceMmap::Physical(..))
                     | Ok(DeviceMmap::PhysicalResolved(..))
                     | Ok(DeviceMmap::PhysicalPages(..))
                     | Ok(DeviceMmap::Cache(_)) => false,
@@ -379,7 +378,8 @@ pub fn sys_mmap(
                             None => Backend::new_linear(start, pa_va_offset, true),
                         }
                     }
-                    #[cfg(feature = "rknpu")]
+                    // Cacheable RAM (no UNCACHED): kernel and userspace share the
+                    // same Normal Inner-Shareable cacheable page coherently.
                     Ok(DeviceMmap::PhysicalCached(mut range, retain)) => {
                         range.start += offset;
                         if range.is_empty() {
@@ -471,7 +471,8 @@ pub fn sys_mmap(
                                             None => Backend::new_linear(start, pa_va_offset, true),
                                         }
                                     }
-                                    #[cfg(feature = "rknpu")]
+                                    // Cacheable RAM (no UNCACHED): coherent
+                                    // kernel↔userspace sharing of the same page.
                                     DeviceMmap::PhysicalCached(range, retain) => {
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
