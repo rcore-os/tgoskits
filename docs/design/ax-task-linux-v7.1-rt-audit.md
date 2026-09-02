@@ -5065,3 +5065,25 @@ park；中断条件仍调用同一 `UserTaskRef::take_interrupt()`，并保持�
 `209883 ns`；与前一精确 head 的 `221072/217440 ns` 相比，OTHER 在 TCG 噪声内，FIFO
 约下降 3.5%，说明 timer 固定成本仍主要位于物理 clockevent、唤醒和 switch tail，而非
 future poll。该改动保留为语义收敛和小幅收益，下一轮不再围绕 future 层做特例优化。
+
+## 2026-09-02：按 Linux `TIF_HRTIMER_REARM` 收敛 clockevent 尾部
+
+Linux 的 `hrtimer_interrupt()` 只在当前 IRQ 确实把物理 comparator 留给 IRQ-return 重编程时
+设置 `TIF_HRTIMER_REARM`；普通调度帧不会为每次 `preempt_enable()` 重新获取 hrtimer base。
+当前实现此前在 `finish_scheduler_cpu_transaction()` 和
+`context_preempt_exit_irq_return()` 中无条件进入 `LocalClockEvent` 的独占 per-CPU 访问，
+即使 phase 不是 `Deferred` 也要走一次 accessor。现在由
+`os/arceos/modules/axruntime/src/clock_event_runtime.rs` 的
+`DEFERRED_REARM_PENDING` 保存同一 CPU 的 deferred edge：`ClockEventFiringTransaction::finish`
+和 `finish_early` 发布该位，scheduler/IRQ-return 尾部先以原子读取判断，只有命中时才获取
+clockevent 独占状态并清除该位。phase 状态机、IRQ 关闭范围、物理 rearm 顺序和 stale-edge
+停止语义均未改变，未引入第二个逻辑 deadline 源。
+
+在同一 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 配置下，先用完整基准取得当前 head
+`ab7faa47c6` 的参考：OTHER 同核 futex p50 `114483 ns`、绝对 timer p50 `254821 ns`；
+FIFO 对应 `81702 ns`、`255793 ns`。随后只选择单一 workload 进行无插桩 QEMU 测量，样本协议
+和二进制保持不变：OTHER 同核 futex p50 `93947 ns`（另一次 `107401 ns`），绝对 timer
+`200955 ns`；FIFO 绝对 timer `196453 ns`。两种策略均 `not_parked=0`，timer 未发生异常
+超时，QEMU 成功匹配 `WAKEUP_LATENCY_PASSED`。TCG 单轮仍有调度噪声，故这些数字记录为
+方向性检查点；本改动的可重复语义收益是把普通调度/IRQ-return 帧从 clockevent 独占访问
+中移除，下一步仍需完整基准和 qperf 复测 context-switch tail 与物理 clockevent 固定成本。

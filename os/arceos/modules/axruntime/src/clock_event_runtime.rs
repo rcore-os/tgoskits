@@ -4,6 +4,9 @@
 //! inside one local-IRQ exclusion window. The physical timer has no remote
 //! mutable endpoint; remote producers publish scheduler deadlines through
 //! ax-task and let the owning CPU reconcile them here.
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
 pub(crate) fn monotonic_now() -> ax_task::runtime::MonotonicInstant {
     ax_task::runtime::MonotonicInstant::from_nanos(ax_hal::time::monotonic_time_nanos())
         .expect("platform monotonic clock exceeded the signed ktime domain")
@@ -18,6 +21,38 @@ fn periodic_interval_nanos() -> u64 {
 #[ax_percpu::def_percpu]
 static LOCAL_CLOCK_EVENT: crate::clock_event::LocalClockEvent =
     crate::clock_event::LocalClockEvent::offline();
+
+/// Linux sets `TIF_HRTIMER_REARM` only for an IRQ frame that deferred the
+/// physical comparator update. Keep that edge separate from the full local
+/// clockevent state so ordinary scheduler/IRQ-return frames do not enter the
+/// exclusive per-CPU accessor.
+#[ax_percpu::def_percpu]
+static DEFERRED_REARM_PENDING: AtomicBool = AtomicBool::new(false);
+
+fn set_deferred_rearm_pending(pending: bool) {
+    // SAFETY: callers run with local IRQs disabled and the clockevent owner
+    // pinned to this CPU, so this atomic belongs to the same firing
+    // transaction as `LOCAL_CLOCK_EVENT`.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            DEFERRED_REARM_PENDING.with_current(pin, |state| {
+                state.store(pending, Ordering::Release);
+            })
+        })
+    }
+    .unwrap_or_else(|error| panic!("clockevent CPU-local state is invalid: {error}"));
+}
+
+fn deferred_rearm_pending() -> bool {
+    // SAFETY: the caller holds local IRQ exclusion, which pins this CPU for
+    // the duration of the observation.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            DEFERRED_REARM_PENDING.with_current(pin, |state| state.load(Ordering::Acquire))
+        })
+    }
+    .unwrap_or_else(|error| panic!("clockevent CPU-local state is invalid: {error}"))
+}
 fn with_local_clock_event_mut<R>(
     operation: impl for<'value> FnOnce(&'value mut crate::clock_event::LocalClockEvent) -> R,
 ) -> R {
@@ -151,12 +186,14 @@ impl ClockEventFiringTransaction {
             let rearm = crate::clock_event::ClockEventRearm::Deferred;
             clockevent.finish_firing(token, rearm)
         });
+        set_deferred_rearm_pending(true);
         apply_clock_event_action(action);
     }
     fn finish_early(self) {
         let action = with_local_clock_event_mut(|clockevent| {
             clockevent.finish_firing(self.token, crate::clock_event::ClockEventRearm::Deferred)
         });
+        set_deferred_rearm_pending(true);
         apply_clock_event_action(action);
     }
     const fn periodic_tick(&self) -> bool {
@@ -216,7 +253,11 @@ pub(crate) fn finish_deferred_rearm() {
         !ax_hal::asm::irqs_enabled(),
         "deferred clockevent rearm requires local IRQ exclusion"
     );
+    if !deferred_rearm_pending() {
+        return;
+    }
     let action = with_local_clock_event_mut(|clockevent| clockevent.finish_deferred_rearm());
+    set_deferred_rearm_pending(false);
     apply_clock_event_action(action);
 }
 
@@ -225,8 +266,13 @@ pub(crate) fn finish_deferred_rearm_pinned(pin: &cpu_local::CpuPin<'_>) {
         !ax_hal::asm::irqs_enabled(),
         "deferred clockevent rearm requires local IRQ exclusion"
     );
+    let pending = DEFERRED_REARM_PENDING.with_current(pin, |state| state.load(Ordering::Acquire));
+    if !pending {
+        return;
+    }
     let action =
         with_local_clock_event_mut_pinned(pin, |clockevent| clockevent.finish_deferred_rearm());
+    DEFERRED_REARM_PENDING.with_current(pin, |state| state.store(false, Ordering::Release));
     apply_clock_event_action(action);
 }
 pub(crate) fn init_timer() {
