@@ -94,7 +94,7 @@ pub fn setup_guest_fdt_from_vmm(
         &excluded_device_paths,
         &fdt,
     );
-    super::create::create_guest_fdt_with_hidden_paths(
+    super::create::create_guest_fdt(
         &fdt,
         &passthrough_device_names,
         crate_config,

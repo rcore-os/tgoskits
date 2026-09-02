@@ -29,16 +29,7 @@ use crate::{
     boot::images::load_vm_image_from_memory,
 };
 
-#[cfg(test)]
-pub fn create_guest_fdt(
-    fdt: &Fdt,
-    passthrough_device_names: &[String],
-    crate_config: &GuestConfig,
-) -> AxVmResult<Vec<u8>> {
-    create_guest_fdt_with_hidden_paths(fdt, passthrough_device_names, crate_config, &[])
-}
-
-pub(crate) fn create_guest_fdt_with_hidden_paths(
+pub(crate) fn create_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
     crate_config: &GuestConfig,
@@ -1183,7 +1174,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg, &[]).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
@@ -1217,7 +1208,7 @@ mod tests {
             "/soc/virtio_mmio@10001000".into(),
         ];
 
-        let dtb = super::create_guest_fdt(&fdt, &selected, &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &selected, &cfg, &[]).unwrap();
         let guest = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(guest.get_by_path_id("/soc/pci@30000000").is_none());
@@ -1239,7 +1230,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg, &[]).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(reparsed.get_by_path_id("/psci").is_some());
@@ -1291,7 +1282,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg, &[]).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
         let plic = reparsed.get_by_path("/soc/plic@c000000").unwrap();
         assert!(reparsed.get_by_path_id("/its@8080000").is_some());
@@ -1334,7 +1325,7 @@ mod tests {
             ..Default::default()
         };
 
-        let dtb = super::create_guest_fdt(&host, &passthrough_devices, &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&host, &passthrough_devices, &cfg, &[]).unwrap();
         let guest = Fdt::from_bytes(&dtb).unwrap();
         let cpu = guest.get_by_path("/cpus/cpu@0").unwrap().as_node();
 
