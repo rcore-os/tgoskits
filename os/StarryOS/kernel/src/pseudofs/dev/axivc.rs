@@ -1023,8 +1023,8 @@ fn cache_op_user_range(
         .checked_add(shm_size)
         .ok_or(VfsError::InvalidInput)?;
 
-    let aspace = current().as_thread().proc_data.aspace();
-    let aspace = aspace.lock();
+    let aspace_pin = current().as_thread().proc_data.pin_aspace()?;
+    let aspace = aspace_pin.lock();
     let mut cursor = addr;
     while cursor < end {
         let (paddr, _flags, page_size) = aspace
