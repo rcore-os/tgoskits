@@ -5191,3 +5191,30 @@ rq 时间戳。与此同时删除 `finish_owner_dispatch_commit()` 中未使用�
 无输出，该宽泛试验已撤回；提交中只保留经过完整 benchmark 验证的 owner switch-tail
 路径。下一步继续用单步路径和窄 qperf 检查 `context-switch tail`、clockevent publication
 及用户返回边界的固定成本。
+
+## 2026-09-02：用户返回校验合并为 Linux 单一 IRQ 窗口
+
+`axruntime::guard::validate_schedule_context()` 原先在正常 task-context 入口先读取 IRQ/硬中断
+状态、关开一次 IRQ，再通过 `current_preempt_depth()` 重新 pin CPU 并再次进入 IRQ 窗口。
+现在对照 Linux `preempt_count`/`exit_to_user_mode_loop()` 的入口边界，先拒绝 IRQ-off 或
+硬中断调用，再在一个 IRQ-off 窗口内读取 guard state 与 preempt depth，最后只恢复一次
+IRQ。失败状态和 owner/scheduler frame 的专用入口保持不变。
+
+`UserExecutionContext::enter()` 的 `prepare_user_return()` 已经完成最终 IRQ-off、无待调度
+工作的快照，且成功后到架构返回之间没有可改变 guard state 的操作；原先再次调用
+`validate_prepared_user_entry()` 只重复读取同一状态。现删除该重复读取，保留用户返回模式、
+runtime context publication 和 active-mm/hardware-root 校验，直接对应 Linux final flags check
+后进入 arch return 的顺序。
+
+同一 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 完整无插桩 benchmark 两次均输出
+`WAKEUP_LATENCY_PASSED`。本轮第二次结果 p50（ns）为：OTHER 同核/跨核线程/跨核进程
+`100033/101161/97269`，FIFO 同核/跨核线程/跨核进程 `71446/98876/104015`；
+`futex_wait_mismatch` 为 `8604/8502`，`futex_wake_empty` 为 `7054/7112`，
+`sched_yield_no_peer` 为 `15954/17189`（OTHER/FIFO）。所有 futex 样本
+`not_parked=0`；绝对 timer 仍有 TCG 抖动（OTHER `missed_deadlines=45`，FIFO `0`）。
+同核 futex 中位数在 TCG 下跨轮波动明显，因此不把它解释成稳定回退或硬件比例；更短的
+无切换路径下降与删除重复 IRQ/preempt 读取的方向一致。
+
+本轮没有新增测试、没有执行 clippy；在 benchmark 完成后统一执行了 `cargo fmt` 和
+`git diff --check`。当前仍未达到 Linux RT 约 `15--28 us` 参考区间的 90% 目标，下一步
+继续检查用户返回后的 syscall/信号边界以及 `context-switch tail` 的重复 publication。

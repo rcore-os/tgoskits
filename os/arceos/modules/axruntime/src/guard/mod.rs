@@ -98,22 +98,6 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
     }
 }
 
-/// Validates the guard state after the final IRQ-off scheduler-work snapshot.
-#[cfg(feature = "uspace")]
-pub(crate) fn validate_prepared_user_entry() -> ax_task::runtime::RuntimeStatus {
-    use ax_task::runtime::RuntimeStatus;
-
-    if ax_hal::asm::irqs_enabled() || in_hard_irq_pinned() {
-        return RuntimeStatus::UnsafeContext;
-    }
-    let state = read_state();
-    if state.irq.is_clear() && state.preempt.is_clear() && current_preempt_depth() == 0 {
-        RuntimeStatus::Success
-    } else {
-        RuntimeStatus::UnsafeContext
-    }
-}
-
 /// Validates a public scheduler entry before it can publish task state.
 pub(crate) fn validate_schedule_context(
     _origin: ax_task::runtime::RuntimeScheduleOrigin,
@@ -122,20 +106,19 @@ pub(crate) fn validate_schedule_context(
 
     let irqs_enabled = ax_hal::asm::irqs_enabled();
     let hard_irq = in_hard_irq();
-    if irqs_enabled {
-        ax_hal::asm::disable_irqs();
+    if !irqs_enabled || hard_irq {
+        return RuntimeStatus::UnsafeContext;
     }
+    // Linux's public scheduling entry validates the task-context preemption
+    // word while already inside one IRQ-excluded boundary. Keep the same
+    // single window here instead of toggling IRQs once for the guard-state
+    // read and again while sampling the architecture depth.
+    ax_hal::asm::disable_irqs();
     let state = read_state();
-    if irqs_enabled {
-        ax_hal::asm::enable_irqs();
-    }
     let preempt_depth = current_preempt_depth();
-    if irqs_enabled
-        && !hard_irq
-        && state.irq.is_clear()
-        && state.preempt.is_clear()
-        && preempt_depth == 0
-    {
+    let valid = state.irq.is_clear() && state.preempt.is_clear() && preempt_depth == 0;
+    ax_hal::asm::enable_irqs();
+    if valid {
         RuntimeStatus::Success
     } else {
         RuntimeStatus::UnsafeContext

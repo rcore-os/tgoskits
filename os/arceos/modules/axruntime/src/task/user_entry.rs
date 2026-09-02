@@ -113,9 +113,11 @@ impl UserExecutionContext {
     }
 
     fn validate_prepared_entry(&self) -> Result<(), TaskError> {
-        if crate::guard::validate_prepared_user_entry() != RuntimeStatus::Success {
-            return Err(TaskError::UnsafeContext);
-        }
+        // `prepare_user_return()` owns the final IRQ-off no-work snapshot and
+        // performs no guarded operation after it succeeds. Re-reading the
+        // guard state here only repeats the same boundary check; Linux's
+        // `exit_to_user_mode_loop()` proceeds directly to the architecture
+        // return after its final flags read.
         if !self.registers.has_interruptible_user_return_mode() {
             return Err(TaskError::UnsafeContext);
         }
