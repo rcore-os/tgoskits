@@ -7,7 +7,7 @@ pub(crate) fn wake_thread_from_current_cpu(
     let Ok(system) = runtime_task_system() else {
         return WakeResult::Unavailable;
     };
-    system.wake_thread_from_current_cpu(Arc::clone(core), intent)
+    system.wake_thread_from_current_cpu(core, intent)
 }
 
 pub(crate) fn wake_wait_claim_from_task(
@@ -20,7 +20,7 @@ pub(crate) fn wake_wait_claim_from_task(
         claim.cancel_selected();
         return WaitWakeDelivery::Unavailable;
     };
-    system.wake_wait_claim_from_current_cpu(Arc::clone(core), claim, intent)
+    system.wake_wait_claim_from_current_cpu(core, claim, intent)
 }
 
 pub(crate) fn runtime_task_system() -> Result<&'static TaskSystem, TaskError> {
@@ -115,6 +115,21 @@ impl RuntimeCpuHandles {
         // `remote`; its owner gate excludes every overlapping mutable borrow.
         let cpu =
             unsafe { remote.claim_local(ptr::with_exposed_provenance_mut::<CpuLocal>(local_raw))? };
+        validate_cpu_owner(&cpu, self.runtime_cpu)?;
+        Ok(cpu)
+    }
+
+    unsafe fn borrow_in_scheduler_frame(self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
+        let remote = self.remote()?;
+        let local_raw = self.cpu_local.into_raw();
+        validate_handle::<CpuLocal>(local_raw)?;
+        // SAFETY: the caller owns the live IRQ-off scheduler frame that
+        // captured these paired handles and bounds the returned borrow.
+        let cpu = unsafe {
+            remote.borrow_local_in_scheduler_frame(ptr::with_exposed_provenance_mut::<CpuLocal>(
+                local_raw,
+            ))?
+        };
         validate_cpu_owner(&cpu, self.runtime_cpu)?;
         Ok(cpu)
     }
@@ -243,7 +258,9 @@ pub(super) struct RuntimeSchedulerFrameGuard {
 impl runtime_cpu_pin_sealed::Sealed for RuntimeSchedulerFrameGuard {}
 impl RuntimeCpuPin for RuntimeSchedulerFrameGuard {
     fn claim_current_cpu(&mut self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
-        self.cpu.claim()
+        // SAFETY: this object owns the runtime's IRQ-off scheduler baton, and
+        // the returned borrow is lifetime-bound to its mutable borrow.
+        unsafe { self.cpu.borrow_in_scheduler_frame() }
     }
 }
 

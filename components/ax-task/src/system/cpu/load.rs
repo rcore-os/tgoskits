@@ -14,10 +14,9 @@ pub enum SchedulingClass {
     Fair     = 3,
 }
 
-/// Coherent, allocation-free snapshot used by remote placement and balancing.
+/// Allocation-free lockless hints used by remote placement and balancing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CpuLoadSummary {
-    pub(super) epoch: u64,
     pub(super) queued_count: usize,
     pub(super) nr_running: usize,
     pub(super) fair_demand: u64,
@@ -72,11 +71,6 @@ impl DeadlineBandwidthSnapshot {
 }
 
 impl CpuLoadSummary {
-    /// Returns the publication epoch read with this coherent snapshot.
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-
     /// Returns candidates available to `pick_next_task()`, excluding current.
     pub const fn queued_count(self) -> usize {
         self.queued_count

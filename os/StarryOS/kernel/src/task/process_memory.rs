@@ -137,8 +137,16 @@ impl ProcessMemoryShare {
         self.0.aspace.clone()
     }
 
+    pub(crate) fn aspace_ref(&self) -> &Arc<PiMutex<AddrSpace>> {
+        &self.0.aspace
+    }
+
     pub(crate) fn private_futexes(&self) -> Arc<FutexDomain> {
         self.0.private_futexes.clone()
+    }
+
+    pub(crate) fn private_futexes_ref(&self) -> &Arc<FutexDomain> {
+        &self.0.private_futexes
     }
 }
 

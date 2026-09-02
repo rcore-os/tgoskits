@@ -236,6 +236,9 @@ impl TaskSystem {
             cpu.as_mut().clear_fair_balance();
             self.root_domain.disable_rt_runtime(id);
             remote.finish_offline();
+            remote
+                .lock_run_queue(RunQueueGuardSource::Lifecycle)
+                .invalidate_domain_publication();
             self.root_domain.publish_offline(id);
             if self
                 .root_domain
@@ -308,7 +311,8 @@ impl TaskSystem {
             target_rq.commit();
             core.set_wake_cpu_hint(target);
             drop(sched);
-            self.publish_owner_deadline_refresh_reserved(core, target, publication);
+            drop(publication);
+            self.publish_owner_deadline_refresh(core, target);
         }
         Ok(())
     }

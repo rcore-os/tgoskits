@@ -75,11 +75,15 @@ impl TaskSystem {
     pub(crate) fn publish_run_queue_summary(
         &self,
         remote: &CpuRemote,
-        run_queue: &CpuRunQueueState,
+        run_queue: &mut CpuRunQueueState,
     ) {
         let _ = remote.publish_run_queue_load_summary(run_queue);
-        self.root_domain
-            .publish_run_queue(remote.owner(), run_queue, remote.accepts_placement());
+        if let Some((previous, publication)) =
+            run_queue.take_domain_publication(remote.accepts_placement())
+        {
+            self.root_domain
+                .publish_run_queue(remote.owner(), previous, publication);
+        }
     }
 
     /// Mirrors Linux `need_pull_rt_task()`/`need_pull_dl_task()` followed by

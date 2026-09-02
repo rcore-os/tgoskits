@@ -93,12 +93,11 @@ impl PreparedCurrentPark {
 
     /// Arms an absolute deadline in the runtime's finite monotonic domain.
     pub fn arm_deadline(&mut self, deadline: MonotonicDeadline) -> Result<(), TaskError> {
-        let thread = self.thread.as_ref();
         let ticket = self
             .ticket
             .as_mut()
             .expect("prepared park ticket remains owned");
-        arm_current_park_deadline(thread, ticket, deadline)
+        arm_current_park_deadline(&self.thread, ticket, deadline)
     }
 
     /// Commits the scheduler park and returns after this thread is runnable again.
@@ -243,8 +242,20 @@ pub fn on_clock_event(
             )
         };
     let rt_period_rescheduled = system.service_rt_period(&cpu, now);
-    let hard = system.service_due_hard_timers(cpu.as_mut(), now)?;
-    let batch = cpu.as_mut().on_task_clock_event(now, budget);
+    let hard = system.service_due_hard_timers(cpu.as_mut(), now, budget)?;
+    let batch = hard.soft();
+    if task_tick_rq_observation.is_none()
+        && !rt_period_rescheduled
+        && !hard.requires_rq_deadline_observation()
+    {
+        return Ok(TaskClockEventOutcome {
+            slice_expired: false,
+            deadline_overrun: false,
+            expired: hard.processed().saturating_add(batch.expired()),
+            update: hard.timer_base_update(),
+            scheduler_tick: None,
+        });
+    }
     let rq_observation = if let Some(task_tick_rq_observation) = task_tick_rq_observation {
         if clock_event_rq_observation_reusable(rt_period_rescheduled, hard.processed()) {
             cpu.as_mut()
@@ -415,12 +426,12 @@ pub(crate) fn cancel_current_park(
 }
 
 pub(crate) fn arm_current_park_deadline(
-    thread: &ThreadCore,
+    thread: &Arc<ThreadCore>,
     ticket: &mut crate::ParkTicket,
     deadline: MonotonicDeadline,
 ) -> Result<(), TaskError> {
     let mut irq = RuntimeIrqGuard::enter();
-    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    let cpu = runtime_current_cpu_mut(&mut irq)?;
     if ticket.thread() != thread.id()
         || ticket.is_resolved()
         || ticket.has_deadline()
@@ -429,29 +440,34 @@ pub(crate) fn arm_current_park_deadline(
         return Err(TaskError::StaleThreadId);
     }
     let owner = cpu.owner();
-    let monotonic_now = task_runtime::monotonic_now();
-    let non_timer = cpu
-        .as_mut()
-        .prepare_scheduler_deadline_registration_publication(
-            monotonic_now,
-            SchedulerDeadlineDerivationSource::ParkArm,
-        );
     let (registration, update) = {
         let mut deadline_base = cpu
             .remote()
             .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
-        let registration = deadline_base
-            .queue
-            .arm(
+        let non_timer = deadline_base.non_timer;
+        let kind = TaskDeadlineKind::park_timeout(ticket.generation());
+        let registration = if matches!(
+            thread.base_policy_snapshot(),
+            SchedulePolicy::Fifo { .. }
+                | SchedulePolicy::RoundRobin { .. }
+                | SchedulePolicy::Deadline(_)
+        ) {
+            deadline_base.queue.arm_hard_park(
                 thread.sleep_timer(),
                 deadline,
-                TaskDeadlineKind::park_timeout(ticket.generation()),
+                kind,
+                Arc::clone(thread),
             )
-            .map_err(|error| match error {
-                crate::timer::TaskDeadlineError::Capacity => TaskError::TimerCapacity,
-                crate::timer::TaskDeadlineError::GenerationExhausted
-                | crate::timer::TaskDeadlineError::KindMismatch => TaskError::InvalidConfiguration,
-            })?;
+        } else {
+            deadline_base
+                .queue
+                .arm(thread.sleep_timer(), deadline, kind)
+        }
+        .map_err(|error| match error {
+            crate::timer::TaskDeadlineError::Capacity => TaskError::TimerCapacity,
+            crate::timer::TaskDeadlineError::GenerationExhausted
+            | crate::timer::TaskDeadlineError::KindMismatch => TaskError::InvalidConfiguration,
+        })?;
         let token = registration.token();
         thread.register_sleep_timer(owner, token.generation());
         let update = match CpuLocal::update_scheduler_deadline_registration_publication(
@@ -489,7 +505,7 @@ pub(crate) fn cancel_current_park_deadline(
     };
     let system = runtime_task_system()?;
     let mut irq = RuntimeIrqGuard::enter();
-    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    let cpu = runtime_current_cpu_mut(&mut irq)?;
     let actual = cpu.owner();
     let Some(expected) = thread.sleep_timer_cpu_for(token.generation()) else {
         // Expiration physically removes the queue entry and clears the core's
@@ -542,13 +558,6 @@ pub(crate) fn cancel_current_park_deadline(
         }
         return Ok(cancelled);
     }
-    let monotonic_now = task_runtime::monotonic_now();
-    let non_timer = cpu
-        .as_mut()
-        .prepare_scheduler_deadline_registration_publication(
-            monotonic_now,
-            SchedulerDeadlineDerivationSource::ParkCancel,
-        );
     let (cancellation, update) = {
         let registration = ticket
             .deadline()
@@ -556,6 +565,7 @@ pub(crate) fn cancel_current_park_deadline(
         let mut deadline_base = cpu
             .remote()
             .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+        let non_timer = deadline_base.non_timer;
         let cancellation = deadline_base.queue.begin_cancel(registration);
         let expired = if cancellation.is_none() {
             deadline_base.cancel_expired_task_deadline(registration)

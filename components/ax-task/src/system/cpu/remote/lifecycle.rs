@@ -273,10 +273,6 @@ impl OwnedCpuRemotePublication {
 }
 
 impl CpuRemotePublication<'_> {
-    pub(super) fn reserves(&self, remote: &CpuRemote) -> bool {
-        core::ptr::eq(self.remote, remote)
-    }
-
     pub(crate) fn publish_owner_control(
         self,
         node: Pin<&'static InboxNode>,

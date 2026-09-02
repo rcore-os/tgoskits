@@ -131,9 +131,8 @@ impl RunQueue {
         self.fair.total_weight()
     }
 
-    pub(crate) fn placement_demand(&self) -> u64 {
-        self.fair_demand()
-            .saturating_add(self.fixed_placement_demand)
+    pub(crate) const fn fixed_placement_demand(&self) -> u64 {
+        self.fixed_placement_demand
     }
 
     /// Returns `rq->cfs.avg_vruntime()`, shared by every fair mode.
@@ -166,6 +165,14 @@ impl RunQueue {
 
     pub(crate) fn rt_count_at_priority(&self, priority: u8) -> usize {
         self.rt.count_at_priority(priority)
+    }
+
+    pub(crate) fn has_selectable_higher_class(
+        &self,
+        class: SchedulerClass,
+        rt_eligibility: RtEligibility,
+    ) -> bool {
+        class.has_selectable_higher_class(self, rt_eligibility)
     }
 
     pub(crate) fn has_fair(&self) -> bool {

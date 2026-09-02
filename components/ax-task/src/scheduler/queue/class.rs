@@ -47,6 +47,32 @@ impl SchedulerClass {
         }
     }
 
+    /// Returns whether the static class chain has a selectable task above
+    /// `self` without disturbing any class-owned queue state.
+    ///
+    /// Linux compares scheduling classes before invoking a class picker. A
+    /// caller that only needs to prove that the current task still wins must
+    /// not dequeue a candidate and then roll the selection back. Throttled
+    /// Deadline tasks are absent from the EDF tree, while RT eligibility is a
+    /// property of the whole RT runqueue.
+    pub(crate) fn has_selectable_higher_class(
+        self,
+        run_queue: &RunQueue,
+        rt_eligibility: RtEligibility,
+    ) -> bool {
+        let stop = run_queue.stop.is_some();
+        let deadline = run_queue.deadline.earliest_deadline_ns().is_some();
+        let realtime =
+            matches!(rt_eligibility, RtEligibility::Runnable) && run_queue.rt.has_any_rt();
+
+        match self {
+            Self::Stop => false,
+            Self::Deadline => stop,
+            Self::Realtime => stop || deadline,
+            Self::Fair => stop || deadline || realtime,
+        }
+    }
+
     /// Linux `enqueue_task()` class hook. Common rq accounting and membership
     /// publication are committed by [`RunQueue::enqueue_task`] after this
     /// hook has installed the class-owned intrusive node.

@@ -375,12 +375,11 @@ impl DeadlineRunQueue {
                 .is_none(),
             "Deadline runqueue cannot contain one thread twice"
         );
-        let core = Arc::clone(&thread.core);
         let mut inserted = unsafe {
             // SAFETY: target-rq placement serializes the only physical queue
             // node belonging to this thread. A linked thread cannot enter a
             // second runqueue concurrently.
-            core.runqueue_nodes().take_deadline()
+            thread.core.runqueue_nodes().take_deadline()
         };
         inserted.reset(thread);
         self.root = insert_node(self.root.take(), inserted);

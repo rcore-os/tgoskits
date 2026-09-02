@@ -77,18 +77,23 @@ pub fn irq_is_enabled() -> bool {
     with_current_lapic(|lapic, _timer| lapic.timer_is_unmasked())
 }
 
-/// Arms a one-shot deadline `ticks_from_now` from the current TSC.
-pub fn set_next_event_in_ticks(ticks_from_now: usize) {
-    with_current_lapic(|lapic, timer| program_next_event(lapic, timer, ticks_from_now));
+/// LAPIC one-shot expiry consumes an edge without leaving a level asserted.
+pub const fn requires_irq_quiesce() -> bool {
+    false
 }
 
-fn program_next_event(lapic: &X86LocalApic, timer: LocalTimerProfile, ticks_from_now: usize) {
-    let delta =
-        u64::try_from(ticks_from_now.max(TIMER_MIN_DELTA_TICKS as usize)).unwrap_or(u64::MAX);
+/// Arms a one-shot at an absolute TSC-domain deadline.
+pub fn set_next_event_at_ticks(deadline_ticks: u64) {
+    with_current_lapic(|lapic, timer| program_next_event(lapic, timer, deadline_ticks));
+}
+
+fn program_next_event(lapic: &X86LocalApic, timer: LocalTimerProfile, deadline_ticks: u64) {
+    let current_ticks = someboot::timer::ticks() as u64;
+    let deadline = deadline_ticks.max(current_ticks.saturating_add(TIMER_MIN_DELTA_TICKS as u64));
     if timer.tsc_deadline {
-        let deadline = someboot::timer::ticks() as u64 + delta;
         lapic.timer_set_tsc_deadline(deadline);
     } else {
+        let delta = deadline.saturating_sub(current_ticks);
         lapic.timer_set_initial_count(ticks_to_apic_counts(delta, timer.apic_counts_per_tsc_q32));
     }
 }
@@ -110,10 +115,10 @@ pub fn cancel_oneshot() {
 }
 
 /// Makes the source observable before installing a fresh comparator.
-pub fn resume_oneshot_in_ticks(ticks_from_now: usize) {
+pub fn resume_oneshot_at_ticks(deadline_ticks: u64) {
     with_current_lapic(|lapic, timer| {
         resume_oneshot_with(
-            ticks_from_now,
+            deadline_ticks,
             || {
                 lapic.timer_set_masked(false);
                 lapic.timer_serialize_mask_update();
@@ -129,12 +134,12 @@ fn cancel_oneshot_with(mask: impl FnOnce(), clear_comparator: impl FnOnce()) {
 }
 
 fn resume_oneshot_with(
-    ticks_from_now: usize,
+    deadline_ticks: u64,
     unmask_and_serialize: impl FnOnce(),
-    program_comparator: impl FnOnce(usize),
+    program_comparator: impl FnOnce(u64),
 ) {
     unmask_and_serialize();
-    program_comparator(ticks_from_now);
+    program_comparator(deadline_ticks);
 }
 
 fn calibrate_apic_timer_ratio(lapic: &X86LocalApic) -> u64 {

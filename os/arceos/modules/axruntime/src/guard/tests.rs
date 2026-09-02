@@ -239,25 +239,16 @@ fn nested_irq_exit_does_not_reenter_context_queries() {
     let mut state = RuntimeGuardState::new();
     state.enter_irq(true);
     state.enter_irq(false);
-    let irq_queries = Cell::new(0);
     let reschedule_queries = Cell::new(0);
 
-    assert!(!irq_guard_exit_needs_schedule(
-        &state,
-        0,
-        || {
-            irq_queries.set(irq_queries.get() + 1);
-            false
-        },
-        || {
-            reschedule_queries.set(reschedule_queries.get() + 1);
-            false
-        },
-    ));
+    assert!(!irq_guard_exit_needs_schedule(&state, 0, || {
+        reschedule_queries.set(reschedule_queries.get() + 1);
+        false
+    },));
     assert_eq!(
-        (irq_queries.get(), reschedule_queries.get()),
-        (0, 0),
-        "a nested IRQ guard drop must not recursively query IRQ or scheduler state"
+        reschedule_queries.get(),
+        0,
+        "a nested IRQ guard drop must not recursively query scheduler state"
     );
 }
 

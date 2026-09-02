@@ -826,22 +826,19 @@ impl FutexDomainOwner {
 /// A syscall may retry its nofault user access, but it cannot change process
 /// identity while the syscall is active. Shared keys are intentionally
 /// re-resolved after a fault because their VMA backing may have changed.
-pub(crate) struct FutexContext {
-    task: UserTaskRef,
+pub(crate) struct FutexContext<'task> {
+    task: &'task UserTaskRef,
     memory: ProcessMemoryShare,
 }
 
-impl FutexContext {
-    pub(crate) fn new(task: &UserTaskRef) -> Self {
+impl<'task> FutexContext<'task> {
+    pub(crate) fn new(task: &'task UserTaskRef) -> Self {
         let memory = task.as_thread().proc_data.memory_share();
-        Self {
-            task: task.clone(),
-            memory,
-        }
+        Self { task, memory }
     }
 
-    pub(crate) fn task(&self) -> &UserTaskRef {
-        &self.task
+    pub(crate) fn task(&self) -> &'task UserTaskRef {
+        self.task
     }
 
     fn resolve_keys(
@@ -851,7 +848,7 @@ impl FutexContext {
         mode: FutexKeyMode,
     ) -> (FutexKey, Option<FutexKey>) {
         if matches!(mode, FutexKeyMode::Private) {
-            let mm_generation = self.memory.private_futexes().generation();
+            let mm_generation = self.memory.private_futexes_ref().generation();
             return (
                 FutexKey::Private {
                     mm_generation,
@@ -864,9 +861,8 @@ impl FutexContext {
             );
         }
 
-        let aspace = self.memory.aspace();
-        let aspace = aspace.lock();
-        let mm_generation = self.memory.private_futexes().generation();
+        let aspace = self.memory.aspace_ref().lock();
+        let mm_generation = self.memory.private_futexes_ref().generation();
         (
             FutexKey::new(&aspace, mm_generation, first_address, mode),
             second_address.map(|address| FutexKey::new(&aspace, mm_generation, address, mode)),
@@ -875,7 +871,9 @@ impl FutexContext {
 
     fn domain_for(&self, key: &FutexKey) -> FutexDomainOwner {
         match key {
-            FutexKey::Private { .. } => FutexDomainOwner::Private(self.memory.private_futexes()),
+            FutexKey::Private { .. } => {
+                FutexDomainOwner::Private(Arc::clone(self.memory.private_futexes_ref()))
+            }
             FutexKey::Shared { .. } => FutexDomainOwner::Shared,
         }
     }

@@ -12,7 +12,6 @@ use crate::runtime::RuntimeSwitchPlan;
 /// Returns [`TaskError::UnsafeContext`] in hard IRQ context and object-handle
 /// errors when runtime initialization is incomplete or inconsistent.
 pub fn schedule_current_cpu() -> Result<SchedulerOutcome, TaskError> {
-    validate_schedule_context(RuntimeScheduleOrigin::Preempt)?;
     schedule_current_cpu_with_entry(RuntimeSchedulerEntry::Task)
 }
 
@@ -137,12 +136,11 @@ fn preempt_schedule_needs_repeat(outcome: SchedulerOutcome, needs_reschedule: bo
 
 /// Yields the calling thread and executes the resulting context switch.
 pub fn yield_current_cpu() -> Result<ScheduleDecision, TaskError> {
-    validate_schedule_context(RuntimeScheduleOrigin::Yield)?;
-    let current = current_thread_ref()?;
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Yield,
         RuntimeSchedulerEntry::Task,
     )?;
+    let current = current_thread_ref()?;
     let system = runtime_task_system()?;
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;

@@ -43,9 +43,22 @@ pub(crate) fn nanos_to_ticks(nanos: u64) -> u64 {
     nanos_to_ticks_at_frequency(nanos, freq)
 }
 
+fn deadline_nanos_to_ticks(nanos: u64) -> u64 {
+    let freq = timer_frequency_hz();
+    deadline_nanos_to_ticks_at_frequency(nanos, freq)
+}
+
 const fn ticks_to_nanos_at_frequency(ticks: u64, frequency_hz: u64) -> u64 {
     if frequency_hz == 0 {
         return 0;
+    }
+    let nanos_per_second = ax_plat::time::NANOS_PER_SEC;
+    if frequency_hz <= u64::MAX / nanos_per_second {
+        let seconds = ticks / frequency_hz;
+        let remainder = ticks % frequency_hz;
+        return seconds
+            .saturating_mul(nanos_per_second)
+            .saturating_add(remainder * nanos_per_second / frequency_hz);
     }
     let nanos = (ticks as u128 * ax_plat::time::NANOS_PER_SEC as u128) / frequency_hz as u128;
     if nanos > u64::MAX as u128 {
@@ -59,6 +72,14 @@ const fn nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> u64 {
     if frequency_hz == 0 {
         return 0;
     }
+    let nanos_per_second = ax_plat::time::NANOS_PER_SEC;
+    if frequency_hz <= u64::MAX / nanos_per_second {
+        let seconds = nanos / nanos_per_second;
+        let remainder = nanos % nanos_per_second;
+        return seconds
+            .saturating_mul(frequency_hz)
+            .saturating_add(remainder * frequency_hz / nanos_per_second);
+    }
     let ticks = (nanos as u128 * frequency_hz as u128) / ax_plat::time::NANOS_PER_SEC as u128;
     if ticks > u64::MAX as u128 {
         u64::MAX
@@ -70,6 +91,20 @@ const fn deadline_nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> 
     if frequency_hz == 0 {
         return 0;
     }
+    let nanos_per_second = ax_plat::time::NANOS_PER_SEC;
+    if frequency_hz <= u64::MAX / nanos_per_second {
+        let seconds = nanos / nanos_per_second;
+        let remainder = nanos % nanos_per_second;
+        let base = seconds.saturating_mul(frequency_hz);
+        let scaled = remainder * frequency_hz;
+        let fraction = scaled / nanos_per_second
+            + if scaled.is_multiple_of(nanos_per_second) {
+                0
+            } else {
+                1
+            };
+        return base.saturating_add(fraction);
+    }
     let scaled = nanos as u128 * frequency_hz as u128;
     let divisor = ax_plat::time::NANOS_PER_SEC as u128;
     let ticks = scaled / divisor + if scaled.is_multiple_of(divisor) { 0 } else { 1 };
@@ -79,6 +114,7 @@ const fn deadline_nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> 
         ticks as u64
     }
 }
+#[cfg(test)]
 fn oneshot_interval_ticks(deadline_ns: u64, current_ticks: u64, frequency_hz: u64) -> usize {
     let deadline_ticks = deadline_nanos_to_ticks_at_frequency(deadline_ns, frequency_hz);
     let delta = deadline_ticks.saturating_sub(current_ticks).max(1);
@@ -88,6 +124,7 @@ fn oneshot_interval_ticks(deadline_ns: u64, current_ticks: u64, frequency_hz: u6
         delta as usize
     }
 }
+#[cfg(test)]
 fn program_oneshot(
     deadline_ns: u64,
     current_ticks: u64,
@@ -97,6 +134,7 @@ fn program_oneshot(
     let interval = oneshot_interval_ticks(deadline_ns, current_ticks, frequency_hz);
     program_interval(interval);
 }
+#[cfg(test)]
 fn resume_oneshot(
     deadline_ns: u64,
     current_ticks: u64,
@@ -182,24 +220,15 @@ impl ax_plat::time::TimeIf for GenericTimer {
     /// A timer interrupt will be triggered at the specified monotonic time
     /// deadline (in nanoseconds).
     fn set_oneshot_timer(deadline_ns: u64) {
-        let current_ticks = somehal::timer::ticks() as u64;
-        let frequency_hz = timer_frequency_hz();
-        program_oneshot(
-            deadline_ns,
-            current_ticks,
-            frequency_hz,
-            somehal::timer::set_next_event_in_ticks,
-        );
+        let deadline_ticks = deadline_nanos_to_ticks(deadline_ns);
+        somehal::timer::set_next_event_at_ticks(deadline_ticks);
+    }
+    fn oneshot_timer_requires_irq_quiesce() -> bool {
+        somehal::timer::requires_irq_quiesce()
     }
     fn resume_oneshot_timer(deadline_ns: u64) {
-        let current_ticks = somehal::timer::ticks() as u64;
-        let frequency_hz = timer_frequency_hz();
-        resume_oneshot(
-            deadline_ns,
-            current_ticks,
-            frequency_hz,
-            somehal::timer::resume_oneshot_in_ticks,
-        );
+        let deadline_ticks = deadline_nanos_to_ticks(deadline_ns);
+        somehal::timer::resume_oneshot_at_ticks(deadline_ticks);
     }
     fn cancel_oneshot_timer() {
         somehal::timer::cancel_oneshot();

@@ -177,25 +177,42 @@ impl RootDomain {
         self.online_count.load(Ordering::Acquire).max(1) as u32
     }
 
-    pub(super) fn publish_run_queue(&self, cpu: CpuId, run_queue: &CpuRunQueueState, online: bool) {
+    pub(super) fn publish_run_queue(
+        &self,
+        cpu: CpuId,
+        previous: Option<RunQueueDomainPublication>,
+        publication: RunQueueDomainPublication,
+    ) {
         // Linux RT throttling gates local pick eligibility, but it does not
         // remove the rq's real urgency from cpupri or its queued migratable
         // tasks from rto_mask. Other CPUs must still be able to pull work from
         // a throttled rq and must not mistake it for a low-priority target.
-        self.priority.publish_run_queue(
-            cpu,
-            run_queue.highest_rt_priority_including_current(),
-            run_queue.earliest_deadline_including_current(),
-            online,
-        );
-        self.overload.publish(
-            cpu,
-            online && run_queue.has_pushable_realtime(),
-            online && run_queue.has_pushable_deadline(),
-        );
-        if self
-            .fair_nohz
-            .publish_source(cpu, online && run_queue.has_pushable_fair())
+        if previous.is_none_or(|previous| {
+            previous.online != publication.online
+                || previous.highest_rt_priority != publication.highest_rt_priority
+                || previous.earliest_deadline != publication.earliest_deadline
+        }) {
+            self.priority.publish_run_queue(
+                cpu,
+                publication.highest_rt_priority,
+                publication.earliest_deadline,
+                publication.online,
+            );
+        }
+        if previous.is_none_or(|previous| {
+            previous.pushable_realtime != publication.pushable_realtime
+                || previous.pushable_deadline != publication.pushable_deadline
+        }) {
+            self.overload.publish(
+                cpu,
+                publication.pushable_realtime,
+                publication.pushable_deadline,
+            );
+        }
+        if previous.is_none_or(|previous| previous.pushable_fair != publication.pushable_fair)
+            && self
+                .fair_nohz
+                .publish_source(cpu, publication.pushable_fair)
         {
             self.kick_fair_idle_balancer(cpu);
         }

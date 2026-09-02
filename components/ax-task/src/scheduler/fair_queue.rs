@@ -270,11 +270,10 @@ impl FairRunQueue {
                 .checked_add(1)
                 .expect("fair migratable count must fit usize");
         }
-        let core = Arc::clone(&thread.core);
         let mut inserted = unsafe {
             // SAFETY: target-rq placement serializes the single fair linkage
             // embedded in this thread's scheduler storage.
-            core.runqueue_nodes().take_fair()
+            thread.core.runqueue_nodes().take_fair()
         };
         inserted.reset(thread);
         self.root = insert_node(self.root.take(), inserted);

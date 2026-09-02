@@ -69,6 +69,8 @@ pub(crate) struct CpuDeadlineBase {
 struct CpuDeadlineSnapshot {
     sequence: AtomicU64,
     timer_deadline: AtomicU64,
+    non_timer_deadline: AtomicU64,
+    non_timer_runtime_deadline: AtomicU64,
     publication_deadline: AtomicU64,
     publication_runtime_deadline: AtomicU64,
 }
@@ -76,6 +78,7 @@ struct CpuDeadlineSnapshot {
 #[derive(Clone, Copy)]
 struct CpuDeadlineSnapshotValue {
     timer_deadline: Option<MonotonicDeadline>,
+    non_timer: SchedulerNonTimerDeadlines,
     publication: Option<SchedulerDeadlinePublicationState>,
 }
 
@@ -84,6 +87,8 @@ impl CpuDeadlineSnapshot {
         Self {
             sequence: AtomicU64::new(0),
             timer_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_NONE),
+            non_timer_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_NONE),
+            non_timer_runtime_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_NONE),
             publication_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_UNINITIALIZED),
             publication_runtime_deadline: AtomicU64::new(DEADLINE_SNAPSHOT_NONE),
         }
@@ -93,6 +98,14 @@ impl CpuDeadlineSnapshot {
         let sequence = self.sequence.fetch_add(1, Ordering::AcqRel);
         self.timer_deadline.store(
             encode_deadline_snapshot(state.timer_deadline()),
+            Ordering::Relaxed,
+        );
+        self.non_timer_deadline.store(
+            encode_deadline_snapshot(state.non_timer.deadline),
+            Ordering::Relaxed,
+        );
+        self.non_timer_runtime_deadline.store(
+            encode_deadline_snapshot(state.non_timer.runtime_deadline),
             Ordering::Relaxed,
         );
         self.publication_deadline.store(
@@ -123,6 +136,9 @@ impl CpuDeadlineSnapshot {
                 continue;
             }
             let timer_deadline = self.timer_deadline.load(Ordering::Relaxed);
+            let non_timer_deadline = self.non_timer_deadline.load(Ordering::Relaxed);
+            let non_timer_runtime_deadline =
+                self.non_timer_runtime_deadline.load(Ordering::Relaxed);
             let publication_deadline = self.publication_deadline.load(Ordering::Relaxed);
             let publication_runtime_deadline =
                 self.publication_runtime_deadline.load(Ordering::Relaxed);
@@ -130,6 +146,10 @@ impl CpuDeadlineSnapshot {
             if before == after {
                 return CpuDeadlineSnapshotValue {
                     timer_deadline: decode_deadline_snapshot(timer_deadline),
+                    non_timer: SchedulerNonTimerDeadlines {
+                        deadline: decode_deadline_snapshot(non_timer_deadline),
+                        runtime_deadline: decode_deadline_snapshot(non_timer_runtime_deadline),
+                    },
                     publication: (publication_deadline != DEADLINE_SNAPSHOT_UNINITIALIZED).then(
                         || SchedulerDeadlinePublicationState {
                             deadline: decode_deadline_snapshot(publication_deadline),
@@ -273,11 +293,12 @@ impl CpuDeadlineBase {
             .into_iter()
             .flatten()
             .min();
-        snapshot.publication
-            == Some(SchedulerDeadlinePublicationState {
-                deadline,
-                runtime_deadline: non_timer.runtime_deadline,
-            })
+        snapshot.non_timer == non_timer
+            && snapshot.publication
+                == Some(SchedulerDeadlinePublicationState {
+                    deadline,
+                    runtime_deadline: non_timer.runtime_deadline,
+                })
     }
 }
 
@@ -308,6 +329,7 @@ pub(crate) struct CpuDeadlineState {
     /// bit after draining every due and buffered soft expiry.
     pub(crate) softirq_activated: bool,
     pub(crate) generation: u64,
+    pub(crate) non_timer: SchedulerNonTimerDeadlines,
     pub(crate) publication: Option<SchedulerDeadlinePublicationState>,
 }
 
@@ -328,6 +350,10 @@ impl CpuDeadlineState {
             last_service_claim_was_kernel: false,
             softirq_activated: false,
             generation: 0,
+            non_timer: SchedulerNonTimerDeadlines {
+                deadline: None,
+                runtime_deadline: None,
+            },
             publication: None,
         }
     }
@@ -342,7 +368,7 @@ impl CpuDeadlineState {
 
     pub(crate) fn timer_deadline(&self) -> Option<MonotonicDeadline> {
         let hard = [
-            self.queue.next_scheduler_deadline(),
+            self.queue.next_hard_deadline(),
             self.kernel_timers.next_hard_deadline(),
         ]
         .into_iter()

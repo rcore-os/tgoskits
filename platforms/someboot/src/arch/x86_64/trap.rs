@@ -7,7 +7,7 @@ use page_table_generic::PhysAddr;
 use x86::{
     bits64::{rflags, segmentation::Descriptor64},
     controlregs,
-    cpuid::CpuId,
+    cpuid::{CpuId, Hypervisor},
     dtables::{self, DescriptorTablePointer},
     irq::PageFaultError,
     msr::{self, rdmsr, wrmsr},
@@ -35,10 +35,11 @@ const MAX_VALID_TSC_FREQ_HZ: u64 = 10_000_000_000;
 static TSC_FREQ_HZ: AtomicU64 = AtomicU64::new(0);
 static HAS_INVARIANT_TSC: AtomicBool = AtomicBool::new(false);
 static HAS_TSC_ADJUST: AtomicBool = AtomicBool::new(false);
+static HAS_RELIABLE_VIRTUAL_TSC: AtomicBool = AtomicBool::new(false);
 static TSC_INFO_STATE: AtomicU8 = AtomicU8::new(0);
 static TSC_ADJUST_REFERENCE_STATE: AtomicU8 = AtomicU8::new(0);
 static TSC_ADJUST_REFERENCE: AtomicU64 = AtomicU64::new(0);
-static TSC_ADJUST_CHANGED: AtomicBool = AtomicBool::new(false);
+static TSC_STABILITY: AtomicU8 = AtomicU8::new(0);
 static IDT_STATE: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +79,7 @@ pub fn init_local() {
     enable_nxe();
     enable_xsave_features();
     init_tsc_freq();
+    validate_local_tsc();
 }
 
 pub fn tsc_freq() -> usize {
@@ -93,19 +95,35 @@ pub fn ticks_now() -> u64 {
 }
 
 pub fn scheduler_counter_stability() -> crate::timer::CounterStability {
-    let invariant_tsc = HAS_INVARIANT_TSC.load(Ordering::Acquire);
-    let cpu_count = crate::smp::cpu_count();
-    if !invariant_tsc || cpu_count != 1 {
-        return crate::timer::CounterStability::Unstable;
+    if TSC_STABILITY.load(Ordering::Acquire) == 1 {
+        crate::timer::CounterStability::Stable
+    } else {
+        crate::timer::CounterStability::Unstable
     }
-    classify_scheduler_counter(invariant_tsc, cpu_count, tsc_adjust_is_unchanged())
 }
 
-fn tsc_adjust_is_unchanged() -> bool {
-    if !HAS_TSC_ADJUST.load(Ordering::Acquire) {
-        return true;
+fn validate_local_tsc() {
+    let cpuid = CpuId::new();
+    let invariant_tsc = cpuid
+        .get_advanced_power_mgmt_info()
+        .is_some_and(|info| info.has_invariant_tsc());
+    let cpu_count = crate::smp::cpu_count();
+    let synchronization_trusted = if HAS_TSC_ADJUST.load(Ordering::Acquire) {
+        tsc_adjust_matches_reference()
+    } else {
+        cpu_count == 1 || HAS_RELIABLE_VIRTUAL_TSC.load(Ordering::Acquire)
+    };
+    if classify_scheduler_counter(invariant_tsc, cpu_count, synchronization_trusted)
+        == crate::timer::CounterStability::Unstable
+    {
+        TSC_STABILITY.store(2, Ordering::Release);
+        return;
     }
 
+    let _ = TSC_STABILITY.compare_exchange(0, 1, Ordering::Release, Ordering::Relaxed);
+}
+
+fn tsc_adjust_matches_reference() -> bool {
     let current_adjust = unsafe { rdmsr(msr::IA32_TSC_ADJUST) };
     if TSC_ADJUST_REFERENCE_STATE
         .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
@@ -113,24 +131,20 @@ fn tsc_adjust_is_unchanged() -> bool {
     {
         TSC_ADJUST_REFERENCE.store(current_adjust, Ordering::Relaxed);
         TSC_ADJUST_REFERENCE_STATE.store(2, Ordering::Release);
-    } else {
-        while TSC_ADJUST_REFERENCE_STATE.load(Ordering::Acquire) != 2 {
-            spin_loop();
-        }
+        return true;
     }
-
-    if current_adjust != TSC_ADJUST_REFERENCE.load(Ordering::Acquire) {
-        TSC_ADJUST_CHANGED.store(true, Ordering::Release);
+    while TSC_ADJUST_REFERENCE_STATE.load(Ordering::Acquire) != 2 {
+        spin_loop();
     }
-    !TSC_ADJUST_CHANGED.load(Ordering::Acquire)
+    current_adjust == TSC_ADJUST_REFERENCE.load(Ordering::Acquire)
 }
 
 const fn classify_scheduler_counter(
     invariant_tsc: bool,
     cpu_count: usize,
-    tsc_adjust_unchanged: bool,
+    synchronization_trusted: bool,
 ) -> crate::timer::CounterStability {
-    if invariant_tsc && cpu_count == 1 && tsc_adjust_unchanged {
+    if invariant_tsc && (cpu_count == 1 || synchronization_trusted) {
         crate::timer::CounterStability::Stable
     } else {
         crate::timer::CounterStability::Unstable
@@ -184,9 +198,13 @@ fn init_tsc_freq() {
     let has_tsc_adjust = cpuid
         .get_extended_feature_info()
         .is_some_and(|info| info.has_tsc_adjust_msr());
+    let has_reliable_virtual_tsc = cpuid.get_hypervisor_info().is_some_and(|hypervisor| {
+        matches!(hypervisor.identify(), Hypervisor::KVM | Hypervisor::QEMU)
+    });
 
     HAS_INVARIANT_TSC.store(has_invariant_tsc, Ordering::Release);
     HAS_TSC_ADJUST.store(has_tsc_adjust, Ordering::Release);
+    HAS_RELIABLE_VIRTUAL_TSC.store(has_reliable_virtual_tsc, Ordering::Release);
 
     TSC_FREQ_HZ.store(freq_hz, Ordering::Release);
     TSC_INFO_STATE.store(2, Ordering::Release);
@@ -410,7 +428,7 @@ mod tests {
     use crate::timer::CounterStability;
 
     #[test]
-    fn only_proven_single_cpu_invariant_tsc_uses_the_stable_path() {
+    fn invariant_tsc_uses_stable_path_only_with_trusted_synchronization() {
         assert_eq!(
             classify_scheduler_counter(true, 1, true),
             CounterStability::Stable
@@ -421,7 +439,7 @@ mod tests {
         );
         assert_eq!(
             classify_scheduler_counter(true, 2, true),
-            CounterStability::Unstable
+            CounterStability::Stable
         );
         assert_eq!(
             classify_scheduler_counter(true, 1, false),

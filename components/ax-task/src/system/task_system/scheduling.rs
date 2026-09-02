@@ -1,7 +1,7 @@
 //! Owner scheduling entry points, runtime charging, and load balancing requests.
 
-use super::{dispatch::OwnerDispatchCommit, *};
-use crate::{PickTaskResult, RtEligibility};
+use super::{dispatch::OwnerDispatchCommit, switch::OwnerRqScheduleOut, *};
+use crate::{RtEligibility, SchedulerClass};
 
 pub(crate) fn lone_current_yield_keeps_dispatch(
     entity: Option<&SchedulingEntity>,
@@ -23,11 +23,11 @@ fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
     ) {
         return false;
     }
-    let Some((current, priority)) = transaction.current().and_then(|current| {
+    let Some(priority) = transaction.current().and_then(|current| {
         current
             .schedule_policy()
             .rt_priority()
-            .map(|priority| (current.thread(), priority.get()))
+            .map(|priority| priority.get())
     }) else {
         return false;
     };
@@ -37,17 +37,11 @@ fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
         return false;
     }
 
-    // Ask the same class chain used by the eventual owner selection. The
-    // unique highest-priority RT node is current, but Stop or Deadline may
-    // still precede it. Lower-priority RT and Fair tasks cannot displace it.
-    let Some(PickTaskResult::Continue(picked)) =
-        transaction.pick_next_task(RtEligibility::Runnable, false, None)
-    else {
-        task_runtime::fatal_invariant(0x5343_1217, current.as_u64() as usize)
-    };
-    let remains_selected = picked.id() == current;
-    transaction.rollback_pick(picked);
-    remains_selected
+    // The unique highest-priority RT node is current. Linux next checks the
+    // static class chain: only queued Stop or eligible Deadline work can
+    // displace it. Do not mutate and roll back class queues merely to prove
+    // that no higher class is selectable.
+    !transaction.has_selectable_higher_class(SchedulerClass::Realtime, RtEligibility::Runnable)
 }
 
 fn owner_yield_keeps_current_dispatch(transaction: &mut OwnerRqTxn<'_>) -> bool {
@@ -147,8 +141,10 @@ impl TaskSystem {
         transaction: &mut OwnerRqTxn<'_>,
         current: &ThreadCore,
     ) -> bool {
-        self.owner_schedule_out_is_rq_owned(transaction, current)
-            && realtime_current_remains_selected(transaction)
+        realtime_current_remains_selected(transaction)
+            && self
+                .prepare_owner_rq_schedule_out(transaction, current)
+                .is_some()
     }
 
     fn finish_owner_no_switch(
@@ -598,7 +594,9 @@ impl TaskSystem {
         current: Option<&ThreadCore>,
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
-        self.ensure_owner_cpu_context(&cpu)?;
+        if rq_entry.requires_owner_context_validation() {
+            self.ensure_owner_cpu_context(&cpu)?;
+        }
         // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
         // endpoint while this scheduling transaction and switch tail are live.
         let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
@@ -727,7 +725,9 @@ impl TaskSystem {
         rq_entry: OwnerRqEntry,
         request_scope: SchedulerRequestScope,
     ) -> Result<SchedulerOutcome, TaskError> {
-        self.ensure_owner_cpu_context(&cpu)?;
+        if rq_entry.requires_owner_context_validation() {
+            self.ensure_owner_cpu_context(&cpu)?;
+        }
         // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
         // endpoint while this scheduling transaction and switch tail are live.
         let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
@@ -790,7 +790,9 @@ impl TaskSystem {
                 request_scope,
             );
         }
-        if self.owner_schedule_out_is_rq_owned(&transaction, previous_core_hint) {
+        if let Some(schedule_out) =
+            self.prepare_owner_rq_schedule_out(&transaction, previous_core_hint)
+        {
             let now_ns = transaction.clock().wall().as_nanos();
             let previous_core = transaction.current_core();
             let previous_endpoint = transaction.current_switch_endpoint();
@@ -802,6 +804,7 @@ impl TaskSystem {
                 cpu.as_mut(),
                 &mut transaction,
                 outgoing,
+                schedule_out,
                 EnqueueReason::Preempted,
             );
             let commit = self.commit_requested_preemption_in_rq(
@@ -908,7 +911,9 @@ impl TaskSystem {
         current: &ThreadCore,
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
-        self.ensure_owner_cpu_context(&cpu)?;
+        if rq_entry.requires_owner_context_validation() {
+            self.ensure_owner_cpu_context(&cpu)?;
+        }
         // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
         // endpoint while this scheduling transaction and switch tail are live.
         let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
@@ -925,12 +930,10 @@ impl TaskSystem {
         let mut transaction = unsafe { rq_entry.begin(self, remote) };
         transaction.adopt_scheduler_request(initial_request);
 
-        if transaction.current().is_some() {
-            let _settled = transaction.settle_current(0);
-        }
-
-        // A forced yield consumes a slice-expiration request discovered while
-        // accounting the outgoing task in this same scheduling pass.
+        // A forced yield consumes every request already visible at this
+        // explicit scheduling point. Runtime is settled only after selection
+        // proves that current must leave the CPU; Linux returns before
+        // put-prev/update-curr when the class picker selects current again.
         let request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         if transaction
             .current()
@@ -938,8 +941,15 @@ impl TaskSystem {
         {
             task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
         }
-        if self.owner_schedule_out_is_rq_owned(&transaction, previous_core_hint) {
-            return Ok(self.yield_current_rq_owned(cpu.as_mut(), transaction, previous_core_hint));
+        if let Some(schedule_out) =
+            self.prepare_owner_rq_schedule_out(&transaction, previous_core_hint)
+        {
+            return Ok(self.yield_current_rq_owned(
+                cpu.as_mut(),
+                transaction,
+                previous_core_hint,
+                schedule_out,
+            ));
         }
         // Preserve requests merged by the rq-owned probe while restoring the
         // full p->pi_lock -> rq order for exceptional task-control work.
@@ -1109,9 +1119,9 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         mut transaction: OwnerRqTxn<'_>,
         previous_core_hint: &ThreadCore,
+        schedule_out: OwnerRqScheduleOut,
     ) -> ScheduleDecision {
         let now_ns = transaction.clock().wall().as_nanos();
-        let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
@@ -1129,9 +1139,7 @@ impl TaskSystem {
         let continuing_dispatch = owner_yield_keeps_current_dispatch(&mut transaction)
             && transaction.task_state(core.id(), placement).is_current();
         if continuing_dispatch {
-            let deadline_rq_observation =
-                transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-            transaction.commit_and_finish_scheduler_request();
+            transaction.finish_unchanged_scheduler_request();
             let endpoint = previous_endpoint.unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1215, core.id().as_u64() as usize)
             });
@@ -1143,17 +1151,17 @@ impl TaskSystem {
                 SwitchReason::Yield,
                 now_ns,
             );
-            self.finish_owner_dispatch_commit(dispatch_commit);
-            let decision =
-                self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
-
-            return decision;
+            return self.finish_owner_unchanged_yield(cpu.as_mut(), decision);
         }
 
+        let _settled = transaction.settle_current(0);
+        let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
+        transaction.merge_scheduler_request(SchedulerRequestScope::All);
         self.schedule_out_owner_rq_owned(
             cpu.as_mut(),
             &mut transaction,
             Arc::clone(core),
+            schedule_out,
             EnqueueReason::Yield,
         );
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);

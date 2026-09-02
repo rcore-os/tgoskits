@@ -207,6 +207,6 @@ impl timer::aarch64_deadline::el2::TimerRegisters for El2TimerRegisters {
     }
 }
 
-pub fn systick_set_interval(ticks: usize) {
-    timer::aarch64_deadline::el2::program(&El2TimerRegisters, ticks as u64);
+pub fn systick_set_deadline(deadline_ticks: u64) {
+    timer::aarch64_deadline::el2::program_deadline(&El2TimerRegisters, deadline_ticks);
 }

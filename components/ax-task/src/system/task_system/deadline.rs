@@ -40,6 +40,9 @@ pub(crate) struct KtimerServiceBatch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HardTimerServiceBatch {
     processed: usize,
+    rq_deadline_dirty: bool,
+    soft: SoftTimerExpireBatch,
+    timer_base_update: SchedulerDeadlineUpdate,
 }
 
 pub(crate) struct KernelTimerCompletionBatch {
@@ -86,6 +89,18 @@ impl KtimerServiceBatch {
 impl HardTimerServiceBatch {
     pub(crate) const fn processed(self) -> usize {
         self.processed
+    }
+
+    pub(crate) const fn requires_rq_deadline_observation(self) -> bool {
+        self.rq_deadline_dirty
+    }
+
+    pub(crate) const fn soft(self) -> SoftTimerExpireBatch {
+        self.soft
+    }
+
+    pub(crate) const fn timer_base_update(self) -> SchedulerDeadlineUpdate {
+        self.timer_base_update
     }
 }
 
@@ -678,19 +693,14 @@ impl TaskSystem {
 
     pub(crate) fn complete_task_timer_execution(
         &self,
-        mut cpu: Pin<&mut CpuLocal>,
+        cpu: Pin<&mut CpuLocal>,
         event: ExpiredTaskDeadline,
         handle: Option<&ThreadHandle>,
     ) -> Result<(Option<ThreadWakeHandle>, Option<SchedulerDeadlineUpdate>), TaskError> {
-        let non_timer = cpu
-            .as_mut()
-            .prepare_scheduler_deadline_registration_publication(
-                task_runtime::monotonic_now(),
-                SchedulerDeadlineDerivationSource::KtimerService,
-            );
         let mut deadline_base = cpu
             .remote()
             .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
+        let non_timer = deadline_base.non_timer;
         let cancel_requested = deadline_base
             .complete_claimed_task_expiration(event)
             .unwrap_or_else(|| {
@@ -716,22 +726,17 @@ impl TaskSystem {
 
     pub(crate) fn complete_kernel_timer_execution(
         &self,
-        mut cpu: Pin<&mut CpuLocal>,
+        cpu: Pin<&mut CpuLocal>,
         execution: KernelTimerExecution,
         action: KernelTimerAction,
     ) -> Result<KernelTimerCompletionBatch, TaskError> {
         if task_runtime::in_hard_irq() {
             return Err(TaskError::UnsafeContext);
         }
-        let non_timer = cpu
-            .as_mut()
-            .prepare_scheduler_deadline_registration_publication(
-                task_runtime::monotonic_now(),
-                SchedulerDeadlineDerivationSource::KtimerService,
-            );
         let mut deadline_base = cpu
             .remote()
             .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
+        let non_timer = deadline_base.non_timer;
         let completed = deadline_base
             .kernel_timers
             .complete_soft_execution(execution, action);
@@ -804,17 +809,35 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now: MonotonicInstant,
+        budget: usize,
     ) -> Result<HardTimerServiceBatch, TaskError> {
         let mut processed = 0;
+        let mut rq_deadline_dirty = false;
         loop {
-            let Some(claim) = cpu.as_mut().claim_due_hard_timer(now) else {
-                break;
+            let claim = match cpu.as_mut().claim_due_hard_timer_step(now, budget)? {
+                HardTimerServiceStep::Claim(claim) => claim,
+                HardTimerServiceStep::Complete { soft, update } => {
+                    return Ok(HardTimerServiceBatch {
+                        processed,
+                        rq_deadline_dirty,
+                        soft,
+                        timer_base_update: update,
+                    });
+                }
             };
             match claim {
                 HardTimerServiceClaim::Scheduler(event) => {
+                    rq_deadline_dirty = true;
                     self.service_expired_scheduler_deadline(cpu.as_mut(), event)?;
                 }
+                HardTimerServiceClaim::Park(thread) => {
+                    if let Some(thread) = thread {
+                        let _wake_result =
+                            self.wake_thread_from_current_cpu(&thread, WakeIntent::Normal);
+                    }
+                }
                 HardTimerServiceClaim::Kernel(mut execution) => {
+                    rq_deadline_dirty = true;
                     let action = unsafe {
                         // SAFETY: this service runs with the owner CPU's IRQ
                         // baton. The queue lock was released before returning
@@ -827,15 +850,6 @@ impl TaskSystem {
             }
             processed += 1;
         }
-        if processed != 0 {
-            self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::KernelTimer)?;
-        }
-        // The caller derives and publishes the next clockevent only after the
-        // complete hard queue has drained.  Linux's `hrtimer_interrupt()`
-        // keeps callback Complete/Disarm/Rearm transitions private until that
-        // single expires-next calculation; publishing here would force a
-        // second rq observation and hardware decision in the same IRQ.
-        Ok(HardTimerServiceBatch { processed })
     }
 
     fn service_expired_deadline_cbs(

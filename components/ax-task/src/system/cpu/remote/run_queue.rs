@@ -210,6 +210,24 @@ pub(crate) struct CpuRunQueueState {
     rt_throttled: bool,
     idle: Option<IdleRqTask>,
     membarrier_state: AddressSpaceMembarrierState,
+    published_domain: Option<RunQueueDomainPublication>,
+    published_load: Option<RunQueueLoadPublication>,
+}
+
+/// Root-domain state derived from one rq-lock transaction.
+///
+/// Linux updates cpupri, cpudl, overload, and NOHZ masks from the scheduling
+/// class which changed the corresponding rq fact. Keeping the last committed
+/// values with the rq owner provides the same edge-triggered publication
+/// without making every transaction reread every root-domain mirror.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RunQueueDomainPublication {
+    pub(crate) online: bool,
+    pub(crate) highest_rt_priority: Option<u8>,
+    pub(crate) earliest_deadline: Option<u64>,
+    pub(crate) pushable_realtime: bool,
+    pub(crate) pushable_deadline: bool,
+    pub(crate) pushable_fair: bool,
 }
 
 /// Per-CPU idle task state owned by rq but never linked as a class entity.
@@ -236,7 +254,44 @@ impl CpuRunQueueState {
             rt_throttled: false,
             idle: None,
             membarrier_state: AddressSpaceMembarrierState::NONE,
+            published_domain: None,
+            published_load: None,
         }
+    }
+
+    pub(crate) fn take_domain_publication(
+        &mut self,
+        online: bool,
+    ) -> Option<(Option<RunQueueDomainPublication>, RunQueueDomainPublication)> {
+        let publication = RunQueueDomainPublication {
+            online,
+            highest_rt_priority: self.highest_rt_priority_including_current(),
+            earliest_deadline: self.earliest_deadline_including_current(),
+            pushable_realtime: online && self.has_pushable_realtime(),
+            pushable_deadline: online && self.has_pushable_deadline(),
+            pushable_fair: online && self.has_pushable_fair(),
+        };
+        if self.published_domain == Some(publication) {
+            return None;
+        }
+        let previous = self.published_domain.replace(publication);
+        Some((previous, publication))
+    }
+
+    pub(crate) fn invalidate_domain_publication(&mut self) {
+        self.published_domain = None;
+        self.published_load = None;
+    }
+
+    pub(crate) fn take_load_publication(
+        &mut self,
+        publication: RunQueueLoadPublication,
+    ) -> Option<(Option<RunQueueLoadPublication>, RunQueueLoadPublication)> {
+        if self.published_load == Some(publication) {
+            return None;
+        }
+        let previous = self.published_load.replace(publication);
+        Some((previous, publication))
     }
 
     /// Updates and snapshots Linux-style `rq->clock` under this runqueue lock.

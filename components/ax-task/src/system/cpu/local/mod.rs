@@ -9,7 +9,8 @@ mod owner_dispatch;
 mod owner_idle;
 
 pub(crate) use owner_deadline::{
-    HardTimerServiceClaim, KtimerServiceClaim, SchedulerDeadlineRqObservation,
+    HardTimerServiceClaim, HardTimerServiceStep, KtimerServiceClaim,
+    SchedulerDeadlineRqObservation, SoftTimerExpireBatch,
 };
 
 use crate::system::cpu::remote::SchedulerDeadlinePublicationState;
@@ -19,9 +20,6 @@ use crate::system::cpu::remote::SchedulerDeadlinePublicationState;
 #[repr(usize)]
 pub(crate) enum SchedulerDeadlineDerivationSource {
     ClockEvent,
-    ParkArm,
-    ParkCancel,
-    KernelTimer,
     KtimerService,
     Enqueue,
     Placement,

@@ -3,6 +3,10 @@
 use super::*;
 
 impl ThreadCore {
+    pub(crate) fn base_policy_snapshot(&self) -> SchedulePolicy {
+        self.base_policy.load()
+    }
+
     pub(crate) fn publish_base_policy(&self, policy: SchedulePolicy) {
         self.base_policy.store(policy);
     }

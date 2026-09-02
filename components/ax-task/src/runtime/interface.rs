@@ -144,6 +144,9 @@ pub trait TaskRuntime {
     unsafe fn local_irq_restore(state: LocalIrqState);
 
     /// Saves raw interrupt state, disables local IRQs and enters nested guards.
+    /// A hard interrupt that already owns the runtime's IRQ-return pin may
+    /// return [`IrqGuardToken::NONE`]; nested users then borrow that single
+    /// outer CPU owner instead of creating per-handler guard transactions.
     fn irq_guard_enter() -> IrqGuardToken;
 
     /// Leaves one nested IRQ guard and restores the outer raw state if needed.
@@ -151,7 +154,8 @@ pub trait TaskRuntime {
     /// # Safety
     ///
     /// `token` must have been returned by `irq_guard_enter` on this CPU and
-    /// must be exited exactly once. Tokens may be exited in non-LIFO order.
+    /// must be exited exactly once. [`IrqGuardToken::NONE`] is a no-op borrowed
+    /// owner. Non-empty tokens may be exited in non-LIFO order.
     unsafe fn irq_guard_exit(token: IrqGuardToken);
 
     /// Prevents the current task context from being preempted or migrated.

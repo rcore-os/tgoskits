@@ -99,9 +99,7 @@ pub(crate) fn validate_schedule_context(
 ) -> ax_task::runtime::RuntimeStatus {
     use ax_task::runtime::RuntimeStatus;
 
-    let irqs_enabled = ax_hal::asm::irqs_enabled();
-    let hard_irq = in_hard_irq();
-    if !irqs_enabled || hard_irq {
+    if !ax_hal::asm::irqs_enabled() {
         return RuntimeStatus::UnsafeContext;
     }
     // Linux's public scheduling entry validates the task-context preemption
@@ -109,9 +107,13 @@ pub(crate) fn validate_schedule_context(
     // single window here instead of toggling IRQs once for the guard-state
     // read and again while sampling the architecture depth.
     ax_hal::asm::disable_irqs();
-    let state = read_state();
-    let preempt_depth = current_preempt_depth();
-    let valid = state.irq.is_clear() && state.preempt.is_clear() && preempt_depth == 0;
+    let valid = with_current_cpu_pin(|pin| {
+        let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
+        state.irq.is_clear()
+            && state.preempt.is_clear()
+            && current_preempt_depth_pinned(pin) == 0
+            && !in_hard_irq_on(pin)
+    });
     ax_hal::asm::enable_irqs();
     if valid {
         RuntimeStatus::Success
@@ -130,15 +132,30 @@ pub(crate) fn validate_owner_cpu_context() -> ax_task::runtime::RuntimeStatus {
     if ax_hal::asm::irqs_enabled() {
         return RuntimeStatus::UnsafeContext;
     }
-    let state = read_state();
-    if in_hard_irq_pinned() && state.irq.is_clear() {
-        return RuntimeStatus::UnsafeContext;
+    with_current_cpu_pin(|pin| {
+        let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
+        if in_hard_irq_on(pin) && state.irq.is_clear() {
+            if state.preempt.is_clear() && current_preempt_depth_pinned(pin) != 0 {
+                return RuntimeStatus::Success;
+            }
+            return RuntimeStatus::UnsafeContext;
+        }
+        if state.owns_cpu_context() {
+            RuntimeStatus::Success
+        } else {
+            RuntimeStatus::UnsafeContext
+        }
+    })
+}
+
+pub(crate) fn inherits_hardirq_cpu_owner() -> bool {
+    if ax_hal::asm::irqs_enabled() {
+        return false;
     }
-    if state.owns_cpu_context() {
-        RuntimeStatus::Success
-    } else {
-        RuntimeStatus::UnsafeContext
-    }
+    with_current_cpu_pin(|pin| {
+        let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
+        in_hard_irq_on(pin) && state.irq.is_clear() && state.preempt.is_clear()
+    })
 }
 
 /// Reports whether the current CPU is in a context that must not sleep.
@@ -165,24 +182,29 @@ pub(crate) fn enter_irq() {
     with_guard_state_mut(|state| state.enter_irq(outer_irqs_enabled));
 }
 pub(crate) fn exit_irq(owner: &'static str) {
-    let (must_schedule, restore_irqs) = with_guard_state_mut(|state| {
-        let needs_reschedule = state.irq.depth == 1 && {
-            // SAFETY: raw IRQ exclusion retains the same CPU while this
-            // query observes the current CpuRemote's sticky request.
-            unsafe { ax_task::current_needs_immediate_scheduler_work_pinned() }.unwrap_or_else(
-                |error| panic!("IRQ guard exit lost the current scheduler owner: {error:?}"),
-            )
-        };
-        if needs_reschedule {
-            publish_preemption_pending(true);
-        }
-        if irq_guard_exit_needs_schedule(state, current_preempt_depth(), in_hard_irq_pinned, || {
-            needs_reschedule
-        }) {
-            (true, false)
-        } else {
-            (false, state.exit_irq(owner))
-        }
+    let (must_schedule, restore_irqs) = with_current_cpu_pin(|pin| {
+        let preempt_depth = current_preempt_depth_pinned(pin);
+        with_guard_state_mut_pinned(pin, |state| {
+            if irq_guard_exit_needs_schedule(state, preempt_depth, || {
+                // SAFETY: raw IRQ exclusion retains the same CPU while this
+                // query observes the current CpuRemote's sticky request. The
+                // closure is reached only at the final schedulable IRQ boundary;
+                // nested irqsave guards leave the decision to preempt-enable.
+                let needs_reschedule =
+                    unsafe { ax_task::current_needs_immediate_scheduler_work_pinned() }
+                        .unwrap_or_else(|error| {
+                            panic!("IRQ guard exit lost the current scheduler owner: {error:?}")
+                        });
+                if needs_reschedule {
+                    publish_preemption_pending_pinned(pin, true);
+                }
+                needs_reschedule
+            }) {
+                (true, false)
+            } else {
+                (false, state.exit_irq(owner))
+            }
+        })
     });
 
     if must_schedule {
@@ -205,9 +227,13 @@ pub(crate) fn publish_local_scheduler_work() -> bool {
         !ax_hal::asm::irqs_enabled(),
         "local scheduler-work query requires an IRQ publication guard"
     );
-    publish_preemption_pending(true);
-    in_hard_irq_pinned()
-        || read_state().local_scheduler_work_is_self_serviced(current_preempt_depth())
+    with_current_cpu_pin(|pin| {
+        publish_preemption_pending_pinned(pin, true);
+        in_hard_irq_on(pin)
+            || RUNTIME_GUARD_STATE.with_current(pin, |state| {
+                state.local_scheduler_work_is_self_serviced(current_preempt_depth_pinned(pin))
+            })
+    })
 }
 
 #[cfg(all(
@@ -322,8 +348,15 @@ fn claim_preempt_exit_scheduler(origin: PreemptExitOrigin, irqs_were_enabled: bo
 #[cfg(not(any(test, feature = "host-test")))]
 #[inline(always)]
 pub(crate) fn enter_lock_preempt() -> Option<cpu_local::PreemptionToken> {
-    if !ax_hal::asm::irqs_enabled() && read_state().owns_cpu_context() {
-        return None;
+    if !ax_hal::asm::irqs_enabled() {
+        let state = read_state();
+        if state.owns_cpu_context()
+            || (state.irq.is_clear()
+                && state.preempt.is_clear()
+                && with_current_cpu_pin(in_hard_irq_on))
+        {
+            return None;
+        }
     }
     let token = cpu_local::enter_preemption();
     Some(token)
@@ -371,14 +404,12 @@ fn preempt_exit_needs_schedule(
 fn irq_guard_exit_needs_schedule(
     state: &RuntimeGuardState,
     preempt_depth: u32,
-    in_hard_irq: impl FnOnce() -> bool,
     needs_reschedule: impl FnOnce() -> bool,
 ) -> bool {
     state.irq.depth == 1
         && state.irq.outer_irqs_enabled
         && preempt_depth == 0
         && state.preempt.is_clear()
-        && !in_hard_irq()
         && needs_reschedule()
 }
 pub(crate) fn enter_scheduler_frame_guard(
@@ -407,7 +438,7 @@ pub(crate) fn enter_scheduler_frame_guard(
         | RuntimeSchedulerEntry::IrqGuardExit => !irqs_enabled,
         RuntimeSchedulerEntry::IrqReturnContinuation => unreachable!(),
     };
-    if !raw_state_valid || in_hard_irq() {
+    if !raw_state_valid {
         return RuntimeStatus::UnsafeContext;
     }
 
@@ -458,6 +489,9 @@ fn claim_scheduler_cpu_state(entry: ax_task::runtime::RuntimeSchedulerEntry) -> 
     use ax_task::runtime::RuntimeSchedulerEntry;
 
     with_current_cpu_pin(|pin| {
+        if in_hard_irq_on(pin) {
+            return false;
+        }
         let preempt_depth = current_preempt_depth_pinned(pin);
         with_guard_state_mut_pinned(pin, |state| match entry {
             RuntimeSchedulerEntry::Task => state.claim_task_scheduler(preempt_depth),
@@ -533,9 +567,6 @@ pub(crate) fn transfer_scheduler_switch_baton() {
 fn in_hard_irq() -> bool {
     ax_hal::irq::in_irq_context()
 }
-fn in_hard_irq_pinned() -> bool {
-    with_current_cpu_pin(in_hard_irq_on)
-}
 
 fn in_hard_irq_on(pin: &cpu_local::CpuPin<'_>) -> bool {
     ax_hal::irq::in_irq_context_pinned(pin)
@@ -564,10 +595,6 @@ fn current_preempt_depth_pinned(pin: &cpu_local::CpuPin<'_>) -> u32 {
         .unwrap_or_else(|error| panic!("architecture preemption state is invalid: {error}"))
         .depth()
 }
-fn publish_preemption_pending(pending: bool) {
-    with_current_cpu_pin(|pin| publish_preemption_pending_pinned(pin, pending));
-}
-
 fn publish_preemption_pending_pinned(pin: &cpu_local::CpuPin<'_>, pending: bool) {
     if pending {
         cpu_local::set_preemption_pending(pin)

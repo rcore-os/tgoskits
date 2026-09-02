@@ -150,15 +150,22 @@ impl_task_runtime! {
             }
             #[cfg(not(any(test, feature = "host-test")))]
             {
+                if crate::guard::inherits_hardirq_cpu_owner() {
+                    return IrqGuardToken::NONE;
+                }
                 crate::guard::enter_irq();
                 // SAFETY: enter_irq established the matching live guard state.
                 unsafe { IrqGuardToken::from_raw(1) }
             }
         }
 
-        unsafe fn irq_guard_exit(_token: IrqGuardToken) {
+        unsafe fn irq_guard_exit(token: IrqGuardToken) {
             #[cfg(not(any(test, feature = "host-test")))]
-            crate::guard::exit_irq("task runtime");
+            if !token.is_none() {
+                crate::guard::exit_irq("task runtime");
+            }
+            #[cfg(any(test, feature = "host-test"))]
+            let _ = token;
         }
 
         fn preempt_guard_enter() -> PreemptGuardToken {

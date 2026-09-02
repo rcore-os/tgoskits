@@ -83,6 +83,13 @@ pub trait TimeIf {
     /// not silently leave the previous event armed.
     fn set_oneshot_timer(deadline_ns: u64);
 
+    /// Returns whether a claimed timer IRQ must physically quiesce the
+    /// one-shot source before the interrupt controller completes the edge.
+    ///
+    /// Edge-triggered or rearm-cleared devices return `false`; level-triggered
+    /// devices whose expired comparator remains observable return `true`.
+    fn oneshot_timer_requires_irq_quiesce() -> bool;
+
     /// Returns a stopped one-shot timer to its active state and programs it.
     ///
     /// The implementation owns the architecture-specific activation order.

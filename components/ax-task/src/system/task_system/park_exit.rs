@@ -131,11 +131,14 @@ impl TaskSystem {
         if token.is_resolved() || current.id() != token.thread() {
             return Err(TaskError::StaleThreadId);
         }
-        self.ensure_owner_cpu_context(&cpu)?;
+        if rq_entry.requires_owner_context_validation() {
+            self.ensure_owner_cpu_context(&cpu)?;
+        }
         // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
         // endpoint for the complete park transaction.
         let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         if let Some(registration) = token.deadline()
+            && registration.may_enter_soft_expiry_buffer()
             && let Some(event) = cpu.as_mut().take_buffered_expiration(registration)
         {
             self.service_expired_park_deadline(event)?;
@@ -893,7 +896,9 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         rq_entry: OwnerRqEntry,
     ) -> Result<SwitchInCompletion, TaskError> {
-        self.ensure_owner_cpu_context(&cpu)?;
+        if rq_entry.requires_owner_context_validation() {
+            self.ensure_owner_cpu_context(&cpu)?;
+        }
         let Some(initial_handoff) = cpu.as_ref().get_ref().switch_handoff() else {
             return Ok(SwitchInCompletion::NONE);
         };

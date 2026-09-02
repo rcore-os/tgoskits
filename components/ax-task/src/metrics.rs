@@ -9,7 +9,7 @@ use crate::{
 
 const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
 const IRQ_GUARD_SOURCE_COUNT: usize = 24;
-const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 9;
+const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 6;
 
 /// Aggregate scheduler counters captured without allocating or taking locks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -335,12 +335,9 @@ impl QperfSchedulerMetrics {
         };
         let scheduler_deadline_derivation_clock_event_entries =
             deadline_derivations(SchedulerDeadlineDerivationSource::ClockEvent);
-        let scheduler_deadline_derivation_park_arm_entries =
-            deadline_derivations(SchedulerDeadlineDerivationSource::ParkArm);
-        let scheduler_deadline_derivation_park_cancel_entries =
-            deadline_derivations(SchedulerDeadlineDerivationSource::ParkCancel);
-        let scheduler_deadline_derivation_kernel_timer_entries =
-            deadline_derivations(SchedulerDeadlineDerivationSource::KernelTimer);
+        let scheduler_deadline_derivation_park_arm_entries = 0;
+        let scheduler_deadline_derivation_park_cancel_entries = 0;
+        let scheduler_deadline_derivation_kernel_timer_entries = 0;
         let scheduler_deadline_derivation_ktimer_service_entries =
             deadline_derivations(SchedulerDeadlineDerivationSource::KtimerService);
         let scheduler_deadline_derivation_enqueue_entries =

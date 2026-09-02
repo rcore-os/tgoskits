@@ -63,12 +63,11 @@ impl TaskSystem {
         PreparedMigrationDelivery::prepare(target_remote, core, source, target)
     }
 
-    pub(super) fn publish_owner_deadline_refresh_reserved(
-        &self,
-        core: &Arc<ThreadCore>,
-        owner: CpuId,
-        publication: CpuRemotePublication<'_>,
-    ) {
+    pub(super) fn publish_owner_deadline_refresh(&self, core: &Arc<ThreadCore>, owner: CpuId) {
+        let remote = &self.cpu_remotes[owner.as_usize()];
+        let publication = remote
+            .begin_owner_delivery()
+            .unwrap_or_else(|| task_runtime::fatal_invariant(0x444c_0010, owner.as_u32() as usize));
         if !core.reserve_scheduler_inbox_delivery() {
             return;
         }

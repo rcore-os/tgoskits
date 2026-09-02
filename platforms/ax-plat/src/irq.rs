@@ -1,6 +1,6 @@
 //! Interrupt request (IRQ) handling.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use ax_lazyinit::OnceLock;
 pub use irq_framework::{
@@ -169,7 +169,9 @@ impl IrqOps for PlatIrqOps {
 
 static IRQ_REGISTRY: OnceLock<Registry<PlatIrqOps>> = OnceLock::new();
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(0);
-static IRQ_CONTEXT_CPUS: AtomicUsize = AtomicUsize::new(0);
+
+#[ax_percpu::def_percpu]
+static IRQ_CONTEXT_DEPTH: AtomicU32 = AtomicU32::new(0);
 
 fn registry() -> &'static Registry<PlatIrqOps> {
     IRQ_REGISTRY.call_once(|| Registry::new(PlatIrqOps))
@@ -177,17 +179,21 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    let _guard = ax_sync::PreemptGuard::new();
-    // SAFETY: the guard prevents migration across both CPU identity resolution
-    // and the matching context-bit read. Releasing an inner guard between these
-    // operations could resume this thread on another CPU with a stale ID.
-    unsafe {
-        ax_percpu::with_cpu_pin(|pin| {
-            let cpu = CpuId(crate::percpu::this_cpu_id_pinned(pin));
-            in_irq_context_on(cpu)
-        })
-    }
-    .expect("the current CPU-local area must remain bound")
+    let irq_state = ax_sync::irq_save_and_disable();
+    // SAFETY: local IRQ exclusion prevents a scheduler safe point and therefore
+    // fixes the selected CPU for this single owner-local read.
+    let active = unsafe { ax_percpu::with_cpu_pin(in_irq_context_pinned) }
+        .expect("the current CPU-local area must remain bound");
+    // SAFETY: this is the matching restore for the state saved above.
+    unsafe { ax_sync::irq_restore(irq_state) };
+    active
+}
+
+/// Tests IRQ-action context through an existing current-CPU pin.
+#[doc(hidden)]
+#[inline(always)]
+pub fn in_irq_context_pinned(pin: &ax_percpu::CpuPin<'_>) -> bool {
+    IRQ_CONTEXT_DEPTH.with_current(pin, |depth| depth.load(Ordering::Relaxed) != 0)
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
@@ -269,17 +275,28 @@ pub fn prepare_irq_context(vector: TrapVector) {
 
 /// Dispatches actions registered in the dynamic IRQ framework on `cpu`.
 pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId) -> IrqOutcome {
-    let context_bit = irq_context_bit(cpu);
-    let was_in_irq = context_bit
-        .map(|bit| IRQ_CONTEXT_CPUS.fetch_or(bit, Ordering::AcqRel) & bit != 0)
-        .unwrap_or(false);
-    let outcome = registry().dispatch(irq, cpu);
-    if let Some(bit) = context_bit
-        && !was_in_irq
-    {
-        IRQ_CONTEXT_CPUS.fetch_and(!bit, Ordering::AcqRel);
+    // SAFETY: IRQ dispatch runs with local interrupts disabled. The caller's
+    // explicit CPU identity and the installed current area must describe the
+    // same non-migrating owner for the complete action callback.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            assert_eq!(
+                ax_percpu::current_cpu_index(pin).as_usize(),
+                cpu.0,
+                "IRQ dispatch CPU must match the current CPU-local owner"
+            );
+            let depth =
+                IRQ_CONTEXT_DEPTH.with_current(pin, |depth| depth.fetch_add(1, Ordering::Relaxed));
+            assert_ne!(depth, u32::MAX, "IRQ action nesting overflow");
+            let outcome = registry().dispatch(irq, cpu);
+            IRQ_CONTEXT_DEPTH.with_current(pin, |depth| {
+                let previous = depth.fetch_sub(1, Ordering::Relaxed);
+                assert_ne!(previous, 0, "IRQ action exit without a matching entry");
+            });
+            outcome
+        })
     }
-    outcome
+    .expect("IRQ dispatch requires an installed current CPU-local area")
 }
 
 fn dispatch_with_controller_ack<T>(
@@ -314,13 +331,16 @@ pub fn dispatch_irq(irq: IrqId) -> IrqOutcome {
 /// exclusion across CPU identity resolution and this atomic observation.
 #[doc(hidden)]
 pub fn in_irq_context_on(cpu: CpuId) -> bool {
-    irq_context_bit(cpu)
-        .map(|bit| IRQ_CONTEXT_CPUS.load(Ordering::Acquire) & bit != 0)
-        .unwrap_or(false)
-}
-
-fn irq_context_bit(cpu: CpuId) -> Option<usize> {
-    (cpu.0 < usize::BITS as usize).then_some(1usize << cpu.0)
+    let Ok(cpu) = ax_percpu::CpuIndex::try_from(cpu.0) else {
+        return false;
+    };
+    let Ok(area) = ax_percpu::area(cpu) else {
+        return false;
+    };
+    // SAFETY: the generated symbol pointer addresses an AtomicU32 in every
+    // initialized CPU area, so shared remote observation is synchronized by
+    // the atomic itself and never aliases a non-atomic access.
+    unsafe { IRQ_CONTEXT_DEPTH.remote_ptr(area).as_ref() }.load(Ordering::Relaxed) != 0
 }
 
 /// Resolves a firmware/controller interrupt source to a framework IRQ id.

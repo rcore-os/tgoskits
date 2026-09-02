@@ -221,7 +221,11 @@ impl LocalClockEvent {
     /// transaction. Logical expiry is decided by the scheduler using its own
     /// clock; an early or stale hardware edge therefore completes normally
     /// and reprograms the still-earliest absolute deadline exactly once.
-    pub(crate) fn claim_irq(&mut self, now: MonotonicInstant) -> ClockEventIrqClaim {
+    pub(crate) fn claim_irq_with_device_quiesce(
+        &mut self,
+        now: MonotonicInstant,
+        device_quiesce_required: bool,
+    ) -> ClockEventIrqClaim {
         match self.phase {
             ClockEventPhase::Offline | ClockEventPhase::Idle | ClockEventPhase::Firing => {
                 return ClockEventIrqClaim::Ignored;
@@ -241,16 +245,27 @@ impl LocalClockEvent {
         );
         let logical_deadline_elapsed = self.has_immediate_work(now);
         self.armed_deadline = None;
-        self.device_state = ClockEventDeviceState::Stopped;
+        if device_quiesce_required {
+            self.device_state = ClockEventDeviceState::Stopped;
+        }
         self.phase = ClockEventPhase::Firing;
         ClockEventIrqClaim::Firing(ClockEventFiringToken {
             cpu_epoch: self.cpu_epoch,
-            quiesce: ClockEventAction::Stop,
+            quiesce: if device_quiesce_required {
+                ClockEventAction::Stop
+            } else {
+                ClockEventAction::None
+            },
             logical_deadline_elapsed,
             scheduler_deadline_elapsed: self
                 .runtime_deadline
                 .is_some_and(|deadline| now.reached(deadline.as_monotonic())),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn claim_irq(&mut self, now: MonotonicInstant) -> ClockEventIrqClaim {
+        self.claim_irq_with_device_quiesce(now, true)
     }
 
     /// Advances periodic accounting without producing a scheduling decision.

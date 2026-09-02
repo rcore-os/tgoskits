@@ -152,7 +152,10 @@ impl ClockEventFiringTransaction {
     fn begin(
         now: ax_task::runtime::MonotonicInstant,
     ) -> Result<Self, crate::clock_event::ClockEventAction> {
-        let claim = with_local_clock_event_mut(|clockevent| clockevent.claim_irq(now));
+        let device_quiesce_required = ax_hal::time::oneshot_timer_requires_irq_quiesce();
+        let claim = with_local_clock_event_mut(|clockevent| {
+            clockevent.claim_irq_with_device_quiesce(now, device_quiesce_required)
+        });
         let token = match claim {
             // No logical owner may leave a level/pending clockevent source
             // armed across EOI. This is the clockevent-device shutdown step,
@@ -162,9 +165,9 @@ impl ClockEventFiringTransaction {
             }
             crate::clock_event::ClockEventIrqClaim::Firing(token) => token,
         };
-        // Linux clockevent drivers quiesce a claimed source before invoking
-        // the hrtimer callback. In particular, a level-triggered architectural
-        // timer must be masked before interrupt-controller EOI can repend it.
+        // Only level-triggered devices whose expired comparator remains
+        // observable quiesce here. Edge devices retain their active oneshot
+        // configuration and need only one comparator program at IRQ return.
         apply_clock_event_action(token.quiesce_action());
         let periodic_tick = with_local_clock_event_mut(|clockevent| {
             clockevent.advance_periodic(now, periodic_interval_nanos())
@@ -332,46 +335,46 @@ pub(crate) fn next_periodic_deadline(
     next
 }
 pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
-    run_clock_event_irq_scope(crate::sync::IrqSaveGuard::new, || {
-        let _ = ctx;
-        // Claiming first invalidates the armed device state, matching Linux
-        // `hrtimer_interrupt()` setting `expires_next = KTIME_MAX` before it
-        // advances scheduler time or runs any hard timer.
-        let firing = match ClockEventFiringTransaction::begin(monotonic_now()) {
-            Ok(firing) => firing,
-            Err(action) => {
-                apply_clock_event_action(action);
-                return ax_hal::irq::IrqReturn::Handled;
-            }
-        };
-        if !scheduler_service_required(firing.periodic_tick(), firing.logical_deadline_elapsed()) {
-            firing.finish_early();
+    debug_assert!(!ax_hal::asm::irqs_enabled());
+    let _ = ctx;
+    // The IRQ entry owner already holds the single local-IRQ exclusion window
+    // through controller completion and IRQ-return scheduling. Re-entering an
+    // irq-save guard here creates a nested scheduler publication transaction
+    // that Linux's local timer interrupt does not have.
+    let firing = match ClockEventFiringTransaction::begin(monotonic_now()) {
+        Ok(firing) => firing,
+        Err(action) => {
+            apply_clock_event_action(action);
             return ax_hal::irq::IrqReturn::Handled;
         }
-        if firing.periodic_tick() || firing.scheduler_deadline_elapsed() {
-            // SAFETY: the claimed local firing transaction excludes migration
-            // and nested scheduler-clock publication for this complete stamp.
-            unsafe { ax_hal::time::scheduler_clock_tick() }
-                .expect("current CPU scheduler clock must be online before timer IRQs");
-        }
-        let now = monotonic_now();
-        let periodic_tick_ns = firing.periodic_tick().then(|| {
-            core::num::NonZeroU64::new(periodic_interval_nanos())
-                .expect("scheduler tick interval was validated as nonzero")
-        });
-        let scheduler_event = ax_task::ClaimedSchedulerDeadlines::new(
-            periodic_tick_ns,
-            firing.scheduler_deadline_elapsed(),
-        );
-        let outcome = crate::task::on_clock_event(now, scheduler_event);
-        if let Some(tick_ns) = periodic_tick_ns
-            && let Some(stamp) = outcome.scheduler_tick_stamp()
-        {
-            crate::task::publish_scheduler_tick(stamp, tick_ns.get());
-        }
-        firing.finish(outcome);
-        ax_hal::irq::IrqReturn::Handled
-    })
+    };
+    if !scheduler_service_required(firing.periodic_tick(), firing.logical_deadline_elapsed()) {
+        firing.finish_early();
+        return ax_hal::irq::IrqReturn::Handled;
+    }
+    if firing.periodic_tick() || firing.scheduler_deadline_elapsed() {
+        // SAFETY: the claimed local firing transaction excludes migration
+        // and nested scheduler-clock publication for this complete stamp.
+        unsafe { ax_hal::time::scheduler_clock_tick() }
+            .expect("current CPU scheduler clock must be online before timer IRQs");
+    }
+    let now = monotonic_now();
+    let periodic_tick_ns = firing.periodic_tick().then(|| {
+        core::num::NonZeroU64::new(periodic_interval_nanos())
+            .expect("scheduler tick interval was validated as nonzero")
+    });
+    let scheduler_event = ax_task::ClaimedSchedulerDeadlines::new(
+        periodic_tick_ns,
+        firing.scheduler_deadline_elapsed(),
+    );
+    let outcome = crate::task::on_clock_event(now, scheduler_event);
+    if let Some(tick_ns) = periodic_tick_ns
+        && let Some(stamp) = outcome.scheduler_tick_stamp()
+    {
+        crate::task::publish_scheduler_tick(stamp, tick_ns.get());
+    }
+    firing.finish(outcome);
+    ax_hal::irq::IrqReturn::Handled
 }
 
 #[cfg(test)]

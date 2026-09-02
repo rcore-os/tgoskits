@@ -286,8 +286,12 @@ impl SystimerArch for Arch {
         tcfg::read().en()
     }
 
-    fn systimer_set_interval(ticks: usize) {
-        let ticks = crate::timer::loongarch64_interval::aligned_ticks(ticks);
+    fn systimer_set_deadline(deadline_ticks: u64) {
+        let current_ticks = Self::systimer_tick() as u64;
+        let interval_ticks = deadline_ticks.saturating_sub(current_ticks).max(1);
+        let ticks = crate::timer::loongarch64_interval::aligned_ticks(
+            usize::try_from(interval_ticks).unwrap_or(usize::MAX),
+        );
 
         // 先禁用定时器
         tcfg::set_en(false);
@@ -303,6 +307,10 @@ impl SystimerArch for Arch {
         tcfg::set_en(true);
     }
 
+    fn systimer_requires_irq_quiesce() -> bool {
+        false
+    }
+
     fn systimer_cancel_oneshot() {
         tcfg::set_en(false);
         tcfg::set_periodic(false);
@@ -310,9 +318,9 @@ impl SystimerArch for Arch {
         ticlr::clear_timer_interrupt();
     }
 
-    fn systimer_resume_oneshot(ticks: usize) {
+    fn systimer_resume_oneshot(deadline_ticks: u64) {
         // Programming TCFG also enables the one-shot after clearing stale TI.
-        Self::systimer_set_interval(ticks);
+        Self::systimer_set_deadline(deadline_ticks);
     }
 
     /// The pending timer interrupt latches in TICLR and must be cleared

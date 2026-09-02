@@ -105,6 +105,52 @@ pub(super) unsafe fn enter_preemption() {
     }
 }
 
+#[inline(always)]
+pub(super) unsafe fn read_preemption_state() -> u32 {
+    let state: u32;
+    // SAFETY: a live preemption token pins the GS-selected CPU area until the
+    // matching finish consumes its depth.
+    unsafe {
+        core::arch::asm!(
+            "mov {state:e}, dword ptr gs:[{offset}]",
+            state = out(reg) state,
+            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    state
+}
+
+#[inline(always)]
+pub(super) unsafe fn compare_exchange_current_preemption_state(current: u32, next: u32) -> bool {
+    let mut observed = current;
+    // SAFETY: the positive depth excludes remote writers. A local interrupt
+    // can update the pending bit only before or after this instruction.
+    unsafe {
+        core::arch::asm!(
+            "cmpxchg dword ptr gs:[{offset}], {next:e}",
+            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+            next = in(reg) next,
+            inout("eax") observed,
+            options(nostack),
+        );
+    }
+    observed == current
+}
+
+#[inline(always)]
+pub(super) unsafe fn decrement_current_preemption_state() {
+    // SAFETY: the caller retains a nested depth, and integer subtraction
+    // preserves the pending high bit regardless of an interrupt publication.
+    unsafe {
+        core::arch::asm!(
+            "dec dword ptr gs:[{offset}]",
+            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+            options(nostack),
+        );
+    }
+}
+
 /// Returns the current CPU's preemption word after a caller has raised its
 /// depth through [`enter_preemption`].
 ///
@@ -145,6 +191,7 @@ pub(super) unsafe fn current_preemption_state() -> &'static PreemptionState {
 /// depth, and no remote CPU may access that owner. A local interrupt may
 /// update the word only at an instruction boundary.
 #[inline(always)]
+#[cfg(test)]
 pub(super) unsafe fn compare_exchange_preemption_state(
     state: &PreemptionState,
     current: u32,
@@ -164,24 +211,6 @@ pub(super) unsafe fn compare_exchange_preemption_state(
         );
     }
     observed == current
-}
-
-/// Decrements a nested preemption depth in one owner-local instruction.
-///
-/// # Safety
-///
-/// The caller must retain a depth greater than one on this CPU's state word.
-#[inline(always)]
-pub(super) unsafe fn decrement_preemption_state(state: &PreemptionState) {
-    // SAFETY: the caller's positive depth pins the GS-selected state to this
-    // CPU and excludes every remote writer.
-    unsafe {
-        core::arch::asm!(
-            "dec dword ptr [{state}]",
-            state = in(reg) state.as_mut_ptr(),
-            options(nostack),
-        );
-    }
 }
 
 #[cfg(feature = "tls")]

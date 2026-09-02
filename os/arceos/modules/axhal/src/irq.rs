@@ -94,8 +94,7 @@ fn finish_irq_entry(release_preempt: impl FnOnce(), complete: impl FnOnce()) {
 #[doc(hidden)]
 #[inline(always)]
 pub fn in_irq_context_pinned(pin: &cpu_local::CpuPin<'_>) -> bool {
-    let cpu = CpuId(pin.area().cpu_index().as_usize());
-    ax_plat::irq::in_irq_context_on(cpu)
+    ax_plat::irq::in_irq_context_pinned(pin)
 }
 
 /// Installs the default ArceOS IRQ dispatcher into `ax-cpu`'s runtime hook.

@@ -364,12 +364,11 @@ pub fn set_thread_affinity_and_wait(thread: ThreadId, affinity: CpuSet) -> Resul
 /// the new mask. Generic remote-thread affinity updates remain asynchronous and
 /// are completed by the remote owner's next scheduler safe point.
 pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
-    validate_schedule_context(RuntimeScheduleOrigin::Yield)?;
-    let current = current_thread_ref()?;
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Yield,
         RuntimeSchedulerEntry::Task,
     )?;
+    let current = current_thread_ref()?;
     let system = runtime_task_system()?;
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;

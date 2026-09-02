@@ -26,16 +26,16 @@ pub use load::{CpuLoadSummary, DeadlineBandwidthSnapshot, SchedulingClass};
 use load::{SUMMARY_FAIR_IDLE_ONLY, SUMMARY_FAIR_PUSHABLE};
 pub use local::CpuLocal;
 pub(crate) use local::{
-    HardTimerServiceClaim, KtimerServiceClaim, SchedulerDeadlineDerivationSource,
-    SchedulerDeadlineRqObservation,
+    HardTimerServiceClaim, HardTimerServiceStep, KtimerServiceClaim,
+    SchedulerDeadlineDerivationSource, SchedulerDeadlineRqObservation, SoftTimerExpireBatch,
 };
 use remote::RqCurrentUpdate;
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{
     CpuRemotePublication, CpuRunQueueState, DeadlineBaseGuardSource, EqualRtWakeAction,
     IdlePullReservation, KtimerClaimClass, OwnerRqEnqueue, PreparedMigrationDelivery,
-    RescheduleKind, RunQueueGuardSource, SchedulerRequestClaim, SchedulerRequestScope,
-    WakePreemptionContext, WakePreemptionDecision,
+    RescheduleKind, RunQueueDomainPublication, RunQueueGuardSource, SchedulerRequestClaim,
+    SchedulerRequestScope, WakePreemptionContext, WakePreemptionDecision,
 };
 pub use snapshot::CpuSnapshot;
 pub(in crate::system) use transaction::OwnerRqTaskState;
@@ -53,8 +53,8 @@ use crate::{
     },
     thread::ThreadCore,
     timer::{
-        ExpiredTaskDeadline, HardKernelTimerAction, KernelTimerEntry, KernelTimerExecution,
-        KernelTimerQueue, TaskDeadlineExpireBatch, TaskDeadlineExpireRequest, TaskDeadlineQueue,
-        TaskDeadlineRegistration,
+        ExpiredTaskDeadline, HardKernelTimerAction, HardTaskDeadlineClaim, KernelTimerEntry,
+        KernelTimerExecution, KernelTimerQueue, TaskDeadlineExpireBatch, TaskDeadlineExpireRequest,
+        TaskDeadlineKind, TaskDeadlineQueue, TaskDeadlineRegistration,
     },
 };

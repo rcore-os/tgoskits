@@ -572,7 +572,7 @@ pub(crate) unsafe fn current_x86_preemption_state() -> &'static PreemptionState 
 ///
 /// `state` must be the live owner retained by a positive preemption depth on
 /// the current CPU. No remote CPU may access the word during this operation.
-#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[cfg(all(test, target_arch = "x86_64", not(feature = "host-test")))]
 #[inline(always)]
 pub(crate) unsafe fn compare_exchange_x86_preemption_state(
     state: &PreemptionState,
@@ -584,16 +584,26 @@ pub(crate) unsafe fn compare_exchange_x86_preemption_state(
     unsafe { imp::compare_exchange_preemption_state(state, current, next) }
 }
 
-/// Decrements a nested preemption depth owned by the current x86 CPU.
-///
-/// # Safety
-///
-/// `state` must retain a depth greater than one for this CPU. The update is a
-/// single local instruction, so an interrupt can observe only the old or new
-/// complete word and the pending bit is preserved by integer subtraction.
 #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
 #[inline(always)]
-pub(crate) unsafe fn decrement_x86_preemption_state(state: &PreemptionState) {
-    // SAFETY: forwarded by the caller's positive nested preemption depth.
-    unsafe { imp::decrement_preemption_state(state) }
+pub(crate) unsafe fn read_current_x86_preemption_state_raw() -> u32 {
+    // SAFETY: forwarded by the caller's live preemption token.
+    unsafe { imp::read_preemption_state() }
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn compare_exchange_current_x86_preemption_state(
+    current: u32,
+    next: u32,
+) -> bool {
+    // SAFETY: forwarded by the caller's positive local preemption depth.
+    unsafe { imp::compare_exchange_current_preemption_state(current, next) }
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn decrement_current_x86_preemption_state() {
+    // SAFETY: forwarded by the caller's nested local preemption depth.
+    unsafe { imp::decrement_current_preemption_state() }
 }

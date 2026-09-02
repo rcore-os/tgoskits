@@ -147,6 +147,9 @@ impl TimeIf for DummyTime {
     }
 
     fn set_oneshot_timer(_deadline_ns: u64) {}
+    fn oneshot_timer_requires_irq_quiesce() -> bool {
+        false
+    }
     fn resume_oneshot_timer(_deadline_ns: u64) {}
     fn cancel_oneshot_timer() {}
 }

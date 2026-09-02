@@ -255,19 +255,23 @@ impl SystimerArch for Arch {
         elx::systick_irq_is_enabled()
     }
 
-    fn systimer_set_interval(ticks: usize) {
-        elx::systick_set_interval(ticks);
+    fn systimer_set_deadline(deadline_ticks: u64) {
+        elx::systick_set_deadline(deadline_ticks);
+    }
+
+    fn systimer_requires_irq_quiesce() -> bool {
+        true
     }
 
     fn systimer_cancel_oneshot() {
         elx::systick_stop_oneshot();
     }
 
-    fn systimer_resume_oneshot(ticks: usize) {
+    fn systimer_resume_oneshot(deadline_ticks: u64) {
         // The Arm timer is level-triggered. Replace the expired compare value
         // before unmasking it so controller EOI cannot expose a stale level.
         timer::resume_masked_level_oneshot(
-            || elx::systick_set_interval(ticks),
+            || elx::systick_set_deadline(deadline_ticks),
             elx::systick_irq_enable,
         );
     }

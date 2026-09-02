@@ -21,11 +21,12 @@ pub(crate) use delivery::PreparedMigrationDelivery;
 pub(crate) use idle_pull::IdlePullReservation;
 pub use lifecycle::CpuLifecycleState;
 pub(crate) use lifecycle::{CpuRemotePublication, OwnedCpuRemotePublication};
+pub(crate) use load_summary::RunQueueLoadPublication;
 pub use owner::CpuLocalOwnerBorrow;
 pub(in crate::system::cpu) use run_queue::RqCurrentUpdate;
 pub(crate) use run_queue::{
-    CpuRunQueueState, EqualRtWakeAction, OwnerRqEnqueue, RunQueueGuardSource,
-    WakePreemptionContext, WakePreemptionDecision,
+    CpuRunQueueState, EqualRtWakeAction, OwnerRqEnqueue, RunQueueDomainPublication,
+    RunQueueGuardSource, WakePreemptionContext, WakePreemptionDecision,
 };
 pub(crate) use scheduler::{RescheduleKind, SchedulerRequestClaim, SchedulerRequestScope};
 

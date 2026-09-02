@@ -280,10 +280,10 @@ impl timer::aarch64_deadline::el1::TimerRegisters for El1TimerRegisters {
     }
 }
 
-pub fn systick_set_interval(ticks: usize) {
-    timer::aarch64_deadline::el1::program(
+pub fn systick_set_deadline(deadline_ticks: u64) {
+    timer::aarch64_deadline::el1::program_deadline(
         &El1TimerRegisters,
         timer::aarch64_timer_mode(),
-        ticks as u64,
+        deadline_ticks,
     );
 }

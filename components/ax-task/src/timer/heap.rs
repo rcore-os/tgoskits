@@ -1,50 +1,64 @@
 //! Allocation-once binary min-heap for value-owned task deadlines.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
-use super::{TaskDeadlineKind, TaskDeadlineNodeId, TaskDeadlineToken};
-use crate::{ThreadId, runtime::MonotonicDeadline};
+use super::{TaskDeadlineClass, TaskDeadlineKind, TaskDeadlineNodeId, TaskDeadlineToken};
+use crate::{ThreadCore, ThreadId, runtime::MonotonicDeadline};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub(super) struct TimerEntry {
     deadline: MonotonicDeadline,
     thread: ThreadId,
     token: TaskDeadlineToken,
     kind: TaskDeadlineKind,
+    class: TaskDeadlineClass,
+    park_thread: Option<Arc<ThreadCore>>,
 }
 
 impl TimerEntry {
-    pub(super) const fn new(
+    pub(super) fn new(
         deadline: MonotonicDeadline,
         thread: ThreadId,
         token: TaskDeadlineToken,
         kind: TaskDeadlineKind,
+        class: TaskDeadlineClass,
+        park_thread: Option<Arc<ThreadCore>>,
     ) -> Self {
         Self {
             deadline,
             thread,
             token,
             kind,
+            class,
+            park_thread,
         }
     }
 
-    pub(super) const fn deadline(self) -> MonotonicDeadline {
+    pub(super) const fn deadline(&self) -> MonotonicDeadline {
         self.deadline
     }
 
-    pub(super) const fn thread(self) -> ThreadId {
+    pub(super) const fn thread(&self) -> ThreadId {
         self.thread
     }
 
-    pub(super) const fn token(self) -> TaskDeadlineToken {
+    pub(super) const fn token(&self) -> TaskDeadlineToken {
         self.token
     }
 
-    pub(super) const fn kind(self) -> TaskDeadlineKind {
+    pub(super) const fn kind(&self) -> TaskDeadlineKind {
         self.kind
     }
 
-    pub(super) fn precedes(self, other: Self) -> bool {
+    pub(super) const fn class(&self) -> TaskDeadlineClass {
+        self.class
+    }
+
+    pub(super) fn take_park_thread(&mut self) -> Option<Arc<ThreadCore>> {
+        self.park_thread.take()
+    }
+
+    pub(super) fn precedes(&self, other: &Self) -> bool {
         self.deadline < other.deadline
             || (self.deadline == other.deadline
                 && (self.thread.as_u64() < other.thread.as_u64()
@@ -87,8 +101,8 @@ impl TimerHeap {
             .any(|entry| entry.token().node() == node)
     }
 
-    pub(super) fn peek(&self) -> Option<TimerEntry> {
-        self.entries.first().copied()
+    pub(super) fn peek(&self) -> Option<&TimerEntry> {
+        self.entries.first()
     }
 
     pub(super) fn push(&mut self, entry: TimerEntry) {
@@ -123,7 +137,7 @@ impl TimerHeap {
         if index < self.entries.len() {
             if index > 0 {
                 let parent = (index - 1) / 2;
-                if self.entries[index].precedes(self.entries[parent]) {
+                if self.entries[index].precedes(&self.entries[parent]) {
                     self.sift_up(index);
                     return Some(removed);
                 }
@@ -142,7 +156,7 @@ impl TimerHeap {
         if index < self.entries.len() {
             if index > 0 {
                 let parent = (index - 1) / 2;
-                if self.entries[index].precedes(self.entries[parent]) {
+                if self.entries[index].precedes(&self.entries[parent]) {
                     self.sift_up(index);
                     return Some(removed);
                 }
@@ -155,7 +169,7 @@ impl TimerHeap {
     fn sift_up(&mut self, mut index: usize) {
         while index > 0 {
             let parent = (index - 1) / 2;
-            if !self.entries[index].precedes(self.entries[parent]) {
+            if !self.entries[index].precedes(&self.entries[parent]) {
                 break;
             }
             self.entries.swap(index, parent);
@@ -170,13 +184,14 @@ impl TimerHeap {
                 return;
             }
             let right = left + 1;
-            let child =
-                if right < self.entries.len() && self.entries[right].precedes(self.entries[left]) {
-                    right
-                } else {
-                    left
-                };
-            if !self.entries[child].precedes(self.entries[index]) {
+            let child = if right < self.entries.len()
+                && self.entries[right].precedes(&self.entries[left])
+            {
+                right
+            } else {
+                left
+            };
+            if !self.entries[child].precedes(&self.entries[index]) {
                 return;
             }
             self.entries.swap(index, child);

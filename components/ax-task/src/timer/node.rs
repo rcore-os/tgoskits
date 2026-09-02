@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::TaskDeadlineError;
 use crate::{ThreadId, runtime::MonotonicDeadline};
 
-pub(super) const TASK_DEADLINE_CLASS_COUNT: usize = 3;
+pub(super) const TASK_DEADLINE_CLASS_COUNT: usize = 4;
 static NEXT_TASK_DEADLINE_NODE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Process-lifetime identity assigned lazily to one physical timer node.
@@ -27,14 +27,42 @@ impl TaskDeadlineNodeId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub(super) enum TaskDeadlineClass {
-    Park            = 0,
-    DeadlineCbs     = 1,
-    DeadlineZeroLag = 2,
+    ParkSoft        = 0,
+    ParkHard        = 1,
+    DeadlineCbs     = 2,
+    DeadlineZeroLag = 3,
 }
 
 impl TaskDeadlineClass {
+    pub(super) const ALL: [Self; TASK_DEADLINE_CLASS_COUNT] = [
+        Self::ParkSoft,
+        Self::ParkHard,
+        Self::DeadlineCbs,
+        Self::DeadlineZeroLag,
+    ];
+
     pub(super) const fn index(self) -> usize {
         self as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskDeadlineNodeKind {
+    Park,
+    DeadlineCbs,
+    DeadlineZeroLag,
+}
+
+impl TaskDeadlineNodeKind {
+    const fn supports(self, class: TaskDeadlineClass) -> bool {
+        matches!(
+            (self, class),
+            (
+                Self::Park,
+                TaskDeadlineClass::ParkSoft | TaskDeadlineClass::ParkHard
+            ) | (Self::DeadlineCbs, TaskDeadlineClass::DeadlineCbs)
+                | (Self::DeadlineZeroLag, TaskDeadlineClass::DeadlineZeroLag)
+        )
     }
 }
 
@@ -70,7 +98,7 @@ impl TaskDeadlineToken {
 #[derive(Debug)]
 pub struct TaskDeadlineNode {
     thread: ThreadId,
-    class: TaskDeadlineClass,
+    kind: TaskDeadlineNodeKind,
     identity: AtomicU64,
     sequence: AtomicU64,
 }
@@ -78,21 +106,21 @@ pub struct TaskDeadlineNode {
 impl TaskDeadlineNode {
     /// Creates a deadline node owned by one generation-checked scheduler thread.
     pub const fn for_thread(thread: ThreadId) -> Self {
-        Self::new(thread, TaskDeadlineClass::Park)
+        Self::new(thread, TaskDeadlineNodeKind::Park)
     }
 
     pub(crate) const fn deadline_cbs_for_thread(thread: ThreadId) -> Self {
-        Self::new(thread, TaskDeadlineClass::DeadlineCbs)
+        Self::new(thread, TaskDeadlineNodeKind::DeadlineCbs)
     }
 
     pub(crate) const fn deadline_zero_lag_for_thread(thread: ThreadId) -> Self {
-        Self::new(thread, TaskDeadlineClass::DeadlineZeroLag)
+        Self::new(thread, TaskDeadlineNodeKind::DeadlineZeroLag)
     }
 
-    const fn new(thread: ThreadId, class: TaskDeadlineClass) -> Self {
+    const fn new(thread: ThreadId, kind: TaskDeadlineNodeKind) -> Self {
         Self {
             thread,
-            class,
+            kind,
             identity: AtomicU64::new(0),
             sequence: AtomicU64::new(0),
         }
@@ -102,8 +130,8 @@ impl TaskDeadlineNode {
         self.thread
     }
 
-    pub(super) const fn class(&self) -> TaskDeadlineClass {
-        self.class
+    pub(super) const fn supports(&self, class: TaskDeadlineClass) -> bool {
+        self.kind.supports(class)
     }
 
     pub(super) fn identity(&self) -> Result<TaskDeadlineNodeId, TaskDeadlineError> {
@@ -191,9 +219,9 @@ impl TaskDeadlineKind {
         }
     }
 
-    pub(super) const fn class(self) -> TaskDeadlineClass {
+    pub(super) const fn default_class(self) -> TaskDeadlineClass {
         match self {
-            Self::ParkTimeout { .. } => TaskDeadlineClass::Park,
+            Self::ParkTimeout { .. } => TaskDeadlineClass::ParkSoft,
             Self::DeadlineCbs => TaskDeadlineClass::DeadlineCbs,
             Self::DeadlineZeroLag => TaskDeadlineClass::DeadlineZeroLag,
         }
@@ -212,6 +240,7 @@ pub struct TaskDeadlineRegistration {
     token: TaskDeadlineToken,
     deadline: MonotonicDeadline,
     kind: TaskDeadlineKind,
+    class: TaskDeadlineClass,
 }
 
 impl TaskDeadlineRegistration {
@@ -220,12 +249,14 @@ impl TaskDeadlineRegistration {
         token: TaskDeadlineToken,
         deadline: MonotonicDeadline,
         kind: TaskDeadlineKind,
+        class: TaskDeadlineClass,
     ) -> Self {
         Self {
             thread,
             token,
             deadline,
             kind,
+            class,
         }
     }
 
@@ -247,6 +278,16 @@ impl TaskDeadlineRegistration {
     /// Returns the typed scheduler event.
     pub const fn kind(&self) -> TaskDeadlineKind {
         self.kind
+    }
+
+    /// Returns whether IRQ expiry may move this registration into the soft
+    /// expiration buffer before its owner commits the park transition.
+    pub(crate) const fn may_enter_soft_expiry_buffer(&self) -> bool {
+        matches!(self.class, TaskDeadlineClass::ParkSoft)
+    }
+
+    pub(super) const fn class(&self) -> TaskDeadlineClass {
+        self.class
     }
 }
 

@@ -17,7 +17,16 @@ pub(crate) enum KtimerServiceClaim {
 
 pub(crate) enum HardTimerServiceClaim {
     Kernel(KernelTimerExecution),
+    Park(Option<Arc<ThreadCore>>),
     Scheduler(ExpiredTaskDeadline),
+}
+
+pub(crate) enum HardTimerServiceStep {
+    Claim(HardTimerServiceClaim),
+    Complete {
+        soft: SoftTimerExpireBatch,
+        update: SchedulerDeadlineUpdate,
+    },
 }
 
 impl SoftTimerExpireBatch {
@@ -49,12 +58,6 @@ pub(crate) struct SchedulerDeadlineRqObservation {
 enum SchedulerDeadlineRqClockEvent {
     Due,
     After(core::time::Duration),
-}
-
-impl SchedulerDeadlineRqObservation {
-    pub(crate) const fn clock_event_due(self) -> bool {
-        matches!(self.clock_event, Some(SchedulerDeadlineRqClockEvent::Due))
-    }
 }
 
 impl SchedulerDeadlineRqClockEvent {
@@ -265,21 +268,6 @@ impl CpuLocal {
             .map(SchedulerDeadlinePublicationOutcome::changed_update)
     }
 
-    pub(crate) fn prepare_scheduler_deadline_registration_publication(
-        self: Pin<&mut Self>,
-        monotonic_now: MonotonicInstant,
-        source: SchedulerDeadlineDerivationSource,
-    ) -> SchedulerNonTimerDeadlines {
-        // Derive rq-owned inputs before entering the timer base. The caller can
-        // then mutate the queue and commit its physical publication under one
-        // Registration guard, preserving the rq -> deadline-base lock order.
-        self.as_ref()
-            .get_ref()
-            .record_scheduler_deadline_derivation(source);
-        let rq_observation = self.scheduler_deadline_rq_observation();
-        self.next_non_timer_deadline_from_rq_observation(monotonic_now, rq_observation)
-    }
-
     fn record_scheduler_deadline_derivation(&self, source: SchedulerDeadlineDerivationSource) {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_scheduler_deadline_derivation(source);
@@ -291,6 +279,7 @@ impl CpuLocal {
         task_deadlines: &mut crate::system::cpu::remote::CpuDeadlineState,
         non_timer: SchedulerNonTimerDeadlines,
     ) -> Result<SchedulerDeadlinePublicationOutcome, TaskError> {
+        task_deadlines.non_timer = non_timer;
         let timer = task_deadlines.timer_deadline();
         let publication = SchedulerDeadlinePublicationState {
             deadline: [timer, non_timer.deadline].into_iter().flatten().min(),
@@ -438,50 +427,6 @@ impl CpuLocal {
         self.dispatch_state_mut().clear_fair_balance();
     }
 
-    /// Expires one bounded batch of task-context park timeouts.
-    ///
-    /// CBS and zero-lag timers are consumed separately in the hard clockevent
-    /// path. Only park timeout identities cross into the deferred worker.
-    pub(crate) fn on_task_clock_event(
-        self: Pin<&mut Self>,
-        now: MonotonicInstant,
-        budget: usize,
-    ) -> SoftTimerExpireBatch {
-        let this = self;
-        let batch_limit = this.drain.batch_limit();
-        let Some(mut deadlines) = this
-            .remote
-            .lock_active_deadline_activity(DeadlineBaseGuardSource::SoftExpiry)
-        else {
-            return SoftTimerExpireBatch {
-                expired: 0,
-                pending: false,
-            };
-        };
-        let task_batch =
-            Self::promote_due_task_deadlines_in_base(&mut deadlines, batch_limit, now, budget);
-        let kernel_batch = deadlines
-            .kernel_timers
-            .expire_due_soft(now, budget.saturating_sub(task_batch.processed()));
-        if task_batch.expired() != 0
-            || task_batch.pending()
-            || kernel_batch.expired() != 0
-            || kernel_batch.pending()
-        {
-            deadlines.softirq_activated = true;
-        }
-        let batch = SoftTimerExpireBatch {
-            expired: task_batch.expired().saturating_add(kernel_batch.expired()),
-            pending: task_batch.pending() || kernel_batch.pending(),
-        };
-        drop(deadlines);
-        if batch.pending() || batch.expired() != 0 {
-            this.remote.publish_ktimer_work();
-        }
-
-        batch
-    }
-
     /// Selects one task-context timer under one Linux hrtimer-style base lock.
     ///
     /// The returned callback identity has already left the base. Its callback
@@ -561,34 +506,83 @@ impl CpuLocal {
         batch
     }
 
-    /// Claims one earliest due hard timer from the shared owner hrtimer base.
-    pub(crate) fn claim_due_hard_timer(
+    /// Claims one earliest due hard timer or completes this clockevent pass.
+    ///
+    /// A claimed callback runs after this function releases the base. Once no
+    /// hard timer remains due, the same reacquired base transaction promotes
+    /// soft expirations and publishes expires-next, matching Linux's
+    /// `__hrtimer_run_queues()` plus `hrtimer_update_base()` boundary.
+    pub(crate) fn claim_due_hard_timer_step(
         self: Pin<&mut Self>,
         now: MonotonicInstant,
-    ) -> Option<HardTimerServiceClaim> {
+        budget: usize,
+    ) -> Result<HardTimerServiceStep, TaskError> {
+        self.as_ref()
+            .get_ref()
+            .record_scheduler_deadline_derivation(SchedulerDeadlineDerivationSource::ClockEvent);
+        let batch_limit = self.drain.batch_limit();
         let mut task_deadlines = self
             .remote
-            .lock_active_deadline_activity(DeadlineBaseGuardSource::HardExpiry)?;
-        let scheduler_deadline = task_deadlines.queue.next_scheduler_deadline();
+            .lock_deadline_activity(DeadlineBaseGuardSource::HardExpiry);
+        let scheduler_deadline = task_deadlines.queue.next_hard_deadline();
         let kernel_deadline = task_deadlines.kernel_timers.next_hard_deadline();
-        match (scheduler_deadline, kernel_deadline) {
+        let claim = match (scheduler_deadline, kernel_deadline) {
             (Some(scheduler), Some(kernel)) if kernel < scheduler => task_deadlines
                 .kernel_timers
                 .claim_due_hard(now)
                 .map(HardTimerServiceClaim::Kernel),
-            (Some(scheduler), _) if now.reached(scheduler) => {
-                let mut event = [ExpiredTaskDeadline::EMPTY; 1];
-                let batch = task_deadlines
-                    .queue
-                    .expire_scheduler(TaskDeadlineExpireRequest::new(now, 1), &mut event);
-                (batch.expired() == 1).then_some(HardTimerServiceClaim::Scheduler(event[0]))
-            }
+            (Some(scheduler), _) if now.reached(scheduler) => task_deadlines
+                .queue
+                .claim_due_hard(now)
+                .map(|claim| match claim {
+                    HardTaskDeadlineClaim::Park { event, thread } => {
+                        let park_generation = event
+                            .kind()
+                            .and_then(TaskDeadlineKind::park_generation)
+                            .expect("a hard park deadline retains its park generation");
+                        let completed = thread.complete_sleep_timer(event.token().generation());
+                        let ready = completed && thread.park_generation() == park_generation;
+                        HardTimerServiceClaim::Park(ready.then_some(thread))
+                    }
+                    HardTaskDeadlineClaim::Scheduler(event) => {
+                        HardTimerServiceClaim::Scheduler(event)
+                    }
+                }),
             (_, Some(kernel)) if now.reached(kernel) => task_deadlines
                 .kernel_timers
                 .claim_due_hard(now)
                 .map(HardTimerServiceClaim::Kernel),
             _ => None,
+        };
+        if let Some(claim) = claim {
+            return Ok(HardTimerServiceStep::Claim(claim));
         }
+
+        let task_batch =
+            Self::promote_due_task_deadlines_in_base(&mut task_deadlines, batch_limit, now, budget);
+        let kernel_batch = task_deadlines
+            .kernel_timers
+            .expire_due_soft(now, budget.saturating_sub(task_batch.processed()));
+        if task_batch.expired() != 0
+            || task_batch.pending()
+            || kernel_batch.expired() != 0
+            || kernel_batch.pending()
+        {
+            task_deadlines.softirq_activated = true;
+        }
+        let soft = SoftTimerExpireBatch {
+            expired: task_batch.expired().saturating_add(kernel_batch.expired()),
+            pending: task_batch.pending() || kernel_batch.pending(),
+        };
+        let non_timer = task_deadlines.non_timer;
+        let update =
+            Self::update_scheduler_deadline_publication_in_base(&mut task_deadlines, non_timer)?
+                .update();
+        drop(task_deadlines);
+        if soft.pending() || soft.expired() != 0 {
+            self.remote.publish_ktimer_work();
+        }
+        Ok(HardTimerServiceStep::Complete { soft, update })
     }
 
     pub(crate) fn complete_hard_kernel_timer_execution(

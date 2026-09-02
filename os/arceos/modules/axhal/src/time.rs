@@ -4,10 +4,10 @@ pub use ax_plat::time::{
     Duration, MICROS_PER_SEC, MILLIS_PER_SEC, NANOS_PER_MICROS, NANOS_PER_MILLIS, NANOS_PER_SEC,
     SchedulerClockError, SchedulerClockStability, TimeValue, busy_wait, busy_wait_until,
     cancel_oneshot_timer, current_ticks, epochoffset_nanos, init_scheduler_clock, irq_num,
-    monotonic_time, monotonic_time_nanos, nanos_to_ticks, resume_oneshot_timer,
-    scheduler_clock_hardirq_sample, scheduler_clock_source, scheduler_clock_stability,
-    scheduler_clock_tick, set_oneshot_timer, shutdown_scheduler_clock, ticks_to_nanos, wall_time,
-    wall_time_nanos,
+    monotonic_time, monotonic_time_nanos, nanos_to_ticks, oneshot_timer_requires_irq_quiesce,
+    resume_oneshot_timer, scheduler_clock_hardirq_sample, scheduler_clock_source,
+    scheduler_clock_stability, scheduler_clock_tick, set_oneshot_timer, shutdown_scheduler_clock,
+    ticks_to_nanos, wall_time, wall_time_nanos,
 };
 
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {

@@ -65,6 +65,36 @@ impl CpuRemote {
         Ok(CpuLocalOwnerBorrow {
             remote: self,
             cpu,
+            release_claim: true,
+            _not_send_or_sync: PhantomData,
+        })
+    }
+
+    /// Borrows the owner-only scheduler state under an existing scheduler baton.
+    ///
+    /// # Safety
+    ///
+    /// `cpu` must identify this endpoint's pinned [`CpuLocal`]. The caller must
+    /// own the CPU's IRQ-off scheduler frame for the complete returned borrow,
+    /// and no dynamically claimed owner borrow may overlap it.
+    pub unsafe fn borrow_local_in_scheduler_frame(
+        &self,
+        cpu: *mut CpuLocal,
+    ) -> Result<CpuLocalOwnerBorrow<'_>, TaskError> {
+        let cpu = NonNull::new(cpu).ok_or(TaskError::InvalidRuntimeHandle)?;
+        // SAFETY: the caller's scheduler baton pins this exact CpuLocal and
+        // excludes every other owner-side entry until the borrow is dropped.
+        let actual = unsafe { cpu.as_ref() }.owner();
+        if actual != self.owner {
+            return Err(TaskError::CpuOwnerMismatch {
+                expected: self.owner.as_u32(),
+                actual: actual.as_u32(),
+            });
+        }
+        Ok(CpuLocalOwnerBorrow {
+            remote: self,
+            cpu,
+            release_claim: false,
             _not_send_or_sync: PhantomData,
         })
     }
@@ -103,14 +133,16 @@ impl CpuRemote {
     }
 }
 
-/// Dynamically checked owner borrow of one pinned [`CpuLocal`].
+/// Exclusive owner borrow of one pinned [`CpuLocal`].
 ///
-/// The borrow gate resides in the separately allocated [`CpuRemote`] endpoint,
-/// so a reentrant claim can fail without touching memory covered by the active
-/// mutable `CpuLocal` reference.
+/// Ordinary callers acquire the dynamic gate in the separately allocated
+/// [`CpuRemote`] endpoint. A live IRQ-off scheduler frame may instead lend its
+/// stronger CPU-owner baton to the same borrow type without another atomic
+/// ownership transaction.
 pub struct CpuLocalOwnerBorrow<'remote> {
     remote: &'remote CpuRemote,
     cpu: NonNull<CpuLocal>,
+    release_claim: bool,
     _not_send_or_sync: PhantomData<*mut ()>,
 }
 
@@ -136,10 +168,12 @@ impl Deref for CpuLocalOwnerBorrow<'_> {
 
 impl Drop for CpuLocalOwnerBorrow<'_> {
     fn drop(&mut self) {
-        self.remote
-            .owner_state
-            .claimed
-            .store(false, Ordering::Release);
+        if self.release_claim {
+            self.remote
+                .owner_state
+                .claimed
+                .store(false, Ordering::Release);
+        }
     }
 }
 

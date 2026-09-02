@@ -531,11 +531,10 @@ impl RealtimeRunQueue {
             self.exempt_count[index] = self.exempt_count[index].saturating_add(1);
             self.exempt_bitmap |= 1_u128 << index;
         }
-        let core = Arc::clone(&thread.core);
         let mut node = unsafe {
             // SAFETY: the placement state and target rq lock serialize the
             // only RT linkage belonging to this thread.
-            core.runqueue_nodes().take_realtime()
+            thread.core.runqueue_nodes().take_realtime()
         };
         node.reset(thread);
         let node = if reason == EnqueueReason::Preempted {

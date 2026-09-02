@@ -57,6 +57,15 @@ enum OwnerRqContext {
 }
 
 impl OwnerRqEntry {
+    /// Returns whether this entry still needs the runtime owner assertion.
+    ///
+    /// `SchedulerFrame` is constructed only after the runtime atomically
+    /// validates and claims the IRQ-off scheduler baton. Revalidating it below
+    /// every TaskSystem entry would repeat the same CPU-local state walk.
+    pub(crate) const fn requires_owner_context_validation(self) -> bool {
+        matches!(self, Self::IrqSave)
+    }
+
     /// Locks task scheduler state under this rq entry's IRQ ownership model.
     ///
     /// # Safety
@@ -922,7 +931,7 @@ impl<'a> OwnerRqTxn<'a> {
         }
         let run_queue = self
             .run_queue
-            .as_ref()
+            .as_mut()
             .expect("an unfinished rq transaction must retain its lock");
         self.system
             .publish_run_queue_summary(self.remote, run_queue);
@@ -943,7 +952,7 @@ impl<'a> OwnerRqTxn<'a> {
         }
         let run_queue = self
             .run_queue
-            .as_ref()
+            .as_mut()
             .expect("an unfinished rq transaction must retain its lock");
         let _ = self.remote.publish_run_queue_load_summary(run_queue);
         self.finished = true;
@@ -963,9 +972,27 @@ impl<'a> OwnerRqTxn<'a> {
         let remote = self.remote;
         let run_queue = self
             .run_queue
-            .as_ref()
+            .as_mut()
             .expect("an unfinished rq transaction must retain its lock");
         self.system.publish_run_queue_summary(remote, run_queue);
+        self.finished = true;
+        drop(self.run_queue.take());
+        remote.finish_scheduler_request();
+    }
+
+    /// Releases a scheduler transaction whose class selection kept the same
+    /// current task and did not mutate scheduler-visible rq state.
+    ///
+    /// `update_rq_clock()` and the sticky request claim are owner-local. Like
+    /// Linux's `next == prev` return in `put_prev_set_next_task()`, this path
+    /// must not manufacture cpupri/cpudl/load publication when no class hook,
+    /// runtime charge, or current transition ran.
+    pub(crate) fn finish_unchanged_scheduler_request(mut self) {
+        let _claim = self
+            .request
+            .take()
+            .expect("an unchanged scheduler selection must consume its request claim");
+        let remote = self.remote;
         self.finished = true;
         drop(self.run_queue.take());
         remote.finish_scheduler_request();
@@ -988,7 +1015,7 @@ impl<'a> OwnerRqTxn<'a> {
         let remote = self.remote;
         let run_queue = self
             .run_queue
-            .as_ref()
+            .as_mut()
             .expect("an unfinished rq transaction must retain its lock");
         self.system.publish_run_queue_summary(remote, run_queue);
         self.finished = true;

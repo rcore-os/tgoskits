@@ -82,7 +82,7 @@ pub(crate) mod aarch64_deadline {
 
     #[cfg(any(not(feature = "hv"), test))]
     pub(crate) mod el1 {
-        use super::{super::ArchTimerMode, from_interval};
+        use super::super::ArchTimerMode;
 
         pub(crate) trait TimerRegisters {
             fn read_virtual_counter(&self) -> u64;
@@ -91,21 +91,19 @@ pub(crate) mod aarch64_deadline {
             fn write_physical_compare(&self, deadline: u64);
         }
 
-        pub(crate) fn program(
+        pub(crate) fn program_deadline(
             registers: &impl TimerRegisters,
             mode: ArchTimerMode,
-            interval_ticks: u64,
+            deadline_ticks: u64,
         ) {
             match mode {
-                ArchTimerMode::El1Virt => registers.write_virtual_compare(from_interval(
-                    registers.read_virtual_counter(),
-                    interval_ticks,
-                )),
+                ArchTimerMode::El1Virt => registers.write_virtual_compare(
+                    deadline_ticks.max(registers.read_virtual_counter().saturating_add(1)),
+                ),
                 ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => registers
-                    .write_physical_compare(from_interval(
-                        registers.read_physical_counter(),
-                        interval_ticks,
-                    )),
+                    .write_physical_compare(
+                        deadline_ticks.max(registers.read_physical_counter().saturating_add(1)),
+                    ),
             }
         }
 
@@ -121,18 +119,15 @@ pub(crate) mod aarch64_deadline {
 
     #[cfg(any(feature = "hv", test))]
     pub(crate) mod el2 {
-        use super::from_interval;
-
         pub(crate) trait TimerRegisters {
             fn read_physical_counter(&self) -> u64;
             fn write_hyp_physical_compare(&self, deadline: u64);
         }
 
-        pub(crate) fn program(registers: &impl TimerRegisters, interval_ticks: u64) {
-            registers.write_hyp_physical_compare(from_interval(
-                registers.read_physical_counter(),
-                interval_ticks,
-            ));
+        pub(crate) fn program_deadline(registers: &impl TimerRegisters, deadline_ticks: u64) {
+            registers.write_hyp_physical_compare(
+                deadline_ticks.max(registers.read_physical_counter().saturating_add(1)),
+            );
         }
 
         pub(crate) fn disarm(registers: &impl TimerRegisters) {
