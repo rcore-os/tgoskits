@@ -5047,6 +5047,6 @@ yield handoff 均向下移动；TCG 调度噪声仍然较大，timer p50 未改�
 该试验已撤回；没有留下第二套语义。删除调度尾部无效 `clock.wall()` 参数的试验导致
 `sched_yield_handoff` 长时间无输出，也已撤回。当前保留的改动仅包括 Fair 单遍删除、
 切换出时间戳传递、既有 vtime seqlock/clockevent/address-space 优化。按请求未执行
-clippy 或新增测试；格式化和 `git diff --check` 已在本检查点完成。仍未达到 Linux RT
+clippy 或新增本提交测试；格式化和 `git diff --check` 已在本检查点完成。仍未达到 Linux RT
 约 15--28µs 参考区间的 90% 目标，下一优先级是 qperf 已显示的 context-switch tail、
 clockevent publication 和 owner-rq 观测固定成本。
