@@ -345,7 +345,7 @@ impl CpuLocal {
         Ok(update)
     }
 
-    fn scheduler_deadline_rq_observation(&self) -> SchedulerDeadlineRqObservation {
+    pub(crate) fn scheduler_deadline_rq_observation(&self) -> SchedulerDeadlineRqObservation {
         let run_queue = self
             .remote
             .lock_run_queue(RunQueueGuardSource::TimerDeadlineDerivationObservation);

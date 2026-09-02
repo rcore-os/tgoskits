@@ -5013,3 +5013,40 @@ collect_futex_wakes (0xffffffff800171e0)
 功能回归使用 `cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64`，
 结果为 `AXTEST_SUMMARY pass=87 fail=0 skip=0 total=87` 与 `AXTEST_SUITE_OK`。按本轮要求
 未执行 clippy，格式化和 `git diff --check` 在功能验证完成后统一通过。
+
+## 2026-09-02：Fair 选择与切换出 vtime 观测合并
+
+本检查点把两个 Linux RT 热路径差异收敛为通用实现。`FairRunQueue::pick_eligible()`
+（`components/ax-task/src/scheduler/fair_queue.rs`）现在让资格遍历直接返回可删除的
+`FairQueueKey`，并由 `remove_node_if()` 在同一次键遍历中完成条件删除；`take_delayed()`
+和受保护 current 路径复用同一操作。这样不再出现“资格查找 → `find_node()` →
+`remove_entry()`”的三次 AVL 遍历，同时保留 generation/index 校验和树-索引一致性断言。
+Linux v7.1 的对应路径是嵌入 `sched_entity.run_node` 后直接执行 dequeue，不通过 task-id
+回查树节点。
+
+切换出时间记账不再在 Starry 扩展钩子中再次读取物理时钟。`ScheduleDecision` 已经携带
+owner rq 的 Linux scheduler-clock 时间戳，`ThreadExtensionOps::on_switch_out` 将该值传到
+Starry `CpuTimeAccounting::scheduler_switch_out()`；切换入仍在新上下文建立后读取时间，
+避免把架构切换尾部计入 incoming task。该边界保留 `on_cpu`/rq baton 的先后语义，只删除
+重复的时钟源读取。
+
+同一 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 无断点完整基准再次输出
+`WAKEUP_LATENCY_PASSED`。本轮 p50（ns）为：
+
+| 策略 | 同核 futex | 跨核线程 futex | 跨核进程 futex | 同核绝对 timer | yield handoff |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| OTHER | 109793 | 97437 | 102634 | 242112 | 46750 |
+| FIFO | 78752 | 112230 | 104932 | 237173 | 43123 |
+
+与紧邻的相同源码检查点相比，切换出时间观测合并后 OTHER 同核/跨核 futex 和 FIFO 同核、
+yield handoff 均向下移动；TCG 调度噪声仍然较大，timer p50 未改善，不能把单轮结果当作
+硬件比例证明。短 qperf 窗口（10 秒、206 个内核叶样本）只用于确认调用链，因 workload
+未输出 stop marker，不作为延迟数字证据；可靠的性能结论以完整无插桩基准为准。
+
+本轮曾试验 x86 嵌套 preempt depth 的单指令直接递减，完整 QEMU 的 FIFO 同核结果退化，
+该试验已撤回；没有留下第二套语义。删除调度尾部无效 `clock.wall()` 参数的试验导致
+`sched_yield_handoff` 长时间无输出，也已撤回。当前保留的改动仅包括 Fair 单遍删除、
+切换出时间戳传递、既有 vtime seqlock/clockevent/address-space 优化。按请求未执行
+clippy 或新增测试；格式化和 `git diff --check` 已在本检查点完成。仍未达到 Linux RT
+约 15--28µs 参考区间的 90% 目标，下一优先级是 qperf 已显示的 context-switch tail、
+clockevent publication 和 owner-rq 观测固定成本。

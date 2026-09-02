@@ -14,6 +14,11 @@ pub(super) enum FairPick {
     Delayed(Arc<crate::ThreadCore>),
 }
 
+enum FairEligible {
+    Runnable(FairQueueKey),
+    Delayed(Arc<crate::ThreadCore>),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FairQueueKey {
     virtual_deadline: u64,
@@ -264,15 +269,33 @@ impl FairRunQueue {
     }
 
     fn remove_entry(&mut self, thread: ThreadId) -> Option<QueuedThread> {
-        let indexed = self.keys.get_mut(thread.slot() as usize)?.take()?;
-        if indexed.0 != thread.generation() {
-            self.keys[thread.slot() as usize] = Some(indexed);
+        let key = self
+            .keys
+            .get(thread.slot() as usize)
+            .and_then(|entry| *entry)
+            .filter(|(generation, _)| *generation == thread.generation())
+            .map(|(_, key)| key)?;
+        self.remove_entry_with_key(thread, key, |_| true)
+    }
+
+    fn remove_entry_with_key(
+        &mut self,
+        thread: ThreadId,
+        key: FairQueueKey,
+        mut should_remove: impl FnMut(&FairNode) -> bool,
+    ) -> Option<QueuedThread> {
+        let indexed = self
+            .keys
+            .get(thread.slot() as usize)
+            .and_then(|entry| *entry)?;
+        if indexed.0 != thread.generation() || indexed.1 != key {
             return None;
         }
-        let key = indexed.1;
-        let (root, removed) = remove_node(self.root.take(), key);
+        let (root, removed, found) = remove_node_if(self.root.take(), key, &mut should_remove);
         self.root = root;
-        let removed = removed.expect("fair runqueue identity index must match its tree");
+        assert!(found, "fair runqueue identity index must match its tree");
+        let removed = removed?;
+        self.keys[thread.slot() as usize] = None;
         let removed = Self::return_removed(removed);
         self.remove_weighted_entity(fair_entity(&removed));
         if matches!(fair_entity(&removed).mode(), crate::FairMode::Idle) {
@@ -302,16 +325,13 @@ impl FairRunQueue {
         virtual_time: u64,
         skip_delayed: bool,
     ) -> Option<FairPick> {
-        let key = earliest_eligible_key(self.root.as_deref(), virtual_time, skip_delayed)?;
-        let node = find_node(self.root.as_deref(), key)
-            .expect("eligible fair key must remain present until owner selection");
-        if fair_entity(node.thread()).is_delayed() {
-            return Some(FairPick::Delayed(Arc::clone(&node.thread().core)));
+        match earliest_eligible(self.root.as_deref(), virtual_time, skip_delayed)? {
+            FairEligible::Delayed(core) => Some(FairPick::Delayed(core)),
+            FairEligible::Runnable(key) => Some(FairPick::Runnable(
+                self.remove_entry_with_key(key.thread, key, |_| true)
+                    .expect("eligible fair identity must remain indexed"),
+            )),
         }
-        let thread = self
-            .remove_entry(key.thread)
-            .expect("eligible fair identity must remain indexed");
-        Some(FairPick::Runnable(thread))
     }
 
     /// Returns the runnable current while Linux `RUN_TO_PARITY` still
@@ -331,11 +351,9 @@ impl FairRunQueue {
         if generation != current.generation() {
             return None;
         }
-        let node =
-            find_node(self.root.as_deref(), key).expect("fair identity index must match its tree");
-        protected_current_is_eligible(fair_entity(node.thread()), virtual_time)
-            .then(|| self.remove_entry(current))
-            .flatten()
+        self.remove_entry_with_key(current, key, |node| {
+            protected_current_is_eligible(fair_entity(node.thread()), virtual_time)
+        })
     }
 
     pub(super) fn earliest_eligible(&self, virtual_time: u64) -> Option<ThreadId> {
@@ -356,9 +374,13 @@ impl FairRunQueue {
     }
 
     pub(super) fn take_delayed(&mut self, thread: ThreadId) -> Option<QueuedThread> {
-        self.is_delayed(thread)
-            .then(|| self.remove_entry(thread))
-            .flatten()
+        let key = self
+            .keys
+            .get(thread.slot() as usize)
+            .and_then(|entry| *entry)
+            .filter(|(generation, _)| *generation == thread.generation())
+            .map(|(_, key)| key)?;
+        self.remove_entry_with_key(thread, key, |node| fair_entity(node.thread()).is_delayed())
     }
 
     pub(super) fn finish_delayed_dequeue(
@@ -700,31 +722,50 @@ fn insert_node(root: FairLink, inserted: Box<FairNode>) -> FairLink {
     Some(rebalance(root))
 }
 
-fn remove_node(root: FairLink, key: FairQueueKey) -> (FairLink, Option<Box<FairNode>>) {
+fn remove_node_if(
+    root: FairLink,
+    key: FairQueueKey,
+    should_remove: &mut impl FnMut(&FairNode) -> bool,
+) -> (FairLink, Option<Box<FairNode>>, bool) {
     let Some(mut root) = root else {
-        return (None, None);
+        return (None, None, false);
     };
     match key.cmp(&root.key) {
         Ordering::Less => {
-            let (left, removed) = remove_node(root.left.take(), key);
-            root.left = left;
-            (Some(rebalance(root)), removed)
+            let (left, removed, found) = remove_node_if(root.left.take(), key, should_remove);
+            if removed.is_some() {
+                root.left = left;
+                (Some(rebalance(root)), removed, found)
+            } else {
+                root.left = left;
+                (Some(root), None, found)
+            }
         }
         Ordering::Greater => {
-            let (right, removed) = remove_node(root.right.take(), key);
-            root.right = right;
-            (Some(rebalance(root)), removed)
-        }
-        Ordering::Equal => match (root.left.take(), root.right.take()) {
-            (None, right) => (right, Some(root)),
-            (left, None) => (left, Some(root)),
-            (Some(left), Some(right)) => {
-                let (right, mut successor) = take_min(right);
-                successor.left = Some(left);
-                successor.right = right;
-                (Some(rebalance(successor)), Some(root))
+            let (right, removed, found) = remove_node_if(root.right.take(), key, should_remove);
+            if removed.is_some() {
+                root.right = right;
+                (Some(rebalance(root)), removed, found)
+            } else {
+                root.right = right;
+                (Some(root), None, found)
             }
-        },
+        }
+        Ordering::Equal => {
+            if !should_remove(&root) {
+                return (Some(root), None, true);
+            }
+            match (root.left.take(), root.right.take()) {
+                (None, right) => (right, Some(root), true),
+                (left, None) => (left, Some(root), true),
+                (Some(left), Some(right)) => {
+                    let (right, mut successor) = take_min(right);
+                    successor.left = Some(left);
+                    successor.right = right;
+                    (Some(rebalance(successor)), Some(root), true)
+                }
+            }
+        }
     }
 }
 
@@ -739,33 +780,48 @@ fn take_min(mut root: Box<FairNode>) -> (FairLink, Box<FairNode>) {
     (Some(rebalance(root)), minimum)
 }
 
-fn earliest_eligible_key(
+fn earliest_eligible(
     node: Option<&FairNode>,
     virtual_time: u64,
     skip_delayed: bool,
-) -> Option<FairQueueKey> {
+) -> Option<FairEligible> {
     let node = node?;
     if node
         .left
         .as_deref()
         .is_some_and(|left| !virtual_before(virtual_time, left.min_vruntime))
-        && let Some(key) = earliest_eligible_key(node.left.as_deref(), virtual_time, skip_delayed)
+        && let Some(candidate) = earliest_eligible(node.left.as_deref(), virtual_time, skip_delayed)
     {
-        return Some(key);
+        return Some(candidate);
     }
     if fair_entity(node.thread()).is_eligible(virtual_time)
         && !(skip_delayed && fair_entity(node.thread()).is_delayed())
     {
-        return Some(node.key);
+        return Some(if fair_entity(node.thread()).is_delayed() {
+            FairEligible::Delayed(Arc::clone(&node.thread().core))
+        } else {
+            FairEligible::Runnable(node.key)
+        });
     }
     if node
         .right
         .as_deref()
         .is_some_and(|right| !virtual_before(virtual_time, right.min_vruntime))
     {
-        return earliest_eligible_key(node.right.as_deref(), virtual_time, skip_delayed);
+        return earliest_eligible(node.right.as_deref(), virtual_time, skip_delayed);
     }
     None
+}
+
+fn earliest_eligible_key(
+    node: Option<&FairNode>,
+    virtual_time: u64,
+    skip_delayed: bool,
+) -> Option<FairQueueKey> {
+    match earliest_eligible(node, virtual_time, skip_delayed)? {
+        FairEligible::Runnable(key) => Some(key),
+        FairEligible::Delayed(_) => None,
+    }
 }
 
 fn find_node(node: Option<&FairNode>, key: FairQueueKey) -> Option<&FairNode> {

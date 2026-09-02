@@ -615,7 +615,7 @@ pub(super) fn prepare_runtime_address_space_switch<'switch>(
         }
 
         let previous_state = if previous_selected.is_none() {
-            AddressSpaceMembarrierState::NONE
+            None
         } else {
             let selected = runtime_address_space(previous_selected)?;
             let Some(active) = previous else {
@@ -624,18 +624,15 @@ pub(super) fn prepare_runtime_address_space_switch<'switch>(
             if !same_logical_address_space(active, selected) {
                 return Err(RuntimeStatus::InvalidArgument);
             }
-            AddressSpaceCpuState::membarrier_state(&selected.cpu_state)
+            Some(selected)
         };
 
         let (next_state, action) = if next_selected.is_none() {
-            (
-                AddressSpaceMembarrierState::NONE,
-                PreparedAddressSpaceAction::KernelLazy,
-            )
+            (None, PreparedAddressSpaceAction::KernelLazy)
         } else {
             let next = runtime_address_space(next_selected)?;
             (
-                AddressSpaceCpuState::membarrier_state(&next.cpu_state),
+                Some(next),
                 PreparedAddressSpaceAction::User {
                     next_raw: next_selected.into_raw(),
                     next,
@@ -643,7 +640,16 @@ pub(super) fn prepare_runtime_address_space_switch<'switch>(
             )
         };
 
-        if previous_state.identity() != next_state.identity() {
+        // The switch barrier is keyed only by the logical mm identity. The
+        // membarrier registration bits are consumed by their own syscall
+        // paths; loading them on every same-mm thread switch is not part of
+        // Linux switch_mm() semantics and adds a SeqCst read to the hot path.
+        let changed_address_space = match (previous_state, next_state) {
+            (Some(previous), Some(next)) => !same_logical_address_space(previous, next),
+            (Some(_), None) | (None, Some(_)) => true,
+            (None, None) => false,
+        };
+        if changed_address_space {
             // Common four-architecture counterpart of Linux switch_mm() and
             // mmdrop's ordering after rq->curr publication and before user
             // execution.

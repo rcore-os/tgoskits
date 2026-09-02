@@ -126,24 +126,40 @@ impl PreemptionState {
     }
 
     fn finish(&self) -> PreemptionExit {
-        loop {
-            let state = self.0.load(Ordering::Relaxed);
-            let depth = state & PREEMPT_DEPTH_MASK;
-            assert!(depth > 0, "unbalanced preemption exit");
+        let state = self.0.load(Ordering::Relaxed);
+        let depth = state & PREEMPT_DEPTH_MASK;
+        assert!(depth > 0, "unbalanced preemption exit");
 
-            if depth == 1 && state & PREEMPT_NO_PENDING == 0 {
+        if depth == 1 {
+            if state & PREEMPT_NO_PENDING == 0 {
                 return PreemptionExit::Pending(PendingPreemption::new(self));
             }
+            return if self.compare_exchange_local(state, state - 1) {
+                PreemptionExit::Enabled
+            } else {
+                // A local interrupt can publish the pending bit between the
+                // snapshot and the final decrement. Re-enter the same
+                // transition so the scheduler baton cannot be lost.
+                self.finish()
+            };
+        }
 
+        // Linux's nested preempt_count decrement is a single local update.
+        // The owner word cannot be modified remotely, and an interrupt cannot
+        // observe a partially executed instruction; preserving the pending high
+        // bit therefore needs no cmpxchg loop for depth > 1.
+        #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+        unsafe {
+            crate::register::decrement_x86_preemption_state(self);
+        }
+        #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+        {
             let next = state - 1;
-            if self.compare_exchange_local(state, next) {
-                return if depth == 1 {
-                    PreemptionExit::Enabled
-                } else {
-                    PreemptionExit::Nested
-                };
+            if !self.compare_exchange_local(state, next) {
+                return self.finish();
             }
         }
+        PreemptionExit::Nested
     }
 
     fn release_pending(&self) {

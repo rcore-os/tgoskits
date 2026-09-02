@@ -583,3 +583,17 @@ pub(crate) unsafe fn compare_exchange_x86_preemption_state(
     // by this architecture boundary.
     unsafe { imp::compare_exchange_preemption_state(state, current, next) }
 }
+
+/// Decrements a nested preemption depth owned by the current x86 CPU.
+///
+/// # Safety
+///
+/// `state` must retain a depth greater than one for this CPU. The update is a
+/// single local instruction, so an interrupt can observe only the old or new
+/// complete word and the pending bit is preserved by integer subtraction.
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn decrement_x86_preemption_state(state: &PreemptionState) {
+    // SAFETY: forwarded by the caller's positive nested preemption depth.
+    unsafe { imp::decrement_preemption_state(state) }
+}

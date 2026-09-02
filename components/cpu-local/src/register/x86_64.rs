@@ -166,6 +166,24 @@ pub(super) unsafe fn compare_exchange_preemption_state(
     observed == current
 }
 
+/// Decrements a nested preemption depth in one owner-local instruction.
+///
+/// # Safety
+///
+/// The caller must retain a depth greater than one on this CPU's state word.
+#[inline(always)]
+pub(super) unsafe fn decrement_preemption_state(state: &PreemptionState) {
+    // SAFETY: the caller's positive depth pins the GS-selected state to this
+    // CPU and excludes every remote writer.
+    unsafe {
+        core::arch::asm!(
+            "dec dword ptr [{state}]",
+            state = in(reg) state.as_mut_ptr(),
+            options(nostack),
+        );
+    }
+}
+
 #[cfg(feature = "tls")]
 pub(super) unsafe fn read_kernel_tls() -> usize {
     let low: u32;

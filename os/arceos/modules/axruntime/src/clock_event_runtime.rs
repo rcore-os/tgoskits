@@ -302,10 +302,12 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
             firing.finish_early();
             return ax_hal::irq::IrqReturn::Handled;
         }
-        // SAFETY: the claimed local firing transaction excludes migration and
-        // nested scheduler-clock publication for this complete stamp.
-        unsafe { ax_hal::time::scheduler_clock_tick() }
-            .expect("current CPU scheduler clock must be online before timer IRQs");
+        if firing.periodic_tick() || firing.scheduler_deadline_elapsed() {
+            // SAFETY: the claimed local firing transaction excludes migration
+            // and nested scheduler-clock publication for this complete stamp.
+            unsafe { ax_hal::time::scheduler_clock_tick() }
+                .expect("current CPU scheduler clock must be online before timer IRQs");
+        }
         let now = monotonic_now();
         let periodic_tick_ns = firing.periodic_tick().then(|| {
             core::num::NonZeroU64::new(periodic_interval_nanos())
@@ -316,8 +318,10 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
             firing.scheduler_deadline_elapsed(),
         );
         let outcome = crate::task::on_clock_event(now, scheduler_event);
-        if let Some(tick_ns) = periodic_tick_ns {
-            crate::task::publish_scheduler_tick(outcome.scheduler_tick_stamp(), tick_ns.get());
+        if let Some(tick_ns) = periodic_tick_ns
+            && let Some(stamp) = outcome.scheduler_tick_stamp()
+        {
+            crate::task::publish_scheduler_tick(stamp, tick_ns.get());
         }
         firing.finish(outcome);
         ax_hal::irq::IrqReturn::Handled

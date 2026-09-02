@@ -828,12 +828,13 @@ impl TaskSystem {
             processed += 1;
         }
         if processed != 0 {
-            // Linux runs the complete hard queue first, then recomputes one
-            // expires-next value for the shared hrtimer base. Do the same for
-            // callback Complete/Disarm/Rearm transitions so the IRQ firing
-            // transaction publishes exactly one combined clockevent update.
             self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::KernelTimer)?;
         }
+        // The caller derives and publishes the next clockevent only after the
+        // complete hard queue has drained.  Linux's `hrtimer_interrupt()`
+        // keeps callback Complete/Disarm/Rearm transitions private until that
+        // single expires-next calculation; publishing here would force a
+        // second rq observation and hardware decision in the same IRQ.
         Ok(HardTimerServiceBatch { processed })
     }
 

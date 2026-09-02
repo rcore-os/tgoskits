@@ -517,6 +517,7 @@ impl Thread {
     pub(super) fn scheduler_switch_out(
         &self,
         reason: ax_std::os::arceos::task::SwitchReason,
+        observed_ns: u64,
         cpu_pin: &CpuPin<'_>,
     ) {
         #[cfg(target_arch = "aarch64")]
@@ -524,7 +525,9 @@ impl Thread {
         // SAFETY: switch-in established exactly one activation for this task,
         // and the scheduler baton still pins the same CPU during switch-out.
         unsafe { self.scope.deactivate_pinned(cpu_pin) };
-        self.accounting.cpu_time.scheduler_switch_out(reason);
+        self.accounting
+            .cpu_time
+            .scheduler_switch_out(reason, observed_ns);
         self.publish_cpu_time_for_active_interval_timer();
     }
 

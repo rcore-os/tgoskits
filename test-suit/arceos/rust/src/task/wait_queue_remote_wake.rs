@@ -35,7 +35,12 @@ const TEST_STACK_SIZE: usize = 256 * 1024;
 unsafe extern "Rust" fn ignore_switch_in(_data: usize, _thread: ThreadId, _policy: SchedulePolicy) {
 }
 
-unsafe extern "Rust" fn stall_switch_out(_data: usize, _thread: ThreadId, _reason: SwitchReason) {
+unsafe extern "Rust" fn stall_switch_out(
+    _data: usize,
+    _thread: ThreadId,
+    _reason: SwitchReason,
+    _observed_ns: u64,
+) {
     if STALL_ARMED.swap(false, Ordering::AcqRel) {
         STALL_ENTERED.store(true, Ordering::Release);
         // This fixed upper-bounded atomic probe holds the switch-out baton long

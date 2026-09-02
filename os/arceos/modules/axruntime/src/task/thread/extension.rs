@@ -60,11 +60,12 @@ unsafe extern "Rust" fn runtime_thread_switch_out_hook(
     data: usize,
     thread: ThreadId,
     reason: SwitchReason,
+    observed_ns: u64,
 ) {
     let runtime = unsafe { runtime_thread_data_from_raw(data) };
     if let Some(extension) = runtime.os_extension.as_ref() {
         // SAFETY: same composition contract as `runtime_thread_switch_in_hook`.
-        unsafe { (extension.ops().on_switch_out)(extension.data(), thread, reason) };
+        unsafe { (extension.ops().on_switch_out)(extension.data(), thread, reason, observed_ns) };
     }
 }
 

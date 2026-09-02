@@ -236,6 +236,7 @@ pub(super) fn execute_switch_plan(
                 extension.data(),
                 previous.thread(),
                 decision.switch_reason(),
+                decision.timestamp_ns(),
             )
         };
     }

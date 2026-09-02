@@ -35,7 +35,6 @@ pub struct CpuTimeAccounting {
     last_account_ns: AtomicU64,
     realtime_continuous_ns: AtomicU64,
     realtime_reset_generation: AtomicU64,
-    writer_gate: SpinLock<()>,
     adjusted: SpinLock<CpuTimeHighWater>,
     sequence: AtomicU64,
     running: AtomicBool,
@@ -61,7 +60,6 @@ impl CpuTimeAccounting {
             last_account_ns: AtomicU64::new(0),
             realtime_continuous_ns: AtomicU64::new(0),
             realtime_reset_generation: AtomicU64::new(0),
-            writer_gate: SpinLock::new(()),
             adjusted: SpinLock::new(CpuTimeHighWater::ZERO),
             sequence: AtomicU64::new(0),
             running: AtomicBool::new(false),
@@ -103,9 +101,9 @@ impl CpuTimeAccounting {
         self.scheduler_switch_in_locked(realtime_policy, monotonic_time_nanos() as u64)
     }
 
-    pub(crate) fn scheduler_switch_out(&self, reason: scheduler::SwitchReason) {
+    pub(crate) fn scheduler_switch_out(&self, reason: scheduler::SwitchReason, observed_ns: u64) {
         let _writer = self.begin_write();
-        self.scheduler_switch_out_locked(reason, monotonic_time_nanos() as u64);
+        self.scheduler_switch_out_locked(reason, observed_ns);
     }
 
     pub(crate) fn apply_realtime_policy(
@@ -307,19 +305,37 @@ impl CpuTimeAccounting {
     }
 
     fn begin_write(&self) -> CpuTimeWriter<'_> {
-        let gate = self.writer_gate.lock();
-        let sequence = self.sequence.load(Ordering::Relaxed);
-        debug_assert_eq!(sequence & 1, 0, "CPU-time writer gate lost exclusion");
-        let writing = sequence
-            .checked_add(1)
-            .expect("CPU-time accounting sequence overflow");
-        self.sequence.store(writing, Ordering::Release);
-        CpuTimeWriter {
-            accounting: self,
-            completed_sequence: writing
+        // The sequence word is both the reader seqlock and the writer
+        // ownership token. Linux vtime writers are serialized by the
+        // scheduler's existing owner lock; Starry policy/accounting writers
+        // can arrive from another CPU, so claim the same word explicitly and
+        // avoid a second ticket-lock/preemption boundary on every switch.
+        loop {
+            let sequence = self.sequence.load(Ordering::Acquire);
+            if sequence & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            let writing = sequence
                 .checked_add(1)
-                .expect("CPU-time accounting sequence overflow"),
-            _gate: gate,
+                .expect("CPU-time accounting sequence overflow");
+            if self
+                .sequence
+                .compare_exchange_weak(
+                    sequence,
+                    writing,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return CpuTimeWriter {
+                    accounting: self,
+                    completed_sequence: writing
+                        .checked_add(1)
+                        .expect("CPU-time accounting sequence overflow"),
+                };
+            }
         }
     }
 }
@@ -327,7 +343,6 @@ impl CpuTimeAccounting {
 struct CpuTimeWriter<'accounting> {
     accounting: &'accounting CpuTimeAccounting,
     completed_sequence: u64,
-    _gate: SpinLockGuard<'accounting, ()>,
 }
 
 impl Drop for CpuTimeWriter<'_> {
