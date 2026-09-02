@@ -3391,6 +3391,42 @@ impl AddrSpace {
         Ok(populated)
     }
 
+    /// Returns whether every materialized leaf in `range` already permits the
+    /// requested user access.
+    ///
+    /// This is a software page-table check under the address-space mutex, so it
+    /// is the architecture-independent fallback for CPUs without a cheap user
+    /// translation probe.  It deliberately requires `USER` even though
+    /// `UserAccessIntent` only carries read/write intent.  A present supervisor
+    /// mapping must never make a user-copy preparation succeed.
+    fn materialized_range_satisfies_access(
+        &self,
+        range: VirtAddrRange,
+        access_flags: MappingFlags,
+    ) -> bool {
+        let required = access_flags | MappingFlags::USER;
+        let mut cursor = range.start;
+        while cursor < range.end {
+            let Ok((_, flags, leaf_size)) = self.pt.query(cursor) else {
+                return false;
+            };
+            if leaf_size < PAGE_SIZE_4K
+                || !leaf_size.is_power_of_two()
+                || !flags.contains(required)
+            {
+                return false;
+            }
+            let Some(leaf_end) = cursor.align_down(leaf_size).checked_add(leaf_size) else {
+                return false;
+            };
+            if leaf_end <= cursor {
+                return false;
+            }
+            cursor = leaf_end.min(range.end);
+        }
+        true
+    }
+
     /// Populates an already-published area with physical frames.
     pub fn populate_area(
         &mut self,
@@ -3400,6 +3436,12 @@ impl AddrSpace {
     ) -> StarryResult {
         let range = VirtAddrRange::try_from_start_size(start, size)
             .ok_or(StarryError::InvalidInput)?;
+        self.validate_region(start, size)?;
+        if self.can_access_range(start, size, access_flags)
+            && self.materialized_range_satisfies_access(range, access_flags)
+        {
+            return Ok(());
+        }
         let preimage = self.capture_mapping_preimage(range)?;
         let graph_preimage = self.capture_mapping_graph_snapshot(&[range])?;
         let mut mutation = self.prepare_mutation_range(start, size);

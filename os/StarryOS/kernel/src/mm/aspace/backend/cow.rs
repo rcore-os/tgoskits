@@ -1788,6 +1788,54 @@ fn populate_unpublished_commit_restores_nonresident_preimage_for_test() -> bool 
 }
 
 #[cfg(all(test, axtest))]
+fn populate_present_range_is_noop_for_test() -> bool {
+    let start = VirtAddr::from(0x6480_0000);
+    let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+    let Ok(mut aspace) = AddrSpace::new_empty(start, PAGE_SIZE_4K) else {
+        return false;
+    };
+    if aspace
+        .map(
+            start,
+            PAGE_SIZE_4K,
+            flags,
+            true,
+            MappingOperation::new_alloc(start, PAGE_SIZE_4K, "[populate-noop-test]"),
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    let key = super::super::MappingSlotKey {
+        space_id: aspace.id,
+        va: start,
+    };
+    let Some(slot_before) = aspace.mapping_slots.get(&key).cloned() else {
+        let _ = aspace.reset_uninstalled_for_loader();
+        return false;
+    };
+    let Ok(pte_before) = aspace.pt.query(start) else {
+        let _ = aspace.reset_uninstalled_for_loader();
+        return false;
+    };
+    let epoch_before = aspace.vm_epoch();
+    let pending_before = aspace.pending_tlb_obligations();
+
+    let populated = aspace.populate_area(start, PAGE_SIZE_4K, flags).is_ok();
+    let unchanged = populated
+        && aspace.vm_epoch() == epoch_before
+        && aspace.pending_tlb_obligations() == pending_before
+        && aspace.pt.query(start).is_ok_and(|pte| pte == pte_before)
+        && aspace
+            .mapping_slots
+            .get(&key)
+            .is_some_and(|slot_after| Arc::ptr_eq(slot_after, &slot_before));
+    let cleared = aspace.reset_uninstalled_for_loader().is_ok();
+    unchanged && cleared
+}
+
+#[cfg(all(test, axtest))]
 fn munmap_unpublished_commit_restores_mapping_preimage_for_test() -> bool {
     let start = VirtAddr::from(0x6500_0000);
     let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
@@ -2966,6 +3014,12 @@ mod tests {
     #[axtest::axtest]
     fn populate_unpublished_commit_restores_nonresident_preimage() {
         assert!(super::populate_unpublished_commit_restores_nonresident_preimage_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn populate_present_range_is_noop() {
+        assert!(super::populate_present_range_is_noop_for_test());
     }
 
     #[cfg(all(test, axtest))]
