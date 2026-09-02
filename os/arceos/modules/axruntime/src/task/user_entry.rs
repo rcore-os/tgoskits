@@ -9,7 +9,7 @@ use ax_hal::cpu::uspace::{ReturnReason, UserContext};
 use ax_task::{TaskError, runtime::RuntimeStatus};
 
 use super::{
-    context::{RuntimeUserBinding, bind_current_user_context, validate_current_user_context},
+    context::{RuntimeUserBinding, bind_current_user_context},
     runtime_status_error, with_current_cpu_pin,
 };
 
@@ -50,7 +50,7 @@ impl UserExecutionContext {
             // SAFETY: `irq` prevents migration and owns the current CPU for
             // both the runtime-context and active-mm observations.
             with_current_cpu_pin(|pin| {
-                let binding = bind_current_user_context(pin, selected_address_space)?;
+                let binding = bind_current_user_context(pin)?;
                 super::address_space::validate_current_user_address_space(
                     pin,
                     selected_address_space,
@@ -74,21 +74,16 @@ impl UserExecutionContext {
     /// This method returns after a syscall, exception, page fault, or hardware
     /// interrupt restores the kernel continuation.
     pub fn enter(&mut self) -> Result<ReturnReason, TaskError> {
-        crate::guard::prepare_user_return()?;
-
-        match self.validate_prepared_entry() {
-            Ok(()) => Ok(PreparedUserEntry {
-                registers: &mut self.registers,
-                _not_send_or_sync: PhantomData,
-            }
-            .enter()),
-            Err(error) => {
-                // bind/prepare require IRQ-enabled task context, so a failed
-                // final validation restores exactly that entry state.
-                ax_hal::asm::enable_irqs();
-                Err(error)
-            }
+        if !self.registers.has_interruptible_user_return_mode() {
+            return Err(TaskError::UnsafeContext);
         }
+        crate::guard::prepare_user_return()?;
+        self.binding.prepare_user_fp_return();
+        Ok(PreparedUserEntry {
+            registers: &mut self.registers,
+            _not_send_or_sync: PhantomData,
+        }
+        .enter())
     }
 
     /// Refreshes the bound address-space generation after an `execve`-style
@@ -104,31 +99,6 @@ impl UserExecutionContext {
                 super::address_space::validate_current_user_address_space(
                     pin,
                     selected_address_space,
-                )?;
-                self.binding.replace_address_space(selected_address_space);
-                Ok::<_, RuntimeStatus>(())
-            })
-        }
-        .map_err(runtime_status_error)
-    }
-
-    fn validate_prepared_entry(&self) -> Result<(), TaskError> {
-        // `prepare_user_return()` owns the final IRQ-off no-work snapshot and
-        // performs no guarded operation after it succeeds. Re-reading the
-        // guard state here only repeats the same boundary check; Linux's
-        // `exit_to_user_mode_loop()` proceeds directly to the architecture
-        // return after its final flags read.
-        if !self.registers.has_interruptible_user_return_mode() {
-            return Err(TaskError::UnsafeContext);
-        }
-        unsafe {
-            // SAFETY: prepare_user_return left local IRQs disabled, so the
-            // current context, CPU and active-mm publications cannot move.
-            with_current_cpu_pin(|pin| {
-                validate_current_user_context(pin, &self.binding)?;
-                super::address_space::validate_current_user_address_space(
-                    pin,
-                    self.binding.address_space(),
                 )
             })
         }

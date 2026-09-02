@@ -9,8 +9,6 @@ use core::{
 use ax_hal::percpu::{
     CpuPin, ExecutionContextHeader, PreparedContextSwitch, PreviousContextBinding,
 };
-#[cfg(feature = "uspace")]
-use ax_task::runtime::AddressSpaceHandle;
 use ax_task::{
     TaskError,
     runtime::{
@@ -200,25 +198,26 @@ fn current_runtime_context(cpu_pin: &CpuPin) -> Result<&'static RuntimeContext, 
 #[cfg(feature = "uspace")]
 pub(super) struct RuntimeUserBinding {
     context: NonNull<RuntimeContext>,
-    publication: CurrentThreadPublication,
-    address_space: AddressSpaceHandle,
 }
 
 #[cfg(feature = "uspace")]
 impl RuntimeUserBinding {
-    pub(super) const fn address_space(&self) -> AddressSpaceHandle {
-        self.address_space
-    }
-
-    pub(super) fn replace_address_space(&mut self, address_space: AddressSpaceHandle) {
-        self.address_space = address_space;
+    pub(super) fn prepare_user_fp_return(&self) {
+        #[cfg(all(target_arch = "x86_64", feature = "fp-simd"))]
+        {
+            // SAFETY: this binding is owned by the current task's kernel stack.
+            // The final user-return boundary has local IRQs disabled, so its
+            // runtime context and CPU-local FPU owner cannot change here.
+            let context = unsafe { self.context.as_ref() };
+            let architecture_context = unsafe { &*context.inner.get() };
+            architecture_context.prepare_user_return_fp();
+        }
     }
 }
 
 #[cfg(feature = "uspace")]
 pub(super) fn bind_current_user_context(
     cpu_pin: &CpuPin<'_>,
-    address_space: AddressSpaceHandle,
 ) -> Result<RuntimeUserBinding, RuntimeStatus> {
     let context = current_runtime_context(cpu_pin)?;
     if context.has_switch_tail() {
@@ -232,25 +231,7 @@ pub(super) fn bind_current_user_context(
     }
     Ok(RuntimeUserBinding {
         context: NonNull::from(context),
-        publication,
-        address_space,
     })
-}
-
-#[cfg(feature = "uspace")]
-pub(super) fn validate_current_user_context(
-    cpu_pin: &CpuPin<'_>,
-    binding: &RuntimeUserBinding,
-) -> Result<(), RuntimeStatus> {
-    let context = current_runtime_context(cpu_pin)?;
-    if !ptr::eq(context, binding.context.as_ptr()) || context.has_switch_tail() {
-        return Err(RuntimeStatus::UnsafeContext);
-    }
-    // SAFETY: the current context owns this immutable publication.
-    if unsafe { *context.publication.get() } != binding.publication {
-        return Err(RuntimeStatus::InvalidHandle);
-    }
-    Ok(())
 }
 
 pub(super) fn bind_bootstrap_runtime_context(
@@ -415,31 +396,6 @@ pub(super) fn scheduler_current_thread_publication() -> CurrentThreadPublication
 /// Reads only the immutable scheduler identity owned by the current task.
 pub(super) fn scheduler_current_thread_identity() -> ThreadIdentityV1 {
     scheduler_current_thread_publication().identity()
-}
-
-/// Restores the current x86 userspace FPU image after the final no-work snapshot.
-#[cfg(feature = "uspace")]
-pub(crate) fn prepare_current_user_fp_return() -> Result<(), TaskError> {
-    #[cfg(all(target_arch = "x86_64", feature = "fp-simd"))]
-    {
-        // SAFETY: the user-return boundary keeps local IRQs disabled, so the
-        // current header, runtime context, and CPU-local FPU owner stay pinned
-        // through the restore and owner publication.
-        unsafe {
-            with_current_cpu_pin(|cpu_pin| {
-                let context = current_runtime_context(cpu_pin).map_err(runtime_status_error)?;
-                // SAFETY: this is the currently executing architecture context;
-                // no scheduler or remote path can mutate it under IRQ exclusion.
-                let architecture_context = &*context.inner.get();
-                architecture_context.prepare_user_return_fp();
-                Ok(())
-            })
-        }
-    }
-    #[cfg(not(all(target_arch = "x86_64", feature = "fp-simd")))]
-    {
-        Ok(())
-    }
 }
 
 #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]

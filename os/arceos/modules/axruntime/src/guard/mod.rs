@@ -80,14 +80,9 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
             }
         };
         if !pending {
-            if let Err(error) = crate::task::prepare_current_user_fp_return() {
-                ax_hal::asm::enable_irqs();
-                return Err(error);
-            }
             // Keep IRQs disabled. The runtime's private prepared user-entry
             // token enters the architecture return path without exposing a
-            // kernel IRQ window after the final no-work snapshot and FPU-owner
-            // publication.
+            // kernel IRQ window after the final no-work snapshot.
             return Ok(());
         }
 

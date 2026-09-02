@@ -114,8 +114,6 @@ use bootstrap::{
 #[cfg(feature = "smp")]
 pub(crate) use bootstrap::{initialize_secondary, run_idle};
 pub use context::diagnose_current_stack_guard_page_fault;
-#[cfg(feature = "uspace")]
-pub(crate) use context::prepare_current_user_fp_return;
 use context::{
     bind_bootstrap_runtime_context, bind_runtime_context_thread, create_bootstrap_context,
     create_runtime_context, create_user_runtime_context, destroy_runtime_context,
