@@ -260,7 +260,7 @@ impl TaskSystem {
                     | SchedulePolicy::RoundRobin { .. }
                     | SchedulePolicy::Deadline(_)
             ) {
-                self.select_priority_cpu(policy, active.entity(), affinity, Some(owner), None)
+                self.select_priority_cpu(policy, Some(active.entity()), affinity, Some(owner), None)
             } else if affinity.contains(owner) {
                 Some(owner)
             } else {
@@ -339,8 +339,14 @@ impl TaskSystem {
             owner
         } else {
             let (policy, entity) = self.affinity_schedule_state_locked(core, &sched)?;
-            self.select_priority_cpu(policy, &entity, &sched.affinity.affinity, None, Some(owner))
-                .ok_or(TaskError::InvalidConfiguration)?
+            self.select_priority_cpu(
+                policy,
+                Some(&entity),
+                &sched.affinity.affinity,
+                None,
+                Some(owner),
+            )
+            .ok_or(TaskError::InvalidConfiguration)?
         };
         core.set_wake_cpu_hint(target);
 

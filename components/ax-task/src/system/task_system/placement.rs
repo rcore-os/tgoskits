@@ -163,7 +163,7 @@ impl TaskSystem {
                 SchedulePolicy::Fifo { .. }
                 | SchedulePolicy::RoundRobin { .. }
                 | SchedulePolicy::Deadline(_) => {
-                    self.select_priority_cpu(policy, &entity, &affinity, preferred, None)
+                    self.select_priority_cpu(policy, Some(&entity), &affinity, preferred, None)
                 }
                 SchedulePolicy::KernelStop => self.select_fallback_active_cpu(&affinity, None),
             })
@@ -254,7 +254,7 @@ impl TaskSystem {
                     .or_else(|| {
                         self.select_priority_cpu(
                             policy,
-                            &entity,
+                            Some(&entity),
                             &affinity,
                             Some(owner),
                             must_migrate.then_some(owner),

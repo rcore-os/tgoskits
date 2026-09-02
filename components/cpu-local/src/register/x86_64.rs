@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     CPU_AREA_CURRENT_CONTEXT_OFFSET, CPU_AREA_PREEMPTION_STATE_OFFSET, CPU_AREA_SELF_BASE_OFFSET,
-    preempt::PreemptionState,
+    CpuIndex, CpuLocalError, preempt::PreemptionState,
 };
 
 const IA32_GS_BASE: u32 = 0xc000_0101;
@@ -16,6 +16,23 @@ pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentMo
 pub(super) struct Backend;
 
 impl ArchitectureRegisterBackend for Backend {
+    #[inline(always)]
+    fn current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
+        let index: u32;
+        // SAFETY: the installed GS base points at the immutable CPU-area
+        // header for the current CPU and the caller's preemption/IRQ pin keeps
+        // that area selected until this scalar is consumed.
+        unsafe {
+            core::arch::asm!(
+                "mov {index:e}, dword ptr gs:[{offset}]",
+                index = out(reg) index,
+                offset = const crate::CPU_AREA_CPU_INDEX_OFFSET,
+                options(nostack, preserves_flags, readonly),
+            );
+        }
+        CpuIndex::from_u32(index).ok_or(CpuLocalError::AreaIdentityMismatch)
+    }
+
     #[inline(always)]
     fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
         let state: u32;

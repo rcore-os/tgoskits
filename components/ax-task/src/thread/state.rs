@@ -100,6 +100,7 @@ impl ThreadLifecycle {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn consume_wake(&self, preserve_park_notification: bool) -> bool {
         let consumed = if preserve_park_notification {
             WAKE_PENDING
@@ -119,6 +120,43 @@ impl ThreadLifecycle {
             .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel)
             & PARK_NOTIFIED
             != 0
+    }
+
+    /// Consumes one wake publication and optionally advances a blocked task in
+    /// the same lifecycle CAS. The task lock serializes scheduler ownership,
+    /// while this single atomic update closes the remaining park/wake race
+    /// without publishing an intermediate `Blocked` observation.
+    pub(crate) fn consume_wake_and_transition(
+        &self,
+        preserve_park_notification: bool,
+        next: Option<ThreadState>,
+    ) -> (ThreadState, bool) {
+        let mut observed = self.state.load(Ordering::Acquire);
+        loop {
+            let current = decode_state(observed);
+            let pending = observed & WAKE_PENDING != 0;
+            let consumed = if preserve_park_notification && current == ThreadState::Parking {
+                WAKE_PENDING
+            } else {
+                WAKE_STATE_PUBLISHED
+            };
+            let mut updated = observed & !consumed;
+            if pending && next == Some(ThreadState::Waking) && current == ThreadState::Blocked {
+                updated = (updated & !STATE_MASK) | ThreadState::Waking as u8;
+            }
+            if updated == observed {
+                return (current, pending);
+            }
+            match self.state.compare_exchange_weak(
+                observed,
+                updated,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return (current, pending),
+                Err(next_observed) => observed = next_observed,
+            }
+        }
     }
 
     /// Atomically chooses between a racing wake and blocked publication.

@@ -7,8 +7,13 @@ impl ThreadCore {
         self.state.publish_wake()
     }
 
-    pub(crate) fn consume_wake(&self, preserve_park_notification: bool) -> bool {
-        self.state.consume_wake(preserve_park_notification)
+    pub(crate) fn consume_wake_and_transition(
+        &self,
+        preserve_park_notification: bool,
+        next: Option<ThreadState>,
+    ) -> (ThreadState, bool) {
+        self.state
+            .consume_wake_and_transition(preserve_park_notification, next)
     }
 
     pub(crate) fn discard_failed_wake(&self) {

@@ -5,7 +5,7 @@ use core::{pin::Pin, ptr::NonNull, sync::atomic::Ordering};
 #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
 use crate::preempt::PreemptionState;
 use crate::{
-    ContextSwitchError, CpuAreaRef, CpuLocalError, CpuPin, ExecutionContextHeader,
+    ContextSwitchError, CpuAreaRef, CpuIndex, CpuLocalError, CpuPin, ExecutionContextHeader,
     preempt::PreemptionSnapshot,
 };
 
@@ -80,9 +80,18 @@ impl ArchitectureCurrentModel {
 /// representation, while preserving the same advisory snapshot semantics.
 pub(super) trait ArchitectureRegisterBackend {
     #[inline(always)]
+    fn current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
+        default_current_cpu_index()
+    }
+
+    #[inline(always)]
     fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
         default_current_preemption_snapshot()
     }
+}
+
+fn default_current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
+    Ok(current_area()?.cpu_index())
 }
 
 /// Installs the final area of an offline CPU.
@@ -112,6 +121,17 @@ pub(crate) fn current_area() -> Result<CpuAreaRef, CpuLocalError> {
     // SAFETY: only install_cpu_area writes the architecture-owned base after
     // validating it, and its contract keeps that area mapped until shutdown.
     Ok(unsafe { CpuAreaRef::from_installed_base(area_base) })
+}
+
+/// Reads the logical CPU index selected by the architecture register.
+///
+/// # Safety
+///
+/// Callers must retain the migration exclusion that makes the selected CPU
+/// area stable for the complete observation.
+#[inline(always)]
+pub unsafe fn current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
+    imp::Backend::current_cpu_index()
 }
 
 /// Reads the architecture CPU-area base without validating current context.

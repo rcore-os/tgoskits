@@ -92,8 +92,9 @@ impl_task_runtime! {
         unsafe fn current_cpu_id() -> RuntimeCpuId {
             // SAFETY: the TaskRuntime caller retains a migration pin for the
             // complete owner-CPU observation.
-            let cpu = unsafe { with_current_cpu_pin(|pin| pin.area().cpu_index().as_u32()) };
-            RuntimeCpuId::new(cpu)
+            let cpu = unsafe { cpu_local::current_cpu_index() }
+                .unwrap_or_else(|error| panic!("task runtime CPU index is invalid: {error}"));
+            RuntimeCpuId::new(cpu.as_u32())
         }
 
         fn prepare_cpu_online(cpu: RuntimeCpuId) -> RuntimeStatus {

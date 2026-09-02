@@ -1,7 +1,7 @@
 //! Direct wakeup transactions.
 
 use super::*;
-use crate::{WakePreemptionContext, lock::IrqOwner};
+use crate::{FairEntity, WakePreemptionContext, lock::IrqOwner};
 
 struct FairWakeContext<'a> {
     affinity: &'a CpuSet,
@@ -40,6 +40,19 @@ enum OnRqWakeAction {
 enum OnRqRevalidation {
     CommitOnRq,
     ActivateOffRq,
+}
+
+enum WakeActivationPreparation {
+    Throttled,
+    Ready {
+        policy: SchedulePolicy,
+        active: ActiveSchedulingState,
+        metadata: RqTaskMetadata,
+        current_fair: Option<FairEntity>,
+        maintains_fair_virtual_time: bool,
+        delayed_migration_wake: bool,
+        deadline_wake: bool,
+    },
 }
 
 /// Selects the Linux `ttwu_runnable()` action after the rq lock is held.
@@ -133,23 +146,17 @@ impl TaskSystem {
         source_remote.kick_scheduler_work()
     }
 
-    fn consume_wake_locked(
-        core: &Arc<ThreadCore>,
-        sched: &mut ThreadSchedState,
-    ) -> Result<WakeTransition, TaskError> {
-        let lifecycle = sched.lifecycle.state();
-        if !core.consume_wake(lifecycle == ThreadState::Parking) || lifecycle == ThreadState::Exited
-        {
-            return Ok(WakeTransition::Notified);
+    fn consume_wake_locked(core: &Arc<ThreadCore>) -> WakeTransition {
+        let (lifecycle, pending) =
+            core.consume_wake_and_transition(true, Some(ThreadState::Waking));
+        if !pending || lifecycle == ThreadState::Exited {
+            return WakeTransition::Notified;
         }
         match lifecycle {
-            ThreadState::Parking => Ok(WakeTransition::Notified),
-            ThreadState::Blocked => {
-                sched.transition(core, ThreadState::Waking)?;
-                Ok(WakeTransition::Activate)
-            }
-            ThreadState::Running | ThreadState::Waking => Ok(WakeTransition::Notified),
-            ThreadState::New | ThreadState::Exited => Ok(WakeTransition::Notified),
+            ThreadState::Parking => WakeTransition::Notified,
+            ThreadState::Blocked => WakeTransition::Activate,
+            ThreadState::Running | ThreadState::Waking => WakeTransition::Notified,
+            ThreadState::New | ThreadState::Exited => WakeTransition::Notified,
         }
     }
 
@@ -160,11 +167,9 @@ impl TaskSystem {
     /// transaction publishes Running directly; Waking is reserved for the
     /// off-rq path that must drop the task lock before target selection and
     /// enqueue.
-    fn consume_on_rq_wake_locked(
-        core: &Arc<ThreadCore>,
-        sched: &ThreadSchedState,
-    ) -> WakeTransition {
-        if !core.consume_wake(false) || sched.lifecycle.state() != ThreadState::Blocked {
+    fn consume_on_rq_wake_locked(core: &Arc<ThreadCore>) -> WakeTransition {
+        let (lifecycle, pending) = core.consume_wake_and_transition(false, None);
+        if !pending || lifecycle != ThreadState::Blocked {
             WakeTransition::Notified
         } else {
             WakeTransition::Activate
@@ -175,7 +180,7 @@ impl TaskSystem {
         &self,
         sched: &ThreadSchedState,
         wakee: &ThreadCore,
-        waker: CpuId,
+        waker: Option<CpuId>,
         previous: Option<CpuId>,
         intent: WakeIntent,
     ) -> Option<CpuId> {
@@ -189,9 +194,13 @@ impl TaskSystem {
             }
             WakeTargetSelection::SchedulerClass => {}
         }
-        let active = wakee.sched().active(sched);
-        let policy = active.policy();
+        let policy = wakee.effective_policy_snapshot();
         if let SchedulePolicy::Fair { mode, .. } = policy {
+            let waker = waker.or_else(|| {
+                Some(CpuId::new(unsafe {
+                    task_runtime::current_cpu_id().as_u32()
+                }))
+            });
             let wake_wide = {
                 let publication = task_runtime::current_thread_publication();
                 // SAFETY: the preempt scope pins this execution context until
@@ -209,7 +218,7 @@ impl TaskSystem {
             };
             return self.select_fair_wake_cpu(FairWakeContext {
                 affinity: &sched.affinity.affinity,
-                waker: Some(waker),
+                waker,
                 previous,
                 wakee_demand: policy.placement_demand(),
                 intent,
@@ -217,7 +226,13 @@ impl TaskSystem {
                 wake_wide,
             });
         }
-        let preferred = previous.or(Some(waker));
+        let preferred = previous.or_else(|| {
+            waker.or_else(|| {
+                Some(CpuId::new(unsafe {
+                    task_runtime::current_cpu_id().as_u32()
+                }))
+            })
+        });
         if let Some(priority) = policy.rt_priority()
             && let Some(previous) = preferred
             && sched.affinity.affinity.contains(previous)
@@ -233,9 +248,11 @@ impl TaskSystem {
             // of bouncing the wakee merely because another CPU is idle.
             return Some(previous);
         }
+        let entity =
+            matches!(policy, SchedulePolicy::Deadline(_)).then(|| wakee.sched().active(sched));
         self.select_priority_cpu(
             policy,
-            active.entity(),
+            entity.as_ref().map(|active| active.entity()),
             &sched.affinity.affinity,
             // Linux enters select_task_rq_{rt,dl} with p->wake_cpu. The
             // current waker is not an implicit placement override for these
@@ -411,7 +428,6 @@ impl TaskSystem {
         // ownership boundary here. The preempt scope only pins the producer
         // while selecting its CPU and acquiring that lock.
         let _preempt = crate::lock::PreemptScope::enter();
-        let waker = CpuId::new(unsafe { task_runtime::current_cpu_id().as_u32() });
         let wake_publication = core.publish_wake();
 
         if wake_publication.already_pending() && wake_publication.state() != ThreadState::Blocked {
@@ -431,7 +447,7 @@ impl TaskSystem {
 
         let mut fail_delivery = false;
         loop {
-            let mut sched = core.sched().lock();
+            let sched = core.sched().lock();
             if sched.lifecycle.state() == ThreadState::Exited {
                 core.discard_failed_wake();
                 return WakeResult::Exited;
@@ -464,7 +480,7 @@ impl TaskSystem {
                     drop(sched);
                     continue;
                 };
-                let transition = Self::consume_on_rq_wake_locked(&core, &sched);
+                let transition = Self::consume_on_rq_wake_locked(&core);
                 if transition != WakeTransition::Activate {
                     task_runtime::fatal_invariant(0x574b_000f, core.id().as_u64() as usize);
                 }
@@ -475,7 +491,7 @@ impl TaskSystem {
                 .placement
                 .assigned_cpu()
                 .or_else(|| core.wake_cpu_hint());
-            let target = self.select_wake_target(&sched, &core, waker, previous, intent);
+            let target = self.select_wake_target(&sched, &core, None, previous, intent);
 
             let Some(target) = target else {
                 return WakeResult::Unavailable;
@@ -493,10 +509,7 @@ impl TaskSystem {
                 continue;
             };
 
-            let transition = match Self::consume_wake_locked(&core, &mut sched) {
-                Ok(transition) => transition,
-                Err(_) => task_runtime::fatal_invariant(0x574b_0002, core.id().as_u64() as usize),
-            };
+            let transition = Self::consume_wake_locked(&core);
             match transition {
                 WakeTransition::Notified => return WakeResult::Notified,
                 WakeTransition::Activate => {
@@ -533,8 +546,7 @@ impl TaskSystem {
             return WaitWakeDelivery::Exited;
         }
         let _preempt = crate::lock::PreemptScope::enter();
-        let waker = CpuId::new(unsafe { task_runtime::current_cpu_id().as_u32() });
-        let mut sched = core.sched().lock();
+        let sched = core.sched().lock();
         if core.park_generation() != claim.park_generation() {
             claim.cancel_selected();
             return WaitWakeDelivery::Cancelled;
@@ -562,7 +574,7 @@ impl TaskSystem {
                 // publication-aware path, matching Linux's on_rq revalidation
                 // under p->pi_lock.
                 drop(sched);
-                let mut sched = core.sched().lock();
+                let sched = core.sched().lock();
                 if core.park_generation() != claim.park_generation()
                     || sched.lifecycle.state() != ThreadState::Blocked
                 {
@@ -579,11 +591,9 @@ impl TaskSystem {
                     });
                 let on_rq = sched.placement.queued_cpu() == Some(target);
                 let transition = if on_rq {
-                    Self::consume_on_rq_wake_locked(&core, &sched)
+                    Self::consume_on_rq_wake_locked(&core)
                 } else {
-                    Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
-                        task_runtime::fatal_invariant(0x574b_001a, core.id().as_u64() as usize)
-                    })
+                    Self::consume_wake_locked(&core)
                 };
                 if transition != WakeTransition::Activate {
                     task_runtime::fatal_invariant(0x574b_001b, core.id().as_u64() as usize);
@@ -609,7 +619,7 @@ impl TaskSystem {
                         return WaitWakeDelivery::Cancelled;
                     }
                     let _already_pending = core.publish_wake();
-                    let transition = Self::consume_on_rq_wake_locked(&core, &sched);
+                    let transition = Self::consume_on_rq_wake_locked(&core);
                     if transition != WakeTransition::Activate {
                         task_runtime::fatal_invariant(0x574b_0011, core.id().as_u64() as usize);
                     }
@@ -631,7 +641,7 @@ impl TaskSystem {
                         .assigned_cpu()
                         .or_else(|| core.wake_cpu_hint());
                     let Some(target) =
-                        self.select_wake_target(&sched, &core, waker, previous, intent)
+                        self.select_wake_target(&sched, &core, None, previous, intent)
                     else {
                         claim.cancel_selected();
                         return WaitWakeDelivery::Unavailable;
@@ -649,10 +659,7 @@ impl TaskSystem {
                     return WaitWakeDelivery::Cancelled;
                 }
                 let _already_pending = core.publish_wake();
-                let transition =
-                    Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
-                        task_runtime::fatal_invariant(0x574b_000b, core.id().as_u64() as usize)
-                    });
+                let transition = Self::consume_wake_locked(&core);
                 if transition != WakeTransition::Activate {
                     task_runtime::fatal_invariant(0x574b_000c, core.id().as_u64() as usize);
                 }
@@ -832,6 +839,78 @@ impl TaskSystem {
         WakeResult::Notified
     }
 
+    /// Prepares the policy-owned state before the common wake enqueue. Keeping
+    /// Fair/Deadline accounting out of the RT enqueue function leaves the
+    /// Linux FIFO/RR path with one policy classification and one ownership
+    /// transfer instead of repeatedly checking class-specific metadata.
+    fn prepare_wake_activation(
+        &self,
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        run_queue: &mut OwnerRqTxn<'_>,
+        target: CpuId,
+    ) -> WakeActivationPreparation {
+        let mut active = core.sched().active(sched);
+        let policy = active.policy();
+        if matches!(policy, SchedulePolicy::Fair { .. })
+            && run_queue.current().is_some_and(|current| {
+                matches!(current.schedule_policy(), SchedulePolicy::Fair { .. })
+            })
+        {
+            let _ = run_queue.settle_current(0);
+        }
+        let deadline_wake = matches!(policy, SchedulePolicy::Deadline(_)) && !sched.is_pi_boosted();
+        let queued_entity = deadline_wake.then(|| {
+            let mut entity = active.entity().clone();
+            entity.activate_deadline(run_queue.clock().wall().as_nanos());
+            *active.entity_mut() = entity.clone();
+            entity
+        });
+        drop(active);
+
+        let deadline_throttled = queued_entity
+            .as_ref()
+            .and_then(|entity| entity.deadline())
+            .is_some_and(DeadlineEntity::is_throttled);
+        if deadline_throttled {
+            self.link_owner_throttled_deadline_locked(run_queue, core, sched, target);
+            return WakeActivationPreparation::Throttled;
+        }
+
+        Self::activate_deadline_bandwidth_locked(core, sched, run_queue, target);
+        let maintains_fair_virtual_time = queued_entity
+            .as_ref()
+            .is_some_and(|entity| entity.fair().is_some());
+        let current_fair = if maintains_fair_virtual_time {
+            let current_fair = run_queue.current_fair_contender();
+            run_queue.update_fair_virtual_time(current_fair);
+            current_fair
+        } else {
+            None
+        };
+        let metadata = sched.rq_task_metadata().unwrap_or_else(|_| {
+            task_runtime::fatal_invariant(0x574b_0103, core.id().as_u64() as usize)
+        });
+        let active = core.sched().take_active(sched);
+        debug_assert_eq!(active.policy(), policy);
+        if let Some(queued_entity) = queued_entity.as_ref() {
+            debug_assert_eq!(active.entity(), queued_entity);
+        }
+        let delayed_migration_wake = queued_entity
+            .as_ref()
+            .and_then(SchedulingEntity::fair)
+            .is_some_and(|fair| fair.is_delayed_migrating());
+        WakeActivationPreparation::Ready {
+            policy,
+            active,
+            metadata,
+            current_fair,
+            maintains_fair_virtual_time,
+            delayed_migration_wake,
+            deadline_wake,
+        }
+    }
+
     pub(in crate::system::task_system) fn activate_waking_thread_locked(
         &self,
         core: &Arc<ThreadCore>,
@@ -874,64 +953,45 @@ impl TaskSystem {
         }
         let mut run_queue = OwnerRqTxn::begin_nested(self, remote, &irq_owner);
 
-        let mut active = core.sched().active(sched);
-        let policy = active.policy();
-        if matches!(policy, SchedulePolicy::Fair { .. })
-            && run_queue.current().is_some_and(|current| {
-                matches!(current.schedule_policy(), SchedulePolicy::Fair { .. })
-            })
-        {
-            let _ = run_queue.settle_current(0);
-        }
-        let deadline_wake = matches!(policy, SchedulePolicy::Deadline(_)) && !sched.is_pi_boosted();
-        let queued_entity = deadline_wake.then(|| {
-            let mut entity = active.entity().clone();
-            entity.activate_deadline(run_queue.clock().wall().as_nanos());
-            *active.entity_mut() = entity.clone();
-            entity
-        });
-        drop(active);
-        Self::activate_deadline_bandwidth_locked(core, sched, &mut run_queue, target);
-        if deadline_wake
-            && queued_entity
-                .as_ref()
-                .and_then(|entity| entity.deadline())
-                .is_some_and(DeadlineEntity::is_throttled)
-        {
-            self.link_owner_throttled_deadline_locked(&mut run_queue, core, sched, target);
-            if sched.transition(core, ThreadState::Running).is_err() {
-                task_runtime::fatal_invariant(0x574b_0006, core.id().as_u64() as usize);
+        let preparation = self.prepare_wake_activation(core, sched, &mut run_queue, target);
+        let (
+            policy,
+            active,
+            metadata,
+            current_fair,
+            maintains_fair_virtual_time,
+            delayed_migration_wake,
+            deadline_wake,
+        ) = match preparation {
+            WakeActivationPreparation::Throttled => {
+                if sched.transition(core, ThreadState::Running).is_err() {
+                    task_runtime::fatal_invariant(0x574b_0006, core.id().as_u64() as usize);
+                }
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_direct_wake_activation();
+                run_queue.commit();
+                drop(sched_guard);
+                self.publish_owner_deadline_refresh_reserved(core, target, publication);
+                return WakeResult::Notified;
             }
-            #[cfg(feature = "qperf-metrics")]
-            crate::metrics::record_direct_wake_activation();
-            run_queue.commit();
-            drop(sched_guard);
-            self.publish_owner_deadline_refresh_reserved(core, target, publication);
-            return WakeResult::Notified;
-        }
-        let maintains_fair_virtual_time = queued_entity
-            .as_ref()
-            .is_some_and(|entity| entity.fair().is_some());
-        let current_fair = if maintains_fair_virtual_time {
-            let current_fair = run_queue.current_fair_contender();
-
-            run_queue.update_fair_virtual_time(current_fair);
-            current_fair
-        } else {
-            None
+            WakeActivationPreparation::Ready {
+                policy,
+                active,
+                metadata,
+                current_fair,
+                maintains_fair_virtual_time,
+                delayed_migration_wake,
+                deadline_wake,
+            } => (
+                policy,
+                active,
+                metadata,
+                current_fair,
+                maintains_fair_virtual_time,
+                delayed_migration_wake,
+                deadline_wake,
+            ),
         };
-        let metadata = sched.rq_task_metadata().unwrap_or_else(|_| {
-            task_runtime::fatal_invariant(0x574b_0103, core.id().as_u64() as usize)
-        });
-        let active = core.sched().take_active(sched);
-        debug_assert_eq!(active.policy(), policy);
-        if let Some(queued_entity) = queued_entity.as_ref() {
-            debug_assert_eq!(active.entity(), queued_entity);
-        }
-        let delayed_migration_wake = queued_entity
-            .as_ref()
-            .and_then(SchedulingEntity::fair)
-            .is_some_and(|fair| fair.is_delayed_migrating());
         let queued = QueuedThread::new(
             core.id(),
             active,

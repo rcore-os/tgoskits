@@ -271,7 +271,7 @@ impl TaskSystem {
                 .or_else(|| {
                     self.select_priority_cpu(
                         current_policy,
-                        current_entity,
+                        Some(current_entity),
                         &sched.affinity.affinity,
                         None,
                         Some(owner),
@@ -476,7 +476,10 @@ impl TaskSystem {
     pub(super) fn select_priority_cpu(
         &self,
         policy: SchedulePolicy,
-        entity: &SchedulingEntity,
+        // RT placement is keyed solely by priority. Deadline placement also
+        // needs the entity's absolute deadline; callers pass it only for that
+        // class so ordinary wakeups do not transfer detached ownership.
+        entity: Option<&SchedulingEntity>,
         affinity: &CpuSet,
         preferred: Option<CpuId>,
         excluded: Option<CpuId>,
@@ -500,7 +503,7 @@ impl TaskSystem {
                 .root_domain
                 .find_lowest_rt_cpu(priority, affinity, preferred, accepts),
             SchedulePolicy::Deadline(_) => entity
-                .deadline()
+                .and_then(SchedulingEntity::deadline)
                 .and_then(DeadlineEntity::absolute_deadline_ns)
                 .and_then(|absolute_deadline_ns| {
                     self.root_domain.find_later_deadline_cpu(
