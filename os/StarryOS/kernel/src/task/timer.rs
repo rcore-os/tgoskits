@@ -18,7 +18,7 @@ use strum::FromRepr;
 
 use super::PidIdentity;
 use crate::{
-    sync::{PiMutex, SpinLock},
+    sync::{NoPreemptIrqSave, PiMutex, SpinLock},
     task::poll_process_timer_for_alarm,
 };
 

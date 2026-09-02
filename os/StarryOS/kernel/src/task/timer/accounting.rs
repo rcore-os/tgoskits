@@ -305,11 +305,13 @@ impl CpuTimeAccounting {
     }
 
     fn begin_write(&self) -> CpuTimeWriter<'_> {
-        // The sequence word is both the reader seqlock and the writer
-        // ownership token. Linux vtime writers are serialized by the
-        // scheduler's existing owner lock; Starry policy/accounting writers
-        // can arrive from another CPU, so claim the same word explicitly and
-        // avoid a second ticket-lock/preemption boundary on every switch.
+        // A seqcount writer must not be preempted by another writer. In
+        // particular, scheduler_switch_out() can run for the same thread that
+        // was preempted while account_now() owned an odd sequence. Keep every
+        // writer IRQ-safe and non-preemptible, matching Linux's rq-owned vtime
+        // writer boundary, then use the sequence word to serialize remote
+        // policy/accounting updates.
+        let local_owner = NoPreemptIrqSave::new();
         loop {
             let sequence = self.sequence.load(Ordering::Acquire);
             if sequence & 1 != 0 {
@@ -331,6 +333,7 @@ impl CpuTimeAccounting {
             {
                 return CpuTimeWriter {
                     accounting: self,
+                    _local_owner: local_owner,
                     completed_sequence: writing
                         .checked_add(1)
                         .expect("CPU-time accounting sequence overflow"),
@@ -342,6 +345,7 @@ impl CpuTimeAccounting {
 
 struct CpuTimeWriter<'accounting> {
     accounting: &'accounting CpuTimeAccounting,
+    _local_owner: NoPreemptIrqSave,
     completed_sequence: u64,
 }
 
