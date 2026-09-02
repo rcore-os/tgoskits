@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Expose the typed PCI host key so architecture composition roots can register a provider only when referenced.
+- Add architecture-neutral ECAM, memory-aperture, and root lifecycle frontends for graph-resolved PCI hosts.
+- Add fixed versus relocatable 32-bit BAR decode policies and preserve prefetchable attributes across probes, partial writes, and reset.
+- Model Memory Space Enable, Bus Master Enable, and INTx Disable command state through an out-of-lock effect boundary.
+
+### Fixed
+
+- Reset every bound PCI endpoint after restoring root state, continue after failures, and return the first endpoint error.
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.6.1...axdevice-v0.6.2) - 2026-08-27
 
 ### Fixed

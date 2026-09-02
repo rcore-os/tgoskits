@@ -6,13 +6,15 @@ default_runner = "qcs"
 [[check]]
 id = "test-axvisor-aarch64-qemu-smoke-axtest-timer-stress"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · Smoke + virtio-blk guest + axtest + timer stress"
+name = "QEMU aarch64 · Smoke + virtio-blk/ivshmem guests + axtest + timer stress"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 smoke"
 cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
+echo "==> axvisor aarch64 ivshmem-pci ArceOS guest"
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case ivshmem-pci
 echo "==> axvisor aarch64 axtest"
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
 echo "==> pull qemu-aarch64 image"
@@ -26,7 +28,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["smoke", "gicv2-timer-stress", "gicv3-timer-stress"]
+cases = ["smoke", "ivshmem-pci", "gicv2-timer-stress", "gicv3-timer-stress"]
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-panic-modes"
@@ -110,7 +112,15 @@ cases = ["smoke"]
 id = "test-axvisor-qemu-ivc"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · IVC"
+timeout_minutes = 30
 command = '''
+echo "==> pull IVC Message V1 image"
+export TGOS_IMAGE_DOWNLOAD_DIR="$PWD/tmp/ivc-images"
+export TGOS_IMAGE_EXTRACT_DIR="$PWD/tmp/axbuild/rootfs"
+cargo xtask image pull \
+  --registry "https://raw.githubusercontent.com/baitwo02/tgosimages/4ae69e079f0d2a39b2f5d1b210cc093ffc5bad07/registry/ivc-message-v1-3ce6ae8a.toml" \
+  "rootfs-aarch64-alpine-ivc-message-v1.img:0.0.12-ivc-message-v1-3ce6ae8a"
+echo "==> axvisor aarch64 IVC"
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
 '''
 

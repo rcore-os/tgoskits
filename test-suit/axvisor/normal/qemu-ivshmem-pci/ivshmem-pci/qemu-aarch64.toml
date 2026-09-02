@@ -1,0 +1,19 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-m",
+  "4g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^ARCEOS_IVSHMEM_PCI_FAIL(?:\\s|$)",
+]
+success_regex = ["(?m)^ARCEOS_IVSHMEM_PCI_PASS\\s*$"]
+timeout = 120
+to_bin = true
+uefi = false

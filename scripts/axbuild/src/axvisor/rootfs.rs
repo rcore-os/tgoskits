@@ -95,6 +95,67 @@ pub(super) async fn load_patched_qemu_config(
     Ok(qemu)
 }
 
+/// Resolves the managed rootfs image referenced by one QEMU configuration.
+///
+/// A test case may declare its own immutable image by naming a managed
+/// `rootfs-*.img` in its drive arguments. Returns `None` when the config does
+/// not select a managed rootfs and the caller should use the arch default.
+pub(crate) fn managed_rootfs_path_from_qemu(
+    qemu: &QemuConfig,
+    workspace_root: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    let mut selected_rootfs: Option<PathBuf> = None;
+
+    for file_path in crate::rootfs::qemu::drive_file_paths(qemu) {
+        let Some(managed_rootfs) =
+            crate::image::storage::resolve_managed_rootfs_path(workspace_root, &file_path)?
+        else {
+            continue;
+        };
+        match &selected_rootfs {
+            Some(existing) if existing != &managed_rootfs => {
+                bail!(
+                    "QEMU configuration selects multiple managed rootfs images: {} and {}",
+                    existing.display(),
+                    managed_rootfs.display()
+                );
+            }
+            Some(_) => {}
+            None => selected_rootfs = Some(managed_rootfs),
+        }
+    }
+
+    Ok(selected_rootfs)
+}
+
+/// Resolves the single managed rootfs shared by all QEMU configs in a test
+/// group. Test cases in one build group must boot from the same image.
+pub(crate) fn managed_rootfs_path_from_qemu_cases<'a>(
+    qemus: impl IntoIterator<Item = &'a QemuConfig>,
+    workspace_root: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    let mut selected_rootfs: Option<PathBuf> = None;
+
+    for qemu in qemus {
+        let Some(case_rootfs) = managed_rootfs_path_from_qemu(qemu, workspace_root)? else {
+            continue;
+        };
+        match &selected_rootfs {
+            Some(existing) if existing != &case_rootfs => {
+                bail!(
+                    "QEMU test group selects multiple managed rootfs images: {} and {}",
+                    existing.display(),
+                    case_rootfs.display()
+                );
+            }
+            Some(_) => {}
+            None => selected_rootfs = Some(case_rootfs),
+        }
+    }
+
+    Ok(selected_rootfs)
+}
+
 /// Ensures the managed rootfs required by an Axvisor QEMU run is available.
 pub(crate) async fn ensure_qemu_rootfs_ready(
     request: &ResolvedAxvisorRequest,
@@ -393,6 +454,66 @@ kernel_path = "{}"
             qemu.args
                 .iter()
                 .any(|arg| arg.contains("root=/dev/nvme0n1"))
+        );
+    }
+
+    #[test]
+    fn managed_rootfs_from_qemu_uses_dedicated_drive_image() {
+        let root = tempdir().unwrap();
+        write_test_image_config(root.path());
+        let image_name = "rootfs-aarch64-alpine-ivc-message-v1.img";
+        let dedicated = managed_rootfs_path_for_test(root.path(), image_name);
+        let drive_value = format!(
+            "id=disk0,if=none,format=raw,file=${{workspace}}/tmp/axbuild/rootfs/{image_name}"
+        );
+        let qemu = QemuConfig {
+            args: vec!["-drive".to_string(), drive_value.clone()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            managed_rootfs_path_from_qemu(&qemu, root.path()).unwrap(),
+            Some(dedicated)
+        );
+    }
+
+    #[test]
+    fn managed_rootfs_from_qemu_rejects_distinct_managed_images() {
+        let root = tempdir().unwrap();
+        write_test_image_config(root.path());
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/\
+                 rootfs-aarch64-alpine.img"
+                    .to_string(),
+                "-drive".to_string(),
+                "id=disk1,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/\
+                 rootfs-aarch64-alpine-ivc-message-v1.img"
+                    .to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let error = managed_rootfs_path_from_qemu(&qemu, root.path()).unwrap_err();
+        assert!(error.to_string().contains("multiple managed rootfs"));
+    }
+
+    #[test]
+    fn managed_rootfs_from_qemu_ignores_unmanaged_drives() {
+        let root = tempdir().unwrap();
+        write_test_image_config(root.path());
+        let qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/unmanaged.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            managed_rootfs_path_from_qemu(&qemu, root.path()).unwrap(),
+            None
         );
     }
 

@@ -89,7 +89,7 @@ impl DeviceModel for X86PciHostModel {
             memory.1,
             binding.clone(),
         )));
-        bundle.add_lifecycle(Arc::new(PciRootLifecycle::new(root)));
+        bundle.add_lifecycle(Arc::new(PciRootLifecycle::new(binding.clone())));
         bundle.provide_service::<PciRootBindingKey>(binding)?;
         Ok(bundle)
     }

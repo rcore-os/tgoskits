@@ -11,9 +11,9 @@ const PUBLISHER_TO_SUBSCRIBER_RING_OFFSET: u32 =
     core::mem::offset_of!(IvcRegion, publisher_to_subscriber) as u32;
 const SUBSCRIBER_TO_PUBLISHER_RING_OFFSET: u32 =
     core::mem::offset_of!(IvcRegion, subscriber_to_publisher) as u32;
-const IVC_REGION_FEATURE_SPSC_FIXED_SLOTS: u32 = 1;
+const IVC_REGION_FEATURE_SPSC_OPAQUE_CELLS: u32 = 1;
 
-/// Full fixed-slot IVC region for one publisher/subscriber pair.
+/// Full opaque-cell IVC region for one publisher/subscriber pair.
 ///
 /// Axvisor enforces at most one subscriber for the current SPSC protocol. The
 /// first two fields intentionally match `axvm::runtime::ivc::IVCChannelHeader`.
@@ -30,7 +30,7 @@ pub struct IvcRegion {
 
 // SAFETY: The two rings are independent SPSC rings. Axvisor admits only one
 // subscriber per channel, mutable ring state is reachable only through
-// `IvcProducer`/`IvcConsumer` endpoints with `&mut` methods, and the `unsafe`
+// message sender/receiver endpoints with `&mut` methods, and the `unsafe`
 // endpoint constructors require callers to keep one endpoint per ring role.
 // The header fields are initialized once before sharing or are atomic, so
 // concurrent &IvcRegion access across threads is sound.
@@ -43,6 +43,10 @@ impl IvcRegion {
     /// is made subscribable. It is read-only to guests, so protocol setup must
     /// not rewrite it while a subscriber may already be reading it.
     pub fn initialize(&mut self) {
+        // A newly mapped GPA can contain bytes from an earlier session. Clear
+        // publication first so a racing subscriber cannot accept stale layout
+        // metadata while the rings are being reinitialized.
+        self.header.invalidate();
         self.publisher_to_subscriber
             .initialize(IvcRingDirection::PublisherToSubscriber);
         self.subscriber_to_publisher
@@ -59,10 +63,13 @@ impl IvcRegion {
 
     /// Returns whether the protocol header is supported by this crate.
     pub fn protocol_header_matches(&self) -> bool {
-        self.header.magic.load(Ordering::Acquire) == IVC_REGION_MAGIC
-            && self.header.version.load(Ordering::Acquire) == IVC_REGION_VERSION
-            && self.header.region_size.load(Ordering::Acquire) as usize
-                >= core::mem::size_of::<Self>()
+        self.header.matches()
+            && self
+                .publisher_to_subscriber
+                .layout_matches(IvcRingDirection::PublisherToSubscriber)
+            && self
+                .subscriber_to_publisher
+                .layout_matches(IvcRingDirection::SubscriberToPublisher)
     }
 
     /// Attaches the publisher side and returns its channel endpoints.
@@ -75,7 +82,7 @@ impl IvcRegion {
     /// The caller must guarantee that the publisher role is attached only
     /// once across every address space sharing this region. Attaching it again
     /// would create duplicate producer and consumer endpoints, allowing data
-    /// races on slot payloads.
+    /// races on cell bytes.
     pub unsafe fn publisher_endpoints(&self) -> IvcEndpoints<'_> {
         IvcEndpoints::new(&self.publisher_to_subscriber, &self.subscriber_to_publisher)
     }
@@ -90,7 +97,7 @@ impl IvcRegion {
     /// The caller must guarantee that the subscriber role is attached only
     /// once across every address space sharing this region. Attaching it again
     /// would create duplicate producer and consumer endpoints, allowing data
-    /// races on slot payloads.
+    /// races on cell bytes.
     pub unsafe fn subscriber_endpoints(&self) -> IvcEndpoints<'_> {
         IvcEndpoints::new(&self.subscriber_to_publisher, &self.publisher_to_subscriber)
     }
@@ -110,13 +117,31 @@ struct IvcRegionHeader {
 }
 
 impl IvcRegionHeader {
+    fn matches(&self) -> bool {
+        self.magic.load(Ordering::Acquire) == IVC_REGION_MAGIC
+            && self.version.load(Ordering::Relaxed) == IVC_REGION_VERSION
+            && self.header_size.load(Ordering::Relaxed) as usize == core::mem::size_of::<Self>()
+            && self.region_size.load(Ordering::Relaxed) as usize
+                >= core::mem::size_of::<IvcRegion>()
+            && self.features.load(Ordering::Relaxed) == IVC_REGION_FEATURE_SPSC_OPAQUE_CELLS
+            && self.publisher_to_subscriber_offset.load(Ordering::Relaxed)
+                == PUBLISHER_TO_SUBSCRIBER_RING_OFFSET
+            && self.subscriber_to_publisher_offset.load(Ordering::Relaxed)
+                == SUBSCRIBER_TO_PUBLISHER_RING_OFFSET
+            && self.ring_size.load(Ordering::Relaxed) == RING_HEADER_SIZE
+    }
+
+    fn invalidate(&self) {
+        self.magic.store(0, Ordering::Release);
+    }
+
     fn initialize(&self) {
         self.header_size
             .store(core::mem::size_of::<Self>() as u16, Ordering::Relaxed);
         self.region_size
             .store(core::mem::size_of::<IvcRegion>() as u32, Ordering::Relaxed);
         self.features
-            .store(IVC_REGION_FEATURE_SPSC_FIXED_SLOTS, Ordering::Relaxed);
+            .store(IVC_REGION_FEATURE_SPSC_OPAQUE_CELLS, Ordering::Relaxed);
         self.publisher_to_subscriber_offset
             .store(PUBLISHER_TO_SUBSCRIBER_RING_OFFSET, Ordering::Relaxed);
         self.subscriber_to_publisher_offset

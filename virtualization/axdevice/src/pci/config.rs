@@ -10,6 +10,27 @@ use super::{
 };
 
 const COMMAND_MEMORY_SPACE_ENABLE: u8 = 0x02;
+const COMMAND_BUS_MASTER_ENABLE: u8 = 0x04;
+// PCI Interrupt Disable is command bit 10: bit 2 of the high command byte.
+const COMMAND_INTX_DISABLE_HIGH: u8 = 0x04;
+
+/// Standard command state observed after one configuration-space write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PciCommandState {
+    pub(crate) memory_space_enabled: bool,
+    pub(crate) bus_master_enabled: bool,
+    pub(crate) intx_disabled: bool,
+}
+
+impl PciCommandState {
+    pub(crate) fn from_config(config: &[u8; CONFIG_SPACE_SIZE]) -> Self {
+        Self {
+            memory_space_enabled: config[4] & COMMAND_MEMORY_SPACE_ENABLE != 0,
+            bus_master_enabled: config[4] & COMMAND_BUS_MASTER_ENABLE != 0,
+            intx_disabled: config[5] & COMMAND_INTX_DISABLE_HIGH != 0,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct PowerOnConfig {
@@ -32,7 +53,8 @@ impl PowerOnConfig {
         let mut write_mask = [0; CONFIG_SPACE_SIZE];
         bytes[0..2].copy_from_slice(&identity.vendor_id().to_le_bytes());
         bytes[2..4].copy_from_slice(&identity.device_id().to_le_bytes());
-        write_mask[4] = COMMAND_MEMORY_SPACE_ENABLE;
+        write_mask[4] = COMMAND_MEMORY_SPACE_ENABLE | COMMAND_BUS_MASTER_ENABLE;
+        write_mask[5] = COMMAND_INTX_DISABLE_HIGH;
         let class = identity.class();
         bytes[8] = identity.revision();
         bytes[9] = class.programming_interface();
@@ -46,8 +68,9 @@ impl PowerOnConfig {
         }
         for bar in bars {
             let offset = bar.index.config_offset();
+            let attributes = if bar.prefetchable { 0x8 } else { 0 };
             bytes[offset..offset + 4]
-                .copy_from_slice(&(bar.address as u32 & 0xffff_fff0).to_le_bytes());
+                .copy_from_slice(&((bar.address as u32 & 0xffff_fff0) | attributes).to_le_bytes());
         }
         Ok(Self { bytes, write_mask })
     }
@@ -81,6 +104,10 @@ impl FunctionState {
 
     pub(crate) fn memory_decode_enabled(&self) -> bool {
         self.config[4] & COMMAND_MEMORY_SPACE_ENABLE != 0
+    }
+
+    pub(crate) fn command_state(&self) -> PciCommandState {
+        PciCommandState::from_config(&self.config)
     }
 
     pub(crate) fn bars(&self) -> &[BarState] {
@@ -182,6 +209,8 @@ mod tests {
         let plan = ResolvedBarPlan {
             index: bar.index(),
             size: bar.size(),
+            prefetchable: false,
+            policy: super::super::PciBarDecodePolicy::RelocatableWithinHostAperture,
             address: 0x2000_0000,
         };
         let power_on = PowerOnConfig::build(identity, &[plan], &[]).unwrap();

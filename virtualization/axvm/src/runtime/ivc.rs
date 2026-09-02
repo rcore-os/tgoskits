@@ -679,6 +679,19 @@ impl<H: PagingHandler> IVCChannel<H> {
             operation: "allocate IVC shared region frames",
         })?;
 
+        unsafe {
+            // The frame allocator may return bytes left by a prior owner. The
+            // allocation is contiguous, exclusively owned here, and directly
+            // mapped by `phys_to_virt` for its full page-aligned size. Clear it
+            // before publishing the channel so no peer can observe stale ring
+            // indices, protocol metadata, or payload bytes.
+            std::ptr::write_bytes(
+                H::phys_to_virt(shared_region_base).as_mut_ptr(),
+                0,
+                shared_region_size,
+            );
+        }
+
         let mut channel = IVCChannel {
             publisher_vm_id,
             key,
@@ -941,7 +954,13 @@ mod tests {
         if offset + bytes > TEST_ARENA_SIZE {
             return None;
         }
-        Some(PhysAddr::from_usize(arena_base() + offset))
+        let address = arena_base() + offset;
+        unsafe {
+            // The bump allocator assigned this in-bounds range exclusively to
+            // the caller. Fill the complete allocation to model stale frames.
+            core::ptr::write_bytes(address as *mut u8, 0xa5, bytes);
+        }
+        Some(PhysAddr::from_usize(address))
     }
 
     fn teardown_bindings(teardowns: &[IvcTeardown]) -> Vec<IvcGuestBinding> {
@@ -1008,6 +1027,31 @@ mod tests {
                 .contains(&(base.as_usize(), 4))
         );
         assert!(DEALLOC_FRAME_CALLS.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn allocation_clears_stale_protocol_state_before_publishing_identity() {
+        let channel = IVCChannel::<MockPagingHandler>::alloc(
+            0x1122,
+            0x3344,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_0800),
+        )
+        .unwrap();
+
+        assert_eq!(channel.header().publisher_id, 0x1122);
+        assert_eq!(channel.header().key, 0x3344);
+        let protocol_bytes = unsafe {
+            // The channel exclusively owns this directly mapped allocation;
+            // the slice starts after its live header and remains in bounds.
+            core::slice::from_raw_parts(
+                MockPagingHandler::phys_to_virt(channel.base_hpa())
+                    .as_ptr()
+                    .add(core::mem::size_of::<IVCChannelHeader>()),
+                channel.size() - core::mem::size_of::<IVCChannelHeader>(),
+            )
+        };
+        assert!(protocol_bytes.iter().all(|&byte| byte == 0));
     }
 
     #[test]

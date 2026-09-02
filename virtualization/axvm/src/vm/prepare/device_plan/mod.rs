@@ -15,6 +15,13 @@ pub(crate) struct VmDevicePlan {
     graph: ResolvedDeviceGraph,
 }
 
+enum PciHostRegistration {
+    #[cfg(target_arch = "x86_64")]
+    Required(PciHostProvider),
+    #[cfg(any(target_arch = "aarch64", test))]
+    IfReferenced(PciHostProvider),
+}
+
 impl VmDevicePlan {
     #[cfg(any(not(target_arch = "x86_64"), test))]
     pub(crate) fn with_pools_for_vm(
@@ -26,6 +33,7 @@ impl VmDevicePlan {
         Self::build(config, nodes, replacement_ranges, &mut pools, None)
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn with_pci_host_for_vm(
         config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
@@ -38,7 +46,24 @@ impl VmDevicePlan {
             nodes,
             replacement_ranges,
             &mut pools,
-            Some(pci_host),
+            Some(PciHostRegistration::Required(pci_host)),
+        )
+    }
+
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn with_optional_pci_host_for_vm(
+        config: &AxVMConfig,
+        nodes: Vec<DeviceNodeSpec>,
+        replacement_ranges: &[Range<u64>],
+        mut pools: ResourcePools,
+        pci_host: PciHostProvider,
+    ) -> AxVmResult<Self> {
+        Self::build(
+            config,
+            nodes,
+            replacement_ranges,
+            &mut pools,
+            Some(PciHostRegistration::IfReferenced(pci_host)),
         )
     }
 
@@ -47,24 +72,38 @@ impl VmDevicePlan {
         nodes: Vec<DeviceNodeSpec>,
         replacement_ranges: &[Range<u64>],
         pools: &mut ResourcePools,
-        pci_host: Option<PciHostProvider>,
+        pci_host: Option<PciHostRegistration>,
     ) -> AxVmResult<Self> {
         let mut builder = DeviceGraphBuilder::new();
         for node in nodes {
             builder.add(node).map_err(DeviceManagerError::from)?;
         }
-        if let Some(pci_host) = pci_host {
-            builder
-                .register_pci_host(pci_host)
-                .map_err(DeviceManagerError::from)?;
-        }
-
-        let configured_requests = builder.requests().map_err(DeviceManagerError::from)?;
+        let configured_requests = match pci_host {
+            #[cfg(target_arch = "x86_64")]
+            Some(PciHostRegistration::Required(provider)) => {
+                builder
+                    .register_pci_host(provider)
+                    .map_err(DeviceManagerError::from)?;
+                builder.requests().map_err(DeviceManagerError::from)?
+            }
+            #[cfg(any(target_arch = "aarch64", test))]
+            Some(PciHostRegistration::IfReferenced(provider)) => {
+                let requests = builder.requests().map_err(DeviceManagerError::from)?;
+                if pci_host_is_referenced(&requests, provider.key()) {
+                    builder
+                        .register_pci_host(provider)
+                        .map_err(DeviceManagerError::from)?;
+                    builder.requests().map_err(DeviceManagerError::from)?
+                } else {
+                    requests
+                }
+            }
+            None => builder.requests().map_err(DeviceManagerError::from)?,
+        };
         let fixed_internal_ranges = pools::fixed_mmio_ranges(&configured_requests)?;
-        pools::reserve_guest_memory(config, pools)?;
-
         let mut replacement_ranges = replacement_ranges.to_vec();
         replacement_ranges.extend(fixed_internal_ranges);
+        pools::reserve_guest_address_ranges(config, &replacement_ranges, pools)?;
         passthrough::add_host_nodes(config, &replacement_ranges, &mut builder)?;
 
         let declared = builder.declare().map_err(DeviceManagerError::from)?;
@@ -77,6 +116,16 @@ impl VmDevicePlan {
     pub(crate) const fn graph(&self) -> &ResolvedDeviceGraph {
         &self.graph
     }
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+fn pci_host_is_referenced(requests: &[DevicePlanRequest], host: &PciHostKey) -> bool {
+    requests.iter().any(|request| {
+        request
+            .requirements()
+            .pci_function()
+            .is_some_and(|function| function.host() == host)
+    })
 }
 
 /// Small common capability exposed by every architecture-specific VM plan.
@@ -104,7 +153,7 @@ mod tests {
     use std::sync::Arc;
 
     use axdevice_base::{ControllerInputId, InterruptControllerId};
-    use axvm_types::{VmMemConfig, VmMemMappingType};
+    use axvm_types::{ReservedAddressConfig, VmMemConfig, VmMemMappingType};
     use axvmconfig::VirtualDeviceRequest;
 
     use super::*;
@@ -114,7 +163,31 @@ mod tests {
         configured::append_configured_devices,
     };
 
+    struct AutoMmioModel;
     struct FixedMmioInsideRamModel;
+    struct FixedReplacementPageModel;
+
+    impl DeviceModel for AutoMmioModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            DeviceRequirements::new().with_mmio(
+                ResourceSlot::new("registers")?,
+                0x1000,
+                0x1000,
+                ResourceRequest::Auto,
+            )
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            Ok(DeviceBundle::new())
+        }
+    }
 
     impl DeviceModel for FixedMmioInsideRamModel {
         fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
@@ -123,6 +196,28 @@ mod tests {
                 0x1000,
                 0x1000,
                 ResourceRequest::Fixed(0x8000_0000),
+            )
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            Ok(DeviceBundle::new())
+        }
+    }
+
+    impl DeviceModel for FixedReplacementPageModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            DeviceRequirements::new().with_mmio(
+                ResourceSlot::new("registers")?,
+                0x1000,
+                0x1000,
+                ResourceRequest::Fixed(0x1000_1000),
             )
         }
 
@@ -286,6 +381,78 @@ mod tests {
             .unwrap();
 
         assert_eq!(irq.input(), ControllerInputId::new(32));
+    }
+
+    #[test]
+    fn auto_mmio_skips_reserved_address_ranges() {
+        let config = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            reserved_address_ranges: vec![ReservedAddressConfig {
+                base_gpa: 0x1000_0000,
+                length: 0x1000,
+            }],
+            ..Default::default()
+        });
+        let nodes = vec![DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("auto-mmio").unwrap(),
+            Arc::new(AutoMmioModel),
+        )];
+        let mut pools = ResourcePools::new();
+        pools.add_auto_mmio(0x1000_0000..0x1000_2000).unwrap();
+
+        let plan = VmDevicePlan::with_pools_for_vm(&config, nodes, &[], pools).unwrap();
+        let resources = plan
+            .graph()
+            .resources_for(&DeviceNodeId::new("auto-mmio").unwrap())
+            .unwrap();
+
+        assert_eq!(
+            resources.mmio(&ResourceSlot::new("registers").unwrap()),
+            Ok((0x1000_1000, 0x1000))
+        );
+    }
+
+    #[test]
+    fn reserved_address_ranges_are_normalized_around_memory_and_replacements() {
+        let config = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            memory_regions: vec![VmMemConfig {
+                gpa: 0x1000_0000,
+                size: 0x1000,
+                flags: 0x7,
+                map_type: VmMemMappingType::MapIdentical,
+            }],
+            reserved_address_ranges: vec![ReservedAddressConfig {
+                base_gpa: 0x1000_0000,
+                length: 0x3000,
+            }],
+            ..Default::default()
+        });
+        let nodes = vec![
+            DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new("auto-mmio").unwrap(),
+                Arc::new(AutoMmioModel),
+            ),
+            DeviceNodeSpec::host_replacement(
+                DeviceNodeId::new("replacement").unwrap(),
+                Arc::new(FixedReplacementPageModel),
+            ),
+        ];
+        let mut pools = ResourcePools::new();
+        pools.add_auto_mmio(0x1000_0000..0x1000_4000).unwrap();
+
+        let plan = VmDevicePlan::with_pools_for_vm(&config, nodes, &[], pools).unwrap();
+        let resources = plan
+            .graph()
+            .resources_for(&DeviceNodeId::new("auto-mmio").unwrap())
+            .unwrap();
+
+        assert_eq!(
+            resources.mmio(&ResourceSlot::new("registers").unwrap()),
+            Ok((0x1000_3000, 0x1000))
+        );
     }
 
     #[test]

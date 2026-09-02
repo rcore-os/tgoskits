@@ -14,6 +14,8 @@ pub struct AxvisorBoardConfig {
     pub(crate) build_info: BuildInfo,
     #[serde(default)]
     pub vm_configs: Vec<PathBuf>,
+    #[serde(default)]
+    pub(crate) pre_build_cmds: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +23,7 @@ pub(super) struct LoadedAxvisorBuildConfig {
     pub(super) build_info: AxvisorBuildInfo,
     pub(super) target: String,
     pub(super) vm_configs: Vec<PathBuf>,
+    pub(super) pre_build_cmds: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -53,6 +56,7 @@ impl AxvisorBoardConfig {
             build_info: self.build_info,
             target,
             vm_configs: self.vm_configs,
+            pre_build_cmds: self.pre_build_cmds,
         }
     }
 }

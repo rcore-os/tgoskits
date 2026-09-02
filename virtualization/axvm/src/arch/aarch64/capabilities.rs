@@ -89,22 +89,30 @@ pub(super) fn patch_runtime_fdt(
     let initrd = vm.with_config(|config| {
         super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
     });
-    let (serial_profile, serial_identity, additional_serials, devices, gic_profile, timer_profile) =
-        vm.with_architecture_plan(|plan| {
-            Ok((
-                plan.serial_profile(),
-                plan.serial_fdt_identity().cloned(),
-                plan.serial_devices()
-                    .iter()
-                    .filter(|serial| serial.id() != "console0")
-                    .map(crate::machine::ResolvedSerialDevice::profile)
-                    .collect::<std::vec::Vec<_>>(),
-                plan.firmware_devices().to_vec(),
-                plan.gic_profile().clone(),
-                plan.timer_profile().clone(),
-            ))
-        })?;
-    crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
+    let (
+        serial_profile,
+        serial_identity,
+        additional_serials,
+        devices,
+        gic_profile,
+        timer_profile,
+        pci_host,
+    ) = vm.with_architecture_plan(|plan| {
+        Ok((
+            plan.serial_profile(),
+            plan.serial_fdt_identity().cloned(),
+            plan.serial_devices()
+                .iter()
+                .filter(|serial| serial.id() != "console0")
+                .map(crate::machine::ResolvedSerialDevice::profile)
+                .collect::<std::vec::Vec<_>>(),
+            plan.firmware_devices().to_vec(),
+            plan.gic_profile().clone(),
+            plan.timer_profile().clone(),
+            plan.pci_firmware(),
+        ))
+    })?;
+    let bytes = crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
         crate::boot::fdt::core::create::GuestFdtRuntimePatch {
             fdt_bytes,
             memory_regions: &vm.memory_regions(),
@@ -119,7 +127,8 @@ pub(super) fn patch_runtime_fdt(
             initrd_start_size: initrd,
             create_chosen: true,
         },
-    )
+    )?;
+    crate::boot::fdt::core::pci::install_pci_host(&bytes, pci_host.as_ref())
 }
 
 pub(super) fn patch_provided_fdt(

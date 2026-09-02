@@ -7,17 +7,41 @@ use axdevice_base::*;
 
 use crate::{AxVmError, AxVmResult};
 
-pub(super) fn reserve_guest_memory(
+pub(super) fn reserve_guest_address_ranges(
     config: &crate::config::AxVMConfig,
+    replacement_ranges: &[core::ops::Range<u64>],
     pools: &mut ResourcePools,
 ) -> AxVmResult {
-    let mut ranges = config
-        .memory_regions()
-        .iter()
-        .map(|region| checked_u64_range(region.gpa, region.size, "guest memory"))
-        .collect::<AxVmResult<Vec<_>>>()?;
-    ranges.sort_by_key(|range| range.start);
+    let memory_ranges = normalized_ranges(
+        config
+            .memory_regions()
+            .iter()
+            .map(|region| checked_u64_range(region.gpa, region.size, "guest memory"))
+            .collect::<AxVmResult<Vec<_>>>()?,
+    );
+    for (index, range) in memory_ranges.iter().cloned().enumerate() {
+        pools.reserve_mmio(std::format!("guest-memory-{index}"), range)?;
+    }
 
+    let reserved_ranges = config
+        .reserved_address_ranges()
+        .iter()
+        .map(|region| checked_u64_range(region.base_gpa, region.length, "guest reserved address"))
+        .collect::<AxVmResult<Vec<_>>>()?;
+    let mut occupied_ranges = memory_ranges;
+    occupied_ranges.extend_from_slice(replacement_ranges);
+    let reserved_ranges = subtract_ranges(
+        normalized_ranges(reserved_ranges),
+        &normalized_ranges(occupied_ranges),
+    );
+    for (index, range) in normalized_ranges(reserved_ranges).into_iter().enumerate() {
+        pools.reserve_mmio(std::format!("guest-reserved-address-{index}"), range)?;
+    }
+    Ok(())
+}
+
+fn normalized_ranges(mut ranges: Vec<core::ops::Range<u64>>) -> Vec<core::ops::Range<u64>> {
+    ranges.sort_by_key(|range| range.start);
     let mut merged: Vec<core::ops::Range<u64>> = Vec::new();
     for range in ranges {
         if let Some(previous) = merged.last_mut()
@@ -28,10 +52,38 @@ pub(super) fn reserve_guest_memory(
         }
         merged.push(range);
     }
-    for (index, range) in merged.into_iter().enumerate() {
-        pools.reserve_mmio(std::format!("guest-memory-{index}"), range)?;
+    merged
+}
+
+fn subtract_ranges(
+    mut ranges: Vec<core::ops::Range<u64>>,
+    removed_ranges: &[core::ops::Range<u64>],
+) -> Vec<core::ops::Range<u64>> {
+    for removed in removed_ranges {
+        ranges = ranges
+            .into_iter()
+            .flat_map(|range| range_without(range, removed))
+            .collect();
     }
-    Ok(())
+    ranges
+}
+
+pub(super) fn range_without(
+    range: core::ops::Range<u64>,
+    removed: &core::ops::Range<u64>,
+) -> Vec<core::ops::Range<u64>> {
+    if range.start >= removed.end || removed.start >= range.end {
+        return std::vec![range];
+    }
+
+    let mut fragments = Vec::with_capacity(2);
+    if range.start < removed.start {
+        fragments.push(range.start..range.end.min(removed.start));
+    }
+    if removed.end < range.end {
+        fragments.push(range.start.max(removed.end)..range.end);
+    }
+    fragments
 }
 
 pub(super) fn fixed_mmio_ranges(

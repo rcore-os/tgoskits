@@ -115,6 +115,8 @@ pub trait DeviceModel: Send + Sync {
 
 资源冲突在原子占用时检查，错误包含命名空间、资源值、已有所有者和新请求者。不同 controller 的同号 input 不冲突。共享电平线必须具有一致 trigger/sharing。
 
+`VmDevicePlan` 在自动 MMIO 分配前保留 guest memory。`reserved_address_ranges` 先减去已由 guest memory 或 fixed host replacement 接管的部分，再合并为互不重叠的 reservation。host passthrough 和其他 fixed 请求先于自动请求放置，因此自动设备会跳过这些范围。host FDT 的 `/reserved-memory` 只导入缺少 `status` 或 `status = "ok"`、`"okay"` 的 direct child；disabled 节点不占用客户机资源池。
+
 不采用 `vm-allocator`：它不能直接表达 owner 诊断、跨中断域命名空间、固定优先、共享 IRQ、MSI/LPI 复合资源、一次性 claim 和 VM 事务回滚。私有的区间查找以后可以替换，不影响公开领域模型。
 
 ## claim、lease 与 bundle 事务
@@ -127,9 +129,11 @@ pub trait DeviceModel: Send + Sync {
 
 ## typed PCI function 与 root binding
 
-普通模型通过 `DeviceRequirements::with_pci_function` 声明至多一个 `PciFunctionRequirement`：typed host key、`PciEndpointIdentity`、`Auto`/`Fixed` BDF 请求和 32-bit non-prefetchable memory BAR 列表。每个 architecture composition root 通过 `DeviceGraphBuilder::register_pci_host` 显式注册唯一 `PciHostProvider`（host 节点、memory aperture slot、平台 function spec 及保留 BDF），不使用全局 registry、model 字符串发现或隐式默认 provider。graph declaration 阶段收集全部 `requirements()`，按 host key 解析 provider 并自动追加 endpoint→host 依赖边；自动边与显式边进入同一拓扑排序与环检测，缺失或重复 provider 在 declaration 阶段返回 typed error，调用方不得手写该依赖。
+普通模型通过 `DeviceRequirements::with_pci_function` 声明至多一个 `PciFunctionRequirement`：typed host key、`PciEndpointIdentity`、`Auto`/`Fixed` BDF 请求和 32-bit non-prefetchable memory BAR 列表。每个 architecture composition root 拥有唯一 `PciHostProvider`（host 节点、memory aperture slot、平台 function spec 及保留 BDF），不使用全局 registry、model 字符串发现或隐式默认 provider。x86 始终通过 `DeviceGraphBuilder::register_pci_host` 注册 Q35 provider；AArch64 的 `VmDevicePlan::with_optional_pci_host_for_vm` 先检查 typed requirements，只在 endpoint 引用了对应 host key 时注册 provider。graph declaration 阶段按 host key 解析 provider 并自动追加 endpoint→host 依赖边；自动边与显式边进入同一拓扑排序与环检测，缺失或重复 provider 在 declaration 阶段返回 typed error，调用方不得手写该依赖。
 
 PCI topology 在 `ResolvedDeviceGraph` 的同一解析事务内消费已规划的 host aperture：先校验 fixed 请求与平台保留 BDF，再按稳定节点 ID 为 auto function 分配最低空闲 device 的 function 0，BAR 按 size 降序 + node ID + index 确定性 first-fit，最后生成 power-on config image。每个 resolved function 携带非空的 owner（configured endpoint 归 endpoint node，Q35 host bridge/LPC 等平台 function 归 host node）和所属 host node id；metadata 仅在全图成功后一次性发布到 `ResolvedDeviceGraph`，不产生第二个公开 graph 或 seal。x86 上 Q35/LPC 与 endpoint 共享同一 `PciRootState`：CF8/CFC frontend 只解码 configuration mechanism #1 端口访问并统一走 root lookup，不保存 function table 或固定 BDF；完整 memory aperture 是单一顶层 MMIO 设备，BAR relocation 只改 root 内部 route；ACPI `_CRS` 的 PCI memory window 从同一 resolved aperture 推导并显式校验一致。
+
+AArch64 使用同一个 typed provider 和 root binding。没有 endpoint 时，graph 不实例化 host 节点，也不申请 ECAM、memory aperture 或 runtime root service。存在 endpoint 时，host 从 `0x0b00_0000..0x1_0000_0000` 自动 MMIO 搜索域取得 1 MiB ECAM 与完整 64 MiB memory aperture；lowest-first 分配会避开 guest memory、有效 reserved-memory、剩余 `reserved_address_ranges`、fixed virtual resources 和 passthrough mappings。ECAM frontend 和 aperture frontend 只委托同一 `PciRootState`，架构固件适配器从 graph-resolved ranges 生成 `pci-host-ecam-generic` 节点。已有 PCI bridge、冲突 top-level `reg`、无 DTB endpoint、4 GiB 以下无合法窗口或 host range 契约无效时明确失败，不覆盖或猜测 fallback。
 
 runtime 注册时，host bundle 必须恰好发布一个 `PciRootBinding` 服务，runtime 校验其 host node id 与 `Arc` 身份均匹配本节点 resolved topology；endpoint bundle 声明 bundle-local device index 实现 resolved function，runtime 只沿冻结的 host dependency 取得该 binding，分配最终 endpoint `DeviceId` 并生成不可伪造的 `EndpointRouteToken`（仅含 `DeviceId` + binding generation，不携带任何 capability），经 binding 原子写入 root 后把 lease 保存在 runtime 中。缺失、重复、owner 不匹配、来自非 dependency 节点的 root service 或 bind 失败都会回滚整个 bundle 注册；lease drop 按“先失效 generation、再撤销 root route、最后释放引用”的顺序完成解绑。root 使用窄的 IRQ-safe 锁只保护 config bytes、BAR route 和 binding bookkeeping；token 与 route 在锁内克隆，回调严格在锁外由 runtime 校验 token 后执行。旧 generation token 在 unbind 或 rebind 后永远失效。
 

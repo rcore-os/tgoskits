@@ -1,0 +1,27 @@
+[base]
+id = 1
+name = "arceos-ivshmem-pci"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+phys_cpu_sets = [1]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-ivshmem-pci.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = [
+  { path = "/pcie@10000000" },
+]
+
+[[devices.virtual]]
+id = "ivshmem0"
+model = "ivshmem-pci"

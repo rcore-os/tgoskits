@@ -41,6 +41,10 @@ mod task;
 mod vcpu;
 mod vm;
 
+#[cfg(all(test, not(target_arch = "aarch64")))]
+#[path = "arch/aarch64/pci_plan.rs"]
+mod aarch64_pci_plan_tests;
+
 pub mod config;
 
 pub use ax_cpumask::CpuMask;

@@ -1,0 +1,10 @@
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "test-suit/axvisor/normal/qemu-ivshmem-pci/configs/arceos-ivshmem-pci.toml",
+]
+pre_build_cmds = [
+  "cargo xtask arceos build -p arceos-ivshmem-pci -c apps/arceos/build-aarch64-ivshmem-pci.toml",
+  "\"${LLVM_OBJCOPY:-$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy}\" --strip-all -O binary target/aarch64-unknown-linux-musl/release/arceos-ivshmem-pci target/aarch64-unknown-linux-musl/release/arceos-ivshmem-pci.bin",
+]

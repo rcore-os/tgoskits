@@ -90,6 +90,8 @@ impl PciTopologyBuilder {
                 .map(|bar| ResolvedBarPlan {
                     index: bar.index(),
                     size: bar.size(),
+                    prefetchable: bar.is_prefetchable(),
+                    policy: bar.decode_policy(),
                     address: bar_addresses[&(id.clone(), bar.index())],
                 })
                 .collect::<Vec<_>>();
@@ -211,6 +213,11 @@ impl ResolvedPciBar {
     /// Returns the fixed BAR size.
     pub const fn size(self) -> u64 {
         self.0.size
+    }
+
+    /// Returns whether this BAR is prefetchable.
+    pub const fn prefetchable(self) -> bool {
+        self.0.prefetchable
     }
 }
 
@@ -592,6 +599,21 @@ mod tests {
             overlap.resolve(APERTURE_START..APERTURE_END),
             Err(PciError::BarConflict { .. })
         ));
+    }
+
+    #[test]
+    fn automatic_placement_reports_exhaustion_after_thirty_two_devices() {
+        let mut builder = PciTopologyBuilder::new();
+        for index in 0..33u8 {
+            builder
+                .add_function(function(&alloc::format!("auto-{index:02}")))
+                .unwrap();
+        }
+
+        match builder.resolve(APERTURE_START..APERTURE_END) {
+            Err(PciError::BdfExhausted { function }) => assert_eq!(function, "auto-32"),
+            other => panic!("device 33 must exhaust bus-zero placement, got {other:?}"),
+        }
     }
 
     fn function(id: &str) -> PciFunctionSpec {

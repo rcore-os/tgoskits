@@ -404,6 +404,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-ivshmem-pci"
+version = "0.1.0"
+dependencies = [
+ "ax-mm",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-loongarch-unaligned-fixup"
 version = "0.1.0"
 dependencies = [
@@ -1414,6 +1422,9 @@ dependencies = [
 [[package]]
 name = "axivc"
 version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "axklib"

@@ -6,7 +6,7 @@ use axdevice_base::*;
 
 use crate::AxVmResult;
 
-const AUTO_MMIO: core::ops::Range<u64> = 0x0b00_0000..0x1000_0000;
+pub(super) const AUTO_MMIO_SEARCH: core::ops::Range<u64> = 0x0b00_0000..0x1_0000_0000;
 const AUTO_MSI_ID_END: u32 = 0x1_0000;
 
 pub(super) fn create(vgic: &ArmVgicConfig) -> AxVmResult<ResourcePools> {
@@ -20,7 +20,7 @@ pub(super) fn create(vgic: &ArmVgicConfig) -> AxVmResult<ResourcePools> {
         .ok_or_else(|| crate::AxVmError::invalid_config("AArch64 automatic SPI range overflows"))?;
 
     let mut pools = ResourcePools::new();
-    pools.add_auto_mmio(AUTO_MMIO)?;
+    pools.add_auto_mmio(AUTO_MMIO_SEARCH)?;
     pools.add_auto_controller_inputs(
         controller,
         ControllerInputId::new(32)..ControllerInputId::new(spi_end),

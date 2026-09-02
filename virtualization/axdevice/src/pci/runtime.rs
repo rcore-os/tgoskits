@@ -62,6 +62,15 @@ pub trait PciFunction: Device {
         value: u64,
         context: &mut dyn DeviceContext,
     ) -> DeviceResult;
+
+    /// Restores endpoint-owned transport state after root state is recovered.
+    ///
+    /// The root lock is not held, and one failure does not prevent later
+    /// endpoints from being reset. Endpoints without transport state can use
+    /// this default.
+    fn reset(&self) -> DeviceResult {
+        Ok(())
+    }
 }
 
 /// Non-capability token identifying one active endpoint binding generation.
@@ -221,6 +230,25 @@ impl PciRootBinding {
         let mut context = NoopDeviceContext::new(token.device);
         endpoint.write_bar(PciBarAccess { route }, value, &mut context)
     }
+
+    /// Restores root state and then attempts every bound endpoint reset.
+    pub fn reset(&self) -> DeviceManagerResult {
+        let tokens = self.root.reset_collecting_bound_tokens();
+        let mut first_error = None;
+        for token in tokens {
+            let result = self
+                .router
+                .endpoint(token)
+                .and_then(|endpoint| endpoint.reset());
+            if let Err(error) = result {
+                log::error!("PCI endpoint reset failed: {error}");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), |error| Err(error.into()))
+    }
 }
 
 /// Typed service key published only by a PCI host bundle.
@@ -255,6 +283,8 @@ impl Drop for PciBindingLease {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use axdevice_base::{DeviceAccess, Resource};
 
     use super::*;
@@ -354,6 +384,63 @@ mod tests {
         assert!(router.invalidate(token).is_none());
     }
 
+    struct ResetFunction {
+        name: &'static str,
+        error_detail: Option<&'static str>,
+        calls: AtomicUsize,
+    }
+
+    impl Device for ResetFunction {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn resources(&self) -> &[Resource] {
+            &[]
+        }
+        fn read(
+            &self,
+            _access: &DeviceAccess,
+            _context: &mut dyn DeviceContext,
+        ) -> DeviceResult<u64> {
+            Err(DeviceError::NotFound)
+        }
+        fn write(
+            &self,
+            _access: &DeviceAccess,
+            _value: u64,
+            _context: &mut dyn DeviceContext,
+        ) -> DeviceResult {
+            Ok(())
+        }
+    }
+
+    impl PciFunction for ResetFunction {
+        fn read_bar(
+            &self,
+            _access: PciBarAccess,
+            _context: &mut dyn DeviceContext,
+        ) -> DeviceResult<u64> {
+            Ok(0)
+        }
+        fn write_bar(
+            &self,
+            _access: PciBarAccess,
+            _value: u64,
+            _context: &mut dyn DeviceContext,
+        ) -> DeviceResult {
+            Ok(())
+        }
+        fn reset(&self) -> DeviceResult {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.error_detail.map_or(Ok(()), |detail| {
+                Err(DeviceError::Unsupported {
+                    operation: "reset PCI endpoint",
+                    detail: detail.into(),
+                })
+            })
+        }
+    }
+
     #[test]
     fn root_rejects_a_second_binding_for_the_same_function() {
         use crate::{PciClass, PciEndpointIdentity, PciFunctionSpec, PciTopologyBuilder};
@@ -388,5 +475,95 @@ mod tests {
             .activate(DeviceId::new(1), Arc::clone(&function))
             .unwrap();
         root.bind_endpoint(&function_id, second).unwrap();
+    }
+
+    #[test]
+    fn binding_reset_attempts_every_endpoint_and_returns_the_first_error() {
+        use crate::{
+            ConfigOffset, PciClass, PciEndpointIdentity, PciFunctionSpec, PciSegment,
+            PciTopologyBuilder, ResourceRequest,
+        };
+
+        let ids = [
+            DeviceNodeId::new("first").unwrap(),
+            DeviceNodeId::new("second").unwrap(),
+            DeviceNodeId::new("third").unwrap(),
+        ];
+        let bdfs = [
+            PciBdf::new(PciSegment::new(0), 0, 1, 0).unwrap(),
+            PciBdf::new(PciSegment::new(0), 0, 2, 0).unwrap(),
+            PciBdf::new(PciSegment::new(0), 0, 3, 0).unwrap(),
+        ];
+        let mut builder = PciTopologyBuilder::new();
+        for (id, bdf) in ids.iter().cloned().zip(bdfs) {
+            builder
+                .add_function(
+                    PciFunctionSpec::new(
+                        id,
+                        PciEndpointIdentity::new(0x1af4, 0x1110, PciClass::new(0xff, 0, 0)),
+                    )
+                    .with_bdf(ResourceRequest::Fixed(bdf)),
+                )
+                .unwrap();
+        }
+        let topology = Arc::new(builder.resolve(0xc000_0000..0xc100_0000).unwrap());
+        let root = Arc::new(PciRootState::new(topology));
+        let binding = Arc::new(PciRootBinding::new(
+            DeviceNodeId::new("host").unwrap(),
+            root.clone(),
+        ));
+        let first = Arc::new(ResetFunction {
+            name: "first",
+            error_detail: Some("first reset failure"),
+            calls: AtomicUsize::new(0),
+        });
+        let second = Arc::new(ResetFunction {
+            name: "second",
+            error_detail: Some("second reset failure"),
+            calls: AtomicUsize::new(0),
+        });
+        let third = Arc::new(ResetFunction {
+            name: "third",
+            error_detail: None,
+            calls: AtomicUsize::new(0),
+        });
+        let mut leases = alloc::vec::Vec::new();
+        for (index, function) in [first.clone(), second.clone(), third.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let function: Arc<dyn PciFunction> = function;
+            leases.push(
+                binding
+                    .bind(&ids[index], DeviceId::new(index as u32 + 1), function)
+                    .unwrap(),
+            );
+        }
+        for bdf in bdfs {
+            root.write_config(
+                bdf,
+                ConfigOffset::new(4).unwrap(),
+                AccessWidth::Word,
+                0xffff,
+            )
+            .unwrap();
+        }
+
+        match binding.reset() {
+            Err(DeviceManagerError::Device(DeviceError::Unsupported { detail, .. })) => {
+                assert_eq!(detail, "first reset failure");
+            }
+            other => panic!("reset must return the first endpoint error, got {other:?}"),
+        }
+        assert_eq!(first.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(second.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(third.calls.load(Ordering::Relaxed), 1);
+        for bdf in bdfs {
+            assert_eq!(
+                root.read_config(bdf, ConfigOffset::new(4).unwrap(), AccessWidth::Word)
+                    .unwrap(),
+                0
+            );
+        }
     }
 }

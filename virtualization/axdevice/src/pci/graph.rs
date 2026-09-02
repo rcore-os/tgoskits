@@ -119,6 +119,11 @@ impl PciHostProvider {
         }
     }
 
+    /// Returns the stable key selected by endpoint requirements.
+    pub const fn key(&self) -> &PciHostKey {
+        &self.key
+    }
+
     /// Adds one platform-owned fixed function.
     pub fn with_platform_function(mut self, function: PciFunctionSpec) -> PciResult<Self> {
         if self

@@ -154,20 +154,13 @@ impl HostMappingNode {
     }
 
     fn without_range(self, removed: &Range<u64>) -> AxVmResult<Vec<Self>> {
-        let mapping_start = self.mapping.guest_base();
-        let mapping_end = mapping_end(self.mapping);
-        if mapping_start >= removed.end || removed.start >= mapping_end {
-            return Ok(std::vec![self]);
-        }
-
-        let mut fragments = Vec::with_capacity(2);
-        if mapping_start < removed.start {
-            fragments.push(self.fragment(mapping_start, min(mapping_end, removed.start))?);
-        }
-        if removed.end < mapping_end {
-            fragments.push(self.fragment(max(mapping_start, removed.end), mapping_end)?);
-        }
-        Ok(fragments)
+        super::pools::range_without(
+            self.mapping.guest_base()..mapping_end(self.mapping),
+            removed,
+        )
+        .into_iter()
+        .map(|fragment| self.fragment(fragment.start, fragment.end))
+        .collect()
     }
 
     fn fragment(&self, guest_base: u64, guest_end: u64) -> AxVmResult<Self> {

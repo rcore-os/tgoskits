@@ -11,3 +11,4 @@ description = "Shared-memory protocol helpers for AxVisor inter-VM communication
 readme = "README.md"
 
 [dependencies]
+thiserror.workspace = true

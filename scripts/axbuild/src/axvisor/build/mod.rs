@@ -58,6 +58,7 @@ fn to_cargo_config(
     let mut cargo = config
         .build_info
         .into_prepared_std_cargo_config_with_metadata(&request.package, &config.target, metadata)?;
+    cargo.pre_build_cmds.extend(config.pre_build_cmds);
     patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
     Ok(cargo)
 }

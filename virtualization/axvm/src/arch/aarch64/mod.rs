@@ -22,6 +22,7 @@ pub(crate) mod fdt;
 mod firmware_plan;
 mod gic;
 mod npt;
+mod pci_plan;
 mod resource_pools;
 mod shared_provider;
 mod vgic;

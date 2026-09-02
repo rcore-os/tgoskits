@@ -283,18 +283,17 @@ impl Device for PciMemoryApertureDevice {
     }
 }
 
-/// Lifecycle adapter restoring only root-owned PCI config and BAR state.
-pub struct PciRootLifecycle(Arc<PciRootState>);
+/// Lifecycle adapter restoring root and bound endpoint state.
+pub struct PciRootLifecycle(Arc<PciRootBinding>);
 impl PciRootLifecycle {
-    /// Creates a lifecycle adapter for one generic PCI root.
-    pub const fn new(root: Arc<PciRootState>) -> Self {
-        Self(root)
+    /// Creates a lifecycle adapter for one generic PCI root binding.
+    pub const fn new(binding: Arc<PciRootBinding>) -> Self {
+        Self(binding)
     }
 }
 impl DeviceLifecycle for PciRootLifecycle {
     fn reset(&self) -> DeviceManagerResult {
-        self.0.reset();
-        Ok(())
+        self.0.reset()
     }
     fn suspend(&self) -> DeviceManagerResult {
         Ok(())
@@ -467,8 +466,8 @@ mod tests {
         );
 
         // The same byte lanes are written independently and honor write
-        // masks: both selected lanes are read-only for this function, so the
-        // write has no effect instead of failing the guest access.
+        // masks: command-high accepts only INTx Disable (bit 2), while the
+        // selected status byte remains read-only.
         write(
             &frontend,
             CONFIG_ADDRESS_PORT,
@@ -476,7 +475,7 @@ mod tests {
             0x8000_0004,
         );
         write(&frontend, CONFIG_DATA_PORT + 1, AccessWidth::Word, 0xffff);
-        assert_eq!(read(&frontend, CONFIG_DATA_PORT + 1, AccessWidth::Word), 0);
+        assert_eq!(read(&frontend, CONFIG_DATA_PORT + 1, AccessWidth::Word), 4);
         write(
             &frontend,
             CONFIG_ADDRESS_PORT,

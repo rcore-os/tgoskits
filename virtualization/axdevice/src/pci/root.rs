@@ -5,14 +5,15 @@
 //! runtime identities, and lifecycle callbacks are introduced by later
 //! integration layers.
 
-use alloc::{collections::BTreeMap, string::ToString, sync::Arc};
+use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use core::{fmt, ops::Range};
 
 use ax_sync::SpinLock;
 
 use super::{
-    EndpointRouteToken, FOUR_GIB, PciBarIndex, PciBdf, PciError, PciResult, ResolvedPciTopology,
-    config::{BarWriteAction, FunctionState},
+    EndpointRouteToken, FOUR_GIB, PciBarDecodePolicy, PciBarIndex, PciBdf, PciError, PciResult,
+    ResolvedPciTopology,
+    config::{BarWriteAction, FunctionState, PciCommandState},
 };
 use crate::{AccessWidth, ConfigOffset};
 
@@ -94,20 +95,42 @@ impl PciRootState {
         let Some(function_index) = state.function_index(bdf) else {
             return Ok(());
         };
+        let command_before = state.functions[function_index].command_state();
         let Some(action) = state.functions[function_index].prepare_bar_write(offset, size, value)
         else {
             state.functions[function_index].write_non_bar(offset, size, value);
+            let command_after = state.functions[function_index].command_state();
+            drop(state);
+            if command_after != command_before {
+                dispatch_command_effect(command_after);
+            }
             return Ok(());
         };
         match action {
             BarWriteAction::Probe { bar } => state.functions[function_index].apply_probe(bar),
             BarWriteAction::Relocate { bar, candidate } => {
-                let accepted = state.bar_address_available(
-                    self.topology.memory_aperture(),
-                    function_index,
-                    bar,
-                    candidate,
-                );
+                let target = &state.functions[function_index].bars()[bar];
+                let policy = target.decode_policy();
+                let planned = target.planned_address();
+                let bar_index = target.index();
+                let accepted = match policy {
+                    PciBarDecodePolicy::Fixed => {
+                        if candidate != planned {
+                            log::warn!(
+                                "ignoring PCI BAR{bar_index} relocation to {candidate:#x}: fixed \
+                                 policy keeps the planned base {planned:#x}"
+                            );
+                        }
+                        candidate == planned
+                    }
+                    PciBarDecodePolicy::RelocatableWithinHostAperture => state
+                        .bar_address_available(
+                            self.topology.memory_aperture(),
+                            function_index,
+                            bar,
+                            candidate,
+                        ),
+                };
                 state.functions[function_index]
                     .finish_relocation(bar, accepted.then_some(candidate));
             }
@@ -165,10 +188,32 @@ impl PciRootState {
 
     /// Restores every function's root-owned power-on config and BAR route.
     pub fn reset(&self) {
-        for function in &mut self.state.lock_irqsave().functions {
+        drop(self.reset_collecting_bound_tokens());
+    }
+
+    /// Restores root state and snapshots bound endpoint generations in BDF order.
+    pub(crate) fn reset_collecting_bound_tokens(&self) -> Vec<EndpointRouteToken> {
+        let mut state = self.state.lock_irqsave();
+        for function in &mut state.functions {
             function.reset();
         }
+        state
+            .functions
+            .iter()
+            .filter_map(|function| state.bindings.get(&function.bdf()).copied())
+            .collect()
     }
+}
+
+fn dispatch_command_effect(command: PciCommandState) {
+    // Keep endpoint-visible effects outside the root lock. The first endpoint
+    // observer can extend this seam without changing config-state ownership.
+    log::debug!(
+        "PCI command state: memory_space={}, bus_master={}, intx_disabled={}",
+        command.memory_space_enabled,
+        command.bus_master_enabled,
+        command.intx_disabled
+    );
 }
 
 fn resolve_route(
@@ -386,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn command_register_only_accepts_memory_space_enable() {
+    fn command_register_models_memory_bus_master_and_intx_disable() {
         let (root, endpoint_bdf, bar_base) = root_with_bar();
 
         assert!(root.resolve_bar(bar_base, AccessWidth::Dword).is_none());
@@ -396,7 +441,7 @@ mod tests {
         assert_eq!(
             root.read_config(endpoint_bdf, offset(4), AccessWidth::Word)
                 .unwrap(),
-            0x0002
+            0x0406
         );
         let route = root.resolve_bar(bar_base + 8, AccessWidth::Dword).unwrap();
         assert_eq!(route.bdf(), endpoint_bdf);
@@ -427,6 +472,64 @@ mod tests {
             0xffff_0000
         );
         assert!(root.resolve_bar(bar_base, AccessWidth::Byte).is_some());
+    }
+
+    #[test]
+    fn fixed_prefetchable_bar_rejects_relocation_and_preserves_attributes() {
+        let bar2 = PciBarIndex::new(2).unwrap();
+        let endpoint = function("fixed")
+            .with_bar(
+                PciMemoryBar::new(bar2, BAR_SIZE)
+                    .unwrap()
+                    .prefetchable()
+                    .with_decode_policy(PciBarDecodePolicy::Fixed)
+                    .with_address(ResourceRequest::Fixed(APERTURE_START)),
+            )
+            .unwrap();
+        let mut builder = PciTopologyBuilder::new();
+        builder.add_function(endpoint).unwrap();
+        let topology = Arc::new(builder.resolve(APERTURE_START..APERTURE_END).unwrap());
+        assert!(
+            topology
+                .function(&node("fixed"))
+                .unwrap()
+                .bar(bar2)
+                .unwrap()
+                .prefetchable()
+        );
+        let bdf = topology.function(&node("fixed")).unwrap().bdf();
+        let root = PciRootState::new(topology);
+        root.write_config(bdf, offset(4), AccessWidth::Word, 2)
+            .unwrap();
+
+        root.write_config(
+            bdf,
+            offset(0x18),
+            AccessWidth::Dword,
+            APERTURE_START + BAR_SIZE,
+        )
+        .unwrap();
+        assert_eq!(
+            root.read_config(bdf, offset(0x18), AccessWidth::Dword)
+                .unwrap(),
+            APERTURE_START | 0x8
+        );
+        assert!(
+            root.resolve_bar(APERTURE_START, AccessWidth::Byte)
+                .is_some()
+        );
+        assert!(
+            root.resolve_bar(APERTURE_START + BAR_SIZE, AccessWidth::Byte)
+                .is_none()
+        );
+
+        root.write_config(bdf, offset(0x18), AccessWidth::Dword, u64::from(u32::MAX))
+            .unwrap();
+        assert_eq!(
+            root.read_config(bdf, offset(0x18), AccessWidth::Dword)
+                .unwrap(),
+            0xffff_0008
+        );
     }
 
     #[test]

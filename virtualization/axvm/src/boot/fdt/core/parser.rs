@@ -421,12 +421,26 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut GuestConfig, dtb: &[u8]) ->
             format!("Failed to parse DTB image while reading reserved memory: {e:#?}")
         )
     })?;
+    let Some(reserved_memory_id) = fdt.get_by_path_id("/reserved-memory") else {
+        return Ok(());
+    };
+    let reserved_memory_children = fdt
+        .node(reserved_memory_id)
+        .ok_or_else(|| ax_err_type!(InvalidData, "DTB reserved-memory node is missing"))?
+        .children()
+        .to_vec();
     let default_flags = (MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE).bits();
 
     let mut added_count = 0usize;
-    for node_id in fdt.iter_node_ids() {
+    for node_id in reserved_memory_children {
         let node_path = fdt.path_of(node_id);
-        if !is_reserved_memory_path(&node_path) {
+        let node = fdt.node(node_id).ok_or_else(|| {
+            ax_err_type!(
+                InvalidData,
+                format!("DTB reserved-memory child {node_path} is missing")
+            )
+        })?;
+        if !fdt_node_is_available(node, &node_path)? {
             continue;
         }
 
@@ -459,6 +473,19 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut GuestConfig, dtb: &[u8]) ->
         );
     }
     Ok(())
+}
+
+fn fdt_node_is_available(node: &Node, node_path: &str) -> AxVmResult<bool> {
+    let Some(status) = node.get_property("status") else {
+        return Ok(true);
+    };
+    let status = status.as_str().ok_or_else(|| {
+        ax_err_type!(
+            InvalidData,
+            format!("DTB node {node_path} has a malformed status property")
+        )
+    })?;
+    Ok(matches!(status, "ok" | "okay"))
 }
 
 pub fn set_phys_cpu_sets(
@@ -777,8 +804,9 @@ mod tests {
     use fdt_raw::RegInfo;
 
     use super::{
-        align_reserved_region_4k, parse_passthrough_devices_address, parse_vm_interrupt,
-        reserve_excluded_device_ranges, resolve_phys_cpu_sets, setup_guest_fdt_from_vmm,
+        align_reserved_region_4k, parse_passthrough_devices_address, parse_reserved_memory_regions,
+        parse_vm_interrupt, reserve_excluded_device_ranges, resolve_phys_cpu_sets,
+        setup_guest_fdt_from_vmm,
     };
     use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
 
@@ -792,6 +820,58 @@ mod tests {
         let mut prop = fdt_edit::Property::new(name, std::vec![]);
         prop.set_u32_ls(values);
         prop
+    }
+
+    fn fdt_with_reserved_memory_statuses() -> Vec<u8> {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+
+        let reserved_memory = fdt.add_node(root, Node::new("reserved-memory"));
+        fdt.node_mut(reserved_memory)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(reserved_memory)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+        fdt.node_mut(reserved_memory)
+            .unwrap()
+            .set_property(fdt_edit::Property::new("ranges", vec![]));
+
+        for (name, base, status) in [
+            ("active@c000000", 0x0c00_0000, None),
+            ("disabled@e000000", 0x0e00_0000, Some("disabled")),
+            ("okay@10000000", 0x1000_0000, Some("okay")),
+        ] {
+            let region = fdt.add_node(reserved_memory, Node::new(name));
+            if let Some(status) = status {
+                fdt.node_mut(region)
+                    .unwrap()
+                    .set_property(super::super::tree::prop_string("status", status));
+            }
+            fdt.view_typed_mut(region)
+                .unwrap()
+                .set_regs(&[RegInfo::new(base, Some(0x1000))]);
+        }
+
+        fdt.encode().as_ref().to_vec()
+    }
+
+    fn fdt_with_malformed_reserved_memory_status() -> Vec<u8> {
+        let dtb = fdt_with_reserved_memory_statuses();
+        let mut fdt = Fdt::from_bytes(&dtb).unwrap();
+        let disabled = fdt
+            .get_by_path_id("/reserved-memory/disabled@e000000")
+            .unwrap();
+        fdt.node_mut(disabled)
+            .unwrap()
+            .set_property(fdt_edit::Property::new("status", vec![b'o', b'k']));
+        fdt.encode().as_ref().to_vec()
     }
 
     fn fdt_with_excluded_devices() -> Vec<u8> {
@@ -1043,6 +1123,35 @@ mod tests {
         }
 
         fdt.encode().as_ref().to_vec()
+    }
+
+    #[test]
+    fn disabled_reserved_memory_is_not_added_to_guest_regions() {
+        let mut config = GuestConfig::default();
+
+        parse_reserved_memory_regions(&mut config, &fdt_with_reserved_memory_statuses()).unwrap();
+
+        let reserved_bases = config
+            .kernel
+            .memory_regions
+            .iter()
+            .filter(|region| region.map_type == VmMemMappingType::MapReserved)
+            .map(|region| region.gpa)
+            .collect::<Vec<_>>();
+        assert_eq!(reserved_bases, [0x0c00_0000, 0x1000_0000]);
+    }
+
+    #[test]
+    fn malformed_reserved_memory_status_is_rejected() {
+        let mut config = GuestConfig::default();
+
+        let error = parse_reserved_memory_regions(
+            &mut config,
+            &fdt_with_malformed_reserved_memory_status(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("malformed status property"));
     }
 
     #[test]

@@ -142,8 +142,16 @@ impl Axvisor {
         // embedded VM configuration, so a later build would otherwise replace
         // the executable belonging to an earlier group.
         for (index, build_group) in build_groups.iter_mut().enumerate() {
-            rootfs::ensure_qemu_rootfs_ready(&build_group.request, self.app.workspace_root(), None)
-                .await?;
+            let group_rootfs = rootfs::managed_rootfs_path_from_qemu_cases(
+                build_group.group.cases.iter().map(|case| &case.qemu),
+                self.app.workspace_root(),
+            )?;
+            rootfs::ensure_qemu_rootfs_ready(
+                &build_group.request,
+                self.app.workspace_root(),
+                group_rootfs.as_deref(),
+            )
+            .await?;
             build_group.cargo = build::load_cargo_config(&build_group.request)?;
             prepare_configured_busybox_initramfs(
                 &build_group.request,
@@ -310,7 +318,12 @@ impl Axvisor {
             qemu.fail_regex.push(VCPU_RUNTIME_ERROR.to_string());
         }
 
-        let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
+        let rootfs_path =
+            rootfs::managed_rootfs_path_from_qemu_cases([&case.qemu], self.app.workspace_root())?
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)
+                })?;
         let prepared_assets = test_case::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,

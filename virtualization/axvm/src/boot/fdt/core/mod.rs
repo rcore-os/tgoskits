@@ -14,6 +14,7 @@ pub(crate) mod create;
 mod device;
 pub(crate) mod interrupt;
 mod parser;
+pub(crate) mod pci;
 mod policy;
 mod print;
 pub(crate) mod serial;

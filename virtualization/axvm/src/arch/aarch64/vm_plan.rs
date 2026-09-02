@@ -5,13 +5,14 @@ use std::vec::Vec;
 
 use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
 
-use super::{firmware_plan::*, shared_provider::*, vgic::*};
+use super::{firmware_plan::*, pci_plan::*, shared_provider::*, vgic::*};
 use crate::{config::*, machine::*, vm::prepare::device_plan::*, *};
 
 /// Complete AArch64 plan created once before firmware and devices are finalized.
 pub(crate) struct Aarch64VmPlan {
     devices: VmDevicePlan,
     firmware: Aarch64FirmwarePlan,
+    pci: Option<Aarch64PciPlan>,
 }
 
 impl Aarch64VmPlan {
@@ -48,14 +49,20 @@ impl Aarch64VmPlan {
             replacement_ranges.push(serial_range(config.serial_profile())?);
         }
 
-        let devices = VmDevicePlan::with_pools_for_vm(
+        let devices = VmDevicePlan::with_optional_pci_host_for_vm(
             config,
             nodes,
             &replacement_ranges,
             super::resource_pools::create(vgic.config())?,
+            provider(&controller_id)?,
         )?;
+        let pci = Aarch64PciPlan::resolve(config, devices.graph())?;
         let firmware = Aarch64FirmwarePlan::new(config, vgic.config(), devices.graph())?;
-        Ok(Self { devices, firmware })
+        Ok(Self {
+            devices,
+            firmware,
+            pci,
+        })
     }
 
     pub(crate) const fn gic_profile(&self) -> &GuestGicProfile {
@@ -80,6 +87,10 @@ impl Aarch64VmPlan {
 
     pub(crate) const fn timer_profile(&self) -> &GuestTimerProfile {
         self.firmware.timer()
+    }
+
+    pub(crate) fn pci_firmware(&self) -> Option<crate::boot::fdt::core::pci::GuestPciHost> {
+        self.pci.as_ref().map(Aarch64PciPlan::firmware)
     }
 }
 

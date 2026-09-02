@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `map_normal_memory` so memory-backed shared regions can be mapped with normal cacheable, shareable attributes instead of device ones.
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.31...ax-mm-v0.6.0) - 2026-08-20
 
 ### Added

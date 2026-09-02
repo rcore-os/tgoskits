@@ -238,6 +238,35 @@ log = "Info"
 }
 
 #[test]
+fn load_cargo_config_preserves_configured_pre_build_commands() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join(".build.toml");
+    fs::write(
+        &config_path,
+        r#"
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+pre_build_cmds = ["build guest", "convert guest"]
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(
+        config_path,
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+    ))
+    .unwrap();
+
+    assert!(
+        cargo
+            .pre_build_cmds
+            .ends_with(&["build guest".to_string(), "convert guest".to_string(),])
+    );
+}
+
+#[test]
 fn load_cargo_config_does_not_select_an_x86_backend() {
     let root = tempdir().unwrap();
     let config_path = root.path().join("build-x86_64.toml");
