@@ -5087,3 +5087,30 @@ FIFO 对应 `81702 ns`、`255793 ns`。随后只选择单一 workload 进行无�
 超时，QEMU 成功匹配 `WAKEUP_LATENCY_PASSED`。TCG 单轮仍有调度噪声，故这些数字记录为
 方向性检查点；本改动的可重复语义收益是把普通调度/IRQ-return 帧从 clockevent 独占访问
 中移除，下一步仍需完整基准和 qperf 复测 context-switch tail 与物理 clockevent 固定成本。
+
+## 2026-09-02：合并 Fair 节点摘除与 IRQ-return 关中断边界
+
+本检查点继续收敛两个与 Linux RT 固定路径直接对应的开销。`FairRunQueue::pick_eligible()`
+现在通过 `take_earliest_eligible()` 在一次 augmented AVL 遍历中完成资格判断和根节点摘除，
+再由 `finish_removed()` 统一更新 generation 索引、权重、idle/delayed/migratable 计数；普通
+按身份删除仍保留原有索引校验。该路径对应 Linux `pick_next_task_fair()` 对嵌入
+`sched_entity.run_node` 的直接 dequeue，避免先找 key、再重新沿树查找节点。
+
+`axruntime::guard::exit_lock_preempt()` 同时对照 Linux `preempt_count_dec_and_test()` 的
+IRQ 语义：只有原先硬件 IRQ 开启时才执行 `disable_irqs()`，IRQ-return 本已处于 IRQ-off
+时直接进入最终 pending 判定；调度 baton、preempt depth 和恢复 IRQ 的条件保持不变。这样
+所有中断返回的最终 preempt 退出不再支付重复的本地关中断操作。
+
+两处改动均未新增兼容分支或测试。相同 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 完整
+QEMU 基准输出 `WAKEUP_LATENCY_PASSED`；本轮 p50（ns）为：
+
+| 策略 | 同核 futex | 跨核线程 futex | 跨核进程 futex | 同核绝对 timer | yield handoff |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| OTHER | 97904 | 94382 | 97846 | 259893 | 42449 |
+| FIFO | 66473 | 93341 | 95486 | 246533 | 36483 |
+
+与前一检查点的同配置单轮结果相比，futex/yield 的中位数大多持平或下降，但 timer 仍受
+TCG 调度抖动影响（本轮 FIFO 记录 `missed_deadlines=13`，跨核线程 futex 有 1 个
+`not_parked` 样本），因此不能把单轮数字解释为稳定比例提升。该结果确认通用路径没有
+功能失败，下一优先级仍是 `execute_switch_plan()` 前后的 owner-rq/context-switch tail，
+并需要在相同硬件或多轮 QEMU 中重新测量 90% 目标。

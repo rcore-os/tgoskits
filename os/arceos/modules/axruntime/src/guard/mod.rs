@@ -276,7 +276,9 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
     // enters the IRQ-excluded scheduling path. The retained depth pins this
     // execution until the scheduler baton or pending.release() consumes it.
     let irqs_were_enabled = ax_hal::asm::irqs_enabled();
-    ax_hal::asm::disable_irqs();
+    if irqs_were_enabled {
+        ax_hal::asm::disable_irqs();
+    }
 
     let must_schedule = claim_preempt_exit_scheduler(origin, irqs_were_enabled);
 

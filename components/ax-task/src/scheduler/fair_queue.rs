@@ -16,6 +16,11 @@ pub(super) enum FairPick {
 
 enum FairEligible {
     Runnable(FairQueueKey),
+    Delayed,
+}
+
+enum FairEligibleOwned {
+    Runnable(Box<FairNode>),
     Delayed(Arc<crate::ThreadCore>),
 }
 
@@ -295,7 +300,21 @@ impl FairRunQueue {
         self.root = root;
         assert!(found, "fair runqueue identity index must match its tree");
         let removed = removed?;
-        self.keys[thread.slot() as usize] = None;
+        assert_eq!(removed.key, key, "fair removal must preserve indexed key");
+        Some(self.finish_removed(removed))
+    }
+
+    fn finish_removed(&mut self, removed: Box<FairNode>) -> QueuedThread {
+        let removed_thread = removed.thread();
+        let slot = removed_thread.id.slot() as usize;
+        let indexed = self
+            .keys
+            .get(slot)
+            .and_then(|entry| *entry)
+            .expect("removed fair node must remain indexed");
+        assert_eq!(indexed.0, removed_thread.id.generation());
+        assert_eq!(indexed.1, removed.key);
+        self.keys[slot] = None;
         let removed = Self::return_removed(removed);
         self.remove_weighted_entity(fair_entity(&removed));
         if matches!(fair_entity(&removed).mode(), crate::FairMode::Idle) {
@@ -317,7 +336,7 @@ impl FairRunQueue {
                 .expect("fair migratable count must match queue membership");
         }
         self.len -= 1;
-        Some(removed)
+        removed
     }
 
     pub(super) fn pick_eligible(
@@ -325,12 +344,13 @@ impl FairRunQueue {
         virtual_time: u64,
         skip_delayed: bool,
     ) -> Option<FairPick> {
-        match earliest_eligible(self.root.as_deref(), virtual_time, skip_delayed)? {
-            FairEligible::Delayed(core) => Some(FairPick::Delayed(core)),
-            FairEligible::Runnable(key) => Some(FairPick::Runnable(
-                self.remove_entry_with_key(key.thread, key, |_| true)
-                    .expect("eligible fair identity must remain indexed"),
-            )),
+        let (root, selected) = take_earliest_eligible(self.root.take(), virtual_time, skip_delayed);
+        self.root = root;
+        match selected? {
+            FairEligibleOwned::Delayed(core) => Some(FairPick::Delayed(core)),
+            FairEligibleOwned::Runnable(node) => {
+                Some(FairPick::Runnable(self.finish_removed(node)))
+            }
         }
     }
 
@@ -755,16 +775,21 @@ fn remove_node_if(
             if !should_remove(&root) {
                 return (Some(root), None, true);
             }
-            match (root.left.take(), root.right.take()) {
-                (None, right) => (right, Some(root), true),
-                (left, None) => (left, Some(root), true),
-                (Some(left), Some(right)) => {
-                    let (right, mut successor) = take_min(right);
-                    successor.left = Some(left);
-                    successor.right = right;
-                    (Some(rebalance(successor)), Some(root), true)
-                }
-            }
+            let (remaining, removed) = remove_root(root);
+            (remaining, Some(removed), true)
+        }
+    }
+}
+
+fn remove_root(mut root: Box<FairNode>) -> (FairLink, Box<FairNode>) {
+    match (root.left.take(), root.right.take()) {
+        (None, right) => (right, root),
+        (left, None) => (left, root),
+        (Some(left), Some(right)) => {
+            let (right, mut successor) = take_min(right);
+            successor.left = Some(left);
+            successor.right = right;
+            (Some(rebalance(successor)), root)
         }
     }
 }
@@ -798,7 +823,7 @@ fn earliest_eligible(
         && !(skip_delayed && fair_entity(node.thread()).is_delayed())
     {
         return Some(if fair_entity(node.thread()).is_delayed() {
-            FairEligible::Delayed(Arc::clone(&node.thread().core))
+            FairEligible::Delayed
         } else {
             FairEligible::Runnable(node.key)
         });
@@ -813,6 +838,49 @@ fn earliest_eligible(
     None
 }
 
+fn take_earliest_eligible(
+    root: FairLink,
+    virtual_time: u64,
+    skip_delayed: bool,
+) -> (FairLink, Option<FairEligibleOwned>) {
+    let Some(mut root) = root else {
+        return (None, None);
+    };
+    if root
+        .left
+        .as_deref()
+        .is_some_and(|left| !virtual_before(virtual_time, left.min_vruntime))
+    {
+        let (left, selected) = take_earliest_eligible(root.left.take(), virtual_time, skip_delayed);
+        root.left = left;
+        if selected.is_some() {
+            return (Some(rebalance(root)), selected);
+        }
+    }
+    let entity = fair_entity(root.thread());
+    if entity.is_eligible(virtual_time) && !(skip_delayed && entity.is_delayed()) {
+        if entity.is_delayed() {
+            let core = Arc::clone(&root.thread().core);
+            return (Some(root), Some(FairEligibleOwned::Delayed(core)));
+        }
+        let (remaining, removed) = remove_root(root);
+        return (remaining, Some(FairEligibleOwned::Runnable(removed)));
+    }
+    if root
+        .right
+        .as_deref()
+        .is_some_and(|right| !virtual_before(virtual_time, right.min_vruntime))
+    {
+        let (right, selected) =
+            take_earliest_eligible(root.right.take(), virtual_time, skip_delayed);
+        root.right = right;
+        if selected.is_some() {
+            return (Some(rebalance(root)), selected);
+        }
+    }
+    (Some(root), None)
+}
+
 fn earliest_eligible_key(
     node: Option<&FairNode>,
     virtual_time: u64,
@@ -820,7 +888,7 @@ fn earliest_eligible_key(
 ) -> Option<FairQueueKey> {
     match earliest_eligible(node, virtual_time, skip_delayed)? {
         FairEligible::Runnable(key) => Some(key),
-        FairEligible::Delayed(_) => None,
+        FairEligible::Delayed => None,
     }
 }
 
