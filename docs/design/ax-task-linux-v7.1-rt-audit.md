@@ -5246,3 +5246,27 @@ O(1) 成员读取，不把单轮数字解释成整体性能提升。该变化没
 也没有在本 checkpoint 追加格式化；仅由 benchmark 编译验证并通过 `git diff --check`。
 Linux RT 约 `15--28 us` 参考区间仍未达到，下一步继续拆解 Fair AVL 的资格选择、删除和
 delayed reactivation 中真正不可避免的树遍历。
+
+## 2026-09-02：park 提交复用 scheduler-entry 上下文校验
+
+`PreparedCurrentPark::commit()` 原先先调用 `validate_blocking_context()`，随后立即进入
+`RuntimeSchedulerFrameGuard::enter(Task)`。两者都在 IRQ 开启的 task context 读取 hard-IRQ
+和 preempt 状态，并各自建立一次 IRQ 边界；第二次 scheduler-frame claim 才是真正消费
+Linux `schedule()` baton 的地方。该重复探测位于每次 futex/timer park 的固定路径，不能
+因为调用者已经在 `begin_current_park` 成功就假定状态永远不变，所以保留第二个权威边界，
+只删除前一个等价检查。
+
+同一 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 配置下完整 benchmark 输出
+`WAKEUP_LATENCY_PASSED`，所有 futex 样本 `not_parked=0`。本轮 p50（ns）为：
+
+| 策略 | 同核 futex | 跨核线程 futex | 跨核进程 futex | 绝对 timer | mismatch | wake-empty |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| OTHER | 102339 | 102387 | 109357 | 188865 | 9439 | 8047 |
+| FIFO | 69652 | 104993 | 101986 | 205925 | 8901 | 7406 |
+
+相对前一 checkpoint，OTHER 同核和绝对 timer 分别下降约 `4.8%`、`12.5%`，FIFO 跨进程
+下降约 `7.7%`；其余项目在 TCG 跨轮噪声内基本持平。该结果支持删除一次重复 IRQ/preempt
+边界的固定成本，但仍不能外推为 Linux RT 比例。按阶段要求没有新增测试或 clippy，也
+没有追加格式化；仅由 benchmark 编译运行并通过 `git diff --check`。下一步继续定位
+`commit_park_owner` 中 Linux `try_to_block_task` 对应的重复 rq observation 与 Fair
+delayed reactivation 树遍历。

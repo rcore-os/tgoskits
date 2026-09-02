@@ -382,7 +382,11 @@ fn commit_current_park_with_system(
     current: &Arc<ThreadCore>,
     ticket: &mut crate::ParkTicket,
 ) -> Result<CurrentParkDisposition, TaskError> {
-    validate_blocking_context()?;
+    // The task scheduler frame is the authoritative Linux schedule-entry
+    // boundary. Its `Task` claim validates IRQ state, hard-IRQ context, and
+    // preemption depth while taking the baton; repeating the public blocking
+    // probe here would toggle IRQs twice for every park without adding a
+    // stronger guarantee.
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Block,
         RuntimeSchedulerEntry::Task,
