@@ -50,7 +50,7 @@ impl UserExecutionContext {
             // SAFETY: `irq` prevents migration and owns the current CPU for
             // both the runtime-context and active-mm observations.
             with_current_cpu_pin(|pin| {
-                let binding = bind_current_user_context(pin)?;
+                let binding = bind_current_user_context(pin, selected_address_space)?;
                 super::address_space::validate_current_user_address_space(
                     pin,
                     selected_address_space,
@@ -91,6 +91,27 @@ impl UserExecutionContext {
         }
     }
 
+    /// Refreshes the bound address-space generation after an `execve`-style
+    /// syscall replaced the current task's logical `mm`.
+    #[doc(hidden)]
+    pub fn refresh_address_space(&mut self) -> Result<(), TaskError> {
+        let _irq = crate::sync::IrqSaveGuard::new();
+        let selected_address_space = ax_task::current_address_space_handle()?;
+        unsafe {
+            // SAFETY: `irq` prevents migration while the scheduler-selected
+            // address space and active hardware root are sampled together.
+            with_current_cpu_pin(|pin| {
+                super::address_space::validate_current_user_address_space(
+                    pin,
+                    selected_address_space,
+                )?;
+                self.binding.replace_address_space(selected_address_space);
+                Ok::<_, RuntimeStatus>(())
+            })
+        }
+        .map_err(runtime_status_error)
+    }
+
     fn validate_prepared_entry(&self) -> Result<(), TaskError> {
         if crate::guard::validate_prepared_user_entry() != RuntimeStatus::Success {
             return Err(TaskError::UnsafeContext);
@@ -98,7 +119,6 @@ impl UserExecutionContext {
         if !self.registers.has_interruptible_user_return_mode() {
             return Err(TaskError::UnsafeContext);
         }
-        let selected_address_space = ax_task::current_address_space_handle()?;
         unsafe {
             // SAFETY: prepare_user_return left local IRQs disabled, so the
             // current context, CPU and active-mm publications cannot move.
@@ -106,7 +126,7 @@ impl UserExecutionContext {
                 validate_current_user_context(pin, &self.binding)?;
                 super::address_space::validate_current_user_address_space(
                     pin,
-                    selected_address_space,
+                    self.binding.address_space(),
                 )
             })
         }

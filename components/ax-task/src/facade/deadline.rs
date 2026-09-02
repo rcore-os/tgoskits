@@ -23,6 +23,9 @@ pub enum CurrentParkStart {
 pub struct PreparedCurrentPark {
     thread: Arc<ThreadCore>,
     ticket: Option<crate::ParkTicket>,
+    // Reuse the validated runtime owner through schedule-out. Looking it up
+    // again at commit repeats registry and handle checks on the futex hot path.
+    system: &'static TaskSystem,
 }
 
 /// Terminal scheduler information returned after a prepared park resumes.
@@ -106,17 +109,21 @@ impl PreparedCurrentPark {
             .expect("prepared park ticket remains owned");
         let generation = ticket.generation();
         let deadline_armed = ticket.has_deadline();
-        let disposition = match commit_current_park(&self.thread, &mut ticket) {
-            Ok(disposition) => disposition,
-            Err(error) => {
-                let deadline_result = cancel_current_park_deadline(&self.thread, &mut ticket);
-                if cancel_current_park(&self.thread, &mut ticket).is_err() {
-                    task_runtime::fatal_invariant(0x5041_0002, self.thread.id().as_u64() as usize);
+        let disposition =
+            match commit_current_park_with_system(self.system, &self.thread, &mut ticket) {
+                Ok(disposition) => disposition,
+                Err(error) => {
+                    let deadline_result = cancel_current_park_deadline(&self.thread, &mut ticket);
+                    if cancel_current_park(&self.thread, &mut ticket).is_err() {
+                        task_runtime::fatal_invariant(
+                            0x5041_0002,
+                            self.thread.id().as_u64() as usize,
+                        );
+                    }
+                    let _cancelled = deadline_result?;
+                    return Err(error);
                 }
-                let _cancelled = deadline_result?;
-                return Err(error);
-            }
-        };
+            };
         let deadline_cancelled = cancel_current_park_deadline(&self.thread, &mut ticket)?;
         Ok(CurrentParkResume {
             generation,
@@ -181,6 +188,7 @@ pub(crate) fn begin_current_park_with_permit(
         ParkPrepare::Prepared(ticket) => Ok(CurrentParkStart::Prepared(PreparedCurrentPark {
             thread,
             ticket: Some(ticket),
+            system,
         })),
     }
 }
@@ -336,12 +344,20 @@ pub(crate) fn commit_current_park(
     current: &Arc<ThreadCore>,
     ticket: &mut crate::ParkTicket,
 ) -> Result<CurrentParkDisposition, TaskError> {
+    let system = runtime_task_system()?;
+    commit_current_park_with_system(system, current, ticket)
+}
+
+fn commit_current_park_with_system(
+    system: &'static TaskSystem,
+    current: &Arc<ThreadCore>,
+    ticket: &mut crate::ParkTicket,
+) -> Result<CurrentParkDisposition, TaskError> {
     validate_blocking_context()?;
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Block,
         RuntimeSchedulerEntry::Task,
     )?;
-    let system = runtime_task_system()?;
     let commit = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.

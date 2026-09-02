@@ -166,6 +166,10 @@ pub fn new_user_task(
                     // while the entry stop is active.
                     let syscall_no = uctx.sysno();
                     let syscall_arg0 = uctx.arg0();
+                    let address_space_replaced = matches!(
+                        Sysno::new(syscall_no),
+                        Some(Sysno::execve | Sysno::execveat)
+                    );
                     if ptrace_trace.is_some()
                         && let Some(exit_code) = ptrace_exit_event_code(syscall_no, syscall_arg0)
                         && crate::syscall::ptrace_notify_exit(thr.tid(), exit_code)
@@ -174,6 +178,11 @@ pub fn new_user_task(
                     }
 
                     syscall_restart = handle_syscall(&curr, &mut uctx);
+                    if address_space_replaced {
+                        uctx
+                            .refresh_address_space()
+                            .expect("execve must leave a valid current address space");
+                    }
                     if let Some((tid, _)) = ptrace_trace {
                         if stop_for_pending_ptrace_event(thr, &mut uctx) {
                             continue;

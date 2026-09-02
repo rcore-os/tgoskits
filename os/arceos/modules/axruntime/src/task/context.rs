@@ -9,6 +9,8 @@ use core::{
 use ax_hal::percpu::{
     CpuPin, ExecutionContextHeader, PreparedContextSwitch, PreviousContextBinding,
 };
+#[cfg(feature = "uspace")]
+use ax_task::runtime::AddressSpaceHandle;
 use ax_task::{
     TaskError,
     runtime::{
@@ -199,11 +201,24 @@ fn current_runtime_context(cpu_pin: &CpuPin) -> Result<&'static RuntimeContext, 
 pub(super) struct RuntimeUserBinding {
     context: NonNull<RuntimeContext>,
     publication: CurrentThreadPublication,
+    address_space: AddressSpaceHandle,
+}
+
+#[cfg(feature = "uspace")]
+impl RuntimeUserBinding {
+    pub(super) const fn address_space(&self) -> AddressSpaceHandle {
+        self.address_space
+    }
+
+    pub(super) fn replace_address_space(&mut self, address_space: AddressSpaceHandle) {
+        self.address_space = address_space;
+    }
 }
 
 #[cfg(feature = "uspace")]
 pub(super) fn bind_current_user_context(
     cpu_pin: &CpuPin<'_>,
+    address_space: AddressSpaceHandle,
 ) -> Result<RuntimeUserBinding, RuntimeStatus> {
     let context = current_runtime_context(cpu_pin)?;
     if context.has_switch_tail() {
@@ -218,6 +233,7 @@ pub(super) fn bind_current_user_context(
     Ok(RuntimeUserBinding {
         context: NonNull::from(context),
         publication,
+        address_space,
     })
 }
 

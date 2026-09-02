@@ -1,11 +1,9 @@
 //! Futex implementation.
 
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
-#[cfg(axtest)]
-use core::sync::atomic::AtomicUsize;
 use core::{
     cmp::Ordering,
-    sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering},
+    sync::atomic::{fence, AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     time::Duration,
 };
 
@@ -689,12 +687,63 @@ struct FutexBucketWaiter {
 
 struct FutexBucket {
     waiters: PiMutex<VecDeque<FutexBucketWaiter>>,
+    // Linux's futex hash bucket keeps a lockless waiter hint so wakeups can
+    // avoid taking the bucket lock when no waiter can be present. The hint is
+    // deliberately bucket-wide (not key-specific), and is only a fast-path
+    // filter; the queue remains authoritative under `waiters`.
+    pending: AtomicUsize,
 }
 
 impl FutexBucket {
     const fn new() -> Self {
         Self {
             waiters: PiMutex::new(VecDeque::new()),
+            pending: AtomicUsize::new(0),
+        }
+    }
+
+    fn reserve_waiter(&self) -> FutexBucketReservation<'_> {
+        self.pending.fetch_add(1, AtomicOrdering::Relaxed);
+        // Publish the reservation before a producer is allowed to sample the
+        // hint and skip the lock, matching Linux's waiter-before-wake barrier.
+        fence(AtomicOrdering::SeqCst);
+        FutexBucketReservation {
+            bucket: self,
+            linked: false,
+        }
+    }
+
+    fn reserve_requeued_waiter(&self) {
+        self.pending.fetch_add(1, AtomicOrdering::Relaxed);
+        fence(AtomicOrdering::SeqCst);
+    }
+
+    fn waiter_removed(&self) {
+        let previous = self.pending.fetch_sub(1, AtomicOrdering::Release);
+        debug_assert!(previous > 0, "futex bucket waiter hint underflow");
+    }
+
+    fn has_pending_waiters(&self) -> bool {
+        fence(AtomicOrdering::SeqCst);
+        self.pending.load(AtomicOrdering::Acquire) != 0
+    }
+}
+
+struct FutexBucketReservation<'a> {
+    bucket: &'a FutexBucket,
+    linked: bool,
+}
+
+impl FutexBucketReservation<'_> {
+    fn commit(mut self) {
+        self.linked = true;
+    }
+}
+
+impl Drop for FutexBucketReservation<'_> {
+    fn drop(&mut self) {
+        if !self.linked {
+            self.bucket.waiter_removed();
         }
     }
 }
@@ -744,6 +793,7 @@ impl FutexDomain {
             return false;
         };
         waiters.remove(index);
+        bucket.waiter_removed();
         true
     }
 }
@@ -888,6 +938,7 @@ impl ResolvedFutex {
         let task = task.clone();
         let (_, bucket) = self.domain.domain().bucket(&self.key);
         let (generation, mut park) = {
+            let reservation = bucket.reserve_waiter();
             let mut waiters = bucket.waiters.lock();
             if !condition()? {
                 return Ok(false);
@@ -923,6 +974,7 @@ impl ResolvedFutex {
                     generation,
                 },
             });
+            reservation.commit();
             (generation, park)
         };
 
@@ -993,10 +1045,13 @@ impl ResolvedFutex {
 
     pub(crate) fn wake(&self, count: usize, mask: u32) -> usize {
         let (_, bucket) = self.domain.domain().bucket(&self.key);
+        if count == 0 || mask == 0 || !bucket.has_pending_waiters() {
+            return 0;
+        }
         let mut wakes = WakeBatch::new();
         {
             let mut waiters = bucket.waiters.lock();
-            collect_futex_wakes(&mut waiters, &self.key, count, mask, &mut wakes);
+            collect_futex_wakes(bucket, &mut waiters, &self.key, count, mask, &mut wakes);
         }
         wake_batch(wakes)
     }
@@ -1030,9 +1085,9 @@ impl ResolvedFutex {
                         return Ok(None);
                     }
                     collect_futex_requeue(
-                        &mut source_waiters,
+                        (source_bucket, &mut source_waiters),
                         &self.key,
-                        &mut target_waiters,
+                        (target_bucket, &mut target_waiters),
                         target,
                         request,
                         &mut wakes,
@@ -1047,9 +1102,9 @@ impl ResolvedFutex {
                         return Ok(None);
                     }
                     collect_futex_requeue(
-                        &mut source_waiters,
+                        (source_bucket, &mut source_waiters),
                         &self.key,
-                        &mut target_waiters,
+                        (target_bucket, &mut target_waiters),
                         target,
                         request,
                         &mut wakes,
@@ -1061,6 +1116,7 @@ impl ResolvedFutex {
                         return Ok(None);
                     }
                     collect_futex_requeue_same_bucket(
+                        source_bucket,
                         &mut waiters,
                         &self.key,
                         target,
@@ -1093,6 +1149,7 @@ impl ResolvedFutex {
                     .lock_nested(NESTED_FUTEX_BUCKET_LOCK_SUBCLASS);
                 let wake_second = condition.take().expect("condition used once")()?;
                 collect_futex_wakes(
+                    source_bucket,
                     &mut source_waiters,
                     &self.key,
                     wake_count,
@@ -1101,6 +1158,7 @@ impl ResolvedFutex {
                 );
                 if wake_second {
                     collect_futex_wakes(
+                        target_bucket,
                         &mut target_waiters,
                         &target.key,
                         wake2_count,
@@ -1116,6 +1174,7 @@ impl ResolvedFutex {
                     .lock_nested(NESTED_FUTEX_BUCKET_LOCK_SUBCLASS);
                 let wake_second = condition.take().expect("condition used once")()?;
                 collect_futex_wakes(
+                    source_bucket,
                     &mut source_waiters,
                     &self.key,
                     wake_count,
@@ -1124,6 +1183,7 @@ impl ResolvedFutex {
                 );
                 if wake_second {
                     collect_futex_wakes(
+                        target_bucket,
                         &mut target_waiters,
                         &target.key,
                         wake2_count,
@@ -1135,9 +1195,17 @@ impl ResolvedFutex {
             Ordering::Equal => {
                 let mut waiters = source_bucket.waiters.lock();
                 let wake_second = condition.take().expect("condition used once")()?;
-                collect_futex_wakes(&mut waiters, &self.key, wake_count, u32::MAX, &mut wakes);
+                collect_futex_wakes(
+                    source_bucket,
+                    &mut waiters,
+                    &self.key,
+                    wake_count,
+                    u32::MAX,
+                    &mut wakes,
+                );
                 if wake_second {
                     collect_futex_wakes(
+                        source_bucket,
                         &mut waiters,
                         &target.key,
                         wake2_count,
@@ -1159,6 +1227,7 @@ fn cancel_futex_waiter(task: &UserTaskRef, generation: u64) {
 }
 
 fn collect_futex_wakes(
+    bucket: &FutexBucket,
     waiters: &mut VecDeque<FutexBucketWaiter>,
     key: &FutexKey,
     count: usize,
@@ -1170,6 +1239,7 @@ fn collect_futex_wakes(
     while index < waiters.len() {
         if waiters[index].waiter.is_cancelled() {
             waiters.remove(index);
+            bucket.waiter_removed();
             continue;
         }
         if !waiters[index].key.same(key)
@@ -1183,6 +1253,7 @@ fn collect_futex_wakes(
             .remove(index)
             .expect("futex waiter index checked")
             .waiter;
+        bucket.waiter_removed();
         if waiter.mark_woken() {
             WaitQueue::push_wake(wakes, waiter);
         }
@@ -1190,15 +1261,18 @@ fn collect_futex_wakes(
 }
 
 fn collect_futex_requeue(
-    source: &mut VecDeque<FutexBucketWaiter>,
+    source_queue: (&FutexBucket, &mut VecDeque<FutexBucketWaiter>),
     source_key: &FutexKey,
-    target_waiters: &mut VecDeque<FutexBucketWaiter>,
+    target_queue: (&FutexBucket, &mut VecDeque<FutexBucketWaiter>),
     target: &ResolvedFutex,
     request: FutexRequeueRequest,
     wakes: &mut WakeBatch,
 ) -> usize {
+    let (source_bucket, source) = source_queue;
+    let (target_bucket, target_waiters) = target_queue;
     let wake_base = wakes.len();
     collect_futex_wakes(
+        source_bucket,
         source,
         source_key,
         request.wake_count,
@@ -1211,16 +1285,23 @@ fn collect_futex_requeue(
     while index < source.len() && requeued < request.requeue_count {
         if source[index].waiter.is_cancelled() {
             source.remove(index);
+            source_bucket.waiter_removed();
             continue;
         }
         if !source[index].key.same(source_key) {
             index += 1;
             continue;
         }
-        let mut entry = source.remove(index).expect("futex waiter index checked");
-        if !entry.waiter.set_cleanup_if_queued(target.cleanup()) {
+        if !source[index].waiter.set_cleanup_if_queued(target.cleanup()) {
+            index += 1;
             continue;
         }
+        // Publish the target-bucket hint before unlinking the source entry.
+        // A concurrent wake may observe the hint and wait for this bucket
+        // lock, but can never miss the entry once the lock is released.
+        target_bucket.reserve_requeued_waiter();
+        let mut entry = source.remove(index).expect("futex waiter index checked");
+        source_bucket.waiter_removed();
         entry.key = target.key.clone();
         target_waiters.push_back(entry);
         requeued += 1;
@@ -1229,6 +1310,7 @@ fn collect_futex_requeue(
 }
 
 fn collect_futex_requeue_same_bucket(
+    bucket: &FutexBucket,
     waiters: &mut VecDeque<FutexBucketWaiter>,
     source_key: &FutexKey,
     target: &ResolvedFutex,
@@ -1237,6 +1319,7 @@ fn collect_futex_requeue_same_bucket(
 ) -> usize {
     let wake_base = wakes.len();
     collect_futex_wakes(
+        bucket,
         waiters,
         source_key,
         request.wake_count,

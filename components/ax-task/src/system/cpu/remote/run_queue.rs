@@ -1173,6 +1173,19 @@ impl CpuRunQueueState {
             return WakePreemptionDecision::DedicatedIdlePreempted;
         }
         let current_policy = current.schedule_policy();
+        // Linux's `check_preempt_equal_prio()` has already established that
+        // an equal-priority RT wake must preserve FIFO order on this rq. The
+        // class hook cannot preempt an equal RT task, so avoid cloning the
+        // current scheduling entity and re-running the generic class chain.
+        // This is the common pinned SCHED_FIFO/RR wake path; the context still
+        // carries migration and pending-reschedule facts for the exceptional
+        // requeue case handled below.
+        if context.equal_rt_action == EqualRtWakeAction::PreserveFifoOrder
+            && policy.rt_priority().is_some()
+            && policy.rt_priority() == current_policy.rt_priority()
+        {
+            return WakePreemptionDecision::KeepCurrent;
+        }
         if context.equal_rt_action == EqualRtWakeAction::RequeueWakeeAndReschedule {
             if policy.rt_priority() != current_policy.rt_priority()
                 || policy.rt_priority().is_none()

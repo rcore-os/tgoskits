@@ -4,18 +4,42 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 const UNINIT_EPOCH_OFFSET_NANOS: u64 = u64::MAX;
 static EPOCH_OFFSET_NANOS: AtomicU64 = AtomicU64::new(UNINIT_EPOCH_OFFSET_NANOS);
+// The platform timer frequency is fixed for the lifetime of a boot. Cache it
+// after the first conversion so every clock read does not repeat the provider
+// lookup; the arithmetic and saturation semantics remain unchanged.
+const UNINIT_FREQUENCY_HZ: u64 = u64::MAX;
+static TIMER_FREQUENCY_HZ: AtomicU64 = AtomicU64::new(UNINIT_FREQUENCY_HZ);
 
+#[inline(always)]
 pub(crate) fn current_ticks() -> u64 {
     somehal::timer::ticks() as _
 }
 
+#[inline(always)]
+fn timer_frequency_hz() -> u64 {
+    let cached = TIMER_FREQUENCY_HZ.load(Ordering::Acquire);
+    if cached != UNINIT_FREQUENCY_HZ {
+        return cached;
+    }
+    let frequency = somehal::timer::freq() as u64;
+    let _ = TIMER_FREQUENCY_HZ.compare_exchange(
+        UNINIT_FREQUENCY_HZ,
+        frequency,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+    frequency
+}
+
+#[inline(always)]
 pub(crate) fn ticks_to_nanos(ticks: u64) -> u64 {
-    let freq = somehal::timer::freq() as u64;
+    let freq = timer_frequency_hz();
     ticks_to_nanos_at_frequency(ticks, freq)
 }
 
+#[inline(always)]
 pub(crate) fn nanos_to_ticks(nanos: u64) -> u64 {
-    let freq = somehal::timer::freq() as u64;
+    let freq = timer_frequency_hz();
     nanos_to_ticks_at_frequency(nanos, freq)
 }
 
@@ -159,7 +183,7 @@ impl ax_plat::time::TimeIf for GenericTimer {
     /// deadline (in nanoseconds).
     fn set_oneshot_timer(deadline_ns: u64) {
         let current_ticks = somehal::timer::ticks() as u64;
-        let frequency_hz = somehal::timer::freq() as u64;
+        let frequency_hz = timer_frequency_hz();
         program_oneshot(
             deadline_ns,
             current_ticks,
@@ -169,7 +193,7 @@ impl ax_plat::time::TimeIf for GenericTimer {
     }
     fn resume_oneshot_timer(deadline_ns: u64) {
         let current_ticks = somehal::timer::ticks() as u64;
-        let frequency_hz = somehal::timer::freq() as u64;
+        let frequency_hz = timer_frequency_hz();
         resume_oneshot(
             deadline_ns,
             current_ticks,
