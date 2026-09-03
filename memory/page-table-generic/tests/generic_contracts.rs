@@ -5,7 +5,7 @@ use std::alloc::{self, Layout};
 
 use mocks::{Fram4k, MappingFlags, PteImpl};
 use page_table_generic::{
-    FrameAllocator, PageTable, PageTableEntry, PhysAddr, TableMeta, VirtAddr,
+    FrameAllocator, PageTable, PageTableEntry, PhysAddr, TableMeta, VirtAddr, WalkConfig,
 };
 
 const PAGE_SIZE_16K: usize = 0x4000;
@@ -189,6 +189,45 @@ fn occupied_walk_retains_non_present_leaf_identity() {
         page_table.mapping_size_for_level(occupied[0].level),
         Some(OpaqueMeta::PAGE_SIZE)
     );
+}
+
+#[test]
+fn ranged_walk_descends_into_an_overlapping_parent_entry() {
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(0x20_4000);
+    let paddr = PhysAddr::from_usize(0x80_0000);
+
+    page_table
+        .map_page(
+            vaddr,
+            paddr,
+            OpaqueMeta::PAGE_SIZE,
+            OpaqueConfig {
+                domain: 0x2a,
+                present: false,
+            },
+        )
+        .unwrap();
+
+    let occupied = page_table
+        .walk_all(WalkConfig {
+            start_vaddr: vaddr,
+            end_vaddr: vaddr + OpaqueMeta::PAGE_SIZE,
+        })
+        .filter(|entry| {
+            !entry.pte.unused() && (entry.level == 1 || entry.pte.huge(entry.level > 1))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(occupied.len(), 1);
+    assert_eq!(occupied[0].vaddr, vaddr);
+    assert_eq!(occupied[0].level, 1);
+
+    let occupied = page_table
+        .walk_occupied_range(vaddr, vaddr + OpaqueMeta::PAGE_SIZE)
+        .collect::<Vec<_>>();
+    assert_eq!(occupied.len(), 1);
+    assert_eq!(occupied[0].vaddr, vaddr);
 }
 
 #[test]

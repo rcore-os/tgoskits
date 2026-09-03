@@ -1247,9 +1247,23 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     /// access permissions removed. The walk scales with allocated page-table
     /// frames rather than with the represented virtual address span.
     pub fn walk_occupied(&self) -> impl Iterator<Item = crate::walk::PteInfo<T::P>> + '_ {
+        self.walk_occupied_range(0.into(), usize::MAX.into())
+    }
+
+    /// Walks occupied final leaves whose represented range overlaps
+    /// `[start_vaddr, end_vaddr)`.
+    ///
+    /// Unlike probing every base page, this follows only allocated page-table
+    /// paths that intersect the requested range. Retained non-present leaves
+    /// remain visible so rollback can keep PTE and software ownership in sync.
+    pub fn walk_occupied_range(
+        &self,
+        start_vaddr: VirtAddr,
+        end_vaddr: VirtAddr,
+    ) -> impl Iterator<Item = crate::walk::PteInfo<T::P>> + '_ {
         let config = WalkConfig {
-            start_vaddr: 0.into(),
-            end_vaddr: usize::MAX.into(),
+            start_vaddr,
+            end_vaddr,
         };
         PageTableWalker::new(self, config)
             .filter(|p| !p.pte.unused() && (p.level == 1 || p.pte.huge(p.level > 1)))

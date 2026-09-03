@@ -718,43 +718,33 @@ impl AddrSpace {
         &self,
         ranges: &[VirtAddrRange],
     ) -> StarryResult<Vec<OccupiedPteLeaf>> {
-        let Some(max_end) = ranges.iter().map(|range| range.end).max() else {
-            return Ok(Vec::new());
-        };
         let mut leaves = Vec::new();
-        for entry in self.pt.walk_occupied() {
-            let leaf_start = entry.vaddr;
-            if leaf_start >= max_end {
-                continue;
+        for range in ranges {
+            for entry in self.pt.walk_occupied_range(range.start, range.end) {
+                let leaf_start = entry.vaddr;
+                let page_size = self
+                    .pt
+                    .mapping_size_for_level(entry.level)
+                    .ok_or(StarryError::BadState)?;
+                let leaf_end = leaf_start
+                    .checked_add(page_size)
+                    .ok_or(StarryError::BadState)?;
+                if leaf_start >= range.end || leaf_end <= range.start {
+                    continue;
+                }
+                if leaf_start < range.start || leaf_end > range.end {
+                    return Err(StarryError::OperationNotSupported);
+                }
+                let is_directory_level = entry.level > 1;
+                leaves
+                    .try_reserve(1)
+                    .map_err(|_| StarryError::NoMemory)?;
+                leaves.push(OccupiedPteLeaf {
+                    range: VirtAddrRange::new(leaf_start, leaf_end),
+                    paddr: entry.pte.paddr(is_directory_level),
+                    flags: entry.pte.config(is_directory_level),
+                });
             }
-            let page_size = self
-                .pt
-                .mapping_size_for_level(entry.level)
-                .ok_or(StarryError::BadState)?;
-            let leaf_end = leaf_start
-                .checked_add(page_size)
-                .ok_or(StarryError::BadState)?;
-            if !ranges
-                .iter()
-                .any(|range| leaf_start < range.end && range.start < leaf_end)
-            {
-                continue;
-            }
-            if !ranges
-                .iter()
-                .any(|range| range.start <= leaf_start && leaf_end <= range.end)
-            {
-                return Err(StarryError::OperationNotSupported);
-            }
-            let is_directory_level = entry.level > 1;
-            leaves
-                .try_reserve(1)
-                .map_err(|_| StarryError::NoMemory)?;
-            leaves.push(OccupiedPteLeaf {
-                range: VirtAddrRange::new(leaf_start, leaf_end),
-                paddr: entry.pte.paddr(is_directory_level),
-                flags: entry.pte.config(is_directory_level),
-            });
         }
         Ok(leaves)
     }
