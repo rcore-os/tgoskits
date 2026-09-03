@@ -156,6 +156,13 @@ impl SchedulerRequestState {
         published.or_else(|| Some(self.request.load(Ordering::Acquire)))
     }
 
+    fn publish_rq_delivery(&self, reason: u64) -> Option<u64> {
+        // Unlike Linux's task-owned TIF_NEED_RESCHED, this CPU-global bit can
+        // survive the physical edge that first carried it. Each fresh rq
+        // decision must therefore retry delivery for immediate or owner work.
+        self.publish_remote(reason)
+    }
+
     fn claim(&self, scope: SchedulerRequestScope) -> SchedulerRequestClaim {
         let request = self
             .request
@@ -295,7 +302,10 @@ impl CpuRemote {
         if owner_work {
             reasons |= REQUEST_OWNER_WORK;
         }
-        if let Some(publication) = self.publish_scheduler_request_owned(reasons)
+        if let Some(publication) = self
+            .scheduler_request
+            .publish_rq_delivery(reasons)
+            .map(Self::scheduler_request_publication)
             && (owner_work || reschedule == Some(RescheduleKind::Immediate))
         {
             if publication.delivery == SchedulerRequestDelivery::PollingOwner {
