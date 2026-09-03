@@ -99,6 +99,8 @@ use address_space::{
 };
 #[cfg(feature = "qperf-metrics")]
 pub use ax_task::{DEFAULT_BATCH_LIMIT, qperf_cpu_owner_claims};
+#[cfg(feature = "uspace")]
+use bootstrap::current_cpu_remote;
 #[cfg(feature = "tls")]
 pub(crate) use bootstrap::initialize_early_bootstrap_tls;
 #[cfg(test)]
@@ -108,9 +110,9 @@ pub(crate) use bootstrap::{
     start_current_ktimer_service, start_deferred_task_work_service,
 };
 use bootstrap::{
-    cpu_remote, current_cpu_owner_handles, current_cpu_remote, idle_context_entry,
-    primary_bootstrap_thread, scheduler_current_cpu_remote_handle, task_system,
-    with_current_cpu_local_mut_owner, with_current_cpu_pin,
+    cpu_remote, current_cpu_owner_handles, idle_context_entry, primary_bootstrap_thread,
+    scheduler_current_cpu_remote_handle, task_system, with_current_cpu_local_mut_owner,
+    with_current_cpu_pin,
 };
 #[cfg(feature = "smp")]
 pub(crate) use bootstrap::{initialize_secondary, run_idle};
@@ -144,6 +146,7 @@ pub(crate) fn scheduler_frame_capabilities(cpu_pin: &CpuPin) -> RuntimeScheduler
     }
 }
 
+#[cfg(feature = "uspace")]
 pub(crate) fn current_cpu_needs_reschedule_pinned(cpu_pin: &CpuPin) -> Result<bool, TaskError> {
     Ok(current_cpu_remote(cpu_pin)
         .ok_or(TaskError::NotInitialized)?

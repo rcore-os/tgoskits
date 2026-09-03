@@ -52,9 +52,13 @@ fn scheduler_entry_state_reuses_one_cpu_pin() {
             .expect("modeled task must release bootstrap preemption");
         cpu_local::host_test::reset_register_read_counts();
 
-        assert!(claim_scheduler_cpu_state(
-            ax_task::runtime::RuntimeSchedulerEntry::Task
-        ));
+        let capabilities = claim_scheduler_cpu_state(ax_task::runtime::RuntimeSchedulerEntry::Task)
+            .expect("modeled task must claim one scheduler-frame capability snapshot");
+        assert_eq!(
+            capabilities.status(),
+            ax_task::runtime::RuntimeStatus::Success,
+            "a claimed scheduler frame must publish a successful capability snapshot"
+        );
 
         let reads = cpu_local::host_test::register_read_counts();
         assert_eq!(
