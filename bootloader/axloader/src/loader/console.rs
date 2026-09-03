@@ -1,6 +1,7 @@
 use core::fmt;
 
 use uefi::{
+    Status,
     boot::{self, OpenProtocolAttributes, OpenProtocolParams},
     proto::console::{
         serial::{IoMode, Parity, Serial, StopBits},
@@ -35,17 +36,25 @@ pub fn serial_println(args: fmt::Arguments<'_>) {
     serial_print(format_args!("\n"));
 }
 
-pub fn serial_read_byte() -> Option<u8> {
-    if let Some(byte) = read_serial_byte() {
-        return Some(byte);
+pub fn serial_read_available(buffer: &mut [u8]) -> usize {
+    if buffer.is_empty() {
+        return 0;
+    }
+    if let Some(read) = read_serial_available(buffer) {
+        return read;
     }
 
     uefi::system::with_stdin(|stdin| match stdin.read_key() {
         Ok(Some(Key::Printable(ch))) => {
             let ch = char::from(ch);
-            if ch.is_ascii() { Some(ch as u8) } else { None }
+            if ch.is_ascii() {
+                buffer[0] = ch as u8;
+                1
+            } else {
+                0
+            }
         }
-        Ok(Some(Key::Special(_))) | Ok(None) | Err(_) => None,
+        Ok(Some(Key::Special(_))) | Ok(None) | Err(_) => 0,
     })
 }
 
@@ -85,12 +94,12 @@ fn configure_serial(serial: &mut Serial) {
     let _ = serial.set_attributes(&mode);
 }
 
-fn read_serial_byte() -> Option<u8> {
-    with_serial(|serial| {
-        let mut byte = [0];
-        serial.read(&mut byte).ok().map(|()| byte[0])
+fn read_serial_available(buffer: &mut [u8]) -> Option<usize> {
+    with_serial(|serial| match serial.read(buffer) {
+        Ok(()) => buffer.len(),
+        Err(error) if error.status() == Status::TIMEOUT => *error.data(),
+        Err(_) => 0,
     })
-    .flatten()
 }
 
 struct SerialWriter<'a> {

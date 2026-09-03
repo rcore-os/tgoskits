@@ -1,6 +1,7 @@
 const X86_CONTEXT: &str = include_str!("../src/x86_64/context.rs");
 const X86_LOCAL_STATE: &str = include_str!("../src/x86_64/local_state.rs");
-const RUNTIME_GUARD: &str = include_str!("../../../os/arceos/modules/axruntime/src/guard/mod.rs");
+const RUNTIME_USER_ENTRY: &str =
+    include_str!("../../../os/arceos/modules/axruntime/src/task/user_entry.rs");
 
 #[test]
 fn x86_user_fpu_follows_linux_owner_and_return_to_user_boundaries() {
@@ -24,7 +25,9 @@ fn x86_user_fpu_follows_linux_owner_and_return_to_user_boundaries() {
         "the physical FPU image requires one CPU-local owner source",
     );
     assert!(
-        RUNTIME_GUARD.contains("prepare_current_user_fp_return"),
-        "the final IRQ-off user-return snapshot must prepare the current FPU owner",
+        RUNTIME_USER_ENTRY.contains(
+            "crate::guard::prepare_user_return()?;\n        self.binding.prepare_user_fp_return();",
+        ),
+        "the context binding must prepare the FPU owner after the final IRQ-off snapshot",
     );
 }

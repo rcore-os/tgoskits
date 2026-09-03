@@ -25,6 +25,8 @@ const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
 const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
 const HTTP_SMOKE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
+const HTTP_SMOKE_SERIAL_READY_DELAY: Duration = Duration::from_millis(50);
+const HTTP_SMOKE_SERIAL_BYTE_DELAY: Duration = Duration::from_millis(2);
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
 
 #[derive(Clone, Copy)]
@@ -293,10 +295,8 @@ fn drive_http_smoke_session(child: &mut Child, boot_line: &str) -> anyhow::Resul
                 print!("{chunk}");
                 transcript.push_str(&chunk);
                 if !progress.boot_sent() && transcript.contains("AXLOADER READY") {
-                    stdin
-                        .write_all(boot_line.as_bytes())
+                    write_serial_control_line(&mut stdin, boot_line)
                         .context("failed to send AXLOADER BOOT over QEMU serial")?;
-                    stdin.flush().ok();
                     progress.mark_boot_sent(Instant::now());
                 }
                 if transcript.contains("elf_loaded:") {
@@ -329,6 +329,27 @@ fn drive_http_smoke_session(child: &mut Child, boot_line: &str) -> anyhow::Resul
         "UEFI startup"
     };
     bail!("axloader HTTP smoke timed out during {phase}; transcript:\n{transcript}")
+}
+
+fn write_serial_control_line(output: &mut impl Write, line: &str) -> std::io::Result<()> {
+    write_serial_control_line_with_delay(output, line, thread::sleep)
+}
+
+fn write_serial_control_line_with_delay(
+    output: &mut impl Write,
+    line: &str,
+    mut delay: impl FnMut(Duration),
+) -> std::io::Result<()> {
+    delay(HTTP_SMOKE_SERIAL_READY_DELAY);
+    let mut bytes = line.as_bytes().iter().peekable();
+    while let Some(byte) = bytes.next() {
+        output.write_all(core::slice::from_ref(byte))?;
+        output.flush()?;
+        if bytes.peek().is_some() {
+            delay(HTTP_SMOKE_SERIAL_BYTE_DELAY);
+        }
+    }
+    Ok(())
 }
 
 fn next_smoke_attempt(current_attempt: usize) -> Option<usize> {
@@ -647,6 +668,45 @@ mod tests {
         assert!(boot_line.contains("\"kernel_size\":4096"));
         assert!(boot_line.contains("\"arch\":\"x86_64\""));
         assert!(boot_line.ends_with('\n'));
+    }
+
+    #[test]
+    fn boot_line_is_paced_for_uefi_polled_serial_input() {
+        #[derive(Default)]
+        struct WriteRecorder {
+            bytes: Vec<u8>,
+            writes: Vec<usize>,
+            flushes: usize,
+        }
+
+        impl Write for WriteRecorder {
+            fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(buffer);
+                self.writes.push(buffer.len());
+                Ok(buffer.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes += 1;
+                Ok(())
+            }
+        }
+
+        let line = "AXLOADER BOOT {\"protocol_version\":1}\n";
+        let mut output = WriteRecorder::default();
+        let mut delays = Vec::new();
+
+        write_serial_control_line_with_delay(&mut output, line, |delay| delays.push(delay))
+            .unwrap();
+
+        assert_eq!(output.bytes, line.as_bytes());
+        assert_eq!(output.writes, vec![1; line.len()]);
+        assert_eq!(output.flushes, line.len());
+        assert_eq!(delays[0], HTTP_SMOKE_SERIAL_READY_DELAY);
+        assert_eq!(
+            delays[1..],
+            vec![HTTP_SMOKE_SERIAL_BYTE_DELAY; line.len() - 1]
+        );
     }
 
     #[test]

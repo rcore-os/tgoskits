@@ -4,18 +4,21 @@ const ACCOUNTING: &str = include_str!("../src/task/timer/accounting.rs");
 const SCHEDULER_TASK: &str = include_str!("../src/task/scheduler_task.rs");
 
 #[test]
-fn running_policy_updates_share_the_cpu_time_writer_gate() {
+fn running_policy_updates_share_the_cpu_time_sequence_writer() {
     assert!(SCHEDULER_TASK.contains(".with_running_policy_applied_hook("));
     assert!(SCHEDULER_TASK.contains(".apply_cpu_time_policy("));
 
     let accounting = struct_body(ACCOUNTING, "pub struct CpuTimeAccounting");
     assert!(
-        accounting.contains("writer_gate: SpinLock<()>"),
-        "remote running-policy updates must serialize with execution-owner transitions"
+        accounting.contains("sequence: AtomicU64"),
+        "CPU-time readers and writers must share one sequence word"
     );
 
     let begin_write = function_body(ACCOUNTING, "fn begin_write(");
-    assert!(begin_write.contains("self.writer_gate.lock()"));
+    assert!(begin_write.contains("NoPreemptIrqSave::new()"));
+    assert!(begin_write.contains("compare_exchange_weak("));
+    let finish_write = function_body(ACCOUNTING, "fn drop(");
+    assert!(finish_write.contains("Ordering::Release"));
     assert!(!ACCOUNTING.contains("CPU-time accounting owner was re-entered"));
 }
 
