@@ -48,4 +48,3 @@ impl SwapProvider for UnsupportedSwap {
         Err(SwapError::Unsupported)
     }
 }
-
