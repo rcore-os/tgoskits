@@ -1,4 +1,8 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    vec::Vec,
+};
 use core::{fmt, sync::atomic::AtomicUsize};
 
 use ax_fs_ng::file::CachedPagePin;
@@ -22,6 +26,7 @@ use crate::{
     sync::{IrqMutex, LockdepMutexExt, Mutex},
 };
 
+#[cfg(test)]
 fn complete_page_fault_with(
     handled: bool,
     vaddr: VirtAddr,
@@ -64,6 +69,9 @@ pub use self::objects::{
     PageObject, PageState, RmapSet, SlotState, WritebackError, WritebackLease,
 };
 pub(crate) use self::domain::{PageTableDomain, PteStripeCursor};
+
+#[cfg(all(test, axtest))]
+static MAPPING_GRAPH_SNAPSHOT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MovedPageDestination {
@@ -126,9 +134,111 @@ impl ResidentPageCounts {
             .saturating_add(self.file)
             .saturating_add(self.shmem)
     }
+
+    fn checked_delta_to(self, after: Self) -> StarryResult<ResidentDelta> {
+        fn delta(before: u64, after: u64) -> StarryResult<i64> {
+            let value = i128::from(after) - i128::from(before);
+            i64::try_from(value).map_err(|_| StarryError::BadState)
+        }
+
+        Ok(ResidentDelta {
+            anon: delta(self.anon, after.anon)?,
+            file: delta(self.file, after.file)?,
+            shmem: delta(self.shmem, after.shmem)?,
+        })
+    }
+
+    fn checked_apply(&mut self, delta: ResidentDelta) -> StarryResult {
+        fn apply(current: u64, delta: i64) -> StarryResult<u64> {
+            if delta >= 0 {
+                current
+                    .checked_add(u64::try_from(delta).map_err(|_| StarryError::BadState)?)
+                    .ok_or(StarryError::BadState)
+            } else {
+                current
+                    .checked_sub(delta.unsigned_abs())
+                    .ok_or(StarryError::BadState)
+            }
+        }
+
+        self.anon = apply(self.anon, delta.anon)?;
+        self.file = apply(self.file, delta.file)?;
+        self.shmem = apply(self.shmem, delta.shmem)?;
+        Ok(())
+    }
+
+    fn checked_add_pages(&mut self, kind: Option<RssKind>, pages: u64) -> StarryResult {
+        let bucket = match kind {
+            Some(RssKind::Anon) => &mut self.anon,
+            Some(RssKind::File) => &mut self.file,
+            Some(RssKind::Shmem) => &mut self.shmem,
+            None => return Ok(()),
+        };
+        *bucket = bucket.checked_add(pages).ok_or(StarryError::BadState)?;
+        Ok(())
+    }
+
+    fn checked_negated_delta(self) -> StarryResult<ResidentDelta> {
+        Ok(ResidentDelta {
+            anon: -i64::try_from(self.anon).map_err(|_| StarryError::BadState)?,
+            file: -i64::try_from(self.file).map_err(|_| StarryError::BadState)?,
+            shmem: -i64::try_from(self.shmem).map_err(|_| StarryError::BadState)?,
+        })
+    }
+
+    fn checked_positive_delta(self) -> StarryResult<ResidentDelta> {
+        Ok(ResidentDelta {
+            anon: i64::try_from(self.anon).map_err(|_| StarryError::BadState)?,
+            file: i64::try_from(self.file).map_err(|_| StarryError::BadState)?,
+            shmem: i64::try_from(self.shmem).map_err(|_| StarryError::BadState)?,
+        })
+    }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+impl ResidentDelta {
+    fn for_pages(kind: Option<RssKind>, pages: i64) -> Self {
+        match kind {
+            Some(RssKind::Anon) => Self {
+                anon: pages,
+                ..Self::default()
+            },
+            Some(RssKind::File) => Self {
+                file: pages,
+                ..Self::default()
+            },
+            Some(RssKind::Shmem) => Self {
+                shmem: pages,
+                ..Self::default()
+            },
+            None => Self::default(),
+        }
+    }
+
+    fn checked_add_assign(&mut self, other: Self) -> StarryResult {
+        self.anon = self
+            .anon
+            .checked_add(other.anon)
+            .ok_or(StarryError::BadState)?;
+        self.file = self
+            .file
+            .checked_add(other.file)
+            .ok_or(StarryError::BadState)?;
+        self.shmem = self
+            .shmem
+            .checked_add(other.shmem)
+            .ok_or(StarryError::BadState)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PteOwnerPublication {
+    satisfied_pages: usize,
+    mapping_delta: MappingDelta,
+    resident_delta: ResidentDelta,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct MappingSlotFingerprint {
     key: MappingSlotKey,
     mapping: MappingId,
@@ -141,30 +251,43 @@ struct MappingSlotFingerprint {
 /// preimages retain the actual objects needed for rollback.
 struct MappingGraphSnapshot {
     slots: Vec<MappingSlotFingerprint>,
-    resident_pages: u64,
+    resident: ResidentPageCounts,
 }
 
 impl MappingGraphSnapshot {
     fn delta_to(&self, after: &Self) -> StarryResult<(MappingDelta, ResidentDelta)> {
-        let attached = after
-            .slots
-            .iter()
-            .filter(|slot| !self.slots.contains(slot))
-            .count();
-        let detached = self
-            .slots
-            .iter()
-            .filter(|slot| !after.slots.contains(slot))
-            .count();
-        let resident_pages = i128::from(after.resident_pages) - i128::from(self.resident_pages);
+        let mut before_index = 0usize;
+        let mut after_index = 0usize;
+        let mut attached = 0usize;
+        let mut detached = 0usize;
+        while before_index < self.slots.len() && after_index < after.slots.len() {
+            match self.slots[before_index].cmp(&after.slots[after_index]) {
+                core::cmp::Ordering::Less => {
+                    detached = detached.checked_add(1).ok_or(StarryError::BadState)?;
+                    before_index += 1;
+                }
+                core::cmp::Ordering::Equal => {
+                    before_index += 1;
+                    after_index += 1;
+                }
+                core::cmp::Ordering::Greater => {
+                    attached = attached.checked_add(1).ok_or(StarryError::BadState)?;
+                    after_index += 1;
+                }
+            }
+        }
+        detached = detached
+            .checked_add(self.slots.len() - before_index)
+            .ok_or(StarryError::BadState)?;
+        attached = attached
+            .checked_add(after.slots.len() - after_index)
+            .ok_or(StarryError::BadState)?;
         Ok((
             MappingDelta {
                 attached: u32::try_from(attached).map_err(|_| StarryError::BadState)?,
                 detached: u32::try_from(detached).map_err(|_| StarryError::BadState)?,
             },
-            ResidentDelta {
-                pages: i64::try_from(resident_pages).map_err(|_| StarryError::BadState)?,
-            },
+            self.resident.checked_delta_to(after.resident)?,
         ))
     }
 }
@@ -525,6 +648,103 @@ enum CommitMutationError {
     PublishedPendingTlb(StarryError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MutationPublication {
+    Complete,
+    PendingTlb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FaultPtePreimage {
+    NotMapped,
+    Mapped {
+        paddr: PhysAddr,
+        flags: MappingFlags,
+        page_size: usize,
+    },
+}
+
+impl FaultPtePreimage {
+    fn capture(pt: &PageTable, va: VirtAddr) -> StarryResult<Self> {
+        match pt.query(va) {
+            Ok((paddr, flags, page_size)) => Ok(Self::Mapped {
+                paddr,
+                flags,
+                page_size,
+            }),
+            Err(PagingError::NotMapped) => Ok(Self::NotMapped),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn install_in(self, va: VirtAddr, pt: &mut PageTable) -> StarryResult {
+        match self {
+            Self::NotMapped => Ok(()),
+            Self::Mapped {
+                paddr,
+                flags,
+                page_size,
+            } => pt
+                .map_page(va, paddr, page_size, flags)
+                .map(|_| ())
+                .map_err(Into::into),
+        }
+    }
+
+    fn matches(self, va: VirtAddr, pt: &PageTable) -> bool {
+        match (self, pt.query(va)) {
+            (Self::NotMapped, Err(PagingError::NotMapped)) => true,
+            (
+                Self::Mapped {
+                    paddr,
+                    flags,
+                    page_size,
+                },
+                Ok((current_paddr, current_flags, current_size)),
+            ) => paddr == current_paddr && flags == current_flags && page_size == current_size,
+            _ => false,
+        }
+    }
+}
+
+struct PageFaultPlan {
+    base_epoch: VmEpoch,
+    space_id: AddressSpaceId,
+    vaddr: VirtAddr,
+    range: VirtAddrRange,
+    vma_flags: MappingFlags,
+    access_flags: MappingFlags,
+    operation: MappingOperation,
+    request: PopulateRequest,
+    preimage: FaultPtePreimage,
+}
+
+struct PreparedPageFault {
+    plan: PageFaultPlan,
+    materialization: PteMaterialization,
+    desired_flags: Vec<MappingFlags>,
+}
+
+impl PreparedPageFault {
+    fn cancel(self) -> StarryResult {
+        self.plan
+            .operation
+            .cancel_prepared_page_publications(self.materialization)
+    }
+}
+
+enum PageFaultApplyOutcome {
+    Complete(FaultResult),
+    Cancel {
+        prepared: PreparedPageFault,
+        result: FaultResult,
+    },
+    PendingTlb {
+        request: TlbRequest,
+        targets: Arc<AtomicUsize>,
+    },
+}
+
 /// Result of revoking one file-cache reverse mapping.  A pending TLB result is
 /// successful publication, not a rollback-safe error.  `NeedsRepair` likewise
 /// keeps the page in Evicting so it cannot be reused from an unproved state.
@@ -562,6 +782,10 @@ pub struct AddrSpace {
     /// All VmX counters for this address space.  Maintained automatically by
     /// `map`, `unmap`, `clear`, and `try_clone`; never touch from outside mm/.
     pub vm_stat: ProcessVmStat,
+    /// Current Linux RSS buckets. This value changes only when one published
+    /// mutation receipt is committed; MappingSlot remains the corresponding
+    /// installed-page ownership fact and rollback never touches these counters.
+    resident_pages: ResidentPageCounts,
     resident_watermark: ResidentWatermark,
     /// Frames detached by a mutation remain here until every TLB obligation
     /// acknowledges the corresponding `(space_id, epoch)` request.
@@ -708,6 +932,76 @@ impl AddrSpace {
         self.pt.query(vaddr).ok().map(|(_, _, size)| size)
     }
 
+    /// Iterates only MappingSlots that can overlap `range`.
+    ///
+    /// A huge leaf may begin before `range.start`, so the ordered walk includes
+    /// the immediate predecessor before visiting keys whose start lies inside
+    /// the range. No earlier slot can overlap because published slots within
+    /// one address space never overlap each other.
+    fn mapping_slots_overlapping(
+        &self,
+        range: VirtAddrRange,
+    ) -> impl Iterator<Item = (&MappingSlotKey, &Arc<MappingSlot>)> {
+        let start = MappingSlotKey {
+            space_id: self.id,
+            va: range.start,
+        };
+        let end = MappingSlotKey {
+            space_id: self.id,
+            va: range.end,
+        };
+        let predecessor = self
+            .mapping_slots
+            .range(..start)
+            .next_back()
+            .filter(move |(key, slot)| key.space_id == self.id && slot.overlaps(range));
+        let inside = self
+            .mapping_slots
+            .range(start..end)
+            .filter(move |(key, slot)| key.space_id == self.id && slot.overlaps(range));
+        predecessor.into_iter().chain(inside)
+    }
+
+    fn mapping_slot_summary(
+        &self,
+        range: VirtAddrRange,
+    ) -> StarryResult<(usize, usize, ResidentPageCounts)> {
+        let mut slots = 0usize;
+        let mut materialized_pages = 0usize;
+        let mut resident = ResidentPageCounts::default();
+        for (_, slot) in self.mapping_slots_overlapping(range) {
+            if slot.state() != SlotState::Present {
+                return Err(StarryError::BadState);
+            }
+            let pages = 1usize
+                .checked_shl(slot.page_order.get().into())
+                .ok_or(StarryError::BadState)?;
+            slots = slots.checked_add(1).ok_or(StarryError::BadState)?;
+            materialized_pages = materialized_pages
+                .checked_add(pages)
+                .ok_or(StarryError::BadState)?;
+            resident.checked_add_pages(
+                slot.resident_kind(),
+                u64::try_from(pages).map_err(|_| StarryError::BadState)?,
+            )?;
+        }
+        Ok((slots, materialized_pages, resident))
+    }
+
+    fn resident_counts_from_all_slots(&self) -> StarryResult<ResidentPageCounts> {
+        let mut resident = ResidentPageCounts::default();
+        for slot in self.mapping_slots.values() {
+            if slot.state() != SlotState::Present {
+                return Err(StarryError::BadState);
+            }
+            let pages = 1u64
+                .checked_shl(slot.page_order.get().into())
+                .ok_or(StarryError::BadState)?;
+            resident.checked_add_pages(slot.resident_kind(), pages)?;
+        }
+        Ok(resident)
+    }
+
     /// Returns occupied page-table leaves overlapping any requested range.
     ///
     /// This includes retained non-present leaves: protection may remove
@@ -785,13 +1079,10 @@ impl AddrSpace {
             }
             slots.push((key, slot, leaf));
         }
-        let overlapping_slots = self
-            .mapping_slots
+        let overlapping_slots = ranges
             .iter()
-            .filter(|(key, slot)| {
-                key.space_id == self.id && ranges.iter().any(|range| slot.overlaps(*range))
-            })
-            .count();
+            .map(|range| self.mapping_slots_overlapping(*range).count())
+            .sum::<usize>();
         if overlapping_slots != slots.len() {
             return Err(StarryError::BadState);
         }
@@ -842,7 +1133,7 @@ impl AddrSpace {
         candidates
             .try_reserve(2)
             .map_err(|_| StarryError::NoMemory)?;
-        for (key, slot) in &self.mapping_slots {
+        for (key, slot) in self.mapping_slots_overlapping(range) {
             if slot.page_order == PageOrder::BASE || !slot.overlaps(range) {
                 continue;
             }
@@ -1123,36 +1414,18 @@ impl AddrSpace {
         &self,
         range: VirtAddrRange,
     ) -> StarryResult<Vec<ProtectionLeafPreimage>> {
+        let occupied = self.occupied_pte_leaves_overlapping(&[range])?;
         let mut leaves = Vec::new();
         leaves
-            .try_reserve(range.size() / PAGE_SIZE_4K)
+            .try_reserve(occupied.len())
             .map_err(|_| StarryError::NoMemory)?;
-        let mut cursor = range.start;
-        while cursor < range.end {
-            match self.pt.query(cursor) {
-                Ok((paddr, flags, page_size)) => {
-                    let va = cursor.align_down(page_size);
-                    let end = va
-                        .checked_add(page_size)
-                        .ok_or(StarryError::BadState)?;
-                    if va < range.start || end > range.end {
-                        return Err(StarryError::OperationNotSupported);
-                    }
-                    leaves.push(ProtectionLeafPreimage {
-                        va,
-                        paddr,
-                        page_size,
-                        flags,
-                    });
-                    cursor = end;
-                }
-                Err(PagingError::NotMapped) => {
-                    cursor = cursor
-                        .checked_add(PAGE_SIZE_4K)
-                        .ok_or(StarryError::BadState)?;
-                }
-                Err(error) => return Err(error.into()),
-            }
+        for leaf in occupied {
+            leaves.push(ProtectionLeafPreimage {
+                va: leaf.range.start,
+                paddr: leaf.paddr,
+                page_size: leaf.range.size(),
+                flags: leaf.flags,
+            });
         }
         Ok(leaves)
     }
@@ -1251,6 +1524,7 @@ impl AddrSpace {
             mutation_gate: MutationGate::new(),
             published_epoch: Arc::new(core::sync::atomic::AtomicU64::new(0)),
             vm_stat: ProcessVmStat::new(),
+            resident_pages: ResidentPageCounts::default(),
             resident_watermark: ResidentWatermark::new(),
             tlb_quarantine: TlbQuarantine::default(),
             tlb_targets: Arc::new(AtomicUsize::new(0)),
@@ -1278,19 +1552,25 @@ impl AddrSpace {
         self.published_epoch.clone()
     }
 
-    fn commit_mutation_classified(
-        &self,
+    fn publish_mutation_classified(
+        &mut self,
         mutation: PreparedMutation,
-    ) -> Result<(), CommitMutationError> {
+    ) -> Result<MutationPublication, CommitMutationError> {
+        let mut next_resident = self.resident_pages;
+        next_resident
+            .checked_apply(mutation.receipt().resident_delta)
+            .map_err(CommitMutationError::Unpublished)?;
         match self.mutation_gate.commit(mutation) {
             Ok(receipt) => {
+                self.resident_pages = next_resident;
                 self.published_epoch
                     .store(receipt.new_epoch.get(), core::sync::atomic::Ordering::Release);
                 self.resident_watermark
-                    .observe_resident_total(self.resident_page_counts().total());
-                Ok(())
+                    .observe_resident_total(self.resident_pages.total());
+                Ok(MutationPublication::Complete)
             }
             Err(MutationError::TlbPending) => {
+                self.resident_pages = next_resident;
                 self.published_epoch.store(
                     self.mutation_gate.current_epoch().get(),
                     core::sync::atomic::Ordering::Release,
@@ -1300,17 +1580,8 @@ impl AddrSpace {
                 // Linux likewise records RSS high-water before reclaiming the
                 // old page-table view; a TLB timeout must not hide the new RSS.
                 self.resident_watermark
-                    .observe_resident_total(self.resident_page_counts().total());
-                // The mutation is already published and its receipt is held by
-                // `MutationGate::pending`.  Service *all* pending receipts,
-                // rather than looking up only `current_epoch()`: a later
-                // mutation may have advanced the epoch before a slow IPI
-                // acknowledgement arrives.  A failed shootdown is surfaced
-                // while the published state remains visible and the receipt
-                // stays queued for retry.
-                self.service_pending_tlb()
-                    .map(|_| ())
-                    .map_err(CommitMutationError::PublishedPendingTlb)
+                    .observe_resident_total(self.resident_pages.total());
+                Ok(MutationPublication::PendingTlb)
             }
             Err(error) => Err(CommitMutationError::Unpublished(match error {
                     MutationError::ResourceExhausted => StarryError::NoMemory,
@@ -1324,7 +1595,25 @@ impl AddrSpace {
         }
     }
 
-    fn commit_mutation(&self, mutation: PreparedMutation) -> StarryResult {
+    fn commit_mutation_classified(
+        &mut self,
+        mutation: PreparedMutation,
+    ) -> Result<(), CommitMutationError> {
+        match self.publish_mutation_classified(mutation)? {
+            MutationPublication::Complete => Ok(()),
+            MutationPublication::PendingTlb => {
+                // Compatibility callers still use the synchronous service.
+                // Faults use `publish_mutation_classified` directly, drop the
+                // address-space mutex, and complete this platform operation
+                // outside every VMA/PTE/rmap lock.
+                self.service_pending_tlb()
+                    .map(|_| ())
+                    .map_err(CommitMutationError::PublishedPendingTlb)
+            }
+        }
+    }
+
+    fn commit_mutation(&mut self, mutation: PreparedMutation) -> StarryResult {
         match self.commit_mutation_classified(mutation) {
             Ok(()) => Ok(()),
             Err(CommitMutationError::PublishedPendingTlb(error)) => Err(error),
@@ -1342,41 +1631,30 @@ impl AddrSpace {
 
     /// Completes outstanding address-space-tagged TLB obligations.
     ///
-    /// The immutable request snapshot is taken before any IPI is sent, so no
-    /// VMA, page-table, or page-cache lock is held across the platform call.
-    /// It is safe to invoke this from a sleepable reclaimer or an IPI
-    /// completion worker; a concurrent worker consuming the same receipt is
-    /// treated as an idempotent observation.
+    /// The request snapshot and active-CPU source can outlive the address-space
+    /// mutex. Platform shootdown therefore runs without a VMA, PTE, rmap, or
+    /// page-cache lock, after which the short acknowledgement phase retires the
+    /// matching receipts and quarantined owners.
     pub fn service_pending_tlb(&self) -> StarryResult<usize> {
         let requests = self.mutation_gate.pending_requests();
-        let mut completed = 0;
+        Self::flush_tlb_requests(&requests, &self.tlb_targets)?;
+        self.acknowledge_tlb_requests(&requests)
+    }
+
+    fn flush_tlb_requests(
+        requests: &[TlbRequest],
+        tlb_targets: &AtomicUsize,
+    ) -> StarryResult {
         for request in requests {
             let pending_targets = request.pending();
             // `tlb_targets` is the full-flush fallback's equivalent of
-            // Linux's loaded-mm footprint. A bit can only be cleared by
-            // consuming an ActivationLease after another root has been
-            // installed and the local TLB has been flushed. Intersecting the
-            // immutable receipt with that live footprint therefore avoids
-            // waiting on a CPU that switched away or completed CPU-offline,
-            // while a later activation installs the already-published PTEs.
+            // Linux's loaded-mm footprint. A bit can only be cleared after
+            // another root is installed and the local TLB is flushed.
             let live_targets =
-                pending_targets & self.tlb_targets.load(core::sync::atomic::Ordering::Acquire);
+                pending_targets & tlb_targets.load(core::sync::atomic::Ordering::Acquire);
             if request.ranges.is_empty() && live_targets != 0 {
-                ax_runtime::hal::cache::flush_tlb_all_on_cpus(live_targets).map_err(
-                    |error| match error {
-                        ax_runtime::hal::cache::TlbShootdownError::Timeout => {
-                            StarryError::TimedOut
-                        }
-                        ax_runtime::hal::cache::TlbShootdownError::Unsupported
-                        | ax_runtime::hal::cache::TlbShootdownError::CpuOffline => {
-                            StarryError::Unsupported
-                        }
-                        ax_runtime::hal::cache::TlbShootdownError::GenerationExhausted => {
-                            StarryError::Errno(syscalls::Errno::EOVERFLOW)
-                        }
-                        ax_runtime::hal::cache::TlbShootdownError::Platform => StarryError::Io,
-                    },
-                )?;
+                ax_runtime::hal::cache::flush_tlb_all_on_cpus(live_targets)
+                    .map_err(Self::map_tlb_shootdown_error)?;
             } else if live_targets != 0 {
                 for range in &request.ranges {
                     ax_runtime::hal::cache::flush_tlb_range_on_cpus(
@@ -1384,28 +1662,34 @@ impl AddrSpace {
                         range.start,
                         range.size,
                     )
-                    .map_err(|error| match error {
-                        ax_runtime::hal::cache::TlbShootdownError::Timeout => {
-                            StarryError::TimedOut
-                        }
-                        ax_runtime::hal::cache::TlbShootdownError::Unsupported
-                        | ax_runtime::hal::cache::TlbShootdownError::CpuOffline => {
-                            StarryError::Unsupported
-                        }
-                        ax_runtime::hal::cache::TlbShootdownError::GenerationExhausted => {
-                            StarryError::Errno(syscalls::Errno::EOVERFLOW)
-                        }
-                        ax_runtime::hal::cache::TlbShootdownError::Platform => StarryError::Io,
-                    })?;
+                    .map_err(Self::map_tlb_shootdown_error)?;
                 }
             }
-            // Every pending target now has one of two retirement proofs: a
-            // synchronous shootdown above, or an ActivationLease root-switch
-            // proof that cleared its live bit. If a cleared CPU reactivates
-            // after the mask load, root installation performs another local
-            // tag/full flush before it can use this MM. Acknowledge both
-            // classes, matching Linux's ability to skip an mm after the CPU
-            // has switched away from it.
+        }
+        Ok(())
+    }
+
+    fn map_tlb_shootdown_error(
+        error: ax_runtime::hal::cache::TlbShootdownError,
+    ) -> StarryError {
+        match error {
+            ax_runtime::hal::cache::TlbShootdownError::Timeout => StarryError::TimedOut,
+            ax_runtime::hal::cache::TlbShootdownError::Unsupported
+            | ax_runtime::hal::cache::TlbShootdownError::CpuOffline => StarryError::Unsupported,
+            ax_runtime::hal::cache::TlbShootdownError::GenerationExhausted => {
+                StarryError::Errno(syscalls::Errno::EOVERFLOW)
+            }
+            ax_runtime::hal::cache::TlbShootdownError::Platform => StarryError::Io,
+        }
+    }
+
+    fn acknowledge_tlb_requests(&self, requests: &[TlbRequest]) -> StarryResult<usize> {
+        let mut completed = 0;
+        for request in requests {
+            let pending_targets = request.pending();
+            // Every target now has either a shootdown proof or a root-switch
+            // proof. A later activation installs the published epoch and
+            // performs its required local tag/full flush before use.
             for cpu in 0..usize::BITS as usize {
                 if pending_targets & (1usize << cpu) == 0 {
                     continue;
@@ -1454,6 +1738,19 @@ impl AddrSpace {
         mutation
     }
 
+    /// Begins a fresh-PTE publication that cannot invalidate an older present
+    /// translation. Linux installs a previously-none fault PTE under the PTL
+    /// and returns through `update_mmu_cache()` without a remote shootdown;
+    /// only permission changes and page replacement require an active-CPU TLB
+    /// obligation. The range remains in the receipt for auditability.
+    fn prepare_fresh_pte_mutation_range(&self, start: VirtAddr, size: usize) -> PreparedMutation {
+        let mut mutation = self.mutation_gate.begin(self.id, 0);
+        if let Some(range) = TlbRange::new(start, size) {
+            mutation.add_tlb_range(range);
+        }
+        mutation
+    }
+
     /// Reserves and captures every owner that may become unreachable when a
     /// materialized mapping in `range` is detached.  This runs before the PTE
     /// mutation, so allocation or cache-identity failure leaves the published
@@ -1484,47 +1781,43 @@ impl AddrSpace {
             if backend.shared_file_lease().is_some() {
                 let start = entry.start().max(range.start).align_down_4k();
                 let end = entry.end().min(range.end);
-                let count = end
-                    .checked_sub_addr(start)
-                    .ok_or(StarryError::BadState)?
-                    .div_ceil(PAGE_SIZE_4K);
+                let file_range = VirtAddrRange::new(start, end);
+                let count = self.mapping_slots_overlapping(file_range).count();
                 owners
                     .cache_pins
                     .try_reserve(count)
                     .map_err(|_| StarryError::NoMemory)?;
-                for va in PageIter4K::new(start, end).ok_or(StarryError::InvalidInput)? {
-                    match self.pt.query(va) {
-                        Ok((paddr, _, page_size)) if page_size == PAGE_SIZE_4K => {
-                            let pin = backend
-                                .pin_file_cache_owner_for_mapping(va, paddr)?
-                                .ok_or(StarryError::BadState)?;
-                            owners.cache_pins.push(pin);
-                        }
-                        Ok(_) => return Err(StarryError::BadState),
-                        Err(PagingError::NotMapped) => {}
-                        Err(error) => return Err(error.into()),
+                for (_, slot) in self.mapping_slots_overlapping(file_range) {
+                    if slot.state() != SlotState::Present
+                        || slot.mapping != backend.mapping_id()
+                        || slot.page_order != PageOrder::BASE
+                    {
+                        return Err(StarryError::BadState);
                     }
+                    let paddr = slot.mapped_paddr().ok_or(StarryError::BadState)?;
+                    let (installed, _, page_size) = self.pt.query(slot.va)?;
+                    if installed != paddr || page_size != PAGE_SIZE_4K {
+                        return Err(StarryError::BadState);
+                    }
+                    let pin = backend
+                        .pin_file_cache_owner_for_mapping(slot.va, paddr)?
+                        .ok_or(StarryError::BadState)?;
+                    owners.cache_pins.push(pin);
                 }
             }
             owners.backends.push(backend);
         }
 
-        let matching_slots = self
-            .mapping_slots
-            .values()
-            .filter(|slot| slot.overlaps(range))
-            .count();
+        let matching_slots = self.mapping_slots_overlapping(range).count();
         owners
             .pages
             .try_reserve(matching_slots)
             .map_err(|_| StarryError::NoMemory)?;
-        for slot in self.mapping_slots.values() {
-            if slot.overlaps(range) {
-                if slot.state() != SlotState::Present {
-                    return Err(StarryError::BadState);
-                }
-                owners.pages.push(slot.page.clone());
+        for (_, slot) in self.mapping_slots_overlapping(range) {
+            if slot.state() != SlotState::Present {
+                return Err(StarryError::BadState);
             }
+            owners.pages.push(slot.page.clone());
         }
         Ok(owners)
     }
@@ -1957,6 +2250,11 @@ impl AddrSpace {
                 self.mutation_gate.mark_needs_repair();
                 return Err(StarryError::BadState);
             }
+            leaf.page.set_resident_kind(
+                self.mapping_slots
+                    .get(&key)
+                    .and_then(|slot| slot.resident_kind()),
+            );
         }
         self.vma_root = vma_root;
         self.vm_stat.restore(vm_stat);
@@ -2347,7 +2645,7 @@ impl AddrSpace {
         operation: &MappingOperation,
         range: VirtAddrRange,
         materialization: PteMaterialization,
-    ) -> StarryResult<usize> {
+    ) -> StarryResult<PteOwnerPublication> {
         struct SlotPublication {
             key: MappingSlotKey,
             previous: Option<Arc<MappingSlot>>,
@@ -2365,6 +2663,8 @@ impl AddrSpace {
         let mut seen = Vec::new();
         seen.try_reserve(owners.len())
             .map_err(|_| StarryError::NoMemory)?;
+        let mut mapping_delta = MappingDelta::default();
+        let mut resident_delta = ResidentDelta::default();
 
         // Complete every fallible identity/deposit preparation before the
         // first rmap is changed. The outer mutation preimage remains the
@@ -2414,9 +2714,6 @@ impl AddrSpace {
                 space_id: self.id,
                 va,
             };
-            if seen.contains(&key) {
-                return Err(StarryError::BadState);
-            }
             seen.push(key);
             let previous = self.mapping_slots.get(&key).cloned();
             let order = page_size
@@ -2475,6 +2772,32 @@ impl AddrSpace {
                 };
                 Some(Arc::new(slot))
             };
+            if !same_owner {
+                mapping_delta.attached = mapping_delta
+                    .attached
+                    .checked_add(1)
+                    .ok_or(StarryError::BadState)?;
+                if previous.is_some() {
+                    mapping_delta.detached = mapping_delta
+                        .detached
+                        .checked_add(1)
+                        .ok_or(StarryError::BadState)?;
+                }
+            }
+            if let Some(previous) = &previous {
+                let pages = 1i64
+                    .checked_shl(previous.page_order.get().into())
+                    .ok_or(StarryError::BadState)?;
+                resident_delta.checked_add_assign(ResidentDelta::for_pages(
+                    previous.resident_kind(),
+                    -pages,
+                ))?;
+            }
+            let pages = 1i64
+                .checked_shl(order.get().into())
+                .ok_or(StarryError::BadState)?;
+            resident_delta
+                .checked_add_assign(ResidentDelta::for_pages(resident_kind, pages))?;
             publications.push(SlotPublication {
                 key,
                 previous,
@@ -2482,6 +2805,11 @@ impl AddrSpace {
                 resident_kind,
                 provider_publication,
             });
+        }
+
+        seen.sort_unstable();
+        if seen.windows(2).any(|keys| keys[0] == keys[1]) {
+            return Err(StarryError::BadState);
         }
 
         for publication in publications {
@@ -2501,6 +2829,7 @@ impl AddrSpace {
                     return Err(StarryError::BadState);
                 }
                 current.set_resident_kind(resident_kind);
+                current.page.set_resident_kind(resident_kind);
                 if provider_publication == ProviderPublication::Pending {
                     operation.finish_page_publication(key.va, &current.page)?;
                 }
@@ -2546,14 +2875,16 @@ impl AddrSpace {
                 return Err(StarryError::BadState);
             }
         }
-        Ok(satisfied_pages)
+        Ok(PteOwnerPublication {
+            satisfied_pages,
+            mapping_delta,
+            resident_delta,
+        })
     }
 
     fn detach_mapping_slots(&mut self, range: VirtAddrRange) -> StarryResult {
         let keys: Vec<_> = self
-            .mapping_slots
-            .iter()
-            .filter(|(key, slot)| key.space_id == self.id && slot.overlaps(range))
+            .mapping_slots_overlapping(range)
             .map(|(key, _)| *key)
             .collect();
         for key in keys {
@@ -2604,7 +2935,7 @@ impl AddrSpace {
             detached: 1,
             ..MappingDelta::default()
         });
-        mutation.set_resident_delta(ResidentDelta { pages: -1 });
+        mutation.set_resident_delta(ResidentDelta::for_pages(slot.resident_kind(), -1));
 
         let apply_result = (|| -> StarryResult {
             let unmapped = {
@@ -2710,41 +3041,57 @@ impl AddrSpace {
         &self,
         ranges: &[VirtAddrRange],
     ) -> StarryResult<MappingGraphSnapshot> {
-        let contains_slot = |slot: &&Arc<MappingSlot>| {
-            slot.state() == SlotState::Present
-                && ranges.iter().any(|range| slot.overlaps(*range))
-        };
-        let slot_count = self.mapping_slots.values().filter(contains_slot).count();
+        #[cfg(all(test, axtest))]
+        MAPPING_GRAPH_SNAPSHOT_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let slot_count = ranges
+            .iter()
+            .map(|range| self.mapping_slots_overlapping(*range).count())
+            .sum();
         let mut slots = Vec::new();
         slots
             .try_reserve(slot_count)
             .map_err(|_| StarryError::NoMemory)?;
-        let mut resident_pages = 0u64;
-        for (key, slot) in &self.mapping_slots {
-            if slot.state() != SlotState::Present
-                || !ranges.iter().any(|range| slot.overlaps(*range))
-            {
-                continue;
-            }
-            slots.push(MappingSlotFingerprint {
-                key: *key,
-                mapping: slot.mapping,
-                page: slot.page.id,
-                page_order: slot.page_order,
-            });
-            if slot.resident_kind().is_some() {
+        let mut seen = BTreeSet::new();
+        let mut resident = ResidentPageCounts::default();
+        for range in ranges {
+            for (key, slot) in self.mapping_slots_overlapping(*range) {
+                if slot.state() != SlotState::Present || !seen.insert(*key) {
+                    continue;
+                }
+                slots.push(MappingSlotFingerprint {
+                    key: *key,
+                    mapping: slot.mapping,
+                    page: slot.page.id,
+                    page_order: slot.page_order,
+                });
                 let pages = 1u64
                     .checked_shl(u32::from(slot.page_order.get()))
                     .ok_or(StarryError::BadState)?;
-                resident_pages = resident_pages
-                    .checked_add(pages)
-                    .ok_or(StarryError::BadState)?;
+                match slot.resident_kind() {
+                    Some(RssKind::Anon) => {
+                        resident.anon = resident
+                            .anon
+                            .checked_add(pages)
+                            .ok_or(StarryError::BadState)?;
+                    }
+                    Some(RssKind::File) => {
+                        resident.file = resident
+                            .file
+                            .checked_add(pages)
+                            .ok_or(StarryError::BadState)?;
+                    }
+                    Some(RssKind::Shmem) => {
+                        resident.shmem = resident
+                            .shmem
+                            .checked_add(pages)
+                            .ok_or(StarryError::BadState)?;
+                    }
+                    None => {}
+                }
             }
         }
-        Ok(MappingGraphSnapshot {
-            slots,
-            resident_pages,
-        })
+        slots.sort_unstable();
+        Ok(MappingGraphSnapshot { slots, resident })
     }
 
     fn set_mapping_graph_receipt_delta(
@@ -2760,26 +3107,19 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// Aggregates the current resident set from the published MappingSlots.
-    /// Each slot is counted per address-space mapping (never deduplicated by
-    /// PageObject), and a huge leaf contributes its number of base pages.
+    /// Returns the current resident set published by mutation receipts.
     pub(crate) fn resident_page_counts(&self) -> ResidentPageCounts {
-        let mut counts = ResidentPageCounts::default();
-        for slot in self.mapping_slots.values() {
-            if slot.state() != SlotState::Present {
-                continue;
-            }
-            let pages = 1u64
-                .checked_shl(u32::from(slot.page_order.get()))
-                .unwrap_or(u64::MAX);
-            match slot.resident_kind() {
-                Some(RssKind::Anon) => counts.anon = counts.anon.saturating_add(pages),
-                Some(RssKind::File) => counts.file = counts.file.saturating_add(pages),
-                Some(RssKind::Shmem) => counts.shmem = counts.shmem.saturating_add(pages),
-                None => {}
-            }
-        }
-        counts
+        self.resident_pages
+    }
+
+    #[cfg(all(test, axtest))]
+    fn reset_mapping_graph_snapshot_calls_for_test(&self) {
+        MAPPING_GRAPH_SNAPSHOT_CALLS.store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(all(test, axtest))]
+    fn mapping_graph_snapshot_calls_for_test(&self) -> usize {
+        MAPPING_GRAPH_SNAPSHOT_CALLS.load(core::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn resident_hiwater_pages(&self) -> u64 {
@@ -3520,13 +3860,13 @@ impl AddrSpace {
                     access_flags,
                     &mut self.pt,
                 )?;
-                let pages = self.publish_prepared_pte_owners(
+                let publication = self.publish_prepared_pte_owners(
                     &backend,
                     range,
                     materialization,
                 )?;
                 populated = populated
-                    .checked_add(pages)
+                    .checked_add(publication.satisfied_pages)
                     .ok_or(StarryError::NoMemory)?;
                 entry_end
             };
@@ -3732,15 +4072,9 @@ impl AddrSpace {
                 );
             }
         };
-        let detached_counts = self
-            .mapping_slots
-            .values()
-            .filter(|slot| slot.overlaps(retired_range))
-            .try_fold((0usize, 0usize), |(slots, pages), slot| {
-                let slot_pages = 1usize.checked_shl(slot.page_order.get().into())?;
-                Some((slots.checked_add(1)?, pages.checked_add(slot_pages)?))
-            });
-        let Some((detached_slots, retired_pages)) = detached_counts else {
+        let Ok((detached_slots, retired_pages, retired_resident)) =
+            self.mapping_slot_summary(retired_range)
+        else {
             return self.abort_unpublished_split_mapping_mutation(
                 retired_range,
                 preimage,
@@ -3799,9 +4133,7 @@ impl AddrSpace {
             attached: u32::try_from(split_slots).unwrap_or(u32::MAX),
             detached: u32::try_from(detached_slots).unwrap_or(u32::MAX),
         });
-        mutation.set_resident_delta(ResidentDelta {
-            pages: -i64::try_from(retired_pages).unwrap_or(i64::MAX),
-        });
+        mutation.set_resident_delta(retired_resident.checked_negated_delta()?);
 
         match self.commit_mutation_classified(mutation) {
             Ok(()) => {
@@ -3857,12 +4189,10 @@ impl AddrSpace {
         let range = VirtAddrRange::from_start_size(start, size);
         let mut candidates = Vec::new();
         candidates
-            .try_reserve(self.mapping_slots.len())
+            .try_reserve(self.mapping_slots_overlapping(range).count())
             .map_err(|_| StarryError::NoMemory)?;
-        for slot in self.mapping_slots.values() {
-            if !slot.overlaps(range)
-                || slot.page_order != PageOrder::BASE
-                || slot.page.mapping_refs() != 1
+        for (_, slot) in self.mapping_slots_overlapping(range) {
+            if slot.page_order != PageOrder::BASE || slot.page.mapping_refs() != 1
             {
                 continue;
             }
@@ -4083,15 +4413,9 @@ impl AddrSpace {
                     .map(|()| AddressSpaceMutationOutcome::Complete);
             }
         };
-        let detached_counts = self
-            .mapping_slots
-            .values()
-            .filter(|slot| slot.overlaps(range))
-            .try_fold((0usize, 0usize), |(slots, pages), slot| {
-                let slot_pages = 1usize.checked_shl(slot.page_order.get().into())?;
-                Some((slots.checked_add(1)?, pages.checked_add(slot_pages)?))
-            });
-        let Some((detached_slots, detached_resident_pages)) = detached_counts else {
+        let Ok((detached_slots, detached_resident_pages, detached_resident)) =
+            self.mapping_slot_summary(range)
+        else {
             return self
                 .abort_unpublished_huge_splits(splits, StarryError::BadState)
                 .map(|()| AddressSpaceMutationOutcome::Complete);
@@ -4159,9 +4483,7 @@ impl AddrSpace {
             attached: u32::try_from(split_slots).unwrap_or(u32::MAX),
             detached: u32::try_from(detached_slots).unwrap_or(u32::MAX),
         });
-        mutation.set_resident_delta(ResidentDelta {
-            pages: -i64::try_from(detached_resident_pages).unwrap_or(i64::MAX),
-        });
+        mutation.set_resident_delta(detached_resident.checked_negated_delta()?);
         self.vm_stat.on_unmap(removed_pages);
         let after_vmas = self.vma_root.len();
         mutation.set_vma_delta(VmaDelta {
@@ -4754,9 +5076,11 @@ impl AddrSpace {
             if !dontunmap && let Some(tail) = tail_range {
                 self.detach_mapping_slots(tail)?;
             }
-            if self.mapping_slots.iter().any(|(key, slot)| {
-                key.space_id == self.id && slot.overlaps(moved_source_range)
-            }) {
+            if self
+                .mapping_slots_overlapping(moved_source_range)
+                .next()
+                .is_some()
+            {
                 return Err(StarryError::BadState);
             }
             self.vma_root = Arc::new(final_successor.clone());
@@ -5204,6 +5528,7 @@ impl AddrSpace {
             range.size(),
         );
         self.clear_quiescent_contents()?;
+        self.resident_pages = ResidentPageCounts::default();
         self.heap = HeapState::new(USER_HEAP_BASE);
         self.executable_data = ExecutableDataLayout::default();
         crate::syscall::memfd_apply_shared_writable_deltas(&memfd_deltas);
@@ -5219,7 +5544,7 @@ impl AddrSpace {
         let range = self.layout.range();
         let removed_vmas = self.vma_root.len();
         let detached_slots = self.mapping_slots.len();
-        let resident_pages = self
+        let materialized_pages = self
             .mapping_slots
             .values()
             .try_fold(0usize, |pages, slot| {
@@ -5237,16 +5562,14 @@ impl AddrSpace {
             ..VmaDelta::default()
         });
         mutation.set_pte_delta(PteDelta {
-            unmapped: u32::try_from(resident_pages).unwrap_or(u32::MAX),
+            unmapped: u32::try_from(materialized_pages).unwrap_or(u32::MAX),
             ..PteDelta::default()
         });
         mutation.set_mapping_delta(MappingDelta {
             detached: u32::try_from(detached_slots).unwrap_or(u32::MAX),
             ..MappingDelta::default()
         });
-        mutation.set_resident_delta(ResidentDelta {
-            pages: -i64::try_from(resident_pages).unwrap_or(i64::MAX),
-        });
+        mutation.set_resident_delta(self.resident_pages.checked_negated_delta()?);
         self.clear_quiescent_contents()?;
         let result = self.commit_mutation(mutation);
         if self.vm_epoch() != base_epoch {
@@ -5364,77 +5687,46 @@ impl AddrSpace {
             return Ok(PAGE_SIZE_4K);
         }
 
-        let mut cursor = policy_range.start;
-        while cursor < policy_range.end {
-            match self.pt.query(cursor) {
-                // Any installed sibling proves that this PMD is materialized
-                // as base PTEs.  Replacing it with a new huge leaf would
-                // overwrite live mappings and their rmap ownership.
-                Ok(_) => return Ok(PAGE_SIZE_4K),
-                Err(PagingError::NotMapped) => {
-                    cursor = cursor
-                        .checked_add(PAGE_SIZE_4K)
-                        .ok_or(StarryError::BadState)?;
-                }
-                Err(error) => return Err(error.into()),
-            }
+        // Any occupied sibling proves that this policy unit already owns a
+        // base-page table. Replacing it with a huge leaf would overwrite live
+        // or retained mappings and their rmap ownership. Follow allocated
+        // page-table paths instead of issuing 512 base-page queries.
+        if self
+            .pt
+            .walk_occupied_range(policy_range.start, policy_range.end)
+            .next()
+            .is_some()
+        {
+            return Ok(PAGE_SIZE_4K);
         }
         Ok(policy_size)
     }
 
-    /// Resolves a page fault and retains its Linux-visible classification.
-    ///
-    /// The backend is cloned while the VMA borrow is short-lived.  This keeps
-    /// the fault path free to perform file I/O without retaining a reference to
-    /// a mutable `MemoryArea`, and makes an EOF result distinguishable from an
-    /// ordinary unmapped or permission fault.
-    #[cfg(all(test, axtest))]
-    fn handle_page_fault_result(
-        &mut self,
-        vaddr: VirtAddr,
-        access_flags: PageFaultFlags,
-    ) -> FaultResult {
-        self.handle_page_fault_result_with_thp_mode(
-            vaddr,
-            access_flags,
-            TransparentHugePageMode::default(),
-        )
-    }
-
-    fn handle_page_fault_result_with_thp_mode(
-        &mut self,
+    fn plan_page_fault(
+        &self,
         vaddr: VirtAddr,
         access_flags: PageFaultFlags,
         thp_mode: TransparentHugePageMode,
-    ) -> FaultResult {
+    ) -> Result<PageFaultPlan, FaultResult> {
         if !self.layout.range().contains(vaddr) {
-            return FaultResult::Unmapped;
+            return Err(FaultResult::Unmapped);
         }
         let access_flags = MappingFlags::from(access_flags);
         let Some(entry) = self.vma_root.lookup_entry(vaddr) else {
-            return FaultResult::Unmapped;
+            return Err(FaultResult::Unmapped);
         };
         let vma = entry.snapshot().clone();
         let flags = vma.rights;
         if !flags.contains(access_flags) {
-            return FaultResult::PermissionDenied;
+            return Err(FaultResult::PermissionDenied);
         }
-        // Clone the executable half of the same persistent-tree node before
-        // any file I/O. Metadata-only readers receive `VmaSnapshot`, while a
-        // fault transaction retains the operation that owns the backing
-        // coordinates for exactly that snapshot.
         let backend = entry.operation_clone();
-        // Once a huge leaf has been split, Linux routes a write fault through
-        // the materialized PTE rather than realigning it to the mapping's THP
-        // policy unit. Keep PageSizePolicy on the VMA group, apply VMA-local
-        // MADV_HUGEPAGE/NOHUGEPAGE advice, and then derive this transaction's
-        // range from an installed finer leaf when one exists.
         let Some(policy_size) = vma
             .group
             .page_policy
             .fault_leaf_size(vma.huge_page_advice, thp_mode)
         else {
-            return FaultResult::Unmapped;
+            return Err(FaultResult::Unmapped);
         };
         let page_size = match self.fault_transaction_page_size(
             vaddr,
@@ -5444,180 +5736,417 @@ impl AddrSpace {
             Ok(page_size) => page_size,
             Err(error) => {
                 warn!("could not classify page-fault leaf for {vaddr:?}: {error}");
-                return FaultResult::Retry;
+                return Err(FaultResult::Retry);
             }
         };
         let page_start = vaddr.align_down(page_size);
-        let lazy_free_page = access_flags
-            .contains(MappingFlags::WRITE)
-            .then(|| {
-                self.mapping_slots
-                    .get(&MappingSlotKey {
-                        space_id: self.id,
-                        va: page_start,
-                    })
-                    .filter(|slot| slot.page.state() == PageState::LazyFree)
-                    .map(|slot| slot.page.clone())
-            })
-            .flatten();
         let Some(range) = VirtAddrRange::try_from_start_size(page_start, page_size) else {
-            return FaultResult::Unmapped;
-        };
-        let graph_preimage = match self.capture_mapping_graph_snapshot(&[range]) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                warn!("could not snapshot page-fault mapping graph for {vaddr:?}: {error}");
-                return FaultResult::Retry;
-            }
-        };
-        let preimage = match self.capture_mapping_preimage(range) {
-            Ok(preimage) => preimage,
-            Err(StarryError::OperationNotSupported) => return FaultResult::Retry,
-            Err(error) => {
-                warn!("could not prepare page-fault preimage for {vaddr:?}: {error}");
-                return FaultResult::Retry;
-            }
-        };
-        let mut mutation = self.prepare_mutation_range(page_start, page_size);
-        let retire_epoch = match mutation.receipt().base_epoch.checked_next() {
-            Some(epoch) => epoch,
-            None => return FaultResult::Retry,
-        };
-        let retired_owners = if graph_preimage.slots.is_empty() {
-            None
-        } else {
-            match self.prepare_retired_mapping_owners(range) {
-                Ok(owners) => Some(owners),
-                Err(error) => {
-                    warn!("could not reserve page-fault retire owners for {vaddr:?}: {error}");
-                    return FaultResult::Retry;
-                }
-            }
+            return Err(FaultResult::Unmapped);
         };
         let fault_fallback = if vma.group.page_policy.permits_fault_fallback() {
             FaultFallback::BasePage
         } else {
             FaultFallback::Forbidden
         };
-        let populate_request = match PopulateRequest::fault(
+        let request = match PopulateRequest::fault(
             range,
             page_size,
             vaddr,
             fault_fallback,
         ) {
             Ok(request) => request,
-            Err(_) => return FaultResult::Unmapped,
+            Err(_) => return Err(FaultResult::Unmapped),
         };
-        let populate_result = backend.populate(
-            self.id,
-            populate_request,
-            flags,
-            access_flags,
-            &mut self.pt,
-        );
-        match populate_result {
-            Ok(materialization) => {
-                let pages = materialization.satisfied_pages();
-                if pages == 0 {
-                    if self.restore_mapping_preimage(range, preimage).is_err() {
-                        FaultResult::Retry
-                    } else if backend.is_file_backed() {
-                        FaultResult::Sigbus(BusCode::AdrErr)
-                    } else {
-                        warn!("No pages populated for {vaddr:?} ({flags:?})");
-                        FaultResult::Unmapped
-                    }
-                } else {
-                    mutation.set_pte_delta(PteDelta {
-                        mapped: u32::try_from(pages).unwrap_or(u32::MAX),
-                        ..PteDelta::default()
-                    });
-                    if self
-                        .publish_prepared_pte_owners(&backend, range, materialization)
-                        .is_err()
-                    {
-                        if self.restore_mapping_preimage(range, preimage).is_err() {
-                            self.mutation_gate.mark_needs_repair();
-                        }
-                        return FaultResult::Retry;
-                    }
-                    if let Err(error) = self.set_mapping_graph_receipt_delta(
-                        &mut mutation,
-                        &graph_preimage,
-                        &[range],
-                    ) {
-                        warn!("could not record page-fault mapping delta for {vaddr:?}: {error}");
-                        if self.restore_mapping_preimage(range, preimage).is_err() {
-                            self.mutation_gate.mark_needs_repair();
-                        }
-                        return FaultResult::Retry;
-                    }
-                    if let Some(page) = &lazy_free_page
-                        && !page.clear_lazy_free()
-                    {
-                        if self.restore_mapping_preimage(range, preimage).is_err() {
-                            self.mutation_gate.mark_needs_repair();
-                        }
-                        return FaultResult::Retry;
-                    }
-                    if let Some(owners) = retired_owners {
-                        self.park_retired_mapping_owners(retire_epoch, owners);
-                    }
-                    match self.commit_mutation_classified(mutation) {
-                        Ok(()) => self.release_retired_mapping_owners(retire_epoch),
-                        Err(CommitMutationError::PublishedPendingTlb(error)) => {
-                            warn!(
-                                "page-fault publication for {vaddr:?} is waiting for TLB repair: {error}"
-                            );
-                            return FaultResult::Retry;
-                        }
-                        Err(CommitMutationError::Unpublished(error)) => {
-                            warn!(
-                                "page-fault publication for {vaddr:?} failed before publish: {error}"
-                            );
-                            if self.restore_mapping_preimage(range, preimage).is_err() {
-                                self.mutation_gate.mark_needs_repair();
-                            } else {
-                                self.release_retired_mapping_owners(retire_epoch);
-                                if let Some(page) = &lazy_free_page
-                                    && !page.mark_lazy_free()
-                                {
-                                    self.mutation_gate.mark_needs_repair();
-                                }
-                            }
-                            return FaultResult::Retry;
-                        }
-                    }
-                    complete_page_fault_with(
-                        true,
-                        vaddr,
-                        ax_runtime::hal::cache::update_mmu_cache,
-                    );
-                    FaultResult::Handled
-                }
-            }
+        let preimage = match FaultPtePreimage::capture(&self.pt, page_start) {
+            Ok(preimage) => preimage,
             Err(error) => {
-                warn!("Failed to populate pages for {vaddr:?} ({flags:?}): {error}");
-                if self.restore_mapping_preimage(range, preimage).is_err() {
-                    self.mutation_gate.mark_needs_repair();
-                    FaultResult::Retry
-                } else if backend.is_file_backed() {
-                    match error {
-                        StarryError::ResourceBusy
-                        | StarryError::Vfs(axfs_ng_vfs::VfsError::ResourceBusy) => {
-                            FaultResult::Retry
-                        }
-                        StarryError::BadAddress => FaultResult::Sigbus(BusCode::AdrErr),
-                        StarryError::Io | StarryError::Vfs(_) => {
-                            FaultResult::Sigbus(BusCode::ObjErr)
-                        }
-                        _ => FaultResult::Unmapped,
-                    }
-                } else {
-                    FaultResult::Unmapped
+                warn!("could not capture page-fault PTE at {page_start:?}: {error}");
+                return Err(FaultResult::Retry);
+            }
+        };
+        Ok(PageFaultPlan {
+            base_epoch: self.vm_epoch(),
+            space_id: self.id,
+            vaddr,
+            range,
+            vma_flags: flags,
+            access_flags,
+            operation: backend,
+            request,
+            preimage,
+        })
+    }
+
+    fn classify_fault_error(file_backed: bool, error: StarryError) -> FaultResult {
+        if matches!(error, StarryError::NoMemory | StarryError::ResourceBusy) {
+            return FaultResult::Retry;
+        }
+        if !file_backed {
+            return FaultResult::Unmapped;
+        }
+        match error {
+            StarryError::ResourceBusy
+            | StarryError::Vfs(axfs_ng_vfs::VfsError::ResourceBusy) => FaultResult::Retry,
+            StarryError::BadAddress => FaultResult::Sigbus(BusCode::AdrErr),
+            StarryError::Io | StarryError::Vfs(_) => FaultResult::Sigbus(BusCode::ObjErr),
+            _ => FaultResult::Unmapped,
+        }
+    }
+
+    fn prepare_page_fault(plan: PageFaultPlan) -> Result<PreparedPageFault, FaultResult> {
+        let mut scratch = match PageTable::new(PagingAllocator) {
+            Ok(scratch) => scratch,
+            Err(_) => return Err(FaultResult::Retry),
+        };
+        if let Err(error) = plan.preimage.install_in(plan.range.start, &mut scratch) {
+            warn!("could not construct page-fault scratch PTE: {error}");
+            return Err(FaultResult::Retry);
+        }
+        let materialization = match plan.operation.populate(
+            plan.space_id,
+            plan.request,
+            plan.vma_flags,
+            plan.access_flags,
+            &mut scratch,
+        ) {
+            Ok(materialization) => materialization,
+            Err(error) => {
+                warn!(
+                    "failed to prepare page fault for {:?} ({:?}): {error}",
+                    plan.vaddr, plan.vma_flags
+                );
+                return Err(Self::classify_fault_error(
+                    plan.operation.is_file_backed(),
+                    error,
+                ));
+            }
+        };
+        if materialization.owners().len() > 1 {
+            let _ = plan
+                .operation
+                .cancel_prepared_page_publications(materialization);
+            return Err(FaultResult::Retry);
+        }
+        let mut desired_flags = Vec::new();
+        if desired_flags.try_reserve(materialization.owners().len()).is_err() {
+            let _ = plan
+                .operation
+                .cancel_prepared_page_publications(materialization);
+            return Err(FaultResult::Retry);
+        }
+        for owner in materialization.owners() {
+            match scratch.query(owner.va) {
+                Ok((paddr, flags, page_size))
+                    if paddr == owner.paddr && page_size == owner.page_size =>
+                {
+                    desired_flags.push(flags);
+                }
+                _ => {
+                    let _ = plan
+                        .operation
+                        .cancel_prepared_page_publications(materialization);
+                    return Err(FaultResult::Retry);
                 }
             }
         }
+        Ok(PreparedPageFault {
+            plan,
+            materialization,
+            desired_flags,
+        })
+    }
+
+    fn page_fault_plan_is_current(&self, plan: &PageFaultPlan) -> bool {
+        if self.vm_epoch() != plan.base_epoch || !plan.preimage.matches(plan.range.start, &self.pt) {
+            return false;
+        }
+        self.vma_root.lookup_entry(plan.vaddr).is_some_and(|entry| {
+            entry.snapshot().rights == plan.vma_flags
+                && entry.snapshot().range.contains_range(plan.range)
+                && entry.operation().mapping_id() == plan.operation.mapping_id()
+        })
+    }
+
+    fn apply_prepared_page_fault(
+        &mut self,
+        prepared: PreparedPageFault,
+    ) -> PageFaultApplyOutcome {
+        if !self.page_fault_plan_is_current(&prepared.plan) {
+            return PageFaultApplyOutcome::Cancel {
+                prepared,
+                result: FaultResult::Retry,
+            };
+        }
+
+        let pages = prepared.materialization.satisfied_pages();
+        if pages == 0 {
+            let result = if prepared.plan.operation.is_file_backed() {
+                FaultResult::Sigbus(BusCode::AdrErr)
+            } else {
+                warn!(
+                    "no pages prepared for {:?} ({:?})",
+                    prepared.plan.vaddr, prepared.plan.vma_flags
+                );
+                FaultResult::Unmapped
+            };
+            return PageFaultApplyOutcome::Cancel { prepared, result };
+        }
+        if prepared.materialization.owners().is_empty() {
+            return PageFaultApplyOutcome::Cancel {
+                prepared,
+                result: FaultResult::Handled,
+            };
+        }
+        if prepared.materialization.owners().len() != prepared.desired_flags.len() {
+            return PageFaultApplyOutcome::Cancel {
+                prepared,
+                result: FaultResult::Retry,
+            };
+        }
+
+        let range = prepared.plan.range;
+        let vaddr = prepared.plan.vaddr;
+        let mapping_preimage = match self.capture_mapping_preimage(range) {
+            Ok(preimage) => preimage,
+            Err(error) => {
+                warn!("could not retain page-fault preimage for {vaddr:?}: {error}");
+                return PageFaultApplyOutcome::Cancel {
+                    prepared,
+                    result: FaultResult::Retry,
+                };
+            }
+        };
+        let replaces_owner = prepared
+            .materialization
+            .owners()
+            .iter()
+            .any(|owner| owner.transition == PteOwnerTransition::Replaced);
+        let retired_owners = if replaces_owner {
+            match self.prepare_retired_mapping_owners(range) {
+                Ok(owners) => Some(owners),
+                Err(error) => {
+                    warn!("could not reserve page-fault retire owners for {vaddr:?}: {error}");
+                    return PageFaultApplyOutcome::Cancel {
+                        prepared,
+                        result: FaultResult::Retry,
+                    };
+                }
+            }
+        } else {
+            None
+        };
+        let lazy_free_page = prepared
+            .plan
+            .access_flags
+            .contains(MappingFlags::WRITE)
+            .then(|| {
+                let owner = &prepared.materialization.owners()[0];
+                self.mapping_slots
+                    .get(&MappingSlotKey {
+                        space_id: self.id,
+                        va: owner.va,
+                    })
+                    .filter(|slot| slot.page.state() == PageState::LazyFree)
+                    .map(|slot| slot.page.clone())
+            })
+            .flatten();
+        let fresh_install = matches!(prepared.plan.preimage, FaultPtePreimage::NotMapped)
+            && prepared
+                .materialization
+                .owners()
+                .iter()
+                .all(|owner| owner.transition == PteOwnerTransition::Installed);
+        let mut mutation = if fresh_install {
+            self.prepare_fresh_pte_mutation_range(range.start, range.size())
+        } else {
+            self.prepare_mutation_range(range.start, range.size())
+        };
+        let Some(retire_epoch) = mutation.receipt().base_epoch.checked_next() else {
+            return PageFaultApplyOutcome::Cancel {
+                prepared,
+                result: FaultResult::Retry,
+            };
+        };
+
+        let apply_result = {
+            let owner = &prepared.materialization.owners()[0];
+            let desired_flags = prepared.desired_flags[0];
+            let pt = &mut self.pt as *mut PageTable;
+            let _stripe = self.lock_pte_range(range);
+            // SAFETY: the address-space mutex and ordered PTE stripe exclude
+            // every competing writer. The epoch and exact PTE preimage were
+            // rechecked immediately before entering this critical section.
+            let result = unsafe {
+                match owner.transition {
+                    PteOwnerTransition::Installed => (&mut *pt)
+                        .map_page(owner.va, owner.paddr, owner.page_size, desired_flags)
+                        .map(|()| owner.page_size),
+                    PteOwnerTransition::Replaced | PteOwnerTransition::Updated => (&mut *pt)
+                        .remap_page(owner.va, owner.paddr, desired_flags),
+                }
+            };
+            result.and_then(|installed_size| {
+                (installed_size == owner.page_size)
+                    .then_some(installed_size)
+                    .ok_or(PagingError::NotMapped)
+            })
+        };
+        if let Err(error) = apply_result {
+            warn!("could not apply prepared page fault for {vaddr:?}: {error}");
+            if prepared
+                .plan
+                .preimage
+                .matches(prepared.plan.range.start, &self.pt)
+            {
+                return PageFaultApplyOutcome::Cancel {
+                    prepared,
+                    result: FaultResult::Retry,
+                };
+            }
+            if self
+                .restore_mapping_preimage(range, mapping_preimage)
+                .is_err()
+            {
+                self.mutation_gate.mark_needs_repair();
+            }
+            return PageFaultApplyOutcome::Complete(FaultResult::Retry);
+        }
+
+        let PreparedPageFault {
+            plan,
+            materialization,
+            desired_flags: _,
+        } = prepared;
+        mutation.set_pte_delta(PteDelta {
+            mapped: u32::try_from(pages).unwrap_or(u32::MAX),
+            ..PteDelta::default()
+        });
+        let publication = match self.publish_prepared_pte_owners(
+            &plan.operation,
+            range,
+            materialization,
+        ) {
+            Ok(publication) => publication,
+            Err(error) => {
+                warn!("could not publish prepared page owner for {vaddr:?}: {error}");
+                if self
+                    .restore_mapping_preimage(range, mapping_preimage)
+                    .is_err()
+                {
+                    self.mutation_gate.mark_needs_repair();
+                }
+                return PageFaultApplyOutcome::Complete(FaultResult::Retry);
+            }
+        };
+        mutation.set_mapping_delta(publication.mapping_delta);
+        mutation.set_resident_delta(publication.resident_delta);
+        if let Some(page) = &lazy_free_page
+            && !page.clear_lazy_free()
+        {
+            if self
+                .restore_mapping_preimage(range, mapping_preimage)
+                .is_err()
+            {
+                self.mutation_gate.mark_needs_repair();
+            }
+            return PageFaultApplyOutcome::Complete(FaultResult::Retry);
+        }
+        if let Some(owners) = retired_owners {
+            self.park_retired_mapping_owners(retire_epoch, owners);
+        }
+        match self.publish_mutation_classified(mutation) {
+            Ok(MutationPublication::Complete) => {
+                self.release_retired_mapping_owners(retire_epoch);
+                PageFaultApplyOutcome::Complete(FaultResult::Handled)
+            }
+            Ok(MutationPublication::PendingTlb) => {
+                let Some(request) = self.mutation_gate.pending_request(self.id, retire_epoch) else {
+                    self.mutation_gate.mark_needs_repair();
+                    return PageFaultApplyOutcome::Complete(FaultResult::Retry);
+                };
+                PageFaultApplyOutcome::PendingTlb {
+                    request,
+                    targets: self.tlb_targets(),
+                }
+            }
+            Err(CommitMutationError::Unpublished(error)) => {
+                warn!("page-fault publication for {vaddr:?} failed before publish: {error}");
+                if self
+                    .restore_mapping_preimage(range, mapping_preimage)
+                    .is_err()
+                {
+                    self.mutation_gate.mark_needs_repair();
+                } else {
+                    self.release_retired_mapping_owners(retire_epoch);
+                    if let Some(page) = &lazy_free_page
+                        && !page.mark_lazy_free()
+                    {
+                        self.mutation_gate.mark_needs_repair();
+                    }
+                }
+                PageFaultApplyOutcome::Complete(FaultResult::Retry)
+            }
+            Err(CommitMutationError::PublishedPendingTlb(error)) => {
+                warn!("unexpected synchronous TLB result for page fault {vaddr:?}: {error}");
+                let Some(request) = self.mutation_gate.pending_request(self.id, retire_epoch) else {
+                    self.mutation_gate.mark_needs_repair();
+                    return PageFaultApplyOutcome::Complete(FaultResult::Retry);
+                };
+                PageFaultApplyOutcome::PendingTlb {
+                    request,
+                    targets: self.tlb_targets(),
+                }
+            }
+        }
+    }
+
+    /// Test-only synchronous wrapper. Production faults are orchestrated by
+    /// `MmPin`, which drops the address-space mutex around prepare and TLB IPI.
+    #[cfg(all(test, axtest))]
+    fn handle_page_fault_result(
+        &mut self,
+        vaddr: VirtAddr,
+        access_flags: PageFaultFlags,
+    ) -> FaultResult {
+        let plan = match self.plan_page_fault(
+            vaddr,
+            access_flags,
+            TransparentHugePageMode::default(),
+        ) {
+            Ok(plan) => plan,
+            Err(result) => return result,
+        };
+        let prepared = match Self::prepare_page_fault(plan) {
+            Ok(prepared) => prepared,
+            Err(result) => return result,
+        };
+        let result = match self.apply_prepared_page_fault(prepared) {
+            PageFaultApplyOutcome::Complete(result) => result,
+            PageFaultApplyOutcome::Cancel { prepared, result } => {
+                if prepared.cancel().is_ok() {
+                    result
+                } else {
+                    FaultResult::Retry
+                }
+            }
+            PageFaultApplyOutcome::PendingTlb { request, targets } => {
+                if Self::flush_tlb_requests(core::slice::from_ref(&request), &targets).is_ok()
+                    && self
+                        .acknowledge_tlb_requests(core::slice::from_ref(&request))
+                        .is_ok()
+                {
+                    FaultResult::Handled
+                } else {
+                    FaultResult::Retry
+                }
+            }
+        };
+        complete_page_fault_with(
+            matches!(result, FaultResult::Handled),
+            vaddr,
+            ax_runtime::hal::cache::update_mmu_cache,
+        );
+        result
     }
 
     /// Captures every resident parent PTE that fork must make read-only.
@@ -5639,43 +6168,23 @@ impl AddrSpace {
             if !entry.operation().requires_fork_write_protect() {
                 continue;
             }
-            let mut va = entry.start();
             let mut range_changed = false;
-            while va < entry.end() {
-                match self.pt.query(va) {
-                    Ok((paddr, flags, installed_size)) => {
-                        let leaf_start = va.align_down(installed_size);
-                        let leaf_end = leaf_start
-                            .checked_add(installed_size)
-                            .ok_or(StarryError::InvalidInput)?;
-                        if leaf_start != va
-                            || leaf_start < entry.start()
-                            || leaf_end > entry.end()
-                            || installed_size < PAGE_SIZE_4K
-                            || !installed_size.is_power_of_two()
-                        {
-                            return Err(StarryError::BadState);
-                        }
-                        let protected_flags = flags - MappingFlags::WRITE;
-                        if protected_flags != flags {
-                            ptes.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
-                            ptes.push(ForkParentPteProtection {
-                                va,
-                                paddr,
-                                page_size: installed_size,
-                                original_flags: flags,
-                                protected_flags,
-                            });
-                            range_changed = true;
-                        }
-                        va = leaf_end;
-                    }
-                    Err(PagingError::NotMapped) => {
-                        va = va
-                            .checked_add(PAGE_SIZE_4K)
-                            .ok_or(StarryError::InvalidInput)?;
-                    }
-                    Err(error) => return Err(error.into()),
+            for leaf in self.occupied_pte_leaves_overlapping(&[entry.range()])? {
+                let page_size = leaf.range.size();
+                if page_size < PAGE_SIZE_4K || !page_size.is_power_of_two() {
+                    return Err(StarryError::BadState);
+                }
+                let protected_flags = leaf.flags - MappingFlags::WRITE;
+                if protected_flags != leaf.flags {
+                    ptes.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
+                    ptes.push(ForkParentPteProtection {
+                        va: leaf.range.start,
+                        paddr: leaf.paddr,
+                        page_size,
+                        original_flags: leaf.flags,
+                        protected_flags,
+                    });
+                    range_changed = true;
                 }
             }
             if range_changed {
@@ -5941,10 +6450,11 @@ impl AddrSpace {
                 attached: u32::try_from(guard.mapping_slots.len()).unwrap_or(u32::MAX),
                 ..MappingDelta::default()
             });
-            child_mutation.set_resident_delta(ResidentDelta {
-                pages: i64::try_from(guard.resident_page_counts().total())
-                    .map_err(|_| StarryError::BadState)?,
-            });
+            child_mutation.set_resident_delta(
+                guard
+                    .resident_counts_from_all_slots()?
+                    .checked_positive_delta()?,
+            );
             if let Err(error) = guard.commit_mutation(child_mutation) {
                 if let Err(cleanup_error) = Self::abort_unpublished_clone(&mut guard) {
                     warn!(

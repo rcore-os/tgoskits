@@ -12,7 +12,7 @@ use ax_memory_addr::{DynPageIter, MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, 
 use ax_memory_set::MappingBackend;
 use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{MappingFlags, PageTable, PagingError},
+    paging::{MappingFlags, PageTable},
 };
 use scope_local::scope_local;
 
@@ -90,6 +90,62 @@ pub(crate) fn dealloc_frame(frame: PhysAddr, align: usize) {
 
 fn pages_in(range: VirtAddrRange, align: usize) -> StarryResult<DynPageIter<VirtAddr>> {
     DynPageIter::new(range.start, range.end, align).ok_or(StarryError::InvalidInput)
+}
+
+/// Returns only materialized page-table leaves wholly contained in `range`.
+///
+/// Lazy VMAs may span terabytes while owning only a handful of leaves.  Linux
+/// walks page-table directories for these operations instead of probing every
+/// base-page address.  Keeping the same rule here makes `mmap`, `mprotect`,
+/// `munmap`, and sparse `fork` proportional to materialized state.
+fn occupied_leaf_ranges(
+    range: VirtAddrRange,
+    pt: &PageTable,
+) -> StarryResult<Vec<(VirtAddr, usize)>> {
+    if range.is_empty() || !range.start.is_aligned_4k() || !range.end.is_aligned_4k() {
+        return Err(StarryError::InvalidInput);
+    }
+    let occupied = pt.walk_occupied_range(range.start, range.end);
+    let (lower, upper) = occupied.size_hint();
+    let mut leaves = Vec::new();
+    leaves
+        .try_reserve(upper.unwrap_or(lower))
+        .map_err(|_| StarryError::NoMemory)?;
+    for entry in occupied {
+        let leaf_size = pt
+            .mapping_size_for_level(entry.level)
+            .ok_or(StarryError::BadState)?;
+        let leaf_end = entry
+            .vaddr
+            .checked_add(leaf_size)
+            .ok_or(StarryError::BadState)?;
+        if leaf_size < PAGE_SIZE_4K
+            || !leaf_size.is_power_of_two()
+            || entry.vaddr < range.start
+            || leaf_end > range.end
+        {
+            return Err(StarryError::OperationNotSupported);
+        }
+        leaves
+            .try_reserve(1)
+            .map_err(|_| StarryError::NoMemory)?;
+        leaves.push((entry.vaddr, leaf_size));
+    }
+    Ok(leaves)
+}
+
+fn validate_occupied_leaf_range(
+    range: VirtAddrRange,
+    expected_leaf_size: Option<usize>,
+    pt: &PageTable,
+) -> bool {
+    occupied_leaf_ranges(range, pt).is_ok_and(|leaves| {
+        expected_leaf_size.is_none_or(|expected| {
+            leaves
+                .iter()
+                .all(|(_, leaf_size)| *leaf_size == expected)
+        })
+    })
 }
 
 /// How one backend PTE operation changed the software owner expected at a
@@ -306,6 +362,10 @@ impl PteMaterialization {
         self.satisfied_pages
     }
 
+    pub(super) fn owners(&self) -> &[PreparedPteOwner] {
+        &self.owners
+    }
+
     pub(super) fn set_satisfied_pages(&mut self, pages: usize) {
         self.satisfied_pages = pages;
     }
@@ -360,10 +420,15 @@ pub(super) trait MappingExecution {
     /// resident/device backends should reject malformed or conflicting leaves
     /// before an overlapping replacement removes the old VMA.
     fn validate_map(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
-        let Ok(mut pages) = pages_in(range, self.page_size()) else {
+        if range.is_empty()
+            || !range.start.is_aligned(self.page_size())
+            || !range.end.is_aligned(self.page_size())
+        {
             return false;
-        };
-        pages.all(|va| matches!(pt.query(va), Err(PagingError::NotMapped)))
+        }
+        pt.walk_occupied_range(range.start, range.end)
+            .next()
+            .is_none()
     }
 
     /// Unmap a memory region.
@@ -376,28 +441,14 @@ pub(super) trait MappingExecution {
     /// Read-only unmap preflight. `NotMapped` is valid for lazy mappings;
     /// malformed page-table walks are rejected before any leaf is detached.
     fn validate_unmap(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
-        let Ok(mut pages) = pages_in(range, self.page_size()) else {
-            return false;
-        };
-        pages.all(|va| match pt.query(va) {
-            Ok((_, _, page_size)) => page_size == self.page_size(),
-            Err(PagingError::NotMapped) => true,
-            Err(_) => false,
-        })
+        validate_occupied_leaf_range(range, Some(self.page_size()), pt)
     }
 
     /// Read-only protection preflight. A non-resident lazy page is legal, but
     /// every resident leaf must be structurally queryable and use one backend
     /// page size.
     fn validate_protect(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
-        let Ok(mut pages) = pages_in(range, self.page_size()) else {
-            return false;
-        };
-        pages.all(|va| match pt.query(va) {
-            Ok((_, _, page_size)) => page_size == self.page_size(),
-            Err(PagingError::NotMapped) => true,
-            Err(_) => false,
-        })
+        validate_occupied_leaf_range(range, Some(self.page_size()), pt)
     }
 
     /// Called before a memory region is protected.
@@ -636,7 +687,16 @@ impl MappingOperation {
             MappingOperationKind::Cow(cow) => cow.pte_flags_for_protect(new_flags),
             _ => new_flags,
         };
-        pt.protect_region(range.start, range.size(), pte_flags)?;
+        // VMA metadata may cover an enormous sparse range.  Protect only the
+        // materialized leaves collected before the first PTE write; probing
+        // every 4 KiB address would turn an otherwise metadata-only mprotect
+        // into an unbounded syscall.
+        let leaves = occupied_leaf_ranges(range, pt)?;
+        for (va, expected_size) in leaves {
+            if pt.protect_page(va, pte_flags)? != expected_size {
+                return Err(StarryError::BadState);
+            }
+        }
         Ok(())
     }
 
@@ -851,6 +911,35 @@ impl MappingOperation {
             MappingOperationKind::File(file) => file.finish_page_publication(va, page),
             MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => Ok(()),
         }
+    }
+
+    /// Cancels provider reservations owned by a prepared fault that lost its
+    /// epoch/PTE recheck before publication. Cancellation runs after dropping
+    /// the address-space mutex because a file-cache provider may take its own
+    /// sleepable lock while returning the retained pin.
+    pub(super) fn cancel_prepared_page_publications(
+        &self,
+        materialization: PteMaterialization,
+    ) -> StarryResult {
+        let mut first_error = None;
+        for owner in materialization.into_owners() {
+            if owner.provider_publication != ProviderPublication::Pending {
+                continue;
+            }
+            let result = match &self.kind {
+                MappingOperationKind::Cow(cow) => cow.cancel_page_publication(&owner.page),
+                MappingOperationKind::File(file) => {
+                    file.cancel_page_publication(owner.va, &owner.page)
+                }
+                MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => Ok(()),
+            };
+            if let Err(error) = result
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Restores one exact resident leaf retained by a mutation preimage.

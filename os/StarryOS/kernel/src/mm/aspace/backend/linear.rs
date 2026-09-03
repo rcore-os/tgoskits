@@ -5,7 +5,7 @@ use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
 use super::{
     MappingExecution, MappingOperation, PreparedPteOwner, ProviderPublication,
-    PteMaterialization, pages_in,
+    PteMaterialization, occupied_leaf_ranges, pages_in,
 };
 use super::super::objects::{FrameLease, PageId, PageObject};
 use super::super::vma::{
@@ -156,9 +156,10 @@ impl MappingExecution for LinearBackend {
         let pa_range = ax_memory_addr::PhysAddrRange::try_from_start_size(pa_start, range.size())
             .ok_or(StarryError::InvalidInput)?;
         debug!("Linear::unmap: {range:?} -> {pa_range:?}");
-        for vaddr in pages_in(range, PAGE_SIZE_4K)? {
+        for (vaddr, expected_size) in occupied_leaf_ranges(range, pt)? {
             match pt.unmap_page(vaddr) {
-                Ok((_, _, page_size)) => debug_assert_eq!(page_size, PAGE_SIZE_4K),
+                Ok((_, _, page_size)) if page_size == expected_size => {}
+                Ok(_) => return Err(StarryError::BadState),
                 Err(PagingError::NotMapped) => {}
                 Err(err) => return Err(err.into()),
             }

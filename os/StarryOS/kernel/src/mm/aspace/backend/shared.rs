@@ -6,7 +6,8 @@ use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
 use super::{
     MappingExecution, MappingOperation, PreparedPteOwner, ProviderPublication,
-    PteMaterialization, RssKind, SharedFutexIdentity, alloc_frame, divide_page, pages_in,
+    PteMaterialization, RssKind, SharedFutexIdentity, alloc_frame, divide_page,
+    occupied_leaf_ranges, pages_in,
 };
 use super::super::objects::{FrameLease, PageId, PageObject};
 use super::super::vma::{
@@ -260,34 +261,14 @@ impl SharedBackend {
         if self.validate_range(range).is_err() {
             return false;
         }
-        let mut cursor = range.start;
-        while cursor < range.end {
-            match pt.query(cursor) {
-                Ok((paddr, _, page_size)) => {
-                    let leaf_start = cursor.align_down(page_size);
-                    let Some(leaf_end) = leaf_start.checked_add(page_size) else {
-                        return false;
-                    };
-                    if leaf_start != cursor
-                        || leaf_end > range.end
-                        || page_size < PAGE_SIZE_4K
-                        || !page_size.is_power_of_two()
-                        || self.mapped_paddr_at(leaf_start, page_size) != Some(paddr)
-                    {
-                        return false;
-                    }
-                    cursor = leaf_end;
-                }
-                Err(PagingError::NotMapped) => {
-                    let Some(next) = cursor.checked_add(PAGE_SIZE_4K) else {
-                        return false;
-                    };
-                    cursor = next;
-                }
-                Err(_) => return false,
-            }
-        }
-        true
+        occupied_leaf_ranges(range, pt).is_ok_and(|leaves| {
+            leaves.into_iter().all(|(va, page_size)| {
+                pt.query(va).is_ok_and(|(paddr, _, installed_size)| {
+                    installed_size == page_size
+                        && self.mapped_paddr_at(va, page_size) == Some(paddr)
+                })
+            })
+        })
     }
 
     pub(crate) fn mapping_alignment(&self) -> usize {
@@ -453,31 +434,16 @@ impl MappingExecution for SharedBackend {
         if !self.validate_materialized_range(range, pt) {
             return Err(crate::StarryError::BadState);
         }
-        let mut cursor = range.start;
-        while cursor < range.end {
-            match pt.query(cursor) {
-                Ok((_, _, page_size)) => {
-                    let unmapped = pt.unmap_page(cursor)?;
-                    if unmapped.2 != page_size {
-                        return Err(crate::StarryError::BadState);
-                    }
-                    // A normal outer mutation retains the SharedBackend owner
-                    // until its epoch receipt completes.  Other callers must
-                    // invalidate immediately before their backend clone can
-                    // release the SharedMemoryObject lease.
-                    if !super::tlb_retire_is_deferred() {
-                        crate::mm::flush_tlb_range_sync(cursor, page_size)?;
-                    }
-                    cursor = cursor
-                        .checked_add(page_size)
-                        .ok_or(crate::StarryError::BadState)?;
-                }
-                Err(PagingError::NotMapped) => {
-                    cursor = cursor
-                        .checked_add(PAGE_SIZE_4K)
-                        .ok_or(crate::StarryError::BadState)?;
-                }
-                Err(err) => return Err(err.into()),
+        for (va, page_size) in occupied_leaf_ranges(range, pt)? {
+            let unmapped = pt.unmap_page(va)?;
+            if unmapped.2 != page_size {
+                return Err(crate::StarryError::BadState);
+            }
+            // A normal outer mutation retains the SharedBackend owner until
+            // its epoch receipt completes. Other callers must invalidate
+            // immediately before their backend clone can release the object.
+            if !super::tlb_retire_is_deferred() {
+                crate::mm::flush_tlb_range_sync(va, page_size)?;
             }
         }
         Ok(())
@@ -491,58 +457,41 @@ impl MappingExecution for SharedBackend {
         new_pt: &mut PageTable,
     ) -> StarryResult<(MappingOperation, PteMaterialization)> {
         self.validate_range(range)?;
-        let capacity = range.size() / PAGE_SIZE_4K;
+        let leaves = occupied_leaf_ranges(range, old_pt)?;
+        let capacity = leaves.len();
         let mut materialization = PteMaterialization::with_capacity(capacity)?;
         let mut installed = Vec::new();
         installed
             .try_reserve(capacity)
             .map_err(|_| crate::StarryError::NoMemory)?;
-        let mut cursor = range.start;
-        while cursor < range.end {
-            match old_pt.query(cursor) {
-                Ok((paddr, pte_flags, leaf_size)) => {
-                    let leaf_start = cursor.align_down(leaf_size);
-                    let leaf_end = leaf_start
-                        .checked_add(leaf_size)
-                        .ok_or(crate::StarryError::BadState)?;
-                    if leaf_start != cursor
-                        || leaf_end > range.end
-                        || self.mapped_paddr_at(cursor, leaf_size) != Some(paddr)
-                    {
-                        return Err(crate::StarryError::BadState);
-                    }
-                    let (page_index, _) = self
-                        .page_location(cursor)
-                        .ok_or(crate::StarryError::BadState)?;
-                    let page = self
-                        .object
-                        .resident_page(page_index)
-                        .ok_or(crate::StarryError::BadState)?;
-                    if let Err(error) = new_pt.map_page(cursor, paddr, leaf_size, pte_flags) {
-                        for old_va in installed.into_iter().rev() {
-                            let _ = new_pt.unmap_page(old_va);
-                        }
-                        return Err(error.into());
-                    }
-                    installed.push(cursor);
-                    materialization.push(PreparedPteOwner::installed(
-                        cursor,
-                        paddr,
-                        leaf_size,
-                        page,
-                        Some(RssKind::Shmem),
-                        ProviderPublication::Complete,
-                    ));
-                    materialization.increment_satisfied(leaf_size / PAGE_SIZE_4K)?;
-                    cursor = leaf_end;
-                }
-                Err(PagingError::NotMapped) => {
-                    cursor = cursor
-                        .checked_add(PAGE_SIZE_4K)
-                        .ok_or(crate::StarryError::BadState)?;
-                }
-                Err(error) => return Err(error.into()),
+        for (va, leaf_size) in leaves {
+            let (paddr, pte_flags, installed_size) = old_pt.query(va)?;
+            if installed_size != leaf_size || self.mapped_paddr_at(va, leaf_size) != Some(paddr) {
+                return Err(crate::StarryError::BadState);
             }
+            let (page_index, _) = self
+                .page_location(va)
+                .ok_or(crate::StarryError::BadState)?;
+            let page = self
+                .object
+                .resident_page(page_index)
+                .ok_or(crate::StarryError::BadState)?;
+            if let Err(error) = new_pt.map_page(va, paddr, leaf_size, pte_flags) {
+                for old_va in installed.into_iter().rev() {
+                    let _ = new_pt.unmap_page(old_va);
+                }
+                return Err(error.into());
+            }
+            installed.push(va);
+            materialization.push(PreparedPteOwner::installed(
+                va,
+                paddr,
+                leaf_size,
+                page,
+                Some(RssKind::Shmem),
+                ProviderPublication::Complete,
+            ));
+            materialization.increment_satisfied(leaf_size / PAGE_SIZE_4K)?;
         }
         Ok((
             MappingOperation::from_shared(self.clone()),

@@ -1,9 +1,10 @@
 //! Resident classification and historical watermark state.
 //!
-//! Current RSS is derived exclusively from the address space's published
-//! `MappingSlot` set. This module intentionally owns no per-VA charge map and
-//! no duplicate Anon/File/Shmem counters; the only mutable value here is the
-//! historical high-water mark required by Linux `VmHWM`/`ru_maxrss`.
+//! Current RSS is advanced exclusively by the typed resident delta in the
+//! address space's mutation receipt. `MappingSlot` remains the installed-page
+//! ownership source, while the receipt is the only publication path that may
+//! change the current counters. This module owns only the historical high-water
+//! mark required by Linux `VmHWM`/`ru_maxrss`.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -37,7 +38,8 @@ impl RssKind {
 /// Historical RSS peak for one address space.
 ///
 /// This is not a current resident counter. Callers first publish a coherent
-/// MappingSlot set, derive its total, and then observe that value here.
+/// receipt delta, advance the address-space counters, and then observe the new
+/// total here.
 pub(crate) struct ResidentWatermark {
     hiwater_pages: AtomicU64,
 }

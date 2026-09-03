@@ -18,7 +18,8 @@ use axfs_ng_vfs::Location;
 
 use super::{
     MappingExecution, MappingFileInfo, MappingOperation, PreparedPteOwner,
-    PopulateRequest, ProviderPublication, PteMaterialization, RssKind, pages_in,
+    PopulateRequest, ProviderPublication, PteMaterialization, RssKind, occupied_leaf_ranges,
+    pages_in,
 };
 use super::super::{
     EvictMappingOutcome,
@@ -567,7 +568,11 @@ impl FileBackendInner {
         )
     }
 
-    fn cancel_page_publication(&self, va: VirtAddr, page: &Arc<PageObject>) -> StarryResult {
+    pub(super) fn cancel_page_publication(
+        &self,
+        va: VirtAddr,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
         let page_number = self.page_number_at(va).ok_or(StarryError::BadState)?;
         self.page_domain
             .cancel_page_publication(page_number, page)
@@ -678,6 +683,14 @@ impl FileBackend {
         page: &Arc<PageObject>,
     ) -> StarryResult {
         self.0.finish_page_publication(va, page)
+    }
+
+    pub(super) fn cancel_page_publication(
+        &self,
+        va: VirtAddr,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
+        self.0.cancel_page_publication(va, page)
     }
 
     pub(crate) fn ensure_page_identity(
@@ -844,13 +857,14 @@ impl MappingExecution for FileBackend {
         pt: &mut PageTable,
     ) -> StarryResult {
         let provider_rollback = !super::tlb_retire_is_deferred();
-        for addr in pages_in(range, PAGE_SIZE_4K)? {
-            let expected_paddr = match pt.query(addr) {
-                Ok((paddr, _, page_size)) if page_size == PAGE_SIZE_4K => Some(paddr),
-                Ok(_) => return Err(StarryError::BadState),
-                Err(PagingError::NotMapped) => None,
-                Err(error) => return Err(error.into()),
-            };
+        for (addr, expected_size) in occupied_leaf_ranges(range, pt)? {
+            if expected_size != PAGE_SIZE_4K {
+                return Err(StarryError::BadState);
+            }
+            let (expected_paddr, _, page_size) = pt.query(addr)?;
+            if page_size != expected_size {
+                return Err(StarryError::BadState);
+            }
             // A deferred unmap is owned by the outer address-space receipt:
             // its retained MappingSlot/PageObject preimage is the exact frame
             // authority until TLB acknowledgement.  Do not re-enter the
@@ -858,13 +872,11 @@ impl MappingExecution for FileBackend {
             // may be held.  Non-deferred calls are unpublished-map rollback
             // and retain the provider reservation that must be cancelled.
             let rollback_page = if provider_rollback {
-                expected_paddr
-                    .map(|paddr| {
-                        self.0
-                            .page_object_for_va(addr, paddr)
-                            .ok_or(StarryError::BadState)
-                    })
-                    .transpose()?
+                Some(
+                    self.0
+                        .page_object_for_va(addr, expected_paddr)
+                        .ok_or(StarryError::BadState)?,
+                )
             } else {
                 None
             };
@@ -873,7 +885,7 @@ impl MappingExecution for FileBackend {
                     if page_size != PAGE_SIZE_4K {
                         return Err(StarryError::BadState);
                     }
-                    if expected_paddr != Some(paddr) {
+                    if expected_paddr != paddr {
                         return Err(StarryError::BadState);
                     }
                     // The outer mutation normally holds a CachedPagePin until
@@ -893,7 +905,7 @@ impl MappingExecution for FileBackend {
                         self.0.cancel_page_publication(addr, &page)?;
                     }
                 }
-                Err(PagingError::NotMapped) => {}
+                Err(PagingError::NotMapped) => return Err(StarryError::BadState),
                 Err(err) => {
                     warn!("Failed to unmap page {:?}: {:?}", addr, err);
                     return Err(err.into());

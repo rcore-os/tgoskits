@@ -21,7 +21,7 @@ use ax_runtime::hal::trap::PageFaultFlags;
 
 use crate::sync::{IrqMutex, Mutex};
 
-use super::{AddrSpace, FaultResult, TransparentHugePageMode};
+use super::{AddrSpace, FaultResult, PageFaultApplyOutcome, TransparentHugePageMode};
 
 /// Monotonic identity independent from a page-table root physical address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -827,9 +827,55 @@ impl MmPin {
         vaddr: VirtAddr,
         access_flags: PageFaultFlags,
     ) -> FaultResult {
-        let mut aspace = self.0.aspace.lock();
-        let mode = self.0.transparent_huge_page_mode();
-        aspace.handle_page_fault_result_with_thp_mode(vaddr, access_flags, mode)
+        let plan = {
+            let aspace = self.0.aspace.lock();
+            let mode = self.0.transparent_huge_page_mode();
+            match aspace.plan_page_fault(vaddr, access_flags, mode) {
+                Ok(plan) => plan,
+                Err(result) => return result,
+            }
+        };
+        // Allocation, file I/O and page-cache reservation happen with no
+        // address-space metadata lock held. The apply phase below rechecks the
+        // exact VMA epoch and PTE preimage before publishing anything.
+        let prepared = match AddrSpace::prepare_page_fault(plan) {
+            Ok(prepared) => prepared,
+            Err(result) => return result,
+        };
+        let outcome = {
+            let mut aspace = self.0.aspace.lock();
+            aspace.apply_prepared_page_fault(prepared)
+        };
+        let result = match outcome {
+            PageFaultApplyOutcome::Complete(result) => result,
+            PageFaultApplyOutcome::Cancel { prepared, result } => {
+                if prepared.cancel().is_ok() {
+                    result
+                } else {
+                    FaultResult::Retry
+                }
+            }
+            PageFaultApplyOutcome::PendingTlb { request, targets } => {
+                if AddrSpace::flush_tlb_requests(core::slice::from_ref(&request), &targets).is_err()
+                {
+                    FaultResult::Retry
+                } else {
+                    let aspace = self.0.aspace.lock();
+                    if aspace
+                        .acknowledge_tlb_requests(core::slice::from_ref(&request))
+                        .is_ok()
+                    {
+                        FaultResult::Handled
+                    } else {
+                        FaultResult::Retry
+                    }
+                }
+            }
+        };
+        if matches!(result, FaultResult::Handled) {
+            ax_runtime::hal::cache::update_mmu_cache(vaddr);
+        }
+        result
     }
 
     /// Resolves a fault for a kernel faultable user-copy scope.
@@ -1381,6 +1427,64 @@ mod tests {
         let permit = handle
             .release_user_ref()
             .expect("an inactive ownerless address space must become reclaimable");
+        permit.reclaim().unwrap();
+    }
+
+    #[axtest::axtest]
+    fn mm_pin_fault_prepares_outside_and_publishes_through_the_live_mm() {
+        let start = ax_memory_addr::VirtAddr::from_usize(0x4000);
+        let aspace = Arc::new(Mutex::new(AddrSpace::new_empty(start, 0x1000).unwrap()));
+        let handle = MmHandle::from_arc(aspace.clone()).unwrap();
+        {
+            let mut guard = aspace.lock();
+            guard
+                .map(
+                    start,
+                    ax_memory_addr::PAGE_SIZE_4K,
+                    ax_runtime::hal::paging::MappingFlags::READ
+                        | ax_runtime::hal::paging::MappingFlags::WRITE
+                        | ax_runtime::hal::paging::MappingFlags::USER,
+                    false,
+                    MappingOperation::new_alloc(
+                        start,
+                        ax_memory_addr::PAGE_SIZE_4K,
+                        "[mm-pin-fault-test]",
+                    ),
+                )
+                .unwrap();
+        }
+
+        let pin = handle.pin().unwrap();
+        let activation = handle.activation(2).unwrap();
+        assert_eq!(
+            pin.handle_page_fault_result(
+                start,
+                PageFaultFlags::READ | PageFaultFlags::USER,
+            ),
+            FaultResult::Handled
+        );
+        {
+            let guard = aspace.lock();
+            assert_eq!(guard.resident_page_counts().anon, 1);
+            assert!(guard.pending_tlb_requests().is_empty());
+            assert_eq!(
+                guard
+                    .mutation_gate
+                    .last_retired_receipt()
+                    .unwrap()
+                    .tlb_obligation
+                    .targets(),
+                0,
+                "a previously-none PTE must not shoot down another CPU"
+            );
+        }
+
+        activation.release_after_kernel_switch();
+        drop(pin);
+        drop(aspace);
+        let permit = handle
+            .release_user_ref()
+            .expect("the quiescent MM must become reclaimable after the fault");
         permit.reclaim().unwrap();
     }
 

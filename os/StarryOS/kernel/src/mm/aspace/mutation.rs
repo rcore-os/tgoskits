@@ -55,7 +55,17 @@ pub struct MappingDelta {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResidentDelta {
-    pub pages: i64,
+    pub anon: i64,
+    pub file: i64,
+    pub shmem: i64,
+}
+
+impl ResidentDelta {
+    pub const fn total(self) -> i64 {
+        self.anon
+            .saturating_add(self.file)
+            .saturating_add(self.shmem)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
