@@ -751,7 +751,15 @@ pub fn wake_net_task_irq() {
 }
 
 fn next_poll_delay() -> Duration {
-    const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+    // Cadence when no socket has a pending smoltcp timer (`next_poll_at`
+    // returned None) — i.e. nothing but the device-poll fallback (`wake_all_devices`
+    // on timeout) has anything to do. Socket timer deadlines schedule their own
+    // precise polls; the device IRQ path (`wake_net_task_irq`) also bypasses
+    // this interval, so a coarse fallback only trades worst-case pickup
+    // latency in no-IRQ environments against idle scheduler wakes (at 100 ms
+    // it fanned out to every rx worker 10x/s while the graphics stack is
+    // latency-sensitive on the ready queue).
+    const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(1000);
     let next = {
         let mut service = get_service();
         let sockets = SOCKET_SET.inner.lock();

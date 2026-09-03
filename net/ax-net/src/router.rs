@@ -73,7 +73,15 @@ use crate::{
 };
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
-const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Idle RX poll cadence. Event-driven wakeup is primary: the device IRQ
+/// notifies net-poll (`wake_net_task_irq`), net-poll fans out
+/// `wake_all_devices`, and each device's poll registration fires its rx
+/// waker. This interval only bounds worst-case pickup latency when every
+/// event path is missed, so it stays coarse — a 10 ms poll here cost 100 Hz
+/// of scheduler wakes per device (plus a `request_poll` wake of net-poll per
+/// iteration) while the graphics stack is latency-sensitive on the ready
+/// queue.
+const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// Per-interface cumulative RX/TX byte and packet counters.
 ///
@@ -1355,9 +1363,12 @@ mod tests {
     }
 
     #[test]
-    fn rx_worker_idle_poll_interval_keeps_polling_devices_active() {
+    fn rx_worker_idle_poll_interval_bounds_idle_latency() {
+        // Event-driven wakeup is primary; the interval only bounds worst-case
+        // pickup latency if every event path is missed, so it must exist and
+        // stay within the coarse backoff budget.
         assert!(DEVICE_RX_IDLE_POLL_INTERVAL > core::time::Duration::ZERO);
-        assert!(DEVICE_RX_IDLE_POLL_INTERVAL <= core::time::Duration::from_millis(10));
+        assert!(DEVICE_RX_IDLE_POLL_INTERVAL <= core::time::Duration::from_millis(1000));
     }
 
     #[test]
