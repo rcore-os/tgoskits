@@ -10,7 +10,7 @@ const PTRACE: &str = include_str!("../src/task/process_ptrace.rs");
 
 #[test]
 fn unlimited_rttime_skips_watchdog_accounting() {
-    let check = function_body(SIGNAL, "fn queue_rttime_limit_signal(");
+    let check = function_body(SIGNAL, "fn queue_rttime_limit_signal_from_scheduler_tick(");
     let unlimited = check
         .find("if soft_limit_us == u64::MAX")
         .expect("the default unlimited RLIMIT_RTTIME must have an explicit fast path");
