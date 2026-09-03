@@ -28,6 +28,8 @@ pub struct ProcessMemStats {
     pub shared_vss_pages: u64,
     /// Resident set size in pages (`statm resident`, `stat` field 24, VmRSS).
     pub resident_pages: u64,
+    /// Virtual pages covered by `VM_LOCKED` or `VM_LOCKONFAULT` VMAs.
+    pub locked_pages: u64,
     /// Peak virtual address space in pages (VmPeak). Sourced from the
     /// per-process atomic watermark updated on every successful map.
     pub peak_pages: u64,
@@ -154,6 +156,9 @@ impl ProcessMemStats {
                 file_info.shared,
                 stack_top,
             );
+            if area.is_locked() {
+                stats.locked_pages = stats.locked_pages.saturating_add(pages);
+            }
         }
         let resident = aspace.resident_page_counts();
         stats.rss_anon_pages = resident.anon;
@@ -198,6 +203,7 @@ impl ProcessMemStats {
         let vss_kb = self.vss_pages * page_kb;
         let hwm_kb = self.hiwater_rss_pages * page_kb;
         let resident_kb = self.resident_pages * page_kb;
+        let locked_kb = self.locked_pages * page_kb;
         let anon_kb = self.rss_anon_pages * page_kb;
         let file_kb = self.rss_file_pages * page_kb;
         let shmem_kb = self.rss_shmem_pages * page_kb;
@@ -205,7 +211,7 @@ impl ProcessMemStats {
         let stack_kb = self.stack_pages * page_kb;
         let exe_kb = self.exe_pages * page_kb;
         format!(
-            "VmPeak:\t{peak_kb} kB\nVmSize:\t{vss_kb} kB\nVmLck:\t0 kB\nVmPin:\t0 \
+            "VmPeak:\t{peak_kb} kB\nVmSize:\t{vss_kb} kB\nVmLck:\t{locked_kb} kB\nVmPin:\t0 \
              kB\nVmHWM:\t{hwm_kb} kB\nVmRSS:\t{resident_kb} kB\nRssAnon:\t{anon_kb} \
              kB\nRssFile:\t{file_kb} kB\nRssShmem:\t{shmem_kb} kB\nVmData:\t{data_kb} \
              kB\nVmStk:\t{stack_kb} kB\nVmExe:\t{exe_kb} kB\nVmLib:\t0 kB\nVmPTE:\t0 \

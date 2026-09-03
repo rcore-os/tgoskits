@@ -3,7 +3,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{fmt, sync::atomic::{AtomicU64, Ordering}};
 
-use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::MappingFlags;
 
 use super::backend::{
@@ -282,6 +282,7 @@ pub struct VmaSnapshot {
     pub source_offset: PageOffset,
     pub huge_page_advice: HugePageAdvice,
     pub lock_mode: VmaLockMode,
+    pub(crate) advice_policy: VmaAdvicePolicy,
 }
 
 /// Linux `VM_LOCKED`/`VM_LOCKONFAULT` policy carried by one immutable VMA.
@@ -304,6 +305,57 @@ impl VmaLockMode {
     }
 }
 
+/// Linux VMA-local access and inheritance policy changed by `madvise`.
+///
+/// The policy belongs to the immutable VMA root so split, merge, fork and
+/// mremap all observe one published fact. Access-pattern advice is retained
+/// even before a readahead consumer exists; it must not be represented as a
+/// successful no-op that disappears at the next VMA mutation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct VmaAdvicePolicy {
+    access_pattern: VmaAccessPattern,
+    dont_fork: bool,
+    dont_dump: bool,
+}
+
+impl VmaAdvicePolicy {
+    pub const DEFAULT: Self = Self {
+        access_pattern: VmaAccessPattern::Normal,
+        dont_fork: false,
+        dont_dump: false,
+    };
+
+    pub const fn dont_fork(self) -> bool {
+        self.dont_fork
+    }
+
+    pub const fn apply(self, update: VmaAdviceUpdate) -> Self {
+        match update {
+            VmaAdviceUpdate::AccessPattern(access_pattern) => Self {
+                access_pattern,
+                ..self
+            },
+            VmaAdviceUpdate::DontFork(dont_fork) => Self { dont_fork, ..self },
+            VmaAdviceUpdate::DontDump(dont_dump) => Self { dont_dump, ..self },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum VmaAccessPattern {
+    #[default]
+    Normal,
+    Random,
+    Sequential,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VmaAdviceUpdate {
+    AccessPattern(VmaAccessPattern),
+    DontFork(bool),
+    DontDump(bool),
+}
+
 /// Public name used by callers that do not need to know that snapshots are
 /// copied out of the publication root.
 pub type Vma = VmaSnapshot;
@@ -314,6 +366,7 @@ pub(crate) struct VmaInspectionRecord {
     pub rights: MappingRights,
     pub reported_rights: MappingRights,
     pub file: MappingFileInfo,
+    lock_mode: VmaLockMode,
 }
 
 impl VmaInspectionRecord {
@@ -339,6 +392,10 @@ impl VmaInspectionRecord {
 
     pub fn file_info(&self) -> &MappingFileInfo {
         &self.file
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.lock_mode.is_locked()
     }
 }
 
@@ -416,6 +473,10 @@ impl VmaMremapSource {
         self.snapshot.lock_mode
     }
 
+    pub(crate) fn advice_policy(&self) -> VmaAdvicePolicy {
+        self.snapshot.advice_policy
+    }
+
     pub fn alignment(&self) -> usize {
         self.operation.mremap_alignment()
     }
@@ -465,6 +526,10 @@ impl VmaAdviceFragment {
 
     pub fn is_locked(&self) -> bool {
         self.lock_mode.is_locked()
+    }
+
+    pub fn is_special(&self) -> bool {
+        matches!(self.kind, AdviceMappingKind::Invalid)
     }
 
     pub fn pageout(&self) -> StarryResult {
@@ -525,6 +590,7 @@ impl VmaSnapshot {
             && Arc::ptr_eq(&self.group, &next.group)
             && self.huge_page_advice == next.huge_page_advice
             && self.lock_mode == next.lock_mode
+            && self.advice_policy == next.advice_policy
             && self
                 .source_offset
                 .get()
@@ -546,6 +612,7 @@ impl VmaSnapshot {
             source_offset: self.source_offset,
             huge_page_advice: self.huge_page_advice,
             lock_mode: self.lock_mode,
+            advice_policy: self.advice_policy,
         })
     }
 
@@ -570,6 +637,7 @@ impl VmaSnapshot {
             source_offset: PageOffset::new(self.source_offset.get().checked_add(offset)?),
             huge_page_advice: self.huge_page_advice,
             lock_mode: self.lock_mode,
+            advice_policy: self.advice_policy,
         })
     }
 }
@@ -639,6 +707,7 @@ impl VmaEntry {
             rights: self.rights(),
             reported_rights: self.reported_rights(),
             file: self.operation.file_info()?,
+            lock_mode: self.snapshot.lock_mode,
         })
     }
 
@@ -728,6 +797,7 @@ impl fmt::Debug for VmaSnapshot {
             .field("source_offset", &self.source_offset)
             .field("huge_page_advice", &self.huge_page_advice)
             .field("lock_mode", &self.lock_mode)
+            .field("advice_policy", &self.advice_policy)
             .finish_non_exhaustive()
     }
 }
@@ -922,6 +992,20 @@ impl VmaMap {
 
     pub fn is_empty(&self) -> bool {
         self.root.is_none()
+    }
+
+    /// Derives Linux `mm->locked_vm` from the immutable VMA root.
+    ///
+    /// Keeping this as a read-side reduction avoids a second mutable charge
+    /// map that could diverge after split, merge, unmap, fork or mremap.
+    pub(crate) fn locked_pages(&self) -> Option<u64> {
+        self.iter().try_fold(0u64, |pages, vma| {
+            if !vma.lock_mode.is_locked() {
+                return Some(pages);
+            }
+            let vma_pages = u64::try_from(vma.range.size() / PAGE_SIZE_4K).ok()?;
+            pages.checked_add(vma_pages)
+        })
     }
 
     pub fn lookup(&self, address: VirtAddr) -> Option<Arc<VmaSnapshot>> {
@@ -1210,6 +1294,67 @@ impl VmaMap {
         updated.coalesce_compatible()
     }
 
+    /// Returns a successor root with one Linux VMA advice policy update
+    /// applied to every VMA fragment in `range`.
+    pub(super) fn with_advice_update(
+        &self,
+        range: VirtAddrRange,
+        update: VmaAdviceUpdate,
+    ) -> Option<Self> {
+        if range.is_empty() || !self.contains_range(range.start, range.size()) {
+            return None;
+        }
+
+        let affected: Vec<_> = self
+            .iter_entries()
+            .filter(|entry| entry.snapshot.range.overlaps(range))
+            .collect();
+        let mut updated = self.clone();
+        for source in affected {
+            let (next, removed) = updated.remove_entry(source.snapshot.range.start)?;
+            if removed.snapshot.id != source.snapshot.id {
+                return None;
+            }
+            updated = next;
+
+            let intersection = VirtAddrRange::new(
+                source.snapshot.range.start.max(range.start),
+                source.snapshot.range.end.min(range.end),
+            );
+            let mut retained_id = Some(source.snapshot.id);
+            if source.snapshot.range.start < intersection.start {
+                let head = source.fragment(
+                    source.snapshot.range.start,
+                    intersection.start,
+                    retained_id.take().unwrap_or_else(allocate_vma_id),
+                )?;
+                updated = updated.insert_entry(head)?;
+            }
+
+            let body = source.fragment(
+                intersection.start,
+                intersection.end,
+                retained_id.take().unwrap_or_else(allocate_vma_id),
+            )?;
+            let mut body_snapshot = (*body.snapshot).clone();
+            body_snapshot.advice_policy = body_snapshot.advice_policy.apply(update);
+            updated = updated.insert_entry(VmaEntry::new(
+                body_snapshot,
+                body.operation.clone(),
+            ))?;
+
+            if intersection.end < source.snapshot.range.end {
+                let tail = source.fragment(
+                    intersection.end,
+                    source.snapshot.range.end,
+                    retained_id.take().unwrap_or_else(allocate_vma_id),
+                )?;
+                updated = updated.insert_entry(tail)?;
+            }
+        }
+        updated.coalesce_compatible()
+    }
+
     /// Merges adjacent fragments only when the public mapping identity,
     /// permissions, policy, advice and source coordinates all agree.  The
     /// first fragment's operation starts at the merged range and therefore
@@ -1410,6 +1555,7 @@ impl VmaMap {
         max_rights: MappingRights,
         huge_page_advice: HugePageAdvice,
         lock_mode: VmaLockMode,
+        advice_policy: VmaAdvicePolicy,
         operation: MappingOperation,
     ) -> Option<Arc<VmaEntry>> {
         if range.is_empty() {
@@ -1427,6 +1573,7 @@ impl VmaMap {
                 source_offset: descriptor.source_offset,
                 huge_page_advice,
                 lock_mode,
+                advice_policy,
             },
             operation,
         ))
@@ -1569,6 +1716,7 @@ mod tests {
             source_offset: PageOffset::ZERO,
             huge_page_advice: HugePageAdvice::Default,
             lock_mode: VmaLockMode::Unlocked,
+            advice_policy: VmaAdvicePolicy::default(),
         }, operation)
     }
 

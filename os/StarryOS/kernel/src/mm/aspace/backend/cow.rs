@@ -2045,6 +2045,7 @@ fn mremap_move_uses_one_receipt_and_preserves_max_rights_for_test() -> bool {
             false,
             0,
             false,
+            None,
         )
         .is_ok()
         && aspace.vm_epoch() == epoch.next()
@@ -2106,6 +2107,7 @@ fn mremap_unpublished_commit_restores_both_ranges_for_test() -> bool {
             false,
             0,
             false,
+            None,
         )
         .is_err();
     let restored = rejected
@@ -2192,6 +2194,7 @@ fn partial_thp_mremap_moves_one_subpage_without_copy_for_test() -> bool {
         false,
         PAGE_SIZE_4K,
         false,
+        None,
     );
     let moved = move_result.is_ok();
     let graph_moved = moved

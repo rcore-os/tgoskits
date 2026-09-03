@@ -35,6 +35,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -67,6 +68,9 @@
 #endif
 #ifndef MADV_PAGEOUT
 #define MADV_PAGEOUT 21
+#endif
+#ifndef MADV_DONTNEED_LOCKED
+#define MADV_DONTNEED_LOCKED 24
 #endif
 
 static long PS;
@@ -245,39 +249,60 @@ static int test_dontneed_hole_keeps_prefix_and_suffix_effects(void)
     TEST_DONE();
 }
 
-/* ===== H. 未实现 advice 必须显式 EOPNOTSUPP ===== */
+/* ===== H. Linux VMA policy advice ===== */
 static int test_advice_contracts(void)
 {
-    TEST_START("H. advice capability contract");
+    TEST_START("H. Linux VMA advice policy");
     void *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) { CHECK(0, "mmap"); TEST_DONE(); }
     memset(p, 0x77, (size_t)PS);
 
+    CHECK(madvise(p, (size_t)PS, MADV_NORMAL) == 0,
+          "MADV_NORMAL resets access policy");
+    CHECK(madvise(p, (size_t)PS, MADV_RANDOM) == 0,
+          "MADV_RANDOM records random access policy");
+    CHECK(madvise(p, (size_t)PS, MADV_SEQUENTIAL) == 0,
+          "MADV_SEQUENTIAL records sequential access policy");
     errno = 0;
-    CHECK(madvise(p, (size_t)PS, MADV_NORMAL) == -1 && errno == EOPNOTSUPP,
-          "MADV_NORMAL without policy owner -> EOPNOTSUPP");
-    errno = 0;
-    CHECK(madvise(p, (size_t)PS, MADV_RANDOM) == -1 && errno == EOPNOTSUPP,
-          "MADV_RANDOM without policy owner -> EOPNOTSUPP");
-    errno = 0;
-    CHECK(madvise(p, (size_t)PS, MADV_SEQUENTIAL) == -1 && errno == EOPNOTSUPP,
-          "MADV_SEQUENTIAL without policy owner -> EOPNOTSUPP");
-    errno = 0;
-    CHECK(madvise(p, (size_t)PS, MADV_WILLNEED) == -1 && errno == EOPNOTSUPP,
-          "MADV_WILLNEED without prefetch owner -> EOPNOTSUPP");
-    errno = 0;
-    CHECK(madvise(p, (size_t)PS, MADV_DONTFORK) == -1 && errno == EOPNOTSUPP,
-          "MADV_DONTFORK without fork policy -> EOPNOTSUPP");
-    errno = 0;
-    CHECK(madvise(p, (size_t)PS, MADV_DOFORK) == -1 && errno == EOPNOTSUPP,
-          "MADV_DOFORK without fork policy -> EOPNOTSUPP");
-    errno = 0;
-    CHECK(madvise(p, (size_t)PS, MADV_DONTDUMP) == -1 && errno == EOPNOTSUPP,
-          "MADV_DONTDUMP without dump policy -> EOPNOTSUPP");
-    errno = 0;
-    CHECK(madvise(p, (size_t)PS, MADV_DODUMP) == -1 && errno == EOPNOTSUPP,
-          "MADV_DODUMP without dump policy -> EOPNOTSUPP");
+    CHECK(madvise(p, (size_t)PS, MADV_WILLNEED) == -1 && errno == EBADF,
+          "MADV_WILLNEED anonymous mapping without swap -> EBADF");
+
+    CHECK(madvise(p, (size_t)PS, MADV_DONTFORK) == 0,
+          "MADV_DONTFORK records VM_DONTCOPY");
+    pid_t omitted = fork();
+    CHECK(omitted >= 0, "fork MADV_DONTFORK child");
+    if (omitted == 0) {
+        volatile unsigned char value = *(volatile unsigned char *)p;
+        (void)value;
+        _exit(1);
+    }
+    if (omitted > 0) {
+        int status = 0;
+        CHECK(waitpid(omitted, &status, 0) == omitted,
+              "wait MADV_DONTFORK child");
+        CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV,
+              "MADV_DONTFORK omits VMA from child mm");
+    }
+
+    CHECK(madvise(p, (size_t)PS, MADV_DOFORK) == 0,
+          "MADV_DOFORK clears VM_DONTCOPY");
+    pid_t inherited = fork();
+    CHECK(inherited >= 0, "fork MADV_DOFORK child");
+    if (inherited == 0)
+        _exit(*(volatile unsigned char *)p == 0x77 ? 0 : 1);
+    if (inherited > 0) {
+        int status = 0;
+        CHECK(waitpid(inherited, &status, 0) == inherited,
+              "wait MADV_DOFORK child");
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "MADV_DOFORK restores child mapping");
+    }
+
+    CHECK(madvise(p, (size_t)PS, MADV_DONTDUMP) == 0,
+          "MADV_DONTDUMP records VM_DONTDUMP");
+    CHECK(madvise(p, (size_t)PS, MADV_DODUMP) == 0,
+          "MADV_DODUMP clears VM_DONTDUMP");
 
     /* Linux records THP advice in the VMA flags.  It does not require an
      * already-materialized huge page, nor does MADV_NOHUGEPAGE eagerly split
@@ -303,7 +328,33 @@ static int test_advice_contracts(void)
     TEST_DONE();
 }
 
-/* ===== I. MADV_PAGEOUT 对磁盘文件 clean page 执行同步 reclaim ===== */
+/* ===== I. locked VMA reclaim advice ===== */
+static int test_locked_dontneed_contract(void)
+{
+    TEST_START("I. locked VMA rejects DONTNEED/FREE");
+    unsigned char *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { CHECK(0, "mmap locked advice fixture"); TEST_DONE(); }
+    *p = 0x5A;
+    CHECK(mlock(p, (size_t)PS) == 0, "mlock advice fixture");
+
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_DONTNEED) == -1 && errno == EINVAL,
+          "MADV_DONTNEED rejects VM_LOCKED");
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_FREE) == -1 && errno == EINVAL,
+          "MADV_FREE rejects VM_LOCKED");
+    CHECK(*p == 0x5A, "rejected advice preserves locked contents");
+
+    CHECK(madvise(p, (size_t)PS, MADV_DONTNEED_LOCKED) == 0,
+          "MADV_DONTNEED_LOCKED explicitly discards locked page");
+    CHECK(*p == 0, "MADV_DONTNEED_LOCKED refaults anonymous zero page");
+    CHECK(munlock(p, (size_t)PS) == 0, "munlock advice fixture");
+    munmap(p, (size_t)PS);
+    TEST_DONE();
+}
+
+/* ===== J. MADV_PAGEOUT 对磁盘文件 clean page 执行同步 reclaim ===== */
 static int test_pageout_clean_file(void)
 {
     TEST_START("I. MADV_PAGEOUT 磁盘文件 clean page reclaim");
@@ -339,7 +390,7 @@ static int test_pageout_clean_file(void)
     TEST_DONE();
 }
 
-/* ===== J. MADV_PAGEOUT 脏文件页是 best-effort，不向 ABI 泄漏内部 Busy ===== */
+/* ===== K. MADV_PAGEOUT 脏文件页是 best-effort，不向 ABI 泄漏内部 Busy ===== */
 static int test_pageout_dirty_file(void)
 {
     TEST_START("J. MADV_PAGEOUT 脏文件页 best-effort reclaim");
@@ -386,6 +437,7 @@ int main(void)
     fail |= test_dontneed_file_backed();
     fail |= test_dontneed_hole_keeps_prefix_and_suffix_effects();
     fail |= test_advice_contracts();
+    fail |= test_locked_dontneed_contract();
     fail |= test_pageout_clean_file();
     fail |= test_pageout_dirty_file();
     printf("\n==== test-madvise 汇总: %s ====\n", fail ? "FAIL" : "PASS");

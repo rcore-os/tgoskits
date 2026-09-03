@@ -10,7 +10,7 @@ use std::sync::Mutex as StdMutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, FileNodeOps, FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents,
     FsPollable, Metadata, MetadataUpdate, Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType,
-    Reference, StatFs,
+    PreallocationMode, Reference, StatFs,
 };
 
 use super::*;
@@ -243,7 +243,23 @@ impl FileNodeOps for CacheTestFile {
             FileRangeOperation::CollapseRange | FileRangeOperation::InsertRange => {
                 Err(VfsError::InvalidInput)
             }
-            _ => Err(VfsError::OperationNotSupported),
+            FileRangeOperation::PunchHole
+            | FileRangeOperation::ZeroRange(PreallocationMode::KeepSize) => {
+                let visible_end = end.min(state.logical_len);
+                if offset < visible_end {
+                    let logical_len = state.logical_len;
+                    state.physical_data.resize(logical_len, 0);
+                    state.physical_data[offset..visible_end].fill(0);
+                }
+                Ok(())
+            }
+            FileRangeOperation::ZeroRange(PreallocationMode::ExtendSize) => {
+                state.physical_data.resize(end, 0);
+                state.physical_data[offset..end].fill(0);
+                state.logical_len = state.logical_len.max(end);
+                Ok(())
+            }
+            FileRangeOperation::Allocate(_) => Err(VfsError::OperationNotSupported),
         }
     }
 }
@@ -664,7 +680,49 @@ fn mapping_epoch_overflow_precedes_truncate_side_effects() {
 }
 
 #[test]
-fn shifted_range_retries_when_a_page_is_cached_after_the_initial_snapshot() {
+fn range_operation_blocks_fault_publication_after_cache_snapshot() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2]));
+        let cached = reopen_cached_file(backing);
+        assert_eq!(cached.write_at(&[0xa5][..], 0).unwrap(), 1);
+        assert!(cached.is_page_cached(0));
+        assert!(!cached.is_page_cached(1));
+
+        let blocked = Arc::new(AtomicBool::new(false));
+        let callback_blocked = blocked.clone();
+        let racing_fault = cached.clone();
+        let endpoint = test_mapping_endpoint(move |event| match event {
+            CacheMappingEvent::WritebackProtect(page) => {
+                assert_eq!(page.page_number(), 0);
+                assert_eq!(
+                    racing_fault.pin_page_or_insert(1).err(),
+                    Some(VfsError::ResourceBusy),
+                    "a fault must not publish a page after the range snapshot"
+                );
+                callback_blocked.store(true, Ordering::Release);
+                CacheMappingResult::Protected
+            }
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+        });
+        cached.install_mapping_endpoint(&endpoint).unwrap();
+
+        cached
+            .operate_range(0, (PAGE_SIZE * 2) as u64, FileRangeOperation::PunchHole)
+            .unwrap();
+
+        assert!(blocked.load(Ordering::Acquire));
+        assert!(!cached.is_page_cached(1));
+        let mut contents = vec![0xff; PAGE_SIZE * 2];
+        assert_eq!(
+            cached.read_at(contents.as_mut_slice(), 0).unwrap(),
+            contents.len()
+        );
+        assert!(contents.iter().all(|byte| *byte == 0));
+    });
+}
+
+#[test]
+fn shifted_range_blocks_fault_publication_during_mapping_update() {
     with_test_page_provider(true, |_| {
         let mut original = vec![0; PAGE_SIZE * 3];
         for (index, page) in original
@@ -683,15 +741,20 @@ fn shifted_range_retries_when_a_page_is_cached_after_the_initial_snapshot() {
             "page one must be dirty so writeback protection opens the race window"
         );
 
-        let racing_handle = cached.clone();
+        let blocked = Arc::new(AtomicBool::new(false));
+        let callback_blocked = blocked.clone();
+        let racing_fault = cached.clone();
         let endpoint = test_mapping_endpoint(move |event| match event {
             CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
             CacheMappingEvent::WritebackProtect(page) => {
-                if page.page_number() != 1 || racing_handle.pin_page_or_insert(2).is_ok() {
-                    CacheMappingResult::Protected
-                } else {
-                    CacheMappingResult::Busy
-                }
+                assert_eq!(page.page_number(), 1);
+                assert_eq!(
+                    racing_fault.pin_page_or_insert(2).err(),
+                    Some(VfsError::ResourceBusy),
+                    "a fault must not publish a page while the shifted range is prepared"
+                );
+                callback_blocked.store(true, Ordering::Release);
+                CacheMappingResult::Protected
             }
         });
         cached.install_mapping_endpoint(&endpoint).unwrap();
@@ -704,6 +767,7 @@ fn shifted_range_retries_when_a_page_is_cached_after_the_initial_snapshot() {
             )
             .unwrap();
 
+        assert!(blocked.load(Ordering::Acquire));
         let mut shifted_page = vec![0; PAGE_SIZE];
         assert_eq!(
             cached
@@ -713,7 +777,7 @@ fn shifted_range_retries_when_a_page_is_cached_after_the_initial_snapshot() {
         );
         assert!(
             shifted_page.iter().all(|byte| *byte == 2),
-            "the page cached during writeback protection must be invalidated after the shift"
+            "the shifted backing data must remain visible after cache invalidation"
         );
     });
 }

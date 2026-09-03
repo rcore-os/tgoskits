@@ -13,8 +13,8 @@ use crate::{
     StarryError, StarryResult,
     file::get_file_like,
     mm::{
-        HugePageAdvice, MappingOperation, MappingPublication, SharedMemoryObject, VmaLockMode,
-        VmaMremapSource,
+        HugePageAdvice, MappingOperation, MappingPublication, MemlockLimit, SharedMemoryObject,
+        VmaAccessPattern, VmaAdviceUpdate, VmaLockMode, VmaMremapSource,
     },
     pseudofs::{Device, DeviceMmap},
     syscall::fs::{memfd_check_write_seal, memfd_check_write_seal_for_shared_file_backend},
@@ -178,7 +178,6 @@ pub fn sys_mmap(
 
     let curr = current();
     let curr_aspace = curr.as_thread().proc_data.pin_aspace()?;
-    let mut aspace = curr_aspace.lock();
     let Some(permission_flags) = MmapProt::from_bits(prot) else {
         return Err(StarryError::InvalidInput);
     };
@@ -195,6 +194,20 @@ pub fn sys_mmap(
     if map_flags.contains(MmapFlags::SYNC) {
         return Err(StarryError::OperationNotSupported);
     }
+    let mapping_memlock_limit = if map_flags.contains(MmapFlags::LOCKED) {
+        let byte_limit = curr.as_thread().proc_data.rlim.read()[RLIMIT_MEMLOCK].current;
+        let limit = MemlockLimit::for_mapping(
+            byte_limit,
+            curr.as_thread().cred().has_cap_ipc_lock(),
+        );
+        if !limit.can_lock() {
+            return Err(StarryError::OperationNotPermitted);
+        }
+        Some(limit)
+    } else {
+        None
+    };
+    let mut aspace = curr_aspace.lock();
     let anonymous = map_flags.contains(MmapFlags::ANONYMOUS);
     let map_type = match flags & MmapFlags::TYPE.bits() {
         MAP_SHARED => MmapFlags::SHARED,
@@ -403,7 +416,11 @@ pub fn sys_mmap(
                 },
                 populate,
                 backend,
-                MappingPublication::mmap(replace_existing, lock_mode),
+                MappingPublication::mmap(
+                    replace_existing,
+                    lock_mode,
+                    mapping_memlock_limit,
+                ),
             )?;
             drop(aspace);
             info!(
@@ -644,7 +661,7 @@ pub fn sys_mmap(
         },
         populate,
         backend,
-        MappingPublication::mmap(replace_existing, lock_mode),
+        MappingPublication::mmap(replace_existing, lock_mode, mapping_memlock_limit),
     )?;
     drop(aspace);
 
@@ -793,6 +810,7 @@ struct MremapMove<'a> {
     dontunmap: bool,
     src_offset: usize,
     replace_target: bool,
+    memlock_limit: Option<MemlockLimit>,
 }
 
 struct MremapSourceValidation {
@@ -896,6 +914,7 @@ fn move_fixed_mremap_fragments(
                 dontunmap: false,
                 src_offset: fragment.source_offset,
                 replace_target: true,
+                memlock_limit: None,
             },
         )?;
     }
@@ -921,6 +940,8 @@ fn validate_mremap_source(
     let source = *first.group.source;
     let page_policy = first.group.page_policy;
     let huge_page_advice = first.huge_page_advice;
+    let lock_mode = first.lock_mode;
+    let advice_policy = first.advice_policy;
     let rights = first.rights;
     let max_rights = first.max_rights;
     let first_delta = range
@@ -943,6 +964,8 @@ fn validate_mremap_source(
             || fragment.group.source.as_ref() != &source
             || fragment.group.page_policy != page_policy
             || fragment.huge_page_advice != huge_page_advice
+            || fragment.lock_mode != lock_mode
+            || fragment.advice_policy != advice_policy
             || fragment.rights != rights
             || fragment.max_rights != max_rights
         {
@@ -990,6 +1013,7 @@ fn mremap_move(
         dontunmap,
         src_offset,
         replace_target,
+        memlock_limit,
     } = move_args;
     aspace.mremap_move_from_source(
         source,
@@ -1001,6 +1025,7 @@ fn mremap_move(
         dontunmap,
         src_offset,
         replace_target,
+        memlock_limit,
     )
 }
 
@@ -1054,9 +1079,14 @@ pub fn sys_mremap(
     }
 
     let curr = current();
+    let memlock_limit = MemlockLimit::for_mapping(
+        curr.as_thread().proc_data.rlim.read()[RLIMIT_MEMLOCK].current,
+        curr.as_thread().cred().has_cap_ipc_lock(),
+    );
     let aspace_ref = curr.as_thread().proc_data.pin_aspace()?;
     let mut aspace = aspace_ref.lock();
     let source = aspace.mremap_source(addr).ok_or(StarryError::BadAddress)?;
+    let source_memlock_limit = source.lock_mode().is_locked().then_some(memlock_limit);
     let vma_start = source.start();
     let vma_end = source.end();
     let operation_alignment = source.alignment();
@@ -1109,8 +1139,8 @@ pub fn sys_mremap(
             target,
             new_size,
             src_offset,
-            source.huge_page_advice(),
             fixed,
+            source_memlock_limit,
         )?;
         return Ok(target.as_usize() as isize);
     }
@@ -1158,6 +1188,7 @@ pub fn sys_mremap(
                 dontunmap,
                 src_offset,
                 replace_target: true,
+                memlock_limit: source_memlock_limit,
             },
         )?;
         return Ok(target.as_usize() as isize);
@@ -1190,6 +1221,7 @@ pub fn sys_mremap(
                 dontunmap: true,
                 src_offset,
                 replace_target: false,
+                memlock_limit: source_memlock_limit,
             },
         )?;
         return Ok(target.as_usize() as isize);
@@ -1199,7 +1231,7 @@ pub fn sys_mremap(
 
     let old_end = addr.checked_add(old_size).ok_or(StarryError::InvalidInput)?;
     if source_validation.fragment_count == 1 && old_end == vma_end {
-        match aspace.extend_area(addr, delta) {
+        match aspace.extend_area_with_memlock(addr, delta, source_memlock_limit) {
             Ok(()) => return Ok(addr.as_usize() as isize),
             Err(
                 StarryError::NoMemory
@@ -1228,6 +1260,7 @@ pub fn sys_mremap(
             dontunmap: false,
             src_offset,
             replace_target: false,
+            memlock_limit: source_memlock_limit,
         },
     )?;
     Ok(target.as_usize() as isize)
@@ -1237,31 +1270,31 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> StarryResult<isiz
     debug!("sys_madvise <= addr: {addr:#x}, length: {length:x}, advice: {advice:#x}");
 
     match advice as u32 {
-        MADV_DONTNEED
-        | MADV_FREE
-        | MADV_REMOVE
-        | MADV_HUGEPAGE
-        | MADV_NOHUGEPAGE
-        | MADV_PAGEOUT => {}
-        // Recognized Linux advice values without a Starry implementation must
-        // be visible to callers.  Returning EOPNOTSUPP prevents an accidental
-        // successful no-op from being mistaken for reclaim, THP, or poisoning.
         MADV_NORMAL
         | MADV_RANDOM
         | MADV_SEQUENTIAL
         | MADV_WILLNEED
+        | MADV_DONTNEED
+        | MADV_FREE
+        | MADV_REMOVE
         | MADV_DONTFORK
         | MADV_DOFORK
+        | MADV_HUGEPAGE
+        | MADV_NOHUGEPAGE
         | MADV_DONTDUMP
         | MADV_DODUMP
-        | MADV_WIPEONFORK
+        | MADV_PAGEOUT
+        | MADV_DONTNEED_LOCKED => {}
+        // Recognized Linux advice values without a Starry implementation must
+        // be visible to callers.  Returning EOPNOTSUPP prevents an accidental
+        // successful no-op from being mistaken for reclaim, THP, or poisoning.
+        MADV_WIPEONFORK
         | MADV_KEEPONFORK
         | MADV_MERGEABLE
         | MADV_UNMERGEABLE
         | MADV_COLD
         | MADV_POPULATE_READ
         | MADV_POPULATE_WRITE
-        | MADV_DONTNEED_LOCKED
         | MADV_COLLAPSE
         | MADV_HWPOISON
         | MADV_SOFT_OFFLINE => return Err(StarryError::OperationNotSupported),
@@ -1337,6 +1370,60 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> StarryResult<isiz
             fragment.pageout()?;
             cursor = fragment_end;
         }
+    } else if advice as u32 == MADV_WILLNEED {
+        // With CONFIG_SWAP disabled Linux returns EBADF for anonymous private
+        // VMAs. File and shmem prefetch require a backend reservation API that
+        // Starry does not yet expose, so keep that capability explicit instead
+        // of pretending that the hint was consumed.
+        let aspace = aspace_arc.lock();
+        let Some(fragment) = aspace.next_advice_fragment(cursor, end) else {
+            return Err(StarryError::NoMemory);
+        };
+        if fragment.gap_before {
+            return Err(StarryError::NoMemory);
+        }
+        if fragment.is_private_anonymous() {
+            return Err(StarryError::BadFileDescriptor);
+        }
+        return Err(StarryError::OperationNotSupported);
+    } else if matches!(
+        advice as u32,
+        MADV_NORMAL
+            | MADV_RANDOM
+            | MADV_SEQUENTIAL
+            | MADV_DONTFORK
+            | MADV_DOFORK
+            | MADV_DONTDUMP
+            | MADV_DODUMP
+    ) {
+        let update = match advice as u32 {
+            MADV_NORMAL => VmaAdviceUpdate::AccessPattern(VmaAccessPattern::Normal),
+            MADV_RANDOM => VmaAdviceUpdate::AccessPattern(VmaAccessPattern::Random),
+            MADV_SEQUENTIAL => VmaAdviceUpdate::AccessPattern(VmaAccessPattern::Sequential),
+            MADV_DONTFORK => VmaAdviceUpdate::DontFork(true),
+            MADV_DOFORK => VmaAdviceUpdate::DontFork(false),
+            MADV_DONTDUMP => VmaAdviceUpdate::DontDump(true),
+            MADV_DODUMP => VmaAdviceUpdate::DontDump(false),
+            _ => unreachable!(),
+        };
+        let reject_special = matches!(advice as u32, MADV_DOFORK | MADV_DODUMP);
+        let mut aspace = aspace_arc.lock();
+        while cursor < end {
+            let Some(fragment) = aspace.next_advice_fragment(cursor, end) else {
+                saw_gap = true;
+                break;
+            };
+            saw_gap |= fragment.gap_before;
+            if reject_special && fragment.is_special() {
+                return Err(StarryError::InvalidInput);
+            }
+            let fragment_start = fragment.range.start;
+            let fragment_len = fragment.range.size();
+            aspace.advise_vma_policy(fragment_start, fragment_len, update)?;
+            cursor = fragment_start
+                .checked_add(fragment_len)
+                .ok_or(StarryError::InvalidInput)?;
+        }
     } else if matches!(advice as u32, MADV_HUGEPAGE | MADV_NOHUGEPAGE) {
         // Linux updates VM_HUGEPAGE/VM_NOHUGEPAGE one VMA fragment at a
         // time under the mmap write lock.  Gaps are remembered as ENOMEM,
@@ -1375,7 +1462,10 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> StarryResult<isiz
             saw_gap |= fragment.gap_before;
             let fragment_start = fragment.range.start;
             let fragment_len = fragment.range.size();
-            if advice as u32 == MADV_DONTNEED {
+            if fragment.is_locked() && advice as u32 != MADV_DONTNEED_LOCKED {
+                return Err(StarryError::InvalidInput);
+            }
+            if matches!(advice as u32, MADV_DONTNEED | MADV_DONTNEED_LOCKED) {
                 // Linux zaps each VMA fragment in address order.  A later
                 // invalid VMA or gap does not roll back this prefix.
                 aspace.discard_range(fragment_start, fragment_len)?;
@@ -1491,6 +1581,13 @@ pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> StarryResult<isize>
     let size = end - aligned;
 
     let curr = current();
+    let memlock_limit = MemlockLimit::for_mlock(
+        curr.as_thread().proc_data.rlim.read()[RLIMIT_MEMLOCK].current,
+        curr.as_thread().cred().has_cap_ipc_lock(),
+    );
+    if !memlock_limit.can_lock() {
+        return Err(StarryError::OperationNotPermitted);
+    }
     let aspace_arc = curr.as_thread().proc_data.pin_aspace()?;
     let mut aspace = aspace_arc.lock();
     let start = VirtAddr::from(aligned);
@@ -1502,7 +1599,7 @@ pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> StarryResult<isize>
     // Linux applies VM_LOCKED/VM_LOCKONFAULT under mmap_write_lock before
     // optional population. A later fault-in failure therefore leaves the VMA
     // policy visible rather than pretending the metadata transaction aborted.
-    aspace.set_vma_lock_mode(start, size, lock_mode)?;
+    aspace.lock_vma_range(start, size, lock_mode, memlock_limit)?;
     if lock_mode == VmaLockMode::Locked {
         // Plain mlock (flags == 0): honor the "fault now" contract by faulting
         // the whole range in, reporting ENOMEM on any unmapped page. On this
@@ -1526,11 +1623,9 @@ pub fn sys_munlock(addr: usize, length: usize) -> StarryResult<isize> {
 
     let curr = current();
     let aspace_arc = curr.as_thread().proc_data.pin_aspace()?;
-    aspace_arc.lock().set_vma_lock_mode(
-        VirtAddr::from(aligned),
-        size,
-        VmaLockMode::Unlocked,
-    )?;
+    aspace_arc
+        .lock()
+        .unlock_vma_range(VirtAddr::from(aligned), size)?;
     Ok(0)
 }
 

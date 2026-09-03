@@ -1,8 +1,0 @@
-cmake_minimum_required(VERSION 3.20)
-project(test-task-stack-reclaim C)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS ON)
-add_executable(test-task-stack-reclaim src/main.c)
-target_compile_options(test-task-stack-reclaim PRIVATE -Wall -Wextra -Werror)
-install(TARGETS test-task-stack-reclaim RUNTIME DESTINATION usr/bin/starry-test-suit)

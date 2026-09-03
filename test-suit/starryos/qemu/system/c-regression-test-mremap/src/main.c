@@ -32,6 +32,9 @@
 #ifndef MAP_HUGETLB
 #define MAP_HUGETLB 0x40000
 #endif
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0x4000
+#endif
 
 static void *raw_mremap(void *old_addr, size_t old_size, size_t new_size,
                         int flags, void *new_addr) {
@@ -541,6 +544,42 @@ int main(void)
         } else {
             if (src != MAP_FAILED) munmap(src, 2 * PAGE);
             if (dst != MAP_FAILED) munmap(dst, 2 * PAGE);
+        }
+    }
+
+    /* 27. Sparse VMA publication and relocation scale with materialized
+     * leaves, not with the number of virtual 4 KiB pages. Only the endpoints
+     * are faulted into a 4 GiB source; the middle remains a lazy hole. */
+    {
+        const size_t SPARSE = 4ULL * 1024 * 1024 * 1024;
+        unsigned char *src = mmap(NULL, SPARSE, PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                                  -1, 0);
+        unsigned char *dst = mmap(NULL, SPARSE, PROT_NONE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                                  -1, 0);
+        CHECK(src != MAP_FAILED && dst != MAP_FAILED,
+              "mmap sparse 4 GiB source and target");
+        if (src != MAP_FAILED && dst != MAP_FAILED) {
+            src[0] = 0x2a;
+            src[SPARSE - PAGE] = 0x7c;
+            void *moved = raw_mremap(src, SPARSE, SPARSE,
+                                     MREMAP_MAYMOVE | MREMAP_FIXED, dst);
+            CHECK(moved == dst, "mremap sparse 4 GiB VMA by resident leaves");
+            if (moved == dst) {
+                CHECK(dst[0] == 0x2a, "sparse move preserves first resident page");
+                CHECK(dst[SPARSE - PAGE] == 0x7c,
+                      "sparse move preserves last resident page");
+                CHECK(dst[SPARSE / 2] == 0,
+                      "sparse move keeps untouched middle page lazy and zero-filled");
+                munmap(dst, SPARSE);
+            } else {
+                munmap(src, SPARSE);
+                munmap(dst, SPARSE);
+            }
+        } else {
+            if (src != MAP_FAILED) munmap(src, SPARSE);
+            if (dst != MAP_FAILED) munmap(dst, SPARSE);
         }
     }
 

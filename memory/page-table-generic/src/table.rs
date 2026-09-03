@@ -1240,6 +1240,26 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             .filter(|p| p.pte.present() && p.is_final_mapping)
     }
 
+    /// Walks every occupied final leaf, including retained non-present leaves.
+    ///
+    /// Rollback and quarantine code must distinguish an empty page-table slot
+    /// from a descriptor that still owns a physical mapping but has had its
+    /// access permissions removed. The walk scales with allocated page-table
+    /// frames rather than with the represented virtual address span.
+    pub fn walk_occupied(&self) -> impl Iterator<Item = crate::walk::PteInfo<T::P>> + '_ {
+        let config = WalkConfig {
+            start_vaddr: 0.into(),
+            end_vaddr: usize::MAX.into(),
+        };
+        PageTableWalker::new(self, config)
+            .filter(|p| !p.pte.unused() && (p.level == 1 || p.pte.huge(p.level > 1)))
+    }
+
+    /// Returns the mapping size represented by one page-table level.
+    pub fn mapping_size_for_level(&self, level: usize) -> Option<usize> {
+        (level != 0 && level <= T::LEVEL_BITS.len()).then(|| Frame::<T, A>::level_size(level))
+    }
+
     /// 验证映射配置的有效性
     fn validate_map_config(&self, config: &MapConfig<PteConfigOf<T>>) -> PagingResult {
         if config.size == 0 {

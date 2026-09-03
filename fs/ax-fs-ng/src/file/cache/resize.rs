@@ -51,6 +51,11 @@ impl CachedFile {
         let file = self.inner.entry().as_file()?;
 
         loop {
+            // Fault invalidation callbacks may re-enter the page cache through
+            // an address space, so this must stay separate from the I/O lock.
+            // Keep the publication barrier across the initial cache snapshot,
+            // backing mutation, cache update, and epoch publication.
+            let _mapping_update = self.begin_mapping_update()?;
             let observed_len = self.shared.len();
             let visible_end = match operation {
                 FileRangeOperation::PunchHole
@@ -131,6 +136,7 @@ impl CachedFile {
         let file = self.inner.entry().as_file()?;
         let start_page = offset / PAGE_SIZE as u64;
         loop {
+            let _mapping_update = self.begin_mapping_update()?;
             let observed_len = self.shared.len();
             let new_len = match operation {
                 FileRangeOperation::CollapseRange => observed_len

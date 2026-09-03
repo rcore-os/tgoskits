@@ -3,7 +3,7 @@
 use core::ops::{Index, IndexMut};
 
 use linux_raw_sys::general::{
-    RLIM_NLIMITS, RLIMIT_DATA, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_STACK,
+    RLIM_NLIMITS, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_STACK,
 };
 
 /// The maximum number of open files
@@ -13,6 +13,9 @@ pub const AX_FILE_LIMIT: usize = 1024;
 /// message queues, matching Linux `MQ_BYTES_MAX` (`include/uapi/linux/mqueue.h`,
 /// 819200) as seeded by `INIT_RLIMITS`.
 pub const MQ_BYTES_MAX: u64 = 819200;
+
+/// Linux `MLOCK_LIMIT` from `include/uapi/linux/resource.h`.
+pub const MLOCK_LIMIT: u64 = 8 * 1024 * 1024;
 
 /// The limit for a specific resource
 #[derive(Default)]
@@ -56,6 +59,7 @@ impl Default for Rlimits {
         result[RLIMIT_NOFILE] = (AX_FILE_LIMIT as u64).into();
         // Linux default: RLIMIT_DATA is unlimited
         result[RLIMIT_DATA] = Rlimit::new(u64::MAX, u64::MAX);
+        result[RLIMIT_MEMLOCK] = Rlimit::new(MLOCK_LIMIT, MLOCK_LIMIT);
         // Linux `INIT_RLIMITS` seeds RLIMIT_MSGQUEUE with MQ_BYTES_MAX
         // (`include/asm-generic/resource.h`, `include/uapi/linux/mqueue.h`):
         // the per-user ceiling on bytes held across all that user's POSIX
@@ -88,6 +92,8 @@ fn resource_limit_defaults_hold_for_test() -> bool {
         && limits[RLIMIT_STACK].max == crate::config::USER_STACK_SIZE as u64
         && limits[RLIMIT_DATA].current == u64::MAX
         && limits[RLIMIT_DATA].max == u64::MAX
+        && limits[RLIMIT_MEMLOCK].current == MLOCK_LIMIT
+        && limits[RLIMIT_MEMLOCK].max == MLOCK_LIMIT
         && limits[RLIMIT_NOFILE].current == 7
         && limits[RLIMIT_NOFILE].max == 9
         && Rlimit::from(11).current == 11

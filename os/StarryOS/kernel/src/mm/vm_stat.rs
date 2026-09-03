@@ -106,20 +106,15 @@ impl ProcessVmStat {
         self.peak_vss_pages.store(0, Ordering::Relaxed);
     }
 
-    /// Seed this stat from a parent's snapshot (used when `try_clone` builds
-    /// the child address space for `fork`/`clone`).
+    /// Seed this stat from the VMAs actually copied into a fork child.
     ///
     /// The child inherits the parent's current VSS as its virtual watermark,
     /// matching Linux: the child's `mm_struct` starts with `hiwater_vm` set to
     /// the copied `total_vm`.
     #[inline]
-    pub(super) fn seed_from(&self, parent: &Self) {
-        let vss = parent.vss_pages();
+    pub(super) fn seed_clone(&self, vss: u64) {
         self.vss_pages.store(vss as i64, Ordering::Relaxed);
-        // The resident watermark is initialized from the child's own
-        // MappingSlot snapshot after page-table cloning.
-        self.peak_vss_pages
-            .store(parent.peak_vss_pages().max(vss), Ordering::Relaxed);
+        self.peak_vss_pages.store(vss, Ordering::Relaxed);
     }
 }
 
@@ -137,9 +132,9 @@ fn process_vm_stat_watermarks_hold_for_test() -> bool {
     parent.on_unmap(4);
 
     let child = ProcessVmStat::new();
-    child.seed_from(&parent);
+    child.seed_clone(parent.vss_pages());
 
-    let inherited = child.vss_pages() == 1 && child.peak_vss_pages() == 5;
+    let inherited = child.vss_pages() == 1 && child.peak_vss_pages() == 1;
     parent.on_clear();
 
     inherited && parent.vss_pages() == 0 && parent.peak_vss_pages() == 0
@@ -169,10 +164,9 @@ fn process_vm_stat_edge_cases_hold_for_test() -> bool {
     // Peaks still at historical max.
     let peaks_stable = stat.peak_vss_pages() == 15;
 
-    // seed_from with zeroed parent.
-    let empty = ProcessVmStat::new();
+    // seed_clone with an empty copied VMA set.
     let child = ProcessVmStat::new();
-    child.seed_from(&empty);
+    child.seed_clone(0);
     let from_empty = child.vss_pages() == 0 && child.peak_vss_pages() == 0;
 
     init_ok && after_map && after_more && after_unmap && after_over && peaks_stable && from_empty

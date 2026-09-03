@@ -12,8 +12,11 @@
  */
 
 #include "test_framework.h"
+#include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 
@@ -24,6 +27,80 @@
 static long raw_mlock2(const void *addr, size_t len, unsigned int flags)
 {
     return syscall(SYS_mlock2, addr, len, flags);
+}
+
+static long read_vmlck_kb(void)
+{
+    FILE *status = fopen("/proc/self/status", "r");
+    if (!status) return -1;
+
+    char line[256];
+    long locked_kb = -1;
+    while (fgets(line, sizeof(line), status)) {
+        if (sscanf(line, "VmLck:%ld kB", &locked_kb) == 1) break;
+    }
+    fclose(status);
+    return locked_kb;
+}
+
+static int run_memlock_limit_child(long ps)
+{
+    struct rlimit one_page = {
+        .rlim_cur = (rlim_t)ps,
+        .rlim_max = (rlim_t)ps,
+    };
+    if (setrlimit(RLIMIT_MEMLOCK, &one_page) != 0) return 10;
+    if (setuid(65534) != 0) return 11;
+
+    char *pages = mmap(NULL, 2 * ps, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (pages == MAP_FAILED) return 12;
+
+    /* Linux checks permission against the raw byte limit, then truncates it to
+       pages for the accounting limit. A non-zero sub-page limit therefore
+       reaches the limit check: mlock returns ENOMEM and MAP_LOCKED EAGAIN,
+       rather than failing the permission gate with EPERM. */
+    struct rlimit sub_page = {
+        .rlim_cur = 1,
+        .rlim_max = (rlim_t)ps,
+    };
+    if (setrlimit(RLIMIT_MEMLOCK, &sub_page) != 0) return 13;
+    errno = 0;
+    if (mlock(pages, ps) != -1 || errno != ENOMEM) return 14;
+    errno = 0;
+    void *sub_page_locked = mmap(NULL, ps, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_LOCKED,
+                                 -1, 0);
+    if (sub_page_locked != MAP_FAILED || errno != EAGAIN) {
+        if (sub_page_locked != MAP_FAILED) munmap(sub_page_locked, ps);
+        return 15;
+    }
+    if (setrlimit(RLIMIT_MEMLOCK, &one_page) != 0) return 16;
+
+    if (mlock(pages, ps) != 0) return 17;
+    if (read_vmlck_kb() != ps / 1024) return 18;
+
+    errno = 0;
+    if (mlock(pages + ps, ps) != -1 || errno != ENOMEM) return 19;
+    if (mlock(pages, ps) != 0) return 20;
+    if (read_vmlck_kb() != ps / 1024) return 21;
+
+    errno = 0;
+    if (raw_mlock2(pages, 2 * ps, MLOCK_ONFAULT) != -1 || errno != ENOMEM)
+        return 22;
+
+    if (munlock(pages, ps) != 0) return 23;
+    if (read_vmlck_kb() != 0) return 24;
+    if (mlock(pages + ps, ps) != 0) return 25;
+    if (munlock(pages + ps, ps) != 0) return 26;
+
+    errno = 0;
+    void *locked = mmap(NULL, 2 * ps, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_LOCKED, -1, 0);
+    if (locked != MAP_FAILED || errno != EAGAIN) return 27;
+
+    munmap(pages, 2 * ps);
+    return 0;
 }
 
 int main(void)
@@ -143,6 +220,20 @@ int main(void)
         CHECK_ERR(mlock(hole, 3 * ps), ENOMEM, "mlock over a hole → ENOMEM");
         munmap(hole, ps);
         munmap(hole + 2 * ps, ps);
+    }
+
+    /* RLIMIT_MEMLOCK belongs to the shared mm. Dropping privileges removes
+     * CAP_IPC_LOCK, so a one-page budget must reject every net increase while
+     * repeated/overlapping locks do not consume the budget twice. */
+    pid_t limit_child = fork();
+    CHECK(limit_child >= 0, "fork RLIMIT_MEMLOCK child");
+    if (limit_child == 0) _exit(run_memlock_limit_child(ps));
+    if (limit_child > 0) {
+        int status = 0;
+        CHECK_RET(waitpid(limit_child, &status, 0), limit_child,
+                  "wait RLIMIT_MEMLOCK child");
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "mlock/MAP_LOCKED enforce one-page limit and VmLck accounting");
     }
 
     TEST_DONE();
