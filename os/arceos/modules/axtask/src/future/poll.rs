@@ -1,4 +1,7 @@
-use core::{future::poll_fn, task::Poll};
+use core::{
+    future::poll_fn,
+    task::{Poll, Waker},
+};
 
 use axpoll::{IoEvents, Pollable};
 
@@ -31,7 +34,12 @@ where
     E: PollIoError,
 {
     let curr = current();
-    poll_fn(move |cx| {
+    // Last waker this poll registered; deregistered on return so stale wakers
+    // don't accumulate in the pollable's poll set (a leftover waker can consume
+    // a `wake_one`, starving the real waiter until its timeout — e.g. ~1.3ms
+    // flip-event delivery on-screen).
+    let mut registered: Option<Waker> = None;
+    let out = poll_fn(|cx| {
         match f() {
             Ok(value) => return Poll::Ready(Ok(value)),
             Err(error) if error.is_would_block() => {}
@@ -43,6 +51,7 @@ where
         // for EPOLLOUT. If we skip registration for non-blocking callers, the
         // TCP stack has no waker to call when the handshake finishes.
         pollable.register(cx, events);
+        registered = Some(cx.waker().clone());
 
         match f() {
             Ok(value) => Poll::Ready(Ok(value)),
@@ -57,7 +66,11 @@ where
             Err(e) => Poll::Ready(Err(e)),
         }
     })
-    .await
+    .await;
+    if let Some(w) = registered.take() {
+        pollable.unregister(&w);
+    }
+    out
 }
 
 /// Registers a waker for the given domain-scoped IRQ id.

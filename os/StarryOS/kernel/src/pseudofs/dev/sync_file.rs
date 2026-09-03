@@ -72,6 +72,8 @@ pub struct SyncFile {
     fence_id: u64,
     signaled: AtomicBool,
     poll_set: PollSet,
+    /// Whether a poll/epoll waiter currently holds a waker in `poll_set`.
+    has_poller: core::sync::atomic::AtomicBool,
 }
 
 /// Live out-fence registry. The host completion of a fence is only observable
@@ -96,6 +98,7 @@ impl SyncFile {
             fence_id,
             signaled: AtomicBool::new(false),
             poll_set: PollSet::new(),
+            has_poller: core::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -327,6 +330,17 @@ impl Pollable for SyncFile {
         // by the poll_set afterwards and woken via `signal` (also task
         // context).
         unsafe { self.poll_set.register(&waker, IoEvents::IN) };
+        self.has_poller
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
+
+    fn unregister(&self, waker: &core::task::Waker) {
+        // SAFETY: poll deregistration runs in task context (poll/epoll return).
+        unsafe {
+            self.poll_set.unregister(waker);
+        }
+        self.has_poller
+            .store(false, core::sync::atomic::Ordering::Release);
     }
 }
 

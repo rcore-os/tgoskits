@@ -126,6 +126,7 @@ fn do_poll(
 
     with_blocked_signals(sigmask, || {
         let mut did_wait = false;
+        let mut registered_waker: Option<core::task::Waker> = None;
         let wait = poll_fn(|cx| {
             let mut res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
             if res > 0 {
@@ -134,6 +135,7 @@ fn do_poll(
             did_wait = true;
 
             fds.register(cx, IoEvents::empty());
+            registered_waker = Some(cx.waker().clone());
 
             res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
             if res > 0 {
@@ -147,6 +149,14 @@ fn do_poll(
             Ok(Err(_)) => Ok(0),
             Err(err) => Err(err.into()),
         };
+        // Deregister this poll's wakers on return: a stale waker whose task
+        // already left the wait can consume a flip-event `wake_one`, starving
+        // the real waiter (the compositor's drm poll) until its timeout —
+        // measured ~1.3ms flip-event delivery on-screen. Linux's eventfd/poll
+        // wakes by level, so no explicit cleanup is needed there.
+        if let Some(w) = registered_waker {
+            fds.unregister(&w);
+        }
         // [run6g] poll wake-to-return latency: the last unix-stream send that
         // woke this poller happened at LAST_PEER_WAKE_NS; the delta to now is
         // the wakeup+return path cost (waker -> scheduler -> re-poll -> syscall

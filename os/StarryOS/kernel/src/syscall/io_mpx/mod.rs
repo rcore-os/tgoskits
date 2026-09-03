@@ -21,6 +21,12 @@ impl Pollable for FdPollSet {
             file.register(context, *events);
         }
     }
+
+    fn unregister(&self, waker: &core::task::Waker) {
+        for (file, _) in &self.0 {
+            file.unregister(waker);
+        }
+    }
 }
 
 #[cfg(test)]

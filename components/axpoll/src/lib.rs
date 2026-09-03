@@ -62,6 +62,15 @@ pub trait Pollable {
 
     /// Registers wakers for I/O events.
     fn register(&self, context: &mut Context<'_>, events: IoEvents);
+
+    /// Removes the waker registered by a previous [`register`](Self::register)
+    /// call, if any. Poll/epoll waiters call this on return so stale wakers
+    /// don't accumulate in the poll set: a leftover waker whose task already
+    /// left the wait can consume a [`PollSet::wake_one`], starving the real
+    /// waiter until its timeout (measured: flip-event delivery 1.3ms on-screen
+    /// while the compositor's drm poll blocked past its timeout). Default:
+    /// no-op.
+    fn unregister(&self, _waker: &core::task::Waker) {}
 }
 
 const POLL_SET_CAPACITY: usize = 64;
@@ -201,6 +210,33 @@ impl PollSet {
         if let Some(entry) = replaced {
             entry.wake();
         }
+    }
+
+    /// Removes the entry whose waker matches `waker` (by pointer identity,
+    /// like `Waker::will_wake`). Returns whether an entry was removed. Used by
+    /// poll/epoll waiters on return so stale wakers don't accumulate and
+    /// consume [`wake_one`](Self::wake_one).
+    ///
+    /// # Safety
+    ///
+    /// Task/deferred-context only, matching [`register`](Self::register).
+    pub unsafe fn unregister(&self, waker: &core::task::Waker) -> bool {
+        let Some(inner) = self.0.get() else {
+            return false;
+        };
+        let mut inner = inner.lock_irqsave();
+        let len = inner.len();
+        let mut keep = 0usize;
+        for i in 0..len {
+            let entry = unsafe { inner.entries[i].assume_init_read() };
+            if entry.waker.will_wake(waker) {
+                continue;
+            }
+            inner.entries[keep].write(entry);
+            keep += 1;
+        }
+        inner.cursor = keep;
+        keep != len
     }
 
     /// Wakes up registered wakers whose interests intersect `ready`.

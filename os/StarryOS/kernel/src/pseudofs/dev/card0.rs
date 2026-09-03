@@ -1668,6 +1668,16 @@ impl Pollable for Card0 {
             unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
+
+    fn unregister(&self, waker: &core::task::Waker) {
+        // Poll/epoll return: drop this waiter's stale waker so flip-event
+        // wake_one always reaches the compositor's current drm poll instead of
+        // a leftover entry (leftovers starve the real waiter until its
+        // timeout — measured ~1.3ms flip delivery on-screen).
+        unsafe {
+            self.poll_rx.unregister(waker);
+        }
+    }
 }
 
 impl Card0 {
