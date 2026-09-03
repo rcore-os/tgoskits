@@ -37,7 +37,7 @@ use self::{
 use crate::{
     RuntimeError, RuntimeResult,
     sync::{PiMutex, SpinLock},
-    task::{CpuId, CpuSet, FixedIrqWorkerSignal, WaitQueue},
+    task::{CpuId, CpuSet, FairMode, FixedIrqWorkerSignal, Nice, SchedulePolicy, WaitQueue},
 };
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
@@ -47,6 +47,16 @@ const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 // startup records. Keep enough whole-record slots for the bounded SMP burst so
 // activating a console owner does not immediately lose diagnostics.
 const LOG_SUBSCRIPTION_CAPACITY: usize = 128;
+const SERIAL_WORKER_NICE: Nice = match Nice::new(-20) {
+    Ok(nice) => nice,
+    Err(_) => panic!("Linux console worker priority must be valid"),
+};
+
+const fn serial_worker_policy() -> SchedulePolicy {
+    // Linux keeps threaded console printers in SCHED_NORMAL at nice -20 so
+    // they run promptly with a generous Fair budget without becoming RT work.
+    SchedulePolicy::fair(SERIAL_WORKER_NICE, FairMode::Normal)
+}
 
 static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
 static LOG_MAILBOX: OnceLock<Arc<LogMailbox>> = OnceLock::new();
@@ -977,10 +987,11 @@ fn build_runtime(
         ));
     }
 
-    crate::task::spawn_raw_with_affinity(
+    crate::task::spawn_raw_with_policy_and_affinity(
         move || worker.run(),
         alloc::format!("serial{index}-maint"),
         crate::task::default_task_stack_size(),
+        serial_worker_policy(),
         affinity,
     )
     .map_err(|error| {
@@ -1361,6 +1372,14 @@ mod tests {
             "the panic marker must not become the final byte of an interrupted ANSI sequence"
         );
         assert_eq!(writer.source_written, payload.len());
+    }
+
+    #[test]
+    fn serial_worker_uses_linux_console_worker_priority() {
+        assert_eq!(
+            serial_worker_policy(),
+            SchedulePolicy::fair(Nice::new(-20).unwrap(), FairMode::Normal)
+        );
     }
 
     #[test]
