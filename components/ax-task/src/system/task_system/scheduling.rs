@@ -1131,31 +1131,22 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         mut transaction: OwnerRqTxn<'_>,
-        previous_core_hint: &ThreadCore,
+        current: &ThreadCore,
         schedule_out: OwnerRqScheduleOut,
     ) -> YieldOutcome {
+        if owner_yield_keeps_current_dispatch(&mut transaction) {
+            transaction.finish_unchanged_scheduler_request();
+            self.finish_owner_unchanged_yield(cpu.as_mut(), current.id());
+            return YieldOutcome::Unchanged;
+        }
+
         let now_ns = transaction.clock().wall().as_nanos();
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
-        if previous_core
-            .as_ref()
-            .is_none_or(|core| !core::ptr::eq(core.as_ref(), previous_core_hint))
-        {
-            task_runtime::fatal_invariant(0x5343_1212, cpu.owner().as_u32() as usize);
-        }
         let core = previous_core.as_ref().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1213, cpu.owner().as_u32() as usize)
         });
-        let placement = core.sched().placement();
-        let continuing_dispatch = owner_yield_keeps_current_dispatch(&mut transaction)
-            && transaction.task_state(core.id(), placement).is_current();
-        if continuing_dispatch {
-            transaction.finish_unchanged_scheduler_request();
-            self.finish_owner_unchanged_yield(cpu.as_mut(), core.id());
-            return YieldOutcome::Unchanged;
-        }
-
         let _settled = transaction.settle_current(0);
         let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
