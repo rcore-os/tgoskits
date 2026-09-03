@@ -244,6 +244,20 @@ kind = "axvisor-board"
 board = "orangepi-5-plus-starry"
 
 [[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark"
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+name = "Board OrangePi 5 Plus · AXIVC Zephyr-Starry benchmark"
+runner = "board"
+timeout_minutes = 30
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-ivc-benchmark
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-ivc-benchmark"
+
+[[check]]
 id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board ROC-RK3568-PC · Linux guest"
