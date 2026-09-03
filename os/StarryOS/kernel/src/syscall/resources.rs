@@ -2,7 +2,9 @@ use core::mem::offset_of;
 
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
-use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
+use linux_raw_sys::general::{
+    __kernel_old_timeval, RLIM_NLIMITS, RLIMIT_RTTIME, rlimit64, rusage,
+};
 
 use crate::{
     StarryError, StarryResult,
@@ -55,6 +57,9 @@ pub fn sys_prlimit64(
             }
         }
         limit.replace(Rlimit::new(new_limit.rlim_cur, new_limit.rlim_max));
+        if resource == RLIMIT_RTTIME {
+            proc_data.publish_rttime_watchdog_limit();
+        }
     }
 
     Ok(0)

@@ -992,6 +992,7 @@ unsafe extern "Rust" fn starry_user_task_scheduler_tick(
 ) -> scheduler::SchedulerTickWorkDisposition {
     let extension = unsafe { extension_data_from_raw(data) };
     extension.thread.sample_scheduler_tick_cpu_time(observed_ns);
+    super::signal::queue_rttime_limit_signal_from_scheduler_tick(&extension.thread, observed_ns);
     super::poll_process_cpu_timers_from_scheduler_tick(&extension.thread.proc_data);
     scheduler::SchedulerTickWorkDisposition::Complete
 }

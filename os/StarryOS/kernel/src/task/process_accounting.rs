@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_runtime::{hal::time::TimeValue, task::SchedulerTickGate};
+use linux_raw_sys::general::RLIMIT_RTTIME;
 
 use super::{
     AlarmChange, AlarmToken, CpuTimeDelta, ITimerSetting, ITimerType, PendingTimerActions,
@@ -39,13 +40,28 @@ impl ProcessAccountingState {
 }
 
 impl ProcessData {
+    fn refresh_scheduler_tick_gate(&self) {
+        let has_cpu_interval_timer = self
+            .accounting
+            .active_interval_timers
+            .load(Ordering::Acquire)
+            & CPU_INTERVAL_TIMER_MASK
+            != 0;
+        let has_rttime_watchdog = self.rlimit_current(RLIMIT_RTTIME) != u64::MAX;
+        self.accounting
+            .scheduler_tick_gate
+            .set_enabled(has_cpu_interval_timer || has_rttime_watchdog);
+    }
+
     fn publish_active_interval_timers(&self, mask: u8) {
         self.accounting
             .active_interval_timers
             .store(mask, Ordering::Release);
-        self.accounting
-            .scheduler_tick_gate
-            .set_enabled(mask & CPU_INTERVAL_TIMER_MASK != 0);
+        self.refresh_scheduler_tick_gate();
+    }
+
+    pub(crate) fn publish_rttime_watchdog_limit(&self) {
+        self.refresh_scheduler_tick_gate();
     }
 
     pub(crate) fn scheduler_tick_gate(&self) -> Arc<SchedulerTickGate> {

@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize
 
 use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin};
 use axpoll_set::PollSet;
-use linux_raw_sys::general::RLIMIT_RTTIME;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
@@ -770,7 +769,6 @@ impl Thread {
                 .signals
                 .deferred_mask_restore_pending
                 .load(Ordering::Acquire)
-            || self.proc_data.rlimit_current(RLIMIT_RTTIME) != u64::MAX
     }
 
     pub(crate) fn wake_signalfd(&self) {

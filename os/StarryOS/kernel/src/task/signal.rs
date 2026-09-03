@@ -317,7 +317,6 @@ pub(crate) fn check_signals_with_outcome(
     restart_info: Option<&SyscallRestartInfo>,
 ) -> SignalCheckOutcome {
     let thr = current.as_thread();
-    queue_rttime_limit_signal(thr);
     if thr.take_deadline_overrun() {
         let _result = thr
             .signal()
@@ -439,7 +438,7 @@ pub(crate) fn check_signals_with_outcome(
     outcome
 }
 
-fn queue_rttime_limit_signal(thr: &Thread) {
+pub(super) fn queue_rttime_limit_signal_from_scheduler_tick(thr: &Thread, observed_ns: u64) {
     let limit = thr.proc_data.rlimit(RLIMIT_RTTIME);
     let (soft_limit_us, hard_limit_us) = (limit.current, limit.max);
     if soft_limit_us == u64::MAX {
@@ -448,7 +447,7 @@ fn queue_rttime_limit_signal(thr: &Thread) {
     let action = thr
         .rttime()
         .lock()
-        .check_limit(thr.cpu_time(), soft_limit_us, hard_limit_us);
+        .check_limit_at(thr.cpu_time(), observed_ns, soft_limit_us, hard_limit_us);
     let signo = match action {
         RttimeLimitAction::None => return,
         RttimeLimitAction::Soft => Signo::SIGXCPU,
