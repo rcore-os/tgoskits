@@ -140,6 +140,22 @@ impl SchedulerRequestState {
         }
     }
 
+    fn publish_remote(&self, reason: u64) -> Option<u64> {
+        let published = self.publish(reason);
+        if reason & (REQUEST_PREEMPT | REQUEST_OWNER_WORK) == 0 {
+            return published;
+        }
+
+        // Linux may suppress a repeated reschedule IPI because need-resched
+        // belongs to the exact rq current task until that task reaches a safe
+        // point. This state is CPU-global, so the sticky bit can outlive the
+        // physical edge which first transported it. Preserve the logical bit
+        // coalescing while still offering each fresh remote scheduling
+        // decision to DeliveryEdge; an armed edge coalesces it, while a
+        // claimed edge sends again.
+        published.or_else(|| Some(self.request.load(Ordering::Acquire)))
+    }
+
     fn claim(&self, scope: SchedulerRequestScope) -> SchedulerRequestClaim {
         let request = self
             .request
@@ -241,10 +257,14 @@ impl CpuRemote {
         if owner_work {
             reasons |= REQUEST_OWNER_WORK;
         }
-        if let Some(publication) = self.publish_scheduler_request_owned(reasons)
-            && (owner_work || reschedule == Some(RescheduleKind::Immediate))
-        {
-            self.deliver_scheduler_work_owned(publication);
+        let publication = self
+            .scheduler_request
+            .publish_remote(reasons)
+            .map(Self::scheduler_request_publication);
+        if owner_work || reschedule == Some(RescheduleKind::Immediate) {
+            self.deliver_scheduler_work_owned(
+                publication.expect("immediate remote scheduler work must retain a publication"),
+            );
         }
     }
 
@@ -601,6 +621,21 @@ mod tests {
             lazy.request.load(Ordering::Acquire) & REQUEST_PREEMPT_LAZY,
             0,
             "a notified park must restore the lazy request claimed before cancellation"
+        );
+    }
+
+    #[test]
+    fn repeated_remote_preemption_retains_a_delivery_attempt() {
+        let request = SchedulerRequestState::new();
+
+        assert!(request.publish_remote(REQUEST_PREEMPT).is_some());
+        assert!(
+            request.publish_remote(REQUEST_PREEMPT).is_some(),
+            "a fresh remote rq decision must reach DeliveryEdge even while the CPU bit is sticky"
+        );
+        assert!(
+            request.publish_remote(REQUEST_PREEMPT_LAZY).is_none(),
+            "a repeated lazy request must remain logical-only"
         );
     }
 }

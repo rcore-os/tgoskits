@@ -2,7 +2,10 @@ use std::{
     os::arceos::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
         modules::ax_hal::percpu::this_cpu_id,
-        task::{FairMode, Nice, RtPriority, SchedulePolicy, current_thread_id, set_thread_policy},
+        task::{
+            FairMode, Nice, RtPriority, SchedulePolicy, ThreadId, current_thread_id,
+            set_thread_policy, thread_handle,
+        },
     },
     sync::{
         Arc, Mutex,
@@ -245,6 +248,8 @@ pub fn run() -> crate::TestResult {
             drop(guard);
         })
     };
+    let owner_id = owner.thread().id().as_u64().get();
+    let owner_id = ThreadId::from_parts(owner_id as u32, (owner_id >> 32) as u32);
     wait_until(
         || owner_locked.load(Ordering::Acquire),
         "PI mutex owner did not acquire the lock",
@@ -275,10 +280,12 @@ pub fn run() -> crate::TestResult {
 
     let waiter_started = Arc::new(AtomicBool::new(false));
     let waiter_acquired = Arc::new(AtomicBool::new(false));
+    let waiter_completion = Arc::new(AxWaitQueueHandle::new());
     let waiter = {
         let mutex = Arc::clone(&mutex);
         let started = Arc::clone(&waiter_started);
         let acquired = Arc::clone(&waiter_acquired);
+        let completion = Arc::clone(&waiter_completion);
         thread::spawn(move || {
             pin_current_to_cpu(1);
             let current = current_thread_id().expect("PI waiter must have a thread identity");
@@ -290,17 +297,27 @@ pub fn run() -> crate::TestResult {
             started.store(true, Ordering::Release);
             drop(mutex.lock());
             acquired.store(true, Ordering::Release);
+            api::ax_wait_queue_wake(completion.as_ref(), 1);
         })
     };
     wait_until(
         || waiter_started.load(Ordering::Acquire),
         "PI waiter did not start",
     );
-    thread::sleep(Duration::from_millis(10));
+    let donated_policy = SchedulePolicy::fifo(RtPriority::new(80).expect("priority 80 is valid"));
+    wait_until(
+        || thread_handle(owner_id).is_ok_and(|owner| owner.effective_policy() == donated_policy),
+        "PI waiter did not donate FIFO priority to the owner",
+    );
 
     release_owner.store(true, Ordering::Release);
-    wait_until(
+    let timed_out = api::ax_wait_queue_wait_until(
+        waiter_completion.as_ref(),
         || waiter_acquired.load(Ordering::Acquire),
+        Some(PROGRESS_TIMEOUT),
+    );
+    assert!(
+        !timed_out,
         "RT waiter did not donate priority and acquire the mutex",
     );
 

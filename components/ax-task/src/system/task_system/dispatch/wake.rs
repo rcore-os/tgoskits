@@ -462,52 +462,49 @@ impl TaskSystem {
             ThreadState::Blocked => {}
         }
 
-        loop {
-            let sched = core.sched().lock();
-            if sched.lifecycle.state() == ThreadState::Exited {
-                core.discard_failed_wake();
-                return WakeResult::Exited;
+        let sched = core.sched().lock();
+        if sched.lifecycle.state() == ThreadState::Exited {
+            core.discard_failed_wake();
+            return WakeResult::Exited;
+        }
+        if matches!(
+            sched.lifecycle.state(),
+            ThreadState::Parking | ThreadState::Running | ThreadState::Waking
+        ) {
+            // Parking and its final transition to Blocked are serialized by
+            // this task lock, matching Linux try_to_wake_up() under p->pi_lock.
+            // If the parker still owns the task, the sticky notification is
+            // the complete transaction; otherwise the Blocked path below
+            // performs the no-fail runnable publication.
+            return WakeResult::Notified;
+        }
+        // Linux checks `p->on_rq` and runs `ttwu_runnable()` before it
+        // waits for `p->on_cpu`. A delayed Fair sleeper deliberately
+        // retains rq membership through switch tail, so it reactivates on
+        // that rq without taking the ordinary direct-activation path.
+        if let Some(target) = sched.placement.queued_cpu() {
+            let transition = Self::consume_on_rq_wake_locked(core);
+            if transition != WakeTransition::Activate {
+                task_runtime::fatal_invariant(0x574b_000f, core.id().as_u64() as usize);
             }
-            if matches!(
-                sched.lifecycle.state(),
-                ThreadState::Parking | ThreadState::Running | ThreadState::Waking
-            ) {
-                // Parking and its final transition to Blocked are serialized by
-                // this task lock, matching Linux try_to_wake_up() under p->pi_lock.
-                // If the parker still owns the task, the sticky notification is
-                // the complete transaction; otherwise the Blocked path below
-                // performs the no-fail runnable publication.
-                return WakeResult::Notified;
-            }
-            // Linux checks `p->on_rq` and runs `ttwu_runnable()` before it
-            // waits for `p->on_cpu`. A delayed Fair sleeper deliberately
-            // retains rq membership through switch tail, so it reactivates on
-            // that rq without taking the ordinary direct-activation path.
-            if let Some(target) = sched.placement.queued_cpu() {
-                let transition = Self::consume_on_rq_wake_locked(&core);
-                if transition != WakeTransition::Activate {
-                    task_runtime::fatal_invariant(0x574b_000f, core.id().as_u64() as usize);
-                }
 
-                return self.wake_on_rq_locked(&core, sched, target, intent, context);
-            }
-            let previous = sched
-                .placement
-                .assigned_cpu()
-                .or_else(|| core.wake_cpu_hint());
-            let target =
-                self.select_wake_target(&sched, &core, Some(context.producer), previous, intent);
+            return self.wake_on_rq_locked(core, sched, target, intent, context);
+        }
+        let previous = sched
+            .placement
+            .assigned_cpu()
+            .or_else(|| core.wake_cpu_hint());
+        let target =
+            self.select_wake_target(&sched, core, Some(context.producer), previous, intent);
 
-            let Some(target) = target else {
-                return WakeResult::Unavailable;
-            };
-            let transition = Self::consume_wake_locked(&core);
-            match transition {
-                WakeTransition::Notified => return WakeResult::Notified,
-                WakeTransition::Activate => {
-                    return self
-                        .activate_waking_thread_locked(&core, sched, target, intent, context);
-                }
+        let Some(target) = target else {
+            return WakeResult::Unavailable;
+        };
+        let transition = Self::consume_wake_locked(core);
+        match transition {
+            WakeTransition::Notified => WakeResult::Notified,
+            WakeTransition::Activate => {
+                self.activate_waking_thread_locked(core, sched, target, intent, context)
             }
         }
     }
@@ -574,17 +571,17 @@ impl TaskSystem {
                 let target = sched.placement.queued_cpu().unwrap_or(assigned);
                 let on_rq = sched.placement.queued_cpu() == Some(target);
                 let transition = if on_rq {
-                    Self::consume_on_rq_wake_locked(&core)
+                    Self::consume_on_rq_wake_locked(core)
                 } else {
-                    Self::consume_wake_locked(&core)
+                    Self::consume_wake_locked(core)
                 };
                 if transition != WakeTransition::Activate {
                     task_runtime::fatal_invariant(0x574b_001b, core.id().as_u64() as usize);
                 }
                 let result = if on_rq {
-                    self.wake_on_rq_locked(&core, sched, target, intent, context)
+                    self.wake_on_rq_locked(core, sched, target, intent, context)
                 } else {
-                    self.activate_waking_thread_locked(&core, sched, target, intent, context)
+                    self.activate_waking_thread_locked(core, sched, target, intent, context)
                 };
                 if result != WakeResult::Notified {
                     task_runtime::fatal_invariant(0x574b_001c, core.id().as_u64() as usize);
@@ -597,11 +594,11 @@ impl TaskSystem {
                         return WaitWakeDelivery::Cancelled;
                     }
                     let _already_pending = core.publish_wake();
-                    let transition = Self::consume_on_rq_wake_locked(&core);
+                    let transition = Self::consume_on_rq_wake_locked(core);
                     if transition != WakeTransition::Activate {
                         task_runtime::fatal_invariant(0x574b_0011, core.id().as_u64() as usize);
                     }
-                    let result = self.wake_on_rq_locked(&core, sched, target, intent, context);
+                    let result = self.wake_on_rq_locked(core, sched, target, intent, context);
                     if result != WakeResult::Notified {
                         task_runtime::fatal_invariant(0x574b_0012, core.id().as_u64() as usize);
                     }
@@ -620,7 +617,7 @@ impl TaskSystem {
                         .or_else(|| core.wake_cpu_hint());
                     let Some(target) = self.select_wake_target(
                         &sched,
-                        &core,
+                        core,
                         Some(context.producer),
                         previous,
                         intent,
@@ -635,12 +632,12 @@ impl TaskSystem {
                     return WaitWakeDelivery::Cancelled;
                 }
                 let _already_pending = core.publish_wake();
-                let transition = Self::consume_wake_locked(&core);
+                let transition = Self::consume_wake_locked(core);
                 if transition != WakeTransition::Activate {
                     task_runtime::fatal_invariant(0x574b_000c, core.id().as_u64() as usize);
                 }
                 let result =
-                    self.activate_waking_thread_locked(&core, sched, target, intent, context);
+                    self.activate_waking_thread_locked(core, sched, target, intent, context);
                 if result != WakeResult::Notified {
                     task_runtime::fatal_invariant(0x574b_000d, core.id().as_u64() as usize);
                 }

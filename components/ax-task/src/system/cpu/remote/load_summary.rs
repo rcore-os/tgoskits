@@ -336,7 +336,6 @@ mod tests {
     #[test]
     fn running_stopper_is_not_an_idle_placement_target() {
         let stopper = CpuLoadSummary {
-            epoch: 0,
             queued_count: 0,
             nr_running: 1,
             fair_demand: 0,
@@ -352,7 +351,6 @@ mod tests {
 
     fn load_summary(workload_demand: u64, fair_idle_only: bool) -> CpuLoadSummary {
         CpuLoadSummary {
-            epoch: 0,
             queued_count: 0,
             nr_running: usize::from(fair_idle_only),
             fair_demand: workload_demand,
