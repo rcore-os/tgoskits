@@ -5,6 +5,7 @@ mod clock;
 mod entity;
 mod fair;
 mod fair_queue;
+mod hrtick;
 mod queue;
 mod rt;
 mod rt_priority;

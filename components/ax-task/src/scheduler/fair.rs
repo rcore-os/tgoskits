@@ -1,10 +1,10 @@
 //! EEVDF scheduling entity calculations.
 
+use super::hrtick::finish_hrtick_delta_ns;
 use crate::{FairMode, Nice, TaskError};
 
 const BASE_WEIGHT: u64 = 1024;
 const MAX_VIRTUAL_DELTA: u64 = i64::MAX as u64;
-const MIN_HRTICK_DELTA_NS: u64 = 10_000;
 /// Returns the signed modular distance from `reference` to `value`.
 ///
 /// Linux compares EEVDF virtual time as `(s64)(a - b)`. Keeping every active
@@ -597,18 +597,6 @@ impl FairEntity {
     pub(crate) fn finish_runtime_deadline_delta_ns(self, irq_util_avg: u32) -> u64 {
         finish_hrtick_delta_ns(self.runtime_deadline_delta_ns(), irq_util_avg)
     }
-}
-
-fn finish_hrtick_delta_ns(delta_ns: u64, irq_util_avg: u32) -> u64 {
-    debug_assert!(irq_util_avg < BASE_WEIGHT as u32);
-    let scaled_delta = if irq_util_avg == 0 {
-        delta_ns
-    } else {
-        let scale = u128::from(BASE_WEIGHT) * u128::from(BASE_WEIGHT)
-            / u128::from(BASE_WEIGHT - u64::from(irq_util_avg));
-        (u128::from(delta_ns) * scale / u128::from(BASE_WEIGHT)).min(u128::from(u64::MAX)) as u64
-    };
-    scaled_delta.max(MIN_HRTICK_DELTA_NS)
 }
 
 impl FairEntity {
