@@ -116,7 +116,11 @@ fn account_clock_event(
         Err(error) => panic!("task clockevent accounting failed: {error}"),
     }
 }
-pub(crate) fn publish_scheduler_tick(stamp: ax_task::SchedulerTickStamp, tick_ns: u64) {
-    ax_task::publish_scheduler_tick(stamp, tick_ns)
+pub(crate) fn publish_scheduler_tick(
+    stamp: ax_task::SchedulerTickStamp,
+    mode: ax_task::SchedulerTickMode,
+    tick_ns: u64,
+) {
+    ax_task::publish_scheduler_tick(stamp, mode, tick_ns)
         .unwrap_or_else(|error| panic!("scheduler tick publication failed: {error}"));
 }

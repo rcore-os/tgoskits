@@ -203,7 +203,7 @@ impl IrqIf for DummyIrq {
         Err(ax_plat::irq::IrqError::Unsupported)
     }
 
-    fn handle(_irq: TrapVector) -> Option<IrqId> {
+    fn handle(_irq: TrapVector, _origin: ax_plat::irq::IrqOrigin) -> Option<IrqId> {
         None
     }
 

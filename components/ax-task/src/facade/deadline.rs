@@ -1,7 +1,7 @@
 use core::num::NonZeroU64;
 
 use super::*;
-use crate::{DeadlineBaseGuardSource, SchedulerDeadlineDerivationSource};
+use crate::{DeadlineBaseGuardSource, SchedulerDeadlineDerivationSource, SchedulerTickMode};
 
 /// Result of beginning an externally queued current-thread park transaction.
 ///
@@ -364,7 +364,11 @@ impl ClaimedSchedulerDeadlines {
 /// clock sampled by the preceding owner-rq transaction. Physical clockevent
 /// sources therefore do not pass compatibility booleans into task deadline
 /// processing, and a delayed publication cannot silently target a new task.
-pub fn publish_scheduler_tick(stamp: SchedulerTickStamp, tick_ns: u64) -> Result<(), TaskError> {
+pub fn publish_scheduler_tick(
+    stamp: SchedulerTickStamp,
+    mode: SchedulerTickMode,
+    tick_ns: u64,
+) -> Result<(), TaskError> {
     if tick_ns == 0 {
         return Err(TaskError::InvalidConfiguration);
     }
@@ -377,7 +381,7 @@ pub fn publish_scheduler_tick(stamp: SchedulerTickStamp, tick_ns: u64) -> Result
             actual: cpu.owner().as_u32(),
         });
     }
-    system.publish_current_scheduler_tick_work(&cpu, stamp.thread, stamp.observed_ns, tick_ns)
+    system.publish_current_scheduler_tick_work(&cpu, stamp.thread, stamp.observed_ns, mode, tick_ns)
 }
 
 pub(crate) fn commit_current_park(

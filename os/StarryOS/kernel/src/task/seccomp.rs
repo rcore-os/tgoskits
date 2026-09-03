@@ -228,6 +228,10 @@ struct SeccompData {
 }
 
 impl SeccompState {
+    pub(crate) fn is_active(&self) -> bool {
+        self.mode != SeccompMode::Disabled
+    }
+
     /// Enable Linux strict seccomp mode for this thread.
     ///
     /// Strict mode can only be installed from the disabled state.  Once a

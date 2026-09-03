@@ -1,7 +1,7 @@
 //! Deferred task-context work and resource reclamation.
 
 use super::*;
-use crate::SchedulerTickWorkDisposition;
+use crate::{SchedulerTickMode, SchedulerTickWorkDisposition};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct SchedulerTickDispatch {
@@ -23,6 +23,7 @@ impl TaskSystem {
         cpu: &CpuLocal,
         expected: ThreadId,
         observed_ns: u64,
+        mode: SchedulerTickMode,
         tick_ns: u64,
     ) -> Result<(), TaskError> {
         let Some(core) = cpu.current_core() else {
@@ -31,7 +32,7 @@ impl TaskSystem {
         if core.id() != expected {
             return Err(TaskError::StaleThreadId);
         }
-        core.sample_scheduler_tick_cpu_time(tick_ns);
+        core.sample_scheduler_tick_cpu_time(mode, tick_ns);
         self.publish_scheduler_tick_work(&core, observed_ns);
         Ok(())
     }

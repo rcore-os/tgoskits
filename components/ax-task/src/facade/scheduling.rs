@@ -54,7 +54,8 @@ fn schedule_current_cpu_with_entry(
         let request_scope = scheduler_request_scope(entry, original_entry);
         let mut scheduler_frame =
             RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
-        let system = runtime_task_system()?;
+        let system = scheduler_frame.task_system()?;
+        let current_publication = scheduler_frame.current_thread_publication();
         let (outcome, no_switch_request_pending) = {
             let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
             // SAFETY: RuntimeSchedulerFrameGuard owns the IRQ-off scheduler baton.
@@ -67,7 +68,9 @@ fn schedule_current_cpu_with_entry(
                     SchedulerOutcome::Quiescent
                 }
             } else {
-                let current = current_thread_ref()?;
+                // SAFETY: the publication was captured by this scheduler
+                // frame's runtime transaction and remains current here.
+                let current = unsafe { current_publication.borrow_current()? };
                 // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
                 unsafe {
                     system.schedule_if_requested_in_scheduler_frame(
@@ -135,20 +138,22 @@ fn preempt_schedule_needs_repeat(outcome: SchedulerOutcome, needs_reschedule: bo
 }
 
 /// Yields the calling thread and executes the resulting context switch.
-pub fn yield_current_cpu() -> Result<ScheduleDecision, TaskError> {
+pub fn yield_current_cpu() -> Result<(), TaskError> {
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Yield,
         RuntimeSchedulerEntry::Task,
     )?;
-    let current = current_thread_ref()?;
-    let system = runtime_task_system()?;
-    let decision = {
+    let current = scheduler_frame.current_thread_ref()?;
+    let system = scheduler_frame.task_system()?;
+    let outcome = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
         unsafe { system.yield_current_in_scheduler_frame(cpu.as_mut(), &current)? }
     };
-    execute_switch_plan(&mut scheduler_frame, decision);
-    Ok(decision)
+    if let Some(decision) = outcome.decision() {
+        execute_switch_plan(&mut scheduler_frame, decision);
+    }
+    Ok(())
 }
 
 /// Exits the calling thread and switches to its replacement.
@@ -187,7 +192,8 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
     let mut scheduler_frame =
         RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Exit, RuntimeSchedulerEntry::Task)
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0010, thread.as_u64() as _));
-    let system = runtime_task_system()
+    let system = scheduler_frame
+        .task_system()
         .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0011, thread.as_u64() as _));
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)

@@ -10,9 +10,9 @@ use syscalls::Sysno;
 #[cfg(target_arch = "loongarch64")]
 use super::unaligned::{UnalignedEmulationResult, emulate_user_unaligned};
 use super::{
-    SignalCheckOutcome, SyscallRestartInfo, SyscallTraceState, Thread, TidNumber, TimerState,
+    SignalCheckOutcome, SyscallRestartInfo, SyscallTraceState, Thread, TidNumber,
     check_signals, check_signals_with_outcome, current_user_task, ptrace_stop_current,
-    ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state, wait_existing_ptrace_stop_current,
+    ptrace_syscall_stop_current, raise_signal_fatal, wait_existing_ptrace_stop_current,
 };
 use crate::{
     mm::{VmMutPtr, VmPtr},
@@ -94,10 +94,6 @@ pub fn new_user_task(
             // un-interceptable SIGKILL cannot be replaced by a racing `_exit(0)`.
             while check_signals(&curr, &mut uctx, None, None) {}
         }
-        // Linux's tick accounting classifies the interrupted context. Publish
-        // User before the first entry so the initial userspace interval cannot
-        // remain in the unaccounted None state.
-        set_timer_state(thr, TimerState::User);
         while !thr.pending_exit() {
             if thr.proc_data.has_ptrace_singlestep_work() {
                 let tid = thr.tid();
@@ -132,15 +128,11 @@ pub fn new_user_task(
                 .enter()
                 .expect("return-to-user validation must match the current task and address space");
 
-            // The periodic tick interrupted userspace while User was still
-            // published. Settle that sample before switching the lightweight
-            // mode to Kernel. Syscall entry itself intentionally does no clock
-            // accounting, matching Linux's non-vtime configuration.
+            // A periodic tick classifies CPU time from the saved trap origin.
+            // Settle the precise runtime interval before handling return work.
             if matches!(reason, ReturnReason::Interrupt) {
                 thr.account_cpu_time_now();
             }
-
-            set_timer_state(thr, TimerState::Kernel);
 
             let saved_a0 = uctx.arg0();
             let saved_sysno = uctx.sysno();
@@ -360,7 +352,7 @@ pub fn new_user_task(
                 }
             }
 
-            if !thr.unblock_next_signal_check() {
+            if !thr.unblock_next_signal_check() && thr.has_user_return_work() {
                 let eintr_code = -(crate::Errno::EINTR.into_raw() as isize);
                 let restart = if is_syscall
                     && (uctx.retval() as isize) == eintr_code
@@ -423,8 +415,6 @@ pub fn new_user_task(
                     }
                 }
             }
-
-            set_timer_state(thr, TimerState::User);
         }
     }
 }

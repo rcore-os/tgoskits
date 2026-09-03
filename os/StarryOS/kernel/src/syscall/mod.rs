@@ -116,23 +116,25 @@ ax_tracepoint::define_event_trace!(
 pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallRestart {
     let thread = current.as_thread();
     let raw_sysno = uctx.sysno();
-    match thread.evaluate_seccomp(uctx) {
-        SeccompDecision::Allow => {}
-        SeccompDecision::Errno(errno) => {
-            uctx.set_retval(seccomp_errno(errno));
-            return SyscallRestart::Allowed;
-        }
-        SeccompDecision::KillProcess => {
-            do_exit(Signo::SIGSYS as i32, true);
-            return SyscallRestart::Allowed;
-        }
-        SeccompDecision::KillThread => {
-            do_exit(Signo::SIGSYS as i32, false);
-            return SyscallRestart::Allowed;
-        }
-        SeccompDecision::UnsupportedAction => {
-            uctx.set_retval(-crate::Errno::ENOSYS.into_raw() as usize);
-            return SyscallRestart::Allowed;
+    if thread.has_seccomp_syscall_work() {
+        match thread.evaluate_seccomp(uctx) {
+            SeccompDecision::Allow => {}
+            SeccompDecision::Errno(errno) => {
+                uctx.set_retval(seccomp_errno(errno));
+                return SyscallRestart::Allowed;
+            }
+            SeccompDecision::KillProcess => {
+                do_exit(Signo::SIGSYS as i32, true);
+                return SyscallRestart::Allowed;
+            }
+            SeccompDecision::KillThread => {
+                do_exit(Signo::SIGSYS as i32, false);
+                return SyscallRestart::Allowed;
+            }
+            SeccompDecision::UnsupportedAction => {
+                uctx.set_retval(-crate::Errno::ENOSYS.into_raw() as usize);
+                return SyscallRestart::Allowed;
+            }
         }
     }
 

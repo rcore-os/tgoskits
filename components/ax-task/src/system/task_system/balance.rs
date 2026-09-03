@@ -372,9 +372,10 @@ impl TaskSystem {
     /// to enter SMP balancing: idle entry, an overloaded RT/Deadline queue, or
     /// the periodic Fair deadline must request the work explicitly.
     pub(super) fn owner_balance_work_pending(&self, cpu: &CpuLocal, next: ThreadId) -> bool {
-        if task_runtime::in_hard_irq() {
-            return false;
-        }
+        // Every caller owns the scheduler transaction or its post-selection
+        // tail, which already excludes hard IRQ entry. Linux tests the rq
+        // callback pointer directly here instead of revalidating interrupt
+        // context through an architecture/runtime boundary.
         let idle = cpu.remote().idle_thread() == Some(next);
         let idle_pull_pending = idle
             && cpu.idle_pull_pending()

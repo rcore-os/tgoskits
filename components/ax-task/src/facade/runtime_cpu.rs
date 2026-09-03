@@ -27,6 +27,12 @@ pub(crate) fn runtime_task_system() -> Result<&'static TaskSystem, TaskError> {
     // SAFETY: the linked TaskRuntime provider is the platform trust root and
     // must publish only the pinned, shutdown-lifetime TaskSystem it owns.
     let handle = unsafe { task_runtime::task_system_handle() };
+    task_system_from_handle(handle)
+}
+
+fn task_system_from_handle(
+    handle: crate::runtime::TaskSystemHandle,
+) -> Result<&'static TaskSystem, TaskError> {
     let raw = handle.into_raw();
     validate_handle::<TaskSystem>(raw)?;
     // SAFETY: TaskRuntime requires this handle to identify a pinned TaskSystem
@@ -76,6 +82,14 @@ impl RuntimeCpuHandles {
         // RuntimeSchedulerFrameGuard that prevents migration. The runtime
         // snapshots all three values from that one pinned CPU.
         let handles = unsafe { task_runtime::current_cpu_owner_handles() };
+        Self {
+            runtime_cpu: handles.cpu(),
+            cpu_local: handles.local(),
+            cpu_remote: handles.remote(),
+        }
+    }
+
+    const fn from_snapshot(handles: crate::runtime::CurrentCpuOwnerHandles) -> Self {
         Self {
             runtime_cpu: handles.cpu(),
             cpu_local: handles.local(),
@@ -252,6 +266,8 @@ impl Drop for RuntimeIrqGuard {
 pub(super) struct RuntimeSchedulerFrameGuard {
     return_to: RuntimeSchedulerReturn,
     cpu: RuntimeCpuHandles,
+    system: crate::runtime::TaskSystemHandle,
+    current: crate::runtime::CurrentThreadPublication,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -269,7 +285,8 @@ impl RuntimeSchedulerFrameGuard {
         origin: RuntimeScheduleOrigin,
         entry: RuntimeSchedulerEntry,
     ) -> Result<Self, TaskError> {
-        let status = task_runtime::scheduler_frame_guard_enter(origin, entry);
+        let context = task_runtime::scheduler_frame_guard_enter(origin, entry);
+        let status = context.status();
         if status != RuntimeStatus::Success {
             return Err(match status {
                 RuntimeStatus::UnsafeContext => TaskError::UnsafeContext,
@@ -286,7 +303,9 @@ impl RuntimeSchedulerFrameGuard {
         };
         Ok(Self {
             return_to,
-            cpu: RuntimeCpuHandles::capture(),
+            cpu: RuntimeCpuHandles::from_snapshot(context.cpu()),
+            system: context.system(),
+            current: context.current(),
             _not_send: PhantomData,
         })
     }
@@ -300,6 +319,23 @@ impl RuntimeSchedulerFrameGuard {
 
     pub(super) const fn cpu_id(&self) -> RuntimeCpuId {
         self.cpu.cpu_id()
+    }
+
+    pub(super) fn task_system(&self) -> Result<&'static TaskSystem, TaskError> {
+        task_system_from_handle(self.system)
+    }
+
+    pub(super) const fn current_thread_publication(
+        &self,
+    ) -> crate::runtime::CurrentThreadPublication {
+        self.current
+    }
+
+    pub(super) fn current_thread_ref(&self) -> Result<CurrentThreadRef, TaskError> {
+        // SAFETY: the runtime captured this publication while atomically
+        // claiming the scheduler baton. The returned non-Send capability stays
+        // within the synchronous lifetime of this frame.
+        unsafe { self.current.borrow_current() }
     }
 
     /// Tests the scheduler request published for this frame's pinned CPU.
@@ -318,6 +354,14 @@ impl RuntimeSchedulerFrameGuard {
 
 impl Drop for RuntimeSchedulerFrameGuard {
     fn drop(&mut self) {
-        let _task_context_safe = task_runtime::scheduler_frame_guard_exit(self.return_to);
+        let needs_reschedule = self
+            .cpu
+            .remote()
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5346_0001, self.cpu.runtime_cpu.as_u32() as usize)
+            })
+            .needs_immediate_scheduler_work();
+        let _task_context_safe =
+            task_runtime::scheduler_frame_guard_exit(self.return_to, needs_reschedule);
     }
 }

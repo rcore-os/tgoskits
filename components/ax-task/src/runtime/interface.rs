@@ -254,14 +254,17 @@ pub trait TaskRuntime {
     fn scheduler_frame_guard_enter(
         origin: RuntimeScheduleOrigin,
         entry: RuntimeSchedulerEntry,
-    ) -> RuntimeStatus;
+    ) -> RuntimeSchedulerFrameEnterResult;
 
     /// Consumes the current CPU's scheduler switch baton after switch tail.
     ///
     /// This hook restores task-context hardware IRQ state and must not schedule
     /// recursively. It returns `true` only when deferred callbacks may run with
     /// IRQs enabled and every ordinary guard clear.
-    fn scheduler_frame_guard_exit(return_to: RuntimeSchedulerReturn) -> bool;
+    fn scheduler_frame_guard_exit(
+        return_to: RuntimeSchedulerReturn,
+        needs_reschedule: bool,
+    ) -> bool;
 
     /// Returns whether execution is currently inside a hard interrupt.
     fn in_hard_irq() -> bool;

@@ -31,12 +31,12 @@ pub enum TrapOrigin {
 }
 
 /// IRQ trap hook type.
-pub type IrqHandler = fn(usize) -> bool;
+pub type IrqHandler = fn(usize, TrapOrigin) -> bool;
 
 /// Page-fault trap hook type.
 pub type PageFaultHandler = fn(VirtAddr, PageFaultFlags) -> bool;
 
-fn default_irq_handler(irq: usize) -> bool {
+fn default_irq_handler(irq: usize, _origin: TrapOrigin) -> bool {
     trace!("IRQ {} triggered", irq);
     false
 }
@@ -72,7 +72,7 @@ pub fn set_page_fault_handler(handler: PageFaultHandler) -> PageFaultHandler {
 }
 
 /// Dispatches an IRQ through the runtime-registered handler, or the default handler.
-pub fn dispatch_irq(irq: usize) -> bool {
+pub fn dispatch_irq(irq: usize, origin: TrapOrigin) -> bool {
     let handler = IRQ_HANDLER.load(Ordering::Acquire);
     let handler = if handler == 0 {
         default_irq_handler
@@ -80,7 +80,7 @@ pub fn dispatch_irq(irq: usize) -> bool {
         // SAFETY: the atomic only stores function pointers of type `IrqHandler`.
         unsafe { core::mem::transmute::<usize, IrqHandler>(handler) }
     };
-    handler(irq)
+    handler(irq, origin)
 }
 
 /// Dispatches a page fault through the runtime-registered handler, or the default handler.
@@ -98,7 +98,7 @@ pub fn dispatch_page_fault(addr: VirtAddr, flags: PageFaultFlags) -> bool {
 /// IRQ handler.
 #[eii]
 pub fn irq_handler(irq: usize) -> bool {
-    dispatch_irq(irq)
+    dispatch_irq(irq, TrapOrigin::Kernel)
 }
 
 /// Page fault handler.

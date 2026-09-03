@@ -19,6 +19,24 @@ pub struct ScheduleDecision {
     pub(super) timestamp_ns: u64,
 }
 
+/// Result of an explicit scheduler yield.
+#[derive(Clone, Copy, Debug)]
+pub enum YieldOutcome {
+    /// The current scheduling class kept the same dispatch selected.
+    Unchanged,
+    /// The yield selected a different execution context.
+    Switch(ScheduleDecision),
+}
+
+impl YieldOutcome {
+    pub(crate) const fn decision(self) -> Option<ScheduleDecision> {
+        match self {
+            Self::Unchanged => None,
+            Self::Switch(decision) => Some(decision),
+        }
+    }
+}
+
 /// Callback work that becomes valid only after the incoming thread is current.
 #[doc(hidden)]
 pub struct SwitchInCompletion {

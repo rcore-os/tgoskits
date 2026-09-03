@@ -3,7 +3,8 @@
 const SIGNAL: &str = include_str!("../src/task/signal.rs");
 const THREAD_SYSCALLS: &str = include_str!("../src/syscall/task/thread.rs");
 const DEVICES: &str = include_str!("../src/pseudofs/dev/mod.rs");
-const CPU_ACCOUNTING: &str = include_str!("../src/task/timer/accounting.rs");
+const CLOCK_EVENT_RUNTIME: &str =
+    include_str!("../../../arceos/modules/axruntime/src/clock_event_runtime.rs");
 const USER_TASK: &str = include_str!("../src/task/user.rs");
 const PTRACE: &str = include_str!("../src/task/process_ptrace.rs");
 
@@ -51,28 +52,18 @@ fn dev_null_is_an_always_ready_file() {
 }
 
 #[test]
-fn syscall_boundaries_only_publish_the_cpu_execution_mode() {
-    let set_state = function_body(CPU_ACCOUNTING, "pub(crate) fn set_state(");
+fn scheduler_tick_classifies_the_saved_irq_origin() {
+    let timer_irq = function_body(CLOCK_EVENT_RUNTIME, "pub(crate) fn timer_irq_handler(");
     assert!(
-        set_state.contains(".set_mode("),
-        "the syscall boundary must publish only the sampled User/Kernel mode"
+        timer_irq.contains("ctx.origin")
+            && timer_irq.contains("IrqOrigin::User")
+            && timer_irq.contains("SchedulerTickMode::User"),
+        "the periodic tick must classify CPU time from the interrupted context"
     );
     assert!(
-        !set_state.contains("begin_write") && !set_state.contains("monotonic_time_nanos"),
-        "Linux tick accounting does not take a vtime writer lock or read a clock on every syscall"
+        !USER_TASK.contains("set_timer_state") && !USER_TASK.contains("TimerState"),
+        "syscall boundaries must not mirror the current execution mode"
     );
-
-    let first_user_run = USER_TASK
-        .find("while !thr.pending_exit()")
-        .expect("the user execution loop must exist");
-    let first_run = USER_TASK[first_user_run..]
-        .find(".enter()")
-        .map(|offset| first_user_run + offset)
-        .expect("the user execution loop must enter userspace");
-    let initial_user_state = USER_TASK[..first_run]
-        .rfind("set_timer_state(thr, TimerState::User)")
-        .expect("the first userspace interval must be classified as user time");
-    assert!(initial_user_state < first_run);
 }
 
 #[test]

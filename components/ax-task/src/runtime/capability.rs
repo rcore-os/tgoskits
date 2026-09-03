@@ -466,6 +466,13 @@ pub struct CurrentCpuOwnerHandles {
 }
 
 impl CurrentCpuOwnerHandles {
+    /// Empty capability used when a scheduler-frame entry is rejected.
+    pub const NONE: Self = Self {
+        cpu: RuntimeCpuId::new(u32::MAX),
+        local: CurrentCpuLocalHandle::NONE,
+        remote: CpuRemoteHandle::NONE,
+    };
+
     /// Creates one pinned current-CPU capability snapshot.
     ///
     /// # Safety
@@ -681,6 +688,73 @@ pub struct ThreadIdentityV1 {
 pub struct CurrentThreadPublication {
     identity: ThreadIdentityV1,
     owner: CurrentThreadOwnerHandle,
+}
+
+/// Atomic runtime result of claiming one scheduler frame.
+///
+/// A successful result carries every immutable capability selected under the
+/// same IRQ-off CPU pin: task system, owner CPU endpoints, and current thread.
+/// This is the runtime boundary equivalent of Linux deriving `rq` and
+/// `rq->curr` from one pinned scheduler entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct RuntimeSchedulerFrameEnterResult {
+    status: RuntimeStatus,
+    system: TaskSystemHandle,
+    cpu: CurrentCpuOwnerHandles,
+    current: CurrentThreadPublication,
+}
+
+impl RuntimeSchedulerFrameEnterResult {
+    /// Creates a successful scheduler-frame capability snapshot.
+    ///
+    /// # Safety
+    ///
+    /// All handles and the current publication must describe the execution
+    /// context pinned by the scheduler baton that was claimed in the same
+    /// runtime transaction.
+    pub const unsafe fn success(
+        system: TaskSystemHandle,
+        cpu: CurrentCpuOwnerHandles,
+        current: CurrentThreadPublication,
+    ) -> Self {
+        Self {
+            status: RuntimeStatus::Success,
+            system,
+            cpu,
+            current,
+        }
+    }
+
+    /// Creates a rejected scheduler-frame result without live capabilities.
+    pub const fn failure(status: RuntimeStatus) -> Self {
+        Self {
+            status,
+            system: TaskSystemHandle::NONE,
+            cpu: CurrentCpuOwnerHandles::NONE,
+            current: CurrentThreadPublication::NONE,
+        }
+    }
+
+    /// Returns the runtime entry status.
+    pub const fn status(self) -> RuntimeStatus {
+        self.status
+    }
+
+    /// Returns the pinned task-system capability.
+    pub const fn system(self) -> TaskSystemHandle {
+        self.system
+    }
+
+    /// Returns the pinned owner-CPU capability.
+    pub const fn cpu(self) -> CurrentCpuOwnerHandles {
+        self.cpu
+    }
+
+    /// Returns the architecture-selected current-thread publication.
+    pub const fn current(self) -> CurrentThreadPublication {
+        self.current
+    }
 }
 
 /// Borrowed view of the scheduler-owned current-thread reference.

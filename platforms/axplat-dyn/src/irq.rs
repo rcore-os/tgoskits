@@ -1,5 +1,5 @@
 use ax_plat::irq::{
-    CpuId, IrqAffinity, IrqError, IrqId, IrqIf, IrqSource, IrqTrigger, TrapVector,
+    CpuId, IrqAffinity, IrqError, IrqId, IrqIf, IrqOrigin, IrqSource, IrqTrigger, TrapVector,
     dispatch_ipi_irq_on, dispatch_irq_on,
 };
 
@@ -56,7 +56,7 @@ impl IrqIf for IrqIfImpl {
     }
 
     /// Handles the IRQ.
-    fn handle(vector: TrapVector) -> Option<IrqId> {
+    fn handle(vector: TrapVector, origin: IrqOrigin) -> Option<IrqId> {
         let irq = {
             let mut active = somehal::irq::begin_irq(vector.0)?;
             let irq = active.id();
@@ -76,9 +76,9 @@ impl IrqIf for IrqIfImpl {
 
             let cpu = current_irq_cpu();
             let outcome = if irq == somehal::irq::ipi_irq() {
-                dispatch_ipi_irq_on(irq, cpu, || active.acknowledge_ipi())
+                dispatch_ipi_irq_on(irq, cpu, origin, || active.acknowledge_ipi())
             } else {
-                dispatch_irq_on(irq, cpu)
+                dispatch_irq_on(irq, cpu, origin)
             };
             if !outcome.handled {
                 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]

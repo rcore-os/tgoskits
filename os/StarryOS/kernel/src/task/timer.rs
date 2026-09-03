@@ -28,7 +28,7 @@ mod common;
 mod itimer;
 mod rttime;
 
-pub use accounting::{CpuTimeAccounting, ProcessCpuTimeAccounting, TimerState};
+pub use accounting::{CpuTimeAccounting, ProcessCpuTimeAccounting};
 pub(crate) use accounting::{CpuTimeDelta, ProcessCpuTimeSnapshot};
 pub(crate) use alarm::{AlarmChange, AlarmSlot, AlarmToken};
 pub use alarm::{AlarmTarget, spawn_alarm_task};

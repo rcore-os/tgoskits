@@ -182,7 +182,7 @@ pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
 }
 
 pub(crate) fn dispatch_host_irq(vector: usize) {
-    modules::ax_hal::irq::handle_irq(vector);
+    modules::ax_hal::irq::handle_irq(vector, modules::ax_hal::irq::TrapOrigin::Kernel);
 }
 
 impl HostCpu for ArceOsHost {

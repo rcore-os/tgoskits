@@ -6,8 +6,8 @@ use ax_lazyinit::OnceLock;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
-    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger,
-    Registry, ShareMode, TrapVector,
+    IrqId, IrqOps, IrqOrigin, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus,
+    IrqTrigger, Registry, ShareMode, TrapVector,
 };
 
 #[cfg(target_arch = "loongarch64")]
@@ -274,7 +274,7 @@ pub fn prepare_irq_context(vector: TrapVector) {
 }
 
 /// Dispatches actions registered in the dynamic IRQ framework on `cpu`.
-pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId) -> IrqOutcome {
+pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId, origin: IrqOrigin) -> IrqOutcome {
     // SAFETY: IRQ dispatch runs with local interrupts disabled. The caller's
     // explicit CPU identity and the installed current area must describe the
     // same non-migrating owner for the complete action callback.
@@ -288,7 +288,7 @@ pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId) -> IrqOutcome {
             let depth =
                 IRQ_CONTEXT_DEPTH.with_current(pin, |depth| depth.fetch_add(1, Ordering::Relaxed));
             assert_ne!(depth, u32::MAX, "IRQ action nesting overflow");
-            let outcome = registry().dispatch(irq, cpu);
+            let outcome = registry().dispatch(irq, cpu, origin);
             IRQ_CONTEXT_DEPTH.with_current(pin, |depth| {
                 let previous = depth.fetch_sub(1, Ordering::Relaxed);
                 assert_ne!(previous, 0, "IRQ action exit without a matching entry");
@@ -315,14 +315,15 @@ fn dispatch_with_controller_ack<T>(
 pub fn dispatch_ipi_irq_on(
     irq: IrqId,
     cpu: CpuId,
+    origin: IrqOrigin,
     acknowledge_controller: impl FnOnce(),
 ) -> IrqOutcome {
-    dispatch_with_controller_ack(acknowledge_controller, || dispatch_irq_on(irq, cpu))
+    dispatch_with_controller_ack(acknowledge_controller, || dispatch_irq_on(irq, cpu, origin))
 }
 
 /// Dispatches actions registered in the dynamic IRQ framework.
-pub fn dispatch_irq(irq: IrqId) -> IrqOutcome {
-    dispatch_irq_on(irq, PlatIrqOps.current_cpu())
+pub fn dispatch_irq(irq: IrqId, origin: IrqOrigin) -> IrqOutcome {
+    dispatch_irq_on(irq, PlatIrqOps.current_cpu(), origin)
 }
 
 /// Tests one explicitly selected CPU's IRQ-action publication.
@@ -399,7 +400,7 @@ pub trait IrqIf {
     /// the input `irq` number, for example on AArch64 the input `irq` is
     /// ignored and the real IRQ number is obtained from the GIC. Returns
     /// `None` if the IRQ is spurious.
-    fn handle(vector: TrapVector) -> Option<IrqId>;
+    fn handle(vector: TrapVector, origin: IrqOrigin) -> Option<IrqId>;
 
     /// Sends an inter-processor interrupt (IPI) to one target CPU.
     ///
@@ -483,7 +484,7 @@ mod tests {
             Err(IrqError::Unsupported)
         }
 
-        fn handle(_vector: TrapVector) -> Option<IrqId> {
+        fn handle(_vector: TrapVector, _origin: IrqOrigin) -> Option<IrqId> {
             None
         }
 

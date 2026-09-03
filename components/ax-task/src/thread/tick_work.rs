@@ -1,61 +1,40 @@
 //! Scheduler-tick-gated extension work executed in ordinary task context.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::ThreadId;
 
 /// Execution mode sampled by the periodic scheduler tick.
 ///
 /// This is the OS-independent equivalent of Linux's `user_mode(regs)` result.
-/// An OS publishes mode transitions without reading a clock; the scheduler
-/// tick then charges exactly one configured tick to the current mode.
-#[repr(u8)]
+/// The IRQ entry passes the saved-context classification into the scheduler
+/// tick so syscall boundaries do not need to publish a mirrored mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchedulerTickMode {
-    /// The attached accounting domain is not currently classifiable.
-    Inactive = 0,
     /// The thread is executing userspace.
-    User     = 1,
+    User,
     /// The thread is executing kernel code.
-    System   = 2,
-}
-
-impl SchedulerTickMode {
-    const fn from_raw(raw: u8) -> Self {
-        match raw {
-            1 => Self::User,
-            2 => Self::System,
-            _ => Self::Inactive,
-        }
-    }
+    System,
 }
 
 /// IRQ-safe tick-sampled user/system CPU time for one scheduler thread.
 ///
 /// The object is retained by both the OS task and [`super::ThreadExtension`].
-/// Only the current CPU samples it, while syscall and exception boundaries may
-/// publish the next mode concurrently through one release store.
+/// Only the current CPU samples it from the periodic tick's saved trap origin.
 #[derive(Debug)]
 pub struct SchedulerTickCpuTime {
-    mode: AtomicU8,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
 }
 
 impl SchedulerTickCpuTime {
-    /// Creates an inactive accounting stream.
+    /// Creates an empty accounting stream.
     pub const fn new() -> Self {
         Self {
-            mode: AtomicU8::new(SchedulerTickMode::Inactive as u8),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
         }
-    }
-
-    /// Publishes the mode to be sampled by the next periodic tick.
-    pub fn set_mode(&self, mode: SchedulerTickMode) {
-        self.mode.store(mode as u8, Ordering::Release);
     }
 
     /// Returns the raw tick-accounted totals.
@@ -66,9 +45,8 @@ impl SchedulerTickCpuTime {
         }
     }
 
-    pub(crate) fn sample(&self, tick_ns: u64) {
-        let total = match SchedulerTickMode::from_raw(self.mode.load(Ordering::Acquire)) {
-            SchedulerTickMode::Inactive => return,
+    pub(crate) fn sample(&self, mode: SchedulerTickMode, tick_ns: u64) {
+        let total = match mode {
             SchedulerTickMode::User => &self.user_ns,
             SchedulerTickMode::System => &self.system_ns,
         };
@@ -269,11 +247,8 @@ mod tests {
     fn periodic_tick_samples_only_the_published_execution_mode() {
         let accounting = SchedulerTickCpuTime::new();
 
-        accounting.sample(10);
-        accounting.set_mode(SchedulerTickMode::User);
-        accounting.sample(10);
-        accounting.set_mode(SchedulerTickMode::System);
-        accounting.sample(10);
+        accounting.sample(SchedulerTickMode::User, 10);
+        accounting.sample(SchedulerTickMode::System, 10);
 
         assert_eq!(
             accounting.snapshot(),

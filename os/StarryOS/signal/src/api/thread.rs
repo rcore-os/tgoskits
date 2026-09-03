@@ -467,6 +467,12 @@ impl ThreadSignalManager {
         )
     }
 
+    /// Tests the signal work flags consumed at return to userspace.
+    pub fn has_pending_signal_work(&self) -> bool {
+        self.possibly_has_signal.load(Ordering::Acquire)
+            || self.proc.possibly_has_signal.load(Ordering::Acquire)
+    }
+
     /// Checks pending signals and delivers one if possible.
     ///
     /// The caller supplies the architecture state captured at the current-task

@@ -70,6 +70,15 @@ impl TaskSystem {
 
     pub(super) fn ensure_owner_cpu_online(&self, cpu: &CpuLocal) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(cpu)?;
+        self.ensure_owner_cpu_registration_online(cpu)
+    }
+
+    /// Verifies the published owner/remote identity after the caller has
+    /// established its CPU ownership context.
+    pub(super) fn ensure_owner_cpu_registration_online(
+        &self,
+        cpu: &CpuLocal,
+    ) -> Result<(), TaskError> {
         let remote = self
             .cpu_remotes
             .get(cpu.owner().as_usize())

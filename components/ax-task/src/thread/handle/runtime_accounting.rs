@@ -1,6 +1,7 @@
 //! Runqueue-owned runtime accounting and scheduler tick work publication.
 
 use super::*;
+use crate::SchedulerTickMode;
 
 impl ThreadCore {
     pub(crate) fn commit_runtime_interval(&self, runtime_ns: u64) {
@@ -25,9 +26,9 @@ impl ThreadCore {
         }
     }
 
-    pub(crate) fn sample_scheduler_tick_cpu_time(&self, tick_ns: u64) {
+    pub(crate) fn sample_scheduler_tick_cpu_time(&self, mode: SchedulerTickMode, tick_ns: u64) {
         if let Some(accounting) = &self.scheduler_tick_cpu_time {
-            accounting.sample(tick_ns);
+            accounting.sample(mode, tick_ns);
         }
     }
 

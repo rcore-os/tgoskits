@@ -235,7 +235,7 @@ impl UserContext {
 
         let ret = match kind {
             TrapKind::Irq => {
-                crate::trap::dispatch_irq(0);
+                crate::trap::dispatch_irq(0, crate::trap::TrapOrigin::User);
                 ReturnReason::Interrupt
             }
             TrapKind::Fiq | TrapKind::SError => ReturnReason::Unknown,

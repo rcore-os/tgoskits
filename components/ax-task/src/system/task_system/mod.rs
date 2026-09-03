@@ -42,7 +42,7 @@ pub use model::{DeferredTaskWorkBatch, OwnedThreadReapError, TaskSystem};
 pub(crate) use outcome::SwitchEndpoint;
 pub use outcome::{
     ChargeOutcome, DeadlineActivitySnapshot, DeadlineRuntimeSnapshot, OwnerControlDrain,
-    ScheduleDecision, SchedulerOutcome, SwitchInCompletion,
+    ScheduleDecision, SchedulerOutcome, SwitchInCompletion, YieldOutcome,
 };
 pub(crate) use park_exit::CurrentExitPermit;
 use priority_index::RootDomainPriorityIndex;

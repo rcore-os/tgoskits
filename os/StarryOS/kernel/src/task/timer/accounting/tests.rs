@@ -12,7 +12,6 @@ mod tests {
         };
 
         let accounting = Arc::new(CpuTimeAccounting::new());
-        accounting.set_state_at(TimerState::User, 0);
         accounting.scheduler_switch_in_at(true, 0);
 
         let execution_writer = accounting.begin_write();
@@ -48,7 +47,6 @@ mod tests {
     #[test]
     fn preemption_and_yield_preserve_rttime_but_block_resets_it() {
         let accounting = CpuTimeAccounting::new();
-        accounting.set_state_at(TimerState::User, 0);
         accounting.scheduler_switch_in_at(true, 0);
         accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 500_000);
         assert_eq!(
@@ -80,7 +78,6 @@ mod tests {
     #[test]
     fn switch_out_keeps_runtime_unpublished_until_group_accounting_requests_it() {
         let accounting = CpuTimeAccounting::new();
-        accounting.set_state_at(TimerState::User, 0);
         accounting.scheduler_switch_in_at(false, 0);
 
         accounting.scheduler_switch_out_at(scheduler::SwitchReason::Blocked, 10);
@@ -114,7 +111,6 @@ mod tests {
     #[test]
     fn leaving_rt_policy_resets_continuous_runtime() {
         let accounting = CpuTimeAccounting::new();
-        accounting.set_state_at(TimerState::Kernel, 0);
         accounting.scheduler_switch_in_at(true, 0);
         accounting.set_realtime_policy_at(false, 2_000_000);
         let fair = accounting.snapshot_at(3_000_000);

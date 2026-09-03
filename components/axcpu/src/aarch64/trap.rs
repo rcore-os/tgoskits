@@ -233,7 +233,7 @@ unsafe extern "C" fn aarch64_trap_handler(raw: *mut RawTrapFrame, raw_kind: u8, 
             );
         }
         TrapKind::Irq => {
-            crate::trap::dispatch_irq(0);
+            crate::trap::dispatch_irq(0, crate::trap::TrapOrigin::Kernel);
         }
         TrapKind::Synchronous => {
             #[cfg(not(feature = "arm-el2"))]

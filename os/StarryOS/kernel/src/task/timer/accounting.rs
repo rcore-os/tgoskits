@@ -1,29 +1,10 @@
 use super::*;
 
-/// Represents the state of the timer.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TimerState {
-    /// The timer is running in user space.
-    User   = 1,
-    /// The timer is running in kernel space.
-    Kernel = 2,
-}
-
-impl TimerState {
-    fn scheduler_tick_mode(self) -> scheduler::SchedulerTickMode {
-        match self {
-            Self::User => scheduler::SchedulerTickMode::User,
-            Self::Kernel => scheduler::SchedulerTickMode::System,
-        }
-    }
-}
-
 /// Linux-style tick classification paired with precise scheduler runtime.
 ///
-/// With virtual accounting disabled, syscall boundaries publish only the
-/// User/System mode consumed by the next periodic scheduler tick. Scheduler
-/// switch hooks independently maintain precise total runtime and RT continuity.
+/// With virtual accounting disabled, the periodic IRQ classifies the saved
+/// execution context. Scheduler switch hooks independently maintain precise
+/// total runtime and RT continuity.
 /// Readers combine both streams through Linux's monotonic `cputime_adjust()`
 /// algorithm instead of reclassifying a running residual by its latest mode.
 pub struct CpuTimeAccounting {
@@ -50,7 +31,6 @@ impl Default for CpuTimeAccounting {
 impl CpuTimeAccounting {
     pub(crate) fn new() -> Self {
         let scheduler_tick_cpu_time = Arc::new(scheduler::SchedulerTickCpuTime::new());
-        scheduler_tick_cpu_time.set_mode(scheduler::SchedulerTickMode::System);
         Self {
             scheduler_tick_cpu_time,
             published_user_ns: AtomicU64::new(0),
@@ -84,16 +64,6 @@ impl CpuTimeAccounting {
 
     pub(crate) fn scheduler_tick_cpu_time(&self) -> Arc<scheduler::SchedulerTickCpuTime> {
         Arc::clone(&self.scheduler_tick_cpu_time)
-    }
-
-    /// Publishes the current task's user/kernel execution state.
-    ///
-    /// Like Linux tick accounting with `CONFIG_VIRT_CPU_ACCOUNTING_GEN=n`, a
-    /// syscall transition does not read a clock or enter the vtime writer. The
-    /// next scheduler accounting boundary samples the latest published mode.
-    pub(crate) fn set_state(&self, state: TimerState) {
-        self.scheduler_tick_cpu_time
-            .set_mode(state.scheduler_tick_mode());
     }
 
     pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool, observed_ns: u64) {
@@ -159,11 +129,6 @@ impl CpuTimeAccounting {
         if reason == scheduler::SwitchReason::Blocked {
             self.reset_realtime_continuous();
         }
-    }
-
-    #[cfg(any(test, axtest))]
-    fn set_state_at(&self, state: TimerState, _now_ns: u64) {
-        self.set_state(state);
     }
 
     #[cfg(all(test, not(axtest)))]
@@ -555,14 +520,12 @@ impl ProcessCpuTimeSnapshot {
 pub(super) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool {
     let process = ProcessCpuTimeAccounting::new();
     let accounting = CpuTimeAccounting::new();
-    accounting.set_state_at(TimerState::User, 0);
     process.record_transition(|| {
         accounting.scheduler_switch_in_at(false, 0);
         CpuTimeDelta::ZERO
     });
 
     let first = process.snapshot_at_with_live(10, &mut |now| accounting.unpublished_delta_at(now));
-    accounting.set_state_at(TimerState::Kernel, 10);
     accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 15);
     process.record_transition(|| {
         accounting.publish_committed_delta()

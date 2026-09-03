@@ -336,7 +336,10 @@ pub(crate) fn next_periodic_deadline(
 }
 pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     debug_assert!(!ax_hal::asm::irqs_enabled());
-    let _ = ctx;
+    let tick_mode = match ctx.origin {
+        ax_hal::irq::IrqOrigin::Kernel => ax_task::SchedulerTickMode::System,
+        ax_hal::irq::IrqOrigin::User => ax_task::SchedulerTickMode::User,
+    };
     // The IRQ entry owner already holds the single local-IRQ exclusion window
     // through controller completion and IRQ-return scheduling. Re-entering an
     // irq-save guard here creates a nested scheduler publication transaction
@@ -371,7 +374,7 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
     if let Some(tick_ns) = periodic_tick_ns
         && let Some(stamp) = outcome.scheduler_tick_stamp()
     {
-        crate::task::publish_scheduler_tick(stamp, tick_ns.get());
+        crate::task::publish_scheduler_tick(stamp, tick_mode, tick_ns.get());
     }
     firing.finish(outcome);
     ax_hal::irq::IrqReturn::Handled

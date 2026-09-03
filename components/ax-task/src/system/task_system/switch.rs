@@ -45,15 +45,15 @@ impl TaskSystem {
     pub(super) fn finish_owner_unchanged_yield(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
-        decision: ScheduleDecision,
-    ) -> ScheduleDecision {
-        if !self.owner_balance_work_pending(cpu.as_ref().get_ref(), decision.next()) {
-            return decision;
+        current: ThreadId,
+    ) {
+        if !self.owner_balance_work_pending(cpu.as_ref().get_ref(), current) {
+            return;
         }
         let run_queue_changed = self
-            .service_owner_balance(cpu.as_mut(), decision.next())
+            .service_owner_balance(cpu.as_mut(), current)
             .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5343_0001, decision.next().as_u64() as usize)
+                task_runtime::fatal_invariant(0x5343_0001, current.as_u64() as usize)
             })
             .run_queue_changed();
         if run_queue_changed
@@ -64,9 +64,8 @@ impl TaskSystem {
                 )
                 .is_err()
         {
-            task_runtime::fatal_invariant(0x5343_0002, decision.next().as_u64() as usize);
+            task_runtime::fatal_invariant(0x5343_0002, current.as_u64() as usize);
         }
-        decision
     }
 
     /// Returns whether ordinary preemption can complete under the rq lock.

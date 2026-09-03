@@ -67,9 +67,10 @@ use ax_task::{
         AddressSpaceReclaimArmOutcome, ContextThreadBinding, CpuRemoteHandle,
         CurrentCpuLocalHandle, CurrentCpuOwnerHandles, CurrentThreadPublication,
         ExecutionContextHandle, IrqGuardToken, KernelContextRequest, MembarrierRegistrationPhase,
-        RuntimeCpuId, RuntimeHandleResult, RuntimeMembarrierAction, RuntimeStatus,
-        RuntimeSwitchPlan, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle,
-        ThreadIdentityV1, TlsHandle, TlsRequest, UserContextRequest,
+        RuntimeCpuId, RuntimeHandleResult, RuntimeMembarrierAction,
+        RuntimeSchedulerFrameEnterResult, RuntimeStatus, RuntimeSwitchPlan, StackHandle,
+        StackRequest, TaskRuntime, TaskSystemHandle, ThreadIdentityV1, TlsHandle, TlsRequest,
+        UserContextRequest,
     },
 };
 
@@ -107,9 +108,9 @@ pub(crate) use bootstrap::{
     start_current_ktimer_service, start_deferred_task_work_service,
 };
 use bootstrap::{
-    cpu_remote, current_cpu_owner_handles, idle_context_entry, primary_bootstrap_thread,
-    scheduler_current_cpu_remote_handle, task_system, with_current_cpu_local_mut_owner,
-    with_current_cpu_pin,
+    cpu_remote, current_cpu_owner_handles, current_cpu_remote, idle_context_entry,
+    primary_bootstrap_thread, scheduler_current_cpu_remote_handle, task_system,
+    with_current_cpu_local_mut_owner, with_current_cpu_pin,
 };
 #[cfg(feature = "smp")]
 pub(crate) use bootstrap::{initialize_secondary, run_idle};
@@ -118,8 +119,36 @@ use context::{
     bind_bootstrap_runtime_context, bind_runtime_context_thread, create_bootstrap_context,
     create_runtime_context, create_user_runtime_context, destroy_runtime_context,
     finish_runtime_context_switch_tail, scheduler_current_thread_identity,
-    scheduler_current_thread_publication, switch_runtime_context,
+    scheduler_current_thread_publication, scheduler_current_thread_publication_pinned,
+    switch_runtime_context,
 };
+
+pub(crate) fn runtime_task_system_handle() -> TaskSystemHandle {
+    task_system().map_or(TaskSystemHandle::NONE, |system| {
+        // SAFETY: TASK_SYSTEM owns this pinned allocation through shutdown and
+        // exposes it only through shared scheduler APIs.
+        unsafe { TaskSystemHandle::from_raw((system as *const TaskSystem).expose_provenance()) }
+    })
+}
+
+pub(crate) fn scheduler_frame_capabilities(cpu_pin: &CpuPin) -> RuntimeSchedulerFrameEnterResult {
+    // SAFETY: the caller claimed the scheduler baton under this same CPU pin;
+    // every returned capability is immutable or shutdown-lifetime state tied
+    // to that owner CPU and architecture-selected context.
+    unsafe {
+        RuntimeSchedulerFrameEnterResult::success(
+            runtime_task_system_handle(),
+            current_cpu_owner_handles(cpu_pin),
+            scheduler_current_thread_publication_pinned(cpu_pin),
+        )
+    }
+}
+
+pub(crate) fn current_cpu_needs_reschedule_pinned(cpu_pin: &CpuPin) -> Result<bool, TaskError> {
+    Ok(current_cpu_remote(cpu_pin)
+        .ok_or(TaskError::NotInitialized)?
+        .needs_reschedule())
+}
 pub use executor::{BlockOnError, block_on, block_on_timeout};
 pub use irq_worker::FixedIrqWorkerSignal;
 #[cfg(feature = "tls")]

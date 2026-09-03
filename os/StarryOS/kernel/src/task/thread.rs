@@ -5,13 +5,14 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize
 
 use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin};
 use axpoll_set::PollSet;
+use linux_raw_sys::general::RLIMIT_RTTIME;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, Cred, ExitPathLease, PidIdentity, PidNamespaceRef, PidRoleLease,
     ProcessData, ROOT_PID_NS, RttimeWatchdog, SeccompDecision, SeccompState, SeccompStateStore,
-    SockFilter, Tid, TidNumber, TimerState, UserTaskRef,
+    SockFilter, Tid, TidNumber, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
     interruption::{InterruptSnapshot, InterruptState},
@@ -22,6 +23,7 @@ use super::{
 use crate::sync::{IrqMutex, NoPreemptIrqSave, PiMutex};
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
+const SYSCALL_WORK_SECCOMP: u32 = 1 << 0;
 
 /// User-visible and scheduler-visible identities retained by one Linux thread.
 struct ThreadIdentity {
@@ -135,6 +137,19 @@ struct ThreadLifecycle {
     rseq_signature: AtomicU32,
 }
 
+/// Lock-free entry and return work published to one Linux thread.
+struct ThreadWork {
+    syscall: AtomicU32,
+}
+
+impl ThreadWork {
+    const fn new() -> Self {
+        Self {
+            syscall: AtomicU32::new(0),
+        }
+    }
+}
+
 impl ThreadLifecycle {
     fn new() -> Self {
         Self {
@@ -159,6 +174,7 @@ struct ThreadSignals {
     manager: Arc<ThreadSignalManager>,
     signalfd_waker: PollSet,
     deferred_mask_restore: IrqMutex<Option<SignalSet>>,
+    deferred_mask_restore_pending: AtomicBool,
 }
 
 impl ThreadSignals {
@@ -171,6 +187,7 @@ impl ThreadSignals {
             manager: ThreadSignalManager::new_with_blocked(tid, process_signal, signal_mask),
             signalfd_waker: PollSet::new(),
             deferred_mask_restore: IrqMutex::new(None),
+            deferred_mask_restore_pending: AtomicBool::new(false),
         }
     }
 }
@@ -289,6 +306,7 @@ pub struct Thread {
     scope: ThreadScope,
     accounting: ThreadAccounting,
     lifecycle: ThreadLifecycle,
+    work: ThreadWork,
     wait: ThreadWaitState,
     signals: ThreadSignals,
     security: ThreadSecurity,
@@ -321,6 +339,7 @@ impl Thread {
             scope: ThreadScope::new(scope),
             accounting: ThreadAccounting::new(),
             lifecycle: ThreadLifecycle::new(),
+            work: ThreadWork::new(),
             wait: ThreadWaitState::new(),
             signals: ThreadSignals::new(tid, process_signal, signal_mask),
             security: ThreadSecurity::new(parent_cred),
@@ -532,10 +551,6 @@ impl Thread {
         self.publish_cpu_time_for_active_interval_timer();
     }
 
-    pub(crate) fn set_cpu_time_state(&self, state: TimerState) {
-        self.accounting.cpu_time.set_state(state);
-    }
-
     pub(crate) fn apply_cpu_time_policy(&self, realtime_policy: bool, observed_ns: u64) {
         self.accounting
             .cpu_time
@@ -724,11 +739,38 @@ impl Thread {
             previous.is_none(),
             "one thread cannot own nested deferred signal-mask restores"
         );
+        self.signals
+            .deferred_mask_restore_pending
+            .store(true, Ordering::Release);
     }
 
     /// Takes the mask that the next delivered signal frame must restore.
     pub(crate) fn take_deferred_signal_mask_restore(&self) -> Option<SignalSet> {
-        self.signals.deferred_mask_restore.lock().take()
+        if !self
+            .signals
+            .deferred_mask_restore_pending
+            .load(Ordering::Acquire)
+        {
+            return None;
+        }
+        let restore = self.signals.deferred_mask_restore.lock().take();
+        self.signals
+            .deferred_mask_restore_pending
+            .store(false, Ordering::Release);
+        restore
+    }
+
+    /// Tests the Linux-style return-to-user work flags without entering any
+    /// signal, exit, or realtime-limit state machine.
+    pub(super) fn has_user_return_work(&self) -> bool {
+        self.signal().has_pending_signal_work()
+            || self.has_exit_request()
+            || self.lifecycle.deadline_overrun.is_pending()
+            || self
+                .signals
+                .deferred_mask_restore_pending
+                .load(Ordering::Acquire)
+            || self.proc_data.rlimit_current(RLIMIT_RTTIME) != u64::MAX
     }
 
     pub(crate) fn wake_signalfd(&self) {
@@ -780,21 +822,40 @@ impl Thread {
         self.security.seccomp.evaluate(uctx)
     }
 
+    /// Tests Linux-style syscall entry work without touching its cold state.
+    pub(crate) fn has_seccomp_syscall_work(&self) -> bool {
+        self.work.syscall.load(Ordering::Acquire) & SYSCALL_WORK_SECCOMP != 0
+    }
+
+    fn publish_seccomp_syscall_work(&self) {
+        self.work
+            .syscall
+            .fetch_or(SYSCALL_WORK_SECCOMP, Ordering::Release);
+    }
+
     /// Replaces inherited seccomp state.
     pub fn set_seccomp_state(&self, state: Arc<SeccompState>) {
+        let active = state.is_active();
         self.security.seccomp.replace(state);
+        if active {
+            self.publish_seccomp_syscall_work();
+        }
     }
 
     /// Enables strict seccomp mode.
     pub fn install_seccomp_strict(&self) -> crate::StarryResult<()> {
-        self.security.seccomp.update(SeccompState::install_strict)
+        self.security.seccomp.update(SeccompState::install_strict)?;
+        self.publish_seccomp_syscall_work();
+        Ok(())
     }
 
     /// Appends one seccomp filter program.
     pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> crate::StarryResult<()> {
         self.security
             .seccomp
-            .update(move |state| state.append_filter(insns))
+            .update(move |state| state.append_filter(insns))?;
+        self.publish_seccomp_syscall_work();
+        Ok(())
     }
 
     /// Returns a credential snapshot.

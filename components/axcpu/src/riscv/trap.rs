@@ -182,7 +182,7 @@ fn handle_trap(tf: &mut KernelTrapFrame<'_>) {
             }
             Trap::Exception(E::Breakpoint) => handle_breakpoint(tf),
             Trap::Interrupt(_) => {
-                crate::trap::dispatch_irq(scause.bits());
+                crate::trap::dispatch_irq(scause.bits(), crate::trap::TrapOrigin::Kernel);
             }
             _ => {
                 let snapshot = tf.snapshot();

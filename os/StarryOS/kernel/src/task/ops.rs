@@ -8,7 +8,7 @@ use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use starry_signal::{SignalInfo, Signo};
 
 use super::{
-    AlarmTarget, AlarmToken, PendingTimerActions, ProcessData, Thread, TimerState, UserTaskRef,
+    AlarmTarget, AlarmToken, PendingTimerActions, ProcessData, Thread, UserTaskRef,
     ZombieSnapshot, current_user_task, processes, publish_zombie,
     resolve_futex_for_process_teardown, send_signal_to_process, send_signal_to_process_data,
     send_signal_to_thread, yield_now,
@@ -304,11 +304,6 @@ pub(crate) fn poll_process_timer_for_alarm(identity: &Arc<PidIdentity>, token: &
             },
         );
     }
-}
-
-/// Sets the current thread's user/kernel accounting state.
-pub(crate) fn set_timer_state(thr: &Thread, state: TimerState) {
-    thr.set_cpu_time_state(state);
 }
 
 #[repr(C)]

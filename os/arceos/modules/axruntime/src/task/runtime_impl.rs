@@ -40,15 +40,7 @@ struct ArceOsTaskRuntime;
 impl_task_runtime! {
     impl TaskRuntime for ArceOsTaskRuntime {
         unsafe fn task_system_handle() -> TaskSystemHandle {
-            task_system().map_or(TaskSystemHandle::NONE, |system| {
-                // SAFETY: TASK_SYSTEM owns this pinned allocation through
-                // shutdown and exposes it only through shared scheduler APIs.
-                unsafe {
-                    TaskSystemHandle::from_raw(
-                        (system as *const TaskSystem).expose_provenance(),
-                    )
-                }
-            })
+            runtime_task_system_handle()
         }
 
         unsafe fn current_cpu_owner_handles() -> CurrentCpuOwnerHandles {
@@ -243,14 +235,15 @@ impl_task_runtime! {
         fn scheduler_frame_guard_enter(
             origin: ax_task::runtime::RuntimeScheduleOrigin,
             entry: ax_task::runtime::RuntimeSchedulerEntry,
-        ) -> RuntimeStatus {
+        ) -> RuntimeSchedulerFrameEnterResult {
             crate::guard::enter_scheduler_frame_guard(origin, entry)
         }
 
         fn scheduler_frame_guard_exit(
             return_to: ax_task::runtime::RuntimeSchedulerReturn,
+            needs_reschedule: bool,
         ) -> bool {
-            crate::guard::exit_scheduler_frame_guard(return_to)
+            crate::guard::exit_scheduler_frame_guard(return_to, needs_reschedule)
         }
 
         fn in_hard_irq() -> bool {

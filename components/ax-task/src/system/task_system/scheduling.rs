@@ -1,7 +1,7 @@
 //! Owner scheduling entry points, runtime charging, and load balancing requests.
 
 use super::{dispatch::OwnerDispatchCommit, switch::OwnerRqScheduleOut, *};
-use crate::{RtEligibility, SchedulerClass};
+use crate::{RtEligibility, SchedulerClass, system::cpu::SchedulerRequestClaim};
 
 pub(crate) fn lone_current_yield_keeps_dispatch(
     entity: Option<&SchedulingEntity>,
@@ -604,7 +604,7 @@ impl TaskSystem {
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
-        self.ensure_owner_cpu_online(&cpu)?;
+        self.ensure_owner_cpu_registration_online(&cpu)?;
         let previous_core_hint = current;
         let mut previous_sched = previous_core_hint.map(|core| {
             // SAFETY: propagated from the selected entry contract.
@@ -735,7 +735,7 @@ impl TaskSystem {
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
-        self.ensure_owner_cpu_online(&cpu)?;
+        self.ensure_owner_cpu_registration_online(&cpu)?;
         let previous_core_hint = current;
         // Probe the rq-owned decision first. Linux's ordinary no-switch pass
         // never acquires p->pi_lock; task scheduler state is needed only after
@@ -888,7 +888,7 @@ impl TaskSystem {
         &self,
         cpu: Pin<&mut CpuLocal>,
         current: &ThreadHandle,
-    ) -> Result<ScheduleDecision, TaskError> {
+    ) -> Result<YieldOutcome, TaskError> {
         self.yield_current_owner(cpu, current.runtime_core_arc(), OwnerRqEntry::IrqSave)
     }
 
@@ -901,7 +901,7 @@ impl TaskSystem {
         &self,
         cpu: Pin<&mut CpuLocal>,
         current: &CurrentThreadRef,
-    ) -> Result<ScheduleDecision, TaskError> {
+    ) -> Result<YieldOutcome, TaskError> {
         self.yield_current_owner(cpu, current.runtime_core(), OwnerRqEntry::SchedulerFrame)
     }
 
@@ -910,30 +910,29 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         current: &ThreadCore,
         rq_entry: OwnerRqEntry,
-    ) -> Result<ScheduleDecision, TaskError> {
+    ) -> Result<YieldOutcome, TaskError> {
         if rq_entry.requires_owner_context_validation() {
             self.ensure_owner_cpu_context(&cpu)?;
         }
         // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
         // endpoint while this scheduling transaction and switch tail are live.
         let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
-        let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
-        self.ensure_owner_cpu_online(&cpu)?;
+        self.ensure_owner_cpu_registration_online(&cpu)?;
         let previous_core_hint = current;
         // Probe rq ownership before taking the current task lock. Linux's
         // ordinary sched_yield path holds only rq->lock; task state is needed
         // only for migration, Deadline, or other task-control work.
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, remote) };
-        transaction.adopt_scheduler_request(initial_request);
 
         // A forced yield consumes every request already visible at this
-        // explicit scheduling point. Runtime is settled only after selection
-        // proves that current must leave the CPU; Linux returns before
-        // put-prev/update-curr when the class picker selects current again.
+        // explicit scheduling point under the same rq lock as selection.
+        // Runtime is settled only after selection proves that current must
+        // leave the CPU; Linux returns before put-prev/update-curr when the
+        // class picker selects current again.
         let request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         if transaction
             .current()
@@ -955,6 +954,20 @@ impl TaskSystem {
         // full p->pi_lock -> rq order for exceptional task-control work.
         transaction.commit();
 
+        self.yield_current_task_control(cpu, previous_core_hint, rq_entry, remote, request)
+    }
+
+    /// Handles the uncommon yield path that must serialize task-local state.
+    #[cold]
+    #[inline(never)]
+    fn yield_current_task_control(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        previous_core_hint: &ThreadCore,
+        rq_entry: OwnerRqEntry,
+        remote: &'static CpuRemote,
+        request: SchedulerRequestClaim,
+    ) -> Result<YieldOutcome, TaskError> {
         // SAFETY: propagated from the selected entry contract.
         let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
@@ -1008,10 +1021,9 @@ impl TaskSystem {
                     now_ns,
                 );
                 self.finish_owner_dispatch_commit(dispatch_commit);
-                let decision =
-                    self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+                self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
-                return Ok(decision);
+                return Ok(YieldOutcome::Unchanged);
             }
         }
         let mut migration = None;
@@ -1110,17 +1122,18 @@ impl TaskSystem {
         self.finish_owner_dispatch_commit(dispatch_commit);
         let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
-        Ok(decision)
+        Ok(YieldOutcome::Switch(decision))
     }
 
     /// Implements Linux's rq-owned ordinary yield path.
+    #[inline(never)]
     fn yield_current_rq_owned(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         mut transaction: OwnerRqTxn<'_>,
         previous_core_hint: &ThreadCore,
         schedule_out: OwnerRqScheduleOut,
-    ) -> ScheduleDecision {
+    ) -> YieldOutcome {
         let now_ns = transaction.clock().wall().as_nanos();
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
@@ -1131,7 +1144,6 @@ impl TaskSystem {
         {
             task_runtime::fatal_invariant(0x5343_1212, cpu.owner().as_u32() as usize);
         }
-
         let core = previous_core.as_ref().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1213, cpu.owner().as_u32() as usize)
         });
@@ -1140,18 +1152,8 @@ impl TaskSystem {
             && transaction.task_state(core.id(), placement).is_current();
         if continuing_dispatch {
             transaction.finish_unchanged_scheduler_request();
-            let endpoint = previous_endpoint.unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1215, core.id().as_u64() as usize)
-            });
-            let decision = Self::owner_switch_plan(
-                Some(core),
-                Some(endpoint),
-                core,
-                endpoint,
-                SwitchReason::Yield,
-                now_ns,
-            );
-            return self.finish_owner_unchanged_yield(cpu.as_mut(), decision);
+            self.finish_owner_unchanged_yield(cpu.as_mut(), core.id());
+            return YieldOutcome::Unchanged;
         }
 
         let _settled = transaction.settle_current(0);
@@ -1192,6 +1194,10 @@ impl TaskSystem {
             now_ns,
         );
         self.finish_owner_dispatch_commit(dispatch_commit);
-        self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation)
+        YieldOutcome::Switch(self.finish_owner_selection(
+            cpu.as_mut(),
+            decision,
+            deadline_rq_observation,
+        ))
     }
 }

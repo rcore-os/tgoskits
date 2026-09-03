@@ -247,7 +247,7 @@ unsafe extern "C" fn x86_trap_handler(raw: *mut RawTrapFrame) {
             );
         }
         IRQ_VECTOR_START..=IRQ_VECTOR_END => {
-            crate::trap::dispatch_irq(tf.raw.vector as _);
+            crate::trap::dispatch_irq(tf.raw.vector as _, crate::trap::TrapOrigin::Kernel);
         }
         _ => {
             let snapshot = tf.snapshot();
