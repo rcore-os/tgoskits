@@ -177,6 +177,15 @@ struct EpollInterest {
     exclusive: bool,
     in_ready_queue: AtomicBool,
     owner_repoll_pending: AtomicBool,
+    /// One persistent waker per interest, created on first use. Per-wait
+    /// registration reuses this same waker, so replacing a per-file PollSet
+    /// slot (ring mode, POLL_SET_CAPACITY) hits the `will_wake` fast path and
+    /// does not wake the replaced entry. A fresh waker per register used to
+    /// wake the replaced (stale) waker, which re-enqueued the interest with no
+    /// real I/O event — every epoll_wait then drained all interests
+    /// (measured: ~13 stale drains, 96.5% NoEvent, 100-500us of wasted
+    /// kernel time before parking, ~470 FPS).
+    cached_waker: IrqMutex<Option<Waker>>,
 }
 
 impl EpollInterest {
@@ -200,7 +209,22 @@ impl EpollInterest {
             exclusive: flags.contains(EpollFlags::EXCLUSIVE),
             in_ready_queue: AtomicBool::new(false),
             owner_repoll_pending: AtomicBool::new(false),
+            cached_waker: IrqMutex::new(None),
         }
+    }
+
+    /// Returns the interest's one persistent waker, creating it on first use.
+    fn cached_waker(self: &Arc<Self>, epoll: &Arc<EpollInner>) -> Waker {
+        let mut g = self.cached_waker.lock();
+        if let Some(w) = g.as_ref() {
+            return w.clone();
+        }
+        let w = Waker::from(Arc::new(InterestWaker {
+            epoll: Arc::downgrade(epoll),
+            interest: Arc::downgrade(self),
+        }));
+        *g = Some(w.clone());
+        w
     }
 
     #[inline]
@@ -397,10 +421,7 @@ impl EpollInner {
             return;
         }
 
-        let waker = Waker::from(Arc::new(InterestWaker {
-            epoll: Arc::downgrade(self),
-            interest: Arc::downgrade(interest),
-        }));
+        let waker = interest.cached_waker(self);
         let mut context = Context::from_waker(&waker);
         file.register(&mut context, register_events(interest.event.events));
     }
@@ -650,10 +671,7 @@ impl Epoll {
             return;
         }
 
-        let waker = Waker::from(Arc::new(InterestWaker {
-            epoll: Arc::downgrade(&self.inner),
-            interest: Arc::downgrade(interest),
-        }));
+        let waker = interest.cached_waker(&self.inner);
 
         let mut context = Context::from_waker(&waker);
         file.register(&mut context, register_events(interest.event.events));
@@ -690,10 +708,7 @@ impl Epoll {
             return;
         }
 
-        let waker = Waker::from(Arc::new(InterestWaker {
-            epoll: Arc::downgrade(&self.inner),
-            interest: Arc::downgrade(interest),
-        }));
+        let waker = interest.cached_waker(&self.inner);
 
         let current = match_ready_events(file.poll(), interest.event.events);
 
