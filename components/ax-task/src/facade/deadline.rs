@@ -256,21 +256,19 @@ pub fn on_clock_event(
             scheduler_tick: None,
         });
     }
-    let rq_observation = if let Some(task_tick_rq_observation) = task_tick_rq_observation {
-        if clock_event_rq_observation_reusable(rt_period_rescheduled, hard.processed()) {
-            cpu.as_mut()
-                .scheduler_work_due_from_rq_observation(now, task_tick_rq_observation)
-        } else {
-            cpu.as_mut().scheduler_work_due(now)
+    let rq_observation = match clock_event_rq_observation_plan(
+        task_tick_rq_observation.is_some(),
+        rt_period_rescheduled,
+        hard.processed(),
+    ) {
+        ClockEventRqObservationPlan::ReuseAccounted => {
+            cpu.as_mut().scheduler_work_due_from_rq_observation(
+                now,
+                task_tick_rq_observation
+                    .expect("reused clockevent observation must have been accounted"),
+            )
         }
-    } else if rt_period_rescheduled {
-        cpu.as_mut().scheduler_work_due(now)
-    } else {
-        // The hard timer path already published any wake request. One final
-        // rq observation is sufficient to derive the next physical deadline;
-        // it must not also perform scheduler-work accounting for a plain
-        // task-timeout interrupt.
-        cpu.as_mut().scheduler_deadline_rq_observation()
+        ClockEventRqObservationPlan::RefreshAndPublish => cpu.as_mut().scheduler_work_due(now),
     };
     let update = cpu
         .as_mut()
@@ -294,11 +292,35 @@ pub fn on_clock_event(
     })
 }
 
-fn clock_event_rq_observation_reusable(
+const fn clock_event_rq_observation_reusable(
     rt_period_rescheduled: bool,
     hard_timers_processed: usize,
 ) -> bool {
     !rt_period_rescheduled && hard_timers_processed == 0
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClockEventRqObservationPlan {
+    ReuseAccounted,
+    RefreshAndPublish,
+}
+
+const fn clock_event_rq_observation_plan(
+    accounted_observation: bool,
+    rt_period_rescheduled: bool,
+    hard_timers_processed: usize,
+) -> ClockEventRqObservationPlan {
+    if accounted_observation
+        && clock_event_rq_observation_reusable(rt_period_rescheduled, hard_timers_processed)
+    {
+        ClockEventRqObservationPlan::ReuseAccounted
+    } else {
+        // A hard-timer callback may make the current rq deadline due even
+        // when this physical edge did not claim the scheduler runtime timer.
+        // Linux's hrtick callback publishes reschedule work before it leaves
+        // the hard-timer queue; a fresh observation here must do the same.
+        ClockEventRqObservationPlan::RefreshAndPublish
+    }
 }
 
 /// Scheduler-owned deadlines claimed by one physical clockevent firing.
@@ -666,8 +688,14 @@ mod tests {
     use core::num::NonZeroU64;
 
     use super::{
-        ClaimedSchedulerDeadlines, ClockAccountingKind, clock_event_rq_observation_reusable,
+        ClaimedSchedulerDeadlines, ClockAccountingKind, ClockEventRqObservationPlan,
+        clock_event_rq_observation_plan, clock_event_rq_observation_reusable,
     };
+
+    const _: () = assert!(matches!(
+        clock_event_rq_observation_plan(false, false, 1),
+        ClockEventRqObservationPlan::RefreshAndPublish
+    ));
 
     #[test]
     fn only_periodic_clock_events_run_the_scheduler_tick() {
@@ -706,5 +734,13 @@ mod tests {
         assert!(clock_event_rq_observation_reusable(false, 0));
         assert!(!clock_event_rq_observation_reusable(true, 0));
         assert!(!clock_event_rq_observation_reusable(false, 1));
+    }
+
+    #[test]
+    fn plain_hard_timer_rechecks_and_publishes_due_scheduler_work() {
+        assert_eq!(
+            clock_event_rq_observation_plan(false, false, 1),
+            ClockEventRqObservationPlan::RefreshAndPublish
+        );
     }
 }

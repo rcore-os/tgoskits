@@ -65,7 +65,7 @@ fn task_work_service_loop() -> Result<(), TaskError> {
         let pending_after_pass = doorbell.claim_pending().is_some();
         match task_work_service_action(batch, pending_after_pass, BATCH_LIMIT) {
             TaskWorkServiceAction::Yield => {
-                let _decision = yield_current_cpu()?;
+                yield_current_cpu()?;
                 continue;
             }
             TaskWorkServiceAction::Wait => {

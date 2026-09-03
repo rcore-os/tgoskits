@@ -85,7 +85,7 @@ fn ktimer_service_loop(owner: CpuId) -> Result<(), TaskError> {
         }
         remote.complete_ktimer_work(claim);
         if pending {
-            let _decision = yield_current_cpu()?;
+            yield_current_cpu()?;
         }
     }
 }
