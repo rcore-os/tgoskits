@@ -122,30 +122,40 @@ impl CachedFileShared {
             pns.sort_unstable();
             pns.dedup();
         }
-        let mut guard = self.page_cache.lock();
         let mut dirty_keys = Vec::new();
-        dirty_keys
-            .try_reserve(guard.len())
-            .map_err(|_| VfsError::NoMemory)?;
-        for (&pn, page) in guard.iter_mut() {
-            if !page.dirty {
+        loop {
+            dirty_keys.clear();
+            let required = self.page_cache.lock().len();
+            if dirty_keys.capacity() < required {
+                dirty_keys
+                    .try_reserve_exact(required)
+                    .map_err(|_| VfsError::NoMemory)?;
+            }
+
+            let mut guard = self.page_cache.lock();
+            if guard.len() > dirty_keys.capacity() {
                 continue;
             }
-            if let Some(requested) = requested_pns.as_ref()
-                && requested.binary_search(&pn).is_err()
-            {
-                continue;
+            for (&pn, page) in guard.iter_mut() {
+                if !page.dirty {
+                    continue;
+                }
+                if let Some(requested) = requested_pns.as_ref()
+                    && requested.binary_search(&pn).is_err()
+                {
+                    continue;
+                }
+                let page_start = pn as u64 * PAGE_SIZE as u64;
+                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64);
+                if len == 0 {
+                    continue;
+                }
+                page.writeback_protecting = true;
+                page.dirty_during_writeback = false;
+                dirty_keys.push(pn);
             }
-            let page_start = pn as u64 * PAGE_SIZE as u64;
-            let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64);
-            if len == 0 {
-                continue;
-            }
-            page.writeback_protecting = true;
-            page.dirty_during_writeback = false;
-            dirty_keys.push(pn);
+            break;
         }
-        drop(guard);
         dirty_keys.sort_unstable();
         Ok((file_len, dirty_keys))
     }

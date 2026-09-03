@@ -13,6 +13,39 @@ struct PreparedPageWrite {
     zeroed_data: Vec<u8>,
 }
 
+/// Move-only ownership of cache pages detached for one mapping update.
+///
+/// Every vector is reserved before a page leaves the cache index. Callback
+/// failure can therefore move the exact frame owner into `retry` and restore
+/// it without a fallible allocation after detachment.
+struct DetachedPageBatch {
+    pages: Vec<(u32, PageCache)>,
+    retry: Vec<(u32, PageCache)>,
+    replaced: Vec<PageCache>,
+}
+
+impl DetachedPageBatch {
+    fn prepare(capacity: usize) -> VfsResult<Self> {
+        let mut pages = Vec::new();
+        pages
+            .try_reserve_exact(capacity)
+            .map_err(|_| VfsError::NoMemory)?;
+        let mut retry = Vec::new();
+        retry
+            .try_reserve_exact(capacity)
+            .map_err(|_| VfsError::NoMemory)?;
+        let mut replaced = Vec::new();
+        replaced
+            .try_reserve_exact(capacity)
+            .map_err(|_| VfsError::NoMemory)?;
+        Ok(Self {
+            pages,
+            retry,
+            replaced,
+        })
+    }
+}
+
 impl CachedFile {
     /// Reserves backing storage and keeps the cached length coherent.
     pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
@@ -70,7 +103,7 @@ impl CachedFile {
             };
             let start_page = offset / PAGE_SIZE as u64;
             let end_page = visible_end.div_ceil(PAGE_SIZE as u64);
-            let affected_pages = self.cached_pages_in_range(start_page, end_page);
+            let affected_pages = self.cached_pages_in(start_page, end_page)?;
 
             self.shared
                 .protect_dirty_pages_before_writeback(&affected_pages)?;
@@ -79,14 +112,13 @@ impl CachedFile {
             }
 
             let _io = self.shared.io_lock.lock();
-            if self.shared.len() != observed_len {
-                continue;
-            }
-            if self.cached_pages_in_range(start_page, end_page) != affected_pages {
-                // Buffered I/O may have populated or removed a page while the
-                // mapping callbacks ran. Restart so every page present at the
-                // backing-operation linearization point is protected and
-                // updated by the same snapshot.
+            if self.shared.len() != observed_len
+                || !self.cached_page_set_matches(start_page, end_page, &affected_pages)
+            {
+                // Buffered I/O is serialized by `io_lock`, so a matching
+                // second snapshot closes the window between the first cache
+                // walk and backing mutation. Newly observed pages must first
+                // pass through mapping protection and writeback.
                 continue;
             }
             if !self.in_memory {
@@ -145,7 +177,7 @@ impl CachedFile {
                     .ok_or(VfsError::FileTooLarge)?,
                 _ => unreachable!(),
             };
-            let affected_pages = self.cached_pages_from(start_page);
+            let affected_pages = self.cached_pages_from(start_page)?;
 
             self.shared
                 .protect_dirty_pages_before_writeback(&affected_pages)?;
@@ -157,13 +189,12 @@ impl CachedFile {
             if self.shared.len() != observed_len {
                 continue;
             }
-            let final_affected_pages = self.cached_pages_from(start_page);
-            if final_affected_pages != affected_pages {
+            if !self.cached_page_set_matches(start_page, u64::MAX, &affected_pages) {
                 continue;
             }
             let cache_busy = {
                 let mut guard = self.shared.page_cache.lock();
-                final_affected_pages.iter().any(|page_number| {
+                affected_pages.iter().any(|page_number| {
                     guard
                         .get(page_number)
                         .is_some_and(|page| page.pins != 0 || (!self.in_memory && page.dirty))
@@ -172,15 +203,15 @@ impl CachedFile {
             if cache_busy {
                 return Err(VfsError::ResourceBusy);
             }
-            let discarded = {
+            let mut discarded = DetachedPageBatch::prepare(affected_pages.len())?;
+            {
                 let mut guard = self.shared.page_cache.lock();
-                final_affected_pages
-                    .into_iter()
-                    .filter_map(|page_number| {
-                        guard.pop(&page_number).map(|page| (page_number, page))
-                    })
-                    .collect::<Vec<_>>()
-            };
+                for page_number in affected_pages {
+                    if let Some(page) = guard.pop(&page_number) {
+                        discarded.pages.push((page_number, page));
+                    }
+                }
+            }
             drop(io);
             self.notify_discarded_pages(discarded)?;
 
@@ -188,7 +219,9 @@ impl CachedFile {
             // deliberately released. Recheck both the file generation and
             // cache index before making the backing shift irreversible.
             let _io = self.shared.io_lock.lock();
-            if self.shared.len() != observed_len || !self.cached_pages_from(start_page).is_empty() {
+            if self.shared.len() != observed_len
+                || !self.cached_page_set_matches(start_page, u64::MAX, &[])
+            {
                 continue;
             }
             let next_epoch = self.shared.prepare_mapping_epoch()?;
@@ -199,21 +232,73 @@ impl CachedFile {
         }
     }
 
-    fn cached_pages_in_range(&self, start_page: u64, end_page: u64) -> Vec<u32> {
-        let guard = self.shared.page_cache.lock();
-        let mut pages = guard
-            .iter()
-            .filter_map(|(&page_number, _)| {
-                let page = u64::from(page_number);
-                (start_page <= page && page < end_page).then_some(page_number)
-            })
-            .collect::<Vec<_>>();
-        pages.sort_unstable();
-        pages
+    fn cached_pages_from(&self, start_page: u64) -> VfsResult<Vec<u32>> {
+        self.cached_pages_in(start_page, u64::MAX)
     }
 
-    fn cached_pages_from(&self, start_page: u64) -> Vec<u32> {
-        self.cached_pages_in_range(start_page, u64::from(u32::MAX) + 1)
+    /// Takes a sorted cache-index snapshot without growing a vector while the
+    /// cache lock is held. The first pass only measures, allocation happens
+    /// lock-free, and the second pass retries if concurrent insertion exceeded
+    /// the prepared capacity.
+    pub(super) fn cached_pages_in(&self, start_page: u64, end_page: u64) -> VfsResult<Vec<u32>> {
+        let contains = |page_number: u32| {
+            let page = u64::from(page_number);
+            start_page <= page && page < end_page
+        };
+        let mut pages = Vec::new();
+        loop {
+            pages.clear();
+            let required = {
+                let guard = self.shared.page_cache.lock();
+                guard
+                    .iter()
+                    .filter(|(page_number, _)| contains(**page_number))
+                    .count()
+            };
+            if pages.capacity() < required {
+                pages
+                    .try_reserve_exact(required)
+                    .map_err(|_| VfsError::NoMemory)?;
+            }
+
+            let guard = self.shared.page_cache.lock();
+            let mut overflowed = false;
+            for (&page_number, _) in guard.iter() {
+                if !contains(page_number) {
+                    continue;
+                }
+                if pages.len() == pages.capacity() {
+                    overflowed = true;
+                    break;
+                }
+                pages.push(page_number);
+            }
+            drop(guard);
+            if overflowed {
+                continue;
+            }
+            pages.sort_unstable();
+            return Ok(pages);
+        }
+    }
+
+    /// Rechecks a sorted snapshot without allocating. Callers hold `io_lock`,
+    /// which excludes buffered cache insertion; mmap faults are excluded by
+    /// the mapping-update barrier.
+    fn cached_page_set_matches(&self, start_page: u64, end_page: u64, expected: &[u32]) -> bool {
+        let guard = self.shared.page_cache.lock();
+        let mut actual_len = 0;
+        for (&page_number, _) in guard.iter() {
+            let page = u64::from(page_number);
+            if page < start_page || page >= end_page {
+                continue;
+            }
+            actual_len += 1;
+            if expected.binary_search(&page_number).is_err() {
+                return false;
+            }
+        }
+        actual_len == expected.len()
     }
 
     pub(super) fn zero_partial_page_locked(
@@ -223,15 +308,12 @@ impl CachedFile {
         zero_start: usize,
         zero_end: usize,
     ) -> VfsResult<()> {
-        let mut guard = self.shared.page_cache.lock();
-        let page = self
-            .page_or_insert(file, &mut guard, page_number, true, false)?
-            .0;
-        page.data()[zero_start..zero_end].fill(0);
-        if !self.in_memory {
-            page.mark_dirty();
-        }
-        Ok(())
+        self.with_page_or_insert(file, page_number, true, |page, _| {
+            page.data()[zero_start..zero_end].fill(0);
+            if !self.in_memory {
+                page.mark_dirty();
+            }
+        })
     }
 
     fn prepare_zero_write_locked(
@@ -242,18 +324,34 @@ impl CachedFile {
         zero_end: usize,
         persist_end: usize,
     ) -> VfsResult<PreparedPageWrite> {
-        let mut guard = self.shared.page_cache.lock();
-        let page = self
-            .page_or_insert(file, &mut guard, page_number, true, false)?
-            .0;
-        let was_dirty = page.dirty;
-        let original_data = page.data()[zero_start..zero_end].to_vec();
-        page.data()[zero_start..zero_end].fill(0);
-        if !self.in_memory {
-            page.mark_dirty();
-        }
-        let generation = page.dirty_generation;
-        let zeroed_data = page.data()[zero_start..persist_end].to_vec();
+        let original_len = zero_end
+            .checked_sub(zero_start)
+            .filter(|_| zero_end <= PAGE_SIZE)
+            .ok_or(VfsError::InvalidInput)?;
+        let zeroed_len = persist_end
+            .checked_sub(zero_start)
+            .filter(|_| persist_end <= PAGE_SIZE)
+            .ok_or(VfsError::InvalidInput)?;
+        let mut original_data = Vec::new();
+        original_data
+            .try_reserve_exact(original_len)
+            .map_err(|_| VfsError::NoMemory)?;
+        let mut zeroed_data = Vec::new();
+        zeroed_data
+            .try_reserve_exact(zeroed_len)
+            .map_err(|_| VfsError::NoMemory)?;
+        let (was_dirty, generation) =
+            self.with_page_or_insert(file, page_number, true, |page, _| {
+                let was_dirty = page.dirty;
+                original_data.extend_from_slice(&page.data()[zero_start..zero_end]);
+                page.data()[zero_start..zero_end].fill(0);
+                if !self.in_memory {
+                    page.mark_dirty();
+                }
+                let generation = page.dirty_generation;
+                zeroed_data.extend_from_slice(&page.data()[zero_start..persist_end]);
+                (was_dirty, generation)
+            })?;
         Ok(PreparedPageWrite {
             page_number,
             page_offset: zero_start,
@@ -349,31 +447,32 @@ impl CachedFile {
         }
     }
 
-    fn take_discarded_pages_locked(&self, len: u64) -> VfsResult<Vec<(u32, PageCache)>> {
+    fn take_discarded_pages_locked(&self, len: u64) -> VfsResult<DetachedPageBatch> {
         let first_discarded_page = len.div_ceil(PAGE_SIZE as u64);
+        let keys = self.cached_pages_from(first_discarded_page)?;
+        let mut discarded = DetachedPageBatch::prepare(keys.len())?;
         let mut guard = self.shared.page_cache.lock();
-        let keys = guard
-            .iter()
-            .map(|(page_number, _)| *page_number)
-            .filter(|page_number| u64::from(*page_number) >= first_discarded_page)
-            .collect::<Vec<_>>();
         if keys
             .iter()
             .any(|page_number| guard.get(page_number).is_some_and(|page| page.pins != 0))
         {
             return Err(VfsError::ResourceBusy);
         }
-        Ok(keys
-            .into_iter()
-            .filter_map(|page_number| guard.pop(&page_number).map(|page| (page_number, page)))
-            .collect())
+        for page_number in keys {
+            if let Some(page) = guard.pop(&page_number) {
+                discarded.pages.push((page_number, page));
+            }
+        }
+        Ok(discarded)
     }
 
-    fn notify_discarded_pages(&self, pages: Vec<(u32, PageCache)>) -> VfsResult<()> {
-        let mut busy = Vec::new();
+    fn notify_discarded_pages(&self, batch: DetachedPageBatch) -> VfsResult<()> {
+        let DetachedPageBatch {
+            pages,
+            mut retry,
+            mut replaced,
+        } = batch;
         let mut failed = false;
-        busy.try_reserve(pages.len())
-            .map_err(|_| VfsError::NoMemory)?;
         for (page_number, page) in pages {
             let result = page
                 .paddr()
@@ -386,19 +485,24 @@ impl CachedFile {
             match result {
                 CacheMappingResult::Retired => drop(page),
                 CacheMappingResult::Busy | CacheMappingResult::Quarantined => {
-                    busy.push((page_number, page));
+                    retry.push((page_number, page));
                 }
                 CacheMappingResult::Protected | CacheMappingResult::Failed => {
-                    busy.push((page_number, page));
+                    retry.push((page_number, page));
                     failed = true;
                 }
             }
         }
-        if !busy.is_empty() {
-            let mut guard = self.shared.page_cache.lock();
-            for (page_number, page) in busy {
-                guard.put(page_number, page);
+        if !retry.is_empty() {
+            {
+                let mut guard = self.shared.page_cache.lock();
+                for (page_number, page) in retry {
+                    if let Some(page) = guard.put(page_number, page) {
+                        replaced.push(page);
+                    }
+                }
             }
+            drop(replaced);
             return Err(if failed {
                 VfsError::BadState
             } else {
@@ -512,10 +616,7 @@ impl CachedFile {
             }
 
             if len < old_len {
-                if !self
-                    .cached_pages_from(len.div_ceil(PAGE_SIZE as u64))
-                    .is_empty()
-                {
+                if !self.cached_page_set_matches(len.div_ceil(PAGE_SIZE as u64), u64::MAX, &[]) {
                     // A reader populated a page while mapping invalidators ran.
                     // Restart and revoke that page before touching backing.
                     continue;

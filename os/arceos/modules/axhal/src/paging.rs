@@ -52,6 +52,16 @@ pub type PageTableMapDeposit =
 /// Recoverable apply error that returns an uninstalled [`PageTableMapDeposit`].
 pub type PageTableMapApplyError =
     page_table_generic::PageTableMapApplyError<ArchPagingMeta, PagingAllocator>;
+/// Immutable identity of one architecture-specific occupied leaf.
+pub type PageTableLeafPlan = page_table_generic::PageTableLeafPlan<ArchPagingMeta>;
+/// Allocation-free plan for one architecture-specific PTE relocation.
+pub type PageTableMovePlan = page_table_generic::PageTableMovePlan<ArchPagingMeta, PagingAllocator>;
+/// Move-only ownership of an empty, detached page-table suffix.
+pub type PageTablePathDeposit =
+    page_table_generic::PageTablePathDeposit<ArchPagingMeta, PagingAllocator>;
+/// Recoverable path-publication failure.
+pub type PageTablePathApplyError =
+    page_table_generic::PageTablePathApplyError<ArchPagingMeta, PagingAllocator>;
 /// A pre-zeroed child table bound to one architecture-specific huge leaf.
 pub type HugeSplitDeposit = page_table_generic::HugeSplitDeposit<ArchPagingMeta, PagingAllocator>;
 /// Recoverable apply error that returns an uninstalled [`HugeSplitDeposit`].

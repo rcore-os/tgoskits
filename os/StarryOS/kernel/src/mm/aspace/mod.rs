@@ -15,7 +15,7 @@ use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{
         InstalledHugeSplit, MappingFlags, PageTable, PageTableEntry, PageTableMapDeposit,
-        PageTableMapPlan, PagingAllocator, PagingError,
+        PageTableMapPlan, PageTableMovePlan, PagingAllocator, PagingError,
     },
     trap::PageFaultFlags,
 };
@@ -24,7 +24,7 @@ use crate::{
     StarryError, StarryResult,
     config::USER_HEAP_BASE,
     mm::{ProcessVmStat, ProcessVmStatSnapshot, UserVirtualAddressLayout},
-    sync::{IrqMutex, LockdepMutexExt, Mutex},
+    sync::{IrqMutex, LockdepMutexExt, Mutex, try_reserve_irq_vec},
 };
 
 #[cfg(test)]
@@ -87,7 +87,6 @@ struct MovedPage {
     src_va: VirtAddr,
     dst_va: VirtAddr,
     paddr: PhysAddr,
-    flags: MappingFlags,
     page_size: usize,
     destination: MovedPageDestination,
 }
@@ -523,98 +522,6 @@ struct ProtectionLeafPreimage {
     paddr: PhysAddr,
     page_size: usize,
     flags: MappingFlags,
-}
-
-fn rollback_moved_pages(cursor: &mut PageTable, moved_pages: &[MovedPage]) -> bool {
-    let mut complete = true;
-    for moved in moved_pages.iter().rev() {
-        if matches!(moved.destination, MovedPageDestination::SourceOwner) {
-            let destination_matches = cursor.query(moved.dst_va).is_ok_and(
-                |(current_paddr, _, current_size)| {
-                    current_paddr == moved.paddr && current_size == moved.page_size
-                },
-            );
-            if !destination_matches {
-                warn!(
-                    "move rollback found an unexpected destination leaf at {:?}",
-                    moved.dst_va
-                );
-                complete = false;
-            } else {
-                match cursor.unmap_page(moved.dst_va) {
-                    Ok((_, _, removed_size)) => {
-                        if let Err(error) =
-                            crate::mm::flush_tlb_range_sync(moved.dst_va, removed_size)
-                        {
-                            warn!(
-                                "move rollback could not invalidate destination {:?}: {error}",
-                                moved.dst_va
-                            );
-                            complete = false;
-                        }
-                    }
-                    Err(error) => {
-                        warn!(
-                            "move rollback could not unmap destination {:?}: {error}",
-                            moved.dst_va
-                        );
-                        complete = false;
-                    }
-                }
-            }
-        }
-        match cursor.query(moved.src_va) {
-            Ok((current_paddr, _, current_size)) => {
-                if current_paddr != moved.paddr || current_size != moved.page_size {
-                    warn!(
-                        "move rollback found an unexpected source leaf at {:?}",
-                        moved.src_va
-                    );
-                    complete = false;
-                }
-            }
-            Err(PagingError::NotMapped) => {
-                if let Err(error) = cursor.map_page(
-                    moved.src_va,
-                    moved.paddr,
-                    moved.page_size,
-                    moved.flags,
-                ) {
-                    warn!(
-                        "move rollback could not restore source {:?}: {error}",
-                        moved.src_va
-                    );
-                    complete = false;
-                } else if let Err(error) =
-                    crate::mm::flush_tlb_range_sync(moved.src_va, moved.page_size)
-                {
-                    warn!(
-                        "move rollback could not invalidate restored source {:?}: {error}",
-                        moved.src_va
-                    );
-                    complete = false;
-                } else if !cursor.query(moved.src_va).is_ok_and(
-                    |(current_paddr, _, current_size)| {
-                        current_paddr == moved.paddr && current_size == moved.page_size
-                    },
-                ) {
-                    warn!(
-                        "move rollback could not verify restored source {:?}",
-                        moved.src_va
-                    );
-                    complete = false;
-                }
-            }
-            Err(error) => {
-                warn!(
-                    "move rollback could not query source {:?}: {error}",
-                    moved.src_va
-                );
-                complete = false;
-            }
-        }
-    }
-    complete
 }
 
 /// Ownership retained after a PTE is detached and before its TLB receipt is
@@ -1748,7 +1655,10 @@ impl AddrSpace {
     /// page-cache lock, after which the short acknowledgement phase retires the
     /// matching receipts and quarantined owners.
     pub fn service_pending_tlb(&self) -> StarryResult<usize> {
-        let requests = self.mutation_gate.pending_requests();
+        let requests = self
+            .mutation_gate
+            .pending_requests()
+            .map_err(|_| StarryError::NoMemory)?;
         Self::flush_tlb_requests(&requests, &self.tlb_targets)?;
         self.acknowledge_tlb_requests(&requests)
     }
@@ -1813,9 +1723,10 @@ impl AddrSpace {
                     Ok(_) | Err(MutationError::WrongState) | Err(MutationError::TlbPending) => {}
                     Err(_) => return Err(StarryError::BadState),
                 }
-                let _ = self
+                self
                     .tlb_quarantine
-                    .acknowledge(self.id, request.epoch, cpu);
+                    .acknowledge(self.id, request.epoch, cpu)
+                    .map_err(|_| StarryError::NoMemory)?;
             }
             if self
                 .mutation_gate
@@ -1871,9 +1782,7 @@ impl AddrSpace {
         &self,
         range: VirtAddrRange,
     ) -> StarryResult<RetiredMappingOwners> {
-        self.retired_mapping_batches
-            .lock()
-            .try_reserve(1)
+        try_reserve_irq_vec(&self.retired_mapping_batches, 1)
             .map_err(|_| StarryError::NoMemory)?;
 
         let mut owners = RetiredMappingOwners::default();
@@ -1941,9 +1850,7 @@ impl AddrSpace {
         &self,
         page: &Arc<PageObject>,
     ) -> StarryResult<RetiredMappingOwners> {
-        self.retired_mapping_batches
-            .lock()
-            .try_reserve(1)
+        try_reserve_irq_vec(&self.retired_mapping_batches, 1)
             .map_err(|_| StarryError::NoMemory)?;
         let mut owners = RetiredMappingOwners::default();
         owners
@@ -1999,8 +1906,10 @@ impl AddrSpace {
     /// Snapshot of outstanding shootdown requests.  The caller may submit
     /// these to the platform IPI layer without retaining an address-space
     /// metadata lock.
-    pub fn pending_tlb_requests(&self) -> Vec<TlbRequest> {
-        self.mutation_gate.pending_requests()
+    pub fn pending_tlb_requests(&self) -> StarryResult<Vec<TlbRequest>> {
+        self.mutation_gate
+            .pending_requests()
+            .map_err(|_| StarryError::NoMemory)
     }
 
     /// Records one remote acknowledgement and returns frames that became safe
@@ -2023,7 +1932,10 @@ impl AddrSpace {
             }
             Err(_) => return Err(StarryError::ResourceBusy),
         }
-        let released = self.tlb_quarantine.acknowledge(space_id, epoch, cpu);
+        let released = self
+            .tlb_quarantine
+            .acknowledge(space_id, epoch, cpu)
+            .map_err(|_| StarryError::NoMemory)?;
         if self
             .mutation_gate
             .pending_request(space_id, epoch)
@@ -3080,21 +2992,20 @@ impl AddrSpace {
         });
         mutation.set_resident_delta(ResidentDelta::for_pages(slot.resident_kind(), -1));
 
+        let unmap_plan = self.pt.plan_unmap_page(key.va)?;
+        if slot.mapped_paddr() != Some(unmap_plan.paddr())
+            || unmap_plan.page_size() != PAGE_SIZE_4K
+        {
+            return Err(StarryError::BadState);
+        }
         let apply_result = (|| -> StarryResult {
             let unmapped = {
-                let pt = &mut self.pt as *mut PageTable;
-                let _stripe = self.lock_pte_range(VirtAddrRange::from_start_size(
-                    key.va,
-                    PAGE_SIZE_4K,
-                ));
-                let (expected, _, expected_size) = unsafe { (&*pt).query(key.va) }
-                    .map_err(|_| StarryError::BadState)?;
-                if slot.mapped_paddr() != Some(expected) || expected_size != PAGE_SIZE_4K {
-                    return Err(StarryError::BadState);
-                }
-                // SAFETY: the address-space mutex and ordered stripe guard
-                // exclude every competing writer for this leaf.
-                unsafe { (&mut *pt).unmap_page(key.va) }?
+                let pte_domain = &self.pte_domain;
+                let pt = &mut self.pt;
+                let range = VirtAddrRange::from_start_size(key.va, PAGE_SIZE_4K);
+                let _structure = pte_domain.lock_structure();
+                let _stripe = pte_domain.lock_range(range);
+                pt.try_unmap_page_with(unmap_plan)?
             };
             if slot.mapped_paddr() != Some(unmapped.0) || unmapped.2 != PAGE_SIZE_4K {
                 return Err(StarryError::BadState);
@@ -4893,82 +4804,86 @@ impl AddrSpace {
         moved_pages
             .try_reserve(mapped_pages.len())
             .map_err(|_| StarryError::NoMemory)?;
-        // Every fallible Vec allocation is complete before IRQ-disabling PTE
-        // stripe guards exist. Declare the guards last as well, so all return
-        // paths release them before either backing allocation is dropped.
-        let mutation_gate = &self.mutation_gate;
-        let pte_domain = &self.pte_domain;
-        let cursor = &mut self.pt;
-        let _pte_stripes = pte_domain.lock_ranges(&[move_range, dst_range]);
-        debug_assert!(!_pte_stripes.stripe_indices().is_empty());
-        let _locked_range = _pte_stripes.range();
-        for &(src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
-            let destination = match cursor.query(dst_va) {
+        let mut move_plans = Vec::<PageTableMovePlan>::new();
+        move_plans
+            .try_reserve(mapped_pages.len())
+            .map_err(|_| StarryError::NoMemory)?;
+
+        // Linux allocates destination PTE/PMD directories before taking the
+        // leaf PTL.  Publish the same kind of empty structural deposit here:
+        // allocation and loser destruction happen outside every IRQ-saving
+        // page-table lock, and no materialized mapping is visible yet.
+        for &(_, dst_va, _, _, page_size) in &mapped_pages {
+            match self.pt.query_occupied(dst_va) {
+                Ok(_) => {}
                 Err(PagingError::NotMapped) => {
-                    if let Err(err) = cursor.map_page(dst_va, paddr, page_size, flags) {
-                        let restored = rollback_moved_pages(cursor, &moved_pages);
-                        if !restored {
-                            mutation_gate.mark_needs_repair();
+                    let plan = self.pt.plan_map_page(dst_va, page_size)?;
+                    if let Some(deposit) = plan.prepare_path()? {
+                        let apply_result = {
+                            let _structure = self.pte_domain.lock_structure();
+                            self.pt.try_install_map_path(deposit)
+                        };
+                        if let Err(failure) = apply_result {
+                            let (error, deposit) = failure.into_parts();
+                            // The deposit owns page-table frames.  It is
+                            // intentionally destroyed after the IRQ-saving
+                            // structure guard above has gone out of scope.
+                            drop(deposit);
+                            return Err(error.into());
                         }
-                        return Err(if restored {
-                            err.into()
-                        } else {
-                            StarryError::BadState
-                        });
-                    }
-                    MovedPageDestination::SourceOwner
-                }
-                Ok((_, _, target_size)) => {
-                    if target_size < PAGE_SIZE_4K || !target_size.is_power_of_two() {
-                        let restored = rollback_moved_pages(cursor, &moved_pages);
-                        if !restored {
-                            mutation_gate.mark_needs_repair();
-                        }
-                        return Err(StarryError::BadState);
-                    }
-                    MovedPageDestination::TargetOwner {
-                        slot_va: dst_va.align_down(target_size),
                     }
                 }
-                Err(error) => {
-                    let restored = rollback_moved_pages(cursor, &moved_pages);
-                    if !restored {
-                        mutation_gate.mark_needs_repair();
-                    }
-                    return Err(if restored {
-                        error.into()
-                    } else {
-                        StarryError::BadState
-                    });
-                }
-            };
-            if let Err(err) = cursor.unmap_page(src_va) {
-                if matches!(destination, MovedPageDestination::SourceOwner)
-                    && let Ok((_, _, removed_size)) = cursor.unmap_page(dst_va)
-                    && let Err(flush_error) = crate::mm::flush_tlb_range_sync(dst_va, removed_size)
-                {
-                    warn!(
-                        "move rollback could not invalidate destination {dst_va:?}: {flush_error}"
-                    );
-                }
-                let restored = rollback_moved_pages(cursor, &moved_pages);
-                if !restored {
-                    mutation_gate.mark_needs_repair();
-                }
-                return Err(if restored {
-                    err.into()
-                } else {
-                    StarryError::BadState
-                });
+                Err(error) => return Err(error.into()),
             }
+        }
+
+        for &(src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
+            let plan = self.pt.plan_move_page(src_va, dst_va)?;
+            if plan.source_vaddr() != src_va
+                || plan.destination_vaddr() != dst_va
+                || plan.paddr() != paddr
+                || plan.config() != flags
+                || plan.page_size() != page_size
+            {
+                return Err(StarryError::BadState);
+            }
+            let destination = if plan.destination_is_occupied() {
+                let target_size = plan.destination_page_size();
+                if target_size < PAGE_SIZE_4K || !target_size.is_power_of_two() {
+                    return Err(StarryError::BadState);
+                }
+                MovedPageDestination::TargetOwner {
+                    slot_va: dst_va.align_down(target_size),
+                }
+            } else {
+                MovedPageDestination::SourceOwner
+            };
             moved_pages.push(MovedPage {
                 src_va,
                 dst_va,
                 paddr,
-                flags,
                 page_size,
                 destination,
             });
+            move_plans.push(plan);
+        }
+
+        // Every fallible allocation and all path publication completed before
+        // these IRQ-saving guards.  The generic batch first revalidates every
+        // source/destination preimage and only then performs infallible leaf
+        // stores, so rollback never allocates or waits for an IPI under PTL.
+        let pte_domain = &self.pte_domain;
+        let cursor = &mut self.pt;
+        let apply_result = {
+            let _structure = pte_domain.lock_structure();
+            let pte_stripes = pte_domain.lock_ranges(&[move_range, dst_range]);
+            debug_assert!(!pte_stripes.stripe_indices().is_empty());
+            cursor.try_move_pages_with(&move_plans)
+        };
+        let applied = apply_result?;
+        if applied != moved_pages.len() {
+            self.mutation_gate.mark_needs_repair();
+            return Err(StarryError::BadState);
         }
         Ok(moved_pages)
     }
@@ -5615,19 +5530,18 @@ impl AddrSpace {
         }
 
         let deferred_tlb = DeferredTlbRetireGuard::enter();
-        let clear_result = {
-            let pt = &mut self.pt as *mut PageTable;
-            let _structure = self.pte_domain.lock_structure();
-            // SAFETY: the caller proved that no CPU can install or walk this
-            // address space, and the structure lock excludes page-table-node
-            // mutation while the prepared operations remove their materialized
-            // mappings.
-            operations.into_iter().try_for_each(|(fragment, operation)| {
-                // SAFETY: the structure guard and the quiescent lifecycle
-                // proof above exclude every competing page-table user.
-                operation.unmap_range(fragment, unsafe { &mut *pt })
-            })
-        };
+        // A retired MM has no users, pins, activations, pending receipts or
+        // page-table walkers.  An unpublished loader image is likewise held by
+        // one `&mut AddrSpace`.  Linux uses the same isolation proof to run
+        // `free_pgtables()` without a PTL after VMAs have been detached.  Do
+        // not acquire the IRQ-saving structure lock here: backend validation,
+        // occupied-leaf vectors, page-table frame release and Arc destruction
+        // are all allowed to allocate or enter the allocator's reclaim path.
+        let clear_result = operations
+            .into_iter()
+            .try_for_each(|(fragment, operation)| {
+                operation.unmap_range(fragment, &mut self.pt)
+            });
         drop(deferred_tlb);
         if let Err(error) = clear_result {
             if let Err(flush_error) =

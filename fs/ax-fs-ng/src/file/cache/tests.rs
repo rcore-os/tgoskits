@@ -81,6 +81,7 @@ struct CacheTestFileState {
 
 struct CacheTestFile {
     state: StdMutex<CacheTestFileState>,
+    read_observer: StdMutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     fail_next_set_len: AtomicBool,
     fail_next_write: AtomicBool,
     filesystem: &'static CacheTestFilesystem,
@@ -99,6 +100,7 @@ impl CacheTestFile {
                 physical_data,
                 write_lengths: Vec::new(),
             }),
+            read_observer: StdMutex::new(None),
             fail_next_set_len: AtomicBool::new(false),
             fail_next_write: AtomicBool::new(false),
             filesystem,
@@ -111,6 +113,10 @@ impl CacheTestFile {
 
     fn fail_next_write(&self) {
         self.fail_next_write.store(true, Ordering::Release);
+    }
+
+    fn set_read_observer(&self, observer: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self.read_observer.lock().unwrap() = observer;
     }
 
     fn write_lengths(&self) -> Vec<usize> {
@@ -174,6 +180,10 @@ impl FsPollable for CacheTestFile {
 
 impl FileNodeOps for CacheTestFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        let observer = self.read_observer.lock().unwrap().clone();
+        if let Some(observer) = observer {
+            observer();
+        }
         let offset = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
         let state = self.state.lock().unwrap();
         let read_len = buf.len().min(state.logical_len.saturating_sub(offset));
@@ -389,6 +399,37 @@ fn writeback_protect_endpoint_runs_without_endpoint_lock() {
         shared.invoke_writeback_protect_for_test(&[0]).unwrap();
 
         assert!(observed_unlocked.load(Ordering::Acquire));
+    });
+}
+
+#[test]
+fn partial_cached_write_reads_backing_without_cache_index_lock() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE]));
+        let cached = reopen_cached_file(backing.clone());
+        let called = Arc::new(AtomicBool::new(false));
+        let observed_unlocked = Arc::new(AtomicBool::new(false));
+        let callback_called = called.clone();
+        let callback_unlocked = observed_unlocked.clone();
+        let shared = Arc::downgrade(&cached.shared);
+        backing.set_read_observer(Some(Arc::new(move || {
+            callback_called.store(true, Ordering::Release);
+            callback_unlocked.store(
+                shared
+                    .upgrade()
+                    .is_some_and(|shared| shared.page_cache_lock_is_free_for_test()),
+                Ordering::Release,
+            );
+        })));
+
+        assert_eq!(cached.write_at(&[0xc3][..], 1).unwrap(), 1);
+        backing.set_read_observer(None);
+
+        assert!(called.load(Ordering::Acquire));
+        assert!(
+            observed_unlocked.load(Ordering::Acquire),
+            "backing I/O must not run while the page-cache index is locked"
+        );
     });
 }
 
@@ -722,7 +763,7 @@ fn range_operation_blocks_fault_publication_after_cache_snapshot() {
 }
 
 #[test]
-fn range_operation_rechecks_page_populated_by_buffered_read() {
+fn range_operation_restarts_after_buffered_read_populates_cache() {
     with_test_page_provider(true, |_| {
         let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2]));
         let cached = reopen_cached_file(backing);
@@ -730,20 +771,21 @@ fn range_operation_rechecks_page_populated_by_buffered_read() {
         assert!(cached.is_page_cached(0));
         assert!(!cached.is_page_cached(1));
 
-        let populated = Arc::new(AtomicBool::new(false));
-        let callback_populated = populated.clone();
+        let raced = Arc::new(AtomicBool::new(false));
+        let callback_raced = raced.clone();
         let racing_read = cached.clone();
         let endpoint = test_mapping_endpoint(move |event| match event {
             CacheMappingEvent::WritebackProtect(_) => {
-                if !callback_populated.swap(true, Ordering::AcqRel) {
-                    let mut old_contents = vec![0; PAGE_SIZE];
+                if !callback_raced.swap(true, Ordering::AcqRel) {
+                    let mut contents = vec![0; PAGE_SIZE];
                     assert_eq!(
                         racing_read
-                            .read_at(old_contents.as_mut_slice(), PAGE_SIZE as u64)
+                            .read_at(contents.as_mut_slice(), PAGE_SIZE as u64)
                             .unwrap(),
                         PAGE_SIZE
                     );
-                    assert!(old_contents.iter().all(|byte| *byte == 0x5a));
+                    assert!(contents.iter().all(|byte| *byte == 0x5a));
+                    assert!(racing_read.is_page_cached(1));
                 }
                 CacheMappingResult::Protected
             }
@@ -755,23 +797,21 @@ fn range_operation_rechecks_page_populated_by_buffered_read() {
             .operate_range(0, (PAGE_SIZE * 2) as u64, FileRangeOperation::PunchHole)
             .unwrap();
 
-        assert!(populated.load(Ordering::Acquire));
-        let mut contents = vec![0xff; PAGE_SIZE];
+        assert!(raced.load(Ordering::Acquire));
+        let mut contents = vec![0xff; PAGE_SIZE * 2];
         assert_eq!(
-            cached
-                .read_at(contents.as_mut_slice(), PAGE_SIZE as u64)
-                .unwrap(),
-            PAGE_SIZE
+            cached.read_at(contents.as_mut_slice(), 0).unwrap(),
+            contents.len()
         );
         assert!(
             contents.iter().all(|byte| *byte == 0),
-            "hole punch must invalidate data populated after the initial cache snapshot"
+            "a page populated after the first snapshot must not retain stale backing data"
         );
     });
 }
 
 #[test]
-fn range_operation_rechecks_page_populated_by_buffered_write() {
+fn range_operation_restarts_after_buffered_write_populates_cache() {
     with_test_page_provider(true, |_| {
         let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2]));
         let cached = reopen_cached_file(backing);
@@ -779,18 +819,19 @@ fn range_operation_rechecks_page_populated_by_buffered_write() {
         assert!(cached.is_page_cached(0));
         assert!(!cached.is_page_cached(1));
 
-        let populated = Arc::new(AtomicBool::new(false));
-        let callback_populated = populated.clone();
+        let raced = Arc::new(AtomicBool::new(false));
+        let callback_raced = raced.clone();
         let racing_write = cached.clone();
         let endpoint = test_mapping_endpoint(move |event| match event {
             CacheMappingEvent::WritebackProtect(_) => {
-                if !callback_populated.swap(true, Ordering::AcqRel) {
+                if !callback_raced.swap(true, Ordering::AcqRel) {
                     assert_eq!(
                         racing_write
-                            .write_at(&[0xa5][..], PAGE_SIZE as u64)
+                            .write_at(&[0xc3][..], PAGE_SIZE as u64)
                             .unwrap(),
                         1
                     );
+                    assert!(racing_write.is_page_cached(1));
                 }
                 CacheMappingResult::Protected
             }
@@ -802,17 +843,15 @@ fn range_operation_rechecks_page_populated_by_buffered_write() {
             .operate_range(0, (PAGE_SIZE * 2) as u64, FileRangeOperation::PunchHole)
             .unwrap();
 
-        assert!(populated.load(Ordering::Acquire));
-        let mut contents = vec![0xff; PAGE_SIZE];
+        assert!(raced.load(Ordering::Acquire));
+        let mut contents = vec![0xff; PAGE_SIZE * 2];
         assert_eq!(
-            cached
-                .read_at(contents.as_mut_slice(), PAGE_SIZE as u64)
-                .unwrap(),
-            PAGE_SIZE
+            cached.read_at(contents.as_mut_slice(), 0).unwrap(),
+            contents.len()
         );
         assert!(
             contents.iter().all(|byte| *byte == 0),
-            "hole punch must win over a buffered write completed before the backing mutation"
+            "a dirty page inserted after the first snapshot must be covered by the range update"
         );
     });
 }

@@ -483,6 +483,130 @@ fn stale_map_path_returns_its_unpublished_frames() {
     drop(pt);
 }
 
+/// Destination directory allocation is separate from PTE publication.  The
+/// prepared empty suffix can be installed under a structure lock without an
+/// allocator call, destructor, or TLB operation.
+#[test]
+fn installing_a_prepared_empty_map_path_has_no_critical_section_side_effects() {
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    OPS.lock().unwrap().clear();
+    let mut pt = PageTable::<RecordingMeta, RecordingFram4k>::new(RecordingFram4k).unwrap();
+    let va = VirtAddr::from_usize(VA);
+    let path = pt
+        .plan_map_page(va, PG)
+        .unwrap()
+        .prepare_path()
+        .unwrap()
+        .expect("an empty four-level root needs a directory suffix");
+    assert_eq!(
+        OPS.lock()
+            .unwrap()
+            .iter()
+            .filter(|op| matches!(op, Op::Alloc))
+            .count(),
+        4,
+        "one root and three detached child tables are allocated in prepare"
+    );
+    OPS.lock().unwrap().clear();
+
+    pt.try_install_map_path(path).unwrap();
+
+    assert!(
+        OPS.lock().unwrap().is_empty(),
+        "path apply must neither allocate, free nor flush"
+    );
+    assert!(matches!(pt.query(va), Err(PagingError::NotMapped)));
+    drop(pt);
+}
+
+/// A leaf relocation uses only pre-existing page-table structure.  In
+/// particular, clearing the source retains its now-empty directories so their
+/// lifetime cannot outrun the later TLB receipt.
+#[test]
+fn moving_a_preplanned_leaf_does_not_allocate_free_or_flush() {
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    OPS.lock().unwrap().clear();
+    let mut pt = PageTable::<RecordingMeta, RecordingFram4k>::new(RecordingFram4k).unwrap();
+    let source = VirtAddr::from_usize(VA);
+    let destination = VirtAddr::from_usize(VA + (1usize << 39));
+    let paddr = PhysAddr::from_usize(0x1000_0000);
+    pt.map(&MapConfig {
+        vaddr: source,
+        paddr,
+        size: PG,
+        pte: PteImpl::kernel_mode_config(),
+        allow_huge: false,
+        flush: false,
+    })
+    .unwrap();
+    let path = pt
+        .plan_map_page(destination, PG)
+        .unwrap()
+        .prepare_path()
+        .unwrap()
+        .expect("the destination uses a different root entry");
+    pt.try_install_map_path(path).unwrap();
+    let plan = pt.plan_move_page(source, destination).unwrap();
+    OPS.lock().unwrap().clear();
+
+    assert_eq!(pt.try_move_pages_with(&[plan]).unwrap(), 1);
+
+    assert!(
+        OPS.lock().unwrap().is_empty(),
+        "move apply must neither allocate, free nor flush"
+    );
+    assert!(matches!(pt.query(source), Err(PagingError::NotMapped)));
+    assert_eq!(pt.query(destination).unwrap().0, paddr);
+    pt.unmap(destination, PG).unwrap();
+    drop(pt);
+}
+
+/// Batch validation precedes every descriptor store.  A stale later source
+/// therefore cannot leave an earlier page partially moved.
+#[test]
+fn stale_move_batch_leaves_every_earlier_leaf_unchanged() {
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    OPS.lock().unwrap().clear();
+    let mut pt = PageTable::<RecordingMeta, RecordingFram4k>::new(RecordingFram4k).unwrap();
+    let source = VirtAddr::from_usize(VA);
+    let destination = VirtAddr::from_usize(VA + (1usize << 39));
+    let paddr = PhysAddr::from_usize(0x1000_0000);
+    pt.map(&MapConfig {
+        vaddr: source,
+        paddr,
+        size: 2 * PG,
+        pte: PteImpl::kernel_mode_config(),
+        allow_huge: false,
+        flush: false,
+    })
+    .unwrap();
+    let path = pt
+        .plan_map_page(destination, PG)
+        .unwrap()
+        .prepare_path()
+        .unwrap()
+        .expect("the destination uses a different root entry");
+    pt.try_install_map_path(path).unwrap();
+    let first = pt.plan_move_page(source, destination).unwrap();
+    let second = pt.plan_move_page(source + PG, destination + PG).unwrap();
+    pt.protect_page(source + PG, PteConfig::default()).unwrap();
+    OPS.lock().unwrap().clear();
+
+    assert!(matches!(
+        pt.try_move_pages_with(&[first, second]),
+        Err(PagingError::StaleMapDeposit { .. })
+    ));
+
+    assert!(
+        OPS.lock().unwrap().is_empty(),
+        "stale preflight must not allocate, free, flush, or write a leaf"
+    );
+    assert_eq!(pt.query(source).unwrap().0, paddr);
+    assert!(matches!(pt.query(destination), Err(PagingError::NotMapped)));
+    pt.unmap(source, 2 * PG).unwrap();
+    drop(pt);
+}
+
 /// A higher-level mutation can change a subset of the installed child leaves
 /// and still abort back to the exact huge descriptor observed during prepare.
 /// The installed child table is withdrawn into a new move-only deposit instead

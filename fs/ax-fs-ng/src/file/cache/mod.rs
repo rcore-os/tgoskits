@@ -353,14 +353,17 @@ impl CachedFileShared {
     /// Takes a strong snapshot of the endpoint capability and releases the
     /// publication lock before any VM code can run.
     fn mapping_endpoint(&self) -> Option<Arc<dyn CacheMappingEndpoint>> {
-        let mut installed = self.mapping_endpoint.lock();
-        match installed.as_ref().and_then(Weak::upgrade) {
-            Some(endpoint) => Some(endpoint),
-            None => {
-                *installed = None;
-                None
+        let (endpoint, stale) = {
+            let mut installed = self.mapping_endpoint.lock();
+            match installed.as_ref().and_then(Weak::upgrade) {
+                Some(endpoint) => (Some(endpoint), None),
+                None => (None, installed.take()),
             }
-        }
+        };
+        // Dropping the final weak control-block owner can deallocate. Keep it
+        // outside the endpoint publication lock just like detached pages.
+        drop(stale);
+        endpoint
     }
 
     fn has_mapping_endpoint(&self) -> bool {
@@ -640,36 +643,22 @@ impl CachedFile {
             });
         }
 
+        let candidates = self.cached_pages_in(u64::from(start_pn), u64::from(end_pn))?;
         let mut pending = Vec::new();
+        pending
+            .try_reserve_exact(candidates.len())
+            .map_err(|_| VfsError::NoMemory)?;
         let mut busy = false;
         {
             let mut cache = self.shared.page_cache.lock();
-            let candidate_count = cache
-                .iter()
-                .filter(|(pn, page)| {
-                    **pn >= start_pn && **pn < end_pn && !page.dirty && page.pins == 0
-                })
-                .count();
-            pending
-                .try_reserve(candidate_count)
-                .map_err(|_| VfsError::NoMemory)?;
-
-            let mut candidates = Vec::new();
-            candidates
-                .try_reserve(candidate_count)
-                .map_err(|_| VfsError::NoMemory)?;
-            for (&pn, page) in cache.iter() {
-                if pn < start_pn || pn >= end_pn {
+            for pn in candidates {
+                let Some(page) = cache.get_mut(&pn) else {
                     continue;
-                }
+                };
                 if page.dirty || page.pins != 0 {
                     busy = true;
                 } else {
-                    candidates.push(pn);
-                }
-            }
-            for pn in candidates {
-                if let Some(page) = cache.pop(&pn) {
+                    let page = cache.pop(&pn).ok_or(VfsError::BadState)?;
                     pending.push((pn, page));
                 }
             }
@@ -691,11 +680,13 @@ impl CachedFile {
                 CacheMappingResult::Retired => invalidated += 1,
                 CacheMappingResult::Busy | CacheMappingResult::Quarantined => {
                     busy = true;
-                    self.shared.page_cache.lock().put(pn, page);
+                    let replaced = self.shared.page_cache.lock().put(pn, page);
+                    drop(replaced);
                 }
                 CacheMappingResult::Protected | CacheMappingResult::Failed => {
                     first_error.get_or_insert(VfsError::BadState);
-                    self.shared.page_cache.lock().put(pn, page);
+                    let replaced = self.shared.page_cache.lock().put(pn, page);
+                    drop(replaced);
                 }
             }
         }
@@ -726,7 +717,7 @@ impl CachedFile {
             return Err(VfsError::OperationNotSupported);
         }
 
-        let dirty = self.dirty_pages_in_range(start_pn, end_pn);
+        let dirty = self.dirty_pages_in_range(start_pn, end_pn)?;
         if !dirty.is_empty()
             && let Err(error) = self.writeback_pages(&dirty)
         {
@@ -763,41 +754,12 @@ impl CachedFile {
         }
     }
 
-    fn page_or_insert<'a>(
+    fn prepare_cache_page(
         &self,
         file: &FileNode,
-        cache: &'a mut LruCache<u32, PageCache>,
         pn: u32,
         read_backing: bool,
-        allow_deferred_evict: bool,
-    ) -> VfsResult<(&'a mut PageCache, Option<(u32, PageCache)>)> {
-        // TODO: Matching the result of `get_mut` confuses compiler. See
-        // https://users.rust-lang.org/t/return-do-not-release-mutable-borrow/55757.
-        if cache.contains(&pn) {
-            return Ok((cache.get_mut(&pn).unwrap(), None));
-        }
-        let mut evicted = None;
-        if cache.len() >= cache.cap().get() {
-            if self.shared.has_mapping_endpoint() && !allow_deferred_evict {
-                // Internal buffered-I/O paths cannot call unknown mmap
-                // invalidators while holding `page_cache`/`io_lock`, and they
-                // have no way to return an eviction token to their caller.
-                // Leave the old page resident for the explicit reclaim worker.
-                return Err(VfsError::ResourceBusy);
-            }
-            // Cache is full, remove the least recently used page
-            if let Some((pn, page)) = cache.pop_lru() {
-                if page.dirty || page.pins != 0 {
-                    // Dirty writeback and pinned-page retirement are explicit
-                    // operations.  Never block on backing I/O or invalidate a
-                    // live frame while holding the cache index lock.
-                    cache.put(pn, page);
-                    return Err(VfsError::ResourceBusy);
-                }
-                evicted = Some((pn, page));
-            }
-        }
-
+    ) -> VfsResult<PageCache> {
         let mut page = PageCache::new()?;
         if self.in_memory || !read_backing {
             page.data().fill(0);
@@ -811,8 +773,66 @@ impl CachedFile {
             let read = file.read_at(page.data(), pn as u64 * PAGE_SIZE as u64)?;
             page.data()[read..].fill(0);
         }
-        cache.put(pn, page);
-        Ok((cache.get_mut(&pn).unwrap(), evicted))
+        Ok(page)
+    }
+
+    /// Updates an existing page or publishes one fully prepared cache page.
+    ///
+    /// Frame allocation and backing I/O happen before taking the cache-index
+    /// lock. The lock section only rechecks identity, mutates page bytes, and
+    /// installs the prepared owner. A losing candidate or capacity eviction is
+    /// dropped after unlocking, so frame reclaim cannot re-enter this index.
+    /// Callers serialize cache insertion with `io_lock`.
+    fn with_page_or_insert<R>(
+        &self,
+        file: &FileNode,
+        pn: u32,
+        read_backing: bool,
+        update: impl FnOnce(&mut PageCache, bool) -> R,
+    ) -> VfsResult<R> {
+        let mut update = Some(update);
+        {
+            let mut cache = self.shared.page_cache.lock();
+            if cache.contains(&pn) {
+                let page = cache.get_mut(&pn).ok_or(VfsError::BadState)?;
+                return Ok(update.take().ok_or(VfsError::BadState)?(page, false));
+            }
+        }
+
+        let mut prepared = self.prepare_cache_page(file, pn, read_backing)?;
+        let has_mapping_endpoint = self.shared.has_mapping_endpoint();
+        let (result, retired) = {
+            let mut cache = self.shared.page_cache.lock();
+            if cache.contains(&pn) {
+                let page = cache.get_mut(&pn).ok_or(VfsError::BadState)?;
+                let result = update.take().ok_or(VfsError::BadState)?(page, false);
+                (result, Some(prepared))
+            } else {
+                if cache.len() >= cache.cap().get() {
+                    if has_mapping_endpoint {
+                        drop(cache);
+                        drop(prepared);
+                        return Err(VfsError::ResourceBusy);
+                    }
+                    let Some((_, victim)) = cache.peek_lru() else {
+                        drop(cache);
+                        drop(prepared);
+                        return Err(VfsError::BadState);
+                    };
+                    if victim.dirty || victim.pins != 0 {
+                        drop(cache);
+                        drop(prepared);
+                        return Err(VfsError::ResourceBusy);
+                    }
+                }
+
+                let result = update.take().ok_or(VfsError::BadState)?(&mut prepared, true);
+                let retired = cache.push(pn, prepared).map(|(_, page)| page);
+                (result, retired)
+            }
+        };
+        drop(retired);
+        Ok(result)
     }
 
     /// Loads one bounded contiguous cache window beginning at `pn`.
@@ -822,8 +842,7 @@ impl CachedFile {
     /// filesystem blocks on IRQ-driven I/O.
     fn populate_page_window(&self, file: &FileNode, pn: u32, window_pages: usize) -> VfsResult<()> {
         if self.in_memory {
-            let mut guard = self.shared.page_cache.lock();
-            self.page_or_insert(file, &mut guard, pn, false, false)?;
+            self.with_page_or_insert(file, pn, false, |_, _| {})?;
             return Ok(());
         }
 
@@ -873,19 +892,19 @@ impl CachedFile {
             .min(run_len);
         file.read_at(&mut data[..readable], file_offset)?;
 
-        let mut guard = self.shared.page_cache.lock();
         for index in 0..run_pages {
             let page_number = pn
                 .checked_add(u32::try_from(index).map_err(|_| VfsError::InvalidInput)?)
                 .ok_or(VfsError::InvalidInput)?;
-            if guard.contains(&page_number) {
+            if self.shared.page_cache.lock().contains(&page_number) {
                 continue;
             }
-            let page = self
-                .page_or_insert(file, &mut guard, page_number, false, false)?
-                .0;
             let start = index * PAGE_SIZE;
-            page.data().copy_from_slice(&data[start..start + PAGE_SIZE]);
+            self.with_page_or_insert(file, page_number, false, |page, installed| {
+                if installed {
+                    page.data().copy_from_slice(&data[start..start + PAGE_SIZE]);
+                }
+            })?;
         }
         Ok(())
     }
@@ -1064,17 +1083,13 @@ impl CachedFile {
             }
             self.shared.update_len_max(current + n as u64);
 
-            {
-                let mut guard = self.shared.page_cache.lock();
-                let read_backing = page_start < old_len && !(page_offset == 0 && n == PAGE_SIZE);
-                let page = self
-                    .page_or_insert(file, &mut guard, pn, read_backing, false)?
-                    .0;
+            let read_backing = page_start < old_len && !(page_offset == 0 && n == PAGE_SIZE);
+            self.with_page_or_insert(file, pn, read_backing, |page, _| {
                 page.data()[page_offset..page_offset + n].copy_from_slice(&scratch.data()[..n]);
                 if !self.in_memory {
                     page.mark_dirty();
                 }
-            }
+            })?;
 
             written += n;
             current += n as u64;
@@ -1111,19 +1126,16 @@ impl CachedFile {
         self.shared.writeback_pages(pns)
     }
 
-    pub fn dirty_pages_in_range(&self, start_pn: u32, end_pn: u32) -> alloc::vec::Vec<u32> {
+    pub fn dirty_pages_in_range(
+        &self,
+        start_pn: u32,
+        end_pn: u32,
+    ) -> VfsResult<alloc::vec::Vec<u32>> {
         let _io = self.shared.io_lock.lock();
-        let guard = self.shared.page_cache.lock();
-        guard
-            .iter()
-            .filter_map(|(&pn, page)| {
-                if page.dirty && pn >= start_pn && pn < end_pn {
-                    Some(pn)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        let mut pages = self.cached_pages_in(u64::from(start_pn), u64::from(end_pn))?;
+        let mut guard = self.shared.page_cache.lock();
+        pages.retain(|pn| guard.get_mut(pn).is_some_and(|page| page.dirty));
+        Ok(pages)
     }
 
     pub fn clear_dirty_pages(&self, pns: &[u32]) {

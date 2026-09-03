@@ -101,10 +101,6 @@ impl PageTableDomain {
             }
         }
         PteStripeCursor {
-            range: ranges
-                .first()
-                .copied()
-                .unwrap_or_else(|| VirtAddrRange::new(VirtAddr::from_usize(0), VirtAddr::from_usize(0))),
             indices,
             _guards: guards,
         }
@@ -127,7 +123,6 @@ impl Default for PageTableDomain {
 
 /// Proof that all PTE stripes for a range are held in lock-order.
 pub struct PteStripeCursor<'a> {
-    range: VirtAddrRange,
     indices: InlineVec<usize, PTE_STRIPE_COUNT>,
     _guards: InlineVec<IrqMutexGuard<'a, ()>, PTE_STRIPE_COUNT>,
 }
@@ -144,10 +139,6 @@ impl Drop for PteStripeCursor<'_> {
 }
 
 impl PteStripeCursor<'_> {
-    pub fn range(&self) -> VirtAddrRange {
-        self.range
-    }
-
     pub fn stripe_indices(&self) -> &[usize] {
         &self.indices
     }

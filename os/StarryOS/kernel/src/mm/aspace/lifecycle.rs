@@ -19,7 +19,7 @@ use core::{
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::trap::PageFaultFlags;
 
-use crate::sync::{IrqMutex, Mutex};
+use crate::sync::{IrqMutex, Mutex, RwLock, try_push_irq_vec, try_reserve_irq_vec};
 
 use super::{AddrSpace, FaultResult, PageFaultApplyOutcome, TransparentHugePageMode};
 
@@ -499,21 +499,86 @@ impl MmInner {
 /// Weak identity index used only to resolve an explicit reverse-map entry.
 /// File-cache callbacks never retain an address-space pointer of their own;
 /// they name an MM by `AddressSpaceId` and obtain a typed kernel pin here.
-static MM_REGISTRY: IrqMutex<BTreeMap<AddressSpaceId, Weak<MmInner>>> =
-    IrqMutex::new(BTreeMap::new());
+///
+/// Writers path-copy the map before taking the publication lock.  The locked
+/// section is therefore one `Arc` swap: BTree node allocation/destruction and
+/// the displaced snapshot's last Drop both happen after the guard is gone.
+type MmRegistry = BTreeMap<AddressSpaceId, Weak<MmInner>>;
+static MM_REGISTRY: RwLock<Option<Arc<MmRegistry>>> = RwLock::new(None);
+
+fn mm_registry_snapshot() -> Option<Arc<MmRegistry>> {
+    MM_REGISTRY.read().clone()
+}
+
+fn registry_snapshot_matches(
+    current: &Option<Arc<MmRegistry>>,
+    expected: &Option<Arc<MmRegistry>>,
+) -> bool {
+    match (current, expected) {
+        (None, None) => true,
+        (Some(current), Some(expected)) => Arc::ptr_eq(current, expected),
+        (None, Some(_)) | (Some(_), None) => false,
+    }
+}
 
 fn register_mm(inner: &Arc<MmInner>) -> Result<(), MmCreateError> {
-    let mut registry = MM_REGISTRY.lock();
-    if registry.get(&inner.id).and_then(Weak::upgrade).is_some() {
-        return Err(MmCreateError::DuplicateIdentity);
+    loop {
+        let base = mm_registry_snapshot();
+        if base
+            .as_deref()
+            .and_then(|registry| registry.get(&inner.id))
+            .and_then(Weak::upgrade)
+            .is_some()
+        {
+            return Err(MmCreateError::DuplicateIdentity);
+        }
+        let mut next = base.as_deref().cloned().unwrap_or_default();
+        next.insert(inner.id, Arc::downgrade(inner));
+        let next = Some(Arc::new(next));
+        let displaced = {
+            let mut current = MM_REGISTRY.write();
+            if !registry_snapshot_matches(&current, &base) {
+                continue;
+            }
+            core::mem::replace(&mut *current, next)
+        };
+        drop(displaced);
+        return Ok(());
     }
-    registry.insert(inner.id, Arc::downgrade(inner));
-    Ok(())
 }
 
 fn unregister_mm(inner: &Arc<MmInner>) {
-    let removed = MM_REGISTRY.lock().remove(&inner.id);
-    debug_assert!(removed.is_some(), "address-space identity was not registered");
+    let removed = remove_registered_mm(inner.id);
+    debug_assert!(
+        removed,
+        "address-space identity was not registered"
+    );
+}
+
+fn remove_registered_mm(id: AddressSpaceId) -> bool {
+    loop {
+        let base = mm_registry_snapshot();
+        let Some(base_registry) = base.as_deref() else {
+            return false;
+        };
+        if !base_registry.contains_key(&id) {
+            return false;
+        }
+        let mut next = base_registry.clone();
+        let removed = next.remove(&id);
+        debug_assert!(removed.is_some());
+        let next = (!next.is_empty()).then(|| Arc::new(next));
+        let displaced = {
+            let mut current = MM_REGISTRY.write();
+            if !registry_snapshot_matches(&current, &base) {
+                continue;
+            }
+            core::mem::replace(&mut *current, next)
+        };
+        drop(displaced);
+        drop(removed);
+        return true;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -530,8 +595,11 @@ pub(crate) enum RmapMmLookupError {
 /// MM is already absent from memfd writable-mapping checks even though its
 /// frames remain quarantined until CPU activations and kernel pins drain.
 pub(crate) fn is_address_space_live(id: AddressSpaceId) -> bool {
-    let registry = MM_REGISTRY.lock();
-    match registry.get(&id) {
+    let weak = mm_registry_snapshot()
+        .as_deref()
+        .and_then(|registry| registry.get(&id))
+        .cloned();
+    match weak {
         // Fork and exec build a complete MM before publishing its first
         // MmHandle.  Treat that preparation window as live so a concurrent
         // F_SEAL_WRITE cannot slip between VMA publication and lifecycle
@@ -547,12 +615,15 @@ pub(crate) fn is_address_space_live(id: AddressSpaceId) -> bool {
 /// deliberately reported as Busy: an eviction must not assume that a missing
 /// new pin means its stale PTE has already disappeared.
 pub(crate) fn pin_mm_for_rmap(id: AddressSpaceId) -> Result<MmPin, RmapMmLookupError> {
-    let weak = MM_REGISTRY.lock().get(&id).cloned();
+    let weak = mm_registry_snapshot()
+        .as_deref()
+        .and_then(|registry| registry.get(&id))
+        .cloned();
     let Some(weak) = weak else {
         return Err(RmapMmLookupError::Gone);
     };
     let Some(inner) = weak.upgrade() else {
-        MM_REGISTRY.lock().remove(&id);
+        remove_registered_mm(id);
         return Err(RmapMmLookupError::Gone);
     };
     match inner.state() {
@@ -1068,34 +1139,40 @@ pub fn enqueue_retire(permit: RetirePermit) {
 /// the queue cannot reserve storage, so no lifecycle transition is lost.
 pub fn try_enqueue_retire(permit: RetirePermit) -> Result<(), RetireQueueError> {
     let inner = permit.0.clone();
-    let mut queue = RETIRE_QUEUE.lock();
-    if queue.try_reserve(1).is_err() {
+    if try_push_irq_vec(&RETIRE_QUEUE, permit).is_err() {
         {
             let _gate = inner.lifecycle_gate.lock();
             inner.state.store(MmState::NeedsRepair as u8, Ordering::Release);
             inner.retire_queued.store(false, Ordering::Release);
         }
-        drop(queue);
         enqueue_repair_candidate(inner);
         return Err(RetireQueueError::ResourceExhausted);
     }
-    queue.push(permit);
     Ok(())
 }
 
 fn enqueue_repair_candidate(inner: Arc<MmInner>) {
-    let mut repairs = REPAIR_QUEUE.lock();
-    if repairs.iter().any(|candidate| Arc::ptr_eq(candidate, &inner)) {
-        return;
-    }
-    if repairs.try_reserve(1).is_ok() {
+    loop {
+        if try_reserve_irq_vec(&REPAIR_QUEUE, 1).is_err() {
+            // Keep the MM in `NeedsRepair` and emit a diagnostic.  Dropping
+            // this temporary Arc is safe because the address-space contents
+            // remain owned by their lifecycle graph, and the state cannot be
+            // mistaken for reclaimed.
+            warn!("repair queue exhausted while retaining a NeedsRepair address space");
+            return;
+        }
+        let mut repairs = REPAIR_QUEUE.lock();
+        if repairs
+            .iter()
+            .any(|candidate| Arc::ptr_eq(candidate, &inner))
+        {
+            return;
+        }
+        if repairs.len() == repairs.capacity() {
+            continue;
+        }
         repairs.push(inner);
-    } else {
-        // There is no allocation-free queue available in this kernel.  Keep
-        // the MM in `NeedsRepair` and emit a diagnostic; dropping this Arc is
-        // safe because the address-space contents remain owned by it, but the
-        // state cannot be mistaken for reclaimed.
-        warn!("repair queue exhausted while retaining a NeedsRepair address space");
+        return;
     }
 }
 
@@ -1111,10 +1188,17 @@ pub fn reap_retired(limit: usize) -> (usize, usize) {
     if limit == 0 {
         return (0, 0);
     }
+    let count = {
+        let queue = RETIRE_QUEUE.lock();
+        limit.min(queue.len())
+    };
     let mut work = Vec::new();
+    if work.try_reserve_exact(count).is_err() {
+        return (0, 0);
+    }
     {
         let mut queue = RETIRE_QUEUE.lock();
-        let count = limit.min(queue.len());
+        let count = limit.min(queue.len()).min(work.capacity());
         work.extend(queue.drain(..count));
     }
     let mut reclaimed = 0;
@@ -1139,11 +1223,14 @@ pub fn reclaim_live_lazy_free_pages(limit: usize) -> usize {
         return 0;
     }
     let mut inners = Vec::new();
+    let registry = mm_registry_snapshot();
+    let Some(registry) = registry.as_deref() else {
+        return 0;
+    };
+    if inners.try_reserve(registry.len().min(limit)).is_err() {
+        return 0;
+    }
     {
-        let registry = MM_REGISTRY.lock();
-        if inners.try_reserve(registry.len().min(limit)).is_err() {
-            return 0;
-        }
         for weak in registry.values() {
             if inners.len() >= limit {
                 break;
@@ -1181,9 +1268,20 @@ pub fn reclaim_live_lazy_free_pages(limit: usize) -> usize {
 pub struct RepairPermit(Arc<MmInner>);
 
 pub fn take_repair_candidates(limit: usize) -> Vec<RepairPermit> {
-    let mut queue = REPAIR_QUEUE.lock();
-    let count = limit.min(queue.len());
-    queue.drain(..count).map(RepairPermit).collect()
+    let count = {
+        let queue = REPAIR_QUEUE.lock();
+        limit.min(queue.len())
+    };
+    let mut candidates: Vec<RepairPermit> = Vec::new();
+    if candidates.try_reserve_exact(count).is_err() {
+        return candidates;
+    }
+    {
+        let mut queue = REPAIR_QUEUE.lock();
+        let count = limit.min(queue.len()).min(candidates.capacity());
+        candidates.extend(queue.drain(..count).map(RepairPermit));
+    }
+    candidates
 }
 
 /// Requests one explicit repair retry pass on the sleepable reclaimer.
@@ -1471,7 +1569,7 @@ mod tests {
         {
             let guard = aspace.lock();
             assert_eq!(guard.resident_page_counts().anon, 1);
-            assert!(guard.pending_tlb_requests().is_empty());
+            assert!(guard.pending_tlb_requests().unwrap().is_empty());
             assert_eq!(
                 guard
                     .mutation_gate

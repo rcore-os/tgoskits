@@ -194,16 +194,19 @@ impl CachedFileShared {
         let Some(mut installed) = self.mapping_endpoint.try_lock() else {
             return true;
         };
-        if installed
-            .as_ref()
-            .and_then(alloc::sync::Weak::upgrade)
-            .is_some()
-        {
-            true
+        let endpoint = installed.as_ref().and_then(alloc::sync::Weak::upgrade);
+        let stale = if endpoint.is_some() {
+            None
         } else {
-            *installed = None;
-            false
-        }
+            installed.take()
+        };
+        let blocked = endpoint.is_some();
+        drop(installed);
+        // Neither an endpoint destructor nor the final weak-control-block
+        // deallocation belongs in the allocator-pressure try-lock section.
+        drop(stale);
+        drop(endpoint);
+        blocked
     }
 }
 

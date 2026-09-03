@@ -1,6 +1,6 @@
 use axfs_ng_vfs::{VfsError, VfsResult};
 
-use crate::os::memory::{FsPage, PAGE_SIZE};
+use crate::os::memory::FsPage;
 
 pub struct PageCache {
     page: Option<FsPage>,
@@ -60,9 +60,9 @@ impl PageCache {
     pub fn data(&mut self) -> &mut [u8] {
         let page = self
             .page
-            .as_ref()
+            .as_mut()
             .expect("page cache frame already dropped");
-        unsafe { core::slice::from_raw_parts_mut(page.as_mut_ptr(), PAGE_SIZE) }
+        page.as_mut_slice()
     }
 }
 

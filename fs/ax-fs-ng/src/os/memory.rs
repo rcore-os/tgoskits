@@ -29,8 +29,16 @@ impl FsPage {
         self.addr
     }
 
-    pub fn as_mut_ptr(&self) -> *mut u8 {
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.addr as *mut u8
+    }
+
+    /// Borrows the uniquely owned page as writable bytes.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `from_raw` requires a writable page-sized allocation owned
+        // by this non-Clone token. Requiring `&mut self` prevents safe callers
+        // from creating overlapping mutable slices from shared references.
+        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), PAGE_SIZE) }
     }
 }
 
@@ -131,7 +139,7 @@ pub mod test_support {
             Ok(unsafe { FsPage::from_raw(addr) })
         }
 
-        fn dealloc_page(&self, page: FsPage) {
+        fn dealloc_page(&self, mut page: FsPage) {
             let allocation_generation = self
                 .allocation_generations
                 .lock()

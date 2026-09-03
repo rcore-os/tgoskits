@@ -80,6 +80,56 @@ pub struct PageTableMapApplyError<T: TableMeta, A: FrameAllocator> {
     deposit: PageTableMapDeposit<T, A>,
 }
 
+/// Move-only ownership of page-table directories prepared for one vacant leaf.
+///
+/// Unlike [`PageTableMapDeposit`], the final leaf remains empty.  This mirrors
+/// Linux's `pmd_install()` preparation for `move_ptes()`: destination page-table
+/// structure can be allocated and published before the PTE lock is acquired,
+/// while the later leaf move is allocation-free.
+pub struct PageTablePathDeposit<T: TableMeta, A: FrameAllocator> {
+    plan: PageTableMapPlan<T, A>,
+    path: ReservedMapPath<T, A>,
+}
+
+/// Failed path publication that returns every still-detached table frame.
+pub struct PageTablePathApplyError<T: TableMeta, A: FrameAllocator> {
+    error: PagingError,
+    deposit: PageTablePathDeposit<T, A>,
+}
+
+/// Immutable identity of one occupied leaf.
+///
+/// It is deliberately allocation-free and owns neither the mapped data frame
+/// nor any page-table frame.  An apply API must revalidate this identity before
+/// clearing the descriptor.
+#[derive(Clone, Copy)]
+pub struct PageTableLeafPlan<T: TableMeta> {
+    root_paddr: PhysAddr,
+    parent_paddr: PhysAddr,
+    vaddr: VirtAddr,
+    paddr: PhysAddr,
+    config: PteConfigOf<T>,
+    page_size: usize,
+    level: usize,
+    _marker: PhantomData<T>,
+}
+
+enum PageTableMoveDestination<T: TableMeta, A: FrameAllocator> {
+    Vacant(PageTableMapPlan<T, A>),
+    Occupied(PageTableLeafPlan<T>),
+}
+
+/// Allocation-free preimage for one page-table leaf relocation.
+///
+/// A vacant destination must already have all intermediate directories.  Use
+/// [`PageTableMapPlan::prepare_path`] before constructing the final move plan
+/// when the destination hierarchy is absent.
+pub struct PageTableMovePlan<T: TableMeta, A: FrameAllocator> {
+    source: PageTableLeafPlan<T>,
+    destination_vaddr: VirtAddr,
+    destination: PageTableMoveDestination<T, A>,
+}
+
 /// A child-table deposit bound to one observed huge leaf.
 ///
 /// This is the page-table-generic equivalent of Linux's deposited PTE page:
@@ -256,6 +306,34 @@ impl<T: TableMeta, A: FrameAllocator> PageTableMapPlan<T, A> {
         self.page_size
     }
 
+    /// Prepares only the missing intermediate directories for this leaf.
+    ///
+    /// `Ok(None)` means the complete directory path already exists.  A
+    /// returned deposit owns an unreachable, zeroed suffix; publishing it is
+    /// one bounded parent-entry store and never installs the leaf itself.
+    pub fn prepare_path(self) -> PagingResult<Option<PageTablePathDeposit<T, A>>> {
+        if self.attach_level == self.target_level {
+            return Ok(None);
+        }
+
+        let root_level = self.attach_level - 1;
+        let root = Frame::<T, A>::new(self.allocator.clone())?;
+        let path = ReservedMapPath {
+            root: Some(root),
+            root_level,
+        };
+        let mut current = path.root();
+        let mut current_level = root_level;
+        while current_level > self.target_level {
+            let child = Frame::<T, A>::new(self.allocator.clone())?;
+            let index = Frame::<T, A>::virt_to_index(self.vaddr, current_level);
+            current.as_slice_mut()[index] = T::P::new_table(child.paddr);
+            current = child;
+            current_level -= 1;
+        }
+        Ok(Some(PageTablePathDeposit { plan: self, path }))
+    }
+
     /// Allocates and initializes every missing table below the captured parent.
     ///
     /// No live page-table entry is changed.  Failure drops the unpublished
@@ -328,6 +406,67 @@ impl<T: TableMeta, A: FrameAllocator> PageTableMapApplyError<T, A> {
     }
 }
 
+impl<T: TableMeta, A: FrameAllocator> PageTablePathApplyError<T, A> {
+    pub const fn error(&self) -> &PagingError {
+        &self.error
+    }
+
+    pub fn into_parts(self) -> (PagingError, PageTablePathDeposit<T, A>) {
+        (self.error, self.deposit)
+    }
+}
+
+impl<T: TableMeta> PageTableLeafPlan<T> {
+    pub const fn vaddr(&self) -> VirtAddr {
+        self.vaddr
+    }
+
+    pub const fn paddr(&self) -> PhysAddr {
+        self.paddr
+    }
+
+    pub const fn config(&self) -> PteConfigOf<T> {
+        self.config
+    }
+
+    pub const fn page_size(&self) -> usize {
+        self.page_size
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> PageTableMovePlan<T, A> {
+    pub const fn source_vaddr(&self) -> VirtAddr {
+        self.source.vaddr
+    }
+
+    pub const fn destination_vaddr(&self) -> VirtAddr {
+        self.destination_vaddr
+    }
+
+    pub const fn paddr(&self) -> PhysAddr {
+        self.source.paddr
+    }
+
+    pub const fn config(&self) -> PteConfigOf<T> {
+        self.source.config
+    }
+
+    pub const fn page_size(&self) -> usize {
+        self.source.page_size
+    }
+
+    pub const fn destination_is_occupied(&self) -> bool {
+        matches!(&self.destination, PageTableMoveDestination::Occupied(_))
+    }
+
+    pub const fn destination_page_size(&self) -> usize {
+        match &self.destination {
+            PageTableMoveDestination::Vacant(_) => self.source.page_size,
+            PageTableMoveDestination::Occupied(target) => target.page_size,
+        }
+    }
+}
+
 impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTableMapPlan<T, A> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PageTableMapPlan")
@@ -356,6 +495,45 @@ impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTableMapApplyErro
         f.debug_struct("PageTableMapApplyError")
             .field("error", &self.error)
             .field("deposit", &self.deposit)
+            .finish()
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTablePathDeposit<T, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PageTablePathDeposit")
+            .field("plan", &self.plan)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTablePathApplyError<T, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PageTablePathApplyError")
+            .field("error", &self.error)
+            .field("deposit", &self.deposit)
+            .finish()
+    }
+}
+
+impl<T: TableMeta> core::fmt::Debug for PageTableLeafPlan<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PageTableLeafPlan")
+            .field("root_paddr", &self.root_paddr)
+            .field("parent_paddr", &self.parent_paddr)
+            .field("vaddr", &self.vaddr)
+            .field("paddr", &self.paddr)
+            .field("page_size", &self.page_size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTableMovePlan<T, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PageTableMovePlan")
+            .field("source", &self.source)
+            .field("destination_vaddr", &self.destination_vaddr)
+            .field("destination_occupied", &self.destination_is_occupied())
             .finish()
     }
 }
@@ -1151,6 +1329,303 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 T::P::new_page(deposit.paddr, deposit.config, deposit.plan.target_level > 1);
         }
         Ok(())
+    }
+
+    /// Publishes a prepared, empty page-table suffix.
+    ///
+    /// The operation only revalidates the captured prefix and performs one
+    /// release-ordered parent-entry store.  It never allocates, frees, or
+    /// flushes; a failed apply returns the detached suffix to its caller.
+    pub fn try_install_map_path(
+        &mut self,
+        mut deposit: PageTablePathDeposit<T, A>,
+    ) -> Result<(), PageTablePathApplyError<T, A>> {
+        let stale = || PagingError::stale_map_deposit(deposit.plan.vaddr);
+        if self.root_paddr() != deposit.plan.root_paddr
+            || deposit.plan.attach_level <= deposit.plan.target_level
+        {
+            return Err(PageTablePathApplyError {
+                error: stale(),
+                deposit,
+            });
+        }
+
+        let mut parent = self.root.clone();
+        let mut level = Frame::<T, A>::PT_LEVEL;
+        while level > deposit.plan.attach_level {
+            let index = Frame::<T, A>::virt_to_index(deposit.plan.vaddr, level);
+            let entry = parent.as_slice()[index];
+            if entry.unused() || entry.huge(true) || !entry.present() {
+                return Err(PageTablePathApplyError {
+                    error: stale(),
+                    deposit,
+                });
+            }
+            parent = Frame::from_paddr(entry.paddr(true), self.root.allocator.clone());
+            level -= 1;
+        }
+        if parent.paddr != deposit.plan.parent_paddr {
+            return Err(PageTablePathApplyError {
+                error: stale(),
+                deposit,
+            });
+        }
+        let index = Frame::<T, A>::virt_to_index(deposit.plan.vaddr, level);
+        if !parent.as_slice()[index].unused() {
+            return Err(PageTablePathApplyError {
+                error: stale(),
+                deposit,
+            });
+        }
+
+        let path_root = deposit.path.root();
+        fence(Ordering::Release);
+        parent.as_slice_mut()[index] = T::P::new_table(path_root.paddr);
+        deposit.path.disarm();
+        Ok(())
+    }
+
+    /// Captures the exact occupied leaf covering `vaddr` without allocating.
+    pub fn plan_unmap_page(&self, vaddr: VirtAddr) -> PagingResult<PageTableLeafPlan<T>> {
+        if T::STRICT_ADDRESS_WIDTH && !Self::is_addr_in_width(vaddr.as_usize()) {
+            return Err(PagingError::address_overflow("plan_unmap_page"));
+        }
+        let (pte, level) = self
+            .root
+            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)?;
+        let page_size = Frame::<T, A>::level_size(level);
+        let leaf_vaddr = vaddr.align_down(page_size);
+        let mut parent = self.root.clone();
+        let mut current_level = Frame::<T, A>::PT_LEVEL;
+        while current_level > level {
+            let index = Frame::<T, A>::virt_to_index(leaf_vaddr, current_level);
+            let entry = parent.as_slice()[index];
+            if entry.unused() || entry.huge(true) || !entry.present() {
+                return Err(PagingError::hierarchy_error(
+                    "Occupied leaf path changed while it was captured",
+                ));
+            }
+            parent = Frame::from_paddr(entry.paddr(true), self.root.allocator.clone());
+            current_level -= 1;
+        }
+        Ok(PageTableLeafPlan {
+            root_paddr: self.root_paddr(),
+            parent_paddr: parent.paddr,
+            vaddr: leaf_vaddr,
+            paddr: pte.paddr(level > 1),
+            config: pte.config(level > 1),
+            page_size,
+            level,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Captures one source leaf and the destination state for a later batch
+    /// move.  The destination hierarchy must already exist when it is vacant.
+    pub fn plan_move_page(
+        &self,
+        source_vaddr: VirtAddr,
+        destination_vaddr: VirtAddr,
+    ) -> PagingResult<PageTableMovePlan<T, A>> {
+        let source = self.plan_unmap_page(source_vaddr)?;
+        if source.vaddr != source_vaddr
+            || !destination_vaddr
+                .as_usize()
+                .is_multiple_of(source.page_size)
+        {
+            return Err(PagingError::alignment_error(
+                "Page move endpoints must align to the source leaf",
+            ));
+        }
+        self.validate_address_width(destination_vaddr, source.page_size, "plan_move_page")?;
+
+        let destination = match self.plan_map_page(destination_vaddr, source.page_size) {
+            Ok(plan) if plan.attach_level == plan.target_level => {
+                PageTableMoveDestination::Vacant(plan)
+            }
+            Ok(_) => {
+                return Err(PagingError::hierarchy_error(
+                    "Destination page-table path must be prepared before a move",
+                ));
+            }
+            Err(PagingError::MappingConflict { .. }) => {
+                PageTableMoveDestination::Occupied(self.plan_unmap_page(destination_vaddr)?)
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(PageTableMovePlan {
+            source,
+            destination_vaddr,
+            destination,
+        })
+    }
+
+    fn validate_leaf_plan(&self, plan: &PageTableLeafPlan<T>) -> PagingResult<()>
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        let stale = || PagingError::stale_map_deposit(plan.vaddr);
+        if self.root_paddr() != plan.root_paddr {
+            return Err(stale());
+        }
+        let mut parent = self.root.clone();
+        let mut level = Frame::<T, A>::PT_LEVEL;
+        while level > plan.level {
+            let index = Frame::<T, A>::virt_to_index(plan.vaddr, level);
+            let entry = parent.as_slice()[index];
+            if entry.unused() || entry.huge(true) || !entry.present() {
+                return Err(stale());
+            }
+            parent = Frame::from_paddr(entry.paddr(true), self.root.allocator.clone());
+            level -= 1;
+        }
+        if parent.paddr != plan.parent_paddr {
+            return Err(stale());
+        }
+        let entry = parent.as_slice()[Frame::<T, A>::virt_to_index(plan.vaddr, level)];
+        if entry.unused()
+            || (level > 1 && !entry.huge(true))
+            || entry.paddr(level > 1) != plan.paddr
+            || entry.config(level > 1) != plan.config
+            || Frame::<T, A>::level_size(level) != plan.page_size
+        {
+            return Err(stale());
+        }
+        Ok(())
+    }
+
+    fn validate_vacant_move_target(&self, plan: &PageTableMapPlan<T, A>) -> PagingResult<()> {
+        let stale = || PagingError::stale_map_deposit(plan.vaddr);
+        if self.root_paddr() != plan.root_paddr || plan.attach_level != plan.target_level {
+            return Err(stale());
+        }
+        let mut parent = self.root.clone();
+        let mut level = Frame::<T, A>::PT_LEVEL;
+        while level > plan.target_level {
+            let index = Frame::<T, A>::virt_to_index(plan.vaddr, level);
+            let entry = parent.as_slice()[index];
+            if entry.unused() || entry.huge(true) || !entry.present() {
+                return Err(stale());
+            }
+            parent = Frame::from_paddr(entry.paddr(true), self.root.allocator.clone());
+            level -= 1;
+        }
+        if parent.paddr != plan.parent_paddr
+            || !parent.as_slice()[Frame::<T, A>::virt_to_index(plan.vaddr, level)].unused()
+        {
+            return Err(stale());
+        }
+        Ok(())
+    }
+
+    /// Clears one previously planned leaf without pruning directories or
+    /// performing a TLB flush.
+    ///
+    /// The caller retains ownership of the mapped data frame and must attach a
+    /// later TLB obligation before releasing it.  Empty page-table directories
+    /// remain owned by this page table and can be reused by a subsequent fault.
+    pub fn try_unmap_page_with(
+        &mut self,
+        plan: PageTableLeafPlan<T>,
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)>
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        self.validate_leaf_plan(&plan)?;
+        let mut parent: Frame<T, A> =
+            Frame::from_paddr(plan.parent_paddr, self.root.allocator.clone());
+        parent.as_slice_mut()[Frame::<T, A>::virt_to_index(plan.vaddr, plan.level)].clear();
+        Ok((plan.paddr, plan.config, plan.page_size))
+    }
+
+    /// Applies a sorted batch of page moves after validating every preimage.
+    ///
+    /// No descriptor is changed until the whole slice passes validation.  The
+    /// apply phase then consists only of PTE clears/stores: it cannot allocate,
+    /// free, flush, or fail.  Source directories are intentionally retained,
+    /// matching Linux's PTE move before `free_pgtables()` handles the detached
+    /// source VMA.
+    pub fn try_move_pages_with(&mut self, plans: &[PageTableMovePlan<T, A>]) -> PagingResult<usize>
+    where
+        PteConfigOf<T>: PartialEq,
+    {
+        let mut source_bounds = None::<(VirtAddr, VirtAddr)>;
+        let mut destination_bounds = None::<(VirtAddr, VirtAddr)>;
+        let mut previous_source_end = None::<VirtAddr>;
+        let mut previous_destination_end = None::<VirtAddr>;
+
+        for plan in plans {
+            let source_end = plan
+                .source
+                .vaddr
+                .checked_add(plan.source.page_size)
+                .ok_or_else(|| PagingError::address_overflow("page move source range"))?;
+            let destination_end = plan
+                .destination_vaddr
+                .checked_add(plan.source.page_size)
+                .ok_or_else(|| PagingError::address_overflow("page move destination range"))?;
+            if previous_source_end.is_some_and(|end| end > plan.source.vaddr)
+                || previous_destination_end.is_some_and(|end| end > plan.destination_vaddr)
+            {
+                return Err(PagingError::invalid_range(
+                    "Page move plans must be sorted and non-overlapping",
+                ));
+            }
+            previous_source_end = Some(source_end);
+            previous_destination_end = Some(destination_end);
+            source_bounds = Some(
+                source_bounds.map_or((plan.source.vaddr, source_end), |(start, _)| {
+                    (start, source_end)
+                }),
+            );
+            destination_bounds = Some(
+                destination_bounds
+                    .map_or((plan.destination_vaddr, destination_end), |(start, _)| {
+                        (start, destination_end)
+                    }),
+            );
+
+            self.validate_leaf_plan(&plan.source)?;
+            match &plan.destination {
+                PageTableMoveDestination::Vacant(target) => {
+                    self.validate_vacant_move_target(target)?;
+                }
+                PageTableMoveDestination::Occupied(target) => {
+                    self.validate_leaf_plan(target)?;
+                }
+            }
+        }
+        if let (Some((source_start, source_end)), Some((destination_start, destination_end))) =
+            (source_bounds, destination_bounds)
+            && source_start < destination_end
+            && destination_start < source_end
+        {
+            return Err(PagingError::invalid_range(
+                "Page move source and destination ranges overlap",
+            ));
+        }
+
+        let allocator = self.root.allocator.clone();
+        for plan in plans {
+            let mut source_parent: Frame<T, A> =
+                Frame::from_paddr(plan.source.parent_paddr, allocator.clone());
+            source_parent.as_slice_mut()
+                [Frame::<T, A>::virt_to_index(plan.source.vaddr, plan.source.level)]
+            .clear();
+            if let PageTableMoveDestination::Vacant(target) = &plan.destination {
+                let mut destination_parent: Frame<T, A> =
+                    Frame::from_paddr(target.parent_paddr, allocator.clone());
+                fence(Ordering::Release);
+                destination_parent.as_slice_mut()
+                    [Frame::<T, A>::virt_to_index(target.vaddr, target.target_level)] =
+                    T::P::new_page(
+                        plan.source.paddr,
+                        plan.source.config,
+                        target.target_level > 1,
+                    );
+            }
+        }
+        Ok(plans.len())
     }
 
     /// Allocates a pre-zeroed child table and binds it to the currently

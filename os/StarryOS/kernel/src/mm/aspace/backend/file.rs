@@ -796,7 +796,11 @@ impl FileBackend {
         // let this path enter the cache without carrying a VMA metadata lock.
         let (start_pn, end_pn) = self.cache_page_range(range_start, range_end)?;
 
-        let dirty_pns = self.0.cache.dirty_pages_in_range(start_pn, end_pn);
+        let dirty_pns = self
+            .0
+            .cache
+            .dirty_pages_in_range(start_pn, end_pn)
+            .map_err(StarryError::from)?;
 
         if dirty_pns.is_empty() {
             return Ok(());

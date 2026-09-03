@@ -4,8 +4,9 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use ax_memory_addr::{VirtAddr, VirtAddrRange};
+use heapless::Vec as InlineVec;
 
-use crate::sync::IrqMutex;
+use crate::sync::{IrqMutex, try_push_irq_vec, try_reserve_irq_vec};
 
 use super::{AddressSpaceId, VmEpoch, objects::FrameLease};
 
@@ -94,9 +95,19 @@ pub struct TlbRequest {
     pub space_id: AddressSpaceId,
     pub epoch: VmEpoch,
     pub targets: usize,
-    pub ranges: Vec<TlbRange>,
+    pub ranges: InlineVec<TlbRange, MAX_INLINE_TLB_RANGES>,
     acknowledged: usize,
+    ranges_collapsed_to_full_flush: bool,
 }
+
+// This is a batching threshold, not an ABI limit.  More disjoint ranges are
+// conservatively collapsed into one full-address-space flush, just as Linux
+// mmu_gather falls back to flushing a batch when its inline storage is full.
+const MAX_INLINE_TLB_RANGES: usize = 8;
+
+// A receipt emits exactly one publication and one retirement event.  Keeping
+// those records inline makes cloning a published receipt allocation-free.
+const MAX_PUBLISH_EVENTS: usize = 2;
 
 #[derive(Debug)]
 struct QuarantinedFrame {
@@ -140,15 +151,12 @@ impl TlbQuarantine {
             // acknowledgement callback.
             return Ok(());
         }
-        let mut entries = self.entries.lock();
-        if entries.try_reserve(1).is_err() {
-            return Err(QuarantineFailure {
-                frame,
+        try_push_irq_vec(&self.entries, QuarantinedFrame { frame, request }).map_err(|entry| {
+            QuarantineFailure {
+                frame: entry.frame,
                 reason: QuarantineError::ResourceExhausted,
-            });
-        }
-        entries.push(QuarantinedFrame { frame, request });
-        Ok(())
+            }
+        })
     }
 
     /// Fallible insertion that returns ownership of the frame on allocation
@@ -167,12 +175,20 @@ impl TlbQuarantine {
         self.entries.lock().len()
     }
 
-    pub fn requests(&self) -> Vec<TlbRequest> {
-        self.entries
-            .lock()
-            .iter()
-            .map(|entry| entry.request.clone())
-            .collect()
+    pub fn requests(&self) -> Result<Vec<TlbRequest>, QuarantineError> {
+        let mut requests = Vec::new();
+        loop {
+            let required = self.entries.lock().len();
+            requests
+                .try_reserve_exact(required)
+                .map_err(|_| QuarantineError::ResourceExhausted)?;
+            let entries = self.entries.lock();
+            if entries.len() > requests.capacity() {
+                continue;
+            }
+            requests.extend(entries.iter().map(|entry| entry.request.clone()));
+            return Ok(requests);
+        }
     }
 
     pub fn contains_request(&self, space_id: AddressSpaceId, epoch: VmEpoch) -> bool {
@@ -184,18 +200,39 @@ impl TlbQuarantine {
     /// Removes entries whose obligations were already satisfied by a local
     /// flush.  Remote acknowledgements are still handled by
     /// [`Self::acknowledge`].
-    pub fn reap_ready(&self) -> Vec<FrameLease> {
-        let mut entries = self.entries.lock();
+    pub fn reap_ready(&self) -> Result<Vec<FrameLease>, QuarantineError> {
         let mut released = Vec::new();
-        let mut index = 0;
-        while index < entries.len() {
-            if entries[index].request.is_complete() {
-                released.push(entries.swap_remove(index).frame);
-            } else {
-                index += 1;
+        loop {
+            if released.len() == released.capacity() {
+                if !self
+                    .entries
+                    .lock()
+                    .iter()
+                    .any(|entry| entry.request.is_complete())
+                {
+                    return Ok(released);
+                }
+                released
+                    .try_reserve(1)
+                    .map_err(|_| QuarantineError::ResourceExhausted)?;
             }
+            let entry = {
+                let mut entries = self.entries.lock();
+                entries
+                    .iter()
+                    .position(|entry| entry.request.is_complete())
+                    .map(|index| entries.swap_remove(index))
+            };
+            let Some(entry) = entry else {
+                return Ok(released);
+            };
+            // Both the request and the frame owner leave the IRQ-save queue
+            // before either can be dropped.  `push` cannot grow after the
+            // reservation above.
+            let QuarantinedFrame { frame, request } = entry;
+            released.push(frame);
+            drop(request);
         }
-        released
     }
 
     /// Records one acknowledgement and returns frames that became reclaimable.
@@ -204,22 +241,16 @@ impl TlbQuarantine {
         space_id: AddressSpaceId,
         epoch: VmEpoch,
         cpu: usize,
-    ) -> Vec<FrameLease> {
-        let mut entries = self.entries.lock();
-        let mut released = Vec::new();
-        let mut index = 0;
-        while index < entries.len() {
-            let entry = &mut entries[index];
-            if entry.request.space_id == space_id && entry.request.epoch == epoch {
-                let _ = entry.request.acknowledge(cpu);
-            }
-            if entries[index].request.is_complete() {
-                released.push(entries.swap_remove(index).frame);
-            } else {
-                index += 1;
+    ) -> Result<Vec<FrameLease>, QuarantineError> {
+        {
+            let mut entries = self.entries.lock();
+            for entry in entries.iter_mut() {
+                if entry.request.space_id == space_id && entry.request.epoch == epoch {
+                    let _ = entry.request.acknowledge(cpu);
+                }
             }
         }
-        released
+        self.reap_ready()
     }
 }
 
@@ -242,24 +273,32 @@ impl TlbRequest {
             space_id,
             epoch,
             targets,
-            ranges: Vec::new(),
+            ranges: InlineVec::new(),
             acknowledged: 0,
+            ranges_collapsed_to_full_flush: false,
         }
     }
 
     pub fn with_range(mut self, range: TlbRange) -> Self {
-        self.ranges.push(range);
+        self.add_range(range);
         self
     }
 
     /// Fallible variant used by prepare paths that must not turn metadata
     /// pressure into a panic.
     pub fn try_with_range(mut self, range: TlbRange) -> Result<Self, MutationError> {
-        self.ranges
-            .try_reserve(1)
-            .map_err(|_| MutationError::ResourceExhausted)?;
-        self.ranges.push(range);
+        self.add_range(range);
         Ok(self)
+    }
+
+    fn add_range(&mut self, range: TlbRange) {
+        if self.ranges_collapsed_to_full_flush {
+            return;
+        }
+        if self.ranges.push(range).is_err() {
+            self.ranges.clear();
+            self.ranges_collapsed_to_full_flush = true;
+        }
     }
 
     pub const fn targets(&self) -> usize {
@@ -415,18 +454,28 @@ impl MutationGate {
         if self.needs_repair() {
             return Err(MutationError::NeedsRepair);
         }
-        let _commit_guard = self.commit_lock.lock();
         mutation.freeze_active_targets();
-        // Reserve the pending-receipt slot before changing the epoch.  If the
-        // reservation cannot be made, the operation remains wholly prepared
-        // and callers can retry without an already-published mutation that has
-        // nowhere to record its TLB obligation.
-        if !mutation.receipt.tlb_obligation.is_complete() {
-            let mut pending = self.pending.lock();
-            pending
-                .try_reserve(1)
-                .map_err(|_| MutationError::ResourceExhausted)?;
-        }
+        let needs_pending_slot = !mutation.receipt.tlb_obligation.is_complete();
+        // Capacity preparation must not run while the IRQ-saving commit gate
+        // is held.  Recheck after taking the gate because another commit may
+        // consume the observed spare slot; acknowledgements can only remove
+        // entries, so once this loop succeeds the slot remains ours until
+        // publication finishes.
+        let _commit_guard = loop {
+            if needs_pending_slot {
+                try_reserve_irq_vec(&self.pending, 1)
+                    .map_err(|_| MutationError::ResourceExhausted)?;
+            }
+            let guard = self.commit_lock.lock();
+            let has_capacity = !needs_pending_slot || {
+                let pending = self.pending.lock();
+                pending.len() < pending.capacity()
+            };
+            if has_capacity {
+                break guard;
+            }
+            drop(guard);
+        };
         let base_epoch = self.current_epoch();
         let new_epoch = base_epoch
             .checked_next()
@@ -469,12 +518,24 @@ impl MutationGate {
         self.pending.lock().len()
     }
 
-    pub fn pending_requests(&self) -> Vec<TlbRequest> {
-        self.pending
-            .lock()
-            .iter()
-            .map(|receipt| receipt.tlb_obligation.clone())
-            .collect()
+    pub fn pending_requests(&self) -> Result<Vec<TlbRequest>, MutationError> {
+        let mut requests = Vec::new();
+        loop {
+            let required = self.pending.lock().len();
+            requests
+                .try_reserve_exact(required)
+                .map_err(|_| MutationError::ResourceExhausted)?;
+            let pending = self.pending.lock();
+            if pending.len() > requests.capacity() {
+                continue;
+            }
+            requests.extend(
+                pending
+                    .iter()
+                    .map(|receipt| receipt.tlb_obligation.clone()),
+            );
+            return Ok(requests);
+        }
     }
 
     /// Returns one immutable shootdown request without exposing the pending
@@ -518,10 +579,13 @@ impl MutationGate {
         }
         let mut receipt = pending.swap_remove(index);
         receipt.state = MutationState::Retired;
-        receipt.events.push(PublishEvent::MappingRetired {
-            space_id,
-            epoch,
-        });
+        receipt
+            .events
+            .push(PublishEvent::MappingRetired {
+                space_id,
+                epoch,
+            })
+            .expect("a receipt emits one retirement event");
         #[cfg(test)]
         {
             *self.last_retired_receipt.lock() = Some(receipt.clone());
@@ -540,7 +604,7 @@ pub struct MutationReceipt {
     pub mapping_delta: MappingDelta,
     pub resident_delta: ResidentDelta,
     pub tlb_obligation: TlbRequest,
-    pub events: Vec<PublishEvent>,
+    events: InlineVec<PublishEvent, MAX_PUBLISH_EVENTS>,
     state: MutationState,
 }
 
@@ -580,7 +644,7 @@ impl PreparedMutation {
                 mapping_delta: MappingDelta::default(),
                 resident_delta: ResidentDelta::default(),
                 tlb_obligation: TlbRequest::new(space_id, base_epoch, targets),
-                events: Vec::new(),
+                events: InlineVec::new(),
                 state: MutationState::Prepared,
             },
             active_targets: None,
@@ -637,39 +701,22 @@ impl PreparedMutation {
     }
 
     pub fn add_tlb_range(&mut self, range: TlbRange) {
-        self.receipt.tlb_obligation.ranges.push(range);
+        self.receipt.tlb_obligation.add_range(range);
     }
 
     pub fn try_reserve_tlb_ranges(&mut self, additional: usize) -> Result<(), MutationError> {
-        self.receipt
-            .tlb_obligation
-            .ranges
-            .try_reserve(additional)
-            .map_err(|_| {
-                self.receipt.state = MutationState::Aborted;
-                MutationError::ResourceExhausted
-            })
-    }
-
-    pub fn try_add_tlb_range(&mut self, range: TlbRange) -> Result<(), MutationError> {
-        self.receipt.tlb_obligation.ranges.try_reserve(1).map_err(|_| {
-            self.receipt.state = MutationState::Aborted;
-            MutationError::ResourceExhausted
-        })?;
-        self.receipt.tlb_obligation.ranges.push(range);
+        let request = &mut self.receipt.tlb_obligation;
+        if !request.ranges_collapsed_to_full_flush
+            && request.ranges.len().saturating_add(additional) > MAX_INLINE_TLB_RANGES
+        {
+            request.ranges.clear();
+            request.ranges_collapsed_to_full_flush = true;
+        }
         Ok(())
     }
 
-    pub fn push_event(&mut self, event: PublishEvent) {
-        self.receipt.events.push(event);
-    }
-
-    pub fn try_push_event(&mut self, event: PublishEvent) -> Result<(), MutationError> {
-        self.receipt
-            .events
-            .try_reserve(1)
-            .map_err(|_| MutationError::ResourceExhausted)?;
-        self.receipt.events.push(event);
+    pub fn try_add_tlb_range(&mut self, range: TlbRange) -> Result<(), MutationError> {
+        self.receipt.tlb_obligation.add_range(range);
         Ok(())
     }
 
@@ -696,10 +743,13 @@ impl AppliedMutation {
     pub fn publish(mut self, new_epoch: VmEpoch) -> PublishedPendingTlb {
         self.receipt.new_epoch = new_epoch;
         self.receipt.tlb_obligation.epoch = new_epoch;
-        self.receipt.events.push(PublishEvent::MappingPublished {
-            space_id: self.receipt.tlb_obligation.space_id,
-            epoch: new_epoch,
-        });
+        self.receipt
+            .events
+            .push(PublishEvent::MappingPublished {
+                space_id: self.receipt.tlb_obligation.space_id,
+                epoch: new_epoch,
+            })
+            .expect("a receipt emits one publication event");
         self.receipt.state = MutationState::PublishedPendingTlb;
         PublishedPendingTlb {
             receipt: self.receipt,
@@ -754,10 +804,13 @@ impl PublishedMutation {
 
     pub fn retire(mut self) -> MutationReceipt {
         self.receipt.state = MutationState::Retired;
-        self.receipt.events.push(PublishEvent::MappingRetired {
-            space_id: self.receipt.tlb_obligation.space_id,
-            epoch: self.receipt.new_epoch,
-        });
+        self.receipt
+            .events
+            .push(PublishEvent::MappingRetired {
+                space_id: self.receipt.tlb_obligation.space_id,
+                epoch: self.receipt.new_epoch,
+            })
+            .expect("a receipt emits one retirement event");
         self.receipt
     }
 }
@@ -807,8 +860,9 @@ mod tests {
         assert_eq!(quarantine.pending(), 1);
         assert!(quarantine
             .acknowledge(space_id, epoch, 0)
+            .unwrap()
             .is_empty());
-        let released = quarantine.acknowledge(space_id, epoch, 1);
+        let released = quarantine.acknowledge(space_id, epoch, 1).unwrap();
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].paddr(), ax_memory_addr::PhysAddr::from_usize(0x2000));
         assert_eq!(quarantine.pending(), 0);
@@ -823,7 +877,7 @@ mod tests {
             TlbRequest::new(AddressSpaceId::allocate(), VmEpoch::new(1), 0),
         ).expect("completed local flush needs no queue allocation");
         assert_eq!(quarantine.pending(), 0);
-        assert!(quarantine.requests().is_empty());
+        assert!(quarantine.requests().unwrap().is_empty());
     }
 
     #[cfg_attr(axtest, axtest::axtest)]
@@ -867,6 +921,28 @@ mod tests {
 
     #[cfg_attr(axtest, axtest::axtest)]
     #[cfg_attr(not(axtest), test)]
+    fn oversized_tlb_range_batch_falls_back_to_full_flush() {
+        let gate = MutationGate::new();
+        let id = AddressSpaceId::allocate();
+        let mut mutation = gate.begin(id, 1);
+        for index in 0..=MAX_INLINE_TLB_RANGES {
+            mutation.add_tlb_range(
+                TlbRange::new(VirtAddr::from_usize(index * 0x1000), 0x1000).unwrap(),
+            );
+        }
+
+        assert_eq!(gate.commit(mutation).unwrap_err(), MutationError::TlbPending);
+        let request = gate
+            .pending_request(id, VmEpoch::new(1))
+            .expect("published mutation retains its shootdown request");
+        assert!(
+            request.ranges.is_empty(),
+            "an overfull inline batch must conservatively request a full flush"
+        );
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn prepared_failure_does_not_publish_or_advance_epoch() {
         let gate = MutationGate::new();
         let id = AddressSpaceId::allocate();
@@ -905,14 +981,16 @@ mod tests {
 
         assert!(quarantine
             .acknowledge(space_id, epoch, 2)
+            .unwrap()
             .is_empty());
         assert_eq!(quarantine.pending(), 1);
         assert!(quarantine
             .acknowledge(space_id, VmEpoch::new(10), 3)
+            .unwrap()
             .is_empty());
         assert_eq!(quarantine.pending(), 1);
 
-        let released = quarantine.acknowledge(space_id, epoch, 3);
+        let released = quarantine.acknowledge(space_id, epoch, 3).unwrap();
         assert_eq!(released.len(), 1);
         assert_eq!(
             released[0].paddr(),
