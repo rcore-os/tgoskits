@@ -1019,6 +1019,12 @@ fn perf_report(card: &Card0) {
             wrl[0], wrl[1], wrl[2], wrl[3], wrl[4], wrl[5],
         );
     }
+    // ---- fence refresher wake-ups per window (gated tick: ~20/s idle,
+    // ~1ms service only while a guest is poll-blocked on an out-fence). ----
+    let frt = super::sync_file::REFRESH_TICKS.load(Ordering::Relaxed);
+    if frt > 0 {
+        warn!("  [card0:fx] fence-refresh ticks n={frt}");
+    }
     if RING_DUMPED.load(Ordering::Relaxed) < RING_DUMP_LIMIT {
         let nonw = RING_LAST_EXECB_NONW.load(Ordering::Relaxed);
         let last_execb = if nonw != usize::MAX {
@@ -1137,6 +1143,7 @@ fn perf_report(card: &Card0) {
     }
     crate::syscall::POLL_WAKE_LAT_CNT.store(0, Ordering::Relaxed);
     ax_task::wake_run_lat_reset();
+    super::sync_file::REFRESH_TICKS.store(0, Ordering::Relaxed);
     RC_ALLOC_SUM.store(0, Ordering::Relaxed);
     RC_ALLOC_CNT.store(0, Ordering::Relaxed);
     RC_PAGE_SUM.store(0, Ordering::Relaxed);

@@ -39,13 +39,14 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     task::Context,
     time::Duration,
 };
 
 use ax_display::gpu3d_fence_completed;
 use ax_runtime::hal::time::monotonic_time;
+use ax_task::WaitQueue;
 use axpoll::{IoEvents, PollSet, Pollable};
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -90,6 +91,27 @@ static FENCE_WAITERS: IrqMutex<Vec<(u64, Weak<SyncFile>)>> = IrqMutex::new(Vec::
 /// registered out-fence).
 static REFRESHER_SPAWNED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+
+/// Number of live out-fences that currently have a registered poll/epoll
+/// waker (`has_poller`). The refresher's 1 ms service cadence is only needed
+/// while this is non-zero: `signal` exists to wake pollers, and every other
+/// wait path re-checks the fence level itself (WAIT ioctl and in-fence waits
+/// refresh in their yield loop; epoll re-polls the file on every wait).
+static FENCE_POLLERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Parks the refresher while no pollers exist. A 0→1 poller transition in
+/// `Pollable::register` notifies it so the first waiter is served immediately
+/// instead of after one idle backstop tick.
+static REFRESHER_WAKE: WaitQueue = WaitQueue::new();
+
+/// Refresher wake-ups per perf-report window (idle backstop + active service
+/// ticks), printed and reset by card0's `perf_report`.
+pub(crate) static REFRESH_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Idle backstop tick while no pollers exist: prunes dead registry entries
+/// and covers a missed 0→1 notification. 50 ms is far below any fence-wait
+/// timeout a guest tolerates, and 20 wakes/s do not contend for the scheduler.
+const REFRESHER_IDLE_TICK: Duration = Duration::from_millis(50);
 
 impl SyncFile {
     /// Creates a sync_file for `fence_id`, initially unsignaled.
@@ -177,6 +199,12 @@ impl SyncFile {
 
 impl Drop for SyncFile {
     fn drop(&mut self) {
+        // A polled fd can be dropped without a matching unregister return
+        // (e.g. closed while registered in an epoll set); drop the poller
+        // count it still holds so the refresher's gate cannot leak upward.
+        if self.has_poller.swap(false, Ordering::AcqRel) {
+            FENCE_POLLERS.fetch_sub(1, Ordering::Release);
+        }
         // Fence ids are unique among live out-fences (one SyncFile per
         // submit), so removing every entry with this id is exact.
         // `lock_irqsave`: see `register`.
@@ -204,9 +232,9 @@ pub(crate) fn refresh_fence_waiters_from_irq() {
 
 /// Task-context refresh of every live out-fence: pumps the used ring (via
 /// `fence_completed`) so `completed_fence_id` advances, then signals + wakes
-/// the pollers of fences that just completed. Returns whether any live
-/// out-fence remains (drives the refresher's sleep period).
-fn refresh_all_fences() -> bool {
+/// the pollers of fences that just completed. Called on the refresher's
+/// active (pollers present) service cadence.
+fn refresh_all_fences() {
     // Snapshot under the registry lock, then refresh *outside* it: holding
     // the IRQ-save registry lock across `lock_display()` would deadlock on
     // smp=1 if the display lock were held by a preempted task (local IRQs
@@ -214,31 +242,47 @@ fn refresh_all_fences() -> bool {
     let snapshot: Vec<(u64, Weak<SyncFile>)> = {
         let waiters = FENCE_WAITERS.lock();
         if waiters.is_empty() {
-            return false;
+            return;
         }
         waiters.clone()
     };
-    let mut live = false;
     for (_, w) in &snapshot {
-        let Some(sf) = w.upgrade() else {
-            continue;
-        };
-        live = true;
-        sf.refresh();
+        if let Some(sf) = w.upgrade() {
+            sf.refresh();
+        }
     }
-    live
 }
 
-/// Background fence waiter: while any out-fence is registered, periodically
-/// pump + refresh so poll-blocked guests observe host completions (the
-/// device's completion IRQ is not delivered in this environment). Sleeps long
-/// when the registry is empty. Runs forever; spawned once by
+/// Background fence waiter: while at least one guest is *blocked in poll()* on
+/// an out-fence, pump + refresh on a 1 ms cadence so the waiter observes host
+/// completions without the completion IRQ (which this environment may never
+/// deliver). With no pollers, nobody needs waking — WAIT/in-fence waits
+/// refresh themselves in their yield loop and epoll re-polls the file on every
+/// wait — so the loop parks on [`REFRESHER_WAKE`] until the next 0→1 poller
+/// transition, with a 50 ms backstop tick that only prunes dead registry
+/// entries and covers a missed notification. Runs forever; spawned once by
 /// [`ensure_refresher`].
 fn refresher_loop() -> ! {
     loop {
-        let live = refresh_all_fences();
-        ax_task::sleep(Duration::from_millis(if live { 1 } else { 50 }));
+        REFRESH_TICKS.fetch_add(1, Ordering::Relaxed);
+        if FENCE_POLLERS.load(Ordering::Acquire) > 0 {
+            refresh_all_fences();
+            ax_task::sleep(Duration::from_millis(1));
+        } else {
+            prune_dead_waiters();
+            REFRESHER_WAKE.wait_timeout_until(REFRESHER_IDLE_TICK, || {
+                FENCE_POLLERS.load(Ordering::Acquire) > 0
+            });
+        }
     }
+}
+
+/// Removes dead entries (dropped `SyncFile`s) from the registry. The IRQ path
+/// prunes on every fire; this keeps the `Vec` bounded in environments where
+/// the completion IRQ never fires and [`refresh_all_fences`] would otherwise
+/// rescan the accumulated dead `Weak`s on every service tick.
+fn prune_dead_waiters() {
+    FENCE_WAITERS.lock().retain(|(_, w)| w.strong_count() > 0);
 }
 
 /// Spawns the refresher task once. Called from [`SyncFile::register`].
@@ -330,8 +374,12 @@ impl Pollable for SyncFile {
         // by the poll_set afterwards and woken via `signal` (also task
         // context).
         unsafe { self.poll_set.register(&waker, IoEvents::IN) };
-        self.has_poller
-            .store(true, core::sync::atomic::Ordering::Release);
+        if !self.has_poller.swap(true, Ordering::AcqRel) {
+            // 0→1 transition: the refresher may be parked on the idle
+            // backstop; wake it so this first waiter is served immediately.
+            FENCE_POLLERS.fetch_add(1, Ordering::AcqRel);
+            REFRESHER_WAKE.notify_one(true);
+        }
     }
 
     fn unregister(&self, waker: &core::task::Waker) {
@@ -339,8 +387,15 @@ impl Pollable for SyncFile {
         unsafe {
             self.poll_set.unregister(waker);
         }
-        self.has_poller
-            .store(false, core::sync::atomic::Ordering::Release);
+        // Single-waker assumption: a sync_file fd is polled by one waiter at
+        // a time (the guest's libsync fence wait is a plain `poll()`). If a
+        // file were concurrently held by both a poll and a persistent epoll
+        // interest, the poll's return would clear the flag while the epoll
+        // waker stays registered — safe but conservative: the refresher would
+        // idle while that epoll waiter relies on its own per-wait re-poll.
+        if self.has_poller.swap(false, Ordering::AcqRel) {
+            FENCE_POLLERS.fetch_sub(1, Ordering::Release);
+        }
     }
 }
 
