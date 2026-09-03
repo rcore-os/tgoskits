@@ -58,10 +58,10 @@
       };
       fixtureNixosShared = fixtureShared // {
         mkNixosSystem = modules: nixpkgs.lib.nixosSystem { inherit system modules; };
-        systemModule = {
+        systemModule = { config, lib, ... }: {
           networking.useDHCP = false;
           nix.enable = false;
-          services.dbus.enable = false;
+          services.dbus.enable = lib.mkForce false;
           services.logind.enable = false;
           services.nscd.enable = false;
           services.udev.enable = false;
@@ -69,6 +69,20 @@
           systemd.services."autovt@".enable = false;
           systemd.services.console-getty.enable = false;
           systemd.services."getty@tty1".enable = false;
+          boot.kernel.sysctl = {
+            "kernel.pid_max" = lib.mkForce null;
+            "vm.max_map_count" = lib.mkForce null;
+          };
+          assertions = [
+            {
+              assertion = (config.boot.kernel.sysctl."kernel.pid_max" or null) == null;
+              message = "StarryNixOS Stage-2 must not configure kernel.pid_max before PID allocation enforces it";
+            }
+            {
+              assertion = (config.boot.kernel.sysctl."vm.max_map_count" or null) == null;
+              message = "StarryNixOS Stage-2 must not configure vm.max_map_count before VMA admission enforces it";
+            }
+          ];
         };
       };
       missingInputs = builtins.tryEval (
@@ -126,6 +140,14 @@
           kernelNarHash = "sha256-fiqck+CYjhisfQB5RvFEY3jAVmNFkaT5oXtmB/O54kk=";
           starryNixos = fixtureNixosShared;
           caseName = "function-forbidden";
+        }).systemToplevel
+      );
+      fixtureSysctlForbidden = builtins.tryEval (
+        (mkAssembly {
+          kernelPath = ./kernel-fixture.bin;
+          kernelNarHash = "sha256-fiqck+CYjhisfQB5RvFEY3jAVmNFkaT5oXtmB/O54kk=";
+          starryNixos = fixtureNixosShared;
+          caseName = "sysctl-forbidden";
         }).systemToplevel
       );
       unknownCase = builtins.tryEval (
@@ -200,6 +222,7 @@
         assert nixpkgs.lib.hasInfix "STARRY_NIXOS_ASSERT_FAILED" fixtureServiceFail.contract.testScript;
         assert nixpkgs.lib.hasInfix "succeed(\"true\")" fixtureUnsupported.contract.testScript;
         assert fixtureFunctionForbidden.success == false;
+        assert fixtureSysctlForbidden.success == false;
         assert udevGuard.success == false;
         assert (builtins.tryEval fixtureService.test.drvPath).success;
         assert (builtins.tryEval fixtureHello.test.drvPath).success;

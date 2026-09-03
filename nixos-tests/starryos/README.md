@@ -1,6 +1,6 @@
 # StarryOS-backed nixosTest
 
-This directory owns the project-local NixOS test framework for StarryOS. It is independent of the Starry application cases under `test-suit/starryos/` and of the legacy `starry app qemu` acceptance path. Cases live in `cases/*.nix`. The in-tree catalog currently includes `boot`, `function-allowed`, `function-forbidden`, `hello-tmpfiles`, `service`, `service-fail`, and `unsupported`.
+This directory owns the project-local NixOS test framework for StarryOS. It is independent of the Starry application cases under `test-suit/starryos/` and of the legacy `starry app qemu` acceptance path. Cases live in `cases/*.nix`. The in-tree catalog currently includes `boot`, `function-allowed`, `function-forbidden`, `hello-tmpfiles`, `service`, `service-fail`, `sysctl-forbidden`, and `unsupported`.
 
 ## Supported boundary
 
@@ -66,7 +66,7 @@ Add a file under `cases/` whose stem matches `^[a-z][a-z0-9-]{0,62}$`. Copy `cas
 ```
 
 Do not write a `testScript` and do not call `machine.succeed`. Extra modules must not re-enable udev, dbus, nscd, logind, getty, DHCP, or the Nix daemon. Cases are in-tree only in this slice. After adding the file:
-Function-form NixOS modules are supported and are evaluated by `mkNixosSystem` before the final baseline assertions inspect `config`. A function module that enables a forbidden option still fails during system evaluation; a function module that only declares allowed state is accepted. The `nixos-tests/starryos/flake.nix` interface check covers both cases with `function-allowed` and `function-forbidden`.
+Function-form NixOS modules are supported and are evaluated by `mkNixosSystem` before the final baseline assertions inspect `config`. A function module that enables a forbidden option still fails during system evaluation; a function module that only declares allowed state is accepted. Extra modules also cannot clear the Stage-2 `kernel.pid_max` and `vm.max_map_count` assertions: `function-forbidden` still fails after `assertions = lib.mkForce [ ]`, and `sysctl-forbidden` fails when an extra module writes `kernel.pid_max`. The `nixos-tests/starryos/flake.nix` interface check covers these cases with `function-allowed`, `function-forbidden`, and `sysctl-forbidden`.
 
 ```bash
 cargo xtask starry test nixos --list

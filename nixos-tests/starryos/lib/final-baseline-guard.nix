@@ -1,6 +1,8 @@
 { config, lib, ... }:
 {
-  # Keep these assertions at force priority so extra modules cannot clear them.
+  # `mkForce` wins against extra modules that clear `assertions`, including
+  # `assertions = lib.mkForce [ ]`. Keep the Stage-2 sysctl guards in this
+  # same forced list so those app baseline invariants still run.
   assertions = lib.mkForce [
     {
       assertion = !(config.services.udev.enable or false);
@@ -37,6 +39,14 @@
     {
       assertion = !(config.systemd.services."autovt@".enable or false);
       message = "Starry nixosTest extra modules must not enable autovt@";
+    }
+    {
+      assertion = (config.boot.kernel.sysctl."kernel.pid_max" or null) == null;
+      message = "StarryNixOS Stage-2 must not configure kernel.pid_max before PID allocation enforces it";
+    }
+    {
+      assertion = (config.boot.kernel.sysctl."vm.max_map_count" or null) == null;
+      message = "StarryNixOS Stage-2 must not configure vm.max_map_count before VMA admission enforces it";
     }
   ];
 }
