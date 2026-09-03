@@ -142,6 +142,22 @@ pub(super) fn run_vcpu<A: super::Architecture>(
     }
 
     let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
+        /// Maximum wall-clock time a vCPU may run continuously before yielding to the
+        /// host scheduler. Bounding each run slice lets more vCPUs than physical CPUs
+        /// time-share one host CPU without one continuously runnable guest starving
+        /// the others.
+        const VCPU_TIME_SLICE_NANOS: u64 = 10_000_000; // 10ms
+        // Bound this vCPU's continuous run time so that multiple vCPUs can
+        // time-share one physical CPU. The deadline is checked only against
+        // the host monotonic clock at each `Continue` VM exit (MMIO, sysreg,
+        // ...). Arming no host timer keeps the `with_current_cpu_set`
+        // invariant intact: no asynchronous scheduler tick can preempt this
+        // vCPU while it is still published as the current vCPU.
+        let slice_deadline_ns = (crate::timer::current_host_time()
+            .as_nanos()
+            .min(u64::MAX as u128) as u64)
+            .saturating_add(VCPU_TIME_SLICE_NANOS);
+
         loop {
             crate::runtime::vcpus::inject_pending_interrupts::<A>(vm.id(), vcpu_id, vcpu);
 
@@ -152,7 +168,21 @@ pub(super) fn run_vcpu<A: super::Architecture>(
             let exit = exit?;
             trace!("{exit:#x?}");
             match A::handle_vcpu_exit_bound(vm, vcpu, exit)? {
-                BoundVcpuExit::Continue => continue,
+                BoundVcpuExit::Continue => {
+                    let now_ns = crate::timer::current_host_time()
+                        .as_nanos()
+                        .min(u64::MAX as u128) as u64;
+                    if now_ns >= slice_deadline_ns {
+                        debug!("VM[{vm_id}] VCpu[{vcpu_id}] time slice expired, yielding to host");
+                        break Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                            waits_for_event: false,
+                            stop_reason: None,
+                            resets_vm: false,
+                            exits_vcpu: false,
+                        }));
+                    }
+                    continue;
+                }
                 action => break Ok(action),
             }
         }
