@@ -7,7 +7,7 @@ use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
 use super::{VcpuExitAction, VcpuRunAction, VcpuRunOutcome};
-use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
+use crate::{AxVmResult, ax_err, host::HostTime, irq::model::PendingVcpuInterrupt};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
@@ -159,6 +159,18 @@ pub(crate) trait ArchOps {
             }
         }
 
+        // Maximum wall-clock time a vCPU may run continuously before yielding
+        // to the host scheduler. Bounding each run slice lets more vCPUs than
+        // physical CPUs time-share one host CPU without one continuously
+        // runnable guest starving the others.
+        const VCPU_TIME_SLICE_NANOS: u64 = 10_000_000; // 10ms
+        // The deadline is checked only against the host monotonic clock at
+        // each `Continue` VM exit (MMIO, sysreg, ...). Arming no host timer
+        // keeps the CPU-bound entry invariant intact: no asynchronous
+        // scheduler tick can preempt this vCPU while it is still published as
+        // the current vCPU.
+        let slice_deadline_ns = VCPU_TIME_SLICE_NANOS.saturating_add(host_time_ns());
+
         let run_result = run_vcpu_slice(
             || Self::prepare_vcpu_run_slice(vm, vcpu),
             || {
@@ -223,7 +235,25 @@ pub(crate) trait ArchOps {
             |exit| match exit {
                 Some(exit) => {
                     trace!("{exit:#x?}");
-                    Self::handle_vcpu_exit_unbound(vm, vcpu, exit)
+                    match Self::handle_vcpu_exit_unbound(vm, vcpu, exit)? {
+                        VcpuExitAction::Continue => {
+                            if host_time_ns() >= slice_deadline_ns {
+                                debug!(
+                                    "VM[{vm_id}] VCpu[{vcpu_id}] time slice expired, yielding to \
+                                     host"
+                                );
+                                Ok(VcpuExitAction::Complete(VcpuRunAction {
+                                    waits_for_event: false,
+                                    stop_reason: None,
+                                    resets_vm: false,
+                                    exits_vcpu: false,
+                                }))
+                            } else {
+                                Ok(VcpuExitAction::Continue)
+                            }
+                        }
+                        action => Ok(action),
+                    }
                 }
                 None => Ok(VcpuExitAction::EntryCanceled),
             },
@@ -261,6 +291,14 @@ pub(crate) trait ArchOps {
             }
         }
     }
+}
+
+/// Returns the host monotonic clock in nanoseconds, saturating at `u64::MAX`.
+fn host_time_ns() -> u64 {
+    (crate::host::default_host()
+        .monotonic_time()
+        .as_nanos()
+        .min(u64::MAX as u128)) as u64
 }
 
 fn run_vcpu_slice<E>(
