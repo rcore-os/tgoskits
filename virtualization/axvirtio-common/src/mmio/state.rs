@@ -56,9 +56,12 @@ pub struct VirtioMmioState<T: GuestMemoryAccessor + Clone> {
     device_features: u64,
     status: Mutex<u32>,
     driver_features: Mutex<u64>,
+    features_sealed: Mutex<bool>,
     device_features_sel: Mutex<u32>,
     driver_features_sel: Mutex<u32>,
     queue_sel: Mutex<u16>,
+    /// Serializes queue configuration register writes without blocking the data path.
+    queue_config_transaction: Mutex<()>,
     queues: Mutex<Vec<VirtioQueue<T>>>,
     interrupt_status: Mutex<InterruptState>,
     config_generation: Mutex<u32>,
@@ -83,9 +86,11 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             device_features,
             status: Mutex::new(0),
             driver_features: Mutex::new(0),
+            features_sealed: Mutex::new(false),
             device_features_sel: Mutex::new(0),
             driver_features_sel: Mutex::new(0),
             queue_sel: Mutex::new(0),
+            queue_config_transaction: Mutex::new(()),
             queues: Mutex::new(queues),
             interrupt_status: Mutex::new(InterruptState::default()),
             config_generation: Mutex::new(0),
@@ -166,6 +171,8 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
     /// Full transport reset: clears driver features, selectors, interrupt
     /// status, status and every queue. Device identity and features are kept.
     pub fn reset(&self) {
+        let _queue_config_guard = self.queue_config_transaction.lock();
+        let mut features_sealed = self.features_sealed.lock_irqsave();
         *self.driver_features.lock_irqsave() = 0;
         *self.driver_features_sel.lock_irqsave() = 0;
         *self.device_features_sel.lock_irqsave() = 0;
@@ -175,6 +182,7 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
         for q in self.queues.lock_irqsave().iter_mut() {
             q.reset();
         }
+        *features_sealed = false;
     }
 
     /// Handle a standard MMIO read. Out-of-range reads yield `Standard(0)`;
@@ -303,13 +311,16 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             transport::validate_access_width(width)?;
         }
         let val = val as u32;
+        let _queue_config_guard =
+            is_queue_config_register(offset).then(|| self.queue_config_transaction.lock());
 
         match offset {
             vc::VIRTIO_MMIO_DEVICE_FEATURES_SEL => *self.device_features_sel.lock_irqsave() = val,
             vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL => *self.driver_features_sel.lock_irqsave() = val,
             vc::VIRTIO_MMIO_DRIVER_FEATURES => {
+                let features_sealed = self.features_sealed.lock_irqsave();
                 let sel = *self.driver_features_sel.lock_irqsave() as u64;
-                if sel < 2 {
+                if !*features_sealed && sel < 2 {
                     let mask: u64 = (val as u64) << (sel * 32);
                     let clear: u64 = !(((1u64) << 32) - 1).wrapping_shl((sel * 32) as u32);
                     let mut f = self.driver_features.lock_irqsave();
@@ -330,26 +341,44 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             }
             vc::VIRTIO_MMIO_QUEUE_READY => {
                 let sel = *self.queue_sel.lock_irqsave();
-                // Hold the queues lock across the layout check and the ready
-                // transition so validation and `set_ready` form one atomic
-                // enforcement point. The probe is bounded (first/last byte of
-                // the three ring regions) and performs no callbacks, so the
-                // hold is short.
-                if let Some(q) = self.queues.lock_irqsave().get_mut(sel as usize) {
-                    let layout_ok = if q.is_configured() {
-                        match ready_memory {
-                            Some(memory) => q.validate_layout_with_memory(memory),
-                            None => {
-                                let accessor = q.accessor().clone();
-                                let mut memory = crate::AddressSpaceMemory::new(&*accessor);
-                                q.validate_layout_with_memory(&mut memory)
-                            }
+                if val == 0 {
+                    if let Some(queue) = self.queues.lock_irqsave().get_mut(sel as usize) {
+                        queue.cancel_ready_preparation();
+                    }
+                    return Ok(MmioWriteAction::None);
+                }
+                let mut candidate = self
+                    .queues
+                    .lock_irqsave()
+                    .get_mut(sel as usize)
+                    .and_then(VirtioQueue::begin_ready_preparation);
+                let prepared = if let Some(queue) = candidate.as_mut() {
+                    let result = match ready_memory {
+                        Some(memory) => queue.validate_layout_with_memory(memory).and_then(|()| {
+                            queue.set_ready(true);
+                            queue.rearm_available_event_with_memory(memory).map(|_| ())
+                        }),
+                        None => {
+                            let accessor = queue.accessor().clone();
+                            let mut memory = crate::AddressSpaceMemory::new(&*accessor);
+                            queue
+                                .validate_layout_with_memory(&mut memory)
+                                .and_then(|()| {
+                                    queue.set_ready(true);
+                                    queue
+                                        .rearm_available_event_with_memory(&mut memory)
+                                        .map(|_| ())
+                                })
                         }
-                        .is_ok()
-                    } else {
-                        false
                     };
-                    q.set_ready(val != 0 && layout_ok);
+                    result.is_ok()
+                } else {
+                    false
+                };
+                if let Some(snapshot) = candidate.as_ref()
+                    && let Some(queue) = self.queues.lock_irqsave().get_mut(sel as usize)
+                {
+                    queue.finish_ready_preparation(snapshot, prepared);
                 }
             }
             vc::VIRTIO_MMIO_QUEUE_NOTIFY => return Ok(MmioWriteAction::QueueNotified(val as u16)),
@@ -380,12 +409,24 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             self.reset();
             return Ok(MmioWriteAction::Reset);
         }
-        let mut new_status = val;
-        if (new_status & vc::VIRTIO_STATUS_FEATURES_OK) != 0 {
+        let mut features_sealed = self.features_sealed.lock_irqsave();
+        let features_already_ok = *features_sealed;
+        let mut new_status = if features_already_ok {
+            val | vc::VIRTIO_STATUS_FEATURES_OK
+        } else {
+            val
+        };
+        if !features_already_ok && (new_status & vc::VIRTIO_STATUS_FEATURES_OK) != 0 {
             let driver_feats = *self.driver_features.lock_irqsave();
             if (driver_feats & !self.device_features) != 0 {
                 new_status &= !vc::VIRTIO_STATUS_FEATURES_OK;
                 new_status |= vc::VIRTIO_STATUS_FAILED;
+            } else {
+                let event_idx_enabled = driver_feats & vc::VIRTIO_F_RING_EVENT_IDX != 0;
+                for queue in self.queues.lock_irqsave().iter_mut() {
+                    queue.event_idx_enabled = event_idx_enabled;
+                }
+                *features_sealed = true;
             }
         }
         *self.status.lock_irqsave() = new_status;
@@ -445,6 +486,21 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             _ => {}
         }
     }
+}
+
+const fn is_queue_config_register(offset: usize) -> bool {
+    matches!(
+        offset,
+        vc::VIRTIO_MMIO_QUEUE_SEL
+            | vc::VIRTIO_MMIO_QUEUE_NUM
+            | vc::VIRTIO_MMIO_QUEUE_READY
+            | vc::VIRTIO_MMIO_QUEUE_DESC_LOW
+            | vc::VIRTIO_MMIO_QUEUE_DESC_HIGH
+            | vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW
+            | vc::VIRTIO_MMIO_QUEUE_AVAIL_HIGH
+            | vc::VIRTIO_MMIO_QUEUE_USED_LOW
+            | vc::VIRTIO_MMIO_QUEUE_USED_HIGH
+    )
 }
 
 /// Combine a 32-bit LOW/HIGH half with the current address into a 64-bit value.

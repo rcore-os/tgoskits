@@ -308,6 +308,8 @@ rdif-block = { workspace = true }
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
 ax-io = { workspace = true }
+axhvc = { workspace = true }
+axivc = { workspace = true }
 axpoll = { workspace = true }
 axpoll-set.workspace = true
 bitflags = "2.10"

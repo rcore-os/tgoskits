@@ -13,7 +13,7 @@ use crate::{
 
 const REGISTERS_SLOT: &str = "registers";
 const NOTIFY_IRQ_SLOT: &str = "notify";
-pub(crate) const IVC_CHANNEL_SHARED_RANGE_SIZE: u64 = 0x1_0000;
+pub(crate) const IVC_CHANNEL_SHARED_RANGE_SIZE: u64 = ivc::MAX_IVC_CHANNEL_SIZE as u64;
 
 pub(super) fn register(
     catalog: &mut crate::ConfiguredDeviceCatalog,

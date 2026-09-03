@@ -21,16 +21,26 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
             .unwrap(),
             notification: controller_notification,
             irq_latches: IrqMutex::new(Vec::new()),
+            terminal_confirmed: AtomicBool::new(false),
         }),
         controller_thread: IrqMutex::new(None),
         state: AtomicU8::new(DEVICE_READY),
         accepting: AtomicBool::new(true),
-        active_data: AtomicUsize::new(0),
-        flush_active: AtomicBool::new(false),
         data_gate_waiters: TaskWaiters::new(),
         flush_gate_waiters: TaskWaiters::new(),
         data_drain_waiters: TaskWaiters::new(),
         state_notification: ops.notification(),
+        lifecycle_gate: IrqMutex::new(LifecycleGateState {
+            phase: DevicePhase::Ready,
+            submission_ready_hctx_count: 0,
+            active_data: 0,
+            flush_active: false,
+            teardown_in_progress: false,
+            terminal_teardown_error: None,
+        }),
+        shutdown_waiters: TaskWaiters::new(),
+        member_id: None,
+        group_owner: None,
     })
 }
 
@@ -51,7 +61,7 @@ fn flush_barrier_waits_for_prior_data_and_holds_later_data() {
         flush_tx.send(()).unwrap();
     });
     let deadline = Instant::now() + Duration::from_secs(1);
-    while !inner.flush_active.load(Ordering::Acquire) {
+    while !inner.lifecycle_gate.lock().flush_active {
         assert!(Instant::now() < deadline, "flush gate was not acquired");
         thread::yield_now();
     }
@@ -82,28 +92,28 @@ fn flush_barrier_waits_for_prior_data_and_holds_later_data() {
 fn nowait_admission_never_sleeps_behind_flush_barrier() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.flush_active.store(true, Ordering::Release);
+    inner.lifecycle_gate.lock().flush_active = true;
 
     assert_eq!(
         inner.enter_data_submissions(1, SubmissionAdmission::Nowait),
         Err(BlkError::Retry)
     );
-    assert_eq!(inner.active_data.load(Ordering::Acquire), 0);
+    assert_eq!(inner.lifecycle_gate.lock().active_data, 0);
 
-    inner.flush_active.store(false, Ordering::Release);
-    inner.active_data.store(1, Ordering::Release);
+    inner.lifecycle_gate.lock().flush_active = false;
+    inner.lifecycle_gate.lock().active_data = 1;
     assert_eq!(
         inner.begin_flush_barrier(SubmissionAdmission::Nowait),
         Err(BlkError::Retry)
     );
-    assert!(!inner.flush_active.load(Ordering::Acquire));
+    assert!(!inner.lifecycle_gate.lock().flush_active);
 }
 
 #[test]
 fn flush_completion_wakes_every_blocked_data_submitter() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.flush_active.store(true, Ordering::Release);
+    inner.lifecycle_gate.lock().flush_active = true;
 
     let (done_tx, done_rx) = mpsc::channel();
     let mut joins = Vec::new();

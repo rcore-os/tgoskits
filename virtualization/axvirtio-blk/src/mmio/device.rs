@@ -195,6 +195,8 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
                 head
             } else if let Some(head) = queue.pop_available_head_with_memory(memory)? {
                 head
+            } else if queue.rearm_available_event_with_memory(memory)? {
+                continue;
             } else {
                 break;
             };
@@ -419,6 +421,8 @@ mod tests {
     use super::*;
 
     const DESC_TABLE: usize = 0x100;
+    const AVAIL_RING: usize = 0x200;
+    const USED_RING: usize = 0x240;
     const HEADER: usize = 0x300;
     const DATA: usize = 0x400;
     const STATUS: usize = 0x800;
@@ -557,5 +561,40 @@ mod tests {
 
         assert_eq!(event, Ok(BlockDeviceEvent::Reset));
         assert_eq!(*device.pending_head.lock(), None);
+    }
+
+    #[test]
+    fn empty_event_idx_queue_rearms_the_next_available_index() {
+        let (device, _queue, mut memory) = fixture(64, 0);
+        device.set_status(crate::constants::VIRTIO_STATUS_DRIVER_OK);
+        {
+            let mut queues = device.state.queues_lock();
+            let queue = &mut queues[0];
+            queue.set_size(4).unwrap();
+            queue
+                .set_desc_table_addr(GuestPhysAddr::from(DESC_TABLE))
+                .unwrap();
+            queue
+                .set_avail_ring_addr(GuestPhysAddr::from(AVAIL_RING))
+                .unwrap();
+            queue
+                .set_used_ring_addr(GuestPhysAddr::from(USED_RING))
+                .unwrap();
+            queue.set_ready(true);
+            queue.event_idx_enabled = true;
+            queue.update_last_avail_idx(2);
+        }
+        memory.0[AVAIL_RING + 2..AVAIL_RING + 4].copy_from_slice(&2u16.to_le_bytes());
+
+        assert_eq!(
+            device.handle_queue_notify(0, &mut memory),
+            Ok(BlockDeviceEvent::None)
+        );
+
+        let avail_event = USED_RING + 4 + 4 * 8;
+        assert_eq!(
+            u16::from_le_bytes(memory.0[avail_event..avail_event + 2].try_into().unwrap()),
+            2
+        );
     }
 }

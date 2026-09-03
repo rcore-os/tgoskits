@@ -1,13 +1,14 @@
 use super::*;
 
-struct DropTrackedQueue {
+pub(super) struct DropTrackedQueue {
     info: QueueInfo,
     drop_event: &'static str,
     log: Arc<StdMutex<Vec<&'static str>>>,
+    shutdown_error: Option<BlkError>,
 }
 
 impl DropTrackedQueue {
-    fn startable(
+    pub(super) fn startable(
         id: usize,
         drop_event: &'static str,
         log: Arc<StdMutex<Vec<&'static str>>>,
@@ -19,6 +20,24 @@ impl DropTrackedQueue {
             },
             drop_event,
             log,
+            shutdown_error: None,
+        }
+    }
+
+    pub(super) fn shutdown_failure(
+        id: usize,
+        drop_event: &'static str,
+        log: Arc<StdMutex<Vec<&'static str>>>,
+        error: BlkError,
+    ) -> Self {
+        Self {
+            info: QueueInfo {
+                id,
+                ..test_queue_info()
+            },
+            drop_event,
+            log,
+            shutdown_error: Some(error),
         }
     }
 
@@ -37,6 +56,7 @@ impl DropTrackedQueue {
             info,
             drop_event,
             log,
+            shutdown_error: None,
         }
     }
 }
@@ -73,7 +93,7 @@ impl HardwareQueue for DropTrackedQueue {
     }
 
     fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        Ok(())
+        self.shutdown_error.take().map_or(Ok(()), Err)
     }
 }
 
@@ -127,18 +147,14 @@ impl BlockController for RejectedResourceUpdateController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.bootstrap_queue.take().ok_or(BlkError::Io)?)],
-                vec![IrqEndpoint::new(
-                    0,
-                    IrqQueueMask::from_queue(0),
-                    Box::new(QueueZeroHandler),
-                )],
+                Vec::new(),
             )),
             ControllerEvent::OnlineSmp { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.emitted_queue.take().ok_or(BlkError::Io)?)],
                 vec![IrqEndpoint::new(
                     1,
-                    IrqQueueMask::from_queue(1),
+                    1 << 1,
                     Box::new(self.emitted_handler.take().ok_or(BlkError::Io)?),
                 )],
             )
@@ -176,11 +192,7 @@ impl BlockController for RejectedQueueBatchController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.bootstrap_queue.take().ok_or(BlkError::Io)?)],
-                vec![IrqEndpoint::new(
-                    0,
-                    IrqQueueMask::from_queue(0),
-                    Box::new(QueueZeroHandler),
-                )],
+                Vec::new(),
             )),
             ControllerEvent::OnlineSmp { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
@@ -205,7 +217,16 @@ fn rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     let log = Arc::new(StdMutex::new(Vec::new()));
-    configure_test_irq_registrar(Arc::clone(&log));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .fail_enable_at
+        .store(usize::MAX, Ordering::Release);
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
     let initial_info = test_queue_info().device;
     let changed_info = DeviceInfo {
         num_blocks: initial_info.num_blocks + 1,
@@ -226,18 +247,10 @@ fn rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown() {
         changed_info,
         log: Arc::clone(&log),
     };
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "rejected-resource-update",
-        [
-            BlockIrqSource {
-                source_id: 0,
-                irq: IrqId::new(IrqDomainId(1), HwIrq(20)),
-            },
-            BlockIrqSource {
-                source_id: 1,
-                irq: IrqId::new(IrqDomainId(1), HwIrq(21)),
-            },
-        ],
+        [BlockIrqSource { source_id: 1, irq }],
         Box::new(controller),
     ))
     .unwrap();
@@ -257,9 +270,7 @@ fn assert_rejected_queue_batch_is_retained(
     emitted_queues: Vec<Box<dyn HardwareQueue>>,
     expected_drop_events: &[&str],
 ) {
-    let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    configure_test_irq_registrar(Arc::clone(&log));
     let controller = RejectedQueueBatchController {
         bootstrap_queue: Some(LifecycleQueue {
             log: Arc::clone(&log),
@@ -269,10 +280,7 @@ fn assert_rejected_queue_batch_is_retained(
     };
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "rejected-queue-batch",
-        [BlockIrqSource {
-            source_id: 0,
-            irq: IrqId::new(IrqDomainId(1), HwIrq(22)),
-        }],
+        [],
         Box::new(controller),
     ))
     .unwrap();

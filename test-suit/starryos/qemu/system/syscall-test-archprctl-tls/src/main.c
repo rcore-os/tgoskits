@@ -43,6 +43,15 @@
 #define ARCH_GET_GS 0x1004
 #endif
 
+#ifndef ARCH_GET_CPUID
+#define ARCH_GET_CPUID 0x1011
+#define ARCH_SET_CPUID 0x1012
+#endif
+#ifndef ARCH_CPUID_ENABLE
+#define ARCH_CPUID_ENABLE 1
+#define ARCH_CPUID_SIGSEGV 0
+#endif
+
 static void alarm_handler(int s)
 {
     (void)s;
@@ -153,6 +162,33 @@ static int test_pkey_graceful(void)
     TEST_DONE();
 }
 
+#if defined(__x86_64__)
+/*
+ * arch_prctl(ARCH_GET_CPUID/ARCH_SET_CPUID) — x86-64 CPUID faulting control.
+ * ground truth: man 2 arch_prctl, Linux arch/x86/kernel/process.c
+ *   get_cpuid_mode()/set_cpuid_mode().
+ *   ARCH_GET_CPUID returns ARCH_CPUID_ENABLE(1) when the CPUID instruction is
+ *   enabled for the thread and ARCH_CPUID_SIGSEGV(0) when it faults. A thread
+ *   starts with CPUID enabled, so a freshly-started process reads back 1.
+ *   ARCH_SET_CPUID returns -ENODEV on a system without CPUID-faulting support
+ *   (StarryOS never installs faulting), for every requested value.
+ */
+static int test_arch_prctl_cpuid(void)
+{
+    TEST_START("D. arch_prctl ARCH_GET_CPUID/ARCH_SET_CPUID(x86)");
+    errno = 0;
+    long r = syscall(SYS_arch_prctl, ARCH_GET_CPUID, 0);
+    CHECK(r == ARCH_CPUID_ENABLE,
+          "ARCH_GET_CPUID 报 CPUID 已启用(1),线程默认可执行 CPUID");
+    /* No CPUID-faulting support: SET_CPUID is ENODEV for any value. */
+    CHECK_ERR(syscall(SYS_arch_prctl, ARCH_SET_CPUID, ARCH_CPUID_SIGSEGV), ENODEV,
+              "ARCH_SET_CPUID(禁用) 无 faulting 支持 -> ENODEV");
+    CHECK_ERR(syscall(SYS_arch_prctl, ARCH_SET_CPUID, ARCH_CPUID_ENABLE), ENODEV,
+              "ARCH_SET_CPUID(启用) 无 faulting 支持 -> ENODEV");
+    TEST_DONE();
+}
+#endif
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -163,6 +199,7 @@ int main(void)
 #if defined(__x86_64__)
     fail |= test_arch_prctl_fs();
     fail |= test_arch_prctl_gs_errno();
+    fail |= test_arch_prctl_cpuid();
 #endif
     fail |= test_pkey_graceful();
     printf("\n==== test-archprctl-tls 汇总: %s ====\n", fail ? "FAIL" : "PASS");

@@ -206,7 +206,11 @@ mod tests {
         let config = config_with_ivc();
         let nodes = ivc_nodes(&config);
         let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_mmio(
+                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+            )
+            .unwrap();
         pools
             .add_auto_controller_inputs(
                 InterruptControllerId::new(0),
@@ -222,7 +226,13 @@ mod tests {
             .mmio(&registers)
             .unwrap();
 
-        assert_eq!((base, size), (0x1000_0000, 0x1_0000));
+        assert_eq!(
+            (base, size),
+            (
+                0x1000_0000,
+                crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+            )
+        );
         for memory in config.memory_regions() {
             let memory_base = memory.gpa as u64;
             let memory_end = memory_base + memory.size as u64;
@@ -244,7 +254,11 @@ mod tests {
             Arc::new(FixedMmioOccupantModel),
         ));
         let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_mmio(
+                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+            )
+            .unwrap();
         pools.allow_fixed_mmio(0x1000_0000..0x1001_0000).unwrap();
         pools
             .add_auto_controller_inputs(
@@ -268,7 +282,11 @@ mod tests {
         let config = config_with_ivc();
         let nodes = ivc_nodes(&config);
         let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_mmio(
+                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+            )
+            .unwrap();
         pools
             .add_auto_controller_inputs(
                 InterruptControllerId::new(0),

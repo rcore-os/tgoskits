@@ -143,6 +143,66 @@ fn feature_negotiation_rejects_non_subset() {
 }
 
 #[test]
+fn event_idx_is_enabled_only_after_successful_feature_negotiation() {
+    let s = state(vc::VIRTIO_F_RING_EVENT_IDX);
+    assert!(!s.queues_lock()[0].event_idx_enabled);
+
+    wr(&s, vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
+    wr(
+        &s,
+        vc::VIRTIO_MMIO_DRIVER_FEATURES,
+        vc::VIRTIO_F_RING_EVENT_IDX as u32,
+    );
+    wr(&s, vc::VIRTIO_MMIO_STATUS, vc::VIRTIO_STATUS_FEATURES_OK);
+
+    assert!(s.queues_lock()[0].event_idx_enabled);
+}
+
+#[test]
+fn transport_reset_disables_event_idx_on_every_queue() {
+    let s = state(vc::VIRTIO_F_RING_EVENT_IDX);
+    wr(&s, vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
+    wr(
+        &s,
+        vc::VIRTIO_MMIO_DRIVER_FEATURES,
+        vc::VIRTIO_F_RING_EVENT_IDX as u32,
+    );
+    wr(&s, vc::VIRTIO_MMIO_STATUS, vc::VIRTIO_STATUS_FEATURES_OK);
+    assert!(s.queues_lock()[0].event_idx_enabled);
+
+    wr(&s, vc::VIRTIO_MMIO_STATUS, 0);
+
+    assert!(!s.queues_lock()[0].event_idx_enabled);
+}
+
+#[test]
+fn accepted_features_are_sealed_until_transport_reset() {
+    let s = state(vc::VIRTIO_F_RING_EVENT_IDX);
+    wr(&s, vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
+    wr(
+        &s,
+        vc::VIRTIO_MMIO_DRIVER_FEATURES,
+        vc::VIRTIO_F_RING_EVENT_IDX as u32,
+    );
+    wr(&s, vc::VIRTIO_MMIO_STATUS, vc::VIRTIO_STATUS_FEATURES_OK);
+    assert!(s.queues_lock()[0].event_idx_enabled);
+
+    wr(&s, vc::VIRTIO_MMIO_DRIVER_FEATURES, 0);
+    wr(
+        &s,
+        vc::VIRTIO_MMIO_STATUS,
+        vc::VIRTIO_STATUS_FEATURES_OK | vc::VIRTIO_STATUS_DRIVER_OK,
+    );
+
+    assert_eq!(s.driver_features(), vc::VIRTIO_F_RING_EVENT_IDX);
+    assert!(s.queues_lock()[0].event_idx_enabled);
+    assert_ne!(
+        rd(&s, vc::VIRTIO_MMIO_STATUS) & vc::VIRTIO_STATUS_FEATURES_OK,
+        0
+    );
+}
+
+#[test]
 fn queue_notify_returns_action() {
     let s = state(0);
     assert_eq!(
@@ -185,6 +245,106 @@ fn queue_ready_rejected_when_ring_outside_guest_address_space() {
     bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_USED_LOW, 0xf000);
     bounded_wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
     assert_eq!(bounded_rd(&s, vc::VIRTIO_MMIO_QUEUE_READY), 1);
+}
+
+#[test]
+fn queue_ready_initializes_negotiated_event_idx_fields() {
+    let memory = mem();
+    let queue = VirtioQueue::new(0, vc::DEFAULT_QUEUE_SIZE, Arc::new(memory.clone()));
+    let s = VirtioMmioState::new(
+        GuestPhysAddr::from(BASE),
+        LEN,
+        2,
+        vc::VIRTIO_VENDOR_ID,
+        vc::VIRTIO_F_RING_EVENT_IDX,
+        vec![queue],
+    );
+    wr(&s, vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
+    wr(
+        &s,
+        vc::VIRTIO_MMIO_DRIVER_FEATURES,
+        vc::VIRTIO_F_RING_EVENT_IDX as u32,
+    );
+    wr(&s, vc::VIRTIO_MMIO_STATUS, vc::VIRTIO_STATUS_FEATURES_OK);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_SEL, 0);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_NUM, 4);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_DESC_LOW, 0x1000);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW, 0x2000);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_USED_LOW, 0x3000);
+    memory
+        .write_buffer(GuestPhysAddr::from(0x3000), &1u16.to_le_bytes())
+        .unwrap();
+    memory
+        .write_buffer(GuestPhysAddr::from(0x3024), &0x1234u16.to_le_bytes())
+        .unwrap();
+
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
+
+    assert_eq!(rd(&s, vc::VIRTIO_MMIO_QUEUE_READY), 1);
+    assert_eq!(&memory.buf[0x3000..0x3002], &0u16.to_le_bytes());
+    assert_eq!(&memory.buf[0x3024..0x3026], &0u16.to_le_bytes());
+
+    memory
+        .write_buffer(GuestPhysAddr::from(0x3024), &2u16.to_le_bytes())
+        .unwrap();
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
+    assert_eq!(
+        &memory.buf[0x3024..0x3026],
+        &2u16.to_le_bytes(),
+        "a duplicate ready write must not rewind avail_event"
+    );
+}
+
+#[test]
+fn replacing_used_ring_starts_a_new_notification_epoch() {
+    const AVAIL_BASE: usize = 0x2000;
+    const FIRST_USED_BASE: usize = 0x3000;
+    const REPLACEMENT_USED_BASE: usize = 0x4000;
+
+    let memory = mem();
+    let queue = VirtioQueue::new(0, vc::DEFAULT_QUEUE_SIZE, Arc::new(memory.clone()));
+    let s = VirtioMmioState::new(
+        GuestPhysAddr::from(BASE),
+        LEN,
+        2,
+        vc::VIRTIO_VENDOR_ID,
+        vc::VIRTIO_F_RING_EVENT_IDX,
+        vec![queue],
+    );
+    wr(&s, vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
+    wr(
+        &s,
+        vc::VIRTIO_MMIO_DRIVER_FEATURES,
+        vc::VIRTIO_F_RING_EVENT_IDX as u32,
+    );
+    wr(&s, vc::VIRTIO_MMIO_STATUS, vc::VIRTIO_STATUS_FEATURES_OK);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_SEL, 0);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_NUM, 4);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_DESC_LOW, 0x1000);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW, AVAIL_BASE as u32);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_USED_LOW, FIRST_USED_BASE as u32);
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
+    memory
+        .write_buffer(
+            GuestPhysAddr::from(AVAIL_BASE + 4 + 4 * 2),
+            &0u16.to_le_bytes(),
+        )
+        .unwrap();
+
+    assert!(s.queues_lock()[0].complete(0, 8).unwrap());
+
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 0);
+    wr(
+        &s,
+        vc::VIRTIO_MMIO_QUEUE_USED_LOW,
+        REPLACEMENT_USED_BASE as u32,
+    );
+    wr(&s, vc::VIRTIO_MMIO_QUEUE_READY, 1);
+
+    assert!(
+        s.queues_lock()[0].complete(1, 8).unwrap(),
+        "the first completion on a replacement used ring must notify for used_event 0"
+    );
 }
 
 #[test]

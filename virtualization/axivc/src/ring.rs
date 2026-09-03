@@ -82,6 +82,12 @@ impl IvcRing {
         Ok(())
     }
 
+    pub(crate) fn can_send(&self) -> bool {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+        (tail.wrapping_sub(head) as usize) < IVC_RING_CAPACITY
+    }
+
     pub(crate) fn try_recv(&self, payload: &mut [u8]) -> Result<Option<IvcMessage>, IvcRingError> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
@@ -93,6 +99,12 @@ impl IvcRing {
         let message = self.slots[slot_index].read(payload)?;
         self.head.store(head.wrapping_add(1), Ordering::Release);
         Ok(Some(message))
+    }
+
+    pub(crate) fn can_recv(&self) -> bool {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        head != tail
     }
 }
 

@@ -1,7 +1,7 @@
 use core::mem::{offset_of, size_of};
 
 use ax_runtime::hal::time::{
-    NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
+    NANOS_PER_SEC, TimeValue, monotonic_time, wall_time,
 };
 use linux_raw_sys::general::{
     __kernel_clockid_t, __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, CLOCK_BOOTTIME,
@@ -232,16 +232,20 @@ pub fn sys_times(current: &crate::task::UserTaskRef, tms: *mut Tms) -> crate::St
     let proc_data = &curr.as_thread().proc_data;
     let (utime, stime) = proc_data.cpu_time();
     let (cutime, cstime) = proc_data.children_cpu_time();
+    // Linux times(2) reports every field and the return value in USER_HZ clock
+    // ticks (glibc/musl hardcode _SC_CLK_TCK = 100, so one tick is 10 ms), the
+    // same jiffies unit as the /proc/[pid]/stat writer in task::stat.
+    let ticks = |d: TimeValue| (d.as_millis() / 10) as usize;
     tms.vm_write(
         current,
         Tms {
-            tms_utime: utime.as_micros() as usize,
-            tms_stime: stime.as_micros() as usize,
-            tms_cutime: cutime.as_micros() as usize,
-            tms_cstime: cstime.as_micros() as usize,
+            tms_utime: ticks(utime),
+            tms_stime: ticks(stime),
+            tms_cutime: ticks(cutime),
+            tms_cstime: ticks(cstime),
         },
     )?;
-    Ok(nanos_to_ticks(monotonic_time_nanos()) as _)
+    Ok((monotonic_time().as_millis() / 10) as _)
 }
 
 pub fn sys_getitimer(

@@ -295,6 +295,19 @@ impl<T: GuestMemoryAccessor + Clone> AvailableRing<T> {
             .map_err(|_| VirtioError::InvalidAddress)
     }
 
+    /// Reads the used event field with a scoped memory capability.
+    pub(crate) fn read_used_event_with_memory(
+        &self,
+        memory: &mut dyn GuestMemory,
+    ) -> VirtioResult<u16> {
+        if !self.is_valid() {
+            return Err(VirtioError::QueueNotReady);
+        }
+        let mut bytes = [0u8; 2];
+        memory.read(self.used_event_addr(), &mut bytes)?;
+        Ok(u16::from_le_bytes(bytes))
+    }
+
     /// Write the used event field (for event_idx feature)
     pub fn write_used_event(&self, event: u16) -> VirtioResult<()> {
         if !self.is_valid() {

@@ -27,7 +27,6 @@ pub enum DeviceMmap {
     ///
     /// This is for DMA buffers that are normal memory and whose driver/runtime
     /// performs explicit cache maintenance around device access.
-    #[cfg(feature = "rknpu")]
     PhysicalCached(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to an already offset-resolved physical address range.
     ///

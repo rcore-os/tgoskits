@@ -1568,6 +1568,7 @@ dependencies = [
  "axaddrspace",
  "axvm-types",
  "log",
+ "mbarrier",
 ]
 
 [[package]]
@@ -8003,6 +8004,8 @@ dependencies = [
  "ax-tracepoint",
  "axbacktrace",
  "axfs-ng-vfs",
+ "axhvc",
+ "axivc",
  "axklib",
  "axplat-dyn",
  "axpoll",

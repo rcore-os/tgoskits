@@ -8,6 +8,12 @@ mod paging {
     dead_code,
     reason = "the host adapter exercises PTE behavior without architecture initialization"
 )]
+#[path = "../src/aarch64/paging.rs"]
+mod aarch64_paging;
+#[expect(
+    dead_code,
+    reason = "the host adapter exercises PTE behavior without architecture initialization"
+)]
 #[path = "../src/loongarch64/paging.rs"]
 mod loongarch64_paging;
 #[expect(
@@ -17,6 +23,7 @@ mod loongarch64_paging;
 #[path = "../src/riscv/paging.rs"]
 mod riscv_paging;
 
+use aarch64_paging::A64Pte;
 use ax_cpu::trap::PageFaultFlags;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use loongarch64_paging::La64Pte;
@@ -36,6 +43,45 @@ fn page_fault_access_converts_to_mapping_permissions() {
         MappingFlags::from(access),
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER
     );
+}
+
+#[test]
+fn aarch64_relocated_normal_leaf_preserves_memory_type() {
+    let source_paddr = PhysAddr::from_usize(0x1_81ea_5000);
+    let target_paddr = PhysAddr::from_usize(0x1_8200_0000);
+    let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+    let source_pte = A64Pte::new_page(source_paddr, flags, false);
+    let queried_flags = source_pte.config(false);
+    let target_pte = A64Pte::new_page(target_paddr, queried_flags, false);
+
+    assert_eq!(queried_flags, flags);
+    assert_eq!(target_pte.config(false), flags);
+}
+
+#[test]
+fn aarch64_explicit_memory_types_roundtrip() {
+    let paddr = PhysAddr::from_usize(0x1_81ea_5000);
+    for memory_type in [MappingFlags::DEVICE, MappingFlags::UNCACHED] {
+        let flags = MappingFlags::READ | MappingFlags::WRITE | memory_type;
+        let pte = A64Pte::new_page(paddr, flags, false);
+
+        assert_eq!(pte.config(false), flags);
+    }
+}
+
+#[test]
+fn aarch64_unprogrammed_mair_indices_decode_as_device() {
+    let paddr = PhysAddr::from_usize(0x1_81ea_5000);
+    let normal_flags = MappingFlags::READ | MappingFlags::WRITE;
+    for index in 3..8 {
+        let pte = A64Pte::new_page(paddr, normal_flags, false).with_attr_index(index);
+
+        assert_eq!(
+            pte.config(false),
+            normal_flags | MappingFlags::DEVICE,
+            "AttrIndx {index} must match its zero-valued MAIR slot"
+        );
+    }
 }
 
 #[test]

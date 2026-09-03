@@ -315,7 +315,9 @@ mod tests {
             graph.add(node).unwrap();
         }
         let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_mmio(0x1000_0000..0x1000_0000 + super::devices::IVC_CHANNEL_SHARED_RANGE_SIZE)
+            .unwrap();
         pools.allow_fixed_pio(0x3f8..0x400).unwrap();
         pools
             .allow_fixed_controller_inputs(

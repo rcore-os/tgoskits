@@ -47,6 +47,42 @@ impl GuestMemoryAccessor for MockMem {
     }
 }
 
+struct PublishAfterAvailEventWrite {
+    mem: Arc<MockMem>,
+    avail_event_addr: GuestPhysAddr,
+    avail_idx_addr: GuestPhysAddr,
+    published_idx: u16,
+}
+
+impl axvirtio_common::GuestMemory for PublishAfterAvailEventWrite {
+    fn read(
+        &mut self,
+        guest_addr: GuestPhysAddr,
+        data: &mut [u8],
+    ) -> axvirtio_common::VirtioResult<()> {
+        self.mem
+            .read_buffer(guest_addr, data)
+            .map_err(|_| VirtioError::InvalidAddress)
+    }
+
+    fn write(
+        &mut self,
+        guest_addr: GuestPhysAddr,
+        data: &[u8],
+    ) -> axvirtio_common::VirtioResult<()> {
+        self.mem
+            .write_buffer(guest_addr, data)
+            .map_err(|_| VirtioError::InvalidAddress)?;
+        if guest_addr == self.avail_event_addr {
+            self.mem.put(
+                self.avail_idx_addr.as_usize(),
+                &self.published_idx.to_le_bytes(),
+            );
+        }
+        Ok(())
+    }
+}
+
 /// A fully-wired queue plus its guest-memory layout offsets.
 struct Fixture {
     mem: Arc<MockMem>,
@@ -129,9 +165,21 @@ impl Fixture {
         self.mem.put(self.avail_base, &flags.to_le_bytes());
     }
 
+    /// Set the driver-owned `used_event` footer in the available ring.
+    fn set_used_event(&self, event: u16) {
+        let off = self.avail_base + 4 + self.size as usize * 2;
+        self.mem.put(off, &event.to_le_bytes());
+    }
+
     /// Read the used-ring head index `used.idx`.
     fn used_idx(&self) -> u16 {
         let off = self.used_base + 2;
+        u16::from_le_bytes([self.mem.buf[off], self.mem.buf[off + 1]])
+    }
+
+    /// Read the device-owned `avail_event` footer in the used ring.
+    fn avail_event(&self) -> u16 {
+        let off = self.used_base + 4 + self.size as usize * 8;
         u16::from_le_bytes([self.mem.buf[off], self.mem.buf[off + 1]])
     }
 
@@ -280,6 +328,49 @@ fn pop_available_head_wraps_u16_index() {
     assert_eq!(f.queue.pop_available_head().unwrap(), Some(0));
     // last_avail advanced to 0 (MAX + 1 wraps).
     assert_eq!(f.queue.get_last_avail_idx(), 0);
+}
+
+#[test]
+fn event_idx_rearm_publishes_the_next_expected_available_index() {
+    let mut f = Fixture::new(4);
+    f.queue.event_idx_enabled = true;
+    f.queue.update_last_avail_idx(2);
+    f.set_avail_idx(2);
+
+    assert!(!f.queue.rearm_available_event().unwrap());
+    assert_eq!(f.avail_event(), 2);
+}
+
+#[test]
+fn event_idx_rearm_detects_buffers_published_before_the_recheck() {
+    let mut f = Fixture::new(4);
+    f.queue.event_idx_enabled = true;
+    f.queue.update_last_avail_idx(2);
+    f.set_avail_idx(2);
+    let mut memory = PublishAfterAvailEventWrite {
+        mem: Arc::clone(&f.mem),
+        avail_event_addr: GuestPhysAddr::from(f.used_base + 4 + f.size as usize * 8),
+        avail_idx_addr: GuestPhysAddr::from(f.avail_base + 2),
+        published_idx: 3,
+    };
+
+    assert!(
+        f.queue
+            .rearm_available_event_with_memory(&mut memory)
+            .unwrap()
+    );
+    assert_eq!(f.avail_event(), 2);
+}
+
+#[test]
+fn event_idx_rearm_detects_available_index_wraparound() {
+    let mut f = Fixture::new(4);
+    f.queue.event_idx_enabled = true;
+    f.queue.update_last_avail_idx(u16::MAX);
+    f.set_avail_idx(0);
+
+    assert!(f.queue.rearm_available_event().unwrap());
+    assert_eq!(f.avail_event(), u16::MAX);
 }
 
 #[test]
@@ -902,6 +993,35 @@ fn no_interrupt_flag_suppresses_notification() {
     assert_eq!(f.used_idx(), 1);
     // ...but the driver must not be interrupted.
     assert!(!notify);
+}
+
+#[test]
+fn event_idx_notifies_only_at_the_requested_used_index() {
+    let mut f = Fixture::new(4);
+    f.queue.event_idx_enabled = true;
+    f.set_avail_flags(VIRTQ_AVAIL_F_NO_INTERRUPT);
+    f.set_used_event(0);
+
+    assert!(
+        f.queue.complete(3, 64).unwrap(),
+        "event_idx must ignore NO_INTERRUPT and notify for used_event 0"
+    );
+    assert!(
+        !f.queue.complete(2, 32).unwrap(),
+        "the next completion must stay suppressed until used_event advances"
+    );
+}
+
+#[test]
+fn event_idx_batch_notification_uses_the_previous_check_index() {
+    let mut f = Fixture::new(4);
+    f.queue.event_idx_enabled = true;
+    f.set_used_event(0);
+
+    f.queue.add_used(1, 8).unwrap();
+    f.queue.add_used(2, 8).unwrap();
+
+    assert!(f.queue.should_notify().unwrap());
 }
 
 #[test]

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-times-clock-ticks C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-times-clock-ticks src/main.c)
+target_compile_options(bug-times-clock-ticks PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-times-clock-ticks RUNTIME DESTINATION usr/bin/starry-test-suit)

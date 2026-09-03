@@ -21,6 +21,7 @@ rdif-base
 rdif-def
 ax-sched
 axvm
+virtualization-tests
 axvmconfig
 ax-cpumask
 irq-framework

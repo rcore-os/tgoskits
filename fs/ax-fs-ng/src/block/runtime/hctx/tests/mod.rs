@@ -4,7 +4,11 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
-use std::{sync::Mutex as StdMutex, thread, time::Instant};
+use std::{
+    sync::{Mutex, mpsc},
+    thread,
+    time::Instant,
+};
 
 use rdif_block::{
     ControlEvent, ControllerEvent, DeviceInfo, DriverGeneric, HardIrqHandler, IrqAck, IrqQueueMask,
@@ -12,10 +16,7 @@ use rdif_block::{
 };
 
 use super::{submission::collect_submission_batch, *};
-use crate::block::runtime::{
-    completion::CompletionSubscription,
-    irq::{BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, IrqRearmEpisode},
-};
+use crate::block::runtime::{completion::CompletionSubscription, irq::BlockIrqAction};
 
 mod progress;
 mod queue_info;
@@ -27,6 +28,7 @@ struct QueueCounters {
     committed: AtomicUsize,
     drained: AtomicUsize,
     shutdown: AtomicUsize,
+    dropped: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -47,7 +49,7 @@ impl HctxObserver for TestObserver {
 
 #[derive(Default)]
 struct TestControllerPort {
-    events: StdMutex<Vec<ControllerEvent>>,
+    events: Mutex<Vec<ControllerEvent>>,
 }
 
 impl ControllerEventPort for TestControllerPort {
@@ -89,6 +91,48 @@ struct CapabilityRefreshQueue {
 
 struct FailingDrainQueue {
     counters: Arc<QueueCounters>,
+}
+
+struct BlockingShutdownQueue {
+    entered: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
+}
+
+impl DriverGeneric for BlockingShutdownQueue {
+    fn name(&self) -> &str {
+        "blocking-shutdown"
+    }
+}
+
+impl HardwareQueue for BlockingShutdownQueue {
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn info(&self) -> QueueInfo {
+        test_queue_info(1)
+    }
+
+    fn submit_batch_owned(
+        &mut self,
+        _requests: &mut OwnedRequestBatch,
+        _sink: &mut dyn SubmissionSink,
+    ) -> rdif_block::BatchSubmitResult {
+        rdif_block::BatchSubmitResult::new(0, BatchSubmitDisposition::Continue)
+    }
+
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        self.entered.send(()).map_err(|_| BlkError::Io)?;
+        self.release.recv().map_err(|_| BlkError::Io)
+    }
 }
 
 impl DriverGeneric for FailingDrainQueue {
@@ -303,6 +347,12 @@ struct UnderreportedAcceptanceQueue {
     pending: Vec<RequestId>,
 }
 
+impl Drop for UnderreportedAcceptanceQueue {
+    fn drop(&mut self) {
+        self.counters.dropped.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 impl DriverGeneric for UnderreportedAcceptanceQueue {
     fn name(&self) -> &str {
         "underreported-acceptance"
@@ -495,19 +545,4 @@ fn wait_for_commits(counters: &QueueCounters, expected: usize) {
         assert!(Instant::now() < deadline, "maintenance task did not commit");
         thread::yield_now();
     }
-}
-
-fn queue_zero_action_with_handler(hctx: &Hctx, handler: Box<dyn HardIrqHandler>) -> BlockIrqAction {
-    let controller_latch = Arc::new(ControllerIrqLatch::new(0));
-    let controller_notification = runtime_ops().unwrap().notification();
-    let source = Arc::new(IrqRearmEpisode::new(
-        0,
-        ControllerIrqTarget::new(controller_latch, controller_notification),
-    ));
-    let target = hctx.irq_target(Arc::clone(&source));
-    BlockIrqAction::new(handler, source, vec![target])
-}
-
-fn queue_zero_action(hctx: &Hctx) -> BlockIrqAction {
-    queue_zero_action_with_handler(hctx, Box::new(QueueZeroIrq))
 }
