@@ -722,6 +722,102 @@ fn range_operation_blocks_fault_publication_after_cache_snapshot() {
 }
 
 #[test]
+fn range_operation_rechecks_page_populated_by_buffered_read() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2]));
+        let cached = reopen_cached_file(backing);
+        assert_eq!(cached.write_at(&[0xa5][..], 0).unwrap(), 1);
+        assert!(cached.is_page_cached(0));
+        assert!(!cached.is_page_cached(1));
+
+        let populated = Arc::new(AtomicBool::new(false));
+        let callback_populated = populated.clone();
+        let racing_read = cached.clone();
+        let endpoint = test_mapping_endpoint(move |event| match event {
+            CacheMappingEvent::WritebackProtect(_) => {
+                if !callback_populated.swap(true, Ordering::AcqRel) {
+                    let mut old_contents = vec![0; PAGE_SIZE];
+                    assert_eq!(
+                        racing_read
+                            .read_at(old_contents.as_mut_slice(), PAGE_SIZE as u64)
+                            .unwrap(),
+                        PAGE_SIZE
+                    );
+                    assert!(old_contents.iter().all(|byte| *byte == 0x5a));
+                }
+                CacheMappingResult::Protected
+            }
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+        });
+        cached.install_mapping_endpoint(&endpoint).unwrap();
+
+        cached
+            .operate_range(0, (PAGE_SIZE * 2) as u64, FileRangeOperation::PunchHole)
+            .unwrap();
+
+        assert!(populated.load(Ordering::Acquire));
+        let mut contents = vec![0xff; PAGE_SIZE];
+        assert_eq!(
+            cached
+                .read_at(contents.as_mut_slice(), PAGE_SIZE as u64)
+                .unwrap(),
+            PAGE_SIZE
+        );
+        assert!(
+            contents.iter().all(|byte| *byte == 0),
+            "hole punch must invalidate data populated after the initial cache snapshot"
+        );
+    });
+}
+
+#[test]
+fn range_operation_rechecks_page_populated_by_buffered_write() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2]));
+        let cached = reopen_cached_file(backing);
+        assert_eq!(cached.write_at(&[0xa5][..], 0).unwrap(), 1);
+        assert!(cached.is_page_cached(0));
+        assert!(!cached.is_page_cached(1));
+
+        let populated = Arc::new(AtomicBool::new(false));
+        let callback_populated = populated.clone();
+        let racing_write = cached.clone();
+        let endpoint = test_mapping_endpoint(move |event| match event {
+            CacheMappingEvent::WritebackProtect(_) => {
+                if !callback_populated.swap(true, Ordering::AcqRel) {
+                    assert_eq!(
+                        racing_write
+                            .write_at(&[0xa5][..], PAGE_SIZE as u64)
+                            .unwrap(),
+                        1
+                    );
+                }
+                CacheMappingResult::Protected
+            }
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+        });
+        cached.install_mapping_endpoint(&endpoint).unwrap();
+
+        cached
+            .operate_range(0, (PAGE_SIZE * 2) as u64, FileRangeOperation::PunchHole)
+            .unwrap();
+
+        assert!(populated.load(Ordering::Acquire));
+        let mut contents = vec![0xff; PAGE_SIZE];
+        assert_eq!(
+            cached
+                .read_at(contents.as_mut_slice(), PAGE_SIZE as u64)
+                .unwrap(),
+            PAGE_SIZE
+        );
+        assert!(
+            contents.iter().all(|byte| *byte == 0),
+            "hole punch must win over a buffered write completed before the backing mutation"
+        );
+    });
+}
+
+#[test]
 fn shifted_range_blocks_fault_publication_during_mapping_update() {
     with_test_page_provider(true, |_| {
         let mut original = vec![0; PAGE_SIZE * 3];

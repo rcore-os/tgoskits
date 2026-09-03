@@ -70,16 +70,7 @@ impl CachedFile {
             };
             let start_page = offset / PAGE_SIZE as u64;
             let end_page = visible_end.div_ceil(PAGE_SIZE as u64);
-            let affected_pages = {
-                let guard = self.shared.page_cache.lock();
-                guard
-                    .iter()
-                    .filter_map(|(&page_number, _)| {
-                        let page = u64::from(page_number);
-                        (start_page <= page && page < end_page).then_some(page_number)
-                    })
-                    .collect::<Vec<_>>()
-            };
+            let affected_pages = self.cached_pages_in_range(start_page, end_page);
 
             self.shared
                 .protect_dirty_pages_before_writeback(&affected_pages)?;
@@ -89,6 +80,13 @@ impl CachedFile {
 
             let _io = self.shared.io_lock.lock();
             if self.shared.len() != observed_len {
+                continue;
+            }
+            if self.cached_pages_in_range(start_page, end_page) != affected_pages {
+                // Buffered I/O may have populated or removed a page while the
+                // mapping callbacks ran. Restart so every page present at the
+                // backing-operation linearization point is protected and
+                // updated by the same snapshot.
                 continue;
             }
             if !self.in_memory {
@@ -201,16 +199,21 @@ impl CachedFile {
         }
     }
 
-    fn cached_pages_from(&self, start_page: u64) -> Vec<u32> {
+    fn cached_pages_in_range(&self, start_page: u64, end_page: u64) -> Vec<u32> {
         let guard = self.shared.page_cache.lock();
         let mut pages = guard
             .iter()
             .filter_map(|(&page_number, _)| {
-                (u64::from(page_number) >= start_page).then_some(page_number)
+                let page = u64::from(page_number);
+                (start_page <= page && page < end_page).then_some(page_number)
             })
             .collect::<Vec<_>>();
         pages.sort_unstable();
         pages
+    }
+
+    fn cached_pages_from(&self, start_page: u64) -> Vec<u32> {
+        self.cached_pages_in_range(start_page, u64::from(u32::MAX) + 1)
     }
 
     pub(super) fn zero_partial_page_locked(
