@@ -180,6 +180,26 @@ fn x86_preemption_finish_uses_a_cpu_local_compare_exchange() {
 }
 
 #[test]
+fn generic_preemption_finish_retries_without_recursion() {
+    let finish = PREEMPT
+        .split_once("fn finish(&self) -> PreemptionExit")
+        .expect("generic preemption finish must exist")
+        .1
+        .split_once("fn release_pending(&self)")
+        .expect("generic preemption finish must remain bounded")
+        .0;
+
+    assert!(
+        finish.contains("loop {"),
+        "a failed local CAS must retry at a fixed stack depth"
+    );
+    assert!(
+        !finish.contains("self.finish()"),
+        "a weak-CAS retry must not recurse from interrupt return"
+    );
+}
+
+#[test]
 fn aarch64_current_stays_in_sp_el0_when_tls_is_enabled() {
     let install = AARCH64
         .split_once("unsafe fn install_cpu_base")

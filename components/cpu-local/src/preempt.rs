@@ -129,33 +129,26 @@ impl PreemptionState {
 
     #[cfg(any(test, not(target_arch = "x86_64"), feature = "host-test"))]
     fn finish(&self) -> PreemptionExit {
-        let state = self.0.load(Ordering::Relaxed);
-        let depth = state & PREEMPT_DEPTH_MASK;
-        assert!(depth > 0, "unbalanced preemption exit");
+        loop {
+            let state = self.0.load(Ordering::Relaxed);
+            let depth = state & PREEMPT_DEPTH_MASK;
+            assert!(depth > 0, "unbalanced preemption exit");
 
-        if depth == 1 {
-            if state & PREEMPT_NO_PENDING == 0 {
+            if depth == 1 && state & PREEMPT_NO_PENDING == 0 {
                 return PreemptionExit::Pending(PendingPreemption::new(self));
             }
-            return if self.compare_exchange_local(state, state - 1) {
-                PreemptionExit::Enabled
-            } else {
-                // A local interrupt can publish the pending bit between the
-                // snapshot and the final decrement. Re-enter the same
-                // transition so the scheduler baton cannot be lost.
-                self.finish()
-            };
-        }
 
-        // Linux's nested preempt_count decrement is a single local update.
-        // The owner word cannot be modified remotely, and an interrupt cannot
-        // observe a partially executed instruction; preserving the pending high
-        // bit therefore needs no cmpxchg loop for depth > 1.
-        let next = state - 1;
-        if !self.compare_exchange_local(state, next) {
-            return self.finish();
+            // A local interrupt may update the sticky pending bit, and weak
+            // LL/SC compare-exchange may also fail spuriously. Retry at a
+            // fixed stack depth, matching Linux's bounded IRQ-return loop.
+            if self.compare_exchange_local(state, state - 1) {
+                return if depth == 1 {
+                    PreemptionExit::Enabled
+                } else {
+                    PreemptionExit::Nested
+                };
+            }
         }
-        PreemptionExit::Nested
     }
 
     fn release_pending(&self) {
@@ -237,7 +230,7 @@ impl PreemptionToken {
         #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
         {
             let _token = ManuallyDrop::new(self);
-            return 1;
+            1
         }
         #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
         {
@@ -256,7 +249,7 @@ impl PreemptionToken {
     pub unsafe fn from_raw(raw: usize) -> Option<Self> {
         #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
         {
-            return (raw == 1).then(Self::new_current);
+            (raw == 1).then(Self::new_current)
         }
         #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
         {
@@ -282,7 +275,7 @@ impl PreemptionToken {
         #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
         {
             let _ = resumed_owner;
-            return self;
+            self
         }
         #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
         {
@@ -375,7 +368,7 @@ pub fn finish_preemption(token: PreemptionToken) -> PreemptionExit {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     {
         let _token = ManuallyDrop::new(token);
-        return finish_current_x86_preemption();
+        finish_current_x86_preemption()
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     {
