@@ -13,7 +13,7 @@ mod types;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_lazyinit::LazyInit;
-use ax_task::sync::{SpinLock as Mutex, SpinLockGuard};
+use ax_task::sync::{SpinLock as Mutex, SpinLockIrqSaveGuard};
 pub use device::{DisplayDevice, DisplayError, DisplayResult, ErasedDisplayDevice, Gpu3dErrorKind};
 pub use types::{CapsetInfo, DisplayInfo, PixelFormat, TransferBox};
 
@@ -29,9 +29,14 @@ static LOCK_WAIT_CNT: AtomicU64 = AtomicU64::new(0);
 static LOCK_WAIT_MAX_NS: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
-fn lock_display() -> SpinLockGuard<'static, ErasedDisplayDevice> {
+fn lock_display() -> SpinLockIrqSaveGuard<'static, ErasedDisplayDevice> {
     let t0 = ax_hal::time::monotonic_time_nanos();
-    let guard = MAIN_DISPLAY.lock();
+    // `lock_irqsave` (not `lock`): every 3D entry may be interrupted by the
+    // device completion IRQ, whose handler (`framebuffer_handle_irq`,
+    // `refresh_fence_waiters_from_irq`) takes this same lock. On smp=1 a task
+    // holding it with IRQs enabled deadlocks: the IRQ fires, the handler
+    // spins on the lock, and the interrupted task can never release it.
+    let guard = MAIN_DISPLAY.lock_irqsave();
     let dt = ax_hal::time::monotonic_time_nanos().saturating_sub(t0);
     LOCK_WAIT_NS.fetch_add(dt, Ordering::Relaxed);
     LOCK_WAIT_CNT.fetch_add(1, Ordering::Relaxed);
@@ -319,6 +324,20 @@ pub fn gpu3d_wait_fence(fence_id: u64) -> Result<(), DisplayError> {
 /// batch.
 pub fn gpu3d_fence_completed(fence_id: u64) -> Result<bool, DisplayError> {
     lock_display().fence_completed(fence_id)
+}
+
+/// Drain the host completion queue without blocking. Call after fire-and-forget
+/// submits so the next completion triggers the device IRQ promptly (Linux's
+/// virtio-gpu pumps in its completion worker after every IRQ, keeping
+/// fence-signal latency at µs instead of up to a frame).
+pub fn gpu3d_pump() -> Result<(), DisplayError> {
+    lock_display().pump()
+}
+
+/// Completion-level-only fence query without draining the used ring. Intended
+/// for IRQ handlers whose pump has already advanced the completion level.
+pub fn gpu3d_fence_completed_no_pump(fence_id: u64) -> Result<bool, DisplayError> {
+    lock_display().fence_completed_no_pump(fence_id)
 }
 
 /// Query capset information by index.

@@ -299,11 +299,36 @@ pub trait Interface: DriverGeneric {
         Err(DisplayError::NotSupported)
     }
 
+    /// Drain the completion queue (used ring) without blocking and without
+    /// waiting for any specific fence.
+    ///
+    /// Called after fire-and-forget submits (EXECBUFFER/present) so the host's
+    /// per-command completions are observed promptly: pumping advances the
+    /// completion level and refreshes the device's notification watermark, so
+    /// the next completion triggers the device IRQ immediately instead of
+    /// being batched until a later pump (which delayed fence signaling by up
+    /// to one frame — ~1.5ms on-screen, run54: ppoll avg 1465µs ≈ IRQ
+    /// interval). Linux's virtio-gpu pumps in its completion worker after every
+    /// IRQ, keeping per-command signal latency at µs.
+    fn pump(&mut self) -> Result<(), DisplayError> {
+        Ok(())
+    }
+
     /// Non-blocking fence query: has `fence_id` already completed on the host?
     /// `false` means the host is still busy with the batch — Linux
     /// `dma_resv_test_signaled` (the NOWAIT probe in `virtio_gpu_wait_ioctl`).
     fn fence_completed(&mut self, _fence_id: u64) -> Result<bool, DisplayError> {
         Err(DisplayError::NotSupported)
+    }
+
+    /// Completion-level-only fence query, **without** draining the used ring.
+    ///
+    /// For IRQ handlers that have already pumped (the display completion IRQ
+    /// drains the ring before waking waiters): re-pumping per registered fence
+    /// would double the per-IRQ cost. Defaults to the pumping variant so a
+    /// backend without an IRQ path stays correct.
+    fn fence_completed_no_pump(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        self.fence_completed(fence_id)
     }
 
     /// Query capset information by index.

@@ -305,9 +305,19 @@ impl DisplayDevice for RdifDisplayDevice {
         self.device.wait_fence(fence_id).map_err(map_display_error)
     }
 
+    fn pump(&mut self) -> Result<(), DisplayError> {
+        self.device.pump().map_err(map_display_error)
+    }
+
     fn fence_completed(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
         self.device
             .fence_completed(fence_id)
+            .map_err(map_display_error)
+    }
+
+    fn fence_completed_no_pump(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        self.device
+            .fence_completed_no_pump(fence_id)
             .map_err(map_display_error)
     }
 

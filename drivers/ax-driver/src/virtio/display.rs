@@ -30,8 +30,12 @@ crate::model_register!(
 
 #[cfg(feature = "pci")]
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
-    let transport =
-        crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::GPU)?;
+    // INTx stays unmasked at probe time: card0's completion IRQ handler
+    // (`framebuffer_handle_irq` + `refresh_fence_waiters_from_irq`) pumps the
+    // used ring and wakes fence pollers directly. Without it, fence signaling
+    // falls back to the 1ms refresher poll (measured: offscreen texture
+    // 703 -> 1141 FPS with the IRQ path, +62%).
+    let transport = crate::pci::take_virtio_transport(probe.endpoint_mut(), DeviceType::GPU)?;
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
     register_transport_with_info(probe.into_platform_device(), transport, info)
 }
@@ -415,6 +419,11 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
         self.raw.wait_fence(fence_id).map_err(map_gpu3d_err)
     }
 
+    fn pump(&mut self) -> Result<(), DisplayError> {
+        self.raw.pump_completions().map_err(map_gpu3d_err)?;
+        Ok(())
+    }
+
     fn fence_completed(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
         // Drain the used ring before answering: the device's completion
         // interrupt is not delivered in every environment (this virtio-vga
@@ -422,6 +431,14 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
         // when some caller pumps. Every fence query pumping keeps a
         // poll-blocked waiter's refresher able to observe completion.
         self.raw.pump_completions().map_err(map_gpu3d_err)?;
+        Ok(self.raw.fence_completed(fence_id))
+    }
+
+    fn fence_completed_no_pump(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        // Completion-level-only query for IRQ handlers: the caller (card0's
+        // display IRQ path) has already drained the used ring via
+        // `handle_irq`'s pump, so re-pumping per registered fence would
+        // double the per-IRQ cost on the frequent on-screen completion path.
         Ok(self.raw.fence_completed(fence_id))
     }
 

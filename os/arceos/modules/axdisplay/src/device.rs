@@ -206,10 +206,24 @@ pub trait DisplayDevice: Send {
         Err(DisplayError::NotSupported)
     }
 
+    /// Drain the completion queue without blocking (see the rdif contract).
+    fn pump(&mut self) -> Result<(), DisplayError> {
+        Ok(())
+    }
+
     /// Non-blocking fence query (Linux `dma_resv_test_signaled`).
     /// Default: not supported.
     fn fence_completed(&mut self, _fence_id: u64) -> Result<bool, DisplayError> {
         Err(DisplayError::NotSupported)
+    }
+
+    /// Completion-level-only fence query without draining the used ring.
+    /// Intended for IRQ handlers whose pump has already advanced the
+    /// completion level (re-pumping per registered fence doubles the per-IRQ
+    /// cost). Default: pumping variant, which stays correct without an IRQ
+    /// path.
+    fn fence_completed_no_pump(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        self.fence_completed(fence_id)
     }
 
     fn capset_info(&mut self, _index: u32) -> Result<CapsetInfo, DisplayError> {
@@ -456,8 +470,16 @@ impl DisplayDevice for ErasedDisplayDevice {
         self.inner.wait_fence(fence_id)
     }
 
+    fn pump(&mut self) -> Result<(), DisplayError> {
+        self.inner.pump()
+    }
+
     fn fence_completed(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
         self.inner.fence_completed(fence_id)
+    }
+
+    fn fence_completed_no_pump(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        self.inner.fence_completed_no_pump(fence_id)
     }
 
     fn capset_info(&mut self, index: u32) -> Result<CapsetInfo, DisplayError> {
