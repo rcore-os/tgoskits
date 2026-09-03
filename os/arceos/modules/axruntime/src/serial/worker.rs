@@ -19,6 +19,22 @@ use crate::{RuntimeError, RuntimeResult};
 const RX_BUDGET: usize = 256;
 const TX_BUDGET: usize = 64;
 
+/// Keeps the 1 ms polling cadence for this long after the last RX byte or TX
+/// progress, so interactive console use stays responsive.
+const ACTIVE_WINDOW_NS: u64 = 50_000_000;
+/// Polling-mode cadence while console work is recent.
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
+/// Polling-mode cadence once idle. Polling mode has no RX interrupt, so the
+/// loop must keep sampling the port — but only the port sample depends on the
+/// tick, and a 1 kHz wake loop is pure scheduler noise (it interleaves ahead
+/// of renderer wakeups on the ready queue). Idle console-input latency is
+/// bounded by this interval instead.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+fn now_ns() -> u64 {
+    ax_hal::time::monotonic_time().as_nanos() as u64
+}
+
 pub(super) struct SerialWorker {
     shared: Arc<RuntimeShared>,
     irq_rx: SpscConsumer<RxSample>,
@@ -35,6 +51,9 @@ pub(super) struct SerialWorker {
     pending_rearm: SerialEventSet,
     immediate_events: SerialEventSet,
     latched_rx_errors: RxErrorFlags,
+    /// Monotonic ns of the last real console work (RX bytes received or TX
+    /// progress); drives the polling-mode idle backoff.
+    last_active_ns: u64,
 }
 
 impl SerialWorker {
@@ -61,6 +80,7 @@ impl SerialWorker {
             pending_rearm: SerialEventSet::empty(),
             immediate_events: SerialEventSet::empty(),
             latched_rx_errors: RxErrorFlags::empty(),
+            last_active_ns: 0,
         }
     }
 
@@ -103,6 +123,9 @@ impl SerialWorker {
                 }
                 let outcome = self.service_rx(path);
                 rx_blocked = outcome.blocked;
+                if outcome.received {
+                    self.last_active_ns = now_ns();
+                }
                 if outcome.budget_exhausted {
                     ax_task::yield_now();
                 } else if !outcome.blocked && self.shared.bridge.latch.has_pending() {
@@ -119,6 +142,7 @@ impl SerialWorker {
             let mut budget_exhausted = false;
             let mut tx_blocked = false;
             if self.shared.started() && tx_needed {
+                self.last_active_ns = now_ns();
                 let outcome = self.service_tx();
                 budget_exhausted |= outcome.budget_exhausted;
                 tx_blocked = outcome.blocked;
@@ -158,7 +182,15 @@ impl SerialWorker {
             if drain_waiting_for_hardware {
                 ax_task::yield_now();
             } else if self.shared.polling {
-                ax_task::sleep(Duration::from_millis(1));
+                // Adaptive idle backoff: sample the port at the active
+                // cadence while console work is recent, then drop to the
+                // idle cadence (see `IDLE_POLL_INTERVAL`).
+                let idle = now_ns().wrapping_sub(self.last_active_ns) > ACTIVE_WINDOW_NS;
+                ax_task::sleep(if idle {
+                    IDLE_POLL_INTERVAL
+                } else {
+                    ACTIVE_POLL_INTERVAL
+                });
             } else {
                 self.shared.bridge.notify.wait();
             }
@@ -435,6 +467,7 @@ impl SerialWorker {
                 RxPath::Port => !source_drained,
             };
         RxServiceOutcome {
+            received: processed > 0,
             blocked,
             budget_exhausted: !blocked && processed == RX_BUDGET && source_pending,
         }
@@ -787,6 +820,9 @@ fn prepare_rx_output(
 }
 
 struct RxServiceOutcome {
+    /// At least one RX sample was processed on this call (real console input,
+    /// as opposed to an empty port poll).
+    received: bool,
     blocked: bool,
     budget_exhausted: bool,
 }
