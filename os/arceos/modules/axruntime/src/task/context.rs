@@ -197,6 +197,7 @@ fn current_runtime_context(cpu_pin: &CpuPin) -> Result<&'static RuntimeContext, 
 /// Immutable runtime identity captured by one safe user-execution object.
 #[cfg(feature = "uspace")]
 pub(super) struct RuntimeUserBinding {
+    #[cfg(all(target_arch = "x86_64", feature = "fp-simd"))]
     context: NonNull<RuntimeContext>,
 }
 
@@ -230,6 +231,7 @@ pub(super) fn bind_current_user_context(
         return Err(RuntimeStatus::InvalidHandle);
     }
     Ok(RuntimeUserBinding {
+        #[cfg(all(target_arch = "x86_64", feature = "fp-simd"))]
         context: NonNull::from(context),
     })
 }

@@ -138,16 +138,6 @@ pub(crate) mod aarch64_deadline {
 
 #[cfg(any(target_arch = "riscv64", test))]
 pub(crate) mod riscv64_interval {
-    /// Converts an SBI relative interval into an absolute timer deadline.
-    pub(crate) fn absolute_deadline(current_ticks: u64, interval_ticks: u64) -> u64 {
-        let interval_ticks = if interval_ticks == 0 {
-            1
-        } else {
-            interval_ticks
-        };
-        current_ticks.saturating_add(interval_ticks)
-    }
-
     /// Returns the SBI comparator value used to disarm a one-shot timer.
     pub(crate) const fn stopped_deadline() -> u64 {
         u64::MAX
@@ -299,13 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn riscv64_deadline_saturates_at_counter_limit() {
-        assert_eq!(
-            riscv64_interval::absolute_deadline(u64::MAX - 3, 8),
-            u64::MAX
-        );
-        assert_eq!(riscv64_interval::absolute_deadline(10, 0), 11);
-        assert_eq!(riscv64_interval::absolute_deadline(u64::MAX, 0), u64::MAX);
+    fn riscv64_stopped_deadline_disarms_comparator() {
         assert_eq!(riscv64_interval::stopped_deadline(), u64::MAX);
     }
 
