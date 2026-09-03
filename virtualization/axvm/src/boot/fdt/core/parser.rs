@@ -882,10 +882,7 @@ mod tests {
             .set_property(prop_u32("phandle", 1));
         fdt.node_mut(intc)
             .unwrap()
-            .set_property(super::super::tree::prop_string(
-                "compatible",
-                "riscv,plic0",
-            ));
+            .set_property(super::super::tree::prop_string("compatible", "riscv,plic0"));
         let soc = fdt.add_node(root, Node::new("soc"));
         let pci = fdt.add_node(soc, Node::new("pci@30000000"));
         fdt.node_mut(pci)
@@ -904,10 +901,7 @@ mod tests {
         let virtio = fdt.add_node(soc, Node::new("virtio_mmio@10001000"));
         fdt.node_mut(virtio)
             .unwrap()
-            .set_property(super::super::tree::prop_string(
-                "compatible",
-                "virtio,mmio",
-            ));
+            .set_property(super::super::tree::prop_string("compatible", "virtio,mmio"));
         fdt.node_mut(virtio)
             .unwrap()
             .set_property(prop_u32("interrupt-parent", 1));
@@ -1352,7 +1346,9 @@ mod tests {
         assert_eq!(
             error,
             crate::AxVmError::InvalidConfig {
-                detail: "passthrough device /soc/virtio_mmio@10001000 shares host-owned interrupt source 0xb".to_string(),
+                detail: "passthrough device /soc/virtio_mmio@10001000 shares host-owned interrupt \
+                         source 0xb"
+                    .to_string(),
             }
         );
     }
