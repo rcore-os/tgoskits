@@ -40,9 +40,7 @@ pub(crate) struct KtimerServiceBatch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HardTimerServiceBatch {
     processed: usize,
-    rq_deadline_dirty: bool,
     soft: SoftTimerExpireBatch,
-    timer_base_update: SchedulerDeadlineUpdate,
 }
 
 pub(crate) struct KernelTimerCompletionBatch {
@@ -91,16 +89,8 @@ impl HardTimerServiceBatch {
         self.processed
     }
 
-    pub(crate) const fn requires_rq_deadline_observation(self) -> bool {
-        self.rq_deadline_dirty
-    }
-
     pub(crate) const fn soft(self) -> SoftTimerExpireBatch {
         self.soft
-    }
-
-    pub(crate) const fn timer_base_update(self) -> SchedulerDeadlineUpdate {
-        self.timer_base_update
     }
 }
 
@@ -812,22 +802,15 @@ impl TaskSystem {
         budget: usize,
     ) -> Result<HardTimerServiceBatch, TaskError> {
         let mut processed = 0;
-        let mut rq_deadline_dirty = false;
         loop {
             let claim = match cpu.as_mut().claim_due_hard_timer_step(now, budget)? {
                 HardTimerServiceStep::Claim(claim) => claim,
-                HardTimerServiceStep::Complete { soft, update } => {
-                    return Ok(HardTimerServiceBatch {
-                        processed,
-                        rq_deadline_dirty,
-                        soft,
-                        timer_base_update: update,
-                    });
+                HardTimerServiceStep::Complete { soft } => {
+                    return Ok(HardTimerServiceBatch { processed, soft });
                 }
             };
             match claim {
                 HardTimerServiceClaim::Scheduler(event) => {
-                    rq_deadline_dirty = true;
                     self.service_expired_scheduler_deadline(cpu.as_mut(), event)?;
                 }
                 HardTimerServiceClaim::Park(thread) => {
@@ -837,7 +820,6 @@ impl TaskSystem {
                     }
                 }
                 HardTimerServiceClaim::Kernel(mut execution) => {
-                    rq_deadline_dirty = true;
                     let action = unsafe {
                         // SAFETY: this service runs with the owner CPU's IRQ
                         // baton. The queue lock was released before returning

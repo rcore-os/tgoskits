@@ -23,10 +23,7 @@ pub(crate) enum HardTimerServiceClaim {
 
 pub(crate) enum HardTimerServiceStep {
     Claim(HardTimerServiceClaim),
-    Complete {
-        soft: SoftTimerExpireBatch,
-        update: SchedulerDeadlineUpdate,
-    },
+    Complete { soft: SoftTimerExpireBatch },
 }
 
 impl SoftTimerExpireBatch {
@@ -575,14 +572,12 @@ impl CpuLocal {
             pending: task_batch.pending() || kernel_batch.pending(),
         };
         let non_timer = task_deadlines.non_timer;
-        let update =
-            Self::update_scheduler_deadline_publication_in_base(&mut task_deadlines, non_timer)?
-                .update();
+        Self::update_scheduler_deadline_publication_in_base(&mut task_deadlines, non_timer)?;
         drop(task_deadlines);
         if soft.pending() || soft.expired() != 0 {
             self.remote.publish_ktimer_work();
         }
-        Ok(HardTimerServiceStep::Complete { soft, update })
+        Ok(HardTimerServiceStep::Complete { soft })
     }
 
     pub(crate) fn complete_hard_kernel_timer_execution(

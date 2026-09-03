@@ -202,74 +202,46 @@ pub fn on_clock_event(
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     let periodic_tick = scheduler_event.runs_periodic_task_tick();
-    let scheduler_runtime_expired = scheduler_event.scheduler_deadline_elapsed();
     if periodic_tick {
         // Linux PREEMPT_RT promotes TIF_NEED_RESCHED_LAZY before invoking the
         // current class's periodic task_tick hook. A new lazy request created
         // by that hook remains lazy until the following promotion point.
         cpu.promote_lazy_reschedule();
     }
-    // Linux hrtimer callbacks that only wake a blocked task do not run
-    // update_curr() for the interrupted task. Runtime accounting belongs to
-    // the scheduler deadline/tick path; charging here would open an extra rq
-    // transaction before the hard-timer wake and add a fixed wake latency.
-    let (charge, clock, current, task_tick_rq_observation) =
-        if !periodic_tick && !scheduler_runtime_expired {
-            (None, None, None, None)
-        } else {
-            let accounted = match scheduler_event.accounting_kind() {
-                ClockAccountingKind::RuntimeOnly => unreachable!(),
-                ClockAccountingKind::SchedulerDeadline => {
-                    system.clock_event_current_until_with_clock(cpu.as_mut(), 0)?
-                }
-                ClockAccountingKind::PeriodicTick => system.task_tick_current_until_with_clock(
-                    cpu.as_mut(),
-                    0,
-                    scheduler_event.periodic_tick_ns(),
-                )?,
-                ClockAccountingKind::PeriodicTickWithSchedulerDeadline => system
-                    .task_tick_and_clock_event_current_until_with_clock(
-                        cpu.as_mut(),
-                        0,
-                        scheduler_event.periodic_tick_ns(),
-                    )?,
-            };
-            (
-                Some(accounted.0),
-                Some(accounted.1),
-                Some(accounted.2),
-                Some(accounted.3),
-            )
-        };
+    // A plain hard-timer callback may enqueue Fair work. Linux settles the
+    // current Fair entity before enqueue and wakeup-preemption comparisons;
+    // take the owner-rq accounting sample before running callbacks so the
+    // same ordering also holds for our shared hard-timer path.
+    let (charge, clock, current, task_tick_rq_observation) = match scheduler_event.accounting_kind()
+    {
+        ClockAccountingKind::RuntimeOnly => {
+            system.charge_current_until_with_clock(cpu.as_mut(), 0)?
+        }
+        ClockAccountingKind::SchedulerDeadline => {
+            system.clock_event_current_until_with_clock(cpu.as_mut(), 0)?
+        }
+        ClockAccountingKind::PeriodicTick => system.task_tick_current_until_with_clock(
+            cpu.as_mut(),
+            0,
+            scheduler_event.periodic_tick_ns(),
+        )?,
+        ClockAccountingKind::PeriodicTickWithSchedulerDeadline => system
+            .task_tick_and_clock_event_current_until_with_clock(
+                cpu.as_mut(),
+                0,
+                scheduler_event.periodic_tick_ns(),
+            )?,
+    };
     let rt_period_rescheduled = system.service_rt_period(&cpu, now);
     let hard = system.service_due_hard_timers(cpu.as_mut(), now, budget)?;
     let batch = hard.soft();
-    if task_tick_rq_observation.is_none()
-        && !rt_period_rescheduled
-        && !hard.requires_rq_deadline_observation()
-    {
-        return Ok(TaskClockEventOutcome {
-            slice_expired: false,
-            deadline_overrun: false,
-            expired: hard.processed().saturating_add(batch.expired()),
-            update: hard.timer_base_update(),
-            scheduler_tick: None,
-        });
-    }
-    let rq_observation = match clock_event_rq_observation_plan(
-        task_tick_rq_observation.is_some(),
-        rt_period_rescheduled,
-        hard.processed(),
-    ) {
-        ClockEventRqObservationPlan::ReuseAccounted => {
-            cpu.as_mut().scheduler_work_due_from_rq_observation(
-                now,
-                task_tick_rq_observation
-                    .expect("reused clockevent observation must have been accounted"),
-            )
-        }
-        ClockEventRqObservationPlan::RefreshAndPublish => cpu.as_mut().scheduler_work_due(now),
-    };
+    let rq_observation =
+        match clock_event_rq_observation_plan(rt_period_rescheduled, hard.processed()) {
+            ClockEventRqObservationPlan::ReuseAccounted => cpu
+                .as_mut()
+                .scheduler_work_due_from_rq_observation(now, task_tick_rq_observation),
+            ClockEventRqObservationPlan::RefreshAndPublish => cpu.as_mut().scheduler_work_due(now),
+        };
     let update = cpu
         .as_mut()
         .next_scheduler_deadline_update_from_rq_observation(
@@ -278,17 +250,15 @@ pub fn on_clock_event(
             SchedulerDeadlineDerivationSource::ClockEvent,
         )?;
     Ok(TaskClockEventOutcome {
-        slice_expired: charge.is_some_and(|charge| charge.slice_expired()),
-        deadline_overrun: charge.is_some_and(|charge| charge.deadline_overrun()),
+        slice_expired: charge.slice_expired(),
+        deadline_overrun: charge.deadline_overrun(),
         expired: hard.processed().saturating_add(batch.expired()),
         update,
-        scheduler_tick: clock
-            .zip(current)
-            .map(|(clock, thread)| SchedulerTickStamp {
-                cpu: cpu.owner(),
-                thread,
-                observed_ns: clock.task().as_nanos(),
-            }),
+        scheduler_tick: SchedulerTickStamp {
+            cpu: cpu.owner(),
+            thread: current,
+            observed_ns: clock.task().as_nanos(),
+        },
     })
 }
 
@@ -306,13 +276,10 @@ enum ClockEventRqObservationPlan {
 }
 
 const fn clock_event_rq_observation_plan(
-    accounted_observation: bool,
     rt_period_rescheduled: bool,
     hard_timers_processed: usize,
 ) -> ClockEventRqObservationPlan {
-    if accounted_observation
-        && clock_event_rq_observation_reusable(rt_period_rescheduled, hard_timers_processed)
-    {
+    if clock_event_rq_observation_reusable(rt_period_rescheduled, hard_timers_processed) {
         ClockEventRqObservationPlan::ReuseAccounted
     } else {
         // A hard-timer callback may make the current rq deadline due even
@@ -349,10 +316,6 @@ impl ClaimedSchedulerDeadlines {
             periodic_tick_ns,
             scheduler_deadline_elapsed,
         }
-    }
-
-    pub(crate) const fn scheduler_deadline_elapsed(self) -> bool {
-        self.scheduler_deadline_elapsed
     }
 
     const fn runs_periodic_task_tick(self) -> bool {
@@ -644,7 +607,7 @@ pub struct TaskClockEventOutcome {
     deadline_overrun: bool,
     expired: usize,
     update: crate::runtime::SchedulerDeadlineUpdate,
-    scheduler_tick: Option<SchedulerTickStamp>,
+    scheduler_tick: SchedulerTickStamp,
 }
 
 /// Opaque owner-rq sample required to publish one periodic scheduler tick.
@@ -674,7 +637,7 @@ impl TaskClockEventOutcome {
     }
     /// Returns the rq-bound stamp consumed when this physical edge was also a
     /// periodic scheduler tick.
-    pub const fn scheduler_tick_stamp(self) -> Option<SchedulerTickStamp> {
+    pub const fn scheduler_tick_stamp(self) -> SchedulerTickStamp {
         self.scheduler_tick
     }
     /// Returns the next finite task-owned deadline.
@@ -693,7 +656,7 @@ mod tests {
     };
 
     const _: () = assert!(matches!(
-        clock_event_rq_observation_plan(false, false, 1),
+        clock_event_rq_observation_plan(false, 1),
         ClockEventRqObservationPlan::RefreshAndPublish
     ));
 
@@ -739,7 +702,7 @@ mod tests {
     #[test]
     fn plain_hard_timer_rechecks_and_publishes_due_scheduler_work() {
         assert_eq!(
-            clock_event_rq_observation_plan(false, false, 1),
+            clock_event_rq_observation_plan(false, 1),
             ClockEventRqObservationPlan::RefreshAndPublish
         );
     }
