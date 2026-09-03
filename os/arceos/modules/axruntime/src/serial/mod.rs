@@ -1142,6 +1142,7 @@ pub(crate) fn emergency_write(args: fmt::Arguments<'_>) -> Option<usize> {
         return Some(0);
     };
     let mut writer = EmergencyWriter::new(register_access);
+    writer.begin_record();
     if writer.write_fmt(args).is_err() {
         runtime.shared.stats.add_log_dropped_records(1);
     }
@@ -1185,12 +1186,18 @@ struct EmergencyWriter<'a, E: rdif_serial::UartEmergencyTx + ?Sized> {
     source_written: usize,
 }
 
+const EMERGENCY_RECORD_BOUNDARY: &[u8] = b"\x1b[0m\r\n";
+
 impl<'a, E: rdif_serial::UartEmergencyTx + ?Sized> EmergencyWriter<'a, E> {
     const fn new(access: rdif_serial::UartEmergencyAccess<'a, E>) -> Self {
         Self {
             access,
             source_written: 0,
         }
+    }
+
+    fn begin_record(&self) {
+        self.write_all_blocking(EMERGENCY_RECORD_BOUNDARY);
     }
 
     fn write_all_blocking(&self, mut bytes: &[u8]) {
@@ -1250,6 +1257,17 @@ impl Write for ActiveConsoleWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RecordingEmergencyTx(&'static std::sync::Mutex<Vec<u8>>);
+
+    impl rdif_serial::UartEmergencyTx for RecordingEmergencyTx {
+        unsafe fn mask_interrupts_unlocked(&self) {}
+
+        unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            bytes.len()
+        }
+    }
 
     struct ChunkedEmergencyTx(&'static AtomicUsize);
 
@@ -1322,6 +1340,27 @@ mod tests {
         assert_eq!(writer.source_written, payload.len() + 14);
         assert_eq!(HARDWARE_BYTES.load(Ordering::Relaxed), payload.len() + 15);
         assert!(gate.try_enter().is_none());
+    }
+
+    #[test]
+    fn emergency_writer_starts_a_terminal_safe_record() {
+        let hardware: &'static std::sync::Mutex<Vec<u8>> =
+            Box::leak(Box::new(std::sync::Mutex::new(Vec::new())));
+        let gate = rdif_serial::UartRegisterGate::new(RecordingEmergencyTx(hardware));
+        let access = gate.try_begin_emergency().expect("emergency takeover");
+        let mut writer = EmergencyWriter::new(access);
+        let payload = "ARCEOS_PANIC_EMERGENCY\n";
+
+        writer.begin_record();
+        writer.write_str(payload).unwrap();
+
+        let bytes = hardware.lock().unwrap();
+        assert_eq!(
+            bytes.as_slice(),
+            b"\x1b[0m\r\nARCEOS_PANIC_EMERGENCY\r\n",
+            "the panic marker must not become the final byte of an interrupted ANSI sequence"
+        );
+        assert_eq!(writer.source_written, payload.len());
     }
 
     #[test]
