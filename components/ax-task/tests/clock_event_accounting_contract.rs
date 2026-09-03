@@ -24,3 +24,20 @@ fn plain_hard_timer_accounts_current_before_callbacks() {
         "current-task accounting must precede hard-timer callbacks"
     );
 }
+
+#[test]
+fn periodic_tick_publishes_promoted_lazy_work_to_irq_return() {
+    let promotion = DEADLINE_FACADE
+        .split_once("if periodic_tick")
+        .expect("periodic clock events must retain lazy-request promotion")
+        .1
+        .split_once("// A plain hard-timer callback")
+        .expect("lazy promotion must precede clock-event accounting")
+        .0;
+
+    assert!(
+        promotion.contains("cpu.promote_lazy_reschedule()")
+            && promotion.contains("task_runtime::publish_local_scheduler_work()"),
+        "a promoted lazy request must set the architecture preemption word observed by IRQ return"
+    );
+}

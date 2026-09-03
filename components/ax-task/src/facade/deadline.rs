@@ -202,11 +202,13 @@ pub fn on_clock_event(
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     let periodic_tick = scheduler_event.runs_periodic_task_tick();
-    if periodic_tick {
+    if periodic_tick && cpu.promote_lazy_reschedule() {
         // Linux PREEMPT_RT promotes TIF_NEED_RESCHED_LAZY before invoking the
-        // current class's periodic task_tick hook. A new lazy request created
-        // by that hook remains lazy until the following promotion point.
-        cpu.promote_lazy_reschedule();
+        // current class's periodic task_tick hook through resched_curr(). The
+        // logical request and architecture preemption word are separate here,
+        // so publish both before IRQ return. A new lazy request created by the
+        // class hook remains lazy until the following promotion point.
+        let _self_serviced = task_runtime::publish_local_scheduler_work();
     }
     // A plain hard-timer callback may enqueue Fair work. Linux settles the
     // current Fair entity before enqueue and wakeup-preemption comparisons;
