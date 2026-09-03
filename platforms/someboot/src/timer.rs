@@ -72,14 +72,6 @@ pub(crate) fn resume_masked_level_oneshot(
 
 #[cfg(any(target_arch = "aarch64", test))]
 pub(crate) mod aarch64_deadline {
-    /// Converts a relative timer interval into an absolute counter compare value.
-    ///
-    /// Architectural counters and compare registers wrap together, so this must
-    /// use wrapping rather than saturating arithmetic.
-    pub(crate) const fn from_interval(current_ticks: u64, interval_ticks: u64) -> u64 {
-        current_ticks.wrapping_add(interval_ticks)
-    }
-
     #[cfg(any(not(feature = "hv"), test))]
     pub(crate) mod el1 {
         use super::super::ArchTimerMode;
@@ -222,7 +214,6 @@ mod tests {
 
     use super::{
         aarch64_deadline::{
-            self,
             el1::{self, TimerRegisters as El1TimerRegisters},
             el2::{self, TimerRegisters as El2TimerRegisters},
         },
@@ -277,18 +268,6 @@ mod tests {
     }
 
     #[test]
-    fn compare_value_preserves_intervals_beyond_tval_width() {
-        let current = 0x1234_5678_0000_0000;
-        let interval = u32::MAX as u64 + 17;
-
-        assert_eq!(
-            aarch64_deadline::from_interval(current, interval),
-            current + interval
-        );
-        assert_eq!(aarch64_deadline::from_interval(u64::MAX - 3, 8), 4);
-    }
-
-    #[test]
     fn riscv64_stopped_deadline_disarms_comparator() {
         assert_eq!(riscv64_interval::stopped_deadline(), u64::MAX);
     }
@@ -305,37 +284,36 @@ mod tests {
     }
 
     #[test]
-    fn el1_virtual_timer_uses_virtual_counter_and_compare_register() {
-        let registers = RecordingEl1TimerRegisters::new(0x1234_5678_0000_0000, 17);
-        let interval = u32::MAX as u64 + 17;
+    fn el1_virtual_timer_programs_absolute_deadline() {
+        let registers = RecordingEl1TimerRegisters::new(17, 19);
 
-        el1::program(&registers, ArchTimerMode::El1Virt, interval);
+        el1::program_deadline(&registers, ArchTimerMode::El1Virt, 23);
 
-        assert_eq!(registers.virtual_compare.get(), Some(0x1234_5679_0000_0010));
+        assert_eq!(registers.virtual_compare.get(), Some(23));
         assert_eq!(registers.physical_compare.get(), None);
         assert_eq!(registers.virtual_counter_reads.get(), 1);
         assert_eq!(registers.physical_counter_reads.get(), 0);
     }
 
     #[test]
-    fn el1_physical_timer_uses_physical_counter_and_compare_register() {
-        let registers = RecordingEl1TimerRegisters::new(17, u64::MAX - 3);
+    fn el1_physical_timer_advances_past_deadline_to_next_tick() {
+        let registers = RecordingEl1TimerRegisters::new(17, 19);
 
-        el1::program(&registers, ArchTimerMode::El1Phys, 8);
+        el1::program_deadline(&registers, ArchTimerMode::El1Phys, 8);
 
         assert_eq!(registers.virtual_compare.get(), None);
-        assert_eq!(registers.physical_compare.get(), Some(4));
+        assert_eq!(registers.physical_compare.get(), Some(20));
         assert_eq!(registers.virtual_counter_reads.get(), 0);
         assert_eq!(registers.physical_counter_reads.get(), 1);
     }
 
     #[test]
-    fn el2_hyp_timer_uses_physical_counter_and_hyp_compare_register() {
-        let registers = RecordingEl2TimerRegisters::new(u64::MAX - 3);
+    fn el2_hyp_timer_advances_past_deadline_to_next_tick() {
+        let registers = RecordingEl2TimerRegisters::new(19);
 
-        el2::program(&registers, 8);
+        el2::program_deadline(&registers, 8);
 
-        assert_eq!(registers.hyp_physical_compare.get(), Some(4));
+        assert_eq!(registers.hyp_physical_compare.get(), Some(20));
         assert_eq!(registers.physical_counter_reads.get(), 1);
     }
 

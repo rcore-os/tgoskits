@@ -148,6 +148,7 @@ pub(crate) fn validate_owner_cpu_context() -> ax_task::runtime::RuntimeStatus {
     })
 }
 
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn inherits_hardirq_cpu_owner() -> bool {
     if ax_hal::asm::irqs_enabled() {
         return false;
