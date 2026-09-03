@@ -842,18 +842,23 @@ impl MmPin {
             Ok(prepared) => prepared,
             Err(result) => return result,
         };
+        let mut attempt = prepared.into_apply_attempt();
         let outcome = {
             let mut aspace = self.0.aspace.lock();
-            aspace.apply_prepared_page_fault(prepared)
+            aspace.apply_prepared_page_fault(&mut attempt)
         };
         let result = match outcome {
             PageFaultApplyOutcome::Complete(result) => result,
-            PageFaultApplyOutcome::Cancel { prepared, result } => {
-                if prepared.cancel().is_ok() {
+            PageFaultApplyOutcome::Cancel(result) => {
+                if attempt.cancel().is_ok() {
                     result
                 } else {
                     FaultResult::Retry
                 }
+            }
+            PageFaultApplyOutcome::NeedsRepair(result) => {
+                attempt.release_to_repair_state();
+                result
             }
             PageFaultApplyOutcome::PendingTlb { request, targets } => {
                 if AddrSpace::flush_tlb_requests(core::slice::from_ref(&request), &targets).is_err()

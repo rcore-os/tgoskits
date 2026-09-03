@@ -16,9 +16,9 @@ use ax_runtime::hal::{
 };
 
 use super::{
-    FaultFallback, MappingExecution, MappingFileInfo, MappingOperation, PopulateRequest,
-    PreparedPteOwner, ProviderPublication, PteMaterialization, RssKind, alloc_frame,
-    occupied_leaf_ranges, pages_in, validate_occupied_leaf_range,
+    FaultFallback, FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingFileInfo,
+    MappingOperation, PopulateRequest, PreparedPteOwner, ProviderPublication, PteMaterialization,
+    RssKind, alloc_frame, occupied_leaf_ranges, pages_in, validate_occupied_leaf_range,
 };
 #[cfg(all(test, axtest))]
 use super::super::{AddrSpace, HugePageAdvice, MappingPermissions};
@@ -439,6 +439,28 @@ impl CowBackend {
         access_flags: MappingFlags,
         pt: &mut PageTable,
     ) -> StarryResult<Arc<PageObject>> {
+        let page = self.prepare_new_at_sized(vaddr, leaf_size, access_flags)?;
+        let frame = page.frame().paddr();
+        let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+        if let Err(err) = pt.map_page(vaddr, frame, leaf_size, pte_flags) {
+            self.discard_pending_page(&page);
+            return Err(err.into());
+        }
+        Ok(page)
+    }
+
+    /// Allocates and fills one private fault page without publishing a PTE.
+    ///
+    /// The returned page remains Pending in the source-local index until the
+    /// address-space mutation publishes its MappingSlot. This is the same
+    /// prepare/apply split Linux uses when it allocates a COW folio before
+    /// taking the page-table lock.
+    fn prepare_new_at_sized(
+        &self,
+        vaddr: VirtAddr,
+        leaf_size: usize,
+        access_flags: MappingFlags,
+    ) -> StarryResult<Arc<PageObject>> {
         let kind = self.rss_kind_for_fault(access_flags);
         let page = self.alloc_new_frame_sized(true, kind, leaf_size)?;
         let frame = page.frame().paddr();
@@ -494,11 +516,6 @@ impl CowBackend {
                 self.discard_pending_page(&page);
                 return Err(err.into());
             }
-        }
-        let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
-        if let Err(err) = pt.map_page(vaddr, frame, leaf_size, pte_flags) {
-            self.discard_pending_page(&page);
-            return Err(err.into());
         }
         Ok(page)
     }
@@ -665,6 +682,39 @@ impl CowBackend {
         vma_flags: MappingFlags,
         pt: &mut PageTable,
     ) -> StarryResult<PreparedPteOwner> {
+        let owner = self.prepare_cow_fault(space_id, vaddr, paddr, leaf_size, vma_flags)?;
+        let apply_result = match owner.transition {
+            super::PteOwnerTransition::Updated => pt.protect_page(vaddr, vma_flags),
+            super::PteOwnerTransition::Replaced => {
+                pt.remap_page(vaddr, owner.paddr, vma_flags)
+            }
+            super::PteOwnerTransition::Installed => return Err(StarryError::BadState),
+        };
+        match apply_result {
+            Ok(installed_size) if installed_size == leaf_size => Ok(owner),
+            Ok(_) => {
+                if owner.provider_publication == ProviderPublication::Pending {
+                    self.discard_pending_page(&owner.page);
+                }
+                Err(StarryError::BadState)
+            }
+            Err(error) => {
+                if owner.provider_publication == ProviderPublication::Pending {
+                    self.discard_pending_page(&owner.page);
+                }
+                Err(error.into())
+            }
+        }
+    }
+
+    fn prepare_cow_fault(
+        &self,
+        space_id: AddressSpaceId,
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        leaf_size: usize,
+        vma_flags: MappingFlags,
+    ) -> StarryResult<PreparedPteOwner> {
         let page = self
             .page_object_for_frame(paddr)
             .ok_or(StarryError::BadAddress)?;
@@ -675,9 +725,6 @@ impl CowBackend {
             return Err(StarryError::BadState);
         }
         if page.exclusively_mapped_by(space_id) {
-            if pt.protect_page(vaddr, vma_flags)? != leaf_size {
-                return Err(StarryError::BadState);
-            }
             let resident_kind = if self.file.is_some() && vma_flags.contains(MappingFlags::WRITE) {
                 Some(RssKind::Anon)
             } else {
@@ -700,17 +747,6 @@ impl CowBackend {
                 phys_to_virt(new_frame).as_mut_ptr(),
                 leaf_size,
             );
-        }
-        match pt.remap_page(vaddr, new_frame, vma_flags) {
-            Ok(installed_size) if installed_size == leaf_size => {}
-            Ok(_) => {
-                self.discard_pending_page(&new_page);
-                return Err(StarryError::BadState);
-            }
-            Err(err) => {
-                self.discard_pending_page(&new_page);
-                return Err(err.into());
-            }
         }
         // The enclosing address-space transaction replaces the MappingSlot,
         // records the old PageObject in its retire batch, and performs the
@@ -1021,6 +1057,96 @@ impl MappingExecution for CowBackend {
             self.unmap_page(leaf_start, pt)?;
         }
         Ok(())
+    }
+
+    fn prepare_fault(
+        &self,
+        space_id: AddressSpaceId,
+        request: PopulateRequest,
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        preimage: FaultPteSnapshot,
+    ) -> StarryResult<FaultMaterialization> {
+        let range = request.range();
+        let preferred_leaf_size = request.preferred_leaf_size();
+        let transparent_huge_fault = self.file.is_none()
+            && self.page_size == PAGE_SIZE_4K
+            && preferred_leaf_size == PAGE_SIZE_2M
+            && request.fault_address().is_some()
+            && request.fallback() == FaultFallback::BasePage
+            && range.size() == PAGE_SIZE_2M
+            && range.start.is_aligned(PAGE_SIZE_2M);
+        let split_base_fault = self.page_size > PAGE_SIZE_4K
+            && preferred_leaf_size == PAGE_SIZE_4K
+            && range.size() == PAGE_SIZE_4K;
+        if preferred_leaf_size != self.page_size
+            && !transparent_huge_fault
+            && !split_base_fault
+        {
+            return Err(StarryError::OperationNotSupported);
+        }
+
+        match preimage {
+            FaultPteSnapshot::Mapped {
+                paddr,
+                flags: page_flags,
+                page_size,
+            } => {
+                if page_size != preferred_leaf_size {
+                    return Err(StarryError::BadState);
+                }
+                if access_flags.contains(MappingFlags::WRITE)
+                    && !page_flags.contains(MappingFlags::WRITE)
+                {
+                    let owner = self.prepare_cow_fault(
+                        space_id,
+                        range.start,
+                        paddr,
+                        page_size,
+                        flags,
+                    )?;
+                    Ok(FaultMaterialization::with_owner(1, owner, flags))
+                } else {
+                    Ok(FaultMaterialization::satisfied(usize::from(
+                        page_flags.contains(access_flags),
+                    )))
+                }
+            }
+            FaultPteSnapshot::NotMapped => {
+                let (installed_addr, installed_size, page) = if transparent_huge_fault {
+                    let fault_address = request.fault_address().ok_or(StarryError::BadState)?;
+                    allocate_transparent_fault_with(
+                        range.start,
+                        fault_address,
+                        preferred_leaf_size,
+                        |allocation_address, allocation_size| {
+                            self.prepare_new_at_sized(
+                                allocation_address,
+                                allocation_size,
+                                access_flags,
+                            )
+                        },
+                    )?
+                } else {
+                    let page = self.prepare_new_at_sized(
+                        range.start,
+                        preferred_leaf_size,
+                        access_flags,
+                    )?;
+                    (range.start, preferred_leaf_size, page)
+                };
+                let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+                let owner = PreparedPteOwner::installed(
+                    installed_addr,
+                    page.frame().paddr(),
+                    installed_size,
+                    page.clone(),
+                    page.resident_kind(),
+                    ProviderPublication::Pending,
+                );
+                Ok(FaultMaterialization::with_owner(1, owner, pte_flags))
+            }
+        }
     }
 
     fn populate(
@@ -2253,6 +2379,14 @@ fn transparent_huge_advice_faults_one_pmd_for_test() -> bool {
 fn transparent_huge_allocation_falls_back_to_faulting_base_page_for_test() -> bool {
     let preferred_start = VirtAddr::from(0x7a00_0000);
     let fault = preferred_start + 7 * PAGE_SIZE_4K;
+    let preferred_request = PopulateRequest::fault(
+        VirtAddrRange::from_start_size(preferred_start, PAGE_SIZE_2M),
+        PAGE_SIZE_2M,
+        fault,
+        FaultFallback::BasePage,
+    )
+    .expect("valid transparent-huge fault request");
+    let narrowed_request = preferred_request.into_base_page_fallback();
     let mut attempts = Vec::new();
     let outcome = allocate_transparent_fault_with(
         preferred_start,
@@ -2269,6 +2403,12 @@ fn transparent_huge_allocation_falls_back_to_faulting_base_page_for_test() -> bo
     );
     outcome.is_ok_and(|(address, size, value)| {
         address == fault.align_down_4k() && size == PAGE_SIZE_4K && value == 0x5a
+    }) && narrowed_request.is_some_and(|request| {
+        request.range()
+            == VirtAddrRange::from_start_size(fault.align_down_4k(), PAGE_SIZE_4K)
+            && request.preferred_leaf_size() == PAGE_SIZE_4K
+            && request.fault_address() == Some(fault)
+            && request.fallback() == FaultFallback::Forbidden
     }) && attempts
         == [
             (preferred_start, PAGE_SIZE_2M),
@@ -2933,9 +3073,10 @@ fn stale_prepared_fault_cannot_reinstall_unmapped_page_for_test() -> bool {
         let _ = prepared.cancel();
         return false;
     }
-    let rejected = match aspace.apply_prepared_page_fault(prepared) {
-        super::super::PageFaultApplyOutcome::Cancel { prepared, result } => {
-            matches!(result, super::super::FaultResult::Retry) && prepared.cancel().is_ok()
+    let mut attempt = prepared.into_apply_attempt();
+    let rejected = match aspace.apply_prepared_page_fault(&mut attempt) {
+        super::super::PageFaultApplyOutcome::Cancel(result) => {
+            matches!(result, super::super::FaultResult::Retry) && attempt.cancel().is_ok()
         }
         _ => false,
     };

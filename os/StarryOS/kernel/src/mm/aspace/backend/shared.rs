@@ -5,9 +5,9 @@ use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
 use super::{
-    MappingExecution, MappingOperation, PreparedPteOwner, ProviderPublication,
-    PteMaterialization, RssKind, SharedFutexIdentity, alloc_frame, divide_page,
-    occupied_leaf_ranges, pages_in,
+    FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingOperation, PreparedPteOwner,
+    ProviderPublication, PteMaterialization, RssKind, SharedFutexIdentity, alloc_frame,
+    divide_page, occupied_leaf_ranges, pages_in,
 };
 use super::super::objects::{FrameLease, PageId, PageObject};
 use super::super::vma::{
@@ -350,6 +350,65 @@ impl MappingExecution for SharedBackend {
         }
         materialization.set_satisfied_pages(range.size() / PAGE_SIZE_4K);
         Ok(materialization)
+    }
+
+    fn prepare_fault(
+        &self,
+        _space_id: super::super::AddressSpaceId,
+        request: super::PopulateRequest,
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        preimage: FaultPteSnapshot,
+    ) -> StarryResult<FaultMaterialization> {
+        let range = request.range();
+        let leaf_size = request.preferred_leaf_size();
+        self.validate_range(range)?;
+        if leaf_size != self.leaf_size
+            || range.size() != leaf_size
+            || !range.start.is_aligned(leaf_size)
+        {
+            return Err(crate::StarryError::OperationNotSupported);
+        }
+        if !has_pte_access(flags) || !flags.contains(access_flags) {
+            return Ok(FaultMaterialization::empty());
+        }
+
+        match preimage {
+            FaultPteSnapshot::Mapped {
+                paddr,
+                flags: page_flags,
+                page_size,
+            } => {
+                if page_size != leaf_size
+                    || self.mapped_paddr_at(range.start, leaf_size) != Some(paddr)
+                {
+                    return Err(crate::StarryError::BadState);
+                }
+                Ok(FaultMaterialization::satisfied(
+                    if page_flags.contains(access_flags) {
+                        leaf_size / PAGE_SIZE_4K
+                    } else {
+                        0
+                    },
+                ))
+            }
+            FaultPteSnapshot::NotMapped => {
+                let (page, paddr) = self.page_for_materialization(range.start, leaf_size)?;
+                let owner = PreparedPteOwner::installed(
+                    range.start,
+                    paddr,
+                    leaf_size,
+                    page,
+                    Some(RssKind::Shmem),
+                    ProviderPublication::Complete,
+                );
+                Ok(FaultMaterialization::with_owner(
+                    leaf_size / PAGE_SIZE_4K,
+                    owner,
+                    flags,
+                ))
+            }
+        }
     }
 
     fn populate(

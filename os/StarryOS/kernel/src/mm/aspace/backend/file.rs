@@ -17,9 +17,9 @@ use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 use axfs_ng_vfs::Location;
 
 use super::{
-    MappingExecution, MappingFileInfo, MappingOperation, PreparedPteOwner,
-    PopulateRequest, ProviderPublication, PteMaterialization, RssKind, occupied_leaf_ranges,
-    pages_in,
+    FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingFileInfo, MappingOperation,
+    PopulateRequest, PreparedPteOwner, ProviderPublication, PteMaterialization, RssKind,
+    occupied_leaf_ranges, pages_in,
 };
 use super::super::{
     EvictMappingOutcome,
@@ -426,7 +426,14 @@ impl FilePageDomain {
                 return CacheMappingResult::Busy;
             }
         };
-        for key in page.rmap.snapshot() {
+        let mappings = match page.rmap.try_snapshot() {
+            Ok(mappings) => mappings,
+            Err(_) => {
+                let _ = lease.cancel();
+                return CacheMappingResult::Busy;
+            }
+        };
+        for key in mappings {
             let pin = match pin_mm_for_rmap(key.space_id) {
                 Ok(pin) => pin,
                 Err(RmapMmLookupError::Gone | RmapMmLookupError::Busy) => {
@@ -487,7 +494,14 @@ impl FilePageDomain {
             Ok(lease) => lease,
             Err(_) => return CacheMappingResult::Busy,
         };
-        for key in page.rmap.snapshot() {
+        let mappings = match page.rmap.try_snapshot() {
+            Ok(mappings) => mappings,
+            Err(_) => {
+                let _ = lease.cancel();
+                return CacheMappingResult::Busy;
+            }
+        };
+        for key in mappings {
             let pin = match pin_mm_for_rmap(key.space_id) {
                 Ok(pin) => pin,
                 Err(_) => {
@@ -922,6 +936,93 @@ impl MappingExecution for FileBackend {
         _pt: &mut PageTable,
     ) -> StarryResult {
         self.check_flags(new_flags)
+    }
+
+    fn prepare_fault(
+        &self,
+        _space_id: super::super::AddressSpaceId,
+        request: PopulateRequest,
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        preimage: FaultPteSnapshot,
+    ) -> StarryResult<FaultMaterialization> {
+        let range = request.range();
+        if request.preferred_leaf_size() != PAGE_SIZE_4K
+            || range.size() != PAGE_SIZE_4K
+            || !range.start.is_aligned_4k()
+        {
+            return Err(StarryError::OperationNotSupported);
+        }
+        let local_offset = range
+            .start
+            .checked_sub_addr(self.0.start)
+            .ok_or(StarryError::BadState)?;
+        if !local_offset.is_multiple_of(PAGE_SIZE_4K) {
+            return Err(StarryError::BadState);
+        }
+        let page_delta = u32::try_from(local_offset / PAGE_SIZE_4K)
+            .map_err(|_| StarryError::InvalidInput)?;
+        let page_number = self
+            .0
+            .offset_page
+            .checked_add(page_delta)
+            .ok_or(StarryError::InvalidInput)?;
+        let eof_page = self.0.cache.file_len()?.div_ceil(PAGE_SIZE_4K as u64);
+        if u64::from(page_number) >= eof_page {
+            return Ok(FaultMaterialization::empty());
+        }
+
+        match preimage {
+            FaultPteSnapshot::Mapped {
+                paddr,
+                flags: page_flags,
+                page_size,
+            } => {
+                if page_size != PAGE_SIZE_4K {
+                    return Err(StarryError::BadState);
+                }
+                if access_flags.contains(MappingFlags::WRITE)
+                    && !page_flags.contains(MappingFlags::WRITE)
+                {
+                    let page = self
+                        .0
+                        .page_object_for_va(range.start, paddr)
+                        .ok_or(StarryError::BadState)?;
+                    self.0.cache.mark_mmap_dirty_page(page_number)?;
+                    let owner = PreparedPteOwner::updated(
+                        range.start,
+                        paddr,
+                        PAGE_SIZE_4K,
+                        page,
+                        Some(self.rss_kind()),
+                    );
+                    Ok(FaultMaterialization::with_owner(1, owner, flags))
+                } else {
+                    Ok(FaultMaterialization::satisfied(usize::from(
+                        page_flags.contains(access_flags),
+                    )))
+                }
+            }
+            FaultPteSnapshot::NotMapped => {
+                let map_flags = if self.0.cache.in_memory() {
+                    flags
+                } else {
+                    flags - MappingFlags::WRITE
+                };
+                let page_pin = self.0.cache.pin_page_or_insert(page_number)?;
+                let paddr = PhysAddr::from(page_pin.paddr());
+                let page = self.0.get_or_create_page_object(page_number, page_pin)?;
+                let owner = PreparedPteOwner::installed(
+                    range.start,
+                    paddr,
+                    PAGE_SIZE_4K,
+                    page,
+                    Some(self.rss_kind()),
+                    ProviderPublication::Pending,
+                );
+                Ok(FaultMaterialization::with_owner(1, owner, map_flags))
+            }
+        }
     }
 
     fn populate(

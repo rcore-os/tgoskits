@@ -30,6 +30,8 @@ pub enum PagingError {
     NotMapped,
     #[error("Huge split deposit is stale for virtual address {vaddr:#x}")]
     StaleHugeSplit { vaddr: VirtAddr },
+    #[error("Page-table map deposit is stale for virtual address {vaddr:#x}")]
+    StaleMapDeposit { vaddr: VirtAddr },
 }
 
 impl PagingError {
@@ -67,6 +69,10 @@ impl PagingError {
     pub fn stale_huge_split(vaddr: VirtAddr) -> Self {
         Self::StaleHugeSplit { vaddr }
     }
+
+    pub fn stale_map_deposit(vaddr: VirtAddr) -> Self {
+        Self::StaleMapDeposit { vaddr }
+    }
 }
 
 impl core::fmt::Debug for PagingError {
@@ -92,6 +98,9 @@ impl core::fmt::Debug for PagingError {
             Self::NotMapped => write!(f, "NotMapped"),
             Self::StaleHugeSplit { vaddr } => {
                 write!(f, "StaleHugeSplit: vaddr={:#x}", vaddr.as_usize())
+            }
+            Self::StaleMapDeposit { vaddr } => {
+                write!(f, "StaleMapDeposit: vaddr={:#x}", vaddr.as_usize())
             }
         }
     }

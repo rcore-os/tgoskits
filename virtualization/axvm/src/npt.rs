@@ -423,6 +423,7 @@ pub(crate) fn map_error(err: ptg::PagingError) -> MappingError {
         ptg::PagingError::NoMemory
         | ptg::PagingError::HierarchyError { .. }
         | ptg::PagingError::StaleHugeSplit { .. }
+        | ptg::PagingError::StaleMapDeposit { .. }
         | ptg::PagingError::NotMapped => MappingError::BadState,
     }
 }

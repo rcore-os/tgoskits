@@ -392,6 +392,97 @@ fn applying_a_prepared_deposit_does_not_allocate() {
     );
 }
 
+/// A missing page-table suffix is fully allocated before the critical-section
+/// apply. Applying the move-only token publishes the initialized suffix with
+/// no allocator or TLB activity, matching Linux's prealloc_pte/pmd_install
+/// split.
+#[test]
+fn applying_a_prepared_map_path_does_not_allocate() {
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    OPS.lock().unwrap().clear();
+    let mut pt = PageTable::<RecordingMeta, RecordingFram4k>::new(RecordingFram4k).unwrap();
+    let va = VirtAddr::from_usize(VA);
+    let pa = PhysAddr::from_usize(0x1000_0000);
+    let plan = pt.plan_map_page(va, PG).unwrap();
+    OPS.lock().unwrap().clear();
+
+    let deposit = plan.prepare(pa, PteImpl::kernel_mode_config()).unwrap();
+    let prepare_ops = OPS.lock().unwrap().clone();
+    assert_eq!(
+        prepare_ops
+            .iter()
+            .filter(|op| matches!(op, Op::Alloc))
+            .count(),
+        3,
+        "a four-level base-page path reserves three child tables: {prepare_ops:?}"
+    );
+    OPS.lock().unwrap().clear();
+
+    pt.try_map_page_with(deposit).unwrap();
+    assert_eq!(pt.query(va).unwrap().0, pa);
+    let apply_ops = OPS.lock().unwrap().clone();
+    assert!(
+        apply_ops.is_empty(),
+        "map-deposit apply must neither allocate, free nor flush: {apply_ops:?}"
+    );
+
+    pt.unmap(va, PG).unwrap();
+    drop(pt);
+}
+
+/// A competing path installation makes the captured parent stale. The failed
+/// apply returns the complete unpublished suffix so its destructor can run
+/// after the caller leaves the page-table critical section.
+#[test]
+fn stale_map_path_returns_its_unpublished_frames() {
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    OPS.lock().unwrap().clear();
+    let mut pt = PageTable::<RecordingMeta, RecordingFram4k>::new(RecordingFram4k).unwrap();
+    let va = VirtAddr::from_usize(VA);
+    let plan = pt.plan_map_page(va, PG).unwrap();
+    let deposit = plan
+        .prepare(
+            PhysAddr::from_usize(0x1000_0000),
+            PteImpl::kernel_mode_config(),
+        )
+        .unwrap();
+
+    pt.map_page(
+        va + PG,
+        PhysAddr::from_usize(0x2000_0000),
+        PG,
+        PteImpl::kernel_mode_config(),
+    )
+    .unwrap();
+    OPS.lock().unwrap().clear();
+
+    let failure = pt
+        .try_map_page_with(deposit)
+        .expect_err("a changed parent path must reject the stale deposit");
+    assert!(matches!(
+        failure.error(),
+        PagingError::StaleMapDeposit { vaddr } if *vaddr == va
+    ));
+    assert!(
+        OPS.lock().unwrap().is_empty(),
+        "failed apply returns ownership without freeing under the caller's lock"
+    );
+    let (_, returned) = failure.into_parts();
+    drop(returned);
+    let drop_ops = OPS.lock().unwrap().clone();
+    assert_eq!(
+        drop_ops
+            .iter()
+            .filter(|op| matches!(op, Op::Dealloc(_)))
+            .count(),
+        3,
+        "dropping the returned four-level suffix releases every reserved frame: {drop_ops:?}"
+    );
+
+    pt.unmap(va + PG, PG).unwrap();
+    drop(pt);
+}
+
 /// A higher-level mutation can change a subset of the installed child leaves
 /// and still abort back to the exact huge descriptor observed during prepare.
 /// The installed child table is withdrawn into a new move-only deposit instead

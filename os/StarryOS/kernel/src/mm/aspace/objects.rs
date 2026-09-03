@@ -237,6 +237,16 @@ pub struct MappingSlotKey {
     pub va: VirtAddr,
 }
 
+/// Heap storage reserved before entering the page/rmap graph critical section.
+///
+/// If the live vector has spare capacity, this remains empty. Otherwise apply
+/// copies the current keys into this buffer and swaps it into `RmapSet`; the
+/// displaced allocation stays in the token and is released only after the
+/// caller drops every IRQ-saving graph guard.
+pub(crate) struct MappingGraphReservation {
+    replacement: Vec<MappingSlotKey>,
+}
+
 impl Hash for MappingSlotKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.space_id.hash(state);
@@ -245,29 +255,106 @@ impl Hash for MappingSlotKey {
 }
 
 impl RmapSet {
-    fn insert(&self, key: MappingSlotKey) -> bool {
-        let mut entries = self.entries.lock();
-        if entries.contains(&key) {
-            return false;
-        }
-        if entries.try_reserve(1).is_err() {
-            return false;
-        }
-        entries.push(key);
-        true
-    }
-
-    fn remove(&self, key: MappingSlotKey) -> bool {
-        let mut entries = self.entries.lock();
-        let Some(index) = entries.iter().position(|entry| *entry == key) else {
-            return false;
+    fn prepare_replace(
+        &self,
+        additional: usize,
+    ) -> Result<MappingGraphReservation, MappingGraphError> {
+        let (len, capacity) = {
+            let entries = self.entries.lock();
+            (entries.len(), entries.capacity())
         };
-        entries.swap_remove(index);
-        true
+        let required = len
+            .checked_add(additional)
+            .ok_or(MappingGraphError::ResourceExhausted)?;
+        let mut replacement = Vec::new();
+        if capacity < required {
+            replacement
+                .try_reserve_exact(required)
+                .map_err(|_| MappingGraphError::ResourceExhausted)?;
+        }
+        Ok(MappingGraphReservation { replacement })
     }
 
+    /// Applies an already-reserved rmap root change without allocating.
+    ///
+    /// `reservation` always retains any displaced allocation, including on a
+    /// stale-capacity error, so no backing storage is freed under this lock.
+    fn replace_reserved(
+        &self,
+        old: &[MappingSlotKey],
+        new: &[MappingSlotKey],
+        reservation: &mut MappingGraphReservation,
+    ) -> Result<(), MappingGraphError> {
+        let mut entries = self.entries.lock();
+        for (index, key) in old.iter().enumerate() {
+            if old[..index].contains(key) || !entries.contains(key) {
+                return Err(MappingGraphError::MissingOldSlot);
+            }
+        }
+        for (index, key) in new.iter().enumerate() {
+            if new[..index].contains(key) || (entries.contains(key) && !old.contains(key)) {
+                return Err(MappingGraphError::DuplicateNewSlot);
+            }
+        }
+        let retained = entries
+            .len()
+            .checked_sub(old.len())
+            .ok_or(MappingGraphError::MissingOldSlot)?;
+        let target_len = retained
+            .checked_add(new.len())
+            .ok_or(MappingGraphError::ResourceExhausted)?;
+
+        if entries.capacity() >= target_len {
+            for key in old {
+                let index = entries
+                    .iter()
+                    .position(|entry| entry == key)
+                    .ok_or(MappingGraphError::MissingOldSlot)?;
+                entries.swap_remove(index);
+            }
+            entries.extend_from_slice(new);
+            return Ok(());
+        }
+        if reservation.replacement.capacity() < target_len {
+            return Err(MappingGraphError::ResourceExhausted);
+        }
+
+        reservation.replacement.clear();
+        reservation.replacement.extend(
+            entries
+                .iter()
+                .copied()
+                .filter(|entry| !old.contains(entry)),
+        );
+        reservation.replacement.extend_from_slice(new);
+        core::mem::swap(&mut *entries, &mut reservation.replacement);
+        Ok(())
+    }
+
+    pub fn try_snapshot(&self) -> Result<Vec<MappingSlotKey>, MappingGraphError> {
+        let mut snapshot = Vec::new();
+        loop {
+            let required = self.entries.lock().len();
+            if snapshot.capacity() < required {
+                snapshot
+                    .try_reserve_exact(required.saturating_sub(snapshot.len()))
+                    .map_err(|_| MappingGraphError::ResourceExhausted)?;
+            }
+            let entries = self.entries.lock();
+            if entries.len() > snapshot.capacity() {
+                drop(entries);
+                continue;
+            }
+            snapshot.clear();
+            snapshot.extend_from_slice(&entries);
+            return Ok(snapshot);
+        }
+    }
+
+    #[cfg(test)]
     pub fn snapshot(&self) -> Vec<MappingSlotKey> {
-        self.entries.lock().clone()
+        self.try_snapshot()
+            .expect("test reverse-mapping snapshot allocation must succeed")
     }
 
     fn all_mappings_belong_to(&self, mm_id: AddressSpaceId, expected: u32) -> bool {
@@ -384,63 +471,104 @@ impl PageObject {
         mappings != 0 && self.rmap.all_mappings_belong_to(mm_id, mappings)
     }
 
-    fn retain_mappings_locked(&self, count: u32) -> Result<(), PageRefError> {
-        let mut current = self.mapping_refs.load(Ordering::Acquire);
-        loop {
-            let next = current.checked_add(count).ok_or(PageRefError::Overflow)?;
-            match self.mapping_refs.compare_exchange_weak(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return Ok(()),
-                Err(observed) => current = observed,
-            }
-        }
-    }
-
-    fn release_mappings_locked(&self, count: u32) -> Result<bool, PageRefError> {
-        let previous = self
-            .mapping_refs
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_sub(count)
-            })
-            .map_err(|_| PageRefError::Underflow)?;
-        Ok(previous == count)
-    }
-
     fn publish_slot_graph(&self, key: MappingSlotKey) -> bool {
-        let _graph = self.mapping_graph.lock();
-        if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
+        let Ok(mut reservation) = self.rmap.prepare_replace(1) else {
             return false;
-        }
-        if self.retain_mappings_locked(1).is_err() {
-            return false;
-        }
-        if self.rmap.insert(key)
-            && matches!(self.state(), PageState::Present | PageState::LazyFree)
-        {
-            true
-        } else {
-            self.rmap.remove(key);
-            let _ = self.release_mappings_locked(1);
-            false
-        }
+        };
+        let published = {
+            let _graph = self.mapping_graph.lock();
+            if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
+                false
+            } else {
+                let current = self.mapping_refs.load(Ordering::Acquire);
+                let Some(next) = current.checked_add(1) else {
+                    return false;
+                };
+                match self
+                    .rmap
+                    .replace_reserved(&[], &[key], &mut reservation)
+                {
+                    Err(_) => false,
+                    Ok(()) if !matches!(self.state(), PageState::Present | PageState::LazyFree) => {
+                        let _ = self
+                            .rmap
+                            .replace_reserved(&[key], &[], &mut reservation);
+                        false
+                    }
+                    Ok(()) => {
+                        self.mapping_refs.store(next, Ordering::Release);
+                        true
+                    }
+                }
+            }
+        };
+        // A successful grow-by-swap leaves the old vector allocation here.
+        // Release it only after the IRQ-saving graph guard has gone away.
+        drop(reservation);
+        published
     }
 
     fn detach_slot_graph(&self, key: MappingSlotKey) -> bool {
+        let Ok(mut reservation) = self.rmap.prepare_replace(0) else {
+            return false;
+        };
+        let detached = {
+            let _graph = self.mapping_graph.lock();
+            let current = self.mapping_refs.load(Ordering::Acquire);
+            let Some(next) = current.checked_sub(1) else {
+                return false;
+            };
+            if self
+                .rmap
+                .replace_reserved(&[key], &[], &mut reservation)
+                .is_err()
+            {
+                false
+            } else {
+                self.mapping_refs.store(next, Ordering::Release);
+                true
+            }
+        };
+        drop(reservation);
+        detached
+    }
+
+    pub(crate) fn prepare_mapping_graph_replace(
+        &self,
+        old: &[MappingSlotKey],
+        new: &[MappingSlotKey],
+    ) -> Result<MappingGraphReservation, MappingGraphError> {
+        self.rmap
+            .prepare_replace(new.len().saturating_sub(old.len()))
+    }
+
+    pub(crate) fn replace_mapping_graph_reserved(
+        &self,
+        old: &[MappingSlotKey],
+        new: &[MappingSlotKey],
+        reservation: &mut MappingGraphReservation,
+    ) -> Result<(), MappingGraphError> {
         let _graph = self.mapping_graph.lock();
-        if !self.rmap.remove(key) {
-            return false;
+        if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
+            return Err(MappingGraphError::PageNotPresent);
         }
-        if self.release_mappings_locked(1).is_err() {
-            // Refcount failure means the graph was already inconsistent.  Put
-            // the rmap fact back before reporting failure to the slot owner.
-            let _ = self.rmap.insert(key);
-            return false;
-        }
-        true
+        let current = self.mapping_refs.load(Ordering::Acquire);
+        let next = if new.len() >= old.len() {
+            let additional = u32::try_from(new.len() - old.len())
+                .map_err(|_| MappingGraphError::RefOverflow)?;
+            current
+                .checked_add(additional)
+                .ok_or(MappingGraphError::RefOverflow)?
+        } else {
+            let removed = u32::try_from(old.len() - new.len())
+                .map_err(|_| MappingGraphError::RefUnderflow)?;
+            current
+                .checked_sub(removed)
+                .ok_or(MappingGraphError::RefUnderflow)?
+        };
+        self.rmap.replace_reserved(old, new, reservation)?;
+        self.mapping_refs.store(next, Ordering::Release);
+        Ok(())
     }
 
     /// Atomically replaces a set of reverse mappings and adjusts the installed
@@ -451,44 +579,10 @@ impl PageObject {
         old: &[MappingSlotKey],
         new: &[MappingSlotKey],
     ) -> Result<(), MappingGraphError> {
-        let _graph = self.mapping_graph.lock();
-        if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
-            return Err(MappingGraphError::PageNotPresent);
-        }
-        let mut entries = self.rmap.entries.lock();
-        if old.iter().any(|key| !entries.contains(key)) {
-            return Err(MappingGraphError::MissingOldSlot);
-        }
-        for (index, key) in new.iter().enumerate() {
-            if new[..index].contains(key)
-                || (entries.contains(key) && !old.contains(key))
-            {
-                return Err(MappingGraphError::DuplicateNewSlot);
-            }
-        }
-        if new.len() > old.len() {
-            entries
-                .try_reserve(new.len() - old.len())
-                .map_err(|_| MappingGraphError::ResourceExhausted)?;
-            let additional = u32::try_from(new.len() - old.len())
-                .map_err(|_| MappingGraphError::RefOverflow)?;
-            self.retain_mappings_locked(additional)
-                .map_err(|_| MappingGraphError::RefOverflow)?;
-        } else if old.len() > new.len() {
-            let removed = u32::try_from(old.len() - new.len())
-                .map_err(|_| MappingGraphError::RefUnderflow)?;
-            self.release_mappings_locked(removed)
-                .map_err(|_| MappingGraphError::RefUnderflow)?;
-        }
-        for key in old {
-            let index = entries
-                .iter()
-                .position(|entry| entry == key)
-                .ok_or(MappingGraphError::MissingOldSlot)?;
-            entries.swap_remove(index);
-        }
-        entries.extend_from_slice(new);
-        Ok(())
+        let mut reservation = self.prepare_mapping_graph_replace(old, new)?;
+        let result = self.replace_mapping_graph_reserved(old, new, &mut reservation);
+        drop(reservation);
+        result
     }
 
     pub(crate) fn transition(&self, expected: PageState, next: PageState) -> bool {
@@ -588,12 +682,6 @@ impl PageObject {
             generation,
         })
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageRefError {
-    Overflow,
-    Underflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

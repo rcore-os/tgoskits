@@ -278,6 +278,109 @@ pub(super) enum FaultFallback {
     BasePage,
 }
 
+/// Stable PTE state captured before a fault drops the address-space mutex.
+///
+/// Backends use this copyable value to prepare a page, cache pin, or COW copy
+/// without constructing a speculative page table. The live PTE is rechecked
+/// under its stripe immediately before the prepared descriptor is installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FaultPteSnapshot {
+    NotMapped,
+    Mapped {
+        paddr: PhysAddr,
+        flags: MappingFlags,
+        page_size: usize,
+    },
+}
+
+impl FaultPteSnapshot {
+    pub(super) fn capture(pt: &PageTable, va: VirtAddr) -> StarryResult<Self> {
+        match pt.query(va) {
+            Ok((paddr, flags, page_size)) => Ok(Self::Mapped {
+                paddr,
+                flags,
+                page_size,
+            }),
+            Err(ax_runtime::hal::paging::PagingError::NotMapped) => Ok(Self::NotMapped),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(super) fn matches(self, va: VirtAddr, pt: &PageTable) -> bool {
+        match (self, pt.query(va)) {
+            (Self::NotMapped, Err(ax_runtime::hal::paging::PagingError::NotMapped)) => true,
+            (
+                Self::Mapped {
+                    paddr,
+                    flags,
+                    page_size,
+                },
+                Ok((current_paddr, current_flags, current_size)),
+            ) => paddr == current_paddr && flags == current_flags && page_size == current_size,
+            _ => false,
+        }
+    }
+}
+
+/// Allocation-free, single-leaf result of backend fault preparation.
+///
+/// Bulk population keeps using [`PteMaterialization`], but a hardware fault
+/// carries at most one owner inline, like Linux's `vm_fault` folio reference.
+/// The page-table flags are bound to the owner before the live PTE lock is
+/// acquired, so apply consists only of a stale-state check and one descriptor
+/// update.
+pub(super) struct FaultMaterialization {
+    satisfied_pages: usize,
+    owner: Option<PreparedPteOwner>,
+    pte_flags: Option<MappingFlags>,
+}
+
+impl FaultMaterialization {
+    pub(super) const fn empty() -> Self {
+        Self {
+            satisfied_pages: 0,
+            owner: None,
+            pte_flags: None,
+        }
+    }
+
+    pub(super) const fn satisfied(satisfied_pages: usize) -> Self {
+        Self {
+            satisfied_pages,
+            owner: None,
+            pte_flags: None,
+        }
+    }
+
+    pub(super) const fn with_owner(
+        satisfied_pages: usize,
+        owner: PreparedPteOwner,
+        pte_flags: MappingFlags,
+    ) -> Self {
+        Self {
+            satisfied_pages,
+            owner: Some(owner),
+            pte_flags: Some(pte_flags),
+        }
+    }
+
+    pub(super) const fn satisfied_pages(&self) -> usize {
+        self.satisfied_pages
+    }
+
+    pub(super) const fn owner(&self) -> Option<&PreparedPteOwner> {
+        self.owner.as_ref()
+    }
+
+    pub(super) const fn pte_flags(&self) -> Option<MappingFlags> {
+        self.pte_flags
+    }
+
+    fn into_owner(self) -> Option<PreparedPteOwner> {
+        self.owner
+    }
+}
+
 impl PopulateRequest {
     pub(super) fn area(
         range: VirtAddrRange,
@@ -337,6 +440,32 @@ impl PopulateRequest {
     pub(super) const fn fallback(self) -> FaultFallback {
         self.fallback
     }
+
+    /// Narrows a transparent-huge fault to its faulting base page.
+    ///
+    /// Linux may abandon a prepared huge folio when a later page-table
+    /// allocation fails, release that reservation, and retry the base-page
+    /// fault. Keeping this transition on the typed request prevents callers
+    /// from accidentally retaining the original 2 MiB publication range.
+    pub(super) fn into_base_page_fallback(self) -> Option<Self> {
+        if self.fallback != FaultFallback::BasePage
+            || self.preferred_leaf_size <= PAGE_SIZE_4K
+        {
+            return None;
+        }
+        let fault_address = self.fault_address?;
+        let range = VirtAddrRange::try_from_start_size(
+            fault_address.align_down_4k(),
+            PAGE_SIZE_4K,
+        )?;
+        Self::fault(
+            range,
+            PAGE_SIZE_4K,
+            fault_address,
+            FaultFallback::Forbidden,
+        )
+        .ok()
+    }
 }
 
 impl PteMaterialization {
@@ -394,9 +523,6 @@ impl PteMaterialization {
         Ok(())
     }
 
-    pub(super) fn into_owners(self) -> Vec<PreparedPteOwner> {
-        self.owners
-    }
 }
 
 pub(super) trait MappingExecution {
@@ -475,6 +601,22 @@ pub(super) trait MappingExecution {
         _pt: &mut PageTable,
     ) -> StarryResult<PteMaterialization> {
         Ok(PteMaterialization::empty())
+    }
+
+    /// Prepares exactly one hardware-fault leaf without mutating a page table.
+    ///
+    /// Implementations may allocate frames or perform file I/O here. They may
+    /// not publish a PTE or rmap; those steps happen after the caller reacquires
+    /// the address-space mutex and rechecks `preimage` under the PTE stripe.
+    fn prepare_fault(
+        &self,
+        _space_id: AddressSpaceId,
+        _request: PopulateRequest,
+        _flags: MappingFlags,
+        _access_flags: MappingFlags,
+        _preimage: FaultPteSnapshot,
+    ) -> StarryResult<FaultMaterialization> {
+        Ok(FaultMaterialization::empty())
     }
 
     /// Duplicates this mapping for use in a different page table.
@@ -849,6 +991,24 @@ impl MappingOperation {
         MappingExecution::populate(self, space_id, request, flags, access_flags, pt)
     }
 
+    pub(super) fn prepare_fault(
+        &self,
+        space_id: AddressSpaceId,
+        request: PopulateRequest,
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        preimage: FaultPteSnapshot,
+    ) -> StarryResult<FaultMaterialization> {
+        MappingExecution::prepare_fault(
+            self,
+            space_id,
+            request,
+            flags,
+            access_flags,
+            preimage,
+        )
+    }
+
     pub(super) fn clone_map(
         &self,
         range: VirtAddrRange,
@@ -913,33 +1073,25 @@ impl MappingOperation {
         }
     }
 
-    /// Cancels provider reservations owned by a prepared fault that lost its
-    /// epoch/PTE recheck before publication. Cancellation runs after dropping
-    /// the address-space mutex because a file-cache provider may take its own
-    /// sleepable lock while returning the retained pin.
-    pub(super) fn cancel_prepared_page_publications(
+    /// Cancels the one provider reservation carried inline by a fault token.
+    /// This runs after the address-space mutex is released.
+    pub(super) fn cancel_prepared_fault_publication(
         &self,
-        materialization: PteMaterialization,
+        materialization: FaultMaterialization,
     ) -> StarryResult {
-        let mut first_error = None;
-        for owner in materialization.into_owners() {
-            if owner.provider_publication != ProviderPublication::Pending {
-                continue;
-            }
-            let result = match &self.kind {
-                MappingOperationKind::Cow(cow) => cow.cancel_page_publication(&owner.page),
-                MappingOperationKind::File(file) => {
-                    file.cancel_page_publication(owner.va, &owner.page)
-                }
-                MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => Ok(()),
-            };
-            if let Err(error) = result
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
+        let Some(owner) = materialization.into_owner() else {
+            return Ok(());
+        };
+        if owner.provider_publication != ProviderPublication::Pending {
+            return Ok(());
         }
-        first_error.map_or(Ok(()), Err)
+        match &self.kind {
+            MappingOperationKind::Cow(cow) => cow.cancel_page_publication(&owner.page),
+            MappingOperationKind::File(file) => {
+                file.cancel_page_publication(owner.va, &owner.page)
+            }
+            MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => Ok(()),
+        }
     }
 
     /// Restores one exact resident leaf retained by a mutation preimage.
@@ -1224,6 +1376,50 @@ impl MappingExecution for MappingOperation {
             MappingOperationKind::File(backend) => {
                 MappingExecution::populate(backend, space_id, request, flags, access_flags, pt)
             }
+        }
+    }
+
+    fn prepare_fault(
+        &self,
+        space_id: AddressSpaceId,
+        request: PopulateRequest,
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        preimage: FaultPteSnapshot,
+    ) -> StarryResult<FaultMaterialization> {
+        match &self.kind {
+            MappingOperationKind::Linear(backend) => MappingExecution::prepare_fault(
+                backend,
+                space_id,
+                request,
+                flags,
+                access_flags,
+                preimage,
+            ),
+            MappingOperationKind::Cow(backend) => MappingExecution::prepare_fault(
+                backend,
+                space_id,
+                request,
+                flags,
+                access_flags,
+                preimage,
+            ),
+            MappingOperationKind::Shared(backend) => MappingExecution::prepare_fault(
+                backend,
+                space_id,
+                request,
+                flags,
+                access_flags,
+                preimage,
+            ),
+            MappingOperationKind::File(backend) => MappingExecution::prepare_fault(
+                backend,
+                space_id,
+                request,
+                flags,
+                access_flags,
+                preimage,
+            ),
         }
     }
 

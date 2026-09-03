@@ -1,4 +1,8 @@
-use core::ops::{Deref, DerefMut, Range};
+use core::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut, Range},
+    sync::atomic::{Ordering, fence},
+};
 
 use ax_memory_addr::MemoryAddr;
 
@@ -25,6 +29,55 @@ enum RegionPageSelection {
 /// during prepare.
 struct ReservedTable<T: TableMeta, A: FrameAllocator> {
     frame: Option<Frame<T, A>>,
+}
+
+/// A detached, fully initialized page-table suffix.
+///
+/// The root frame owns every child reachable through the suffix.  Publishing
+/// the suffix therefore requires one parent-entry store, while dropping an
+/// unpublished suffix recursively returns every reserved table frame.
+struct ReservedMapPath<T: TableMeta, A: FrameAllocator> {
+    root: Option<Frame<T, A>>,
+    root_level: usize,
+}
+
+/// Allocation-free description of where one absent leaf may be installed.
+///
+/// This is captured while the caller has a stable page-table view.  It owns no
+/// frames and may cross a lock boundary so allocation can happen before the
+/// page-table mutation critical section, like Linux's `vmf->prealloc_pte`.
+pub struct PageTableMapPlan<T: TableMeta, A: FrameAllocator> {
+    root_paddr: PhysAddr,
+    parent_paddr: PhysAddr,
+    vaddr: VirtAddr,
+    page_size: usize,
+    attach_level: usize,
+    target_level: usize,
+    allocator: A,
+    _marker: PhantomData<T>,
+}
+
+/// Move-only ownership of a detached page-table suffix for one exact leaf.
+///
+/// Dropping an unconsumed deposit releases only unpublished table frames.  A
+/// successful apply transfers those frames into the live page-table tree and
+/// disarms the deposit.  The target address, physical address, leaf size and
+/// PTE configuration are bound during prepare and cannot be redirected by the
+/// apply caller.
+pub struct PageTableMapDeposit<T: TableMeta, A: FrameAllocator> {
+    plan: PageTableMapPlan<T, A>,
+    paddr: PhysAddr,
+    config: PteConfigOf<T>,
+    path: Option<ReservedMapPath<T, A>>,
+}
+
+/// Failed structural apply that returns the still-unpublished map deposit.
+///
+/// Returning ownership is essential for non-sleeping page-table critical
+/// sections: a stale deposit is released only after the caller drops its lock.
+pub struct PageTableMapApplyError<T: TableMeta, A: FrameAllocator> {
+    error: PagingError,
+    deposit: PageTableMapDeposit<T, A>,
 }
 
 /// A child-table deposit bound to one observed huge leaf.
@@ -170,6 +223,140 @@ impl<T: TableMeta, A: FrameAllocator> Drop for ReservedTable<T, A> {
         if let Some(frame) = self.frame.take() {
             frame.allocator.dealloc_frame(frame.paddr);
         }
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> ReservedMapPath<T, A> {
+    fn root(&self) -> Frame<T, A> {
+        self.root
+            .as_ref()
+            .cloned()
+            .expect("a reserved map path is consumed at most once")
+    }
+
+    fn disarm(&mut self) {
+        self.root = None;
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> Drop for ReservedMapPath<T, A> {
+    fn drop(&mut self) {
+        if let Some(mut root) = self.root.take() {
+            root.deallocate_recursive(self.root_level);
+        }
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> PageTableMapPlan<T, A> {
+    pub const fn vaddr(&self) -> VirtAddr {
+        self.vaddr
+    }
+
+    pub const fn page_size(&self) -> usize {
+        self.page_size
+    }
+
+    /// Allocates and initializes every missing table below the captured parent.
+    ///
+    /// No live page-table entry is changed.  Failure drops the unpublished
+    /// partial suffix, so callers either receive a complete move-only deposit
+    /// or retain the exact pre-prepare page table.
+    pub fn prepare(
+        self,
+        paddr: PhysAddr,
+        config: PteConfigOf<T>,
+    ) -> PagingResult<PageTableMapDeposit<T, A>> {
+        if !paddr.as_usize().is_multiple_of(self.page_size) {
+            return Err(PagingError::alignment_error(
+                "Physical address not aligned to map-deposit leaf size",
+            ));
+        }
+
+        let path = if self.attach_level == self.target_level {
+            None
+        } else {
+            let root_level = self.attach_level - 1;
+            let root = Frame::<T, A>::new(self.allocator.clone())?;
+            let path = ReservedMapPath {
+                root: Some(root),
+                root_level,
+            };
+            let mut current = path.root();
+            let mut current_level = root_level;
+            while current_level > self.target_level {
+                let child = Frame::<T, A>::new(self.allocator.clone())?;
+                let index = Frame::<T, A>::virt_to_index(self.vaddr, current_level);
+                current.as_slice_mut()[index] = T::P::new_table(child.paddr);
+                current = child;
+                current_level -= 1;
+            }
+            let index = Frame::<T, A>::virt_to_index(self.vaddr, self.target_level);
+            current.as_slice_mut()[index] = T::P::new_page(paddr, config, self.target_level > 1);
+            Some(path)
+        };
+
+        Ok(PageTableMapDeposit {
+            plan: self,
+            paddr,
+            config,
+            path,
+        })
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> PageTableMapDeposit<T, A> {
+    pub const fn vaddr(&self) -> VirtAddr {
+        self.plan.vaddr
+    }
+
+    pub const fn paddr(&self) -> PhysAddr {
+        self.paddr
+    }
+
+    pub const fn page_size(&self) -> usize {
+        self.plan.page_size
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> PageTableMapApplyError<T, A> {
+    pub const fn error(&self) -> &PagingError {
+        &self.error
+    }
+
+    pub fn into_parts(self) -> (PagingError, PageTableMapDeposit<T, A>) {
+        (self.error, self.deposit)
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTableMapPlan<T, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PageTableMapPlan")
+            .field("root_paddr", &self.root_paddr)
+            .field("parent_paddr", &self.parent_paddr)
+            .field("vaddr", &self.vaddr)
+            .field("page_size", &self.page_size)
+            .field("attach_level", &self.attach_level)
+            .field("target_level", &self.target_level)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTableMapDeposit<T, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PageTableMapDeposit")
+            .field("plan", &self.plan)
+            .field("paddr", &self.paddr)
+            .field("has_reserved_path", &self.path.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for PageTableMapApplyError<T, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PageTableMapApplyError")
+            .field("error", &self.error)
+            .field("deposit", &self.deposit)
+            .finish()
     }
 }
 
@@ -841,6 +1028,129 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 Frame::<T, A>::level_size(level),
             )
         })
+    }
+
+    /// Captures the existing page-table prefix for one currently absent leaf.
+    ///
+    /// This operation performs no allocation.  The returned plan owns only an
+    /// allocator capability and copyable identity data, so a caller can drop
+    /// its page-table lock before [`PageTableMapPlan::prepare`] allocates the
+    /// missing suffix.  Apply rewalks the prefix and rejects a stale plan.
+    pub fn plan_map_page(
+        &self,
+        vaddr: VirtAddr,
+        page_size: usize,
+    ) -> PagingResult<PageTableMapPlan<T, A>> {
+        let Some(target_level) = Frame::<T, A>::level_for_page_size(page_size) else {
+            return Err(PagingError::invalid_size(
+                "Page size is not represented by the page-table levels",
+            ));
+        };
+        if target_level > 1 && target_level > T::MAX_BLOCK_LEVEL {
+            return Err(PagingError::invalid_size(
+                "Page size exceeds the architecture's block-mapping level",
+            ));
+        }
+        if !vaddr.as_usize().is_multiple_of(page_size) {
+            return Err(PagingError::alignment_error(
+                "Virtual address not aligned to map-deposit leaf size",
+            ));
+        }
+        self.validate_address_width(vaddr, page_size, "plan_map_page")?;
+
+        let mut parent = self.root.clone();
+        let mut level = Frame::<T, A>::PT_LEVEL;
+        loop {
+            let index = Frame::<T, A>::virt_to_index(vaddr, level);
+            let entry = parent.as_slice()[index];
+            if level == target_level || entry.unused() {
+                if level == target_level && !entry.unused() {
+                    return Err(PagingError::mapping_conflict(vaddr, entry.paddr(level > 1)));
+                }
+                return Ok(PageTableMapPlan {
+                    root_paddr: self.root_paddr(),
+                    parent_paddr: parent.paddr,
+                    vaddr,
+                    page_size,
+                    attach_level: level,
+                    target_level,
+                    allocator: self.root.allocator.clone(),
+                    _marker: PhantomData,
+                });
+            }
+            if entry.huge(true) {
+                return Err(PagingError::mapping_conflict(vaddr, entry.paddr(true)));
+            }
+            if !entry.present() {
+                return Err(PagingError::hierarchy_error(
+                    "Non-present intermediate entry is not a leaf",
+                ));
+            }
+            parent = Frame::from_paddr(entry.paddr(true), self.root.allocator.clone());
+            level -= 1;
+        }
+    }
+
+    /// Installs one fully prepared leaf without allocating or releasing memory.
+    ///
+    /// On failure the move-only deposit is returned to the caller, which must
+    /// drop it after leaving any non-sleeping page-table critical section.  A
+    /// successful apply publishes an already initialized suffix with one
+    /// release-ordered parent store, then transfers every reserved frame to the
+    /// live page-table tree.
+    pub fn try_map_page_with(
+        &mut self,
+        mut deposit: PageTableMapDeposit<T, A>,
+    ) -> Result<(), PageTableMapApplyError<T, A>> {
+        if self.root_paddr() != deposit.plan.root_paddr {
+            return Err(PageTableMapApplyError {
+                error: PagingError::stale_map_deposit(deposit.plan.vaddr),
+                deposit,
+            });
+        }
+
+        let mut parent = self.root.clone();
+        let mut level = Frame::<T, A>::PT_LEVEL;
+        while level > deposit.plan.attach_level {
+            let index = Frame::<T, A>::virt_to_index(deposit.plan.vaddr, level);
+            let entry = parent.as_slice()[index];
+            if entry.unused() || entry.huge(true) || !entry.present() {
+                return Err(PageTableMapApplyError {
+                    error: PagingError::stale_map_deposit(deposit.plan.vaddr),
+                    deposit,
+                });
+            }
+            parent = Frame::from_paddr(entry.paddr(true), self.root.allocator.clone());
+            level -= 1;
+        }
+        if parent.paddr != deposit.plan.parent_paddr {
+            return Err(PageTableMapApplyError {
+                error: PagingError::stale_map_deposit(deposit.plan.vaddr),
+                deposit,
+            });
+        }
+        let index = Frame::<T, A>::virt_to_index(deposit.plan.vaddr, level);
+        if !parent.as_slice()[index].unused() {
+            return Err(PageTableMapApplyError {
+                error: PagingError::stale_map_deposit(deposit.plan.vaddr),
+                deposit,
+            });
+        }
+
+        if let Some(path) = deposit.path.as_mut() {
+            let path_root = path.root();
+            // Every child descriptor and the leaf were initialized before the
+            // suffix becomes reachable.  The release fence is the generic
+            // counterpart of Linux pmd_install()'s smp_wmb().
+            fence(Ordering::Release);
+            parent.as_slice_mut()[index] = T::P::new_table(path_root.paddr);
+            path.disarm();
+        } else {
+            debug_assert_eq!(deposit.plan.attach_level, deposit.plan.target_level);
+            parent.as_slice_mut()[index] =
+                T::P::new_page(deposit.paddr, deposit.config, deposit.plan.target_level > 1);
+        }
+        Ok(())
     }
 
     /// Allocates a pre-zeroed child table and binds it to the currently

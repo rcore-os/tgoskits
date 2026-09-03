@@ -7,9 +7,8 @@
 //! page table; [`AddrSpace`](super::AddrSpace) remains the owner of the
 //! materialized root.
 
-use alloc::vec::Vec;
-
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use heapless::Vec as InlineVec;
 
 use crate::sync::{IrqMutex, IrqMutexGuard};
 
@@ -19,18 +18,14 @@ pub const PTE_STRIPE_COUNT: usize = 64;
 
 /// Lock set for PTE updates and page-table structure updates.
 pub struct PageTableDomain {
-    stripes: Vec<IrqMutex<()>>,
+    stripes: [IrqMutex<()>; PTE_STRIPE_COUNT],
     structure: IrqMutex<()>,
 }
 
 impl PageTableDomain {
     pub fn new() -> Self {
-        let mut stripes = Vec::with_capacity(PTE_STRIPE_COUNT);
-        for _ in 0..PTE_STRIPE_COUNT {
-            stripes.push(IrqMutex::new(()));
-        }
         Self {
-            stripes,
+            stripes: core::array::from_fn(|_| IrqMutex::new(())),
             structure: IrqMutex::new(()),
         }
     }
@@ -55,15 +50,23 @@ impl PageTableDomain {
     }
 
     /// Computes the ordered, de-duplicated stripes touched by a range.
-    pub fn stripe_indices(&self, range: VirtAddrRange) -> Vec<usize> {
+    pub fn stripe_indices(
+        &self,
+        range: VirtAddrRange,
+    ) -> InlineVec<usize, PTE_STRIPE_COUNT> {
         let probe_count = Self::stripe_probe_count(range);
         if probe_count == 0 {
-            return Vec::new();
+            return InlineVec::new();
         }
-        let mut result = Vec::with_capacity(probe_count);
+        let mut result = InlineVec::new();
         let first_stripe = self.stripe_index(range.start.align_down_4k());
         for offset in 0..probe_count {
-            result.push((first_stripe + offset) & (PTE_STRIPE_COUNT - 1));
+            if result
+                .push((first_stripe + offset) & (PTE_STRIPE_COUNT - 1))
+                .is_err()
+            {
+                unreachable!("stripe probe count is bounded by PTE_STRIPE_COUNT");
+            }
         }
         result.sort_unstable();
         result
@@ -82,18 +85,20 @@ impl PageTableDomain {
     /// stripe ids.  This is used by move/copy operations that touch source and
     /// destination ranges and must never lock the same stripe twice.
     pub fn lock_ranges(&self, ranges: &[VirtAddrRange]) -> PteStripeCursor<'_> {
-        let mut indices = Vec::new();
+        let mut indices = InlineVec::<usize, PTE_STRIPE_COUNT>::new();
         for range in ranges {
             for index in self.stripe_indices(*range) {
-                if !indices.contains(&index) {
-                    indices.push(index);
+                if !indices.contains(&index) && indices.push(index).is_err() {
+                    unreachable!("there are only PTE_STRIPE_COUNT distinct stripes");
                 }
             }
         }
         indices.sort_unstable();
-        let mut guards = Vec::with_capacity(indices.len());
+        let mut guards = InlineVec::<IrqMutexGuard<'_, ()>, PTE_STRIPE_COUNT>::new();
         for index in &indices {
-            guards.push(self.stripes[*index].lock());
+            if guards.push(self.stripes[*index].lock()).is_err() {
+                unreachable!("one guard is acquired per distinct PTE stripe");
+            }
         }
         PteStripeCursor {
             range: ranges
@@ -123,8 +128,8 @@ impl Default for PageTableDomain {
 /// Proof that all PTE stripes for a range are held in lock-order.
 pub struct PteStripeCursor<'a> {
     range: VirtAddrRange,
-    indices: Vec<usize>,
-    _guards: Vec<IrqMutexGuard<'a, ()>>,
+    indices: InlineVec<usize, PTE_STRIPE_COUNT>,
+    _guards: InlineVec<IrqMutexGuard<'a, ()>, PTE_STRIPE_COUNT>,
 }
 
 impl Drop for PteStripeCursor<'_> {
@@ -188,7 +193,11 @@ mod tests {
         );
 
         let domain = PageTableDomain::new();
-        assert_eq!(domain.stripe_indices(range), (0..PTE_STRIPE_COUNT).collect::<Vec<_>>());
+        assert!(domain
+            .stripe_indices(range)
+            .iter()
+            .copied()
+            .eq(0..PTE_STRIPE_COUNT));
     }
 
     #[test]
