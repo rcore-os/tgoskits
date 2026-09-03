@@ -33,7 +33,7 @@ pub(crate) fn create_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
     crate_config: &GuestConfig,
-    hidden_device_paths: &[String],
+    excluded_device_paths: &[String],
 ) -> AxVmResult<Vec<u8>> {
     let phys_cpu_ids = crate_config
         .base
@@ -53,8 +53,7 @@ pub(crate) fn create_guest_fdt(
         passthrough_device_names,
         phys_cpu_ids,
         machine_interrupt_providers: &machine_interrupt_providers,
-        disabled_devices: &crate_config.devices.disabled,
-        hidden_device_paths,
+        excluded_device_paths,
     };
     let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         policy.should_keep(node_id, path, node)
@@ -68,8 +67,7 @@ struct GeneratedNodePolicy<'a> {
     passthrough_device_names: &'a [String],
     phys_cpu_ids: &'a [usize],
     machine_interrupt_providers: &'a [String],
-    disabled_devices: &'a [axvmconfig::PhysicalDeviceRef],
-    hidden_device_paths: &'a [String],
+    excluded_device_paths: &'a [String],
 }
 
 impl GeneratedNodePolicy<'_> {
@@ -101,16 +99,7 @@ impl GeneratedNodePolicy<'_> {
             return true;
         }
 
-        if self.disabled_devices.iter().any(|device| {
-            node_path == device.path
-                || node_path
-                    .strip_prefix(&device.path)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-        }) {
-            return false;
-        }
-
-        if self.hidden_device_paths.iter().any(|path| {
+        if self.excluded_device_paths.iter().any(|path| {
             node_path == path
                 || node_path
                     .strip_prefix(path)
@@ -1207,8 +1196,14 @@ mod tests {
             "/soc/pci@30000000/nvme@0".into(),
             "/soc/virtio_mmio@10001000".into(),
         ];
+        let excluded = cfg
+            .devices
+            .disabled
+            .iter()
+            .map(|device| device.path.clone())
+            .collect::<std::vec::Vec<_>>();
 
-        let dtb = super::create_guest_fdt(&fdt, &selected, &cfg, &[]).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &selected, &cfg, &excluded).unwrap();
         let guest = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(guest.get_by_path_id("/soc/pci@30000000").is_none());

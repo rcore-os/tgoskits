@@ -53,7 +53,6 @@ pub fn setup_guest_fdt_from_vmm(
     let fdt = Fdt::from_bytes(fdt_bytes)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
 
-    reserve_excluded_device_ranges(vm_cfg, crate_config, fdt_bytes)?;
     // The runtime configuration may contain an implicit root selector to
     // establish the passthrough address-space policy. Keep its non-PCI
     // devices (for example the guest-owned virtio-blk endpoint), but remove
@@ -78,11 +77,14 @@ pub fn setup_guest_fdt_from_vmm(
     } else {
         explicit_device_names
     };
-    let hidden_device_paths = if implicit_root_passthrough {
-        reserve_unassigned_pci_hosts(vm_cfg, &fdt)
-    } else {
-        Vec::new()
-    };
+    if implicit_root_passthrough {
+        for node_id in fdt.iter_node_ids() {
+            if fdt.node(node_id).is_some_and(Node::is_pci) {
+                vm_cfg.exclude_device_path(fdt.path_of(node_id));
+            }
+        }
+    }
+    reserve_excluded_device_ranges(vm_cfg, crate_config, fdt_bytes)?;
     let excluded_device_paths = vm_cfg
         .excluded_devices()
         .iter()
@@ -98,44 +100,12 @@ pub fn setup_guest_fdt_from_vmm(
         &fdt,
         &passthrough_device_names,
         crate_config,
-        &hidden_device_paths,
+        &excluded_device_paths,
     )
 }
 
 fn is_reserved_memory_path(node_path: &str) -> bool {
     node_path == "/reserved-memory" || node_path.starts_with("/reserved-memory/")
-}
-
-fn reserve_unassigned_pci_hosts(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut reserved_ranges = Vec::new();
-    let existing_exclusions = vm_cfg
-        .excluded_devices()
-        .iter()
-        .flatten()
-        .cloned()
-        .collect::<Vec<_>>();
-    for node_id in fdt.iter_node_ids() {
-        let Some(node) = fdt.node(node_id) else {
-            continue;
-        };
-        if !node.is_pci() {
-            continue;
-        }
-
-        let path = fdt.path_of(node_id);
-        if is_excluded_node_path(&path, &existing_exclusions) {
-            paths.push(path);
-            continue;
-        }
-        vm_cfg.exclude_device_path(path.clone());
-        collect_node_reserved_ranges(fdt, node_id, &path, &mut reserved_ranges);
-        paths.push(path);
-    }
-    for range in reserved_ranges {
-        vm_cfg.add_reserved_address_range(range);
-    }
-    paths
 }
 
 fn overlaps_memory_region(lhs_gpa: usize, lhs_size: usize, rhs: &VmMemConfig) -> bool {
@@ -325,7 +295,22 @@ pub fn reserve_excluded_device_ranges(
         }
 
         exclude_node_interrupt_sources(vm_cfg, &fdt, node_id, decode_interrupt);
-        collect_node_reserved_ranges(&fdt, node_id, &node_path, &mut reserved_ranges);
+        for reg in node_regs(&fdt, node_id) {
+            push_reserved_address_range(
+                &mut reserved_ranges,
+                &node_path,
+                reg.address as usize,
+                reg.size.unwrap_or(0) as usize,
+            );
+        }
+        for range in node_pci_ranges(&fdt, node_id) {
+            push_reserved_address_range(
+                &mut reserved_ranges,
+                &node_path,
+                range.cpu_address as usize,
+                range.size as usize,
+            );
+        }
     }
 
     reserved_ranges.sort_by_key(|range| range.base_gpa);
@@ -334,31 +319,6 @@ pub fn reserve_excluded_device_ranges(
     }
 
     Ok(())
-}
-
-fn collect_node_reserved_ranges(
-    fdt: &Fdt,
-    node_id: usize,
-    node_path: &str,
-    reserved_ranges: &mut Vec<ReservedAddressConfig>,
-) {
-    for reg in node_regs(fdt, node_id) {
-        push_reserved_address_range(
-            reserved_ranges,
-            node_path,
-            reg.address as usize,
-            reg.size.unwrap_or(0) as usize,
-        );
-    }
-
-    for range in node_pci_ranges(fdt, node_id) {
-        push_reserved_address_range(
-            reserved_ranges,
-            node_path,
-            range.cpu_address as usize,
-            range.size as usize,
-        );
-    }
 }
 
 fn exclude_node_interrupt_sources(
@@ -910,6 +870,22 @@ mod tests {
         fdt.node_mut(root)
             .unwrap()
             .set_property(prop_u32("#size-cells", 2));
+        let intc = fdt.add_node(root, Node::new("interrupt-controller@0"));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(prop_u32("#interrupt-cells", 1));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(prop_u32("phandle", 1));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(super::super::tree::prop_string(
+                "compatible",
+                "riscv,plic0",
+            ));
         let soc = fdt.add_node(root, Node::new("soc"));
         let pci = fdt.add_node(soc, Node::new("pci@30000000"));
         fdt.node_mut(pci)
@@ -918,8 +894,29 @@ mod tests {
         fdt.view_typed_mut(pci)
             .unwrap()
             .set_regs(&[RegInfo::new(0x3000_0000, Some(0x1000_0000))]);
-        fdt.add_node(pci, Node::new("nvme@0"));
-        fdt.add_node(soc, Node::new("virtio_mmio@10001000"));
+        let nvme = fdt.add_node(pci, Node::new("nvme@0"));
+        fdt.node_mut(nvme)
+            .unwrap()
+            .set_property(prop_u32("interrupt-parent", 1));
+        fdt.node_mut(nvme)
+            .unwrap()
+            .set_property(prop_u32_list("interrupts", &[11]));
+        let virtio = fdt.add_node(soc, Node::new("virtio_mmio@10001000"));
+        fdt.node_mut(virtio)
+            .unwrap()
+            .set_property(super::super::tree::prop_string(
+                "compatible",
+                "virtio,mmio",
+            ));
+        fdt.node_mut(virtio)
+            .unwrap()
+            .set_property(prop_u32("interrupt-parent", 1));
+        fdt.node_mut(virtio)
+            .unwrap()
+            .set_property(prop_u32_list("interrupts", &[11]));
+        fdt.view_typed_mut(virtio)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x1000_1000, Some(0x1000))]);
         fdt.encode().as_ref().to_vec()
     }
 
@@ -1315,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn implicit_root_passthrough_does_not_publish_unassigned_pci() {
+    fn implicit_root_passthrough_excludes_unassigned_pci_resources() {
         let dtb = fdt_with_pci_host_and_endpoint();
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
@@ -1347,6 +1344,16 @@ mod tests {
                 .reserved_address_ranges()
                 .iter()
                 .any(|range| { range.base_gpa == 0x3000_0000 && range.length == 0x1000_0000 })
+        );
+        assert!(vm_cfg.excluded_passthrough_irq_sources().contains(&11));
+
+        parse_passthrough_devices_address(&mut vm_cfg, &crate_cfg, &guest_dtb).unwrap();
+        let error = parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &guest_dtb).unwrap_err();
+        assert_eq!(
+            error,
+            crate::AxVmError::InvalidConfig {
+                detail: "passthrough device /soc/virtio_mmio@10001000 shares host-owned interrupt source 0xb".to_string(),
+            }
         );
     }
 
