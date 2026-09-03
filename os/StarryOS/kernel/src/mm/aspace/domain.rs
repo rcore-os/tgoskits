@@ -40,19 +40,30 @@ impl PageTableDomain {
         (address.as_usize() / PAGE_SIZE_4K) & (PTE_STRIPE_COUNT - 1)
     }
 
+    fn stripe_probe_count(range: VirtAddrRange) -> usize {
+        if range.is_empty() {
+            return 0;
+        }
+
+        let first_page = range.start.align_down_4k();
+        let covered_bytes = range.end.as_usize() - first_page.as_usize();
+        let page_count =
+            covered_bytes / PAGE_SIZE_4K + usize::from(!covered_bytes.is_multiple_of(PAGE_SIZE_4K));
+        // Stripe ownership repeats after one complete stripe period. Once a
+        // range spans that period, probing more pages cannot add another lock.
+        page_count.min(PTE_STRIPE_COUNT)
+    }
+
     /// Computes the ordered, de-duplicated stripes touched by a range.
     pub fn stripe_indices(&self, range: VirtAddrRange) -> Vec<usize> {
-        let mut result = Vec::new();
-        let mut address = range.start.align_down_4k();
-        while address < range.end {
-            let stripe = self.stripe_index(address);
-            if !result.contains(&stripe) {
-                result.push(stripe);
-            }
-            let Some(next) = address.checked_add(PAGE_SIZE_4K) else {
-                break;
-            };
-            address = next;
+        let probe_count = Self::stripe_probe_count(range);
+        if probe_count == 0 {
+            return Vec::new();
+        }
+        let mut result = Vec::with_capacity(probe_count);
+        let first_stripe = self.stripe_index(range.start.align_down_4k());
+        for offset in 0..probe_count {
+            result.push((first_stripe + offset) & (PTE_STRIPE_COUNT - 1));
         }
         result.sort_unstable();
         result
@@ -164,6 +175,29 @@ mod tests {
         let range = VirtAddrRange::from_start_size(VirtAddr::from_usize(0x4000), PAGE_SIZE_4K);
         let cursor = domain.lock_range(range);
         assert_eq!(cursor.stripe_indices().len(), 1);
+    }
+
+    #[test]
+    fn huge_lazy_range_has_bounded_stripe_probe_count() {
+        let range = VirtAddrRange::from_start_size(VirtAddr::from_usize(0x1000), 1usize << 40);
+
+        assert_eq!(
+            PageTableDomain::stripe_probe_count(range),
+            PTE_STRIPE_COUNT,
+            "stripe discovery must not inspect more than one complete stripe period",
+        );
+
+        let domain = PageTableDomain::new();
+        assert_eq!(domain.stripe_indices(range), (0..PTE_STRIPE_COUNT).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn unaligned_empty_range_takes_no_stripe() {
+        let address = VirtAddr::from_usize(0x1234);
+        let range = VirtAddrRange::new(address, address);
+
+        assert_eq!(PageTableDomain::stripe_probe_count(range), 0);
+        assert!(PageTableDomain::new().stripe_indices(range).is_empty());
     }
 }
 
