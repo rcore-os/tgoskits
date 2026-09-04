@@ -1068,6 +1068,47 @@ static REPAIR_QUEUE: IrqMutex<Vec<Arc<MmInner>>> = IrqMutex::new(Vec::new());
 static RECLAIMER_STARTED: AtomicBool = AtomicBool::new(false);
 static REPAIR_RETRY_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+struct CoalescedReclaimRequest {
+    pending: AtomicBool,
+}
+
+impl CoalescedReclaimRequest {
+    const fn new() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+        }
+    }
+
+    fn request(&self) {
+        self.pending.store(true, Ordering::Release);
+    }
+
+    fn run_one_batch(&self, limit: usize, reclaim: impl FnOnce(usize) -> usize) -> usize {
+        if limit == 0 || !self.pending.swap(false, Ordering::AcqRel) {
+            return 0;
+        }
+        let reclaimed = reclaim(limit);
+        if reclaimed >= limit {
+            // Hitting the batch limit means another eligible page may remain.
+            // Keep the edge set for the next bounded worker pass.
+            self.request();
+        }
+        reclaimed
+    }
+}
+
+static LAZY_FREE_RECLAIM: CoalescedReclaimRequest = CoalescedReclaimRequest::new();
+
+/// Coalesces `MADV_FREE` publications into one sleepable worker pass.
+///
+/// Linux makes lazy-free pages reclaimable on its LRU and only scans them from
+/// a reclaim invocation; it does not poll every live `mm` at a fixed interval.
+/// Starry's current reclaim engine has no anonymous LRU yet, so this bit is the
+/// allocation-free publication edge between the VMA transaction and worker.
+pub(super) fn request_lazy_free_reclaim() {
+    LAZY_FREE_RECLAIM.request();
+}
+
 fn queue_if_retired(inner: &Arc<MmInner>) {
     if let Some(permit) = MmInner::take_retire_permit(inner)
         && let Err(error) = try_enqueue_retire(permit)
@@ -1177,7 +1218,7 @@ pub fn reclaim_live_lazy_free_pages(limit: usize) -> usize {
     let mut inners = Vec::new();
     let count = {
         let registry = MM_REGISTRY.lock();
-        registry.len().min(limit)
+        registry.len()
     };
     if inners.try_reserve_exact(count).is_err() {
         return 0;
@@ -1185,7 +1226,7 @@ pub fn reclaim_live_lazy_free_pages(limit: usize) -> usize {
     {
         let registry = MM_REGISTRY.lock();
         for weak in registry.values() {
-            if inners.len() >= limit || inners.len() == inners.capacity() {
+            if inners.len() == inners.capacity() {
                 break;
             }
             if let Some(inner) = weak.upgrade() {
@@ -1286,7 +1327,7 @@ pub fn spawn_reclaimer_task() {
     ax_task::spawn_raw(
         || loop {
             let _ = ax_mm::retry_kernel_virtual_quarantines(16);
-            let _ = reclaim_live_lazy_free_pages(16);
+            let _ = LAZY_FREE_RECLAIM.run_one_batch(16, reclaim_live_lazy_free_pages);
             let _ = reap_retired(16);
             if REPAIR_RETRY_REQUESTED.swap(false, Ordering::AcqRel) {
                 // A repair coordinator explicitly requested this pass after
@@ -1388,6 +1429,43 @@ pub enum ReclaimError {
 mod tests {
     use super::*;
     use crate::mm::MappingOperation;
+
+    #[axtest::axtest]
+    fn lazy_free_reclaim_only_scans_after_a_publication_edge() {
+        let request = CoalescedReclaimRequest::new();
+        let mut scans = 0usize;
+
+        assert_eq!(
+            request.run_one_batch(16, |_| {
+                scans += 1;
+                0
+            }),
+            0
+        );
+        assert_eq!(scans, 0, "an idle worker must not scan live MMs");
+
+        request.request();
+        request.request();
+        assert_eq!(
+            request.run_one_batch(16, |limit| {
+                scans += 1;
+                limit
+            }),
+            16
+        );
+        assert_eq!(scans, 1, "coalesced publications need one scan");
+
+        assert_eq!(
+            request.run_one_batch(16, |_| {
+                scans += 1;
+                3
+            }),
+            3,
+            "a full batch must schedule one bounded continuation"
+        );
+        assert_eq!(scans, 2);
+        assert_eq!(request.run_one_batch(16, |_| unreachable!()), 0);
+    }
 
     #[axtest::axtest]
     fn tag_allocator_uses_explicit_full_flush_fallback() {

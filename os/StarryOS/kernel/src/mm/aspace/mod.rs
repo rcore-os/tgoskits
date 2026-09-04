@@ -4317,8 +4317,16 @@ impl AddrSpace {
             ..PteDelta::default()
         });
         match self.commit_mutation_classified(mutation) {
-            Ok(()) => Ok(()),
-            Err(CommitMutationError::PublishedPendingTlb(error)) => Err(error),
+            Ok(()) => {
+                lifecycle::request_lazy_free_reclaim();
+                Ok(())
+            }
+            Err(CommitMutationError::PublishedPendingTlb(error)) => {
+                // The LazyFree state is already visible even though detached
+                // owners remain quarantined for the outstanding shootdown.
+                lifecycle::request_lazy_free_reclaim();
+                Err(error)
+            }
             Err(CommitMutationError::Unpublished(error)) => {
                 for (_, _, _, page) in candidates.iter().rev() {
                     if !page.clear_lazy_free() {
