@@ -19,7 +19,7 @@ use core::{
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::trap::PageFaultFlags;
 
-use crate::sync::{IrqMutex, Mutex, RwLock, try_push_irq_vec, try_reserve_irq_vec};
+use crate::sync::{IrqMutex, Mutex, try_push_irq_vec, try_reserve_irq_vec};
 
 use super::{AddrSpace, FaultResult, PageFaultApplyOutcome, TransparentHugePageMode};
 
@@ -500,51 +500,29 @@ impl MmInner {
 /// File-cache callbacks never retain an address-space pointer of their own;
 /// they name an MM by `AddressSpaceId` and obtain a typed kernel pin here.
 ///
-/// Writers path-copy the map before taking the publication lock.  The locked
-/// section is therefore one `Arc` swap: BTree node allocation/destruction and
-/// the displaced snapshot's last Drop both happen after the guard is gone.
+/// This is task-context metadata, not an IRQ, PTE, rmap, or allocator-pressure
+/// lock.  A sleepable mutex therefore permits the `BTreeMap` to allocate a
+/// node while inserting, without turning every fork/exec/exit into a complete
+/// path-copy of all live MMs.  The allocator's pressure hook never enters an
+/// MM endpoint, so allocation cannot recurse into this mutex.  Lookups clone
+/// only one `Weak`, and removed values are destroyed after releasing the lock.
 type MmRegistry = BTreeMap<AddressSpaceId, Weak<MmInner>>;
-static MM_REGISTRY: RwLock<Option<Arc<MmRegistry>>> = RwLock::new(None);
+static MM_REGISTRY: Mutex<MmRegistry> = Mutex::new(BTreeMap::new());
 
-fn mm_registry_snapshot() -> Option<Arc<MmRegistry>> {
-    MM_REGISTRY.read().clone()
-}
-
-fn registry_snapshot_matches(
-    current: &Option<Arc<MmRegistry>>,
-    expected: &Option<Arc<MmRegistry>>,
-) -> bool {
-    match (current, expected) {
-        (None, None) => true,
-        (Some(current), Some(expected)) => Arc::ptr_eq(current, expected),
-        (None, Some(_)) | (Some(_), None) => false,
-    }
+fn registered_mm(id: AddressSpaceId) -> Option<Weak<MmInner>> {
+    MM_REGISTRY.lock().get(&id).cloned()
 }
 
 fn register_mm(inner: &Arc<MmInner>) -> Result<(), MmCreateError> {
-    loop {
-        let base = mm_registry_snapshot();
-        if base
-            .as_deref()
-            .and_then(|registry| registry.get(&inner.id))
-            .and_then(Weak::upgrade)
-            .is_some()
-        {
-            return Err(MmCreateError::DuplicateIdentity);
-        }
-        let mut next = base.as_deref().cloned().unwrap_or_default();
-        next.insert(inner.id, Arc::downgrade(inner));
-        let next = Some(Arc::new(next));
-        let displaced = {
-            let mut current = MM_REGISTRY.write();
-            if !registry_snapshot_matches(&current, &base) {
-                continue;
-            }
-            core::mem::replace(&mut *current, next)
-        };
-        drop(displaced);
-        return Ok(());
+    let mut registry = MM_REGISTRY.lock();
+    if registry.contains_key(&inner.id) {
+        return Err(MmCreateError::DuplicateIdentity);
     }
+    let displaced = registry.insert(inner.id, Arc::downgrade(inner));
+    drop(registry);
+    debug_assert!(displaced.is_none());
+    drop(displaced);
+    Ok(())
 }
 
 fn unregister_mm(inner: &Arc<MmInner>) {
@@ -556,29 +534,10 @@ fn unregister_mm(inner: &Arc<MmInner>) {
 }
 
 fn remove_registered_mm(id: AddressSpaceId) -> bool {
-    loop {
-        let base = mm_registry_snapshot();
-        let Some(base_registry) = base.as_deref() else {
-            return false;
-        };
-        if !base_registry.contains_key(&id) {
-            return false;
-        }
-        let mut next = base_registry.clone();
-        let removed = next.remove(&id);
-        debug_assert!(removed.is_some());
-        let next = (!next.is_empty()).then(|| Arc::new(next));
-        let displaced = {
-            let mut current = MM_REGISTRY.write();
-            if !registry_snapshot_matches(&current, &base) {
-                continue;
-            }
-            core::mem::replace(&mut *current, next)
-        };
-        drop(displaced);
-        drop(removed);
-        return true;
-    }
+    let removed = MM_REGISTRY.lock().remove(&id);
+    let found = removed.is_some();
+    drop(removed);
+    found
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,11 +554,7 @@ pub(crate) enum RmapMmLookupError {
 /// MM is already absent from memfd writable-mapping checks even though its
 /// frames remain quarantined until CPU activations and kernel pins drain.
 pub(crate) fn is_address_space_live(id: AddressSpaceId) -> bool {
-    let weak = mm_registry_snapshot()
-        .as_deref()
-        .and_then(|registry| registry.get(&id))
-        .cloned();
-    match weak {
+    match registered_mm(id) {
         // Fork and exec build a complete MM before publishing its first
         // MmHandle.  Treat that preparation window as live so a concurrent
         // F_SEAL_WRITE cannot slip between VMA publication and lifecycle
@@ -615,10 +570,7 @@ pub(crate) fn is_address_space_live(id: AddressSpaceId) -> bool {
 /// deliberately reported as Busy: an eviction must not assume that a missing
 /// new pin means its stale PTE has already disappeared.
 pub(crate) fn pin_mm_for_rmap(id: AddressSpaceId) -> Result<MmPin, RmapMmLookupError> {
-    let weak = mm_registry_snapshot()
-        .as_deref()
-        .and_then(|registry| registry.get(&id))
-        .cloned();
+    let weak = registered_mm(id);
     let Some(weak) = weak else {
         return Err(RmapMmLookupError::Gone);
     };
@@ -1223,16 +1175,17 @@ pub fn reclaim_live_lazy_free_pages(limit: usize) -> usize {
         return 0;
     }
     let mut inners = Vec::new();
-    let registry = mm_registry_snapshot();
-    let Some(registry) = registry.as_deref() else {
-        return 0;
+    let count = {
+        let registry = MM_REGISTRY.lock();
+        registry.len().min(limit)
     };
-    if inners.try_reserve(registry.len().min(limit)).is_err() {
+    if inners.try_reserve_exact(count).is_err() {
         return 0;
     }
     {
+        let registry = MM_REGISTRY.lock();
         for weak in registry.values() {
-            if inners.len() >= limit {
+            if inners.len() >= limit || inners.len() == inners.capacity() {
                 break;
             }
             if let Some(inner) = weak.upgrade() {
