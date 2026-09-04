@@ -119,7 +119,9 @@ const PERF_RECORD_MISC_USER: u16 = 2;
 /// most nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
 /// STREAM_ID, CPU(cpu+res), PERIOD). [`build_sample`] writes into a stack buffer
 /// of this size and returns the actual length.
-const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8;
+const MAX_STACK_DEPTH: usize = 64;
+const MAX_CALLCHAIN_ENTRIES: usize = 1 + MAX_STACK_DEPTH;
+const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8;
 const LOST_RECORD_LEN: usize = 8 + 2 * 8;
 
 /// One physical perf mmap ring and its IRQ-safe multi-producer writer.
@@ -266,6 +268,8 @@ const PERF_SAMPLE_TID: u64 = 1 << 1;
 const PERF_SAMPLE_TIME: u64 = 1 << 2;
 /// `PERF_SAMPLE_ADDR`: data address (`u64`); always 0 for our IP samples.
 const PERF_SAMPLE_ADDR: u64 = 1 << 3;
+/// `PERF_SAMPLE_CALLCHAIN`: `u64 nr` followed by context markers and IPs.
+const PERF_SAMPLE_CALLCHAIN: u64 = 1 << 5;
 /// `PERF_SAMPLE_ID`: event id (`u64`).
 const PERF_SAMPLE_ID: u64 = 1 << 6;
 /// `PERF_SAMPLE_CPU`: cpu number (`u32 cpu, u32 res`).
@@ -285,6 +289,7 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_TID
     | PERF_SAMPLE_TIME
     | PERF_SAMPLE_ADDR
+    | PERF_SAMPLE_CALLCHAIN
     | PERF_SAMPLE_ID
     | PERF_SAMPLE_CPU
     | PERF_SAMPLE_PERIOD
@@ -316,6 +321,9 @@ pub struct SampleSlot {
     pub id: u64,
     /// PID namespace view captured by the event owner.
     pub observer: PidNamespaceId,
+    /// Fixed owner identity for a task event; system-wide sources use `None`
+    /// and attribute the task interrupted on their CPU.
+    pub owner_ids: Option<(TgidNumber, TidNumber)>,
     /// Frequency mode (`attr.freq`): after each sample re-derive [`period`](Self::period)
     /// to converge on [`target_freq`](Self::target_freq) samples/sec. Fixed
     /// `-c` period when false.
@@ -460,8 +468,14 @@ pub fn ensure_pmu_irq_registered() {
 pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     // Capture the interrupted context before doing anything that could fault or
     // overwrite ELR_EL1 / SPSR_EL1.
-    let ip = ax_cpu::pmu::interrupted_pc();
-    let is_user = ax_cpu::pmu::interrupted_is_user();
+    let interrupted = ax_cpu::pmu::interrupted_context();
+    let ip = interrupted.map_or_else(
+        || ax_cpu::pmu::interrupted_pc() as usize,
+        |context| context.pc,
+    );
+    let is_user = interrupted.map_or_else(ax_cpu::pmu::interrupted_is_user, |context| {
+        context.privilege == ax_cpu::pmu::InterruptedPrivilege::User
+    });
 
     let ovf = ax_cpu::pmu::overflow::status();
     if ovf == 0 {
@@ -510,12 +524,22 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             // never crosses the Linux perf ABI boundary. A system-wide counter
             // can overflow while a kernel task is running, in which case there
             // is no Linux PID identity and the wire fields remain zero.
-            let (pid, tid) = current_sample_ids(slot.observer);
+            let (pid, tid) = slot
+                .owner_ids
+                .map_or_else(|| current_sample_ids(slot.observer), |(pid, tid)| {
+                    (Some(pid), Some(tid))
+                });
             let time = ax_runtime::hal::time::monotonic_time_nanos();
             let cpu = ax_hal::percpu::this_cpu_id() as u32;
+            let mut callchain = [0u64; MAX_CALLCHAIN_ENTRIES];
+            let callchain_len = if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
+                build_callchain(interrupted, ip, is_user, &mut callchain)
+            } else {
+                0
+            };
             let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
             let data = SampleData {
-                ip,
+                ip: ip as u64,
                 pid,
                 tid,
                 time,
@@ -524,6 +548,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
                 stream_id: 0,
                 cpu,
                 period: cur_period as u64,
+                callchain: &callchain[..callchain_len],
             };
             let len = build_sample(&mut record, sample_type, misc, &data);
 
@@ -572,6 +597,36 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     IrqReturn::Handled
 }
 
+fn build_callchain(
+    interrupted: Option<ax_cpu::pmu::InterruptedContext>,
+    ip: usize,
+    is_user: bool,
+    chain: &mut [u64],
+) -> usize {
+    let Some((marker, region)) = chain.split_first_mut() else {
+        return 0;
+    };
+    *marker = if is_user {
+        (-512i64) as u64
+    } else {
+        (-128i64) as u64
+    };
+    let frames = match interrupted {
+        Some(context) if is_user => {
+            super::unwind::user_callchain(ip, context.fp, context.sp, region)
+        }
+        Some(context) => super::unwind::kernel_callchain(ip, context.fp, region),
+        None => {
+            let Some(leaf) = region.first_mut() else {
+                return 1;
+            };
+            *leaf = ip as u64;
+            1
+        }
+    };
+    1 + frames
+}
+
 fn current_sample_ids(observer: PidNamespaceId) -> (Option<TgidNumber>, Option<TidNumber>) {
     let task = ax_task::current();
     let Some(thread) = task.try_as_thread() else {
@@ -618,7 +673,7 @@ fn kernel_task_sample_ids_are_empty_for_test() -> bool {
 /// IP-only record (8-byte header + `u64 ip`).
 /// The per-sample scalar values [`build_sample`] may emit (those not implied by
 /// `sample_type` alone). Gathered by the overflow handler at interrupt time.
-struct SampleData {
+struct SampleData<'a> {
     ip: u64,
     pid: Option<TgidNumber>,
     tid: Option<TidNumber>,
@@ -628,6 +683,7 @@ struct SampleData {
     stream_id: u64,
     cpu: u32,
     period: u64,
+    callchain: &'a [u64],
 }
 
 fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> usize {
@@ -667,6 +723,12 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
     }
     if sample_type & PERF_SAMPLE_ADDR != 0 {
         put!(d.addr);
+    }
+    if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
+        put!(d.callchain.len() as u64);
+        for &entry in d.callchain {
+            put!(entry);
+        }
     }
     if sample_type & PERF_SAMPLE_ID != 0 {
         put!(d.id);

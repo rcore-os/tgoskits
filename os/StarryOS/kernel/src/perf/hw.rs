@@ -396,6 +396,7 @@ impl HwPerfEvent {
                     sample_type: sampling.sample_type,
                     id: self.sample_id,
                     observer: crate::task::ROOT_PID_NS.id(),
+                    owner_ids: None,
                     freq: sampling.freq,
                     target_freq: sampling.target_freq,
                     last_time: 0,
@@ -1068,6 +1069,17 @@ fn perf_event_open_hw_per_task(
     let enabled = attr.disabled() == 0;
     let enable_on_exec = attr.enable_on_exec() != 0;
 
+    let observer = ax_task::current().as_thread().active_pid_namespace().id();
+    let owner_ids = thr
+        .proc_data
+        .identity()
+        .visible_number_in(observer)
+        .map(crate::task::TgidNumber::from)
+        .zip(
+            thr.pid_identity()
+                .visible_number_in(observer)
+                .map(crate::task::TidNumber::from),
+        );
     let ptc = Arc::new(super::task::PerTaskCounter::new(
         super::task::PerTaskConfig {
             cpu_filter: cpu_filter.map(super::target::PerfCpuId::as_usize),
@@ -1090,7 +1102,8 @@ fn perf_event_open_hw_per_task(
             sample_id_all: attr.sample_id_all() != 0,
             // Follow forked children into the same ring (`perf record` default).
             inherit: attr.inherit() != 0,
-            observer: ax_task::current().as_thread().active_pid_namespace().id(),
+            observer,
+            owner_ids,
         },
     ));
     super::task::attach(thr, ptc.clone());

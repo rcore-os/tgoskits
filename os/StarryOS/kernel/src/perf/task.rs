@@ -198,6 +198,8 @@ pub struct PerTaskCounter {
     inherit: bool,
     /// PID namespace view captured when this event was opened.
     observer: PidNamespaceId,
+    /// Stable owner ids captured for task sampling attribution.
+    owner_ids: Option<(TgidNumber, TidNumber)>,
 
     // --- Per-task counting mmap (`rdpmc`) ---
     /// Weak event-side reference to the VMA-owned metadata page. Scheduler
@@ -304,6 +306,8 @@ pub struct PerTaskConfig {
     pub inherit: bool,
     /// PID namespace view captured when the root event was opened.
     pub observer: PidNamespaceId,
+    /// Target task identity in that namespace.
+    pub owner_ids: Option<(TgidNumber, TidNumber)>,
 }
 
 impl PerTaskCounter {
@@ -346,6 +350,7 @@ impl PerTaskCounter {
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
             observer: cfg.observer,
+            owner_ids: cfg.owner_ids,
             rdpmc_page: IrqMutex::new(None),
             endpoint_ptr: AtomicUsize::new(0),
             loss: Arc::new(LossState::new()),
@@ -696,6 +701,7 @@ fn arm_slice(ptc: &PerTaskCounter, slot: usize, now: u64) {
                 sample_type: ptc.sample_type,
                 id: ptc.sample_id.load(Ordering::Relaxed),
                 observer: ptc.observer,
+                owner_ids: ptc.owner_ids,
                 freq: ptc.freq,
                 target_freq: ptc.freq_target,
                 last_time: 0,
@@ -1220,6 +1226,8 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
                     sample_id_all: p.sample_id_all,
                     inherit: true,
                     observer: p.observer,
+                    owner_ids: visible_tgid(p, &child_thr.proc_data.identity())
+                        .zip(visible_tid(p, &child_thr.pid_identity())),
                 },
                 sample_id: p.sample_id.load(Ordering::Relaxed),
                 ring: p.inherit_ring(),
