@@ -328,23 +328,57 @@ fn current_el_irq_handler(_tf: &mut TrapFrame) {
 }
 
 /// Handles synchronous exceptions that occur from the current exception level.
+///
+/// A synchronous exception taken at the current EL means the hypervisor itself
+/// faulted (for example a data abort while touching guest memory). The
+/// interrupted host context may already hold locks, so this handler must not
+/// `panic!`: panicking re-enters the host panic path on top of the faulting
+/// context. That path can allocate or take the very lock the faulting context
+/// holds (wedge) or recurse through the EL2 vector, permanently losing the
+/// control plane. Instead the handler reports the fault through the
+/// registered allocation-free writer (when one exists) and halts the current
+/// CPU with interrupts masked so the fault cannot amplify.
 #[unsafe(no_mangle)]
-fn current_el_sync_handler(tf: &mut TrapFrame) {
+fn current_el_sync_handler(tf: &mut TrapFrame) -> ! {
     let esr = ESR_EL2.extract();
     let ec = ESR_EL2.read(ESR_EL2::EC);
     let iss = ESR_EL2.read(ESR_EL2::ISS);
 
-    panic!(
-        "Unhandled synchronous exception from current EL:\nESR_EL2: {:#x}\nException Class: \
-         {ec:#x}\nInstruction Specific Syndrome: {iss:#x}\nFAR_EL2: {:#x}\nELR_EL2: \
-         {:#x}\nSPSR_EL2: {:#x}\nHCR_EL2: {:#x}\nTrap frame: {:#x?}",
-        esr.get(),
-        FAR_EL2.get(),
-        ELR_EL2.get(),
-        SPSR_EL2.get(),
-        HCR_EL2.get(),
-        tf
-    );
+    if let Some(writer) = super::host::current_el_sync_fault_writer() {
+        writer(format_args!(
+            "Unhandled synchronous exception from current EL:\nESR_EL2: {:#x}\nException Class: \
+             {ec:#x}\nInstruction Specific Syndrome: {iss:#x}\nFAR_EL2: {:#x}\nELR_EL2: \
+             {:#x}\nSPSR_EL2: {:#x}\nHCR_EL2: {:#x}\nTrap frame: {:#x?}\n",
+            esr.get(),
+            FAR_EL2.get(),
+            ELR_EL2.get(),
+            SPSR_EL2.get(),
+            HCR_EL2.get(),
+            tf
+        ));
+    }
+
+    halt_current_cpu()
+}
+
+/// Halts the current CPU with all interrupts masked.
+///
+/// Interrupts are disabled before the wait loop so the halted CPU cannot
+/// re-enter the EL2 exception vector while the faulting context's locks are
+/// still held; the CPU then parks on a masked `wfe` that never wakes.
+fn halt_current_cpu() -> ! {
+    // SAFETY: `msr daifset` only masks interrupt flags on the current CPU; the
+    // faulting context never resumes on this CPU after this point.
+    unsafe {
+        core::arch::asm!("msr daifset, #0b1111", options(nostack, preserves_flags));
+    }
+    loop {
+        // SAFETY: `wfe` is a hint that waits for an event; with IRQ/FIQ masked
+        // no interrupt can wake this CPU, so the loop is a permanent halt.
+        unsafe {
+            core::arch::asm!("wfe", options(nostack, preserves_flags));
+        }
+    }
 }
 
 /// A trampoline function for sp switching during handling VM exits,

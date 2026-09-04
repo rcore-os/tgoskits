@@ -156,6 +156,44 @@ pub(crate) fn install_current_el_irq_handler<H: ArmHostOps>() {
     CURRENT_EL_IRQ_HANDLER_USERS.fetch_add(1, Ordering::AcqRel);
 }
 
+/// Writer used to report an unhandled current-EL synchronous exception before
+/// the faulting CPU halts.
+///
+/// The handler runs on the EL2 exception vector while the interrupted host
+/// context may still hold locks (for example the heap allocator spin lock),
+/// so the writer must not allocate, sleep, or take a lock that the faulting
+/// context could own.
+pub type CurrentElSyncFaultWriter = for<'a> fn(core::fmt::Arguments<'a>);
+
+static CURRENT_EL_SYNC_FAULT_WRITER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Registers (or clears) the process-wide writer used to report unhandled
+/// current-EL synchronous exceptions.
+///
+/// The writer is invoked on the CPU that took the synchronous exception,
+/// immediately before that CPU halts. Registering a writer is optional: with
+/// no writer the faulting CPU halts silently. Only one writer can be active;
+/// the embedding VMM registers it once before enabling EL2 virtualization.
+pub fn register_current_el_sync_fault_writer(writer: Option<CurrentElSyncFaultWriter>) {
+    let ptr = match writer {
+        Some(writer) => writer as *mut (),
+        None => core::ptr::null_mut(),
+    };
+    CURRENT_EL_SYNC_FAULT_WRITER.store(ptr, Ordering::Release);
+}
+
+/// Returns the registered current-EL synchronous-fault writer, if any.
+pub(crate) fn current_el_sync_fault_writer() -> Option<CurrentElSyncFaultWriter> {
+    let ptr = CURRENT_EL_SYNC_FAULT_WRITER.load(Ordering::Acquire);
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: the stored pointer was produced by `register_current_el_sync_fault_writer`
+    // from a `CurrentElSyncFaultWriter` function pointer, and registration and the
+    // subsequent load are ordered by the acquire/release pair above.
+    Some(unsafe { core::mem::transmute::<*mut (), CurrentElSyncFaultWriter>(ptr) })
+}
+
 pub(crate) fn clear_current_el_irq_handler() {
     loop {
         let users = CURRENT_EL_IRQ_HANDLER_USERS.load(Ordering::Acquire);

@@ -1576,6 +1576,7 @@ name = "axvisor"
 version = "0.7.2"
 dependencies = [
  "anyhow",
+ "arm_vcpu",
  "ax-api",
  "ax-driver",
  "ax-hal",

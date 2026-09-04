@@ -10,7 +10,10 @@ mod smc;
 mod vcpu;
 
 pub use self::{
-    host::{ArmHostIrqConfig, ArmHostIrqGuard, ArmHostOps},
+    host::{
+        ArmHostIrqConfig, ArmHostIrqGuard, ArmHostOps, CurrentElSyncFaultWriter,
+        register_current_el_sync_fault_writer,
+    },
     pcpu::ArmPerCpu,
     vcpu::{
         ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,

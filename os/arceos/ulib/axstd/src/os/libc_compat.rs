@@ -2010,6 +2010,25 @@ static MMAP_ALLOCS: LazyLock<Mutex<BTreeMap<usize, SizeT>>> =
 static FD_PATHS: LazyLock<Mutex<BTreeMap<c_int, FdPath>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+/// Commits the one-time initialization of every process-wide lazy table in
+/// this module.
+///
+/// A task can first touch one of these tables while it runs inside a context
+/// that cannot sleep (for example a network event wakes a fresh std thread and
+/// the scheduler runs its first instructions inside the preemption-disabled
+/// IRQ tail). If two threads race on the first touch, the loser waits for the
+/// winner's initialization; that wait may need a sleepable context and panics
+/// on the preemption-disabled path. Running this from a normal task context
+/// (for example when spawning a thread) commits all one-time initialization
+/// up front so later first touches only take the fast path.
+pub(crate) fn preheat_lazy_tables() {
+    let _ = FUTEX_QUEUES.lock();
+    let _ = MMAP_ALLOCS.lock();
+    #[cfg(feature = "fs")]
+    let _ = FD_PATHS.lock();
+    pthread::preheat_lazy_tables();
+}
+
 mod pthread {
     use super::*;
 
@@ -2030,6 +2049,13 @@ mod pthread {
     static NEXT_COND_ID: AtomicUsize = AtomicUsize::new(1);
     static CONDVARS: LazyLock<Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>>> =
         LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+    pub(super) fn preheat_lazy_tables() {
+        let _ = KEY_SLOTS.lock();
+        let _ = TLS_VALUES.lock();
+        let _ = CXA_THREAD_DTORS.lock();
+        let _ = CONDVARS.lock();
+    }
 
     struct TlsKey {
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -2124,6 +2150,7 @@ mod pthread {
         start: extern "C" fn(*mut c_void) -> *mut c_void,
         arg: *mut c_void,
     ) -> c_int {
+        super::preheat_lazy_tables();
         let start = Box::into_raw(Box::new(PthreadStart { start, arg }));
         let ret = unsafe {
             ax_posix_api::sys_pthread_create(

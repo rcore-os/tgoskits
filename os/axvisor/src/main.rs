@@ -59,6 +59,18 @@ mod shell;
 ///    lifecycle waiter and the physical-console shell.
 ///
 fn main() {
+    // Route unhandled current-EL synchronous exceptions (host faults, e.g.
+    // aborts while touching guest memory) to the allocation-free emergency
+    // console before EL2 virtualization is enabled anywhere. The vCPU core
+    // then halts the faulting CPU instead of panicking on top of a context
+    // that may already hold the allocator lock (see the 3VM HTTP wedge root
+    // cause: recursive panic output wedged the heap and froze the control
+    // plane).
+    #[cfg(target_arch = "aarch64")]
+    arm_vcpu::register_current_el_sync_fault_writer(Some(|args| {
+        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(args);
+    }));
+
     // Test-only panic paths — gated behind dedicated features so they never
     // activate in normal builds.  These are consumed by test-suit cases that
     // verify the backtrace markers (or their absence) via QEMU regex matching.

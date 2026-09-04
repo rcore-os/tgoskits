@@ -114,6 +114,7 @@ ax-std = { workspace = true, default-features = false, features = [
 axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
 axvm-types.workspace = true
+arm_vcpu = { workspace = true }
 ax-driver = { workspace = true, optional = true }
 
 [dev-dependencies]
