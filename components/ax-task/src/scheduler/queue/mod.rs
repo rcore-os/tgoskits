@@ -202,6 +202,7 @@ impl RunQueue {
 
     /// Replaces a linked `rq->curr` after class selection keeps both task
     /// entities in their rq-owned nodes.
+    #[inline(always)]
     pub(crate) fn replace_linked_current(&mut self, current: CurrentDispatch) {
         assert!(
             self.detached_current_publication.is_none(),
