@@ -129,20 +129,29 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 
         #[cfg(not(feature = "arm-el2"))]
         unsafe {
-            // TLB Invalidate by VA, All ASID, EL1, Inner Shareable
-            asm!("tlbi vaae1is, {}; dsb sy; isb", in(reg) operand)
+            // `dsb ishst` first so the invalidating PTE store (the caller's
+            // break-before-make write) is observable to all cores before the
+            // by-VA TLBI. Without it, a walker on another core can re-cache the
+            // stale entry after the TLBI but before the store lands (ARM ARM
+            // DDI0487, break-before-make). Then TLBI by VA, All ASID, EL1, Inner
+            // Shareable.
+            asm!("dsb ishst; tlbi vaae1is, {}; dsb sy; isb", in(reg) operand)
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
-            // TLB Invalidate by VA, EL2, Inner Shareable
-            asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) operand)
+            // See the EL1 branch: `dsb ishst` orders the PTE store before the
+            // by-VA TLBI. TLBI by VA, EL2, Inner Shareable.
+            asm!("dsb ishst; tlbi vae2is, {}; dsb sy; isb", in(reg) operand)
         }
     } else {
         // flush the entire TLB
         #[cfg(not(feature = "arm-el2"))]
         unsafe {
-            // TLB Invalidate by VMID, All at stage 1, EL1
-            asm!("dsb sy; isb; tlbi vmalle1; dsb sy; isb")
+            // Inner-shareable broadcast (`vmalle1is`, not the CPU-local
+            // `vmalle1`) so sibling cores also drop stale entries; a local-only
+            // full flush leaves other cores translating through freed/replaced
+            // mappings. TLB Invalidate All at stage 1, EL1, Inner Shareable.
+            asm!("dsb sy; isb; tlbi vmalle1is; dsb sy; isb")
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
