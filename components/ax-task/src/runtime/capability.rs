@@ -468,14 +468,12 @@ impl RuntimeCpuId {
 
 /// Runtime-owned capability snapshot for one pinned scheduler CPU.
 ///
-/// The three fields are captured in one runtime operation, mirroring Linux's
-/// direct `this_rq()` lookup. Keeping the logical identity together with the
-/// owner-only and remote endpoints prevents the scheduler from resolving its
-/// current CPU back through the global registry.
+/// The paired fields are captured in one runtime operation, mirroring Linux's
+/// direct `this_rq()` lookup. The remote endpoint is the sole owner identity;
+/// its embedded CPU ID prevents a second architecture or registry lookup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct CurrentCpuOwnerHandles {
-    cpu: RuntimeCpuId,
     local: CurrentCpuLocalHandle,
     remote: CpuRemoteHandle,
 }
@@ -483,7 +481,6 @@ pub struct CurrentCpuOwnerHandles {
 impl CurrentCpuOwnerHandles {
     /// Empty capability used when a scheduler-frame entry is rejected.
     pub const NONE: Self = Self {
-        cpu: RuntimeCpuId::new(u32::MAX),
         local: CurrentCpuLocalHandle::NONE,
         remote: CpuRemoteHandle::NONE,
     };
@@ -492,21 +489,15 @@ impl CurrentCpuOwnerHandles {
     ///
     /// # Safety
     ///
-    /// `local` and `remote` must identify the owner-only and Arc-backed
-    /// scheduler endpoints for `cpu`. Every non-empty handle must remain live
-    /// until shutdown, and the caller must keep migration excluded while the
-    /// snapshot is used.
+    /// `local` and `remote` must identify the paired owner-only and Arc-backed
+    /// scheduler endpoints for the pinned CPU. Every non-empty handle must
+    /// remain live until shutdown, and the caller must keep migration excluded
+    /// while the snapshot is used.
     pub const unsafe fn new(
-        cpu: RuntimeCpuId,
         local: CurrentCpuLocalHandle,
         remote: CpuRemoteHandle,
     ) -> Self {
-        Self { cpu, local, remote }
-    }
-
-    /// Returns the logical CPU identity bound to both handles.
-    pub const fn cpu(self) -> RuntimeCpuId {
-        self.cpu
+        Self { local, remote }
     }
 
     /// Returns the current CPU's owner-only scheduler handle.

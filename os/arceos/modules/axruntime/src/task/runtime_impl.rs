@@ -51,8 +51,8 @@ impl_task_runtime! {
 
         unsafe fn current_cpu_owner_handles() -> CurrentCpuOwnerHandles {
             // SAFETY: the ax-task caller already owns a migration pin. The
-            // callback captures the ID and both endpoints from that same CPU
-            // area in one transaction.
+            // callback captures both paired endpoints from that same CPU area
+            // in one transaction.
             unsafe { with_current_cpu_pin(current_cpu_owner_handles) }
         }
 

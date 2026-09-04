@@ -73,7 +73,6 @@ pub(crate) trait RuntimeCpuPin: runtime_cpu_pin_sealed::Sealed {
 
 #[derive(Clone, Copy)]
 struct RuntimeCpuHandles {
-    runtime_cpu: RuntimeCpuId,
     cpu_local: NonNull<CpuLocal>,
     cpu_remote: &'static CpuRemote,
 }
@@ -82,7 +81,7 @@ impl RuntimeCpuHandles {
     fn capture() -> Self {
         // SAFETY: every capture is owned by a live RuntimeIrqGuard or
         // RuntimeSchedulerFrameGuard that prevents migration. The runtime
-        // snapshots all three values from that one pinned CPU.
+        // snapshots both paired endpoints from that one pinned CPU.
         let handles = unsafe { task_runtime::current_cpu_owner_handles() };
         // SAFETY: forwarded from the provider's current-CPU capability
         // contract and bounded by the caller's live CPU pin.
@@ -91,7 +90,6 @@ impl RuntimeCpuHandles {
 
     unsafe fn from_snapshot(handles: crate::runtime::CurrentCpuOwnerHandles) -> Self {
         Self {
-            runtime_cpu: handles.cpu(),
             // SAFETY: a successful runtime capability snapshot contains the
             // live, aligned owner endpoint for this exact CPU.
             cpu_local: unsafe {
@@ -108,7 +106,7 @@ impl RuntimeCpuHandles {
     }
 
     const fn cpu_id(self) -> RuntimeCpuId {
-        self.runtime_cpu
+        RuntimeCpuId::new(self.cpu_remote.owner().as_u32())
     }
 
     const fn remote(self) -> &'static CpuRemote {

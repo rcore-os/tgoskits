@@ -364,17 +364,14 @@ pub(super) fn cpu_remote(cpu: RuntimeCpuId) -> Option<&'static CpuRemote> {
 }
 
 pub(super) fn current_cpu_owner_handles(cpu_pin: &CpuPin) -> CurrentCpuOwnerHandles {
-    let cpu = u32::try_from(ax_hal::percpu::this_cpu_id_pinned(cpu_pin))
-        .expect("logical CPU ID must fit the TaskRuntime ABI");
     let local = CPU_LOCAL_OWNER_HANDLE.read_current(cpu_pin);
     assert_ne!(local, 0, "online scheduler CPU must own a CpuLocal handle");
     let remote = current_cpu_remote_handle(cpu_pin);
-    // SAFETY: initialization publishes all three values from one exclusive CPU
+    // SAFETY: initialization publishes both endpoints from one exclusive CPU
     // transaction before that CPU is admitted to scheduler traffic. The
     // containing runtime keeps both endpoint allocations live until shutdown.
     unsafe {
         CurrentCpuOwnerHandles::new(
-            RuntimeCpuId::new(cpu),
             CurrentCpuLocalHandle::from_raw(local),
             remote,
         )
