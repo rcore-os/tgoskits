@@ -39,6 +39,10 @@
 #define FUTEX_CMP_REQUEUE 4
 #endif
 
+#ifndef FUTEX_WAKE_OP
+#define FUTEX_WAKE_OP 5
+#endif
+
 #ifndef FUTEX_PRIVATE_FLAG
 #define FUTEX_PRIVATE_FLAG 128
 #endif
@@ -61,6 +65,20 @@
 
 #ifndef FUTEX_TID_MASK
 #define FUTEX_TID_MASK 0x3fffffffu
+#endif
+
+#ifndef FUTEX_OP_SET
+#define FUTEX_OP_SET 0
+#endif
+
+#ifndef FUTEX_OP_CMP_EQ
+#define FUTEX_OP_CMP_EQ 0
+#endif
+
+#ifndef FUTEX_OP
+#define FUTEX_OP(op, oparg, cmp, cmparg) \
+    ((((op) & 0xf) << 28) | (((cmp) & 0xf) << 24) | \
+     (((oparg) & 0xfff) << 12) | ((cmparg) & 0xfff))
 #endif
 
 #define FUTEX_INVALID_OP 0x7f
@@ -661,6 +679,118 @@ static void test_futex_shared_wake_count(void)
     CHECK(munmap(returned_count, sizeof(*returned_count)) == 0, "munmap shared count word succeeds");
 }
 
+static int swap_shared_mappings(uint32_t *lower, uint32_t *upper,
+                                size_t page_size)
+{
+    void *scratch = mmap(NULL, page_size, PROT_NONE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (scratch == MAP_FAILED) {
+        return -1;
+    }
+
+    if (mremap(lower, page_size, page_size,
+               MREMAP_MAYMOVE | MREMAP_FIXED, scratch) != scratch) {
+        return -1;
+    }
+    if (mremap(upper, page_size, page_size,
+               MREMAP_MAYMOVE | MREMAP_FIXED, lower) != lower) {
+        return -1;
+    }
+    if (mremap(scratch, page_size, page_size,
+               MREMAP_MAYMOVE | MREMAP_FIXED, upper) != upper) {
+        return -1;
+    }
+    return 0;
+}
+
+static int run_shared_double_queue_ops(uint32_t *lower, uint32_t *upper)
+{
+    const uint32_t encoded_op =
+        FUTEX_OP(FUTEX_OP_SET, 0, FUTEX_OP_CMP_EQ, 0);
+
+    for (int iteration = 0; iteration < 256; iteration++) {
+        if (raw_futex(lower, FUTEX_WAKE_OP, 0, futex_count_arg(0),
+                      upper, encoded_op) != 0) {
+            return -1;
+        }
+        if (raw_futex(lower, FUTEX_CMP_REQUEUE, 0, futex_count_arg(0),
+                      upper, 0) != 0) {
+            return -1;
+        }
+        sched_yield();
+    }
+    return 0;
+}
+
+static void test_futex_shared_reverse_mapping_lock_order(void)
+{
+    printf("\n--- shared futex lock order across reverse mappings ---\n");
+    long page_size_value = sysconf(_SC_PAGESIZE);
+    CHECK(page_size_value > 0, "query page size for reverse mappings succeeds");
+    if (page_size_value <= 0) {
+        return;
+    }
+    size_t page_size = (size_t)page_size_value;
+
+    uint32_t *first = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    uint32_t *second = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                            MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    uint32_t *barrier = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    CHECK(first != MAP_FAILED && second != MAP_FAILED && barrier != MAP_FAILED,
+          "create two shared futex mappings and a process barrier");
+    if (first == MAP_FAILED || second == MAP_FAILED || barrier == MAP_FAILED) {
+        return;
+    }
+
+    uint32_t *lower = (uintptr_t)first < (uintptr_t)second ? first : second;
+    uint32_t *upper = lower == first ? second : first;
+    *lower = 0;
+    *upper = 0;
+    barrier[0] = 0;
+    barrier[1] = 0;
+
+    pid_t pid = fork();
+    CHECK(pid >= 0, "fork reverse-mapping futex worker succeeds");
+    if (pid == 0) {
+        alarm(10);
+        if (swap_shared_mappings(lower, upper, page_size) != 0) {
+            __sync_lock_test_and_set(&barrier[0], UINT32_MAX);
+            _exit(1);
+        }
+        __sync_lock_test_and_set(&barrier[0], 1);
+        while (shared_atomic_load(&barrier[1]) == 0) {
+            sched_yield();
+        }
+        _exit(run_shared_double_queue_ops(lower, upper) == 0 ? 0 : 1);
+    }
+    if (pid < 0) {
+        return;
+    }
+
+    alarm(10);
+    while (shared_atomic_load(&barrier[0]) == 0) {
+        sched_yield();
+    }
+    if (shared_atomic_load(&barrier[0]) != 1) {
+        wait_child_ok(pid, "child creates the reverse shared mappings");
+        alarm(0);
+        goto cleanup;
+    }
+    __sync_lock_test_and_set(&barrier[1], 1);
+    CHECK(run_shared_double_queue_ops(lower, upper) == 0,
+          "parent completes double-queue operations in its mapping order");
+    wait_child_ok(pid,
+                  "child completes double-queue operations in the reverse mapping order");
+    alarm(0);
+
+cleanup:
+    CHECK(munmap(first, page_size) == 0, "munmap first shared futex page succeeds");
+    CHECK(munmap(second, page_size) == 0, "munmap second shared futex page succeeds");
+    CHECK(munmap(barrier, page_size) == 0, "munmap reverse-mapping barrier succeeds");
+}
+
 static void test_futex_requeue_id_collision_regression(void)
 {
     printf("\n--- FUTEX_REQUEUE id collision regression ---\n");
@@ -1219,6 +1349,7 @@ int main(void)
     test_futex_shared_fork();
     test_futex_shared_private_key_fork();
     test_futex_shared_wake_count();
+    test_futex_shared_reverse_mapping_lock_order();
     test_futex_requeue_id_collision_regression();
     test_futex_cmp_requeue_semantics();
     test_futex_bitset();

@@ -286,27 +286,26 @@ impl WaitQueue {
         woke
     }
 
+    fn lock_order(&self, target: &WaitQueue) -> Ordering {
+        core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target))
+    }
+
     /// Serializes a FUTEX_WAKE_OP user RMW with both futex wait queues.
     pub fn wake_op(
         &self,
-        source_order: usize,
         wake_count: usize,
         target: &WaitQueue,
-        target_order: usize,
         wake2_count: usize,
         condition: impl FnOnce() -> Result<bool, FutexAccessError>,
     ) -> Result<usize, FutexAccessError> {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
-        // Use the stable futex addresses for lock ordering.  Ordering queues
-        // by their heap addresses makes coverage and lock acquisition depend
-        // on allocator layout across otherwise identical runs.
-        let ordering = if core::ptr::eq(self, target) {
-            Ordering::Equal
-        } else {
-            source_order.cmp(&target_order)
-        };
+        // `FutexGuard` keeps both entries alive, so their queue addresses are
+        // stable for this operation. Shared futex keys resolve to the same
+        // queue objects across processes even when mapped at different virtual
+        // addresses, making this a process-independent global lock order.
+        let ordering = self.lock_order(target);
         match ordering {
             Ordering::Less => {
                 let mut src = self.inner.lock();
@@ -385,29 +384,21 @@ impl WaitQueue {
 
     /// Serializes a condition check with waking and requeueing waiters from
     /// this queue to `target`.
-    #[allow(clippy::too_many_arguments)]
     pub fn wake_requeue_if(
         &self,
-        source_order: usize,
         wake_count: usize,
         wake_mask: u32,
         requeue_count: usize,
         target_cleanup: FutexWaitCleanup,
         target: &WaitQueue,
-        target_order: usize,
         condition: impl FnOnce() -> Result<bool, FutexAccessError>,
     ) -> Result<Option<usize>, FutexAccessError> {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
-        // See `wake_op`: user futex addresses provide a deterministic order,
-        // while pointer equality preserves the single-queue fast path for
-        // aliased/shared futex keys.
-        let ordering = if core::ptr::eq(self, target) {
-            Ordering::Equal
-        } else {
-            source_order.cmp(&target_order)
-        };
+        // See `wake_op`: queue identity provides one global order for private
+        // and shared futexes, while equality preserves the single-queue path.
+        let ordering = self.lock_order(target);
         let count = match ordering {
             Ordering::Less => {
                 let mut src = self.inner.lock();
@@ -764,6 +755,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lock_order_is_process_independent_for_reversed_shared_mappings() {
+        let first_shared_queue = WaitQueue::new();
+        let second_shared_queue = WaitQueue::new();
+
+        // Process A sees first/second at 0x1000/0x2000, while process B may
+        // map the same objects at 0x2000/0x1000. Neither mapping participates
+        // in the order: both callers compare the shared queue identities.
+        let process_a_order = first_shared_queue.lock_order(&second_shared_queue);
+        let process_b_order = second_shared_queue.lock_order(&first_shared_queue);
+
+        assert_eq!(process_a_order, process_b_order.reverse());
+    }
+
+    #[test]
     fn nofault_failure_is_transactional() {
         let wait_queue = WaitQueue::new();
         let mut wait = Box::pin(WaitIfFuture {
@@ -790,9 +795,7 @@ mod tests {
         });
 
         assert!(matches!(
-            source.wake_op(0x1000, 1, &target, 0x2000, 1, || {
-                Err(FutexAccessError::Fault)
-            }),
+            source.wake_op(1, &target, 1, || { Err(FutexAccessError::Fault) }),
             Err(FutexAccessError::Fault)
         ));
         assert_eq!(source.inner.lock().queue.len(), 1);
@@ -803,16 +806,9 @@ mod tests {
             key: 0x2000,
         };
         assert!(matches!(
-            source.wake_requeue_if(
-                0x1000,
-                1,
-                u32::MAX,
-                1,
-                target_cleanup,
-                &target,
-                0x2000,
-                || Err(FutexAccessError::Retry),
-            ),
+            source.wake_requeue_if(1, u32::MAX, 1, target_cleanup, &target, || {
+                Err(FutexAccessError::Retry)
+            }),
             Err(FutexAccessError::Retry)
         ));
         assert_eq!(source.inner.lock().queue.len(), 1);
@@ -825,11 +821,9 @@ mod tests {
             || {
                 attempts.set(attempts.get() + 1);
                 if attempts.get() == 1 {
-                    source.wake_op(0x1000, 0, &target, 0x2000, 0, || {
-                        Err(FutexAccessError::Fault)
-                    })
+                    source.wake_op(0, &target, 0, || Err(FutexAccessError::Fault))
                 } else {
-                    source.wake_op(0x1000, 0, &target, 0x2000, 0, || Ok(false))
+                    source.wake_op(0, &target, 0, || Ok(false))
                 }
             },
             || {

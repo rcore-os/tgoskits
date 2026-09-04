@@ -342,13 +342,11 @@ pub fn sys_futex(
                     };
 
                     source.wq.wake_requeue_if(
-                        uaddr.addr(),
                         wake_count,
                         u32::MAX,
                         requeue_count,
                         target_cleanup.clone(),
                         &target.wq,
-                        uaddr2.addr(),
                         || {
                             if op.command == FutexCommand::CmpRequeue {
                                 futex_value_matches_nofault(uaddr, value3)
@@ -383,14 +381,9 @@ pub fn sys_futex(
                 || {
                     let source = futex_table.get_or_insert(&key);
                     let target = table2.get_or_insert(&key2);
-                    source.wq.wake_op(
-                        uaddr.addr(),
-                        wake_count,
-                        &target.wq,
-                        uaddr2.addr(),
-                        wake2_count,
-                        || futex_atomic_op_in_user_nofault(uaddr2, &operation),
-                    )
+                    source.wq.wake_op(wake_count, &target.wq, wake2_count, || {
+                        futex_atomic_op_in_user_nofault(uaddr2, &operation)
+                    })
                 },
                 || fault_in_user_u32_write(uaddr2),
             )?;
