@@ -84,6 +84,7 @@ struct CacheTestFile {
     read_observer: StdMutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     fail_next_set_len: AtomicBool,
     fail_next_write: AtomicBool,
+    fail_next_range_operation: AtomicBool,
     filesystem: &'static CacheTestFilesystem,
 }
 
@@ -103,6 +104,7 @@ impl CacheTestFile {
             read_observer: StdMutex::new(None),
             fail_next_set_len: AtomicBool::new(false),
             fail_next_write: AtomicBool::new(false),
+            fail_next_range_operation: AtomicBool::new(false),
             filesystem,
         }
     }
@@ -113,6 +115,11 @@ impl CacheTestFile {
 
     fn fail_next_write(&self) {
         self.fail_next_write.store(true, Ordering::Release);
+    }
+
+    fn fail_next_range_operation(&self) {
+        self.fail_next_range_operation
+            .store(true, Ordering::Release);
     }
 
     fn set_read_observer(&self, observer: Option<Arc<dyn Fn() + Send + Sync>>) {
@@ -230,6 +237,9 @@ impl FileNodeOps for CacheTestFile {
     }
 
     fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> VfsResult<()> {
+        if self.fail_next_range_operation.swap(false, Ordering::AcqRel) {
+            return Err(VfsError::Io);
+        }
         let offset = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
         let len = usize::try_from(len).map_err(|_| VfsError::InvalidInput)?;
         let end = offset.checked_add(len).ok_or(VfsError::InvalidInput)?;
@@ -409,17 +419,21 @@ fn partial_cached_write_reads_backing_without_cache_index_lock() {
         let cached = reopen_cached_file(backing.clone());
         let called = Arc::new(AtomicBool::new(false));
         let observed_unlocked = Arc::new(AtomicBool::new(false));
+        let observed_layout_locked = Arc::new(AtomicBool::new(false));
         let callback_called = called.clone();
         let callback_unlocked = observed_unlocked.clone();
+        let callback_layout_locked = observed_layout_locked.clone();
         let shared = Arc::downgrade(&cached.shared);
         backing.set_read_observer(Some(Arc::new(move || {
             callback_called.store(true, Ordering::Release);
-            callback_unlocked.store(
-                shared
-                    .upgrade()
-                    .is_some_and(|shared| shared.page_cache_lock_is_free_for_test()),
-                Ordering::Release,
-            );
+            if let Some(shared) = shared.upgrade() {
+                callback_unlocked
+                    .store(shared.page_cache_lock_is_free_for_test(), Ordering::Release);
+                callback_layout_locked.store(
+                    !shared.mapping_layout_lock_is_free_for_test(),
+                    Ordering::Release,
+                );
+            }
         })));
 
         assert_eq!(cached.write_at(&[0xc3][..], 1).unwrap(), 1);
@@ -429,6 +443,10 @@ fn partial_cached_write_reads_backing_without_cache_index_lock() {
         assert!(
             observed_unlocked.load(Ordering::Acquire),
             "backing I/O must not run while the page-cache index is locked"
+        );
+        assert!(
+            observed_layout_locked.load(Ordering::Acquire),
+            "buffered cache population must hold the mapping-layout boundary"
         );
     });
 }
@@ -600,6 +618,31 @@ fn failed_shrink_restores_cached_and_backing_tail() {
 }
 
 #[test]
+fn failed_shrink_after_mapping_retirement_restores_dirty_cached_tail() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE * 2]));
+        let cached = reopen_cached_file(backing.clone());
+        assert_eq!(cached.write_at(&[0x7c][..], PAGE_SIZE as u64).unwrap(), 1);
+        let endpoint = test_mapping_endpoint(|event| match event {
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+            CacheMappingEvent::WritebackProtect(_) => CacheMappingResult::Protected,
+        });
+        cached.install_mapping_endpoint(&endpoint).unwrap();
+        backing.fail_next_set_len();
+
+        assert_eq!(cached.set_len(PAGE_SIZE as u64), Err(VfsError::Io));
+        assert_eq!(cached.len(), (PAGE_SIZE * 2) as u64);
+        assert!(cached.is_page_cached(1));
+        let mut byte = [0];
+        assert_eq!(cached.read_at(&mut byte[..], PAGE_SIZE as u64).unwrap(), 1);
+        assert_eq!(byte, [0x7c]);
+
+        cached.writeback().unwrap();
+        assert_eq!(backing.state.lock().unwrap().physical_data[PAGE_SIZE], 0x7c);
+    });
+}
+
+#[test]
 fn failed_extension_zero_write_rolls_back_backing_length() {
     with_test_page_provider(true, |_| {
         let backing = Arc::new(CacheTestFile::new(vec![0xa5; PAGE_SIZE]));
@@ -627,6 +670,10 @@ fn truncate_notifies_discard_listeners_without_cached_file_locks() {
         let endpoint = test_mapping_endpoint(move |event| {
             assert!(matches!(event, CacheMappingEvent::Evict(_)));
             assert_eq!(event.page().page_number(), 1);
+            assert!(
+                !shared.mapping_layout_lock_is_free_for_test(),
+                "truncate must retain its Linux-style invalidate boundary"
+            );
             observed.store(
                 shared.io_lock_is_free_for_test() && shared.page_cache_lock_is_free_for_test(),
                 Ordering::Release,
@@ -735,6 +782,39 @@ fn rejected_truncate_preserves_cache_and_backing_length() {
 }
 
 #[test]
+fn partial_mapping_retirement_failure_restores_the_whole_cache_batch() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0xa5; PAGE_SIZE * 3]));
+        let cached = reopen_cached_file(backing.clone());
+        drop(cached.pin_page_or_insert(1).unwrap());
+        drop(cached.pin_page_or_insert(2).unwrap());
+
+        let retired_page_two = Arc::new(AtomicBool::new(false));
+        let observed_retirement = retired_page_two.clone();
+        let endpoint = test_mapping_endpoint(move |event| match event {
+            CacheMappingEvent::Evict(page) if page.page_number() == 2 => {
+                observed_retirement.store(true, Ordering::Release);
+                CacheMappingResult::Retired
+            }
+            CacheMappingEvent::Evict(page) if page.page_number() == 1 => CacheMappingResult::Busy,
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Failed,
+            CacheMappingEvent::WritebackProtect(_) => CacheMappingResult::Protected,
+        });
+        cached.install_mapping_endpoint(&endpoint).unwrap();
+
+        assert_eq!(
+            cached.set_len(PAGE_SIZE as u64),
+            Err(VfsError::ResourceBusy)
+        );
+        assert!(retired_page_two.load(Ordering::Acquire));
+        assert!(cached.is_page_cached(1));
+        assert!(cached.is_page_cached(2));
+        assert_eq!(cached.len(), (PAGE_SIZE * 3) as u64);
+        assert_eq!(backing.metadata().unwrap().size, (PAGE_SIZE * 3) as u64);
+    });
+}
+
+#[test]
 fn mapping_epoch_overflow_precedes_truncate_side_effects() {
     with_test_page_provider(true, |_| {
         let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2]));
@@ -799,96 +879,61 @@ fn range_operation_blocks_fault_publication_after_cache_snapshot() {
 }
 
 #[test]
-fn range_operation_restarts_after_buffered_read_populates_cache() {
+fn invalid_shifted_ranges_fail_before_mapping_retirement() {
     with_test_page_provider(true, |_| {
-        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2]));
-        let cached = reopen_cached_file(backing);
-        assert_eq!(cached.write_at(&[0xa5][..], 0).unwrap(), 1);
-        assert!(cached.is_page_cached(0));
-        assert!(!cached.is_page_cached(1));
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 3]));
+        let cached = reopen_cached_file(backing.clone());
+        drop(cached.pin_page_or_insert(2).unwrap());
 
-        let raced = Arc::new(AtomicBool::new(false));
-        let callback_raced = raced.clone();
-        let racing_read = cached.clone();
-        let endpoint = test_mapping_endpoint(move |event| match event {
-            CacheMappingEvent::WritebackProtect(_) => {
-                if !callback_raced.swap(true, Ordering::AcqRel) {
-                    let mut contents = vec![0; PAGE_SIZE];
-                    assert_eq!(
-                        racing_read
-                            .read_at(contents.as_mut_slice(), PAGE_SIZE as u64)
-                            .unwrap(),
-                        PAGE_SIZE
-                    );
-                    assert!(contents.iter().all(|byte| *byte == 0x5a));
-                    assert!(racing_read.is_page_cached(1));
-                }
-                CacheMappingResult::Protected
-            }
-            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed_events = events.clone();
+        let endpoint = test_mapping_endpoint(move |_| {
+            observed_events.fetch_add(1, Ordering::AcqRel);
+            CacheMappingResult::Retired
         });
         cached.install_mapping_endpoint(&endpoint).unwrap();
 
-        cached
-            .operate_range(0, (PAGE_SIZE * 2) as u64, FileRangeOperation::PunchHole)
-            .unwrap();
-
-        assert!(raced.load(Ordering::Acquire));
-        let mut contents = vec![0xff; PAGE_SIZE * 2];
         assert_eq!(
-            cached.read_at(contents.as_mut_slice(), 0).unwrap(),
-            contents.len()
+            cached.operate_range(
+                (PAGE_SIZE * 2) as u64,
+                PAGE_SIZE as u64,
+                FileRangeOperation::CollapseRange,
+            ),
+            Err(VfsError::InvalidInput)
         );
-        assert!(
-            contents.iter().all(|byte| *byte == 0),
-            "a page populated after the first snapshot must not retain stale backing data"
-        );
+        assert_eq!(events.load(Ordering::Acquire), 0);
+        assert!(cached.is_page_cached(2));
+        assert_eq!(cached.len(), (PAGE_SIZE * 3) as u64);
+        assert_eq!(backing.metadata().unwrap().size, (PAGE_SIZE * 3) as u64);
     });
 }
 
 #[test]
-fn range_operation_restarts_after_buffered_write_populates_cache() {
+fn failed_shifted_backing_operation_restores_retired_cache_owners() {
     with_test_page_provider(true, |_| {
-        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2]));
-        let cached = reopen_cached_file(backing);
-        assert_eq!(cached.write_at(&[0xa5][..], 0).unwrap(), 1);
-        assert!(cached.is_page_cached(0));
-        assert!(!cached.is_page_cached(1));
-
-        let raced = Arc::new(AtomicBool::new(false));
-        let callback_raced = raced.clone();
-        let racing_write = cached.clone();
-        let endpoint = test_mapping_endpoint(move |event| match event {
-            CacheMappingEvent::WritebackProtect(_) => {
-                if !callback_raced.swap(true, Ordering::AcqRel) {
-                    assert_eq!(
-                        racing_write
-                            .write_at(&[0xc3][..], PAGE_SIZE as u64)
-                            .unwrap(),
-                        1
-                    );
-                    assert!(racing_write.is_page_cached(1));
-                }
-                CacheMappingResult::Protected
-            }
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 3]));
+        let cached = reopen_cached_file(backing.clone());
+        drop(cached.pin_page_or_insert(1).unwrap());
+        drop(cached.pin_page_or_insert(2).unwrap());
+        let endpoint = test_mapping_endpoint(|event| match event {
             CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+            CacheMappingEvent::WritebackProtect(_) => CacheMappingResult::Protected,
         });
         cached.install_mapping_endpoint(&endpoint).unwrap();
+        backing.fail_next_range_operation();
 
-        cached
-            .operate_range(0, (PAGE_SIZE * 2) as u64, FileRangeOperation::PunchHole)
-            .unwrap();
-
-        assert!(raced.load(Ordering::Acquire));
-        let mut contents = vec![0xff; PAGE_SIZE * 2];
         assert_eq!(
-            cached.read_at(contents.as_mut_slice(), 0).unwrap(),
-            contents.len()
+            cached.operate_range(
+                PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+                FileRangeOperation::CollapseRange,
+            ),
+            Err(VfsError::Io)
         );
-        assert!(
-            contents.iter().all(|byte| *byte == 0),
-            "a dirty page inserted after the first snapshot must be covered by the range update"
-        );
+        assert!(cached.is_page_cached(1));
+        assert!(cached.is_page_cached(2));
+        assert_eq!(cached.len(), (PAGE_SIZE * 3) as u64);
+        assert_eq!(backing.metadata().unwrap().size, (PAGE_SIZE * 3) as u64);
     });
 }
 

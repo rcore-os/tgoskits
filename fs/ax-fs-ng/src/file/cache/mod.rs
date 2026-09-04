@@ -22,7 +22,10 @@ use readahead::ReadAheadState;
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files};
 
 use super::page::PageCache;
-use crate::os::{memory::PAGE_SIZE, sync::SleepMutex as Mutex};
+use crate::os::{
+    memory::PAGE_SIZE,
+    sync::{SleepMutex as Mutex, SleepMutexGuard},
+};
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
 
@@ -204,7 +207,9 @@ struct InvalidateCleanOutcome {
 ///
 /// One live endpoint is installed per [`CachedFileIdentity`].  Implementations
 /// must not enter cached I/O from `publish`; the cache invokes it without any
-/// page-cache, cached-I/O, or endpoint-publication lock held.
+/// page-cache, cached-I/O, or endpoint-publication lock held. A mapping-layout
+/// serialization guard may remain held so buffered I/O cannot republish stale
+/// cache contents before the event either commits or rolls back.
 pub trait CacheMappingEndpoint: Send + Sync {
     fn publish(&self, event: CacheMappingEvent) -> CacheMappingResult;
 }
@@ -247,16 +252,20 @@ impl Drop for CachedPagePin {
     }
 }
 
-/// Serializes a file mapping-layout change against new mmap PTE publication.
+/// Serializes a file mapping-layout change against buffered cache publication.
 ///
-/// This cannot be the cached-I/O mutex: an invalidator enters an address space,
-/// while the fault path reaches cached I/O from that address space. Faults
-/// instead observe this publication barrier and retry after it is released.
-struct MappingUpdateGuard {
-    shared: Arc<CachedFileShared>,
+/// Linux uses `address_space::invalidate_lock` for the same boundary: buffered
+/// cache population takes the shared side while truncate and hole-punch take
+/// the exclusive side. `ax-sync` does not yet provide a sleepable RW lock, so
+/// cached I/O and layout mutation use this exclusive sleepable lock. Faults do
+/// not acquire it while holding address-space state; they observe the atomic
+/// publication barrier and retry instead.
+struct MappingUpdateGuard<'a> {
+    shared: &'a CachedFileShared,
+    _layout: SleepMutexGuard<'a, ()>,
 }
 
-impl Drop for MappingUpdateGuard {
+impl Drop for MappingUpdateGuard<'_> {
     fn drop(&mut self) {
         self.shared
             .mapping_update_in_progress
@@ -267,6 +276,7 @@ impl Drop for MappingUpdateGuard {
 struct CachedFileShared {
     identity: CachedFileIdentity,
     page_cache: Mutex<LruCache<u32, PageCache>>,
+    mapping_layout_lock: Mutex<()>,
     io_lock: Mutex<()>,
     mapping_endpoint: Mutex<Option<Weak<dyn CacheMappingEndpoint>>>,
     backing: Option<FileNode>,
@@ -286,6 +296,7 @@ impl CachedFileShared {
             page_cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(DISK_PAGE_CACHE_CAP).unwrap(),
             )),
+            mapping_layout_lock: Mutex::new(()),
             io_lock: Mutex::new(()),
             mapping_endpoint: Mutex::new(None),
             backing: Some(backing),
@@ -300,6 +311,7 @@ impl CachedFileShared {
         Self {
             identity: CachedFileIdentity::allocate(),
             page_cache: Mutex::new(LruCache::unbounded()),
+            mapping_layout_lock: Mutex::new(()),
             io_lock: Mutex::new(()),
             mapping_endpoint: Mutex::new(None),
             backing: None,
@@ -399,6 +411,11 @@ impl CachedFileShared {
     #[cfg(test)]
     fn io_lock_is_free_for_test(&self) -> bool {
         self.io_lock.try_lock().is_some()
+    }
+
+    #[cfg(test)]
+    fn mapping_layout_lock_is_free_for_test(&self) -> bool {
+        self.mapping_layout_lock.try_lock().is_some()
     }
 
     #[cfg(test)]
@@ -959,13 +976,15 @@ impl CachedFile {
         self.pin_cached_page(pn)
     }
 
-    fn begin_mapping_update(&self) -> VfsResult<MappingUpdateGuard> {
+    fn begin_mapping_update(&self) -> VfsResult<MappingUpdateGuard<'_>> {
+        let layout = self.shared.mapping_layout_lock.lock();
         self.shared
             .mapping_update_in_progress
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| VfsError::ResourceBusy)?;
         Ok(MappingUpdateGuard {
-            shared: self.shared.clone(),
+            shared: &self.shared,
+            _layout: layout,
         })
     }
 
@@ -1003,6 +1022,7 @@ impl CachedFile {
 
     /// Reads data from the file at `offset` into `dst`.
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, offset: u64) -> VfsResult<usize> {
+        let _layout = self.shared.mapping_layout_lock.lock();
         let len = self.shared.len();
         let end = offset.saturating_add(dst.remaining_mut() as u64).min(len);
         if end <= offset {
@@ -1100,12 +1120,14 @@ impl CachedFile {
 
     /// Writes `buf` to the file at `offset`.
     pub fn write_at(&self, buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
+        let _layout = self.shared.mapping_layout_lock.lock();
         let _io = self.shared.io_lock.lock();
         self.write_at_locked(buf, offset)
     }
 
     /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
+        let _layout = self.shared.mapping_layout_lock.lock();
         let _io = self.shared.io_lock.lock();
         let len = self.shared.len();
         self.write_at_locked(buf, len)
