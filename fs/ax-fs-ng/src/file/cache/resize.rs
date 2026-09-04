@@ -483,7 +483,7 @@ impl CachedFile {
                 })
                 .unwrap_or(CacheMappingResult::Failed);
             match result {
-                CacheMappingResult::Retired => drop(page),
+                CacheMappingResult::Retired => page.retire_invalidated(),
                 CacheMappingResult::Busy | CacheMappingResult::Quarantined => {
                     retry.push((page_number, page));
                 }

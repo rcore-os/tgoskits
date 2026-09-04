@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Context,
     time::Duration,
 };
@@ -637,6 +637,42 @@ fn truncate_notifies_discard_listeners_without_cached_file_locks() {
 
         cached.set_len(PAGE_SIZE as u64).unwrap();
         assert!(observed_unlocked.load(Ordering::Acquire));
+    });
+}
+
+#[test]
+fn successful_truncate_retires_dirty_tail_as_invalidated() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE * 2]));
+        let cached = reopen_cached_file(backing);
+        assert_eq!(
+            cached.write_at(&[0xa5][..], PAGE_SIZE as u64).unwrap(),
+            1,
+            "the discarded tail page must start dirty"
+        );
+
+        let dirty_drops = Arc::new(AtomicUsize::new(0));
+        let dirty_drop_observer = dirty_drops.clone();
+        cached
+            .shared
+            .page_cache
+            .lock()
+            .get_mut(&1)
+            .expect("the dirty tail page must remain indexed")
+            .observe_dirty_drop(dirty_drop_observer);
+        let endpoint = test_mapping_endpoint(|event| match event {
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+            CacheMappingEvent::WritebackProtect(_) => CacheMappingResult::Protected,
+        });
+        cached.install_mapping_endpoint(&endpoint).unwrap();
+
+        cached.set_len(PAGE_SIZE as u64).unwrap();
+
+        assert_eq!(
+            dirty_drops.load(Ordering::Acquire),
+            0,
+            "a page invalidated by truncate must not reach Drop as unflushed dirty data"
+        );
     });
 }
 
