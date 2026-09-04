@@ -218,7 +218,7 @@ fn poll_nfds_validation_rules_hold_for_test() -> bool {
         && always_reported.bits() == (IoEvents::ERR | IoEvents::HUP).bits()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use axpoll::IoEvents;
 
@@ -246,7 +246,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(axtest))]
     #[test]
     fn poll_nfds_validation_rules_hold() {
         assert!(super::poll_nfds_validation_rules_hold_for_test());
