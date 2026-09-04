@@ -902,7 +902,11 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         current: &ThreadHandle,
     ) -> Result<YieldOutcome, TaskError> {
-        self.yield_current_owner(cpu, current.runtime_core_arc(), OwnerRqEntry::IrqSave)
+        self.yield_current_owner(
+            cpu,
+            Some(current.runtime_core_arc().as_ref()),
+            OwnerRqEntry::IrqSave,
+        )
     }
 
     /// Yields while the runtime owns the IRQ-off scheduler baton.
@@ -913,15 +917,14 @@ impl TaskSystem {
     pub(crate) unsafe fn yield_current_in_scheduler_frame(
         &self,
         cpu: Pin<&mut CpuLocal>,
-        current: &CurrentThreadRef,
     ) -> Result<YieldOutcome, TaskError> {
-        self.yield_current_owner(cpu, current.runtime_core(), OwnerRqEntry::SchedulerFrame)
+        self.yield_current_owner(cpu, None, OwnerRqEntry::SchedulerFrame)
     }
 
     fn yield_current_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
-        current: &ThreadCore,
+        expected_current: Option<&ThreadCore>,
         rq_entry: OwnerRqEntry,
     ) -> Result<YieldOutcome, TaskError> {
         #[cfg(feature = "qperf-metrics")]
@@ -939,7 +942,6 @@ impl TaskSystem {
         if validate_owner {
             self.ensure_owner_cpu_registration_online(&cpu)?;
         }
-        let previous_core_hint = current;
         // Probe rq ownership before taking the current task lock. Linux's
         // ordinary sched_yield path holds only rq->lock; task state is needed
         // only for migration, Deadline, or other task-control work.
@@ -949,14 +951,13 @@ impl TaskSystem {
         let mut transaction = unsafe { rq_entry.begin(self, remote) };
         #[cfg(feature = "qperf-metrics")]
         let rq_begin_finished_ns = task_runtime::monotonic_now().as_nanos();
-        if transaction
-            .current_core_ref()
-            .is_none_or(|current| !core::ptr::eq(current, previous_core_hint))
-        {
+        let previous_core = transaction.current_core_ref().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
+        });
+        if expected_current.is_some_and(|expected| !core::ptr::eq(expected, previous_core)) {
             task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
         }
-        if let Some(schedule_out) =
-            self.prepare_owner_rq_schedule_out(&transaction, previous_core_hint)
+        if let Some(schedule_out) = self.prepare_owner_rq_schedule_out(&transaction, previous_core)
         {
             #[cfg(feature = "qperf-metrics")]
             {
@@ -981,10 +982,13 @@ impl TaskSystem {
         }
         // Preserve requests merged by the rq-owned probe while restoring the
         // full p->pi_lock -> rq order for exceptional task-control work.
+        let previous_core = transaction.current_core().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
+        });
         let request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         transaction.commit();
 
-        self.yield_current_task_control(cpu, previous_core_hint, rq_entry, remote, request)
+        self.yield_current_task_control(cpu, previous_core.as_ref(), rq_entry, remote, request)
     }
 
     /// Handles the uncommon yield path that must serialize task-local state.

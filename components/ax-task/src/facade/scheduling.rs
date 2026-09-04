@@ -147,7 +147,6 @@ pub fn yield_current_cpu() -> Result<(), TaskError> {
     )?;
     #[cfg(feature = "qperf-metrics")]
     let scheduler_frame_entered_ns = task_runtime::monotonic_now().as_nanos();
-    let current = scheduler_frame.current_thread_ref()?;
     let system = scheduler_frame.task_system();
     #[cfg(feature = "qperf-metrics")]
     let scheduler_dispatch_started_ns;
@@ -158,7 +157,7 @@ pub fn yield_current_cpu() -> Result<(), TaskError> {
             scheduler_dispatch_started_ns = task_runtime::monotonic_now().as_nanos();
         }
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
-        unsafe { system.yield_current_in_scheduler_frame(cpu.as_mut(), &current)? }
+        unsafe { system.yield_current_in_scheduler_frame(cpu.as_mut())? }
     };
     #[cfg(feature = "qperf-metrics")]
     let scheduler_dispatch_finished_ns = task_runtime::monotonic_now().as_nanos();

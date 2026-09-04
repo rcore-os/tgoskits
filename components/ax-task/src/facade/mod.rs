@@ -374,14 +374,12 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
         // exposing an IRQ-enabled validation window here could let IRQ-return
         // scheduling migrate the caller between publishing the mask and yielding.
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
-        unsafe { system.yield_current_in_scheduler_frame(cpu.as_mut(), &current) }.unwrap_or_else(
-            |_| {
-                // Affinity publication cannot be rolled back safely after another CPU
-                // may have observed the migration target. Scheduler commit failures are
-                // therefore runtime invariants, like failures after exit publication.
-                task_runtime::fatal_invariant(0x4558_0021, current.id().as_u64() as usize);
-            },
-        )
+        unsafe { system.yield_current_in_scheduler_frame(cpu.as_mut()) }.unwrap_or_else(|_| {
+            // Affinity publication cannot be rolled back safely after another CPU
+            // may have observed the migration target. Scheduler commit failures are
+            // therefore runtime invariants, like failures after exit publication.
+            task_runtime::fatal_invariant(0x4558_0021, current.id().as_u64() as usize);
+        })
     };
     let decision = outcome.decision().unwrap_or_else(|| {
         task_runtime::fatal_invariant(0x4558_0022, current.id().as_u64() as usize)
