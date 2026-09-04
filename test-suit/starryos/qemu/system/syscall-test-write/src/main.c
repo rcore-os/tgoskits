@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include <fcntl.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -40,6 +41,16 @@ int main(void)
         memset(buf, 0, sizeof(buf));
         CHECK_RET(read(fd, buf, msg_len), msg_len, "read written bytes back");
         CHECK(memcmp(buf, msg, msg_len) == 0, "written data is preserved");
+
+        /*
+         * A regular writable file reaches user-buffer validation without a
+         * descriptor-specific count check taking precedence. SIZE_MAX cannot
+         * form a Rust slice, so write(2) must fail with EFAULT instead of
+         * failing while constructing the layout.
+         */
+        volatile size_t oversized_len = SIZE_MAX;
+        CHECK_ERR(write(fd, msg, oversized_len), EFAULT,
+                  "oversized write length returns EFAULT without trapping the kernel");
         CHECK_RET(close(fd), 0, "close write fixture");
 
         struct stat st;
