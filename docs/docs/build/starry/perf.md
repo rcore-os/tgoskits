@@ -5,7 +5,7 @@ sidebar_label: "性能剖析"
 
 # StarryOS 性能剖析
 
-`cargo xtask starry perf` 构建 StarryOS 并通过 qperf 进行性能剖析，输出火焰图（SVG/HTML/Folded）、Pprof 或 callchain 数据。这是 StarryOS 独有的命令，[ArceOS](../arceos/overview) 和 [Axvisor](../axvisor/overview) 没有。
+`cargo xtask starry perf` 构建 StarryOS 并通过 qperf 进行性能剖析，输出火焰图（SVG/HTML/Folded）、Pprof 或 callchain 数据。这是 StarryOS 独有的命令，[ArceOS](../arceos/overview) 和 [Axvisor](../axvisor/overview) 没有。qperf 是运行在宿主 QEMU 中的 TCG translation-block profiler，不是 guest 的 Linux `perf_event_open(2)` 或 PMUv3；AArch64 guest perf 的 ABI、计数器、采样 ring 和 upstream `perf` 验证由 Starry system tests 与 `apps/starry/linux-perf` 承担。
 
 目前支持 `riscv64`、`loongarch64` 和 `x86_64`。x86_64 使用 StarryOS 的 q35/UEFI
 启动配置，并通过 Ostool 的固定版本和 SHA-256 校验流程复用公共 OVMF 缓存。需要隔离缓存时，
@@ -16,6 +16,8 @@ qperf 工具和报告脚本统一通过 `apps/common/prebuild-harness-kit.sh` �
 harness kit；`cargo xtask starry perf` 与 `apps/qperf`、`apps/OScope-harness` 复用同一
 checkout。需要使用预先准备的只读 checkout 时，设置 `TGOSKIT_HARNESS_KIT_DIR`；该
 目录必须是文档所列固定提交的 Git checkout，且包含 qperf 与报告脚本。
+
+若目标是验证 AArch64 用户态程序能否直接执行 `perf stat`、`perf record` 或 `perf report`，不要使用本命令。QEMU TCG 只能作为 guest perf ABI 与控制流门禁，真实 cache、branch、stall 和 big.LITTLE 行为需要在 OrangePi 5 Plus 上运行 `linux-perf/board` app。
 
 ## 1. 剖析流程
 
