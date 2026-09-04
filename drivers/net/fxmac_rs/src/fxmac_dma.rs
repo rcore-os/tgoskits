@@ -1271,16 +1271,21 @@ fn CleanDmaTxdescs(instance_p: &mut FXmac) {
 
 fn FreeOnlyTxPbufs(instance_p: &mut FXmac) {
     warn!("Free all TX DMA pbuf");
-    for index in 0..FXMAX_TX_PBUFS_LENGTH {
-        if (instance_p.lwipport.buffer.tx_pbufs_storage[index] != 0) {
-            let pbuf = instance_p.lwipport.buffer.tx_pbufs_storage[index];
+    for pbuf in instance_p
+        .lwipport
+        .buffer
+        .tx_pbufs_storage
+        .iter_mut()
+        .take(FXMAX_TX_PBUFS_LENGTH)
+    {
+        if *pbuf != 0 {
             let pages = (FXMAC_MAX_FRAME_SIZE as usize).div_ceil(PAGE_SIZE);
             ax_crate_interface::call_interface!(crate::KernelFunc::dma_free_coherent(
-                pbuf as usize,
+                *pbuf as usize,
                 pages
             ));
 
-            instance_p.lwipport.buffer.tx_pbufs_storage[index] = 0;
+            *pbuf = 0;
         }
     }
 }

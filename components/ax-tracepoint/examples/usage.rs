@@ -85,24 +85,22 @@ mod tracepoint_example {
         TP_kops(Kops),
         TP_system(tracepoint_test),
         TP_PROTO(a: u32, b: &TestS),
-        TP_STRUCT__entry{
+        TP_STRUCT__entry {
             a: u32,
-            pad:[u8;4],
+            pad: [u8; 4],
             b: u32
         },
-        TP_fast_assign{
+        TP_fast_assign {
             a: a,
             pad: [0; 4],
             b: *b.b.deref().deref()
         },
         TP_ident(__entry),
-        TP_printk(
-            {
-                let arg1 = __entry.a;
-                let arg2 = __entry.b;
-                format!("Hello from tracepoint! a={:?}, b={}", arg1, arg2)
-            }
-        )
+        TP_printk({
+            let arg1 = __entry.a;
+            let arg2 = __entry.b;
+            format!("Hello from tracepoint! a={:?}, b={}", arg1, arg2)
+        })
     );
 
     define_event_trace!(
@@ -110,16 +108,13 @@ mod tracepoint_example {
         TP_kops(Kops),
         TP_system(tracepoint_test),
         TP_PROTO(a: u32, b: u32),
-        TP_STRUCT__entry{
-            a: u32,
-            b: u32
-        },
-        TP_fast_assign{
-            a:a,
-            b:b
-        },
+        TP_STRUCT__entry { a: u32, b: u32 },
+        TP_fast_assign { a: a, b: b },
         TP_ident(__entry),
-        TP_printk(format_args!("Hello from tracepoint! a={}, b={}", __entry.a, __entry.b))
+        TP_printk(format_args!(
+            "Hello from tracepoint! a={}, b={}",
+            __entry.a, __entry.b
+        ))
     );
 
     pub fn test_trace(a: u32, b: u32) {

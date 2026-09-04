@@ -509,8 +509,7 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
     ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
         let mut mappings = BTreeMap::new();
         let direct_limit = logical_limit.min(DIRECT_BLOCKS as u64) as usize;
-        for logical in 0..direct_limit {
-            let pointer = inode.i_block[logical];
+        for (logical, &pointer) in inode.i_block.iter().enumerate().take(direct_limit) {
             if pointer != 0 {
                 let physical = AbsoluteBN::from(pointer);
                 self.validate_data_block(physical)?;

@@ -16,7 +16,7 @@ use ax_runtime::hal::{
     cpu::{
         UserAccessError, UserAtomicError, UserAtomicU32Op,
         asm::user_copy,
-        trap::{PageFaultFlags, page_fault_handler},
+        trap::PageFaultFlags,
         user_atomic_u32, user_read_u32,
     },
     paging::MappingFlags,
@@ -384,8 +384,7 @@ pub(crate) use nullable;
 /// `node_vmstat_pgfault`.
 pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
-#[page_fault_handler]
-fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
+pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
 
     #[cfg(feature = "stack-guard-page")]

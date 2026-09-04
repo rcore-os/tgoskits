@@ -700,12 +700,12 @@ impl QueueTransferDescriptor {
         }
 
         let first_page = dma_addr & !0xfff;
-        for index in 0..5 {
+        for (index, buffer) in self.buffer.iter_mut().enumerate() {
             let page = first_page + (index as u64 * 4096);
             if page >= dma_addr + len as u64 {
                 break;
             }
-            self.buffer[index] = if index == 0 {
+            *buffer = if index == 0 {
                 dma_addr as u32
             } else {
                 page as u32

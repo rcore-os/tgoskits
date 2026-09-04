@@ -9,10 +9,11 @@ const ARCH_TRAPS: [(&str, &str); 4] = [
     ("loongarch64/trap.rs", "loongarch64_trap_handler"),
 ];
 
-#[ax_cpu::trap::breakpoint_handler]
 fn typed_breakpoint_hook(_frame: &mut ax_cpu::KernelTrapFrame<'_>) -> bool {
     false
 }
+
+const _: ax_cpu::trap::BreakpointHandler = typed_breakpoint_hook;
 
 #[test]
 fn assembly_frames_are_private_types_not_public_aliases() {

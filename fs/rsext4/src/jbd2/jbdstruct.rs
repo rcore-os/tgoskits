@@ -454,8 +454,8 @@ impl JournalSuperBlock {
         bytes[81..84].copy_from_slice(&self.s_padding2);
 
         let mut off = 84usize;
-        for i in 0..42 {
-            bytes[off..off + 4].copy_from_slice(&self.s_padding[i].to_be_bytes());
+        for padding in &self.s_padding {
+            bytes[off..off + 4].copy_from_slice(&padding.to_be_bytes());
             off += 4;
         }
 
@@ -654,8 +654,8 @@ impl DiskFormat for CommitHeader {
         bytes[14..16].copy_from_slice(&self.h_padding);
 
         let mut off = 16usize;
-        for i in 0..8 {
-            bytes[off..off + 4].copy_from_slice(&self.h_chksum[i].to_be_bytes());
+        for checksum in &self.h_chksum {
+            bytes[off..off + 4].copy_from_slice(&checksum.to_be_bytes());
             off += 4;
         }
 

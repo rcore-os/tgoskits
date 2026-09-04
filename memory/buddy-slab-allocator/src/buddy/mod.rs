@@ -13,9 +13,9 @@ pub use page_meta::{PFN_NONE, PageFlags, PageMeta};
 use page_meta::{free_list_push, free_list_remove};
 
 use crate::{
-    align_up, eii,
+    align_up,
     error::{AllocError, AllocResult},
-    is_aligned,
+    interface, is_aligned,
 };
 
 /// Maximum buddy order. With 4 KiB pages this gives 2^20 × 4 KiB = 4 GiB blocks.
@@ -662,7 +662,7 @@ impl<const PAGE_SIZE: usize> BuddyAllocator<PAGE_SIZE> {
                     continue;
                 };
                 let addr = section.heap_start + target_pfn * PAGE_SIZE;
-                let phys = eii::virt_to_phys(addr);
+                let phys = interface::virt_to_phys(addr);
                 let block_bytes = (1usize << alloc_order) * PAGE_SIZE;
                 if phys + block_bytes <= DMA32_LIMIT && addr.is_multiple_of(align) {
                     unsafe {
