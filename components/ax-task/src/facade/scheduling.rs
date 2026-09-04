@@ -252,9 +252,13 @@ pub(super) fn execute_switch_plan(
         task_runtime::fatal_invariant(1, decision.next().as_u64() as usize);
     };
     let next = decision.next_endpoint();
-    if previous.context().is_none() || next.context().is_none() {
-        task_runtime::fatal_invariant(2, next.thread().as_u64() as usize);
-    }
+    let plan = RuntimeSwitchPlan::new(
+        previous.context(),
+        previous.address_space(),
+        next.context(),
+        next.address_space(),
+    )
+    .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.thread().as_u64() as usize));
     #[cfg(feature = "qperf-metrics")]
     let switch_validate_finished_ns = task_runtime::monotonic_now().as_nanos();
     // Match Linux's sched_switch observation point: the trace runs while the
@@ -285,15 +289,8 @@ pub(super) fn execute_switch_plan(
     let switch_out_hook_finished_ns = task_runtime::monotonic_now().as_nanos();
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_context_switch(decision.switch_reason());
-    let plan = RuntimeSwitchPlan::new(
-        previous.context(),
-        previous.address_space(),
-        next.context(),
-        next.address_space(),
-    )
-    .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.thread().as_u64() as usize));
     #[cfg(feature = "qperf-metrics")]
-    let switch_plan_finished_ns = task_runtime::monotonic_now().as_nanos();
+    let switch_accounting_finished_ns = task_runtime::monotonic_now().as_nanos();
     #[cfg(feature = "qperf-metrics")]
     let plan = {
         crate::metrics::qperf_record_switch_scheduler_detail(
@@ -314,7 +311,7 @@ pub(super) fn execute_switch_plan(
         crate::metrics::qperf_record_switch_scheduler_detail(
             29,
             switch_out_hook_finished_ns,
-            switch_plan_finished_ns,
+            switch_accounting_finished_ns,
         );
         let mut plan = plan;
         plan.set_qperf_prepare_started_ns(prepare_started_ns);
