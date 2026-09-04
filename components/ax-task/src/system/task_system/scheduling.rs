@@ -1201,7 +1201,20 @@ impl TaskSystem {
             qperf_account_finished_ns,
             qperf_put_prev_finished_ns,
         );
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
+        let next = if SchedulerClass::for_policy(previous_policy) == SchedulerClass::Realtime
+            && !transaction.rt_is_effectively_throttled()
+            && !transaction.has_selectable_higher_class(
+                SchedulerClass::Realtime,
+                RtEligibility::Runnable,
+            )
+        {
+            // `yield_task_rt()` has just rotated the retained current node.
+            // With the static higher-class prefix proved empty, Linux enters
+            // `pick_next_task_rt()` directly and selects that class head.
+            self.pick_owner_realtime_after_yield_in_rq(cpu.owner(), &mut transaction)
+        } else {
+            self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None)
+        };
         let OwnerNext {
             core: next_core,
             policy: next_policy,

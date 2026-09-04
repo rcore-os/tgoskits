@@ -695,6 +695,93 @@ impl TaskSystem {
         )
     }
 
+    /// Continues an RT yield directly from the class whose rq-linked current
+    /// was rotated. The caller must prove the static higher-class prefix is
+    /// empty and RT bandwidth still permits selection.
+    #[inline(always)]
+    pub(super) fn pick_owner_realtime_after_yield_in_rq(
+        &self,
+        owner: CpuId,
+        transaction: &mut OwnerRqTxn<'_>,
+    ) -> OwnerNext {
+        let queued = transaction.pick_realtime_task().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1113, owner.as_u32() as usize)
+        });
+        self.install_owner_picked_in_rq(owner, transaction, PickedThread::Linked(queued))
+    }
+
+    /// Installs one class-owned selection as Linux's `set_next_task()` result.
+    #[inline(always)]
+    fn install_owner_picked_in_rq(
+        &self,
+        owner: CpuId,
+        transaction: &mut OwnerRqTxn<'_>,
+        queued: PickedThread,
+    ) -> OwnerNext {
+        transaction.set_next_task(&queued);
+        let next_policy = queued.policy();
+        let (thread, dispatch) = match queued {
+            PickedThread::Owned(queued) => {
+                let thread = queued.id;
+                let core = queued.core;
+                core.sched().placement().set_next_task(owner);
+                let dispatch = CurrentDispatch::owned(
+                    core,
+                    queued.active,
+                    queued.metadata,
+                    queued.rt_quota_exempt,
+                    transaction.clock().task(),
+                );
+                (thread, dispatch)
+            }
+            PickedThread::Linked(queued) => {
+                let linked = queued.thread();
+                let core = Arc::as_ref(&linked.core);
+                core.sched().placement().set_next_task(owner);
+                let dispatch = CurrentDispatch::linked(
+                    linked.id,
+                    core,
+                    next_policy,
+                    linked.metadata.clone(),
+                    linked.rt_quota_exempt,
+                    linked.remote_publication,
+                    transaction.clock().task(),
+                );
+                (linked.id, dispatch)
+            }
+        };
+
+        // Linux set_next_task_{rt,dl} queues its class push callback after the
+        // preempted task has become pushable in the same rq transaction.
+        if let Some(class) = super::balance::push_class_for_policy(next_policy)
+            && transaction.has_pushable_class_tasks(class.scheduling_class())
+        {
+            self.root_domain.start_rt_deadline_push_from(class, owner);
+        }
+
+        transaction.set_task_current(dispatch);
+        let current = transaction.current_core_ref().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize)
+        });
+        // SAFETY: the selected current is now owned by CurrentDispatch for
+        // Fair/stop or by its still-linked RT/DL node. Both ownership sources
+        // remain live through the incoming switch tail.
+        let core = unsafe { SchedulerThreadRef::from_scheduler_owned(current) };
+
+        let urgency = if matches!(next_policy, SchedulePolicy::Deadline(_)) {
+            transaction.current_scheduling_urgency().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize)
+            })
+        } else {
+            next_policy.scheduling_urgency()
+        };
+        OwnerNext {
+            core,
+            policy: next_policy,
+            urgency,
+        }
+    }
+
     fn pick_owner_next_with_rt_eligibility(
         &self,
         cpu: Pin<&mut CpuLocal>,
@@ -809,68 +896,7 @@ impl TaskSystem {
             };
         };
 
-        transaction.set_next_task(&queued);
-        let next_policy = queued.policy();
-        let (thread, dispatch) = match queued {
-            PickedThread::Owned(queued) => {
-                let thread = queued.id;
-                let core = queued.core;
-                core.sched().placement().set_next_task(owner);
-                let dispatch = CurrentDispatch::owned(
-                    core,
-                    queued.active,
-                    queued.metadata,
-                    queued.rt_quota_exempt,
-                    transaction.clock().task(),
-                );
-                (thread, dispatch)
-            }
-            PickedThread::Linked(queued) => {
-                let linked = queued.thread();
-                let core = Arc::as_ref(&linked.core);
-                core.sched().placement().set_next_task(owner);
-                let dispatch = CurrentDispatch::linked(
-                    linked.id,
-                    core,
-                    next_policy,
-                    linked.metadata.clone(),
-                    linked.rt_quota_exempt,
-                    linked.remote_publication,
-                    transaction.clock().task(),
-                );
-                (linked.id, dispatch)
-            }
-        };
-
-        // Linux set_next_task_{rt,dl} queues its class push callback after the
-        // preempted task has become pushable in the same rq transaction.
-        if let Some(class) = super::balance::push_class_for_policy(next_policy)
-            && transaction.has_pushable_class_tasks(class.scheduling_class())
-        {
-            self.root_domain.start_rt_deadline_push_from(class, owner);
-        }
-
-        transaction.set_task_current(dispatch);
-        let current = transaction.current_core_ref().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize)
-        });
-        // SAFETY: the selected current is now owned by CurrentDispatch for
-        // Fair/stop or by its still-linked RT/DL node. Both ownership sources
-        // remain live through the incoming switch tail.
-        let core = unsafe { SchedulerThreadRef::from_scheduler_owned(current) };
-
-        let urgency = if matches!(next_policy, SchedulePolicy::Deadline(_)) {
-            transaction.current_scheduling_urgency().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize)
-            })
-        } else {
-            next_policy.scheduling_urgency()
-        };
-        OwnerNext {
-            core,
-            policy: next_policy,
-            urgency,
-        }
+        self.install_owner_picked_in_rq(owner, transaction, queued)
     }
 
     pub(super) fn prepare_switch_handoff(

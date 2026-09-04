@@ -113,6 +113,13 @@ impl RunQueue {
         None
     }
 
+    /// Selects the RT class head after the caller has proved that no higher
+    /// scheduler class is runnable and the RT runqueue is not throttled.
+    #[inline(always)]
+    pub(crate) fn pick_realtime_task(&self) -> Option<LinkedPickedThread> {
+        self.rt.select()
+    }
+
     /// Linux `set_next_task()`: commits the rq-owned class pick as current.
     ///
     /// Class selection itself is the ownership proof: every runnable entity

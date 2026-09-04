@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::{
-    BalanceScan, EnqueueReason, FairEntity, PickTaskResult, PickedThread, QueuedThreadSnapshot,
-    RtEligibility, SchedulingUrgency,
+    BalanceScan, EnqueueReason, FairEntity, LinkedPickedThread, PickTaskResult, PickedThread,
+    QueuedThreadSnapshot, RtEligibility, SchedulingUrgency,
     system::{
         task_system::{SwitchEndpoint, TaskSystem},
         thread_sched::{SchedulerPlacement, ThreadSchedCell, ThreadSchedState},
@@ -671,6 +671,11 @@ impl<'a> OwnerRqTxn<'a> {
             skip_delayed,
             protected_fair_current,
         )
+    }
+
+    #[inline(always)]
+    pub(crate) fn pick_realtime_task(&mut self) -> Option<LinkedPickedThread> {
+        self.scheduler_queue_mut().pick_realtime_task()
     }
 
     #[inline(always)]
