@@ -135,6 +135,7 @@ pub(crate) fn runtime_task_system_handle() -> TaskSystemHandle {
 
 pub(crate) fn scheduler_frame_capabilities(cpu_pin: &CpuPin) -> RuntimeSchedulerFrameEnterResult {
     // SAFETY: the caller claimed the scheduler baton under this same CPU pin;
+    // TASK_SYSTEM is initialized before any task may enter the scheduler, and
     // every returned capability is immutable or shutdown-lifetime state tied
     // to that owner CPU and architecture-selected context.
     unsafe {

@@ -250,7 +250,9 @@ pub trait TaskRuntime {
     /// [`RuntimeSchedulerEntry::IrqReturnContinuation`] must reproduce Linux's
     /// IRQ-return pass boundary: establish one preemption depth, enable local
     /// IRQs without a live scheduler baton, disable them again, then convert
-    /// that exact depth into the next scheduler baton.
+    /// that exact depth into the next scheduler baton. A successful result
+    /// must carry a non-empty task-system capability; a rejected entry returns
+    /// the unsafe-context sentinel without live capabilities.
     fn scheduler_frame_guard_enter(
         origin: RuntimeScheduleOrigin,
         entry: RuntimeSchedulerEntry,

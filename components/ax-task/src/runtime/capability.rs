@@ -705,7 +705,6 @@ pub struct CurrentThreadPublication {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct RuntimeSchedulerFrameEnterResult {
-    status: RuntimeStatus,
     system: TaskSystemHandle,
     cpu: CurrentCpuOwnerHandles,
     current: CurrentThreadPublication,
@@ -716,26 +715,24 @@ impl RuntimeSchedulerFrameEnterResult {
     ///
     /// # Safety
     ///
-    /// All handles and the current publication must describe the execution
-    /// context pinned by the scheduler baton that was claimed in the same
-    /// runtime transaction.
+    /// `system` must be non-empty. All handles and the current publication
+    /// must describe the execution context pinned by the scheduler baton that
+    /// was claimed in the same runtime transaction.
     pub const unsafe fn success(
         system: TaskSystemHandle,
         cpu: CurrentCpuOwnerHandles,
         current: CurrentThreadPublication,
     ) -> Self {
         Self {
-            status: RuntimeStatus::Success,
             system,
             cpu,
             current,
         }
     }
 
-    /// Creates a rejected scheduler-frame result without live capabilities.
-    pub const fn failure(status: RuntimeStatus) -> Self {
+    /// Creates an unsafe-context rejection without live capabilities.
+    pub const fn failure() -> Self {
         Self {
-            status,
             system: TaskSystemHandle::NONE,
             cpu: CurrentCpuOwnerHandles::NONE,
             current: CurrentThreadPublication::NONE,
@@ -744,7 +741,11 @@ impl RuntimeSchedulerFrameEnterResult {
 
     /// Returns the runtime entry status.
     pub const fn status(self) -> RuntimeStatus {
-        self.status
+        if self.system.is_none() {
+            RuntimeStatus::UnsafeContext
+        } else {
+            RuntimeStatus::Success
+        }
     }
 
     /// Returns the pinned task-system capability.

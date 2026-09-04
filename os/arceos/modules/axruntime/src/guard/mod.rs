@@ -431,19 +431,17 @@ pub(crate) fn enter_scheduler_frame_guard(
     _origin: ax_task::runtime::RuntimeScheduleOrigin,
     entry: ax_task::runtime::RuntimeSchedulerEntry,
 ) -> ax_task::runtime::RuntimeSchedulerFrameEnterResult {
-    use ax_task::runtime::{
-        RuntimeSchedulerEntry, RuntimeSchedulerFrameEnterResult, RuntimeStatus,
-    };
+    use ax_task::runtime::{RuntimeSchedulerEntry, RuntimeSchedulerFrameEnterResult};
 
     let irqs_enabled = ax_hal::asm::irqs_enabled();
     if entry == RuntimeSchedulerEntry::IrqReturnContinuation {
         if irqs_enabled || in_hard_irq() {
-            return RuntimeSchedulerFrameEnterResult::failure(RuntimeStatus::UnsafeContext);
+            return RuntimeSchedulerFrameEnterResult::failure();
         }
         #[cfg(feature = "qperf-metrics")]
         crate::task::record_irq_return_scheduler_continuation();
         if !enter_irq_return_continuation_scheduler() {
-            return RuntimeSchedulerFrameEnterResult::failure(RuntimeStatus::UnsafeContext);
+            return RuntimeSchedulerFrameEnterResult::failure();
         }
         return with_current_cpu_pin(crate::task::scheduler_frame_capabilities);
     }
@@ -455,7 +453,7 @@ pub(crate) fn enter_scheduler_frame_guard(
         RuntimeSchedulerEntry::IrqReturnContinuation => unreachable!(),
     };
     if !raw_state_valid {
-        return RuntimeSchedulerFrameEnterResult::failure(RuntimeStatus::UnsafeContext);
+        return RuntimeSchedulerFrameEnterResult::failure();
     }
 
     ax_hal::asm::disable_irqs();
@@ -464,7 +462,7 @@ pub(crate) fn enter_scheduler_frame_guard(
         if irqs_enabled {
             ax_hal::asm::enable_irqs();
         }
-        return RuntimeSchedulerFrameEnterResult::failure(RuntimeStatus::UnsafeContext);
+        return RuntimeSchedulerFrameEnterResult::failure();
     };
     capabilities
 }

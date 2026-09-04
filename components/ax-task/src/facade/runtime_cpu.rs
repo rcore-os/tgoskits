@@ -260,10 +260,7 @@ impl RuntimeSchedulerFrameGuard {
         let context = task_runtime::scheduler_frame_guard_enter(origin, entry);
         let status = context.status();
         if status != RuntimeStatus::Success {
-            return Err(match status {
-                RuntimeStatus::UnsafeContext => TaskError::UnsafeContext,
-                status => TaskError::RuntimeFailure(status as u32),
-            });
+            return Err(TaskError::UnsafeContext);
         }
         let system = task_system_from_handle(context.system()).unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x5254_0001, context.system().into_raw())
