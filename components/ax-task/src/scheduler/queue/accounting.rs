@@ -1,6 +1,28 @@
 use super::*;
 
 impl RunQueue {
+    /// Accounts the common execution-time portion of a linked FIFO/RR task.
+    #[inline(always)]
+    pub(crate) fn charge_fixed_realtime_current(
+        &mut self,
+        runtime_ns: u64,
+        now_ns: u64,
+    ) -> (DispatchCharge, bool) {
+        let current = self
+            .current
+            .as_mut()
+            .expect("fixed RT accounting requires rq->curr");
+        debug_assert!(matches!(
+            current.schedule_policy(),
+            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+        ));
+        let rt_quota_exempt = current.rt_quota_exempt();
+        (
+            current.charge_runtime_only(runtime_ns, now_ns),
+            rt_quota_exempt,
+        )
+    }
+
     /// Charges `rq->curr` and its class-owned entity in one rq transaction.
     ///
     /// The common dispatch token and RT/DL active nodes are disjoint fields
@@ -119,10 +141,20 @@ impl RunQueue {
             !self.contains(id),
             "an rq-linked current must be deactivated through its class"
         );
+        let policy = self
+            .current
+            .as_ref()
+            .filter(|current| current.thread() == id)
+            .expect("deactivated unlinked task must be rq->curr")
+            .schedule_policy();
         self.nr_running = self
             .nr_running
             .checked_sub(1)
             .expect("current deactivation must match one runnable entity");
+        self.fixed_placement_demand = self
+            .fixed_placement_demand
+            .saturating_sub(fixed_placement_demand(policy));
+        self.mark_publication_dirty();
     }
 
     /// Linux `rq->cfs.load.weight`: the combined weight of every queued fair
@@ -131,6 +163,8 @@ impl RunQueue {
         self.fair.total_weight()
     }
 
+    /// Linux-style placement demand for every runnable fixed-class task,
+    /// including a linked RT/Deadline current.
     pub(crate) const fn fixed_placement_demand(&self) -> u64 {
         self.fixed_placement_demand
     }
@@ -265,6 +299,7 @@ impl RunQueue {
     }
 
     pub(super) fn refresh_class_pushable(&mut self, thread: ThreadId, current: Option<ThreadId>) {
+        let previous = self.pushable_publication_state();
         match self.membership_class(thread) {
             Some(QueueMembershipClass::Deadline(_)) => {
                 self.deadline.refresh_pushable(thread, current)
@@ -276,6 +311,9 @@ impl RunQueue {
                 | QueueMembershipClass::Fair,
             )
             | None => {}
+        }
+        if self.pushable_publication_state() != previous {
+            self.mark_publication_dirty();
         }
     }
 }

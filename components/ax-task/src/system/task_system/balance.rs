@@ -77,10 +77,12 @@ impl TaskSystem {
         remote: &CpuRemote,
         run_queue: &mut CpuRunQueueState,
     ) {
+        let online = remote.accepts_placement();
+        if !run_queue.take_summary_dirty(online) {
+            return;
+        }
         let _ = remote.publish_run_queue_load_summary(run_queue);
-        if let Some((previous, publication)) =
-            run_queue.take_domain_publication(remote.accepts_placement())
-        {
+        if let Some((previous, publication)) = run_queue.take_domain_publication(online) {
             self.root_domain
                 .publish_run_queue(remote.owner(), previous, publication);
         }

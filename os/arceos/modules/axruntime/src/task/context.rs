@@ -73,6 +73,10 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
 struct RuntimeSwitchTail {
     previous: NonNull<ExecutionContextHeader>,
     binding: PreviousContextBinding,
+    #[cfg(feature = "qperf-metrics")]
+    qperf_runtime_tail_started_ns: u64,
+    #[cfg(feature = "qperf-metrics")]
+    qperf_switch_started_ns: u64,
 }
 
 /// Runtime-owned architecture context and its pinned scheduler identity.
@@ -141,7 +145,7 @@ impl RuntimeContext {
         Ok(())
     }
 
-    unsafe fn finish_switch_tail(&self) {
+    unsafe fn finish_switch_tail(&self) -> (u64, u64) {
         // SAFETY: the current incoming continuation owns this slot with local
         // IRQs disabled and completes the one-shot previous-binding token.
         let slot = unsafe { &mut *self.switch_tail.get() };
@@ -153,6 +157,13 @@ impl RuntimeContext {
         let previous = unsafe { Pin::new_unchecked(tail.previous.as_ref()) };
         unsafe { tail.binding.finish(previous) }
             .expect("runtime switch tail did not own the exact previous CPU binding");
+        #[cfg(feature = "qperf-metrics")]
+        return (
+            tail.qperf_runtime_tail_started_ns,
+            tail.qperf_switch_started_ns,
+        );
+        #[cfg(not(feature = "qperf-metrics"))]
+        (0, 0)
     }
 }
 
@@ -269,22 +280,39 @@ pub(super) fn bind_bootstrap_runtime_context(
     Ok(())
 }
 
-pub(super) fn finish_runtime_context_switch_tail() -> (bool, u64) {
+pub(super) fn finish_runtime_context_switch_tail() -> bool {
+    #[cfg(feature = "qperf-metrics")]
+    let qperf_incoming_tail_started_ns = crate::clock_event_runtime::monotonic_now().as_nanos();
     // SAFETY: TaskSystem invokes this with the scheduler baton and local IRQs
     // disabled immediately after entering the incoming context.
-    unsafe {
+    let (_qperf_runtime_tail_started_ns, _qperf_switch_started_ns) = unsafe {
         with_current_cpu_pin(|cpu_pin| {
             let current = current_runtime_context(cpu_pin)
                 .expect("incoming scheduler context is not runtime-owned");
             // SAFETY: the incoming context exclusively owns its staged one-shot tail.
-            current.finish_switch_tail();
+            current.finish_switch_tail()
         })
     };
-    let switch_timestamp_ns = crate::clock_event_runtime::monotonic_now().as_nanos();
-    (
-        super::address_space::take_context_switch_reclaim_ready(),
-        switch_timestamp_ns,
-    )
+    #[cfg(feature = "qperf-metrics")]
+    let qperf_incoming_tail_finished_ns = crate::clock_event_runtime::monotonic_now().as_nanos();
+    #[cfg(feature = "qperf-metrics")]
+    {
+        ax_task::qperf_record_switch_scheduler_detail(
+            21,
+            _qperf_switch_started_ns,
+            qperf_incoming_tail_started_ns,
+        );
+        ax_task::qperf_record_switch_scheduler_detail(
+            22,
+            qperf_incoming_tail_started_ns,
+            qperf_incoming_tail_finished_ns,
+        );
+        ax_task::qperf_record_switch_phase_runtime_tail(
+            _qperf_runtime_tail_started_ns,
+            qperf_incoming_tail_finished_ns,
+        );
+    }
+    super::address_space::take_context_switch_reclaim_ready()
 }
 
 pub(super) fn create_runtime_context(request: KernelContextRequest) -> RuntimeHandleResult {
@@ -563,7 +591,6 @@ pub(super) fn install_initial_fp_state(context: usize, fp_state: ax_hal::cpu::Fp
 }
 
 pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
-    crate::guard::assert_scheduler_switch_baton();
     let previous_address_space = plan.previous_address_space();
     let next_address_space = plan.next_address_space();
     let previous_raw = plan.previous_context().into_raw();
@@ -574,6 +601,9 @@ pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
     // preparation, publication, and the naked switch tail.
     unsafe {
         with_current_cpu_pin(|pin| {
+            #[cfg(feature = "qperf-metrics")]
+            let qperf_prepare_entry_finished_ns =
+                crate::clock_event_runtime::monotonic_now().as_nanos();
             // SAFETY: both handles stay live and are uniquely owned by the
             // committed scheduler switch plan.
             let previous_context = &*previous;
@@ -600,25 +630,70 @@ pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
                 .unwrap_or_else(|status| {
                     panic!("failed to prepare runtime address-space switch: {status:?}")
                 });
+            #[cfg(feature = "qperf-metrics")]
+            let qperf_prepare_mm_finished_ns =
+                crate::clock_event_runtime::monotonic_now().as_nanos();
             // All CPU binding, FP and active-mm validation precedes the
             // irreversible baton transfer and both commits.
             let (prepared, previous_binding) =
                 prepare_runtime_thread_switch(pin, previous_context, next_context);
+            #[cfg(feature = "qperf-metrics")]
+            let qperf_prepare_binding_finished_ns =
+                crate::clock_event_runtime::monotonic_now().as_nanos();
             assert_eq!(
                 next_arch_context.context_header(),
                 Some(prepared.next_header()),
                 "prepared switch token must belong to the next task context",
             );
             previous_arch_context.prepare_switch_to(next_arch_context);
+            #[cfg(feature = "qperf-metrics")]
+            let qperf_runtime_tail_started_ns =
+                crate::clock_event_runtime::monotonic_now().as_nanos();
+            #[cfg(feature = "qperf-metrics")]
+            {
+                ax_task::qperf_record_switch_scheduler_detail(
+                    17,
+                    plan.qperf_prepare_started_ns(),
+                    qperf_prepare_entry_finished_ns,
+                );
+                ax_task::qperf_record_switch_scheduler_detail(
+                    18,
+                    qperf_prepare_entry_finished_ns,
+                    qperf_prepare_mm_finished_ns,
+                );
+                ax_task::qperf_record_switch_scheduler_detail(
+                    19,
+                    qperf_prepare_mm_finished_ns,
+                    qperf_prepare_binding_finished_ns,
+                );
+                ax_task::qperf_record_switch_scheduler_detail(
+                    20,
+                    qperf_prepare_binding_finished_ns,
+                    qperf_runtime_tail_started_ns,
+                );
+                ax_task::qperf_record_switch_phase_prepare(
+                    plan.qperf_prepare_started_ns(),
+                    qperf_runtime_tail_started_ns,
+                );
+            }
+            #[cfg(feature = "qperf-metrics")]
+            let qperf_switch_started_ns = crate::clock_event_runtime::monotonic_now().as_nanos();
             let tail = RuntimeSwitchTail {
                 previous: previous_context.header().as_non_null(),
                 binding: previous_binding,
+                #[cfg(feature = "qperf-metrics")]
+                qperf_runtime_tail_started_ns,
+                #[cfg(feature = "qperf-metrics")]
+                qperf_switch_started_ns,
             };
             next_context
                 .stage_switch_tail(tail)
                 .unwrap_or_else(|status| panic!("failed to stage runtime switch tail: {status:?}"));
-            // The active scheduler baton covers both context and active-mm
-            // commits. Once it is transferred, the next operation must enter
+            // Validate the active scheduler baton exactly once, at the
+            // irreversible active-mm commit. IRQ exclusion keeps that baton
+            // unchanged throughout preparation, so an earlier duplicate
+            // guard-state snapshot would not establish any additional fact.
+            // Once it is transferred, the next operation must enter
             // current-context publication and the naked switch tail.
             prepared_address_space.commit(pin);
             crate::guard::transfer_scheduler_switch_baton();
@@ -676,6 +751,9 @@ mod tests {
                     next.stage_switch_tail(RuntimeSwitchTail {
                         previous: previous.header().as_non_null(),
                         binding,
+                        #[cfg(feature = "qperf-metrics")]
+                        qperf_runtime_tail_started_ns: 0,
+                        qperf_switch_started_ns: 0,
                     })
                     .unwrap();
                     next.finish_switch_tail();

@@ -119,10 +119,6 @@ impl ThreadCore {
         self.wake_cpu_hint.store(cpu.as_u32(), Ordering::Release);
     }
 
-    pub(crate) fn base_policy(&self) -> SchedulePolicy {
-        self.base_policy.load()
-    }
-
     pub(crate) fn wake_cpu_hint(&self) -> Option<CpuId> {
         let cpu = self.wake_cpu_hint.load(Ordering::Acquire);
         (cpu != u32::MAX).then(|| CpuId::new(cpu))

@@ -253,6 +253,68 @@ impl RealtimeLevel {
         }
         Some(removed)
     }
+
+    fn move_to_back(&mut self, node_pointer: NonNull<RealtimeNode>) -> bool {
+        if self.tail == Some(node_pointer) {
+            return true;
+        }
+        let previous = unsafe {
+            // SAFETY: callers supply a key published for a node linked to this
+            // owner rq, whose lock prevents concurrent list mutation.
+            node_pointer.as_ref().prev
+        };
+        let mut moved = match previous {
+            Some(mut previous) => unsafe {
+                // SAFETY: the predecessor owns the Box link to this node and
+                // the rq lock grants exclusive access to the complete chain.
+                let link = &mut previous.as_mut().next;
+                if !link
+                    .as_deref()
+                    .is_some_and(|node| NonNull::from(node) == node_pointer)
+                {
+                    return false;
+                }
+                let mut moved = link
+                    .take()
+                    .expect("linked RT predecessor must own its successor");
+                *link = moved.next.take();
+                if let Some(next) = link.as_deref_mut() {
+                    next.prev = Some(previous);
+                }
+                moved
+            },
+            None => {
+                if !self
+                    .head
+                    .as_deref()
+                    .is_some_and(|node| NonNull::from(node) == node_pointer)
+                {
+                    return false;
+                }
+                let mut moved = self
+                    .head
+                    .take()
+                    .expect("linked RT level must retain its head");
+                self.head = moved.next.take();
+                if let Some(head) = self.head.as_deref_mut() {
+                    head.prev = None;
+                }
+                moved
+            }
+        };
+        let mut tail = self
+            .tail
+            .expect("a non-tail linked RT node must retain a successor");
+        moved.prev = Some(tail);
+        unsafe {
+            // SAFETY: the old tail is still the final node of this exclusively
+            // owned chain after detaching `moved` from its previous position.
+            debug_assert!(tail.as_ref().next.is_none());
+            tail.as_mut().next = Some(moved);
+        }
+        self.tail = Some(node_pointer);
+        true
+    }
 }
 
 impl Drop for RealtimeLevel {
@@ -608,22 +670,15 @@ impl RealtimeRunQueue {
             .map(LinkedPickedThread::from)
     }
 
-    pub(super) fn put_prev_current(
-        &mut self,
-        key: RealtimeQueueKey,
-        reason: EnqueueReason,
-    ) -> Option<SchedulingEntity> {
+    pub(super) fn put_prev_current(&mut self, key: RealtimeQueueKey) -> Option<SchedulingEntity> {
+        self.get(key).map(QueuedThread::entity_snapshot)
+    }
+
+    /// Linux `yield_task_rt()`: rotates only the current priority list.
+    #[inline(always)]
+    pub(super) fn yield_current(&mut self, key: RealtimeQueueKey) -> bool {
         let index = key.index();
-        let move_to_tail = matches!(reason, EnqueueReason::Yield);
-        if move_to_tail {
-            let node = self.active[index].remove(key.node)?;
-            let entity = node.thread().active.entity().clone();
-            let requeued = self.active[index].push_back(node);
-            debug_assert_eq!(requeued, key.node);
-            Some(entity)
-        } else {
-            self.get(key).map(QueuedThread::entity_snapshot)
-        }
+        self.active[index].move_to_back(key.node)
     }
 
     /// Linux `requeue_task_rt(..., head = 1)` for an already linked wakee.

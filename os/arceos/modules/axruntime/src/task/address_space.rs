@@ -480,6 +480,8 @@ fn same_logical_address_space(first: &RuntimeAddressSpace, second: &RuntimeAddre
 
 enum PreparedAddressSpaceAction {
     KernelLazy,
+    #[cfg(all(feature = "uspace", not(target_arch = "aarch64")))]
+    SameUser,
     #[cfg(feature = "uspace")]
     User {
         next_raw: usize,
@@ -554,7 +556,8 @@ impl PreparedAddressSpaceSwitch<'_> {
                     enter_lazy_kernel_address_space();
                 }
             }
-            #[cfg(feature = "uspace")]
+            #[cfg(all(feature = "uspace", not(target_arch = "aarch64")))]
+            PreparedAddressSpaceAction::SameUser => {}
             PreparedAddressSpaceAction::User { next_raw, next } => {
                 let reclaim_ready = commit_user_address_space_activation(
                     self.cpu_id,
@@ -604,6 +607,40 @@ pub(super) fn prepare_runtime_address_space_switch<'switch>(
             let previous = unsafe { AddressSpaceHandle::from_raw(previous_raw) };
             Some(runtime_address_space(previous)?)
         };
+
+        #[cfg(not(target_arch = "aarch64"))]
+        if let Some((previous, next)) = previous.zip(
+            (!next_selected.is_none())
+                .then(|| runtime_address_space(next_selected))
+                .transpose()?,
+        ) && same_logical_address_space(previous, next)
+        {
+            // Linux's ordinary same-mm path compares the CPU's loaded mm with
+            // next->mm and returns without inspecting the old task token,
+            // active mask, lease count or hardware root. x86, RISC-V and
+            // LoongArch retain the loaded root across lazy kernel threads, so
+            // their user-to-user same-mm switch is likewise a pure no-op.
+            // AArch64 is excluded because its lazy path installs the reserved
+            // lower root and must restore TTBR0 on the following user switch.
+            debug_assert!(!previous_selected.is_none());
+            debug_assert!(
+                runtime_address_space(previous_selected)
+                    .is_ok_and(|selected| same_logical_address_space(previous, selected))
+            );
+            debug_assert_ne!(previous.active_leases.load(Ordering::Acquire), 0);
+            debug_assert!(
+                previous.cpu_state.active_mask() & AddressSpaceCpuState::cpu_bit(cpu_id) != 0
+            );
+            return Ok(PreparedAddressSpaceSwitch {
+                cpu_id,
+                phase,
+                previous_raw,
+                previous: Some(previous),
+                action: PreparedAddressSpaceAction::SameUser,
+                _cpu_scope: PhantomData,
+                _not_send_or_sync: PhantomData,
+            });
+        }
 
         if let Some(previous) = previous {
             let bit = AddressSpaceCpuState::cpu_bit(cpu_id);

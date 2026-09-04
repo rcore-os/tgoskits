@@ -180,12 +180,15 @@ impl ClockEventFiringTransaction {
 
     fn finish(self, outcome: ax_task::TaskClockEventOutcome) {
         let token = self.token;
+        let runtime_deadline = outcome
+            .runtime_deadline()
+            .map(resolve_scheduler_runtime_deadline);
         let action = with_local_clock_event_mut(|clockevent| {
-            let _ = clockevent.publish_scheduler(
-                outcome.update().generation(),
-                outcome.update().deadline(),
-                outcome.update().runtime_deadline(),
-            );
+            let _ = clockevent
+                .publish_scheduler(outcome.update().generation(), outcome.update().deadline());
+            if let Some(runtime_deadline) = runtime_deadline {
+                let _ = clockevent.publish_runtime_deadline(runtime_deadline);
+            }
             let rearm = crate::clock_event::ClockEventRearm::Deferred;
             clockevent.finish_firing(token, rearm)
         });
@@ -241,13 +244,36 @@ pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::Schedul
     commit_local_clock_event(|clockevent| {
         (
             (),
-            clockevent.publish_scheduler(
-                update.generation(),
-                update.deadline(),
-                update.runtime_deadline(),
-            ),
+            clockevent.publish_scheduler(update.generation(), update.deadline()),
         )
     });
+}
+
+fn resolve_scheduler_runtime_deadline(
+    update: ax_task::runtime::SchedulerRuntimeDeadline,
+) -> Option<ax_task::runtime::MonotonicDeadline> {
+    match update {
+        ax_task::runtime::SchedulerRuntimeDeadline::Disarmed => None,
+        ax_task::runtime::SchedulerRuntimeDeadline::Due => {
+            Some(ax_task::runtime::MonotonicDeadline::ORIGIN)
+        }
+        ax_task::runtime::SchedulerRuntimeDeadline::After(delay) => {
+            Some(monotonic_now().deadline_after(delay))
+        }
+    }
+}
+
+pub(crate) fn publish_local_scheduler_runtime_deadline(
+    update: ax_task::runtime::SchedulerRuntimeDeadline,
+) {
+    assert!(
+        !ax_hal::asm::irqs_enabled(),
+        "scheduler runtime deadline requires local IRQ exclusion"
+    );
+    let deadline = resolve_scheduler_runtime_deadline(update);
+    let action =
+        with_local_clock_event_mut(|clockevent| clockevent.publish_runtime_deadline(deadline));
+    apply_clock_event_action(action);
 }
 
 /// Completes Linux-style deferred hrtimer rearm before local IRQ restoration.

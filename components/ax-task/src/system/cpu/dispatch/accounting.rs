@@ -42,7 +42,7 @@ impl CurrentDispatch {
         now_ns: u64,
         reclaimed_ns: u64,
     ) -> DispatchCharge {
-        let Some(CurrentClassState::Linked { policy: _ }) = self.class.schedule else {
+        let Some(CurrentClassState::Linked { .. }) = self.class.schedule else {
             crate::runtime::task_runtime::fatal_invariant(
                 0x4355_0002,
                 self.thread().as_u64() as usize,
@@ -59,6 +59,22 @@ impl CurrentDispatch {
             now_ns,
             reclaimed_ns,
         )
+    }
+
+    /// Accounts common dispatch runtime without touching a class entity.
+    ///
+    /// Linux's `update_curr_rt()` updates common task/rq execution time for
+    /// FIFO and RR. RR quantum consumption remains exclusively in
+    /// `task_tick_rt()`, so an ordinary scheduler entry need not resolve and
+    /// copy the linked RT entity merely to call a no-op entity charge.
+    #[inline(always)]
+    pub(crate) fn charge_runtime_only(&mut self, runtime_ns: u64, now_ns: u64) -> DispatchCharge {
+        self.accounting.charged_runtime_ns = self
+            .accounting
+            .charged_runtime_ns
+            .saturating_add(runtime_ns);
+        self.accounting.accounted_until_ns = now_ns;
+        DispatchCharge::default()
     }
 
     fn charge_entity(
@@ -105,9 +121,8 @@ impl CurrentDispatch {
         self.accounting.accounted_until_ns = now_ns;
     }
 
-    pub(crate) fn finish_runtime_interval(&mut self) {
-        let runtime_ns = core::mem::take(&mut self.accounting.charged_runtime_ns);
-        self.task.runtime_core.commit_runtime_interval(runtime_ns);
+    pub(crate) fn take_runtime_interval_charge(&mut self) -> u64 {
+        core::mem::take(&mut self.accounting.charged_runtime_ns)
     }
 
     pub(crate) fn runtime_interval_ns(&self, now_ns: u64) -> u64 {

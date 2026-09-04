@@ -36,37 +36,12 @@ impl SoftTimerExpireBatch {
     }
 }
 
-fn earliest<T: Ord>(current: Option<T>, candidate: T) -> Option<T> {
-    match current {
-        Some(current) => Some(current.min(candidate)),
-        None => Some(candidate),
-    }
-}
-
 /// Deadline inputs derived coherently while one runqueue guard owns current,
 /// class membership, runtime accounting, and the periodic balance predicate.
 #[derive(Clone, Copy)]
 pub(crate) struct SchedulerDeadlineRqObservation {
-    clock_event: Option<SchedulerDeadlineRqClockEvent>,
+    runtime_deadline: SchedulerRuntimeDeadline,
     has_periodic_fair_balance_work: bool,
-}
-
-#[derive(Clone, Copy)]
-enum SchedulerDeadlineRqClockEvent {
-    Due,
-    After(core::time::Duration),
-}
-
-impl SchedulerDeadlineRqClockEvent {
-    fn physical_deadline(self, monotonic_now: MonotonicInstant) -> MonotonicDeadline {
-        match self {
-            // Every already-due value has the same physical meaning. Using the
-            // clock origin gives it one stable publication identity while the
-            // runtime still clamps it to the device's minimum delta.
-            Self::Due => MonotonicDeadline::ORIGIN,
-            Self::After(delay) => monotonic_now.deadline_after(delay),
-        }
-    }
 }
 
 enum SchedulerDeadlinePublicationOutcome {
@@ -90,24 +65,18 @@ impl SchedulerDeadlinePublicationOutcome {
 }
 
 impl CpuLocal {
-    /// Returns whether every deadline source already has the publication that
-    /// this rq observation would derive without sampling the clock.
+    /// Returns whether every shared deadline source already has the
+    /// publication that this rq observation would derive.
     ///
     /// Linux does not restart hrtick or the RT period timer for a plain
-    /// FIFO-to-FIFO switch. A class runtime event is relative to rq clock and
-    /// therefore still requires a fresh sample. Fair balance and the root RT
-    /// period are already absolute deadlines, so the coherent deadline-base
-    /// snapshot can prove that they and the task/kernel timer heads are
-    /// unchanged. A concurrent timer writer publishes its changed base, while
-    /// a newly activated or migrated root RT period retains owner work for a
-    /// later derivation.
+    /// FIFO-to-FIFO switch. Fair balance and the root RT period are absolute
+    /// shared deadlines, so the coherent deadline-base snapshot can prove that
+    /// they and the task/kernel timer heads are unchanged. The current class's
+    /// hrtick is rq-local and is published separately by the owner CPU.
     pub(crate) fn can_reuse_scheduler_deadline_for_rq_observation(
         &self,
         rq_observation: SchedulerDeadlineRqObservation,
     ) -> bool {
-        if rq_observation.clock_event.is_some() {
-            return false;
-        }
         let fair_balance = rq_observation
             .has_periodic_fair_balance_work
             .then(|| self.dispatch.fair_balance_deadline())
@@ -115,7 +84,6 @@ impl CpuLocal {
         let rt_period = self.rt_bandwidth.deadline_for(self.owner);
         let non_timer = SchedulerNonTimerDeadlines {
             deadline: [fair_balance, rt_period].into_iter().flatten().min(),
-            runtime_deadline: None,
         };
         self.remote.deadline_publication_snapshot_matches(non_timer)
     }
@@ -138,8 +106,8 @@ impl CpuLocal {
         // bandwidth periods and querying its next local event.
         let this = unsafe { self.get_unchecked_mut() };
         if matches!(
-            rq_observation.clock_event,
-            Some(SchedulerDeadlineRqClockEvent::Due)
+            rq_observation.runtime_deadline,
+            SchedulerRuntimeDeadline::Due
         ) {
             this.remote.request_reschedule(RescheduleKind::Immediate);
         }
@@ -151,47 +119,56 @@ impl CpuLocal {
         rq_observation
     }
 
+    pub(crate) fn scheduler_runtime_deadline_for_rq_observation(
+        &self,
+        rq_observation: SchedulerDeadlineRqObservation,
+    ) -> SchedulerRuntimeDeadline {
+        if self.remote.immediate_preemption_requested() {
+            SchedulerRuntimeDeadline::Disarmed
+        } else {
+            rq_observation.runtime_deadline
+        }
+    }
+
+    pub(crate) fn next_scheduler_runtime_deadline_update(
+        mut self: Pin<&mut Self>,
+        rq_observation: SchedulerDeadlineRqObservation,
+    ) -> Option<SchedulerRuntimeDeadline> {
+        let deadline = self
+            .as_ref()
+            .get_ref()
+            .scheduler_runtime_deadline_for_rq_observation(rq_observation);
+        // SAFETY: the scheduler owner exclusively mutates this pinned local
+        // hrtick state while local IRQs remain disabled.
+        let this = unsafe { self.as_mut().get_unchecked_mut() };
+        if this.scheduler_runtime_deadline == deadline {
+            return None;
+        }
+        this.scheduler_runtime_deadline = deadline;
+        Some(deadline)
+    }
+
     fn next_non_timer_deadline_from_rq_observation(
-        self: Pin<&mut Self>,
-        monotonic_now: MonotonicInstant,
+        &self,
         rq_observation: SchedulerDeadlineRqObservation,
     ) -> SchedulerNonTimerDeadlines {
-        let this = self.as_ref().get_ref();
-        // Linux's hrtick callback returns HRTIMER_NORESTART after task_tick().
-        // Once that callback has published a sticky preemption request, the
-        // fired class-runtime edge has left the physical timer base. The
-        // scheduler claim is the next owner and will derive a fresh deadline
-        // from the selected rq state before returning with IRQs enabled.
-        let scheduler = (!this.remote.immediate_preemption_requested())
-            .then(|| {
-                rq_observation
-                    .clock_event
-                    .map(|event| event.physical_deadline(monotonic_now))
-            })
-            .flatten();
         let fair_balance = rq_observation
             .has_periodic_fair_balance_work
-            .then(|| this.dispatch.fair_balance_deadline())
+            .then(|| self.dispatch.fair_balance_deadline())
             .flatten();
-        let rt_period = this.rt_bandwidth.deadline_for(this.owner);
+        let rt_period = self.rt_bandwidth.deadline_for(self.owner);
         SchedulerNonTimerDeadlines {
-            deadline: [scheduler, fair_balance, rt_period]
-                .into_iter()
-                .flatten()
-                .min(),
-            runtime_deadline: scheduler,
+            deadline: [fair_balance, rt_period].into_iter().flatten().min(),
         }
     }
 
     pub(crate) fn next_scheduler_deadline_update_if_changed(
         mut self: Pin<&mut Self>,
-        monotonic_now: MonotonicInstant,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
         let rq_observation = self.scheduler_deadline_rq_observation();
         self.as_mut()
             .update_scheduler_deadline_publication_if_changed_from_rq_observation(
-                monotonic_now,
                 rq_observation,
                 source,
             )
@@ -199,13 +176,11 @@ impl CpuLocal {
 
     pub(crate) fn next_scheduler_deadline_update_if_changed_from_rq_observation(
         mut self: Pin<&mut Self>,
-        monotonic_now: MonotonicInstant,
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
         self.as_mut()
             .update_scheduler_deadline_publication_if_changed_from_rq_observation(
-                monotonic_now,
                 rq_observation,
                 source,
             )
@@ -213,22 +188,16 @@ impl CpuLocal {
 
     pub(crate) fn next_scheduler_deadline_update_from_rq_observation(
         mut self: Pin<&mut Self>,
-        monotonic_now: MonotonicInstant,
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<SchedulerDeadlineUpdate, TaskError> {
         self.as_mut()
-            .update_scheduler_deadline_publication_from_rq_observation(
-                monotonic_now,
-                rq_observation,
-                source,
-            )
+            .update_scheduler_deadline_publication_from_rq_observation(rq_observation, source)
             .map(SchedulerDeadlinePublicationOutcome::update)
     }
 
     fn update_scheduler_deadline_publication_from_rq_observation(
-        mut self: Pin<&mut Self>,
-        monotonic_now: MonotonicInstant,
+        self: Pin<&mut Self>,
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<SchedulerDeadlinePublicationOutcome, TaskError> {
@@ -239,15 +208,15 @@ impl CpuLocal {
         // The task/kernel timer head and publication metadata are then read
         // and committed under one authoritative base lock.
         let non_timer = self
-            .as_mut()
-            .next_non_timer_deadline_from_rq_observation(monotonic_now, rq_observation);
+            .as_ref()
+            .get_ref()
+            .next_non_timer_deadline_from_rq_observation(rq_observation);
         let mut task_deadlines = self.remote.lock_deadline_publication();
         Self::update_scheduler_deadline_publication_in_base(&mut task_deadlines, non_timer)
     }
 
     fn update_scheduler_deadline_publication_if_changed_from_rq_observation(
-        mut self: Pin<&mut Self>,
-        monotonic_now: MonotonicInstant,
+        self: Pin<&mut Self>,
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
@@ -255,8 +224,9 @@ impl CpuLocal {
             .get_ref()
             .record_scheduler_deadline_derivation(source);
         let non_timer = self
-            .as_mut()
-            .next_non_timer_deadline_from_rq_observation(monotonic_now, rq_observation);
+            .as_ref()
+            .get_ref()
+            .next_non_timer_deadline_from_rq_observation(rq_observation);
         if self.remote.deadline_publication_snapshot_matches(non_timer) {
             return Ok(None);
         }
@@ -280,15 +250,11 @@ impl CpuLocal {
         let timer = task_deadlines.timer_deadline();
         let publication = SchedulerDeadlinePublicationState {
             deadline: [timer, non_timer.deadline].into_iter().flatten().min(),
-            runtime_deadline: non_timer.runtime_deadline,
         };
         if task_deadlines.publication == Some(publication) {
-            let update = SchedulerDeadlineUpdate::try_new(
-                task_deadlines.generation,
-                publication.deadline,
-                publication.runtime_deadline,
-            )
-            .ok_or(TaskError::InvalidConfiguration)?;
+            let update =
+                SchedulerDeadlineUpdate::try_new(task_deadlines.generation, publication.deadline)
+                    .ok_or(TaskError::InvalidConfiguration)?;
             return Ok(SchedulerDeadlinePublicationOutcome::Unchanged(update));
         }
         Self::commit_scheduler_deadline_publication(task_deadlines, publication)
@@ -321,12 +287,9 @@ impl CpuLocal {
             .generation
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
-        let update = SchedulerDeadlineUpdate::try_new(
-            task_deadlines.generation,
-            publication.deadline,
-            publication.runtime_deadline,
-        )
-        .ok_or(TaskError::InvalidConfiguration)?;
+        let update =
+            SchedulerDeadlineUpdate::try_new(task_deadlines.generation, publication.deadline)
+                .ok_or(TaskError::InvalidConfiguration)?;
         task_deadlines.publication = Some(publication);
         Ok(update)
     }
@@ -342,33 +305,27 @@ impl CpuLocal {
         &self,
         run_queue: &CpuRunQueueState,
     ) -> SchedulerDeadlineRqObservation {
-        let mut due = false;
-        let mut next = None;
-
         let current_thread = run_queue.current_thread();
         let idle = run_queue.idle();
         let current_is_idle = current_thread.is_some() && current_thread == idle;
-        if !current_is_idle
+        let runtime_deadline = if !current_is_idle
             && run_queue.current().is_some()
             && run_queue.current_runtime_timer_required()
             && let Some(delta_ns) = run_queue.current_runtime_timer_delta_ns()
         {
             if delta_ns == 0 {
-                due = true;
+                SchedulerRuntimeDeadline::Due
             } else {
-                next = earliest(next, core::time::Duration::from_nanos(delta_ns));
+                SchedulerRuntimeDeadline::After(core::time::Duration::from_nanos(delta_ns))
             }
-        }
-        let clock_event = if due {
-            Some(SchedulerDeadlineRqClockEvent::Due)
         } else {
-            next.map(SchedulerDeadlineRqClockEvent::After)
+            SchedulerRuntimeDeadline::Disarmed
         };
         let current_non_idle = current_thread.is_some() && current_thread != idle;
         let has_periodic_fair_balance_work =
             run_queue.has_fair() && run_queue.nr_running() > usize::from(current_non_idle);
         SchedulerDeadlineRqObservation {
-            clock_event,
+            runtime_deadline,
             has_periodic_fair_balance_work,
         }
     }

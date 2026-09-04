@@ -131,6 +131,7 @@ impl KernelExtTracePoint {
         let (retired, retired_epoch) = {
             if was_enabled && !is_enabled {
                 tracepoint.set_callback_gate(false);
+                super::sched::publish_runtime_gate(tracepoint, false);
             }
             let mut snapshot = self.state.snapshot.lock();
             let retired_epoch = snapshot.epoch % self.state.readers.len();
@@ -140,6 +141,7 @@ impl KernelExtTracePoint {
         };
         if !was_enabled && is_enabled {
             tracepoint.set_callback_gate(true);
+            super::sched::publish_runtime_gate(tracepoint, true);
         }
         drop(current);
 

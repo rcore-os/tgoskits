@@ -508,7 +508,6 @@ unsafe extern "Rust" fn ignore_extension_switch_in(
     _data: usize,
     _thread: ThreadId,
     _policy: SchedulePolicy,
-    _observed_ns: u64,
 ) {
 }
 
@@ -516,7 +515,6 @@ unsafe extern "Rust" fn ignore_extension_switch_out(
     _data: usize,
     _thread: ThreadId,
     _reason: SwitchReason,
-    _observed_ns: u64,
 ) {
 }
 

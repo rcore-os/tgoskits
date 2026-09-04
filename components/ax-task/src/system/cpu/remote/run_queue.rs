@@ -281,6 +281,16 @@ impl CpuRunQueueState {
     pub(crate) fn invalidate_domain_publication(&mut self) {
         self.published_domain = None;
         self.published_load = None;
+        self.queue.mark_publication_dirty();
+    }
+
+    pub(crate) fn take_summary_dirty(&mut self, online: bool) -> bool {
+        let queue_dirty = self.queue.take_publication_dirty();
+        queue_dirty
+            || self.published_load.is_none()
+            || self
+                .published_domain
+                .is_none_or(|publication| publication.online != online)
     }
 
     pub(crate) fn take_load_publication(
@@ -296,7 +306,7 @@ impl CpuRunQueueState {
 
     /// Updates and snapshots Linux-style `rq->clock` under this runqueue lock.
     pub(crate) fn update_clock(&mut self) -> RunQueueClockSnapshot {
-        let sample = task_runtime::rq_clock_sample(RuntimeCpuId::new(self.owner.as_u32()));
+        let sample = task_runtime::rq_clock_sample();
         self.clock.update(sample)
     }
 
@@ -613,6 +623,15 @@ impl CpuRunQueueState {
         self.queue.install_current(current);
     }
 
+    pub(crate) fn replace_linked_current(&mut self, current: CurrentDispatch) {
+        let task_membarrier_state = Self::state_for_address_space(current.address_space());
+        self.membarrier_state = crate::runtime::scheduled_membarrier_state(
+            self.membarrier_state,
+            task_membarrier_state,
+        );
+        self.queue.replace_linked_current(current);
+    }
+
     fn state_for_address_space(
         address_space: crate::runtime::AddressSpaceHandle,
     ) -> AddressSpaceMembarrierState {
@@ -789,9 +808,15 @@ impl CpuRunQueueState {
     }
 
     pub(crate) fn current_core(&self) -> Option<Arc<ThreadCore>> {
-        self.queue
-            .current()
-            .map(|dispatch| Arc::clone(dispatch.runtime_core_arc()))
+        self.queue.clone_current_runtime_core()
+    }
+
+    pub(crate) fn current_core_ref(&self) -> Option<&ThreadCore> {
+        self.queue.current_runtime_core()
+    }
+
+    pub(crate) fn current_switch_endpoint(&self) -> Option<crate::SwitchEndpoint> {
+        self.queue.current_switch_endpoint()
     }
 
     pub(crate) fn update_current_runtime_binding(
@@ -833,6 +858,7 @@ impl CpuRunQueueState {
                 task_runtime::fatal_invariant(0x5251_100d, thread.as_u64() as usize)
             });
         current.refresh_scheduler_metadata(metadata, rt_quota_exempt);
+        self.queue.mark_publication_dirty();
         if self.membarrier_state.identity() != next_membarrier_state.identity() {
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         }
@@ -850,7 +876,11 @@ impl CpuRunQueueState {
             .filter(|current| current.thread() == thread)
             .map(|current| current.update_affinity(Arc::clone(&affinity)))
             .is_some();
-        self.queue.update_affinity(thread, affinity) || current_updated
+        let queued_updated = self.queue.update_affinity(thread, affinity);
+        if current_updated {
+            self.queue.mark_publication_dirty();
+        }
+        queued_updated || current_updated
     }
 
     pub(crate) fn detach_current_schedule(
@@ -861,16 +891,21 @@ impl CpuRunQueueState {
             return Err(TaskError::InvalidConfiguration);
         }
         if self.queue.is_linked_current(thread) {
-            return self
+            let active = self
                 .queue
                 .reclassify_task(thread)
                 .map(QueuedThread::into_active)
-                .ok_or(TaskError::NotReady);
+                .ok_or(TaskError::NotReady)?;
+            self.queue.mark_publication_dirty();
+            return Ok(active);
         }
-        self.queue
+        let active = self
+            .queue
             .current_mut()
             .and_then(CurrentDispatch::take_owned_for_reclassify)
-            .ok_or(TaskError::InvalidConfiguration)
+            .ok_or(TaskError::InvalidConfiguration)?;
+        self.queue.mark_publication_dirty();
+        Ok(active)
     }
 
     pub(crate) fn install_current_schedule(
@@ -891,8 +926,8 @@ impl CpuRunQueueState {
                 | SchedulePolicy::Fifo { .. }
                 | SchedulePolicy::RoundRobin { .. }
         );
-        let policy = active.policy();
         if linked {
+            let policy = active.policy();
             self.queue.link_running(QueuedThread::new(
                 thread,
                 active,
@@ -904,13 +939,14 @@ impl CpuRunQueueState {
             self.queue
                 .current_mut()
                 .expect("current identity must retain its dispatch")
-                .install_reclassified_schedule(CurrentClassState::Linked { policy });
+                .install_reclassified_schedule(CurrentClassState::Linked { policy }, None);
         } else {
             self.queue
                 .current_mut()
                 .expect("current identity must retain its dispatch")
-                .install_reclassified_schedule(CurrentClassState::Owned(active));
+                .install_reclassified_schedule(CurrentClassState::Owned(active), Some(core));
         }
+        self.queue.mark_publication_dirty();
         Ok(())
     }
 

@@ -130,7 +130,7 @@ pub fn sys_clock_gettime(
             utime + stime
         }
         CLOCK_THREAD_CPUTIME_ID => {
-            let (utime, stime) = current.as_thread().cpu_time().output();
+            let (utime, stime) = current.as_thread().cpu_time_output();
             utime + stime
         }
         _ => {

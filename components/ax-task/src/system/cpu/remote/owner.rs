@@ -79,24 +79,14 @@ impl CpuRemote {
     /// and no dynamically claimed owner borrow may overlap it.
     pub unsafe fn borrow_local_in_scheduler_frame(
         &self,
-        cpu: *mut CpuLocal,
-    ) -> Result<CpuLocalOwnerBorrow<'_>, TaskError> {
-        let cpu = NonNull::new(cpu).ok_or(TaskError::InvalidRuntimeHandle)?;
-        // SAFETY: the caller's scheduler baton pins this exact CpuLocal and
-        // excludes every other owner-side entry until the borrow is dropped.
-        let actual = unsafe { cpu.as_ref() }.owner();
-        if actual != self.owner {
-            return Err(TaskError::CpuOwnerMismatch {
-                expected: self.owner.as_u32(),
-                actual: actual.as_u32(),
-            });
-        }
-        Ok(CpuLocalOwnerBorrow {
+        cpu: NonNull<CpuLocal>,
+    ) -> CpuLocalOwnerBorrow<'_> {
+        CpuLocalOwnerBorrow {
             remote: self,
             cpu,
             release_claim: false,
             _not_send_or_sync: PhantomData,
-        })
+        }
     }
 
     /// Returns `rq->curr` under the authoritative runqueue lock.
@@ -127,9 +117,13 @@ impl CpuRemote {
     }
 
     pub(in crate::system::cpu) fn charge_busy_runtime(&self, runtime_ns: u64) {
+        // Runtime charging is serialized by this CPU's owner rq lock. Other
+        // CPUs only sample the counter, so an atomic read/write publication is
+        // sufficient and avoids pretending there are concurrent writers.
+        let committed = self.owner_state.busy_runtime_ns.load(Ordering::Relaxed);
         self.owner_state
             .busy_runtime_ns
-            .fetch_add(runtime_ns, Ordering::Relaxed);
+            .store(committed.saturating_add(runtime_ns), Ordering::Relaxed);
     }
 }
 

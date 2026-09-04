@@ -1,5 +1,7 @@
 //! `rq->curr` identity and scheduler-class ownership.
 
+use core::ptr::NonNull;
+
 use super::super::*;
 use crate::system::task_system::SwitchEndpoint;
 
@@ -13,14 +15,63 @@ pub(crate) struct CurrentDispatch {
     pub(super) task: CurrentTaskIdentity,
     pub(super) class: CurrentClassDispatch,
     pub(super) accounting: CurrentRuntimeAccounting,
+    remote_publication: CurrentRemotePublication,
 }
 
 /// Stable task identity and runtime resources pinned by `rq->curr`.
 #[derive(Debug)]
 pub(super) struct CurrentTaskIdentity {
     pub(super) thread: ThreadId,
-    pub(super) runtime_core: Arc<ThreadCore>,
+    runtime_core: SchedulerThreadRef,
+    runtime_owner: Option<Arc<ThreadCore>>,
     metadata: RqTaskMetadata,
+}
+
+/// Stable Linux-style `rq->curr` pointer whose lifetime is owned separately.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SchedulerThreadRef(NonNull<ThreadCore>);
+
+// SAFETY: the pointed-to object is Arc-allocated. While the reference is live,
+// an owned current dispatch or a linked RT/DL rq node retains that same Arc.
+// All ownership transitions happen under the owner rq lock.
+unsafe impl Send for SchedulerThreadRef {}
+unsafe impl Sync for SchedulerThreadRef {}
+
+impl SchedulerThreadRef {
+    fn from_ref(core: &ThreadCore) -> Self {
+        Self(NonNull::from(core))
+    }
+
+    fn from_arc(core: &Arc<ThreadCore>) -> Self {
+        Self::from_ref(core)
+    }
+
+    /// Captures a non-owning reference pinned by scheduler state.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have installed `core` as `rq->curr` and must keep the
+    /// current dispatch or its linked RT/DL node alive until the returned
+    /// reference is consumed by the same CPU's context-switch tail.
+    pub(crate) unsafe fn from_scheduler_owned(core: &ThreadCore) -> Self {
+        Self::from_ref(core)
+    }
+
+    pub(crate) fn as_ref(&self) -> &ThreadCore {
+        // SAFETY: construction and every ownership transition preserve the
+        // lifetime invariant documented on `SchedulerThreadRef`.
+        unsafe { self.0.as_ref() }
+    }
+
+    fn clone_arc(&self) -> Arc<ThreadCore> {
+        let pointer = self.0.as_ptr();
+        // SAFETY: every live scheduler reference is pinned by either the
+        // current dispatch's Arc or the current RT/DL rq node's Arc.
+        unsafe {
+            Arc::increment_strong_count(pointer);
+            Arc::from_raw(pointer)
+        }
+    }
 }
 
 /// Scheduler-class state owned by the current runqueue interval.
@@ -39,13 +90,50 @@ pub(super) struct CurrentRuntimeAccounting {
     pub(super) charged_runtime_ns: u64,
 }
 
-/// Registry state copied into one owner-CPU dispatch interval.
-#[derive(Debug)]
-pub(crate) struct CurrentDispatchState {
-    pub(crate) thread: ThreadId,
-    pub(crate) schedule: CurrentClassState,
-    pub(crate) metadata: RqTaskMetadata,
-    pub(crate) rt_quota_exempt: bool,
+/// Load-placement facts contributed by the running task.
+///
+/// These values change only at policy, affinity, or idle-role transitions.
+/// Keeping them with `rq->curr` avoids re-deriving static policy facts during
+/// every context switch merely to prove that remote placement state is stable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CurrentRemotePublication(u64);
+
+impl CurrentRemotePublication {
+    const IDLE: Self = Self(0);
+
+    pub(crate) fn task(policy: SchedulePolicy, metadata: &RqTaskMetadata) -> Self {
+        let fair_demand = policy.fair_demand();
+        let rt_wake_donor = policy
+            .rt_priority()
+            .map(|priority| {
+                u16::from(priority.get())
+                    | if metadata.affinity.is_migration_capable() {
+                        1 << 7
+                    } else {
+                        0
+                    }
+            })
+            .unwrap_or(0);
+        let fixed_demand = matches!(
+            policy,
+            SchedulePolicy::Deadline(_)
+                | SchedulePolicy::Fifo { .. }
+                | SchedulePolicy::RoundRobin { .. }
+        );
+        let idle_fair = matches!(
+            policy,
+            SchedulePolicy::Fair {
+                mode: FairMode::Idle,
+                ..
+            }
+        );
+        Self(
+            fair_demand
+                | (u64::from(rt_wake_donor) << 32)
+                | (u64::from(fixed_demand) << 40)
+                | (u64::from(idle_fair) << 41),
+        )
+    }
 }
 
 /// Class-state ownership during one dispatch interval.
@@ -91,6 +179,10 @@ impl CurrentDispatch {
         }
     }
 
+    pub(crate) const fn is_linked(&self) -> bool {
+        matches!(self.class.schedule, Some(CurrentClassState::Linked { .. }))
+    }
+
     pub(crate) fn owned_base_scheduling_entity_ref(&self) -> Option<&SchedulingEntity> {
         match self.schedule() {
             CurrentClassState::Owned(active) => Some(active.base_entity()),
@@ -123,6 +215,34 @@ impl CurrentDispatch {
         }
     }
 
+    /// Transfers the runtime-core pin together with rq-owned class state.
+    ///
+    /// A linked RT/Deadline current has no detached class entity, but the same
+    /// `rq->curr` record still owns the runtime-core reference needed by the
+    /// switch handoff. Consuming both from one record avoids reacquiring that
+    /// reference while the owner rq lock is held.
+    pub(crate) fn into_runtime_core_and_active(
+        self,
+    ) -> (Arc<ThreadCore>, Option<ActiveSchedulingState>) {
+        let Self {
+            task,
+            class,
+            accounting: _,
+            remote_publication: _,
+        } = self;
+        let active = match class
+            .schedule
+            .expect("rq transaction must reinstall current class state")
+        {
+            CurrentClassState::Owned(active) => Some(active),
+            CurrentClassState::Linked { .. } => None,
+        };
+        let runtime_core = task
+            .runtime_owner
+            .expect("owned current must retain its runtime core");
+        (runtime_core, active)
+    }
+
     /// Converts an unlinked current dispatch into one rq-owned queued task.
     ///
     /// The complete task-control snapshot travels with the active entity, so
@@ -132,6 +252,7 @@ impl CurrentDispatch {
             task,
             class,
             accounting: _,
+            remote_publication: _,
         } = self;
         if class.role != DispatchRole::Task {
             return None;
@@ -143,14 +264,18 @@ impl CurrentDispatch {
             CurrentClassState::Owned(active) => active,
             CurrentClassState::Linked { .. } => return None,
         };
-        let migration_capable = task.metadata.affinity.is_migration_capable();
+        let runtime_core = task
+            .runtime_owner
+            .expect("unlinked current must own its runtime core");
+        let metadata = task.metadata;
+        let migration_capable = metadata.affinity.is_migration_capable();
         Some(QueuedThread::new(
             task.thread,
             active,
-            task.runtime_core,
+            runtime_core,
             class.rt_quota_exempt,
             migration_capable,
-            task.metadata,
+            metadata,
         ))
     }
 
@@ -169,11 +294,38 @@ impl CurrentDispatch {
         }
     }
 
-    pub(crate) fn install_reclassified_schedule(&mut self, schedule: CurrentClassState) {
+    pub(crate) fn install_reclassified_schedule(
+        &mut self,
+        schedule: CurrentClassState,
+        runtime_owner: Option<Arc<ThreadCore>>,
+    ) {
         if matches!(self.class.schedule, Some(CurrentClassState::Owned(_))) {
             panic!("owned current must transfer its entity before reclassification");
         }
+        if let Some(owner) = runtime_owner.as_ref() {
+            assert!(
+                core::ptr::eq(Arc::as_ptr(owner), self.task.runtime_core.0.as_ptr()),
+                "reclassification must preserve current runtime identity"
+            );
+        } else if !matches!(schedule, CurrentClassState::Linked { .. }) {
+            panic!("an unlinked current must retain its runtime core");
+        }
+        self.task.runtime_owner = runtime_owner;
         self.class.schedule = Some(schedule);
+        self.refresh_remote_publication();
+    }
+
+    pub(crate) fn retain_runtime_core_before_unlink(&mut self, runtime_core: Arc<ThreadCore>) {
+        assert!(
+            core::ptr::eq(
+                Arc::as_ptr(&runtime_core),
+                self.task.runtime_core.0.as_ptr()
+            ),
+            "unlink must preserve current runtime identity"
+        );
+        if self.task.runtime_owner.replace(runtime_core).is_some() {
+            panic!("unlinked current must not replace an existing runtime owner");
+        }
     }
 
     /// Refreshes task-control metadata after an in-place class transition.
@@ -188,13 +340,15 @@ impl CurrentDispatch {
     ) {
         self.task.metadata = metadata;
         self.class.rt_quota_exempt = rt_quota_exempt;
+        self.refresh_remote_publication();
     }
 
     pub(crate) fn update_affinity(&mut self, affinity: Arc<CpuSet>) {
         self.task.metadata.affinity = affinity;
+        self.refresh_remote_publication();
     }
 
-    pub(crate) const fn metadata(&self) -> &RqTaskMetadata {
+    pub(crate) fn metadata(&self) -> &RqTaskMetadata {
         &self.task.metadata
     }
 
@@ -218,21 +372,27 @@ impl CurrentDispatch {
         }
     }
 
-    pub(crate) fn new(
-        state: CurrentDispatchState,
-        runtime_core: &Arc<ThreadCore>,
+    #[inline(always)]
+    pub(crate) fn owned(
+        runtime_core: Arc<ThreadCore>,
+        active: ActiveSchedulingState,
+        metadata: RqTaskMetadata,
+        rt_quota_exempt: bool,
         now: RqTaskTime,
     ) -> Self {
         let now_ns = now.as_nanos();
+        let remote_publication = CurrentRemotePublication::task(active.policy(), &metadata);
+        let runtime_core_ref = SchedulerThreadRef::from_arc(&runtime_core);
         Self {
             task: CurrentTaskIdentity {
-                thread: state.thread,
-                runtime_core: Arc::clone(runtime_core),
-                metadata: state.metadata,
+                thread: runtime_core.id(),
+                runtime_core: runtime_core_ref,
+                runtime_owner: Some(runtime_core),
+                metadata,
             },
             class: CurrentClassDispatch {
-                schedule: Some(state.schedule),
-                rt_quota_exempt: state.rt_quota_exempt,
+                schedule: Some(CurrentClassState::Owned(active)),
+                rt_quota_exempt,
                 deadline_overrun: false,
                 role: DispatchRole::Task,
             },
@@ -240,18 +400,50 @@ impl CurrentDispatch {
                 accounted_until_ns: now_ns,
                 charged_runtime_ns: 0,
             },
+            remote_publication,
         }
     }
 
-    pub(crate) fn switch_endpoint(&self) -> SwitchEndpoint {
+    #[inline(always)]
+    pub(crate) fn linked(
+        thread: ThreadId,
+        runtime_core: &ThreadCore,
+        policy: SchedulePolicy,
+        metadata: RqTaskMetadata,
+        rt_quota_exempt: bool,
+        remote_publication: CurrentRemotePublication,
+        now: RqTaskTime,
+    ) -> Self {
+        Self {
+            task: CurrentTaskIdentity {
+                thread,
+                runtime_core: SchedulerThreadRef::from_ref(runtime_core),
+                runtime_owner: None,
+                metadata,
+            },
+            class: CurrentClassDispatch {
+                schedule: Some(CurrentClassState::Linked { policy }),
+                rt_quota_exempt,
+                deadline_overrun: false,
+                role: DispatchRole::Task,
+            },
+            accounting: CurrentRuntimeAccounting {
+                accounted_until_ns: now.as_nanos(),
+                charged_runtime_ns: 0,
+            },
+            remote_publication,
+        }
+    }
+
+    pub(crate) fn switch_endpoint_with_core(&self, runtime_core: &ThreadCore) -> SwitchEndpoint {
         SwitchEndpoint::new(
             self.task.thread,
             self.task.metadata.runtime_binding,
-            self.task.runtime_core.extension_view(),
+            runtime_core.extension_view(),
         )
     }
 
-    pub(crate) const fn address_space(&self) -> crate::runtime::AddressSpaceHandle {
+    pub(crate) fn address_space(&self) -> crate::runtime::AddressSpaceHandle {
         self.task.metadata.runtime_binding.address_space()
     }
 
@@ -259,9 +451,22 @@ impl CurrentDispatch {
         self.task.metadata.runtime_binding = binding;
     }
 
-    pub(crate) const fn with_role(mut self, role: DispatchRole) -> Self {
+    pub(crate) fn with_role(mut self, role: DispatchRole) -> Self {
         self.class.role = role;
+        self.refresh_remote_publication();
         self
+    }
+
+    pub(crate) const fn remote_publication(&self) -> CurrentRemotePublication {
+        self.remote_publication
+    }
+
+    fn refresh_remote_publication(&mut self) {
+        self.remote_publication = if self.is_dedicated_idle() {
+            CurrentRemotePublication::IDLE
+        } else {
+            CurrentRemotePublication::task(self.schedule_policy(), &self.task.metadata)
+        };
     }
 
     pub(crate) const fn rt_quota_exempt(&self) -> bool {
@@ -269,15 +474,11 @@ impl CurrentDispatch {
     }
 
     pub(crate) fn runtime_core(&self) -> &ThreadCore {
-        &self.task.runtime_core
+        self.task.runtime_core.as_ref()
     }
 
-    pub(crate) fn runtime_core_arc(&self) -> &Arc<ThreadCore> {
-        &self.task.runtime_core
-    }
-
-    pub(crate) fn deadline_overrun_core(&self) -> Arc<ThreadCore> {
-        Arc::clone(&self.task.runtime_core)
+    pub(crate) fn clone_runtime_core(&self) -> Arc<ThreadCore> {
+        self.task.runtime_core.clone_arc()
     }
 
     /// Returns the remaining task-clock budget for the running class.

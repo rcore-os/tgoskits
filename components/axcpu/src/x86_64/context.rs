@@ -510,6 +510,23 @@ impl ExtendedState {
     #[inline]
     pub fn save(&mut self) {
         let ptr = &mut self.area as *mut _ as *mut u8;
+        #[cfg(feature = "uspace")]
+        if let Some((mask, xsaveopt_enabled)) = super::local_state::current_cpu_user_xsave_config()
+        {
+            // SAFETY: the CPU-local mask is the XCR0 value installed during
+            // this CPU's userspace initialization, and the task area is a
+            // standard 64-byte-aligned XSAVE image. Linux likewise selects
+            // XSAVEOPT once from boot CPU capabilities and otherwise uses
+            // the architectural XSAVE fallback.
+            unsafe {
+                if xsaveopt_enabled {
+                    core::arch::x86_64::_xsaveopt64(ptr, mask)
+                } else {
+                    core::arch::x86_64::_xsave64(ptr, mask)
+                }
+            }
+            return;
+        }
         if Self::xsave_enabled() {
             // SAFETY: `area` is 64-byte aligned and large enough for the
             // XCR0-enabled state (x87/SSE/AVX); the mask matches XCR0.
@@ -524,6 +541,14 @@ impl ExtendedState {
     #[inline]
     pub fn restore(&self) {
         let ptr = &self.area as *const _ as *const u8;
+        #[cfg(feature = "uspace")]
+        if let Some((mask, _)) = super::local_state::current_cpu_user_xsave_config() {
+            // SAFETY: the image and per-CPU mask obey the same contract as
+            // save(), and XRSTOR consumes the standard non-compacted format
+            // produced by XSAVE or XSAVEOPT.
+            unsafe { core::arch::x86_64::_xrstor64(ptr, mask) }
+            return;
+        }
         if Self::xsave_enabled() {
             // SAFETY: `area` was populated by `_xsave64` (or zero-initialized,
             // which XRSTOR reads as the components' initial state) with a header

@@ -20,6 +20,7 @@ host-test = [
   "ax-percpu/host-test",
   "cpu-local/host-test",
 ]
+irq-time-accounting = []
 ipi = ["dep:ax-ipi", "ax-hal/ipi"]
 # Scheduler-only users still share ax-ipi's typed, coalescible physical edge;
 # logical pending state remains in ax-task.

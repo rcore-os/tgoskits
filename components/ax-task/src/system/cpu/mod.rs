@@ -19,8 +19,8 @@ use core::{
 
 pub(crate) use clock::{RqTaskTime, RunQueueClock, RunQueueClockSnapshot};
 pub(crate) use dispatch::{
-    CurrentClassState, CurrentDispatch, CurrentDispatchState, DispatchCharge, DispatchRole,
-    SwitchHandoff,
+    CurrentClassState, CurrentDispatch, CurrentRemotePublication, DispatchCharge, DispatchRole,
+    PreviousSwitchDisposition, SchedulerThreadRef, SwitchHandoff,
 };
 pub use load::{CpuLoadSummary, DeadlineBandwidthSnapshot, SchedulingClass};
 use load::{SUMMARY_FAIR_IDLE_ONLY, SUMMARY_FAIR_PUSHABLE};
@@ -49,7 +49,7 @@ use crate::{
     lock::{IrqOwner, IrqScope, IrqTicketGuard, IrqTicketLock, RawTicketBaton},
     runtime::{
         AddressSpaceMembarrierState, MonotonicDeadline, MonotonicInstant, RuntimeCpuId,
-        RuntimeStatus, SchedulerDeadlineUpdate, task_runtime,
+        RuntimeStatus, SchedulerDeadlineUpdate, SchedulerRuntimeDeadline, task_runtime,
     },
     thread::ThreadCore,
     timer::{

@@ -32,20 +32,10 @@ const SWITCH_OUT_PROBE_WINDOW: Duration = Duration::from_millis(250);
 const SWITCH_OUT_SPIN_LIMIT: usize = 100_000_000;
 const TEST_STACK_SIZE: usize = 256 * 1024;
 
-unsafe extern "Rust" fn ignore_switch_in(
-    _data: usize,
-    _thread: ThreadId,
-    _policy: SchedulePolicy,
-    _observed_ns: u64,
-) {
+unsafe extern "Rust" fn ignore_switch_in(_data: usize, _thread: ThreadId, _policy: SchedulePolicy) {
 }
 
-unsafe extern "Rust" fn stall_switch_out(
-    _data: usize,
-    _thread: ThreadId,
-    _reason: SwitchReason,
-    _observed_ns: u64,
-) {
+unsafe extern "Rust" fn stall_switch_out(_data: usize, _thread: ThreadId, _reason: SwitchReason) {
     if STALL_ARMED.swap(false, Ordering::AcqRel) {
         STALL_ENTERED.store(true, Ordering::Release);
         // This fixed upper-bounded atomic probe holds the switch-out baton long

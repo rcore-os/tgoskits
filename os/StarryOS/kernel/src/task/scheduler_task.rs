@@ -928,7 +928,6 @@ unsafe extern "Rust" fn starry_user_task_switch_in(
     data: usize,
     thread: scheduler::ThreadId,
     base_policy: scheduler::SchedulePolicy,
-    observed_ns: u64,
 ) {
     let extension = unsafe { extension_data_from_raw(data) };
     // SAFETY: scheduler extension hooks run with local IRQs disabled from the
@@ -938,7 +937,7 @@ unsafe extern "Rust" fn starry_user_task_switch_in(
             CURRENT_USER_EXTENSION.write_current(pin, data);
             extension
                 .thread
-                .scheduler_switch_in(thread, is_realtime_policy(base_policy), observed_ns, pin);
+                .scheduler_switch_in(thread, is_realtime_policy(base_policy), pin);
         })
         .unwrap_or_else(|_| panic!("Starry switch-in has no bound per-CPU area"));
     }
@@ -948,14 +947,13 @@ unsafe extern "Rust" fn starry_user_task_switch_out(
     data: usize,
     _thread: scheduler::ThreadId,
     reason: scheduler::SwitchReason,
-    observed_ns: u64,
 ) {
     let extension = unsafe { extension_data_from_raw(data) };
     // SAFETY: scheduler extension hooks run with local IRQs disabled from the
     // final switch baton, which pins this scoped callback to the owner CPU.
     unsafe {
         ax_runtime::hal::percpu::with_cpu_pin(|pin| {
-            extension.thread.scheduler_switch_out(reason, observed_ns, pin);
+            extension.thread.scheduler_switch_out(reason, pin);
             let current = CURRENT_USER_EXTENSION.read_current(pin);
             if current != data {
                 panic!("Starry switch-out does not own the current-user slot");
@@ -1151,7 +1149,6 @@ mod tests {
         _data: usize,
         _thread: scheduler::ThreadId,
         _policy: scheduler::SchedulePolicy,
-        _observed_ns: u64,
     ) {
     }
 
@@ -1159,7 +1156,6 @@ mod tests {
         _data: usize,
         _thread: scheduler::ThreadId,
         _reason: scheduler::SwitchReason,
-        _observed_ns: u64,
     ) {
     }
 

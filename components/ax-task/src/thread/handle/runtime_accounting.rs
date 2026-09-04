@@ -8,11 +8,13 @@ impl ThreadCore {
         if runtime_ns == 0 {
             return;
         }
+        // Exactly one rq owns this task's on_cpu interval. Migration cannot
+        // start the next interval until switch tail publishes the previous
+        // one, so this is a single-writer counter; remote snapshots are
+        // readers, not competing writers.
+        let committed = self.committed_runtime_ns.load(Ordering::Relaxed);
         self.committed_runtime_ns
-            .try_update(Ordering::Release, Ordering::Relaxed, |committed| {
-                Some(committed.saturating_add(runtime_ns))
-            })
-            .expect("runtime commit update always supplies a value");
+            .store(committed.saturating_add(runtime_ns), Ordering::Release);
     }
 
     pub(crate) fn runtime_snapshot(

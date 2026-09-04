@@ -204,14 +204,20 @@ impl LocalClockEvent {
         &mut self,
         generation: u64,
         deadline: Option<MonotonicDeadline>,
-        runtime_deadline: Option<MonotonicDeadline>,
     ) -> ClockEventAction {
         if generation <= self.scheduler_generation {
             return ClockEventAction::None;
         }
         self.scheduler_generation = generation;
         self.scheduler_deadline = deadline.map(ClockDeadline::from_monotonic);
-        self.runtime_deadline = runtime_deadline.map(ClockDeadline::from_monotonic);
+        self.reconcile_scheduler_publication()
+    }
+
+    pub(crate) fn publish_runtime_deadline(
+        &mut self,
+        deadline: Option<MonotonicDeadline>,
+    ) -> ClockEventAction {
+        self.runtime_deadline = deadline.map(ClockDeadline::from_monotonic);
         self.reconcile_scheduler_publication()
     }
 
@@ -244,6 +250,15 @@ impl LocalClockEvent {
             "an armed clockevent must own an observable physical source"
         );
         let logical_deadline_elapsed = self.has_immediate_work(now);
+        let scheduler_deadline_elapsed = self
+            .runtime_deadline
+            .is_some_and(|deadline| now.reached(deadline.as_monotonic()));
+        if scheduler_deadline_elapsed {
+            // Linux removes the expired hrtick from the active hrtimer base
+            // before running its callback. The scheduler will publish the
+            // next rq-owned runtime edge, if any, before IRQs are restored.
+            self.runtime_deadline = None;
+        }
         self.armed_deadline = None;
         if device_quiesce_required {
             self.device_state = ClockEventDeviceState::Stopped;
@@ -257,9 +272,7 @@ impl LocalClockEvent {
                 ClockEventAction::None
             },
             logical_deadline_elapsed,
-            scheduler_deadline_elapsed: self
-                .runtime_deadline
-                .is_some_and(|deadline| now.reached(deadline.as_monotonic())),
+            scheduler_deadline_elapsed,
         })
     }
 
@@ -357,12 +370,14 @@ impl LocalClockEvent {
             SchedulerTickState::Running { next } => Some(next),
             SchedulerTickState::Stopped { .. } => None,
         };
-        match (scheduler_tick, self.scheduler_deadline) {
-            (Some(periodic), Some(task)) => Some(periodic.min(task)),
-            (Some(periodic), None) => Some(periodic),
-            (None, Some(task)) => Some(task),
-            (None, None) => None,
-        }
+        [
+            scheduler_tick,
+            self.scheduler_deadline,
+            self.runtime_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn reconcile_arm(&mut self) -> ClockEventAction {

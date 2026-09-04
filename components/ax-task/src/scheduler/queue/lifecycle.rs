@@ -35,6 +35,7 @@ impl RunQueue {
             .fixed_placement_demand
             .saturating_add(fixed_placement_demand(policy));
         self.refresh_class_pushable(id, self.linked_current());
+        self.mark_publication_dirty();
         entity
     }
 
@@ -57,6 +58,7 @@ impl RunQueue {
             .saturating_sub(fixed_placement_demand(thread.active.policy()));
         self.unregister_membership(id);
         self.refresh_class_pushable(id, self.linked_current());
+        self.mark_publication_dirty();
         Some(thread)
     }
 
@@ -89,6 +91,7 @@ impl RunQueue {
             .nr_running
             .checked_sub(1)
             .expect("delayed class boundary must remove one rq->nr_running entity");
+        self.mark_publication_dirty();
     }
 
     /// Installs a blocked delayed Fair entity transferred from another rq.
@@ -165,6 +168,7 @@ impl RunQueue {
         self.unregister_membership(id);
         self.refresh_class_pushable(id, self.linked_current());
         self.update_fair_virtual_time(None);
+        self.mark_publication_dirty();
         Some(thread)
     }
 
@@ -182,6 +186,7 @@ impl RunQueue {
             .fair
             .reactivate_delayed(id, current_fair, timing_granularity_ns)?;
         self.refresh_class_pushable(id, self.linked_current());
+        self.mark_publication_dirty();
         Some(entity)
     }
 
@@ -208,11 +213,16 @@ impl RunQueue {
         ) {
             self.nr_running += 1;
         }
-        self.fixed_placement_demand = self
-            .fixed_placement_demand
-            .saturating_add(fixed_placement_demand(policy));
+        if !matches!(reason, EnqueueReason::Preempted | EnqueueReason::Yield) {
+            self.fixed_placement_demand = self
+                .fixed_placement_demand
+                .saturating_add(fixed_placement_demand(policy));
+        }
         self.register_membership(id, membership_class);
         self.refresh_class_pushable(id, self.linked_current());
+        if !matches!(reason, EnqueueReason::Preempted | EnqueueReason::Yield) {
+            self.mark_publication_dirty();
+        }
         Ok(queued_entity)
     }
 
@@ -249,7 +259,9 @@ impl RunQueue {
         else {
             return Err(TaskError::InvalidConfiguration);
         };
+        self.retain_current_runtime_core_before_unlink(id);
         let thread = self.deadline.remove(key).ok_or(TaskError::NotReady)?;
+        let policy = thread.active.policy();
         let entity = thread.active.entity().clone();
         self.deadline.install_throttled(thread)?;
         self.replace_membership_class(id, QueueMembershipClass::DeadlineThrottled);
@@ -257,6 +269,10 @@ impl RunQueue {
             .nr_running
             .checked_sub(1)
             .ok_or(TaskError::InvalidConfiguration)?;
+        self.fixed_placement_demand = self
+            .fixed_placement_demand
+            .saturating_sub(fixed_placement_demand(policy));
+        self.mark_publication_dirty();
         Ok(entity)
     }
 
@@ -289,6 +305,7 @@ impl RunQueue {
             .fixed_placement_demand
             .saturating_add(fixed_placement_demand(policy));
         self.deadline.refresh_pushable(id, self.linked_current());
+        self.mark_publication_dirty();
         Ok(())
     }
 
@@ -336,18 +353,17 @@ impl RunQueue {
         if class == QueueMembershipClass::DeadlineThrottled {
             let thread = self.deadline.take_throttled(id)?;
             self.unregister_membership(id);
+            self.mark_publication_dirty();
             return Some(thread);
         }
-        let was_linked_current = self.linked_current() == Some(id);
+        self.retain_current_runtime_core_before_unlink(id);
         let scheduler_class = class.scheduler_class();
         let removed = scheduler_class
             .dequeue_task(self, class, id)
             .expect("runqueue membership must identify a linked scheduling entity");
-        if !was_linked_current {
-            self.fixed_placement_demand = self
-                .fixed_placement_demand
-                .saturating_sub(fixed_placement_demand(removed.active.policy()));
-        }
+        self.fixed_placement_demand = self
+            .fixed_placement_demand
+            .saturating_sub(fixed_placement_demand(removed.active.policy()));
         self.unregister_membership(removed.id);
         self.refresh_class_pushable(removed.id, self.linked_current());
         if deactivate {
@@ -356,7 +372,24 @@ impl RunQueue {
                 .checked_sub(1)
                 .expect("deactivate_task must match one runnable entity");
         }
+        self.mark_publication_dirty();
         Some(removed)
+    }
+
+    fn retain_current_runtime_core_before_unlink(&mut self, id: ThreadId) {
+        if self.linked_current() != Some(id) {
+            return;
+        }
+        let runtime_core = Arc::clone(
+            &self
+                .linked_current_thread(id)
+                .expect("linked current membership must identify its rq node")
+                .core,
+        );
+        self.current
+            .as_mut()
+            .expect("linked current membership must match rq->curr")
+            .retain_runtime_core_before_unlink(runtime_core);
     }
 
     /// Linux `deactivate_task()`: removes one runnable entity from `nr_running`.
@@ -382,6 +415,17 @@ impl RunQueue {
     /// Returns whether `id` is the RT/DL entity retained as current.
     pub(crate) fn is_linked_current(&self, id: ThreadId) -> bool {
         self.linked_current() == Some(id)
+    }
+
+    pub(crate) fn linked_current_thread(&self, id: ThreadId) -> Option<&QueuedThread> {
+        if self.linked_current() != Some(id) {
+            return None;
+        }
+        match self.membership_class(id)? {
+            QueueMembershipClass::Deadline(key) => self.deadline.get(key),
+            QueueMembershipClass::Realtime(key) => self.rt.get(key),
+            _ => None,
+        }
     }
 
     pub(crate) fn linked_current_entity_mut(
@@ -456,6 +500,7 @@ impl RunQueue {
             .put_prev_current(key)
             .ok_or(TaskError::NotReady)?;
         self.replace_membership_class(id, QueueMembershipClass::Deadline(new_key));
+        self.mark_publication_dirty();
         Ok(self.deadline.first().is_some_and(|thread| thread.id != id))
     }
 
@@ -487,11 +532,7 @@ impl RunQueue {
             return Err(TaskError::InvalidConfiguration);
         }
         let id = thread.id;
-        let policy = thread.active.policy();
         self.enqueue_task(thread, EnqueueReason::PolicyChanged, None)?;
-        self.fixed_placement_demand = self
-            .fixed_placement_demand
-            .saturating_sub(fixed_placement_demand(policy));
         self.refresh_class_pushable(id, Some(id));
         Ok(())
     }

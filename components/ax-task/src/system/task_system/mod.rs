@@ -79,12 +79,11 @@ use crate::{
         RuntimeStatus, task_runtime,
     },
     system::cpu::{
-        CpuRunQueueState, CurrentClassState, CurrentDispatch, CurrentDispatchState,
-        DeadlineBaseGuardSource, EqualRtWakeAction, HardTimerServiceClaim, HardTimerServiceStep,
-        IdlePullReservation, KtimerServiceClaim, OwnerRqEntry, OwnerRqTxn,
-        PreparedMigrationDelivery, RescheduleKind, RqTaskTime, RunQueueClockSnapshot,
+        CpuRunQueueState, CurrentDispatch, DeadlineBaseGuardSource, EqualRtWakeAction,
+        HardTimerServiceClaim, HardTimerServiceStep, IdlePullReservation, KtimerServiceClaim,
+        OwnerRqEntry, OwnerRqTxn, PreparedMigrationDelivery, RescheduleKind, RunQueueClockSnapshot,
         RunQueueDomainPublication, RunQueueGuardSource, SchedulerDeadlineRqObservation,
-        SchedulerRequestScope, SoftTimerExpireBatch, WakePreemptionDecision,
+        SchedulerRequestScope, SchedulerThreadRef, SoftTimerExpireBatch, WakePreemptionDecision,
     },
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{
@@ -214,7 +213,20 @@ fn pi_reuses_base_entity(base: SchedulePolicy, effective: SchedulePolicy) -> boo
 }
 
 struct OwnerNext {
-    core: Arc<ThreadCore>,
+    core: SchedulerThreadRef,
+    policy: SchedulePolicy,
+    urgency: SchedulingUrgency,
+}
+
+/// Scheduler-clock consequence of one committed owner selection.
+///
+/// Linux updates hrtick and class timers only when the selected classes or
+/// their deadline-bearing state changed. A plain FIFO-to-FIFO rotation has no
+/// per-task clockevent, so it carries an explicit unchanged result instead of
+/// re-deriving every shared deadline after each context switch.
+enum OwnerSchedulerDeadline {
+    Unchanged,
+    Reevaluate(SchedulerDeadlineRqObservation),
 }
 
 impl<'system> UnpublishedThreadGuard<'system> {

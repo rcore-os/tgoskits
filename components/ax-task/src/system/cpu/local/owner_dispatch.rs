@@ -98,8 +98,8 @@ impl CpuLocal {
     pub(crate) unsafe fn scheduler_current_lifecycle_state(&self) -> Option<ThreadState> {
         // SAFETY: forwarded from this method's scheduler-frame contract.
         unsafe { self.remote.lock_run_queue_irq_disabled() }
-            .current()
-            .map(|dispatch| dispatch.runtime_core().state())
+            .current_core_ref()
+            .map(ThreadCore::state)
     }
 
     /// Reads the scheduler-selected logical address space for `thread`.
@@ -146,75 +146,15 @@ impl CpuLocal {
         fields.remote.publish_idle_thread(idle);
     }
 
-    pub(crate) fn stage_switch_handoff(
+    pub(crate) fn install_switch_handoff(
         self: Pin<&mut Self>,
-        previous: Arc<ThreadCore>,
-        incoming: Arc<ThreadCore>,
-        migration: Option<PreparedMigrationDelivery>,
+        prepared: SwitchHandoff,
     ) -> Result<(), TaskError> {
         let handoff = &mut self.dispatch_state_mut().switch_handoff;
         if handoff.is_some() {
             return Err(TaskError::InvalidConfiguration);
         }
-        *handoff = Some(SwitchHandoff::prepared(previous, incoming, migration));
-        Ok(())
-    }
-
-    pub(crate) fn install_switch_rq_baton(
-        self: Pin<&mut Self>,
-        baton: RqSwitchBaton,
-    ) -> Result<(), TaskError> {
-        if baton.owner() != self.owner() {
-            return Err(TaskError::InvalidConfiguration);
-        }
-        self.dispatch_state_mut()
-            .switch_handoff
-            .as_mut()
-            .ok_or(TaskError::InvalidConfiguration)?
-            .install_rq_baton(baton)
-    }
-
-    pub(crate) fn finish_switch_rq_baton(
-        self: Pin<&mut Self>,
-        previous: ThreadId,
-    ) -> Result<bool, TaskError> {
-        let owner = self.owner();
-        let handoff = self
-            .dispatch_state_mut()
-            .switch_handoff
-            .as_mut()
-            .ok_or(TaskError::InvalidConfiguration)?;
-        if handoff.previous().id() != previous {
-            return Err(TaskError::InvalidConfiguration);
-        }
-        let Some(baton) = handoff.take_rq_baton() else {
-            return Ok(false);
-        };
-        baton.finish(owner)?;
-        Ok(true)
-    }
-
-    pub(crate) fn finish_switch_runtime_tail(
-        mut self: Pin<&mut Self>,
-        previous: ThreadId,
-        migration_target: Option<CpuId>,
-        reclaim_ready: bool,
-        switch_timestamp_ns: u64,
-    ) -> Result<(), TaskError> {
-        let handoff = self
-            .as_mut()
-            .dispatch_state_mut()
-            .switch_handoff
-            .take()
-            .ok_or(TaskError::InvalidConfiguration)?;
-        if handoff.previous().id() != previous
-            || handoff.migration_target() != migration_target
-            || handoff.runtime_tail_is_finished()
-        {
-            return Err(TaskError::InvalidConfiguration);
-        }
-        self.dispatch_state_mut().switch_handoff =
-            Some(handoff.finish_runtime_tail(reclaim_ready, switch_timestamp_ns)?);
+        *handoff = Some(prepared);
         Ok(())
     }
 

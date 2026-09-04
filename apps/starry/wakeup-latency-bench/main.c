@@ -29,6 +29,7 @@ enum bench_case {
     BENCH_CASE_PROCESS_FUTEX_CROSS_CPU,
     BENCH_CASE_ABSOLUTE_TIMER_SAME_CPU,
     BENCH_CASE_CLOCK_PAIR,
+    BENCH_CASE_GETPID,
     BENCH_CASE_FUTEX_WAIT_MISMATCH,
     BENCH_CASE_FUTEX_WAKE_EMPTY,
     BENCH_CASE_SCHED_YIELD_NO_PEER,
@@ -48,7 +49,7 @@ static void print_usage(const char *program)
             "usage: %s [--policy all|other|fifo] "
             "[--case all|thread_futex_same_cpu|thread_futex_cross_cpu|"
             "process_futex_cross_cpu|absolute_timer_same_cpu|clock_pair|"
-            "futex_wait_mismatch|futex_wake_empty|sched_yield_no_peer|"
+            "getpid|futex_wait_mismatch|futex_wake_empty|sched_yield_no_peer|"
             "sched_yield_handoff|scheduler_baselines]\n",
             program);
 }
@@ -84,6 +85,8 @@ static int parse_case(const char *value, struct bench_selection *selection)
         selection->bench_case = BENCH_CASE_ABSOLUTE_TIMER_SAME_CPU;
     } else if (strcmp(value, "clock_pair") == 0) {
         selection->bench_case = BENCH_CASE_CLOCK_PAIR;
+    } else if (strcmp(value, "getpid") == 0) {
+        selection->bench_case = BENCH_CASE_GETPID;
     } else if (strcmp(value, "futex_wait_mismatch") == 0) {
         selection->bench_case = BENCH_CASE_FUTEX_WAIT_MISMATCH;
     } else if (strcmp(value, "futex_wake_empty") == 0) {
@@ -359,6 +362,11 @@ static int run_benchmark(const struct bench_selection *selection)
 
         if (case_selected(selection, BENCH_CASE_CLOCK_PAIR) &&
             run_latency_case(policy, "clock_pair", bench_clock_pair) != 0) {
+            return 1;
+        }
+
+        if (scheduler_case_selected(selection, BENCH_CASE_GETPID) &&
+            run_latency_case(policy, "getpid", bench_getpid) != 0) {
             return 1;
         }
 

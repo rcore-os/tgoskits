@@ -5,5 +5,7 @@ mod current;
 mod handoff;
 
 pub(crate) use accounting::DispatchCharge;
-pub(crate) use current::{CurrentClassState, CurrentDispatch, CurrentDispatchState, DispatchRole};
-pub(crate) use handoff::SwitchHandoff;
+pub(crate) use current::{
+    CurrentClassState, CurrentDispatch, CurrentRemotePublication, DispatchRole, SchedulerThreadRef,
+};
+pub(crate) use handoff::{PreviousSwitchDisposition, SwitchHandoff};

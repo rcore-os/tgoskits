@@ -138,14 +138,12 @@ impl CpuRemote {
         let current_placement_demand = current
             .filter(|_| current_non_idle)
             .map_or(0, CurrentDispatch::placement_demand);
-        // The placement demand is the same queued Fair weight plus the
-        // fixed-class contribution.  Keep one Fair-tree read per publication
-        // instead of traversing the same aggregate twice on every rq commit.
+        // Linux keeps fixed-class runnable load inclusive of `rq->curr`.
+        // Fair current remains outside its EEVDF tree and is added to that
+        // class's queued aggregate exactly once.
         let queued_fair_demand = run_queue.fair_demand();
         let fair_demand = queued_fair_demand.saturating_add(current_fair_demand);
-        let workload_demand = queued_fair_demand
-            .saturating_add(run_queue.fixed_placement_demand())
-            .saturating_add(current_placement_demand);
+        let workload_demand = fair_demand.saturating_add(run_queue.fixed_placement_demand());
         let rt_wake_donor = current
             .filter(|_| current_non_idle)
             .and_then(|current| {

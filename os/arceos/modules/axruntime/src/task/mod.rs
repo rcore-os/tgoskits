@@ -159,7 +159,9 @@ use resources::runtime_tls_pointer;
 use resources::{
     allocate_runtime_stack, allocate_runtime_tls, deallocate_runtime_stack, deallocate_runtime_tls,
 };
-pub use runtime_impl::{SchedSwitchTraceHook, install_sched_switch_trace_hook};
+pub use runtime_impl::{
+    SchedSwitchTraceHook, install_sched_switch_trace_hook, publish_sched_switch_trace_gate,
+};
 pub use scheduler_events::timer_irq_count;
 #[cfg(feature = "qperf-metrics")]
 pub use scheduler_events::{

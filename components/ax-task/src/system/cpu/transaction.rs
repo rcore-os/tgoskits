@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     BalanceScan, EnqueueReason, FairEntity, PickTaskResult, PickedThread, QueuedThreadSnapshot,
-    RtEligibility,
+    RtEligibility, SchedulingUrgency,
     system::{
         task_system::{SwitchEndpoint, TaskSystem},
         thread_sched::{SchedulerPlacement, ThreadSchedCell, ThreadSchedState},
@@ -89,6 +89,7 @@ impl OwnerRqEntry {
     /// # Safety
     ///
     /// `SchedulerFrame` requires an active IRQ-off runtime scheduler baton.
+    #[inline(always)]
     pub(crate) unsafe fn begin<'a>(
         self,
         system: &'a TaskSystem,
@@ -132,10 +133,6 @@ pub(crate) struct RqSwitchBaton {
 }
 
 impl RqSwitchBaton {
-    pub(crate) const fn owner(&self) -> CpuId {
-        self.owner
-    }
-
     pub(crate) fn finish(self, owner: CpuId) -> Result<(), TaskError> {
         if self.owner != owner {
             return Err(TaskError::InvalidConfiguration);
@@ -207,11 +204,28 @@ impl<'a> OwnerRqTxn<'a> {
     ///
     /// The scheduler IRQ-off baton must outlive this transaction.
     pub(crate) unsafe fn begin_scheduler(system: &'a TaskSystem, remote: &'a CpuRemote) -> Self {
+        #[cfg(feature = "qperf-metrics")]
+        let rq_lock_started_ns = task_runtime::monotonic_now().as_nanos();
         // SAFETY: forwarded from this constructor's contract.
         let mut run_queue = unsafe { remote.lock_run_queue_irq_disabled() };
+        #[cfg(feature = "qperf-metrics")]
+        let rq_lock_finished_ns = task_runtime::monotonic_now().as_nanos();
         let clock = run_queue.update_clock();
         #[cfg(feature = "qperf-metrics")]
-        crate::metrics::record_owner_rq_scheduler_transaction();
+        {
+            let rq_clock_finished_ns = task_runtime::monotonic_now().as_nanos();
+            crate::metrics::qperf_record_switch_scheduler_detail(
+                13,
+                rq_lock_started_ns,
+                rq_lock_finished_ns,
+            );
+            crate::metrics::qperf_record_switch_scheduler_detail(
+                14,
+                rq_lock_finished_ns,
+                rq_clock_finished_ns,
+            );
+            crate::metrics::record_owner_rq_scheduler_transaction();
+        }
         Self {
             system,
             remote,
@@ -306,6 +320,17 @@ impl<'a> OwnerRqTxn<'a> {
         self.run_queue().current_scheduling_entity()
     }
 
+    /// Returns the current class urgency from the rq-owned scheduling state.
+    pub(crate) fn current_scheduling_urgency(&self) -> Option<SchedulingUrgency> {
+        let policy = self.current()?.schedule_policy();
+        if matches!(policy, SchedulePolicy::Deadline(_)) {
+            self.current_scheduling_entity()
+                .map(|entity| entity.scheduling_urgency(policy))
+        } else {
+            Some(policy.scheduling_urgency())
+        }
+    }
+
     pub(crate) fn current_fair_contender(&self) -> Option<FairEntity> {
         self.run_queue().current_fair_contender()
     }
@@ -393,10 +418,12 @@ impl<'a> OwnerRqTxn<'a> {
         self.run_queue().current_core()
     }
 
+    pub(crate) fn current_core_ref(&self) -> Option<&ThreadCore> {
+        self.run_queue().current_core_ref()
+    }
+
     pub(crate) fn current_switch_endpoint(&self) -> Option<SwitchEndpoint> {
-        self.run_queue()
-            .current()
-            .map(CurrentDispatch::switch_endpoint)
+        self.run_queue().current_switch_endpoint()
     }
 
     pub(crate) fn update_current_runtime_binding(
@@ -632,6 +659,7 @@ impl<'a> OwnerRqTxn<'a> {
             .detach_for_transfer(thread, current_fair, timing_granularity_ns)
     }
 
+    #[inline(always)]
     pub(crate) fn pick_next_task(
         &mut self,
         rt_eligibility: RtEligibility,
@@ -645,10 +673,7 @@ impl<'a> OwnerRqTxn<'a> {
         )
     }
 
-    pub(crate) fn rollback_pick(&mut self, picked: PickedThread) {
-        self.scheduler_queue_mut().rollback_pick(picked);
-    }
-
+    #[inline(always)]
     pub(crate) fn set_next_task(&mut self, picked: &PickedThread) {
         self.scheduler_queue_mut().set_next_task(picked);
     }
@@ -726,16 +751,27 @@ impl<'a> OwnerRqTxn<'a> {
             });
     }
 
-    pub(crate) fn put_prev_task(
-        &mut self,
-        thread: ThreadId,
-        reason: EnqueueReason,
-    ) -> SchedulingEntity {
+    pub(crate) fn put_prev_task(&mut self, thread: ThreadId) -> SchedulingEntity {
         self.scheduler_queue_mut()
-            .put_prev_task(thread, reason)
+            .put_prev_task(thread)
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5251_100b, thread.as_u64() as usize)
             })
+    }
+
+    #[inline(always)]
+    pub(crate) fn yield_realtime_current(&mut self, thread: ThreadId) {
+        self.scheduler_queue_mut()
+            .yield_realtime_current(thread)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5251_1011, thread.as_u64() as usize)
+            });
+    }
+
+    #[inline(always)]
+    pub(crate) fn put_prev_realtime_task(&mut self, thread: ThreadId, migration_capable: bool) {
+        self.scheduler_queue_mut()
+            .put_prev_realtime_task(thread, migration_capable);
     }
 
     pub(crate) fn put_prev_unlinked_current(
@@ -750,18 +786,66 @@ impl<'a> OwnerRqTxn<'a> {
             })
     }
 
-    pub(crate) fn install_current(&mut self, dispatch: CurrentDispatch) {
-        let role = if self.run_queue().idle() == Some(dispatch.thread()) {
-            DispatchRole::DedicatedIdle
+    pub(crate) fn set_task_current(&mut self, dispatch: CurrentDispatch) {
+        debug_assert!(!dispatch.is_dedicated_idle());
+        if self.current().is_some() {
+            self.run_queue_mut().replace_linked_current(dispatch);
         } else {
-            DispatchRole::Task
-        };
-        self.run_queue_mut()
-            .install_current(dispatch.with_role(role));
+            self.run_queue_mut().install_current(dispatch);
+        }
     }
 
+    pub(crate) fn set_idle_current(&mut self, dispatch: CurrentDispatch) {
+        debug_assert_eq!(self.run_queue().idle(), Some(dispatch.thread()));
+        let dispatch = dispatch.with_role(DispatchRole::DedicatedIdle);
+        if self.current().is_some() {
+            self.run_queue_mut().replace_linked_current(dispatch);
+        } else {
+            self.run_queue_mut().install_current(dispatch);
+        }
+    }
+
+    #[inline(always)]
     pub(crate) fn charge_current(&mut self, runtime_ns: u64, reclaimed_ns: u64) -> DispatchCharge {
-        let deadline_extra_bw_scaled = self.remote.deadline_extra_bw_scaled();
+        let current_policy = self
+            .current()
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5251_1001, self.remote.owner().as_u32() as usize)
+            })
+            .schedule_policy();
+        self.charge_current_for_policy(runtime_ns, reclaimed_ns, current_policy)
+    }
+
+    #[inline(always)]
+    fn charge_current_for_policy(
+        &mut self,
+        runtime_ns: u64,
+        reclaimed_ns: u64,
+        current_policy: SchedulePolicy,
+    ) -> DispatchCharge {
+        if matches!(
+            current_policy,
+            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+        ) {
+            let now_ns = self.clock.task().as_nanos();
+            let (charge, rt_quota_exempt) = self
+                .scheduler_queue_mut()
+                .charge_fixed_realtime_current(runtime_ns, now_ns);
+            return self.apply_current_update(
+                runtime_ns,
+                RqCurrentUpdate::Task {
+                    charge,
+                    reschedule: None,
+                    realtime: true,
+                    rt_quota_exempt,
+                },
+            );
+        }
+        let deadline_extra_bw_scaled = if matches!(current_policy, SchedulePolicy::Deadline(_)) {
+            self.remote.deadline_extra_bw_scaled()
+        } else {
+            0
+        };
         let update = self
             .run_queue_mut()
             .update_current(runtime_ns, reclaimed_ns, deadline_extra_bw_scaled)
@@ -823,6 +907,7 @@ impl<'a> OwnerRqTxn<'a> {
         self.apply_current_update(runtime_ns, update)
     }
 
+    #[inline(always)]
     fn apply_current_update(&mut self, runtime_ns: u64, update: RqCurrentUpdate) -> DispatchCharge {
         match update {
             RqCurrentUpdate::DedicatedIdle => DispatchCharge::default(),
@@ -866,15 +951,19 @@ impl<'a> OwnerRqTxn<'a> {
         self.run_queue_mut().set_rt_throttled(throttled)
     }
 
+    #[inline(always)]
     pub(crate) fn settle_current(&mut self, reclaimed_ns: u64) -> DispatchCharge {
         let now_ns = self.clock.task().as_nanos();
-        let runtime_ns = self
-            .current()
-            .unwrap_or_else(|| {
+        let (runtime_ns, current_policy) = {
+            let current = self.current().unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5251_1002, self.remote.owner().as_u32() as usize)
-            })
-            .unaccounted_runtime(now_ns);
-        self.charge_current(runtime_ns, reclaimed_ns)
+            });
+            (
+                current.unaccounted_runtime(now_ns),
+                current.schedule_policy(),
+            )
+        };
+        self.charge_current_for_policy(runtime_ns, reclaimed_ns, current_policy)
     }
 
     pub(crate) fn task_tick_current_until(
@@ -975,24 +1064,6 @@ impl<'a> OwnerRqTxn<'a> {
             .as_mut()
             .expect("an unfinished rq transaction must retain its lock");
         self.system.publish_run_queue_summary(remote, run_queue);
-        self.finished = true;
-        drop(self.run_queue.take());
-        remote.finish_scheduler_request();
-    }
-
-    /// Releases a scheduler transaction whose class selection kept the same
-    /// current task and did not mutate scheduler-visible rq state.
-    ///
-    /// `update_rq_clock()` and the sticky request claim are owner-local. Like
-    /// Linux's `next == prev` return in `put_prev_set_next_task()`, this path
-    /// must not manufacture cpupri/cpudl/load publication when no class hook,
-    /// runtime charge, or current transition ran.
-    pub(crate) fn finish_unchanged_scheduler_request(mut self) {
-        let _claim = self
-            .request
-            .take()
-            .expect("an unchanged scheduler selection must consume its request claim");
-        let remote = self.remote;
         self.finished = true;
         drop(self.run_queue.take());
         remote.finish_scheduler_request();

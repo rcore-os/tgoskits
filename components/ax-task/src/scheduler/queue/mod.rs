@@ -24,8 +24,8 @@ pub(crate) use task::{
 
 use super::fair_queue::{FairPick, FairRunQueue};
 use crate::{
-    CurrentDispatch, DispatchCharge, FairEntity, SchedulePolicy, SchedulingClass, SchedulingEntity,
-    TaskError, ThreadCore, ThreadId,
+    CurrentDispatch, CurrentRemotePublication, DispatchCharge, FairEntity, SchedulePolicy,
+    SchedulingClass, SchedulingEntity, TaskError, ThreadCore, ThreadId,
 };
 
 /// Why a runnable thread is being inserted into its owner run queue.
@@ -136,6 +136,8 @@ pub(crate) struct RunQueue {
     next_sequence: u64,
     /// Linux `rq->nr_running`: runnable non-idle tasks, including current.
     nr_running: usize,
+    publication_dirty: bool,
+    detached_current_publication: Option<CurrentRemotePublication>,
 }
 
 impl RunQueue {
@@ -151,7 +153,28 @@ impl RunQueue {
             balance_scan_epoch: 0,
             next_sequence: 0,
             nr_running: 0,
+            publication_dirty: true,
+            detached_current_publication: None,
         }
+    }
+
+    pub(crate) fn take_publication_dirty(&mut self) -> bool {
+        if self.detached_current_publication.take().is_some() {
+            self.publication_dirty = true;
+        }
+        core::mem::replace(&mut self.publication_dirty, false)
+    }
+
+    pub(crate) const fn mark_publication_dirty(&mut self) {
+        self.publication_dirty = true;
+    }
+
+    fn pushable_publication_state(&self) -> (bool, bool, bool) {
+        (
+            self.rt.has_pushable(),
+            self.deadline.has_pushable(),
+            self.fair.has_migratable(),
+        )
     }
 
     pub(crate) const fn current(&self) -> Option<&CurrentDispatch> {
@@ -167,12 +190,76 @@ impl RunQueue {
             self.current.replace(current).is_none(),
             "rq->curr must be cleared before installing a successor"
         );
+        let current_publication = self
+            .current
+            .as_ref()
+            .expect("rq->curr was just installed")
+            .remote_publication();
+        if self.detached_current_publication.take() != Some(current_publication) {
+            self.publication_dirty = true;
+        }
+    }
+
+    /// Replaces a linked `rq->curr` after class selection keeps both task
+    /// entities in their rq-owned nodes.
+    pub(crate) fn replace_linked_current(&mut self, current: CurrentDispatch) {
+        assert!(
+            self.detached_current_publication.is_none(),
+            "linked current replacement cannot follow a detached current"
+        );
+        let previous = self
+            .current
+            .as_mut()
+            .expect("linked current replacement requires rq->curr");
+        assert!(
+            previous.is_linked(),
+            "only a linked class can retain rq->curr through selection"
+        );
+        let previous_publication = previous.remote_publication();
+        let runtime_ns = previous.take_runtime_interval_charge();
+        previous.runtime_core().commit_runtime_interval(runtime_ns);
+        let current_publication = current.remote_publication();
+        self.current = Some(current);
+        if previous_publication != current_publication {
+            self.publication_dirty = true;
+        }
     }
 
     pub(crate) fn take_current(&mut self) -> Option<CurrentDispatch> {
-        let mut current = self.current.take()?;
-        current.finish_runtime_interval();
-        Some(current)
+        let publication = self
+            .current
+            .as_ref()
+            .map(CurrentDispatch::remote_publication)?;
+        assert!(
+            self.detached_current_publication
+                .replace(publication)
+                .is_none(),
+            "rq->curr publication must be reinstalled before another take"
+        );
+        let runtime_ns = self
+            .current
+            .as_mut()
+            .expect("rq->curr publication came from a live dispatch")
+            .take_runtime_interval_charge();
+        self.current_runtime_core()
+            .expect("rq->curr must retain one runtime core owner")
+            .commit_runtime_interval(runtime_ns);
+        self.current.take()
+    }
+
+    pub(crate) fn clone_current_runtime_core(&self) -> Option<Arc<ThreadCore>> {
+        self.current
+            .as_ref()
+            .map(CurrentDispatch::clone_runtime_core)
+    }
+
+    pub(crate) fn current_runtime_core(&self) -> Option<&ThreadCore> {
+        self.current.as_ref().map(CurrentDispatch::runtime_core)
+    }
+
+    pub(crate) fn current_switch_endpoint(&self) -> Option<crate::SwitchEndpoint> {
+        let current = self.current.as_ref()?;
+        Some(current.switch_endpoint_with_core(self.current_runtime_core()?))
     }
 
     fn linked_current(&self) -> Option<ThreadId> {

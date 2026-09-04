@@ -67,14 +67,6 @@ impl HardIrqTime {
 }
 
 #[cfg(not(any(test, feature = "host-test")))]
-fn current_cpu_id() -> usize {
-    // SAFETY: common IRQ entry has disabled preemption and local interrupts,
-    // so the CPU-local area cannot change during this observation.
-    unsafe { ax_percpu::with_cpu_pin(|pin| ax_percpu::current_cpu_index(pin).as_usize()) }
-        .unwrap_or_else(|error| panic!("hard-IRQ CPU-local state is invalid: {error}"))
-}
-
-#[cfg(not(any(test, feature = "host-test")))]
 fn with_current_state<R>(operation: impl FnOnce(&HardIrqTime) -> R) -> R {
     // SAFETY: the caller is in the common IRQ lifecycle with migration and
     // local re-entry excluded. The object itself uses atomics for remote reads.
@@ -83,10 +75,10 @@ fn with_current_state<R>(operation: impl FnOnce(&HardIrqTime) -> R) -> R {
 }
 
 #[cfg(not(any(test, feature = "host-test")))]
-fn scheduler_clock_now(cpu_id: usize) -> u64 {
+fn scheduler_clock_now() -> u64 {
     // SAFETY: common IRQ entry keeps the calling CPU pinned and the scheduler
     // clock for this CPU must already be online before interrupts are enabled.
-    unsafe { ax_hal::time::scheduler_clock_source(cpu_id) }
+    unsafe { ax_hal::time::scheduler_clock_source() }
         .unwrap_or_else(|error| panic!("hard-IRQ scheduler clock is unavailable: {error}"))
 }
 
@@ -130,31 +122,20 @@ pub(crate) fn exit() {
         "hard-IRQ accounting requires local IRQ exclusion"
     );
     let is_outer = with_current_state(HardIrqTime::ends_outer_interval);
-    let now_ns = if is_outer {
-        scheduler_clock_now(current_cpu_id())
-    } else {
-        0
-    };
+    let now_ns = if is_outer { scheduler_clock_now() } else { 0 };
     with_current_state(|state| state.exit(now_ns));
 }
 
 #[cfg(any(test, feature = "host-test"))]
-pub(crate) fn total_for_cpu(_cpu_id: usize) -> u64 {
+pub(crate) fn total_current() -> u64 {
     // Host validation has no installed per-CPU runtime and therefore no
     // physical hard-IRQ time to subtract from the synthetic runqueue clock.
     0
 }
 
 #[cfg(not(any(test, feature = "host-test")))]
-pub(crate) fn total_for_cpu(cpu_id: usize) -> u64 {
-    let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id)
-        .unwrap_or_else(|_| panic!("hard-IRQ CPU {cpu_id} is outside the installed layout"));
-    let area = ax_percpu::area(cpu_index)
-        .unwrap_or_else(|error| panic!("hard-IRQ CPU {cpu_id} area is unavailable: {error}"));
-    let pointer = HARDIRQ_TIME.remote_ptr(area);
-    // SAFETY: the frozen per-CPU layout retains this atomic state for the
-    // complete runtime lifetime. Only the owning CPU mutates depth/start.
-    unsafe { pointer.as_ref() }.total()
+pub(crate) fn total_current() -> u64 {
+    with_current_state(HardIrqTime::total)
 }
 
 #[cfg(test)]

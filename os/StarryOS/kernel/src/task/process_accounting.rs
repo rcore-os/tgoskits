@@ -89,13 +89,18 @@ impl ProcessData {
     pub(crate) fn cpu_time_snapshot(&self) -> ProcessCpuTimeSnapshot {
         self.accounting
             .process_cpu_time
-            .snapshot_with_live(|now_ns| {
+            .snapshot_with_live(|_now_ns| {
                 self.proc
                     .threads()
                     .into_iter()
                     .filter_map(|tid| get_task_by_number(tid).ok())
                     .fold(CpuTimeDelta::ZERO, |total, task| {
-                        total.add(task.as_thread().cpu_time().unpublished_delta_at(now_ns))
+                        let thread = task.as_thread();
+                        total.add(
+                            thread
+                                .cpu_time()
+                                .unpublished_delta(thread.scheduler_runtime_ns()),
+                        )
                     })
             })
     }

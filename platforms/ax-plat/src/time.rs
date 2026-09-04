@@ -60,6 +60,13 @@ pub trait TimeIf {
     /// Converts hardware ticks to nanoseconds.
     fn ticks_to_nanos(ticks: u64) -> u64;
 
+    /// Samples the raw scheduler clock directly in nanoseconds.
+    ///
+    /// The platform must read and convert one counter sample within this
+    /// operation. Scheduler clock correction is applied by `ax-plat` after
+    /// this raw sample crosses the platform boundary.
+    fn scheduler_clock_raw_nanos() -> u64;
+
     /// Converts nanoseconds to hardware ticks.
     fn nanos_to_ticks(nanos: u64) -> u64;
 
@@ -118,7 +125,7 @@ pub trait TimeIf {
 /// interrupt that can access scheduler-clock state.
 pub unsafe fn init_scheduler_clock(cpu_id: usize) -> Result<(), SchedulerClockError> {
     let stability = scheduler_clock_stability();
-    let raw_clock = ticks_to_nanos(current_ticks());
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's offline-CPU contract.
     unsafe { crate::scheduler_clock::online_current_cpu(cpu_id, raw_clock, stability) }
 }
@@ -138,27 +145,26 @@ pub unsafe fn shutdown_scheduler_clock(cpu_id: usize) -> Result<(), SchedulerClo
     unsafe { crate::scheduler_clock::offline_current_cpu(cpu_id) }
 }
 
-/// Samples `cpu_id`'s comparable wrapping scheduler clock in nanoseconds.
+/// Samples the current CPU's comparable wrapping scheduler clock in nanoseconds.
 ///
-/// Stable platforms use the calling CPU's synchronized system counter.
-/// Unstable platforms update the calling CPU's local publication, then couple
-/// it atomically with the target publication without reading the target raw
-/// counter.
+/// Stable platforms use the synchronized system counter. Unstable platforms
+/// update the current CPU's corrected local publication.
 ///
 /// # Errors
 ///
-/// Returns an error when the target or calling CPU clock is offline, or when
-/// `cpu_id` is outside the installed CPU-local layout.
+/// Returns an error when an unstable current CPU clock has no available
+/// CPU-local state.
 ///
 /// # Safety
 ///
-/// The caller must prevent migration for the complete operation. Scheduler
-/// callers normally satisfy this through the target runqueue IRQ-save lock.
+/// The caller must own an initialized scheduler CPU and prevent migration for
+/// the complete operation. Scheduler callers satisfy this through the owner
+/// runqueue IRQ-save lock.
 #[inline]
-pub unsafe fn scheduler_clock_source(cpu_id: usize) -> Result<u64, SchedulerClockError> {
-    let raw_clock = ticks_to_nanos(current_ticks());
+pub unsafe fn scheduler_clock_source() -> Result<u64, SchedulerClockError> {
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's migration-exclusion contract.
-    unsafe { crate::scheduler_clock::source(cpu_id, raw_clock) }
+    unsafe { crate::scheduler_clock::source_current(raw_clock) }
 }
 
 /// Samples the current CPU's scheduler clock before an outer hard interrupt.
@@ -179,7 +185,7 @@ pub unsafe fn scheduler_clock_source(cpu_id: usize) -> Result<u64, SchedulerCloc
 #[inline]
 pub unsafe fn scheduler_clock_hardirq_sample() -> Result<u64, SchedulerClockError> {
     let stability = scheduler_clock_stability();
-    let raw_clock = ticks_to_nanos(current_ticks());
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's outer hard-IRQ entry contract.
     unsafe { crate::scheduler_clock::hardirq_sample(raw_clock, stability) }
 }
@@ -199,7 +205,7 @@ pub unsafe fn scheduler_clock_hardirq_sample() -> Result<u64, SchedulerClockErro
 /// local timer interrupt path naturally satisfies both conditions.
 #[inline]
 pub unsafe fn scheduler_clock_tick() -> Result<u64, SchedulerClockError> {
-    let raw_clock = ticks_to_nanos(current_ticks());
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's local tick contract.
     unsafe { crate::scheduler_clock::tick(raw_clock) }
 }

@@ -54,6 +54,7 @@ impl<T> LazyInit<T> {
     ///
     /// If the value is already initialized, the function will not be called
     /// and a [`None`] will be returned.
+    #[inline]
     pub fn call_once<F>(&self, f: F) -> Option<&T>
     where
         F: FnOnce() -> T,
@@ -102,6 +103,7 @@ impl<T> LazyInit<T> {
     /// If another CPU or thread is initializing the value concurrently, this
     /// method waits until that initialization completes and then returns the
     /// initialized value. The initializer is executed at most once.
+    #[inline]
     pub fn get_or_init<F>(&self, f: F) -> &T
     where
         F: FnOnce() -> T,
@@ -183,6 +185,7 @@ impl<T> LazyInit<T> {
     /// Gets a reference to the value.
     ///
     /// Returns [`None`] if the value is not initialized.
+    #[inline]
     pub fn get(&self) -> Option<&T> {
         if self.is_inited() {
             Some(unsafe { self.force_get() })
@@ -328,6 +331,7 @@ impl<T> OnceLock<T> {
     }
 
     /// Returns the stored value, running `initializer` at most once.
+    #[inline]
     pub fn call_once<F>(&self, initializer: F) -> &T
     where
         F: FnOnce() -> T,
@@ -344,6 +348,7 @@ impl<T> OnceLock<T> {
     }
 
     /// Returns the stored value, or `None` before initialization completes.
+    #[inline]
     pub fn get(&self) -> Option<&T> {
         self.0.get()
     }

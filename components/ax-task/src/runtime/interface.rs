@@ -222,12 +222,12 @@ pub trait TaskRuntime {
     /// disabled and before the scheduler clears the outgoing thread's
     /// `on_cpu` publication. The implementation must not allocate, block,
     /// invoke callbacks, consume the scheduler baton, or re-enter ax-task. It
-    /// returns the deferred resource-release edge and the post-switch
-    /// monotonic clock sample used for incoming CPU-time accounting. Sampling
-    /// after the incoming context binding matches Linux `vtime_task_switch()`.
+    /// returns the deferred resource-release edge. CPU-time accounting remains
+    /// owned by the runqueue clock and must not open a second time domain in
+    /// the architecture switch tail.
     /// Any failure is an unrecoverable runtime invariant: the raw switch has
     /// already committed, so there is no compatibility retry path.
-    fn finish_context_switch_tail() -> (bool, u64);
+    fn finish_context_switch_tail() -> bool;
 
     /// Consumes the CPU-local scheduler switch baton on a fresh context.
     ///
@@ -290,15 +290,15 @@ pub trait TaskRuntime {
     /// Returns one sample from the finite monotonic `ktime` domain.
     fn monotonic_now() -> MonotonicInstant;
 
-    /// Returns one coherent source sample for `cpu`'s runqueue clocks.
+    /// Returns one coherent source sample for the current owner runqueue.
     ///
-    /// Linux calls `sched_clock_cpu(cpu_of(rq))` while holding the target
-    /// runqueue lock, including direct remote wakeups. The runtime may derive
-    /// every CPU source from one synchronized hardware counter, but it must not
-    /// silently substitute the calling CPU when per-CPU sources differ.
+    /// Runqueue mutation is owner-only: remote operations publish into the
+    /// owner inbox instead of locking another CPU's runqueue. Like Linux
+    /// `update_rq_clock()` on the local rq, the runtime therefore samples the
+    /// pinned current CPU and must not repeat a remote CPU lookup.
     /// Scheduler absolute values must never be compared directly with
     /// monotonic deadlines.
-    fn rq_clock_sample(cpu: RuntimeCpuId) -> RqClockSample;
+    fn rq_clock_sample() -> RqClockSample;
 
     /// Commits the current CPU's complete scheduler-deadline state.
     ///
@@ -316,6 +316,13 @@ pub trait TaskRuntime {
     /// recoverable error here would leave the scheduler queue and physical
     /// clockevent in an unknowable half-committed state.
     fn publish_scheduler_deadline(update: SchedulerDeadlineUpdate);
+
+    /// Commits the owner CPU's current scheduling-class hrtick.
+    ///
+    /// The caller already owns an IRQ-off scheduler or CPU-owner scope. Unlike
+    /// task and kernel timers, this state is rq-local and must not enter the
+    /// remotely reachable deadline base.
+    fn publish_scheduler_runtime_deadline(update: SchedulerRuntimeDeadline);
 
     /// Notifies `cpu` after the scheduler has published owner work.
     ///

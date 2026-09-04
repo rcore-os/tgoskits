@@ -182,10 +182,12 @@ mod primitive {
     macro_rules! impl_atomic_primitive {
         ($value:ty, $atomic:ty) => {
             impl Sealed for $value {
+                #[inline(always)]
                 unsafe fn load(pointer: NonNull<Self>) -> Self {
                     unsafe { pointer.cast::<$atomic>().as_ref() }.load(Ordering::Relaxed)
                 }
 
+                #[inline(always)]
                 unsafe fn store(pointer: NonNull<Self>, value: Self) {
                     unsafe { pointer.cast::<$atomic>().as_ref() }.store(value, Ordering::Relaxed);
                 }

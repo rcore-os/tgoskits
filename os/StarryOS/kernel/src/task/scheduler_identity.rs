@@ -26,7 +26,6 @@ impl SchedulerIdentity {
     }
 
     /// Returns the bound generation-bearing identity.
-    #[cfg(any(all(test, not(axtest)), target_arch = "aarch64"))]
     pub(super) fn get(&self) -> Option<ThreadId> {
         decode(self.id.load(Ordering::Acquire))
     }
@@ -81,7 +80,6 @@ mod axtests {
     }
 }
 
-#[cfg(any(all(test, not(axtest)), target_arch = "aarch64"))]
 const fn decode(raw: u64) -> Option<ThreadId> {
     if raw == 0 {
         None

@@ -1,10 +1,11 @@
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use ax_task::runtime::{LocalIrqState, PreemptGuardToken};
 
 use super::*;
 
 static SCHED_SWITCH_TRACE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static SCHED_SWITCH_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 unsafe fn membarrier_ipi_memory_barrier(_arg: *mut ()) {
     core::sync::atomic::fence(Ordering::SeqCst);
@@ -33,6 +34,11 @@ pub fn install_sched_switch_trace_hook(hook: SchedSwitchTraceHook) {
         Ok(_) => {}
         Err(installed) => assert_eq!(installed, hook, "scheduler trace hook already installed"),
     }
+}
+
+/// Publishes whether the scheduler-switch trace site has active consumers.
+pub fn publish_sched_switch_trace_gate(enabled: bool) {
+    SCHED_SWITCH_TRACE_ENABLED.store(enabled, Ordering::Release);
 }
 
 struct ArceOsTaskRuntime;
@@ -206,10 +212,12 @@ impl_task_runtime! {
         }
 
         fn hardirq_enter() {
+            #[cfg(feature = "irq-time-accounting")]
             crate::irq_time::enter();
         }
 
         fn hardirq_exit() {
+            #[cfg(feature = "irq-time-accounting")]
             crate::irq_time::exit();
         }
 
@@ -224,7 +232,7 @@ impl_task_runtime! {
             }
         }
 
-        fn finish_context_switch_tail() -> (bool, u64) {
+        fn finish_context_switch_tail() -> bool {
             finish_runtime_context_switch_tail()
         }
 
@@ -274,22 +282,55 @@ impl_task_runtime! {
             .expect("platform monotonic clock exceeded the signed ktime domain")
         }
 
-        fn rq_clock_sample(cpu: RuntimeCpuId) -> ax_task::runtime::RqClockSample {
-            let cpu_id = cpu.as_u32() as usize;
+        fn rq_clock_sample() -> ax_task::runtime::RqClockSample {
+            #[cfg(feature = "qperf-metrics")]
+            let clock_started_ns = ax_hal::time::monotonic_time_nanos();
             // SAFETY: ax-task holds the target runqueue IRQ-save lock, which
-            // pins the calling CPU for this complete remote-clock coupling.
-            let clock_ns = unsafe { ax_hal::time::scheduler_clock_source(cpu_id) }
+            // pins its owner CPU for this complete local clock sample.
+            let clock_ns = unsafe { ax_hal::time::scheduler_clock_source() }
                 .unwrap_or_else(|error| {
-                    panic!("scheduler clock source for CPU {cpu_id} is unavailable: {error}")
+                    panic!("current scheduler clock source is unavailable: {error}")
                 });
-            ax_task::runtime::RqClockSample::new(
+            #[cfg(any(feature = "qperf-metrics", feature = "irq-time-accounting"))]
+            let irq_time_started_ns = ax_hal::time::monotonic_time_nanos();
+            #[cfg(feature = "irq-time-accounting")]
+            let irq_time_ns = crate::irq_time::total_current();
+            #[cfg(feature = "qperf-metrics")]
+            {
+                ax_task::qperf_record_switch_scheduler_detail(
+                    15,
+                    clock_started_ns,
+                    irq_time_started_ns,
+                );
+            }
+            #[cfg(all(feature = "qperf-metrics", feature = "irq-time-accounting"))]
+            {
+                let irq_time_finished_ns = ax_hal::time::monotonic_time_nanos();
+                ax_task::qperf_record_switch_scheduler_detail(
+                    16,
+                    irq_time_started_ns,
+                    irq_time_finished_ns,
+                );
+            }
+            #[cfg(feature = "irq-time-accounting")]
+            return ax_task::runtime::RqClockSample::new(
                 ax_task::SchedulerTimestamp::from_nanos(clock_ns),
-                crate::irq_time::total_for_cpu(cpu_id),
+                irq_time_ns,
+            );
+            #[cfg(not(feature = "irq-time-accounting"))]
+            ax_task::runtime::RqClockSample::without_irq_time_accounting(
+                ax_task::SchedulerTimestamp::from_nanos(clock_ns),
             )
         }
 
         fn publish_scheduler_deadline(update: ax_task::runtime::SchedulerDeadlineUpdate) {
             crate::clock_event_runtime::publish_local_scheduler_deadline(update);
+        }
+
+        fn publish_scheduler_runtime_deadline(
+            update: ax_task::runtime::SchedulerRuntimeDeadline,
+        ) {
+            crate::clock_event_runtime::publish_local_scheduler_runtime_deadline(update);
         }
 
         fn idle_exit_restart_scheduler_tick() {
@@ -513,6 +554,9 @@ impl_task_runtime! {
         }
 
         fn trace_sched_switch(record: SchedSwitchRecord) {
+            if !SCHED_SWITCH_TRACE_ENABLED.load(Ordering::Acquire) {
+                return;
+            }
             let hook = SCHED_SWITCH_TRACE_HOOK.load(Ordering::Acquire);
             if hook.is_null() {
                 return;

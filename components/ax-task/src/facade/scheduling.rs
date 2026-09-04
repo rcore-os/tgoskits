@@ -94,7 +94,7 @@ fn schedule_current_cpu_with_entry(
         } else {
             scheduler_frame.scheduler_request_pending(request_scope)?
         };
-        let repeat = preempt_schedule_needs_repeat(outcome, needs_reschedule);
+        let repeat = preempt_schedule_needs_repeat(&outcome, needs_reschedule);
         drop(scheduler_frame);
         if !repeat {
             return Ok(outcome);
@@ -133,24 +133,58 @@ fn scheduler_request_scope(
     }
 }
 
-fn preempt_schedule_needs_repeat(outcome: SchedulerOutcome, needs_reschedule: bool) -> bool {
+fn preempt_schedule_needs_repeat(outcome: &SchedulerOutcome, needs_reschedule: bool) -> bool {
     needs_reschedule && !outcome.parking_deferred()
 }
 
 /// Yields the calling thread and executes the resulting context switch.
 pub fn yield_current_cpu() -> Result<(), TaskError> {
+    #[cfg(feature = "qperf-metrics")]
+    let scheduler_started_ns = task_runtime::monotonic_now().as_nanos();
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Yield,
         RuntimeSchedulerEntry::Task,
     )?;
+    #[cfg(feature = "qperf-metrics")]
+    let scheduler_frame_entered_ns = task_runtime::monotonic_now().as_nanos();
     let current = scheduler_frame.current_thread_ref()?;
     let system = scheduler_frame.task_system()?;
+    #[cfg(feature = "qperf-metrics")]
+    let scheduler_dispatch_started_ns;
     let outcome = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
+        #[cfg(feature = "qperf-metrics")]
+        {
+            scheduler_dispatch_started_ns = task_runtime::monotonic_now().as_nanos();
+        }
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
         unsafe { system.yield_current_in_scheduler_frame(cpu.as_mut(), &current)? }
     };
+    #[cfg(feature = "qperf-metrics")]
+    let scheduler_dispatch_finished_ns = task_runtime::monotonic_now().as_nanos();
     if let Some(decision) = outcome.decision() {
+        #[cfg(feature = "qperf-metrics")]
+        {
+            crate::metrics::qperf_record_switch_scheduler_detail(
+                7,
+                scheduler_started_ns,
+                scheduler_frame_entered_ns,
+            );
+            crate::metrics::qperf_record_switch_scheduler_detail(
+                8,
+                scheduler_frame_entered_ns,
+                scheduler_dispatch_started_ns,
+            );
+            crate::metrics::qperf_record_switch_scheduler_detail(
+                9,
+                scheduler_dispatch_started_ns,
+                scheduler_dispatch_finished_ns,
+            );
+            crate::metrics::qperf_record_switch_phase_scheduler(
+                scheduler_started_ns,
+                scheduler_dispatch_finished_ns,
+            );
+        }
         execute_switch_plan(&mut scheduler_frame, decision);
     }
     Ok(())
@@ -201,7 +235,7 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
         unsafe { system.commit_prepared_current_exit(cpu.as_mut(), permit.system) }
     };
-    execute_switch_plan(&mut scheduler_frame, decision);
+    execute_switch_plan(&mut scheduler_frame, &decision);
     // An exited context is never re-enqueued, so returning here indicates a
     // broken architecture switch contract.
     task_runtime::fatal_invariant(4, decision.previous().map_or(0, ThreadId::as_u64) as usize)
@@ -209,11 +243,13 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
 
 pub(super) fn execute_switch_plan(
     scheduler_frame: &mut RuntimeSchedulerFrameGuard,
-    decision: ScheduleDecision,
+    decision: &ScheduleDecision,
 ) {
     if !decision.requires_context_switch() {
         return;
     }
+    #[cfg(feature = "qperf-metrics")]
+    let prepare_started_ns = task_runtime::monotonic_now().as_nanos();
     let Some(previous) = decision.previous_endpoint() else {
         task_runtime::fatal_invariant(1, decision.next().as_u64() as usize);
     };
@@ -221,6 +257,8 @@ pub(super) fn execute_switch_plan(
     if previous.context().is_none() || next.context().is_none() {
         task_runtime::fatal_invariant(2, next.thread().as_u64() as usize);
     }
+    #[cfg(feature = "qperf-metrics")]
+    let switch_validate_finished_ns = task_runtime::monotonic_now().as_nanos();
     // Match Linux's sched_switch observation point: the trace runs while the
     // previous extension is still the published current task, but after all
     // scheduler locks have been released and the switch decision is final.
@@ -231,6 +269,8 @@ pub(super) fn execute_switch_plan(
         timestamp_ns: decision.timestamp_ns(),
         reason: decision.switch_reason() as u32,
     });
+    #[cfg(feature = "qperf-metrics")]
+    let switch_trace_finished_ns = task_runtime::monotonic_now().as_nanos();
     if let Some(extension) = previous.extension() {
         // SAFETY: ThreadExtension construction guarantees callback validity;
         // TaskSystem released every internal lock and the scheduler baton
@@ -240,10 +280,11 @@ pub(super) fn execute_switch_plan(
                 extension.data(),
                 previous.thread(),
                 decision.switch_reason(),
-                decision.timestamp_ns(),
             )
         };
     }
+    #[cfg(feature = "qperf-metrics")]
+    let switch_out_hook_finished_ns = task_runtime::monotonic_now().as_nanos();
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_context_switch(decision.switch_reason());
     let plan = RuntimeSwitchPlan::new(
@@ -253,6 +294,34 @@ pub(super) fn execute_switch_plan(
         next.address_space(),
     )
     .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.thread().as_u64() as usize));
+    #[cfg(feature = "qperf-metrics")]
+    let switch_plan_finished_ns = task_runtime::monotonic_now().as_nanos();
+    #[cfg(feature = "qperf-metrics")]
+    let plan = {
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            26,
+            prepare_started_ns,
+            switch_validate_finished_ns,
+        );
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            27,
+            switch_validate_finished_ns,
+            switch_trace_finished_ns,
+        );
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            28,
+            switch_trace_finished_ns,
+            switch_out_hook_finished_ns,
+        );
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            29,
+            switch_out_hook_finished_ns,
+            switch_plan_finished_ns,
+        );
+        let mut plan = plan;
+        plan.set_qperf_prepare_started_ns(prepare_started_ns);
+        plan
+    };
     // SAFETY: the scheduler committed both endpoint states before releasing
     // its locks. Every context and address-space handle remains live, and
     // local IRQs stay disabled while the runtime consumes the complete plan.
@@ -296,7 +365,7 @@ pub(super) unsafe fn complete_current_context_switch_tail(
 unsafe fn complete_current_context_switch_tail_in_scheduler_frame(
     scheduler_frame: &mut RuntimeSchedulerFrameGuard,
 ) -> Result<(), TaskError> {
-    let system = runtime_task_system()?;
+    let system = scheduler_frame.task_system()?;
     let completion = {
         let mut cpu = runtime_current_cpu_mut(scheduler_frame)?;
         // SAFETY: forwarded from this helper's scheduler-frame contract.

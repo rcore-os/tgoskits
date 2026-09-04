@@ -5,114 +5,125 @@ use super::super::*;
 /// State committed before an architecture switch and consumed by switch tail.
 #[derive(Debug)]
 pub(crate) struct SwitchHandoff {
-    phase: SwitchHandoffPhase,
     previous: Arc<ThreadCore>,
-    incoming: Arc<ThreadCore>,
-    switch_timestamp_ns: u64,
-    migration: Option<PreparedMigrationDelivery>,
-    rq_baton: Option<RqSwitchBaton>,
+    incoming: SchedulerThreadRef,
+    incoming_policy: SchedulePolicy,
+    previous_disposition: PreviousSwitchDisposition,
+    route: SwitchRoute,
+    rq_state: SwitchRqState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SwitchHandoffPhase {
-    Prepared,
-    RuntimeTailFinished { reclaim_ready: bool },
+pub(crate) enum PreviousSwitchDisposition {
+    Live,
+    Exited,
+}
+
+#[derive(Debug)]
+enum SwitchRoute {
+    Local,
+    Migration(PreparedMigrationDelivery),
+}
+
+#[derive(Debug)]
+enum SwitchRqState {
+    Released,
+    Retained(RqSwitchBaton),
 }
 
 pub(crate) struct CompletedSwitchHandoff {
-    pub(crate) incoming: Arc<ThreadCore>,
-    pub(crate) switch_timestamp_ns: u64,
+    pub(crate) incoming: SchedulerThreadRef,
+    pub(crate) incoming_policy: SchedulePolicy,
     pub(crate) migration: Option<PreparedMigrationDelivery>,
     pub(crate) reclaim_ready: bool,
+    pub(crate) previous_exited: bool,
 }
 
 impl SwitchHandoff {
     pub(crate) fn prepared(
         previous: Arc<ThreadCore>,
-        incoming: Arc<ThreadCore>,
+        incoming: SchedulerThreadRef,
+        incoming_policy: SchedulePolicy,
+        previous_disposition: PreviousSwitchDisposition,
         migration: Option<PreparedMigrationDelivery>,
     ) -> Self {
         Self {
-            phase: SwitchHandoffPhase::Prepared,
             previous,
             incoming,
-            switch_timestamp_ns: 0,
-            migration,
-            rq_baton: None,
+            incoming_policy,
+            previous_disposition,
+            route: match migration {
+                Some(migration) => SwitchRoute::Migration(migration),
+                None => SwitchRoute::Local,
+            },
+            rq_state: SwitchRqState::Released,
         }
     }
 
     pub(crate) fn install_rq_baton(&mut self, baton: RqSwitchBaton) -> Result<(), TaskError> {
-        if self.phase != SwitchHandoffPhase::Prepared
-            || self.migration.is_some()
-            || self.rq_baton.is_some()
+        if !matches!(self.route, SwitchRoute::Local)
+            || !matches!(self.rq_state, SwitchRqState::Released)
         {
             return Err(TaskError::InvalidConfiguration);
         }
-        self.rq_baton = Some(baton);
+        self.rq_state = SwitchRqState::Retained(baton);
         Ok(())
     }
 
-    pub(crate) const fn has_rq_baton(&self) -> bool {
-        self.rq_baton.is_some()
+    pub(crate) fn has_rq_baton(&self) -> bool {
+        matches!(self.rq_state, SwitchRqState::Retained(_))
     }
 
     pub(crate) fn take_rq_baton(&mut self) -> Option<RqSwitchBaton> {
-        self.rq_baton.take()
+        let rq_state = core::mem::replace(&mut self.rq_state, SwitchRqState::Released);
+        match rq_state {
+            SwitchRqState::Released => None,
+            SwitchRqState::Retained(baton) => Some(baton),
+        }
     }
 
     pub(crate) fn previous(&self) -> &Arc<ThreadCore> {
         &self.previous
     }
 
-    pub(crate) fn incoming(&self) -> &Arc<ThreadCore> {
-        &self.incoming
+    pub(crate) fn incoming(&self) -> &ThreadCore {
+        self.incoming.as_ref()
     }
 
     pub(crate) fn migration_target(&self) -> Option<CpuId> {
-        self.migration
-            .as_ref()
-            .map(PreparedMigrationDelivery::target)
-    }
-
-    pub(crate) const fn runtime_tail_is_finished(&self) -> bool {
-        matches!(self.phase, SwitchHandoffPhase::RuntimeTailFinished { .. })
-    }
-
-    pub(crate) fn finish_runtime_tail(
-        mut self,
-        reclaim_ready: bool,
-        switch_timestamp_ns: u64,
-    ) -> Result<Self, TaskError> {
-        if self.phase != SwitchHandoffPhase::Prepared {
-            return Err(TaskError::InvalidConfiguration);
+        match &self.route {
+            SwitchRoute::Local => None,
+            SwitchRoute::Migration(migration) => Some(migration.target()),
         }
-        self.switch_timestamp_ns = switch_timestamp_ns;
-        self.phase = SwitchHandoffPhase::RuntimeTailFinished { reclaim_ready };
-        Ok(self)
     }
 
-    pub(crate) fn into_runtime_finished(self) -> Result<CompletedSwitchHandoff, TaskError> {
+    pub(crate) const fn previous_exited(&self) -> bool {
+        matches!(self.previous_disposition, PreviousSwitchDisposition::Exited)
+    }
+
+    #[inline(always)]
+    pub(crate) fn complete(self, reclaim_ready: bool) -> Result<CompletedSwitchHandoff, TaskError> {
         let SwitchHandoff {
             previous,
             incoming,
-            switch_timestamp_ns,
-            migration,
-            rq_baton,
-            phase,
+            incoming_policy,
+            previous_disposition,
+            route,
+            rq_state,
         } = self;
-        if rq_baton.is_some() {
+        if !matches!(rq_state, SwitchRqState::Released) {
             return Err(TaskError::InvalidConfiguration);
         }
-        let SwitchHandoffPhase::RuntimeTailFinished { reclaim_ready } = phase else {
-            return Err(TaskError::InvalidConfiguration);
-        };
         drop(previous);
         Ok(CompletedSwitchHandoff {
             incoming,
-            switch_timestamp_ns,
-            migration,
+            incoming_policy,
+            migration: match route {
+                SwitchRoute::Local => None,
+                SwitchRoute::Migration(migration) => Some(migration),
+            },
             reclaim_ready,
+            previous_exited: matches!(previous_disposition, PreviousSwitchDisposition::Exited),
         })
     }
 }

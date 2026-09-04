@@ -57,6 +57,7 @@ mod mp;
 mod boot_memory;
 mod bootstrap;
 mod guard;
+#[cfg(feature = "irq-time-accounting")]
 mod irq_time;
 #[cfg(feature = "paging")]
 pub mod kernel_mapping;

@@ -43,10 +43,12 @@ unsafe fn context_irq_restore(state: usize) {
 }
 
 fn context_hardirq_enter() {
+    #[cfg(feature = "irq-time-accounting")]
     crate::irq_time::enter();
 }
 
 fn context_hardirq_exit() {
+    #[cfg(feature = "irq-time-accounting")]
     crate::irq_time::exit();
 }
 

@@ -438,7 +438,7 @@ pub(crate) fn check_signals_with_outcome(
     outcome
 }
 
-pub(super) fn queue_rttime_limit_signal_from_scheduler_tick(thr: &Thread, observed_ns: u64) {
+pub(super) fn queue_rttime_limit_signal_from_scheduler_tick(thr: &Thread, _observed_ns: u64) {
     let limit = thr.proc_data.rlimit(RLIMIT_RTTIME);
     let (soft_limit_us, hard_limit_us) = (limit.current, limit.max);
     if soft_limit_us == u64::MAX {
@@ -447,7 +447,12 @@ pub(super) fn queue_rttime_limit_signal_from_scheduler_tick(thr: &Thread, observ
     let action = thr
         .rttime()
         .lock()
-        .check_limit_at(thr.cpu_time(), observed_ns, soft_limit_us, hard_limit_us);
+        .check_limit_at(
+            thr.cpu_time(),
+            thr.scheduler_runtime_ns(),
+            soft_limit_us,
+            hard_limit_us,
+        );
     let signo = match action {
         RttimeLimitAction::None => return,
         RttimeLimitAction::Soft => Signo::SIGXCPU,

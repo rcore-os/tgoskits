@@ -1,3 +1,5 @@
+use core::ptr::NonNull;
+
 use super::*;
 
 pub(crate) fn wake_thread_from_current_cpu(
@@ -72,8 +74,8 @@ pub(crate) trait RuntimeCpuPin: runtime_cpu_pin_sealed::Sealed {
 #[derive(Clone, Copy)]
 struct RuntimeCpuHandles {
     runtime_cpu: RuntimeCpuId,
-    cpu_local: crate::runtime::CurrentCpuLocalHandle,
-    cpu_remote: crate::runtime::CpuRemoteHandle,
+    cpu_local: NonNull<CpuLocal>,
+    cpu_remote: &'static CpuRemote,
 }
 
 impl RuntimeCpuHandles {
@@ -82,18 +84,26 @@ impl RuntimeCpuHandles {
         // RuntimeSchedulerFrameGuard that prevents migration. The runtime
         // snapshots all three values from that one pinned CPU.
         let handles = unsafe { task_runtime::current_cpu_owner_handles() };
-        Self {
-            runtime_cpu: handles.cpu(),
-            cpu_local: handles.local(),
-            cpu_remote: handles.remote(),
-        }
+        // SAFETY: forwarded from the provider's current-CPU capability
+        // contract and bounded by the caller's live CPU pin.
+        unsafe { Self::from_snapshot(handles) }
     }
 
-    const fn from_snapshot(handles: crate::runtime::CurrentCpuOwnerHandles) -> Self {
+    unsafe fn from_snapshot(handles: crate::runtime::CurrentCpuOwnerHandles) -> Self {
         Self {
             runtime_cpu: handles.cpu(),
-            cpu_local: handles.local(),
-            cpu_remote: handles.remote(),
+            // SAFETY: a successful runtime capability snapshot contains the
+            // live, aligned owner endpoint for this exact CPU.
+            cpu_local: unsafe {
+                NonNull::new_unchecked(ptr::with_exposed_provenance_mut::<CpuLocal>(
+                    handles.local().into_raw(),
+                ))
+            },
+            // SAFETY: the paired remote endpoint is Arc-backed and remains
+            // live until shutdown by the TaskRuntime contract.
+            cpu_remote: unsafe {
+                &*ptr::with_exposed_provenance::<CpuRemote>(handles.remote().into_raw())
+            },
         }
     }
 
@@ -101,51 +111,25 @@ impl RuntimeCpuHandles {
         self.runtime_cpu
     }
 
-    fn remote(self) -> Result<&'static CpuRemote, TaskError> {
-        let remote_raw = self.cpu_remote.into_raw();
-        validate_handle::<CpuRemote>(remote_raw)?;
-        // SAFETY: TaskRuntime guarantees this handle identifies the Arc-backed
-        // remote endpoint retained by the task system until shutdown.
-        let remote = unsafe { &*ptr::with_exposed_provenance::<CpuRemote>(remote_raw) };
-        if !remote.is_online() {
-            return Err(TaskError::NotInitialized);
-        }
-        if remote.owner().as_u32() != self.runtime_cpu.as_u32() {
-            return Err(TaskError::CpuOwnerMismatch {
-                expected: remote.owner().as_u32(),
-                actual: self.runtime_cpu.as_u32(),
-            });
-        }
-        Ok(remote)
+    const fn remote(self) -> &'static CpuRemote {
+        self.cpu_remote
     }
 
     fn claim(self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
-        let remote = self.remote()?;
-
-        let local_raw = self.cpu_local.into_raw();
-        validate_handle::<CpuLocal>(local_raw)?;
         // SAFETY: capture ran under this guard's migration pin. The provider
         // guarantees that the pointer is the pinned CpuLocal paired with
         // `remote`; its owner gate excludes every overlapping mutable borrow.
-        let cpu =
-            unsafe { remote.claim_local(ptr::with_exposed_provenance_mut::<CpuLocal>(local_raw))? };
-        validate_cpu_owner(&cpu, self.runtime_cpu)?;
-        Ok(cpu)
+        unsafe { self.cpu_remote.claim_local(self.cpu_local.as_ptr()) }
     }
 
-    unsafe fn borrow_in_scheduler_frame(self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
-        let remote = self.remote()?;
-        let local_raw = self.cpu_local.into_raw();
-        validate_handle::<CpuLocal>(local_raw)?;
+    unsafe fn borrow_in_scheduler_frame(self) -> CpuLocalOwnerBorrow<'static> {
         // SAFETY: the caller owns the live IRQ-off scheduler frame that
-        // captured these paired handles and bounds the returned borrow.
-        let cpu = unsafe {
-            remote.borrow_local_in_scheduler_frame(ptr::with_exposed_provenance_mut::<CpuLocal>(
-                local_raw,
-            ))?
-        };
-        validate_cpu_owner(&cpu, self.runtime_cpu)?;
-        Ok(cpu)
+        // captured and validated these paired handles and bounds the returned
+        // borrow. A running owner CPU cannot become offline under that baton.
+        unsafe {
+            self.cpu_remote
+                .borrow_local_in_scheduler_frame(self.cpu_local)
+        }
     }
 }
 
@@ -203,16 +187,6 @@ fn validate_handle<T>(raw: usize) -> Result<(), TaskError> {
         Err(TaskError::InvalidRuntimeHandle)
     } else {
         Ok(())
-    }
-}
-
-fn validate_cpu_owner(cpu: &CpuLocal, runtime_cpu: RuntimeCpuId) -> Result<(), TaskError> {
-    let actual = runtime_cpu.as_u32();
-    let expected = cpu.owner().as_u32();
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(TaskError::CpuOwnerMismatch { expected, actual })
     }
 }
 
@@ -276,7 +250,7 @@ impl RuntimeCpuPin for RuntimeSchedulerFrameGuard {
     fn claim_current_cpu(&mut self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
         // SAFETY: this object owns the runtime's IRQ-off scheduler baton, and
         // the returned borrow is lifetime-bound to its mutable borrow.
-        unsafe { self.cpu.borrow_in_scheduler_frame() }
+        Ok(unsafe { self.cpu.borrow_in_scheduler_frame() })
     }
 }
 
@@ -303,7 +277,9 @@ impl RuntimeSchedulerFrameGuard {
         };
         Ok(Self {
             return_to,
-            cpu: RuntimeCpuHandles::from_snapshot(context.cpu()),
+            // SAFETY: success from scheduler-frame entry carries the provider's
+            // complete current-CPU capability under the acquired baton.
+            cpu: unsafe { RuntimeCpuHandles::from_snapshot(context.cpu()) },
             system: context.system(),
             current: context.current(),
             _not_send: PhantomData,
@@ -311,10 +287,17 @@ impl RuntimeSchedulerFrameGuard {
     }
 
     pub(super) fn refresh_current_cpu(&mut self) {
-        // A saved scheduler continuation may resume after its task migrated.
-        // Capture the target CPU once before switch-tail owner access; all
-        // later borrows in this frame reuse that validated identity.
-        self.cpu = RuntimeCpuHandles::capture();
+        // A saved scheduler continuation normally resumes on the same rq. Like
+        // Linux's switch tail retaining its rq pointer, keep using the handles
+        // already validated by this scheduler frame unless the task actually
+        // migrated while it was off-CPU.
+        // SAFETY: the scheduler baton still pins this resumed continuation to
+        // the CPU being compared. Both cached handles remain live until runtime
+        // shutdown and are only borrowed again after this identity check.
+        let current = unsafe { task_runtime::current_cpu_id() };
+        if current != self.cpu.cpu_id() {
+            self.cpu = RuntimeCpuHandles::capture();
+        }
     }
 
     pub(super) const fn cpu_id(&self) -> RuntimeCpuId {
@@ -348,19 +331,13 @@ impl RuntimeSchedulerFrameGuard {
         &self,
         scope: SchedulerRequestScope,
     ) -> Result<bool, TaskError> {
-        Ok(self.cpu.remote()?.scheduler_request_pending(scope))
+        Ok(self.cpu.remote().scheduler_request_pending(scope))
     }
 }
 
 impl Drop for RuntimeSchedulerFrameGuard {
     fn drop(&mut self) {
-        let needs_reschedule = self
-            .cpu
-            .remote()
-            .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5346_0001, self.cpu.runtime_cpu.as_u32() as usize)
-            })
-            .needs_immediate_scheduler_work();
+        let needs_reschedule = self.cpu.remote().needs_immediate_scheduler_work();
         let _task_context_safe =
             task_runtime::scheduler_frame_guard_exit(self.return_to, needs_reschedule);
     }

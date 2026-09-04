@@ -3,25 +3,6 @@
 use super::*;
 
 impl TaskSystem {
-    pub(in crate::system::task_system) fn owner_dispatch_from_rq(
-        core: &Arc<ThreadCore>,
-        schedule: CurrentClassState,
-        metadata: RqTaskMetadata,
-        rt_quota_exempt: bool,
-        task_now: RqTaskTime,
-    ) -> CurrentDispatch {
-        CurrentDispatch::new(
-            CurrentDispatchState {
-                thread: core.id(),
-                schedule,
-                metadata,
-                rt_quota_exempt,
-            },
-            core,
-            task_now,
-        )
-    }
-
     pub(in crate::system::task_system) fn settle_owner_current_dispatch_in_rq(
         &self,
         transaction: &mut OwnerRqTxn<'_>,
@@ -41,38 +22,17 @@ impl TaskSystem {
         &self,
         transaction: &mut OwnerRqTxn<'_>,
     ) -> OwnerDispatchCommit {
-        if transaction.current().is_none() {
-            return OwnerDispatchCommit::NONE;
-        }
-        let current = transaction.current_thread();
-        let current_core = transaction.current_core();
         let owner = transaction.owner();
         let Some(dispatch) = transaction.current_mut() else {
-            task_runtime::fatal_invariant(0x5251_1101, owner.as_u32() as usize);
+            return OwnerDispatchCommit::NONE;
         };
-        if current != Some(dispatch.thread())
-            || current_core.is_none_or(|core| !Arc::ptr_eq(&core, dispatch.runtime_core_arc()))
-        {
-            task_runtime::fatal_invariant(0x5251_1102, dispatch.thread().as_u64() as usize);
-        }
-        let overrun_work = Self::sync_runtime_dispatch_state(dispatch);
+        let overrun = dispatch.take_deadline_overrun();
+        let overrun_work = overrun.then(|| {
+            transaction.current_core().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5251_1101, owner.as_u32() as usize)
+            })
+        });
         OwnerDispatchCommit { overrun_work }
-    }
-
-    /// Verifies that selection installed the staged incoming `rq->curr`.
-    pub(in crate::system::task_system) fn validate_owner_runtime_switch_out(
-        &self,
-        cpu: &CpuLocal,
-        transaction: &OwnerRqTxn<'_>,
-    ) {
-        let Some(handoff) = cpu.switch_handoff() else {
-            return;
-        };
-        if transaction.current_thread() != Some(handoff.incoming().id())
-            || Arc::ptr_eq(handoff.previous(), handoff.incoming())
-        {
-            task_runtime::fatal_invariant(0x5251_1105, cpu.owner().as_u32() as usize);
-        }
     }
 
     pub(in crate::system::task_system) fn finish_owner_dispatch_commit(
@@ -97,21 +57,11 @@ impl TaskSystem {
         &self,
         transaction: &mut OwnerRqTxn<'_>,
     ) -> Option<Arc<ThreadCore>> {
-        let current = transaction.current_thread();
-        let current_core = transaction.current_core();
-        let dispatch = transaction.current_mut()?;
-        if current != Some(dispatch.thread())
-            || current_core
-                .as_ref()
-                .is_none_or(|core| !Arc::ptr_eq(core, dispatch.runtime_core_arc()))
-        {
-            task_runtime::fatal_invariant(0x5251_1104, dispatch.thread().as_u64() as usize);
-        }
-        Self::sync_runtime_dispatch_state(dispatch)
-    }
-
-    fn sync_runtime_dispatch_state(dispatch: &mut CurrentDispatch) -> Option<Arc<ThreadCore>> {
-        let overrun_core = dispatch.deadline_overrun_core();
-        dispatch.take_deadline_overrun().then_some(overrun_core)
+        let overrun = transaction.current_mut()?.take_deadline_overrun();
+        overrun.then(|| {
+            transaction.current_core().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5251_1101, transaction.owner().as_u32() as usize)
+            })
+        })
     }
 }

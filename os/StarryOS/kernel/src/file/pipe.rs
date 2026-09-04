@@ -1450,7 +1450,6 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         _policy: SchedulePolicy,
-        _observed_ns: u64,
     ) {
     }
 
@@ -1458,7 +1457,6 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         reason: SwitchReason,
-        _observed_ns: u64,
     ) {
         if reason == SwitchReason::Blocked && DIRECT_WAIT_ARMED.swap(false, Ordering::AcqRel) {
             DIRECT_BLOCKED.store(true, Ordering::Release);

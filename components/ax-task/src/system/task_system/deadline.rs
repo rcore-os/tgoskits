@@ -664,7 +664,6 @@ impl TaskSystem {
             None
         } else {
             cpu.as_mut().next_scheduler_deadline_update_if_changed(
-                monotonic_now,
                 SchedulerDeadlineDerivationSource::KtimerService,
             )?
         };
@@ -889,15 +888,8 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<(), TaskError> {
-        let monotonic_now = task_runtime::monotonic_now();
-        let Some(update) = cpu
-            .as_mut()
-            .next_scheduler_deadline_update_if_changed(monotonic_now, source)?
-        else {
-            return Ok(());
-        };
-        task_runtime::publish_scheduler_deadline(update);
-        Ok(())
+        let rq_observation = cpu.scheduler_deadline_rq_observation();
+        self.program_local_timer_from_rq_observation(cpu.as_mut(), rq_observation, source)
     }
 
     pub(super) fn program_local_timer_from_rq_observation(
@@ -906,25 +898,25 @@ impl TaskSystem {
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<(), TaskError> {
-        if cpu
+        let runtime_deadline = cpu
+            .as_mut()
+            .next_scheduler_runtime_deadline_update(rq_observation);
+        if !cpu
             .as_ref()
             .get_ref()
             .can_reuse_scheduler_deadline_for_rq_observation(rq_observation)
+            && let Some(update) = cpu
+                .as_mut()
+                .next_scheduler_deadline_update_if_changed_from_rq_observation(
+                    rq_observation,
+                    source,
+                )?
         {
-            return Ok(());
+            task_runtime::publish_scheduler_deadline(update);
         }
-        let monotonic_now = task_runtime::monotonic_now();
-        let Some(update) = cpu
-            .as_mut()
-            .next_scheduler_deadline_update_if_changed_from_rq_observation(
-                monotonic_now,
-                rq_observation,
-                source,
-            )?
-        else {
-            return Ok(());
-        };
-        task_runtime::publish_scheduler_deadline(update);
+        if let Some(runtime_deadline) = runtime_deadline {
+            task_runtime::publish_scheduler_runtime_deadline(runtime_deadline);
+        }
         Ok(())
     }
 }

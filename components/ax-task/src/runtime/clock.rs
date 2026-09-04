@@ -85,15 +85,16 @@ impl MonotonicDeadline {
 /// One Linux-style runqueue-clock observation for a target CPU.
 ///
 /// `clock` is the corrected `sched_clock_cpu()` value. `hardirq_time_ns` is
-/// the cumulative hard-interrupt time published by that CPU. The runqueue
-/// owner consumes both values in one locked `OwnerRqTxn` sample so
-/// task execution time can exclude interrupt service without comparing either
-/// value with the monotonic clockevent domain.
+/// present only when the runtime enables Linux-style IRQ time accounting and
+/// can publish the target CPU's cumulative interrupt time coherently with that
+/// clock. The runqueue owner must treat absence like Linux built without
+/// `CONFIG_IRQ_TIME_ACCOUNTING`: task time advances by the full clock delta and
+/// IRQ PELT remains disabled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct RqClockSample {
     clock: crate::SchedulerTimestamp,
-    hardirq_time_ns: u64,
+    hardirq_time_ns: Option<u64>,
     frequency_capacity: u32,
     cpu_capacity: u32,
 }
@@ -103,7 +104,17 @@ impl RqClockSample {
     pub const fn new(clock: crate::SchedulerTimestamp, hardirq_time_ns: u64) -> Self {
         Self {
             clock,
-            hardirq_time_ns,
+            hardirq_time_ns: Some(hardirq_time_ns),
+            frequency_capacity: 1_024,
+            cpu_capacity: 1_024,
+        }
+    }
+
+    /// Creates a sample from a runtime without IRQ time accounting authority.
+    pub const fn without_irq_time_accounting(clock: crate::SchedulerTimestamp) -> Self {
+        Self {
+            clock,
+            hardirq_time_ns: None,
             frequency_capacity: 1_024,
             cpu_capacity: 1_024,
         }
@@ -130,7 +141,7 @@ impl RqClockSample {
         }
         Some(Self {
             clock,
-            hardirq_time_ns,
+            hardirq_time_ns: Some(hardirq_time_ns),
             frequency_capacity,
             cpu_capacity,
         })
@@ -142,7 +153,7 @@ impl RqClockSample {
     }
 
     /// Returns cumulative hard-interrupt time for the target CPU.
-    pub const fn hardirq_time_ns(self) -> u64 {
+    pub const fn hardirq_time_ns(self) -> Option<u64> {
         self.hardirq_time_ns
     }
 
@@ -191,28 +202,19 @@ mod monotonic_time_tests {
 pub struct SchedulerDeadlineUpdate {
     generation: u64,
     deadline: Option<MonotonicDeadline>,
-    runtime_deadline: Option<MonotonicDeadline>,
 }
 
 impl SchedulerDeadlineUpdate {
     /// Creates one publication after the owner has committed its local state.
     ///
     /// Generation zero is reserved for an uninitialized consumer.
-    pub const fn try_new(
-        generation: u64,
-        deadline: Option<MonotonicDeadline>,
-        runtime_deadline: Option<MonotonicDeadline>,
-    ) -> Option<Self> {
-        if generation == 0
-            || matches!((deadline, runtime_deadline), (None, Some(_)))
-            || matches!((deadline, runtime_deadline), (Some(deadline), Some(runtime)) if deadline.as_nanos() > runtime.as_nanos())
-        {
+    pub const fn try_new(generation: u64, deadline: Option<MonotonicDeadline>) -> Option<Self> {
+        if generation == 0 {
             None
         } else {
             Some(Self {
                 generation,
                 deadline,
-                runtime_deadline,
             })
         }
     }
@@ -226,9 +228,15 @@ impl SchedulerDeadlineUpdate {
     pub const fn deadline(self) -> Option<MonotonicDeadline> {
         self.deadline
     }
+}
 
-    /// Returns the current scheduling class's hrtick deadline, if armed.
-    pub const fn runtime_deadline(self) -> Option<MonotonicDeadline> {
-        self.runtime_deadline
-    }
+/// Owner-local update for the current scheduling class's hrtick.
+///
+/// Linux keeps this relative request in the runqueue owner until scheduler
+/// exit, where the local hrtimer base converts it to a physical deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SchedulerRuntimeDeadline {
+    Disarmed,
+    Due,
+    After(core::time::Duration),
 }

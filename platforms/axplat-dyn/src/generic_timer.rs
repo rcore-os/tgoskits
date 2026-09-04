@@ -2,6 +2,8 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use ax_lazyinit::OnceLock;
+
 const UNINIT_EPOCH_OFFSET_NANOS: u64 = u64::MAX;
 static EPOCH_OFFSET_NANOS: AtomicU64 = AtomicU64::new(UNINIT_EPOCH_OFFSET_NANOS);
 // The platform timer frequency is fixed for the lifetime of a boot. Cache it
@@ -9,6 +11,49 @@ static EPOCH_OFFSET_NANOS: AtomicU64 = AtomicU64::new(UNINIT_EPOCH_OFFSET_NANOS)
 // lookup; the arithmetic and saturation semantics remain unchanged.
 const UNINIT_FREQUENCY_HZ: u64 = u64::MAX;
 static TIMER_FREQUENCY_HZ: AtomicU64 = AtomicU64::new(UNINIT_FREQUENCY_HZ);
+static TICKS_TO_NANOS_SCALE: OnceLock<ClockScale> = OnceLock::new();
+
+/// Fixed-point conversion prepared once from the boot-lifetime timer rate.
+///
+/// This is the same hot-path model as Linux clocksource and sched_clock:
+/// frequency division chooses a multiplier and shift during initialization,
+/// while every sample performs only a widened multiply and shift. Widening
+/// preserves the old full-range saturation contract without constraining the
+/// conversion to an epoch-sized delta.
+#[derive(Clone, Copy)]
+struct ClockScale {
+    multiplier: u64,
+    shift: u32,
+}
+
+impl ClockScale {
+    fn from_frequency(frequency_hz: u64) -> Self {
+        if frequency_hz == 0 {
+            return Self {
+                multiplier: 0,
+                shift: 0,
+            };
+        }
+
+        for shift in (0..=64).rev() {
+            let numerator = (ax_plat::time::NANOS_PER_SEC as u128) << shift;
+            let multiplier = (numerator + u128::from(frequency_hz / 2)) / u128::from(frequency_hz);
+            if multiplier <= u64::MAX as u128 {
+                return Self {
+                    multiplier: multiplier as u64,
+                    shift,
+                };
+            }
+        }
+        unreachable!("zero shift always fits the timer conversion multiplier")
+    }
+
+    #[inline(always)]
+    fn ticks_to_nanos(self, ticks: u64) -> u64 {
+        let nanos = (u128::from(ticks) * u128::from(self.multiplier)) >> self.shift;
+        nanos.min(u64::MAX as u128) as u64
+    }
+}
 
 #[inline(always)]
 pub(crate) fn current_ticks() -> u64 {
@@ -33,8 +78,10 @@ fn timer_frequency_hz() -> u64 {
 
 #[inline(always)]
 pub(crate) fn ticks_to_nanos(ticks: u64) -> u64 {
-    let freq = timer_frequency_hz();
-    ticks_to_nanos_at_frequency(ticks, freq)
+    let scale = TICKS_TO_NANOS_SCALE.get().unwrap_or_else(|| {
+        TICKS_TO_NANOS_SCALE.call_once(|| ClockScale::from_frequency(timer_frequency_hz()))
+    });
+    scale.ticks_to_nanos(ticks)
 }
 
 #[inline(always)]
@@ -48,24 +95,9 @@ fn deadline_nanos_to_ticks(nanos: u64) -> u64 {
     deadline_nanos_to_ticks_at_frequency(nanos, freq)
 }
 
-const fn ticks_to_nanos_at_frequency(ticks: u64, frequency_hz: u64) -> u64 {
-    if frequency_hz == 0 {
-        return 0;
-    }
-    let nanos_per_second = ax_plat::time::NANOS_PER_SEC;
-    if frequency_hz <= u64::MAX / nanos_per_second {
-        let seconds = ticks / frequency_hz;
-        let remainder = ticks % frequency_hz;
-        return seconds
-            .saturating_mul(nanos_per_second)
-            .saturating_add(remainder * nanos_per_second / frequency_hz);
-    }
-    let nanos = (ticks as u128 * ax_plat::time::NANOS_PER_SEC as u128) / frequency_hz as u128;
-    if nanos > u64::MAX as u128 {
-        u64::MAX
-    } else {
-        nanos as u64
-    }
+#[cfg(test)]
+fn ticks_to_nanos_at_frequency(ticks: u64, frequency_hz: u64) -> u64 {
+    ClockScale::from_frequency(frequency_hz).ticks_to_nanos(ticks)
 }
 
 const fn nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> u64 {
@@ -185,6 +217,10 @@ impl ax_plat::time::TimeIf for GenericTimer {
     /// Converts hardware ticks to nanoseconds.
     fn ticks_to_nanos(ticks: u64) -> u64 {
         ticks_to_nanos(ticks)
+    }
+
+    fn scheduler_clock_raw_nanos() -> u64 {
+        ticks_to_nanos(current_ticks())
     }
 
     /// Converts nanoseconds to hardware ticks.

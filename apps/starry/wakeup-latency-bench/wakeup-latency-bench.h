@@ -53,6 +53,8 @@ int bench_absolute_timer(const struct bench_config *config,
                          struct latency_result *result);
 int bench_clock_pair(const struct bench_config *config,
                      enum bench_policy policy, struct latency_result *result);
+int bench_getpid(const struct bench_config *config,
+                 enum bench_policy policy, struct latency_result *result);
 int bench_futex_wait_mismatch(const struct bench_config *config,
                               enum bench_policy policy,
                               struct latency_result *result);

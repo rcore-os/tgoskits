@@ -1,11 +1,12 @@
 //! Task-embedded runqueue linkage and immutable rq snapshots.
 
 use alloc::{boxed::Box, sync::Arc};
-use core::{cell::UnsafeCell, fmt, ops::ControlFlow};
+use core::{cell::UnsafeCell, fmt, ops::ControlFlow, ptr::NonNull};
 
 use super::{deadline, deadline_pushable, realtime};
 use crate::{
-    ActiveSchedulingState, CpuSet, SchedulePolicy, SchedulingEntity, ThreadCore, ThreadId,
+    ActiveSchedulingState, CpuSet, CurrentRemotePublication, SchedulePolicy, SchedulingEntity,
+    ThreadCore, ThreadId,
 };
 
 /// Task-control facts published into one owner rq transaction.
@@ -136,6 +137,7 @@ pub(crate) struct QueuedThread {
     pub(crate) core: Arc<ThreadCore>,
     pub(crate) rt_quota_exempt: bool,
     pub(crate) metadata: RqTaskMetadata,
+    pub(crate) remote_publication: CurrentRemotePublication,
     /// The affinity snapshot allows this queued entity to leave its owner rq.
     pub(crate) migration_capable: bool,
     pub(crate) balance_scan_epoch: u64,
@@ -174,30 +176,26 @@ impl QueuedThreadSnapshot {
     }
 }
 
-/// Minimal identity returned by Linux-style RT/Deadline class selection.
+/// Temporary reference to an rq-linked RT/Deadline task selected under the
+/// owner rq lock.
 ///
-/// The scheduling entities remain linked in their rq-owned intrusive nodes
-/// while the task is current. Selection therefore carries only the facts
-/// needed to validate placement and install `rq->curr`; balance observations
-/// continue to use [`QueuedThreadSnapshot`] when they need entity state.
-#[derive(Debug)]
-pub(crate) struct LinkedPickedThread {
-    pub(crate) id: ThreadId,
-    pub(crate) policy: SchedulePolicy,
-    pub(crate) core: Arc<ThreadCore>,
-    pub(crate) rt_quota_exempt: bool,
-    pub(crate) metadata: RqTaskMetadata,
-}
+/// The scheduling entity remains in its stable boxed RT/DL node while class
+/// selection installs it as current. This token must not outlive that owner-rq
+/// transaction.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LinkedPickedThread(NonNull<QueuedThread>);
 
 impl From<&QueuedThread> for LinkedPickedThread {
     fn from(thread: &QueuedThread) -> Self {
-        Self {
-            id: thread.id,
-            policy: thread.active.policy(),
-            core: Arc::clone(&thread.core),
-            rt_quota_exempt: thread.rt_quota_exempt,
-            metadata: thread.metadata.clone(),
-        }
+        Self(NonNull::from(thread))
+    }
+}
+
+impl LinkedPickedThread {
+    pub(crate) fn thread(&self) -> &QueuedThread {
+        // SAFETY: construction and every unlink transition preserve the
+        // rq-linked lifetime invariant documented on this type.
+        unsafe { self.0.as_ref() }
     }
 }
 
@@ -217,38 +215,24 @@ pub(crate) enum PickedThread {
 pub(crate) type PickTaskResult = ControlFlow<Arc<ThreadCore>, PickedThread>;
 
 impl PickedThread {
-    pub(crate) const fn id(&self) -> ThreadId {
+    pub(crate) fn id(&self) -> ThreadId {
         match self {
             Self::Owned(thread) => thread.id,
-            Self::Linked(thread) => thread.id,
-        }
-    }
-
-    pub(crate) fn core(&self) -> &Arc<ThreadCore> {
-        match self {
-            Self::Owned(thread) => &thread.core,
-            Self::Linked(thread) => &thread.core,
+            Self::Linked(thread) => thread.thread().id,
         }
     }
 
     pub(crate) fn policy(&self) -> SchedulePolicy {
         match self {
             Self::Owned(thread) => thread.active.policy(),
-            Self::Linked(thread) => thread.policy,
+            Self::Linked(thread) => thread.thread().active.policy(),
         }
     }
 
     pub(crate) fn metadata(&self) -> &RqTaskMetadata {
         match self {
             Self::Owned(thread) => &thread.metadata,
-            Self::Linked(thread) => &thread.metadata,
-        }
-    }
-
-    pub(crate) const fn rt_quota_exempt(&self) -> bool {
-        match self {
-            Self::Owned(thread) => thread.rt_quota_exempt,
-            Self::Linked(thread) => thread.rt_quota_exempt,
+            Self::Linked(thread) => &thread.thread().metadata,
         }
     }
 }
@@ -262,12 +246,14 @@ impl QueuedThread {
         migration_capable: bool,
         metadata: RqTaskMetadata,
     ) -> Self {
+        let remote_publication = CurrentRemotePublication::task(active.policy(), &metadata);
         Self {
             id,
             active,
             core,
             rt_quota_exempt,
             metadata,
+            remote_publication,
             migration_capable,
             balance_scan_epoch: 0,
             sequence: 0,
@@ -284,6 +270,12 @@ impl QueuedThread {
 
     pub(crate) fn entity_snapshot(&self) -> SchedulingEntity {
         self.entity().clone()
+    }
+
+    pub(crate) fn update_affinity(&mut self, affinity: Arc<CpuSet>) {
+        self.metadata.affinity = affinity;
+        self.remote_publication =
+            CurrentRemotePublication::task(self.active.policy(), &self.metadata);
     }
 
     pub(crate) fn into_active(self) -> ActiveSchedulingState {

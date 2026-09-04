@@ -128,12 +128,6 @@ pub fn new_user_task(
                 .enter()
                 .expect("return-to-user validation must match the current task and address space");
 
-            // A periodic tick classifies CPU time from the saved trap origin.
-            // Settle the precise runtime interval before handling return work.
-            if matches!(reason, ReturnReason::Interrupt) {
-                thr.account_cpu_time_now();
-            }
-
             let saved_a0 = uctx.arg0();
             let saved_sysno = uctx.sysno();
             let is_syscall = matches!(reason, ReturnReason::Syscall);

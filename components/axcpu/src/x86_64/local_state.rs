@@ -30,6 +30,7 @@ struct CpuUserState {
     gs_base: usize,
     tls_generation: usize,
     user_fp_owner: usize,
+    xsave_config: usize,
 }
 
 #[cfg(not(feature = "host-test"))]
@@ -44,6 +45,12 @@ const CPU_USER_TLS_GENERATION_OFFSET: usize =
 #[cfg(not(feature = "host-test"))]
 const CPU_USER_FP_OWNER_OFFSET: usize =
     CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserState, user_fp_owner);
+#[cfg(not(feature = "host-test"))]
+const CPU_USER_XSAVE_CONFIG_OFFSET: usize =
+    CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserState, xsave_config);
+
+#[cfg(feature = "fp-simd")]
+const USER_XSAVEOPT_ENABLED: usize = 1 << (usize::BITS - 1);
 
 const _: () = assert!(size_of::<CpuUserState>() <= CPU_AREA_ARCH_STATE_SIZE);
 
@@ -180,6 +187,47 @@ fn publish_current_cpu_user_fp_owner(_owner: usize) {
     // Host tests cannot address the kernel GS CPU area.
 }
 
+#[cfg(all(feature = "fp-simd", not(feature = "host-test")))]
+pub(super) fn current_cpu_user_xsave_config() -> Option<(u64, bool)> {
+    let config: usize;
+    // SAFETY: userspace CPU initialization publishes this immutable word
+    // before this CPU can schedule a userspace context. It is thereafter read
+    // only by the same IRQ-disabled CPU during FP save and restore.
+    unsafe {
+        core::arch::asm!(
+            "mov {config}, gs:[{config_offset}]",
+            config = out(reg) config,
+            config_offset = const CPU_USER_XSAVE_CONFIG_OFFSET,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    let mask = config & !USER_XSAVEOPT_ENABLED;
+    (mask != 0).then_some((mask as u64, config & USER_XSAVEOPT_ENABLED != 0))
+}
+
+#[cfg(all(feature = "fp-simd", feature = "host-test"))]
+pub(super) fn current_cpu_user_xsave_config() -> Option<(u64, bool)> {
+    None
+}
+
+#[cfg(all(feature = "fp-simd", not(feature = "host-test")))]
+fn publish_current_cpu_user_xsave_config(mask: u64, xsaveopt_enabled: bool) {
+    let config = mask as usize | usize::from(xsaveopt_enabled) * USER_XSAVEOPT_ENABLED;
+    // SAFETY: this runs once for the current CPU after its GS CPU-area base and
+    // XCR0 policy are installed, before that CPU can enter userspace.
+    unsafe {
+        core::arch::asm!(
+            "mov gs:[{config_offset}], {config}",
+            config_offset = const CPU_USER_XSAVE_CONFIG_OFFSET,
+            config = in(reg) config,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+#[cfg(all(feature = "fp-simd", feature = "host-test"))]
+fn publish_current_cpu_user_xsave_config(_mask: u64, _xsaveopt_enabled: bool) {}
+
 fn write_changed_user_tls(previous: UserTlsValues, next: UserTlsValues, initialized: bool) {
     let writes = changed_user_tls(previous, next, initialized);
     if writes.fs_base {
@@ -220,6 +268,23 @@ pub(super) fn initialize_cpu_user_tls() {
     write_changed_user_tls(UserTlsValues::default(), values, false);
     publish_current_cpu_user_tls(values, 1);
     publish_current_cpu_user_fp_owner(0);
+    #[cfg(feature = "fp-simd")]
+    {
+        #[cfg(not(feature = "host-test"))]
+        let config = {
+            let cr4 = unsafe { x86::controlregs::cr4() };
+            if cr4.contains(x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE) {
+                let mask = unsafe { x86::controlregs::xcr0().bits() };
+                let xsaveopt_enabled = core::arch::x86_64::__cpuid_count(0x0d, 1).eax & 1 != 0;
+                (mask, xsaveopt_enabled)
+            } else {
+                (0, false)
+            }
+        };
+        #[cfg(feature = "host-test")]
+        let config = (0, false);
+        publish_current_cpu_user_xsave_config(config.0, config.1);
+    }
 }
 
 /// Lazily installs a user context without disturbing it in kernel-only tasks.

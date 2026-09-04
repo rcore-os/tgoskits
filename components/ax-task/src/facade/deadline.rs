@@ -244,10 +244,10 @@ pub fn on_clock_event(
                 .scheduler_work_due_from_rq_observation(now, task_tick_rq_observation),
             ClockEventRqObservationPlan::RefreshAndPublish => cpu.as_mut().scheduler_work_due(now),
         };
+    let runtime_deadline = cpu.scheduler_runtime_deadline_for_rq_observation(rq_observation);
     let update = cpu
         .as_mut()
         .next_scheduler_deadline_update_from_rq_observation(
-            now,
             rq_observation,
             SchedulerDeadlineDerivationSource::ClockEvent,
         )?;
@@ -256,6 +256,7 @@ pub fn on_clock_event(
         deadline_overrun: charge.deadline_overrun(),
         expired: hard.processed().saturating_add(batch.expired()),
         update,
+        runtime_deadline: Some(runtime_deadline),
         scheduler_tick: SchedulerTickStamp {
             cpu: cpu.owner(),
             thread: current,
@@ -401,7 +402,7 @@ fn commit_current_park_with_system(
     match commit {
         ParkCommit::Notified => Ok(CurrentParkDisposition::NotifiedBeforeBlock),
         ParkCommit::Blocked(decision) => {
-            execute_switch_plan(&mut scheduler_frame, decision);
+            execute_switch_plan(&mut scheduler_frame, &decision);
             Ok(CurrentParkDisposition::BlockedAndResumed)
         }
     }
@@ -609,6 +610,7 @@ pub struct TaskClockEventOutcome {
     deadline_overrun: bool,
     expired: usize,
     update: crate::runtime::SchedulerDeadlineUpdate,
+    runtime_deadline: Option<crate::runtime::SchedulerRuntimeDeadline>,
     scheduler_tick: SchedulerTickStamp,
 }
 
@@ -636,6 +638,10 @@ impl TaskClockEventOutcome {
     /// Returns the complete generation-ordered task-deadline publication.
     pub const fn update(self) -> crate::runtime::SchedulerDeadlineUpdate {
         self.update
+    }
+    /// Returns an owner-local class-runtime update when rq state was sampled.
+    pub const fn runtime_deadline(self) -> Option<crate::runtime::SchedulerRuntimeDeadline> {
+        self.runtime_deadline
     }
     /// Returns the rq-bound stamp consumed when this physical edge was also a
     /// periodic scheduler tick.

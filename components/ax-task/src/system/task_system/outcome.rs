@@ -7,20 +7,16 @@ use crate::{
 };
 
 /// Result of one scheduler safe-point decision.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct ScheduleDecision {
-    pub(super) previous: Option<ThreadId>,
-    pub(super) next: ThreadId,
     pub(super) previous_endpoint: Option<SwitchEndpoint>,
     pub(super) next_endpoint: SwitchEndpoint,
-    pub(super) previous_urgency: Option<crate::SchedulingUrgency>,
-    pub(super) next_urgency: crate::SchedulingUrgency,
     pub(super) switch_reason: SwitchReason,
     pub(super) timestamp_ns: u64,
 }
 
 /// Result of an explicit scheduler yield.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum YieldOutcome {
     /// The current scheduling class kept the same dispatch selected.
     Unchanged,
@@ -29,7 +25,7 @@ pub enum YieldOutcome {
 }
 
 impl YieldOutcome {
-    pub(crate) const fn decision(self) -> Option<ScheduleDecision> {
+    pub(crate) const fn decision(&self) -> Option<&ScheduleDecision> {
         match self {
             Self::Unchanged => None,
             Self::Switch(decision) => Some(decision),
@@ -43,7 +39,6 @@ pub struct SwitchInCompletion {
     thread: Option<ThreadId>,
     policy: Option<SchedulePolicy>,
     extension: Option<ThreadExtensionView>,
-    observed_ns: u64,
 }
 
 impl SwitchInCompletion {
@@ -51,15 +46,13 @@ impl SwitchInCompletion {
         thread: None,
         policy: None,
         extension: None,
-        observed_ns: 0,
     };
 
-    pub(crate) fn for_core(core: &ThreadCore, observed_ns: u64) -> Self {
+    pub(crate) fn for_core(core: &ThreadCore, policy: SchedulePolicy) -> Self {
         Self {
             thread: Some(core.id()),
-            policy: Some(core.base_policy()),
+            policy: Some(policy),
             extension: core.extension_view(),
-            observed_ns,
         }
     }
 
@@ -74,9 +67,7 @@ impl SwitchInCompletion {
         // publication, previous-binding withdrawal, and switch-handoff
         // consumption. The facade drops its CpuLocal owner borrow before
         // finishing the token while retaining the scheduler IRQ baton.
-        unsafe {
-            (extension.ops().on_switch_in)(extension.data(), thread, policy, self.observed_ns)
-        };
+        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, policy) };
     }
 }
 
@@ -85,7 +76,7 @@ impl SwitchInCompletion {
 /// This type deliberately keeps lifecycle deferral and bounded owner work
 /// separate from a scheduling decision. Callers must not infer either state
 /// from a boolean `need_resched` value or an absent decision.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum SchedulerOutcome {
     /// No context switch or owner-only work remains from this pass.
     Quiescent,
@@ -99,7 +90,7 @@ pub enum SchedulerOutcome {
 
 impl SchedulerOutcome {
     /// Returns the scheduler decision, if this pass selected a thread.
-    pub const fn decision(self) -> Option<ScheduleDecision> {
+    pub const fn decision(&self) -> Option<&ScheduleDecision> {
         match self {
             Self::Decision(decision) => Some(decision),
             Self::Quiescent | Self::ParkingDeferred | Self::OwnerWorkPending => None,
@@ -108,47 +99,50 @@ impl SchedulerOutcome {
 
     /// Returns whether the caller must finish a pending park handshake before
     /// scheduler task-work callbacks may execute.
-    pub const fn parking_deferred(self) -> bool {
+    pub const fn parking_deferred(&self) -> bool {
         matches!(self, Self::ParkingDeferred)
     }
 
     /// Returns whether more owner-only work remains for a later bounded safe point.
-    pub const fn owner_work_pending(self) -> bool {
+    pub const fn owner_work_pending(&self) -> bool {
         matches!(self, Self::OwnerWorkPending)
     }
 }
 
 impl ScheduleDecision {
     /// Returns the thread that stopped running, if any.
-    pub const fn previous(self) -> Option<ThreadId> {
-        self.previous
+    pub const fn previous(&self) -> Option<ThreadId> {
+        match self.previous_endpoint {
+            Some(endpoint) => Some(endpoint.thread()),
+            None => None,
+        }
     }
 
     /// Returns the selected thread or CPU idle thread.
-    pub const fn next(self) -> ThreadId {
-        self.next
+    pub const fn next(&self) -> ThreadId {
+        self.next_endpoint.thread()
     }
 
     /// Returns why the previous thread relinquished the CPU.
-    pub const fn switch_reason(self) -> SwitchReason {
+    pub const fn switch_reason(&self) -> SwitchReason {
         self.switch_reason
     }
 
     /// Returns the runqueue timestamp that committed this decision.
-    pub const fn timestamp_ns(self) -> u64 {
+    pub const fn timestamp_ns(&self) -> u64 {
         self.timestamp_ns
     }
 
     /// Returns whether the architecture execution context must change.
-    pub fn requires_context_switch(self) -> bool {
-        self.previous != Some(self.next)
+    pub fn requires_context_switch(&self) -> bool {
+        self.previous() != Some(self.next())
     }
 
-    pub(crate) const fn previous_endpoint(self) -> Option<SwitchEndpoint> {
+    pub(crate) const fn previous_endpoint(&self) -> Option<SwitchEndpoint> {
         self.previous_endpoint
     }
 
-    pub(crate) const fn next_endpoint(self) -> SwitchEndpoint {
+    pub(crate) const fn next_endpoint(&self) -> SwitchEndpoint {
         self.next_endpoint
     }
 }

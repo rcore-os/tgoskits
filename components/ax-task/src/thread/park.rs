@@ -253,7 +253,7 @@ pub enum ParkPrepare {
 }
 
 /// Result of rechecking a prepared park at the scheduler safe point.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum ParkCommit {
     /// A concurrent notification cancelled the park before schedule-out.
     Notified,

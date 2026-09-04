@@ -29,7 +29,7 @@ mod tests {
         let accounting = CpuTimeAccounting::new();
         let mut watchdog = RttimeWatchdog::new();
         assert_eq!(
-            watchdog.check_snapshot(accounting.snapshot_at(0), 0, 0),
+            watchdog.check_snapshot(accounting.snapshot(0), 0, 0),
             RttimeLimitAction::None
         );
     }

@@ -12,6 +12,7 @@
 
 enum baseline_operation {
     BASELINE_CLOCK_PAIR,
+    BASELINE_GETPID,
     BASELINE_FUTEX_WAIT_MISMATCH,
     BASELINE_FUTEX_WAKE_EMPTY,
 };
@@ -22,6 +23,8 @@ static int run_operation(enum baseline_operation operation,
     switch (operation) {
     case BASELINE_CLOCK_PAIR:
         return 0;
+    case BASELINE_GETPID:
+        return syscall(SYS_getpid) > 0 ? 0 : -1;
     case BASELINE_FUTEX_WAIT_MISMATCH: {
         long result = syscall(SYS_futex, futex_word,
                               FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 0, NULL, NULL,
@@ -89,6 +92,13 @@ int bench_clock_pair(const struct bench_config *config,
 {
     return bench_syscall_baseline(config, policy, BASELINE_CLOCK_PAIR,
                                   "clock_pair", result);
+}
+
+int bench_getpid(const struct bench_config *config,
+                 enum bench_policy policy, struct latency_result *result)
+{
+    return bench_syscall_baseline(config, policy, BASELINE_GETPID,
+                                  "getpid", result);
 }
 
 int bench_futex_wait_mismatch(const struct bench_config *config,

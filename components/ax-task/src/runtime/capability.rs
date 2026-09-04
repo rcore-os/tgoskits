@@ -98,6 +98,8 @@ pub struct RuntimeSwitchPlan {
     previous_address_space: AddressSpaceHandle,
     next_context: ExecutionContextHandle,
     next_address_space: AddressSpaceHandle,
+    #[cfg(feature = "qperf-metrics")]
+    qperf_prepare_started_ns: u64,
 }
 
 impl RuntimeSwitchPlan {
@@ -116,6 +118,8 @@ impl RuntimeSwitchPlan {
                 previous_address_space,
                 next_context,
                 next_address_space,
+                #[cfg(feature = "qperf-metrics")]
+                qperf_prepare_started_ns: 0,
             })
         }
     }
@@ -138,6 +142,17 @@ impl RuntimeSwitchPlan {
     /// Returns the incoming scheduler-selected logical address space.
     pub const fn next_address_space(&self) -> AddressSpaceHandle {
         self.next_address_space
+    }
+
+    #[cfg(feature = "qperf-metrics")]
+    pub(crate) fn set_qperf_prepare_started_ns(&mut self, started_ns: u64) {
+        self.qperf_prepare_started_ns = started_ns;
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "qperf-metrics")]
+    pub const fn qperf_prepare_started_ns(&self) -> u64 {
+        self.qperf_prepare_started_ns
     }
 }
 opaque_handle!(
@@ -968,7 +983,6 @@ mod switch_plan_tests {
         let previous_mm = unsafe { AddressSpaceHandle::from_raw(0x3000) };
         // SAFETY: see above.
         let next_mm = unsafe { AddressSpaceHandle::from_raw(0x4000) };
-
         let plan = RuntimeSwitchPlan::new(previous_context, previous_mm, next_context, next_mm)
             .expect("two distinct live contexts must form one runtime switch plan");
 

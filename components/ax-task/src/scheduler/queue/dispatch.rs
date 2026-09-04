@@ -1,24 +1,9 @@
 use super::*;
 
 impl RunQueue {
-    /// Restores a class pick whose owner-rq validation did not reach set-next.
-    pub(crate) fn rollback_pick(&mut self, picked: PickedThread) {
-        match picked {
-            PickedThread::Linked(_) => {}
-            PickedThread::Owned(mut thread) => {
-                thread.active.entity_mut().cancel_fair_migration();
-                SchedulerClass::for_policy(thread.active.policy()).rollback_pick(self, thread);
-            }
-        }
-    }
-
     /// Makes the retained RT/DL current queued again without transferring its
     /// intrusive node or membership identity.
-    pub(crate) fn put_prev_task(
-        &mut self,
-        id: ThreadId,
-        reason: EnqueueReason,
-    ) -> Result<SchedulingEntity, TaskError> {
+    pub(crate) fn put_prev_task(&mut self, id: ThreadId) -> Result<SchedulingEntity, TaskError> {
         if self.linked_current() != Some(id) {
             return Err(TaskError::NotReady);
         }
@@ -27,12 +12,37 @@ impl RunQueue {
             .queued_thread_including_current(id)
             .ok_or(TaskError::NotReady)?
             .policy;
-        let entity = SchedulerClass::for_policy(policy).put_prev_task(self, class, id, reason)?;
-        self.fixed_placement_demand = self
-            .fixed_placement_demand
-            .saturating_add(fixed_placement_demand(policy));
+        let entity = SchedulerClass::for_policy(policy).put_prev_task(self, class, id)?;
         self.refresh_class_pushable(id, None);
+        self.mark_publication_dirty();
         Ok(entity)
+    }
+
+    /// Runs the fixed-priority RT put-prev hook without cloning its unchanged
+    /// scheduling entity for a lock-free publication that is not needed.
+    #[inline(always)]
+    pub(crate) fn yield_realtime_current(&mut self, id: ThreadId) -> Result<(), TaskError> {
+        let Some(QueueMembershipClass::Realtime(key)) = self.membership_class(id) else {
+            return Err(TaskError::InvalidConfiguration);
+        };
+        if !self.rt.yield_current(key) {
+            return Err(TaskError::NotReady);
+        }
+        Ok(())
+    }
+
+    /// Linux `put_prev_task_rt()`: updates current accounting and pushable
+    /// state without implementing `yield_task_rt()` as an enqueue reason.
+    #[inline(always)]
+    pub(crate) fn put_prev_realtime_task(&mut self, id: ThreadId, migration_capable: bool) {
+        // Common runtime accounting already performed Linux's
+        // `update_curr_rt()`. A fixed-affinity current is never in the
+        // pushable set, so `put_prev_task_rt()` has no remaining work. The
+        // caller's `LinkedRealtime` selection retains the rq membership proof
+        // for this complete transaction.
+        if migration_capable {
+            self.refresh_class_pushable(id, None);
+        }
     }
 
     /// Moves one queued RT wakee ahead of its equal-priority current.
@@ -82,26 +92,40 @@ impl RunQueue {
         if is_fair {
             self.update_fair_virtual_time(current_fair);
         }
+        self.mark_publication_dirty();
         Some(thread)
     }
 
+    #[inline(always)]
     pub(crate) fn pick_next_task(
         &mut self,
         rt_eligibility: RtEligibility,
         skip_delayed: bool,
         protected_fair_current: Option<ThreadId>,
     ) -> Option<PickTaskResult> {
-        SchedulerClass::PICK_ORDER.into_iter().find_map(|class| {
-            class.pick_task(self, rt_eligibility, skip_delayed, protected_fair_current)
-        })
+        for class in SchedulerClass::PICK_ORDER {
+            if let Some(picked) =
+                class.pick_task(self, rt_eligibility, skip_delayed, protected_fair_current)
+            {
+                return Some(picked);
+            }
+        }
+        None
     }
 
-    /// Linux `set_next_task()`: commits one class pick as current.
+    /// Linux `set_next_task()`: commits the rq-owned class pick as current.
+    ///
+    /// Class selection itself is the ownership proof: every runnable entity
+    /// can enter a class queue only through the owner-rq enqueue and migration
+    /// transactions. Like Linux, the hot pick path therefore does not reopen
+    /// task lifecycle, affinity, or placement state before publishing
+    /// `on_cpu`; `SchedulerPlacement::set_next_task` checks the packed
+    /// `task_cpu`/`on_rq` carrier at that final publication boundary.
+    #[inline(always)]
     pub(crate) fn set_next_task(&mut self, picked: &PickedThread) {
-        self.fixed_placement_demand = self
-            .fixed_placement_demand
-            .saturating_sub(fixed_placement_demand(picked.policy()));
         SchedulerClass::for_policy(picked.policy()).set_next_task(self, picked);
-        self.refresh_class_pushable(picked.id(), Some(picked.id()));
+        if picked.metadata().affinity.is_migration_capable() {
+            self.refresh_class_pushable(picked.id(), Some(picked.id()));
+        }
     }
 }

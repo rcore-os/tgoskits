@@ -189,17 +189,6 @@ impl FairEntity {
         };
     }
 
-    /// Cancels an unpublished migration without changing the active request.
-    pub(crate) fn cancel_migration(&mut self) {
-        self.placement = match self.placement {
-            FairPlacement::Migrating { .. } => FairPlacement::Active,
-            FairPlacement::DelayedMigrating { virtual_lag, .. } => {
-                FairPlacement::Delayed { virtual_lag }
-            }
-            placement => placement,
-        };
-    }
-
     /// Places a newly runnable entity into the runqueue competition.
     ///
     /// Linux gives an initial entity half a service request so it joins peers

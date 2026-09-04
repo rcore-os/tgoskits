@@ -130,6 +130,10 @@ impl TimeIf for DummyTime {
         ticks
     }
 
+    fn scheduler_clock_raw_nanos() -> u64 {
+        0
+    }
+
     fn nanos_to_ticks(nanos: u64) -> u64 {
         nanos
     }

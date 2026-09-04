@@ -306,23 +306,10 @@ impl CpuSet {
 #[derive(Debug)]
 pub struct ThreadExtensionOps {
     /// Invoked with the applied base policy before the thread becomes current.
-    /// `observed_ns` is the post-switch monotonic sample used for incoming
-    /// CPU-time accounting, matching Linux `vtime_task_switch()`.
-    pub on_switch_in: unsafe extern "Rust" fn(
-        data: usize,
-        thread: ThreadId,
-        policy: SchedulePolicy,
-        observed_ns: u64,
-    ),
+    pub on_switch_in:
+        unsafe extern "Rust" fn(data: usize, thread: ThreadId, policy: SchedulePolicy),
     /// Invoked after the thread stops being the current execution context.
-    /// `observed_ns` is the owner runqueue scheduler-clock sample that
-    /// committed the switch decision.
-    pub on_switch_out: unsafe extern "Rust" fn(
-        data: usize,
-        thread: ThreadId,
-        reason: SwitchReason,
-        observed_ns: u64,
-    ),
+    pub on_switch_out: unsafe extern "Rust" fn(data: usize, thread: ThreadId, reason: SwitchReason),
     /// Invoked in task context after the thread exits.
     pub on_exit: unsafe extern "Rust" fn(data: usize, thread: ThreadId),
     /// Invoked in task context for requested Deadline overrun notification.

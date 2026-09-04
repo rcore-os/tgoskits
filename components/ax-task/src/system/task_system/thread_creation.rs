@@ -285,7 +285,7 @@ impl TaskSystem {
                     EnqueueReason::Wake,
                 );
             let next = self.pick_owner_bootstrap_in_rq(cpu.as_mut(), &mut transaction);
-            if !Arc::ptr_eq(&next.core, &core) {
+            if !core::ptr::eq(next.core.as_ref(), Arc::as_ref(&core)) {
                 task_runtime::fatal_invariant(0x4254_0001, core.id().as_u64() as usize);
             }
             transaction.commit_bootstrap();

@@ -59,6 +59,102 @@ fn render_scheduler_metrics() -> alloc::string::String {
     let task = metrics.task;
     let pipe = crate::file::pipe_qperf_metrics_snapshot();
     let mut output = alloc::string::String::new();
+    writeln!(
+        output,
+        "switch_phase_scheduler_count {}",
+        task.switch_phase_scheduler_count
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "switch_phase_scheduler_total_ns {}",
+        task.switch_phase_scheduler_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "switch_phase_prepare_count {}",
+        task.switch_phase_prepare_count
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "switch_phase_prepare_total_ns {}",
+        task.switch_phase_prepare_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "switch_phase_runtime_tail_count {}",
+        task.switch_phase_runtime_tail_count
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "switch_phase_runtime_tail_total_ns {}",
+        task.switch_phase_runtime_tail_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "switch_phase_owner_tail_count {}",
+        task.switch_phase_owner_tail_count
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "switch_phase_owner_tail_total_ns {}",
+        task.switch_phase_owner_tail_total_ns
+    )
+    .unwrap();
+    for (index, name) in [
+        "account",
+        "put_prev",
+        "pick",
+        "handoff",
+        "rq_commit",
+        "dispatch",
+        "selection_tail",
+        "frame_enter",
+        "facade_setup",
+        "owner_schedule",
+        "owner_drain",
+        "rq_begin",
+        "rq_preflight",
+        "rq_lock",
+        "rq_clock",
+        "rq_clock_source",
+        "rq_irq_time",
+        "prepare_entry",
+        "prepare_mm",
+        "prepare_binding",
+        "prepare_arch",
+        "raw_switch",
+        "incoming_binding",
+        "owner_runtime_publish",
+        "owner_finish_prev",
+        "owner_consume_handoff",
+        "switch_validate",
+        "switch_trace",
+        "switch_out_hook",
+        "switch_plan",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        writeln!(
+            output,
+            "switch_scheduler_detail_{name}_count {}",
+            task.switch_scheduler_detail_count[index]
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "switch_scheduler_detail_{name}_total_ns {}",
+            task.switch_scheduler_detail_total_ns[index]
+        )
+        .unwrap();
+    }
     writeln!(output, "pipe_read_calls {}", pipe.read_calls).unwrap();
     writeln!(output, "pipe_read_waits {}", pipe.read_waits).unwrap();
     writeln!(output, "pipe_read_bytes {}", pipe.read_bytes).unwrap();

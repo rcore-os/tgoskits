@@ -8,7 +8,7 @@ use core::{
     iter::zip,
     mem::MaybeUninit,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use ax_lazyinit::OnceLock;
@@ -21,7 +21,8 @@ use crate::{
 };
 
 const SCOPE_GATE_WRITER: usize = 1 << (usize::BITS - 1);
-const SCOPE_GATE_READERS: usize = SCOPE_GATE_WRITER - 1;
+const SCOPE_GATE_ACTIVE: usize = 1 << (usize::BITS - 2);
+const SCOPE_GATE_READERS: usize = SCOPE_GATE_ACTIVE - 1;
 
 /// Bounded raw gate for scheduler-owned scope leases.
 ///
@@ -71,22 +72,58 @@ impl ScopeGate {
 
     fn try_upgrade_active_shared_to_exclusive(&self) -> bool {
         self.state
-            .compare_exchange(1, SCOPE_GATE_WRITER, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                SCOPE_GATE_ACTIVE,
+                SCOPE_GATE_WRITER,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_ok()
     }
 
     unsafe fn downgrade_exclusive_to_active_shared(&self) {
-        let old = self.state.fetch_add(1, Ordering::Relaxed);
-        assert!(
-            old & SCOPE_GATE_WRITER != 0 && old & SCOPE_GATE_READERS != SCOPE_GATE_READERS,
-            "scope downgrade requires one exclusive lease and reader capacity"
-        );
-        let old = self.state.fetch_and(SCOPE_GATE_READERS, Ordering::Release);
+        self.state
+            .compare_exchange(
+                SCOPE_GATE_WRITER,
+                SCOPE_GATE_ACTIVE,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .expect("scope downgrade requires one exclusive lease");
+    }
+
+    fn try_activate(&self) -> Result<(), ScopeActivationError> {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & SCOPE_GATE_WRITER != 0 {
+                return Err(ScopeActivationError::ExclusiveLease);
+            }
+            if state & SCOPE_GATE_ACTIVE != 0 {
+                return Err(ScopeActivationError::AlreadyActive);
+            }
+            match self.state.compare_exchange_weak(
+                state,
+                state | SCOPE_GATE_ACTIVE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(observed) => state = observed,
+            }
+        }
+    }
+
+    fn deactivate(&self) {
+        let old = self.state.fetch_and(!SCOPE_GATE_ACTIVE, Ordering::Release);
         assert_ne!(
-            old & SCOPE_GATE_WRITER,
+            old & SCOPE_GATE_ACTIVE,
             0,
-            "scope downgrade lost the exclusive lease"
+            "scope deactivation without a matching activation"
         );
+    }
+
+    fn is_active(&self) -> bool {
+        self.state.load(Ordering::Acquire) & SCOPE_GATE_ACTIVE != 0
     }
 
     unsafe fn unlock_shared(&self) {
@@ -363,7 +400,6 @@ impl Drop for ScopeInner {
 /// without waiting in a non-preemptible context.
 pub struct ScopeCell {
     scope: Scope,
-    scheduler_active: AtomicBool,
 }
 
 /// A bounded scope-cell lease could not be acquired immediately.
@@ -408,10 +444,7 @@ impl ScopeCell {
 
     /// Wraps an existing scope with a managed scheduler binding.
     pub fn from_scope(scope: Scope) -> Self {
-        Self {
-            scope,
-            scheduler_active: AtomicBool::new(false),
-        }
+        Self { scope }
     }
 
     /// Attempts to acquire an ordinary shared scope reference while preventing
@@ -533,64 +566,27 @@ impl ScopeCell {
     }
 
     fn try_acquire_active_lease(&self) -> Result<(), ScopeActivationError> {
-        let inner = self.scope.inner();
-        if !inner.try_lock_shared() {
-            return Err(ScopeActivationError::ExclusiveLease);
-        }
-        if self
-            .scheduler_active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            // SAFETY: this function acquired exactly one shared count above.
-            unsafe { inner.unlock_shared() };
-            return Err(ScopeActivationError::AlreadyActive);
-        }
-        Ok(())
+        self.scope.inner().gate.try_activate()
     }
 
     fn release_active_lease(&self) {
-        self.scheduler_active
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .expect("scope deactivation without a matching activation");
-        // SAFETY: every active identity owns exactly one shared count.
-        unsafe { self.scope.inner().unlock_shared() };
+        self.scope.inner().gate.deactivate();
     }
 
     fn try_withdraw_active_lease_for_writer(&self, writer_pending: impl FnOnce()) -> bool {
-        if !self.scheduler_active.load(Ordering::Acquire)
-            || !self
-                .scope
-                .inner()
-                .gate
-                .try_upgrade_active_shared_to_exclusive()
+        if !self
+            .scope
+            .inner()
+            .gate
+            .try_upgrade_active_shared_to_exclusive()
         {
             return false;
         }
         writer_pending();
-        if self
-            .scheduler_active
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            // SAFETY: this function atomically replaced the sole shared lease
-            // with the exclusive lease, but the active-count invariant changed
-            // before it could be retired. Restore the original shared state.
-            unsafe {
-                self.scope
-                    .inner()
-                    .gate
-                    .downgrade_exclusive_to_active_shared()
-            };
-            return false;
-        }
         true
     }
 
     fn restore_active_lease_from_writer(&self, pin: &CpuPin<'_>) {
-        self.scheduler_active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .expect("active mutation restore found an unexpected activation");
         // SAFETY: the exclusive lease keeps the scope stable while the pinned
         // identity is restored. Downgrading publishes its shared lease before
         // the caller may re-enter scope-local access.
@@ -638,7 +634,7 @@ impl Default for ScopeCell {
 impl Drop for ScopeCell {
     fn drop(&mut self) {
         assert!(
-            !self.scheduler_active.load(Ordering::Acquire),
+            !self.scope.inner().gate.is_active(),
             "cannot drop a scope with live scheduler activations"
         );
         assert!(

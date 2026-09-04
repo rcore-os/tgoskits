@@ -59,7 +59,7 @@ impl RunQueueClockSnapshot {
 pub(crate) struct RunQueueClock {
     wall: Option<SchedulerTimestamp>,
     task: Option<SchedulerTimestamp>,
-    prev_irq_time_ns: u64,
+    prev_irq_time_ns: Option<u64>,
     irq_pelt: IrqPelt,
 }
 
@@ -68,7 +68,7 @@ impl RunQueueClock {
         Self {
             wall: None,
             task: None,
-            prev_irq_time_ns: 0,
+            prev_irq_time_ns: None,
             irq_pelt: IrqPelt::new(),
         }
     }
@@ -79,16 +79,10 @@ impl RunQueueClock {
             self.wall = Some(source);
             self.task = Some(source);
             self.prev_irq_time_ns = sample.hardirq_time_ns();
-            self.irq_pelt.update(
-                source.as_nanos(),
-                0,
-                sample.frequency_capacity(),
-                sample.cpu_capacity(),
-            );
             return RunQueueClockSnapshot {
                 wall: source,
                 task: source,
-                irq_util_avg: self.irq_pelt.util_avg(),
+                irq_util_avg: self.irq_util_avg(),
             };
         };
 
@@ -99,29 +93,56 @@ impl RunQueueClock {
             return RunQueueClockSnapshot {
                 wall,
                 task,
-                irq_util_avg: self.irq_pelt.util_avg(),
+                irq_util_avg: self.irq_util_avg(),
             };
         }
 
-        let irq_delta = sample
-            .hardirq_time_ns()
-            .wrapping_sub(self.prev_irq_time_ns)
-            .min(delta);
-        self.prev_irq_time_ns = self.prev_irq_time_ns.wrapping_add(irq_delta);
+        let irq_time_ns = sample.hardirq_time_ns();
+        let irq_delta = match (self.prev_irq_time_ns, irq_time_ns) {
+            (Some(previous), Some(current)) => current.wrapping_sub(previous).min(delta),
+            _ => 0,
+        };
+        match (self.prev_irq_time_ns, irq_time_ns) {
+            (Some(previous), Some(_)) => {
+                self.prev_irq_time_ns = Some(previous.wrapping_add(irq_delta));
+            }
+            (None, Some(current)) => {
+                self.prev_irq_time_ns = Some(current);
+                self.irq_pelt = IrqPelt::new();
+            }
+            (_, None) => {
+                self.prev_irq_time_ns = None;
+                self.irq_pelt = IrqPelt::new();
+            }
+        }
         let wall = wall.advance(delta);
         let task = task.advance(delta - irq_delta);
-        self.irq_pelt.update(
-            wall.as_nanos(),
-            irq_delta,
-            sample.frequency_capacity(),
-            sample.cpu_capacity(),
-        );
+        // Linux updates the IRQ PELT signal from update_rq_clock_task() only
+        // when this rq-clock step consumed new IRQ or steal time. Re-running
+        // the IRQ decay path for an all-task interval both changes that signal
+        // at the wrong event boundary and adds fixed work to every schedule.
+        if irq_delta != 0 {
+            self.irq_pelt.update(
+                wall.as_nanos(),
+                irq_delta,
+                sample.frequency_capacity(),
+                sample.cpu_capacity(),
+            );
+        }
         self.wall = Some(wall);
         self.task = Some(task);
         RunQueueClockSnapshot {
             wall,
             task,
-            irq_util_avg: self.irq_pelt.util_avg(),
+            irq_util_avg: self.irq_util_avg(),
+        }
+    }
+
+    const fn irq_util_avg(&self) -> u32 {
+        if self.prev_irq_time_ns.is_some() {
+            self.irq_pelt.util_avg()
+        } else {
+            0
         }
     }
 
@@ -134,7 +155,7 @@ impl RunQueueClock {
         Some(RunQueueClockSnapshot {
             wall: self.wall?,
             task: self.task?,
-            irq_util_avg: self.irq_pelt.util_avg(),
+            irq_util_avg: self.irq_util_avg(),
         })
     }
 }

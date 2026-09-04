@@ -204,6 +204,7 @@ impl SchedulerClass {
     /// Linux `pick_task()` class hook. RT and Deadline return a snapshot while
     /// retaining their current node in the active structure; Fair and stop
     /// transfer the selected node until `set_next_task()` commits.
+    #[inline(always)]
     pub(super) fn pick_task(
         self,
         run_queue: &mut RunQueue,
@@ -212,11 +213,11 @@ impl SchedulerClass {
         protected_fair_current: Option<ThreadId>,
     ) -> Option<PickTaskResult> {
         match self {
-            Self::Stop => run_queue
-                .stop
-                .take()
-                .map(PickedThread::Owned)
-                .map(PickTaskResult::Continue),
+            Self::Stop => {
+                let picked = run_queue.stop.take()?;
+                run_queue.mark_publication_dirty();
+                Some(PickTaskResult::Continue(PickedThread::Owned(picked)))
+            }
             Self::Deadline => {
                 let picked = run_queue.deadline.select_first();
                 picked
@@ -245,6 +246,7 @@ impl SchedulerClass {
                     let thread = match queue.pick_eligible(virtual_time, skip_delayed)? {
                         FairPick::Runnable(thread) => thread,
                         FairPick::Delayed(core) => {
+                            run_queue.mark_publication_dirty();
                             return Some(PickTaskResult::Break(core));
                         }
                     };
@@ -257,19 +259,8 @@ impl SchedulerClass {
                     };
                     fair.set_slice_protection(shortest_competing_slice_ns);
                 }
+                run_queue.mark_publication_dirty();
                 Some(PickTaskResult::Continue(PickedThread::Owned(thread)))
-            }
-        }
-    }
-
-    /// Reverses a class pick that failed owner-rq validation before set-next.
-    pub(super) fn rollback_pick(self, run_queue: &mut RunQueue, mut thread: QueuedThread) {
-        thread.active.entity_mut().cancel_fair_migration();
-        match self {
-            Self::Stop => assert!(run_queue.stop.replace(thread).is_none()),
-            Self::Fair => run_queue.fair.insert(thread),
-            Self::Deadline | Self::Realtime => {
-                unreachable!("linked classes never transfer their node during pick")
             }
         }
     }
@@ -280,7 +271,6 @@ impl SchedulerClass {
         run_queue: &mut RunQueue,
         membership: QueueMembershipClass,
         id: ThreadId,
-        reason: EnqueueReason,
     ) -> Result<SchedulingEntity, TaskError> {
         match (self, membership) {
             (Self::Deadline, QueueMembershipClass::Deadline(key)) => {
@@ -293,7 +283,7 @@ impl SchedulerClass {
             }
             (Self::Realtime, QueueMembershipClass::Realtime(key)) => run_queue
                 .rt
-                .put_prev_current(key, reason)
+                .put_prev_current(key)
                 .ok_or(TaskError::NotReady),
             _ => Err(TaskError::InvalidConfiguration),
         }

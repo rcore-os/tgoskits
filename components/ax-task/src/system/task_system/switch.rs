@@ -1,14 +1,26 @@
 //! Owner selection, schedule-out, and switch-handoff construction.
 
 use super::*;
-use crate::scheduler::{PickTaskResult, RtEligibility};
+use crate::{
+    scheduler::{PickTaskResult, RtEligibility},
+    system::cpu::{PreviousSwitchDisposition, SwitchHandoff},
+};
 
 pub(super) struct OwnerScheduleOut {
     pub(super) migration: Option<PreparedMigrationDelivery>,
 }
 
-pub(super) struct OwnerRqScheduleOut {
-    thread: ThreadId,
+pub(super) enum OwnerRqScheduleOut {
+    Idle { thread: ThreadId },
+    LinkedRealtime { thread: ThreadId },
+    Unlinked { thread: ThreadId },
+}
+
+pub(super) struct OwnerRqScheduledOut {
+    pub(super) core: Arc<ThreadCore>,
+    pub(super) endpoint: SwitchEndpoint,
+    pub(super) policy: SchedulePolicy,
+    pub(super) urgency: SchedulingUrgency,
 }
 
 impl TaskSystem {
@@ -18,53 +30,31 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         transaction: OwnerRqTxn<'_>,
+        mut handoff: Option<SwitchHandoff>,
         retain_rq_lock: bool,
     ) {
-        self.validate_owner_runtime_switch_out(cpu.as_ref().get_ref(), &transaction);
-        let retain_rq_lock = should_retain_owner_rq_baton(
-            retain_rq_lock,
-            cpu.as_ref().get_ref().switch_handoff().is_some(),
-        );
+        if cpu.as_ref().get_ref().switch_handoff().is_some() {
+            task_runtime::fatal_invariant(0x5343_1117, cpu.owner().as_u32() as usize);
+        }
+        let retain_rq_lock = retain_rq_lock && handoff.is_some();
         if retain_rq_lock {
             let baton = transaction.commit_and_handoff_scheduler_work();
-            cpu.as_mut()
-                .install_switch_rq_baton(baton)
+            handoff
+                .as_mut()
+                .expect("rq baton requires a prepared switch handoff")
+                .install_rq_baton(baton)
                 .unwrap_or_else(|_| {
                     task_runtime::fatal_invariant(0x5343_111a, cpu.owner().as_u32() as usize)
                 });
         } else {
             transaction.commit_and_finish_scheduler_request();
         }
-    }
-
-    /// Runs only the Linux rq balance-callback portion of a no-switch yield.
-    ///
-    /// The current task, its class state, root-domain publication, and
-    /// scheduler deadline are unchanged. Balance work may race the selection,
-    /// so it remains the one post-selection activity that cannot be skipped.
-    pub(super) fn finish_owner_unchanged_yield(
-        &self,
-        mut cpu: Pin<&mut CpuLocal>,
-        current: ThreadId,
-    ) {
-        if !self.owner_balance_work_pending(cpu.as_ref().get_ref(), current) {
-            return;
-        }
-        let run_queue_changed = self
-            .service_owner_balance(cpu.as_mut(), current)
-            .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5343_0001, current.as_u64() as usize)
-            })
-            .run_queue_changed();
-        if run_queue_changed
-            && self
-                .program_local_timer(
-                    cpu.as_mut(),
-                    SchedulerDeadlineDerivationSource::ScheduleSelection,
-                )
-                .is_err()
-        {
-            task_runtime::fatal_invariant(0x5343_0002, current.as_u64() as usize);
+        if let Some(handoff) = handoff {
+            cpu.as_mut()
+                .install_switch_handoff(handoff)
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x5343_1117, cpu.owner().as_u32() as usize)
+                });
         }
     }
 
@@ -81,76 +71,89 @@ impl TaskSystem {
         let dispatch = transaction.current().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1116, core.id().as_u64() as usize)
         });
-        if dispatch.thread() != core.id() {
-            task_runtime::fatal_invariant(0x5343_1117, core.id().as_u64() as usize);
-        }
+        debug_assert_eq!(dispatch.thread(), core.id());
         let placement = core.sched().placement();
-        if core.state() != ThreadState::Running
-            || placement.queued_cpu() != Some(transaction.owner())
-            || placement.on_cpu() != Some(transaction.owner())
+        debug_assert_eq!(core.state(), ThreadState::Running);
+        debug_assert_eq!(placement.queued_cpu(), Some(transaction.owner()));
+        debug_assert_eq!(placement.on_cpu(), Some(transaction.owner()));
+        if placement.requested_migration().is_some()
+            || dispatch.metadata().deadline_bandwidth_scaled != 0
+            || matches!(dispatch.schedule_policy(), SchedulePolicy::Deadline(_))
         {
-            task_runtime::fatal_invariant(0x5343_1119, core.id().as_u64() as usize);
+            return None;
         }
-        (placement.requested_migration().is_none()
-            && dispatch.metadata().affinity.contains(transaction.owner())
-            && dispatch.metadata().deadline_bandwidth_scaled == 0
-            && !matches!(dispatch.schedule_policy(), SchedulePolicy::Deadline(_)))
-        .then_some(OwnerRqScheduleOut { thread: core.id() })
+        if dispatch.is_dedicated_idle() {
+            Some(OwnerRqScheduleOut::Idle { thread: core.id() })
+        } else if dispatch.is_linked() {
+            Some(OwnerRqScheduleOut::LinkedRealtime { thread: core.id() })
+        } else {
+            Some(OwnerRqScheduleOut::Unlinked { thread: core.id() })
+        }
     }
 
     /// Performs the common Linux `put_prev_task()` path with rq as sole owner.
     pub(super) fn schedule_out_owner_rq_owned(
         &self,
-        cpu: Pin<&mut CpuLocal>,
         transaction: &mut OwnerRqTxn<'_>,
-        core: Arc<ThreadCore>,
         ownership: OwnerRqScheduleOut,
         reason: EnqueueReason,
-    ) {
-        self.ensure_owner_cpu_online(&cpu).unwrap_or_else(|_| {
-            task_runtime::fatal_invariant(0x5343_1118, cpu.owner().as_u32() as usize)
+    ) -> OwnerRqScheduledOut {
+        let current = transaction.current().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1105, transaction.owner().as_u32() as usize)
         });
-        let owner = cpu.owner();
-        if ownership.thread != core.id() {
-            task_runtime::fatal_invariant(0x5343_1119, core.id().as_u64() as usize);
-        }
+        let current_thread = current.thread();
+        let endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1105, current_thread.as_u64() as usize)
+        });
+        let policy = current.schedule_policy();
+        let migration_capable = current.metadata().affinity.is_migration_capable();
+        let urgency = policy.scheduling_urgency();
         if !matches!(reason, EnqueueReason::Preempted | EnqueueReason::Yield) {
-            task_runtime::fatal_invariant(0x5343_111b, core.id().as_u64() as usize);
+            task_runtime::fatal_invariant(0x5343_111b, current_thread.as_u64() as usize);
         }
 
         // Pairs prior task accesses with publication of a different rq->curr.
         crate::lock::smp_mb_after_spinlock();
-        if transaction.idle() == Some(core.id()) {
-            let dispatch = transaction.take_current().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
-            });
-            let active = dispatch.into_active().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1107, core.id().as_u64() as usize)
-            });
-            transaction.return_idle_schedule(core.id(), active);
-            return;
-        }
-
-        let policy = transaction
-            .current()
-            .map(CurrentDispatch::schedule_policy)
-            .unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1111, core.id().as_u64() as usize)
-            });
-        let queued_entity = if transaction.is_linked_current(core.id()) {
-            let queued_entity = transaction.put_prev_task(core.id(), reason);
-            let dispatch = transaction.take_current().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
-            });
-            if dispatch.thread() != core.id() || dispatch.into_active().is_some() {
-                task_runtime::fatal_invariant(0x5343_1106, core.id().as_u64() as usize);
+        let core = match ownership {
+            OwnerRqScheduleOut::Idle { thread } => {
+                debug_assert_eq!(thread, current_thread);
+                let dispatch = transaction.take_current().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
+                });
+                let (core, active) = dispatch.into_runtime_core_and_active();
+                let active = active.unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1107, thread.as_u64() as usize)
+                });
+                transaction.return_idle_schedule(thread, active);
+                core
             }
-            queued_entity
-        } else {
-            transaction.put_prev_unlinked_current(core.id(), reason)
+            OwnerRqScheduleOut::LinkedRealtime { thread } => {
+                debug_assert_eq!(thread, current_thread);
+                if reason == EnqueueReason::Yield {
+                    transaction.yield_realtime_current(thread);
+                }
+                transaction.put_prev_realtime_task(thread, migration_capable);
+                let core = transaction.current_core().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
+                });
+                core
+            }
+            OwnerRqScheduleOut::Unlinked { thread } => {
+                debug_assert_eq!(thread, current_thread);
+                let core = transaction.current_core().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
+                });
+                let queued_entity = transaction.put_prev_unlinked_current(thread, reason);
+                core.publish_effective_schedule(policy, &queued_entity);
+                core
+            }
         };
-        core.publish_effective_schedule(policy, &queued_entity);
-        core.set_wake_cpu_hint(owner);
+        OwnerRqScheduledOut {
+            core,
+            endpoint,
+            policy,
+            urgency,
+        }
     }
 
     /// Completes every owner-side selection through the same balance and
@@ -163,32 +166,41 @@ impl TaskSystem {
     pub(super) fn finish_owner_selection(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
-        decision: ScheduleDecision,
-        rq_observation: SchedulerDeadlineRqObservation,
-    ) -> ScheduleDecision {
+        previous: Option<ThreadId>,
+        next: ThreadId,
+        previous_urgency: Option<SchedulingUrgency>,
+        next_urgency: SchedulingUrgency,
+        scheduler_deadline: OwnerSchedulerDeadline,
+    ) {
         // Selection, lifecycle, and switch-handoff state are already committed
         // before this tail. Reporting a recoverable error would let block or
         // yield callers attempt to resume an outgoing thread that is no longer
         // current, so runtime failures beyond this boundary are fatal.
         self.notify_overloaded_owners_after_priority_drop(
             cpu.owner(),
-            decision.previous_urgency,
-            decision.next_urgency,
+            previous_urgency,
+            next_urgency,
         );
+        // FIFO has no per-task scheduler deadline. Owner work that races the
+        // initial drain already owns a sticky scheduler request, so a plain
+        // FIFO-to-FIFO rotation does not scan unrelated idle/Fair/Deadline
+        // balance state before returning to the selected task.
+        if matches!(scheduler_deadline, OwnerSchedulerDeadline::Unchanged) {
+            return;
+        }
         let idle = cpu.remote().idle_thread();
-        let next_is_idle = idle == Some(decision.next());
-        if next_is_idle && decision.previous() != Some(decision.next()) {
+        let next_is_idle = idle == Some(next);
+        let previous_was_idle = idle.is_some() && previous == idle;
+        if next_is_idle && !previous_was_idle {
             // Publish the pull permit before the NOHZ idle target. A racing
             // Fair source may kick this owner as soon as the target bit is
             // visible, including while this scheduler tail is still active.
             cpu.as_mut().arm_idle_pull();
+            self.root_domain.publish_fair_idle_target(cpu.owner(), true);
         }
-        self.root_domain
-            .publish_fair_idle_target(cpu.owner(), next_is_idle);
-        if let Some(idle) = idle
-            && decision.previous() == Some(idle)
-            && decision.next() != idle
-        {
+        if previous_was_idle && !next_is_idle {
+            self.root_domain
+                .publish_fair_idle_target(cpu.owner(), false);
             // Linux `tick_nohz_idle_exit()` runs before `schedule_idle()`
             // leaves the idle task. The idle loop's IRQ-off checkpoints cannot
             // observe a reschedule request that becomes visible only after
@@ -202,8 +214,7 @@ impl TaskSystem {
             .get_ref()
             .switch_handoff()
             .is_some_and(|handoff| handoff.has_rq_baton());
-        let balance_pending =
-            self.owner_balance_work_pending(cpu.as_ref().get_ref(), decision.next());
+        let balance_pending = self.owner_balance_work_pending(cpu.as_ref().get_ref(), next);
         let run_queue_changed = if rq_baton_retained && balance_pending {
             // A balance request can race selection publication. Keep it sticky
             // for the first safe point after switch tail; balance paths may
@@ -212,10 +223,10 @@ impl TaskSystem {
             cpu.request_scheduler_work();
             false
         } else if balance_pending {
-            match self.service_owner_balance(cpu.as_mut(), decision.next()) {
+            match self.service_owner_balance(cpu.as_mut(), next) {
                 Ok(outcome) => outcome.run_queue_changed(),
                 Err(_) => {
-                    task_runtime::fatal_invariant(0x5343_0001, decision.next().as_u64() as usize);
+                    task_runtime::fatal_invariant(0x5343_0001, next.as_u64() as usize);
                 }
             }
         } else {
@@ -227,32 +238,30 @@ impl TaskSystem {
         // whenever its publication still matches; this avoids sampling the
         // monotonic clock and taking the deadline-base lock on FIFO/RR
         // switches that have no runtime timer or balance deadline.
-        let deadline_derivation_required = run_queue_changed
-            || !cpu
-                .as_ref()
-                .get_ref()
-                .can_reuse_scheduler_deadline_for_rq_observation(rq_observation);
-        if !deadline_derivation_required {
-            return decision;
-        }
-
-        let timer_result = if run_queue_changed {
-            self.program_local_timer(
+        let timer_result = match (run_queue_changed, scheduler_deadline) {
+            (true, _) => self.program_local_timer(
                 cpu.as_mut(),
                 SchedulerDeadlineDerivationSource::ScheduleSelection,
-            )
-        } else {
-            self.program_local_timer_from_rq_observation(
-                cpu.as_mut(),
-                rq_observation,
-                SchedulerDeadlineDerivationSource::ScheduleSelection,
-            )
+            ),
+            (false, OwnerSchedulerDeadline::Unchanged) => unreachable!(),
+            (false, OwnerSchedulerDeadline::Reevaluate(rq_observation)) => {
+                if cpu
+                    .as_ref()
+                    .get_ref()
+                    .can_reuse_scheduler_deadline_for_rq_observation(rq_observation)
+                {
+                    return;
+                }
+                self.program_local_timer_from_rq_observation(
+                    cpu.as_mut(),
+                    rq_observation,
+                    SchedulerDeadlineDerivationSource::ScheduleSelection,
+                )
+            }
         };
         if timer_result.is_err() {
-            task_runtime::fatal_invariant(0x5343_0002, decision.next().as_u64() as usize);
+            task_runtime::fatal_invariant(0x5343_0002, next.as_u64() as usize);
         }
-
-        decision
     }
 
     /// Commits one running owner either to its local queue, a migration
@@ -346,19 +355,6 @@ impl TaskSystem {
             return OwnerScheduleOut { migration: None };
         }
         let linked_policy = retained_current.then_some(current_policy);
-        if !retained_current {
-            let dispatch = transaction.take_current().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
-            });
-            if dispatch.thread() != core.id() {
-                task_runtime::fatal_invariant(0x5343_1106, core.id().as_u64() as usize);
-            }
-            let active = dispatch.into_active().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_110a, core.id().as_u64() as usize)
-            });
-            core.sched().install_active(sched, active);
-        }
-
         if let Some((target, migration)) = prepared_migration {
             if retained_current {
                 let active = transaction.deactivate_task(core.id()).into_active();
@@ -371,12 +367,35 @@ impl TaskSystem {
                 }
             } else {
                 transaction.deactivate_unlinked_current(core.id());
+                let dispatch = transaction.take_current().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
+                });
+                if dispatch.thread() != core.id() {
+                    task_runtime::fatal_invariant(0x5343_1106, core.id().as_u64() as usize);
+                }
+                let active = dispatch.into_active().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_110a, core.id().as_u64() as usize)
+                });
+                core.sched().install_active(sched, active);
             }
             placement.begin_migration(owner, target);
             core.set_wake_cpu_hint(target);
             return OwnerScheduleOut {
                 migration: Some(migration),
             };
+        }
+
+        if !retained_current {
+            let dispatch = transaction.take_current().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
+            });
+            if dispatch.thread() != core.id() {
+                task_runtime::fatal_invariant(0x5343_1106, core.id().as_u64() as usize);
+            }
+            let active = dispatch.into_active().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_110a, core.id().as_u64() as usize)
+            });
+            core.sched().install_active(sched, active);
         }
 
         let current_entity = if retained_current {
@@ -445,7 +464,15 @@ impl TaskSystem {
         // virtual time. The retained dispatch remains available until enqueue
         // commits, so no second lifecycle fact is needed for put-prev.
         let enqueue = if retained_current {
-            let queued_entity = transaction.put_prev_task(core.id(), reason);
+            if reason == EnqueueReason::Yield
+                && matches!(
+                    current_policy,
+                    SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+                )
+            {
+                transaction.yield_realtime_current(core.id());
+            }
+            let queued_entity = transaction.put_prev_task(core.id());
             let dispatch = transaction.take_current().unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
             });
@@ -748,6 +775,8 @@ impl TaskSystem {
                 transaction.take_idle_schedule().unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1110, owner.as_u32() as usize)
                 });
+            let policy = active.policy();
+            let urgency = active.entity().scheduling_urgency(policy);
             let placement = core.sched().placement();
             if core.state() != ThreadState::Running
                 || placement.queued_cpu() != Some(owner)
@@ -757,51 +786,60 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x5343_1111, core.id().as_u64() as usize);
             }
             placement.set_next_idle(owner);
-            let dispatch = Self::owner_dispatch_from_rq(
-                &core,
-                CurrentClassState::Owned(active),
+            let thread = core.id();
+            let dispatch = CurrentDispatch::owned(
+                core,
+                active,
                 metadata,
                 rt_quota_exempt,
                 transaction.clock().task(),
             );
-            transaction.install_current(dispatch);
-            return OwnerNext { core };
+            transaction.set_idle_current(dispatch);
+            let current = transaction.current_core_ref().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1111, thread.as_u64() as usize)
+            });
+            // SAFETY: `set_idle_current` installed an owned current dispatch;
+            // that dispatch retains the Arc through the incoming switch tail.
+            let core = unsafe { SchedulerThreadRef::from_scheduler_owned(current) };
+            return OwnerNext {
+                core,
+                policy,
+                urgency,
+            };
         };
 
-        {
-            let core = queued.core();
-            let placement = core.sched().placement();
-            if core.state() != ThreadState::Running
-                || placement.queued_cpu() != Some(owner)
-                || placement.requested_migration().is_some()
-                || !queued.metadata().affinity.contains(owner)
-            {
-                let thread = core.id();
-                transaction.rollback_pick(queued);
-                task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize);
-            }
-        }
-
-        let rt_quota_exempt = queued.rt_quota_exempt();
         transaction.set_next_task(&queued);
         let next_policy = queued.policy();
-
-        let (core, metadata, schedule) = match queued {
-            PickedThread::Owned(thread) => (
-                thread.core,
-                thread.metadata,
-                CurrentClassState::Owned(thread.active),
-            ),
-            PickedThread::Linked(thread) => (
-                thread.core,
-                thread.metadata,
-                CurrentClassState::Linked {
-                    policy: thread.policy,
-                },
-            ),
+        let (thread, dispatch) = match queued {
+            PickedThread::Owned(queued) => {
+                let thread = queued.id;
+                let core = queued.core;
+                core.sched().placement().set_next_task(owner);
+                let dispatch = CurrentDispatch::owned(
+                    core,
+                    queued.active,
+                    queued.metadata,
+                    queued.rt_quota_exempt,
+                    transaction.clock().task(),
+                );
+                (thread, dispatch)
+            }
+            PickedThread::Linked(queued) => {
+                let linked = queued.thread();
+                let core = Arc::as_ref(&linked.core);
+                core.sched().placement().set_next_task(owner);
+                let dispatch = CurrentDispatch::linked(
+                    linked.id,
+                    core,
+                    next_policy,
+                    linked.metadata.clone(),
+                    linked.rt_quota_exempt,
+                    linked.remote_publication,
+                    transaction.clock().task(),
+                );
+                (linked.id, dispatch)
+            }
         };
-        let placement = core.sched().placement();
-        placement.set_next_task(owner);
 
         // Linux set_next_task_{rt,dl} queues its class push callback after the
         // preempted task has become pushable in the same rq transaction.
@@ -811,67 +849,69 @@ impl TaskSystem {
             self.root_domain.start_rt_deadline_push_from(class, owner);
         }
 
-        let dispatch = Self::owner_dispatch_from_rq(
-            &core,
-            schedule,
-            metadata,
-            rt_quota_exempt,
-            transaction.clock().task(),
-        );
-        transaction.install_current(dispatch);
+        transaction.set_task_current(dispatch);
+        let current = transaction.current_core_ref().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize)
+        });
+        // SAFETY: the selected current is now owned by CurrentDispatch for
+        // Fair/stop or by its still-linked RT/DL node. Both ownership sources
+        // remain live through the incoming switch tail.
+        let core = unsafe { SchedulerThreadRef::from_scheduler_owned(current) };
 
-        OwnerNext { core }
+        let urgency = if matches!(next_policy, SchedulePolicy::Deadline(_)) {
+            transaction.current_scheduling_urgency().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize)
+            })
+        } else {
+            next_policy.scheduling_urgency()
+        };
+        OwnerNext {
+            core,
+            policy: next_policy,
+            urgency,
+        }
     }
 
-    pub(super) fn stage_switch_handoff(
-        mut cpu: Pin<&mut CpuLocal>,
+    pub(super) fn prepare_switch_handoff(
         previous: Option<ThreadId>,
         previous_core: Option<Arc<ThreadCore>>,
-        next: Arc<ThreadCore>,
+        next: SchedulerThreadRef,
+        next_policy: SchedulePolicy,
+        previous_disposition: PreviousSwitchDisposition,
         migration: Option<PreparedMigrationDelivery>,
-    ) {
+    ) -> Option<SwitchHandoff> {
         match previous {
-            Some(previous) if previous != next.id() => {
+            Some(previous) if previous != next.as_ref().id() => {
                 let previous_core = previous_core.unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1115, previous.as_u64() as usize)
                 });
                 if previous_core.id() != previous {
                     task_runtime::fatal_invariant(0x5343_1116, previous.as_u64() as usize);
                 }
-                cpu.as_mut()
-                    .stage_switch_handoff(previous_core, next, migration)
-                    .unwrap_or_else(|_| {
-                        task_runtime::fatal_invariant(0x5343_1117, previous.as_u64() as usize)
-                    });
+                Some(SwitchHandoff::prepared(
+                    previous_core,
+                    next,
+                    next_policy,
+                    previous_disposition,
+                    migration,
+                ))
             }
-            _ if migration.is_none() => {}
-            _ => task_runtime::fatal_invariant(0x5343_1118, next.id().as_u64() as usize),
+            _ if migration.is_none() => None,
+            _ => task_runtime::fatal_invariant(0x5343_1118, next.as_ref().id().as_u64() as usize),
         }
     }
 
     pub(super) fn owner_switch_plan(
-        previous: Option<&Arc<ThreadCore>>,
         previous_endpoint: Option<SwitchEndpoint>,
-        next: &Arc<ThreadCore>,
         next_endpoint: SwitchEndpoint,
         switch_reason: SwitchReason,
         timestamp_ns: u64,
     ) -> ScheduleDecision {
-        assert_eq!(previous.is_some(), previous_endpoint.is_some());
-        assert_eq!(next.id(), next_endpoint.thread());
         ScheduleDecision {
-            previous: previous.map(|core| core.id()),
-            next: next.id(),
             previous_endpoint,
             next_endpoint,
-            previous_urgency: previous.map(|core| core.effective_scheduling_urgency()),
-            next_urgency: next.effective_scheduling_urgency(),
             switch_reason,
             timestamp_ns,
         }
     }
-}
-
-fn should_retain_owner_rq_baton(retain_requested: bool, handoff_prepared: bool) -> bool {
-    retain_requested && handoff_prepared
 }

@@ -411,6 +411,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-scheduler-latency-bench"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+ "ax-task",
+]
+
+[[package]]
 name = "arceos-shell"
 version = "0.3.1"
 dependencies = [

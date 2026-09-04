@@ -29,6 +29,7 @@ impl RunQueue {
                 };
                 if thread.active.uses_inherited_entity() {
                     thread.active.replace_base_entity(entity);
+                    self.mark_publication_dirty();
                     return true;
                 }
                 let Some(new_key) = self.deadline.update_entity(key, entity) else {
@@ -36,6 +37,7 @@ impl RunQueue {
                 };
                 self.replace_membership_class(id, QueueMembershipClass::Deadline(new_key));
                 self.deadline.refresh_pushable(id, self.linked_current());
+                self.mark_publication_dirty();
                 true
             }
             QueueMembershipClass::DeadlineThrottled => {
@@ -43,6 +45,7 @@ impl RunQueue {
                     return false;
                 };
                 thread.active.replace_base_entity(entity);
+                self.mark_publication_dirty();
                 true
             }
             _ => false,
@@ -60,7 +63,7 @@ impl RunQueue {
                     .stop
                     .as_mut()
                     .expect("stop membership must retain the stopper task");
-                thread.metadata.affinity = affinity;
+                thread.update_affinity(affinity);
                 thread.migration_capable = false;
             }
             QueueMembershipClass::Deadline(key) => {
@@ -68,7 +71,7 @@ impl RunQueue {
                     .deadline
                     .get_mut(key)
                     .expect("Deadline membership must retain its queue node");
-                thread.metadata.affinity = affinity;
+                thread.update_affinity(affinity);
                 thread.migration_capable = migration_capable;
                 self.deadline.refresh_pushable(id, self.linked_current());
             }
@@ -77,7 +80,7 @@ impl RunQueue {
                     .deadline
                     .throttled_mut(id)
                     .expect("throttled Deadline membership must retain its entity");
-                thread.metadata.affinity = affinity;
+                thread.update_affinity(affinity);
                 thread.migration_capable = migration_capable;
             }
             QueueMembershipClass::Realtime(key) => {
@@ -85,7 +88,7 @@ impl RunQueue {
                     .rt
                     .get_mut(key)
                     .expect("RT membership must retain its queue node");
-                thread.metadata.affinity = affinity;
+                thread.update_affinity(affinity);
                 thread.migration_capable = migration_capable;
                 self.rt.refresh_pushable(key, self.linked_current());
             }
@@ -93,6 +96,7 @@ impl RunQueue {
                 assert!(self.fair.update_affinity(id, affinity));
             }
         }
+        self.mark_publication_dirty();
         true
     }
 

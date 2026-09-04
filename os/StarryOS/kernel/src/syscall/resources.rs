@@ -74,7 +74,7 @@ struct Rusage {
 
 impl Rusage {
     fn from_thread(thread: &Thread) -> Self {
-        let (utime, stime) = thread.cpu_time().output();
+        let (utime, stime) = thread.cpu_time_output();
         let max_rss_kb = thread.proc_data.aspace().lock().rss().hiwater_rss_pages()
             * (PAGE_SIZE_4K as u64 / 1024);
         Self {

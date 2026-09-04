@@ -37,7 +37,12 @@ pub use error::*;
 pub use facade::*;
 pub use irq_wait::*;
 #[cfg(feature = "qperf-metrics")]
-pub use metrics::{QperfSchedulerMetricsSnapshot, qperf_scheduler_metrics_snapshot};
+pub use metrics::{
+    QperfSchedulerMetricsSnapshot, qperf_record_switch_phase_owner_tail,
+    qperf_record_switch_phase_prepare, qperf_record_switch_phase_runtime_tail,
+    qperf_record_switch_phase_scheduler, qperf_record_switch_scheduler_detail,
+    qperf_scheduler_metrics_snapshot,
+};
 pub use scheduler::*;
 pub use sync::{Mutex, MutexGuard, PiMutex, PiMutexGuard, SpinLock, SpinRwLock};
 pub use system::*;

@@ -6,7 +6,7 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use core::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -18,7 +18,7 @@ use strum::FromRepr;
 
 use super::PidIdentity;
 use crate::{
-    sync::{NoPreemptIrqSave, PiMutex, SpinLock},
+    sync::{PiMutex, SpinLock},
     task::poll_process_timer_for_alarm,
 };
 

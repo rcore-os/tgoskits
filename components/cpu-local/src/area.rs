@@ -15,21 +15,21 @@ use crate::{CpuIndex, CpuLocalError, ExecutionContextHeader, preempt::Preemption
 
 #[cfg(feature = "qperf-metrics")]
 const fn runtime_anchor_reserved_size() -> usize {
-    let state_end = 5 * size_of::<usize>() + size_of::<PreemptionState>();
+    let state_end = 6 * size_of::<usize>() + size_of::<PreemptionState>();
     let counter_offset = (state_end + align_of::<AtomicU64>() - 1) & !(align_of::<AtomicU64>() - 1);
     64 - counter_offset - size_of::<AtomicU64>()
 }
 
 #[cfg(not(feature = "qperf-metrics"))]
 const fn runtime_anchor_reserved_size() -> usize {
-    64 - 5 * size_of::<usize>() - size_of::<PreemptionState>()
+    64 - 6 * size_of::<usize>() - size_of::<PreemptionState>()
 }
 
 /// CPU-local scalar state shared by trap entry and context publication.
 #[repr(C, align(64))]
 pub struct CpuRuntimeAnchor {
     current_context: AtomicUsize,
-    architecture_state: [AtomicUsize; 4],
+    architecture_state: [AtomicUsize; 5],
     preemption_state: PreemptionState,
     #[cfg(feature = "qperf-metrics")]
     cpu_pin_entries: AtomicU64,
@@ -49,7 +49,7 @@ impl CpuRuntimeAnchor {
         };
         Self {
             current_context: AtomicUsize::new(current_context),
-            architecture_state: [const { AtomicUsize::new(0) }; 4],
+            architecture_state: [const { AtomicUsize::new(0) }; 5],
             preemption_state: PreemptionState::bootstrap_disabled(),
             #[cfg(feature = "qperf-metrics")]
             cpu_pin_entries: AtomicU64::new(0),
@@ -299,7 +299,7 @@ pub const CPU_AREA_CURRENT_CONTEXT_OFFSET: usize =
 pub const CPU_AREA_ARCH_STATE_OFFSET: usize =
     CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, architecture_state);
 /// Reserved bytes available to the architecture-owned CPU trap state.
-pub const CPU_AREA_ARCH_STATE_SIZE: usize = 4 * size_of::<usize>();
+pub const CPU_AREA_ARCH_STATE_SIZE: usize = 5 * size_of::<usize>();
 /// Byte offset of the x86_64 CPU-owned preemption word.
 pub const CPU_AREA_PREEMPTION_STATE_OFFSET: usize =
     CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, preemption_state);

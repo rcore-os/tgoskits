@@ -421,12 +421,6 @@ impl SchedulingEntity {
         }
     }
 
-    pub(crate) fn cancel_fair_migration(&mut self) {
-        if let Self::Fair(entity) = self {
-            entity.cancel_migration();
-        }
-    }
-
     /// Charges one dispatch and reports whether its class slice expired.
     pub fn charge(&mut self, runtime_ns: u64, virtual_time: u64, reclaimed_ns: u64) -> bool {
         match self {

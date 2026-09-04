@@ -18,12 +18,12 @@ impl RttimeWatchdog {
     pub(crate) fn check_limit_at(
         &mut self,
         accounting: &CpuTimeAccounting,
-        observed_ns: u64,
+        runtime_ns: u64,
         soft_limit_us: u64,
         hard_limit_us: u64,
     ) -> RttimeLimitAction {
         self.check_snapshot(
-            accounting.snapshot_at(observed_ns),
+            accounting.snapshot(runtime_ns),
             soft_limit_us,
             hard_limit_us,
         )

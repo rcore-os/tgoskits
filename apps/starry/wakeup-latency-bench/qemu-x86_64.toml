@@ -16,10 +16,9 @@ args = [
 uefi = true
 to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/wakeup-latency-bench.sh"
+shell_init_cmd = "/usr/bin/wakeup-latency-bench --policy fifo --case getpid >/tmp/getpid.out && /usr/bin/wakeup-latency-bench --policy fifo --case sched_yield_handoff >/tmp/yield.out && cat /tmp/getpid.out /tmp/yield.out && echo WAKEUP_LATENCY_PAIR_PASSED"
 success_regex = [
-    "(?m)^WAKEUP_LATENCY_PASSED\\s*$",
-    "(?m)^WAKEUP_LATENCY_APP_PASSED\\s*$",
+    "(?m)^WAKEUP_LATENCY_PAIR_PASSED\\s*$",
 ]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",

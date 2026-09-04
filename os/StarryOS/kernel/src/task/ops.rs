@@ -108,7 +108,7 @@ pub(crate) fn get_process_group_by_number(pgid: PgidNumber) -> StarryResult<Arc<
 
 /// Returns the accumulated `(utime, stime)` for a task without side effects.
 pub fn task_cpu_time(task: &UserTaskRef) -> (TimeValue, TimeValue) {
-    task.as_thread().cpu_time().output()
+    task.as_thread().cpu_time_output()
 }
 
 fn apply_process_timer_actions(proc_data: &ProcessData, pending: PendingTimerActions) {

@@ -229,6 +229,16 @@ pub(super) fn install() {
         .into_boxed_slice();
     DEFERRED_RINGS.init_once(rings);
     ax_runtime::task::install_sched_switch_trace_hook(on_sched_switch);
+    ax_runtime::task::publish_sched_switch_trace_gate(__sched_switch.key_is_enabled());
+}
+
+pub(super) fn publish_runtime_gate(
+    tracepoint: &'static ax_tracepoint::TracePoint<super::KernelTraceAux>,
+    enabled: bool,
+) {
+    if core::ptr::eq(tracepoint, &__sched_switch) {
+        ax_runtime::task::publish_sched_switch_trace_gate(enabled);
+    }
 }
 
 pub(super) fn start_worker() -> ax_runtime::task::ThreadHandle {

@@ -10,10 +10,21 @@ use crate::{
 const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
 const IRQ_GUARD_SOURCE_COUNT: usize = 24;
 const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 6;
+const SWITCH_SCHEDULER_DETAIL_COUNT: usize = 30;
 
 /// Aggregate scheduler counters captured without allocating or taking locks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QperfSchedulerMetricsSnapshot {
+    pub switch_phase_scheduler_count: u64,
+    pub switch_phase_scheduler_total_ns: u64,
+    pub switch_phase_prepare_count: u64,
+    pub switch_phase_prepare_total_ns: u64,
+    pub switch_phase_runtime_tail_count: u64,
+    pub switch_phase_runtime_tail_total_ns: u64,
+    pub switch_phase_owner_tail_count: u64,
+    pub switch_phase_owner_tail_total_ns: u64,
+    pub switch_scheduler_detail_count: [u64; SWITCH_SCHEDULER_DETAIL_COUNT],
+    pub switch_scheduler_detail_total_ns: [u64; SWITCH_SCHEDULER_DETAIL_COUNT],
     pub current_thread_handle_queries: u64,
     pub runtime_cpu_owner_claims: u64,
     pub cpu_placement_publication_acquires: u64,
@@ -145,6 +156,16 @@ pub struct QperfSchedulerMetricsSnapshot {
 }
 
 struct QperfSchedulerMetrics {
+    switch_phase_scheduler_count: AtomicU64,
+    switch_phase_scheduler_total_ns: AtomicU64,
+    switch_phase_prepare_count: AtomicU64,
+    switch_phase_prepare_total_ns: AtomicU64,
+    switch_phase_runtime_tail_count: AtomicU64,
+    switch_phase_runtime_tail_total_ns: AtomicU64,
+    switch_phase_owner_tail_count: AtomicU64,
+    switch_phase_owner_tail_total_ns: AtomicU64,
+    switch_scheduler_detail_count: [AtomicU64; SWITCH_SCHEDULER_DETAIL_COUNT],
+    switch_scheduler_detail_total_ns: [AtomicU64; SWITCH_SCHEDULER_DETAIL_COUNT],
     current_thread_handle_queries: AtomicU64,
     runtime_cpu_owner_claims: AtomicU64,
     cpu_placement_publication_acquires: AtomicU64,
@@ -226,6 +247,18 @@ struct QperfSchedulerMetrics {
 impl QperfSchedulerMetrics {
     const fn new() -> Self {
         Self {
+            switch_phase_scheduler_count: AtomicU64::new(0),
+            switch_phase_scheduler_total_ns: AtomicU64::new(0),
+            switch_phase_prepare_count: AtomicU64::new(0),
+            switch_phase_prepare_total_ns: AtomicU64::new(0),
+            switch_phase_runtime_tail_count: AtomicU64::new(0),
+            switch_phase_runtime_tail_total_ns: AtomicU64::new(0),
+            switch_phase_owner_tail_count: AtomicU64::new(0),
+            switch_phase_owner_tail_total_ns: AtomicU64::new(0),
+            switch_scheduler_detail_count: [const { AtomicU64::new(0) };
+                SWITCH_SCHEDULER_DETAIL_COUNT],
+            switch_scheduler_detail_total_ns: [const { AtomicU64::new(0) };
+                SWITCH_SCHEDULER_DETAIL_COUNT],
             current_thread_handle_queries: AtomicU64::new(0),
             runtime_cpu_owner_claims: AtomicU64::new(0),
             cpu_placement_publication_acquires: AtomicU64::new(0),
@@ -460,6 +493,32 @@ impl QperfSchedulerMetrics {
         let irq_guard_executor_entries = irq_entries(IrqGuardSource::Executor);
         let irq_guard_executor_none = irq_none(IrqGuardSource::Executor);
         QperfSchedulerMetricsSnapshot {
+            switch_phase_scheduler_count: self.switch_phase_scheduler_count.load(Ordering::Relaxed),
+            switch_phase_scheduler_total_ns: self
+                .switch_phase_scheduler_total_ns
+                .load(Ordering::Relaxed),
+            switch_phase_prepare_count: self.switch_phase_prepare_count.load(Ordering::Relaxed),
+            switch_phase_prepare_total_ns: self
+                .switch_phase_prepare_total_ns
+                .load(Ordering::Relaxed),
+            switch_phase_runtime_tail_count: self
+                .switch_phase_runtime_tail_count
+                .load(Ordering::Relaxed),
+            switch_phase_runtime_tail_total_ns: self
+                .switch_phase_runtime_tail_total_ns
+                .load(Ordering::Relaxed),
+            switch_phase_owner_tail_count: self
+                .switch_phase_owner_tail_count
+                .load(Ordering::Relaxed),
+            switch_phase_owner_tail_total_ns: self
+                .switch_phase_owner_tail_total_ns
+                .load(Ordering::Relaxed),
+            switch_scheduler_detail_count: core::array::from_fn(|index| {
+                self.switch_scheduler_detail_count[index].load(Ordering::Relaxed)
+            }),
+            switch_scheduler_detail_total_ns: core::array::from_fn(|index| {
+                self.switch_scheduler_detail_total_ns[index].load(Ordering::Relaxed)
+            }),
             current_thread_handle_queries: self
                 .current_thread_handle_queries
                 .load(Ordering::Relaxed),
@@ -689,6 +748,61 @@ static QPERF_SCHEDULER_METRICS: QperfSchedulerMetrics = QperfSchedulerMetrics::n
 /// Returns a relaxed aggregate snapshot suitable for before/after diagnostics.
 pub fn qperf_scheduler_metrics_snapshot() -> QperfSchedulerMetricsSnapshot {
     QPERF_SCHEDULER_METRICS.snapshot()
+}
+
+fn record_switch_phase(count: &AtomicU64, total_ns: &AtomicU64, start_ns: u64, end_ns: u64) {
+    count.fetch_add(1, Ordering::Relaxed);
+    total_ns.fetch_add(end_ns.saturating_sub(start_ns), Ordering::Relaxed);
+}
+
+#[doc(hidden)]
+pub fn qperf_record_switch_phase_scheduler(start_ns: u64, end_ns: u64) {
+    record_switch_phase(
+        &QPERF_SCHEDULER_METRICS.switch_phase_scheduler_count,
+        &QPERF_SCHEDULER_METRICS.switch_phase_scheduler_total_ns,
+        start_ns,
+        end_ns,
+    );
+}
+
+#[doc(hidden)]
+pub fn qperf_record_switch_phase_prepare(start_ns: u64, end_ns: u64) {
+    record_switch_phase(
+        &QPERF_SCHEDULER_METRICS.switch_phase_prepare_count,
+        &QPERF_SCHEDULER_METRICS.switch_phase_prepare_total_ns,
+        start_ns,
+        end_ns,
+    );
+}
+
+#[doc(hidden)]
+pub fn qperf_record_switch_phase_runtime_tail(start_ns: u64, end_ns: u64) {
+    record_switch_phase(
+        &QPERF_SCHEDULER_METRICS.switch_phase_runtime_tail_count,
+        &QPERF_SCHEDULER_METRICS.switch_phase_runtime_tail_total_ns,
+        start_ns,
+        end_ns,
+    );
+}
+
+#[doc(hidden)]
+pub fn qperf_record_switch_phase_owner_tail(start_ns: u64, end_ns: u64) {
+    record_switch_phase(
+        &QPERF_SCHEDULER_METRICS.switch_phase_owner_tail_count,
+        &QPERF_SCHEDULER_METRICS.switch_phase_owner_tail_total_ns,
+        start_ns,
+        end_ns,
+    );
+}
+
+#[doc(hidden)]
+pub fn qperf_record_switch_scheduler_detail(phase: usize, start_ns: u64, end_ns: u64) {
+    record_switch_phase(
+        &QPERF_SCHEDULER_METRICS.switch_scheduler_detail_count[phase],
+        &QPERF_SCHEDULER_METRICS.switch_scheduler_detail_total_ns[phase],
+        start_ns,
+        end_ns,
+    );
 }
 
 pub(crate) fn record_current_thread_handle_query() {

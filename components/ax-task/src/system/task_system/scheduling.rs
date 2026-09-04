@@ -1,26 +1,17 @@
 //! Owner scheduling entry points, runtime charging, and load balancing requests.
 
-use super::{dispatch::OwnerDispatchCommit, switch::OwnerRqScheduleOut, *};
-use crate::{RtEligibility, SchedulerClass, system::cpu::SchedulerRequestClaim};
-
-pub(crate) fn lone_current_yield_keeps_dispatch(
-    entity: Option<&SchedulingEntity>,
-    rt_effectively_throttled: bool,
-) -> bool {
-    match entity {
-        Some(SchedulingEntity::Fair(_)) => true,
-        Some(SchedulingEntity::Fifo | SchedulingEntity::RoundRobin { .. }) => {
-            !rt_effectively_throttled
-        }
-        Some(SchedulingEntity::KernelStop | SchedulingEntity::Deadline(_)) | None => false,
-    }
-}
+use super::{
+    dispatch::OwnerDispatchCommit,
+    switch::{OwnerRqScheduleOut, OwnerRqScheduledOut},
+    *,
+};
+use crate::{
+    RtEligibility, SchedulerClass,
+    system::cpu::{PreviousSwitchDisposition, SchedulerRequestClaim},
+};
 
 fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
-    if !lone_current_yield_keeps_dispatch(
-        transaction.current_scheduling_entity(),
-        transaction.rt_is_effectively_throttled(),
-    ) {
+    if transaction.rt_is_effectively_throttled() {
         return false;
     }
     let Some(priority) = transaction.current().and_then(|current| {
@@ -45,20 +36,29 @@ fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
 }
 
 fn owner_yield_keeps_current_dispatch(transaction: &mut OwnerRqTxn<'_>) -> bool {
-    match transaction.current_scheduling_entity() {
-        Some(SchedulingEntity::Fair(_)) => transaction.nr_queued() == 0,
-        Some(SchedulingEntity::Fifo | SchedulingEntity::RoundRobin { .. }) => {
-            // Linux `yield_task_rt()` moves current only within its own
-            // priority list. With no peer at that priority, the normal class
-            // pick still selects current unless a higher class is runnable.
+    let Some(policy) = transaction
+        .current()
+        .map(|current| current.schedule_policy())
+    else {
+        return false;
+    };
+    match SchedulerClass::for_policy(policy) {
+        SchedulerClass::Fair => transaction.nr_queued() == 0,
+        SchedulerClass::Realtime => {
+            // Linux reads `rq->curr->sched_class` directly. The effective
+            // policy belongs to the same rq-owned current dispatch, so class
+            // selection must not rediscover its entity through the queued
+            // generation index.
             realtime_current_remains_selected(transaction)
         }
-        Some(SchedulingEntity::KernelStop | SchedulingEntity::Deadline(_)) | None => false,
+        SchedulerClass::Stop | SchedulerClass::Deadline => false,
     }
 }
 
 struct RequestedPreemptionCommit {
     decision: ScheduleDecision,
+    previous_urgency: Option<SchedulingUrgency>,
+    next_urgency: SchedulingUrgency,
     dispatch: OwnerDispatchCommit,
     deadline_rq_observation: SchedulerDeadlineRqObservation,
 }
@@ -67,6 +67,7 @@ struct RequestedPreemptionState {
     previous: Option<ThreadId>,
     previous_core: Option<Arc<ThreadCore>>,
     previous_endpoint: Option<SwitchEndpoint>,
+    previous_urgency: Option<SchedulingUrgency>,
     dispatch: OwnerDispatchCommit,
     migration: Option<PreparedMigrationDelivery>,
     now_ns: u64,
@@ -84,16 +85,21 @@ impl TaskSystem {
             &mut transaction,
             state.previous,
         );
-        let next_core = next.core;
+        let OwnerNext {
+            core: next_core,
+            policy: next_policy,
+            urgency: next_urgency,
+        } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1206, next_core.id().as_u64() as usize)
+            task_runtime::fatal_invariant(0x5343_1206, next_core.as_ref().id().as_u64() as usize)
         });
         let migrated = state.migration.is_some();
-        Self::stage_switch_handoff(
-            cpu.as_mut(),
+        let handoff = Self::prepare_switch_handoff(
             state.previous,
-            state.previous_core.as_ref().map(Arc::clone),
-            Arc::clone(&next_core),
+            state.previous_core,
+            next_core,
+            next_policy,
+            PreviousSwitchDisposition::Live,
             state.migration,
         );
         let reason = if migrated {
@@ -106,18 +112,15 @@ impl TaskSystem {
         self.commit_owner_switch_selection(
             cpu.as_mut(),
             transaction,
+            handoff,
             !migrated && !state.dispatch.has_deferred_task_lock_work(),
         );
-        let decision = Self::owner_switch_plan(
-            state.previous_core.as_ref(),
-            state.previous_endpoint,
-            &next_core,
-            next_endpoint,
-            reason,
-            state.now_ns,
-        );
+        let decision =
+            Self::owner_switch_plan(state.previous_endpoint, next_endpoint, reason, state.now_ns);
         RequestedPreemptionCommit {
             decision,
+            previous_urgency: state.previous_urgency,
+            next_urgency,
             dispatch: state.dispatch,
             deadline_rq_observation,
         }
@@ -129,11 +132,15 @@ impl TaskSystem {
         commit: RequestedPreemptionCommit,
     ) -> SchedulerOutcome {
         self.finish_owner_dispatch_commit(commit.dispatch);
-        SchedulerOutcome::Decision(self.finish_owner_selection(
+        self.finish_owner_selection(
             cpu.as_mut(),
-            commit.decision,
-            commit.deadline_rq_observation,
-        ))
+            commit.decision.previous(),
+            commit.decision.next(),
+            commit.previous_urgency,
+            commit.next_urgency,
+            OwnerSchedulerDeadline::Reevaluate(commit.deadline_rq_observation),
+        );
+        SchedulerOutcome::Decision(commit.decision)
     }
 
     fn lone_realtime_preemption_keeps_dispatch(
@@ -594,17 +601,18 @@ impl TaskSystem {
         current: Option<&ThreadCore>,
         rq_entry: OwnerRqEntry,
     ) -> Result<ScheduleDecision, TaskError> {
-        if rq_entry.requires_owner_context_validation() {
+        let validate_owner = rq_entry.requires_owner_context_validation();
+        if validate_owner {
             self.ensure_owner_cpu_context(&cpu)?;
         }
         // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
         // endpoint while this scheduling transaction and switch tail are live.
         let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
-        // SAFETY: propagated from the selected entry contract.
-        unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
-        self.ensure_owner_cpu_registration_online(&cpu)?;
+        if validate_owner {
+            self.ensure_owner_cpu_registration_online(&cpu)?;
+        }
         let previous_core_hint = current;
         let mut previous_sched = previous_core_hint.map(|core| {
             // SAFETY: propagated from the selected entry contract.
@@ -623,6 +631,7 @@ impl TaskSystem {
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
+        let previous_urgency = transaction.current_scheduling_urgency();
         if previous_core.as_deref().map(core::ptr::from_ref)
             != previous_core_hint.map(core::ptr::from_ref)
         {
@@ -644,16 +653,21 @@ impl TaskSystem {
         }
         let next =
             self.pick_owner_next_after_preemption_in_rq(cpu.as_mut(), &mut transaction, previous);
-        let next_core = next.core;
+        let OwnerNext {
+            core: next_core,
+            policy: next_policy,
+            urgency: next_urgency,
+        } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1203, next_core.id().as_u64() as usize)
+            task_runtime::fatal_invariant(0x5343_1203, next_core.as_ref().id().as_u64() as usize)
         });
         let migrated = migration.is_some();
-        Self::stage_switch_handoff(
-            cpu.as_mut(),
+        let handoff = Self::prepare_switch_handoff(
             previous,
-            previous_core.as_ref().map(Arc::clone),
-            Arc::clone(&next_core),
+            previous_core,
+            next_core,
+            next_policy,
+            PreviousSwitchDisposition::Live,
             migration,
         );
         let reason = if migrated {
@@ -666,19 +680,20 @@ impl TaskSystem {
         self.commit_owner_switch_selection(
             cpu.as_mut(),
             transaction,
+            handoff,
             !migrated && !dispatch_commit.has_deferred_task_lock_work(),
         );
         drop(previous_sched);
-        let decision = Self::owner_switch_plan(
-            previous_core.as_ref(),
-            previous_endpoint,
-            &next_core,
-            next_endpoint,
-            reason,
-            now_ns,
-        );
+        let decision = Self::owner_switch_plan(previous_endpoint, next_endpoint, reason, now_ns);
         self.finish_owner_dispatch_commit(dispatch_commit);
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+        self.finish_owner_selection(
+            cpu.as_mut(),
+            decision.previous(),
+            decision.next(),
+            previous_urgency,
+            next_urgency,
+            OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation),
+        );
         Ok(decision)
     }
 
@@ -725,17 +740,18 @@ impl TaskSystem {
         rq_entry: OwnerRqEntry,
         request_scope: SchedulerRequestScope,
     ) -> Result<SchedulerOutcome, TaskError> {
-        if rq_entry.requires_owner_context_validation() {
+        let validate_owner = rq_entry.requires_owner_context_validation();
+        if validate_owner {
             self.ensure_owner_cpu_context(&cpu)?;
         }
         // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
         // endpoint while this scheduling transaction and switch tail are live.
         let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         let initial_request = remote.claim_scheduler_request(request_scope);
-        // SAFETY: propagated from the selected entry contract.
-        unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
-        self.ensure_owner_cpu_registration_online(&cpu)?;
+        if validate_owner {
+            self.ensure_owner_cpu_registration_online(&cpu)?;
+        }
         let previous_core_hint = current;
         // Probe the rq-owned decision first. Linux's ordinary no-switch pass
         // never acquires p->pi_lock; task scheduler state is needed only after
@@ -758,11 +774,7 @@ impl TaskSystem {
             // as part of that same scheduling decision.
             request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         }
-        if transaction
-            .current()
-            .map(|dispatch| dispatch.runtime_core_arc().state())
-            == Some(ThreadState::Parking)
-        {
+        if transaction.current_core_ref().map(ThreadCore::state) == Some(ThreadState::Parking) {
             // The interrupted owner still holds a generation-checked park
             // token and remains `current` / `on_cpu`. Consume this safe-point
             // doorbell so an IRQ-return `while need_resched` loop can return to
@@ -775,8 +787,8 @@ impl TaskSystem {
         let switch_requested = request.preemption_requested();
         let previous = transaction.current_thread();
         if transaction
-            .current()
-            .is_none_or(|dispatch| !core::ptr::eq(dispatch.runtime_core(), previous_core_hint))
+            .current_core_ref()
+            .is_none_or(|current| !core::ptr::eq(current, previous_core_hint))
         {
             task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize);
         }
@@ -794,16 +806,14 @@ impl TaskSystem {
             self.prepare_owner_rq_schedule_out(&transaction, previous_core_hint)
         {
             let now_ns = transaction.clock().wall().as_nanos();
-            let previous_core = transaction.current_core();
-            let previous_endpoint = transaction.current_switch_endpoint();
             let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
-            let outgoing = previous_core.as_ref().map(Arc::clone).unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize)
-            });
-            self.schedule_out_owner_rq_owned(
-                cpu.as_mut(),
+            let OwnerRqScheduledOut {
+                core: previous_core,
+                endpoint: previous_endpoint,
+                policy: _,
+                urgency: previous_urgency,
+            } = self.schedule_out_owner_rq_owned(
                 &mut transaction,
-                outgoing,
                 schedule_out,
                 EnqueueReason::Preempted,
             );
@@ -812,8 +822,9 @@ impl TaskSystem {
                 transaction,
                 RequestedPreemptionState {
                     previous,
-                    previous_core,
-                    previous_endpoint,
+                    previous_core: Some(previous_core),
+                    previous_endpoint: Some(previous_endpoint),
+                    previous_urgency: Some(previous_urgency),
                     dispatch: dispatch_commit,
                     migration: None,
                     now_ns,
@@ -852,6 +863,7 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize);
         }
         let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
+        let previous_urgency = transaction.current_scheduling_urgency();
         let mut migration = None;
         if let Some(core) = previous_core.as_ref() {
             let schedule_out = self.schedule_out_owner_running_in_rq(
@@ -871,6 +883,7 @@ impl TaskSystem {
                 previous,
                 previous_core,
                 previous_endpoint,
+                previous_urgency,
                 dispatch: dispatch_commit,
                 migration,
                 now_ns,
@@ -911,47 +924,64 @@ impl TaskSystem {
         current: &ThreadCore,
         rq_entry: OwnerRqEntry,
     ) -> Result<YieldOutcome, TaskError> {
-        if rq_entry.requires_owner_context_validation() {
+        #[cfg(feature = "qperf-metrics")]
+        let owner_entry_started_ns = task_runtime::monotonic_now().as_nanos();
+        let validate_owner = rq_entry.requires_owner_context_validation();
+        if validate_owner {
             self.ensure_owner_cpu_context(&cpu)?;
         }
         // SAFETY: the owner borrow pins the CpuLocal and its immutable remote
         // endpoint while this scheduling transaction and switch tail are live.
         let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
-        // SAFETY: propagated from the selected entry contract.
-        unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
-        self.ensure_owner_cpu_registration_online(&cpu)?;
+        #[cfg(feature = "qperf-metrics")]
+        let owner_drain_finished_ns = task_runtime::monotonic_now().as_nanos();
+        if validate_owner {
+            self.ensure_owner_cpu_registration_online(&cpu)?;
+        }
         let previous_core_hint = current;
         // Probe rq ownership before taking the current task lock. Linux's
         // ordinary sched_yield path holds only rq->lock; task state is needed
         // only for migration, Deadline, or other task-control work.
         // SAFETY: propagated from the selected entry contract.
+        #[cfg(feature = "qperf-metrics")]
+        let rq_begin_started_ns = task_runtime::monotonic_now().as_nanos();
         let mut transaction = unsafe { rq_entry.begin(self, remote) };
-
-        // A forced yield consumes every request already visible at this
-        // explicit scheduling point under the same rq lock as selection.
-        // Runtime is settled only after selection proves that current must
-        // leave the CPU; Linux returns before put-prev/update-curr when the
-        // class picker selects current again.
-        let request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
+        #[cfg(feature = "qperf-metrics")]
+        let rq_begin_finished_ns = task_runtime::monotonic_now().as_nanos();
         if transaction
-            .current()
-            .is_none_or(|dispatch| !core::ptr::eq(dispatch.runtime_core(), previous_core_hint))
+            .current_core_ref()
+            .is_none_or(|current| !core::ptr::eq(current, previous_core_hint))
         {
             task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
         }
         if let Some(schedule_out) =
             self.prepare_owner_rq_schedule_out(&transaction, previous_core_hint)
         {
-            return Ok(self.yield_current_rq_owned(
-                cpu.as_mut(),
-                transaction,
-                previous_core_hint,
-                schedule_out,
-            ));
+            #[cfg(feature = "qperf-metrics")]
+            {
+                let rq_preflight_finished_ns = task_runtime::monotonic_now().as_nanos();
+                crate::metrics::qperf_record_switch_scheduler_detail(
+                    10,
+                    owner_entry_started_ns,
+                    owner_drain_finished_ns,
+                );
+                crate::metrics::qperf_record_switch_scheduler_detail(
+                    11,
+                    rq_begin_started_ns,
+                    rq_begin_finished_ns,
+                );
+                crate::metrics::qperf_record_switch_scheduler_detail(
+                    12,
+                    rq_begin_finished_ns,
+                    rq_preflight_finished_ns,
+                );
+            }
+            return Ok(self.yield_current_rq_owned(cpu.as_mut(), transaction, schedule_out));
         }
         // Preserve requests merged by the rq-owned probe while restoring the
         // full p->pi_lock -> rq order for exceptional task-control work.
+        let request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         transaction.commit();
 
         self.yield_current_task_control(cpu, previous_core_hint, rq_entry, remote, request)
@@ -979,6 +1009,7 @@ impl TaskSystem {
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
+        let previous_urgency = transaction.current_scheduling_urgency();
         if previous_core
             .as_ref()
             .is_none_or(|core| !core::ptr::eq(core.as_ref(), previous_core_hint))
@@ -1012,16 +1043,18 @@ impl TaskSystem {
                 let endpoint = previous_endpoint.unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1209, core.id().as_u64() as usize)
                 });
-                let decision = Self::owner_switch_plan(
-                    Some(core),
-                    Some(endpoint),
-                    core,
-                    endpoint,
-                    SwitchReason::Yield,
-                    now_ns,
-                );
+                let urgency = previous_urgency.unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1209, core.id().as_u64() as usize)
+                });
                 self.finish_owner_dispatch_commit(dispatch_commit);
-                self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+                self.finish_owner_selection(
+                    cpu.as_mut(),
+                    Some(endpoint.thread()),
+                    endpoint.thread(),
+                    Some(urgency),
+                    urgency,
+                    OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation),
+                );
 
                 return Ok(YieldOutcome::Unchanged);
             }
@@ -1086,16 +1119,21 @@ impl TaskSystem {
             }
         }
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
-        let next_core = next.core;
+        let OwnerNext {
+            core: next_core,
+            policy: next_policy,
+            urgency: next_urgency,
+        } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1210, next_core.id().as_u64() as usize)
+            task_runtime::fatal_invariant(0x5343_1210, next_core.as_ref().id().as_u64() as usize)
         });
         let migrated = migration.is_some();
-        Self::stage_switch_handoff(
-            cpu.as_mut(),
+        let handoff = Self::prepare_switch_handoff(
             previous,
-            previous_core.as_ref().map(Arc::clone),
-            Arc::clone(&next_core),
+            previous_core,
+            next_core,
+            next_policy,
+            PreviousSwitchDisposition::Live,
             migration,
         );
         let reason = if migrated {
@@ -1108,19 +1146,20 @@ impl TaskSystem {
         self.commit_owner_switch_selection(
             cpu.as_mut(),
             transaction,
+            handoff,
             !migrated && !dispatch_commit.has_deferred_task_lock_work(),
         );
         drop(previous_sched);
-        let decision = Self::owner_switch_plan(
-            previous_core.as_ref(),
-            previous_endpoint,
-            &next_core,
-            next_endpoint,
-            reason,
-            now_ns,
-        );
         self.finish_owner_dispatch_commit(dispatch_commit);
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+        self.finish_owner_selection(
+            cpu.as_mut(),
+            previous_endpoint.map(SwitchEndpoint::thread),
+            next_endpoint.thread(),
+            previous_urgency,
+            next_urgency,
+            OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation),
+        );
+        let decision = Self::owner_switch_plan(previous_endpoint, next_endpoint, reason, now_ns);
 
         Ok(YieldOutcome::Switch(decision))
     }
@@ -1131,64 +1170,128 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         mut transaction: OwnerRqTxn<'_>,
-        current: &ThreadCore,
         schedule_out: OwnerRqScheduleOut,
     ) -> YieldOutcome {
-        if owner_yield_keeps_current_dispatch(&mut transaction) {
-            transaction.finish_unchanged_scheduler_request();
-            self.finish_owner_unchanged_yield(cpu.as_mut(), current.id());
-            return YieldOutcome::Unchanged;
-        }
-
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_phase_started_ns = task_runtime::monotonic_now().as_nanos();
         let now_ns = transaction.clock().wall().as_nanos();
         let previous = transaction.current_thread();
-        let previous_core = transaction.current_core();
-        let previous_endpoint = transaction.current_switch_endpoint();
-        let core = previous_core.as_ref().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1213, cpu.owner().as_u32() as usize)
-        });
         let _settled = transaction.settle_current(0);
         let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
-        self.schedule_out_owner_rq_owned(
-            cpu.as_mut(),
-            &mut transaction,
-            Arc::clone(core),
-            schedule_out,
-            EnqueueReason::Yield,
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_account_finished_ns = task_runtime::monotonic_now().as_nanos();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            0,
+            qperf_phase_started_ns,
+            qperf_account_finished_ns,
+        );
+        let OwnerRqScheduledOut {
+            core: previous_core,
+            endpoint: previous_endpoint,
+            policy: previous_policy,
+            urgency: previous_urgency,
+        } = self.schedule_out_owner_rq_owned(&mut transaction, schedule_out, EnqueueReason::Yield);
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_put_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            1,
+            qperf_account_finished_ns,
+            qperf_put_prev_finished_ns,
         );
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
-        let next_core = next.core;
+        let OwnerNext {
+            core: next_core,
+            policy: next_policy,
+            urgency: next_urgency,
+        } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1216, next_core.id().as_u64() as usize)
+            task_runtime::fatal_invariant(0x5343_1216, next_core.as_ref().id().as_u64() as usize)
         });
-        Self::stage_switch_handoff(
-            cpu.as_mut(),
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_pick_finished_ns = task_runtime::monotonic_now().as_nanos();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            2,
+            qperf_put_prev_finished_ns,
+            qperf_pick_finished_ns,
+        );
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_handoff_started_ns = task_runtime::monotonic_now().as_nanos();
+        let handoff = Self::prepare_switch_handoff(
             previous,
-            previous_core.as_ref().map(Arc::clone),
-            Arc::clone(&next_core),
+            Some(previous_core),
+            next_core,
+            next_policy,
+            PreviousSwitchDisposition::Live,
             None,
         );
-        let deadline_rq_observation =
-            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            3,
+            qperf_handoff_started_ns,
+            task_runtime::monotonic_now().as_nanos(),
+        );
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_rq_commit_started_ns = task_runtime::monotonic_now().as_nanos();
+        let scheduler_deadline = if matches!(previous_policy, SchedulePolicy::Fifo { .. })
+            && matches!(next_policy, SchedulePolicy::Fifo { .. })
+        {
+            OwnerSchedulerDeadline::Unchanged
+        } else {
+            OwnerSchedulerDeadline::Reevaluate(
+                transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref()),
+            )
+        };
         self.commit_owner_switch_selection(
             cpu.as_mut(),
             transaction,
+            handoff,
             !dispatch_commit.has_deferred_task_lock_work(),
         );
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            4,
+            qperf_rq_commit_started_ns,
+            task_runtime::monotonic_now().as_nanos(),
+        );
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_dispatch_started_ns = task_runtime::monotonic_now().as_nanos();
+        self.finish_owner_dispatch_commit(dispatch_commit);
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            5,
+            qperf_dispatch_started_ns,
+            task_runtime::monotonic_now().as_nanos(),
+        );
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_selection_tail_started_ns = task_runtime::monotonic_now().as_nanos();
+        self.finish_owner_selection(
+            cpu.as_mut(),
+            Some(previous_endpoint.thread()),
+            next_endpoint.thread(),
+            Some(previous_urgency),
+            next_urgency,
+            scheduler_deadline,
+        );
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            6,
+            qperf_selection_tail_started_ns,
+            task_runtime::monotonic_now().as_nanos(),
+        );
         let decision = Self::owner_switch_plan(
-            previous_core.as_ref(),
-            previous_endpoint,
-            &next_core,
+            Some(previous_endpoint),
             next_endpoint,
             SwitchReason::Yield,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(dispatch_commit);
-        YieldOutcome::Switch(self.finish_owner_selection(
-            cpu.as_mut(),
-            decision,
-            deadline_rq_observation,
-        ))
+        if decision.requires_context_switch() {
+            YieldOutcome::Switch(decision)
+        } else {
+            YieldOutcome::Unchanged
+        }
     }
 }

@@ -221,6 +221,24 @@ impl SchedulerClock {
         }
     }
 
+    fn stable_source(&self, raw_clock: u64) -> Option<u64> {
+        // Linux `sched_clock_cpu()` returns `sched_clock()` directly once the
+        // clock is stable. A concurrent transition makes later samples use the
+        // corrected per-CPU domain; rq clocks reject any negative boundary
+        // delta, while hard-IRQ accounting starts after committing the new
+        // domain at interrupt entry.
+        (self.mode.load(Ordering::Acquire) == CLOCK_STABLE).then_some(raw_clock)
+    }
+
+    fn unstable_current_source(
+        &self,
+        cpu: &CpuSchedulerClock,
+        raw_clock: u64,
+    ) -> Result<u64, SchedulerClockError> {
+        cpu.ensure_online()?;
+        Ok(self.unstable_local_source(cpu, raw_clock))
+    }
+
     pub(crate) fn tick(
         &self,
         cpu: &CpuSchedulerClock,
@@ -388,17 +406,16 @@ pub(crate) unsafe fn offline_current_cpu(cpu_id: usize) -> Result<(), SchedulerC
     .map_err(|_| SchedulerClockError::CurrentCpuUnavailable)?
 }
 
-pub(crate) unsafe fn source(
-    target_cpu_id: usize,
-    calling_raw_clock: u64,
-) -> Result<u64, SchedulerClockError> {
-    let target = cpu_state(target_cpu_id)?;
+pub(crate) unsafe fn source_current(calling_raw_clock: u64) -> Result<u64, SchedulerClockError> {
+    if let Some(clock) = SCHEDULER_CLOCK.stable_source(calling_raw_clock) {
+        return Ok(clock);
+    }
     // SAFETY: the public boundary requires a migration pin for the complete
-    // local sample and remote publication coupling transaction.
+    // current-CPU sample.
     unsafe {
         ax_percpu::with_cpu_pin(|pin| {
-            SCHEDULER_CLOCK_CPU.with_current(pin, |calling| {
-                SCHEDULER_CLOCK.source(calling, target, calling_raw_clock)
+            SCHEDULER_CLOCK_CPU.with_current(pin, |cpu| {
+                SCHEDULER_CLOCK.unstable_current_source(cpu, calling_raw_clock)
             })
         })
     }
@@ -429,17 +446,6 @@ pub(crate) unsafe fn hardirq_sample(
         })
     }
     .map_err(|_| SchedulerClockError::CurrentCpuUnavailable)?
-}
-
-fn cpu_state(cpu_id: usize) -> Result<&'static CpuSchedulerClock, SchedulerClockError> {
-    let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id)
-        .map_err(|_| SchedulerClockError::InvalidCpu { cpu_id })?;
-    let area =
-        ax_percpu::area(cpu_index).map_err(|_| SchedulerClockError::InvalidCpu { cpu_id })?;
-    let pointer = SCHEDULER_CLOCK_CPU.remote_ptr(area);
-    // SAFETY: the frozen per-CPU layout constructs this Sync atomic object in
-    // shutdown-lifetime storage. All mutable state is accessed atomically.
-    Ok(unsafe { pointer.as_ref() })
 }
 
 fn ensure_current_cpu(

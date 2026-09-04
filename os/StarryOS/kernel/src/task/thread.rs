@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
-use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin};
+use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin, time::TimeValue};
 use axpoll_set::PollSet;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
@@ -498,6 +498,15 @@ impl Thread {
         self.identity.scheduler.get()
     }
 
+    pub(super) fn scheduler_runtime_ns(&self) -> u64 {
+        self.identity
+            .scheduler
+            .get()
+            .and_then(|id| ax_runtime::task::thread_runtime(id).ok())
+            .map(|snapshot| snapshot.charged_runtime_ns())
+            .unwrap_or_else(|| self.accounting.cpu_time.published_runtime_ns())
+    }
+
     /// Binds the scheduler identity exactly once.
     pub(crate) fn bind_scheduler_id(
         &self,
@@ -517,15 +526,12 @@ impl Thread {
         &self,
         id: ax_std::os::arceos::task::ThreadId,
         realtime_policy: bool,
-        observed_ns: u64,
         cpu_pin: &CpuPin<'_>,
     ) {
-        if self.validate_scheduler_id(id).is_err() {
-            panic!("Starry thread was rebound to a different scheduler identity");
-        }
+        debug_assert!(self.validate_scheduler_id(id).is_ok());
         self.accounting
             .cpu_time
-            .scheduler_switch_in(realtime_policy, observed_ns);
+            .scheduler_switch_in(realtime_policy, || self.scheduler_runtime_ns());
         // SAFETY: the scheduler switch baton pins this CPU and retains the
         // thread-owned ProcessData until the matching switch-out callback.
         unsafe { self.scope.activate_pinned(cpu_pin) };
@@ -536,7 +542,6 @@ impl Thread {
     pub(super) fn scheduler_switch_out(
         &self,
         reason: ax_std::os::arceos::task::SwitchReason,
-        observed_ns: u64,
         cpu_pin: &CpuPin<'_>,
     ) {
         #[cfg(target_arch = "aarch64")]
@@ -546,43 +551,35 @@ impl Thread {
         unsafe { self.scope.deactivate_pinned(cpu_pin) };
         self.accounting
             .cpu_time
-            .scheduler_switch_out(reason, observed_ns);
-        self.publish_cpu_time_for_active_interval_timer();
+            .scheduler_switch_out(reason);
     }
 
-    pub(crate) fn apply_cpu_time_policy(&self, realtime_policy: bool, observed_ns: u64) {
+    pub(crate) fn apply_cpu_time_policy(&self, realtime_policy: bool, _observed_ns: u64) {
         self.accounting
             .cpu_time
-            .apply_realtime_policy(realtime_policy, observed_ns);
-        self.publish_cpu_time_for_active_interval_timer();
+            .apply_realtime_policy(realtime_policy);
     }
 
-    pub(crate) fn account_cpu_time_now(&self) {
-        self.accounting.cpu_time.account_now();
-        self.publish_cpu_time_for_active_interval_timer();
+    pub(crate) fn cpu_time_output(&self) -> (TimeValue, TimeValue) {
+        self.accounting.cpu_time.output(self.scheduler_runtime_ns())
     }
 
     pub(crate) fn commit_cpu_time_now(&self) {
-        self.accounting.cpu_time.account_now();
-        self.proc_data.record_cpu_time_transition(|| {
-            self.accounting.cpu_time.publish_committed_delta()
-        });
-    }
-
-    pub(super) fn sample_scheduler_tick_cpu_time(&self, observed_ns: u64) {
+        let runtime_ns = self.scheduler_runtime_ns();
         self.proc_data.record_cpu_time_transition(|| {
             self.accounting
                 .cpu_time
-                .sample_scheduler_tick_at(observed_ns)
+                .publish_committed_delta(runtime_ns)
         });
     }
 
-    fn publish_cpu_time_for_active_interval_timer(&self) {
-        if self.proc_data.has_active_cpu_interval_timers() {
-            self.proc_data.record_cpu_time_transition(|| {
-                self.accounting.cpu_time.publish_committed_delta()
-            });
-        }
+    pub(super) fn sample_scheduler_tick_cpu_time(&self, _observed_ns: u64) {
+        let runtime_ns = self.scheduler_runtime_ns();
+        self.proc_data.record_cpu_time_transition(|| {
+            self.accounting
+                .cpu_time
+                .sample_scheduler_tick(runtime_ns)
+        });
     }
 
     pub(crate) fn cpu_time(&self) -> &CpuTimeAccounting {

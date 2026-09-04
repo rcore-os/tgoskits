@@ -1,7 +1,7 @@
 //! Park, current-thread exit, and physical switch-tail completion.
 
 use super::*;
-use crate::ParkPublication;
+use crate::{ParkPublication, system::cpu::PreviousSwitchDisposition};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RqOnlyParkClass {
@@ -48,11 +48,10 @@ impl TaskSystem {
     /// Publishes `PARKING` after consuming a wake-before-park notification.
     pub fn prepare_park(
         &self,
-        mut cpu: Pin<&mut CpuLocal>,
+        cpu: Pin<&mut CpuLocal>,
         current: &ThreadHandle,
     ) -> Result<ParkPrepare, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        self.complete_context_switch(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let core = current.runtime_core_arc();
         let placement = core.sched().placement();
@@ -209,6 +208,9 @@ impl TaskSystem {
         let previous_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x504b_1102, previous_core.id().as_u64() as usize)
         });
+        let previous_urgency = transaction.current_scheduling_urgency().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x504b_1102, previous_core.id().as_u64() as usize)
+        });
         let resumed = {
             let placement = previous_core.sched().placement();
             let sched = &mut *previous_sched;
@@ -320,15 +322,20 @@ impl TaskSystem {
             &mut transaction,
             Some((&previous_core, &mut previous_sched)),
         );
-        let next_core = next.core;
+        let OwnerNext {
+            core: next_core,
+            policy: next_policy,
+            urgency: next_urgency,
+        } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x504b_1107, next_core.id().as_u64() as usize)
+            task_runtime::fatal_invariant(0x504b_1107, next_core.as_ref().id().as_u64() as usize)
         });
-        Self::stage_switch_handoff(
-            cpu.as_mut(),
+        let handoff = Self::prepare_switch_handoff(
             Some(token.thread()),
-            Some(Arc::clone(&previous_core)),
-            Arc::clone(&next_core),
+            Some(previous_core),
+            next_core,
+            next_policy,
+            PreviousSwitchDisposition::Live,
             None,
         );
 
@@ -338,20 +345,26 @@ impl TaskSystem {
         self.commit_owner_switch_selection(
             cpu.as_mut(),
             transaction,
+            handoff,
             !dispatch_commit.has_deferred_task_lock_work(),
         );
 
         drop(previous_sched);
+        self.finish_owner_dispatch_commit(dispatch_commit);
+        self.finish_owner_selection(
+            cpu.as_mut(),
+            Some(previous_endpoint.thread()),
+            next_endpoint.thread(),
+            Some(previous_urgency),
+            next_urgency,
+            OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation),
+        );
         let decision = Self::owner_switch_plan(
-            Some(&previous_core),
             Some(previous_endpoint),
-            &next_core,
             next_endpoint,
             SwitchReason::Blocked,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(dispatch_commit);
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
         token.mark_resolved();
         Ok(ParkCommit::Blocked(decision))
@@ -381,9 +394,12 @@ impl TaskSystem {
         // contract. The returned transaction does not outlive this helper.
         let mut transaction = unsafe { rq_entry.begin(self, remote) };
         let linked_current = transaction.is_linked_current(previous_core.id());
+        let current_core_matches = transaction
+            .current_core_ref()
+            .is_some_and(|current| core::ptr::eq(current, previous_core.as_ref()));
         let park_class = transaction.current().and_then(|current| {
             (current.thread() == token.thread()
-                && Arc::ptr_eq(current.runtime_core_arc(), previous_core)
+                && current_core_matches
                 && !current.is_dedicated_idle()
                 && current.metadata().deadline_bandwidth_scaled == 0)
                 .then(|| {
@@ -432,6 +448,9 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x504b_1112, previous_core.id().as_u64() as usize);
         }
         let previous_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x504b_1113, previous_core.id().as_u64() as usize)
+        });
+        let previous_urgency = transaction.current_scheduling_urgency().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x504b_1113, previous_core.id().as_u64() as usize)
         });
 
@@ -539,33 +558,43 @@ impl TaskSystem {
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
 
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
-        let next_core = next.core;
+        let OwnerNext {
+            core: next_core,
+            policy: next_policy,
+            urgency: next_urgency,
+        } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x504b_1118, next_core.id().as_u64() as usize)
+            task_runtime::fatal_invariant(0x504b_1118, next_core.as_ref().id().as_u64() as usize)
         });
-        Self::stage_switch_handoff(
-            cpu.as_mut(),
+        let handoff = Self::prepare_switch_handoff(
             Some(token.thread()),
             Some(Arc::clone(previous_core)),
-            Arc::clone(&next_core),
+            next_core,
+            next_policy,
+            PreviousSwitchDisposition::Live,
             None,
         );
 
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
 
-        self.commit_owner_switch_selection(cpu.as_mut(), transaction, true);
+        self.commit_owner_switch_selection(cpu.as_mut(), transaction, handoff, true);
 
+        self.finish_owner_dispatch_commit(dispatch_commit);
+        self.finish_owner_selection(
+            cpu.as_mut(),
+            Some(previous_endpoint.thread()),
+            next_endpoint.thread(),
+            Some(previous_urgency),
+            next_urgency,
+            OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation),
+        );
         let decision = Self::owner_switch_plan(
-            Some(previous_core),
             Some(previous_endpoint),
-            &next_core,
             next_endpoint,
             SwitchReason::Blocked,
             now_ns,
         );
-        self.finish_owner_dispatch_commit(dispatch_commit);
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
 
         token.mark_resolved();
         Ok(Some(ParkCommit::Blocked(decision)))
@@ -626,7 +655,6 @@ impl TaskSystem {
         require_runtime_context: bool,
     ) -> Result<CurrentExitPermit, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut())?;
         let current_id = current.id();
         if cpu.remote().idle_thread() == Some(current_id) {
@@ -776,6 +804,9 @@ impl TaskSystem {
         let previous_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x4558_0007, exiting.as_u64() as usize)
         });
+        let previous_urgency = transaction.current_scheduling_urgency().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x4558_0007, exiting.as_u64() as usize)
+        });
         let held_reservation = {
             let placement = exited_core.sched().placement();
             let sched = &mut *exited_sched;
@@ -812,30 +843,26 @@ impl TaskSystem {
         };
         transaction.take_current();
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
-        let next_core = next.core;
+        let OwnerNext {
+            core: next_core,
+            policy: next_policy,
+            urgency: next_urgency,
+        } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x4558_0008, exiting.as_u64() as usize)
+            task_runtime::fatal_invariant(0x4558_0008, next_core.as_ref().id().as_u64() as usize)
         });
-        Self::stage_switch_handoff(
-            cpu.as_mut(),
+        let handoff = Self::prepare_switch_handoff(
             Some(exiting),
             Some(Arc::clone(&exited_core)),
-            Arc::clone(&next_core),
+            next_core,
+            next_policy,
+            PreviousSwitchDisposition::Exited,
             None,
         );
-        self.validate_owner_runtime_switch_out(cpu.as_ref().get_ref(), &transaction);
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-        transaction.commit_and_finish_scheduler_request();
+        self.commit_owner_switch_selection(cpu.as_mut(), transaction, handoff, false);
         drop(exited_sched);
-        let decision = Self::owner_switch_plan(
-            Some(&exited_core),
-            Some(previous_endpoint),
-            &next_core,
-            next_endpoint,
-            SwitchReason::Exited,
-            now_ns,
-        );
         self.finish_owner_dispatch_commit(dispatch_commit);
 
         {
@@ -855,22 +882,21 @@ impl TaskSystem {
         self.root_domain.lock().release_deadline(held_reservation);
         exited_core.notify_affinity_waiters();
         drop(permit);
-        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+        self.finish_owner_selection(
+            cpu.as_mut(),
+            Some(previous_endpoint.thread()),
+            next_endpoint.thread(),
+            Some(previous_urgency),
+            next_urgency,
+            OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation),
+        );
+        let decision = Self::owner_switch_plan(
+            Some(previous_endpoint),
+            next_endpoint,
+            SwitchReason::Exited,
+            now_ns,
+        );
         Ok(decision)
-    }
-
-    /// Completes the physical switch-out handoff in the newly active context.
-    ///
-    /// This second phase clears `on_cpu` only after architecture execution has
-    /// left the previous stack. Deferred migration publication and exit hooks
-    /// therefore cannot make a context runnable or reapable too early.
-    #[doc(hidden)]
-    pub fn complete_context_switch(
-        &self,
-        cpu: Pin<&mut CpuLocal>,
-    ) -> Result<SwitchInCompletion, TaskError> {
-        // SAFETY: the irqsave entry establishes its own IRQ ownership.
-        unsafe { self.complete_context_switch_owner(cpu, OwnerRqEntry::IrqSave) }
     }
 
     /// Completes switch tail below the runtime's IRQ-off scheduler baton.
@@ -904,22 +930,17 @@ impl TaskSystem {
         };
         let owner = cpu.owner();
         let previous_id = initial_handoff.previous().id();
-        let previous_ptr = Arc::as_ptr(initial_handoff.previous());
-        let incoming_id = initial_handoff.incoming().id();
         let migration_target = initial_handoff.migration_target();
-        let runtime_tail_finished = initial_handoff.runtime_tail_is_finished();
-        let rq_baton_retained = initial_handoff.has_rq_baton();
-        if previous_id == incoming_id
-            || initial_handoff.previous().sched().placement().on_cpu() != Some(owner)
-            || initial_handoff.incoming().sched().placement().queued_cpu() != Some(owner)
-            || initial_handoff.incoming().sched().placement().on_cpu() != Some(owner)
-            || (migration_target.is_some() && rq_baton_retained)
-        {
-            if runtime_tail_finished {
-                task_runtime::fatal_invariant(0x5357_0006, previous_id.as_u64() as usize);
-            }
-            return Err(TaskError::InvalidConfiguration);
-        }
+        debug_assert_ne!(previous_id, initial_handoff.incoming().id());
+        debug_assert_eq!(
+            initial_handoff.previous().sched().placement().on_cpu(),
+            Some(owner)
+        );
+        debug_assert!(!(migration_target.is_some() && initial_handoff.has_rq_baton()));
+        debug_assert_eq!(
+            initial_handoff.previous_exited(),
+            initial_handoff.previous().state() == ThreadState::Exited
+        );
 
         // Migration completion needs scheduler and deadline state that is only
         // consistently observable under the owner rq transaction. Validate it
@@ -941,49 +962,20 @@ impl TaskSystem {
                 &sched,
             );
             transaction.commit();
-            if let Err(error) = validation {
-                if runtime_tail_finished {
-                    task_runtime::fatal_invariant(0x5357_0007, previous_id.as_u64() as usize);
-                }
-                return Err(error);
-            }
+            validation?;
         }
-        if !runtime_tail_finished {
-            let (reclaim_ready, switch_timestamp_ns) = task_runtime::finish_context_switch_tail();
-            if cpu
-                .as_mut()
-                .finish_switch_runtime_tail(
-                    previous_id,
-                    migration_target,
-                    reclaim_ready,
-                    switch_timestamp_ns,
-                )
-                .is_err()
-            {
-                task_runtime::fatal_invariant(0x5357_0001, previous_id.as_u64() as usize);
-            }
-        }
-        let previous = {
-            let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
-            });
-            let previous = handoff.previous().id();
-            if Arc::as_ptr(handoff.previous()) != previous_ptr
-                || handoff.incoming().id() != incoming_id
-                || incoming_id == previous
-            {
-                task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize);
-            }
-            previous
-        };
-        let (migration_target, previous_exited, affinity_completed) = if migration_target.is_some()
-        {
-            let previous_core = {
-                let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
-                    task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
-                });
-                Arc::clone(handoff.previous())
-            };
+        let reclaim_ready = task_runtime::finish_context_switch_tail();
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_owner_runtime_publish_finished_ns = task_runtime::monotonic_now().as_nanos();
+        // The architecture switch is now irreversible. Move the one owner
+        // token out of the CPU-local slot and consume that exact state through
+        // the remainder of the tail; no post-switch path may rediscover or
+        // revalidate a second mutable identity.
+        let mut handoff = cpu.as_mut().take_switch_handoff().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5357_0003, previous_id.as_u64() as usize)
+        });
+        let affinity_completed = if migration_target.is_some() {
+            let previous_core = Arc::clone(handoff.previous());
             let placement = previous_core.sched().placement();
 
             // SAFETY: propagated from this method's selected entry contract.
@@ -991,17 +983,14 @@ impl TaskSystem {
             // SAFETY: propagated from this method's selected entry contract.
             let mut transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
 
-            let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
-            });
             let validation = self.validate_switch_handoff_state(
                 owner,
                 transaction.deadline_bandwidth(),
-                handoff,
+                &handoff,
                 placement,
                 &sched,
             );
-            let (migration_target, previous_exited) = match validation {
+            let migration_target = match validation {
                 Ok(validated) => validated,
                 Err(_) => {
                     transaction.commit();
@@ -1027,7 +1016,7 @@ impl TaskSystem {
             }
             let affinity_completed =
                 Self::complete_affinity_if_satisfied_locked(&previous_core, &sched);
-            (migration_target, previous_exited, affinity_completed)
+            affinity_completed
         } else {
             // Linux `finish_task_switch()` runs `finish_task(prev)` — the
             // release-store of `prev->on_cpu` — while still holding
@@ -1039,71 +1028,59 @@ impl TaskSystem {
             // not reopen `p->pi_lock`: remote affinity changes are serialized
             // through the rq owner's inbox, while current-task changes request
             // migration and rescheduling before reaching this tail.
-            let previous_exited = if rq_baton_retained {
-                let previous_exited = {
-                    let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
-                        task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
-                    });
-                    let previous_core = handoff.previous();
-                    let previous_exited = previous_core.state() == ThreadState::Exited;
-                    previous_core.sched().placement().finish_task(owner);
-                    previous_exited
-                };
-                if cpu.as_mut().finish_switch_rq_baton(previous_id) != Ok(true) {
+            if let Some(baton) = handoff.take_rq_baton() {
+                handoff.previous().sched().placement().finish_task(owner);
+                if baton.finish(owner).is_err() {
                     task_runtime::fatal_invariant(0x5357_0005, previous_id.as_u64() as usize);
                 }
-                previous_exited
             } else {
                 // SAFETY: propagated from this method's selected entry contract.
                 let transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
-                let previous_exited = {
-                    let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
-                        task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
-                    });
-                    let previous_core = handoff.previous();
-                    let previous_exited = previous_core.state() == ThreadState::Exited;
-                    previous_core.sched().placement().finish_task(owner);
-                    previous_exited
-                };
+                handoff.previous().sched().placement().finish_task(owner);
                 transaction.commit();
-                previous_exited
-            };
+            }
 
-            (None, previous_exited, false)
+            false
         };
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_owner_finish_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            24,
+            qperf_owner_runtime_publish_finished_ns,
+            qperf_owner_finish_prev_finished_ns,
+        );
 
         if affinity_completed {
-            let handoff = cpu.as_ref().get_ref().switch_handoff().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5357_0002, previous_id.as_u64() as usize)
-            });
             handoff.previous().notify_affinity_waiters();
         }
-        let consumed = cpu.as_mut().take_switch_handoff().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5357_0003, previous.as_u64() as usize)
+        let completed = handoff.complete(reclaim_ready).unwrap_or_else(|_| {
+            task_runtime::fatal_invariant(0x5357_0004, previous_id.as_u64() as usize)
         });
-        if consumed.previous().id() != previous
-            || consumed.incoming().id() != incoming_id
-            || consumed.migration_target() != migration_target
-        {
-            task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize);
-        }
-        let completed = consumed.into_runtime_finished().unwrap_or_else(|_| {
-            task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize)
-        });
-        if completed.incoming.id() != incoming_id {
-            task_runtime::fatal_invariant(0x5357_0004, previous.as_u64() as usize)
-        }
+        #[cfg(feature = "qperf-metrics")]
+        let qperf_owner_consume_handoff_finished_ns = task_runtime::monotonic_now().as_nanos();
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_scheduler_detail(
+            25,
+            qperf_owner_finish_prev_finished_ns,
+            qperf_owner_consume_handoff_finished_ns,
+        );
         if let Some(migration) = completed.migration {
             migration.commit();
         }
         if completed.reclaim_ready {
             self.publish_resource_release_ready();
         }
-        if previous_exited {
+        if completed.previous_exited {
             self.task_work.publish();
         }
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::qperf_record_switch_phase_owner_tail(
+            qperf_owner_runtime_publish_finished_ns,
+            task_runtime::monotonic_now().as_nanos(),
+        );
         let completion =
-            SwitchInCompletion::for_core(&completed.incoming, completed.switch_timestamp_ns);
+            SwitchInCompletion::for_core(completed.incoming.as_ref(), completed.incoming_policy);
         Ok(completion)
     }
 
@@ -1114,7 +1091,7 @@ impl TaskSystem {
         handoff: &crate::system::cpu::SwitchHandoff,
         placement: &crate::system::thread_sched::SchedulerPlacement,
         sched: &ThreadSchedState,
-    ) -> Result<(Option<CpuId>, bool), TaskError> {
+    ) -> Result<Option<CpuId>, TaskError> {
         if placement.on_cpu() != Some(owner) {
             return Err(TaskError::InvalidConfiguration);
         }
@@ -1150,9 +1127,6 @@ impl TaskSystem {
             }
             None => None,
         };
-        Ok((
-            migration_target,
-            sched.lifecycle.state() == ThreadState::Exited,
-        ))
+        Ok(migration_target)
     }
 }

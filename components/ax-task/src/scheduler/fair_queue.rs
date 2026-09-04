@@ -503,7 +503,7 @@ impl FairRunQueue {
             .thread
             .as_mut()
             .expect("linked fair node must own one scheduling entity");
-        thread.metadata.affinity = affinity;
+        thread.update_affinity(affinity);
         thread.migration_capable = migration_capable;
         match (counted, next_counted) {
             (false, true) => self.migratable_count += 1,
