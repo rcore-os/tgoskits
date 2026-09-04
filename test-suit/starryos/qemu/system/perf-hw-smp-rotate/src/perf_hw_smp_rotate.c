@@ -32,8 +32,8 @@ struct perf_event_attr {
     uint8_t tail[80];
 };
 
-static long perf_open(struct perf_event_attr *attr, pid_t pid) {
-    return syscall(SYS_perf_event_open, attr, pid, -1, -1, 0);
+static long perf_open(struct perf_event_attr *attr, pid_t pid, int cpu) {
+    return syscall(SYS_perf_event_open, attr, pid, cpu, -1, 0);
 }
 
 static void run_child(int gate) {
@@ -56,6 +56,7 @@ int main(void) {
     puts("STARRY_SMP_ROTATE_OK");
     return 0;
 #endif
+    cpu_set_t set;
     int gate[2];
     if (pipe(gate) != 0) {
         return 1;
@@ -79,7 +80,7 @@ int main(void) {
     };
     long fds[EVENT_COUNT];
     for (int i = 0; i < EVENT_COUNT; ++i) {
-        fds[i] = perf_open(&attr, child);
+        fds[i] = perf_open(&attr, child, -1);
         if (fds[i] < 0 || ioctl((int)fds[i], PERF_IOC_ENABLE, 0) != 0) {
             printf("rotate FAILED: event=%d errno=%d\n", i, errno);
             return 1;
@@ -114,6 +115,47 @@ int main(void) {
         puts("rotate FAILED: no scaled event");
         return 1;
     }
-    printf("STARRY_SMP_ROTATE_OK scaled=%d/%d\n", scaled, EVENT_COUNT);
+
+    /* Linux flexible CPU events overcommit the PMU and rotate on the target
+     * CPU. Opening more events than physical slots must therefore succeed;
+     * every event eventually runs and at least one reports scaled time. */
+    CPU_ZERO(&set);
+    CPU_SET(0, &set);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        return 1;
+    }
+    for (int i = 0; i < EVENT_COUNT; ++i) {
+        fds[i] = perf_open(&attr, -1, 0);
+        if (fds[i] < 0 || ioctl((int)fds[i], PERF_IOC_ENABLE, 0) != 0) {
+            printf("system rotate FAILED: event=%d errno=%d\n", i, errno);
+            return 1;
+        }
+    }
+    volatile uint64_t sum = 0;
+    for (uint64_t i = 0; i < 240000000ull; ++i) {
+        sum += i;
+    }
+    int system_scaled = 0;
+    for (int i = 0; i < EVENT_COUNT; ++i) {
+        uint64_t values[3] = {0};
+        if (ioctl((int)fds[i], PERF_IOC_DISABLE, 0) != 0 ||
+            read((int)fds[i], values, sizeof(values)) != (ssize_t)sizeof(values)) {
+            return 1;
+        }
+        close((int)fds[i]);
+        printf("STARRY_SYSTEM_ROTATE[%d] value=%llu enabled=%llu running=%llu\n", i,
+               (unsigned long long)values[0], (unsigned long long)values[1],
+               (unsigned long long)values[2]);
+        if (values[0] == 0 || values[2] == 0 || values[2] > values[1]) {
+            return 1;
+        }
+        system_scaled += values[2] < values[1];
+    }
+    if (system_scaled == 0 || sum == UINT64_MAX) {
+        puts("system rotate FAILED: no scaled event");
+        return 1;
+    }
+    printf("STARRY_SMP_ROTATE_OK task_scaled=%d/%d system_scaled=%d/%d\n", scaled,
+           EVENT_COUNT, system_scaled, EVENT_COUNT);
     return 0;
 }

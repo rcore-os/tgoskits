@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 /*
  * perf_hw_sample.c -- perf_event_open(2) `perf record`-style SAMPLING ABI test.
  *
@@ -49,6 +53,7 @@
 #endif
 
 #include <errno.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -240,6 +245,46 @@ static int fail(const char *reason) {
     return 1;
 }
 
+static int check_open_enabled_system_sample(struct perf_event_attr *attr) {
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(0, &affinity);
+    if (sched_setaffinity(0, sizeof(affinity), &affinity) != 0) {
+        return fail("sched_setaffinity for open-enabled event");
+    }
+
+    attr->flags = 0; /* Linux default: active as soon as open completes. */
+    long fd = perf_event_open(attr, -1, 0, -1, 0ul);
+    if (fd < 0) {
+        return fail("open-enabled system sampling event");
+    }
+    void *base = mmap(NULL, PERF_MMAP_TOTAL_BYTES, PROT_READ | PROT_WRITE,
+                      MAP_SHARED, (int)fd, 0);
+    if (base == MAP_FAILED) {
+        close((int)fd);
+        return fail("mmap open-enabled system sampling event");
+    }
+
+    volatile uint64_t spin = 0;
+    for (uint64_t i = 0; i < 50000000ull; ++i) {
+        spin += i;
+    }
+    (void)spin;
+    if (ioctl((int)fd, PERF_EVENT_IOC_DISABLE, 0) != 0) {
+        munmap(base, PERF_MMAP_TOTAL_BYTES);
+        close((int)fd);
+        return fail("disable open-enabled system sampling event");
+    }
+    struct perf_event_mmap_page *meta = base;
+    uint64_t head = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
+    munmap(base, PERF_MMAP_TOTAL_BYTES);
+    close((int)fd);
+    if (head == 0) {
+        return fail("open-enabled system sampling event produced no records");
+    }
+    return 0;
+}
+
 int main(void) {
 #if !defined(__aarch64__)
     /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
@@ -386,6 +431,9 @@ int main(void) {
     (void)munmap(base, PERF_MMAP_TOTAL_BYTES);
     close(efd);
 
+    if (rc == 0) {
+        rc = check_open_enabled_system_sample(&attr);
+    }
     if (rc == 0) {
         /* Exactly one success sentinel line. */
         printf("STARRY_PERF_SAMPLE_OK\n");

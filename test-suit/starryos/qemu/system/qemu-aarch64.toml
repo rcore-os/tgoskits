@@ -5,7 +5,7 @@ args = [
     "-m",
     "512M",
     "-cpu",
-    "cortex-a53",
+    "cortex-a53,pmu=on",
     "-smp",
     "4",
     "-device",
