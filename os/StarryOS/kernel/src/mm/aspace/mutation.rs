@@ -86,6 +86,16 @@ impl TlbRange {
     pub fn new(start: VirtAddr, size: usize) -> Option<Self> {
         VirtAddrRange::try_from_start_size(start, size).map(|_| Self { start, size })
     }
+
+    fn overlaps(self, other: Self) -> bool {
+        let Some(left) = VirtAddrRange::try_from_start_size(self.start, self.size) else {
+            return true;
+        };
+        let Some(right) = VirtAddrRange::try_from_start_size(other.start, other.size) else {
+            return true;
+        };
+        left.overlaps(right)
+    }
 }
 
 /// A shootdown obligation.  It is deliberately independent of the platform
@@ -328,6 +338,23 @@ impl TlbRequest {
     pub fn is_complete(&self) -> bool {
         self.pending() == 0
     }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        if self.space_id != other.space_id {
+            return false;
+        }
+        // An empty range list is the full-address-space fallback. This also
+        // covers an overfull inline range batch after it has been collapsed.
+        if self.ranges.is_empty() || other.ranges.is_empty() {
+            return true;
+        }
+        self.ranges.iter().any(|left| {
+            other
+                .ranges
+                .iter()
+                .any(|right| left.overlaps(*right))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,17 +363,24 @@ pub enum MutationError {
     EpochConflict,
     ApplyFailed,
     TlbPending,
+    PendingTlbOverlap,
     ResourceExhausted,
     NeedsRepair,
     EpochExhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MutationPrecondition {
+    None,
+    NoPendingTlbOverlap,
 }
 
 /// Serialization point for all VMA/PTE publication.
 ///
 /// `AddrSpace` is still protected by its sleepable outer mutex, but keeping the
 /// epoch and the typestate transition together prevents a future mutation
-/// caller from publishing a receipt against a stale root.  The gate itself is
-/// lock-free and never performs page-table or file operations.
+/// caller from publishing a receipt against a stale root. The gate never
+/// allocates under its commit lock or performs page-table or file operations.
 pub struct MutationGate {
     epoch: AtomicU64,
     health: core::sync::atomic::AtomicU8,
@@ -416,6 +450,47 @@ impl MutationGate {
         PreparedMutation::new(space_id, self.current_epoch(), targets)
     }
 
+    /// Begins publication into a software-empty range.
+    ///
+    /// The resulting zero-target request may use the fresh-PTE fast path only
+    /// while no older unacknowledged shootdown overlaps its range. Commit
+    /// checks that precondition under the same serialization gate that
+    /// publishes the new epoch.
+    pub fn begin_fresh_mapping(&self, space_id: AddressSpaceId) -> PreparedMutation {
+        let mut mutation = PreparedMutation::new(space_id, self.current_epoch(), 0);
+        mutation.precondition = MutationPrecondition::NoPendingTlbOverlap;
+        mutation
+    }
+
+    /// Checks a prepared mutation before it changes the materialized PTE view.
+    ///
+    /// `AddrSpace` serializes the following apply phase with its outer mutex,
+    /// so an existing conflict can only disappear before commit. Commit still
+    /// repeats this check under the publication gate to make the invariant
+    /// independent of that caller-side locking discipline.
+    pub(super) fn validate_publish_preconditions(
+        &self,
+        mutation: &PreparedMutation,
+    ) -> Result<(), MutationError> {
+        let commit_guard = self.commit_lock.lock();
+        let pending_overlap = self.has_pending_tlb_overlap(mutation);
+        drop(commit_guard);
+        if pending_overlap {
+            Err(MutationError::PendingTlbOverlap)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn has_pending_tlb_overlap(&self, mutation: &PreparedMutation) -> bool {
+        mutation.precondition == MutationPrecondition::NoPendingTlbOverlap
+            && self.pending.lock().iter().any(|pending| {
+                pending
+                    .tlb_obligation
+                    .overlaps(&mutation.receipt.tlb_obligation)
+            })
+    }
+
     /// Begins a mutation whose final shootdown targets are frozen at commit.
     ///
     /// Scheduler activation can race the prepare/apply phase. Keeping the
@@ -476,6 +551,14 @@ impl MutationGate {
             }
             drop(guard);
         };
+        let pending_overlap = self.has_pending_tlb_overlap(&mutation);
+        if pending_overlap {
+            // Drop the IRQ-saving publication gate before dropping the
+            // prepared transaction. The latter may gain owned resources in
+            // future prepare phases and must never destroy them under a gate.
+            drop(_commit_guard);
+            return Err(MutationError::PendingTlbOverlap);
+        }
         let base_epoch = self.current_epoch();
         let new_epoch = base_epoch
             .checked_next()
@@ -631,6 +714,7 @@ impl MutationReceipt {
 pub struct PreparedMutation {
     receipt: MutationReceipt,
     active_targets: Option<Arc<AtomicUsize>>,
+    precondition: MutationPrecondition,
 }
 
 impl PreparedMutation {
@@ -648,6 +732,7 @@ impl PreparedMutation {
                 state: MutationState::Prepared,
             },
             active_targets: None,
+            precondition: MutationPrecondition::None,
         }
     }
 

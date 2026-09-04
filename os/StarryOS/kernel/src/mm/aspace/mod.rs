@@ -593,20 +593,20 @@ struct PageFaultMapPlans {
 fn prepare_mapping_publication_mutation(
     gate: &MutationGate,
     space_id: AddressSpaceId,
-    active_targets: Arc<AtomicUsize>,
+    active_targets: &Arc<AtomicUsize>,
     start: VirtAddr,
     size: usize,
     replaces_existing: bool,
 ) -> PreparedMutation {
-    // A non-replacing mmap publishes into a range whose VMA and PTE preimage
-    // are both empty.  No CPU can cache a translation that needs invalidation,
-    // matching Linux's fresh-PTE path.  MAP_FIXED-style replacement retains
-    // the live target source until commit so a CPU activated during apply is
-    // still included in the shootdown receipt.
+    // A non-replacing mmap publishes into a range whose current VMA and PTE
+    // preimage are empty. It can use Linux's fresh-PTE fast path only if no
+    // older shootdown for that VA is still pending. MAP_FIXED-style
+    // replacement retains the live target source until commit so a CPU
+    // activated during apply is still included in the shootdown receipt.
     let mut mutation = if replaces_existing {
-        gate.begin_with_active_targets(space_id, active_targets)
+        gate.begin_with_active_targets(space_id, active_targets.clone())
     } else {
-        gate.begin(space_id, 0)
+        gate.begin_fresh_mapping(space_id)
     };
     if let Some(range) = TlbRange::new(start, size) {
         mutation.add_tlb_range(range);
@@ -1626,15 +1626,22 @@ impl AddrSpace {
                     .observe_resident_total(self.resident_pages.total());
                 Ok(MutationPublication::PendingTlb)
             }
-            Err(error) => Err(CommitMutationError::Unpublished(match error {
-                    MutationError::ResourceExhausted => StarryError::NoMemory,
-                    MutationError::NeedsRepair
-                    | MutationError::EpochExhausted
-                    | MutationError::EpochConflict
-                    | MutationError::WrongState
-                    | MutationError::ApplyFailed
-                    | MutationError::TlbPending => StarryError::BadState,
-                })),
+            Err(error) => Err(CommitMutationError::Unpublished(
+                Self::map_unpublished_mutation_error(error),
+            )),
+        }
+    }
+
+    fn map_unpublished_mutation_error(error: MutationError) -> StarryError {
+        match error {
+            MutationError::ResourceExhausted => StarryError::NoMemory,
+            MutationError::PendingTlbOverlap => StarryError::ResourceBusy,
+            MutationError::NeedsRepair
+            | MutationError::EpochExhausted
+            | MutationError::EpochConflict
+            | MutationError::WrongState
+            | MutationError::ApplyFailed
+            | MutationError::TlbPending => StarryError::BadState,
         }
     }
 
@@ -3752,6 +3759,17 @@ impl AddrSpace {
         }
         let range = VirtAddrRange::try_from_start_size(start, size)
             .ok_or(StarryError::InvalidInput)?;
+        let mut mutation = prepare_mapping_publication_mutation(
+            &self.mutation_gate,
+            self.id,
+            &self.tlb_targets,
+            start,
+            size,
+            replace,
+        );
+        self.mutation_gate
+            .validate_publish_preconditions(&mutation)
+            .map_err(Self::map_unpublished_mutation_error)?;
         // Count the old VSS before the persistent root performs replacement. This is
         // metadata only and therefore cannot make a failed map visible.
         let removed_pages = if replace {
@@ -3773,14 +3791,6 @@ impl AddrSpace {
         };
         let mapping_preimage = self.capture_mapping_preimage(range)?;
         let graph_preimage = self.capture_mapping_graph_snapshot(&[range])?;
-        let mut mutation = prepare_mapping_publication_mutation(
-            &self.mutation_gate,
-            self.id,
-            self.tlb_targets.clone(),
-            start,
-            size,
-            replace,
-        );
         let retire_epoch = mutation
             .receipt()
             .base_epoch
@@ -6782,7 +6792,10 @@ mod tests {
 
     use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 
-    use super::{AddressSpaceId, MutationGate, prepare_mapping_publication_mutation};
+    use super::{
+        AddressSpaceId, MutationError, MutationGate, TlbRange, VmEpoch,
+        prepare_mapping_publication_mutation,
+    };
 
     #[cfg(all(test, not(axtest)))]
     #[test]
@@ -6801,7 +6814,7 @@ mod tests {
         let fresh = prepare_mapping_publication_mutation(
             &gate,
             id,
-            targets.clone(),
+            &targets,
             start,
             PAGE_SIZE_4K,
             false,
@@ -6811,11 +6824,91 @@ mod tests {
         let replacement = prepare_mapping_publication_mutation(
             &gate,
             id,
-            targets,
+            &targets,
             start,
             PAGE_SIZE_4K,
             true,
         );
         assert_eq!(replacement.receipt().tlb_obligation.targets(), 0b1110);
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn fresh_mapping_cannot_reuse_range_with_pending_shootdown() {
+        let gate = MutationGate::new();
+        let id = AddressSpaceId::allocate();
+        let targets = Arc::new(AtomicUsize::new(0b1));
+        let start = VirtAddr::from(0x20_0000);
+        let mut unmap = gate.begin(id, 0b1);
+        unmap.add_tlb_range(TlbRange::new(start, PAGE_SIZE_4K).unwrap());
+        assert_eq!(gate.commit(unmap).unwrap_err(), MutationError::TlbPending);
+
+        let nonoverlapping = prepare_mapping_publication_mutation(
+            &gate,
+            id,
+            &targets,
+            start + PAGE_SIZE_4K * 2,
+            PAGE_SIZE_4K,
+            false,
+        );
+        gate.validate_publish_preconditions(&nonoverlapping)
+            .unwrap();
+        gate.commit(nonoverlapping).unwrap();
+
+        let fresh = prepare_mapping_publication_mutation(
+            &gate,
+            id,
+            &targets,
+            start,
+            PAGE_SIZE_4K,
+            false,
+        );
+        assert_eq!(
+            gate.validate_publish_preconditions(&fresh),
+            Err(MutationError::PendingTlbOverlap)
+        );
+        assert_eq!(
+            gate.commit(fresh).unwrap_err(),
+            MutationError::PendingTlbOverlap
+        );
+        assert_eq!(gate.current_epoch(), VmEpoch::new(2));
+
+        gate.acknowledge(id, VmEpoch::new(1), 0).unwrap().unwrap();
+        let retry = prepare_mapping_publication_mutation(
+            &gate,
+            id,
+            &targets,
+            start,
+            PAGE_SIZE_4K,
+            false,
+        );
+        gate.validate_publish_preconditions(&retry).unwrap();
+        gate.commit(retry).unwrap();
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn pending_full_flush_blocks_every_fresh_mapping_range() {
+        let gate = MutationGate::new();
+        let id = AddressSpaceId::allocate();
+        let targets = Arc::new(AtomicUsize::new(0b1));
+        assert_eq!(
+            gate.commit(gate.begin(id, 0b1)).unwrap_err(),
+            MutationError::TlbPending
+        );
+
+        let fresh = prepare_mapping_publication_mutation(
+            &gate,
+            id,
+            &targets,
+            VirtAddr::from(0x40_0000),
+            PAGE_SIZE_4K,
+            false,
+        );
+        assert_eq!(
+            gate.commit(fresh).unwrap_err(),
+            MutationError::PendingTlbOverlap
+        );
+        assert_eq!(gate.current_epoch(), VmEpoch::new(1));
     }
 }
