@@ -978,7 +978,12 @@ impl TaskSystem {
                     rq_preflight_finished_ns,
                 );
             }
-            return Ok(self.yield_current_rq_owned(cpu.as_mut(), transaction, schedule_out));
+            return Ok(match schedule_out {
+                linked @ OwnerRqScheduleOut::LinkedRealtime { .. } => {
+                    self.yield_current_rq_owned::<true>(cpu.as_mut(), transaction, linked)
+                }
+                other => self.yield_current_rq_owned::<false>(cpu.as_mut(), transaction, other),
+            });
         }
         // Preserve requests merged by the rq-owned probe while restoring the
         // full p->pi_lock -> rq order for exceptional task-control work.
@@ -1170,7 +1175,7 @@ impl TaskSystem {
 
     /// Implements Linux's rq-owned ordinary yield path.
     #[inline(never)]
-    fn yield_current_rq_owned(
+    fn yield_current_rq_owned<const LINKED_REALTIME: bool>(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         mut transaction: OwnerRqTxn<'_>,
@@ -1180,11 +1185,7 @@ impl TaskSystem {
         let qperf_phase_started_ns = task_runtime::monotonic_now().as_nanos();
         let now_ns = transaction.clock().wall().as_nanos();
         let previous = transaction.current_thread();
-        let linked_realtime_thread = match &schedule_out {
-            OwnerRqScheduleOut::LinkedRealtime { thread } => Some(*thread),
-            OwnerRqScheduleOut::Idle { .. } | OwnerRqScheduleOut::Unlinked { .. } => None,
-        };
-        let dispatch_commit = if linked_realtime_thread.is_some() {
+        let dispatch_commit = if LINKED_REALTIME {
             transaction.settle_fixed_realtime_current();
             OwnerDispatchCommit::NONE
         } else {
@@ -1205,13 +1206,13 @@ impl TaskSystem {
             endpoint: previous_endpoint,
             policy: previous_policy,
             urgency: previous_urgency,
-        } = match linked_realtime_thread {
-            Some(thread) => self.yield_linked_realtime_owner_rq(&mut transaction, thread),
-            None => self.schedule_out_owner_rq_owned(
-                &mut transaction,
-                schedule_out,
-                EnqueueReason::Yield,
-            ),
+        } = if LINKED_REALTIME {
+            let OwnerRqScheduleOut::LinkedRealtime { thread } = schedule_out else {
+                task_runtime::fatal_invariant(0x5343_1217, cpu.owner().as_u32() as usize)
+            };
+            self.yield_linked_realtime_owner_rq(&mut transaction, thread)
+        } else {
+            self.schedule_out_owner_rq_owned(&mut transaction, schedule_out, EnqueueReason::Yield)
         };
         #[cfg(feature = "qperf-metrics")]
         let qperf_put_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
@@ -1221,7 +1222,7 @@ impl TaskSystem {
             qperf_account_finished_ns,
             qperf_put_prev_finished_ns,
         );
-        let next = if SchedulerClass::for_policy(previous_policy) == SchedulerClass::Realtime
+        let next = if LINKED_REALTIME
             && !transaction.rt_is_effectively_throttled()
             && !transaction
                 .has_selectable_higher_class(SchedulerClass::Realtime, RtEligibility::Runnable)
