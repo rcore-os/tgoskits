@@ -81,7 +81,8 @@ pub(super) struct BpfPerfPoll {
 
 impl Pollable for BpfPerfPoll {
     fn poll(&self) -> IoEvents {
-        if self.state.lock().inner.readable() {
+        let state = self.state.lock();
+        if state.is_mapped() && state.inner.readable() {
             IoEvents::IN
         } else {
             IoEvents::empty()

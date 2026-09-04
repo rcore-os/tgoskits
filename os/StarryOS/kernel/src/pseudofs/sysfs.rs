@@ -356,6 +356,7 @@ impl SimpleDirOps for PlatformBusClassDir {
 // Values match `kbpf_basic::perf::PerfTypeId` so the user-supplied number
 // dispatches cleanly in `perf_event_open`.
 const PERF_EVENT_SOURCES: &[(&str, u32)] = &[
+    ("software", 1),  // PERF_TYPE_SOFTWARE
     ("kprobe", 6),     // PerfTypeId::PERF_TYPE_KPROBE
     ("uprobe", 7),     // PerfTypeId::PERF_TYPE_UPROBE
     ("tracepoint", 2), // PERF_TYPE_TRACEPOINT
