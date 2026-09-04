@@ -257,6 +257,17 @@ where
                     // 子页表完全为空，可以回收
                     // 清除指向子页表的PTE
                     pte_ref.clear();
+                    // Invalidate the TLB for the range this table covered BEFORE
+                    // returning its frame to the allocator. The leaf entries were
+                    // already flushed by the recursive unmap above, but the
+                    // now-cleared parent descriptor / table-walk cache is not — so
+                    // without this a concurrent core can reallocate and write the
+                    // freed frame while a stale walk still reads it as page-table
+                    // entries, translating to arbitrary physical memory. This
+                    // completes break-before-free for the intermediate table.
+                    if config.flush {
+                        T::flush(Some(vaddr));
+                    }
                     allocator.dealloc_frame(child_paddr);
                 } else {
                     // 子页表仍有有效映射，不能回收
