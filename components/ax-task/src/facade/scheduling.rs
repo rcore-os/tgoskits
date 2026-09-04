@@ -54,7 +54,7 @@ fn schedule_current_cpu_with_entry(
         let request_scope = scheduler_request_scope(entry, original_entry);
         let mut scheduler_frame =
             RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
-        let system = scheduler_frame.task_system()?;
+        let system = scheduler_frame.task_system();
         let current_publication = scheduler_frame.current_thread_publication();
         let (outcome, no_switch_request_pending) = {
             let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
@@ -148,7 +148,7 @@ pub fn yield_current_cpu() -> Result<(), TaskError> {
     #[cfg(feature = "qperf-metrics")]
     let scheduler_frame_entered_ns = task_runtime::monotonic_now().as_nanos();
     let current = scheduler_frame.current_thread_ref()?;
-    let system = scheduler_frame.task_system()?;
+    let system = scheduler_frame.task_system();
     #[cfg(feature = "qperf-metrics")]
     let scheduler_dispatch_started_ns;
     let outcome = {
@@ -226,9 +226,7 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
     let mut scheduler_frame =
         RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Exit, RuntimeSchedulerEntry::Task)
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0010, thread.as_u64() as _));
-    let system = scheduler_frame
-        .task_system()
-        .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0011, thread.as_u64() as _));
+    let system = scheduler_frame.task_system();
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0013, thread.as_u64() as _));
@@ -365,7 +363,7 @@ pub(super) unsafe fn complete_current_context_switch_tail(
 unsafe fn complete_current_context_switch_tail_in_scheduler_frame(
     scheduler_frame: &mut RuntimeSchedulerFrameGuard,
 ) -> Result<(), TaskError> {
-    let system = scheduler_frame.task_system()?;
+    let system = scheduler_frame.task_system();
     let completion = {
         let mut cpu = runtime_current_cpu_mut(scheduler_frame)?;
         // SAFETY: forwarded from this helper's scheduler-frame contract.

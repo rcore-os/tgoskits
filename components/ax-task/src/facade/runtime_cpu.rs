@@ -240,7 +240,7 @@ impl Drop for RuntimeIrqGuard {
 pub(super) struct RuntimeSchedulerFrameGuard {
     return_to: RuntimeSchedulerReturn,
     cpu: RuntimeCpuHandles,
-    system: crate::runtime::TaskSystemHandle,
+    system: &'static TaskSystem,
     current: crate::runtime::CurrentThreadPublication,
     _not_send: PhantomData<*mut ()>,
 }
@@ -267,6 +267,9 @@ impl RuntimeSchedulerFrameGuard {
                 status => TaskError::RuntimeFailure(status as u32),
             });
         }
+        let system = task_system_from_handle(context.system()).unwrap_or_else(|_| {
+            task_runtime::fatal_invariant(0x5254_0001, context.system().into_raw())
+        });
         let return_to = match entry {
             RuntimeSchedulerEntry::Task
             | RuntimeSchedulerEntry::PreemptExit
@@ -280,7 +283,7 @@ impl RuntimeSchedulerFrameGuard {
             // SAFETY: success from scheduler-frame entry carries the provider's
             // complete current-CPU capability under the acquired baton.
             cpu: unsafe { RuntimeCpuHandles::from_snapshot(context.cpu()) },
-            system: context.system(),
+            system,
             current: context.current(),
             _not_send: PhantomData,
         })
@@ -304,8 +307,8 @@ impl RuntimeSchedulerFrameGuard {
         self.cpu.cpu_id()
     }
 
-    pub(super) fn task_system(&self) -> Result<&'static TaskSystem, TaskError> {
-        task_system_from_handle(self.system)
+    pub(super) const fn task_system(&self) -> &'static TaskSystem {
+        self.system
     }
 
     pub(super) const fn current_thread_publication(

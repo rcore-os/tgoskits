@@ -361,7 +361,7 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
         RuntimeSchedulerEntry::Task,
     )?;
     let current = scheduler_frame.current_thread_ref()?;
-    let system = scheduler_frame.task_system()?;
+    let system = scheduler_frame.task_system();
     let outcome = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         let must_migrate = system.set_current_affinity(cpu.as_mut(), affinity)?;
