@@ -36,6 +36,7 @@ struct perf_event_attr_v0 {
     uint64_t bp_addr;
 };
 
+#if defined(__aarch64__)
 static volatile uint64_t sink;
 
 static int open_sw(uint64_t config, uint64_t read_format, int group_fd) {
@@ -75,6 +76,7 @@ static void work(void) {
         sink += (i * 5u) ^ sink;
     }
 }
+#endif
 
 int main(void) {
 #if !defined(__aarch64__)

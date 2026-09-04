@@ -63,6 +63,7 @@ _Static_assert(sizeof(struct perf_event_attr_v0) == 64, "perf attr v0 size");
 _Static_assert(offsetof(struct perf_event_mmap_page, data_head) == 1024,
                "perf data_head offset");
 
+#if defined(__aarch64__)
 static volatile uint64_t sink;
 
 static void burn(uint64_t iterations) {
@@ -97,6 +98,7 @@ static uint64_t count_lost(const uint8_t *ring, uint64_t size, uint64_t tail,
     }
     return total;
 }
+#endif
 
 int main(void) {
 #if !defined(__aarch64__)
