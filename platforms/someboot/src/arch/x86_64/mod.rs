@@ -73,9 +73,9 @@ impl ArchTrait for Arch {
 
     fn post_allocator() {}
 
-    fn per_cpu_trap_init(_is_primary: bool) {
+    fn per_cpu_trap_init(is_primary: bool) {
         trap::setup();
-        trap::init_local();
+        trap::init_local(is_primary);
     }
 
     fn trap_addr() -> usize {

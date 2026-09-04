@@ -298,15 +298,21 @@ fn irq_wake_drains_without_double_wake() {
 #[test]
 fn full_capacity() {
     let ps = PollSet::new();
-    let counter = Counter::new();
-    for _ in 0..64 {
+    let counters = (0..64).map(|_| Counter::new()).collect::<Vec<_>>();
+    for counter in &counters {
         let w = Waker::from(counter.clone());
         let cx = Context::from_waker(&w);
         unsafe { ps.register(cx.waker(), IoEvents::IN) };
     }
     let woke = unsafe { ps.wake(IoEvents::IN) };
     assert_eq!(woke, 64);
-    assert_eq!(counter.count(), 64);
+    assert_eq!(
+        counters
+            .iter()
+            .map(|counter| counter.count())
+            .sum::<usize>(),
+        64
+    );
 }
 
 #[test]
@@ -326,12 +332,18 @@ fn overwrite() {
 #[test]
 fn drop_wakes() {
     let ps = PollSet::new();
-    let counters = Counter::new();
-    for _ in 0..10 {
-        let w = Waker::from(counters.clone());
+    let counters = (0..10).map(|_| Counter::new()).collect::<Vec<_>>();
+    for counter in &counters {
+        let w = Waker::from(counter.clone());
         let cx = Context::from_waker(&w);
         unsafe { ps.register(cx.waker(), IoEvents::IN) };
     }
     drop(ps);
-    assert_eq!(counters.count(), 10);
+    assert_eq!(
+        counters
+            .iter()
+            .map(|counter| counter.count())
+            .sum::<usize>(),
+        10
+    );
 }

@@ -77,6 +77,25 @@ fn axpoll_wakes_only_matching_interests() {
 }
 
 #[test]
+fn repeated_registration_of_the_same_waker_uses_one_slot() {
+    let poll_set = PollSet::new();
+    let counter = WakeCounter::new();
+    let waker = counter_waker(&counter);
+
+    for index in 0..100 {
+        let interests = if index % 2 == 0 {
+            IoEvents::IN
+        } else {
+            IoEvents::OUT
+        };
+        unsafe { poll_set.register(&waker, interests) };
+    }
+
+    assert_eq!(poll_set.wake_from_irq(IoEvents::IN | IoEvents::OUT), 1);
+    assert_eq!(counter.count(), 1);
+}
+
+#[test]
 fn axpoll_exclusive_wake_keeps_other_matching_waiters() {
     let poll_set = PollSet::new();
     let first_counter = WakeCounter::new();
@@ -123,7 +142,7 @@ fn axpoll_capacity_overwrite_and_drop_rules_hold() {
         unsafe { poll_set.register(&waker, IoEvents::OUT) };
     }
     drop(poll_set);
-    assert_eq!(drop_counter.count(), 4);
+    assert_eq!(drop_counter.count(), 1);
 }
 
 struct FixedPollable {

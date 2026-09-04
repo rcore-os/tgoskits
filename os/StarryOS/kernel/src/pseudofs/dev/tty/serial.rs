@@ -1,5 +1,8 @@
 use alloc::{format, string::String, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use ax_lazyinit::LazyLock;
 use ax_runtime::{
@@ -84,6 +87,13 @@ impl SerialInput {
         match self {
             Self::Console(input) => input.poll_source(),
             Self::Port(input) => input.poll_source(),
+        }
+    }
+
+    fn recovery_poll_interval(&self) -> Option<Duration> {
+        match self {
+            Self::Console(input) => input.recovery_poll_interval(),
+            Self::Port(_) => None,
         }
     }
 }
@@ -357,6 +367,10 @@ impl TtyRead for SerialReader {
 
     fn discard_input(&mut self) -> StarryResult<()> {
         Ok(self.backend.input.discard_pending()?)
+    }
+
+    fn recovery_poll_interval(&self) -> Option<Duration> {
+        self.backend.input.recovery_poll_interval()
     }
 }
 

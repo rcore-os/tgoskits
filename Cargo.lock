@@ -719,6 +719,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-acpi"
+version = "0.1.0"
+dependencies = [
+ "bit_field",
+ "bitflags 2.13.1",
+ "byteorder",
+ "log",
+ "pci_types",
+ "spinning_top 0.3.0",
+]
+
+[[package]]
 name = "ax-alloc"
 version = "0.8.16"
 dependencies = [
@@ -6679,7 +6691,7 @@ dependencies = [
 name = "rdrive"
 version = "0.24.1"
 dependencies = [
- "acpi",
+ "ax-acpi",
  "ax-lazyinit",
  "ax-sync",
  "fdt-edit",

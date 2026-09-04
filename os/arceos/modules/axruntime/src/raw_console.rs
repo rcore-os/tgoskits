@@ -1,7 +1,10 @@
 //! IRQ-backed task input for a HAL-owned console without a runtime UART.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use ax_lazyinit::OnceLock;
 use ax_task::WaitQueue;
@@ -17,11 +20,14 @@ use crate::{
 };
 
 const RAW_RX_CAPACITY: usize = 4_096;
+const RAW_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 static RAW_INPUT: OnceLock<Arc<RawInputRuntime>> = OnceLock::new();
 
 struct RawInputRuntime {
     available: SpinLock<Option<SpscConsumer<RxItem>>>,
+    /// Serializes UART RX status/FIFO access and publication from IRQ and polling paths.
+    producer: SpinLock<SpscProducer<RxItem>>,
     overflow: AtomicBool,
     progress: WaitQueue,
     poll_source: Arc<PollSet>,
@@ -49,62 +55,90 @@ pub(crate) fn take_input() -> RuntimeResult<RawConsoleInput> {
 
 fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
     let irq = ax_hal::console::irq_num().ok_or(RuntimeError::OperationNotSupported)?;
-    ax_hal::console::set_input_irq_enabled(false);
-    let (mut producer, consumer) = crate::serial::spsc::channel(RAW_RX_CAPACITY);
+    let (producer, consumer) = crate::serial::spsc::channel(RAW_RX_CAPACITY);
     let runtime = Arc::new(RawInputRuntime {
         available: SpinLock::new(Some(consumer)),
+        producer: SpinLock::new(producer),
         overflow: AtomicBool::new(false),
         progress: WaitQueue::new(),
         poll_source: Arc::new(PollSet::new()),
         irq_handle: OnceLock::new(),
     });
     let irq_runtime = runtime.clone();
-    let request =
-        ax_hal::irq::IrqRequest::new(move |_| handle_raw_input_irq(&mut producer, &irq_runtime))
-            .share_mode(ax_hal::irq::ShareMode::Shared)
-            .auto_enable(ax_hal::irq::AutoEnable::No);
-    let handle = match ax_hal::irq::request_irq(irq, request) {
-        Ok(handle) => handle,
-        Err(error) => {
-            // Leave the device source masked: no handler owns this IRQ yet.
-            // `get_or_try_init` permits a later caller to retry registration.
-            ax_hal::console::set_input_irq_enabled(false);
-            return Err(error.into());
-        }
-    };
-    ax_hal::console::set_input_irq_enabled(true);
-    if let Err(error) = ax_hal::irq::enable_irq(handle) {
-        ax_hal::console::set_input_irq_enabled(false);
-        if let Err(free_error) = ax_hal::irq::free_irq(handle) {
-            warn!("failed to release raw console IRQ after enable failure: {free_error:?}");
-        }
-        return Err(error.into());
-    }
+    let request = ax_hal::irq::IrqRequest::new(move |_| handle_raw_input_irq(&irq_runtime))
+        .share_mode(ax_hal::irq::ShareMode::Shared)
+        .auto_enable(ax_hal::irq::AutoEnable::No);
+    let handle = activate_raw_input_irq(
+        ax_hal::console::set_input_irq_enabled,
+        || ax_hal::irq::request_irq(irq, request),
+        ax_hal::irq::enable_irq,
+        |handle| {
+            if let Err(free_error) = ax_hal::irq::free_irq(handle) {
+                warn!("failed to release raw console IRQ after enable failure: {free_error:?}");
+            }
+        },
+    )?;
     runtime.irq_handle.call_once(|| handle);
     Ok(runtime)
 }
 
-fn handle_raw_input_irq(
-    producer: &mut SpscProducer<RxItem>,
-    runtime: &RawInputRuntime,
-) -> ax_hal::irq::IrqReturn {
-    let events = ax_hal::console::handle_irq();
-    if events.is_empty() {
-        return ax_hal::irq::IrqReturn::Unhandled;
+fn activate_raw_input_irq<H: Copy, E>(
+    mut set_source_enabled: impl FnMut(bool),
+    request_line: impl FnOnce() -> Result<H, E>,
+    enable_line: impl FnOnce(H) -> Result<(), E>,
+    release_line: impl FnOnce(H),
+) -> Result<H, E> {
+    set_source_enabled(false);
+    let handle = request_line()?;
+    if let Err(error) = enable_line(handle) {
+        set_source_enabled(false);
+        release_line(handle);
+        return Err(error);
     }
+    set_source_enabled(true);
+    Ok(handle)
+}
 
-    let mut published = false;
-    if events.contains(ax_hal::console::ConsoleIrqEvent::OVERRUN) {
-        published |= publish_rx_item(producer, runtime, RxItem::Overrun);
-    }
-
-    published |= drain_raw_input(producer, runtime, ax_hal::console::read_bytes);
+fn handle_raw_input_irq(runtime: &RawInputRuntime) -> ax_hal::irq::IrqReturn {
+    let (irq_return, published) = service_raw_input_irq_with(
+        runtime,
+        ax_hal::console::handle_irq,
+        ax_hal::console::read_bytes,
+    );
 
     if published || runtime.overflow.load(Ordering::Acquire) {
         runtime.progress.notify_all_from_irq();
         runtime.poll_source.wake_from_irq(IoEvents::IN);
     }
-    ax_hal::irq::IrqReturn::Handled
+    irq_return
+}
+
+fn service_raw_input_irq_with(
+    runtime: &RawInputRuntime,
+    handle_irq: impl FnOnce() -> ax_hal::console::ConsoleIrqEvent,
+    read: impl FnMut(&mut [u8]) -> usize,
+) -> (ax_hal::irq::IrqReturn, bool) {
+    let mut producer = runtime.producer.lock_irqsave();
+    let events = handle_irq();
+    if events.is_empty() {
+        return (ax_hal::irq::IrqReturn::Unhandled, false);
+    }
+
+    let mut published = false;
+    if events.contains(ax_hal::console::ConsoleIrqEvent::OVERRUN) {
+        published |= publish_rx_item(&mut producer, runtime, RxItem::Overrun);
+    }
+
+    published |= poll_raw_input(&mut producer, runtime, read);
+    (ax_hal::irq::IrqReturn::Handled, published)
+}
+
+fn poll_raw_input(
+    producer: &mut SpscProducer<RxItem>,
+    runtime: &RawInputRuntime,
+    read: impl FnMut(&mut [u8]) -> usize,
+) -> bool {
+    drain_raw_input(producer, runtime, read)
 }
 
 fn drain_raw_input(
@@ -150,10 +184,23 @@ fn publish_rx_item(
 }
 
 impl RawConsoleInput {
+    pub(crate) const fn recovery_poll_interval() -> Duration {
+        RAW_POLL_INTERVAL
+    }
+
     pub(crate) fn try_read(&self, out: &mut [RxItem]) -> usize {
+        self.try_read_with(out, ax_hal::console::read_bytes)
+    }
+
+    fn try_read_with(&self, out: &mut [RxItem], read: impl FnMut(&mut [u8]) -> usize) -> usize {
         if out.is_empty() {
             return 0;
         }
+        poll_raw_input(
+            &mut self.runtime.producer.lock_irqsave(),
+            &self.runtime,
+            read,
+        );
         let mut written = 0;
         if self.runtime.overflow.swap(false, Ordering::AcqRel) {
             out[written] = RxItem::Overrun;
@@ -166,7 +213,9 @@ impl RawConsoleInput {
     }
 
     pub(crate) fn wait_readable(&self) {
-        self.runtime.progress.wait_until(|| self.has_pending());
+        self.runtime
+            .progress
+            .wait_timeout_until(RAW_POLL_INTERVAL, || self.has_pending());
     }
 
     pub(crate) fn discard_pending(&self) {
@@ -208,13 +257,105 @@ impl Drop for RawConsoleInput {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{rc::Rc, vec::Vec};
+    use core::cell::{Cell, RefCell};
+
     use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ActivationStep {
+        MaskSource,
+        RequestLine,
+        EnableLine,
+        UnmaskSource,
+        ReleaseLine,
+    }
+
+    #[test]
+    fn raw_input_enables_controller_before_uart_source() {
+        let steps = Rc::new(RefCell::new(Vec::new()));
+        let source_steps = steps.clone();
+        let request_steps = steps.clone();
+        let enable_steps = steps.clone();
+
+        activate_raw_input_irq(
+            move |enabled| {
+                source_steps.borrow_mut().push(if enabled {
+                    ActivationStep::UnmaskSource
+                } else {
+                    ActivationStep::MaskSource
+                });
+            },
+            move || {
+                request_steps.borrow_mut().push(ActivationStep::RequestLine);
+                Ok::<_, ()>(7usize)
+            },
+            move |_| {
+                enable_steps.borrow_mut().push(ActivationStep::EnableLine);
+                Ok::<_, ()>(())
+            },
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            *steps.borrow(),
+            [
+                ActivationStep::MaskSource,
+                ActivationStep::RequestLine,
+                ActivationStep::EnableLine,
+                ActivationStep::UnmaskSource,
+            ]
+        );
+    }
+
+    #[test]
+    fn raw_input_enable_failure_masks_source_and_releases_line() {
+        let steps = Rc::new(RefCell::new(Vec::new()));
+        let source_steps = steps.clone();
+        let request_steps = steps.clone();
+        let enable_steps = steps.clone();
+        let release_steps = steps.clone();
+
+        assert_eq!(
+            activate_raw_input_irq(
+                move |enabled| {
+                    source_steps.borrow_mut().push(if enabled {
+                        ActivationStep::UnmaskSource
+                    } else {
+                        ActivationStep::MaskSource
+                    });
+                },
+                move || {
+                    request_steps.borrow_mut().push(ActivationStep::RequestLine);
+                    Ok::<_, &'static str>(7usize)
+                },
+                move |_| {
+                    enable_steps.borrow_mut().push(ActivationStep::EnableLine);
+                    Err("enable failed")
+                },
+                move |_| release_steps.borrow_mut().push(ActivationStep::ReleaseLine),
+            ),
+            Err("enable failed")
+        );
+        assert_eq!(
+            *steps.borrow(),
+            [
+                ActivationStep::MaskSource,
+                ActivationStep::RequestLine,
+                ActivationStep::EnableLine,
+                ActivationStep::MaskSource,
+                ActivationStep::ReleaseLine,
+            ]
+        );
+    }
 
     #[test]
     fn raw_irq_queue_preserves_bytes_and_reports_overflow() {
-        let (mut producer, consumer) = crate::serial::spsc::channel(1);
+        let (producer, consumer) = crate::serial::spsc::channel(1);
         let runtime = Arc::new(RawInputRuntime {
             available: SpinLock::new(None),
+            producer: SpinLock::new(producer),
             overflow: AtomicBool::new(false),
             progress: WaitQueue::new(),
             poll_source: Arc::new(PollSet::new()),
@@ -233,21 +374,25 @@ mod tests {
             flag: RxFlag::Normal,
         };
 
-        assert!(publish_rx_item(&mut producer, &runtime, retained));
-        assert!(!publish_rx_item(&mut producer, &runtime, dropped));
+        {
+            let mut producer = runtime.producer.lock_irqsave();
+            assert!(publish_rx_item(&mut producer, &runtime, retained));
+            assert!(!publish_rx_item(&mut producer, &runtime, dropped));
+        }
 
         let mut out = [RxItem::default(); 2];
-        assert_eq!(input.try_read(&mut out), 2);
+        assert_eq!(input.try_read_with(&mut out, |_| 0), 2);
         assert_eq!(out, [RxItem::Overrun, retained]);
-        assert_eq!(input.try_read(&mut out), 0);
+        assert_eq!(input.try_read_with(&mut out, |_| 0), 0);
     }
 
     #[test]
     fn raw_irq_drain_has_a_fixed_per_interrupt_budget() {
         let source_bytes = RAW_RX_CAPACITY + 64;
-        let (mut producer, _consumer) = crate::serial::spsc::channel(source_bytes);
+        let (producer, _consumer) = crate::serial::spsc::channel(source_bytes);
         let runtime = RawInputRuntime {
             available: SpinLock::new(None),
+            producer: SpinLock::new(producer),
             overflow: AtomicBool::new(false),
             progress: WaitQueue::new(),
             poll_source: Arc::new(PollSet::new()),
@@ -256,7 +401,7 @@ mod tests {
         let mut remaining = source_bytes;
         let mut drained = 0;
 
-        drain_raw_input(&mut producer, &runtime, |out| {
+        poll_raw_input(&mut runtime.producer.lock_irqsave(), &runtime, |out| {
             let count = out.len().min(remaining);
             out[..count].fill(b'x');
             remaining -= count;
@@ -266,5 +411,71 @@ mod tests {
 
         assert_eq!(drained, RAW_RX_CAPACITY);
         assert_eq!(remaining, 64);
+    }
+
+    #[test]
+    #[cfg(feature = "smp")]
+    fn raw_irq_status_probe_holds_the_uart_producer_lock() {
+        let (producer, _consumer) = crate::serial::spsc::channel(4);
+        let runtime = RawInputRuntime {
+            available: SpinLock::new(None),
+            producer: SpinLock::new(producer),
+            overflow: AtomicBool::new(false),
+            progress: WaitQueue::new(),
+            poll_source: Arc::new(PollSet::new()),
+            irq_handle: OnceLock::new(),
+        };
+        let status_was_serialized = Cell::new(false);
+
+        let (irq_return, _) = service_raw_input_irq_with(
+            &runtime,
+            || {
+                status_was_serialized.set(runtime.producer.try_lock_irqsave().is_none());
+                ax_hal::console::ConsoleIrqEvent::RX_READY
+            },
+            |_| 0,
+        );
+
+        assert_eq!(irq_return, ax_hal::irq::IrqReturn::Handled);
+        assert!(
+            status_was_serialized.get(),
+            "UART status must be sampled while the producer lock excludes recovery polling"
+        );
+    }
+
+    #[test]
+    fn raw_polling_recovers_a_byte_without_an_irq_notification() {
+        assert_eq!(RawConsoleInput::recovery_poll_interval(), RAW_POLL_INTERVAL);
+        let (producer, mut consumer) = crate::serial::spsc::channel(4);
+        let runtime = RawInputRuntime {
+            available: SpinLock::new(None),
+            producer: SpinLock::new(producer),
+            overflow: AtomicBool::new(false),
+            progress: WaitQueue::new(),
+            poll_source: Arc::new(PollSet::new()),
+            irq_handle: OnceLock::new(),
+        };
+        let mut supplied = false;
+
+        assert!(poll_raw_input(
+            &mut runtime.producer.lock_irqsave(),
+            &runtime,
+            |out| {
+                if supplied {
+                    return 0;
+                }
+                out[0] = b'x';
+                supplied = true;
+                1
+            }
+        ));
+
+        assert_eq!(
+            consumer.pop(),
+            Some(RxItem::Byte {
+                byte: b'x',
+                flag: RxFlag::Normal,
+            })
+        );
     }
 }

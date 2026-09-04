@@ -106,6 +106,15 @@ impl Inner {
     }
 
     fn register(&mut self, waker: &Waker, interests: IoEvents) -> Option<Entry> {
+        for index in 0..self.len() {
+            // SAFETY: every slot below `len()` has been initialized and remains owned by `Inner`.
+            let entry = unsafe { self.entries[index].assume_init_mut() };
+            if entry.waker.will_wake(waker) {
+                entry.interests |= interests;
+                return None;
+            }
+        }
+
         let slot = self.cursor % POLL_SET_CAPACITY;
         let replaced = if self.cursor >= POLL_SET_CAPACITY {
             let old = unsafe { self.entries[slot].assume_init_read() };
@@ -185,6 +194,8 @@ impl PollSet {
     }
 
     /// Registers a waker for the requested I/O events.
+    ///
+    /// Re-registering the same wake target merges its interests without consuming another slot.
     ///
     /// # Safety
     ///

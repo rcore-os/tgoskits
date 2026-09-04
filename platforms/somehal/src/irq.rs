@@ -131,6 +131,37 @@ pub fn register_child_irq_domain(
     register_domain(owner, preferred, Some(parent), kind)
 }
 
+/// Rolls back interrupt domains reserved by a device before it publishes any capability or route.
+#[cfg(any(test, target_arch = "x86_64"))]
+pub(crate) fn rollback_unpublished_irq_domains(owner: DeviceId) {
+    let mut domains = irq_domains();
+    let removed_ids = domains
+        .iter()
+        .filter(|domain| domain.owner == owner)
+        .map(|domain| domain.id)
+        .collect::<Vec<_>>();
+    debug_assert!(
+        domains.iter().all(|domain| {
+            domain.owner == owner
+                || domain
+                    .parent
+                    .is_none_or(|parent| !removed_ids.contains(&parent))
+        }),
+        "an unpublished interrupt domain gained a foreign child"
+    );
+    for domain in domains.iter().filter(|domain| domain.owner == owner) {
+        if let Some(slot) = domain_slot(domain.kind) {
+            let _ = slot.compare_exchange(
+                domain.id.0,
+                INVALID_IRQ_DOMAIN,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+    domains.retain(|domain| domain.owner != owner);
+}
+
 fn register_domain(
     owner: DeviceId,
     preferred: Option<IrqDomainId>,
@@ -663,6 +694,25 @@ mod tests {
             Ok(ioapic)
         );
         assert_eq!(alloc_irq_domain(owner, IrqDomainKind::X86Msi), Ok(msi));
+    }
+
+    #[test]
+    fn unpublished_domain_rollback_removes_root_children_and_fast_slots() {
+        let _guard = TEST_LOCK.lock();
+        reset_domains();
+
+        let owner = DeviceId::new();
+        let ioapic = alloc_irq_domain(owner, IrqDomainKind::X86IoApic).unwrap();
+        let msi = alloc_irq_domain(owner, IrqDomainKind::X86Msi).unwrap();
+        let msix = alloc_child_irq_domain(owner, msi, IrqDomainKind::PciMsix).unwrap();
+
+        rollback_unpublished_irq_domains(owner);
+
+        assert!(domain_by_id(ioapic).is_none());
+        assert!(domain_by_id(msi).is_none());
+        assert!(domain_by_id(msix).is_none());
+        assert!(domain_by_kind_fast(IrqDomainKind::X86IoApic).is_none());
+        assert!(domain_by_kind_fast(IrqDomainKind::X86Msi).is_none());
     }
 
     #[test]

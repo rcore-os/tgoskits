@@ -44,6 +44,7 @@ ax-alloc
 ax-display
 ax-driver
 rdrive
+ax-acpi
 ax-hal
 ax-sync
 ax-mm

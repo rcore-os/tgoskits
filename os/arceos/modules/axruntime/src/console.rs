@@ -5,7 +5,10 @@
 //! policy remain in the consuming OS.
 
 use alloc::{boxed::Box, sync::Arc};
-use core::fmt::{self, Write};
+use core::{
+    fmt::{self, Write},
+    time::Duration,
+};
 
 use ax_lazyinit::OnceLock;
 use ax_sync::Mutex;
@@ -330,6 +333,14 @@ impl TaskConsoleInput {
         match &self.inner {
             TaskConsoleInputInner::Runtime(inner) => inner.poll_source(),
             TaskConsoleInputInner::RawHal(inner) => inner.poll_source(),
+        }
+    }
+
+    /// Periodic task-context polling needed to recover input when a raw UART interrupt is lost.
+    pub fn recovery_poll_interval(&self) -> Option<Duration> {
+        match &self.inner {
+            TaskConsoleInputInner::Runtime(_) => None,
+            TaskConsoleInputInner::RawHal(_) => Some(RawConsoleInput::recovery_poll_interval()),
         }
     }
 

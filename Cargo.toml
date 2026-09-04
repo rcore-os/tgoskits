@@ -129,6 +129,7 @@ arceos-test-suit = { version = "0.3", path = "test-suit/arceos/rust" }
 arm_vcpu = { version = "0.5", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.6", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.8", path = "memory/ax-alloc", default-features = false }
+ax-acpi = { version = "0.1", path = "drivers/firmware/ax-acpi", default-features = false }
 ax-api = { version = "0.7", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4", path = "drivers/rtc/arm_pl031" }
 cpu-local = { version = "0.2", path = "components/cpu-local" }

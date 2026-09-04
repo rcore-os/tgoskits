@@ -147,6 +147,23 @@ const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePro
     expected_tests: &[],
 }];
 
+const AX_RUNTIME_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: None,
+        expected_tests: &[],
+    },
+    PackageFeatureProfile {
+        name: "host-test+smp-raw-console-lock",
+        no_default_features: false,
+        features: &["host-test", "smp"],
+        name_filter: Some("raw_irq_status_probe_holds_the_uart_producer_lock"),
+        expected_tests: &["raw_console::tests::raw_irq_status_probe_holds_the_uart_producer_lock"],
+    },
+];
+
 const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "alloc",
     no_default_features: false,
@@ -554,13 +571,13 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-input"
         | "ax-ipi"
         | "ax-log"
-        | "ax-runtime"
         | "ax-api"
         | "rdrive"
         | "axpoll"
         | "ax-net"
         | "dma-api"
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
+        "ax-runtime" => Some(AX_RUNTIME_FEATURE_PROFILES),
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),

@@ -4,9 +4,10 @@ use core::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::{Poll, Waker},
+    time::Duration,
 };
 
-use ax_task::future::block_on;
+use ax_task::future::{block_on, timeout};
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
@@ -59,6 +60,11 @@ pub trait TtyRead: Send + Sync + 'static {
     /// Once this returns, a later [`Self::read`] must not expose bytes that
     /// were observable by this reader before the discard began.
     fn discard_input(&mut self) -> StarryResult<()>;
+
+    /// Optional recovery cadence for devices whose interrupt notification can be lost.
+    fn recovery_poll_interval(&self) -> Option<Duration> {
+        None
+    }
 
     /// Whether the writer peer has been fully closed (last fd dropped).
     /// Default: never closed. Lets a Passive reader report hangup
@@ -474,23 +480,32 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         output_source: Option<Arc<PollSet>>,
         input_ready: Arc<PollSet>,
         worker_source: Arc<PollSet>,
+        recovery_poll_interval: Option<Duration>,
     ) {
         ax_task::spawn_with_name(
             move || {
-                block_on(poll_fn(|cx| {
-                    Self::drive_input(&reader, input_ready.as_ref());
-                    // The reader task registers from ordinary task context.
-                    unsafe { input_source.register(cx.waker(), IoEvents::IN) };
-                    if let Some(output_source) = output_source.as_ref() {
-                        unsafe { output_source.register(cx.waker(), IoEvents::OUT) };
-                    }
-                    unsafe { worker_source.register(cx.waker(), IoEvents::OUT) };
+                block_on(async move {
+                    loop {
+                        let _ = timeout(
+                            recovery_poll_interval,
+                            poll_fn(|cx| {
+                                Self::drive_input(&reader, input_ready.as_ref());
+                                // The reader task registers from ordinary task context.
+                                unsafe { input_source.register(cx.waker(), IoEvents::IN) };
+                                if let Some(output_source) = output_source.as_ref() {
+                                    unsafe { output_source.register(cx.waker(), IoEvents::OUT) };
+                                }
+                                unsafe { worker_source.register(cx.waker(), IoEvents::OUT) };
 
-                    // Close the check/register race. block_on's stable AxWaker
-                    // remembers a concurrent source wake before it parks.
-                    Self::drive_input(&reader, input_ready.as_ref());
-                    Poll::<()>::Pending
-                }))
+                                // Close the check/register race. block_on's stable AxWaker
+                                // remembers a concurrent source wake before it parks.
+                                Self::drive_input(&reader, input_ready.as_ref());
+                                Poll::<()>::Pending
+                            }),
+                        )
+                        .await;
+                    }
+                })
             },
             "tty-reader".into(),
         );
@@ -502,6 +517,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let eof_ready = Arc::new(AtomicBool::new(false));
         let input_ready = Arc::new(PollSet::new());
         let worker_source = Arc::new(PollSet::new());
+        let recovery_poll_interval = config.reader.recovery_poll_interval();
         let echo = EchoQueue::new(config.writer, worker_source.clone());
         let reader = InputReader {
             terminal: terminal.clone(),
@@ -527,6 +543,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     output,
                     input_ready.clone(),
                     worker_source.clone(),
+                    recovery_poll_interval,
                 );
                 Processor::InterruptDriven(reader)
             }

@@ -36,6 +36,17 @@ impl PlatformDevice {
         });
     }
 
+    /// Atomically publishes two distinct capabilities for this platform device.
+    ///
+    /// Both capability types are checked before either becomes visible.
+    pub fn register_pair<A: DriverGeneric, B: DriverGeneric>(&self, first: A, second: B) {
+        crate::edit(|manager| {
+            manager
+                .dev_container
+                .insert_pair(self.descriptor.clone(), first, second);
+        });
+    }
+
     /// Publishes a capability on an available direct FDT child.
     ///
     /// The child handle must have been prepared from the [`crate::register::FdtInfo`]

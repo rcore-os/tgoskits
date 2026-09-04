@@ -39,7 +39,7 @@ pub extern "C" fn kernel_entry(
 
 pub(crate) fn mmu_entry() -> ! {
     super::trap::setup();
-    super::trap::init_local();
+    super::trap::init_local(true);
     crate::prime_entry()
 }
 

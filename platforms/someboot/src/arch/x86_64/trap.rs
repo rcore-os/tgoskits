@@ -69,8 +69,10 @@ pub fn trap_addr() -> usize {
     ptr.base as usize
 }
 
-pub fn init_local() {
-    mask_legacy_pic();
+pub fn init_local(is_primary: bool) {
+    if is_primary {
+        mask_legacy_pic();
+    }
     enable_nxe();
     enable_xsave_features();
     init_tsc_freq();
