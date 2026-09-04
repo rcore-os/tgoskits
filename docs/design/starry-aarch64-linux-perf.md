@@ -10,17 +10,19 @@
 
 `sys_perf_event_open()` 先执行 flags 与 `perf_event_attr` 版本拷贝，再解析目标和 group。下表记录本分支必须保持的用户可见语义，错误码由 `perf::uapi` 的显式校验转换，不依赖 `kbpf` 当前结构体大小。
 
+对照源码是本地 `~/linux-src` 的精确标签 v7.1（`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`）：[`perf_copy_attr()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L13544-L13611)、[`perf_event_open()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L13844-L14172)、[`_perf_ioctl()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L6598-L6704)、[`group_sched_in()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L2859-L2897) 和 [`perf_output_read_group()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L8128-L8175) 分别约束 attr、target、ioctl、组调度与采样读布局；ARM event 映射以 [`arm_pmuv3.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmuv3.c#L1195-L1273) 为准。
+
 | 能力 | Linux v7.1 语义 | StarryOS 实现锚点 |
 | --- | --- | --- |
 | `attr.size` | 0 视为 VER0；短结构零填充；超长未知尾部必须全零；非法大小 `E2BIG` 并回写内核大小 | `perf::uapi::copy_perf_event_attr()` |
 | flags | 支持 `FD_NO_GROUP`、`FD_OUTPUT`、`FD_CLOEXEC`；`PID_CGROUP` 的合法组合返回 `EOPNOTSUPP`；未知位 `EINVAL` | `PerfOpenFlags`、`sys_perf_event_open()` |
 | task target | `pid >= 0,cpu == -1` 跟随线程；`cpu >= 0` 时限定运行 CPU | `PerfTarget::Task` |
 | CPU target | `pid == -1,cpu >= 0` 为 system-wide；`-1/-1` 返回 `EINVAL` | `PerfTarget::Cpu` |
-| group | leader 统一控制，读快照 leader-first；跨上下文 link 返回 `EINVAL` | `PerfGroup`、`PerfReadSnapshot` |
-| output | `FD_OUTPUT` 与 `SET_OUTPUT` 只允许相同 perf context；`SET_OUTPUT(-1)` 解除重定向 | `PerfOutputRoute` |
+| group | 默认 ioctl 只控制指定 event，`PERF_IOC_FLAG_GROUP` 才控制整组；读快照 leader-first；跨上下文 link 返回 `EINVAL` | `PerfEvent::{members,group_leader,read_group}`、`PerTaskCounter::link_group()`、`SystemCounter::link_group()` |
+| output | `FD_OUTPUT` 与 `SET_OUTPUT` 只允许相同 perf context；`SET_OUTPUT(-1)` 解除重定向 | `PerfEvent::{redirect_to,set_output}`、`PerfEventOps::{redirect_output,detach_output}` |
 | read | 支持 value、ID、`time_enabled`、`time_running`、LOST 与 GROUP | `PerfReadValues` |
-| sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain | `SampleLayout`、`PerfSampleReadSnapshot` |
-| mmap page | 只在事件实际运行于硬件槽时公开非零 `index` 与用户读能力 | `RdpmcPublisher` |
+| sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain | `sampling::{SampleSlot,SampleReadEntry}`、`perf::unwind` |
+| mmap page | 只在事件实际运行于硬件槽时公开非零 `index` 与用户读能力 | `SystemCounter::write_rdpmc_snapshot()`、`PerTaskCounter::write_rdpmc_snapshot()` |
 
 硬件事件若事件编码合法但目标 CPU 的 `PMCEID` 未实现，返回 Linux ARM PMUv3 backend 对应的 unsupported 错误；格式错误返回 `EINVAL`，错误 fd 返回 `EBADF`，目标线程消失返回 `ESRCH`。不能把未知字段、未知事件或输出关系静默忽略。
 
@@ -44,22 +46,22 @@ PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只�
 
 ### 2.1 每核状态
 
-`PmuCpuState` 由 CPU-local 存储承载，每核记录 `MIDR_EL1`、counter 数量与宽度、`PMCEID0/1_EL0`、cluster、槽 allocator、运行队列、复用游标和 PMU IRQ 注册。sysfs 从同一探测结果发布 event source 与 CPU mask，不能用 CPU 编号奇偶或硬编码 type 推断 cluster。
+`percpu::CORE_PMU: CorePmu` 由 CPU-local 存储承载，每核缓存 `PmuInfo`、槽位 bitmap 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`CPU_INFOS` 只提供跨核只读探测缓存，硬件槽仍只能由 owner CPU 分配。sysfs 从同一探测结果发布 event source 与 CPU mask，不能用 CPU 编号奇偶或硬编码 type 推断 cluster。
 
 ```mermaid
 flowchart LR
-    FD["PerfEvent fd\n逻辑配置与累计值"] --> CTX["PerfContext\ntask 或 CPU"]
-    CTX --> RUN["PmuRunLease\nCPU + slot + generation"]
-    RUN --> CPU["PmuCpuState\n本核寄存器和队列"]
-    CPU --> IRQ["PMU PPI\n本核 registry"]
-    IRQ --> OUT["PerfRingOutput\n共享 cacheable ring"]
+    FD["PerfEvent fd\n逻辑配置与控制"] --> CTX["PerfContextKey\ntask 或 CPU"]
+    CTX --> EVENT["PerTaskCounter / SystemCounter\n累计值与 owner CPU"]
+    EVENT --> CPU["CorePmu\nPmuInfo + slot bitmap + cursor"]
+    CPU --> IRQ["SampleSlot registry\n本核 PMU PPI"]
+    IRQ --> OUT["RingEndpoint\n共享 cacheable ring"]
 ```
 
-`PmuRunLease` 携带 generation，switch-out、disable、close 和远端 worker 只能注销完全相同的一代。这样关闭 fd、线程退出和 CPU 迁移即使交错，也不会清除新 owner 已复用的槽。
+task event 用 `context_sequence` 的奇偶代次让远端 reset 只在稳定的 sched-in/out 区间提交；`last_cpu`、`slot`、`running` 与 owner-CPU 同步调用共同约束当前硬件代。disable、close 和线程退出先在 owner CPU 撤下 counter 与 `SampleSlot`，再释放保存 ring 生命周期的锚点，避免旧事件清除已经复用的槽或让 IRQ 看到失效指针。
 
 ### 2.2 调度与复用
 
-task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；硬件 group 只能整体装载或整体等待。与 Linux v7.1 一致，pinned event 在运行时无法占槽时进入错误态并使 `read()` 返回 EOF，而不是在 `perf_event_open()` 时提前返回 `EBUSY`。
+task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；硬件 group 只能整体装载或整体等待。task pinned event 在调度时无法放置会进入 ERROR 并让 `read()` 返回 EOF；open-enabled system pinned event 会在 open 的同步放置阶段返回 `EBUSY`，之后启用失败也通过 `EBUSY` 报告。直接 system-wide sampling 需要在 open 时保留物理槽，因此槽耗尽也会立即返回 `EBUSY`。
 
 ```mermaid
 stateDiagram-v2
@@ -78,7 +80,7 @@ stateDiagram-v2
 
 ### 2.3 group 与继承
 
-`PerfGroup` 由 leader 强拥有，成员保存 leader 的强引用，leader 的成员表保存 `Weak<PerfEvent>`，避免引用环。link 时验证 task identity 或 CPU context 完全相同；控制传播先在无抢占锁下收集成员，再释放该锁后执行可能睡眠的事件操作。
+文件层 `PerfEvent::{members,group_leader}` 和硬件层 `PerTaskCounter` / `SystemCounter` 的双向 group link 都使用 `Weak`，避免关闭顺序形成引用环；fd 表、task 的 `perf_counters` 和 event backend 提供实际强所有权。link 时验证 task identity 或 CPU context 完全相同；控制传播先收集仍存活的成员，再逐一操作。与 Linux v7.1 一致，普通 ioctl 只作用于指定 event，只有 `PERF_IOC_FLAG_GROUP` 才从 leader 传播到 siblings；member 自己的 `attr.disabled` 状态不会在 link 时被改写。
 
 software inherit 使用“每线程 slice + 共享 aggregate”结构。child 的调度起点、last CPU 和 enable-on-exec 独立，累计值通过 `Arc<SwAggregate>` 汇入根事件；根 fd 关闭后，仍运行的 descendants 由自身 `Arc` 保持 aggregate 生命周期，不能引用已释放 event。
 
@@ -90,17 +92,17 @@ software inherit 使用“每线程 slice + 共享 aggregate”结构。child �
 
 AArch64 kernel IRQ 和 user IRQ 入口按值构造 `InterruptedContext { pc, sp, fp, privilege }`。用户 SP 必须来自进入汇编保存的 `UserContext.sp`，不能读取 Rust dispatch 时已恢复为线程头指针的 `SP_EL0`。per-CPU snapshot 仅在一次 `dispatch_irq()` 动态作用域内可见，RAII guard 在返回和 unwind 路径清除旧值。
 
-`axbacktrace::walk_fp_with_reader()` 接受注入 reader，内核栈使用直接 reader，用户栈使用 Starry no-fault 地址空间 reader。walker 检查 8 字节对齐、地址单调递增、用户范围、checked arithmetic、合理 frame gap 与最大深度，且不在遍历过程中分配。
+`perf::unwind::{kernel_callchain,user_callchain}` 调用 `axbacktrace::walk_fp()` 并注入 reader：内核栈使用 `nofault::read_kernel_word()`，用户栈使用 `nofault::read_user_word()`。walker 检查 8 字节对齐、地址单调递增、地址范围、checked arithmetic、合理 frame gap 与输出容量，且不在遍历过程中分配。
 
 ### 3.2 ring 与 LOST
 
-`PerfRingOutput` 同时拥有 cacheable `GlobalPage`、固定 mapping geometry 和 IRQ-safe producer gate。VMA 或 redirect 对 output 持强引用；event 自有 route 可以持弱引用，但 active sampling lease 必须持强引用。所有 PMU、sideband 与 redirect writer 经过同一个串行化入口。
+`sampling::RingEndpoint` 同时拥有 cacheable `GlobalPage`、固定 mapping geometry 和 `IrqMutex` producer gate。VMA anchor 与 redirect source 对 endpoint 持 `Arc`；活动 `SampleSlot` 的裸 endpoint 指针只在 event 持有的强引用存续期内注册。所有 PMU、sideband 与 redirect writer 经过同一个串行化入口。
 
 ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下一次能够写入时先提交 `PERF_RECORD_LOST`，成功后才清零 pending 数，再尝试当前 record；任一步失败都保留累计值。该过程不等待消费者，因此满环测试能在有限时间内结束。
 
 ### 3.3 读取快照
 
-`PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `PerfSampleReadSnapshot`。快照按 leader-first 保存稳定 read handle 和 event ID，IRQ 只做原子读取与定长编码，不升级任意可能触发析构的弱引用，也不遍历可变 group 列表。
+`PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `[SampleReadEntry; MAX_SAMPLE_READ_EVENTS]` 并存入 `SampleSlot`。数组按 leader-first 保存稳定 callback context 和 event ID，IRQ 只做 owner-local PMU/原子读取与定长编码，不遍历可变 group 列表，也不进行分配。group member 保留自己的 `attr.disabled` 状态；仅 leader disabled、member enabled 的常见 perf 模式会在 leader 启用时整体装载。
 
 ## 4. 事件语义
 
@@ -140,7 +142,7 @@ cargo xtask starry test qemu --arch aarch64 -c qemu/system
 cargo xtask starry test qemu --arch x86_64 -c qemu/system
 cargo xtask starry test qemu --arch riscv64 -c qemu/system
 cargo xtask starry test qemu --arch loongarch64 -c qemu/system
-cargo xtask starry app qemu -t linux-perf/qemu --arch aarch64
+cargo xtask starry app qemu -t linux-perf --arch aarch64
 ```
 
 system cases 覆盖 target 矩阵、SMP 迁移、超槽复用、group 生命周期、ring wrap/redirect、有限时长 LOST、四层用户 FP callchain、software inherit、enable-on-exec、HW_CACHE 支持矩阵以及 attr/flags 错误顺序。upstream perf smoke 只依赖 cycles 和 software events，不用默认 instructions 作为成功条件。
@@ -150,12 +152,10 @@ system cases 覆盖 target 矩阵、SMP 迁移、超槽复用、group 生命周�
 板卡 app 使用 8 核 Starry build，不复用 `max_cpu_num = 1` 的通用 board test wrapper。工具与 workload 通过 `session_files` 临时上传，不写入 Linux 或 Starry 持久根文件系统。
 
 ```bash
-cargo xtask starry app board -t linux-perf/board \
-    --board-config board-orangepi-5-plus.toml \
-    -b OrangePi-5-Plus
+cargo xtask starry app board -t linux-perf -b OrangePi-5-Plus
 ```
 
-workload 通过 `/proc/cpuinfo` 与 MIDR 确认 CPU0 为 A55、CPU4/6 为 A76，并分别固定 affinity。板卡验收真实 counter 数量、动态 PMU sysfs/cpumask、cycles/instructions/cache/branch 递增、overflow sampling、migration、multiplex、callchain 与 `record -a`；不设置跨 cluster 性能比阈值。
+验收脚本通过 `/proc/cpuinfo` 与 MIDR 检查 CPU0 的 A55 event-source mask，并要求 A76 mask 至少包含 CPU4 或 CPU6；实际 workload 固定在 CPU0 和 CPU4，迁移用例验证 CPU0 → CPU4。板卡验收真实 counter 数量、动态 PMU sysfs/cpumask、cycles/instructions/cache/branch 递增、overflow sampling、migration、multiplex、callchain 与 `record -a`；不设置跨 cluster 性能比阈值。
 
 ## 6. 非目标与交付
 
