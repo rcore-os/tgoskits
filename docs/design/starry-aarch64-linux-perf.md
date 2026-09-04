@@ -59,7 +59,7 @@ flowchart LR
 
 ### 2.2 调度与复用
 
-task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；pinned event 无槽返回 `EBUSY`，硬件 group 只能整体装载或整体等待。
+task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；硬件 group 只能整体装载或整体等待。与 Linux v7.1 一致，pinned event 在运行时无法占槽时进入错误态并使 `read()` 返回 EOF，而不是在 `perf_event_open()` 时提前返回 `EBUSY`。
 
 ```mermaid
 stateDiagram-v2

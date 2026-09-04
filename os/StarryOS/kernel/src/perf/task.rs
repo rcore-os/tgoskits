@@ -567,6 +567,26 @@ impl PerTaskCounter {
         self.ring_vaddr.store(ring_vaddr, Ordering::Release);
     }
 
+    /// Detaches `PERF_EVENT_IOC_SET_OUTPUT` and restores the event's own ring.
+    pub fn detach_redirect_ring(&self) {
+        *self.redirect_anchor.lock() = None;
+        let anchors = self.anchors.lock();
+        if let Some(anchors) = anchors.as_ref() {
+            self.notify_ptr.store(
+                Arc::as_ptr(&anchors.notify) as *const () as usize,
+                Ordering::Release,
+            );
+            self.ring_vaddr.store(
+                anchors.ring_pages.start_vaddr().as_usize(),
+                Ordering::Release,
+            );
+        } else {
+            self.notify_ptr.store(0, Ordering::Release);
+            self.ring_len.store(0, Ordering::Release);
+            self.ring_vaddr.store(0, Ordering::Release);
+        }
+    }
+
     /// Readiness for `poll(perf_fd)`: `true` when the ring has unread bytes.
     ///
     /// Reads `data_head`/`data_tail` from the header page; used by the perf fd's

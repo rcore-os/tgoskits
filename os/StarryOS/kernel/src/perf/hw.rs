@@ -765,6 +765,17 @@ impl PerfEventOps for HwPerfEvent {
         Ok(())
     }
 
+    fn detach_output(&mut self) -> StarryResult<()> {
+        if let Some(ptc) = &self.per_task {
+            ptc.detach_redirect_ring();
+            return Ok(());
+        }
+        if let Some(sampling) = &mut self.sampling {
+            sampling.redirect = None;
+        }
+        Ok(())
+    }
+
     fn device_mmap(&mut self, len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         // Per-task sampling owns a ring on `PerTaskCounter`; per-task counting
         // exposes the same one-page rdpmc metadata ABI as system-wide counting.
