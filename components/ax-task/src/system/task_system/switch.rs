@@ -92,6 +92,7 @@ impl TaskSystem {
     }
 
     /// Performs the common Linux `put_prev_task()` path with rq as sole owner.
+    #[inline(always)]
     pub(super) fn schedule_out_owner_rq_owned(
         &self,
         transaction: &mut OwnerRqTxn<'_>,
