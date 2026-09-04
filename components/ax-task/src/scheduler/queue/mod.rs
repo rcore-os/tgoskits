@@ -18,14 +18,14 @@ pub(crate) use class::{SchedulerClass, default_sync_wakeup_preempts, wakeup_pree
 use deadline::{DeadlineQueueKey, DeadlineRunQueue};
 use realtime::{RealtimeQueueKey, RealtimeRunQueue};
 pub(crate) use task::{
-    LinkedPickedThread, PickTaskResult, PickedThread, QueuedThread, QueuedThreadSnapshot,
+    LinkedRqTaskRef, PickTaskResult, PickedThread, QueuedThread, QueuedThreadSnapshot,
     RqTaskMetadata, RunQueueNodeStorage,
 };
 
 use super::fair_queue::{FairPick, FairRunQueue};
 use crate::{
     CurrentDispatch, CurrentRemotePublication, DispatchCharge, FairEntity, SchedulePolicy,
-    SchedulingClass, SchedulingEntity, TaskError, ThreadCore, ThreadId,
+    RqTaskTime, SchedulingClass, SchedulingEntity, TaskError, ThreadCore, ThreadId,
 };
 
 /// Why a runnable thread is being inserted into its owner run queue.
@@ -200,10 +200,13 @@ impl RunQueue {
         }
     }
 
-    /// Replaces a linked `rq->curr` after class selection keeps both task
-    /// entities in their rq-owned nodes.
+    /// Replaces a linked `rq->curr` by advancing only its canonical rq pointer.
     #[inline(always)]
-    pub(crate) fn replace_linked_current(&mut self, current: CurrentDispatch) {
+    pub(crate) fn replace_linked_current(
+        &mut self,
+        linked: LinkedRqTaskRef,
+        now: RqTaskTime,
+    ) {
         assert!(
             self.detached_current_publication.is_none(),
             "linked current replacement cannot follow a detached current"
@@ -212,6 +215,30 @@ impl RunQueue {
             .current
             .as_mut()
             .expect("linked current replacement requires rq->curr");
+        assert!(
+            previous.is_linked(),
+            "only a linked class can retain rq->curr through selection"
+        );
+        let previous_publication = previous.remote_publication();
+        let runtime_ns = previous.take_runtime_interval_charge();
+        previous.runtime_core().commit_runtime_interval(runtime_ns);
+        let current_publication = linked.thread().remote_publication;
+        previous.replace_linked(linked, now);
+        if previous_publication != current_publication {
+            self.publication_dirty = true;
+        }
+    }
+
+    /// Replaces linked current with an rq-detached class such as Fair or idle.
+    pub(crate) fn replace_current(&mut self, current: CurrentDispatch) {
+        assert!(
+            self.detached_current_publication.is_none(),
+            "current replacement cannot follow a detached current"
+        );
+        let previous = self
+            .current
+            .as_mut()
+            .expect("current replacement requires rq->curr");
         assert!(
             previous.is_linked(),
             "only a linked class can retain rq->curr through selection"

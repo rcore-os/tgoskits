@@ -42,7 +42,7 @@ impl CurrentDispatch {
         now_ns: u64,
         reclaimed_ns: u64,
     ) -> DispatchCharge {
-        let Some(CurrentClassState::Linked { .. }) = self.class.schedule else {
+        let Some(CurrentClassState::Linked) = self.class.schedule else {
             crate::runtime::task_runtime::fatal_invariant(
                 0x4355_0002,
                 self.thread().as_u64() as usize,

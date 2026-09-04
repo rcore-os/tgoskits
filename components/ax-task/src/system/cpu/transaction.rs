@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    BalanceScan, EnqueueReason, FairEntity, LinkedPickedThread, PickTaskResult, PickedThread,
+    BalanceScan, EnqueueReason, FairEntity, LinkedRqTaskRef, PickTaskResult, PickedThread,
     QueuedThreadSnapshot, RtEligibility, SchedulingUrgency,
     system::{
         task_system::{SwitchEndpoint, TaskSystem},
@@ -439,16 +439,6 @@ impl<'a> OwnerRqTxn<'a> {
             });
     }
 
-    pub(crate) fn refresh_current_scheduler_metadata(
-        &mut self,
-        thread: ThreadId,
-        metadata: RqTaskMetadata,
-        rt_quota_exempt: bool,
-    ) {
-        self.run_queue_mut()
-            .refresh_current_scheduler_metadata(thread, metadata, rt_quota_exempt);
-    }
-
     /// Linux-style rq mutation: placement was validated under `p->pi_lock`
     /// before the owner rq transaction began, so a missing entity here is an
     /// ownership violation rather than a recoverable scheduling result.
@@ -675,7 +665,7 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn pick_realtime_task(&mut self) -> Option<LinkedPickedThread> {
+    pub(crate) fn pick_realtime_task(&mut self) -> Option<LinkedRqTaskRef> {
         self.scheduler_queue_mut().pick_realtime_task()
     }
 
@@ -795,9 +785,23 @@ impl<'a> OwnerRqTxn<'a> {
     pub(crate) fn set_task_current(&mut self, dispatch: CurrentDispatch) {
         debug_assert!(!dispatch.is_dedicated_idle());
         if self.current().is_some() {
-            self.run_queue_mut().replace_linked_current(dispatch);
+            self.run_queue_mut().replace_current(dispatch);
         } else {
             self.run_queue_mut().install_current(dispatch);
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_linked_task_current(
+        &mut self,
+        linked: LinkedRqTaskRef,
+        now: RqTaskTime,
+    ) {
+        if self.current().is_some() {
+            self.run_queue_mut().replace_linked_current(linked, now);
+        } else {
+            self.run_queue_mut()
+                .install_current(CurrentDispatch::linked(linked, now));
         }
     }
 
@@ -805,7 +809,7 @@ impl<'a> OwnerRqTxn<'a> {
         debug_assert_eq!(self.run_queue().idle(), Some(dispatch.thread()));
         let dispatch = dispatch.with_role(DispatchRole::DedicatedIdle);
         if self.current().is_some() {
-            self.run_queue_mut().replace_linked_current(dispatch);
+            self.run_queue_mut().replace_current(dispatch);
         } else {
             self.run_queue_mut().install_current(dispatch);
         }

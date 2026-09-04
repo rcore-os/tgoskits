@@ -176,22 +176,27 @@ impl QueuedThreadSnapshot {
     }
 }
 
-/// Temporary reference to an rq-linked RT/Deadline task selected under the
-/// owner rq lock.
+/// Stable reference to an rq-owned RT/Deadline task node.
 ///
-/// The scheduling entity remains in its stable boxed RT/DL node while class
-/// selection installs it as current. This token must not outlive that owner-rq
-/// transaction.
+/// Class selection and `rq->curr` share this reference instead of copying the
+/// task metadata. The boxed class node keeps its address stable until the owner
+/// rq converts current back to owned state immediately before unlinking it.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct LinkedPickedThread(NonNull<QueuedThread>);
+pub(crate) struct LinkedRqTaskRef(NonNull<QueuedThread>);
 
-impl From<&QueuedThread> for LinkedPickedThread {
+// SAFETY: a linked reference is stored only in owner-rq state. The owner rq
+// lock serializes access, and every unlink path first removes the reference
+// from current while the boxed class node is still alive.
+unsafe impl Send for LinkedRqTaskRef {}
+unsafe impl Sync for LinkedRqTaskRef {}
+
+impl From<&QueuedThread> for LinkedRqTaskRef {
     fn from(thread: &QueuedThread) -> Self {
         Self(NonNull::from(thread))
     }
 }
 
-impl LinkedPickedThread {
+impl LinkedRqTaskRef {
     pub(crate) fn thread(&self) -> &QueuedThread {
         // SAFETY: construction and every unlink transition preserve the
         // rq-linked lifetime invariant documented on this type.
@@ -203,7 +208,7 @@ impl LinkedPickedThread {
 #[derive(Debug)]
 pub(crate) enum PickedThread {
     Owned(QueuedThread),
-    Linked(LinkedPickedThread),
+    Linked(LinkedRqTaskRef),
 }
 
 /// One scheduler-class selection before Linux delayed dequeue is resolved.

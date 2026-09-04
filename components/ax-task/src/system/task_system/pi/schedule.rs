@@ -107,9 +107,8 @@ impl TaskSystem {
                 Arc::clone(core),
                 rt_quota_exempt,
                 sched.affinity.affinity.is_migration_capable(),
-                metadata.clone(),
+                metadata,
             );
-            transaction.refresh_current_scheduler_metadata(core.id(), metadata, rt_quota_exempt);
             core.publish_effective_schedule(policy, &entity);
             return PiRqFollowup::RemoteReschedule;
         }

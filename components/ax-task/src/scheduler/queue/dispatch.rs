@@ -116,7 +116,7 @@ impl RunQueue {
     /// Selects the RT class head after the caller has proved that no higher
     /// scheduler class is runnable and the RT runqueue is not throttled.
     #[inline(always)]
-    pub(crate) fn pick_realtime_task(&self) -> Option<LinkedPickedThread> {
+    pub(crate) fn pick_realtime_task(&self) -> Option<LinkedRqTaskRef> {
         self.rt.select()
     }
 

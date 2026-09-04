@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{fmt, ptr::NonNull};
 
-use super::{EnqueueReason, LinkedPickedThread, QueuedThread, QueuedThreadSnapshot};
+use super::{EnqueueReason, LinkedRqTaskRef, QueuedThread, QueuedThreadSnapshot};
 use crate::{
     SchedulePolicy, SchedulingEntity, ThreadId,
     scheduler::rt_priority::{
@@ -660,14 +660,14 @@ impl RealtimeRunQueue {
             })
     }
 
-    pub(super) fn select(&self) -> Option<LinkedPickedThread> {
+    pub(super) fn select(&self) -> Option<LinkedRqTaskRef> {
         let priority = self.highest_rt_priority()?;
         let index = rt_priority_index(priority);
         self.active[index]
             .head
             .as_deref()
             .map(RealtimeNode::thread)
-            .map(LinkedPickedThread::from)
+            .map(LinkedRqTaskRef::from)
     }
 
     pub(super) fn put_prev_current(&mut self, key: RealtimeQueueKey) -> Option<SchedulingEntity> {

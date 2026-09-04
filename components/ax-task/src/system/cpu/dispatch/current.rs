@@ -3,7 +3,7 @@
 use core::ptr::NonNull;
 
 use super::super::*;
-use crate::system::task_system::SwitchEndpoint;
+use crate::{LinkedRqTaskRef, system::task_system::SwitchEndpoint};
 
 /// Owner-CPU copy of the running thread's mutable dispatch state.
 ///
@@ -21,10 +21,11 @@ pub(crate) struct CurrentDispatch {
 /// Stable task identity and runtime resources pinned by `rq->curr`.
 #[derive(Debug)]
 pub(super) struct CurrentTaskIdentity {
-    pub(super) thread: ThreadId,
+    thread: ThreadId,
     runtime_core: SchedulerThreadRef,
     runtime_owner: Option<Arc<ThreadCore>>,
-    metadata: RqTaskMetadata,
+    owned_metadata: Option<RqTaskMetadata>,
+    linked: Option<LinkedRqTaskRef>,
 }
 
 /// Stable Linux-style `rq->curr` pointer whose lifetime is owned separately.
@@ -40,10 +41,6 @@ unsafe impl Sync for SchedulerThreadRef {}
 impl SchedulerThreadRef {
     fn from_ref(core: &ThreadCore) -> Self {
         Self(NonNull::from(core))
-    }
-
-    fn from_arc(core: &Arc<ThreadCore>) -> Self {
-        Self::from_ref(core)
     }
 
     /// Captures a non-owning reference pinned by scheduler state.
@@ -141,9 +138,8 @@ impl CurrentRemotePublication {
 pub(crate) enum CurrentClassState {
     /// Fair/stop current owns the entity removed from its class structure.
     Owned(ActiveSchedulingState),
-    /// RT/Deadline current remains owned by its active rq node. Dispatch keeps
-    /// only class metadata; the entity itself never leaves the rq node.
-    Linked { policy: SchedulePolicy },
+    /// RT/Deadline current remains owned by its active rq node.
+    Linked,
 }
 
 /// Runqueue role of the current dispatch.
@@ -168,25 +164,31 @@ impl CurrentDispatch {
     pub(crate) fn schedule_policy(&self) -> SchedulePolicy {
         match self.schedule() {
             CurrentClassState::Owned(active) => active.policy(),
-            CurrentClassState::Linked { policy } => *policy,
+            CurrentClassState::Linked => self
+                .task
+                .linked
+                .expect("linked class state must retain its rq node")
+                .thread()
+                .active
+                .policy(),
         }
     }
 
     pub(crate) fn owned_scheduling_entity_ref(&self) -> Option<&SchedulingEntity> {
         match self.schedule() {
             CurrentClassState::Owned(active) => Some(active.entity()),
-            CurrentClassState::Linked { .. } => None,
+            CurrentClassState::Linked => None,
         }
     }
 
     pub(crate) const fn is_linked(&self) -> bool {
-        matches!(self.class.schedule, Some(CurrentClassState::Linked { .. }))
+        matches!(self.class.schedule, Some(CurrentClassState::Linked))
     }
 
     pub(crate) fn owned_base_scheduling_entity_ref(&self) -> Option<&SchedulingEntity> {
         match self.schedule() {
             CurrentClassState::Owned(active) => Some(active.base_entity()),
-            CurrentClassState::Linked { .. } => None,
+            CurrentClassState::Linked => None,
         }
     }
 
@@ -198,7 +200,7 @@ impl CurrentDispatch {
             .expect("rq transaction must reinstall current class state")
         {
             CurrentClassState::Owned(active) => active,
-            CurrentClassState::Linked { .. } => {
+            CurrentClassState::Linked => {
                 panic!("linked current entity is owned by its rq class node")
             }
         }
@@ -211,7 +213,7 @@ impl CurrentDispatch {
             .expect("rq transaction must reinstall current class state")
         {
             CurrentClassState::Owned(active) => Some(active),
-            CurrentClassState::Linked { .. } => None,
+            CurrentClassState::Linked => None,
         }
     }
 
@@ -235,11 +237,11 @@ impl CurrentDispatch {
             .expect("rq transaction must reinstall current class state")
         {
             CurrentClassState::Owned(active) => Some(active),
-            CurrentClassState::Linked { .. } => None,
+            CurrentClassState::Linked => None,
         };
         let runtime_core = task
             .runtime_owner
-            .expect("owned current must retain its runtime core");
+            .expect("unlinked current must retain its runtime core");
         (runtime_core, active)
     }
 
@@ -262,12 +264,14 @@ impl CurrentDispatch {
             .expect("rq transaction must reinstall current class state")
         {
             CurrentClassState::Owned(active) => active,
-            CurrentClassState::Linked { .. } => return None,
+            CurrentClassState::Linked => return None,
         };
         let runtime_core = task
             .runtime_owner
             .expect("unlinked current must own its runtime core");
-        let metadata = task.metadata;
+        let metadata = task
+            .owned_metadata
+            .expect("unlinked current must own its task resources");
         let migration_capable = metadata.affinity.is_migration_capable();
         Some(QueuedThread::new(
             task.thread,
@@ -287,69 +291,88 @@ impl CurrentDispatch {
             .expect("rq transaction must own current class state")
         {
             CurrentClassState::Owned(active) => Some(active),
-            linked @ CurrentClassState::Linked { .. } => {
+            linked @ CurrentClassState::Linked => {
                 self.class.schedule = Some(linked);
                 None
             }
         }
     }
 
-    pub(crate) fn install_reclassified_schedule(
+    pub(crate) fn install_reclassified_owned(
         &mut self,
-        schedule: CurrentClassState,
-        runtime_owner: Option<Arc<ThreadCore>>,
+        active: ActiveSchedulingState,
+        runtime_core: Arc<ThreadCore>,
+        metadata: RqTaskMetadata,
+        rt_quota_exempt: bool,
     ) {
         if matches!(self.class.schedule, Some(CurrentClassState::Owned(_))) {
             panic!("owned current must transfer its entity before reclassification");
         }
-        if let Some(owner) = runtime_owner.as_ref() {
-            assert!(
-                core::ptr::eq(Arc::as_ptr(owner), self.task.runtime_core.0.as_ptr()),
-                "reclassification must preserve current runtime identity"
-            );
-        } else if !matches!(schedule, CurrentClassState::Linked { .. }) {
-            panic!("an unlinked current must retain its runtime core");
+        if self.thread() != runtime_core.id() {
+            panic!("reclassification must preserve current runtime identity");
         }
-        self.task.runtime_owner = runtime_owner;
-        self.class.schedule = Some(schedule);
-        self.refresh_remote_publication();
-    }
-
-    pub(crate) fn retain_runtime_core_before_unlink(&mut self, runtime_core: Arc<ThreadCore>) {
-        assert!(
-            core::ptr::eq(
-                Arc::as_ptr(&runtime_core),
-                self.task.runtime_core.0.as_ptr()
-            ),
-            "unlink must preserve current runtime identity"
-        );
-        if self.task.runtime_owner.replace(runtime_core).is_some() {
-            panic!("unlinked current must not replace an existing runtime owner");
-        }
-    }
-
-    /// Refreshes task-control metadata after an in-place class transition.
-    ///
-    /// The caller holds the task PI lock and owner rq lock. Keeping this copy
-    /// in the same transaction prevents timer IRQ accounting from observing a
-    /// new class entity with stale PI donor or Deadline rescue state.
-    pub(crate) fn refresh_scheduler_metadata(
-        &mut self,
-        metadata: RqTaskMetadata,
-        rt_quota_exempt: bool,
-    ) {
-        self.task.metadata = metadata;
+        self.task.runtime_core = SchedulerThreadRef::from_ref(&runtime_core);
+        self.task.runtime_owner = Some(runtime_core);
+        self.task.owned_metadata = Some(metadata);
+        self.task.linked = None;
+        self.class.schedule = Some(CurrentClassState::Owned(active));
         self.class.rt_quota_exempt = rt_quota_exempt;
         self.refresh_remote_publication();
     }
 
+    pub(crate) fn install_reclassified_linked(&mut self, linked: LinkedRqTaskRef) {
+        let thread = linked.thread();
+        if self.thread() != thread.id {
+            panic!("reclassification must preserve current runtime identity");
+        }
+        self.task.runtime_core = SchedulerThreadRef::from_ref(&thread.core);
+        self.task.runtime_owner = None;
+        self.task.owned_metadata = None;
+        self.task.linked = Some(linked);
+        self.class.schedule = Some(CurrentClassState::Linked);
+        self.class.rt_quota_exempt = thread.rt_quota_exempt;
+        self.remote_publication = thread.remote_publication;
+    }
+
+    /// Pins task resources before the canonical linked node is removed.
+    pub(crate) fn retain_task_before_unlink(
+        &mut self,
+        runtime_core: Arc<ThreadCore>,
+        metadata: RqTaskMetadata,
+    ) {
+        if self.thread() != runtime_core.id()
+            || self.task.linked.is_none()
+            || self.task.owned_metadata.is_some()
+        {
+            panic!("unlink must preserve one linked current identity");
+        }
+        if self.task.runtime_owner.replace(runtime_core).is_some() {
+            panic!("linked current must not replace an existing runtime owner");
+        }
+        self.task.owned_metadata = Some(metadata);
+        self.task.linked = None;
+    }
+
+    /// Refreshes task-control metadata after an in-place class transition.
     pub(crate) fn update_affinity(&mut self, affinity: Arc<CpuSet>) {
-        self.task.metadata.affinity = affinity;
+        let metadata = self
+            .task
+            .owned_metadata
+            .as_mut()
+            .expect("linked current affinity is owned by its rq node");
+        metadata.affinity = affinity;
         self.refresh_remote_publication();
     }
 
     pub(crate) fn metadata(&self) -> &RqTaskMetadata {
-        &self.task.metadata
+        if let Some(linked) = self.task.linked.as_ref() {
+            &linked.thread().metadata
+        } else {
+            self.task
+                .owned_metadata
+                .as_ref()
+                .expect("unlinked current must own its task metadata")
+        }
     }
 
     pub(crate) fn placement_demand(&self) -> u64 {
@@ -382,13 +405,13 @@ impl CurrentDispatch {
     ) -> Self {
         let now_ns = now.as_nanos();
         let remote_publication = CurrentRemotePublication::task(active.policy(), &metadata);
-        let runtime_core_ref = SchedulerThreadRef::from_arc(&runtime_core);
         Self {
             task: CurrentTaskIdentity {
                 thread: runtime_core.id(),
-                runtime_core: runtime_core_ref,
+                runtime_core: SchedulerThreadRef::from_ref(&runtime_core),
                 runtime_owner: Some(runtime_core),
-                metadata,
+                owned_metadata: Some(metadata),
+                linked: None,
             },
             class: CurrentClassDispatch {
                 schedule: Some(CurrentClassState::Owned(active)),
@@ -405,25 +428,19 @@ impl CurrentDispatch {
     }
 
     #[inline(always)]
-    pub(crate) fn linked(
-        thread: ThreadId,
-        runtime_core: &ThreadCore,
-        policy: SchedulePolicy,
-        metadata: RqTaskMetadata,
-        rt_quota_exempt: bool,
-        remote_publication: CurrentRemotePublication,
-        now: RqTaskTime,
-    ) -> Self {
+    pub(crate) fn linked(linked: LinkedRqTaskRef, now: RqTaskTime) -> Self {
+        let thread = linked.thread();
         Self {
             task: CurrentTaskIdentity {
-                thread,
-                runtime_core: SchedulerThreadRef::from_ref(runtime_core),
+                thread: thread.id,
+                runtime_core: SchedulerThreadRef::from_ref(&thread.core),
                 runtime_owner: None,
-                metadata,
+                owned_metadata: None,
+                linked: Some(linked),
             },
             class: CurrentClassDispatch {
-                schedule: Some(CurrentClassState::Linked { policy }),
-                rt_quota_exempt,
+                schedule: Some(CurrentClassState::Linked),
+                rt_quota_exempt: thread.rt_quota_exempt,
                 deadline_overrun: false,
                 role: DispatchRole::Task,
             },
@@ -431,24 +448,43 @@ impl CurrentDispatch {
                 accounted_until_ns: now.as_nanos(),
                 charged_runtime_ns: 0,
             },
-            remote_publication,
+            remote_publication: thread.remote_publication,
         }
+    }
+
+    /// Advances Linux-style `rq->curr` to another stable rq-linked node.
+    #[inline(always)]
+    pub(crate) fn replace_linked(&mut self, linked: LinkedRqTaskRef, now: RqTaskTime) {
+        let thread = linked.thread();
+        self.task.thread = thread.id;
+        self.task.runtime_core = SchedulerThreadRef::from_ref(&thread.core);
+        self.task.linked = Some(linked);
+        self.class.rt_quota_exempt = thread.rt_quota_exempt;
+        self.class.deadline_overrun = false;
+        self.accounting.accounted_until_ns = now.as_nanos();
+        self.accounting.charged_runtime_ns = 0;
+        self.remote_publication = thread.remote_publication;
     }
 
     pub(crate) fn switch_endpoint_with_core(&self, runtime_core: &ThreadCore) -> SwitchEndpoint {
         SwitchEndpoint::new(
-            self.task.thread,
-            self.task.metadata.runtime_binding,
+            self.thread(),
+            self.metadata().runtime_binding,
             runtime_core.extension_view(),
         )
     }
 
     pub(crate) fn address_space(&self) -> crate::runtime::AddressSpaceHandle {
-        self.task.metadata.runtime_binding.address_space()
+        self.metadata().runtime_binding.address_space()
     }
 
     pub(crate) fn update_runtime_binding(&mut self, binding: crate::runtime::ThreadRuntimeBinding) {
-        self.task.metadata.runtime_binding = binding;
+        let metadata = self
+            .task
+            .owned_metadata
+            .as_mut()
+            .expect("linked current runtime binding is owned by its rq node");
+        metadata.runtime_binding = binding;
     }
 
     pub(crate) fn with_role(mut self, role: DispatchRole) -> Self {
@@ -465,7 +501,7 @@ impl CurrentDispatch {
         self.remote_publication = if self.is_dedicated_idle() {
             CurrentRemotePublication::IDLE
         } else {
-            CurrentRemotePublication::task(self.schedule_policy(), &self.task.metadata)
+            CurrentRemotePublication::task(self.schedule_policy(), self.metadata())
         };
     }
 

@@ -4,7 +4,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::cmp::Ordering;
 
 use super::{
-    LinkedPickedThread, QueuedThread, QueuedThreadSnapshot,
+    LinkedRqTaskRef, QueuedThread, QueuedThreadSnapshot,
     deadline_pushable::DeadlinePushableTasks,
 };
 use crate::{
@@ -430,8 +430,8 @@ impl DeadlineRunQueue {
         find_node_mut(self.root.as_deref_mut(), key).and_then(|node| node.thread.as_mut())
     }
 
-    pub(super) fn select_first(&self) -> Option<LinkedPickedThread> {
-        self.first().map(LinkedPickedThread::from)
+    pub(super) fn select_first(&self) -> Option<LinkedRqTaskRef> {
+        self.first().map(LinkedRqTaskRef::from)
     }
 
     pub(super) fn put_prev_current(

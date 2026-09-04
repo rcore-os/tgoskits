@@ -380,16 +380,16 @@ impl RunQueue {
         if self.linked_current() != Some(id) {
             return;
         }
-        let runtime_core = Arc::clone(
-            &self
+        let (runtime_core, metadata) = {
+            let linked = self
                 .linked_current_thread(id)
-                .expect("linked current membership must identify its rq node")
-                .core,
-        );
+                .expect("linked current membership must identify its rq node");
+            (Arc::clone(&linked.core), linked.metadata.clone())
+        };
         self.current
             .as_mut()
             .expect("linked current membership must match rq->curr")
-            .retain_runtime_core_before_unlink(runtime_core);
+            .retain_task_before_unlink(runtime_core, metadata);
     }
 
     /// Linux `deactivate_task()`: removes one runnable entity from `nr_running`.
@@ -424,6 +424,17 @@ impl RunQueue {
         match self.membership_class(id)? {
             QueueMembershipClass::Deadline(key) => self.deadline.get(key),
             QueueMembershipClass::Realtime(key) => self.rt.get(key),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn linked_current_thread_mut(&mut self, id: ThreadId) -> Option<&mut QueuedThread> {
+        if self.linked_current() != Some(id) {
+            return None;
+        }
+        match self.membership_class(id)? {
+            QueueMembershipClass::Deadline(key) => self.deadline.get_mut(key),
+            QueueMembershipClass::Realtime(key) => self.rt.get_mut(key),
             _ => None,
         }
     }
@@ -523,7 +534,10 @@ impl RunQueue {
     }
 
     /// Installs a newly applied RT/DL policy as the physically linked current.
-    pub(crate) fn link_running(&mut self, thread: QueuedThread) -> Result<(), TaskError> {
+    pub(crate) fn link_running(
+        &mut self,
+        thread: QueuedThread,
+    ) -> Result<LinkedRqTaskRef, TaskError> {
         if self
             .linked_current()
             .is_some_and(|current| self.contains(current))
@@ -534,6 +548,9 @@ impl RunQueue {
         let id = thread.id;
         self.enqueue_task(thread, EnqueueReason::PolicyChanged, None)?;
         self.refresh_class_pushable(id, Some(id));
-        Ok(())
+        Ok(LinkedRqTaskRef::from(
+            self.linked_current_thread(id)
+                .expect("new linked current must retain its rq node"),
+        ))
     }
 }

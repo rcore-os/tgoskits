@@ -126,12 +126,7 @@ impl TaskSystem {
                     Arc::clone(core),
                     rt_quota_exempt,
                     migration_capable,
-                    metadata.clone(),
-                );
-                transaction.refresh_current_scheduler_metadata(
-                    core.id(),
                     metadata,
-                    rt_quota_exempt,
                 );
                 dispatch::OwnerReadyEnqueue {
                     reschedule: Some(RescheduleKind::Immediate),

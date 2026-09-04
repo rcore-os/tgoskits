@@ -720,7 +720,16 @@ impl TaskSystem {
     ) -> OwnerNext {
         transaction.set_next_task(&queued);
         let next_policy = queued.policy();
-        let (thread, dispatch) = match queued {
+
+        // Linux set_next_task_{rt,dl} queues its class push callback after the
+        // preempted task has become pushable in the same rq transaction.
+        if let Some(class) = super::balance::push_class_for_policy(next_policy)
+            && transaction.has_pushable_class_tasks(class.scheduling_class())
+        {
+            self.root_domain.start_rt_deadline_push_from(class, owner);
+        }
+
+        let thread = match queued {
             PickedThread::Owned(queued) => {
                 let thread = queued.id;
                 let core = queued.core;
@@ -732,34 +741,17 @@ impl TaskSystem {
                     queued.rt_quota_exempt,
                     transaction.clock().task(),
                 );
-                (thread, dispatch)
+                transaction.set_task_current(dispatch);
+                thread
             }
             PickedThread::Linked(queued) => {
                 let linked = queued.thread();
                 let core = Arc::as_ref(&linked.core);
                 core.sched().placement().set_next_task(owner);
-                let dispatch = CurrentDispatch::linked(
-                    linked.id,
-                    core,
-                    next_policy,
-                    linked.metadata.clone(),
-                    linked.rt_quota_exempt,
-                    linked.remote_publication,
-                    transaction.clock().task(),
-                );
-                (linked.id, dispatch)
+                transaction.set_linked_task_current(queued, transaction.clock().task());
+                linked.id
             }
         };
-
-        // Linux set_next_task_{rt,dl} queues its class push callback after the
-        // preempted task has become pushable in the same rq transaction.
-        if let Some(class) = super::balance::push_class_for_policy(next_policy)
-            && transaction.has_pushable_class_tasks(class.scheduling_class())
-        {
-            self.root_domain.start_rt_deadline_push_from(class, owner);
-        }
-
-        transaction.set_task_current(dispatch);
         let current = transaction.current_core_ref().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize)
         });

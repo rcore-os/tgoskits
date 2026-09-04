@@ -1,7 +1,7 @@
 use core::ops::Deref;
 
 use super::*;
-use crate::{EnqueueReason, FairEntity, SchedulerClass, WakeIntent};
+use crate::{EnqueueReason, FairEntity, LinkedRqTaskRef, SchedulerClass, WakeIntent};
 
 /// Typed reason for entering the per-CPU runqueue with irqsave semantics.
 ///
@@ -626,7 +626,24 @@ impl CpuRunQueueState {
         self.queue.install_current(current);
     }
 
-    pub(crate) fn replace_linked_current(&mut self, current: CurrentDispatch) {
+    pub(crate) fn replace_linked_current(
+        &mut self,
+        linked: LinkedRqTaskRef,
+        now: RqTaskTime,
+    ) {
+        let current = linked.thread();
+        let task_membarrier_state = self.state_for_task(
+            current.core.membarrier_identity(),
+            current.metadata.runtime_binding.address_space(),
+        );
+        self.membarrier_state = crate::runtime::scheduled_membarrier_state(
+            self.membarrier_state,
+            task_membarrier_state,
+        );
+        self.queue.replace_linked_current(linked, now);
+    }
+
+    pub(crate) fn replace_current(&mut self, current: CurrentDispatch) {
         let task_membarrier_state = self.state_for_task(
             current.runtime_core().membarrier_identity(),
             current.address_space(),
@@ -635,7 +652,7 @@ impl CpuRunQueueState {
             self.membarrier_state,
             task_membarrier_state,
         );
-        self.queue.replace_linked_current(current);
+        self.queue.replace_current(current);
     }
 
     fn state_for_task(
@@ -851,13 +868,26 @@ impl CpuRunQueueState {
     ) -> Result<(), TaskError> {
         let current = self
             .queue
-            .current_mut()
+            .current()
             .ok_or(TaskError::NoRunnableThread)?;
         if current.thread() != thread {
             return Err(TaskError::InvalidConfiguration);
         }
-        current.update_runtime_binding(binding);
-        current
+        if self.queue.is_linked_current(thread) {
+            self.queue
+                .linked_current_thread_mut(thread)
+                .expect("linked current must retain its rq node")
+                .metadata
+                .runtime_binding = binding;
+        } else {
+            self.queue
+                .current_mut()
+                .expect("validated current must remain installed")
+                .update_runtime_binding(binding);
+        }
+        self.queue
+            .current()
+            .expect("validated current must remain installed")
             .runtime_core()
             .publish_membarrier_identity(next_membarrier_state.identity());
         if self.membarrier_state.identity() != next_membarrier_state.identity() {
@@ -869,56 +899,24 @@ impl CpuRunQueueState {
         Ok(())
     }
 
-    pub(crate) fn refresh_current_scheduler_metadata(
-        &mut self,
-        thread: ThreadId,
-        metadata: RqTaskMetadata,
-        rt_quota_exempt: bool,
-    ) {
-        let next_membarrier_state = {
-            let current = self
-                .queue
-                .current()
-                .filter(|current| current.thread() == thread)
-                .unwrap_or_else(|| {
-                    task_runtime::fatal_invariant(0x5251_100d, thread.as_u64() as usize)
-                });
-            self.state_for_task(
-                current.runtime_core().membarrier_identity(),
-                metadata.runtime_binding.address_space(),
-            )
-        };
-        let current = self
-            .queue
-            .current_mut()
-            .filter(|current| current.thread() == thread)
-            .unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5251_100d, thread.as_u64() as usize)
-            });
-        current.refresh_scheduler_metadata(metadata, rt_quota_exempt);
-        self.queue.mark_publication_dirty();
-        if self.membarrier_state.identity() != next_membarrier_state.identity() {
-            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        }
-        self.membarrier_state = next_membarrier_state;
-    }
-
     pub(crate) fn update_thread_affinity(
         &mut self,
         thread: ThreadId,
         affinity: Arc<CpuSet>,
     ) -> bool {
+        if self.queue.is_linked_current(thread) {
+            return self.queue.update_affinity(thread, affinity);
+        }
         let current_updated = self
             .queue
             .current_mut()
             .filter(|current| current.thread() == thread)
-            .map(|current| current.update_affinity(Arc::clone(&affinity)))
+            .map(|current| current.update_affinity(affinity))
             .is_some();
-        let queued_updated = self.queue.update_affinity(thread, affinity);
         if current_updated {
             self.queue.mark_publication_dirty();
         }
-        queued_updated || current_updated
+        current_updated
     }
 
     pub(crate) fn detach_current_schedule(
@@ -958,6 +956,10 @@ impl CpuRunQueueState {
         if self.current_thread() != Some(thread) {
             return Err(TaskError::InvalidConfiguration);
         }
+        let next_membarrier_state = self.state_for_task(
+            core.membarrier_identity(),
+            metadata.runtime_binding.address_space(),
+        );
         let linked = matches!(
             active.policy(),
             SchedulePolicy::Deadline(_)
@@ -965,8 +967,7 @@ impl CpuRunQueueState {
                 | SchedulePolicy::RoundRobin { .. }
         );
         if linked {
-            let policy = active.policy();
-            self.queue.link_running(QueuedThread::new(
+            let linked = self.queue.link_running(QueuedThread::new(
                 thread,
                 active,
                 core,
@@ -977,14 +978,18 @@ impl CpuRunQueueState {
             self.queue
                 .current_mut()
                 .expect("current identity must retain its dispatch")
-                .install_reclassified_schedule(CurrentClassState::Linked { policy }, None);
+                .install_reclassified_linked(linked);
         } else {
             self.queue
                 .current_mut()
                 .expect("current identity must retain its dispatch")
-                .install_reclassified_schedule(CurrentClassState::Owned(active), Some(core));
+                .install_reclassified_owned(active, core, metadata, rt_quota_exempt);
         }
         self.queue.mark_publication_dirty();
+        if self.membarrier_state.identity() != next_membarrier_state.identity() {
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        }
+        self.membarrier_state = next_membarrier_state;
         Ok(())
     }
 
