@@ -54,6 +54,7 @@ struct perf_event_attr_v9 {
 _Static_assert(sizeof(struct perf_event_attr_v9) == PERF_ATTR_SIZE_VER9,
                "perf_event_attr v9 layout mismatch");
 
+#if defined(__aarch64__)
 static long perf_open(void *attr, int pid, int cpu, int group_fd,
                       unsigned long flags) {
     return syscall(SYS_perf_event_open, attr, pid, cpu, group_fd, flags);
@@ -100,6 +101,7 @@ static int expect_open(const char *name, struct perf_event_attr_v9 *attr,
     close((int)fd);
     return 0;
 }
+#endif
 
 int main(void) {
 #if !defined(__aarch64__)
