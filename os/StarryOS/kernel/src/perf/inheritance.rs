@@ -447,9 +447,22 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             super::hw_allocation::free_counter(Counter::Programmable(n));
             continue;
         };
-        let child = Arc::new(PerTaskCounter::new(
-            parent.inherited_config(scheduler_id, Counter::Programmable(n)),
-        ));
+        let owner_ids = child_thr
+            .proc_data
+            .identity()
+            .visible_number_in(parent.observer)
+            .map(crate::task::TgidNumber::from)
+            .zip(
+                child_thr
+                    .pid_identity()
+                    .visible_number_in(parent.observer)
+                    .map(crate::task::TidNumber::from),
+            );
+        let child = Arc::new(PerTaskCounter::new(parent.inherited_config(
+            scheduler_id,
+            Counter::Programmable(n),
+            owner_ids,
+        )));
         child.set_sample_id(parent.sample_id());
 
         // `do_clone` has not made the child schedulable yet. Publish the local

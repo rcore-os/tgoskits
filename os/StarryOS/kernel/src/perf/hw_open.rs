@@ -191,6 +191,21 @@ fn perf_event_open_hw_per_task(
     };
 
     let enabled = attr.disabled() == 0;
+    let observer = crate::task::current_user_task()
+        .as_thread()
+        .active_pid_namespace()
+        .id();
+    let owner_ids = thread
+        .proc_data
+        .identity()
+        .visible_number_in(observer)
+        .map(crate::task::TgidNumber::from)
+        .zip(
+            thread
+                .pid_identity()
+                .visible_number_in(observer)
+                .map(crate::task::TidNumber::from),
+        );
     let per_task_counter = Arc::new(super::task::PerTaskCounter::new(
         super::task::PerTaskConfig {
             scheduler_id,
@@ -211,10 +226,8 @@ fn perf_event_open_hw_per_task(
             want_task: attr.task() != 0,
             sample_id_all: attr.sample_id_all() != 0,
             inherit: attr.inherit() != 0,
-            observer: crate::task::current_user_task()
-                .as_thread()
-                .active_pid_namespace()
-                .id(),
+            observer,
+            owner_ids,
         },
     ));
     let family = PerfInheritanceFamily::new(Arc::clone(&per_task_counter), enabled);

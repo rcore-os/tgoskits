@@ -31,6 +31,8 @@ pub mod kprobe;
 #[cfg(target_arch = "aarch64")]
 mod output;
 #[cfg(target_arch = "aarch64")]
+mod nofault;
+#[cfg(target_arch = "aarch64")]
 pub mod percpu;
 pub mod raw_tracepoint;
 #[cfg(target_arch = "aarch64")]
@@ -64,6 +66,8 @@ mod task_context_state;
 mod task_sideband;
 pub mod tracepoint;
 pub mod uapi;
+#[cfg(target_arch = "aarch64")]
+mod unwind;
 pub mod uprobe;
 
 use alloc::{

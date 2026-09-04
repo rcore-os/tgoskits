@@ -73,6 +73,7 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
                         sample_type: ptc.sample_type,
                         id: ptc.sample_id.load(Ordering::Relaxed),
                         observer: ptc.observer,
+                        owner_ids: ptc.owner_ids,
                         // Frequency mode adapts the period within each slice; the
                         // slot starts at the initial estimate with no timestamp.
                         freq: ptc.freq,

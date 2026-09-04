@@ -89,6 +89,8 @@ pub struct PerTaskCounter {
     inherit: bool,
     /// PID namespace view captured when the root event was opened.
     pub(super) observer: PidNamespaceId,
+    /// Target task identity in the event's captured PID namespace.
+    pub(super) owner_ids: Option<(TgidNumber, TidNumber)>,
     /// Weak fd-owned family identity. The family owns members strongly, so a
     /// weak back-reference avoids a root/member cycle.
     family: IrqMutex<Option<FamilyBinding>>,
@@ -211,6 +213,7 @@ pub(in crate::perf) struct PerTaskConfig {
     pub(in crate::perf) inherit: bool,
     /// PID namespace view captured when the root event was opened.
     pub(in crate::perf) observer: PidNamespaceId,
+    pub(in crate::perf) owner_ids: Option<(TgidNumber, TidNumber)>,
 }
 
 impl PerTaskCounter {
@@ -249,6 +252,7 @@ impl PerTaskCounter {
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
             observer: cfg.observer,
+            owner_ids: cfg.owner_ids,
             family: IrqMutex::new(None),
             resources: PmuResourceRelease::new(),
             rdpmc: RdpmcMapping::new(),
@@ -273,6 +277,7 @@ impl PerTaskCounter {
         &self,
         scheduler_id: ax_runtime::task::thread::ThreadId,
         counter: Counter,
+        owner_ids: Option<(TgidNumber, TidNumber)>,
     ) -> PerTaskConfig {
         PerTaskConfig {
             scheduler_id,
@@ -296,6 +301,7 @@ impl PerTaskCounter {
             sample_id_all: self.sample_id_all,
             inherit: true,
             observer: self.observer,
+            owner_ids,
         }
     }
 

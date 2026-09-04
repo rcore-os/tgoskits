@@ -767,6 +767,78 @@ mod tests {
     }
 }
 
+/// Privilege domain of the register image captured at an IRQ boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptedPrivilege {
+    /// The interrupted context was executing at EL0.
+    User,
+    /// The interrupted context was executing in the kernel.
+    Kernel,
+}
+
+/// Value snapshot of the context interrupted by the IRQ currently dispatched
+/// on this CPU. No trap-frame pointer escapes the boundary that owns it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InterruptedContext {
+    /// Program counter at the interruption point.
+    pub pc: usize,
+    /// Stack pointer belonging to the interrupted context.
+    pub sp: usize,
+    /// Frame pointer belonging to the interrupted context.
+    pub fp: usize,
+    /// Privilege domain of the interrupted context.
+    pub privilege: InterruptedPrivilege,
+}
+
+#[ax_percpu::def_percpu]
+static INTERRUPTED_CONTEXT: Option<InterruptedContext> = None;
+
+fn replace_interrupted_context(context: Option<InterruptedContext>) -> Option<InterruptedContext> {
+    // SAFETY: IRQ boundary callers remain on the current CPU with local IRQs
+    // masked for the complete publish-dispatch-restore scope.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                INTERRUPTED_CONTEXT
+                    .with_current_mut(exclusive, |current| core::mem::replace(current, context))
+            })
+        })
+    }
+    .ok()
+    .flatten()
+}
+
+/// Scope guard that restores the previous per-CPU IRQ snapshot on drop.
+#[must_use]
+pub struct InterruptedContextGuard {
+    previous: Option<InterruptedContext>,
+    _not_send: core::marker::PhantomData<*mut ()>,
+}
+
+impl Drop for InterruptedContextGuard {
+    fn drop(&mut self) {
+        replace_interrupted_context(self.previous);
+    }
+}
+
+/// Publishes a by-value IRQ register snapshot until the returned guard drops.
+pub fn publish_interrupted_context(context: InterruptedContext) -> InterruptedContextGuard {
+    InterruptedContextGuard {
+        previous: replace_interrupted_context(Some(context)),
+        _not_send: core::marker::PhantomData,
+    }
+}
+
+/// Copies the current CPU's IRQ snapshot for PMU sampling.
+pub fn interrupted_context() -> Option<InterruptedContext> {
+    // SAFETY: called inside IRQ dispatch, which pins execution to this CPU.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| INTERRUPTED_CONTEXT.with_current(pin, |context| *context))
+    }
+    .ok()
+    .flatten()
+}
+
 /// The interrupted program counter (`ELR_EL1`).
 ///
 /// Read at the top of the PMU overflow IRQ handler, this is the PC the CPU was
