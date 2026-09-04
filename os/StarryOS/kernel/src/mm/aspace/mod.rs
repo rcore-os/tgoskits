@@ -590,6 +590,30 @@ struct PageFaultMapPlans {
     fallback: Option<PageTableMapPlan>,
 }
 
+fn prepare_mapping_publication_mutation(
+    gate: &MutationGate,
+    space_id: AddressSpaceId,
+    active_targets: Arc<AtomicUsize>,
+    start: VirtAddr,
+    size: usize,
+    replaces_existing: bool,
+) -> PreparedMutation {
+    // A non-replacing mmap publishes into a range whose VMA and PTE preimage
+    // are both empty.  No CPU can cache a translation that needs invalidation,
+    // matching Linux's fresh-PTE path.  MAP_FIXED-style replacement retains
+    // the live target source until commit so a CPU activated during apply is
+    // still included in the shootdown receipt.
+    let mut mutation = if replaces_existing {
+        gate.begin_with_active_targets(space_id, active_targets)
+    } else {
+        gate.begin(space_id, 0)
+    };
+    if let Some(range) = TlbRange::new(start, size) {
+        mutation.add_tlb_range(range);
+    }
+    mutation
+}
+
 struct PreparedPageFault {
     plan: PageFaultPlan,
     materialization: FaultMaterialization,
@@ -3749,7 +3773,14 @@ impl AddrSpace {
         };
         let mapping_preimage = self.capture_mapping_preimage(range)?;
         let graph_preimage = self.capture_mapping_graph_snapshot(&[range])?;
-        let mut mutation = self.prepare_mutation_range(start, size);
+        let mut mutation = prepare_mapping_publication_mutation(
+            &self.mutation_gate,
+            self.id,
+            self.tlb_targets.clone(),
+            start,
+            size,
+            replace,
+        );
         let retire_epoch = mutation
             .receipt()
             .base_epoch
@@ -6744,11 +6775,47 @@ impl Drop for AddrSpace {
     }
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::AtomicUsize;
+
+    use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+
+    use super::{AddressSpaceId, MutationGate, prepare_mapping_publication_mutation};
+
     #[cfg(all(test, not(axtest)))]
     #[test]
     fn page_fault_completion_updates_only_success() {
         assert!(super::page_fault_completion_updates_only_success_for_test());
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn fresh_mapping_publication_has_no_tlb_targets() {
+        let gate = MutationGate::new();
+        let id = AddressSpaceId::allocate();
+        let targets = Arc::new(AtomicUsize::new(0b1110));
+        let start = VirtAddr::from(0x20_0000);
+
+        let fresh = prepare_mapping_publication_mutation(
+            &gate,
+            id,
+            targets.clone(),
+            start,
+            PAGE_SIZE_4K,
+            false,
+        );
+        assert_eq!(fresh.receipt().tlb_obligation.targets(), 0);
+
+        let replacement = prepare_mapping_publication_mutation(
+            &gate,
+            id,
+            targets,
+            start,
+            PAGE_SIZE_4K,
+            true,
+        );
+        assert_eq!(replacement.receipt().tlb_obligation.targets(), 0b1110);
     }
 }
