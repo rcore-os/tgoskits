@@ -259,6 +259,7 @@ impl PollIoError for StarryError {
 fn vm_errno(error: VmError) -> Errno {
     match error {
         VmError::BadAddress | VmError::AccessDenied => Errno::EFAULT,
+        VmError::NoMemory => Errno::ENOMEM,
         VmError::TooLong => Errno::ENAMETOOLONG,
     }
 }
@@ -533,6 +534,7 @@ fn memory_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (VmError::BadAddress.into(), Errno::EFAULT),
         (VmError::AccessDenied.into(), Errno::EFAULT),
+        (VmError::NoMemory.into(), Errno::ENOMEM),
         (VmError::TooLong.into(), Errno::ENAMETOOLONG),
         (
             SignalError::UserMemory(VmError::BadAddress).into(),

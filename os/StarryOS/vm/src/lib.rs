@@ -17,6 +17,14 @@ pub enum VmError {
     /// The operation is not allowed, e.g., trying to write to read-only memory.
     #[error("virtual memory access is denied")]
     AccessDenied,
+    /// A genuine out-of-memory (frame or page-table exhaustion) while faulting
+    /// in a valid user address. Kept distinct from
+    /// [`BadAddress`](Self::BadAddress) and
+    /// [`AccessDenied`](Self::AccessDenied) (which map to EFAULT) so it
+    /// surfaces as ENOMEM, matching Linux `copy_{from,to}_user` under
+    /// memory pressure.
+    #[error("virtual memory is out of memory")]
+    NoMemory,
     /// The C-style string or array is too long.
     ///
     /// This error is returned by [`vm_load_until_nul`] when the null terminator

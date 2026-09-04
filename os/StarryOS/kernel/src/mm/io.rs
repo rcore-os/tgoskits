@@ -147,6 +147,7 @@ impl Write for IoVectorBufIo {
 fn vm_error_to_io_error(error: VmError) -> IoError {
     match error {
         VmError::BadAddress | VmError::AccessDenied => IoError::BadAddress,
+        VmError::NoMemory => IoError::NoMemory,
         VmError::TooLong => IoError::NameTooLong,
     }
 }
