@@ -1148,9 +1148,9 @@ static void test_pidfd_send_signal_paths(void)
     CHECK_RET(close(pfd), 0, "close pidfd");
 }
 
-static void test_pidfd_generation_survives_numeric_pid_reuse(void)
+static void test_pidfd_identity_survives_reap_and_new_process(void)
 {
-    printf("--- pidfd generation survives numeric PID reuse ---\n");
+    printf("--- pidfd identity survives reap and a later process ---\n");
 
     int first_release[2];
     int rc = pipe(first_release);
@@ -1209,10 +1209,10 @@ static void test_pidfd_generation_survives_numeric_pid_reuse(void)
     }
     close(second_release[0]);
 
-    CHECK(second == first, "numeric PID slot is deterministically reused");
+    CHECK(second != first, "cyclic PID allocation avoids immediate numeric reuse");
     if (stale_pidfd >= 0) {
         CHECK_ERR(x_pidfd_send_signal(stale_pidfd, 0, NULL, 0), ESRCH,
-                  "old pidfd does not retarget the replacement generation");
+                  "old pidfd does not retarget a later process");
     }
     CHECK_RET(kill(second, 0), 0, "replacement generation remains alive");
 
@@ -1366,7 +1366,7 @@ int main(void)
     test_pidfd_open_pid_zero_linux();
 
     test_pidfd_send_signal_paths();
-    test_pidfd_generation_survives_numeric_pid_reuse();
+    test_pidfd_identity_survives_reap_and_new_process();
 
     test_pidfd_getfd_flags();
     test_pidfd_getfd_cross_process();
