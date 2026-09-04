@@ -41,14 +41,16 @@
 //! the slot — *before* dropping that `Arc`. The handler therefore only ever
 //! dereferences a pointer whose target is still alive.
 
-use core::sync::atomic::Ordering;
+use alloc::sync::Arc;
+use core::{fmt, sync::atomic::{AtomicU64, Ordering}};
 
+use ax_alloc::GlobalPage;
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use crate::{
-    sync::PreemptIrqSaveGuard,
+    sync::{IrqMutex, PreemptIrqSaveGuard},
     task::{AsThread, PidNamespaceId, TgidNumber, TidNumber},
 };
 
@@ -105,6 +107,9 @@ fn next_freq_period(cur: u32, target_freq: u32, delta_ns: u64) -> u32 {
 
 /// `PERF_RECORD_SAMPLE` discriminant (`perf_event_type::PERF_RECORD_SAMPLE`).
 const PERF_RECORD_SAMPLE: u32 = 9;
+/// `PERF_RECORD_LOST`: reports samples dropped since the previous successful
+/// loss record for this source event.
+const PERF_RECORD_LOST: u32 = 2;
 /// `PERF_RECORD_MISC_KERNEL`: the sample landed in kernel (EL1) context.
 const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
@@ -115,6 +120,139 @@ const PERF_RECORD_MISC_USER: u16 = 2;
 /// STREAM_ID, CPU(cpu+res), PERIOD). [`build_sample`] writes into a stack buffer
 /// of this size and returns the actual length.
 const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8;
+const LOST_RECORD_LEN: usize = 8 + 2 * 8;
+
+/// One physical perf mmap ring and its IRQ-safe multi-producer writer.
+///
+/// The endpoint owns the pages, so an enabled producer can never retain a raw
+/// address after `munmap`. Redirected events share this same `Arc`, hence PMU
+/// IRQs on different CPUs and process-context side-band writers serialize on
+/// one lock before reserving `data_head`.
+pub struct RingEndpoint {
+    _pages: Arc<GlobalPage>,
+    ring_vaddr: usize,
+    ring_len: usize,
+    writer: IrqMutex<()>,
+    notify: Arc<IrqNotify>,
+}
+
+impl fmt::Debug for RingEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RingEndpoint")
+            .field("ring_vaddr", &self.ring_vaddr)
+            .field("ring_len", &self.ring_len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RingEndpoint {
+    pub fn new(
+        pages: Arc<GlobalPage>,
+        ring_vaddr: usize,
+        ring_len: usize,
+        notify: Arc<IrqNotify>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            _pages: pages,
+            ring_vaddr,
+            ring_len,
+            writer: IrqMutex::new(()),
+            notify,
+        })
+    }
+
+    pub fn ring_vaddr(&self) -> usize {
+        self.ring_vaddr
+    }
+
+    pub fn ring_len(&self) -> usize {
+        self.ring_len
+    }
+
+    pub fn notify(&self) -> Arc<IrqNotify> {
+        self.notify.clone()
+    }
+
+    pub fn has_data(&self) -> bool {
+        let header = self.ring_vaddr as *const perf_event_mmap_page;
+        // SAFETY: `self.pages` pins the initialized header for this endpoint.
+        let (head, tail) = unsafe {
+            (
+                core::ptr::addr_of!((*header).data_head).read_volatile(),
+                core::ptr::addr_of!((*header).data_tail).read_volatile(),
+            )
+        };
+        head != tail
+    }
+
+    /// Writes an ordinary record from process context or an IRQ source that
+    /// does not need per-source loss accounting.
+    pub fn write_record(&self, record: &[u8]) -> bool {
+        let _writer = self.writer.lock();
+        // SAFETY: the endpoint owns the ring pages and the writer lock is the
+        // unique kernel reservation mechanism for its `data_head`.
+        let written = unsafe { ring_write_locked(self.ring_vaddr, self.ring_len, record) };
+        if written {
+            self.notify.notify_irq();
+        }
+        written
+    }
+
+    /// Writes one sample, flushing this source's pending `PERF_RECORD_LOST`
+    /// first. Both records share the same reservation critical section.
+    fn write_sample(&self, loss: &LossState, id: u64, sample: &[u8]) {
+        let _writer = self.writer.lock();
+        let pending = loss.pending.load(Ordering::Relaxed);
+        if pending != 0 {
+            let mut record = [0u8; LOST_RECORD_LEN];
+            record[0..4].copy_from_slice(&PERF_RECORD_LOST.to_ne_bytes());
+            record[4..6].copy_from_slice(&0u16.to_ne_bytes());
+            record[6..8].copy_from_slice(&(LOST_RECORD_LEN as u16).to_ne_bytes());
+            record[8..16].copy_from_slice(&id.to_ne_bytes());
+            record[16..24].copy_from_slice(&pending.to_ne_bytes());
+            // SAFETY: protected by this endpoint's writer lock.
+            if !unsafe { ring_write_locked(self.ring_vaddr, self.ring_len, &record) } {
+                loss.record_drop();
+                return;
+            }
+            loss.pending.store(0, Ordering::Relaxed);
+        }
+
+        // SAFETY: protected by this endpoint's writer lock.
+        if unsafe { ring_write_locked(self.ring_vaddr, self.ring_len, sample) } {
+            self.notify.notify_irq();
+        } else {
+            loss.record_drop();
+        }
+    }
+}
+
+/// Loss accounting belongs to the source event, not the shared output ring.
+/// Redirecting several events therefore preserves each source's event id and
+/// dropped-sample total while serializing their records through one endpoint.
+#[derive(Debug)]
+pub struct LossState {
+    pending: AtomicU64,
+    total: AtomicU64,
+}
+
+impl LossState {
+    pub const fn new() -> Self {
+        Self {
+            pending: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+        }
+    }
+
+    fn record_drop(&self) {
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        self.total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn total(&self) -> u64 {
+        self.total.load(Ordering::Acquire)
+    }
+}
 
 // `perf_event_sample_format` bits (see `man perf_event_open`). Only the scalar
 // fields below are supported; every other bit (READ, CALLCHAIN, RAW,
@@ -160,11 +298,11 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
 /// enabled. See the module docs for the `notify`-pointer soundness argument.
 #[derive(Clone, Copy)]
 pub struct SampleSlot {
-    /// Kernel virtual address of the ring buffer's first page
-    /// (`perf_event_mmap_page`). The data region follows at `data_offset`.
-    pub ring_vaddr: usize,
-    /// Total ring length in bytes (header page + data region).
-    pub ring_len: usize,
+    /// Stable output endpoint, held alive by the registered event until this
+    /// slot is unregistered. Null means the event was enabled before mmap.
+    pub endpoint: *const RingEndpoint,
+    /// Stable per-source loss accounting, with the same lifetime as the slot.
+    pub loss: *const LossState,
     /// Sampling period: the counter is re-armed to overflow after this many
     /// events via [`ax_cpu::pmu::counter::preload`]. Also emitted as the
     /// `PERF_SAMPLE_PERIOD` field of each record.
@@ -178,10 +316,6 @@ pub struct SampleSlot {
     pub id: u64,
     /// PID namespace view captured by the event owner.
     pub observer: PidNamespaceId,
-    /// Raw pointer to the owning event's [`IrqNotify`], woken after each sample.
-    /// Kept alive by the event's strong `Arc<IrqNotify>` for as long as the slot
-    /// is registered (see module docs).
-    pub notify: *const (),
     /// Frequency mode (`attr.freq`): after each sample re-derive [`period`](Self::period)
     /// to converge on [`target_freq`](Self::target_freq) samples/sec. Fixed
     /// `-c` period when false.
@@ -366,9 +500,8 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             // can be mutated below without aliasing the borrow).
             let sample_type = slot.sample_type;
             let id = slot.id;
-            let notify_ptr = slot.notify;
-            let ring_vaddr = slot.ring_vaddr;
-            let ring_len = slot.ring_len;
+            let endpoint = slot.endpoint;
+            let loss = slot.loss;
             let cur_period = slot.period;
 
             // Build one PERF_RECORD_SAMPLE honouring the event's `sample_type`
@@ -394,10 +527,12 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             };
             let len = build_sample(&mut record, sample_type, misc, &data);
 
-            // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages for
-            // as long as the slot is registered (the event pins them, and teardown
-            // unregisters before freeing). `ring_write` only touches that region.
-            unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
+            if !endpoint.is_null() && !loss.is_null() {
+                // SAFETY: unregister happens before either owner Arc is
+                // released or exchanged, so both pointers remain valid for the
+                // complete handler critical section.
+                unsafe { (&*endpoint).write_sample(&*loss, id, &record[..len]) };
+            }
 
             // Frequency mode: adapt the period toward the target rate and persist it
             // (plus the sample timestamp) in the slot for the next interval. Fixed
@@ -422,16 +557,6 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             // Re-arm the counter for the next sample.
             ax_cpu::pmu::counter::preload(n, next_period);
 
-            // Wake the deferred worker so it can deliver POLLIN. A redirected event
-            // (`PERF_EVENT_IOC_SET_OUTPUT` into another event's ring) writes into the
-            // leader's ring but has no notify of its own — its `notify` is null, and
-            // the leader's own poller re-checks `data_head` on its next poll. The
-            // pointer, when non-null, is valid: the owning event holds the backing
-            // `Arc<IrqNotify>` while registered (see the module-level soundness note).
-            if !notify_ptr.is_null() {
-                let notify = unsafe { &*(notify_ptr as *const IrqNotify) };
-                notify.notify_irq();
-            }
             true
         };
         // SAFETY: the handler runs with local IRQs masked on its current CPU,
@@ -583,12 +708,12 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
 /// `HwPerfEvent::device_mmap`. The caller must ensure no concurrent kernel
 /// writer touches the same ring (guaranteed here: one counter ⇒ one writer, and
 /// the handler runs with local IRQs masked).
-unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
+unsafe fn ring_write_locked(ring_vaddr: usize, ring_len: usize, record: &[u8]) -> bool {
     // Guard the enable-before-mmap case (slot registered with a zero ring) and
     // any ring too small to even hold the header page: there is nowhere to
     // write, and the header pointer would be null/out of bounds.
     if ring_vaddr == 0 || ring_len < core::mem::size_of::<perf_event_mmap_page>() {
-        return;
+        return false;
     }
 
     let header = ring_vaddr as *mut perf_event_mmap_page;
@@ -601,12 +726,12 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     // Defensive: a malformed/zero header (no data region, or a data window that
     // does not fit in the buffer) means there is nowhere safe to write.
     if data_size == 0 || data_offset > ring_len || data_offset + data_size > ring_len {
-        return;
+        return false;
     }
 
     let len = record.len();
     if len > data_size {
-        return;
+        return false;
     }
 
     // SAFETY: header page is initialized; these are plain u64 fields.
@@ -616,7 +741,7 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     // Would this record overwrite bytes the reader has not consumed yet? Drop it
     // if so (back-pressure; no lost-record accounting in M2).
     if head.wrapping_sub(tail).wrapping_add(len as u64) > data_size as u64 {
-        return;
+        return false;
     }
 
     let data_base = ring_vaddr + data_offset;
@@ -643,6 +768,7 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     unsafe {
         core::ptr::addr_of_mut!((*header).data_head).write_volatile(head.wrapping_add(len as u64));
     }
+    true
 }
 
 /// Write one record into a sampling ring from **process context** (the side-band
@@ -661,11 +787,8 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
 /// kernel-mapped ring (header page + data region) whose pages stay pinned for the
 /// duration of the call (the event holds the backing `Arc` while the slot/ring is
 /// registered).
-pub unsafe fn ring_write_process(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
-    let _guard = PreemptIrqSaveGuard::new();
-    // SAFETY: caller upholds the ring liveness contract; IRQs are masked so the
-    // overflow handler cannot race this write on the current core.
-    unsafe { ring_write(ring_vaddr, ring_len, record) };
+pub fn ring_write_process(endpoint: &RingEndpoint, record: &[u8]) -> bool {
+    endpoint.write_record(record)
 }
 
 #[cfg(test)]

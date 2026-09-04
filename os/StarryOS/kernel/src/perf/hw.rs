@@ -24,7 +24,7 @@
 //! multiplexing, `time_running` always equals `time_enabled`.
 
 #[cfg(target_arch = "aarch64")]
-use alloc::sync::{Arc, Weak};
+use alloc::sync::Arc;
 use core::any::Any;
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -49,7 +49,7 @@ use kbpf_basic::linux_bpf::{perf_hw_id, perf_type_id};
 #[cfg(target_arch = "aarch64")]
 use super::PerfReadValues;
 #[cfg(target_arch = "aarch64")]
-use super::sampling::{self, SampleSlot};
+use super::sampling::{self, LossState, RingEndpoint, SampleSlot};
 #[cfg(target_arch = "aarch64")]
 use super::percpu;
 use super::{PerfEventOps, target::ResolvedPerfTarget};
@@ -161,33 +161,6 @@ fn event_spec(attr: &perf_event_attr) -> StarryResult<PmuEventSpec> {
     }
 }
 
-/// The backing pages of a sampling event's mmap ring buffer, after the first
-/// `mmap(perf_fd)`.
-///
-/// Ownership mirrors [`super::bpf::BpfPerfEventWrapper`]: the strong
-/// `Arc<GlobalPage>` is handed to the user VMA via `DeviceMmap::Physical`'s
-/// retainer, and the event keeps only a `Weak`. `ring_vaddr` / `ring_len`
-/// describe the kernel mapping the IRQ handler writes into; they are valid for
-/// as long as some VMA pins the pages (i.e. while [`RingState::is_mapped`]).
-#[cfg(target_arch = "aarch64")]
-#[derive(Debug)]
-struct RingState {
-    /// Weak handle to the contiguous ring pages; strong refs live in the VMA(s).
-    pages: Weak<GlobalPage>,
-    /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`).
-    ring_vaddr: usize,
-    /// Total ring length in bytes (header page + data region).
-    ring_len: usize,
-}
-
-#[cfg(target_arch = "aarch64")]
-impl RingState {
-    /// Whether a live user mapping of the ring still pins the pages.
-    fn is_mapped(&self) -> bool {
-        self.pages.strong_count() > 0
-    }
-}
-
 /// Sampling state attached to a `HwPerfEvent` when `attr.sample_period > 0`.
 ///
 /// Holds the period and `sample_type`, the deferred poll machinery (mirroring
@@ -217,13 +190,11 @@ struct SamplingState {
     /// Liveness flag for the worker; cleared on drop to stop it.
     poll_alive: Arc<AtomicBool>,
     /// The ring buffer pages, `Some` after the first `mmap(perf_fd)`.
-    ring: Option<RingState>,
-    /// `PERF_EVENT_IOC_SET_OUTPUT` redirect: when `Some((vaddr, len, anchor))`,
-    /// this event's overflow handler writes into *another* event's ring
-    /// (`vaddr`/`len`) instead of `ring`, so `perf record -e a,b` lands both
-    /// events in one mmap buffer. `anchor` pins the target ring's pages for as
-    /// long as this event may write into them.
-    redirect: Option<(usize, usize, Arc<dyn Any + Send + Sync>)>,
+    ring: Option<Arc<RingEndpoint>>,
+    /// Shared target endpoint selected by `PERF_EVENT_IOC_SET_OUTPUT`.
+    redirect: Option<Arc<RingEndpoint>>,
+    /// Per-source loss accounting retained independently of output redirects.
+    loss: Arc<LossState>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -267,7 +238,10 @@ fn start_sampling_notify_worker(
 /// strong `Arc<GlobalPage>` (the caller threads it into the VMA retainer and/or
 /// keeps an anchor), the ring's kernel vaddr, and its physical start.
 #[cfg(target_arch = "aarch64")]
-fn alloc_sampling_ring(len: usize) -> StarryResult<(Arc<GlobalPage>, usize, PhysAddr)> {
+fn alloc_sampling_ring(
+    len: usize,
+    notify: Arc<IrqNotify>,
+) -> StarryResult<(Arc<RingEndpoint>, PhysAddr)> {
     // libbpf/`perf` require `(1 + 2^N) * PAGE_SIZE`: one header page plus a
     // power-of-two-page data ring. Reject anything else.
     if len == 0 || !len.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K) {
@@ -303,7 +277,8 @@ fn alloc_sampling_ring(len: usize) -> StarryResult<(Arc<GlobalPage>, usize, Phys
         core::ptr::addr_of_mut!((*header).data_tail).write(0);
     }
 
-    Ok((Arc::new(pages), kvirt.as_usize(), paddr))
+    let endpoint = RingEndpoint::new(Arc::new(pages), kvirt.as_usize(), len, notify);
+    Ok((endpoint, paddr))
 }
 
 /// A hardware-PMU perf event: one allocated counter plus the timing
@@ -410,25 +385,17 @@ impl HwPerfEvent {
             let Counter::Programmable(n) = self.counter else {
                 return Err(StarryError::OperationNotSupported);
             };
-            let (ring_vaddr, ring_len) = if let Some((vaddr, len, _)) = &sampling.redirect {
-                (*vaddr, *len)
-            } else {
-                sampling
-                    .ring
-                    .as_ref()
-                    .map_or((0, 0), |ring| (ring.ring_vaddr, ring.ring_len))
-            };
+            let endpoint = sampling.redirect.as_ref().or(sampling.ring.as_ref());
             ax_cpu::pmu::counter::preload(n, sampling.period);
             sampling::register(
                 n,
                 SampleSlot {
-                    ring_vaddr,
-                    ring_len,
+                    endpoint: endpoint.map_or(core::ptr::null(), Arc::as_ptr),
+                    loss: Arc::as_ptr(&sampling.loss),
                     period: sampling.period,
                     sample_type: sampling.sample_type,
                     id: self.sample_id,
                     observer: crate::task::ROOT_PID_NS.id(),
-                    notify: Arc::as_ptr(&sampling.notify).cast(),
                     freq: sampling.freq,
                     target_freq: sampling.target_freq,
                     last_time: 0,
@@ -477,6 +444,10 @@ impl HwPerfEvent {
             value: self.raw_value_on_owner(),
             time_enabled,
             time_running,
+            lost: self
+                .sampling
+                .as_ref()
+                .map_or(0, |sampling| sampling.loss.total()),
             read_format: self.read_format,
         }
     }
@@ -608,7 +579,7 @@ impl Pollable for HwPerfEvent {
             // (`data_tail != data_head`): that is what `perf record`'s poll
             // waits on. Before the first mmap there is no ring ⇒ not readable.
             Some(sampling) => {
-                if sampling.ring.as_ref().is_some_and(ring_has_data) {
+                if sampling.ring.as_ref().is_some_and(|ring| ring.has_data()) {
                     IoEvents::IN
                 } else {
                     IoEvents::empty()
@@ -638,28 +609,6 @@ impl Pollable for HwPerfEvent {
             unsafe { sampling.poll_ready.register(context.waker(), IoEvents::IN) };
         }
     }
-}
-
-/// Whether a sampling ring currently has unread bytes (`data_head != data_tail`).
-///
-/// Reads the two head/tail fields from the header page only while a live
-/// mapping still pins the pages; an unmapped ring reports "no data".
-#[cfg(target_arch = "aarch64")]
-fn ring_has_data(ring: &RingState) -> bool {
-    if !ring.is_mapped() {
-        return false;
-    }
-    let header = ring.ring_vaddr as *const perf_event_mmap_page;
-    // SAFETY: the header page is live (a VMA pins it) and was initialized by
-    // `device_mmap`; these are plain `u64` fields read non-atomically, which is
-    // fine for a readiness hint.
-    let (head, tail) = unsafe {
-        (
-            core::ptr::addr_of!((*header).data_head).read_volatile(),
-            core::ptr::addr_of!((*header).data_tail).read_volatile(),
-        )
-    };
-    head != tail
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -711,6 +660,7 @@ impl PerfEventOps for HwPerfEvent {
                 value,
                 time_enabled,
                 time_running,
+                lost: ptc.lost_samples(),
                 read_format: ptc.read_format(),
             });
         }
@@ -736,43 +686,59 @@ impl PerfEventOps for HwPerfEvent {
         if let Some(ptc) = &self.per_task {
             return ptc.output_ring();
         }
-        // System-wide sampling: hand out the mapped ring, upgrading the `Weak` to
-        // a strong `Arc` so the redirecting event pins the pages even if this
-        // event is later closed/munmap'd.
+        // Redirected writers share this endpoint's reservation lock and target
+        // notification mechanism.
         let ring = self.sampling.as_ref()?.ring.as_ref()?;
-        let pages = ring.pages.upgrade()?;
-        let anchor: Arc<dyn Any + Send + Sync> = pages;
-        Some((ring.ring_vaddr, ring.ring_len, anchor))
+        let anchor: Arc<dyn Any + Send + Sync> = ring.clone();
+        Some((ring.ring_vaddr(), ring.ring_len(), anchor))
     }
 
     fn redirect_output(
         &mut self,
-        ring_vaddr: usize,
-        ring_len: usize,
+        _ring_vaddr: usize,
+        _ring_len: usize,
         anchor: Arc<dyn Any + Send + Sync>,
     ) -> StarryResult<()> {
+        let endpoint = anchor
+            .downcast::<RingEndpoint>()
+            .map_err(|_| StarryError::InvalidInput)?;
         // Per-task sampling source: stash the redirect on the shared counter so
         // the scheduler hook arms this counter to write into the target ring.
         if let Some(ptc) = &self.per_task {
-            ptc.set_redirect_ring(ring_vaddr, ring_len, anchor);
-            return Ok(());
+            return ptc.set_redirect_ring(endpoint);
         }
-        // System-wide sampling source: record the redirect; `enable` builds the
-        // `SampleSlot` against it. A non-sampling (counting) HW event produces no
-        // records, so redirecting it is a harmless no-op.
-        if let Some(sampling) = &mut self.sampling {
-            sampling.redirect = Some((ring_vaddr, ring_len, anchor));
+        if self.sampling.is_some() {
+            let was_enabled = self.enabled_since.is_some();
+            let owner = self.owner_cpu;
+            if was_enabled {
+                // SAFETY: bounded owner-local PMU teardown.
+                unsafe { percpu::run_on_cpu_sync(owner, || self.teardown_sampling_irq_on_owner()) }?;
+            }
+            self.sampling.as_mut().unwrap().redirect = Some(endpoint);
+            if was_enabled {
+                // SAFETY: bounded owner-local PMU arm.
+                unsafe { percpu::run_on_cpu_sync(owner, || self.enable_on_owner()) }??;
+            }
         }
         Ok(())
     }
 
     fn detach_output(&mut self) -> StarryResult<()> {
         if let Some(ptc) = &self.per_task {
-            ptc.detach_redirect_ring();
-            return Ok(());
+            return ptc.detach_redirect_ring();
         }
-        if let Some(sampling) = &mut self.sampling {
-            sampling.redirect = None;
+        if self.sampling.is_some() {
+            let was_enabled = self.enabled_since.is_some();
+            let owner = self.owner_cpu;
+            if was_enabled {
+                // SAFETY: bounded owner-local PMU teardown.
+                unsafe { percpu::run_on_cpu_sync(owner, || self.teardown_sampling_irq_on_owner()) }?;
+            }
+            self.sampling.as_mut().unwrap().redirect = None;
+            if was_enabled {
+                // SAFETY: bounded owner-local PMU arm.
+                unsafe { percpu::run_on_cpu_sync(owner, || self.enable_on_owner()) }??;
+            }
         }
         Ok(())
     }
@@ -796,25 +762,26 @@ impl PerfEventOps for HwPerfEvent {
             return self.device_mmap_rdpmc(len);
         };
 
-        // One live mapping per perf fd (Linux semantics). A stale `Weak` from an
-        // abandoned/munmap'd previous attempt does not count (its pages are
-        // already freed), so the fd stays mmap-able. Mirrors `bpf.rs`.
-        if sampling.ring.as_ref().is_some_and(RingState::is_mapped) {
+        // One endpoint per perf event. The event retains it while a producer
+        // can be active, so userspace unmap cannot create a stale IRQ address.
+        if sampling.ring.is_some() {
             return Err(StarryError::ResourceBusy);
         }
 
-        // Allocate + zero + header-init the ring (shared with the per-task path).
-        let (pages, ring_vaddr, paddr) = alloc_sampling_ring(len)?;
-
-        // Hand the sole strong ref to the caller (threaded into the VMA via
-        // `DeviceMmap::Physical`'s retainer); keep only a `Weak`. See `bpf.rs`
-        // for the ownership/UAF rationale.
-        sampling.ring = Some(RingState {
-            pages: Arc::downgrade(&pages),
-            ring_vaddr,
-            ring_len: len,
-        });
-        let anchor: Arc<dyn Any + Send + Sync> = pages;
+        let (endpoint, paddr) = alloc_sampling_ring(len, sampling.notify.clone())?;
+        sampling.ring = Some(endpoint.clone());
+        if self.enabled_since.is_some() {
+            let owner = self.owner_cpu;
+            // SAFETY: replace the null pre-mmap registry route with the newly
+            // owned endpoint using bounded owner-local PMU operations.
+            unsafe {
+                percpu::run_on_cpu_sync(owner, || {
+                    self.teardown_sampling_irq_on_owner();
+                    self.enable_on_owner()
+                })
+            }??;
+        }
+        let anchor: Arc<dyn Any + Send + Sync> = endpoint;
         Ok((paddr, anchor))
     }
 }
@@ -845,26 +812,18 @@ fn device_mmap_per_task(
         return Err(StarryError::ResourceBusy);
     }
 
-    let (pages, ring_vaddr, paddr) = alloc_sampling_ring(len)?;
-
     // Spawn the deferred worker (mirrors the M2 path): it turns IRQ-context
     // `notify_irq` pokes into `axpoll` `IoEvents::IN` wakeups.
     let poll_ready = Arc::new(PollSet::new());
     let notify = Arc::new(IrqNotify::new());
     let poll_alive = Arc::new(AtomicBool::new(true));
     start_sampling_notify_worker(poll_ready.clone(), notify.clone(), poll_alive.clone());
+    let (endpoint, paddr) = alloc_sampling_ring(len, notify)?;
 
     // Publish the ring + anchors onto the ptc so `perf_sched_in` can arm it.
-    ptc.set_ring(
-        pages.clone(),
-        ring_vaddr,
-        len,
-        notify,
-        poll_ready,
-        poll_alive,
-    );
+    ptc.set_ring(endpoint.clone(), poll_ready, poll_alive)?;
 
-    let anchor: Arc<dyn Any + Send + Sync> = pages;
+    let anchor: Arc<dyn Any + Send + Sync> = endpoint;
     Ok((paddr, anchor))
 }
 
@@ -1013,6 +972,7 @@ pub fn perf_event_open_hw(
             poll_alive,
             ring: None,
             redirect: None,
+            loss: Arc::new(LossState::new()),
         })
     } else {
         None

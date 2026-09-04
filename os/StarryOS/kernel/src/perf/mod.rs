@@ -203,6 +203,8 @@ const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
 const PERF_FORMAT_ID: u64 = 1 << 2;
 /// `read_format` bit selecting a leader-first group snapshot.
 const PERF_FORMAT_GROUP: u64 = 1 << 3;
+/// `read_format` bit selecting a per-event lost-sample count.
+const PERF_FORMAT_LOST: u64 = 1 << 4;
 
 /// Counter snapshot returned by [`PerfEventOps::read_values`].
 ///
@@ -219,6 +221,8 @@ pub struct PerfReadValues {
     /// Wall time the event was scheduled onto hardware, in nanoseconds.
     /// Equal to `time_enabled` in M1 (no multiplexing).
     pub time_running: u64,
+    /// Samples dropped because the mmap ring had no free record space.
+    pub lost: u64,
     /// `attr.read_format`, controlling which fields [`PerfEvent::read`] emits.
     /// The `PERF_FORMAT_ID` value itself comes from the owning [`PerfEvent`]'s
     /// id (so `read` and `PERF_EVENT_IOC_ID` agree), not from this snapshot.
@@ -338,11 +342,17 @@ impl PerfEvent {
         if leader.read_format & PERF_FORMAT_ID != 0 {
             fields.push(self.id);
         }
+        if leader.read_format & PERF_FORMAT_LOST != 0 {
+            fields.push(leader.lost);
+        }
         for member in members {
             let values = member.event.lock().read_values()?;
             fields.push(values.value);
             if leader.read_format & PERF_FORMAT_ID != 0 {
                 fields.push(member.id);
+            }
+            if leader.read_format & PERF_FORMAT_LOST != 0 {
+                fields.push(values.lost);
             }
         }
 
@@ -425,7 +435,7 @@ impl FileLike for PerfEvent {
         }
 
         // Build the field sequence gated by `read_format`, in Linux order.
-        let mut fields = [0u64; 4];
+        let mut fields = [0u64; 5];
         let mut n = 0;
         fields[n] = values.value;
         n += 1;
@@ -441,6 +451,10 @@ impl FileLike for PerfEvent {
             // The id is the wrapper's, so `read(perf_fd)` reports the same value
             // `PERF_EVENT_IOC_ID` handed userspace (the inner snapshot has none).
             fields[n] = self.id;
+            n += 1;
+        }
+        if values.read_format & PERF_FORMAT_LOST != 0 {
+            fields[n] = values.lost;
             n += 1;
         }
 

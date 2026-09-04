@@ -69,11 +69,10 @@ use core::{
 
 use ax_alloc::GlobalPage;
 use ax_runtime::hal::paging::MappingFlags;
-use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::{
-    sampling::{self, SampleSlot},
+    sampling::{self, LossState, RingEndpoint, SampleSlot},
     sideband::{self, Mmap2Info, SidebandTarget},
 };
 use crate::{
@@ -207,18 +206,12 @@ pub struct PerTaskCounter {
     /// also serializes scheduler and fd-teardown writers.
     rdpmc_page: IrqMutex<Option<Weak<GlobalPage>>>,
 
-    /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`),
-    /// or `0` until `mmap(perf_fd)` runs ([`set_ring`](Self::set_ring)). Read by
-    /// [`perf_sched_in`] (IRQ-off hot path) to build the [`SampleSlot`].
-    ring_vaddr: AtomicUsize,
-    /// Total ring length in bytes (header page + data region); `0` until mapped.
-    ring_len: AtomicUsize,
-    /// Raw pointer to the live [`IrqNotify`], or null until mapped. Copied into
-    /// the [`SampleSlot`] in [`perf_sched_in`] so the overflow handler can wake
-    /// the poll worker. Kept alive by the `Arc<IrqNotify>` in [`SamplingAnchors`]
-    /// for as long as a slot may reference it (the slot is unregistered before
-    /// the `Arc` drops in [`free_hw`]).
-    notify_ptr: AtomicUsize,
+    /// Raw pointer to the active [`RingEndpoint`] for the scheduler/IRQ hot
+    /// path. Its owning Arc lives in `anchors` or `redirect_endpoint`, and can
+    /// only be exchanged after the current hardware slice is disarmed.
+    endpoint_ptr: AtomicUsize,
+    /// Per-source loss accounting; retained for the entire counter lifetime.
+    loss: Arc<LossState>,
 
     /// Strong anchors keeping the ring pages + notify alive, plus the deferred
     /// poll machinery. Set in process context by [`set_ring`](Self::set_ring),
@@ -234,7 +227,7 @@ pub struct PerTaskCounter {
     /// ring and `notify_ptr` stays `0` (the target's poller re-checks
     /// `data_head`; the overflow handler guards the null notify). Set by
     /// [`set_redirect_ring`](Self::set_redirect_ring) instead of [`set_ring`](Self::set_ring).
-    redirect_anchor: IrqMutex<Option<Arc<dyn Any + Send + Sync>>>,
+    redirect_endpoint: IrqMutex<Option<Arc<RingEndpoint>>>,
 }
 
 /// Strong references that keep a per-task sampling event's ring + notify alive,
@@ -245,14 +238,12 @@ pub struct PerTaskCounter {
 /// side), because the slot the IRQ handler uses is built from the task side in
 /// [`perf_sched_in`]. Set once by [`PerTaskCounter::set_ring`].
 struct SamplingAnchors {
-    /// The contiguous ring pages. Holding this `Arc` keeps the kernel mapping
-    /// (`ring_vaddr`/`ring_len`) live; it drops only in [`free_hw`], after the
-    /// slot is unregistered. Also handed out (cloned) by
-    /// [`PerTaskCounter::output_ring`] so a redirecting event can pin it.
-    ring_pages: Arc<GlobalPage>,
+    /// Stable ring ownership and writer serialization shared with redirecting
+    /// sources.
+    endpoint: Arc<RingEndpoint>,
     /// IRQ-safe notification the overflow handler pokes; drained by the worker.
     /// Holding this `Arc` keeps `notify_ptr` valid for the registered slot.
-    notify: Arc<IrqNotify>,
+    notify: Arc<ax_task::IrqNotify>,
     /// Readiness set the perf fd's poller waits on; woken (`IoEvents::IN`) by the
     /// worker after each sample lands in the ring.
     poll_ready: Arc<axpoll::PollSet>,
@@ -356,17 +347,21 @@ impl PerTaskCounter {
             inherit: cfg.inherit,
             observer: cfg.observer,
             rdpmc_page: IrqMutex::new(None),
-            ring_vaddr: AtomicUsize::new(0),
-            ring_len: AtomicUsize::new(0),
-            notify_ptr: AtomicUsize::new(0),
+            endpoint_ptr: AtomicUsize::new(0),
+            loss: Arc::new(LossState::new()),
             anchors: IrqMutex::new(None),
-            redirect_anchor: IrqMutex::new(None),
+            redirect_endpoint: IrqMutex::new(None),
         }
     }
 
     /// `attr.read_format` for serializing `read(perf_fd)`.
     pub fn read_format(&self) -> u64 {
         self.read_format
+    }
+
+    /// Total samples this source dropped because its output ring was full.
+    pub fn lost_samples(&self) -> u64 {
+        self.loss.total()
     }
 
     /// Whether this pinned event entered Linux's scheduling ERROR state.
@@ -501,26 +496,20 @@ impl PerTaskCounter {
     /// observes a non-zero `ring_vaddr` is guaranteed the backing `Arc`s are live.
     pub fn set_ring(
         &self,
-        ring_pages: Arc<GlobalPage>,
-        ring_vaddr: usize,
-        ring_len: usize,
-        notify: Arc<IrqNotify>,
+        endpoint: Arc<RingEndpoint>,
         poll_ready: Arc<axpoll::PollSet>,
         poll_alive: Arc<AtomicBool>,
-    ) {
-        let notify_ptr = Arc::as_ptr(&notify) as usize;
-        // Install the strong anchors first; the atomics below gate the hot path.
+    ) -> crate::StarryResult<()> {
+        let notify = endpoint.notify();
         *self.anchors.lock() = Some(SamplingAnchors {
-            ring_pages,
+            endpoint: endpoint.clone(),
             notify,
             poll_ready,
             poll_alive,
         });
-        // Publish geometry + notify; the non-zero `ring_vaddr` is the readiness
-        // signal `perf_sched_in` keys on, so store it last.
-        self.notify_ptr.store(notify_ptr, Ordering::Release);
-        self.ring_len.store(ring_len, Ordering::Release);
-        self.ring_vaddr.store(ring_vaddr, Ordering::Release);
+        self.endpoint_ptr
+            .store(Arc::as_ptr(&endpoint) as usize, Ordering::Release);
+        schedule_if_on_cpu(self)
     }
 
     /// Whether a sampling ring has been mmap'd and is therefore armable.
@@ -528,7 +517,7 @@ impl PerTaskCounter {
     /// Read by [`perf_sched_in`] (to decide whether to arm the slice) and by the
     /// fd's `device_mmap` (to reject a second mapping).
     pub fn ring_mapped(&self) -> bool {
-        self.ring_vaddr.load(Ordering::Acquire) != 0
+        self.endpoint_ptr.load(Ordering::Acquire) != 0
     }
 
     /// Expose this counter's mmap ring for a `PERF_EVENT_IOC_SET_OUTPUT` redirect
@@ -536,15 +525,14 @@ impl PerTaskCounter {
     /// of the ring `Arc` so the redirecting event pins the pages. `None` until the
     /// ring is mmap'd. Only an *owned* ring is shared, not a redirected one.
     pub fn output_ring(&self) -> Option<(usize, usize, Arc<dyn Any + Send + Sync>)> {
-        let vaddr = self.ring_vaddr.load(Ordering::Acquire);
-        if vaddr == 0 {
-            return None;
-        }
-        let len = self.ring_len.load(Ordering::Acquire);
         let guard = self.anchors.lock();
         let anchors = guard.as_ref()?;
-        let pages: Arc<dyn Any + Send + Sync> = anchors.ring_pages.clone();
-        Some((vaddr, len, pages))
+        let anchor: Arc<dyn Any + Send + Sync> = anchors.endpoint.clone();
+        Some((
+            anchors.endpoint.ring_vaddr(),
+            anchors.endpoint.ring_len(),
+            anchor,
+        ))
     }
 
     /// Expose this counter's ring for an `attr.inherit` child to redirect into.
@@ -554,21 +542,11 @@ impl PerTaskCounter {
     /// it hands back the redirect anchor so all descendants point at the one
     /// root ring. Returns `(ring_vaddr, ring_len, anchor)`, or `None` before the
     /// ring is mapped.
-    pub fn inherit_ring(&self) -> Option<(usize, usize, Arc<dyn Any + Send + Sync>)> {
-        let vaddr = self.ring_vaddr.load(Ordering::Acquire);
-        if vaddr == 0 {
-            return None;
-        }
-        let len = self.ring_len.load(Ordering::Acquire);
-        // Owned ring: pin its pages directly.
+    pub fn inherit_ring(&self) -> Option<Arc<RingEndpoint>> {
         if let Some(anchors) = self.anchors.lock().as_ref() {
-            let pages: Arc<dyn Any + Send + Sync> = anchors.ring_pages.clone();
-            return Some((vaddr, len, pages));
+            return Some(anchors.endpoint.clone());
         }
-        // Redirected ring (this counter is itself an inherited / SET_OUTPUT
-        // source): re-share the same anchor so the grandchild pins the root ring.
-        let anchor = self.redirect_anchor.lock().as_ref()?.clone();
-        Some((vaddr, len, anchor))
+        self.redirect_endpoint.lock().as_ref().cloned()
     }
 
     /// Point this counter's samples at *another* event's ring
@@ -582,34 +560,27 @@ impl PerTaskCounter {
     /// non-zero value the readiness signal `perf_sched_in` keys on.
     pub fn set_redirect_ring(
         &self,
-        ring_vaddr: usize,
-        ring_len: usize,
-        anchor: Arc<dyn Any + Send + Sync>,
-    ) {
-        *self.redirect_anchor.lock() = Some(anchor);
-        self.notify_ptr.store(0, Ordering::Release);
-        self.ring_len.store(ring_len, Ordering::Release);
-        self.ring_vaddr.store(ring_vaddr, Ordering::Release);
+        endpoint: Arc<RingEndpoint>,
+    ) -> crate::StarryResult<()> {
+        disarm_on_owner(self)?;
+        *self.redirect_endpoint.lock() = Some(endpoint.clone());
+        self.endpoint_ptr
+            .store(Arc::as_ptr(&endpoint) as usize, Ordering::Release);
+        schedule_if_on_cpu(self)
     }
 
     /// Detaches `PERF_EVENT_IOC_SET_OUTPUT` and restores the event's own ring.
-    pub fn detach_redirect_ring(&self) {
-        *self.redirect_anchor.lock() = None;
-        let anchors = self.anchors.lock();
-        if let Some(anchors) = anchors.as_ref() {
-            self.notify_ptr.store(
-                Arc::as_ptr(&anchors.notify) as *const () as usize,
-                Ordering::Release,
-            );
-            self.ring_vaddr.store(
-                anchors.ring_pages.start_vaddr().as_usize(),
-                Ordering::Release,
-            );
-        } else {
-            self.notify_ptr.store(0, Ordering::Release);
-            self.ring_len.store(0, Ordering::Release);
-            self.ring_vaddr.store(0, Ordering::Release);
-        }
+    pub fn detach_redirect_ring(&self) -> crate::StarryResult<()> {
+        disarm_on_owner(self)?;
+        *self.redirect_endpoint.lock() = None;
+        let endpoint = self
+            .anchors
+            .lock()
+            .as_ref()
+            .map(|anchors| Arc::as_ptr(&anchors.endpoint) as usize)
+            .unwrap_or(0);
+        self.endpoint_ptr.store(endpoint, Ordering::Release);
+        schedule_if_on_cpu(self)
     }
 
     /// Readiness for `poll(perf_fd)`: `true` when the ring has unread bytes.
@@ -618,25 +589,18 @@ impl PerTaskCounter {
     /// [`super::hw::HwPerfEvent::poll`]. Returns `false` before the ring is
     /// mapped or once it is torn down.
     pub fn ring_has_data(&self) -> bool {
-        let vaddr = self.ring_vaddr.load(Ordering::Acquire);
-        if vaddr == 0 {
-            return false;
+        self.active_endpoint()
+            .is_some_and(|endpoint| endpoint.has_data())
+    }
+
+    fn active_endpoint(&self) -> Option<Arc<RingEndpoint>> {
+        if let Some(endpoint) = self.redirect_endpoint.lock().as_ref() {
+            return Some(endpoint.clone());
         }
-        // Keep the pages pinned for the duration of the read.
-        let guard = self.anchors.lock();
-        if guard.is_none() {
-            return false;
-        }
-        let header = vaddr as *const kbpf_basic::linux_bpf::perf_event_mmap_page;
-        // SAFETY: the header page is live (an anchor pins it under `guard`) and
-        // was initialized by `device_mmap`; plain `u64` fields read as a hint.
-        let (head, tail) = unsafe {
-            (
-                core::ptr::addr_of!((*header).data_head).read_volatile(),
-                core::ptr::addr_of!((*header).data_tail).read_volatile(),
-            )
-        };
-        head != tail
+        self.anchors
+            .lock()
+            .as_ref()
+            .map(|anchors| anchors.endpoint.clone())
     }
 
     /// Register the perf fd poller's waker on the sampling readiness set.
@@ -726,13 +690,12 @@ fn arm_slice(ptc: &PerTaskCounter, slot: usize, now: u64) {
         sampling::register(
             slot,
             SampleSlot {
-                ring_vaddr: ptc.ring_vaddr.load(Ordering::Acquire),
-                ring_len: ptc.ring_len.load(Ordering::Acquire),
+                endpoint: ptc.endpoint_ptr.load(Ordering::Acquire) as *const RingEndpoint,
+                loss: Arc::as_ptr(&ptc.loss),
                 period: ptc.sample_period,
                 sample_type: ptc.sample_type,
                 id: ptc.sample_id.load(Ordering::Relaxed),
                 observer: ptc.observer,
-                notify: ptc.notify_ptr.load(Ordering::Acquire) as *const (),
                 freq: ptc.freq,
                 target_freq: ptc.freq_target,
                 last_time: 0,
@@ -1009,15 +972,14 @@ fn visible_tid(ptc: &PerTaskCounter, identity: &PidIdentity) -> Option<TidNumber
 }
 
 fn sideband_target(ptc: &PerTaskCounter, thread: &Thread) -> Option<SidebandTarget> {
-    let ring_vaddr = ptc.ring_vaddr.load(Ordering::Acquire);
-    if ring_vaddr == 0 || !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
+    if !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
         return None;
     }
+    let endpoint = ptc.active_endpoint()?;
     let pid = visible_tgid(ptc, &thread.proc_data.identity())?;
     let tid = visible_tid(ptc, &thread.pid_identity())?;
     Some(SidebandTarget {
-        ring_vaddr,
-        ring_len: ptc.ring_len.load(Ordering::Acquire),
+        endpoint,
         sample_type: ptc.sample_type,
         sample_id_all: ptc.sample_id_all,
         id: ptc.sample_id.load(Ordering::Relaxed),
@@ -1228,7 +1190,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
     struct InheritSpec {
         cfg: PerTaskConfig,
         sample_id: u64,
-        ring: Option<(usize, usize, Arc<dyn Any + Send + Sync>)>,
+        ring: Option<Arc<RingEndpoint>>,
         is_sampling: bool,
     }
     let specs: Vec<InheritSpec> = {
@@ -1275,8 +1237,10 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         // Share the parent event's id so inherited samples aggregate under it.
         child.set_sample_id(spec.sample_id);
         // Redirect the child's output into the (root) parent ring it inherited.
-        if let Some((vaddr, len, anchor)) = spec.ring {
-            child.set_redirect_ring(vaddr, len, anchor);
+        if let Some(endpoint) = spec.ring
+            && child.set_redirect_ring(endpoint).is_err()
+        {
+            continue;
         }
         attach(child_thr, child);
     }
@@ -1370,13 +1334,10 @@ pub fn free_hw(ptc: &PerTaskCounter) {
             anchors.poll_alive.store(false, Ordering::Release);
             anchors.notify.notify();
         }
-        // Drop a SET_OUTPUT redirect anchor too, if this event was redirected
-        // into another's ring (its own `anchors` is then `None`). Safe after the
-        // slot is unregistered: the handler can no longer reach the target ring.
-        *ptc.redirect_anchor.lock() = None;
-        // Zero the published geometry so no later hook can re-arm a stale ring.
-        ptc.ring_vaddr.store(0, Ordering::Release);
-        ptc.notify_ptr.store(0, Ordering::Release);
+        // Release a redirect only after unregistering the slot, then withdraw
+        // the raw endpoint pointer so no later hook can re-arm stale ownership.
+        *ptc.redirect_endpoint.lock() = None;
+        ptc.endpoint_ptr.store(0, Ordering::Release);
     } else {
         ptc.publish_rdpmc_page(false);
         ptc.release_rdpmc_page();

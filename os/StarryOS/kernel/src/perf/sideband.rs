@@ -24,9 +24,9 @@
 //! The trailer is part of `header.size`; omitting it would desync `perf`'s parser.
 //! [`push_trailer`] appends it when [`SidebandTarget::sample_id_all`] is set.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
-use crate::task::{TgidNumber, TidNumber};
+use crate::{perf::sampling::RingEndpoint, task::{TgidNumber, TidNumber}};
 
 /// `PERF_RECORD_COMM`.
 const PERF_RECORD_COMM: u32 = 3;
@@ -55,10 +55,8 @@ const COMM_MAX: usize = 15;
 /// Where a side-band record is written, plus the parameters of its
 /// `sample_id_all` trailer. Built per monitored event from its `PerTaskCounter`.
 pub struct SidebandTarget {
-    /// Kernel vaddr of the destination ring's header page (`0` ⇒ skip).
-    pub ring_vaddr: usize,
-    /// Total ring length in bytes.
-    pub ring_len: usize,
+    /// Stable destination ring and its shared writer lock.
+    pub endpoint: Arc<RingEndpoint>,
     /// `attr.sample_type` — selects which fields the trailer carries.
     pub sample_type: u64,
     /// Whether to append the `sample_id_all` trailer at all.
@@ -147,14 +145,7 @@ fn finish_and_write(mut b: Vec<u8>, t: &SidebandTarget, type_: u32, misc: u16) {
     b[0..4].copy_from_slice(&type_.to_ne_bytes());
     b[4..6].copy_from_slice(&misc.to_ne_bytes());
     b[6..8].copy_from_slice(&size.to_ne_bytes());
-    if t.ring_vaddr == 0 {
-        return;
-    }
-    // SAFETY: the caller only builds a target with a non-zero `ring_vaddr` for a
-    // ring whose pages are pinned by the owning event for the duration of this
-    // call (the monitored task is the running task issuing the syscall, so the
-    // ring cannot be torn down concurrently on this single-core path).
-    unsafe { super::sampling::ring_write_process(t.ring_vaddr, t.ring_len, &b) };
+    super::sampling::ring_write_process(&t.endpoint, &b);
 }
 
 /// Emit a `PERF_RECORD_COMM` for `comm` (truncated to `TASK_COMM_LEN`).
