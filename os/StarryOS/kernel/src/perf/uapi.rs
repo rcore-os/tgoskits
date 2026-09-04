@@ -205,7 +205,7 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use super::*;
 

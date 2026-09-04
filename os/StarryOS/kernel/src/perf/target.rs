@@ -113,7 +113,7 @@ impl PerfTarget {
     }
 
     /// Returns the deferred CPU selector.
-    #[cfg(test)]
+    #[cfg(all(test, not(axtest)))]
     pub(crate) const fn cpu_request(self) -> PerfCpuRequest {
         match self {
             Self::Task { cpu, .. } | Self::Cpu(cpu) => cpu,
@@ -187,7 +187,7 @@ impl From<TargetError> for StarryError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use super::*;
 
