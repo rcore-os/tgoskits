@@ -89,7 +89,7 @@ $(app_obj_dir)/%.o: $(APP)/%.c $(ulib_hdr) $(last_app_cflags)
 
 $(OUT_ELF): $(libgcc) $(app-objs) $(c_lib) $(rust_lib)
 	@printf "    $(CYAN_C)Linking$(END_C) $(OUT_ELF)\n"
-	@test -n "$(LD_SCRIPT)" || { echo 'linker.x not found under "$(TARGET_DIR)/$(TARGET)/$(MODE)/build/ax-runtime-*/out"'; exit 1; }
+	@test -n "$(LD_SCRIPT)" || { echo 'linker.x not found under "$(TARGET_DIR)/$(TARGET)/$(MODE)/build/ax-runtime-*/out" or "$(TARGET_DIR)/$(TARGET)/$(MODE)/build/ax-runtime/*/out"'; exit 1; }
 	$(call run_cmd,$(LD),$(LDFLAGS) $^ -o $@)
 
 $(APP)/axbuild.mk: ;
