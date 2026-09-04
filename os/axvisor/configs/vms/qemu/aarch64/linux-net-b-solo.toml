@@ -1,0 +1,33 @@
+# Solo Guest B bring-up (Task 2) — pCPU1, UART kept, initramfs peer.
+# Used to validate rdinit=/init + VirtioNet before dual-guest.
+#
+[base]
+id = 1
+name = "linux-qemu-net-b-solo"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [1]
+vcpu_priorities = [10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "/guest/linux/peer-initramfs.cpio"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "rdinit=/init console=ttyAMA0"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0], # 256M MAP_ALLOC
+]
+
+[devices]
+passthrough = []
+disabled = [{ path = "/pcie@10000000" }]
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x03]

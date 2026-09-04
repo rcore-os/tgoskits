@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
@@ -12,7 +12,13 @@ use serde::Deserialize;
 
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
-    assets::axvisor_case_asset_config,
+    assets::{
+        arceos_x86_64_guest_elf_path, arceos_x86_64_guest_request, axvisor_case_asset_config,
+        build_group_needs_arceos_x86_64_guest, case_needs_arceos_x86_64_guest,
+        ensure_arceos_aarch64_smoke_guest_image, ensure_arceos_rt_latency_guest_image,
+        inject_arceos_x86_64_guest_image, vmconfigs_need_arceos_aarch64_smoke_guest,
+        vmconfigs_need_arceos_rt_latency_guest,
+    },
     discover_qemu_cases,
     discovery::{
         discover_test_group_names, qemu_list_error_is_ignorable, test_suite_dir, test_suite_root,
@@ -151,6 +157,28 @@ impl Axvisor {
                 self.app.workspace_root(),
             )
             .await?;
+            if vmconfigs_need_arceos_aarch64_smoke_guest(
+                &build_group.request,
+                &build_group.request.vmconfigs,
+            ) {
+                ensure_arceos_aarch64_smoke_guest_image(self.app.workspace_root())?;
+            }
+            if vmconfigs_need_arceos_rt_latency_guest(
+                self.app.workspace_root(),
+                &build_group.request.vmconfigs,
+            ) {
+                ensure_arceos_rt_latency_guest_image(self.app.workspace_root())?;
+            }
+            if build_group_needs_arceos_x86_64_guest(&build_group.request) {
+                self.build_arceos_x86_64_guest_image()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to build ArceOS guest image for Axvisor qemu build group `{}`",
+                            build_group.group.build_group
+                        )
+                    })?;
+            }
             let output = self
                 .app
                 .build(
@@ -171,6 +199,8 @@ impl Axvisor {
                 index,
             )?);
         }
+
+        prepare_linux_net_guest_assets(self.app.workspace_root(), &cases)?;
 
         // Phase 2: Run all QEMU tests now that every artifact is available.
         let case_groups = build_groups
@@ -311,7 +341,7 @@ impl Axvisor {
         }
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
-        let prepared_assets = test_case::prepare_case_assets(
+        let mut prepared_assets = test_case::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
@@ -320,6 +350,20 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
+        if case_needs_arceos_x86_64_guest(request, case) {
+            inject_arceos_x86_64_guest_image(
+                self.app.workspace_root(),
+                request,
+                case,
+                &mut prepared_assets,
+            )
+            .with_context(|| {
+                format!(
+                    "failed to prepare ArceOS guest image for Axvisor qemu case `{}`",
+                    case.case.case.name
+                )
+            })?;
+        }
         rootfs::patch_qemu_rootfs_path(
             &mut qemu,
             &prepared_assets.rootfs_path,
@@ -437,6 +481,21 @@ impl Axvisor {
         };
 
         combine_results(qemu_result, probe_configured, probe_result)
+    }
+
+    async fn build_arceos_x86_64_guest_image(&mut self) -> anyhow::Result<PathBuf> {
+        let request = arceos_x86_64_guest_request()?;
+        let cargo = crate::arceos::build::load_cargo_config(&request)?;
+        self.app
+            .build(cargo.clone(), request.build_info_path.clone())
+            .await?;
+
+        let elf_path = arceos_x86_64_guest_elf_path(self.app.workspace_root(), request.debug);
+        self.app
+            .prepare_elf_artifact(elf_path.clone(), true)
+            .await?;
+
+        Ok(elf_path.with_extension("bin"))
     }
 }
 
@@ -579,9 +638,81 @@ pub(super) fn plan_qemu_case_artifacts<'case, 'artifact, T>(
         .collect())
 }
 
+fn linux_net_guest_setup_scripts(
+    case_names: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Vec<&'static str> {
+    let mut scripts = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push = |script: &'static str| {
+        if seen.insert(script) {
+            scripts.push(script);
+        }
+    };
+    for case_name in case_names {
+        match case_name.as_ref() {
+            "icpc-smoke" => {
+                push("scripts/task2/setup-peer-initramfs.sh");
+                push("scripts/task2/setup-icpc-smoke.sh");
+            }
+            "icpc-bench" => {
+                push("scripts/task2/setup-peer-initramfs.sh");
+                push("scripts/task2/setup-icpc-bench.sh");
+            }
+            "icpc-acl-deny" => {
+                push("scripts/task2/setup-peer-initramfs.sh");
+                push("scripts/task2/setup-icpc-acl-deny.sh");
+            }
+            "icpc-fault-inject" => {
+                push("scripts/task2/setup-peer-initramfs.sh");
+                push("scripts/task2/setup-icpc-reliability.sh");
+            }
+            "vsw-dual-guest" => {
+                push("scripts/task2/setup-peer-initramfs.sh");
+                push("scripts/task2/setup-udp-probe.sh");
+                push("scripts/task2/setup-icpc-smoke.sh");
+            }
+            "vsw-peer-initramfs" => {
+                push("scripts/task2/setup-peer-initramfs.sh");
+            }
+            "task3-pid-loop" | "task3-pid-compare" => {
+                push("scripts/task2/setup-peer-initramfs.sh");
+                push("scripts/task3/setup-ai-loop.sh");
+            }
+            _ => {}
+        }
+    }
+    scripts
+}
+
+fn prepare_linux_net_guest_assets(
+    workspace_root: &Path,
+    cases: &[PreparedAxvisorQemuCase],
+) -> anyhow::Result<()> {
+    let scripts =
+        linux_net_guest_setup_scripts(cases.iter().map(|case| case.case.case.name.as_str()));
+    for script in scripts {
+        let path = workspace_root.join(script);
+        if !path.is_file() {
+            anyhow::bail!("missing Linux-net guest prep script `{}`", path.display());
+        }
+        let status = std::process::Command::new(&path)
+            .current_dir(workspace_root)
+            .status()
+            .with_context(|| format!("failed to spawn `{}`", path.display()))?;
+        if !status.success() {
+            anyhow::bail!(
+                "Linux-net guest preparation `{}` failed (exit={})",
+                script,
+                status.code().unwrap_or(-1)
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{combine_results, load_axvisor_http_probe_config};
+    use super::{combine_results, linux_net_guest_setup_scripts, load_axvisor_http_probe_config};
 
     fn ok() -> anyhow::Result<()> {
         Ok(())
@@ -660,5 +791,87 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn icpc_smoke_prepares_peer_initramfs_and_client() {
+        assert_eq!(
+            linux_net_guest_setup_scripts(["icpc-smoke"]),
+            [
+                "scripts/task2/setup-peer-initramfs.sh",
+                "scripts/task2/setup-icpc-smoke.sh",
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_linux_net_cases_dedup_peer_initramfs_setup() {
+        assert_eq!(
+            linux_net_guest_setup_scripts(["icpc-smoke", "task3-pid-loop", "smoke"]),
+            [
+                "scripts/task2/setup-peer-initramfs.sh",
+                "scripts/task2/setup-icpc-smoke.sh",
+                "scripts/task3/setup-ai-loop.sh",
+            ]
+        );
+    }
+
+    #[test]
+    fn unrelated_axvisor_cases_do_not_prepare_linux_net_assets() {
+        assert!(linux_net_guest_setup_scripts(["smoke", "linux-smp2"]).is_empty());
+    }
+
+    #[test]
+    fn rt_latency_guest_build_uses_xtask_std_path_not_arceos_make() {
+        // The contest guest baseline compiled arceos-test-suit with the ArceOS
+        // Makefile (`-Z build-std=core,alloc`). That crate enables
+        // `ax-std/arceos` → `std-compat`, which then fails with ax-std/libc
+        // type errors and a missing panic handler. The native baseline already
+        // passes through `cargo xtask arceos`.
+        const SCRIPT: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../os/axvisor/scripts/task1/build-arceos-rt-guest.sh"
+        ));
+        assert!(
+            SCRIPT.contains("cargo xtask arceos build"),
+            "rt-latency guest image must reuse the passing native xtask path"
+        );
+        assert!(
+            SCRIPT.contains("rust-objcopy"),
+            "AxVisor memory load needs a flat binary at 0x8020_0000"
+        );
+        assert!(
+            !SCRIPT.contains("make A="),
+            "ArceOS make + std-compat is the contest Task 1 guest compile failure"
+        );
+    }
+
+    #[test]
+    fn linux_net_setup_scripts_pull_alpine_rootfs_before_debugfs() {
+        // Contest Task 2 first failed because setup-icpc-guests.sh wrote into
+        // Alpine with debugfs before `cargo xtask image pull` had created the
+        // managed rootfs.
+        const PEER: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/task2/setup-peer-initramfs.sh"
+        ));
+        const SMOKE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/task2/setup-icpc-smoke.sh"
+        ));
+        const AI: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/task3/setup-ai-loop.sh"
+        ));
+        for source in [PEER, SMOKE, AI] {
+            assert!(
+                source.contains("ensure-alpine-rootfs.sh"),
+                "Linux-net setup must pull Alpine before debugfs injection"
+            );
+            assert!(
+                !source.contains("rootfs image missing"),
+                "setup scripts should pull a missing Alpine image instead of exiting"
+            );
+        }
     }
 }

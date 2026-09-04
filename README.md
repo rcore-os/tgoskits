@@ -12,6 +12,38 @@
 
 English | [中文](README_CN.md)
 
+---
+
+<table>
+<tr>
+<td>
+
+### 📋 OpenRace Project · Operational Verification Guide
+
+For **reviewers, reproducibility checks, and submission validation**, start here: **[plans/操作检查指南.md](plans/操作检查指南.md)** (Chinese; full step-by-step guide).
+
+Test cases are launched via **executable scripts** under `scripts/task1/`, `scripts/task2/`, and `scripts/task3/` at the repository root (each script runs setup, `cargo xtask`, and report archival). Pull guest images once before the first run:
+
+```bash
+cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
+```
+
+**Quick smoke path (~20–40 min):**
+
+```bash
+./scripts/task1/run-rt-baseline.sh
+./scripts/task2/run-icpc-smoke.sh
+./scripts/task3/run-task3-pid-loop.sh
+```
+
+Script tables, PASS criteria, and submission reports under `plans/*-reports/` are documented in the **[操作检查指南](plans/操作检查指南.md)**.
+
+</td>
+</tr>
+</table>
+
+---
+
 ## 1. Introduction
 
 TGOSKits is an integrated repository for operating system and virtualization development. It brings together ArceOS, StarryOS, Axvisor, shared components, platform crates, and driver infrastructure in one workspace. A unified `cargo xtask` entry point is used for build, run, debug, and test workflows, making the repository suitable for component development, cross-system integration, and system-level validation.

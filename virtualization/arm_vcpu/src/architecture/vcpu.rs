@@ -66,6 +66,8 @@ pub struct ArmVcpu<H: ArmHostOps> {
     timer: ArmVcpuTimer,
     /// The MPIDR_EL1 value for the vCPU.
     mpidr: u64,
+    /// When set, guest timer/counter registers are not saved or restored on VM exit.
+    passthrough_timer: bool,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -173,6 +175,7 @@ pub struct ArmVcpuCreateConfig {
 pub struct ArmVcpuSetupConfig {
     timer: ArmTimerVmConfig,
     host_irq: ArmHostIrqConfig,
+    passthrough_timer: bool,
 }
 
 impl ArmVcpuSetupConfig {
@@ -181,7 +184,17 @@ impl ArmVcpuSetupConfig {
     ///
     /// Every vCPU in one VM must receive the same immutable configuration.
     pub const fn new(timer: ArmTimerVmConfig, host_irq: ArmHostIrqConfig) -> Self {
-        Self { timer, host_irq }
+        Self {
+            timer,
+            host_irq,
+            passthrough_timer: false,
+        }
+    }
+
+    /// Enables direct guest timer ownership when the VM uses passthrough layout.
+    pub const fn with_passthrough_timer(mut self, passthrough_timer: bool) -> Self {
+        self.passthrough_timer = passthrough_timer;
+        self
     }
 
     /// Returns the VM-wide timer configuration.
@@ -192,6 +205,11 @@ impl ArmVcpuSetupConfig {
     /// Returns the host IRQ interface consumed by the world-switch assembly.
     pub const fn host_irq(self) -> ArmHostIrqConfig {
         self.host_irq
+    }
+
+    /// Returns whether guest timers bypass hypervisor save/restore.
+    pub const fn passthrough_timer(self) -> bool {
+        self.passthrough_timer
     }
 }
 
@@ -207,12 +225,14 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             guest_system_regs: GuestSystemRegisters::default(),
             timer: ArmVcpuTimer::unconfigured(),
             mpidr: config.mpidr_el1,
+            passthrough_timer: false,
             _host: PhantomData,
         })
     }
 
     /// Completes architecture-specific setup.
     pub fn setup(&mut self, config: ArmVcpuSetupConfig) -> ArmVcpuResult {
+        self.passthrough_timer = config.passthrough_timer();
         self.init_hv(config);
         Ok(())
     }
@@ -304,9 +324,11 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
     /// Init guest context. Also set some el2 register value.
     fn init_vm_context(&mut self, config: ArmVcpuSetupConfig) {
-        // CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-        let guest_hypervisor_control =
-            (CNTHCTL_EL2::EL1PCEN::CLEAR + CNTHCTL_EL2::EL1PCTEN::CLEAR).into();
+        let guest_hypervisor_control = if config.passthrough_timer() {
+            (CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET).into()
+        } else {
+            (CNTHCTL_EL2::EL1PCEN::CLEAR + CNTHCTL_EL2::EL1PCTEN::CLEAR).into()
+        };
         self.timer = ArmVcpuTimer::new(config.timer(), guest_hypervisor_control);
         self.host.irq_interface = config.host_irq().interface();
         self.host.irq_cpu_interface_base = config.host_irq().cpu_interface_base();
@@ -412,7 +434,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
                 mov x3, xzr           // Trap nothing from EL1 to El2.
                 msr cptr_el2, x3"
             );
-            self.guest_system_regs.restore();
+            self.guest_system_regs.restore(!self.passthrough_timer);
             core::arch::asm!(
                 "
                 ic  iallu
@@ -443,7 +465,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         unsafe {
             // Store guest system regs. Guest SP_EL0 was already saved into `self.ctx`
             // by the EL2 assembly before host SP_EL0 was restored.
-            self.guest_system_regs.store();
+            self.guest_system_regs.store(!self.passthrough_timer);
         }
 
         let result = match exit_reason {

@@ -15,4 +15,4 @@ features = [
   "rk3588-pwm",
 ]
 log = "Info"
-max_cpu_num = 8
+max_cpu_num = 1

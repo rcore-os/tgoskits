@@ -1,0 +1,13 @@
+# Remote Orange Pi 5 Plus runtime config. The build config is orangepi-5-plus.toml.
+board_type = "OrangePi-5-Plus"
+dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "echo STARRY_ORANGEPI_BOOT_OK"
+success_regex = ["(?m)^STARRY_ORANGEPI_BOOT_OK\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+]
+timeout = 600

@@ -1,0 +1,11 @@
+features = [
+    "rt-latency",
+    "rt-latency-guest",
+    "rt-latency-stress-short",
+]
+log = "Info"
+max_cpu_num = 1
+
+[env]
+BACKTRACE = "y"
+DWARF = "y"

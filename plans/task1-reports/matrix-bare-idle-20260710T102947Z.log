@@ -1,0 +1,166 @@
+[task1] Running ArceOS rt-latency bare-metal baseline on QEMU aarch64...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running `/tmp/cursor-sandbox-cache/72301166be850ad3fa0399927de31e1a/cargo-target/debug/tg-xtask arceos test qemu --arch aarch64 -g rust -c rt-latency`
+[2026-07-10T10:29:47Z INFO  axbuild::context] Workspace root: /home/allen/codes/os/tgoskits
+running arceos rust qemu tests for arch: aarch64 (target: aarch64-unknown-none-softfloat, cases: 1)
+Using build config: /home/allen/codes/os/tgoskits/test-suit/arceos/rust/build-aarch64-unknown-none-softfloat.toml
+[2026-07-10T10:29:47Z INFO  axbuild::build::config_file] Found build config at /home/allen/codes/os/tgoskits/test-suit/arceos/rust/build-aarch64-unknown-none-softfloat.toml
+[2026-07-10T10:29:47Z INFO  ostool::run::qemu] Using QEMU config file: /home/allen/codes/os/tgoskits/test-suit/arceos/rust/qemu-aarch64.toml
+generating /home/allen/codes/os/tgoskits/tmp/axbuild/runtime-assets/arceos/rust/disk.img ...
+generating /home/allen/codes/os/tgoskits/tmp/axbuild/runtime-assets/arceos/rust/disk.img ... done
+[axbuild] cargo build package=arceos-test-suit target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/arceos/rust/build-aarch64-unknown-none-softfloat.toml ...
+sh -c /home/allen/codes/os/tgoskits/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-7ebeb592af4fabe9.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+BACKTRACE=y
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl --sysroot=/home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl --gcc-toolchain=/home/allen/tools/aarch64-linux-musl-cross -isystem /home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl/include -isystem /home/allen/tools/aarch64-linux-musl-cross/lib/gcc/aarch64-linux-musl/11.2.1/include -mgeneral-regs-only
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only
+DWARF=y
+SMP=4
+cargo build --config /home/allen/codes/os/tgoskits/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p arceos-test-suit --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/allen/codes/os/tgoskits/target --features ax-std/smp,ax-std/std-compat,rt-latency -Z json-target-spec --release --message-format json-render-diagnostics
+warning: function `set_fdt_addr_phys_if_valid` is never used
+  --> platforms/someboot/src/fdt/mod.rs:32:15
+   |
+32 | pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `someboot` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.25s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/allen/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.2
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/arceos-test-suit
+  bin: /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/arceos-test-suit.bin
+/home/allen/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/arceos-test-suit /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/arceos-test-suit.bin
+[axbuild] cargo build package=arceos-test-suit target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/arceos/rust/build-aarch64-unknown-none-softfloat.toml ... done (634.70ms)
+[axbuild] cargo build elf=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/arceos-test-suit
+[axbuild] cargo build artifact_dir=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release
+[1/1] arceos rust qemu rt-latency
+  host http server: 127.0.0.1:18181
+[axbuild] qemu run package=arceos-test-suit target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ...
+qemu-system-aarch64 -machine virt,gic-version=3 -m 256M -cpu cortex-a72 -smp 4 -device virtio-blk-device,drive=disk0 -drive id=disk0,if=none,format=raw,file=/home/allen/codes/os/tgoskits/tmp/axbuild/runtime-assets/arceos/rust/disk.img -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -device virtio-gpu-pci -display none -serial mon:stdio -kernel /home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/arceos-test-suit.bin
+VM Load @0x40200000
+VM Load Offset: 0xc0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000041e00000 (28 MiB)
+  Free   0x00000041e00000 - 0x00000050000000 (226 MiB)
+Initialize RAM allocator: 0x41e00000..0x50000000
+Initializing per-CPU data
+Per-CPU data one cpu size: 0x41000 bytes
+Total per-CPU data size for secondary CPUs: 0x104000 bytes (4 CPUs)
+Flushed RAM used range to memory map: 0x41e00000..0x41f00000, current: 0x41f00000
+Flushed RAM used range to memory map: 0x41f00000..0x42004000, current: 0x42004000
+Per-CPU data allocated at 0x41f00000 - 0x42004000
+Initializing per-CPU RAM for CPU0 - hard id 0x0 @ 0x41f00000
+Initializing per-CPU RAM for CPU1 - hard id 0x1 @ 0x41f41000
+Initializing per-CPU RAM for CPU2 - hard id 0x2 @ 0x41f82000
+Initializing per-CPU RAM for CPU3 - hard id 0x3 @ 0x41fc3000
+CPU0 - hard id 0x0, stack top @0x41f41000, stack top virt @0xffffff0041f41000, entry virt @0xffffffff8003102c
+CPU1 - hard id 0x1, stack top @0x41f82000, stack top virt @0xffffff0041f82000, entry virt @0xffffffff8003102c
+CPU2 - hard id 0x2, stack top @0x41fc3000, stack top virt @0xffffff0041fc3000, entry virt @0xffffffff8003102c
+CPU3 - hard id 0x3, stack top @0x42004000, stack top virt @0xffffff0042004000, entry virt @0xffffffff8003102c
+EL: 1
+Mapping early memory regions...
+Ram                 : [0xffff000040000000, 0xffff000050000000) -> [0x0000000040000000, 0x0000000050000000) (256 MiB)
+KImage              : [0xffffffff80000000, 0xffffffff81c00000) -> [0x0000000040200000, 0x0000000041e00000) (28 MiB)
+PerCpu              : [0xffffff0041f00000, 0xffffff0042004000) -> [0x0000000041f00000, 0x0000000042004000) (1.02 MiB)
+Debug serial        : [0xffff000009000000, 0xffff000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: 0x42004000
+Setting up table registers...
+MMU Entry point at physical address: 0x4023431c
+Trap vector at 0xffffffff80036800
+Memory Map:
+  MMIO   0x00000004000000 - 0x00000008010000 (64.06 MiB)
+  MMIO   0x00000008080000 - 0x00000009001000 (15.5 MiB)
+  MMIO   0x00000009010000 - 0x00000009011000 (4 KiB)
+  MMIO   0x00000009020000 - 0x00000009021000 (4 KiB)
+  MMIO   0x00000009030000 - 0x00000009031000 (4 KiB)
+  MMIO   0x0000000a000000 - 0x0000000a004000 (16 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000041e00000 (28 MiB)
+  Rsv    0x00000041e00000 - 0x00000041f00000 (1 MiB)
+  PerCPU 0x00000041f00000 - 0x00000042004000 (1.02 MiB)
+  Rsv    0x00000042004000 - 0x0000004200f000 (44 KiB)
+  Free   0x0000004200f000 - 0x00000050000000 (223.94 MiB)
+  MMIO   0x00004010000000 - 0x00004020000000 (256 MiB)
+Jumping to main entry point at 0xffffffff8001c3d8 with SP 0xffffff0041f41000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 4
+
+[37m[  0.063649 ax_runtime:211] [32mLogging is enabled.[m
+[m[37m[  0.064133 ax_runtime:212] [32mPrimary CPU 0 started, arg = 0x41e00000.[m
+[m[37m[  0.064235 ax_runtime:214] [32mFound physcial memory regions:[m
+[m[37m[  0.065289 ax_runtime:216] [32m  [PA:0x4000000, PA:0x8010000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.065557 ax_runtime:216] [32m  [PA:0x8080000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.065671 ax_runtime:216] [32m  [PA:0x9010000, PA:0x9011000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.065781 ax_runtime:216] [32m  [PA:0x9020000, PA:0x9021000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.065890 ax_runtime:216] [32m  [PA:0x9030000, PA:0x9031000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.065998 ax_runtime:216] [32m  [PA:0xa000000, PA:0xa004000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.066106 ax_runtime:216] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.066242 ax_runtime:216] [32m  [PA:0x40200000, PA:0x41e00000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.066360 ax_runtime:216] [32m  [PA:0x41e00000, PA:0x41f00000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.066473 ax_runtime:216] [32m  [PA:0x41f00000, PA:0x42004000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.066586 ax_runtime:216] [32m  [PA:0x42004000, PA:0x4200f000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.066702 ax_runtime:216] [32m  [PA:0x4200f000, PA:0x50000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.066808 ax_runtime:216] [32m  [PA:0x4010000000, PA:0x4020000000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.066944 ax_runtime:358] [32mInitialize global memory allocator...[m
+[m[37m[  0.067047 ax_runtime:359] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  0.067304 ax_alloc::buddy_slab:150] [32mInitialize global memory allocator, start_vaddr: 0xffff00004200f000, size: 0xdff1000[m
+[m[37m[  0.067977 ax_alloc::buddy_slab:399] [32mglobal allocator initialized[m
+[m[37m[  0.068197 ax_alloc::buddy_slab:160] [32mAdd memory region, start_vaddr: 0xffff000040000000, size: 0x200000[m
+[m[37m[  0.068367 buddy_slab_allocator::global:143] [32mGlobalAllocator: skip region 0xffff000040000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  0.068722 ax_runtime:251] [32mkernel aspace: [VA:0xffff000000000000, VA:0xffffffffffffffff)[m
+[m[37m[  0.068885 ax_mm:112] [32mInitialize virtual memory management...[m
+[m[37m[  0.113902 ax_runtime:263] [32mInitialize platform devices...[m
+[m[37m[  0.120942 someboot::arch::power:23] [32mPower management method : HVC[m
+[m[37m[  0.121137 somehal::driver:5] [32mInitializing rdrive with FDT at 0xffff000041e00000[m
+[m[37m[  0.145599 ax_task::api:146] [32mInitialize scheduling...[m
+[m[37m[  0.146690 ax_task::api:151] [32m  use FIFO scheduler.[m
+[m[37m[  0.146795 ax_runtime:289] [32mInitialize interrupt handlers...[m
+[m[37m[  0.149243 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  0.160974 ax_runtime::mp:79] [32mSecondary CPU 1 started.[m
+[m[37m[  0.162858 ax_runtime::mp:107] [32mSecondary CPU 1 init OK.[m
+[m[37m[  0.168032 ax_runtime::mp:79] [32mSecondary CPU 2 started.[m
+[m[37m[  0.169704 ax_runtime::mp:107] [32mSecondary CPU 2 init OK.[m
+[m[37m[  0.174990 ax_runtime::mp:79] [32mSecondary CPU 3 started.[m
+[m[37m[  0.175048 ax_runtime:334] [32mPrimary CPU 0 init OK.[m
+[m[37m[  0.176366 ax_runtime::mp:107] [32mSecondary CPU 3 init OK.[m
+[mArceOS test suite run begin: 1 tests
+ARCEOS_TEST_BEGIN feature=rt-latency name=periodic wake-up jitter baseline
+RT_LATENCY mode=bare period_ms=1 samples=200 mean_jitter_ns=63411 p99_jitter_ns=309312 p999_jitter_ns=324016 max_jitter_ns=985200
+RT_LATENCY mode=bare period_ms=10 samples=200 mean_jitter_ns=114267 p99_jitter_ns=467952 p999_jitter_ns=579152 max_jitter_ns=682560
+RT_LATENCY_PASS
+=== SUCCESS PATTERN MATCHED: (?m)^RT_LATENCY_PASS\s*$ ===
+
+ARCEOS_TEST_END feature=rt-latency name=periodic wake-up jitter baseline status=pass elapsed_ms=2237
+ArceOS test suite run OK!
+[axbuild] qemu run package=arceos-test-suit target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ... done (2.49s)
+ok: rt-latency (2.61s)
+
+arceos rust qemu test summary:
+  PASS rt-latency (2.61s)
+result: 1/1 case(s) passed
+total: 3.24s
+all arceos rust qemu tests passed

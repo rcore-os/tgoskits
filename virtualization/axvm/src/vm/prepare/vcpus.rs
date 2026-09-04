@@ -12,6 +12,7 @@ pub(crate) struct VcpuPlacement {
     pub(crate) id: usize,
     pub(crate) phys_cpu_set: Option<usize>,
     pub(crate) phys_cpu_id: usize,
+    pub(crate) host_sched_priority: Option<i32>,
 }
 
 pub(crate) struct PreparedVcpus {
@@ -46,6 +47,7 @@ impl PreparedVcpus {
                 vm_id,
                 placement.id,
                 placement.phys_cpu_set,
+                placement.host_sched_priority,
                 arch_config,
             )?));
         }
@@ -102,6 +104,7 @@ impl AxVMResources {
                 id,
                 phys_cpu_set,
                 phys_cpu_id,
+                host_sched_priority: config.phys_cpu_ls.vcpu_priority(id),
             })
             .collect()
     }

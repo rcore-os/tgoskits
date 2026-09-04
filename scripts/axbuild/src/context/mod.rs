@@ -28,6 +28,7 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 mod types;
+mod uboot;
 mod workspace;
 
 pub(crate) use arch::{
@@ -290,7 +291,11 @@ impl AppContext {
         result
     }
 
-    pub(crate) async fn run_prepared_uboot(&mut self, uboot: UbootConfig) -> anyhow::Result<()> {
+    pub(crate) async fn run_prepared_uboot(
+        &mut self,
+        mut uboot: UbootConfig,
+    ) -> anyhow::Result<()> {
+        uboot::normalize_uboot_config_for_local_backend(&mut uboot);
         let stage = StageLog::start("uboot run prepared artifact");
         let result = ostool_uboot::run_uboot(&mut self.invocation, &uboot).await;
         if result.is_ok() {
@@ -440,7 +445,10 @@ impl AppContext {
         cargo: &Cargo,
         path: &Path,
     ) -> anyhow::Result<UbootConfig> {
-        ostool_uboot::read_config_from_path_for_cargo(&self.invocation, cargo, path).await
+        let mut config =
+            ostool_uboot::read_config_from_path_for_cargo(&self.invocation, cargo, path).await?;
+        uboot::normalize_uboot_config_for_local_backend(&mut config);
+        Ok(config)
     }
 
     pub(crate) async fn ensure_uboot_config_for_cargo(

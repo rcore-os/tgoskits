@@ -21,6 +21,8 @@ targets = ["aarch64-unknown-none-softfloat"]
 default = []
 host-test = ["ax-sync/host-test"]
 vgicv3 = []
+# Task 1 pre-opt: extra emulated timer slack (hypervisor timer wheel latency).
+task1-slow-vtimer = []
 
 [dependencies]
 ax-sync.workspace = true

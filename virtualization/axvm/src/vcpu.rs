@@ -94,6 +94,7 @@ struct AxVCpuInnerConst {
     vcpu_id: VCpuId,
     phys_cpu_set: Option<usize>,
     guest_mpidr: Option<u64>,
+    host_sched_priority: Option<i32>,
 }
 
 #[allow(dead_code)]
@@ -157,6 +158,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         vm_id: VMId,
         vcpu_id: VCpuId,
         phys_cpu_set: Option<usize>,
+        host_sched_priority: Option<i32>,
         arch_config: A::CreateConfig,
     ) -> AxVmResult<Self> {
         let guest_mpidr = A::guest_mpidr_from_create_config(&arch_config);
@@ -166,6 +168,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
                 vcpu_id,
                 phys_cpu_set,
                 guest_mpidr,
+                host_sched_priority,
             },
             inner_mut: Mutex::new(AxVCpuInnerMut {
                 state: VmVcpuState::Created,
@@ -216,6 +219,11 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// Returns the guest-visible MPIDR affinity for this vCPU, when the architecture has one.
     pub const fn guest_mpidr(&self) -> Option<u64> {
         self.inner_const.guest_mpidr
+    }
+
+    /// Returns the configured host scheduler nice value for this vCPU.
+    pub const fn host_sched_priority(&self) -> Option<i32> {
+        self.inner_const.host_sched_priority
     }
 
     /// Returns the current vCPU state.

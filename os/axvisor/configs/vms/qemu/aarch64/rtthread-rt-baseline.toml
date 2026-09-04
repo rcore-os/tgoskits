@@ -1,0 +1,27 @@
+# Vm base info configs — RT-Thread RTOS guest for Task 1 (QEMU virt / qemu-virt64-aarch64 BSP)
+#
+# Build with: os/axvisor/scripts/task1/build-rtthread-rt-guest.sh
+# Or pull a prebuilt image after building once locally.
+#
+[base]
+id = 1
+name = "rtthread-rt-baseline"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [3]
+vcpu_priorities = [-20]
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "memory"
+kernel_path = "../../../../images/qemu_aarch64_rtthread/qemu-aarch64-rtthread-bench"
+kernel_load_addr = 0x4008_0000
+dtb_load_addr = 0x47e0_0000
+
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = [{ path = "/pcie@10000000" }]

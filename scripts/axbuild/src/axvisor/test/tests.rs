@@ -8,6 +8,23 @@ use tempfile::tempdir;
 use super::*;
 use crate::{axvisor::build, context::ResolvedAxvisorRequest};
 
+#[derive(serde::Deserialize)]
+struct TestBuildConfigVmConfigs {
+    #[serde(default)]
+    vm_configs: Vec<PathBuf>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmKernelConfig {
+    kernel: TestVmKernel,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmKernel {
+    #[serde(default)]
+    cmdline: String,
+}
+
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
     write_qemu_config_in_group(root, "normal", "default", case, arch, body)
 }
@@ -87,6 +104,35 @@ fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRe
         qemu_config: None,
         uboot_config: None,
         vmconfigs: Vec::new(),
+    }
+}
+
+#[test]
+fn orangepi_guest_board_cases_use_matching_vm_configs() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (board_name, expected_vm_config) in [
+        (
+            "orangepi-5-plus-linux",
+            "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml",
+        ),
+        (
+            "orangepi-5-plus-starry",
+            "os/axvisor/configs/vms/orangepi-5-plus/starry-smp1.toml",
+        ),
+    ] {
+        let groups =
+            discover_board_test_groups(&workspace_root, "normal", Some("smoke"), Some(board_name))
+                .unwrap();
+        assert_eq!(groups.len(), 1, "expected smoke case for {board_name}");
+
+        let build_config = fs::read_to_string(&groups[0].build_config).unwrap();
+        let build_config: TestBuildConfigVmConfigs = toml::from_str(&build_config).unwrap();
+        assert_eq!(
+            build_config.vm_configs,
+            [PathBuf::from(expected_vm_config)],
+            "{board_name} should select its matching guest VM config"
+        );
     }
 }
 
@@ -573,6 +619,36 @@ fn discovers_uboot_test_group_from_board_cases() {
     assert_eq!(group.board_name, "rdk-s100-linux");
     assert_eq!(group.build_config, build_config);
     assert_eq!(group.board_test_config_path, board_test_config);
+}
+
+#[test]
+fn aarch64_timer_stress_vm_configs_carry_guest_cmdline() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (path, timer_case) in [
+        (
+            "test-suit/axvisor/normal/qemu-timer-stress/aarch64-linux-timer-stress-v2.toml",
+            "axvisor.timer_case=gicv2",
+        ),
+        (
+            "test-suit/axvisor/normal/qemu-timer-stress/aarch64-linux-timer-stress.toml",
+            "axvisor.timer_case=gicv3-its",
+        ),
+    ] {
+        let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+        let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+        let cmdline = config.kernel.cmdline;
+
+        assert!(
+            cmdline.contains("rdinit=/init"),
+            "{path} must set rdinit=/init in kernel.cmdline so the BusyBox initramfs test entry \
+             runs"
+        );
+        assert!(
+            cmdline.contains(timer_case),
+            "{path} must set {timer_case} in kernel.cmdline; outer QEMU -append does not reach \
+             the nested Linux guest"
+        );
+    }
 }
 
 #[test]

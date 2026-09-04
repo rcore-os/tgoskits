@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Context;
 use ostool::{board::RunBoardOptions, run::uboot::UbootConfig};
 
@@ -137,6 +139,9 @@ impl Axvisor {
             }
 
             let result = async {
+                if group.name.starts_with("board-orangepi-5-plus-mixed-rt") {
+                    prepare_orangepi_task1_board_guests(self.app.workspace_root())?;
+                }
                 let request = self.prepare_request(
                     axvisor_board_test_build_args(&group),
                     None,
@@ -226,6 +231,24 @@ fn axvisor_board_test_build_args(group: &BoardTestGroup) -> AxvisorCliArgs {
         debug: false,
         vmconfigs: Vec::new(),
     }
+}
+
+fn prepare_orangepi_task1_board_guests(workspace_root: &Path) -> anyhow::Result<()> {
+    let script = workspace_root.join("scripts/task1/prepare-board-mixed-rt-guests.sh");
+    if !script.is_file() {
+        anyhow::bail!("missing Task1 board prep script `{}`", script.display());
+    }
+    let status = std::process::Command::new(&script)
+        .current_dir(workspace_root)
+        .status()
+        .with_context(|| format!("failed to spawn `{}`", script.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "Task1 board guest preparation failed (exit={})",
+            status.code().unwrap_or(-1)
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

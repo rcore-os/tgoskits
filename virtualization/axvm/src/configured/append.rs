@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn console_override_and_extra_serial_share_deterministic_planning() {
         let config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
             virtual_device_catalog: registered_catalog(),
             virtual_device_requests: vec![
                 VirtualDeviceRequest {
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn ivc_channel_uses_resolved_notify_irq_and_planned_mmio_aperture() {
         let config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
             virtual_device_catalog: registered_catalog(),
             virtual_device_requests: vec![VirtualDeviceRequest {
                 id: "ivc0".into(),

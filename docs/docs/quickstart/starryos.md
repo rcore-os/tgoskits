@@ -332,6 +332,40 @@ owned-DMA、IRQ-only 实现与 crate 级测试，但不提供 `ax-driver` 注册
 尚未满足完整写入、fsync、校验和与 teardown 矩阵；在这些证据补齐前，不应将
 对应路径当作受支持的根文件系统配置。
 
+### 3.2 Orange Pi 5 Plus（RK3588）
+
+完整刷写说明见 [StarryOS 实板刷写参考（RK3588 / VisionFive 2）](../../../os/StarryOS/doc/board-flash-rk3588-visionfive2.md)。
+
+```bash
+cargo starry defconfig orangepi-5-plus
+cargo starry build
+
+# 远程 ostool
+cargo starry board \
+  --board-config os/StarryOS/configs/board/orangepi-5-plus-board.toml
+
+# 或 test-suit 冒烟
+cargo starry test board --board orangepi-5-plus -c board-orangepi-5-plus/boot
+
+# 本地 U-Boot 串口（1500000 波特率）
+cargo starry uboot \
+  --uboot-config os/StarryOS/configs/board/orangepi-5-plus-uboot.toml
+```
+
+### 3.3 VisionFive 2
+
+详见同一篇 [实板刷写参考](../../../os/StarryOS/doc/board-flash-rk3588-visionfive2.md)。
+
+```bash
+cargo starry defconfig visionfive2
+cargo starry build
+
+cargo starry board \
+  --board-config os/StarryOS/configs/board/visionfive2-board.toml
+
+cargo starry test board --board visionfive2 -c board-visionfive2/boot
+```
+
 ## 4. 测试入口
 
 StarryOS 除了单次启动外，更常见的验证方式是直接进入测试套件。这里的命令会读取 `test-suit/starryos` 下的用例配置并运行；迁出的压力测试通过 Starry app 命令显式选择。

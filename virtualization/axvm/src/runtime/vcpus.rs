@@ -290,7 +290,13 @@ pub(crate) fn vcpu_on(
             .map_err(|_| VcpuOnError::StartFailed)?;
 
         let vcpu_task = build_vcpu_task(&vm, vcpu.clone());
-        spawn_registered_vcpu_task(vm.id(), vcpu_id, runtime.clone(), vcpu_task);
+        spawn_registered_vcpu_task(
+            vm.id(),
+            vcpu_id,
+            runtime.clone(),
+            vcpu_task,
+            vcpu.host_sched_priority(),
+        );
         runtime.notify_all();
 
         runtime.wait_until(|| ack.is_complete() || !vm.running());
@@ -336,14 +342,23 @@ pub(crate) fn spawn_registered_vcpu_task(
     vcpu_id: usize,
     runtime: std::sync::Arc<VmRuntimeHandle>,
     task: crate::TaskInner,
+    host_sched_priority: Option<i32>,
 ) -> crate::AxTaskRef {
-    crate::host::task::spawn_task_with(task, |task_ref| {
+    let task_ref = crate::host::task::spawn_task_with(task, |task_ref| {
         runtime
             .add_vcpu_task(vcpu_id, task_ref.clone())
             .unwrap_or_else(|error| {
                 panic!("VM[{vm_id}] vCPU[{vcpu_id}] task registration failed: {error}")
             });
-    })
+    });
+    if let Some(priority) = host_sched_priority {
+        if crate::host::task::set_task_priority(&task_ref, priority as isize) {
+            info!("VM[{vm_id}] VCpu[{vcpu_id}] host nice set to {priority}");
+        } else {
+            warn!("VM[{vm_id}] VCpu[{vcpu_id}] failed to apply host nice {priority}");
+        }
+    }
+    task_ref
 }
 
 fn spawn_deferred_reset_task(vm_id: usize) {

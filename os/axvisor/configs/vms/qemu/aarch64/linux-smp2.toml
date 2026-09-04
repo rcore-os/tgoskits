@@ -1,0 +1,32 @@
+# Vm base info configs — Linux 2 vCPU guest for Task 1 (AI / stress domain)
+#
+# pCPU layout (QEMU virt, 4 cores):
+#   pCPU0: AxVisor host
+#   pCPU1-2: this guest (vCPU0-1)
+#   pCPU3: RTOS guest (see arceos-rt-smp1.toml)
+#
+[base]
+id = 1
+name = "linux-qemu-smp2"
+guest_type = "passthrough"
+cpu_num = 2
+phys_cpu_ids = [0, 1]
+vcpu_priorities = [10, 10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+cmdline = "root=/dev/vda rw init=/bin/sh console=ttyAMA0"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 1], # System RAM 1G MAP_IDENTICAL
+]
+
+# Host AxVisor keeps the PCIe NVMe for its own filesystem (kernel loading);
+# the guest boots from the passthrough virtio-blk disk (root=/dev/vda).
+[devices]
+passthrough = []
+disabled = [{ path = "/pcie@10000000" }]

@@ -671,6 +671,10 @@ def _container_image(environment: str, repository: str) -> str:
     repository = repository.lower()
     if environment == "host":
         return ""
+    if repository != "rcore-os/tgoskits":
+        # Forks reuse upstream published CI images until they publish their own.
+        # Pulling `ghcr.io/<fork>-container:latest` fails with `manifest unknown`.
+        repository = "rcore-os/tgoskits"
     if environment == "base":
         return f"ghcr.io/{repository}-container:latest"
     if environment == "axvisor-lvz":

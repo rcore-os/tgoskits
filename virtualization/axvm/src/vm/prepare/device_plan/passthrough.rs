@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn host_replacement_range_is_not_reserved_as_passthrough() {
         let config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
             pass_through_devices: std::vec![HostDeviceAssignment {
                 name: "clock-controller@fd7c0000".into(),
                 base_gpa: 0xfd7c_0000,

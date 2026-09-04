@@ -228,7 +228,7 @@ mod tests {
             clippy::arc_with_non_send_sync,
             reason = "the AxVCpuRef API requires Arc while this fake vCPU remains single-threaded"
         )]
-        Arc::new(crate::vcpu::AxVCpu::<RecordingVcpu>::new(1, 0, None, registers).unwrap())
+        Arc::new(crate::vcpu::AxVCpu::<RecordingVcpu>::new(1, 0, None, None, registers).unwrap())
     }
 
     #[test]

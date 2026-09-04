@@ -1,0 +1,45 @@
+# Linux Guest B — Task 2 dual-guest peer (10.0.9.3)
+#
+# pCPU3, VirtioNet on global vsw.
+# Boots from a private initramfs (no shared block device with Guest A).
+#
+[base]
+id = 2
+name = "linux-qemu-net-b"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [3]
+vcpu_priorities = [10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "/guest/linux/peer-initramfs.cpio"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "rdinit=/init console=ttyAMA0"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+# Guest A already owns the SPI-backed platform devices (pl061 GPIO INTID 39,
+# pl031 RTC INTID 34). Physical SPI routes are exclusive per VM, so Guest B
+# (initramfs-only, virtual virtio-net) must not claim them or VM creation fails
+# with "host INTID ... is already assigned to another VM".
+[devices]
+passthrough = []
+disabled = [
+  { path = "/pcie@10000000" },
+  { path = "/pl061@9030000" },
+  { path = "/pl031@9010000" },
+  { path = "/gpio-keys" },
+]
+
+# mac 02:00:00:00:00:03
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x03]

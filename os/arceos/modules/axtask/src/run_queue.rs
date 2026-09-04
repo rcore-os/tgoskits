@@ -704,6 +704,11 @@ impl<G: GuardState> AxRunQueueRef<G> {
             kick_remote_cpu(cpu_id);
         }
     }
+
+    pub fn set_task_priority(&mut self, task: &AxTaskRef, prio: isize) -> bool {
+        task.set_sched_priority(prio as i32);
+        self.inner.scheduler.lock().set_priority(task, prio)
+    }
 }
 
 /// Core functions of run queue.

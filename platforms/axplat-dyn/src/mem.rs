@@ -7,9 +7,11 @@ use heapless::Vec;
 use someboot::ArchTrait;
 use somehal::mem::MemoryType;
 
+const MMIO_REGION_CAPACITY: usize = 128;
+
 static FREE_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
 static RESERVED_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
-static MMIO_LIST: OnceLock<Vec<RawRange, 16>> = OnceLock::new();
+static MMIO_LIST: OnceLock<Vec<RawRange, MMIO_REGION_CAPACITY>> = OnceLock::new();
 
 #[cfg(target_arch = "x86_64")]
 const X86_FIXED_MMIO_RANGES: &[RawRange] = &[
@@ -205,5 +207,15 @@ fn to_somehal_dcache_op(op: DCacheOp) -> somehal::cache::DCacheOp {
         DCacheOp::Clean => somehal::cache::DCacheOp::Clean,
         DCacheOp::Invalidate => somehal::cache::DCacheOp::Invalidate,
         DCacheOp::CleanInvalidate => somehal::cache::DCacheOp::CleanInvalidate,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mmio_capacity_covers_device_rich_platforms() {
+        assert!(MMIO_REGION_CAPACITY >= 128);
     }
 }

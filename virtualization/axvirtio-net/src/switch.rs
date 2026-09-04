@@ -5,9 +5,76 @@
 //! AxVM, IRQs, DMA, host queues or QEMU. Testable with fake sinks.
 
 use alloc::{collections::BTreeMap, sync::Arc};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use ax_sync::SpinLock as Mutex;
+
+/// icpc UDP service port targeted by the CI fault-injection policy.
+pub const ICPC_UDP_PORT: u16 = 9527;
+
+/// Global fault-injection knob shared by every switch instance. `0` disables
+/// injection; `N > 0` drops roughly `1/N` of icpc UDP frames on the
+/// guest-to-guest forwarding path. `Relaxed` is sufficient: the knob never
+/// synchronizes other data, it only gates an independent per-frame decision.
+static FAULT_DROP_EVERY: AtomicU32 = AtomicU32::new(0);
+
+/// Enables deterministic icpc frame loss for fault-injection tests.
+///
+/// The drop decision hashes the frame payload, so a retransmitted (byte-equal)
+/// frame is dropped again while a client that varies its payload (sequence
+/// number, retry counter) eventually gets through — exactly the condition the
+/// icpc retry logic must survive. ARP and non-icpc traffic always pass.
+pub fn configure_fault_inject(drop_every_n: u32) {
+    FAULT_DROP_EVERY.store(drop_every_n, Ordering::Relaxed);
+}
+
+/// FNV-1a over the whole frame: deterministic across runs, cheap in `no_std`.
+fn frame_drop_hash(frame: &[u8]) -> u32 {
+    let mut hash = 0x811c_9dc5u32;
+    for &byte in frame {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// Extracts UDP source/destination ports from an IPv4 Ethernet frame, or
+/// `None` when the frame is not IPv4/UDP or too short.
+fn parse_udp_ports(frame: &[u8]) -> Option<(u16, u16)> {
+    if frame.len() < ETHERNET_HEADER_LEN + 20 + 8 {
+        return None;
+    }
+    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    if ethertype != 0x0800 {
+        return None;
+    }
+    let ihl = (frame[ETHERNET_HEADER_LEN] & 0x0f) as usize * 4;
+    if ihl < 20 || frame.len() < ETHERNET_HEADER_LEN + ihl + 8 {
+        return None;
+    }
+    if frame[ETHERNET_HEADER_LEN + 9] != 17 {
+        return None;
+    }
+    let src_off = ETHERNET_HEADER_LEN + ihl;
+    let src = u16::from_be_bytes([frame[src_off], frame[src_off + 1]]);
+    let dst = u16::from_be_bytes([frame[src_off + 2], frame[src_off + 3]]);
+    Some((src, dst))
+}
+
+/// Whether the active fault-injection policy drops this icpc UDP frame.
+fn should_fault_drop(frame: &[u8]) -> bool {
+    let every = FAULT_DROP_EVERY.load(Ordering::Relaxed);
+    if every == 0 {
+        return false;
+    }
+    let Some((udp_src, udp_dst)) = parse_udp_ports(frame) else {
+        return false;
+    };
+    if udp_src != ICPC_UDP_PORT && udp_dst != ICPC_UDP_PORT {
+        return false;
+    }
+    frame_drop_hash(frame).is_multiple_of(every)
+}
 
 /// Typed identity of one switch port.
 ///
@@ -87,6 +154,7 @@ pub struct SwitchStats {
     pub undersize_drop: AtomicU64,
     pub inactive_generation_drop: AtomicU64,
     pub duplicate_mac_rejected: AtomicU64,
+    pub fault_injected_drop: AtomicU64,
 }
 
 impl SwitchStats {
@@ -217,18 +285,31 @@ impl VirtualSwitch {
             classify_destination(&header.dst, src_id, &registry)
         };
 
-        for target in decision.local_targets.iter() {
-            if target.deliver_ingress(frame) {
-                target.notify_ingress();
-                match header.class() {
-                    DestinationClass::Broadcast => {
-                        self.stats.inc(&self.stats.broadcast_copies);
-                    }
-                    DestinationClass::Multicast => {
-                        self.stats.inc(&self.stats.multicast_copies);
-                    }
-                    DestinationClass::Unicast => {
-                        self.stats.inc(&self.stats.local_unicast_forwarded);
+        // Fault injection targets the guest-to-guest data plane the icpc
+        // tests exercise; the decision is per-frame so a broadcast either
+        // reaches all local ports or none, mimicking a lossy link. The uplink
+        // outcome is untouched so host connectivity stays deterministic.
+        if !decision.local_targets.is_empty() && should_fault_drop(frame) {
+            self.stats.inc(&self.stats.fault_injected_drop);
+            log::debug!(
+                "vsw fault inject: drop icpc frame from port {:?} len={}",
+                src_id,
+                frame.len()
+            );
+        } else {
+            for target in decision.local_targets.iter() {
+                if target.deliver_ingress(frame) {
+                    target.notify_ingress();
+                    match header.class() {
+                        DestinationClass::Broadcast => {
+                            self.stats.inc(&self.stats.broadcast_copies);
+                        }
+                        DestinationClass::Multicast => {
+                            self.stats.inc(&self.stats.multicast_copies);
+                        }
+                        DestinationClass::Unicast => {
+                            self.stats.inc(&self.stats.local_unicast_forwarded);
+                        }
                     }
                 }
             }
@@ -454,6 +535,8 @@ impl core::fmt::Debug for SwitchPortRegistration {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -713,6 +796,75 @@ mod tests {
             outcome,
             EgressOutcome::Dropped(SwitchDropReason::InactiveGeneration)
         );
+    }
+
+    fn icpc_udp_frame(dst: [u8; 6], src: [u8; 6], seq: u8) -> alloc::vec::Vec<u8> {
+        // Ethernet + IPv4(20B, proto UDP) + UDP header with dst port 9527.
+        let mut f = alloc::vec::Vec::with_capacity(64);
+        f.extend_from_slice(&dst);
+        f.extend_from_slice(&src);
+        f.extend_from_slice(&[0x08, 0x00]);
+        let mut ip = [0u8; 20];
+        ip[0] = 0x45;
+        ip[9] = 17; // UDP
+        f.extend_from_slice(&ip);
+        let mut udp = [0u8; 8];
+        udp[0..2].copy_from_slice(&0x1234u16.to_be_bytes());
+        udp[2..4].copy_from_slice(&ICPC_UDP_PORT.to_be_bytes());
+        f.extend_from_slice(&udp);
+        f.push(seq);
+        f
+    }
+
+    fn lock_fault_inject(drop_every_n: u32) -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        configure_fault_inject(drop_every_n);
+        guard
+    }
+
+    #[test]
+    fn fault_inject_drops_icpc_udp_on_guest_forwarding_path() {
+        let _lock = lock_fault_inject(2);
+        let (switch, _a, b, _ra, _rb) = two_port_switch();
+
+        // ARP-sized non-IP frames always pass so peers can keep resolving MACs.
+        let outcome = switch.switch_from_port(port_id(1), &frame(MAC_B, MAC_A));
+        assert_eq!(outcome, EgressOutcome::Forwarded { uplink: false });
+        assert_eq!(b.delivered().len(), 1);
+
+        // icpc UDP frames are dropped deterministically at roughly 1/N.
+        let mut delivered = 0usize;
+        let mut dropped = 0usize;
+        for seq in 0u8..32 {
+            let before = b.delivered().len();
+            switch.switch_from_port(port_id(1), &icpc_udp_frame(MAC_B, MAC_A, seq));
+            if b.delivered().len() > before {
+                delivered += 1;
+            } else {
+                dropped += 1;
+            }
+        }
+        configure_fault_inject(0);
+        drop(_lock);
+        assert!(delivered > 0, "fault injection must not drop every frame");
+        assert!(dropped > 0, "fault injection must drop some icpc frames");
+        assert_eq!(
+            switch.stats().fault_injected_drop.load(Ordering::Relaxed),
+            dropped as u64
+        );
+    }
+
+    #[test]
+    fn fault_inject_disabled_delivers_every_icpc_frame() {
+        let _lock = lock_fault_inject(0);
+        let (switch, _a, b, _ra, _rb) = two_port_switch();
+        for seq in 0u8..8 {
+            switch.switch_from_port(port_id(1), &icpc_udp_frame(MAC_B, MAC_A, seq));
+        }
+        assert_eq!(b.delivered().len(), 8);
     }
 
     #[test]

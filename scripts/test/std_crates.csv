@@ -8,6 +8,7 @@ axdevice
 axdevice_base
 axfs-ng-vfs
 axhvc
+icpc
 ax-io
 axklib
 axpoll

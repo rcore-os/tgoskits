@@ -1,0 +1,33 @@
+# Vm base info — Linux 2 vCPU + VirtioNet loopback (Task 2 phase 1)
+#
+# pCPU layout (QEMU virt, 4 cores):
+#   pCPU0: AxVisor host
+#   pCPU1-2: this guest
+#
+[base]
+id = 1
+name = "linux-qemu-smp2-net"
+guest_type = "passthrough"
+cpu_num = 2
+phys_cpu_ids = [1, 2]
+vcpu_priorities = [10, 10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 1], # System RAM 1G MAP_IDENTICAL
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02]

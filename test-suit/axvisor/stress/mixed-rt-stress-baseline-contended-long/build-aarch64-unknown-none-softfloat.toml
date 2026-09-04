@@ -1,0 +1,11 @@
+features = [
+    "ax-driver/nvme",
+    "fs",
+    "task1-baseline-slow-vtimer",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/aarch64/linux-smp2-contended.toml",
+    "os/axvisor/configs/vms/qemu/aarch64/arceos-rt-smp1-baseline-contended.toml",
+]

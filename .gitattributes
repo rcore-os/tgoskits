@@ -3,3 +3,10 @@
 *.jpg binary
 *.bin binary
 *.img binary
+
+# Raw serial/QEMU capture evidence for task deliverables keeps original CR
+# bytes; exempt it from whitespace checks so `git diff --check` stays clean
+# without rewriting the captured logs.
+plans/task1-reports/** -whitespace
+plans/task2-reports/** -whitespace
+plans/task3-reports/** -whitespace

@@ -5,6 +5,7 @@ features = [
     # Enable "backtrace" and [env] BACKTRACE = "y" below to
     # activate panic backtrace. Disabled by default for release.
     # "backtrace",
+    "sched-cfs",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

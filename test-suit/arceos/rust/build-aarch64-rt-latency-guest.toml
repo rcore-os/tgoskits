@@ -1,0 +1,15 @@
+features = [
+    "rt-latency",
+    "rt-latency-guest",
+]
+log = "Info"
+max_cpu_num = 4
+# Used by `os/axvisor/scripts/task1/build-arceos-rt-guest.sh` through
+# `cargo xtask arceos build`. rust-objcopy then produces the AxVisor
+# memory-loaded binary at 0x8020_0000. Do not rebuild this package with the
+# ArceOS Makefile (`-Z build-std=core,alloc`): `ax-std/arceos` enables
+# std-compat and that combination fails to compile.
+
+[env]
+BACKTRACE = "y"
+DWARF = "y"

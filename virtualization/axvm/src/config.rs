@@ -174,7 +174,7 @@ impl AxVMConfig {
         Self::new(AxVMConfigParams {
             id,
             name: String::from(name),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
             ..Default::default()
         })
     }
@@ -473,6 +473,7 @@ pub struct PhysCpuList {
     cpu_num: usize,
     phys_cpu_ids: Option<Vec<usize>>,
     phys_cpu_sets: Option<Vec<usize>>,
+    vcpu_priorities: Option<Vec<i32>>,
 }
 
 impl PhysCpuList {
@@ -481,11 +482,21 @@ impl PhysCpuList {
         cpu_num: usize,
         phys_cpu_ids: Option<Vec<usize>>,
         phys_cpu_sets: Option<Vec<usize>>,
+        vcpu_priorities: Option<Vec<i32>>,
     ) -> Self {
+        if let Some(priorities) = &vcpu_priorities
+            && priorities.len() != cpu_num
+        {
+            error!(
+                "ERROR!!!: cpu_num: {}, vcpu_priorities: {:?}",
+                cpu_num, vcpu_priorities
+            );
+        }
         Self {
             cpu_num,
             phys_cpu_ids,
             phys_cpu_sets,
+            vcpu_priorities,
         }
     }
 
@@ -526,6 +537,18 @@ impl PhysCpuList {
     /// Returns the physical CPU sets.
     pub fn phys_cpu_sets(&self) -> &Option<Vec<usize>> {
         &self.phys_cpu_sets
+    }
+
+    /// Returns the configured nice value for a vCPU, if any.
+    pub fn vcpu_priority(&self, vcpu_id: usize) -> Option<i32> {
+        self.vcpu_priorities
+            .as_ref()
+            .and_then(|priorities| priorities.get(vcpu_id).copied())
+    }
+
+    /// Returns the per-vCPU priority list.
+    pub fn vcpu_priorities(&self) -> &Option<Vec<i32>> {
+        &self.vcpu_priorities
     }
 
     /// Sets the guest CPU sets.
@@ -576,7 +599,7 @@ mod tests {
     #[test]
     fn controller_replacements_require_machine_capabilities() {
         let mut config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
             ..Default::default()
         });
         let gic = GuestGicProfile {
@@ -615,15 +638,15 @@ mod tests {
     #[test]
     fn phys_cpu_list_pins_single_vcpu_to_isolated_core() {
         // aarch64/riscv64 arceos-smp1.toml: cpu_num=1, phys_cpu_ids=[1] → physical Core 1.
-        let list = PhysCpuList::new(1, Some(vec![1]), None);
+        let list = PhysCpuList::new(1, Some(vec![1]), None, None);
         assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, None, 1)]);
 
         // x86_64 arceos-smp1.toml: phys_cpu_sets=[2] → affinity mask 0b10 (Core 1).
-        let list = PhysCpuList::new(1, None, Some(vec![2]));
+        let list = PhysCpuList::new(1, None, Some(vec![2]), None);
         assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, Some(2), 0)]);
 
         // Default: no pinning, vcpu id equals physical id.
-        let list = PhysCpuList::new(1, None, None);
+        let list = PhysCpuList::new(1, None, None, None);
         assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, None, 0)]);
     }
 }

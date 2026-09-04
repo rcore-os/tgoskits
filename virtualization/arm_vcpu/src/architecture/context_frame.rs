@@ -215,9 +215,9 @@ impl GuestSystemRegisters {
 
     /// Stores the current values of all relevant registers into the `GuestSystemRegisters` structure.
     ///
-    /// This method uses inline assembly to read the values of various system registers
-    /// and stores them in the corresponding fields of the `GuestSystemRegisters` structure.
-    pub unsafe fn store(&mut self) {
+    /// When `save_timers` is `false`, generic timer registers are left untouched so a
+    /// passthrough guest keeps direct CNTV/CNTP ownership across VM exits.
+    pub unsafe fn store(&mut self, _save_timers: bool) {
         unsafe {
             // MRS!("self.vpidr_el2, VPIDR_EL2, "x");
             asm!("mrs {0}, VMPIDR_EL2", out(reg) self.vmpidr_el2);
@@ -252,13 +252,9 @@ impl GuestSystemRegisters {
 
     /// Restores the values of all relevant system registers from the `GuestSystemRegisters` structure.
     ///
-    /// This method uses inline assembly to write the values stored in the `GuestSystemRegisters` structure
-    /// back to the system registers. This is essential for restoring the state of a virtual machine
-    /// or thread during context switching.
-    ///
-    /// Each system register is restored with its corresponding value from the `GuestSystemRegisters`, ensuring
-    /// that the virtual machine or thread resumes execution with the correct context.
-    pub unsafe fn restore(&self) {
+    /// When `restore_timers` is `false`, generic timer registers are not touched so a
+    /// passthrough guest keeps direct CNTV/CNTP ownership across VM exits.
+    pub unsafe fn restore(&self, _restore_timers: bool) {
         unsafe {
             // Guest SP_EL0 is part of TrapFrame and is restored by `exception_return_el2`.
             asm!("msr SP_EL1, {0}", in(reg) self.sp_el1);

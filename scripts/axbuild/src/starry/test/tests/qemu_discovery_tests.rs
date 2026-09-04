@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn starry_grouped_cases_do_not_install_profile_autorun() {
+    let config = starry_case_asset_config();
+
+    assert!(
+        config.grouped_runner.autorun_profile_script.is_none(),
+        "grouped tests should be triggered by the QEMU harness shell_init_cmd, not profile.d \
+         autorun"
+    );
+}
+
+#[test]
 fn discovers_only_cases_with_matching_qemu_config() {
     let root = tempdir().unwrap();
     write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");

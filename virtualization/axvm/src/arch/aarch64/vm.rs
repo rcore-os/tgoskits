@@ -67,7 +67,8 @@ impl Aarch64Arch {
 
             resources.prepare_guest_address_space(vm.id(), config, &[])?;
             vcpus.setup(resources, config, move |_config, _memory_regions| {
-                Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
+                Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config)
+                    .with_passthrough_timer(config.uses_passthrough_address_space()))
             })?;
 
             let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> =

@@ -62,6 +62,7 @@ pub mod net;
         feature = "task-parallel",
         feature = "task-priority",
         feature = "task-sleep",
+        feature = "rt-latency",
         feature = "task-smp-online",
         feature = "task-stack-guard-page",
         feature = "task-tls",
@@ -127,6 +128,7 @@ test_runner!("task-mutex", run_task_mutex, task::mutex::run);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
 test_runner!("task-priority", run_task_priority, task::priority::run);
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
+test_runner!("rt-latency", run_rt_latency, task::rt_latency::run);
 test_runner!(
     "task-smp-online",
     run_task_smp_online,
@@ -240,6 +242,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "task-sleep")]
     TestCase::new("task-sleep", "bounded task sleeps", run_task_sleep),
+    #[cfg(feature = "rt-latency")]
+    TestCase::new(
+        "rt-latency",
+        "periodic wake-up jitter baseline",
+        run_rt_latency,
+    ),
     #[cfg(feature = "task-smp-online")]
     TestCase::new(
         "task-smp-online",

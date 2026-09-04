@@ -11,6 +11,7 @@ image_location = "memory"
 kernel_path = "${workspace}/tmp/axbuild/images/qemu-aarch64/linux/linux-qemu"
 kernel_load_addr = 0x8020_0000
 dtb_load_addr = 0x8000_0000
+cmdline = "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 axvisor.timer_case=gicv3-its"
 ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-timer-stress/initramfs-aarch64.cpio.gz"
 ramdisk_load_addr = 0x8400_0000
 memory_regions = [

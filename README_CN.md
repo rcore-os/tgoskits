@@ -12,6 +12,34 @@
 
 [English](README.md) | 中文
 
+---
+
+<table>
+<tr>
+<td>
+
+### 📋 揭榜挂帅项目 · 操作检查指南
+
+面向**评审、复现与交卷验收**，请先阅读 **[plans/操作检查指南.md](plans/操作检查指南.md)**。
+
+测试用例已封装为仓库根目录下 `scripts/task1/`、`scripts/task2/`、`scripts/task3/` 的**可执行脚本**（自动完成 setup、`cargo xtask` 拉起与报告归档）。首次运行前执行 `cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images`。
+
+**快速冒烟（约 20–40 分钟）：**
+
+```bash
+./scripts/task1/run-rt-baseline.sh
+./scripts/task2/run-icpc-smoke.sh
+./scripts/task3/run-task3-pid-loop.sh
+```
+
+完整脚本列表、串口 PASS 判读、`plans/*-reports/` 交卷材料与技术方案见 **[操作检查指南](plans/操作检查指南.md)**。
+
+</td>
+</tr>
+</table>
+
+---
+
 ## 1. 简介
 
 TGOSKits 是一个面向操作系统与虚拟化开发的集成仓库，汇聚 ArceOS、StarryOS、Axvisor 以及共享组件、平台适配和驱动生态。仓库通过统一的 `cargo xtask` 入口组织构建、运行、调试和测试流程，适合进行组件级开发、跨系统联调和系统级验证。

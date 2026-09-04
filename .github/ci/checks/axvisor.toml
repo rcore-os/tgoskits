@@ -120,6 +120,23 @@ arch = "aarch64"
 cases = ["qemu-ivc"]
 
 [[check]]
+id = "test-axvisor-aarch64-qemu-icpc-smoke"
+impact_targets = ["axvisor:aarch64"]
+name = "QEMU aarch64 · ICPC smoke"
+timeout_minutes = 45
+command = '''
+echo "==> pull qemu-aarch64 image"
+cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
+echo "==> axvisor aarch64 icpc-smoke"
+cargo xtask axvisor test qemu --arch aarch64 --test-case icpc-smoke
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["icpc-smoke"]
+
+[[check]]
 id = "test-axvisor-self-hosted-x86-64-svm-smoke-acpi"
 impact_targets = ["axvisor:x86_64"]
 name = "SVM x86_64 · Smoke + direct/OVMF ACPI"
@@ -223,7 +240,7 @@ impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Linux guest"
 runner = "board"
 command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-linux
+cargo xtask axvisor test board --board orangepi-5-plus-linux -c smoke
 '''
 
 [[check.suite]]

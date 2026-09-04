@@ -52,6 +52,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "task-parallel",
     "task-priority",
     "task-sleep",
+    "rt-latency",
     "task-smp-online",
     ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
     "task-tls",

@@ -1,0 +1,39 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,snapshot=on",
+  "-device",
+  "virtio-blk-device,drive=disk1",
+  "-drive",
+  "id=disk1,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,snapshot=on",
+  # Run the test as Guest A's init instead of typing it over the console:
+  # with two VMs running, the console mux stays in boot-multiplex mode and
+  # host-side input has proven flaky, so avoid runtime console input entirely.
+  "-append",
+  "root=/dev/vda rw init=/bin/sh -- -c \"mount -t proc proc /proc; mount -t sysfs sys /sys; echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6; ip link set eth0 up; ip addr flush dev eth0; ip addr add 10.0.9.2/24 dev eth0; sleep 10; /usr/local/bin/task3-ai-loop && echo 'task3-pid-loop pass' || echo 'task3-pid-loop fail'\"",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "ICPC_PEER_ETH_FAIL",
+  "task3-pid-loop: .*",
+  "(?m)^\\[VM 1\\] task3-pid-loop fail\\s*$",
+]
+success_regex = [
+  "(?m)^\\[VM 1\\] TASK3_METRICS",
+  "(?m)^\\[VM 1\\] TASK3_ONNX_LOOP_BEGIN",
+  "(?m)^\\[VM 1\\] task3-pid-loop pass\\s*$",
+]
+to_bin = true
+uefi = false
+timeout = 300

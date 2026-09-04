@@ -127,6 +127,8 @@ impl DeviceModel for VirtioNetModel {
                 ResourceSlot::new(MMIO_SLOT)?,
                 MMIO_SIZE,
                 MMIO_SIZE,
+                // AArch64 Auto MMIO starts at 0x0b00_0000, so this must not
+                // steal the host virtio-blk slot at 0x0a00_0000.
                 ResourceRequest::Auto,
             )?
             .with_wired_irq(

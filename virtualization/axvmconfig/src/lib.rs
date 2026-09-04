@@ -288,6 +288,12 @@ pub struct VMBaseConfig {
     ///
     ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
+    /// Per-vCPU scheduler nice values for the host hypervisor.
+    ///
+    /// When set, the length must equal `cpu_num`. Values follow Linux nice
+    /// semantics on CFS (`-20` highest, `19` lowest). Unspecified vCPUs use
+    /// the default nice `0`.
+    pub vcpu_priorities: Option<Vec<i32>>,
 }
 
 /// The configuration structure for the guest VM kernel.

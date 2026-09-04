@@ -58,6 +58,23 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> MmResult<AddrSpace> {
     Ok(aspace)
 }
 
+/// Returns the kernel direct-map VA for a physical address inside `aspace`.
+fn kernel_direct_map_virt(
+    aspace: &AddrSpace,
+    kernel_base: VirtAddr,
+    paddr: PhysAddr,
+    map_size: usize,
+) -> VirtAddr {
+    let direct = phys_to_virt(paddr);
+    let direct_aligned = direct.align_down_4k();
+    if aspace.contains_range(direct_aligned, map_size) {
+        return direct;
+    }
+
+    let offset = paddr.as_usize() - paddr.align_down_4k().as_usize();
+    VirtAddr::from_usize(kernel_base.as_usize() + paddr.align_down_4k().as_usize()) + offset
+}
+
 /// Creates a new address space for kernel itself.
 pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
     let (base, size) = ax_hal::mem::kernel_aspace();
@@ -68,15 +85,11 @@ pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
         // mapped range should contain the whole region if it is not aligned.
         let start = r.paddr.align_down_4k();
         let end = (r.paddr + r.size).align_up_4k();
-        let vaddr = phys_to_virt(start);
-        let size = end - start;
+        let map_size = end - start;
+        let vaddr = kernel_direct_map_virt(&aspace, base, start, map_size);
 
-        // Some platforms provide a physical direct map outside the
-        // page-table-backed kernel address space. Those ranges must not be
-        // inserted into this address space because their low VA bits can alias
-        // real page-table mappings such as vmap.
-        if aspace.contains_range(vaddr, size) {
-            aspace.map_boot_linear(vaddr, start, size, reg_flag_to_map_flag(r.flags))?;
+        if aspace.contains_range(vaddr, map_size) {
+            aspace.map_boot_linear(vaddr, start, map_size, reg_flag_to_map_flag(r.flags))?;
         }
     }
     aspace

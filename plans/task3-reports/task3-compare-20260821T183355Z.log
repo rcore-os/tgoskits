@@ -1,0 +1,1095 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running `/tmp/cursor-sandbox-cache/343699c0b0ddf4131a477c81706f4988/cargo-target/debug/tg-xtask axvisor test qemu --arch aarch64 -c task3-pid-compare`
+[2026-08-21T18:33:56Z INFO  axbuild::context] Workspace root: /home/allen/codes/os/tgoskits
+running axvisor qemu tests for arch: aarch64 (target: aarch64-unknown-none-softfloat, cases: 1)
+[2026-08-21T18:33:56Z INFO  axbuild::context] Workspace member dir for axvisor: /home/allen/codes/os/tgoskits/os/axvisor
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+[2026-08-21T18:33:56Z INFO  ostool::run::qemu] Using QEMU config file: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/qemu-aarch64.toml
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+syncing image registry from https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml...
+file already exists and passed checksum verification
+image archive verified at /tmp/tgosimages/rootfs-aarch64-alpine.img.tar.xz
+image archive is unchanged; keeping rootfs at /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+[axbuild] cargo build package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml ...
+sh -c /home/allen/codes/os/tgoskits/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-25757cc8233f29c6.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AXVISOR_VM_CONFIGS=/home/allen/codes/os/tgoskits/os/axvisor/configs/vms/qemu/aarch64/linux-net-a.toml:/home/allen/codes/os/tgoskits/os/axvisor/configs/vms/qemu/aarch64/linux-net-b.toml
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl --sysroot=/home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl --gcc-toolchain=/home/allen/tools/aarch64-linux-musl-cross -isystem /home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl/include -isystem /home/allen/tools/aarch64-linux-musl-cross/lib/gcc/aarch64-linux-musl/11.2.1/include -mgeneral-regs-only
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+cargo build --config /home/allen/codes/os/tgoskits/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p axvisor --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/allen/codes/os/tgoskits/target --features ax-std/fs,ax-std/nvme,fs,log/release_max_level_info -Z json-target-spec --bin axvisor --release --message-format json-render-diagnostics
+warning: function `with_vm` is never used
+  --> virtualization/axvm/src/manager.rs:59:15
+   |
+59 | pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
+   |               ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `active_vcpu_mask` is never used
+  --> virtualization/axvm/src/manager.rs:68:15
+   |
+68 | pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `inject_interrupt` is never used
+  --> virtualization/axvm/src/manager.rs:80:15
+   |
+80 | pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: variant `Generic` is never constructed
+  --> virtualization/axvm/src/runtime/hvc.rs:26:5
+   |
+25 | pub(crate) enum HyperCallAbi {
+   |                 ------------ variant in this enum
+26 |     Generic,
+   |     ^^^^^^^
+   |
+   = note: `HyperCallAbi` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `handle` is never used
+   --> virtualization/axvm/src/timer.rs:169:8
+    |
+124 | impl TimerWheels {
+    | ---------------- method in this implementation
+...
+169 |     fn handle(&self, token: usize) -> Option<VmTimerHandle> {
+    |        ^^^^^^
+
+warning: function `cancel_timer` is never used
+   --> virtualization/axvm/src/timer.rs:247:15
+    |
+247 | pub(crate) fn cancel_timer(token: usize) {
+    |               ^^^^^^^^^^^^
+
+warning: associated items `with_planned_device_graph`, `handle_nested_page_fault`, and `debug_nested_page_fault` are never used
+    --> virtualization/axvm/src/vm/mod.rs:1251:19
+     |
+1043 | impl AxVM {
+     | --------- associated items in this implementation
+...
+1251 |     pub(crate) fn with_planned_device_graph<F, R>(&self, f: F) -> AxVmResult<R>
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1564 |     pub(crate) fn handle_nested_page_fault(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1579 |     fn debug_nested_page_fault(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `SimpleVmPlan` is never constructed
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:65:19
+   |
+65 | pub(crate) struct SimpleVmPlan(VmDevicePlan);
+   |                   ^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:68:25
+   |
+67 | impl SimpleVmPlan {
+   | ----------------- associated function in this implementation
+68 |     pub(crate) const fn new(devices: VmDevicePlan) -> Self {
+   |                         ^^^
+
+warning: `axvm` (lib) generated 9 warnings
+    Finished `release` profile [optimized] target(s) in 0.23s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/allen/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+[axbuild] cargo build package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml ... done (495.28ms)
+[axbuild] cargo build elf=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor
+[axbuild] cargo build artifact_dir=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release
+[1/1] axvisor qemu task3-pid-compare
+Stripping ELF file...
+  original elf: /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor
+  stripped elf: /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor.elf
+/home/allen/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --binary-architecture=aarch64 /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor.elf
+Converting ELF to BIN format...
+  elf: /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor.elf
+  bin: /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor.bin
+/home/allen/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor.elf /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor.bin
+AXBUILD_TIMING: scope=qemu-asset case=task3-pid-compare phase=resolve-pipeline elapsed_s=0.000
+AXBUILD_TIMING: scope=qemu-asset case=task3-pid-compare phase=plain-rootfs pipeline=plain elapsed_s=0.000
+  prepare assets: 729.57µs (pipeline=plain, cache=miss)
+  qemu config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/qemu-aarch64.toml (timeout=600s)
+  rootfs: /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+[axbuild] qemu run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ...
+qemu-system-aarch64 -nographic -cpu cortex-a72 -machine virt,virtualization=on,gic-version=3 -smp 4 -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 -drive id=disk0,if=none,format=raw,file=/home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,snapshot=on -device virtio-blk-device,drive=disk1 -drive id=disk1,if=none,format=raw,file=/home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,snapshot=on -append root=/dev/vda rw init=/bin/sh -m 8g -kernel /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-hxjNqy/group-0/axvisor.bin
+Boot entropy source: FDT /chosen/rng-seed
+root=/dev/vda rw init=/bin/sh
+VM Load @PA:0x40200000
+VM Load Offset: 0xffff0000c0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040800000 (6 MiB)
+  Free   0x00000040800000 - 0x00000240000000 (7.99 GiB)
+Initialize RAM allocator: 0x40800000..0x240000000
+Reserving CPU-local areas
+CPU-local area stride: 0x44000 bytes
+Total CPU-local allocation: 0x110000 bytes (4 CPUs)
+Flushed RAM used range to memory map: 0x40800000..0x40900000, current: 0x40900000
+Flushed RAM used range to memory map: 0x40900000..0x40a10000, current: 0x40a10000
+CPU-local areas allocated at 0x40900000 - 0x40a10000
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000040000000, 0x0000000240000000) -> [0x0000000040000000, 0x0000000240000000) (8 GiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff80600000) -> [0x0000000040200000, 0x0000000040800000) (6 MiB)
+PerCpu              : [0x0000ff0040900000, 0x0000ff0040a10000) -> [0x0000000040900000, 0x0000000040a10000) (1.06 MiB)
+Debug serial        : [0x0000000009000000, 0x0000000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: PA:0x40a10000
+Setting up table registers...
+MMU Entry point at physical address: 0x403f60d8
+Trap vector at 0xffff801ef800
+Memory Map:
+  MMIO   0x00000004000000 - 0x00000008010000 (64.06 MiB)
+  MMIO   0x00000008080000 - 0x00000009001000 (15.5 MiB)
+  MMIO   0x00000009010000 - 0x00000009011000 (4 KiB)
+  MMIO   0x00000009020000 - 0x00000009021000 (4 KiB)
+  MMIO   0x00000009030000 - 0x00000009031000 (4 KiB)
+  MMIO   0x0000000a000000 - 0x0000000a004000 (16 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040800000 (6 MiB)
+  Rsv    0x00000040800000 - 0x00000040900000 (1 MiB)
+  PerCPU 0x00000040900000 - 0x00000040a10000 (1.06 MiB)
+  Rsv    0x00000040a10000 - 0x00000040a1a000 (40 KiB)
+  Free   0x00000040a1a000 - 0x00000240000000 (7.99 GiB)
+  MMIO   0x00004010000000 - 0x00004020000000 (256 MiB)
+Jumping to main entry point at 0xffff801d6d18 with SP 0x0000ff0040944000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 4
+
+[37max_runtime:254] [32mLogging is enabled.[m
+[m[37max_runtime:255] [32mPrimary CPU 0 started, arg = 0x40800000.[m
+[m[37max_runtime:257] [32mFound physcial memory regions:[m
+[m[37max_runtime:259] [32m  [PA:0x4000000, PA:0x8010000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x8080000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x9010000, PA:0x9011000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x9020000, PA:0x9021000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x9030000, PA:0x9031000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0xa000000, PA:0xa004000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m
+[m[37max_runtime:259] [32m  [PA:0x40200000, PA:0x40800000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40800000, PA:0x40900000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40900000, PA:0x40a10000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40a10000, PA:0x40a1a000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40a1a000, PA:0x240000000) free memory (READ | WRITE | FREE)[m
+[m[37max_runtime:259] [32m  [PA:0x4010000000, PA:0x4020000000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:417] [32mInitialize global memory allocator...[m
+[m[37max_runtime:418] [32m  use buddy-slab-allocator allocator.[m
+[m[37max_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0x40a1a000, size: 0x1ff5e6000[m
+[m[37max_alloc::buddy_slab:424] [32mglobal allocator initialized[m
+[m[37max_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x40000000, size: 0x200000[m
+[m[37mbuddy_slab_allocator::global:151] [32mGlobalAllocator: skip region 0x40000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37max_runtime:294] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37max_mm:120] [32mInitialize virtual memory management...[m
+[m[37max_runtime:306] [32mInitialize platform devices...[m
+[m[37msomeboot::arch::power:23] [32mPower management method : SMC[m
+[m[37msomehal::driver:5] [32mInitializing rdrive with FDT at 0x40800000[m
+[m[37msomehal::arch::gic::v3:296] [32mGICv3 CPU 0 EOI mode: two_step=true[m
+[m[37max_task::api:192] [32mInitialize scheduling...[m
+[m[37max_task::api:200] [32m  use FIFO scheduler.[m
+[m[37max_runtime:335] [32mInitialize interrupt handlers...[m
+[m[37max_runtime::devices:2] [32mProbe platform devices...[m
+[m[37max_driver::serial::pl011:22] [32mProbing PL011 serial device: pl011@9000000[m
+[m[37max_driver::serial::pl011:38] [32mPL011 serial@0x9000000 registered successfully[m
+[m[37max_driver::block::nvme:42] [32mNVMe PCI endpoint 0000:00:02.0: BAR0=0x8000004000..0x8000008000, int_pin=1, int_line=0[m
+[m[37mnvme_driver::nvme:159] [32mNVME @0x8000004000 deferred init, version: 1.4.0[m
+[m[37max_driver::block::nvme:74] [32mNVMe block device registered at 0000:00:02.0 with 65 MSI-X vectors[m
+[m[37max_runtime::serial:895] [32mserial runtime PL011 UART ready: cpu=0, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 44, cells: [0, 1, 4] }))), polling=false[m
+[m[  0.155476 0:2 [37max_runtime:357] [32mruntime console active: serial0, ttyS0[m
+[m[  0.159991 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 0 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(0) }) fixed to CPU 0 for queue mask 0x0[m
+[m[  0.185732 0:5 [37max_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 63[m
+[m[  0.186121 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 1 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(1) }) fixed to CPU 0 for queue mask 0x1[m
+[m[  0.192829 0:2 [37max_fs_ng::root:341] [32m    raw device fs=Some(Ext4)[m
+[m[  0.192980 0:2 [37max_fs_ng::root:372] [32m  block device 0 (nvme) has no usable partition table; treating the whole disk as a candidate[m
+[m[  0.193386 0:2 [37max_fs_ng::root:553] [32m  only one raw block device is available; using it as root[m
+[m[  0.193732 0:2 [37max_fs_ng:103] [32mInitialize filesystem subsystem...[m
+[m[  0.193765 0:2 [37max_fs_ng:104] [32m  selected root device: disk0 raw device[m
+[m[  0.213906 0:2 [37mrsext4::ext4::mount:331] [32m/lost+found exists (superblock hint inode=11)[m
+[m[  0.215164 0:2 [37mrsext4::ext4::mount:466] [32mExt4 filesystem mounted[m
+[m[  0.215199 0:2 [37mrsext4::ext4::mount:467] [32m  - block size: 4096 bytes[m
+[m[  0.215229 0:2 [37mrsext4::ext4::mount:468] [32m  - total blocks: 524288[m
+[m[  0.215253 0:2 [37mrsext4::ext4::mount:469] [32m  - free blocks: 102647[m
+[m[  0.215279 0:2 [37mrsext4::ext4::mount:470] [32m  - total inodes: 131072[m
+[m[  0.215329 0:2 [37mrsext4::ext4::mount:471] [32m  - free inodes: 125216[m
+[m[  0.215388 0:2 [37mrsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[  0.228469 1 [37msomehal::arch::gic::v3:296] [32mGICv3 CPU 1 EOI mode: two_step=true[m
+[m[  0.229932 2 [37msomehal::arch::gic::v3:296] [32mGICv3 CPU 2 EOI mode: two_step=true[m
+[m
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+by AxVisor Team
+
+[Axvisor] dropped 79 host log records (9899 source bytes)
+[  0.231259 3 [37msomehal::arch::gic::v3:296] [32mGICv3 CPU 3 EOI mode: two_step=true[m
+[m
+[  0.225442 0:2 [37mrsext4::ext4::mount:550] [32mExt4 filesystem mounted[m
+[m
+[  0.228806 1 [37max_runtime::mp:84] [32mSecondary CPU 1 started.[m
+[m
+[  0.230002 2 [37max_runtime::mp:84] [32mSecondary CPU 2 started.[m
+[m
+[  0.231319 3 [37max_runtime::mp:84] [32mSecondary CPU 3 started.[m
+[m
+[  0.225898 0:2 [37max_fs_ng:116] [32m  filesystem type: "ext4"[m
+[m
+[  0.229644 1:7 [37max_runtime::mp:123] [32mSecondary CPU 1 init OK.[m
+[m
+[  0.230198 2:9 [37max_runtime::mp:123] [32mSecondary CPU 2 init OK.[m
+[m
+[  0.231491 3:11 [37max_runtime::mp:123] [32mSecondary CPU 3 init OK.[m
+[m
+[  0.231362 0:2 [37max_runtime:397] [32mPrimary CPU 0 init OK.[m
+[m
+[  0.243127 1:21 [37maxvm::host::arceos:362] [32mCore 1 is initializing hardware virtualization support...[m
+[m
+[  0.243085 2:22 [37maxvm::host::arceos:362] [32mCore 2 is initializing hardware virtualization support...[m
+[m
+[  0.243214 3:23 [37maxvm::host::arceos:362] [32mCore 3 is initializing hardware virtualization support...[m
+[m
+[  0.232908 0:5 [37max_fs_ng::block::runtime::hctx:177] [32mblock hctx 1 bound to CPU 1 with hardware depth 63[m
+[m
+[  0.243187 1:21 [37maxvm::timer:329] [32mInitializing AxVM timer wheel...[m
+[m
+[  0.243126 2:22 [37maxvm::timer:329] [32mInitializing AxVM timer wheel...[m
+[m
+[  0.243245 3:23 [37maxvm::timer:329] [32mInitializing AxVM timer wheel...[m
+[m
+[  0.232963 0:5 [37max_fs_ng::block::runtime::hctx:177] [32mblock hctx 2 bound to CPU 2 with hardware depth 63[m
+[m
+[  0.232994 0:5 [37max_fs_ng::block::runtime::hctx:177] [32mblock hctx 3 bound to CPU 3 with hardware depth 63[m
+[m
+[  0.233216 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 2 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(2) }) fixed to CPU 1 for queue mask 0x2[m
+[m
+[  0.233337 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 3 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(3) }) fixed to CPU 2 for queue mask 0x4[m
+[m
+[  0.233463 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 4 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(4) }) fixed to CPU 3 for queue mask 0x8[m
+[m
+[  0.235305 0:2 [37max_fs_ng::block::runtime::lifecycle::device:385] [32mblock device nvme online with 4 hctxs across 4 CPUs[m
+[m
+[  0.238167 0:2 [37maxvisor:113] [32mStarting virtualization...[m
+[m
+[  0.238230 0:2 [37maxvm::host::arceos:344] [32mEnabling hardware virtualization support on all cores...[m
+[m
+[  0.238304 0:2 [37maxvm::host::arceos:350] [32mCore 0 is initializing hardware virtualization support...[m
+[m
+[  0.238493 0:2 [37maxvm::timer:329] [32mInitializing AxVM timer wheel...[m
+[m
+[  0.242699 0:2 [37maxvm::host::arceos:352] [32mHardware virtualization support enabled on core 0[m
+[m
+[  0.243050 0:2 [37maxvm::host::arceos:378] [32mWaiting for all cores to enable hardware virtualization...[m
+[m
+[  0.243662 1:21 [37maxvm::host::arceos:365] [32mHardware virtualization support enabled on core 1[m
+[m
+[  0.243576 2:22 [37maxvm::host::arceos:365] [32mHardware virtualization support enabled on core 2[m
+[m
+[  0.243899 3:23 [37maxvm::host::arceos:365] [32mHardware virtualization support enabled on core 3[m
+[m
+[  0.245852 0:2 [37maxvm::host::arceos:394] [32mAll cores have enabled hardware virtualization support.[m
+[m
+[  0.250547 0:2 [37maxvisor::manager:156] [32mNOT find dir: /guest/vm_default in filesystem[m
+[m
+[  0.250676 0:2 [37maxvisor::config:90] [32mUsing static VM configs.[m
+[m
+[  0.310881 0:2 [37maxvm::boot::fdt::core:79] [32mVM[1] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/intc@8000000", node_phandle: Some(32773), distributor: GuestMmioRegion { base: 134217728, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 134873088, length: 16121856 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/intc@8000000/its@8080000", node_phandle: Some(32774), registers: GuestMmioRegion { base: 134742016, length: 131072 } }] }[m
+[m
+[  0.312357 0:2 [37maxvm::boot::fdt::core:93] [32mVM[1] architectural timer follows host firmware PPIs[m
+[m
+[  0.315923 0:2 [37maxvm::boot::fdt::core::parser:462] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m
+[  0.315992 0:2 [37maxvm::boot::fdt::core::parser:462] [32mCPU node: /cpus/cpu@1, node_id: 0x1, hardware_cpu_id: 0x1[m
+[m
+[  0.316042 0:2 [37maxvm::boot::fdt::core::parser:462] [32mCPU node: /cpus/cpu@2, node_id: 0x2, hardware_cpu_id: 0x2[m
+[m
+[  0.316068 0:2 [37maxvm::boot::fdt::core::parser:462] [32mCPU node: /cpus/cpu@3, node_id: 0x3, hardware_cpu_id: 0x3[m
+[m
+[  0.316152 0:2 [37maxvm::boot::fdt::core::parser:469] [32mFound 4 host CPU nodes[m
+[m
+[  0.316494 0:2 [37maxvm::boot::fdt::core:144] [32mVM[1] DTB not found, generating from the VM configuration[m
+[m
+[  0.328717 0:2 [37maxvm::boot::fdt::core::device:96] [32mFound excluded devices: ["/pcie@10000000", "/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m
+[  0.328968 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /intc@8000000[m
+[m
+[  0.329054 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /intc@8000000/its@8080000[m
+[m
+[  0.329096 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /pcie@10000000[m
+[m
+[  0.329108 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /pl011@9000000[m
+[m
+[  0.329122 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /timer[m
+[m
+[  0.329408 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000000[m
+[m
+[  0.329441 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000200[m
+[m
+[  0.329468 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000400[m
+[m
+[  0.329481 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000600[m
+[m
+[  0.329494 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000800[m
+[m
+[  0.329506 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000a00[m
+[m
+[  0.329519 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000c00[m
+[m
+[  0.329532 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000e00[m
+[m
+[  0.341665 0:2 [37maxvm::boot::fdt::core::device:96] [32mFound excluded devices: ["/pcie@10000000", "/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m
+[  0.341695 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /intc@8000000[m
+[m
+[  0.341718 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /intc@8000000/its@8080000[m
+[m
+[  0.347586 0:2 [37maxvm::boot::fdt::core::device:96] [32mFound excluded devices: ["/pcie@10000000", "/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m
+[  0.350406 0:2 [37maxvisor::config:137] [32mCreating VM[1] "linux-qemu-net-a"[m
+[m
+[  0.376149 0:2 [37maxvm::vm:1068] [32mVM created: id=1[m
+[m
+[  0.648003 0:2 [37maxvisor::config:149] [32mVM[1] created success, loading images...[m
+[m
+[  4.486864 0:27 [37maxvm::runtime::vcpus:456] [32mVM[1] VCpu[0] waiting for running[m
+[m
+[  4.486519 3:2 [37maxvm::runtime::vcpus:364] [33mVM[1] VCpu[0] failed to apply host nice 10[m
+[m
+[  4.487149 0:27 [37maxvm::runtime::vcpus:494] [32mVM[1] VCpu[0] running on CPU0...[m
+[m
+[  4.486847 3:2 [37maxvm::runtime:61] [32mVM[1] boot success[m
+[m
+[  4.522369 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0x80000000[m
+[m
+[  4.486873 3:2 [37maxvm::vm:1314] [32mStarting VM[2][m
+[m
+[  4.523328 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000001[m
+[m
+[  4.486888 3:2 [37maxvm::runtime::vcpus:385] [32mSpawning task for VM[2] VCpu[0][m
+[m
+[  4.523639 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc400000e[m
+[m
+[  4.486921 3:2 [37maxvm::runtime::vcpus:402] [32mVCpu task Task(29, "VM[2]-VCpu[0]") created cpumask: [3, ][m
+[m
+[  4.523796 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000012[m
+[m
+[  4.487027 3:2 [37maxvm::runtime::vcpus:364] [33mVM[2] VCpu[0] failed to apply host nice 10[m
+[m
+[  4.524163 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000015[m
+[m
+[  4.487054 3:2 [37maxvm::runtime:61] [32mVM[2] boot success[m
+[m
+[  4.487878 3:2 [37maxvisor:152] [32m[OK] Default guest initialized[m
+[m
+[  4.487915 3:2 [37maxvisor:157] [32mshell task on CPU3[m
+[m
+[  4.490172 3:29 [37maxvm::runtime::vcpus:456] [32mVM[2] VCpu[0] waiting for running[m
+[m
+[  4.490208 3:29 [37maxvm::runtime::vcpus:494] [32mVM[2] VCpu[0] running on CPU3...[m
+[m
+[  4.522892 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0x80000000[m
+[m
+[  4.523412 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0xc4000001[m
+[m
+[  4.523551 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0xc400000e[m
+[m
+[  4.523672 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0xc4000012[m
+[m
+[  4.523789 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0xc4000015[m
+[m
+[VM 2] [    0.000000] Booting Linux on physical CPU 0x0000000003 [0x410fd083]
+[VM 2] [    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #10 SMP PREEMPT Wed Aug  5 12:44:56 UTC 2026
+[VM 1] [    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[VM 2] [    0.000000] KASLR enabled
+[VM 2] [    0.000000] random: crng init done
+[VM 2] [    0.000000] Machine model: linux,dummy-virt
+[VM 2] [    0.000000] efi: UEFI not found.
+[VM 1] [    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #10 SMP PREEMPT Wed Aug  5 12:44:56 UTC 2026
+[VM 2] [    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[VM 1] [    0.000000] KASLR enabled
+[VM 2] [    0.000000] NUMA: Faking a node at [mem 0x0000000080000000-0x000000008fffffff]
+[VM 1] [    0.000000] random: crng init done
+[VM 1] [    0.000000] Machine model: linux,dummy-virt
+[VM 2] [    0.000000] NODE_DATA(0) allocated [mem 0x8ff870c0-0x8ff897bf]
+[VM 1] [    0.000000] efi: UEFI not found.
+[VM 2] [    0.000000] cma: Reserved 32 MiB at 0x000000008de00000
+[VM 2] [    0.000000] psci: probing for conduit method from DT.
+[VM 1] [    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[VM 2] [    0.000000] psci: PSCIv1.1 detected in firmware.
+[VM 1] [    0.000000] NUMA: Faking a node at [mem 0x0000000222200000-0x00000002321fffff]
+[VM 2] [    0.000000] psci: Using standard PSCI v0.2 function IDs
+[VM 1] [    0.000000] NODE_DATA(0) allocated [mem 0x232181900-0x232183fff]
+[VM 2] [    0.000000] psci: Trusted OS migration not required
+[VM 1] [    0.000000] cma: Reserved 32 MiB at 0x0000000225600000
+[VM 2] [    0.000000] psci: SMC Calling Convention v65535.65535
+[VM 2] [    0.000000] Zone ranges:
+[VM 1] [    0.000000] psci: probing for conduit method from DT.
+[VM 2] [    0.000000]   DMA      [mem 0x0000000080000000-0x000000008fffffff]
+[VM 1] [    0.000000] psci: PSCIv1.1 detected in firmware.
+[VM 2] [    0.000000]   DMA32    empty
+[VM 1] [    0.000000] psci: Using standard PSCI v0.2 function IDs
+[VM 2] [    0.000000]   Normal   empty
+[VM 2] [    0.000000] Movable zone start for each node
+[VM 1] [    0.000000] psci: Trusted OS migration not required
+[VM 2] [    0.000000] Early memory node ranges
+[VM 1] [    0.000000] psci: SMC Calling Convention v65535.65535
+[VM 1] [    0.000000] Zone ranges:
+[VM 2] [    0.000000]   node   0: [mem 0x0000000080000000-0x000000008fffffff]
+[VM 1] [    0.000000]   DMA      [mem 0x0000000222200000-0x00000002321fffff]
+[VM 2] [    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000008fffffff]
+[VM 1] [    0.000000]   DMA32    empty
+[VM 1] [    0.000000]   Normal   empty
+[VM 2] [    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[VM 1] [    0.000000] Movable zone start for each node
+[VM 2] [    0.000000] Detected PIPT I-cache on CPU0
+[VM 1] [    0.000000] Early memory node ranges
+[VM 2] [    0.000000] CPU features: detected: GICv3 CPU interface
+[VM 1] [    0.000000]   node   0: [mem 0x0000000222200000-0x00000002321fffff]
+[VM 2] [    0.000000] CPU features: detected: Spectre-v2
+[VM 1] [    0.000000] Initmem setup node 0 [mem 0x0000000222200000-0x00000002321fffff]
+[VM 2] [    0.000000] CPU features: detected: Spectre-v3a
+[VM 2] [    0.000000] CPU features: detected: Spectre-v4
+[VM 1] [    0.000000] On node 0, zone DMA: 8704 pages in unavailable ranges
+[VM 2] [    0.000000] CPU features: detected: Spectre-BHB
+[VM 2] [    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[VM 1] [    0.000000] On node 0, zone DMA: 24064 pages in unavailable ranges
+[VM 2] [    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[VM 1] [    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[VM 2] [    0.000000] CPU features: detected: ARM erratum 1742098
+[VM 1] [    0.000000] Detected PIPT I-cache on CPU0
+[VM 2] [    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[VM 1] [    0.000000] CPU features: detected: GICv3 CPU interface
+[VM 2] [    0.000000] alternatives: applying boot alternatives
+[VM 1] [    0.000000] CPU features: detected: Spectre-v2
+[VM 1] [    0.000000] CPU features: detected: Spectre-v3a
+[VM 2] [    0.000000] Kernel command line: rdinit=/init console=ttyAMA0
+[VM 1] [    0.000000] CPU features: detected: Spectre-v4
+[VM 2] [    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[VM 1] [    0.000000] CPU features: detected: Spectre-BHB
+[VM 1] [    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[VM 2] [    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[VM 1] [    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[VM 2] [    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[VM 1] [    0.000000] CPU features: detected: ARM erratum 1742098
+[VM 2] [    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[VM 1] [    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[VM 2] [    0.000000] software IO TLB: area num 1.
+[VM 1] [    0.000000] alternatives: applying boot alternatives
+[VM 2] [    0.000000] software IO TLB: mapped [mem 0x000000008feb6000-0x000000008fef6000] (0MB)
+[VM 2] [    0.000000] Fallback order for Node 0: 0 
+[VM 1] [    0.000000] Kernel command line: root=/dev/vda rw init=/bin/sh fsck.repair=yes
+[VM 2] [    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65536
+[VM 1] [    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[VM 2] [    0.000000] Policy zone: DMA
+[VM 1] [    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[VM 2] [    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[VM 2] [    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[VM 1] [    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[VM 2] [    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[VM 1] [    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[VM 2] [    0.000000] rcu: 	RCU event tracing is enabled.
+[VM 1] [    0.000000] software IO TLB: area num 1.
+[VM 2] [    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[VM 1] [    0.000000] software IO TLB: mapped [mem 0x00000002320b1000-0x00000002320f1000] (0MB)
+[VM 2] [    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[VM 1] [    0.000000] Fallback order for Node 0: 0 
+[VM 2] [    0.000000] 	Tracing variant of Tasks RCU enabled.
+[VM 1] [    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65536
+[VM 1] [    0.000000] Policy zone: DMA
+[VM 2] [    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[VM 1] [    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[VM 2] [    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[VM 1] [    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[VM 1] [    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[VM 2] [    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[VM 1] [    0.000000] rcu: 	RCU event tracing is enabled.
+[VM 2] [    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[VM 2] [    0.000000] GICv3: 256 SPIs implemented
+[VM 1] [    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[VM 2] [    0.000000] GICv3: 0 Extended SPIs implemented
+[VM 1] [    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[VM 2] [    0.000000] Root IRQ handler: gic_handle_irq
+[VM 1] [    0.000000] 	Tracing variant of Tasks RCU enabled.
+[VM 2] [    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[VM 2] [    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[VM 1] [    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[VM 2] [    0.000000] GICv3: CPU0: found redistributor 3 region 0:0x00000000080a0000
+[VM 1] [    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[VM 2] [    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[VM 1] [    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[VM 2] [    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @83850000 (indirect, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[VM 1] [    0.000000] GICv3: 256 SPIs implemented
+[VM 2] [    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @83860000 (flat, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] GICv3: 0 Extended SPIs implemented
+[VM 2] [    0.000000] GICv3: using LPI property table @0x0000000083870000
+[VM 1] [    0.000000] Root IRQ handler: gic_handle_irq
+[VM 1] [    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[VM 2] [    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000083880000
+[VM 1] [    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[VM 2] [    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[VM 1] [    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+[VM 2] [    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[VM 1] [    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[VM 2] [    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @227850000 (indirect, esz 8, psz 64K, shr 1)
+[VM 2] [    0.000050] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @227860000 (flat, esz 8, psz 64K, shr 1)
+[VM 2] [    0.008381] Console: colour dummy device 80x25
+[VM 1] [    0.000000] GICv3: using LPI property table @0x0000000227870000
+[VM 2] [    0.011084] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[VM 1] [    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000227880000
+[VM 2] [    0.011162] pid_max: default: 32768 minimum: 301
+[VM 1] [    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[VM 2] [    0.014483] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[VM 1] [    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[VM 2] [    0.014523] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[VM 1] [    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[VM 2] [    0.021127] VFS: Finished mounting rootfs on nullfs
+[VM 2] [    0.035342] /cpus/cpu-map/socket0/cluster0/core0: Can't get CPU for leaf core
+[VM 1] [    0.000052] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[VM 2] [    0.037636] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[VM 1] [    0.008014] Console: colour dummy device 80x25
+[VM 2] [    0.045942] rcu: Hierarchical SRCU implementation.
+[VM 1] [    0.008347] printk: legacy console [tty0] enabled
+[VM 2] [    0.045967] rcu: 	Max phase no-delay instances is 1000.
+[VM 2] [    0.047923] fsl-mc MSI: its@8080000 domain created
+[VM 1] [    0.012384] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[VM 2] [    0.049250] EFI services will not be available.
+[VM 1] [    0.012508] pid_max: default: 32768 minimum: 301
+[VM 2] [    0.049753] smp: Bringing up secondary CPUs ...
+[VM 2] [    0.050278] smp: Brought up 1 node, 1 CPU
+[VM 1] [    0.016146] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[VM 2] [    0.050295] SMP: Total of 1 processors activated.
+[VM 1] [    0.016203] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[VM 2] [    0.050314] CPU: All CPU(s) started at EL1
+[VM 1] [    0.022742] VFS: Finished mounting rootfs on nullfs
+[VM 2] [    0.050487] CPU features: detected: 32-bit EL0 Support
+[VM 2] [    0.050495] CPU features: detected: 32-bit EL1 Support
+[VM 1] [    0.038056] /cpus/cpu-map/socket0/cluster0/core1: Can't get CPU for leaf core
+[VM 2] [    0.050538] CPU features: detected: CRC32 instructions
+[VM 1] [    0.038847] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[VM 2] [    0.050659] CPU features: detected: PMUv3
+[VM 1] [    0.048253] rcu: Hierarchical SRCU implementation.
+[VM 2] [    0.057720] alternatives: applying system-wide alternatives
+[VM 1] [    0.048306] rcu: 	Max phase no-delay instances is 1000.
+[VM 1] [    0.050815] fsl-mc MSI: its@8080000 domain created
+[VM 1] [    0.051925] EFI services will not be available.
+[VM 2] [    0.075157] Memory: 169724K/262144K available (18752K kernel code, 5242K rwdata, 14508K rodata, 12672K init, 718K bss, 57764K reserved, 32768K cma-reserved)
+[VM 1] [    0.052402] smp: Bringing up secondary CPUs ...
+[VM 2] [    0.099041] devtmpfs: initialized
+[VM 1] [    0.052965] smp: Brought up 1 node, 1 CPU
+[VM 1] [    0.052998] SMP: Total of 1 processors activated.
+[VM 2] [    0.114695] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[VM 1] [    0.053034] CPU: All CPU(s) started at EL1
+[VM 1] [    0.055133] CPU features: detected: 32-bit EL0 Support
+[VM 2] [    0.115097] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.055181] CPU features: detected: 32-bit EL1 Support
+[VM 2] [    0.115301] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[VM 1] [    0.055243] CPU features: detected: CRC32 instructions
+[VM 1] [    0.055391] CPU features: detected: PMUv3
+[VM 2] [    0.117996] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[VM 1] [    0.062653] alternatives: applying system-wide alternatives
+[VM 2] [    0.118046] 0 pages in range for non-PLT usage
+[VM 2] [    0.118073] 511248 pages in range for PLT usage
+[VM 2] [    0.128743] DMI: not present or invalid.
+[VM 1] [    0.085861] Memory: 167836K/262144K available (18752K kernel code, 5242K rwdata, 14508K rodata, 12672K init, 718K bss, 59652K reserved, 32768K cma-reserved)
+[VM 2] [    0.147258] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[VM 1] [    0.107574] devtmpfs: initialized
+[VM 2] [    0.156883] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[VM 2] [    0.157135] audit: initializing netlink subsys (disabled)
+[VM 1] [    0.126128] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[VM 2] [    0.159303] audit: type=2000 audit(0.140:1): state=initialized audit_enabled=0 res=1
+[VM 1] [    0.126585] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[VM 2] [    0.164945] thermal_sys: Registered thermal governor 'step_wise'
+[VM 1] [    0.126810] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[VM 2] [    0.165026] thermal_sys: Registered thermal governor 'power_allocator'
+[VM 1] [    0.128545] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[VM 2] [    0.165854] cpuidle: using governor menu
+[VM 1] [    0.128615] 0 pages in range for non-PLT usage
+[VM 2] [    0.168661] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[VM 1] [    0.128651] 511248 pages in range for PLT usage
+[VM 2] [    0.169005] ASID allocator initialised with 32768 entries
+[VM 1] [    0.145223] DMI: not present or invalid.
+[VM 2] [    0.173678] Serial: AMBA PL011 UART driver
+[VM 1] [    0.163333] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[VM 2] [    0.196100] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[VM 1] [    0.173635] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[VM 2] [    0.199419] printk: console [ttyAMA0] enabled
+[VM 1] [    0.174133] audit: initializing netlink subsys (disabled)
+[VM 2] [    0.739923] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[VM 1] [    0.175362] audit: type=2000 audit(0.156:1): state=initialized audit_enabled=0 res=1
+[VM 2] [    0.739949] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[VM 1] [    0.180380] thermal_sys: Registered thermal governor 'step_wise'
+[VM 2] [    0.739970] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[VM 1] [    0.180417] thermal_sys: Registered thermal governor 'power_allocator'
+[VM 2] [    0.739974] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[VM 1] [    0.180755] cpuidle: using governor menu
+[VM 2] [    0.739978] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[VM 1] [    0.181698] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[VM 2] [    0.739981] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[VM 1] [    0.182498] ASID allocator initialised with 32768 entries
+[VM 1] [    0.187453] Serial: AMBA PL011 UART driver
+[VM 2] [    0.739986] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[VM 2] [    0.739989] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[VM 1] [    0.231200] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[VM 2] [    1.180696] ACPI: Interpreter disabled.
+[VM 1] [    0.234510] printk: console [ttyAMA0] enabled
+[VM 2] [    1.495080] iommu: Default domain type: Translated
+[VM 1] [    0.841767] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[VM 2] [    1.504149] iommu: DMA domain TLB invalidation policy: strict mode
+[VM 1] [    0.841836] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[VM 2] [    1.516715] SCSI subsystem initialized
+[VM 1] [    0.841872] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[VM 2] [    1.525749] usbcore: registered new interface driver usbfs
+[VM 1] [    0.841891] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[VM 2] [    1.535735] usbcore: registered new interface driver hub
+[VM 1] [    0.841909] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[VM 2] [    1.535836] usbcore: registered new device driver usb
+[VM 2] [    1.536684] pps_core: LinuxPPS API ver. 1 registered
+[VM 1] [    0.841923] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[VM 1] [    0.841938] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[VM 2] [    1.536696] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[VM 2] [    1.536737] PTP clock support registered
+[VM 1] [    0.841952] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[VM 2] [    1.537001] EDAC MC: Ver: 3.0.0
+[VM 1] [    1.271192] ACPI: Interpreter disabled.
+[VM 2] [    1.590943] scmi_core: SCMI protocol bus registered
+[VM 1] [    1.589599] iommu: Default domain type: Translated
+[VM 2] [    1.600884] FPGA manager framework
+[VM 1] [    1.599099] iommu: DMA domain TLB invalidation policy: strict mode
+[VM 2] [    1.615596] vgaarb: loaded
+[VM 1] [    1.610960] SCSI subsystem initialized
+[VM 2] [    1.622192] clocksource: Switched to clocksource arch_sys_counter
+[VM 1] [    1.620048] usbcore: registered new interface driver usbfs
+[VM 2] [    1.635327] VFS: Disk quotas dquot_6.6.0
+[VM 1] [    1.630296] usbcore: registered new interface driver hub
+[VM 2] [    1.642592] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[VM 1] [    1.639763] usbcore: registered new device driver usb
+[VM 2] [    1.655794] pnp: PnP ACPI: disabled
+[VM 1] [    1.649795] pps_core: LinuxPPS API ver. 1 registered
+[VM 1] [    1.658399] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[VM 2] [    1.676856] NET: Registered PF_INET protocol family
+[VM 1] [    1.658515] PTP clock support registered
+[VM 1] [    1.658919] EDAC MC: Ver: 3.0.0
+[VM 2] [    1.687144] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[VM 1] [    1.687380] scmi_core: SCMI protocol bus registered
+[VM 1] [    1.698098] FPGA manager framework
+[VM 2] [    1.702692] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[VM 1] [    1.712635] vgaarb: loaded
+[VM 2] [    1.716853] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[VM 1] [    1.719677] clocksource: Switched to clocksource arch_sys_counter
+[VM 2] [    1.731082] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[VM 1] [    1.733269] VFS: Disk quotas dquot_6.6.0
+[VM 2] [    1.744599] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[VM 1] [    1.733357] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[VM 1] [    1.753769] pnp: PnP ACPI: disabled
+[VM 2] [    1.757256] TCP: Hash tables configured (established 2048 bind 2048)
+[VM 2] [    1.769383] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[VM 2] [    1.781707] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[VM 1] [    1.777133] NET: Registered PF_INET protocol family
+[VM 2] [    1.793860] RPC: Registered named UNIX socket transport module.
+[VM 1] [    1.787042] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[VM 2] [    1.804091] RPC: Registered udp transport module.
+[VM 2] [    1.812459] RPC: Registered tcp transport module.
+[VM 1] [    1.802339] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[VM 2] [    1.821315] RPC: Registered tcp-with-tls transport module.
+[VM 1] [    1.817022] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[VM 2] [    1.831280] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[VM 2] [    1.842434] PCI: CLS 0 bytes, default 64
+[VM 1] [    1.830804] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[VM 2] [    1.853068] Unpacking initramfs...
+[VM 1] [    1.844530] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[VM 2] [    1.860838] kvm [1]: HYP mode not available
+[VM 1] [    1.844658] TCP: Hash tables configured (established 2048 bind 2048)
+[VM 2] [    1.871378] Initialise system trusted keyrings
+[VM 1] [    1.845591] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[VM 2] [    1.882589] workingset: timestamp_bits=42 (anon: 38) max_order=16 bucket_order=0 (anon: 0)
+[VM 1] [    1.846534] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[VM 1] [    1.894221] RPC: Registered named UNIX socket transport module.
+[VM 2] [    1.902806] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[VM 1] [    1.905356] RPC: Registered udp transport module.
+[VM 2] [    1.914890] NFS: Registering the id_resolver key type
+[VM 1] [    1.913799] RPC: Registered tcp transport module.
+[VM 2] [    1.924773] Key type id_resolver registered
+[VM 1] [    1.922478] RPC: Registered tcp-with-tls transport module.
+[VM 2] [    1.932573] Key type id_legacy registered
+[VM 1] [    1.932285] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[VM 2] [    1.940099] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[VM 1] [    1.944072] PCI: CLS 0 bytes, default 64
+[VM 2] [    1.952993] Freeing initrd memory: 184K
+[VM 1] [    1.956301] kvm [1]: HYP mode not available
+[VM 2] [    1.960745] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[VM 1] [    1.966402] Initialise system trusted keyrings
+[VM 2] [    1.973931] 9p: Installing v9fs 9p2000 file system support
+[VM 2] [    1.986642] Key type asymmetric registered
+[VM 1] [    1.977924] workingset: timestamp_bits=42 (anon: 38) max_order=16 bucket_order=0 (anon: 0)
+[VM 2] [    1.994536] Asymmetric key parser 'x509' registered
+[VM 1] [    1.995010] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[VM 2] [    2.003450] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[VM 1] [    2.007208] NFS: Registering the id_resolver key type
+[VM 2] [    2.016158] io scheduler mq-deadline registered
+[VM 1] [    2.016704] Key type id_resolver registered
+[VM 2] [    2.024432] io scheduler kyber registered
+[VM 1] [    2.024641] Key type id_legacy registered
+[VM 2] [    2.032247] io scheduler bfq registered
+[VM 1] [    2.032320] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[VM 2] [    2.049906] ledtrig-cpu: registered to indicate activity on CPUs
+[VM 1] [    2.044107] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[VM 1] [    2.058025] 9p: Installing v9fs 9p2000 file system support
+[VM 1] [    2.069272] Key type asymmetric registered
+[VM 1] [    2.076498] Asymmetric key parser 'x509' registered
+[VM 1] [    2.085036] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[VM 2] [    2.096532] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[VM 1] [    2.097898] io scheduler mq-deadline registered
+[VM 1] [    2.106184] io scheduler kyber registered
+[VM 2] [    2.114754] msm_serial: driver initialized
+[VM 1] [    2.106476] io scheduler bfq registered
+[VM 2] [    2.123108] SuperH (H)SCI(F) driver initialized
+[VM 2] [    2.123222] STM32 USART driver initialized
+[VM 1] [    2.140811] pl061_gpio 9030000.pl061: PL061 GPIO chip registered
+[VM 2] [    2.153171] loop: module loaded
+[VM 2] [    2.160828] megasas: 07.734.00.00-rc1
+[VM 1] [    2.154540] ledtrig-cpu: registered to indicate activity on CPUs
+[VM 2] [    2.172604] physmap-flash 0.flash: physmap platform flash device: [mem 0x00000000-0x03ffffff]
+[VM 2] [    2.188035] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[VM 2] [    2.204258] Intel/Sharp Extended Query Table at 0x0031
+[VM 2] [    2.213842] Using buffer write method
+[VM 2] [    2.221443] physmap-flash 0.flash: physmap platform flash device: [mem 0x04000000-0x07ffffff]
+[VM 1] [    2.220489] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[VM 2] [    2.236564] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[VM 1] [    2.240029] msm_serial: driver initialized
+[VM 2] [    2.252973] Intel/Sharp Extended Query Table at 0x0031
+[VM 1] [    2.248819] SuperH (H)SCI(F) driver initialized
+[VM 2] [    2.262808] Using buffer write method
+[VM 1] [    2.257672] STM32 USART driver initialized
+[VM 2] [    2.269612] Concatenating MTD devices:
+[VM 2] [    2.276667] (0): "0.flash"
+[VM 2] [    2.281964] (1): "0.flash"
+[VM 2] [    2.287073] into device "0.flash"
+[VM 1] [    2.283004] loop: module loaded
+[VM 1] [    2.289586] virtio_blk virtio0: 1/0/0 default/read/poll queues
+[VM 2] [    2.315075] tun: Universal TUN/TAP device driver, 1.6
+[VM 1] [    2.303990] virtio_blk virtio0: [vda] 4194304 512-byte logical blocks (2.15 GB/2.00 GiB)
+[VM 2] [    2.339300] thunder_xcv, ver 1.0
+[VM 1] [    2.332772] megasas: 07.734.00.00-rc1
+[VM 2] [    2.345512] thunder_bgx, ver 1.0
+[VM 2] [    2.351982] nicpf, ver 1.0
+[VM 1] [    2.345564] physmap-flash 0.flash: physmap platform flash device: [mem 0x00000000-0x03ffffff]
+[VM 2] [    2.359975] e1000: Intel(R) PRO/1000 Network Driver
+[VM 2] [    2.369635] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[VM 1] [    2.362395] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[VM 2] [    2.380371] e1000e: Intel(R) PRO/1000 Network Driver
+[VM 2] [    2.389911] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[VM 1] [    2.384654] Intel/Sharp Extended Query Table at 0x0031
+[VM 1] [    2.396595] Using buffer write method
+[VM 2] [    2.400918] igb: Intel(R) Gigabit Ethernet Network Driver
+[VM 2] [    2.411897] igb: Copyright (c) 2007-2014 Intel Corporation.
+[VM 1] [    2.404447] physmap-flash 0.flash: physmap platform flash device: [mem 0x04000000-0x07ffffff]
+[VM 2] [    2.422343] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[VM 1] [    2.420124] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[VM 2] [    2.433563] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[VM 2] [    2.444543] sky2: driver version 1.30
+[VM 1] [    2.436649] Intel/Sharp Extended Query Table at 0x0031
+[VM 1] [    2.445969] Using buffer write method
+[VM 2] [    2.453376] VFIO - User Level meta-driver version: 0.3
+[VM 1] [    2.453045] Concatenating MTD devices:
+[VM 1] [    2.460154] (0): "0.flash"
+[VM 1] [    2.465250] (1): "0.flash"
+[VM 2] [    2.467559] usbcore: registered new interface driver usb-storage
+[VM 1] [    2.470488] into device "0.flash"
+[VM 2] [    2.482949] i2c_dev: i2c /dev entries driver
+[VM 2] [    2.503634] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[VM 1] [    2.500988] tun: Universal TUN/TAP device driver, 1.6
+[VM 2] [    2.516143] usbcore: registered new interface driver usbhid
+[VM 2] [    2.525860] usbhid: USB HID core driver
+[VM 1] [    2.524864] thunder_xcv, ver 1.0
+[VM 1] [    2.530950] thunder_bgx, ver 1.0
+[VM 1] [    2.537470] nicpf, ver 1.0
+[VM 2] [    2.539621] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 (0,8000003f) counters available
+[VM 1] [    2.544802] e1000: Intel(R) PRO/1000 Network Driver
+[VM 2] [    2.560824] NET: Registered PF_INET6 protocol family
+[VM 1] [    2.553571] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[VM 1] [    2.564176] e1000e: Intel(R) PRO/1000 Network Driver
+[VM 2] [    2.577846] Segment Routing with IPv6
+[VM 1] [    2.572650] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[VM 2] [    2.585122] In-situ OAM (IOAM) with IPv6
+[VM 1] [    2.583365] igb: Intel(R) Gigabit Ethernet Network Driver
+[VM 2] [    2.592815] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[VM 1] [    2.593070] igb: Copyright (c) 2007-2014 Intel Corporation.
+[VM 2] [    2.605282] NET: Registered PF_PACKET protocol family
+[VM 1] [    2.603292] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[VM 2] [    2.615820] 9pnet: Installing 9P2000 support
+[VM 2] [    2.623914] Key type dns_resolver registered
+[VM 1] [    2.614753] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[VM 1] [    2.626127] sky2: driver version 1.30
+[VM 1] [    2.635243] VFIO - User Level meta-driver version: 0.3
+[VM 2] [    2.651060] registered taskstats version 1
+[VM 1] [    2.650644] usbcore: registered new interface driver usb-storage
+[VM 2] [    2.659923] Loading compiled-in X.509 certificates
+[VM 1] [    2.669688] rtc-pl031 9010000.pl031: registered as rtc0
+[VM 2] [    2.680762] Demotion targets for Node 0: null
+[VM 2] [    2.693234] clk: Disabling unused clocks
+[VM 1] [    2.680087] rtc-pl031 9010000.pl031: setting system clock to 2026-08-21T18:34:06 UTC (1787337246)
+[VM 2] [    2.700806] PM: genpd: Disabling unused power domains
+[VM 1] [    2.697864] i2c_dev: i2c /dev entries driver
+[VM 1] [    2.728938] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[VM 1] [    2.744527] usbcore: registered new interface driver usbhid
+[VM 1] [    2.755903] usbhid: USB HID core driver
+[VM 1] [    2.772855] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 (0,8000003f) counters available
+[VM 2] [    2.791687] Freeing unused kernel memory: 12672K
+[VM 2] [    2.800626] Run /init as init process
+[VM 1] [    2.797578] NET: Registered PF_INET6 protocol family
+[VM 1] [    2.812648] Segment Routing with IPv6
+[VM 1] [    2.819195] In-situ OAM (IOAM) with IPv6
+[VM 1] [    2.827047] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[VM 2] ICPC_PEER_START
+[VM 2] ICPC_PEER_MOUNTED
+[VM 2] ICPC_PEER_MOUNTED
+[VM 1] [    2.839272] NET: Registered PF_PACKET protocol family
+[VM 2] ICPC_PEER_READY
+[VM 2] ICPC_PEER_READY
+[VM 1] [    2.849776] 9pnet: Installing 9P2000 support
+[VM 1] [    2.858025] Key type dns_resolver registered
+[VM 1] [    2.886074] registered taskstats version 1
+[VM 1] [    2.895051] Loading compiled-in X.509 certificates
+[VM 1] [    2.916041] Demotion targets for Node 0: null
+[VM 1] [    2.930935] input: gpio-keys as /devices/platform/gpio-keys/input/input0
+[VM 1] [    2.945600] clk: Disabling unused clocks
+[VM 1] [    2.952772] PM: genpd: Disabling unused power domains
+[VM 1] [    2.997708] EXT4-fs (vda): recovery complete
+[VM 1] [    3.005663] EXT4-fs (vda): mounted filesystem 28af8d72-64be-494e-94e2-1b5b46ccb855 r/w with ordered data mode. Quota mode: none.
+[VM 1] [    3.024252] VFS: Mounted root (ext4 filesystem) on device 254:0.
+[VM 1] [    3.036061] devtmpfs: mounted
+[VM 1] [    3.042222] VFS: Pivoted into new rootfs
+[VM 1] [    3.112906] Freeing unused kernel memory: 12672K
+[VM 1] [    3.121080] Run /bin/sh as init process
+[VM 1] /bin/sh: can't access tty; job control turned off
+~ # [6nmount -t proc proc /proc; mount -t sysfs sys /sys; echo 1 > /proc/sys/net/ip
+v6/conf/all/disable_ipv6; ip link set eth0 up; ip addr flush dev eth0; ip addr a
+dd 10.0.9.2/24 dev eth0; sleep 10; /usr/local/bin/task3-ai-loop compare && echo 
+'task3-compare pass' || echo 'task3-compare fail'
+TASK3_FIXED_LOOP_BEGIN
+TASK3_LOOP mode=FIXED i=0 t1_ns=13218308000 t2_ns=13236909000 oneway_us=9300 err=73.694 kp=0.500 state=y=26.306,err=73.694,kp=0.500,ki=0.080,kd=0.020,tick=100
+TASK3_LOOP mode=FIXED i=1 t1_ns=13359229000 t2_ns=13371361000 oneway_us=6066 err=67.692 kp=0.500 state=y=32.308,err=67.692,kp=0.500,ki=0.080,kd=0.020,tick=200
+TASK3_LOOP mode=FIXED i=2 t1_ns=13492707000 t2_ns=13504516000 oneway_us=5904 err=66.082 kp=0.500 state=y=33.918,err=66.082,kp=0.500,ki=0.080,kd=0.020,tick=300
+TASK3_LOOP mode=FIXED i=3 t1_ns=13625664000 t2_ns=13638239000 oneway_us=6287 err=65.450 kp=0.500 state=y=34.550,err=65.450,kp=0.500,ki=0.080,kd=0.020,tick=400
+TASK3_LOOP mode=FIXED i=4 t1_ns=13759480000 t2_ns=13771554000 oneway_us=6037 err=65.039 kp=0.500 state=y=34.961,err=65.039,kp=0.500,ki=0.080,kd=0.020,tick=500
+TASK3_LOOP mode=FIXED i=5 t1_ns=13893606000 t2_ns=13906189000 oneway_us=6291 err=64.678 kp=0.500 state=y=35.322,err=64.678,kp=0.500,ki=0.080,kd=0.020,tick=600
+TASK3_LOOP mode=FIXED i=6 t1_ns=14028467000 t2_ns=14040739000 oneway_us=6136 err=64.330 kp=0.500 state=y=35.670,err=64.330,kp=0.500,ki=0.080,kd=0.020,tick=700
+TASK3_LOOP mode=FIXED i=7 t1_ns=14161485000 t2_ns=14175011000 oneway_us=6763 err=63.986 kp=0.500 state=y=36.014,err=63.986,kp=0.500,ki=0.080,kd=0.020,tick=800
+TASK3_LOOP mode=FIXED i=8 t1_ns=14295828000 t2_ns=14308390000 oneway_us=6281 err=63.644 kp=0.500 state=y=36.356,err=63.644,kp=0.500,ki=0.080,kd=0.020,tick=900
+TASK3_LOOP mode=FIXED i=9 t1_ns=14429726000 t2_ns=14442321000 oneway_us=6297 err=63.304 kp=0.500 state=y=36.696,err=63.304,kp=0.500,ki=0.080,kd=0.020,tick=1000
+TASK3_LOOP mode=FIXED i=10 t1_ns=14563972000 t2_ns=14577081000 oneway_us=6554 err=62.966 kp=0.500 state=y=37.034,err=62.966,kp=0.500,ki=0.080,kd=0.020,tick=1100
+TASK3_LOOP mode=FIXED i=11 t1_ns=14699538000 t2_ns=14711634000 oneway_us=6048 err=62.630 kp=0.500 state=y=37.370,err=62.630,kp=0.500,ki=0.080,kd=0.020,tick=1200
+TASK3_LOOP mode=FIXED i=12 t1_ns=14833476000 t2_ns=14845846000 oneway_us=6185 err=62.296 kp=0.500 state=y=37.704,err=62.296,kp=0.500,ki=0.080,kd=0.020,tick=1300
+TASK3_LOOP mode=FIXED i=13 t1_ns=14967091000 t2_ns=14990023000 oneway_us=11466 err=61.963 kp=0.500 state=y=38.037,err=61.963,kp=0.500,ki=0.080,kd=0.020,tick=1400
+TASK3_LOOP mode=FIXED i=14 t1_ns=15111463000 t2_ns=15123691000 oneway_us=6114 err=61.632 kp=0.500 state=y=38.368,err=61.632,kp=0.500,ki=0.080,kd=0.020,tick=1500
+TASK3_LOOP mode=FIXED i=15 t1_ns=15245171000 t2_ns=15257098000 oneway_us=5963 err=61.304 kp=0.500 state=y=38.696,err=61.304,kp=0.500,ki=0.080,kd=0.020,tick=1600
+TASK3_LOOP mode=FIXED i=16 t1_ns=15379020000 t2_ns=15391487000 oneway_us=6233 err=60.976 kp=0.500 state=y=39.024,err=60.976,kp=0.500,ki=0.080,kd=0.020,tick=1700
+TASK3_LOOP mode=FIXED i=17 t1_ns=15513656000 t2_ns=15526561000 oneway_us=6452 err=60.651 kp=0.500 state=y=39.349,err=60.651,kp=0.500,ki=0.080,kd=0.020,tick=1800
+TASK3_LOOP mode=FIXED i=18 t1_ns=15648260000 t2_ns=15669144000 oneway_us=10442 err=60.327 kp=0.500 state=y=39.673,err=60.327,kp=0.500,ki=0.080,kd=0.020,tick=1900
+TASK3_LOOP mode=FIXED i=19 t1_ns=15790825000 t2_ns=15803627000 oneway_us=6401 err=60.005 kp=0.500 state=y=39.995,err=60.005,kp=0.500,ki=0.080,kd=0.020,tick=2000
+TASK3_LOOP mode=FIXED i=20 t1_ns=15925117000 t2_ns=15938639000 oneway_us=6761 err=59.685 kp=0.500 state=y=40.315,err=59.685,kp=0.500,ki=0.080,kd=0.020,tick=2100
+TASK3_LOOP mode=FIXED i=21 t1_ns=16060469000 t2_ns=16072245000 oneway_us=5888 err=59.366 kp=0.500 state=y=40.634,err=59.366,kp=0.500,ki=0.080,kd=0.020,tick=2200
+TASK3_LOOP mode=FIXED i=22 t1_ns=16193799000 t2_ns=16206616000 oneway_us=6408 err=59.049 kp=0.500 state=y=40.951,err=59.049,kp=0.500,ki=0.080,kd=0.020,tick=2300
+TASK3_LOOP mode=FIXED i=23 t1_ns=16327846000 t2_ns=16340167000 oneway_us=6160 err=58.734 kp=0.500 state=y=41.266,err=58.734,kp=0.500,ki=0.080,kd=0.020,tick=2400
+TASK3_LOOP mode=FIXED i=24 t1_ns=16461604000 t2_ns=16474276000 oneway_us=6336 err=58.420 kp=0.500 state=y=41.580,err=58.420,kp=0.500,ki=0.080,kd=0.020,tick=2500
+TASK3_LOOP mode=FIXED i=25 t1_ns=16595680000 t2_ns=16608635000 oneway_us=6477 err=58.109 kp=0.500 state=y=41.891,err=58.109,kp=0.500,ki=0.080,kd=0.020,tick=2600
+TASK3_LOOP mode=FIXED i=26 t1_ns=16729658000 t2_ns=16742452000 oneway_us=6397 err=57.798 kp=0.500 state=y=42.202,err=57.798,kp=0.500,ki=0.080,kd=0.020,tick=2700
+TASK3_LOOP mode=FIXED i=27 t1_ns=16863650000 t2_ns=16876517000 oneway_us=6433 err=57.490 kp=0.500 state=y=42.510,err=57.490,kp=0.500,ki=0.080,kd=0.020,tick=2800
+TASK3_LOOP mode=FIXED i=28 t1_ns=16998672000 t2_ns=17018452000 oneway_us=9890 err=57.183 kp=0.500 state=y=42.817,err=57.183,kp=0.500,ki=0.080,kd=0.020,tick=2900
+TASK3_LOOP mode=FIXED i=29 t1_ns=17140114000 t2_ns=17152997000 oneway_us=6441 err=56.878 kp=0.500 state=y=43.122,err=56.878,kp=0.500,ki=0.080,kd=0.020,tick=3000
+TASK3_LOOP mode=FIXED i=30 t1_ns=17273540000 t2_ns=17286949000 oneway_us=6704 err=56.574 kp=0.500 state=y=43.426,err=56.574,kp=0.500,ki=0.080,kd=0.020,tick=3100
+TASK3_LOOP mode=FIXED i=31 t1_ns=17408823000 t2_ns=17422316000 oneway_us=6746 err=56.272 kp=0.500 state=y=43.728,err=56.272,kp=0.500,ki=0.080,kd=0.020,tick=3200
+TASK3_LOOP mode=FIXED i=32 t1_ns=17544338000 t2_ns=17556730000 oneway_us=6196 err=55.972 kp=0.500 state=y=44.028,err=55.972,kp=0.500,ki=0.080,kd=0.020,tick=3300
+TASK3_LOOP mode=FIXED i=33 t1_ns=17677846000 t2_ns=17690244000 oneway_us=6199 err=55.673 kp=0.500 state=y=44.327,err=55.673,kp=0.500,ki=0.080,kd=0.020,tick=3400
+TASK3_LOOP mode=FIXED i=34 t1_ns=17811570000 t2_ns=17823834000 oneway_us=6132 err=55.376 kp=0.500 state=y=44.624,err=55.376,kp=0.500,ki=0.080,kd=0.020,tick=3500
+TASK3_LOOP mode=FIXED i=35 t1_ns=17944826000 t2_ns=17956698000 oneway_us=5936 err=55.080 kp=0.500 state=y=44.920,err=55.080,kp=0.500,ki=0.080,kd=0.020,tick=3600
+TASK3_LOOP mode=FIXED i=36 t1_ns=18077671000 t2_ns=18090573000 oneway_us=6451 err=54.786 kp=0.500 state=y=45.214,err=54.786,kp=0.500,ki=0.080,kd=0.020,tick=3700
+TASK3_LOOP mode=FIXED i=37 t1_ns=18218009000 t2_ns=18230957000 oneway_us=6474 err=54.494 kp=0.500 state=y=45.506,err=54.494,kp=0.500,ki=0.080,kd=0.020,tick=3800
+TASK3_LOOP mode=FIXED i=38 t1_ns=18354627000 t2_ns=18367387000 oneway_us=6380 err=54.203 kp=0.500 state=y=45.797,err=54.203,kp=0.500,ki=0.080,kd=0.020,tick=3900
+TASK3_LOOP mode=FIXED i=39 t1_ns=18488243000 t2_ns=18501274000 oneway_us=6515 err=53.914 kp=0.500 state=y=46.086,err=53.914,kp=0.500,ki=0.080,kd=0.020,tick=4000
+TASK3_LOOP mode=FIXED i=40 t1_ns=18621790000 t2_ns=18638067000 oneway_us=8138 err=53.626 kp=0.500 state=y=46.374,err=53.626,kp=0.500,ki=0.080,kd=0.020,tick=4100
+TASK3_LOOP mode=FIXED i=41 t1_ns=18759667000 t2_ns=18772645000 oneway_us=6489 err=53.340 kp=0.500 state=y=46.660,err=53.340,kp=0.500,ki=0.080,kd=0.020,tick=4200
+TASK3_LOOP mode=FIXED i=42 t1_ns=18893687000 t2_ns=18906346000 oneway_us=6329 err=53.055 kp=0.500 state=y=46.945,err=53.055,kp=0.500,ki=0.080,kd=0.020,tick=4300
+TASK3_LOOP mode=FIXED i=43 t1_ns=19028338000 t2_ns=19042987000 oneway_us=7324 err=52.772 kp=0.500 state=y=47.228,err=52.772,kp=0.500,ki=0.080,kd=0.020,tick=4400
+TASK3_LOOP mode=FIXED i=44 t1_ns=19165520000 t2_ns=19177858000 oneway_us=6169 err=52.490 kp=0.500 state=y=47.510,err=52.490,kp=0.500,ki=0.080,kd=0.020,tick=4500
+TASK3_LOOP mode=FIXED i=45 t1_ns=19298468000 t2_ns=19313501000 oneway_us=7516 err=52.210 kp=0.500 state=y=47.790,err=52.210,kp=0.500,ki=0.080,kd=0.020,tick=4600
+TASK3_LOOP mode=FIXED i=46 t1_ns=19444340000 t2_ns=19456592000 oneway_us=6126 err=51.931 kp=0.500 state=y=48.069,err=51.931,kp=0.500,ki=0.080,kd=0.020,tick=4700
+TASK3_LOOP mode=FIXED i=47 t1_ns=19577867000 t2_ns=19590211000 oneway_us=6172 err=51.654 kp=0.500 state=y=48.346,err=51.654,kp=0.500,ki=0.080,kd=0.020,tick=4800
+TASK3_LOOP mode=FIXED i=48 t1_ns=19711090000 t2_ns=19723051000 oneway_us=5980 err=51.378 kp=0.500 state=y=48.622,err=51.378,kp=0.500,ki=0.080,kd=0.020,tick=4900
+TASK3_LOOP mode=FIXED i=49 t1_ns=19843712000 t2_ns=19856404000 oneway_us=6346 err=51.104 kp=0.500 state=y=48.896,err=51.104,kp=0.500,ki=0.080,kd=0.020,tick=5000
+TASK3_LOOP mode=FIXED i=50 t1_ns=19978100000 t2_ns=19990961000 oneway_us=6430 err=50.831 kp=0.500 state=y=49.169,err=50.831,kp=0.500,ki=0.080,kd=0.020,tick=5100
+TASK3_LOOP mode=FIXED i=51 t1_ns=20113840000 t2_ns=20126269000 oneway_us=6214 err=50.560 kp=0.500 state=y=49.440,err=50.560,kp=0.500,ki=0.080,kd=0.020,tick=5200
+TASK3_LOOP mode=FIXED i=52 t1_ns=20247071000 t2_ns=20258899000 oneway_us=5914 err=50.290 kp=0.500 state=y=49.710,err=50.290,kp=0.500,ki=0.080,kd=0.020,tick=5300
+TASK3_LOOP mode=FIXED i=53 t1_ns=20380391000 t2_ns=20394698000 oneway_us=7153 err=50.021 kp=0.500 state=y=49.979,err=50.021,kp=0.500,ki=0.080,kd=0.020,tick=5400
+TASK3_LOOP mode=FIXED i=54 t1_ns=20516274000 t2_ns=20529023000 oneway_us=6374 err=49.754 kp=0.500 state=y=50.246,err=49.754,kp=0.500,ki=0.080,kd=0.020,tick=5500
+TASK3_LOOP mode=FIXED i=55 t1_ns=20650955000 t2_ns=20663280000 oneway_us=6162 err=49.489 kp=0.500 state=y=50.511,err=49.489,kp=0.500,ki=0.080,kd=0.020,tick=5600
+TASK3_LOOP mode=FIXED i=56 t1_ns=20784891000 t2_ns=20797400000 oneway_us=6254 err=49.225 kp=0.500 state=y=50.775,err=49.225,kp=0.500,ki=0.080,kd=0.020,tick=5700
+TASK3_LOOP mode=FIXED i=57 t1_ns=20920091000 t2_ns=20931867000 oneway_us=5888 err=48.962 kp=0.500 state=y=51.038,err=48.962,kp=0.500,ki=0.080,kd=0.020,tick=5800
+TASK3_LOOP mode=FIXED i=58 t1_ns=21053728000 t2_ns=21066433000 oneway_us=6352 err=48.700 kp=0.500 state=y=51.300,err=48.700,kp=0.500,ki=0.080,kd=0.020,tick=5900
+TASK3_LOOP mode=FIXED i=59 t1_ns=21187982000 t2_ns=21200587000 oneway_us=6302 err=48.441 kp=0.500 state=y=51.559,err=48.441,kp=0.500,ki=0.080,kd=0.020,tick=6000
+TASK3_LOOP mode=FIXED i=60 t1_ns=21322017000 t2_ns=21335528000 oneway_us=6755 err=48.182 kp=0.500 state=y=51.818,err=48.182,kp=0.500,ki=0.080,kd=0.020,tick=6100
+TASK3_LOOP mode=FIXED i=61 t1_ns=21458028000 t2_ns=21470556000 oneway_us=6264 err=47.925 kp=0.500 state=y=52.075,err=47.925,kp=0.500,ki=0.080,kd=0.020,tick=6200
+TASK3_LOOP mode=FIXED i=62 t1_ns=21598068000 t2_ns=21609943000 oneway_us=5937 err=47.669 kp=0.500 state=y=52.331,err=47.669,kp=0.500,ki=0.080,kd=0.020,tick=6300
+TASK3_LOOP mode=FIXED i=63 t1_ns=21730491000 t2_ns=21743802000 oneway_us=6655 err=47.414 kp=0.500 state=y=52.586,err=47.414,kp=0.500,ki=0.080,kd=0.020,tick=6400
+TASK3_LOOP mode=FIXED i=64 t1_ns=21870797000 t2_ns=21883206000 oneway_us=6204 err=47.161 kp=0.500 state=y=52.839,err=47.161,kp=0.500,ki=0.080,kd=0.020,tick=6500
+TASK3_LOOP mode=FIXED i=65 t1_ns=22004481000 t2_ns=22016968000 oneway_us=6243 err=46.910 kp=0.500 state=y=53.090,err=46.910,kp=0.500,ki=0.080,kd=0.020,tick=6600
+TASK3_LOOP mode=FIXED i=66 t1_ns=22137817000 t2_ns=22150049000 oneway_us=6116 err=46.659 kp=0.500 state=y=53.341,err=46.659,kp=0.500,ki=0.080,kd=0.020,tick=6700
+TASK3_LOOP mode=FIXED i=67 t1_ns=22271569000 t2_ns=22283884000 oneway_us=6157 err=46.410 kp=0.500 state=y=53.590,err=46.410,kp=0.500,ki=0.080,kd=0.020,tick=6800
+TASK3_LOOP mode=FIXED i=68 t1_ns=22405676000 t2_ns=22418599000 oneway_us=6461 err=46.162 kp=0.500 state=y=53.838,err=46.162,kp=0.500,ki=0.080,kd=0.020,tick=6900
+TASK3_LOOP mode=FIXED i=69 t1_ns=22539937000 t2_ns=22552874000 oneway_us=6468 err=45.916 kp=0.500 state=y=54.084,err=45.916,kp=0.500,ki=0.080,kd=0.020,tick=7000
+TASK3_LOOP mode=FIXED i=70 t1_ns=22673662000 t2_ns=22694833000 oneway_us=10585 err=45.671 kp=0.500 state=y=54.329,err=45.671,kp=0.500,ki=0.080,kd=0.020,tick=7100
+TASK3_LOOP mode=FIXED i=71 t1_ns=22818099000 t2_ns=22830999000 oneway_us=6450 err=45.427 kp=0.500 state=y=54.573,err=45.427,kp=0.500,ki=0.080,kd=0.020,tick=7200
+TASK3_LOOP mode=FIXED i=72 t1_ns=22951904000 t2_ns=22964167000 oneway_us=6131 err=45.185 kp=0.500 state=y=54.815,err=45.185,kp=0.500,ki=0.080,kd=0.020,tick=7300
+TASK3_LOOP mode=FIXED i=73 t1_ns=23086024000 t2_ns=23099984000 oneway_us=6980 err=44.943 kp=0.500 state=y=55.057,err=44.943,kp=0.500,ki=0.080,kd=0.020,tick=7400
+TASK3_LOOP mode=FIXED i=74 t1_ns=23221750000 t2_ns=23236867000 oneway_us=7558 err=44.704 kp=0.500 state=y=55.296,err=44.704,kp=0.500,ki=0.080,kd=0.020,tick=7500
+TASK3_LOOP mode=FIXED i=75 t1_ns=23358794000 t2_ns=23370958000 oneway_us=6082 err=44.465 kp=0.500 state=y=55.535,err=44.465,kp=0.500,ki=0.080,kd=0.020,tick=7600
+TASK3_LOOP mode=FIXED i=76 t1_ns=23492438000 t2_ns=23505068000 oneway_us=6315 err=44.228 kp=0.500 state=y=55.772,err=44.228,kp=0.500,ki=0.080,kd=0.020,tick=7700
+TASK3_LOOP mode=FIXED i=77 t1_ns=23625961000 t2_ns=23638822000 oneway_us=6430 err=43.991 kp=0.500 state=y=56.009,err=43.991,kp=0.500,ki=0.080,kd=0.020,tick=7800
+TASK3_LOOP mode=FIXED i=78 t1_ns=23760214000 t2_ns=23773117000 oneway_us=6451 err=43.757 kp=0.500 state=y=56.243,err=43.757,kp=0.500,ki=0.080,kd=0.020,tick=7900
+TASK3_LOOP mode=FIXED i=79 t1_ns=23894805000 t2_ns=23907504000 oneway_us=6349 err=43.523 kp=0.500 state=y=56.477,err=43.523,kp=0.500,ki=0.080,kd=0.020,tick=8000
+TASK3_LOOP mode=FIXED i=80 t1_ns=24029852000 t2_ns=24042617000 oneway_us=6382 err=43.291 kp=0.500 state=y=56.709,err=43.291,kp=0.500,ki=0.080,kd=0.020,tick=8100
+TASK3_LOOP mode=FIXED i=81 t1_ns=24165995000 t2_ns=24178334000 oneway_us=6169 err=43.060 kp=0.500 state=y=56.940,err=43.060,kp=0.500,ki=0.080,kd=0.020,tick=8200
+TASK3_LOOP mode=FIXED i=82 t1_ns=24300396000 t2_ns=24313115000 oneway_us=6359 err=42.830 kp=0.500 state=y=57.170,err=42.830,kp=0.500,ki=0.080,kd=0.020,tick=8300
+TASK3_LOOP mode=FIXED i=83 t1_ns=24435568000 t2_ns=24447569000 oneway_us=6000 err=42.601 kp=0.500 state=y=57.399,err=42.601,kp=0.500,ki=0.080,kd=0.020,tick=8400
+TASK3_LOOP mode=FIXED i=84 t1_ns=24569921000 t2_ns=24583205000 oneway_us=6642 err=42.374 kp=0.500 state=y=57.626,err=42.374,kp=0.500,ki=0.080,kd=0.020,tick=8500
+TASK3_LOOP mode=FIXED i=85 t1_ns=24704310000 t2_ns=24716953000 oneway_us=6321 err=42.148 kp=0.500 state=y=57.852,err=42.148,kp=0.500,ki=0.080,kd=0.020,tick=8600
+TASK3_LOOP mode=FIXED i=86 t1_ns=24837754000 t2_ns=24850255000 oneway_us=6250 err=41.923 kp=0.500 state=y=58.077,err=41.923,kp=0.500,ki=0.080,kd=0.020,tick=8700
+TASK3_LOOP mode=FIXED i=87 t1_ns=24971132000 t2_ns=24983247000 oneway_us=6057 err=41.699 kp=0.500 state=y=58.301,err=41.699,kp=0.500,ki=0.080,kd=0.020,tick=8800
+TASK3_LOOP mode=FIXED i=88 t1_ns=25104313000 t2_ns=25117042000 oneway_us=6364 err=41.476 kp=0.500 state=y=58.524,err=41.476,kp=0.500,ki=0.080,kd=0.020,tick=8900
+TASK3_LOOP mode=FIXED i=89 t1_ns=25238992000 t2_ns=25251347000 oneway_us=6177 err=41.255 kp=0.500 state=y=58.745,err=41.255,kp=0.500,ki=0.080,kd=0.020,tick=9000
+TASK3_METRICS mode=FIXED first_err=73.694 final_err=41.255 final_y=58.745 rmse=53.499 settle_loops=-1 mean_oneway_us=6589 p99_oneway_us=10585
+TASK3_AI_LOOP_BEGIN
+TASK3_LOOP mode=AI i=0 t1_ns=25503511000 t2_ns=25516548000 oneway_us=6518 err=73.694 kp=0.500 state=y=26.306,err=73.694,kp=0.500,ki=0.080,kd=0.020,tick=100
+TASK3_LOOP mode=AI i=1 t1_ns=25637580000 t2_ns=25649902000 oneway_us=6161 err=48.349 kp=1.177 state=y=51.651,err=48.349,kp=1.177,ki=0.134,kd=0.020,tick=200
+TASK3_LOOP mode=AI i=2 t1_ns=25771202000 t2_ns=25793760000 oneway_us=11279 err=38.724 kp=1.563 state=y=61.276,err=38.724,kp=1.563,ki=0.162,kd=0.020,tick=300
+TASK3_LOOP mode=AI i=3 t1_ns=25916686000 t2_ns=25928703000 oneway_us=6008 err=34.171 kp=1.839 state=y=65.829,err=34.171,kp=1.839,ki=0.181,kd=0.020,tick=400
+TASK3_LOOP mode=AI i=4 t1_ns=26051108000 t2_ns=26063642000 oneway_us=6267 err=31.259 kp=2.062 state=y=68.741,err=31.259,kp=2.062,ki=0.195,kd=0.020,tick=500
+TASK3_LOOP mode=AI i=5 t1_ns=26185746000 t2_ns=26198208000 oneway_us=6231 err=29.119 kp=2.251 state=y=70.881,err=29.119,kp=2.251,ki=0.206,kd=0.020,tick=600
+TASK3_LOOP mode=AI i=6 t1_ns=26318297000 t2_ns=26330699000 oneway_us=6201 err=27.436 kp=2.416 state=y=72.564,err=27.436,kp=2.416,ki=0.215,kd=0.020,tick=700
+TASK3_LOOP mode=AI i=7 t1_ns=26450514000 t2_ns=26463573000 oneway_us=6529 err=26.061 kp=2.562 state=y=73.939,err=26.061,kp=2.562,ki=0.223,kd=0.020,tick=800
+TASK3_LOOP mode=AI i=8 t1_ns=26584981000 t2_ns=26596992000 oneway_us=6005 err=24.928 kp=2.691 state=y=75.072,err=24.928,kp=2.691,ki=0.229,kd=0.020,tick=900
+TASK3_LOOP mode=AI i=9 t1_ns=26717654000 t2_ns=26729863000 oneway_us=6104 err=23.959 kp=2.808 state=y=76.041,err=23.959,kp=2.808,ki=0.234,kd=0.020,tick=1000
+TASK3_LOOP mode=AI i=10 t1_ns=26850832000 t2_ns=26863496000 oneway_us=6332 err=23.123 kp=2.914 state=y=76.877,err=23.123,kp=2.914,ki=0.238,kd=0.020,tick=1100
+TASK3_LOOP mode=AI i=11 t1_ns=26985946000 t2_ns=26998041000 oneway_us=6047 err=22.405 kp=3.009 state=y=77.595,err=22.405,kp=3.009,ki=0.241,kd=0.020,tick=1200
+TASK3_LOOP mode=AI i=12 t1_ns=27119357000 t2_ns=27131736000 oneway_us=6189 err=21.769 kp=3.097 state=y=78.231,err=21.769,kp=3.097,ki=0.243,kd=0.020,tick=1300
+TASK3_LOOP mode=AI i=13 t1_ns=27253968000 t2_ns=27266547000 oneway_us=6289 err=21.203 kp=3.177 state=y=78.797,err=21.203,kp=3.177,ki=0.245,kd=0.020,tick=1400
+TASK3_LOOP mode=AI i=14 t1_ns=27387707000 t2_ns=27399741000 oneway_us=6017 err=20.700 kp=3.251 state=y=79.300,err=20.700,kp=3.251,ki=0.246,kd=0.020,tick=1500
+TASK3_LOOP mode=AI i=15 t1_ns=27521515000 t2_ns=27533980000 oneway_us=6232 err=20.244 kp=3.319 state=y=79.756,err=20.244,kp=3.319,ki=0.247,kd=0.020,tick=1600
+TASK3_LOOP mode=AI i=16 t1_ns=27655165000 t2_ns=27668360000 oneway_us=6597 err=19.839 kp=3.382 state=y=80.161,err=19.839,kp=3.382,ki=0.247,kd=0.020,tick=1700
+TASK3_LOOP mode=AI i=17 t1_ns=27789476000 t2_ns=27802319000 oneway_us=6421 err=19.461 kp=3.442 state=y=80.539,err=19.461,kp=3.442,ki=0.247,kd=0.020,tick=1800
+TASK3_LOOP mode=AI i=18 t1_ns=27925540000 t2_ns=27938270000 oneway_us=6365 err=19.108 kp=3.499 state=y=80.892,err=19.108,kp=3.499,ki=0.247,kd=0.020,tick=1900
+TASK3_LOOP mode=AI i=19 t1_ns=28059494000 t2_ns=28071495000 oneway_us=6000 err=18.765 kp=3.556 state=y=81.235,err=18.765,kp=3.556,ki=0.247,kd=0.020,tick=2000
+TASK3_LOOP mode=AI i=20 t1_ns=28197472000 t2_ns=28209936000 oneway_us=6232 err=18.441 kp=3.611 state=y=81.559,err=18.441,kp=3.611,ki=0.247,kd=0.020,tick=2100
+TASK3_LOOP mode=AI i=21 t1_ns=28331972000 t2_ns=28344169000 oneway_us=6098 err=18.131 kp=3.665 state=y=81.869,err=18.131,kp=3.665,ki=0.247,kd=0.020,tick=2200
+TASK3_LOOP mode=AI i=22 t1_ns=28466533000 t2_ns=28479545000 oneway_us=6506 err=17.836 kp=3.717 state=y=82.164,err=17.836,kp=3.717,ki=0.247,kd=0.020,tick=2300
+TASK3_LOOP mode=AI i=23 t1_ns=28601958000 t2_ns=28614575000 oneway_us=6308 err=17.553 kp=3.768 state=y=82.447,err=17.553,kp=3.768,ki=0.247,kd=0.020,tick=2400
+TASK3_LOOP mode=AI i=24 t1_ns=28736270000 t2_ns=28748286000 oneway_us=6008 err=17.278 kp=3.819 state=y=82.722,err=17.278,kp=3.819,ki=0.247,kd=0.020,tick=2500
+TASK3_LOOP mode=AI i=25 t1_ns=28869824000 t2_ns=28882989000 oneway_us=6582 err=17.017 kp=3.868 state=y=82.983,err=17.017,kp=3.868,ki=0.247,kd=0.020,tick=2600
+TASK3_LOOP mode=AI i=26 t1_ns=29004598000 t2_ns=29017150000 oneway_us=6276 err=16.766 kp=3.916 state=y=83.234,err=16.766,kp=3.916,ki=0.247,kd=0.020,tick=2700
+TASK3_LOOP mode=AI i=27 t1_ns=29138524000 t2_ns=29152785000 oneway_us=7130 err=16.524 kp=3.963 state=y=83.476,err=16.524,kp=3.963,ki=0.247,kd=0.020,tick=2800
+TASK3_LOOP mode=AI i=28 t1_ns=29274299000 t2_ns=29287204000 oneway_us=6452 err=16.291 kp=4.009 state=y=83.709,err=16.291,kp=4.009,ki=0.247,kd=0.020,tick=2900
+TASK3_LOOP mode=AI i=29 t1_ns=29407792000 t2_ns=29420699000 oneway_us=6453 err=16.066 kp=4.054 state=y=83.934,err=16.066,kp=4.054,ki=0.247,kd=0.020,tick=3000
+TASK3_LOOP mode=AI i=30 t1_ns=29541459000 t2_ns=29555138000 oneway_us=6839 err=15.850 kp=4.098 state=y=84.150,err=15.850,kp=4.098,ki=0.247,kd=0.020,tick=3100
+TASK3_LOOP mode=AI i=31 t1_ns=29678158000 t2_ns=29691512000 oneway_us=6677 err=15.639 kp=4.142 state=y=84.361,err=15.639,kp=4.142,ki=0.247,kd=0.020,tick=3200
+TASK3_LOOP mode=AI i=32 t1_ns=29811911000 t2_ns=29824757000 oneway_us=6423 err=15.438 kp=4.184 state=y=84.562,err=15.438,kp=4.184,ki=0.247,kd=0.020,tick=3300
+TASK3_LOOP mode=AI i=33 t1_ns=29945960000 t2_ns=29959451000 oneway_us=6745 err=15.241 kp=4.226 state=y=84.759,err=15.241,kp=4.226,ki=0.247,kd=0.020,tick=3400
+TASK3_LOOP mode=AI i=34 t1_ns=30083952000 t2_ns=30097786000 oneway_us=6917 err=15.051 kp=4.267 state=y=84.949,err=15.051,kp=4.267,ki=0.247,kd=0.020,tick=3500
+TASK3_LOOP mode=AI i=35 t1_ns=30220667000 t2_ns=30233612000 oneway_us=6472 err=14.868 kp=4.307 state=y=85.132,err=14.868,kp=4.307,ki=0.247,kd=0.020,tick=3600
+TASK3_LOOP mode=AI i=36 t1_ns=30358197000 t2_ns=30371508000 oneway_us=6655 err=14.689 kp=4.347 state=y=85.311,err=14.689,kp=4.347,ki=0.247,kd=0.020,tick=3700
+TASK3_LOOP mode=AI i=37 t1_ns=30493954000 t2_ns=30506997000 oneway_us=6521 err=14.515 kp=4.386 state=y=85.485,err=14.515,kp=4.386,ki=0.247,kd=0.020,tick=3800
+TASK3_LOOP mode=AI i=38 t1_ns=30629454000 t2_ns=30642187000 oneway_us=6366 err=14.348 kp=4.424 state=y=85.652,err=14.348,kp=4.424,ki=0.247,kd=0.020,tick=3900
+TASK3_LOOP mode=AI i=39 t1_ns=30763460000 t2_ns=30776319000 oneway_us=6429 err=14.186 kp=4.461 state=y=85.814,err=14.186,kp=4.461,ki=0.247,kd=0.020,tick=4000
+TASK3_LOOP mode=AI i=40 t1_ns=30897690000 t2_ns=30910156000 oneway_us=6233 err=14.027 kp=4.498 state=y=85.973,err=14.027,kp=4.498,ki=0.247,kd=0.020,tick=4100
+TASK3_LOOP mode=AI i=41 t1_ns=31031699000 t2_ns=31044839000 oneway_us=6570 err=13.873 kp=4.534 state=y=86.127,err=13.873,kp=4.534,ki=0.247,kd=0.020,tick=4200
+TASK3_LOOP mode=AI i=42 t1_ns=31165965000 t2_ns=31178141000 oneway_us=6088 err=13.725 kp=4.569 state=y=86.275,err=13.725,kp=4.569,ki=0.247,kd=0.020,tick=4300
+TASK3_LOOP mode=AI i=43 t1_ns=31299195000 t2_ns=31311370000 oneway_us=6087 err=13.579 kp=4.604 state=y=86.421,err=13.579,kp=4.604,ki=0.247,kd=0.020,tick=4400
+TASK3_LOOP mode=AI i=44 t1_ns=31434065000 t2_ns=31447195000 oneway_us=6565 err=13.435 kp=4.639 state=y=86.565,err=13.435,kp=4.639,ki=0.247,kd=0.020,tick=4500
+TASK3_LOOP mode=AI i=45 t1_ns=31568555000 t2_ns=31581071000 oneway_us=6258 err=13.299 kp=4.672 state=y=86.701,err=13.299,kp=4.672,ki=0.247,kd=0.020,tick=4600
+TASK3_LOOP mode=AI i=46 t1_ns=31702036000 t2_ns=31714873000 oneway_us=6418 err=13.162 kp=4.706 state=y=86.838,err=13.162,kp=4.706,ki=0.247,kd=0.020,tick=4700
+TASK3_LOOP mode=AI i=47 t1_ns=31836190000 t2_ns=31849245000 oneway_us=6527 err=13.033 kp=4.738 state=y=86.967,err=13.033,kp=4.738,ki=0.247,kd=0.020,tick=4800
+TASK3_LOOP mode=AI i=48 t1_ns=31970808000 t2_ns=31984306000 oneway_us=6749 err=12.905 kp=4.770 state=y=87.095,err=12.905,kp=4.770,ki=0.247,kd=0.020,tick=4900
+TASK3_LOOP mode=AI i=49 t1_ns=32105130000 t2_ns=32117307000 oneway_us=6088 err=12.779 kp=4.802 state=y=87.221,err=12.779,kp=4.802,ki=0.247,kd=0.020,tick=5000
+TASK3_LOOP mode=AI i=50 t1_ns=32238002000 t2_ns=32251270000 oneway_us=6634 err=12.657 kp=4.833 state=y=87.343,err=12.657,kp=4.833,ki=0.247,kd=0.020,tick=5100
+TASK3_LOOP mode=AI i=51 t1_ns=32373210000 t2_ns=32386051000 oneway_us=6420 err=12.537 kp=4.864 state=y=87.463,err=12.537,kp=4.864,ki=0.247,kd=0.020,tick=5200
+TASK3_LOOP mode=AI i=52 t1_ns=32507496000 t2_ns=32519396000 oneway_us=5950 err=12.421 kp=4.894 state=y=87.579,err=12.421,kp=4.894,ki=0.247,kd=0.020,tick=5300
+TASK3_LOOP mode=AI i=53 t1_ns=32640559000 t2_ns=32652622000 oneway_us=6031 err=12.308 kp=4.923 state=y=87.692,err=12.308,kp=4.923,ki=0.247,kd=0.020,tick=5400
+TASK3_LOOP mode=AI i=54 t1_ns=32774243000 t2_ns=32787026000 oneway_us=6391 err=12.195 kp=4.953 state=y=87.805,err=12.195,kp=4.953,ki=0.247,kd=0.020,tick=5500
+TASK3_LOOP mode=AI i=55 t1_ns=32907903000 t2_ns=32919838000 oneway_us=5967 err=12.088 kp=4.981 state=y=87.912,err=12.088,kp=4.981,ki=0.247,kd=0.020,tick=5600
+TASK3_LOOP mode=AI i=56 t1_ns=33040721000 t2_ns=33053367000 oneway_us=6323 err=11.980 kp=5.010 state=y=88.020,err=11.980,kp=5.010,ki=0.247,kd=0.020,tick=5700
+TASK3_LOOP mode=AI i=57 t1_ns=33174283000 t2_ns=33186518000 oneway_us=6117 err=11.876 kp=5.038 state=y=88.124,err=11.876,kp=5.038,ki=0.247,kd=0.020,tick=5800
+TASK3_LOOP mode=AI i=58 t1_ns=33307417000 t2_ns=33319016000 oneway_us=5799 err=11.775 kp=5.065 state=y=88.225,err=11.775,kp=5.065,ki=0.247,kd=0.020,tick=5900
+TASK3_LOOP mode=AI i=59 t1_ns=33441320000 t2_ns=33454198000 oneway_us=6439 err=11.675 kp=5.092 state=y=88.325,err=11.675,kp=5.092,ki=0.247,kd=0.020,tick=6000
+TASK3_LOOP mode=AI i=60 t1_ns=33575251000 t2_ns=33592340000 oneway_us=8544 err=11.577 kp=5.119 state=y=88.423,err=11.577,kp=5.119,ki=0.247,kd=0.020,tick=6100
+TASK3_LOOP mode=AI i=61 t1_ns=33713278000 t2_ns=33726244000 oneway_us=6483 err=11.481 kp=5.145 state=y=88.519,err=11.481,kp=5.145,ki=0.247,kd=0.020,tick=6200
+TASK3_LOOP mode=AI i=62 t1_ns=33847147000 t2_ns=33859345000 oneway_us=6099 err=11.387 kp=5.171 state=y=88.613,err=11.387,kp=5.171,ki=0.247,kd=0.020,tick=6300
+TASK3_LOOP mode=AI i=63 t1_ns=33981298000 t2_ns=33993853000 oneway_us=6277 err=11.294 kp=5.197 state=y=88.706,err=11.294,kp=5.197,ki=0.247,kd=0.020,tick=6400
+TASK3_LOOP mode=AI i=64 t1_ns=34115062000 t2_ns=34127423000 oneway_us=6180 err=11.204 kp=5.222 state=y=88.796,err=11.204,kp=5.222,ki=0.247,kd=0.020,tick=6500
+TASK3_LOOP mode=AI i=65 t1_ns=34249097000 t2_ns=34261441000 oneway_us=6172 err=11.115 kp=5.247 state=y=88.885,err=11.115,kp=5.247,ki=0.247,kd=0.020,tick=6600
+TASK3_LOOP mode=AI i=66 t1_ns=34382182000 t2_ns=34394758000 oneway_us=6288 err=11.029 kp=5.271 state=y=88.971,err=11.029,kp=5.271,ki=0.247,kd=0.020,tick=6700
+TASK3_LOOP mode=AI i=67 t1_ns=34517766000 t2_ns=34530667000 oneway_us=6450 err=10.944 kp=5.295 state=y=89.056,err=10.944,kp=5.295,ki=0.247,kd=0.020,tick=6800
+TASK3_LOOP mode=AI i=68 t1_ns=34651636000 t2_ns=34663491000 oneway_us=5927 err=10.860 kp=5.319 state=y=89.140,err=10.860,kp=5.319,ki=0.247,kd=0.020,tick=6900
+TASK3_LOOP mode=AI i=69 t1_ns=34783837000 t2_ns=34796671000 oneway_us=6417 err=10.776 kp=5.343 state=y=89.224,err=10.776,kp=5.343,ki=0.247,kd=0.020,tick=7000
+TASK3_LOOP mode=AI i=70 t1_ns=34917589000 t2_ns=34930634000 oneway_us=6522 err=10.696 kp=5.366 state=y=89.304,err=10.696,kp=5.366,ki=0.247,kd=0.020,tick=7100
+TASK3_LOOP mode=AI i=71 t1_ns=35051480000 t2_ns=35063735000 oneway_us=6127 err=10.616 kp=5.389 state=y=89.384,err=10.616,kp=5.389,ki=0.247,kd=0.020,tick=7200
+TASK3_LOOP mode=AI i=72 t1_ns=35184949000 t2_ns=35197204000 oneway_us=6127 err=10.539 kp=5.411 state=y=89.461,err=10.539,kp=5.411,ki=0.247,kd=0.020,tick=7300
+TASK3_LOOP mode=AI i=73 t1_ns=35317887000 t2_ns=35337687000 oneway_us=9900 err=10.462 kp=5.433 state=y=89.538,err=10.462,kp=5.433,ki=0.247,kd=0.020,tick=7400
+TASK3_LOOP mode=AI i=74 t1_ns=35460990000 t2_ns=35473035000 oneway_us=6022 err=10.387 kp=5.455 state=y=89.613,err=10.387,kp=5.455,ki=0.247,kd=0.020,tick=7500
+TASK3_LOOP mode=AI i=75 t1_ns=35593666000 t2_ns=35606623000 oneway_us=6478 err=10.312 kp=5.477 state=y=89.688,err=10.312,kp=5.477,ki=0.247,kd=0.020,tick=7600
+TASK3_LOOP mode=AI i=76 t1_ns=35727026000 t2_ns=35738923000 oneway_us=5948 err=10.240 kp=5.498 state=y=89.760,err=10.240,kp=5.498,ki=0.247,kd=0.020,tick=7700
+TASK3_LOOP mode=AI i=77 t1_ns=35859899000 t2_ns=35872281000 oneway_us=6191 err=10.168 kp=5.519 state=y=89.832,err=10.168,kp=5.519,ki=0.247,kd=0.020,tick=7800
+TASK3_LOOP mode=AI i=78 t1_ns=35992788000 t2_ns=36005639000 oneway_us=6425 err=10.099 kp=5.539 state=y=89.901,err=10.099,kp=5.539,ki=0.247,kd=0.020,tick=7900
+TASK3_LOOP mode=AI i=79 t1_ns=36125818000 t2_ns=36137959000 oneway_us=6070 err=10.028 kp=5.560 state=y=89.972,err=10.028,kp=5.560,ki=0.247,kd=0.020,tick=8000
+TASK3_LOOP mode=AI i=80 t1_ns=36260530000 t2_ns=36273363000 oneway_us=6416 err=9.960 kp=5.580 state=y=90.040,err=9.960,kp=5.580,ki=0.247,kd=0.020,tick=8100
+TASK3_LOOP mode=AI i=81 t1_ns=36397394000 t2_ns=36409943000 oneway_us=6274 err=9.893 kp=5.600 state=y=90.107,err=9.893,kp=5.600,ki=0.247,kd=0.020,tick=8200
+TASK3_LOOP mode=AI i=82 t1_ns=36531626000 t2_ns=36543906000 oneway_us=6140 err=9.828 kp=5.619 state=y=90.172,err=9.828,kp=5.619,ki=0.247,kd=0.020,tick=8300
+TASK3_LOOP mode=AI i=83 t1_ns=36665798000 t2_ns=36677995000 oneway_us=6098 err=9.762 kp=5.639 state=y=90.238,err=9.762,kp=5.639,ki=0.247,kd=0.020,tick=8400
+TASK3_LOOP mode=AI i=84 t1_ns=36798455000 t2_ns=36811181000 oneway_us=6363 err=9.698 kp=5.658 state=y=90.302,err=9.698,kp=5.658,ki=0.247,kd=0.020,tick=8500
+TASK3_LOOP mode=AI i=85 t1_ns=36931995000 t2_ns=36944932000 oneway_us=6468 err=9.636 kp=5.676 state=y=90.364,err=9.636,kp=5.676,ki=0.247,kd=0.020,tick=8600
+TASK3_LOOP mode=AI i=86 t1_ns=37065241000 t2_ns=37077426000 oneway_us=6092 err=9.573 kp=5.695 state=y=90.427,err=9.573,kp=5.695,ki=0.247,kd=0.020,tick=8700
+TASK3_LOOP mode=AI i=87 t1_ns=37197805000 t2_ns=37209797000 oneway_us=5996 err=9.512 kp=5.713 state=y=90.488,err=9.512,kp=5.713,ki=0.247,kd=0.020,tick=8800
+TASK3_LOOP mode=AI i=88 t1_ns=37329907000 t2_ns=37341970000 oneway_us=6031 err=9.452 kp=5.731 state=y=90.548,err=9.452,kp=5.731,ki=0.247,kd=0.020,tick=8900
+TASK3_LOOP mode=AI i=89 t1_ns=37462931000 t2_ns=37475017000 oneway_us=6043 err=9.392 kp=5.749 state=y=90.608,err=9.392,kp=5.749,ki=0.247,kd=0.020,tick=9000
+TASK3_METRICS mode=AI first_err=73.694 final_err=9.392 final_y=90.608 rmse=18.532 settle_loops=-1 mean_oneway_us=6423 p99_oneway_us=9900
+TASK3_COMPARE fixed_rms
+=== SUCCESS PATTERN MATCHED: (?m)^TASK3_COMPARE ===
+e=53.499 ai_rmse=18.532 fixed_settle=-1 ai_settle=-1 fixed_final_err=41.255 ai_final_err=9.392 fixed_p99_oneway_us=10585 ai_p99_oneway_us=9900
+task3-compare pass
+task3-compare pass
+~ # [6n[axbuild] qemu run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ... done (43.75s)
+  qemu run: 43.79s
+ok: task3-pid-compare (43.87s)
+
+axvisor qemu test summary:
+  PASS task3-pid-compare (43.87s)
+result: 1/1 case(s) passed
+total: 46.69s
+all axvisor qemu tests passed

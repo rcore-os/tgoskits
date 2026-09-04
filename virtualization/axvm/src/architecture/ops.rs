@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn inject_vcpu_interrupt_preserves_level_trigger_at_backend_boundary() {
         let injections = Arc::new(IrqSafeMutex::new(InjectionLog::default()));
-        let vcpu = AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap();
+        let vcpu = AxVCpu::<RecordingVcpu>::new(1, 0, None, None, injections.clone()).unwrap();
         let interrupt = PendingVcpuInterrupt {
             id: VirtualInterruptId(0x31),
             trigger: InterruptTriggerMode::LevelTriggered,
@@ -408,7 +408,7 @@ mod tests {
             failing_vector: Some(0x42),
             ..Default::default()
         }));
-        let vcpu = AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap();
+        let vcpu = AxVCpu::<RecordingVcpu>::new(1, 0, None, None, injections.clone()).unwrap();
         let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
         dispatcher.register_test_vcpu(0, 2);
         for interrupt in [

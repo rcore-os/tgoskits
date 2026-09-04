@@ -45,6 +45,7 @@ mod network_console;
 #[cfg(feature = "browser-console")]
 mod network_status;
 mod shell;
+mod task;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
 fn init_panic_hook() {
@@ -99,6 +100,16 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
 
     guest_console::submit_host_bytes(banner::STARTUP);
+
+    task::init_host_task_affinity();
+
+    #[cfg(feature = "vsw-fault-inject")]
+    {
+        // Deterministic ~50% icpc UDP forward drop for icpc-fault-inject CI.
+        // This must configure the axvirtio-net switch: it is the data plane
+        // the VirtioNet glue in `virtio_net.rs` actually forwards through.
+        axvirtio_net::switch::configure_fault_inject(2);
+    }
 
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()

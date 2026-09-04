@@ -306,6 +306,17 @@ impl GuestRegionPlanner {
 
         for region in &self.owned_regions {
             if ranges_overlap(base_gpa, size, region.base, region.size) {
+                if region.kind == VmRegionKind::EmulatedDevice {
+                    // Emulated devices own the GPA window; skip host passthrough.
+                    debug!(
+                        "Skipping passthrough [{:#x}, {:#x}) overlapping emulated [{:#x}, {:#x})",
+                        base_gpa,
+                        base_gpa + size,
+                        region.base,
+                        region.end()
+                    );
+                    return Ok(());
+                }
                 return Err(ax_err_type!(
                     InvalidInput,
                     format!(

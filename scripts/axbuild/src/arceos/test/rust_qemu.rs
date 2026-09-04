@@ -151,6 +151,13 @@ fn apply_rust_qemu_feature_overrides(qemu: &mut QemuConfig, feature: Option<&str
             qemu.fail_regex = vec!["stack guard page was not hit".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
+        Some("rt-latency") => {
+            qemu.success_regex = vec![r"(?m)^RT_LATENCY_PASS\s*$".to_string()];
+            qemu.fail_regex = vec![
+                r"(?i)\bpanic(?:ked)?\b".to_string(),
+                "ARCEOS_TEST_FAIL".to_string(),
+            ];
+        }
         _ => {}
     }
 }

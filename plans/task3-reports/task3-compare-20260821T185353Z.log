@@ -1,0 +1,2249 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running `/tmp/cursor-sandbox-cache/343699c0b0ddf4131a477c81706f4988/cargo-target/debug/tg-xtask axvisor test qemu --arch aarch64 -c task3-pid-compare`
+[2026-08-21T18:53:53Z INFO  axbuild::context] Workspace root: /home/allen/codes/os/tgoskits
+running axvisor qemu tests for arch: aarch64 (target: aarch64-unknown-none-softfloat, cases: 1)
+[2026-08-21T18:53:54Z INFO  axbuild::context] Workspace member dir for axvisor: /home/allen/codes/os/tgoskits/os/axvisor
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+[2026-08-21T18:53:54Z INFO  ostool::run::qemu] Using QEMU config file: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/qemu-aarch64.toml
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+syncing image registry from https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml...
+file already exists and passed checksum verification
+image archive verified at /tmp/tgosimages/rootfs-aarch64-alpine.img.tar.xz
+image archive is unchanged; keeping rootfs at /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+Using build config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml
+[axbuild] cargo build package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml ...
+sh -c /home/allen/codes/os/tgoskits/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-25757cc8233f29c6.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AXVISOR_VM_CONFIGS=/home/allen/codes/os/tgoskits/os/axvisor/configs/vms/qemu/aarch64/linux-net-a.toml:/home/allen/codes/os/tgoskits/os/axvisor/configs/vms/qemu/aarch64/linux-net-b.toml
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl --sysroot=/home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl --gcc-toolchain=/home/allen/tools/aarch64-linux-musl-cross -isystem /home/allen/tools/aarch64-linux-musl-cross/bin/../aarch64-linux-musl/include -isystem /home/allen/tools/aarch64-linux-musl-cross/lib/gcc/aarch64-linux-musl/11.2.1/include -mgeneral-regs-only
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+cargo build --config /home/allen/codes/os/tgoskits/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p axvisor --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/allen/codes/os/tgoskits/target --features ax-std/fs,ax-std/nvme,fs,log/release_max_level_info -Z json-target-spec --bin axvisor --release --message-format json-render-diagnostics
+warning: function `with_vm` is never used
+  --> virtualization/axvm/src/manager.rs:59:15
+   |
+59 | pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
+   |               ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `active_vcpu_mask` is never used
+  --> virtualization/axvm/src/manager.rs:68:15
+   |
+68 | pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `inject_interrupt` is never used
+  --> virtualization/axvm/src/manager.rs:80:15
+   |
+80 | pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: variant `Generic` is never constructed
+  --> virtualization/axvm/src/runtime/hvc.rs:26:5
+   |
+25 | pub(crate) enum HyperCallAbi {
+   |                 ------------ variant in this enum
+26 |     Generic,
+   |     ^^^^^^^
+   |
+   = note: `HyperCallAbi` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `handle` is never used
+   --> virtualization/axvm/src/timer.rs:169:8
+    |
+124 | impl TimerWheels {
+    | ---------------- method in this implementation
+...
+169 |     fn handle(&self, token: usize) -> Option<VmTimerHandle> {
+    |        ^^^^^^
+
+warning: function `cancel_timer` is never used
+   --> virtualization/axvm/src/timer.rs:247:15
+    |
+247 | pub(crate) fn cancel_timer(token: usize) {
+    |               ^^^^^^^^^^^^
+
+warning: associated items `with_planned_device_graph`, `handle_nested_page_fault`, and `debug_nested_page_fault` are never used
+    --> virtualization/axvm/src/vm/mod.rs:1251:19
+     |
+1043 | impl AxVM {
+     | --------- associated items in this implementation
+...
+1251 |     pub(crate) fn with_planned_device_graph<F, R>(&self, f: F) -> AxVmResult<R>
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1564 |     pub(crate) fn handle_nested_page_fault(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1579 |     fn debug_nested_page_fault(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `SimpleVmPlan` is never constructed
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:65:19
+   |
+65 | pub(crate) struct SimpleVmPlan(VmDevicePlan);
+   |                   ^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:68:25
+   |
+67 | impl SimpleVmPlan {
+   | ----------------- associated function in this implementation
+68 |     pub(crate) const fn new(devices: VmDevicePlan) -> Self {
+   |                         ^^^
+
+warning: `axvm` (lib) generated 9 warnings
+    Finished `release` profile [optimized] target(s) in 0.24s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/allen/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+[axbuild] cargo build package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=/home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/build-aarch64-unknown-none-softfloat.toml ... done (504.78ms)
+[axbuild] cargo build elf=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor
+[axbuild] cargo build artifact_dir=/home/allen/codes/os/tgoskits/target/aarch64-unknown-linux-musl/release
+[1/1] axvisor qemu task3-pid-compare
+Stripping ELF file...
+  original elf: /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor
+  stripped elf: /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor.elf
+/home/allen/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --binary-architecture=aarch64 /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor.elf
+Converting ELF to BIN format...
+  elf: /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor.elf
+  bin: /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor.bin
+/home/allen/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor.elf /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor.bin
+AXBUILD_TIMING: scope=qemu-asset case=task3-pid-compare phase=resolve-pipeline elapsed_s=0.000
+AXBUILD_TIMING: scope=qemu-asset case=task3-pid-compare phase=plain-rootfs pipeline=plain elapsed_s=0.000
+  prepare assets: 1.06ms (pipeline=plain, cache=miss)
+  qemu config: /home/allen/codes/os/tgoskits/test-suit/axvisor/normal/task3-pid-compare/qemu-aarch64.toml (timeout=600s)
+  rootfs: /home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+[axbuild] qemu run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ...
+qemu-system-aarch64 -nographic -cpu cortex-a72 -machine virt,virtualization=on,gic-version=3 -smp 4 -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 -drive id=disk0,if=none,format=raw,file=/home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,snapshot=on -device virtio-blk-device,drive=disk1 -drive id=disk1,if=none,format=raw,file=/home/allen/codes/os/tgoskits/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,snapshot=on -append root=/dev/vda rw init=/bin/sh -- -c "mount -t proc proc /proc; mount -t sysfs sys /sys; echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6; ip link set eth0 up; ip addr flush dev eth0; ip addr add 10.0.9.2/24 dev eth0; sleep 10; /usr/local/bin/task3-ai-loop compare && echo 'task3-compare pass' || echo 'task3-compare fail'" -m 8g -kernel /home/allen/codes/os/tgoskits/target/axvisor-qemu-artifacts-TZzgJj/group-0/axvisor.bin
+Boot entropy source: FDT /chosen/rng-seed
+root=/dev/vda rw init=/bin/sh -- -c "mount -t proc proc /proc; mount -t sysfs sys /sys; echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6; ip link set eth0 up; ip addr flush dev eth0; ip addr add 10.0.9.2/24 dev eth0; sleep 10; /usr/local/bin/task3-ai-loop compare && echo 'task3-compare pass' || echo 'task3-compare fail'"
+VM Load @PA:0x40200000
+VM Load Offset: 0xffff0000c0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040800000 (6 MiB)
+  Free   0x00000040800000 - 0x00000240000000 (7.99 GiB)
+Initialize RAM allocator: 0x40800000..0x240000000
+Reserving CPU-local areas
+CPU-local area stride: 0x44000 bytes
+Total CPU-local allocation: 0x110000 bytes (4 CPUs)
+Flushed RAM used range to memory map: 0x40800000..0x40900000, current: 0x40900000
+Flushed RAM used range to memory map: 0x40900000..0x40a10000, current: 0x40a10000
+CPU-local areas allocated at 0x40900000 - 0x40a10000
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000040000000, 0x0000000240000000) -> [0x0000000040000000, 0x0000000240000000) (8 GiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff80600000) -> [0x0000000040200000, 0x0000000040800000) (6 MiB)
+PerCpu              : [0x0000ff0040900000, 0x0000ff0040a10000) -> [0x0000000040900000, 0x0000000040a10000) (1.06 MiB)
+Debug serial        : [0x0000000009000000, 0x0000000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: PA:0x40a10000
+Setting up table registers...
+MMU Entry point at physical address: 0x403f60d8
+Trap vector at 0xffff801ef800
+Memory Map:
+  MMIO   0x00000004000000 - 0x00000008010000 (64.06 MiB)
+  MMIO   0x00000008080000 - 0x00000009001000 (15.5 MiB)
+  MMIO   0x00000009010000 - 0x00000009011000 (4 KiB)
+  MMIO   0x00000009020000 - 0x00000009021000 (4 KiB)
+  MMIO   0x00000009030000 - 0x00000009031000 (4 KiB)
+  MMIO   0x0000000a000000 - 0x0000000a004000 (16 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040800000 (6 MiB)
+  Rsv    0x00000040800000 - 0x00000040900000 (1 MiB)
+  PerCPU 0x00000040900000 - 0x00000040a10000 (1.06 MiB)
+  Rsv    0x00000040a10000 - 0x00000040a1a000 (40 KiB)
+  Free   0x00000040a1a000 - 0x00000240000000 (7.99 GiB)
+  MMIO   0x00004010000000 - 0x00004020000000 (256 MiB)
+Jumping to main entry point at 0xffff801d6d18 with SP 0x0000ff0040944000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 4
+
+[37max_runtime:254] [32mLogging is enabled.[m
+[m[37max_runtime:255] [32mPrimary CPU 0 started, arg = 0x40800000.[m
+[m[37max_runtime:257] [32mFound physcial memory regions:[m
+[m[37max_runtime:259] [32m  [PA:0x4000000, PA:0x8010000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x8080000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x9010000, PA:0x9011000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x9020000, PA:0x9021000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x9030000, PA:0x9031000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0xa000000, PA:0xa004000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m
+[m[37max_runtime:259] [32m  [PA:0x40200000, PA:0x40800000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40800000, PA:0x40900000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40900000, PA:0x40a10000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40a10000, PA:0x40a1a000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37max_runtime:259] [32m  [PA:0x40a1a000, PA:0x240000000) free memory (READ | WRITE | FREE)[m
+[m[37max_runtime:259] [32m  [PA:0x4010000000, PA:0x4020000000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37max_runtime:417] [32mInitialize global memory allocator...[m
+[m[37max_runtime:418] [32m  use buddy-slab-allocator allocator.[m
+[m[37max_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0x40a1a000, size: 0x1ff5e6000[m
+[m[37max_alloc::buddy_slab:424] [32mglobal allocator initialized[m
+[m[37max_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x40000000, size: 0x200000[m
+[m[37mbuddy_slab_allocator::global:151] [32mGlobalAllocator: skip region 0x40000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37max_runtime:294] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37max_mm:120] [32mInitialize virtual memory management...[m
+[m[37max_runtime:306] [32mInitialize platform devices...[m
+[m[37msomeboot::arch::power:23] [32mPower management method : SMC[m
+[m[37msomehal::driver:5] [32mInitializing rdrive with FDT at 0x40800000[m
+[m[37msomehal::arch::gic::v3:296] [32mGICv3 CPU 0 EOI mode: two_step=true[m
+[m[37max_task::api:192] [32mInitialize scheduling...[m
+[m[37max_task::api:200] [32m  use FIFO scheduler.[m
+[m[37max_runtime:335] [32mInitialize interrupt handlers...[m
+[m[37max_runtime::devices:2] [32mProbe platform devices...[m
+[m[37max_driver::serial::pl011:22] [32mProbing PL011 serial device: pl011@9000000[m
+[m[37max_driver::serial::pl011:38] [32mPL011 serial@0x9000000 registered successfully[m
+[m[37max_driver::block::nvme:42] [32mNVMe PCI endpoint 0000:00:02.0: BAR0=0x8000004000..0x8000008000, int_pin=1, int_line=0[m
+[m[37mnvme_driver::nvme:159] [32mNVME @0x8000004000 deferred init, version: 1.4.0[m
+[m[37max_driver::block::nvme:74] [32mNVMe block device registered at 0000:00:02.0 with 65 MSI-X vectors[m
+[m[37max_runtime::serial:895] [32mserial runtime PL011 UART ready: cpu=0, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 44, cells: [0, 1, 4] }))), polling=false[m
+[m[  0.147741 0:2 [37max_runtime:357] [32mruntime console active: serial0, ttyS0[m
+[m[  0.152307 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 0 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(0) }) fixed to CPU 0 for queue mask 0x0[m
+[m[  0.170084 0:5 [37max_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 63[m
+[m[  0.170490 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 1 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(1) }) fixed to CPU 0 for queue mask 0x1[m
+[m[  0.177413 0:2 [37max_fs_ng::root:341] [32m    raw device fs=Some(Ext4)[m
+[m[  0.177565 0:2 [37max_fs_ng::root:372] [32m  block device 0 (nvme) has no usable partition table; treating the whole disk as a candidate[m
+[m[  0.177971 0:2 [37max_fs_ng::root:553] [32m  only one raw block device is available; using it as root[m
+[m[  0.178329 0:2 [37max_fs_ng:103] [32mInitialize filesystem subsystem...[m
+[m[  0.178357 0:2 [37max_fs_ng:104] [32m  selected root device: disk0 raw device[m
+[m[  0.200060 0:2 [37mrsext4::ext4::mount:331] [32m/lost+found exists (superblock hint inode=11)[m
+[m[  0.201376 0:2 [37mrsext4::ext4::mount:466] [32mExt4 filesystem mounted[m
+[m[  0.201413 0:2 [37mrsext4::ext4::mount:467] [32m  - block size: 4096 bytes[m
+[m[  0.201445 0:2 [37mrsext4::ext4::mount:468] [32m  - total blocks: 524288[m
+[m[  0.201472 0:2 [37mrsext4::ext4::mount:469] [32m  - free blocks: 102647[m
+[m[  0.201500 0:2 [37mrsext4::ext4::mount:470] [32m  - total inodes: 131072[m
+[m[  0.201559 0:2 [37mrsext4::ext4::mount:471] [32m  - free inodes: 125216[m
+[m[  0.201622 0:2 [37mrsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[  0.213655 1 [37msomehal::arch::gic::v3:296] [32mGICv3 CPU 1 EOI mode: two_step=true[m
+[m[  0.215151 2 [37msomehal::arch::gic::v3:296] [32mGICv3 CPU 2 EOI mode: two_step=true[m
+[m
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+by AxVisor Team
+
+[Axvisor] dropped 79 host log records (9899 source bytes)
+[  0.216255 3 [37msomehal::arch::gic::v3:296] [32mGICv3 CPU 3 EOI mode: two_step=true[m
+[m
+[  0.210198 0:2 [37mrsext4::ext4::mount:550] [32mExt4 filesystem mounted[m
+[m
+[  0.213975 1 [37max_runtime::mp:84] [32mSecondary CPU 1 started.[m
+[m
+[  0.215217 2 [37max_runtime::mp:84] [32mSecondary CPU 2 started.[m
+[m
+[  0.216312 3 [37max_runtime::mp:84] [32mSecondary CPU 3 started.[m
+[m
+[  0.210702 0:2 [37max_fs_ng:116] [32m  filesystem type: "ext4"[m
+[m
+[  0.214813 1:7 [37max_runtime::mp:123] [32mSecondary CPU 1 init OK.[m
+[m
+[  0.215413 2:9 [37max_runtime::mp:123] [32mSecondary CPU 2 init OK.[m
+[m
+[  0.216481 3:11 [37max_runtime::mp:123] [32mSecondary CPU 3 init OK.[m
+[m
+[  0.216353 0:2 [37max_runtime:397] [32mPrimary CPU 0 init OK.[m
+[m
+[  0.228605 1:21 [37maxvm::host::arceos:362] [32mCore 1 is initializing hardware virtualization support...[m
+[m
+[  0.228619 2:22 [37maxvm::host::arceos:362] [32mCore 2 is initializing hardware virtualization support...[m
+[m
+[  0.228640 3:23 [37maxvm::host::arceos:362] [32mCore 3 is initializing hardware virtualization support...[m
+[m
+[  0.217976 0:5 [37max_fs_ng::block::runtime::hctx:177] [32mblock hctx 1 bound to CPU 1 with hardware depth 63[m
+[m
+[  0.228648 1:21 [37maxvm::timer:329] [32mInitializing AxVM timer wheel...[m
+[m
+[  0.228655 2:22 [37maxvm::timer:329] [32mInitializing AxVM timer wheel...[m
+[m
+[  0.228668 3:23 [37maxvm::timer:329] [32mInitializing AxVM timer wheel...[m
+[m
+[  0.218041 0:5 [37max_fs_ng::block::runtime::hctx:177] [32mblock hctx 2 bound to CPU 2 with hardware depth 63[m
+[m
+[  0.218074 0:5 [37max_fs_ng::block::runtime::hctx:177] [32mblock hctx 3 bound to CPU 3 with hardware depth 63[m
+[m
+[  0.218292 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 2 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(2) }) fixed to CPU 1 for queue mask 0x2[m
+[m
+[  0.218420 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 3 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(3) }) fixed to CPU 2 for queue mask 0x4[m
+[m
+[  0.218551 0:5 [37max_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 4 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(4) }) fixed to CPU 3 for queue mask 0x8[m
+[m
+[  0.220426 0:2 [37max_fs_ng::block::runtime::lifecycle::device:385] [32mblock device nvme online with 4 hctxs across 4 CPUs[m
+[m
+[  0.223415 0:2 [37maxvisor:113] [32mStarting virtualization...[m
+[m
+[  0.223478 0:2 [37maxvm::host::arceos:344] [32mEnabling hardware virtualization support on all cores...[m
+[m
+[  0.223556 0:2 [37maxvm::host::arceos:350] [32mCore 0 is initializing hardware virtualization support...[m
+[m
+[  0.223633 0:2 [37maxvm::timer:329] [32mInitializing AxVM timer wheel...[m
+[m
+[  0.228114 0:2 [37maxvm::host::arceos:352] [32mHardware virtualization support enabled on core 0[m
+[m
+[  0.228473 0:2 [37maxvm::host::arceos:378] [32mWaiting for all cores to enable hardware virtualization...[m
+[m
+[  0.229344 1:21 [37maxvm::host::arceos:365] [32mHardware virtualization support enabled on core 1[m
+[m
+[  0.229391 2:22 [37maxvm::host::arceos:365] [32mHardware virtualization support enabled on core 2[m
+[m
+[  0.229456 3:23 [37maxvm::host::arceos:365] [32mHardware virtualization support enabled on core 3[m
+[m
+[  0.231357 0:2 [37maxvm::host::arceos:394] [32mAll cores have enabled hardware virtualization support.[m
+[m
+[  0.235942 0:2 [37maxvisor::manager:156] [32mNOT find dir: /guest/vm_default in filesystem[m
+[m
+[  0.236070 0:2 [37maxvisor::config:90] [32mUsing static VM configs.[m
+[m
+[  0.264902 0:2 [37maxvm::boot::fdt::core:79] [32mVM[1] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/intc@8000000", node_phandle: Some(32773), distributor: GuestMmioRegion { base: 134217728, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 134873088, length: 16121856 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/intc@8000000/its@8080000", node_phandle: Some(32774), registers: GuestMmioRegion { base: 134742016, length: 131072 } }] }[m
+[m
+[  0.266550 0:2 [37maxvm::boot::fdt::core:93] [32mVM[1] architectural timer follows host firmware PPIs[m
+[m
+[  0.270199 0:2 [37maxvm::boot::fdt::core::parser:462] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m
+[  0.270272 0:2 [37maxvm::boot::fdt::core::parser:462] [32mCPU node: /cpus/cpu@1, node_id: 0x1, hardware_cpu_id: 0x1[m
+[m
+[  0.270326 0:2 [37maxvm::boot::fdt::core::parser:462] [32mCPU node: /cpus/cpu@2, node_id: 0x2, hardware_cpu_id: 0x2[m
+[m
+[  0.270353 0:2 [37maxvm::boot::fdt::core::parser:462] [32mCPU node: /cpus/cpu@3, node_id: 0x3, hardware_cpu_id: 0x3[m
+[m
+[  0.270440 0:2 [37maxvm::boot::fdt::core::parser:469] [32mFound 4 host CPU nodes[m
+[m
+[  0.270824 0:2 [37maxvm::boot::fdt::core:144] [32mVM[1] DTB not found, generating from the VM configuration[m
+[m
+[  0.284287 0:2 [37maxvm::boot::fdt::core::device:96] [32mFound excluded devices: ["/pcie@10000000", "/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m
+[  0.284529 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /intc@8000000[m
+[m
+[  0.284623 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /intc@8000000/its@8080000[m
+[m
+[  0.284664 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /pcie@10000000[m
+[m
+[  0.284677 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /pl011@9000000[m
+[m
+[  0.284690 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /timer[m
+[m
+[  0.284975 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000000[m
+[m
+[  0.285008 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000200[m
+[m
+[  0.285040 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000400[m
+[m
+[  0.285053 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000600[m
+[m
+[  0.285066 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000800[m
+[m
+[  0.285078 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000a00[m
+[m
+[  0.285091 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000c00[m
+[m
+[  0.285104 0:2 [37maxvm::boot::fdt::core::device:137] [32mExcluding host virtio-mmio slot claimed by virtio-net: /virtio_mmio@a000e00[m
+[m
+[  0.297452 0:2 [37maxvm::boot::fdt::core::device:96] [32mFound excluded devices: ["/pcie@10000000", "/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m
+[  0.297482 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /intc@8000000[m
+[m
+[  0.297495 0:2 [37maxvm::boot::fdt::core::device:107] [32mExcluding device: /intc@8000000/its@8080000[m
+[m
+[  0.302992 0:2 [37maxvm::boot::fdt::core::device:96] [32mFound excluded devices: ["/pcie@10000000", "/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m
+[  0.305626 0:2 [37maxvisor::config:137] [32mCreating VM[1] "linux-qemu-net-a"[m
+[m
+[  0.331582 0:2 [37maxvm::vm:1068] [32mVM created: id=1[m
+[m
+[  0.600436 0:2 [37maxvisor::config:149] [32mVM[1] created success, loading images...[m
+[m
+[  4.406461 0:27 [37maxvm::runtime::vcpus:456] [32mVM[1] VCpu[0] waiting for running[m
+[m
+[  4.406085 3:2 [37maxvm::runtime::vcpus:364] [33mVM[1] VCpu[0] failed to apply host nice 10[m
+[m
+[  4.406746 0:27 [37maxvm::runtime::vcpus:494] [32mVM[1] VCpu[0] running on CPU0...[m
+[m
+[  4.406368 3:2 [37maxvm::runtime:61] [32mVM[1] boot success[m
+[m
+[  4.406391 3:2 [37maxvm::vm:1314] [32mStarting VM[2][m
+[m
+[  4.406406 3:2 [37maxvm::runtime::vcpus:385] [32mSpawning task for VM[2] VCpu[0][m
+[m
+[  4.406437 3:2 [37maxvm::runtime::vcpus:402] [32mVCpu task Task(29, "VM[2]-VCpu[0]") created cpumask: [3, ][m
+[m
+[  4.406577 3:2 [37maxvm::runtime::vcpus:364] [33mVM[2] VCpu[0] failed to apply host nice 10[m
+[m
+[  4.406605 3:2 [37maxvm::runtime:61] [32mVM[2] boot success[m
+[m
+[  4.407403 3:2 [37maxvisor:152] [32m[OK] Default guest initialized[m
+[m
+[  4.407437 3:2 [37maxvisor:157] [32mshell task on CPU3[m
+[m
+[  4.409672 3:29 [37maxvm::runtime::vcpus:456] [32mVM[2] VCpu[0] waiting for running[m
+[m
+[  4.409689 3:29 [37maxvm::runtime::vcpus:494] [32mVM[2] VCpu[0] running on CPU3...[m
+[m
+[  4.444615 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0x80000000[m
+[m
+[  4.449586 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0x80000000[m
+[m
+[  4.445350 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0xc4000001[m
+[m
+[  4.450549 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000001[m
+[m
+[  4.445588 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0xc400000e[m
+[m
+[  4.450983 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc400000e[m
+[m
+[  4.445746 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0xc4000012[m
+[m
+[  4.451208 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000012[m
+[m
+[  4.445886 3:29 [37maxvm::runtime::hvc:258] [32mVM[2] PSCI_FEATURES function_id=0xc4000015[m
+[m
+[  4.451492 0:27 [37maxvm::runtime::hvc:258] [32mVM[1] PSCI_FEATURES function_id=0xc4000015[m
+[m
+[VM 2] [    0.000000] Booting Linux on physical CPU 0x0000000003 [0x410fd083]
+[VM 2] [    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #10 SMP PREEMPT Wed Aug  5 12:44:56 UTC 2026
+[VM 2] [    0.000000] KASLR enabled
+[VM 1] [    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[VM 2] [    0.000000] random: crng init done
+[VM 2] [    0.000000] Machine model: linux,dummy-virt
+[VM 2] [    0.000000] efi: UEFI not found.
+[VM 2] [    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[VM 1] [    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #10 SMP PREEMPT Wed Aug  5 12:44:56 UTC 2026
+[VM 1] [    0.000000] KASLR enabled
+[VM 2] [    0.000000] NUMA: Faking a node at [mem 0x0000000080000000-0x000000008fffffff]
+[VM 1] [    0.000000] random: crng init done
+[VM 2] [    0.000000] NODE_DATA(0) allocated [mem 0x8ff870c0-0x8ff897bf]
+[VM 1] [    0.000000] Machine model: linux,dummy-virt
+[VM 1] [    0.000000] efi: UEFI not found.
+[VM 2] [    0.000000] cma: Reserved 32 MiB at 0x000000008de00000
+[VM 2] [    0.000000] psci: probing for conduit method from DT.
+[VM 1] [    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[VM 2] [    0.000000] psci: PSCIv1.1 detected in firmware.
+[VM 1] [    0.000000] NUMA: Faking a node at [mem 0x0000000222200000-0x00000002321fffff]
+[VM 2] [    0.000000] psci: Using standard PSCI v0.2 function IDs
+[VM 2] [    0.000000] psci: Trusted OS migration not required
+[VM 1] [    0.000000] NODE_DATA(0) allocated [mem 0x232181900-0x232183fff]
+[VM 2] [    0.000000] psci: SMC Calling Convention v65535.65535
+[VM 1] [    0.000000] cma: Reserved 32 MiB at 0x0000000225600000
+[VM 2] [    0.000000] Zone ranges:
+[VM 1] [    0.000000] psci: probing for conduit method from DT.
+[VM 2] [    0.000000]   DMA      [mem 0x0000000080000000-0x000000008fffffff]
+[VM 2] [    0.000000]   DMA32    empty
+[VM 1] [    0.000000] psci: PSCIv1.1 detected in firmware.
+[VM 2] [    0.000000]   Normal   empty
+[VM 1] [    0.000000] psci: Using standard PSCI v0.2 function IDs
+[VM 2] [    0.000000] Movable zone start for each node
+[VM 2] [    0.000000] Early memory node ranges
+[VM 1] [    0.000000] psci: Trusted OS migration not required
+[VM 1] [    0.000000] psci: SMC Calling Convention v65535.65535
+[VM 2] [    0.000000]   node   0: [mem 0x0000000080000000-0x000000008fffffff]
+[VM 1] [    0.000000] Zone ranges:
+[VM 2] [    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000008fffffff]
+[VM 1] [    0.000000]   DMA      [mem 0x0000000222200000-0x00000002321fffff]
+[VM 1] [    0.000000]   DMA32    empty
+[VM 2] [    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[VM 1] [    0.000000]   Normal   empty
+[VM 2] [    0.000000] Detected PIPT I-cache on CPU0
+[VM 1] [    0.000000] Movable zone start for each node
+[VM 1] [    0.000000] Early memory node ranges
+[VM 2] [    0.000000] CPU features: detected: GICv3 CPU interface
+[VM 2] [    0.000000] CPU features: detected: Spectre-v2
+[VM 1] [    0.000000]   node   0: [mem 0x0000000222200000-0x00000002321fffff]
+[VM 2] [    0.000000] CPU features: detected: Spectre-v3a
+[VM 1] [    0.000000] Initmem setup node 0 [mem 0x0000000222200000-0x00000002321fffff]
+[VM 2] [    0.000000] CPU features: detected: Spectre-v4
+[VM 2] [    0.000000] CPU features: detected: Spectre-BHB
+[VM 1] [    0.000000] On node 0, zone DMA: 8704 pages in unavailable ranges
+[VM 1] [    0.000000] On node 0, zone DMA: 24064 pages in unavailable ranges
+[VM 2] [    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[VM 2] [    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[VM 1] [    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[VM 1] [    0.000000] Detected PIPT I-cache on CPU0
+[VM 2] [    0.000000] CPU features: detected: ARM erratum 1742098
+[VM 1] [    0.000000] CPU features: detected: GICv3 CPU interface
+[VM 2] [    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[VM 1] [    0.000000] CPU features: detected: Spectre-v2
+[VM 2] [    0.000000] alternatives: applying boot alternatives
+[VM 1] [    0.000000] CPU features: detected: Spectre-v3a
+[VM 2] [    0.000000] Kernel command line: rdinit=/init console=ttyAMA0
+[VM 1] [    0.000000] CPU features: detected: Spectre-v4
+[VM 1] [    0.000000] CPU features: detected: Spectre-BHB
+[VM 2] [    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[VM 1] [    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[VM 2] [    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[VM 1] [    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[VM 2] [    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[VM 1] [    0.000000] CPU features: detected: ARM erratum 1742098
+[VM 2] [    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[VM 1] [    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[VM 2] [    0.000000] software IO TLB: area num 1.
+[VM 1] [    0.000000] alternatives: applying boot alternatives
+[VM 2] [    0.000000] software IO TLB: mapped [mem 0x000000008feb6000-0x000000008fef6000] (0MB)
+[VM 2] [    0.000000] Fallback order for Node 0: 0 
+[VM 2] [    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65536
+[VM 2] [    0.000000] Policy zone: DMA
+[VM 2] [    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[VM 2] [    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[VM 1] [    0.000000] Kernel command line: root=/dev/vda rw init=/bin/sh -- -c "mount -t proc proc /proc; mount -t sysfs sys /sys; echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6; ip link set eth0 up; ip addr flush dev eth0; ip addr add 10.0.9.2/24 dev eth0; sleep 10; /usr/local/bin/task3-ai-loop compare && echo 'task3-compare pass' || echo 'task3-compare fail'" fsck.repair=yes
+[VM 2] [    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[VM 1] [    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[VM 2] [    0.000000] rcu: 	RCU event tracing is enabled.
+[VM 1] [    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[VM 2] [    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[VM 2] [    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[VM 1] [    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[VM 2] [    0.000000] 	Tracing variant of Tasks RCU enabled.
+[VM 1] [    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[VM 1] [    0.000000] software IO TLB: area num 1.
+[VM 2] [    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[VM 2] [    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[VM 1] [    0.000000] software IO TLB: mapped [mem 0x00000002320b1000-0x00000002320f1000] (0MB)
+[VM 1] [    0.000000] Fallback order for Node 0: 0 
+[VM 2] [    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[VM 1] [    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65536
+[VM 2] [    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[VM 1] [    0.000000] Policy zone: DMA
+[VM 2] [    0.000000] GICv3: 256 SPIs implemented
+[VM 1] [    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[VM 2] [    0.000000] GICv3: 0 Extended SPIs implemented
+[VM 2] [    0.000000] Root IRQ handler: gic_handle_irq
+[VM 1] [    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[VM 2] [    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[VM 1] [    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[VM 2] [    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[VM 1] [    0.000000] rcu: 	RCU event tracing is enabled.
+[VM 2] [    0.000000] GICv3: CPU0: found redistributor 3 region 0:0x00000000080a0000
+[VM 1] [    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[VM 2] [    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[VM 1] [    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[VM 2] [    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @83850000 (indirect, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] 	Tracing variant of Tasks RCU enabled.
+[VM 1] [    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[VM 2] [    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @83860000 (flat, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[VM 2] [    0.000000] GICv3: using LPI property table @0x0000000083870000
+[VM 2] [    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000083880000
+[VM 1] [    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[VM 1] [    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[VM 2] [    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[VM 1] [    0.000000] GICv3: 256 SPIs implemented
+[VM 2] [    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[VM 1] [    0.000000] GICv3: 0 Extended SPIs implemented
+[VM 1] [    0.000000] Root IRQ handler: gic_handle_irq
+[VM 2] [    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[VM 1] [    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[VM 1] [    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[VM 2] [    0.000066] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[VM 1] [    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+[VM 2] [    0.009591] Console: colour dummy device 80x25
+[VM 1] [    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[VM 2] [    0.012309] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @227850000 (indirect, esz 8, psz 64K, shr 1)
+[VM 2] [    0.012404] pid_max: default: 32768 minimum: 301
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @227860000 (flat, esz 8, psz 64K, shr 1)
+[VM 2] [    0.016382] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[VM 1] [    0.000000] GICv3: using LPI property table @0x0000000227870000
+[VM 2] [    0.016415] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[VM 2] [    0.023401] VFS: Finished mounting rootfs on nullfs
+[VM 1] [    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000227880000
+[VM 2] [    0.039354] /cpus/cpu-map/socket0/cluster0/core0: Can't get CPU for leaf core
+[VM 1] [    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[VM 2] [    0.040223] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[VM 1] [    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[VM 2] [    0.050852] rcu: Hierarchical SRCU implementation.
+[VM 2] [    0.050880] rcu: 	Max phase no-delay instances is 1000.
+[VM 1] [    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[VM 2] [    0.052981] fsl-mc MSI: its@8080000 domain created
+[VM 2] [    0.053864] EFI services will not be available.
+[VM 1] [    0.000053] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[VM 2] [    0.054725] smp: Bringing up secondary CPUs ...
+[VM 1] [    0.008291] Console: colour dummy device 80x25
+[VM 2] [    0.055505] smp: Brought up 1 node, 1 CPU
+[VM 1] [    0.008651] printk: legacy console [tty0] enabled
+[VM 2] [    0.055530] SMP: Total of 1 processors activated.
+[VM 2] [    0.055552] CPU: All CPU(s) started at EL1
+[VM 1] [    0.013054] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[VM 2] [    0.055745] CPU features: detected: 32-bit EL0 Support
+[VM 1] [    0.013200] pid_max: default: 32768 minimum: 301
+[VM 2] [    0.055754] CPU features: detected: 32-bit EL1 Support
+[VM 2] [    0.055803] CPU features: detected: CRC32 instructions
+[VM 1] [    0.017323] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[VM 2] [    0.055930] CPU features: detected: PMUv3
+[VM 1] [    0.017393] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[VM 2] [    0.064047] alternatives: applying system-wide alternatives
+[VM 1] [    0.025102] VFS: Finished mounting rootfs on nullfs
+[VM 1] [    0.042604] /cpus/cpu-map/socket0/cluster0/core1: Can't get CPU for leaf core
+[VM 2] [    0.081970] Memory: 169724K/262144K available (18752K kernel code, 5242K rwdata, 14508K rodata, 12672K init, 718K bss, 57764K reserved, 32768K cma-reserved)
+[VM 1] [    0.043484] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[VM 2] [    0.105389] devtmpfs: initialized
+[VM 1] [    0.053065] rcu: Hierarchical SRCU implementation.
+[VM 1] [    0.053129] rcu: 	Max phase no-delay instances is 1000.
+[VM 2] [    0.121976] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[VM 1] [    0.055665] fsl-mc MSI: its@8080000 domain created
+[VM 2] [    0.122427] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.057143] EFI services will not be available.
+[VM 1] [    0.057620] smp: Bringing up secondary CPUs ...
+[VM 1] [    0.058267] smp: Brought up 1 node, 1 CPU
+[VM 2] [    0.122637] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[VM 1] [    0.059921] SMP: Total of 1 processors activated.
+[VM 2] [    0.124468] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[VM 1] [    0.059979] CPU: All CPU(s) started at EL1
+[VM 2] [    0.124525] 0 pages in range for non-PLT usage
+[VM 1] [    0.060194] CPU features: detected: 32-bit EL0 Support
+[VM 2] [    0.124552] 511248 pages in range for PLT usage
+[VM 2] [    0.136495] DMI: not present or invalid.
+[VM 1] [    0.060220] CPU features: detected: 32-bit EL1 Support
+[VM 1] [    0.060299] CPU features: detected: CRC32 instructions
+[VM 2] [    0.156902] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[VM 1] [    0.060469] CPU features: detected: PMUv3
+[VM 2] [    0.166967] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[VM 1] [    0.067550] alternatives: applying system-wide alternatives
+[VM 2] [    0.167228] audit: initializing netlink subsys (disabled)
+[VM 2] [    0.168848] audit: type=2000 audit(0.148:1): state=initialized audit_enabled=0 res=1
+[VM 1] [    0.091540] Memory: 167840K/262144K available (18752K kernel code, 5242K rwdata, 14508K rodata, 12672K init, 718K bss, 59648K reserved, 32768K cma-reserved)
+[VM 2] [    0.172436] thermal_sys: Registered thermal governor 'step_wise'
+[VM 1] [    0.114342] devtmpfs: initialized
+[VM 2] [    0.172462] thermal_sys: Registered thermal governor 'power_allocator'
+[VM 2] [    0.173211] cpuidle: using governor menu
+[VM 1] [    0.132706] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[VM 2] [    0.174149] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[VM 1] [    0.133704] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[VM 2] [    0.174430] ASID allocator initialised with 32768 entries
+[VM 2] [    0.184252] Serial: AMBA PL011 UART driver
+[VM 1] [    0.134117] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[VM 1] [    0.139111] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[VM 2] [    0.207896] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[VM 1] [    0.139330] 0 pages in range for non-PLT usage
+[VM 2] [    0.210579] printk: console [ttyAMA0] enabled
+[VM 1] [    0.139431] 511248 pages in range for PLT usage
+[VM 2] [    0.779997] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[VM 1] [    0.152552] DMI: not present or invalid.
+[VM 2] [    0.780023] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[VM 1] [    0.171621] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[VM 2] [    0.780044] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[VM 1] [    0.181928] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[VM 2] [    0.780048] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[VM 1] [    0.182218] audit: initializing netlink subsys (disabled)
+[VM 2] [    0.780055] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[VM 1] [    0.184182] audit: type=2000 audit(0.160:1): state=initialized audit_enabled=0 res=1
+[VM 2] [    0.780058] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[VM 1] [    0.189209] thermal_sys: Registered thermal governor 'step_wise'
+[VM 2] [    0.780063] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[VM 1] [    0.189245] thermal_sys: Registered thermal governor 'power_allocator'
+[VM 2] [    0.780067] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[VM 1] [    0.189563] cpuidle: using governor menu
+[VM 2] [    1.209730] ACPI: Interpreter disabled.
+[VM 1] [    0.190476] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[VM 2] [    1.479022] iommu: Default domain type: Translated
+[VM 1] [    0.190782] ASID allocator initialised with 32768 entries
+[VM 2] [    1.488046] iommu: DMA domain TLB invalidation policy: strict mode
+[VM 1] [    0.195489] Serial: AMBA PL011 UART driver
+[VM 2] [    1.500191] SCSI subsystem initialized
+[VM 1] [    0.236772] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[VM 2] [    1.509634] usbcore: registered new interface driver usbfs
+[VM 1] [    0.240686] printk: console [ttyAMA0] enabled
+[VM 2] [    1.519959] usbcore: registered new interface driver hub
+[VM 1] [    0.802909] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[VM 2] [    1.529553] usbcore: registered new device driver usb
+[VM 1] [    0.802973] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[VM 2] [    1.539513] pps_core: LinuxPPS API ver. 1 registered
+[VM 1] [    0.803009] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[VM 2] [    1.548571] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[VM 1] [    0.803027] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[VM 2] [    1.564715] PTP clock support registered
+[VM 2] [    1.565263] EDAC MC: Ver: 3.0.0
+[VM 1] [    0.803045] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[VM 2] [    1.578786] scmi_core: SCMI protocol bus registered
+[VM 1] [    0.803063] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[VM 2] [    1.589203] FPGA manager framework
+[VM 1] [    0.803078] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[VM 2] [    1.603197] vgaarb: loaded
+[VM 1] [    0.803092] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[VM 1] [    1.257839] ACPI: Interpreter disabled.
+[VM 2] [    1.610305] clocksource: Switched to clocksource arch_sys_counter
+[VM 2] [    1.623581] VFS: Disk quotas dquot_6.6.0
+[VM 1] [    1.611039] iommu: Default domain type: Translated
+[VM 2] [    1.630904] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[VM 1] [    1.619871] iommu: DMA domain TLB invalidation policy: strict mode
+[VM 2] [    1.644448] pnp: PnP ACPI: disabled
+[VM 1] [    1.631824] SCSI subsystem initialized
+[VM 1] [    1.640864] usbcore: registered new interface driver usbfs
+[VM 1] [    1.650555] usbcore: registered new interface driver hub
+[VM 2] [    1.665642] NET: Registered PF_INET protocol family
+[VM 1] [    1.660390] usbcore: registered new device driver usb
+[VM 2] [    1.676063] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[VM 1] [    1.661575] pps_core: LinuxPPS API ver. 1 registered
+[VM 2] [    1.691725] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[VM 1] [    1.661605] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[VM 1] [    1.661666] PTP clock support registered
+[VM 2] [    1.707441] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[VM 1] [    1.661982] EDAC MC: Ver: 3.0.0
+[VM 1] [    1.709689] scmi_core: SCMI protocol bus registered
+[VM 2] [    1.721335] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[VM 1] [    1.720342] FPGA manager framework
+[VM 2] [    1.734939] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[VM 1] [    1.734868] vgaarb: loaded
+[VM 2] [    1.747210] TCP: Hash tables configured (established 2048 bind 2048)
+[VM 1] [    1.741671] clocksource: Switched to clocksource arch_sys_counter
+[VM 2] [    1.759260] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[VM 1] [    1.755395] VFS: Disk quotas dquot_6.6.0
+[VM 2] [    1.771539] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[VM 1] [    1.762967] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[VM 2] [    1.784124] RPC: Registered named UNIX socket transport module.
+[VM 1] [    1.777380] pnp: PnP ACPI: disabled
+[VM 2] [    1.795407] RPC: Registered udp transport module.
+[VM 2] [    1.803670] RPC: Registered tcp transport module.
+[VM 2] [    1.803693] RPC: Registered tcp-with-tls transport module.
+[VM 1] [    1.801226] NET: Registered PF_INET protocol family
+[VM 2] [    1.803701] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[VM 1] [    1.811120] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[VM 2] [    1.803791] PCI: CLS 0 bytes, default 64
+[VM 2] [    1.841710] kvm [1]: HYP mode not available
+[VM 1] [    1.827167] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[VM 2] [    1.852494] Unpacking initramfs...
+[VM 1] [    1.842008] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[VM 2] [    1.860651] Initialise system trusted keyrings
+[VM 1] [    1.855681] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[VM 2] [    1.874715] workingset: timestamp_bits=42 (anon: 38) max_order=16 bucket_order=0 (anon: 0)
+[VM 1] [    1.855840] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[VM 2] [    1.876713] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[VM 1] [    1.855960] TCP: Hash tables configured (established 2048 bind 2048)
+[VM 2] [    1.907109] NFS: Registering the id_resolver key type
+[VM 1] [    1.857139] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[VM 2] [    1.917288] Key type id_resolver registered
+[VM 1] [    1.907578] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[VM 2] [    1.917506] Key type id_legacy registered
+[VM 1] [    1.920828] RPC: Registered named UNIX socket transport module.
+[VM 2] [    1.917922] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[VM 1] [    1.932576] RPC: Registered udp transport module.
+[VM 2] [    1.946501] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[VM 1] [    1.941376] RPC: Registered tcp transport module.
+[VM 2] [    1.959982] Freeing initrd memory: 184K
+[VM 1] [    1.950456] RPC: Registered tcp-with-tls transport module.
+[VM 2] [    1.967297] 9p: Installing v9fs 9p2000 file system support
+[VM 1] [    1.960825] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[VM 2] [    1.979464] Key type asymmetric registered
+[VM 1] [    1.972808] PCI: CLS 0 bytes, default 64
+[VM 2] [    1.987227] Asymmetric key parser 'x509' registered
+[VM 1] [    1.986400] kvm [1]: HYP mode not available
+[VM 2] [    1.996211] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[VM 2] [    2.009264] io scheduler mq-deadline registered
+[VM 1] [    1.996857] Initialise system trusted keyrings
+[VM 2] [    2.009320] io scheduler kyber registered
+[VM 2] [    2.009578] io scheduler bfq registered
+[VM 1] [    2.007242] workingset: timestamp_bits=42 (anon: 38) max_order=16 bucket_order=0 (anon: 0)
+[VM 1] [    2.024112] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[VM 2] [    2.042634] ledtrig-cpu: registered to indicate activity on CPUs
+[VM 1] [    2.036728] NFS: Registering the id_resolver key type
+[VM 1] [    2.046489] Key type id_resolver registered
+[VM 1] [    2.053746] Key type id_legacy registered
+[VM 1] [    2.061157] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[VM 2] [    2.086886] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[VM 1] [    2.073009] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[VM 1] [    2.087765] 9p: Installing v9fs 9p2000 file system support
+[VM 2] [    2.104336] msm_serial: driver initialized
+[VM 1] [    2.099210] Key type asymmetric registered
+[VM 2] [    2.112940] SuperH (H)SCI(F) driver initialized
+[VM 1] [    2.106990] Asymmetric key parser 'x509' registered
+[VM 2] [    2.121825] STM32 USART driver initialized
+[VM 1] [    2.116088] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[VM 2] [    2.144449] loop: module loaded
+[VM 1] [    2.129433] io scheduler mq-deadline registered
+[VM 1] [    2.138051] io scheduler kyber registered
+[VM 2] [    2.151938] megasas: 07.734.00.00-rc1
+[VM 1] [    2.146089] io scheduler bfq registered
+[VM 2] [    2.163122] physmap-flash 0.flash: physmap platform flash device: [mem 0x00000000-0x03ffffff]
+[VM 2] [    2.178857] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[VM 1] [    2.172895] pl061_gpio 9030000.pl061: PL061 GPIO chip registered
+[VM 2] [    2.195259] Intel/Sharp Extended Query Table at 0x0031
+[VM 1] [    2.187288] ledtrig-cpu: registered to indicate activity on CPUs
+[VM 2] [    2.205212] Using buffer write method
+[VM 2] [    2.212543] physmap-flash 0.flash: physmap platform flash device: [mem 0x04000000-0x07ffffff]
+[VM 2] [    2.227174] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[VM 2] [    2.242729] Intel/Sharp Extended Query Table at 0x0031
+[VM 2] [    2.251901] Using buffer write method
+[VM 2] [    2.258609] Concatenating MTD devices:
+[VM 2] [    2.264984] (0): "0.flash"
+[VM 1] [    2.248523] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[VM 2] [    2.270346] (1): "0.flash"
+[VM 2] [    2.275224] into device "0.flash"
+[VM 1] [    2.267629] msm_serial: driver initialized
+[VM 1] [    2.275952] SuperH (H)SCI(F) driver initialized
+[VM 1] [    2.284575] STM32 USART driver initialized
+[VM 2] [    2.301947] tun: Universal TUN/TAP device driver, 1.6
+[VM 1] [    2.309140] loop: module loaded
+[VM 2] [    2.326406] thunder_xcv, ver 1.0
+[VM 2] [    2.332581] thunder_bgx, ver 1.0
+[VM 1] [    2.316398] virtio_blk virtio0: 1/0/0 default/read/poll queues
+[VM 2] [    2.338959] nicpf, ver 1.0
+[VM 2] [    2.346407] e1000: Intel(R) PRO/1000 Network Driver
+[VM 1] [    2.331386] virtio_blk virtio0: [vda] 4194304 512-byte logical blocks (2.15 GB/2.00 GiB)
+[VM 2] [    2.354680] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[VM 2] [    2.364770] e1000e: Intel(R) PRO/1000 Network Driver
+[VM 1] [    2.361147] megasas: 07.734.00.00-rc1
+[VM 2] [    2.373269] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[VM 2] [    2.383521] igb: Intel(R) Gigabit Ethernet Network Driver
+[VM 1] [    2.373962] physmap-flash 0.flash: physmap platform flash device: [mem 0x00000000-0x03ffffff]
+[VM 2] [    2.392657] igb: Copyright (c) 2007-2014 Intel Corporation.
+[VM 2] [    2.403932] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[VM 1] [    2.391640] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[VM 2] [    2.416627] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[VM 1] [    2.410505] Intel/Sharp Extended Query Table at 0x0031
+[VM 2] [    2.429401] sky2: driver version 1.30
+[VM 1] [    2.411113] Using buffer write method
+[VM 2] [    2.438756] VFIO - User Level meta-driver version: 0.3
+[VM 1] [    2.411519] physmap-flash 0.flash: physmap platform flash device: [mem 0x04000000-0x07ffffff]
+[VM 2] [    2.452632] usbcore: registered new interface driver usb-storage
+[VM 1] [    2.411936] 0.flash: Found 2 x16 devices at 0x0 in 32-bit bank. Manufacturer ID 0x000000 Chip ID 0x000000
+[VM 2] [    2.468620] i2c_dev: i2c /dev entries driver
+[VM 1] [    2.412011] Intel/Sharp Extended Query Table at 0x0031
+[VM 1] [    2.412479] Using buffer write method
+[VM 1] [    2.412589] Concatenating MTD devices:
+[VM 2] [    2.488595] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[VM 1] [    2.412617] (0): "0.flash"
+[VM 1] [    2.412642] (1): "0.flash"
+[VM 2] [    2.501799] usbcore: registered new interface driver usbhid
+[VM 1] [    2.412656] into device "0.flash"
+[VM 2] [    2.512221] usbhid: USB HID core driver
+[VM 2] [    2.524795] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 (0,8000003f) counters available
+[VM 1] [    2.522995] tun: Universal TUN/TAP device driver, 1.6
+[VM 2] [    2.544857] NET: Registered PF_INET6 protocol family
+[VM 1] [    2.546873] thunder_xcv, ver 1.0
+[VM 2] [    2.562068] Segment Routing with IPv6
+[VM 1] [    2.552928] thunder_bgx, ver 1.0
+[VM 2] [    2.569133] In-situ OAM (IOAM) with IPv6
+[VM 1] [    2.559865] nicpf, ver 1.0
+[VM 2] [    2.578615] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[VM 1] [    2.568633] e1000: Intel(R) PRO/1000 Network Driver
+[VM 2] [    2.591304] NET: Registered PF_PACKET protocol family
+[VM 1] [    2.577886] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[VM 2] [    2.601191] 9pnet: Installing 9P2000 support
+[VM 1] [    2.588252] e1000e: Intel(R) PRO/1000 Network Driver
+[VM 2] [    2.609275] Key type dns_resolver registered
+[VM 1] [    2.597813] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[VM 1] [    2.608127] igb: Intel(R) Gigabit Ethernet Network Driver
+[VM 1] [    2.617977] igb: Copyright (c) 2007-2014 Intel Corporation.
+[VM 2] [    2.637728] registered taskstats version 1
+[VM 1] [    2.627619] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[VM 2] [    2.647544] Loading compiled-in X.509 certificates
+[VM 1] [    2.639018] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[VM 1] [    2.650355] sky2: driver version 1.30
+[VM 2] [    2.668712] Demotion targets for Node 0: null
+[VM 1] [    2.659495] VFIO - User Level meta-driver version: 0.3
+[VM 2] [    2.681223] clk: Disabling unused clocks
+[VM 2] [    2.688753] PM: genpd: Disabling unused power domains
+[VM 1] [    2.674592] usbcore: registered new interface driver usb-storage
+[VM 1] [    2.693944] rtc-pl031 9010000.pl031: registered as rtc0
+[VM 1] [    2.704831] rtc-pl031 9010000.pl031: setting system clock to 2026-08-21T18:54:04 UTC (1787338444)
+[VM 1] [    2.725065] i2c_dev: i2c /dev entries driver
+[VM 1] [    2.754799] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[VM 2] [    2.780411] Freeing unused kernel memory: 12672K
+[VM 1] [    2.768767] usbcore: registered new interface driver usbhid
+[VM 2] [    2.789940] Run /init as init process
+[VM 1] [    2.779554] usbhid: USB HID core driver
+[VM 2] ICPC_PEER_START
+[VM 1] [    2.794396] hw perfevents: enabled with armv8_pmuv3 PMU driver, 7 (0,8000003f) counters available
+[VM 2] ICPC_PEER_MOUNTED
+[VM 2] ICPC_PEER_MOUNTED
+[VM 1] [    2.816860] NET: Registered PF_INET6 protocol family
+[VM 2] ICPC_PEER_READY
+[VM 1] [    2.832265] Segment Routing with IPv6
+[VM 2] ICPC_PEER_READY
+[VM 1] [    2.839591] In-situ OAM (IOAM) with IPv6
+[VM 1] [    2.847663] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[VM 1] [    2.860366] NET: Registered PF_PACKET protocol family
+[VM 1] [    2.870863] 9pnet: Installing 9P2000 support
+[VM 1] [    2.878848] Key type dns_resolver registered
+[VM 1] [    2.907296] registered taskstats version 1
+[VM 1] [    2.916118] Loading compiled-in X.509 certificates
+[VM 1] [    2.937170] Demotion targets for Node 0: null
+[VM 1] [    2.952225] input: gpio-keys as /devices/platform/gpio-keys/input/input0
+[VM 1] [    2.968287] clk: Disabling unused clocks
+[VM 1] [    2.975556] PM: genpd: Disabling unused power domains
+[VM 1] [    3.023747] EXT4-fs (vda): recovery complete
+[VM 1] [    3.032064] EXT4-fs (vda): mounted filesystem 28af8d72-64be-494e-94e2-1b5b46ccb855 r/w with ordered data mode. Quota mode: none.
+[VM 1] [    3.051397] VFS: Mounted root (ext4 filesystem) on device 254:0.
+[VM 1] [    3.063514] devtmpfs: mounted
+[VM 1] [    3.070808] VFS: Pivoted into new rootfs
+[VM 1] [    3.142961] Freeing unused kernel memory: 12672K
+[VM 1] [    3.152054] Run /bin/sh as init process
+[VM 2] ICPC_PEER_RESET
+[VM 2] ICPC_PEER_RESET
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_FIXED_LOOP_BEGIN
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=0 t1_ns=12474481000 t2_ns=12492469000 oneway_us=8994 err=73.694 kp=0.500 state=y=26.306,err=73.694,kp=0.500,ki=0.080,kd=0.020,tick=100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=1 t1_ns=12615370000 t2_ns=12630642000 oneway_us=7636 err=67.692 kp=0.500 state=y=32.308,err=67.692,kp=0.500,ki=0.080,kd=0.020,tick=200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=2 t1_ns=12753423000 t2_ns=12766998000 oneway_us=6787 err=66.082 kp=0.500 state=y=33.918,err=66.082,kp=0.500,ki=0.080,kd=0.020,tick=300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=3 t1_ns=12889404000 t2_ns=12902671000 oneway_us=6633 err=65.450 kp=0.500 state=y=34.550,err=65.450,kp=0.500,ki=0.080,kd=0.020,tick=400
+[VM 2] ICPC_PEER_RX=6 drop=0 err=0
+[VM 2] ICPC_PEER_RX=6 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=4 t1_ns=13025349000 t2_ns=13041664000 oneway_us=8157 err=65.039 kp=0.500 state=y=34.961,err=65.039,kp=0.500,ki=0.080,kd=0.020,tick=500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=5 t1_ns=13163452000 t2_ns=13176169000 oneway_us=6358 err=64.678 kp=0.500 state=y=35.322,err=64.678,kp=0.500,ki=0.080,kd=0.020,tick=600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=6 t1_ns=13297652000 t2_ns=13310777000 oneway_us=6562 err=64.330 kp=0.500 state=y=35.670,err=64.330,kp=0.500,ki=0.080,kd=0.020,tick=700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=7 t1_ns=13432375000 t2_ns=13446275000 oneway_us=6950 err=63.986 kp=0.500 state=y=36.014,err=63.986,kp=0.500,ki=0.080,kd=0.020,tick=800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=8 t1_ns=13568516000 t2_ns=13581369000 oneway_us=6426 err=63.644 kp=0.500 state=y=36.356,err=63.644,kp=0.500,ki=0.080,kd=0.020,tick=900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=9 t1_ns=13703418000 t2_ns=13719081000 oneway_us=7831 err=63.304 kp=0.500 state=y=36.696,err=63.304,kp=0.500,ki=0.080,kd=0.020,tick=1000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=10 t1_ns=13841150000 t2_ns=13853967000 oneway_us=6408 err=62.966 kp=0.500 state=y=37.034,err=62.966,kp=0.500,ki=0.080,kd=0.020,tick=1100
+[VM 2] ICPC_PEER_RX=13 drop=0 err=0
+[VM 2] ICPC_PEER_RX=13 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=11 t1_ns=13975025000 t2_ns=13988328000 oneway_us=6651 err=62.630 kp=0.500 state=y=37.370,err=62.630,kp=0.500,ki=0.080,kd=0.020,tick=1200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=12 t1_ns=14109930000 t2_ns=14122426000 oneway_us=6248 err=62.296 kp=0.500 state=y=37.704,err=62.296,kp=0.500,ki=0.080,kd=0.020,tick=1300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=13 t1_ns=14245912000 t2_ns=14258959000 oneway_us=6523 err=61.963 kp=0.500 state=y=38.037,err=61.963,kp=0.500,ki=0.080,kd=0.020,tick=1400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=14 t1_ns=14380413000 t2_ns=14392434000 oneway_us=6010 err=61.632 kp=0.500 state=y=38.368,err=61.632,kp=0.500,ki=0.080,kd=0.020,tick=1500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=15 t1_ns=14514522000 t2_ns=14527141000 oneway_us=6309 err=61.304 kp=0.500 state=y=38.696,err=61.304,kp=0.500,ki=0.080,kd=0.020,tick=1600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=16 t1_ns=14648912000 t2_ns=14661186000 oneway_us=6137 err=60.976 kp=0.500 state=y=39.024,err=60.976,kp=0.500,ki=0.080,kd=0.020,tick=1700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=17 t1_ns=14782797000 t2_ns=14796398000 oneway_us=6800 err=60.651 kp=0.500 state=y=39.349,err=60.651,kp=0.500,ki=0.080,kd=0.020,tick=1800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=18 t1_ns=14917800000 t2_ns=14931394000 oneway_us=6797 err=60.327 kp=0.500 state=y=39.673,err=60.327,kp=0.500,ki=0.080,kd=0.020,tick=1900
+[VM 2] ICPC_PEER_RX=21 drop=0 err=0
+[VM 2] ICPC_PEER_RX=21 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=19 t1_ns=15053438000 t2_ns=15066978000 oneway_us=6770 err=60.005 kp=0.500 state=y=39.995,err=60.005,kp=0.500,ki=0.080,kd=0.020,tick=2000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=20 t1_ns=15188682000 t2_ns=15202387000 oneway_us=6852 err=59.685 kp=0.500 state=y=40.315,err=59.685,kp=0.500,ki=0.080,kd=0.020,tick=2100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=21 t1_ns=15330081000 t2_ns=15342990000 oneway_us=6454 err=59.366 kp=0.500 state=y=40.634,err=59.366,kp=0.500,ki=0.080,kd=0.020,tick=2200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=22 t1_ns=15466084000 t2_ns=15479142000 oneway_us=6529 err=59.049 kp=0.500 state=y=40.951,err=59.049,kp=0.500,ki=0.080,kd=0.020,tick=2300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=23 t1_ns=15601548000 t2_ns=15617533000 oneway_us=7992 err=58.734 kp=0.500 state=y=41.266,err=58.734,kp=0.500,ki=0.080,kd=0.020,tick=2400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=24 t1_ns=15739536000 t2_ns=15754115000 oneway_us=7289 err=58.420 kp=0.500 state=y=41.580,err=58.420,kp=0.500,ki=0.080,kd=0.020,tick=2500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=25 t1_ns=15875443000 t2_ns=15888143000 oneway_us=6350 err=58.109 kp=0.500 state=y=41.891,err=58.109,kp=0.500,ki=0.080,kd=0.020,tick=2600
+[VM 2] ICPC_PEER_RX=28 drop=0 err=0
+[VM 2] ICPC_PEER_RX=28 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=26 t1_ns=16009279000 t2_ns=16023123000 oneway_us=6922 err=57.798 kp=0.500 state=y=42.202,err=57.798,kp=0.500,ki=0.080,kd=0.020,tick=2700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=27 t1_ns=16146569000 t2_ns=16159256000 oneway_us=6343 err=57.490 kp=0.500 state=y=42.510,err=57.490,kp=0.500,ki=0.080,kd=0.020,tick=2800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=28 t1_ns=16281305000 t2_ns=16294443000 oneway_us=6569 err=57.183 kp=0.500 state=y=42.817,err=57.183,kp=0.500,ki=0.080,kd=0.020,tick=2900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=29 t1_ns=16416108000 t2_ns=16429086000 oneway_us=6489 err=56.878 kp=0.500 state=y=43.122,err=56.878,kp=0.500,ki=0.080,kd=0.020,tick=3000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=30 t1_ns=16550459000 t2_ns=16563709000 oneway_us=6625 err=56.574 kp=0.500 state=y=43.426,err=56.574,kp=0.500,ki=0.080,kd=0.020,tick=3100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=31 t1_ns=16685566000 t2_ns=16698656000 oneway_us=6545 err=56.272 kp=0.500 state=y=43.728,err=56.272,kp=0.500,ki=0.080,kd=0.020,tick=3200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=32 t1_ns=16821174000 t2_ns=16836882000 oneway_us=7854 err=55.972 kp=0.500 state=y=44.028,err=55.972,kp=0.500,ki=0.080,kd=0.020,tick=3300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_RX=36 drop=0 err=0
+[VM 2] ICPC_PEER_RX=36 drop=0 err=0
+[VM 1] TASK3_LOOP mode=FIXED i=33 t1_ns=16958629000 t2_ns=16971593000 oneway_us=6482 err=55.673 kp=0.500 state=y=44.327,err=55.673,kp=0.500,ki=0.080,kd=0.020,tick=3400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=34 t1_ns=17094538000 t2_ns=17107970000 oneway_us=6716 err=55.376 kp=0.500 state=y=44.624,err=55.376,kp=0.500,ki=0.080,kd=0.020,tick=3500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=35 t1_ns=17230432000 t2_ns=17244575000 oneway_us=7071 err=55.080 kp=0.500 state=y=44.920,err=55.080,kp=0.500,ki=0.080,kd=0.020,tick=3600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=36 t1_ns=17367495000 t2_ns=17379583000 oneway_us=6044 err=54.786 kp=0.500 state=y=45.214,err=54.786,kp=0.500,ki=0.080,kd=0.020,tick=3700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=37 t1_ns=17501682000 t2_ns=17515122000 oneway_us=6720 err=54.494 kp=0.500 state=y=45.506,err=54.494,kp=0.500,ki=0.080,kd=0.020,tick=3800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=38 t1_ns=17637933000 t2_ns=17651630000 oneway_us=6848 err=54.203 kp=0.500 state=y=45.797,err=54.203,kp=0.500,ki=0.080,kd=0.020,tick=3900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=39 t1_ns=17774373000 t2_ns=17787526000 oneway_us=6576 err=53.914 kp=0.500 state=y=46.086,err=53.914,kp=0.500,ki=0.080,kd=0.020,tick=4000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=40 t1_ns=17910143000 t2_ns=17923160000 oneway_us=6508 err=53.626 kp=0.500 state=y=46.374,err=53.626,kp=0.500,ki=0.080,kd=0.020,tick=4100
+[VM 2] ICPC_PEER_RX=44 drop=0 err=0
+[VM 2] ICPC_PEER_RX=44 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=41 t1_ns=18044871000 t2_ns=18057473000 oneway_us=6301 err=53.340 kp=0.500 state=y=46.660,err=53.340,kp=0.500,ki=0.080,kd=0.020,tick=4200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=42 t1_ns=18180350000 t2_ns=18193464000 oneway_us=6557 err=53.055 kp=0.500 state=y=46.945,err=53.055,kp=0.500,ki=0.080,kd=0.020,tick=4300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=43 t1_ns=18314476000 t2_ns=18326912000 oneway_us=6218 err=52.772 kp=0.500 state=y=47.228,err=52.772,kp=0.500,ki=0.080,kd=0.020,tick=4400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=44 t1_ns=18448398000 t2_ns=18461471000 oneway_us=6536 err=52.490 kp=0.500 state=y=47.510,err=52.490,kp=0.500,ki=0.080,kd=0.020,tick=4500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=45 t1_ns=18584497000 t2_ns=18598348000 oneway_us=6925 err=52.210 kp=0.500 state=y=47.790,err=52.210,kp=0.500,ki=0.080,kd=0.020,tick=4600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=46 t1_ns=18721111000 t2_ns=18734606000 oneway_us=6747 err=51.931 kp=0.500 state=y=48.069,err=51.931,kp=0.500,ki=0.080,kd=0.020,tick=4700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=47 t1_ns=18857366000 t2_ns=18873944000 oneway_us=8289 err=51.654 kp=0.500 state=y=48.346,err=51.654,kp=0.500,ki=0.080,kd=0.020,tick=4800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_RX=51 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_RX=51 drop=0 err=0
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=48 t1_ns=19000419000 t2_ns=19029634000 oneway_us=14607 err=51.378 kp=0.500 state=y=48.622,err=51.378,kp=0.500,ki=0.080,kd=0.020,tick=4900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=49 t1_ns=19153764000 t2_ns=19167194000 oneway_us=6715 err=51.104 kp=0.500 state=y=48.896,err=51.104,kp=0.500,ki=0.080,kd=0.020,tick=5000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=50 t1_ns=19289946000 t2_ns=19302647000 oneway_us=6350 err=50.831 kp=0.500 state=y=49.169,err=50.831,kp=0.500,ki=0.080,kd=0.020,tick=5100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=51 t1_ns=19424562000 t2_ns=19437342000 oneway_us=6390 err=50.560 kp=0.500 state=y=49.440,err=50.560,kp=0.500,ki=0.080,kd=0.020,tick=5200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=52 t1_ns=19561890000 t2_ns=19574645000 oneway_us=6377 err=50.290 kp=0.500 state=y=49.710,err=50.290,kp=0.500,ki=0.080,kd=0.020,tick=5300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=53 t1_ns=19697772000 t2_ns=19711232000 oneway_us=6730 err=50.021 kp=0.500 state=y=49.979,err=50.021,kp=0.500,ki=0.080,kd=0.020,tick=5400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=54 t1_ns=19832716000 t2_ns=19845835000 oneway_us=6559 err=49.754 kp=0.500 state=y=50.246,err=49.754,kp=0.500,ki=0.080,kd=0.020,tick=5500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=55 t1_ns=19967323000 t2_ns=19980168000 oneway_us=6422 err=49.489 kp=0.500 state=y=50.511,err=49.489,kp=0.500,ki=0.080,kd=0.020,tick=5600
+[VM 2] ICPC_PEER_RX=59 drop=0 err=0
+[VM 2] ICPC_PEER_RX=59 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=56 t1_ns=20101704000 t2_ns=20114911000 oneway_us=6603 err=49.225 kp=0.500 state=y=50.775,err=49.225,kp=0.500,ki=0.080,kd=0.020,tick=5700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=57 t1_ns=20236353000 t2_ns=20249407000 oneway_us=6527 err=48.962 kp=0.500 state=y=51.038,err=48.962,kp=0.500,ki=0.080,kd=0.020,tick=5800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=58 t1_ns=20371496000 t2_ns=20383973000 oneway_us=6238 err=48.700 kp=0.500 state=y=51.300,err=48.700,kp=0.500,ki=0.080,kd=0.020,tick=5900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=59 t1_ns=20505421000 t2_ns=20518718000 oneway_us=6648 err=48.441 kp=0.500 state=y=51.559,err=48.441,kp=0.500,ki=0.080,kd=0.020,tick=6000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=60 t1_ns=20640545000 t2_ns=20654401000 oneway_us=6928 err=48.182 kp=0.500 state=y=51.818,err=48.182,kp=0.500,ki=0.080,kd=0.020,tick=6100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=61 t1_ns=20776541000 t2_ns=20790100000 oneway_us=6779 err=47.925 kp=0.500 state=y=52.075,err=47.925,kp=0.500,ki=0.080,kd=0.020,tick=6200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=62 t1_ns=20912435000 t2_ns=20926216000 oneway_us=6890 err=47.669 kp=0.500 state=y=52.331,err=47.669,kp=0.500,ki=0.080,kd=0.020,tick=6300
+[VM 2] ICPC_PEER_RX=66 drop=0 err=0
+[VM 2] ICPC_PEER_RX=66 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=63 t1_ns=21049982000 t2_ns=21064225000 oneway_us=7121 err=47.414 kp=0.500 state=y=52.586,err=47.414,kp=0.500,ki=0.080,kd=0.020,tick=6400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=64 t1_ns=21186489000 t2_ns=21199582000 oneway_us=6546 err=47.161 kp=0.500 state=y=52.839,err=47.161,kp=0.500,ki=0.080,kd=0.020,tick=6500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=65 t1_ns=21321361000 t2_ns=21334227000 oneway_us=6433 err=46.910 kp=0.500 state=y=53.090,err=46.910,kp=0.500,ki=0.080,kd=0.020,tick=6600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=66 t1_ns=21456463000 t2_ns=21469388000 oneway_us=6462 err=46.659 kp=0.500 state=y=53.341,err=46.659,kp=0.500,ki=0.080,kd=0.020,tick=6700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=67 t1_ns=21591450000 t2_ns=21603975000 oneway_us=6262 err=46.410 kp=0.500 state=y=53.590,err=46.410,kp=0.500,ki=0.080,kd=0.020,tick=6800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=68 t1_ns=21726514000 t2_ns=21739547000 oneway_us=6516 err=46.162 kp=0.500 state=y=53.838,err=46.162,kp=0.500,ki=0.080,kd=0.020,tick=6900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=69 t1_ns=21862207000 t2_ns=21875757000 oneway_us=6775 err=45.916 kp=0.500 state=y=54.084,err=45.916,kp=0.500,ki=0.080,kd=0.020,tick=7000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=70 t1_ns=21998086000 t2_ns=22015258000 oneway_us=8586 err=45.671 kp=0.500 state=y=54.329,err=45.671,kp=0.500,ki=0.080,kd=0.020,tick=7100
+[VM 2] ICPC_PEER_RX=74 drop=0 err=0
+[VM 2] ICPC_PEER_RX=74 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=71 t1_ns=22152761000 t2_ns=22183828000 oneway_us=15533 err=45.427 kp=0.500 state=y=54.573,err=45.427,kp=0.500,ki=0.080,kd=0.020,tick=7200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=72 t1_ns=22309816000 t2_ns=22327362000 oneway_us=8773 err=45.185 kp=0.500 state=y=54.815,err=45.185,kp=0.500,ki=0.080,kd=0.020,tick=7300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=73 t1_ns=22452481000 t2_ns=22465636000 oneway_us=6577 err=44.943 kp=0.500 state=y=55.057,err=44.943,kp=0.500,ki=0.080,kd=0.020,tick=7400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=74 t1_ns=22587407000 t2_ns=22600366000 oneway_us=6479 err=44.704 kp=0.500 state=y=55.296,err=44.704,kp=0.500,ki=0.080,kd=0.020,tick=7500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=75 t1_ns=22721758000 t2_ns=22735296000 oneway_us=6769 err=44.465 kp=0.500 state=y=55.535,err=44.465,kp=0.500,ki=0.080,kd=0.020,tick=7600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=76 t1_ns=22859370000 t2_ns=22872893000 oneway_us=6761 err=44.228 kp=0.500 state=y=55.772,err=44.228,kp=0.500,ki=0.080,kd=0.020,tick=7700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=77 t1_ns=22996807000 t2_ns=23010325000 oneway_us=6759 err=43.991 kp=0.500 state=y=56.009,err=43.991,kp=0.500,ki=0.080,kd=0.020,tick=7800
+[VM 2] ICPC_PEER_RX=81 drop=0 err=0
+[VM 2] ICPC_PEER_RX=81 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=78 t1_ns=23133819000 t2_ns=23148407000 oneway_us=7294 err=43.757 kp=0.500 state=y=56.243,err=43.757,kp=0.500,ki=0.080,kd=0.020,tick=7900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=79 t1_ns=23271471000 t2_ns=23284232000 oneway_us=6380 err=43.523 kp=0.500 state=y=56.477,err=43.523,kp=0.500,ki=0.080,kd=0.020,tick=8000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=80 t1_ns=23405966000 t2_ns=23419296000 oneway_us=6665 err=43.291 kp=0.500 state=y=56.709,err=43.291,kp=0.500,ki=0.080,kd=0.020,tick=8100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=81 t1_ns=23542731000 t2_ns=23555716000 oneway_us=6492 err=43.060 kp=0.500 state=y=56.940,err=43.060,kp=0.500,ki=0.080,kd=0.020,tick=8200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=82 t1_ns=23681570000 t2_ns=23694570000 oneway_us=6500 err=42.830 kp=0.500 state=y=57.170,err=42.830,kp=0.500,ki=0.080,kd=0.020,tick=8300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=83 t1_ns=23817506000 t2_ns=23831045000 oneway_us=6769 err=42.601 kp=0.500 state=y=57.399,err=42.601,kp=0.500,ki=0.080,kd=0.020,tick=8400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=84 t1_ns=23952362000 t2_ns=23965715000 oneway_us=6676 err=42.374 kp=0.500 state=y=57.626,err=42.374,kp=0.500,ki=0.080,kd=0.020,tick=8500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_RX=89 drop=0 err=0
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_RX=89 drop=0 err=0
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=85 t1_ns=24087485000 t2_ns=24110340000 oneway_us=11427 err=42.148 kp=0.500 state=y=57.852,err=42.148,kp=0.500,ki=0.080,kd=0.020,tick=8600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=86 t1_ns=24233555000 t2_ns=24246897000 oneway_us=6671 err=41.923 kp=0.500 state=y=58.077,err=41.923,kp=0.500,ki=0.080,kd=0.020,tick=8700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=87 t1_ns=24368858000 t2_ns=24382007000 oneway_us=6574 err=41.699 kp=0.500 state=y=58.301,err=41.699,kp=0.500,ki=0.080,kd=0.020,tick=8800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=88 t1_ns=24505279000 t2_ns=24517992000 oneway_us=6356 err=41.476 kp=0.500 state=y=58.524,err=41.476,kp=0.500,ki=0.080,kd=0.020,tick=8900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=FIXED i=89 t1_ns=24639399000 t2_ns=24651332000 oneway_us=5966 err=41.255 kp=0.500 state=y=58.745,err=41.255,kp=0.500,ki=0.080,kd=0.020,tick=9000
+[VM 1] TASK3_METRICS mode=FIXED first_err=73.694 final_err=41.255 final_y=58.745 rmse=53.499 settle_loops=-1 mean_oneway_us=6991 p99_oneway_us=14607
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_RESET
+[VM 2] ICPC_PEER_RESET
+[VM 1] TASK3_AI_LOOP_BEGIN
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=0 t1_ns=24902891000 t2_ns=24916311000 oneway_us=6710 err=73.694 kp=0.500 state=y=26.306,err=73.694,kp=0.500,ki=0.080,kd=0.020,tick=100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=1 t1_ns=25037574000 t2_ns=25056144000 oneway_us=9285 err=48.349 kp=1.177 state=y=51.651,err=48.349,kp=1.177,ki=0.134,kd=0.020,tick=200
+[VM 2] ICPC_PEER_RX=96 drop=0 err=0
+[VM 2] ICPC_PEER_RX=96 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=2 t1_ns=25177418000 t2_ns=25190124000 oneway_us=6353 err=38.724 kp=1.563 state=y=61.276,err=38.724,kp=1.563,ki=0.162,kd=0.020,tick=300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=3 t1_ns=25311526000 t2_ns=25324343000 oneway_us=6408 err=34.171 kp=1.839 state=y=65.829,err=34.171,kp=1.839,ki=0.181,kd=0.020,tick=400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=4 t1_ns=25446458000 t2_ns=25459309000 oneway_us=6425 err=31.259 kp=2.062 state=y=68.741,err=31.259,kp=2.062,ki=0.195,kd=0.020,tick=500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=5 t1_ns=25581722000 t2_ns=25602039000 oneway_us=10158 err=29.119 kp=2.251 state=y=70.881,err=29.119,kp=2.251,ki=0.206,kd=0.020,tick=600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=6 t1_ns=25723955000 t2_ns=25738188000 oneway_us=7116 err=27.436 kp=2.416 state=y=72.564,err=27.436,kp=2.416,ki=0.215,kd=0.020,tick=700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=7 t1_ns=25860195000 t2_ns=25877003000 oneway_us=8404 err=26.061 kp=2.562 state=y=73.939,err=26.061,kp=2.562,ki=0.223,kd=0.020,tick=800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=8 t1_ns=25998891000 t2_ns=26011596000 oneway_us=6352 err=24.928 kp=2.691 state=y=75.072,err=24.928,kp=2.691,ki=0.229,kd=0.020,tick=900
+[VM 2] ICPC_PEER_RX=103 drop=0 err=0
+[VM 2] ICPC_PEER_RX=103 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=9 t1_ns=26134960000 t2_ns=26148509000 oneway_us=6774 err=23.959 kp=2.808 state=y=76.041,err=23.959,kp=2.808,ki=0.234,kd=0.020,tick=1000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=10 t1_ns=26270059000 t2_ns=26283405000 oneway_us=6673 err=23.123 kp=2.914 state=y=76.877,err=23.123,kp=2.914,ki=0.238,kd=0.020,tick=1100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=11 t1_ns=26405372000 t2_ns=26417942000 oneway_us=6285 err=22.405 kp=3.009 state=y=77.595,err=22.405,kp=3.009,ki=0.241,kd=0.020,tick=1200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=12 t1_ns=26539969000 t2_ns=26554067000 oneway_us=7049 err=21.769 kp=3.097 state=y=78.231,err=21.769,kp=3.097,ki=0.243,kd=0.020,tick=1300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=13 t1_ns=26676539000 t2_ns=26691735000 oneway_us=7598 err=21.203 kp=3.177 state=y=78.797,err=21.203,kp=3.177,ki=0.245,kd=0.020,tick=1400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=14 t1_ns=26813432000 t2_ns=26826732000 oneway_us=6650 err=20.700 kp=3.251 state=y=79.300,err=20.700,kp=3.251,ki=0.246,kd=0.020,tick=1500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=15 t1_ns=26949525000 t2_ns=26963381000 oneway_us=6928 err=20.244 kp=3.319 state=y=79.756,err=20.244,kp=3.319,ki=0.247,kd=0.020,tick=1600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=16 t1_ns=27087961000 t2_ns=27103629000 oneway_us=7834 err=19.839 kp=3.382 state=y=80.161,err=19.839,kp=3.382,ki=0.247,kd=0.020,tick=1700
+[VM 2] ICPC_PEER_RX=111 drop=0 err=0
+[VM 2] ICPC_PEER_RX=111 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=17 t1_ns=27225559000 t2_ns=27238953000 oneway_us=6697 err=19.461 kp=3.442 state=y=80.539,err=19.461,kp=3.442,ki=0.247,kd=0.020,tick=1800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=18 t1_ns=27359872000 t2_ns=27372133000 oneway_us=6130 err=19.108 kp=3.499 state=y=80.892,err=19.108,kp=3.499,ki=0.247,kd=0.020,tick=1900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=19 t1_ns=27493336000 t2_ns=27506695000 oneway_us=6679 err=18.765 kp=3.556 state=y=81.235,err=18.765,kp=3.556,ki=0.247,kd=0.020,tick=2000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=20 t1_ns=27628207000 t2_ns=27640838000 oneway_us=6315 err=18.441 kp=3.611 state=y=81.559,err=18.441,kp=3.611,ki=0.247,kd=0.020,tick=2100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=21 t1_ns=27762722000 t2_ns=27780604000 oneway_us=8941 err=18.131 kp=3.665 state=y=81.869,err=18.131,kp=3.665,ki=0.247,kd=0.020,tick=2200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=22 t1_ns=27902248000 t2_ns=27916517000 oneway_us=7134 err=17.836 kp=3.717 state=y=82.164,err=17.836,kp=3.717,ki=0.247,kd=0.020,tick=2300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=23 t1_ns=28038450000 t2_ns=28051557000 oneway_us=6553 err=17.553 kp=3.768 state=y=82.447,err=17.553,kp=3.768,ki=0.247,kd=0.020,tick=2400
+[VM 2] ICPC_PEER_RX=118 drop=0 err=0
+[VM 2] ICPC_PEER_RX=118 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=24 t1_ns=28174653000 t2_ns=28187254000 oneway_us=6300 err=17.278 kp=3.819 state=y=82.722,err=17.278,kp=3.819,ki=0.247,kd=0.020,tick=2500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=25 t1_ns=28311762000 t2_ns=28324378000 oneway_us=6308 err=17.017 kp=3.868 state=y=82.983,err=17.017,kp=3.868,ki=0.247,kd=0.020,tick=2600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=26 t1_ns=28446557000 t2_ns=28459686000 oneway_us=6564 err=16.766 kp=3.916 state=y=83.234,err=16.766,kp=3.916,ki=0.247,kd=0.020,tick=2700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=27 t1_ns=28588926000 t2_ns=28606719000 oneway_us=8896 err=16.524 kp=3.963 state=y=83.476,err=16.524,kp=3.963,ki=0.247,kd=0.020,tick=2800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=28 t1_ns=28728717000 t2_ns=28748111000 oneway_us=9697 err=16.291 kp=4.009 state=y=83.709,err=16.291,kp=4.009,ki=0.247,kd=0.020,tick=2900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=29 t1_ns=28869964000 t2_ns=28883478000 oneway_us=6757 err=16.066 kp=4.054 state=y=83.934,err=16.066,kp=4.054,ki=0.247,kd=0.020,tick=3000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=30 t1_ns=29005646000 t2_ns=29019098000 oneway_us=6726 err=15.850 kp=4.098 state=y=84.150,err=15.850,kp=4.098,ki=0.247,kd=0.020,tick=3100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_RX=126 drop=0 err=0
+[VM 2] ICPC_PEER_RX=126 drop=0 err=0
+[VM 1] TASK3_LOOP mode=AI i=31 t1_ns=29139817000 t2_ns=29153559000 oneway_us=6871 err=15.639 kp=4.142 state=y=84.361,err=15.639,kp=4.142,ki=0.247,kd=0.020,tick=3200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=32 t1_ns=29276408000 t2_ns=29289477000 oneway_us=6534 err=15.438 kp=4.184 state=y=84.562,err=15.438,kp=4.184,ki=0.247,kd=0.020,tick=3300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=33 t1_ns=29410168000 t2_ns=29423214000 oneway_us=6523 err=15.241 kp=4.226 state=y=84.759,err=15.241,kp=4.226,ki=0.247,kd=0.020,tick=3400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=34 t1_ns=29546130000 t2_ns=29559522000 oneway_us=6696 err=15.051 kp=4.267 state=y=84.949,err=15.051,kp=4.267,ki=0.247,kd=0.020,tick=3500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=35 t1_ns=29681511000 t2_ns=29694929000 oneway_us=6709 err=14.868 kp=4.307 state=y=85.132,err=14.868,kp=4.307,ki=0.247,kd=0.020,tick=3600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=36 t1_ns=29816075000 t2_ns=29829532000 oneway_us=6728 err=14.689 kp=4.347 state=y=85.311,err=14.689,kp=4.347,ki=0.247,kd=0.020,tick=3700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=37 t1_ns=29952287000 t2_ns=29966251000 oneway_us=6982 err=14.515 kp=4.386 state=y=85.485,err=14.515,kp=4.386,ki=0.247,kd=0.020,tick=3800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=38 t1_ns=30088302000 t2_ns=30101079000 oneway_us=6388 err=14.348 kp=4.424 state=y=85.652,err=14.348,kp=4.424,ki=0.247,kd=0.020,tick=3900
+[VM 2] ICPC_PEER_RX=133 drop=0 err=0
+[VM 2] ICPC_PEER_RX=133 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=39 t1_ns=30222268000 t2_ns=30235542000 oneway_us=6637 err=14.186 kp=4.461 state=y=85.814,err=14.186,kp=4.461,ki=0.247,kd=0.020,tick=4000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=40 t1_ns=30357466000 t2_ns=30370286000 oneway_us=6410 err=14.027 kp=4.498 state=y=85.973,err=14.027,kp=4.498,ki=0.247,kd=0.020,tick=4100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=41 t1_ns=30491671000 t2_ns=30505067000 oneway_us=6698 err=13.873 kp=4.534 state=y=86.127,err=13.873,kp=4.534,ki=0.247,kd=0.020,tick=4200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=42 t1_ns=30626835000 t2_ns=30639370000 oneway_us=6267 err=13.725 kp=4.569 state=y=86.275,err=13.725,kp=4.569,ki=0.247,kd=0.020,tick=4300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=43 t1_ns=30761370000 t2_ns=30775302000 oneway_us=6966 err=13.579 kp=4.604 state=y=86.421,err=13.579,kp=4.604,ki=0.247,kd=0.020,tick=4400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=44 t1_ns=30897509000 t2_ns=30910991000 oneway_us=6741 err=13.435 kp=4.639 state=y=86.565,err=13.435,kp=4.639,ki=0.247,kd=0.020,tick=4500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=45 t1_ns=31032686000 t2_ns=31044971000 oneway_us=6142 err=13.299 kp=4.672 state=y=86.701,err=13.299,kp=4.672,ki=0.247,kd=0.020,tick=4600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_RX=141 drop=0 err=0
+[VM 2] ICPC_PEER_RX=141 drop=0 err=0
+[VM 1] TASK3_LOOP mode=AI i=46 t1_ns=31166101000 t2_ns=31179306000 oneway_us=6602 err=13.162 kp=4.706 state=y=86.838,err=13.162,kp=4.706,ki=0.247,kd=0.020,tick=4700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=47 t1_ns=31302446000 t2_ns=31315294000 oneway_us=6424 err=13.033 kp=4.738 state=y=86.967,err=13.033,kp=4.738,ki=0.247,kd=0.020,tick=4800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=48 t1_ns=31437599000 t2_ns=31450914000 oneway_us=6657 err=12.905 kp=4.770 state=y=87.095,err=12.905,kp=4.770,ki=0.247,kd=0.020,tick=4900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=49 t1_ns=31572615000 t2_ns=31585319000 oneway_us=6352 err=12.779 kp=4.802 state=y=87.221,err=12.779,kp=4.802,ki=0.247,kd=0.020,tick=5000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=50 t1_ns=31705918000 t2_ns=31718937000 oneway_us=6509 err=12.657 kp=4.833 state=y=87.343,err=12.657,kp=4.833,ki=0.247,kd=0.020,tick=5100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=51 t1_ns=31841823000 t2_ns=31855641000 oneway_us=6909 err=12.537 kp=4.864 state=y=87.463,err=12.537,kp=4.864,ki=0.247,kd=0.020,tick=5200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=52 t1_ns=31977660000 t2_ns=31991209000 oneway_us=6774 err=12.421 kp=4.894 state=y=87.579,err=12.421,kp=4.894,ki=0.247,kd=0.020,tick=5300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=53 t1_ns=32113867000 t2_ns=32127106000 oneway_us=6619 err=12.308 kp=4.923 state=y=87.692,err=12.308,kp=4.923,ki=0.247,kd=0.020,tick=5400
+[VM 2] ICPC_PEER_RX=148 drop=0 err=0
+[VM 2] ICPC_PEER_RX=148 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=54 t1_ns=32248525000 t2_ns=32260947000 oneway_us=6211 err=12.195 kp=4.953 state=y=87.805,err=12.195,kp=4.953,ki=0.247,kd=0.020,tick=5500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=55 t1_ns=32383441000 t2_ns=32395406000 oneway_us=5982 err=12.088 kp=4.981 state=y=87.912,err=12.088,kp=4.981,ki=0.247,kd=0.020,tick=5600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=56 t1_ns=32516572000 t2_ns=32529642000 oneway_us=6535 err=11.980 kp=5.010 state=y=88.020,err=11.980,kp=5.010,ki=0.247,kd=0.020,tick=5700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=57 t1_ns=32651349000 t2_ns=32663370000 oneway_us=6010 err=11.876 kp=5.038 state=y=88.124,err=11.876,kp=5.038,ki=0.247,kd=0.020,tick=5800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=58 t1_ns=32785194000 t2_ns=32798634000 oneway_us=6720 err=11.775 kp=5.065 state=y=88.225,err=11.775,kp=5.065,ki=0.247,kd=0.020,tick=5900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=59 t1_ns=32920229000 t2_ns=32933853000 oneway_us=6812 err=11.675 kp=5.092 state=y=88.325,err=11.675,kp=5.092,ki=0.247,kd=0.020,tick=6000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=60 t1_ns=33055823000 t2_ns=33069485000 oneway_us=6831 err=11.577 kp=5.119 state=y=88.423,err=11.577,kp=5.119,ki=0.247,kd=0.020,tick=6100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_RX=156 drop=0 err=0
+[VM 2] ICPC_PEER_RX=156 drop=0 err=0
+[VM 1] TASK3_LOOP mode=AI i=61 t1_ns=33191289000 t2_ns=33204364000 oneway_us=6537 err=11.481 kp=5.145 state=y=88.519,err=11.481,kp=5.145,ki=0.247,kd=0.020,tick=6200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=62 t1_ns=33327026000 t2_ns=33339474000 oneway_us=6224 err=11.387 kp=5.171 state=y=88.613,err=11.387,kp=5.171,ki=0.247,kd=0.020,tick=6300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=63 t1_ns=33462033000 t2_ns=33475575000 oneway_us=6771 err=11.294 kp=5.197 state=y=88.706,err=11.294,kp=5.197,ki=0.247,kd=0.020,tick=6400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=64 t1_ns=33597379000 t2_ns=33610271000 oneway_us=6446 err=11.204 kp=5.222 state=y=88.796,err=11.204,kp=5.222,ki=0.247,kd=0.020,tick=6500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=65 t1_ns=33731357000 t2_ns=33745409000 oneway_us=7026 err=11.115 kp=5.247 state=y=88.885,err=11.115,kp=5.247,ki=0.247,kd=0.020,tick=6600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=66 t1_ns=33867890000 t2_ns=33882752000 oneway_us=7431 err=11.029 kp=5.271 state=y=88.971,err=11.029,kp=5.271,ki=0.247,kd=0.020,tick=6700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=67 t1_ns=34004310000 t2_ns=34017655000 oneway_us=6672 err=10.944 kp=5.295 state=y=89.056,err=10.944,kp=5.295,ki=0.247,kd=0.020,tick=6800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=68 t1_ns=34139522000 t2_ns=34152469000 oneway_us=6473 err=10.860 kp=5.319 state=y=89.140,err=10.860,kp=5.319,ki=0.247,kd=0.020,tick=6900
+[VM 2] ICPC_PEER_RX=163 drop=0 err=0
+[VM 2] ICPC_PEER_RX=163 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=69 t1_ns=34274040000 t2_ns=34286824000 oneway_us=6392 err=10.776 kp=5.343 state=y=89.224,err=10.776,kp=5.343,ki=0.247,kd=0.020,tick=7000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=70 t1_ns=34408543000 t2_ns=34422058000 oneway_us=6757 err=10.696 kp=5.366 state=y=89.304,err=10.696,kp=5.366,ki=0.247,kd=0.020,tick=7100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=71 t1_ns=34545428000 t2_ns=34559507000 oneway_us=7039 err=10.616 kp=5.389 state=y=89.384,err=10.616,kp=5.389,ki=0.247,kd=0.020,tick=7200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=72 t1_ns=34681321000 t2_ns=34694725000 oneway_us=6702 err=10.539 kp=5.411 state=y=89.461,err=10.539,kp=5.411,ki=0.247,kd=0.020,tick=7300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=73 t1_ns=34815823000 t2_ns=34829336000 oneway_us=6756 err=10.462 kp=5.433 state=y=89.538,err=10.462,kp=5.433,ki=0.247,kd=0.020,tick=7400
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=74 t1_ns=34950793000 t2_ns=34963718000 oneway_us=6462 err=10.387 kp=5.455 state=y=89.613,err=10.387,kp=5.455,ki=0.247,kd=0.020,tick=7500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=75 t1_ns=35086011000 t2_ns=35099320000 oneway_us=6654 err=10.312 kp=5.477 state=y=89.688,err=10.312,kp=5.477,ki=0.247,kd=0.020,tick=7600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_RX=171 drop=0 err=0
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_RX=171 drop=0 err=0
+[VM 1] TASK3_LOOP mode=AI i=76 t1_ns=35221358000 t2_ns=35236395000 oneway_us=7518 err=10.240 kp=5.498 state=y=89.760,err=10.240,kp=5.498,ki=0.247,kd=0.020,tick=7700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=77 t1_ns=35358374000 t2_ns=35371476000 oneway_us=6551 err=10.168 kp=5.519 state=y=89.832,err=10.168,kp=5.519,ki=0.247,kd=0.020,tick=7800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=78 t1_ns=35492435000 t2_ns=35506173000 oneway_us=6869 err=10.099 kp=5.539 state=y=89.901,err=10.099,kp=5.539,ki=0.247,kd=0.020,tick=7900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=79 t1_ns=35627694000 t2_ns=35641709000 oneway_us=7007 err=10.028 kp=5.560 state=y=89.972,err=10.028,kp=5.560,ki=0.247,kd=0.020,tick=8000
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=80 t1_ns=35762403000 t2_ns=35776304000 oneway_us=6950 err=9.960 kp=5.580 state=y=90.040,err=9.960,kp=5.580,ki=0.247,kd=0.020,tick=8100
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=81 t1_ns=35897999000 t2_ns=35911649000 oneway_us=6825 err=9.893 kp=5.600 state=y=90.107,err=9.893,kp=5.600,ki=0.247,kd=0.020,tick=8200
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=82 t1_ns=36033407000 t2_ns=36046759000 oneway_us=6676 err=9.828 kp=5.619 state=y=90.172,err=9.828,kp=5.619,ki=0.247,kd=0.020,tick=8300
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=83 t1_ns=36168440000 t2_ns=36181920000 oneway_us=6740 err=9.762 kp=5.639 state=y=90.238,err=9.762,kp=5.639,ki=0.247,kd=0.020,tick=8400
+[VM 2] ICPC_PEER_RX=178 drop=0 err=0
+[VM 2] ICPC_PEER_RX=178 drop=0 err=0
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=84 t1_ns=36303428000 t2_ns=36315399000 oneway_us=5985 err=9.698 kp=5.658 state=y=90.302,err=9.698,kp=5.658,ki=0.247,kd=0.020,tick=8500
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=85 t1_ns=36437401000 t2_ns=36451183000 oneway_us=6891 err=9.636 kp=5.676 state=y=90.364,err=9.636,kp=5.676,ki=0.247,kd=0.020,tick=8600
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=86 t1_ns=36572514000 t2_ns=36585557000 oneway_us=6521 err=9.573 kp=5.695 state=y=90.427,err=9.573,kp=5.695,ki=0.247,kd=0.020,tick=8700
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=87 t1_ns=36706741000 t2_ns=36727515000 oneway_us=10387 err=9.512 kp=5.713 state=y=90.488,err=9.512,kp=5.713,ki=0.247,kd=0.020,tick=8800
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=88 t1_ns=36852616000 t2_ns=36868340000 oneway_us=7862 err=9.452 kp=5.731 state=y=90.548,err=9.452,kp=5.731,ki=0.247,kd=0.020,tick=8900
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_CTRL
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_PID_TUNED
+[VM 2] ICPC_PEER_STATE
+[VM 2] ICPC_PEER_STATE
+[VM 1] TASK3_LOOP mode=AI i=89 t1_ns=36990451000 t2_ns=37004196000 oneway_us=6872 err=9.392 kp=5.749 state=y=90.608,err=9.392,kp=5.749,ki=0.247,kd=0.020,tick=9000
+[VM 1] TASK3_METRICS mode=AI first_err=73.694 final_err=9.392 final_y=90.608 rmse=18.532 settle_loops=-1 mean_oneway_us=6888 p99_oneway_us=10158
+[VM 1] TASK3_COMPARE fixed_rmse=53.499 ai_rmse=18.532 fixed_sett
+=== SUCCESS PATTERN MATCHED: (?m)^\[VM 1\] TASK3_COMPARE ===
+le=-1 ai_settle=-1 fixed_final_err=41.255 ai_final_err=9.392 fixed_p99_oneway_us=14607 ai_p99_oneway_us=10158
+[VM 1] task3-compare pass
+[VM 1] task3-compare pass
+[VM 1] [   38.130738] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000
+[VM 1] [   38.142996] CPU: 0 UID: 0 PID: 1 Comm: sh Not tainted 7.1.0-rc2-g74fe02ce122a-dirty #10 PREEMPT 
+[VM 1] [   38.156531] Hardware name: linux,dummy-virt (DT)
+[VM 1] [   38.163621] Call trace:
+[VM 1] [   38.167555]  show_stack+0x18/0x24 (C)
+[VM 1] [   38.173497]  dump_stack_lvl+0x34/0x8c
+[VM 1] [   38.179381]  dump_stack+0x18/0x24
+[VM 1] [   38.184523]  vpanic+0x47c/0x4dc
+[VM 1] [   38.189526]  do_panic_on_target_cpu+0x0/0x1c
+[VM 1] [   38.196017]  do_exit+0x7ac/0x8f4
+[VM 1] [   38.201607]  do_group_exit+0x34/0x90
+[VM 1] [   38.207036]  pid_child_should_wake+0x0/0x5c
+[VM 1] [   38.213217]  invoke_syscall+0x54/0x10c
+[VM 2] ICPC_PEER_RX=184 drop=0 err=0
+[VM 1] [   38.218863]  el0_svc_common.constprop.0+0x40/0xe0
+[VM 2] ICPC_PEER_RX=184 drop=0 err=0
+[VM 1] [   38.226540]  do_el0_svc+0x1c/0x28
+[VM 1] [   38.231976]  el0_svc+0x38/0x138
+[VM 1] [   38.236580]  el0t_64_sync_handler+0xa0/0xe4
+[VM 1] [   38.242309]  el0t_64_sync+0x198/0x19c
+[VM 1] [   38.248165] Kernel Offset: 0x5b1ae0c00000 from 0xffff800080000000
+[VM 1] [   38.256778] PHYS_OFFSET: 0xfff1000200000000
+[VM 1] [   38.262913] CPU features: 0x04000000,804f0008,00040001,0400421b
+[VM 1] [   38.271519] Memory Limit: none
+[VM 1] [   38.276654] ---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---
+[axbuild] qemu run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json ... done (43.24s)
+  qemu run: 43.30s
+ok: task3-pid-compare (43.39s)
+
+axvisor qemu test summary:
+  PASS task3-pid-compare (43.39s)
+result: 1/1 case(s) passed
+total: 46.14s
+all axvisor qemu tests passed

@@ -15,7 +15,7 @@ use ax_plat::mem::{check_sorted_ranges_overlap, ranges_difference};
 use heapless::Vec;
 
 #[allow(unused_imports)]
-const MAX_REGIONS: usize = 128;
+const MAX_REGIONS: usize = 256;
 
 static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::new(|| {
     let mut all_regions = Vec::new();

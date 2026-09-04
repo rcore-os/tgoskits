@@ -569,13 +569,26 @@ command = "true"
         self.assertEqual(static_rows["check-formatting"]["runs_on"], ["ubuntu-latest"])
         self.assertEqual(
             static_rows["check-formatting"]["container_image"],
-            "ghcr.io/contributor/tgoskits-container:latest",
+            "ghcr.io/rcore-os/tgoskits-container:latest",
         )
         self.assertFalse(static_rows["check-formatting"]["download_xtask_bin_artifact"])
         clippy = test_rows["run-clippy"]
         self.assertEqual(clippy["runs_on"], ["ubuntu-latest"])
         self.assertEqual(clippy["fetch_depth"], "100")
         self.assertTrue(clippy["download_xtask_bin_artifact"])
+
+    def test_qcl_kernel_fork_reuses_upstream_ci_container(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="qcl-kernel/tgoskits-xuanshu",
+            repository_owner="qcl-kernel",
+            event_name="workflow_dispatch",
+        )
+        plan = ci_plan.build_main_plan(context)
+        static_rows = self.assert_unique_ids(plan["static_matrix"]["include"])
+        self.assertEqual(
+            static_rows["check-formatting"]["container_image"],
+            "ghcr.io/rcore-os/tgoskits-container:latest",
+        )
 
     def test_starry_apps_schedule_and_manual_selection(self) -> None:
         manual = ci_plan.PlanContext(

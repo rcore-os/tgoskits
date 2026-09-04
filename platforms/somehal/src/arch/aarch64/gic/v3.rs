@@ -71,16 +71,38 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let gicr_reg = reg.next().unwrap();
     PRIMARY_GICR_PHYS_BASE.store(gicr_reg.address, Ordering::Release);
 
-    let gicd = ioremap(
-        gicd_reg.address,
-        gicd_reg.size.unwrap_or(0x1000).try_into().unwrap(),
-    )
-    .unwrap();
-    let gicr = ioremap(
-        gicr_reg.address,
-        gicr_reg.size.unwrap_or(0x1000).try_into().unwrap(),
-    )
-    .unwrap();
+    let gicd_size = gicd_reg.size.unwrap_or(0x1000);
+    if gicd_size == 0 {
+        return Err(OnProbeError::other(format!(
+            "[{}] GICD reg size is zero (addr={:#x})",
+            info.node.name(),
+            gicd_reg.address
+        )));
+    }
+    let gicd = ioremap(gicd_reg.address, gicd_size.try_into().unwrap()).map_err(|err| {
+        OnProbeError::other(format!(
+            "[{}] GICD ioremap failed: addr={:#x} size={:#x}: {err}",
+            info.node.name(),
+            gicd_reg.address,
+            gicd_size
+        ))
+    })?;
+    let gicr_size = gicr_reg.size.unwrap_or(0x1000);
+    if gicr_size == 0 {
+        return Err(OnProbeError::other(format!(
+            "[{}] GICR reg size is zero (addr={:#x})",
+            info.node.name(),
+            gicr_reg.address
+        )));
+    }
+    let gicr = ioremap(gicr_reg.address, gicr_size.try_into().unwrap()).map_err(|err| {
+        OnProbeError::other(format!(
+            "[{}] GICR ioremap failed: addr={:#x} size={:#x}: {err}",
+            info.node.name(),
+            gicr_reg.address,
+            gicr_size
+        ))
+    })?;
 
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into()) };
     gic.init();

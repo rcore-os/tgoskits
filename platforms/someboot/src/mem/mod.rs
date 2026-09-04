@@ -226,6 +226,7 @@ pub(crate) fn memory_map_setup() {
     if let Some(desc) = crate::console::debug_to_memory_desc() {
         add_memory_descriptor(desc).unwrap();
     }
+    let _ = crate::fdt::init_device_mmio_map();
 }
 
 pub fn print_memory_map() {

@@ -289,11 +289,20 @@ pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {
             || token.starts_with("root=UUID=")
             || token.starts_with("root=PARTUUID=")
     });
+    // Drop stale initramfs tokens only when a real block root is also present.
+    // Pure initramfs guests (cmdline = "rdinit=/init") must keep those tokens.
+    let has_non_ram_block_root = tokens.iter().any(|token| {
+        (token.starts_with("root=/dev/") && *token != "root=/dev/ram0")
+            || token.starts_with("root=PARTLABEL=")
+            || token.starts_with("root=LABEL=")
+            || token.starts_with("root=UUID=")
+            || token.starts_with("root=PARTUUID=")
+    });
     let mut sanitized = Vec::with_capacity(tokens.len());
     let mut index = 0;
 
     while index < tokens.len() {
-        if matches!(tokens[index], "root=/dev/ram0" | "rdinit=/init") {
+        if has_non_ram_block_root && matches!(tokens[index], "root=/dev/ram0" | "rdinit=/init") {
             index += 1;
             continue;
         }
