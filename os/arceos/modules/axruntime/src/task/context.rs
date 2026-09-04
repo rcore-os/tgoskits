@@ -689,14 +689,13 @@ pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
             next_context
                 .stage_switch_tail(tail)
                 .unwrap_or_else(|status| panic!("failed to stage runtime switch tail: {status:?}"));
-            // Validate the active scheduler baton exactly once, at the
-            // irreversible active-mm commit. IRQ exclusion keeps that baton
-            // unchanged throughout preparation, so an earlier duplicate
-            // guard-state snapshot would not establish any additional fact.
-            // Once it is transferred, the next operation must enter
-            // current-context publication and the naked switch tail.
-            prepared_address_space.commit(pin);
-            crate::guard::transfer_scheduler_switch_baton();
+            // Validate the active scheduler baton once, before the first
+            // irreversible switch side effect. The resulting move-only token
+            // retains this exact CPU pin through the active-mm commit and is
+            // then consumed by the incoming continuation handoff.
+            let switch_baton = crate::guard::prepare_scheduler_switch_baton(pin);
+            prepared_address_space.commit();
+            switch_baton.transfer();
             // SAFETY: switch_to_prepared consumes the sole publication token
             // immediately after the baton transfer and enters naked assembly
             // without another fallible or ownership-sensitive Rust operation.

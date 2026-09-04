@@ -78,10 +78,10 @@ impl RuntimePreemptState {
         self.scheduler_baton = SchedulerBatonState::Active;
         true
     }
-    pub(super) fn transfer_scheduler_baton(&mut self) {
-        assert!(
+    pub(super) fn commit_prepared_scheduler_baton(&mut self) {
+        debug_assert!(
             self.has_active_scheduler_baton(),
-            "scheduler baton transfer requires the active scheduler frame"
+            "prepared scheduler baton changed before transfer"
         );
         self.scheduler_baton = SchedulerBatonState::Transferred;
     }
@@ -164,12 +164,12 @@ impl RuntimeGuardState {
         );
         self.preempt.finish_scheduler_baton();
     }
-    pub(super) fn transfer_scheduler_preempt(&mut self) {
-        assert!(
+    pub(super) fn commit_prepared_scheduler_preempt(&mut self) {
+        debug_assert!(
             self.irq.is_clear(),
-            "scheduler baton transferred with a live IRQ guard"
+            "prepared scheduler baton gained a live IRQ guard before transfer"
         );
-        self.preempt.transfer_scheduler_baton();
+        self.preempt.commit_prepared_scheduler_baton();
     }
 
     #[cfg(feature = "fs")]

@@ -503,7 +503,8 @@ pub(super) enum AddressSpaceTransitionPhase {
 /// hardware or ownership. Commit is therefore infallible and may be placed
 /// immediately before the naked architecture switch.
 #[must_use = "a prepared address-space switch must be committed with its context switch"]
-pub(super) struct PreparedAddressSpaceSwitch<'switch> {
+pub(super) struct PreparedAddressSpaceSwitch<'pin, 'cpu> {
+    pin: &'pin CpuPin<'cpu>,
     cpu_id: usize,
     phase: AddressSpaceTransitionPhase,
     #[cfg(feature = "uspace")]
@@ -511,29 +512,22 @@ pub(super) struct PreparedAddressSpaceSwitch<'switch> {
     #[cfg(feature = "uspace")]
     previous: Option<&'static RuntimeAddressSpace>,
     action: PreparedAddressSpaceAction,
-    _cpu_scope: PhantomData<&'switch mut ()>,
     _not_send_or_sync: PhantomData<*mut ()>,
 }
 
-impl PreparedAddressSpaceSwitch<'_> {
+impl PreparedAddressSpaceSwitch<'_, '_> {
     /// Commits the active-mm transition without running fallible logic.
     #[inline(always)]
-    pub(super) fn commit(self, pin: &CpuPin<'_>) {
+    pub(super) fn commit(self) {
+        let pin = self.pin;
         match self.phase {
             #[cfg(feature = "uspace")]
             AddressSpaceTransitionPhase::CurrentTask => assert!(
                 !ax_hal::asm::irqs_enabled(),
                 "current-task address-space commit requires local IRQ exclusion"
             ),
-            AddressSpaceTransitionPhase::ContextSwitch => {
-                crate::guard::assert_scheduler_switch_baton();
-            }
+            AddressSpaceTransitionPhase::ContextSwitch => {}
         }
-        assert_eq!(
-            pin.area().cpu_index().as_usize(),
-            self.cpu_id,
-            "prepared address-space switch moved to a different CPU"
-        );
         #[cfg(not(feature = "uspace"))]
         debug_assert_eq!(
             self.phase,
@@ -588,12 +582,12 @@ impl PreparedAddressSpaceSwitch<'_> {
 }
 
 /// Validates and prepares the address-space half of a scheduler switch.
-pub(super) fn prepare_runtime_address_space_switch<'switch>(
-    pin: &'switch CpuPin<'_>,
+pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
+    pin: &'pin CpuPin<'cpu>,
     previous_selected: AddressSpaceHandle,
     next_selected: AddressSpaceHandle,
     phase: AddressSpaceTransitionPhase,
-) -> Result<PreparedAddressSpaceSwitch<'switch>, RuntimeStatus> {
+) -> Result<PreparedAddressSpaceSwitch<'pin, 'cpu>, RuntimeStatus> {
     let cpu_id = pin.area().cpu_index().as_usize();
 
     #[cfg(feature = "uspace")]
@@ -632,12 +626,12 @@ pub(super) fn prepare_runtime_address_space_switch<'switch>(
                 previous.cpu_state.active_mask() & AddressSpaceCpuState::cpu_bit(cpu_id) != 0
             );
             return Ok(PreparedAddressSpaceSwitch {
+                pin,
                 cpu_id,
                 phase,
                 previous_raw,
                 previous: Some(previous),
                 action: PreparedAddressSpaceAction::SameUser,
-                _cpu_scope: PhantomData,
                 _not_send_or_sync: PhantomData,
             });
         }
@@ -694,12 +688,12 @@ pub(super) fn prepare_runtime_address_space_switch<'switch>(
         }
 
         Ok(PreparedAddressSpaceSwitch {
+            pin,
             cpu_id,
             phase,
             previous_raw,
             previous,
             action,
-            _cpu_scope: PhantomData,
             _not_send_or_sync: PhantomData,
         })
     }
@@ -710,10 +704,10 @@ pub(super) fn prepare_runtime_address_space_switch<'switch>(
             return Err(RuntimeStatus::Unsupported);
         }
         Ok(PreparedAddressSpaceSwitch {
+            pin,
             cpu_id,
             phase,
             action: PreparedAddressSpaceAction::KernelLazy,
-            _cpu_scope: PhantomData,
             _not_send_or_sync: PhantomData,
         })
     }
@@ -864,7 +858,7 @@ fn commit_current_task_address_space_transition<T>(
             .map_err(super::runtime_status_error)?;
             let result = action()?;
             // No fallible operation may follow the ownership transition above.
-            prepared.commit(pin);
+            prepared.commit();
             Ok(result)
         })
     }

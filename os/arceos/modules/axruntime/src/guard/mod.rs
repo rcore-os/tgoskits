@@ -555,26 +555,47 @@ fn finish_scheduler_cpu_transaction(needs_reschedule: bool, owner: &'static str)
     });
 }
 
-/// Verifies the fixed CPU-local baton immediately before the raw switch.
-pub(crate) fn assert_scheduler_switch_baton() {
+/// Linear proof that one fixed CPU owns the scheduler baton for a raw switch.
+///
+/// Construction validates the dynamic guard state before any active-mm side
+/// effect. Local IRQ exclusion and the borrowed CPU pin then prevent the
+/// state or CPU identity from changing before the token is consumed.
+#[must_use = "the prepared scheduler baton must be transferred to the switch tail"]
+pub(crate) struct PreparedSchedulerSwitchBaton<'pin, 'cpu> {
+    pin: &'pin cpu_local::CpuPin<'cpu>,
+}
+
+impl PreparedSchedulerSwitchBaton<'_, '_> {
+    /// Commits the already-validated baton to the incoming switch tail.
+    #[inline(always)]
+    pub(crate) fn transfer(self) {
+        // SAFETY: construction validated the scheduler-owned state on this
+        // exact pin. IRQ exclusion prevents migration, re-entry, or another
+        // guard-state mutation until this move-only token is consumed.
+        unsafe {
+            cpu_local::with_exclusive_cpu(self.pin, |exclusive| {
+                RUNTIME_GUARD_STATE.with_current_mut(exclusive, |state| {
+                    state.commit_prepared_scheduler_preempt();
+                });
+            });
+        }
+    }
+}
+
+/// Validates the fixed CPU-local baton before the raw switch becomes visible.
+pub(crate) fn prepare_scheduler_switch_baton<'pin, 'cpu>(
+    pin: &'pin cpu_local::CpuPin<'cpu>,
+) -> PreparedSchedulerSwitchBaton<'pin, 'cpu> {
     assert!(
         !ax_hal::asm::irqs_enabled(),
         "scheduler switch requires local IRQs disabled"
     );
-    let state = read_state();
+    let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
     assert!(
         state.irq.is_clear() && state.preempt.has_active_scheduler_baton(),
         "scheduler switch requires the active CPU-local scheduler baton"
     );
-}
-
-/// Commits the scheduler baton to the raw context-switch continuation.
-pub(crate) fn transfer_scheduler_switch_baton() {
-    assert!(
-        !ax_hal::asm::irqs_enabled(),
-        "scheduler baton transfer requires local IRQs disabled"
-    );
-    with_guard_state_mut(RuntimeGuardState::transfer_scheduler_preempt);
+    PreparedSchedulerSwitchBaton { pin }
 }
 fn in_hard_irq() -> bool {
     ax_hal::irq::in_irq_context()
