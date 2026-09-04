@@ -1,5 +1,4 @@
 use alloc::{
-    collections::BTreeMap,
     string::{String, ToString},
     sync::{Arc, Weak},
     vec::Vec,
@@ -42,126 +41,328 @@ use super::super::objects::{FrameLease, PageId, PageObject};
 /// [`super::super::MappingSlot`] are published together.  Afterwards this
 /// index keeps a `Weak` identity so the last slot remains the only mapping
 /// owner and can release the [`FrameLease`] without consulting global state.
-enum CowPageIndexEntry {
+enum CowPageIndexOwner {
     Pending(Arc<PageObject>),
     Published(Weak<PageObject>),
 }
 
-impl CowPageIndexEntry {
+impl CowPageIndexOwner {
     fn page(&self) -> Option<Arc<PageObject>> {
         match self {
             Self::Pending(page) => Some(page.clone()),
             Self::Published(page) => page.upgrade(),
         }
     }
+
+    fn is_live(&self) -> bool {
+        match self {
+            Self::Pending(_) => true,
+            Self::Published(page) => page.strong_count() != 0,
+        }
+    }
+
+    fn owns(&self, page: &Arc<PageObject>) -> bool {
+        match self {
+            Self::Pending(current) => Arc::ptr_eq(current, page),
+            Self::Published(current) => core::ptr::eq(current.as_ptr(), Arc::as_ptr(page)),
+        }
+    }
+}
+
+struct CowPageIndexEntry {
+    paddr: PhysAddr,
+    size: usize,
+    owner: CowPageIndexOwner,
+}
+
+impl CowPageIndexEntry {
+    fn pending(page: &Arc<PageObject>) -> Self {
+        Self {
+            paddr: page.frame().paddr(),
+            size: page.frame().size(),
+            owner: CowPageIndexOwner::Pending(page.clone()),
+        }
+    }
+
+    fn published(page: &Arc<PageObject>) -> Self {
+        Self {
+            paddr: page.frame().paddr(),
+            size: page.frame().size(),
+            owner: CowPageIndexOwner::Published(Arc::downgrade(page)),
+        }
+    }
+
+    fn end(&self) -> Option<usize> {
+        self.paddr.as_usize().checked_add(self.size)
+    }
+
+    fn contains(&self, paddr: PhysAddr) -> Option<bool> {
+        let address = paddr.as_usize();
+        Some(self.paddr.as_usize() <= address && address < self.end()?)
+    }
+
+    fn is_live(&self) -> bool {
+        self.owner.is_live()
+    }
 }
 
 struct CowPageIndex {
-    pages: BTreeMap<PhysAddr, CowPageIndexEntry>,
+    /// Sorted by frame base. Capacity changes are applied from a reservation
+    /// prepared before taking the IRQ-saving index lock.
+    pages: Vec<CowPageIndexEntry>,
+}
+
+/// Heap storage prepared before entering the COW identity critical section.
+///
+/// When the live vector is full, or contains expired Weak tombstones, apply
+/// swaps this allocation into the index and leaves the displaced allocation
+/// and tombstones here. Dropping the token after the guard is released keeps
+/// both allocator entry and final Weak destruction outside the IRQ lock.
+struct CowPageIndexReservation {
+    replacement: Vec<CowPageIndexEntry>,
+}
+
+enum CowPageIndexInsertError {
+    StaleReservation,
+    Invalid(StarryError),
+}
+
+impl CowPageIndexReservation {
+    fn try_with_capacity(capacity: usize) -> StarryResult<Self> {
+        let mut replacement = Vec::new();
+        if capacity != 0 {
+            replacement
+                .try_reserve_exact(capacity)
+                .map_err(|_| StarryError::NoMemory)?;
+        }
+        Ok(Self { replacement })
+    }
 }
 
 impl CowPageIndex {
     const fn new() -> Self {
-        Self {
-            pages: BTreeMap::new(),
+        Self { pages: Vec::new() }
+    }
+
+    /// Returns the allocation size needed by the next insert. This method only
+    /// observes metadata; the caller must allocate the returned reservation
+    /// after releasing the index lock and revalidate during apply.
+    fn insert_reservation_capacity(&self) -> Result<usize, StarryError> {
+        let live = self.pages.iter().filter(|entry| entry.is_live()).count();
+        let required = live.checked_add(1).ok_or(StarryError::BadState)?;
+        if live == self.pages.len() && self.pages.capacity() >= required {
+            return Ok(0);
         }
+        Ok(required.max(self.pages.capacity().saturating_mul(2).max(4)))
     }
 
-    fn prune_stale(&mut self) {
-        self.pages.retain(|_, entry| entry.page().is_some());
+    fn ensure_published_reservation_capacity(
+        &self,
+        page: &Arc<PageObject>,
+    ) -> Result<usize, StarryError> {
+        let paddr = page.frame().paddr().as_usize();
+        if let Ok(position) = self
+            .pages
+            .binary_search_by_key(&paddr, |entry| entry.paddr.as_usize())
+            && self.pages[position].is_live()
+        {
+            // Either this exact page can be downgraded in place, or a live
+            // conflicting owner will be rejected without needing storage.
+            return Ok(0);
+        }
+        self.insert_reservation_capacity()
     }
 
-    fn insert_entry(
+    fn rebuild_for_insert(
+        &mut self,
+        reservation: &mut CowPageIndexReservation,
+    ) -> Result<(), CowPageIndexInsertError> {
+        let live = self.pages.iter().filter(|entry| entry.is_live()).count();
+        let required = live.checked_add(1).ok_or_else(|| {
+            CowPageIndexInsertError::Invalid(StarryError::BadState)
+        })?;
+        if live == self.pages.len() && self.pages.capacity() >= required {
+            return Ok(());
+        }
+        if !reservation.replacement.is_empty()
+            || reservation.replacement.capacity() < required
+        {
+            return Err(CowPageIndexInsertError::StaleReservation);
+        }
+
+        core::mem::swap(&mut self.pages, &mut reservation.replacement);
+        let mut index = 0;
+        while index < reservation.replacement.len() {
+            if reservation.replacement[index].is_live() {
+                let entry = reservation.replacement.swap_remove(index);
+                self.pages.push(entry);
+            } else {
+                index += 1;
+            }
+        }
+        self.pages
+            .sort_unstable_by_key(|entry| entry.paddr.as_usize());
+        Ok(())
+    }
+
+    fn insert_pending_reserved(
         &mut self,
         page: &Arc<PageObject>,
-        entry: CowPageIndexEntry,
-    ) -> StarryResult {
-        self.prune_stale();
+        reservation: &mut CowPageIndexReservation,
+    ) -> Result<(), CowPageIndexInsertError> {
+        if page.mapping_refs() != 0 {
+            return Err(CowPageIndexInsertError::Invalid(StarryError::BadState));
+        }
         let paddr = page.frame().paddr();
         if page.frame().size() == 0 {
-            return Err(StarryError::BadState);
+            return Err(CowPageIndexInsertError::Invalid(StarryError::BadState));
         }
         let start = paddr.as_usize();
         let end = start
             .checked_add(page.frame().size())
-            .ok_or(StarryError::BadState)?;
-        let overlaps = |existing: &CowPageIndexEntry| -> Option<bool> {
-            let existing = existing.page()?;
-            let existing_start = existing.frame().paddr().as_usize();
-            let existing_end = existing_start.checked_add(existing.frame().size())?;
-            Some(start < existing_end && existing_start < end)
-        };
-        if self
+            .ok_or_else(|| CowPageIndexInsertError::Invalid(StarryError::BadState))?;
+
+        self.rebuild_for_insert(reservation)?;
+        let position = self
             .pages
-            .range(..=paddr)
-            .next_back()
-            .is_some_and(|(_, existing)| overlaps(existing) != Some(false))
-            || self
-                .pages
-                .range(paddr..)
-                .next()
-                .is_some_and(|(_, existing)| overlaps(existing) != Some(false))
-        {
-            return Err(StarryError::BadState);
+            .partition_point(|entry| entry.paddr.as_usize() < start);
+        let predecessor_overlaps = if position == 0 {
+            false
+        } else {
+            self.pages[position - 1]
+                .end()
+                .is_none_or(|existing_end| start < existing_end)
+        };
+        let successor_overlaps = self
+            .pages
+            .get(position)
+            .is_some_and(|entry| entry.paddr.as_usize() < end);
+        if predecessor_overlaps || successor_overlaps {
+            return Err(CowPageIndexInsertError::Invalid(StarryError::BadState));
         }
-        self.pages.insert(paddr, entry);
+
+        // `rebuild_for_insert` proved spare capacity, so this shifts entries
+        // but cannot allocate while the IRQ-saving guard is held.
+        self.pages
+            .insert(position, CowPageIndexEntry::pending(page));
         Ok(())
     }
 
-    fn insert_pending(&mut self, page: Arc<PageObject>) -> StarryResult {
-        if page.mapping_refs() != 0 {
-            return Err(StarryError::BadState);
-        }
-        self.insert_entry(&page.clone(), CowPageIndexEntry::Pending(page))
-    }
-
-    fn get(&mut self, paddr: PhysAddr) -> Option<Arc<PageObject>> {
-        self.prune_stale();
-        let (_, entry) = self.pages.range(..=paddr).next_back()?;
-        let page = entry.page()?;
-        let offset = paddr
-            .as_usize()
-            .checked_sub(page.frame().paddr().as_usize())?;
-        (offset < page.frame().size()).then_some(page)
-    }
-
-    fn publish(&mut self, page: &Arc<PageObject>) -> StarryResult {
+    fn ensure_published_reserved(
+        &mut self,
+        page: &Arc<PageObject>,
+        reservation: &mut CowPageIndexReservation,
+    ) -> Result<Option<CowPageIndexOwner>, CowPageIndexInsertError> {
         let paddr = page.frame().paddr();
-        let current = self.get(paddr).ok_or(StarryError::BadState)?;
-        if !Arc::ptr_eq(&current, page) || page.mapping_refs() == 0 {
-            return Err(StarryError::BadState);
+        if let Ok(position) = self
+            .pages
+            .binary_search_by_key(&paddr.as_usize(), |entry| entry.paddr.as_usize())
+            && self.pages[position].is_live()
+        {
+            let entry = &mut self.pages[position];
+            if !entry.owner.owns(page) {
+                return Err(CowPageIndexInsertError::Invalid(StarryError::BadState));
+            }
+            return Ok(Some(core::mem::replace(
+                &mut entry.owner,
+                CowPageIndexOwner::Published(Arc::downgrade(page)),
+            )));
+        }
+
+        if page.frame().size() == 0 {
+            return Err(CowPageIndexInsertError::Invalid(StarryError::BadState));
+        }
+        let start = paddr.as_usize();
+        let end = start
+            .checked_add(page.frame().size())
+            .ok_or_else(|| CowPageIndexInsertError::Invalid(StarryError::BadState))?;
+        self.rebuild_for_insert(reservation)?;
+        let position = self
+            .pages
+            .partition_point(|entry| entry.paddr.as_usize() < start);
+        let predecessor_overlaps = if position == 0 {
+            false
+        } else {
+            self.pages[position - 1]
+                .end()
+                .is_none_or(|existing_end| start < existing_end)
+        };
+        let successor_overlaps = self
+            .pages
+            .get(position)
+            .is_some_and(|entry| entry.paddr.as_usize() < end);
+        if predecessor_overlaps || successor_overlaps {
+            return Err(CowPageIndexInsertError::Invalid(StarryError::BadState));
         }
         self.pages
-            .insert(paddr, CowPageIndexEntry::Published(Arc::downgrade(page)));
-        Ok(())
+            .insert(position, CowPageIndexEntry::published(page));
+        Ok(None)
     }
 
-    fn ensure_published(&mut self, page: &Arc<PageObject>) -> StarryResult {
-        let paddr = page.frame().paddr();
-        if let Some(current) = self.get(paddr) {
-            if !Arc::ptr_eq(&current, page) {
-                return Err(StarryError::BadState);
-            }
-            self.pages
-                .insert(paddr, CowPageIndexEntry::Published(Arc::downgrade(page)));
-            return Ok(());
+    /// Resolves an identity without pruning expired Weak entries.
+    ///
+    /// Some lookup callers still hold a PTE stripe. Retiring a tombstone here
+    /// could therefore deallocate the last Arc control block below that lock.
+    /// The next insertion rebuilds the index from preallocated storage and
+    /// carries all expired entries out of the critical path instead.
+    fn get(&self, paddr: PhysAddr) -> Option<Arc<PageObject>> {
+        let address = paddr.as_usize();
+        let position = self
+            .pages
+            .partition_point(|entry| entry.paddr.as_usize() <= address)
+            .checked_sub(1)?;
+        let entry = self.pages.get(position)?;
+        if entry.contains(paddr)? {
+            entry.owner.page()
+        } else {
+            None
         }
-        self.insert_entry(page, CowPageIndexEntry::Published(Arc::downgrade(page)))
     }
 
-    fn discard_pending(&mut self, page: &Arc<PageObject>) -> StarryResult {
+    fn publish(&mut self, page: &Arc<PageObject>) -> StarryResult<CowPageIndexOwner> {
         let paddr = page.frame().paddr();
-        let Some(entry) = self.pages.get(&paddr) else {
+        let position = self
+            .pages
+            .binary_search_by_key(&paddr.as_usize(), |entry| entry.paddr.as_usize())
+            .map_err(|_| StarryError::BadState)?;
+        let entry = &mut self.pages[position];
+        if !entry.owner.owns(page) || page.mapping_refs() == 0 {
             return Err(StarryError::BadState);
-        };
-        if !matches!(entry, CowPageIndexEntry::Pending(current) if Arc::ptr_eq(current, page))
+        }
+        Ok(core::mem::replace(
+            &mut entry.owner,
+            CowPageIndexOwner::Published(Arc::downgrade(page)),
+        ))
+    }
+
+    fn discard_pending(&mut self, page: &Arc<PageObject>) -> StarryResult<CowPageIndexEntry> {
+        let paddr = page.frame().paddr();
+        let position = self
+            .pages
+            .binary_search_by_key(&paddr.as_usize(), |entry| entry.paddr.as_usize())
+            .map_err(|_| StarryError::BadState)?;
+        let entry = &self.pages[position];
+        if !matches!(&entry.owner, CowPageIndexOwner::Pending(current) if Arc::ptr_eq(current, page))
             || page.mapping_refs() != 0
         {
             return Err(StarryError::BadState);
         }
-        self.pages.remove(&paddr);
-        Ok(())
+        Ok(self.pages.remove(position))
     }
+
+    #[cfg(all(test, axtest))]
+    fn insert_pending_for_test(&mut self, page: &Arc<PageObject>) -> StarryResult {
+        let capacity = self.insert_reservation_capacity()?;
+        let mut reservation = CowPageIndexReservation::try_with_capacity(capacity)?;
+        let result = match self.insert_pending_reserved(page, &mut reservation) {
+            Ok(()) => Ok(()),
+            Err(CowPageIndexInsertError::StaleReservation) => Err(StarryError::BadState),
+            Err(CowPageIndexInsertError::Invalid(error)) => Err(error),
+        };
+        drop(reservation);
+        result
+    }
+
 }
 
 #[cfg(all(test, axtest))]
@@ -177,16 +378,92 @@ fn cow_page_index_rejects_overlapping_frame_owners_for_test() -> bool {
     let whole = PageObject::new_present(PageId::new(0x100), whole_lease);
     let conflicting = PageObject::new_present(PageId::new(0x101), overlap_lease);
     let mut index = CowPageIndex::new();
-    if index.insert_pending(whole.clone()).is_err() {
+    if index.insert_pending_for_test(&whole).is_err() {
         return false;
     }
 
     matches!(
-        index.insert_pending(conflicting),
+        index.insert_pending_for_test(&conflicting),
         Err(StarryError::BadState)
     ) && index
         .get(overlap)
         .is_some_and(|resolved| Arc::ptr_eq(&resolved, &whole))
+}
+
+#[cfg(all(test, axtest))]
+fn cow_page_index_moves_expired_weak_storage_to_reservation_for_test() -> bool {
+    let Some(first_lease) = FrameLease::borrowed(
+        PhysAddr::from_usize(0x50_0000),
+        PAGE_SIZE_4K,
+        None,
+    ) else {
+        return false;
+    };
+    let Some(second_lease) = FrameLease::borrowed(
+        PhysAddr::from_usize(0x60_0000),
+        PAGE_SIZE_4K,
+        None,
+    ) else {
+        return false;
+    };
+    let first = PageObject::new_present(PageId::new(0x102), first_lease);
+    let second = PageObject::new_present(PageId::new(0x103), second_lease);
+    let mut index = CowPageIndex::new();
+    if index.insert_pending_for_test(&first).is_err() {
+        return false;
+    }
+    index.pages[0].owner = CowPageIndexOwner::Published(Arc::downgrade(&first));
+    drop(first);
+
+    let Ok(capacity) = index.insert_reservation_capacity() else {
+        return false;
+    };
+    let Ok(mut reservation) = CowPageIndexReservation::try_with_capacity(capacity) else {
+        return false;
+    };
+    if index
+        .insert_pending_reserved(&second, &mut reservation)
+        .is_err()
+    {
+        return false;
+    }
+    let retired_outside_index = reservation.replacement.len() == 1
+        && !reservation.replacement[0].is_live()
+        && index.pages.len() == 1
+        && index
+            .get(second.frame().paddr())
+            .is_some_and(|page| Arc::ptr_eq(&page, &second));
+    drop(reservation);
+    retired_outside_index
+}
+
+#[cfg(all(test, axtest))]
+fn cow_page_index_restores_missing_published_identity_for_test() -> bool {
+    let Some(lease) = FrameLease::borrowed(
+        PhysAddr::from_usize(0x70_0000),
+        PAGE_SIZE_4K,
+        None,
+    ) else {
+        return false;
+    };
+    let page = PageObject::new_present(PageId::new(0x104), lease);
+    let mut index = CowPageIndex::new();
+    let Ok(capacity) = index.ensure_published_reservation_capacity(&page) else {
+        return false;
+    };
+    let Ok(mut reservation) = CowPageIndexReservation::try_with_capacity(capacity) else {
+        return false;
+    };
+    if !matches!(
+        index.ensure_published_reserved(&page, &mut reservation),
+        Ok(None)
+    ) {
+        return false;
+    }
+    drop(reservation);
+    index
+        .get(page.frame().paddr())
+        .is_some_and(|restored| Arc::ptr_eq(&restored, &page))
 }
 
 fn cow_file_max_read_len(
@@ -277,11 +554,38 @@ impl CowBackend {
     }
 
     pub(crate) fn publish_page_object(&self, page: &Arc<PageObject>) -> StarryResult {
-        self.pages.lock().publish(page)
+        let displaced = {
+            let mut pages = self.pages.lock();
+            pages.publish(page)?
+        };
+        drop(displaced);
+        Ok(())
     }
 
     pub(crate) fn restore_page_identity(&self, page: &Arc<PageObject>) -> StarryResult {
-        self.pages.lock().ensure_published(page)
+        loop {
+            let capacity = {
+                let pages = self.pages.lock();
+                pages.ensure_published_reservation_capacity(page)?
+            };
+            let mut reservation = CowPageIndexReservation::try_with_capacity(capacity)?;
+            let result = {
+                let mut pages = self.pages.lock();
+                pages.ensure_published_reserved(page, &mut reservation)
+            };
+            // A missing identity may replace the Vec and expired Weak owners;
+            // an existing identity returns its displaced strong/weak owner.
+            // Release both only after the IRQ-saving index guard is gone.
+            drop(reservation);
+            match result {
+                Ok(displaced) => {
+                    drop(displaced);
+                    return Ok(());
+                }
+                Err(CowPageIndexInsertError::StaleReservation) => continue,
+                Err(CowPageIndexInsertError::Invalid(error)) => return Err(error),
+            }
+        }
     }
 
     pub fn is_anonymous(&self) -> bool {
@@ -378,7 +682,7 @@ impl CowBackend {
     }
 
     fn discard_pending_page(&self, page: &Arc<PageObject>) {
-        if let Err(error) = self.pages.lock().discard_pending(page) {
+        if let Err(error) = self.discard_pending_index_entry(page) {
             warn!(
                 "failed to discard pending COW page {:?}: {error}",
                 page.frame().paddr()
@@ -387,7 +691,39 @@ impl CowBackend {
     }
 
     pub(super) fn cancel_page_publication(&self, page: &Arc<PageObject>) -> StarryResult {
-        self.pages.lock().discard_pending(page)
+        self.discard_pending_index_entry(page)
+    }
+
+    fn discard_pending_index_entry(&self, page: &Arc<PageObject>) -> StarryResult {
+        let retired = {
+            let mut pages = self.pages.lock();
+            pages.discard_pending(page)?
+        };
+        drop(retired);
+        Ok(())
+    }
+
+    fn insert_pending_page(&self, page: &Arc<PageObject>) -> StarryResult {
+        loop {
+            let capacity = {
+                let pages = self.pages.lock();
+                pages.insert_reservation_capacity()?
+            };
+            let mut reservation = CowPageIndexReservation::try_with_capacity(capacity)?;
+            let result = {
+                let mut pages = self.pages.lock();
+                pages.insert_pending_reserved(page, &mut reservation)
+            };
+            // This owns both replaced Vec storage and expired Weak entries.
+            // Neither is allowed to reach its allocator destructor under the
+            // IRQ-saving index guard.
+            drop(reservation);
+            match result {
+                Ok(()) => return Ok(()),
+                Err(CowPageIndexInsertError::StaleReservation) => continue,
+                Err(CowPageIndexInsertError::Invalid(error)) => return Err(error),
+            }
+        }
     }
 
     fn alloc_new_frame(
@@ -417,7 +753,7 @@ impl CowBackend {
         // is prepared. The returned typed materialization publishes the slot
         // before downgrading this entry to Weak, so there is no second mapping
         // owner.
-        self.pages.lock().insert_pending(page.clone())?;
+        self.insert_pending_page(&page)?;
         Ok(page)
     }
 
@@ -798,7 +1134,7 @@ impl CowBackend {
             // This was an unpublished PTE whose Pending index entry was the
             // only strong owner. Published pages remain weakly indexed and are
             // retired by MappingSlot::detach.
-            let _ = self.pages.lock().discard_pending(&page);
+            let _ = self.discard_pending_index_entry(&page);
         }
         Ok(())
     }
@@ -3148,6 +3484,18 @@ mod tests {
     #[axtest::axtest]
     fn cow_page_index_rejects_overlapping_frame_owners() {
         assert!(super::cow_page_index_rejects_overlapping_frame_owners_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn cow_page_index_retires_expired_weak_storage_outside_the_lock() {
+        assert!(super::cow_page_index_moves_expired_weak_storage_to_reservation_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn cow_page_index_can_restore_a_missing_preimage_identity() {
+        assert!(super::cow_page_index_restores_missing_published_identity_for_test());
     }
 
     #[cfg(all(test, axtest))]

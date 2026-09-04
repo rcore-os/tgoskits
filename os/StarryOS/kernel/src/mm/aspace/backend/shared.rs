@@ -26,6 +26,32 @@ fn has_pte_access(flags: MappingFlags) -> bool {
     flags.intersects(MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE)
 }
 
+/// Result of publishing an already-allocated shared-page candidate.
+///
+/// The loser is deliberately returned to the caller instead of being dropped
+/// while the shared-object lock is held. `Arc::clone` itself is allocation-free,
+/// so the publication critical section cannot enter the frame allocator.
+struct SharedPageSelection<T> {
+    winner: Arc<T>,
+    loser: Option<Arc<T>>,
+}
+
+fn select_shared_page<T>(slot: &mut Option<Arc<T>>, candidate: Arc<T>) -> SharedPageSelection<T> {
+    match slot {
+        Some(current) => SharedPageSelection {
+            winner: current.clone(),
+            loser: Some(candidate),
+        },
+        None => {
+            *slot = Some(candidate.clone());
+            SharedPageSelection {
+                winner: candidate,
+                loser: None,
+            }
+        }
+    }
+}
+
 /// Stable backing object for anonymous shared memory and imported page sets.
 ///
 /// The object owns PageObjects, while each installed PTE is owned exclusively
@@ -117,6 +143,24 @@ impl SharedMemoryObject {
         self.pages.lock().get(index)?.clone()
     }
 
+    fn publish_fault_candidate(
+        &self,
+        index: usize,
+        candidate: Arc<PageObject>,
+    ) -> StarryResult<Arc<PageObject>> {
+        let selected = {
+            let mut pages = self.pages.lock();
+            let slot = pages.get_mut(index).ok_or(crate::StarryError::BadState)?;
+            select_shared_page(slot, candidate)
+        };
+        let SharedPageSelection { winner, loser } = selected;
+        // A racing candidate owns a FrameLease. Release it only after the
+        // IRQ-saving object lock is gone so allocator reclaim cannot re-enter
+        // this shared page index.
+        drop(loser);
+        Ok(winner)
+    }
+
     /// Obtains the unique PageObject for one shared-object page. Anonymous
     /// allocation happens outside the object lock, then uses a second locked
     /// check to publish exactly one winner. This is the Rust ownership analogue
@@ -136,14 +180,65 @@ impl SharedMemoryObject {
             FrameLease::owned(frame, self.page_size),
             Some(RssKind::Shmem),
         );
-        let mut pages = self.pages.lock();
-        let slot = pages.get_mut(index).ok_or(crate::StarryError::BadState)?;
-        Ok(slot.get_or_insert(candidate).clone())
+        self.publish_fault_candidate(index, candidate)
     }
 
     fn materializes_on_map(&self) -> bool {
         self.provider == SharedPageProvider::External
     }
+}
+
+#[cfg(all(test, axtest))]
+fn shared_fault_defers_loser_drop_for_test() -> bool {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    struct LockProbe {
+        object: Arc<SharedMemoryObject>,
+        dropped_after_unlock: Arc<AtomicBool>,
+    }
+
+    impl Drop for LockProbe {
+        fn drop(&mut self) {
+            self.dropped_after_unlock.store(
+                self.object.pages.try_lock().is_some(),
+                Ordering::Release,
+            );
+        }
+    }
+
+    let Ok(object) = SharedMemoryObject::allocate(PAGE_SIZE_4K, PAGE_SIZE_4K).map(Arc::new) else {
+        return false;
+    };
+    let Some(winner_lease) = FrameLease::borrowed(
+        PhysAddr::from_usize(0x90_0000),
+        PAGE_SIZE_4K,
+        None,
+    ) else {
+        return false;
+    };
+    let winner = PageObject::new_present(PageId::new(0x200), winner_lease);
+    let Ok(published) = object.publish_fault_candidate(0, winner.clone()) else {
+        return false;
+    };
+    drop(published);
+
+    let dropped_after_unlock = Arc::new(AtomicBool::new(false));
+    let anchor: Arc<dyn Any + Send + Sync> = Arc::new(LockProbe {
+        object: object.clone(),
+        dropped_after_unlock: dropped_after_unlock.clone(),
+    });
+    let Some(loser_lease) = FrameLease::borrowed(
+        PhysAddr::from_usize(0x91_0000),
+        PAGE_SIZE_4K,
+        Some(anchor),
+    ) else {
+        return false;
+    };
+    let loser = PageObject::new_present(PageId::new(0x201), loser_lease);
+    let Ok(selected) = object.publish_fault_candidate(0, loser) else {
+        return false;
+    };
+    Arc::ptr_eq(&selected, &winner) && dropped_after_unlock.load(Ordering::Acquire)
 }
 
 #[derive(Clone)]
@@ -910,5 +1005,11 @@ mod tests {
     #[axtest::axtest]
     fn shared_prot_none_mapping_materializes_only_after_access() {
         assert!(super::shared_prot_none_mapping_materializes_only_after_access_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn shared_fault_releases_the_racing_candidate_after_publication() {
+        assert!(super::shared_fault_defers_loser_drop_for_test());
     }
 }

@@ -12,7 +12,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    ops::Deref,
+    ops::{Bound::Excluded, Bound::Unbounded, Deref},
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -508,6 +508,30 @@ impl MmInner {
 /// only one `Weak`, and removed values are destroyed after releasing the lock.
 type MmRegistry = BTreeMap<AddressSpaceId, Weak<MmInner>>;
 static MM_REGISTRY: Mutex<MmRegistry> = Mutex::new(BTreeMap::new());
+static LAZY_FREE_SCAN_CURSOR: AtomicU64 = AtomicU64::new(0);
+
+fn next_registry_id_after<V>(
+    registry: &BTreeMap<AddressSpaceId, V>,
+    after: AddressSpaceId,
+) -> Option<AddressSpaceId> {
+    registry
+        .range((Excluded(after), Unbounded))
+        .next()
+        .or_else(|| registry.first_key_value())
+        .map(|(&id, _)| id)
+}
+
+/// Selects and retains at most one registry entry while holding the identity
+/// lock. The caller must still acquire an `MmPin` before entering the address
+/// space. The returned Arc is released after all MM work, never from the
+/// registry critical section.
+fn next_registered_mm_after(
+    after: AddressSpaceId,
+) -> Option<(AddressSpaceId, Option<Arc<MmInner>>)> {
+    let registry = MM_REGISTRY.lock();
+    let id = next_registry_id_after(&registry, after)?;
+    Some((id, registry.get(&id).and_then(Weak::upgrade)))
+}
 
 fn registered_mm(id: AddressSpaceId) -> Option<Weak<MmInner>> {
     MM_REGISTRY.lock().get(&id).cloned()
@@ -1098,6 +1122,8 @@ impl CoalescedReclaimRequest {
 }
 
 static LAZY_FREE_RECLAIM: CoalescedReclaimRequest = CoalescedReclaimRequest::new();
+#[cfg(test)]
+static LAZY_FREE_RECLAIM_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Coalesces `MADV_FREE` publications into one sleepable worker pass.
 ///
@@ -1106,7 +1132,14 @@ static LAZY_FREE_RECLAIM: CoalescedReclaimRequest = CoalescedReclaimRequest::new
 /// Starry's current reclaim engine has no anonymous LRU yet, so this bit is the
 /// allocation-free publication edge between the VMA transaction and worker.
 pub(super) fn request_lazy_free_reclaim() {
+    #[cfg(test)]
+    LAZY_FREE_RECLAIM_REQUESTS.fetch_add(1, Ordering::Relaxed);
     LAZY_FREE_RECLAIM.request();
+}
+
+#[cfg(test)]
+pub(super) fn lazy_free_reclaim_request_count_for_test() -> usize {
+    LAZY_FREE_RECLAIM_REQUESTS.load(Ordering::Relaxed)
 }
 
 fn queue_if_retired(inner: &Arc<MmInner>) {
@@ -1215,31 +1248,29 @@ pub fn reclaim_live_lazy_free_pages(limit: usize) -> usize {
     if limit == 0 {
         return 0;
     }
-    let mut inners = Vec::new();
-    let count = {
+    let visit_limit = {
         let registry = MM_REGISTRY.lock();
         registry.len()
     };
-    if inners.try_reserve_exact(count).is_err() {
-        return 0;
-    }
-    {
-        let registry = MM_REGISTRY.lock();
-        for weak in registry.values() {
-            if inners.len() == inners.capacity() {
-                break;
-            }
-            if let Some(inner) = weak.upgrade() {
-                inners.push(inner);
-            }
-        }
-    }
-
     let mut reclaimed = 0;
-    for inner in inners {
-        if reclaimed >= limit {
+    let mut visited = 0;
+    let mut first_visited = None;
+    while visited < visit_limit && reclaimed < limit {
+        let after = AddressSpaceId(LAZY_FREE_SCAN_CURSOR.load(Ordering::Acquire));
+        let Some((id, inner)) = next_registered_mm_after(after) else {
+            break;
+        };
+        if first_visited == Some(id) {
             break;
         }
+        if first_visited.is_none() {
+            first_visited = Some(id);
+        }
+        LAZY_FREE_SCAN_CURSOR.store(id.get(), Ordering::Release);
+        visited += 1;
+        let Some(inner) = inner else {
+            continue;
+        };
         let Ok(pin) = MmInner::try_pin(&inner) else {
             continue;
         };
@@ -1465,6 +1496,19 @@ mod tests {
         );
         assert_eq!(scans, 2);
         assert_eq!(request.run_one_batch(16, |_| unreachable!()), 0);
+    }
+
+    #[axtest::axtest]
+    fn lazy_free_registry_cursor_wraps_without_favoring_the_first_mm() {
+        let mut registry = BTreeMap::new();
+        registry.insert(AddressSpaceId(2), ());
+        registry.insert(AddressSpaceId(5), ());
+        registry.insert(AddressSpaceId(9), ());
+
+        assert_eq!(next_registry_id_after(&registry, AddressSpaceId(0)), Some(AddressSpaceId(2)));
+        assert_eq!(next_registry_id_after(&registry, AddressSpaceId(2)), Some(AddressSpaceId(5)));
+        assert_eq!(next_registry_id_after(&registry, AddressSpaceId(5)), Some(AddressSpaceId(9)));
+        assert_eq!(next_registry_id_after(&registry, AddressSpaceId(9)), Some(AddressSpaceId(2)));
     }
 
     #[axtest::axtest]

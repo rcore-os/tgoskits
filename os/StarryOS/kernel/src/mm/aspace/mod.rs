@@ -4357,31 +4357,32 @@ impl AddrSpace {
         if limit == 0 {
             return Ok(0);
         }
-        let mut candidates = Vec::new();
-        candidates
-            .try_reserve(limit.min(self.mapping_slots.len()))
-            .map_err(|_| StarryError::NoMemory)?;
-        for (key, slot) in &self.mapping_slots {
-            if candidates.len() >= limit {
+        let mut reclaimed = 0;
+        let mut cursor = None;
+        while reclaimed < limit {
+            let eligible = |(key, slot): (&MappingSlotKey, &Arc<MappingSlot>)| {
+                (slot.page_order == PageOrder::BASE
+                    && slot.page.state() == PageState::LazyFree
+                    && slot.page.mapping_refs() == 1)
+                    .then(|| (*key, slot.page.clone()))
+            };
+            let candidate = if let Some(after) = cursor {
+                self.mapping_slots
+                    .range((core::ops::Bound::Excluded(after), core::ops::Bound::Unbounded))
+                    .find_map(eligible)
+            } else {
+                self.mapping_slots.iter().find_map(eligible)
+            };
+            let Some((key, page)) = candidate else {
                 break;
-            }
-            if slot.page_order != PageOrder::BASE
-                || slot.page.state() != PageState::LazyFree
-                || slot.page.mapping_refs() != 1
-            {
-                continue;
-            }
+            };
+            cursor = Some(key);
             let Some(entry) = self.vma_root.lookup_entry(key.va) else {
                 return Err(StarryError::BadState);
             };
             if !entry.operation().is_private_anonymous() {
                 return Err(StarryError::BadState);
             }
-            candidates.push((*key, slot.page.clone()));
-        }
-
-        let mut reclaimed = 0;
-        for (key, page) in candidates {
             let still_reclaimable = self.mapping_slots.get(&key).is_some_and(|slot| {
                 Arc::ptr_eq(&slot.page, &page)
                     && page.state() == PageState::LazyFree

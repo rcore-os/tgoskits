@@ -512,7 +512,7 @@ impl PageObject {
         let Ok(mut reservation) = self.rmap.prepare_replace(0) else {
             return false;
         };
-        let detached = {
+        let (detached, became_exclusive) = {
             let _graph = self.mapping_graph.lock();
             let current = self.mapping_refs.load(Ordering::Acquire);
             let Some(next) = current.checked_sub(1) else {
@@ -523,13 +523,20 @@ impl PageObject {
                 .replace_reserved(&[key], &[], &mut reservation)
                 .is_err()
             {
-                false
+                (false, false)
             } else {
                 self.mapping_refs.store(next, Ordering::Release);
-                true
+                (true, current > 1 && next == 1)
             }
         };
         drop(reservation);
+        if became_exclusive && self.state() == PageState::LazyFree {
+            // A fork-shared lazy-free page was ineligible during the original
+            // MADV_FREE pass. Its last foreign mapping disappearing is a new
+            // reclaimability edge, analogous to Linux putting a newly eligible
+            // lazy-free folio back on reclaimable LRU state.
+            super::lifecycle::request_lazy_free_reclaim();
+        }
         detached
     }
 
@@ -548,26 +555,32 @@ impl PageObject {
         new: &[MappingSlotKey],
         reservation: &mut MappingGraphReservation,
     ) -> Result<(), MappingGraphError> {
-        let _graph = self.mapping_graph.lock();
-        if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
-            return Err(MappingGraphError::PageNotPresent);
-        }
-        let current = self.mapping_refs.load(Ordering::Acquire);
-        let next = if new.len() >= old.len() {
-            let additional = u32::try_from(new.len() - old.len())
-                .map_err(|_| MappingGraphError::RefOverflow)?;
-            current
-                .checked_add(additional)
-                .ok_or(MappingGraphError::RefOverflow)?
-        } else {
-            let removed = u32::try_from(old.len() - new.len())
-                .map_err(|_| MappingGraphError::RefUnderflow)?;
-            current
-                .checked_sub(removed)
-                .ok_or(MappingGraphError::RefUnderflow)?
+        let became_exclusive = {
+            let _graph = self.mapping_graph.lock();
+            if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
+                return Err(MappingGraphError::PageNotPresent);
+            }
+            let current = self.mapping_refs.load(Ordering::Acquire);
+            let next = if new.len() >= old.len() {
+                let additional = u32::try_from(new.len() - old.len())
+                    .map_err(|_| MappingGraphError::RefOverflow)?;
+                current
+                    .checked_add(additional)
+                    .ok_or(MappingGraphError::RefOverflow)?
+            } else {
+                let removed = u32::try_from(old.len() - new.len())
+                    .map_err(|_| MappingGraphError::RefUnderflow)?;
+                current
+                    .checked_sub(removed)
+                    .ok_or(MappingGraphError::RefUnderflow)?
+            };
+            self.rmap.replace_reserved(old, new, reservation)?;
+            self.mapping_refs.store(next, Ordering::Release);
+            current > 1 && next == 1
         };
-        self.rmap.replace_reserved(old, new, reservation)?;
-        self.mapping_refs.store(next, Ordering::Release);
+        if became_exclusive && self.state() == PageState::LazyFree {
+            super::lifecycle::request_lazy_free_reclaim();
+        }
         Ok(())
     }
 
@@ -1167,6 +1180,88 @@ mod tests {
         assert_eq!(page.rmap.snapshot().len(), 1);
         assert!(slot_b.detach());
         assert!(page.rmap.is_empty());
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn lazy_free_page_requeues_when_a_shared_mapping_becomes_exclusive() {
+        let page = PageObject::new_present(
+            PageId::new(5),
+            FrameLease::new(PhysAddr::from_usize(0xa000)),
+        );
+        let mapping = MappingId::new(5);
+        let parent = MappingSlot::new(
+            mapping,
+            AddressSpaceId::allocate(),
+            VirtAddr::from_usize(0xa000),
+            PageOrder::BASE,
+            page.clone(),
+            Some(RssKind::Anon),
+        );
+        let child = MappingSlot::new(
+            mapping,
+            AddressSpaceId::allocate(),
+            VirtAddr::from_usize(0xb000),
+            PageOrder::BASE,
+            page.clone(),
+            Some(RssKind::Anon),
+        );
+        assert!(parent.publish());
+        assert!(child.publish());
+        assert!(page.mark_lazy_free());
+        assert_eq!(page.mapping_refs(), 2);
+
+        let requests = super::super::lifecycle::lazy_free_reclaim_request_count_for_test();
+        assert!(child.detach());
+        assert_eq!(page.mapping_refs(), 1);
+        assert!(
+            super::super::lifecycle::lazy_free_reclaim_request_count_for_test() > requests,
+            "the 2 -> 1 mapping transition must publish a new reclaim edge"
+        );
+        assert!(parent.detach());
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn lazy_free_page_requeues_after_a_batch_graph_replacement() {
+        let page = PageObject::new_present(
+            PageId::new(6),
+            FrameLease::new(PhysAddr::from_usize(0xc000)),
+        );
+        let first = MappingSlotKey {
+            space_id: AddressSpaceId::allocate(),
+            va: VirtAddr::from_usize(0xc000),
+        };
+        let second = MappingSlotKey {
+            space_id: AddressSpaceId::allocate(),
+            va: VirtAddr::from_usize(0xd000),
+        };
+        let replacement = MappingSlotKey {
+            space_id: first.space_id,
+            va: VirtAddr::from_usize(0xe000),
+        };
+        page.replace_mapping_graph(&[], &[first, second]).unwrap();
+        assert!(page.mark_lazy_free());
+        assert_eq!(page.mapping_refs(), 2);
+
+        let requests = super::super::lifecycle::lazy_free_reclaim_request_count_for_test();
+        let mut reservation = page
+            .prepare_mapping_graph_replace(&[first, second], &[replacement])
+            .unwrap();
+        page.replace_mapping_graph_reserved(
+            &[first, second],
+            &[replacement],
+            &mut reservation,
+        )
+        .unwrap();
+        drop(reservation);
+
+        assert_eq!(page.mapping_refs(), 1);
+        assert!(
+            super::super::lifecycle::lazy_free_reclaim_request_count_for_test() > requests,
+            "a batch graph replacement ending at one mapping must publish a reclaim edge"
+        );
+        page.replace_mapping_graph(&[replacement], &[]).unwrap();
     }
 
     #[test]
