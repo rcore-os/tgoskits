@@ -8,8 +8,10 @@ args = [
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
 ]
-uefi = false
-to_bin = false
+# StarryOS is a PIE image without the Xen PVH ELF note required by QEMU's
+# direct `-kernel` ELF loader.  Use the existing x86_64 UEFI handoff instead.
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "sh /usr/bin/run-llvm22.sh"
 success_regex = ['(?m)^LLVM22_OK=874/874\s*$', '(?m)^TEST PASSED\s*$']
