@@ -115,13 +115,18 @@ const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
 const PERF_RECORD_MISC_USER: u16 = 2;
 
-/// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header plus at
-/// most nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
-/// STREAM_ID, CPU(cpu+res), PERIOD). [`build_sample`] writes into a stack buffer
-/// of this size and returns the actual length.
+/// Maximum number of entries in the prebuilt `PERF_SAMPLE_READ` snapshot.
+/// ARM PMUv3 exposes at most 31 programmable slots and a hardware group cannot
+/// run more events than that at once.
+pub const MAX_SAMPLE_READ_EVENTS: usize = 31;
+/// Upper bound on a sample: fixed scalar fields, a maximum-sized group READ,
+/// and the bounded frame-pointer callchain. The handler uses this stack buffer
+/// only while local IRQs are masked; no allocation is performed.
 const MAX_STACK_DEPTH: usize = 64;
 const MAX_CALLCHAIN_ENTRIES: usize = 1 + MAX_STACK_DEPTH;
-const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8;
+const SAMPLE_READ_MAX_U64S: usize = 3 + MAX_SAMPLE_READ_EVENTS * 3;
+const SAMPLE_RECORD_MAX_LEN: usize =
+    8 + 9 * 8 + SAMPLE_READ_MAX_U64S * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8;
 const LOST_RECORD_LEN: usize = 8 + 2 * 8;
 
 /// One physical perf mmap ring and its IRQ-safe multi-producer writer.
@@ -256,18 +261,20 @@ impl LossState {
     }
 }
 
-// `perf_event_sample_format` bits (see `man perf_event_open`). Only the scalar
-// fields below are supported; every other bit (READ, CALLCHAIN, RAW,
+// `perf_event_sample_format` bits from Linux v7.1 UAPI. Only the fields below
+// are supported; every other bit (RAW,
 // BRANCH_STACK, REGS_USER/INTR, STACK_USER, WEIGHT, DATA_SRC, TRANSACTION,
 // PHYS_ADDR, …) is rejected at open time.
 /// `PERF_SAMPLE_IP`: instruction pointer. Always set by real `perf` for samples.
 const PERF_SAMPLE_IP: u64 = 1 << 0;
 /// `PERF_SAMPLE_TID`: thread + process id (`u32 pid, u32 tid`).
-const PERF_SAMPLE_TID: u64 = 1 << 1;
+pub(crate) const PERF_SAMPLE_TID: u64 = 1 << 1;
 /// `PERF_SAMPLE_TIME`: monotonic timestamp (`u64`).
 const PERF_SAMPLE_TIME: u64 = 1 << 2;
 /// `PERF_SAMPLE_ADDR`: data address (`u64`); always 0 for our IP samples.
 const PERF_SAMPLE_ADDR: u64 = 1 << 3;
+/// `PERF_SAMPLE_READ`: one single or group `read_format` snapshot.
+pub(crate) const PERF_SAMPLE_READ: u64 = 1 << 4;
 /// `PERF_SAMPLE_CALLCHAIN`: `u64 nr` followed by context markers and IPs.
 const PERF_SAMPLE_CALLCHAIN: u64 = 1 << 5;
 /// `PERF_SAMPLE_ID`: event id (`u64`).
@@ -289,12 +296,63 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_TID
     | PERF_SAMPLE_TIME
     | PERF_SAMPLE_ADDR
+    | PERF_SAMPLE_READ
     | PERF_SAMPLE_CALLCHAIN
     | PERF_SAMPLE_ID
     | PERF_SAMPLE_CPU
     | PERF_SAMPLE_PERIOD
     | PERF_SAMPLE_STREAM_ID
     | PERF_SAMPLE_IDENTIFIER;
+
+/// One value returned by an IRQ-safe `PERF_SAMPLE_READ` callback.
+#[derive(Clone, Copy, Default)]
+pub struct SampleReadValue {
+    pub value: u64,
+    pub time_enabled: u64,
+    pub time_running: u64,
+    pub lost: u64,
+}
+
+/// Type-erased, prebuilt read source used by the PMU overflow handler.
+///
+/// The callback and its context are installed while the corresponding event is
+/// strongly owned by the task or system-wide perf fd. Teardown unregisters the
+/// `SampleSlot` synchronously before that owner can be released.
+#[derive(Clone, Copy)]
+pub struct SampleReadEntry {
+    context: *const (),
+    callback: Option<unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue>,
+    pub id: u64,
+}
+
+impl SampleReadEntry {
+    pub const EMPTY: Self = Self {
+        context: core::ptr::null(),
+        callback: None,
+        id: 0,
+    };
+
+    pub fn new(
+        context: *const (),
+        callback: unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue,
+        id: u64,
+    ) -> Self {
+        Self {
+            context,
+            callback: Some(callback),
+            id,
+        }
+    }
+
+    fn read(self, slot: usize, now: u64, period: u32, account_source: bool) -> SampleReadValue {
+        let Some(callback) = self.callback else {
+            return SampleReadValue::default();
+        };
+        // SAFETY: the creator guarantees `context` remains live until the
+        // enclosing SampleSlot is unregistered; the callback is IRQ-safe.
+        unsafe { callback(self.context, slot, now, period, account_source) }
+    }
+}
 
 /// Everything the overflow handler needs for one counter, in a lock-free,
 /// alloc-free `Copy` POD.
@@ -319,6 +377,12 @@ pub struct SampleSlot {
     /// fields. `0` when the event was opened without per-event ids (the common
     /// case in this single-group implementation).
     pub id: u64,
+    /// `attr.read_format` controlling a requested `PERF_SAMPLE_READ` payload.
+    pub read_format: u64,
+    /// Leader-first, fixed-capacity read sources built before IRQ entry.
+    pub read_entries: [SampleReadEntry; MAX_SAMPLE_READ_EVENTS],
+    /// Number of valid entries in `read_entries` (at least one for READ).
+    pub read_len: u8,
     /// PID namespace view captured by the event owner.
     pub observer: PidNamespaceId,
     /// Fixed owner identity for a task event; system-wide sources use `None`
@@ -531,6 +595,24 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
                 });
             let time = ax_runtime::hal::time::monotonic_time_nanos();
             let cpu = ax_hal::percpu::this_cpu_id() as u32;
+            let read_len = usize::from(slot.read_len).min(MAX_SAMPLE_READ_EVENTS);
+            let mut read_values = [SampleReadValue::default(); MAX_SAMPLE_READ_EVENTS];
+            if read_len != 0 {
+                // The first entry is the sampling source. Account the completed
+                // period on every overflow even if userspace did not request a
+                // READ payload, so a later read(perf_fd) sees the sample count.
+                read_values[0] = slot.read_entries[0].read(n, time, cur_period, true);
+                if sample_type & PERF_SAMPLE_READ != 0 {
+                    for (index, value) in read_values
+                        .iter_mut()
+                        .enumerate()
+                        .take(read_len)
+                        .skip(1)
+                    {
+                        *value = slot.read_entries[index].read(n, time, cur_period, false);
+                    }
+                }
+            }
             let mut callchain = [0u64; MAX_CALLCHAIN_ENTRIES];
             let callchain_len = if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
                 build_callchain(interrupted, ip, is_user, &mut callchain)
@@ -548,6 +630,9 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
                 stream_id: 0,
                 cpu,
                 period: cur_period as u64,
+                read_format: slot.read_format,
+                read_entries: &slot.read_entries[..read_len],
+                read_values: &read_values[..read_len],
                 callchain: &callchain[..callchain_len],
             };
             let len = build_sample(&mut record, sample_type, misc, &data);
@@ -667,6 +752,8 @@ fn kernel_task_sample_ids_are_empty_for_test() -> bool {
 /// 8. `STREAM_ID` → `u64 stream_id`
 /// 9. `CPU` → `u32 cpu`, `u32 res = 0`
 /// 10. `PERIOD` → `u64 period`
+/// 11. `READ` → Linux single/group `read_format` layout
+/// 12. `CALLCHAIN` → `u64 nr`, followed by context markers and IPs
 ///
 /// `buf` must be at least [`SAMPLE_RECORD_MAX_LEN`] bytes. With
 /// `sample_type == PERF_SAMPLE_IP` exactly, the result is the original 16-byte
@@ -683,6 +770,9 @@ struct SampleData<'a> {
     stream_id: u64,
     cpu: u32,
     period: u64,
+    read_format: u64,
+    read_entries: &'a [SampleReadEntry],
+    read_values: &'a [SampleReadValue],
     callchain: &'a [u64],
 }
 
@@ -724,12 +814,6 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
     if sample_type & PERF_SAMPLE_ADDR != 0 {
         put!(d.addr);
     }
-    if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
-        put!(d.callchain.len() as u64);
-        for &entry in d.callchain {
-            put!(entry);
-        }
-    }
     if sample_type & PERF_SAMPLE_ID != 0 {
         put!(d.id);
     }
@@ -743,6 +827,48 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
     }
     if sample_type & PERF_SAMPLE_PERIOD != 0 {
         put!(d.period);
+    }
+    if sample_type & PERF_SAMPLE_READ != 0 {
+        if d.read_format & super::PERF_FORMAT_GROUP != 0 {
+            put!(d.read_values.len() as u64);
+            if d.read_format & super::PERF_FORMAT_TOTAL_TIME_ENABLED != 0 {
+                put!(d.read_values.first().map_or(0, |value| value.time_enabled));
+            }
+            if d.read_format & super::PERF_FORMAT_TOTAL_TIME_RUNNING != 0 {
+                put!(d.read_values.first().map_or(0, |value| value.time_running));
+            }
+            for (entry, value) in d.read_entries.iter().zip(d.read_values) {
+                put!(value.value);
+                if d.read_format & super::PERF_FORMAT_ID != 0 {
+                    put!(entry.id);
+                }
+                if d.read_format & super::PERF_FORMAT_LOST != 0 {
+                    put!(value.lost);
+                }
+            }
+        } else {
+            let value = d.read_values.first().copied().unwrap_or_default();
+            let id = d.read_entries.first().map_or(0, |entry| entry.id);
+            put!(value.value);
+            if d.read_format & super::PERF_FORMAT_TOTAL_TIME_ENABLED != 0 {
+                put!(value.time_enabled);
+            }
+            if d.read_format & super::PERF_FORMAT_TOTAL_TIME_RUNNING != 0 {
+                put!(value.time_running);
+            }
+            if d.read_format & super::PERF_FORMAT_ID != 0 {
+                put!(id);
+            }
+            if d.read_format & super::PERF_FORMAT_LOST != 0 {
+                put!(value.lost);
+            }
+        }
+    }
+    if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
+        put!(d.callchain.len() as u64);
+        for &entry in d.callchain {
+            put!(entry);
+        }
     }
 
     // Back-patch the header's `size` field now that the total length is known.

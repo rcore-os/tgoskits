@@ -72,12 +72,17 @@ use ax_runtime::hal::paging::MappingFlags;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::{
-    sampling::{self, LossState, RingEndpoint, SampleSlot},
+    sampling::{
+        self, LossState, RingEndpoint, SampleReadEntry, SampleReadValue, SampleSlot,
+        MAX_SAMPLE_READ_EVENTS,
+    },
     sideband::{self, Mmap2Info, SidebandTarget},
 };
 use crate::{
     sync::IrqMutex,
-    task::{AsThread, PidIdentity, PidNamespaceId, TgidNumber, Thread, TidNumber},
+    task::{
+        AsThread, PidIdentity, PidIdentityId, PidNamespaceId, TgidNumber, Thread, TidNumber,
+    },
 };
 
 // `PROT_*` / `MAP_*` values for the `prot`/`flags` fields of MMAP2 records.
@@ -124,6 +129,9 @@ pub struct PerTaskCounter {
     last_cpu: AtomicUsize,
     /// Optional CPU constraint from `perf_event_open(pid, cpu, ...)`.
     cpu_filter: Option<usize>,
+    /// Generation-stable target thread identity used to reject cross-context
+    /// backend group links even if namespace-visible numeric TIDs are reused.
+    owner_identity: PidIdentityId,
     /// Generic/raw/cache request resolved against each scheduling CPU.
     event: super::hw::PmuEventSpec,
     /// `attr.exclude_user`: do not count EL0 (`PMEVTYPERn_EL0.U`).
@@ -201,6 +209,12 @@ pub struct PerTaskCounter {
     /// Stable owner ids captured for task sampling attribution.
     owner_ids: Option<(TgidNumber, TidNumber)>,
 
+    // --- Linux event-group topology ---
+    /// Weak ownership in both directions prevents fd/task lifetime cycles.
+    group_leader: IrqMutex<Option<Weak<PerTaskCounter>>>,
+    /// In insertion order, which is also Linux's leader-first READ order.
+    group_members: IrqMutex<Vec<Weak<PerTaskCounter>>>,
+
     // --- Per-task counting mmap (`rdpmc`) ---
     /// Weak event-side reference to the VMA-owned metadata page. Scheduler
     /// hooks upgrade it only for a bounded publication; after `munmap`, a stale
@@ -270,6 +284,8 @@ impl core::fmt::Debug for SamplingAnchors {
 pub struct PerTaskConfig {
     /// Optional CPU constraint from `perf_event_open`.
     pub cpu_filter: Option<usize>,
+    /// Generation-stable target thread identity.
+    pub owner_identity: PidIdentityId,
     /// Generic/raw/cache event request.
     pub event: super::hw::PmuEventSpec,
     /// `attr.exclude_user`.
@@ -321,6 +337,7 @@ impl PerTaskCounter {
             slot: AtomicUsize::new(NO_SLOT),
             last_cpu: AtomicUsize::new(usize::MAX),
             cpu_filter: cfg.cpu_filter,
+            owner_identity: cfg.owner_identity,
             event: cfg.event,
             exclude_user: cfg.exclude_user,
             exclude_kernel: cfg.exclude_kernel,
@@ -351,6 +368,8 @@ impl PerTaskCounter {
             inherit: cfg.inherit,
             observer: cfg.observer,
             owner_ids: cfg.owner_ids,
+            group_leader: IrqMutex::new(None),
+            group_members: IrqMutex::new(Vec::new()),
             rdpmc_page: IrqMutex::new(None),
             endpoint_ptr: AtomicUsize::new(0),
             loss: Arc::new(LossState::new()),
@@ -378,6 +397,45 @@ impl PerTaskCounter {
     /// once at open (before the scheduler hooks run), so a relaxed store suffices.
     pub fn set_sample_id(&self, id: u64) {
         self.sample_id.store(id, Ordering::Relaxed);
+    }
+
+    /// Build the type-erased, IRQ-safe source descriptor stored in a sampling
+    /// leader's fixed-capacity read table. The task's `perf_counters` list owns
+    /// this counter until task teardown; teardown unregisters the SampleSlot
+    /// synchronously before the list or ring anchors can be released.
+    fn sample_read_entry(&self) -> SampleReadEntry {
+        SampleReadEntry::new(
+            core::ptr::from_ref(self).cast(),
+            per_task_sample_read_irq,
+            self.sample_id.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Link a hardware member to a hardware leader after the file layer has
+    /// validated the public context/inherit rules.
+    pub fn link_group(
+        leader: &Arc<PerTaskCounter>,
+        member: &Arc<PerTaskCounter>,
+    ) -> crate::StarryResult<()> {
+        if leader.owner_identity != member.owner_identity
+            || leader.cpu_filter != member.cpu_filter
+            || leader.dead.load(Ordering::Acquire)
+            || member.dead.load(Ordering::Acquire)
+        {
+            return Err(crate::StarryError::InvalidInput);
+        }
+        let mut members = leader.group_members.lock();
+        members.retain(|entry| {
+            entry
+                .upgrade()
+                .is_some_and(|event| !event.dead.load(Ordering::Acquire))
+        });
+        if members.len() + 1 >= MAX_SAMPLE_READ_EVENTS {
+            return Err(crate::StarryError::InvalidInput);
+        }
+        *member.group_leader.lock() = Some(Arc::downgrade(leader));
+        members.push(Arc::downgrade(member));
+        Ok(())
     }
 
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
@@ -674,6 +732,90 @@ fn eligible_on_current_cpu(ptc: &PerTaskCounter) -> bool {
     super::percpu::current_info().is_some_and(|info| ptc.event.resolve(info).is_ok())
 }
 
+fn live_group_leader(ptc: &PerTaskCounter) -> Option<Arc<PerTaskCounter>> {
+    ptc.group_leader
+        .lock()
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .filter(|leader| !leader.dead.load(Ordering::Acquire))
+}
+
+fn is_live_group_member(ptc: &PerTaskCounter) -> bool {
+    live_group_leader(ptc).is_some()
+}
+
+fn effective_pinned(ptc: &PerTaskCounter) -> bool {
+    ptc.pinned || live_group_leader(ptc).is_some_and(|leader| leader.pinned)
+}
+
+/// Build a leader-first read table while still in scheduler context. Weak
+/// upgrades are bounded atomic reference-count operations and the returned raw
+/// descriptors remain backed by the owning task's `perf_counters` list.
+fn sample_read_entries(
+    leader: &PerTaskCounter,
+) -> ([SampleReadEntry; MAX_SAMPLE_READ_EVENTS], u8) {
+    let mut entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
+    entries[0] = leader.sample_read_entry();
+    let mut len = 1usize;
+    let members = leader.group_members.lock();
+    for member in members.iter().filter_map(Weak::upgrade) {
+        if member.dead.load(Ordering::Acquire) || len == MAX_SAMPLE_READ_EVENTS {
+            continue;
+        }
+        entries[len] = member.sample_read_entry();
+        len += 1;
+    }
+    (entries, len as u8)
+}
+
+/// Read one task event from the PMU overflow handler without allocation,
+/// sleeping locks, migration, or a cross-CPU call.
+///
+/// # Safety
+///
+/// `context` must be a live `PerTaskCounter` on the current CPU. The registered
+/// SampleSlot lifetime and task counter list establish that requirement.
+unsafe fn per_task_sample_read_irq(
+    context: *const (),
+    _source_slot: usize,
+    now: u64,
+    period: u32,
+    account_source: bool,
+) -> SampleReadValue {
+    // SAFETY: guaranteed by the callback contract above.
+    let ptc = unsafe { &*context.cast::<PerTaskCounter>() };
+    if account_source {
+        ptc.accumulated.fetch_add(period as u64, Ordering::AcqRel);
+    }
+
+    let mut value = ptc.accumulated.load(Ordering::Acquire);
+    if !ptc.is_sampling && ptc.running.load(Ordering::Acquire) {
+        let slot = ptc.slot.load(Ordering::Acquire);
+        if slot != NO_SLOT
+            && ptc.last_cpu.load(Ordering::Acquire) == ax_hal::percpu::this_cpu_id()
+        {
+            value = value.saturating_add(ax_cpu::pmu::counter::read(slot));
+        }
+    }
+
+    let mut time_enabled = ptc.time_enabled_ns.load(Ordering::Acquire);
+    let enabled_at = ptc.enabled_at_ns.load(Ordering::Acquire);
+    if ptc.enabled.load(Ordering::Acquire) && enabled_at != 0 {
+        time_enabled = time_enabled.saturating_add(now.saturating_sub(enabled_at));
+    }
+    let mut time_running = ptc.time_running_ns.load(Ordering::Acquire);
+    let run_since = ptc.run_since_ns.load(Ordering::Acquire);
+    if ptc.running.load(Ordering::Acquire) && run_since != 0 {
+        time_running = time_running.saturating_add(now.saturating_sub(run_since));
+    }
+    SampleReadValue {
+        value,
+        time_enabled,
+        time_running,
+        lost: ptc.loss.total(),
+    }
+}
+
 /// Arms one event on a slot owned by the executing CPU.
 fn arm_slice(ptc: &PerTaskCounter, slot: usize, now: u64) {
     let Some(info) = super::percpu::current_info() else {
@@ -685,6 +827,7 @@ fn arm_slice(ptc: &PerTaskCounter, slot: usize, now: u64) {
         return;
     };
     if ptc.is_sampling {
+        let (read_entries, read_len) = sample_read_entries(ptc);
         ax_cpu::pmu::counter::configure(
             slot,
             event,
@@ -700,6 +843,9 @@ fn arm_slice(ptc: &PerTaskCounter, slot: usize, now: u64) {
                 period: ptc.sample_period,
                 sample_type: ptc.sample_type,
                 id: ptc.sample_id.load(Ordering::Relaxed),
+                read_format: ptc.read_format,
+                read_entries,
+                read_len,
                 observer: ptc.observer,
                 owner_ids: ptc.owner_ids,
                 freq: ptc.freq,
@@ -754,10 +900,14 @@ fn disarm_slice(ptc: &PerTaskCounter, now: u64, accumulate: bool) {
 }
 
 fn schedule_if_on_cpu(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
-    if !ptc.on_cpu.load(Ordering::Acquire) || ptc.running.load(Ordering::Acquire) {
+    let group_leader = live_group_leader(ptc);
+    let root = group_leader.as_deref().unwrap_or(ptc);
+    if !root.on_cpu.load(Ordering::Acquire)
+        || (ptc.running.load(Ordering::Acquire) && group_leader.is_none())
+    {
         return Ok(());
     }
-    let owner = ptc.last_cpu.load(Ordering::Acquire);
+    let owner = root.last_cpu.load(Ordering::Acquire);
     if owner == usize::MAX {
         return Ok(());
     }
@@ -765,20 +915,85 @@ fn schedule_if_on_cpu(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
     // operations and keeps `ptc` borrowed until the synchronous IPI returns.
     unsafe {
         super::percpu::run_on_cpu_sync(owner, || {
-            if ptc.last_cpu.load(Ordering::Acquire) != ax_hal::percpu::this_cpu_id()
-                || !ptc.on_cpu.load(Ordering::Acquire)
-                || !eligible_on_current_cpu(ptc)
-                || ptc.running.load(Ordering::Acquire)
+            if root.last_cpu.load(Ordering::Acquire) != ax_hal::percpu::this_cpu_id()
+                || !root.on_cpu.load(Ordering::Acquire)
+                || !eligible_on_current_cpu(root)
             {
                 return;
             }
-            if let Some(slot) = super::percpu::alloc_programmable() {
-                arm_slice(ptc, slot, now_ns());
-            } else if ptc.pinned {
-                ptc.scheduling_error.store(true, Ordering::Release);
+            if !root.group_members.lock().is_empty() {
+                schedule_group(root, now_ns());
+            } else if let Some(slot) = super::percpu::alloc_programmable() {
+                arm_slice(root, slot, now_ns());
+            } else if root.pinned {
+                root.scheduling_error.store(true, Ordering::Release);
             }
         })
     }
+}
+
+/// Collect enabled members and program the complete hardware group as one PMU
+/// transaction. No event is armed unless every slot has first been reserved.
+fn schedule_group(leader: &PerTaskCounter, now: u64) -> bool {
+    let mut members_snapshot: [Option<Arc<PerTaskCounter>>; MAX_SAMPLE_READ_EVENTS] =
+        core::array::from_fn(|_| None);
+    let mut member_len = 0usize;
+    {
+        let members = leader.group_members.lock();
+        for member in members.iter().filter_map(Weak::upgrade) {
+            if member.dead.load(Ordering::Acquire) || !member.enabled.load(Ordering::Acquire) {
+                continue;
+            }
+            if member_len + 1 == MAX_SAMPLE_READ_EVENTS || !eligible_on_current_cpu(&member) {
+                if leader.pinned {
+                    leader.scheduling_error.store(true, Ordering::Release);
+                }
+                return false;
+            }
+            members_snapshot[member_len] = Some(member);
+            member_len += 1;
+        }
+    }
+
+    // A member may have been enabled while the leader was already running.
+    // Remove the old (smaller) placement before attempting the new transaction.
+    if leader.running.load(Ordering::Acquire) {
+        disarm_slice(leader, now, true);
+    }
+    for member in members_snapshot[..member_len]
+        .iter()
+        .filter_map(Option::as_deref)
+    {
+        if member.running.load(Ordering::Acquire) {
+            disarm_slice(member, now, true);
+        }
+    }
+
+    let mut slots = [NO_SLOT; MAX_SAMPLE_READ_EVENTS];
+    for index in 0..=member_len {
+        let Some(slot) = super::percpu::alloc_programmable() else {
+            for reserved in slots[..index].iter().copied() {
+                super::percpu::free_programmable(reserved);
+            }
+            if leader.pinned {
+                leader.scheduling_error.store(true, Ordering::Release);
+            }
+            return false;
+        };
+        slots[index] = slot;
+    }
+
+    // Counting siblings must be live before the sampling leader is armed: the
+    // leader's SampleSlot captures their complete leader-first read snapshot.
+    for index in (0..member_len).rev() {
+        arm_slice(
+            members_snapshot[index].as_deref().unwrap(),
+            slots[index + 1],
+            now,
+        );
+    }
+    arm_slice(leader, slots[0], now);
+    true
 }
 
 fn disarm_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
@@ -834,7 +1049,15 @@ fn reset_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
 
 fn schedule_pinned(counters: &[Arc<PerTaskCounter>], now: u64) {
     for ptc in counters {
-        if !ptc.pinned || !eligible_on_current_cpu(ptc) || ptc.running.load(Ordering::Acquire) {
+        if !ptc.pinned
+            || is_live_group_member(ptc)
+            || !eligible_on_current_cpu(ptc)
+            || ptc.running.load(Ordering::Acquire)
+        {
+            continue;
+        }
+        if !ptc.group_members.lock().is_empty() {
+            schedule_group(ptc, now);
             continue;
         }
         if let Some(slot) = super::percpu::alloc_programmable() {
@@ -848,7 +1071,15 @@ fn schedule_pinned(counters: &[Arc<PerTaskCounter>], now: u64) {
 fn schedule_flexible(counters: &[Arc<PerTaskCounter>], start: usize, now: u64) {
     for offset in 0..counters.len() {
         let ptc = &counters[(start + offset) % counters.len()];
-        if ptc.pinned || !eligible_on_current_cpu(ptc) || ptc.running.load(Ordering::Acquire) {
+        if ptc.pinned
+            || is_live_group_member(ptc)
+            || !eligible_on_current_cpu(ptc)
+            || ptc.running.load(Ordering::Acquire)
+        {
+            continue;
+        }
+        if !ptc.group_members.lock().is_empty() {
+            schedule_group(ptc, now);
             continue;
         }
         let Some(slot) = super::percpu::alloc_programmable() else {
@@ -918,7 +1149,10 @@ fn perf_rotate_current(thr: &Thread) {
     }
     let mut eligible = 0usize;
     for ptc in counters.iter() {
-        if !ptc.pinned && eligible_on_current_cpu(ptc) {
+        if !effective_pinned(ptc)
+            && !is_live_group_member(ptc)
+            && eligible_on_current_cpu(ptc)
+        {
             eligible += 1;
         }
     }
@@ -927,7 +1161,7 @@ fn perf_rotate_current(thr: &Thread) {
     }
     let now = now_ns();
     for ptc in counters.iter() {
-        if !ptc.pinned && ptc.running.load(Ordering::Acquire) {
+        if !effective_pinned(ptc) && ptc.running.load(Ordering::Acquire) {
             disarm_slice(ptc, now, true);
         }
     }
@@ -1207,6 +1441,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             .map(|p| InheritSpec {
                 cfg: PerTaskConfig {
                     cpu_filter: p.cpu_filter,
+                    owner_identity: child_thr.pid_identity().id(),
                     event: p.event,
                     exclude_user: p.exclude_user,
                     exclude_kernel: p.exclude_kernel,

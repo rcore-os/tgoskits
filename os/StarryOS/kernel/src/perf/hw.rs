@@ -27,7 +27,7 @@
 use alloc::sync::Arc;
 use core::any::Any;
 #[cfg(target_arch = "aarch64")]
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(target_arch = "aarch64")]
 use ax_alloc::GlobalPage;
@@ -49,7 +49,10 @@ use kbpf_basic::linux_bpf::{perf_hw_id, perf_type_id};
 #[cfg(target_arch = "aarch64")]
 use super::PerfReadValues;
 #[cfg(target_arch = "aarch64")]
-use super::sampling::{self, LossState, RingEndpoint, SampleSlot};
+use super::sampling::{
+    self, LossState, RingEndpoint, SampleReadEntry, SampleReadValue, SampleSlot,
+    MAX_SAMPLE_READ_EVENTS,
+};
 #[cfg(target_arch = "aarch64")]
 use super::percpu;
 use super::{PerfEventOps, target::ResolvedPerfTarget};
@@ -195,6 +198,13 @@ struct SamplingState {
     redirect: Option<Arc<RingEndpoint>>,
     /// Per-source loss accounting retained independently of output redirects.
     loss: Arc<LossState>,
+    /// Completed sampling periods, exposed by read() and PERF_SAMPLE_READ.
+    sample_count: AtomicU64,
+    /// Current sampling enable window and completed enabled/running time.
+    /// System-wide events are never task-multiplexed here, so both times match.
+    enabled_at_ns: AtomicU64,
+    time_enabled_ns: AtomicU64,
+    time_running_ns: AtomicU64,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -206,6 +216,58 @@ impl core::fmt::Debug for SamplingState {
             .field("ring", &self.ring)
             .finish()
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl SamplingState {
+    fn read_entry(&self, id: u64) -> SampleReadEntry {
+        SampleReadEntry::new(
+            core::ptr::from_ref(self).cast(),
+            system_sample_read_irq,
+            id,
+        )
+    }
+
+    fn snapshot(&self, now: u64) -> SampleReadValue {
+        let mut time_enabled = self.time_enabled_ns.load(Ordering::Acquire);
+        let mut time_running = self.time_running_ns.load(Ordering::Acquire);
+        let enabled_at = self.enabled_at_ns.load(Ordering::Acquire);
+        if enabled_at != 0 {
+            let elapsed = now.saturating_sub(enabled_at);
+            time_enabled = time_enabled.saturating_add(elapsed);
+            time_running = time_running.saturating_add(elapsed);
+        }
+        SampleReadValue {
+            value: self.sample_count.load(Ordering::Acquire),
+            time_enabled,
+            time_running,
+            lost: self.loss.total(),
+        }
+    }
+}
+
+/// IRQ-safe reader for one system-wide sampling source.
+///
+/// # Safety
+///
+/// `context` must point at the SamplingState kept live by the registered
+/// system-wide event until synchronous SampleSlot teardown completes.
+#[cfg(target_arch = "aarch64")]
+unsafe fn system_sample_read_irq(
+    context: *const (),
+    _source_slot: usize,
+    now: u64,
+    period: u32,
+    account_source: bool,
+) -> SampleReadValue {
+    // SAFETY: guaranteed by the callback contract above.
+    let sampling = unsafe { &*context.cast::<SamplingState>() };
+    if account_source {
+        sampling
+            .sample_count
+            .fetch_add(period as u64, Ordering::AcqRel);
+    }
+    sampling.snapshot(now)
 }
 
 /// Spawn the deferred worker that turns IRQ-context `notify_irq` pokes into
@@ -386,6 +448,12 @@ impl HwPerfEvent {
                 return Err(StarryError::OperationNotSupported);
             };
             let endpoint = sampling.redirect.as_ref().or(sampling.ring.as_ref());
+            let mut read_entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
+            read_entries[0] = sampling.read_entry(self.sample_id);
+            sampling.enabled_at_ns.store(
+                ax_runtime::hal::time::monotonic_time_nanos(),
+                Ordering::Release,
+            );
             ax_cpu::pmu::counter::preload(n, sampling.period);
             sampling::register(
                 n,
@@ -395,6 +463,9 @@ impl HwPerfEvent {
                     period: sampling.period,
                     sample_type: sampling.sample_type,
                     id: self.sample_id,
+                    read_format: self.read_format,
+                    read_entries,
+                    read_len: 1,
                     observer: crate::task::ROOT_PID_NS.id(),
                     owner_ids: None,
                     freq: sampling.freq,
@@ -424,9 +495,30 @@ impl HwPerfEvent {
             self.time_enabled += elapsed;
             self.time_running += elapsed;
         }
+        if let Some(sampling) = &self.sampling {
+            let since = sampling.enabled_at_ns.swap(0, Ordering::AcqRel);
+            if since != 0 {
+                let elapsed = ax_runtime::hal::time::monotonic_time_nanos().saturating_sub(since);
+                sampling
+                    .time_enabled_ns
+                    .fetch_add(elapsed, Ordering::AcqRel);
+                sampling
+                    .time_running_ns
+                    .fetch_add(elapsed, Ordering::AcqRel);
+            }
+        }
     }
 
     fn reset_on_owner(&self) {
+        if let Some(sampling) = &self.sampling {
+            sampling.sample_count.store(0, Ordering::Release);
+            ax_cpu::pmu::counter::preload(
+                self.programmable_index()
+                    .expect("sampling event uses programmable counter"),
+                sampling.period,
+            );
+            return;
+        }
         match self.counter {
             Counter::Cycle => ax_cpu::pmu::cycles::reset(),
             Counter::Programmable(n) => ax_cpu::pmu::counter::reset(n),
@@ -434,6 +526,17 @@ impl HwPerfEvent {
     }
 
     fn read_values_on_owner(&self) -> PerfReadValues {
+        if let Some(sampling) = &self.sampling {
+            let snapshot = sampling.snapshot(ax_runtime::hal::time::monotonic_time_nanos());
+            return PerfReadValues {
+                eof: false,
+                value: snapshot.value,
+                time_enabled: snapshot.time_enabled,
+                time_running: snapshot.time_running,
+                lost: snapshot.lost,
+                read_format: self.read_format,
+            };
+        }
         let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
         if let Some(since) = self.enabled_since {
             let elapsed = ax_runtime::hal::time::monotonic_time_nanos().saturating_sub(since);
@@ -744,6 +847,21 @@ impl PerfEventOps for HwPerfEvent {
         Ok(())
     }
 
+    fn link_group(&mut self, leader: &mut dyn PerfEventOps) -> StarryResult<()> {
+        let Some(leader) = leader.as_any_mut().downcast_mut::<HwPerfEvent>() else {
+            // A hardware member of a software leader consumes no shared
+            // backend topology; the file layer still owns group control/read.
+            return Ok(());
+        };
+        match (&leader.per_task, &self.per_task) {
+            (Some(leader), Some(member)) => super::task::PerTaskCounter::link_group(leader, member),
+            // System-wide counters are owner-CPU fixed and reserved at open;
+            // their all-or-nothing capacity check is therefore already done.
+            (None, None) => Ok(()),
+            _ => Err(StarryError::InvalidInput),
+        }
+    }
+
     fn device_mmap(&mut self, len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         // Per-task sampling owns a ring on `PerTaskCounter`; per-task counting
         // exposes the same one-page rdpmc metadata ABI as system-wide counting.
@@ -905,6 +1023,12 @@ pub fn perf_event_open_hw(
             warn!("perf_event_open: sample_period {raw} exceeds 32-bit counter");
             return Err(StarryError::InvalidInput);
         }
+        if attr.inherit() != 0
+            && attr.sample_type & sampling::PERF_SAMPLE_READ != 0
+            && attr.sample_type & sampling::PERF_SAMPLE_TID == 0
+        {
+            return Err(StarryError::InvalidInput);
+        }
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
@@ -974,6 +1098,10 @@ pub fn perf_event_open_hw(
             ring: None,
             redirect: None,
             loss: Arc::new(LossState::new()),
+            sample_count: AtomicU64::new(0),
+            enabled_at_ns: AtomicU64::new(0),
+            time_enabled_ns: AtomicU64::new(0),
+            time_running_ns: AtomicU64::new(0),
         })
     } else {
         None
@@ -1056,6 +1184,12 @@ fn perf_event_open_hw_per_task(
             warn!("perf_event_open: per-task sample_period {raw} exceeds 32-bit");
             return Err(StarryError::InvalidInput);
         }
+        if attr.inherit() != 0
+            && attr.sample_type & sampling::PERF_SAMPLE_READ != 0
+            && attr.sample_type & sampling::PERF_SAMPLE_TID == 0
+        {
+            return Err(StarryError::InvalidInput);
+        }
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
@@ -1083,6 +1217,7 @@ fn perf_event_open_hw_per_task(
     let ptc = Arc::new(super::task::PerTaskCounter::new(
         super::task::PerTaskConfig {
             cpu_filter: cpu_filter.map(super::target::PerfCpuId::as_usize),
+            owner_identity: thr.pid_identity().id(),
             event: spec,
             exclude_user,
             exclude_kernel,
