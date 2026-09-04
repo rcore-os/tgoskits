@@ -127,6 +127,21 @@ enum CowPageIndexInsertError {
     Invalid(StarryError),
 }
 
+fn cow_page_index_reservation_capacity(
+    live: usize,
+    len: usize,
+    capacity: usize,
+) -> Result<usize, StarryError> {
+    let required = live.checked_add(1).ok_or(StarryError::BadState)?;
+    if live == len && capacity >= required {
+        return Ok(0);
+    }
+    required
+        .max(4)
+        .checked_next_power_of_two()
+        .ok_or(StarryError::BadState)
+}
+
 impl CowPageIndexReservation {
     fn try_with_capacity(capacity: usize) -> StarryResult<Self> {
         let mut replacement = Vec::new();
@@ -149,11 +164,7 @@ impl CowPageIndex {
     /// after releasing the index lock and revalidate during apply.
     fn insert_reservation_capacity(&self) -> Result<usize, StarryError> {
         let live = self.pages.iter().filter(|entry| entry.is_live()).count();
-        let required = live.checked_add(1).ok_or(StarryError::BadState)?;
-        if live == self.pages.len() && self.pages.capacity() >= required {
-            return Ok(0);
-        }
-        Ok(required.max(self.pages.capacity().saturating_mul(2).max(4)))
+        cow_page_index_reservation_capacity(live, self.pages.len(), self.pages.capacity())
     }
 
     fn ensure_published_reservation_capacity(
@@ -430,6 +441,7 @@ fn cow_page_index_moves_expired_weak_storage_to_reservation_for_test() -> bool {
     let retired_outside_index = reservation.replacement.len() == 1
         && !reservation.replacement[0].is_live()
         && index.pages.len() == 1
+        && index.pages.capacity() == 4
         && index
             .get(second.frame().paddr())
             .is_some_and(|page| Arc::ptr_eq(&page, &second));
@@ -3462,6 +3474,21 @@ fn sparse_mapping_mutations_walk_only_occupied_leaves_for_test() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn cow_page_index_retired_capacity_does_not_compound() {
+        assert_eq!(
+            super::cow_page_index_reservation_capacity(0, 1, 4).unwrap(),
+            4,
+            "compacting one tombstone must size storage from live entries, not double retired capacity",
+        );
+        assert_eq!(
+            super::cow_page_index_reservation_capacity(4, 4, 4).unwrap(),
+            8,
+            "a full live index must still grow geometrically",
+        );
+    }
+
     #[cfg(all(test, not(axtest)))]
     #[test]
     fn private_mmap_rejects_fault_at_file_eof() {
