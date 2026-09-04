@@ -36,6 +36,7 @@ impl Aarch64VmPlan {
             &mut nodes,
             &controller_id,
             vgic.config().controller_id(),
+            None,
         )?;
 
         let mut replacement_ranges = gic_ranges(profile)?;

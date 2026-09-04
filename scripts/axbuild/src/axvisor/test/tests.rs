@@ -1,12 +1,52 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 
+use ostool::run::qemu::QemuConfig;
 use tempfile::tempdir;
 
 use super::*;
 use crate::{axvisor::build, context::ResolvedAxvisorRequest};
+
+const X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT: usize = 231;
+
+#[derive(Debug, Eq, PartialEq, serde::Deserialize)]
+struct TestBuildConfigVmConfigs {
+    #[serde(default)]
+    vm_configs: Vec<PathBuf>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmKernelConfig {
+    kernel: TestVmKernel,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmKernel {
+    #[serde(default)]
+    cmdline: String,
+}
+
+#[derive(Debug, Eq, PartialEq, serde::Deserialize)]
+struct TestOvmfBuildConfig {
+    #[serde(default)]
+    features: Vec<String>,
+    vm_configs: Vec<PathBuf>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestOvmfGuestConfig {
+    kernel: TestOvmfGuestKernel,
+}
+
+#[derive(serde::Deserialize)]
+struct TestOvmfGuestKernel {
+    uefi_firmware_path: PathBuf,
+}
 
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
     write_qemu_config_in_group(root, "normal", "default", case, arch, body)
@@ -88,6 +128,376 @@ fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRe
         uboot_config: None,
         vmconfigs: Vec::new(),
     }
+}
+
+#[test]
+fn checked_in_test_build_vmconfigs_exist() {
+    let workspace_root = std::env::current_dir().unwrap();
+    let axvisor_suite = workspace_root.join("test-suit/axvisor");
+    if !axvisor_suite.is_dir() {
+        return;
+    }
+
+    let mut stack = vec![axvisor_suite];
+    let mut checked = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with("build-")
+                || path.extension().and_then(|ext| ext.to_str()) != Some("toml")
+            {
+                continue;
+            }
+
+            let content = fs::read_to_string(&path).unwrap();
+            let config: TestBuildConfigVmConfigs = toml::from_str(&content).unwrap();
+            for vm_config in config.vm_configs {
+                if vm_config.starts_with("os/axvisor/tmp/vmconfigs") {
+                    continue;
+                }
+                checked += 1;
+                let vm_config_path = if vm_config.is_absolute() {
+                    vm_config
+                } else {
+                    workspace_root.join(vm_config)
+                };
+                assert!(
+                    vm_config_path.is_file(),
+                    "{} references missing vm_config {}",
+                    path.display(),
+                    vm_config_path.display()
+                );
+            }
+        }
+    }
+
+    assert!(checked > 0);
+}
+
+#[test]
+fn orangepi_guest_board_cases_use_matching_vm_configs() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (board_name, expected_vm_config) in [
+        (
+            "orangepi-5-plus-linux",
+            "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml",
+        ),
+        (
+            "orangepi-5-plus-starry",
+            "os/axvisor/configs/vms/orangepi-5-plus/starry-smp1.toml",
+        ),
+    ] {
+        let groups =
+            discover_board_test_groups(&workspace_root, "normal", None, Some(board_name)).unwrap();
+        assert_eq!(groups.len(), 1, "expected one case for {board_name}");
+
+        let build_config = fs::read_to_string(&groups[0].build_config).unwrap();
+        let build_config: TestBuildConfigVmConfigs = toml::from_str(&build_config).unwrap();
+        assert_eq!(
+            build_config.vm_configs,
+            [PathBuf::from(expected_vm_config)],
+            "{board_name} should select its matching guest VM config"
+        );
+    }
+}
+
+#[test]
+fn rock4d_board_build_selects_linux_guest() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let build_path = "os/axvisor/configs/board/rock-4d.toml";
+    let build_config = fs::read_to_string(workspace_root.join(build_path)).unwrap();
+    let build_config: TestBuildConfigVmConfigs = toml::from_str(&build_config).unwrap();
+
+    assert_eq!(
+        build_config.vm_configs,
+        [PathBuf::from(
+            "os/axvisor/configs/vms/rock-4d/linux-smp1.toml"
+        )],
+        "{build_path} should embed the default ROCK 4D Linux guest config"
+    );
+}
+
+#[test]
+fn orangepi_linux_guest_does_not_use_uart_clock_workaround() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+
+    // The Rockchip assignment and AxVM shared-MMIO tests pin the protection itself. This
+    // board-level contract prevents the guest config from silently bypassing that path.
+    assert!(
+        !config.kernel.cmdline.contains("clk_ignore_unused"),
+        "{path} must protect the host-owned UART clock through shared-provider mediation"
+    );
+    assert!(
+        config.kernel.cmdline.contains("console=ttyS2,1500000"),
+        "{path} must route the guest console through the machine-owned virtual UART"
+    );
+}
+
+#[test]
+fn rk3568_linux_guest_uses_the_virtual_16550_console() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/roc-rk3568-pc/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+
+    assert!(
+        config.kernel.cmdline.contains("console=ttyS2,1500000"),
+        "{path} must route the login console through the machine-owned virtual 16550"
+    );
+    assert!(
+        !config.kernel.cmdline.contains("console=ttyFIQ0"),
+        "{path} must not route the login console through the removed physical FIQ debugger"
+    );
+}
+
+#[test]
+fn x86_hypervisor_backend_cases_request_raw_bin_artifacts() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (backend, cpu_features) in [
+        (
+            "vmx",
+            &["+vmx-ept", "+vmx-unrestricted-guest", "+vmx-flexpriority"],
+        ),
+        ("svm", &["+svm", "+npt", "+nrip-save"]),
+    ] {
+        let path = workspace_root.join(format!(
+            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-{backend}.toml"
+        ));
+        let config: QemuConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert!(
+            config.uefi,
+            "{backend} smoke must boot the dynamic x86 host through UEFI"
+        );
+        assert!(
+            config.to_bin,
+            "{backend} smoke must provide a raw BIN for the UEFI ESP"
+        );
+        assert!(
+            !config.args.iter().any(|arg| arg == "-nodefaults"),
+            "{backend} UEFI smoke needs QEMU's default firmware devices"
+        );
+
+        let machine = qemu_argument_value(&config.args, "-machine");
+        assert!(
+            !machine.contains("sata=off") && !machine.contains("i8042=off"),
+            "{backend} UEFI smoke must keep the firmware boot bus available"
+        );
+
+        let cpu = qemu_argument_value(&config.args, "-cpu");
+        assert!(cpu.contains("-la57"));
+        for feature in cpu_features {
+            assert!(
+                cpu.contains(feature),
+                "{backend} smoke must enable the required CPU feature {feature}"
+            );
+        }
+    }
+}
+
+#[test]
+fn x86_ovmf_acpi_cases_share_one_backend_neutral_guest_contract() {
+    const BUILD_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cases = discover_qemu_cases(
+        &workspace_root,
+        "normal",
+        "x86_64",
+        "x86_64-unknown-none",
+        None,
+    )
+    .unwrap();
+    let vmx_case = cases
+        .iter()
+        .find(|case| case.case.name == "ovmf-acpi-vmx")
+        .expect("runner should discover the VMX OVMF ACPI case");
+    let svm_case = cases
+        .iter()
+        .find(|case| case.case.name == "ovmf-acpi-svm")
+        .expect("runner should discover the SVM OVMF ACPI case");
+
+    let vmx_build = load_ovmf_build_config(&vmx_case.build_config_path);
+    let svm_build = load_ovmf_build_config(&svm_case.build_config_path);
+    assert_eq!(vmx_build, svm_build);
+    assert_eq!(vmx_build.vm_configs.len(), 1);
+    assert!(
+        vmx_build
+            .features
+            .iter()
+            .all(|feature| feature != "vmx" && feature != "svm"),
+        "OVMF ACPI build configs must leave backend selection to runtime CPUID"
+    );
+
+    let guest_path = workspace_root.join(&vmx_build.vm_configs[0]);
+    let guest: TestOvmfGuestConfig =
+        toml::from_str(&fs::read_to_string(&guest_path).unwrap()).unwrap();
+    let build_output = vmx_build
+        .env
+        .get(BUILD_OUTPUT_ENV)
+        .expect("OVMF build config should prepare the guest firmware image");
+    assert_eq!(
+        guest.kernel.uefi_firmware_path,
+        PathBuf::from(format!("${{workspace}}/{build_output}")),
+        "the prepared image must be the image loaded by the guest configuration"
+    );
+
+    let mut vmx_qemu = load_qemu_config(&vmx_case.case.qemu_config_path);
+    let mut svm_qemu = load_qemu_config(&svm_case.case.qemu_config_path);
+    assert_eq!(
+        replace_qemu_argument(&mut vmx_qemu.args, "-cpu", "<backend>"),
+        "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority"
+    );
+    assert_eq!(
+        replace_qemu_argument(&mut svm_qemu.args, "-cpu", "<backend>"),
+        "host,-la57,+svm,+npt,+nrip-save"
+    );
+    assert_eq!(
+        vmx_qemu, svm_qemu,
+        "VMX and SVM OVMF ACPI cases may differ only in outer QEMU CPU capabilities"
+    );
+}
+
+#[test]
+fn x86_pci_block_cases_validate_rw_ro_and_backend_neutral_contracts() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cases = discover_qemu_cases(
+        &workspace_root,
+        "normal",
+        "x86_64",
+        "x86_64-unknown-none",
+        None,
+    )
+    .unwrap();
+
+    for (mode, read_only) in [("rw", false), ("ro", true)] {
+        let vmx_name = format!("pci-block-{mode}-vmx");
+        let svm_name = format!("pci-block-{mode}-svm");
+        let vmx_case = cases
+            .iter()
+            .find(|case| case.case.name == vmx_name)
+            .unwrap_or_else(|| panic!("runner should discover {vmx_name}"));
+        let svm_case = cases
+            .iter()
+            .find(|case| case.case.name == svm_name)
+            .unwrap_or_else(|| panic!("runner should discover {svm_name}"));
+
+        let vmx_build: TestBuildConfigVmConfigs =
+            toml::from_str(&fs::read_to_string(&vmx_case.build_config_path).unwrap()).unwrap();
+        let svm_build: TestBuildConfigVmConfigs =
+            toml::from_str(&fs::read_to_string(&svm_case.build_config_path).unwrap()).unwrap();
+        assert_eq!(
+            vmx_build, svm_build,
+            "VMX and SVM {mode} builds must share one guest/config contract"
+        );
+        assert_eq!(vmx_build.vm_configs.len(), 1);
+        let guest_path = workspace_root.join(&vmx_build.vm_configs[0]);
+        let guest_text = fs::read_to_string(&guest_path).unwrap();
+        let guest: toml::Value = toml::from_str(&guest_text).unwrap();
+        let virtual_device = guest["devices"]["virtual"]
+            .as_array()
+            .and_then(|devices| devices.first())
+            .unwrap_or_else(|| panic!("{mode} must define one virtual block device"));
+        assert_eq!(virtual_device["model"].as_str(), Some("virtio-blk"));
+        assert_eq!(virtual_device["transport"].as_str(), Some("pci"));
+        assert_eq!(virtual_device["backend"].as_str(), Some("ramdisk"));
+        assert_eq!(virtual_device["read_only"].as_bool(), Some(read_only));
+        let cmdline = guest["kernel"]["cmdline"].as_str().unwrap();
+        assert!(cmdline.contains(&format!("axvisor.pci_block_case={mode}")));
+
+        let mut vmx_qemu = load_qemu_config(&vmx_case.case.qemu_config_path);
+        let mut svm_qemu = load_qemu_config(&svm_case.case.qemu_config_path);
+        assert!(vmx_qemu.uefi, "{vmx_name} must boot the guest through OVMF");
+        assert!(svm_qemu.uefi, "{svm_name} must boot the guest through OVMF");
+        assert!(
+            vmx_qemu.to_bin && svm_qemu.to_bin,
+            "{mode} cases must provide raw BIN artifacts for the UEFI ESP"
+        );
+        assert_eq!(
+            qemu_argument_value(&vmx_qemu.args, "-machine")
+                .split(',')
+                .next(),
+            Some("q35")
+        );
+        assert_eq!(
+            qemu_argument_value(&svm_qemu.args, "-machine")
+                .split(',')
+                .next(),
+            Some("q35")
+        );
+        assert_eq!(qemu_argument_value(&vmx_qemu.args, "-accel"), "kvm");
+        assert_eq!(qemu_argument_value(&svm_qemu.args, "-accel"), "kvm");
+        assert!(qemu_argument_value(&vmx_qemu.args, "-cpu").contains("+vmx-ept"));
+        assert!(qemu_argument_value(&svm_qemu.args, "-cpu").contains("+svm"));
+        let vmx_cpu = replace_qemu_argument(&mut vmx_qemu.args, "-cpu", "<backend>");
+        let svm_cpu = replace_qemu_argument(&mut svm_qemu.args, "-cpu", "<backend>");
+        assert_eq!(
+            vmx_qemu, svm_qemu,
+            "VMX and SVM {mode} cases may differ only in outer CPU capabilities"
+        );
+        assert!(vmx_cpu.contains("vmx"));
+        assert!(svm_cpu.contains("svm"));
+        for qemu in [&vmx_qemu, &svm_qemu] {
+            assert!(qemu.success_regex.iter().any(|pattern| {
+                pattern.contains(&format!("PCI_BLOCK_{}_PASSED", mode.to_uppercase()))
+            }));
+            assert!(
+                qemu.fail_regex
+                    .iter()
+                    .any(|pattern| pattern.contains("AXVISOR_X86_PCI_BLOCK_FAILED"))
+            );
+        }
+
+        let svm_guest_path = workspace_root.join(&svm_build.vm_configs[0]);
+        assert_eq!(
+            guest_text,
+            fs::read_to_string(svm_guest_path).unwrap(),
+            "VMX and SVM {mode} cases must load identical guest configuration"
+        );
+    }
+}
+
+fn load_ovmf_build_config(path: &Path) -> TestOvmfBuildConfig {
+    toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn load_qemu_config(path: &Path) -> QemuConfig {
+    toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn replace_qemu_argument(args: &mut [String], option: &str, replacement: &str) -> String {
+    let index = args
+        .iter()
+        .position(|argument| argument == option)
+        .unwrap_or_else(|| panic!("missing QEMU option {option}"));
+    std::mem::replace(
+        args.get_mut(index + 1)
+            .unwrap_or_else(|| panic!("missing value for QEMU option {option}")),
+        replacement.to_string(),
+    )
+}
+
+fn qemu_argument_value<'a>(args: &'a [String], option: &str) -> &'a str {
+    let index = args
+        .iter()
+        .position(|arg| arg == option)
+        .unwrap_or_else(|| panic!("missing QEMU option {option}"));
+    args.get(index + 1)
+        .unwrap_or_else(|| panic!("missing value for QEMU option {option}"))
 }
 
 #[test]

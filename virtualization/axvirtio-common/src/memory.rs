@@ -2,6 +2,7 @@
 
 use ax_memory_addr::PhysAddr;
 use axaddrspace::GuestMemoryAccessor;
+use axdevice_base::{DeviceContext, DmaGrant};
 use axvm_types::GuestPhysAddr;
 
 use crate::{VirtioError, VirtioResult};
@@ -50,5 +51,36 @@ impl<T: GuestMemoryAccessor> GuestMemory for AddressSpaceMemory<'_, T> {
         self.accessor
             .write_buffer(guest_addr, data)
             .map_err(|_| VirtioError::InvalidAddress)
+    }
+}
+
+/// Guest-memory capability adapter for a routed PCI endpoint callback.
+///
+/// The endpoint supplies its registration-time [`DmaGrant`]; the runtime still
+/// validates the grant and the current BME snapshot on every operation through
+/// [`DeviceContext`].
+pub struct DeviceContextMemory<'a> {
+    context: &'a mut dyn DeviceContext,
+    grant: &'a DmaGrant,
+}
+
+impl<'a> DeviceContextMemory<'a> {
+    /// Creates a scoped memory adapter for one endpoint callback.
+    pub fn new(context: &'a mut dyn DeviceContext, grant: &'a DmaGrant) -> Self {
+        Self { context, grant }
+    }
+}
+
+impl GuestMemory for DeviceContextMemory<'_> {
+    fn read(&mut self, guest_addr: GuestPhysAddr, data: &mut [u8]) -> VirtioResult<()> {
+        self.context
+            .read_guest_memory(self.grant, guest_addr, data)
+            .map_err(|_| VirtioError::MemoryError)
+    }
+
+    fn write(&mut self, guest_addr: GuestPhysAddr, data: &[u8]) -> VirtioResult<()> {
+        self.context
+            .write_guest_memory(self.grant, guest_addr, data)
+            .map_err(|_| VirtioError::MemoryError)
     }
 }

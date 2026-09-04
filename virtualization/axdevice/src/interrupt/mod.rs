@@ -9,4 +9,4 @@ pub(crate) use registration::{
     WiredEndpointRegistration,
 };
 pub use registry::InterruptRegistrationError;
-pub(crate) use registry::InterruptRegistry;
+pub(crate) use registry::{InterruptRegistry, InterruptRegistryCheckpoint};

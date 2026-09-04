@@ -1,6 +1,10 @@
-//! VirtIO Error Types
+//! VirtIO error types and runtime error conversion.
 //!
 //! This module defines common error types used across all VirtIO device implementations.
+
+use alloc::format;
+
+use axdevice_base::DeviceError;
 
 /// VirtIO specific error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,3 +67,80 @@ pub enum VirtioError {
 
 /// Result type for VirtIO operations
 pub type VirtioResult<T> = Result<T, VirtioError>;
+
+/// Maps a VirtIO error to the runtime category that determines the caller's
+/// recovery action.
+pub fn map_virtio_error(error: VirtioError, operation: &'static str) -> DeviceError {
+    match error {
+        VirtioError::BackendError => DeviceError::Backend {
+            operation,
+            detail: format!("{error:?}"),
+        },
+        VirtioError::QueueFaulted => DeviceError::InvalidState {
+            operation,
+            detail: "queue faulted; guest reset required".into(),
+        },
+        VirtioError::QueueNotReady | VirtioError::DeviceNotReady => DeviceError::InvalidState {
+            operation,
+            detail: format!("{error:?}"),
+        },
+        VirtioError::WouldBlock => DeviceError::ResourceBusy {
+            operation,
+            resource: "VirtIO queue or reset transition".into(),
+        },
+        VirtioError::NotSupported => DeviceError::Unsupported {
+            operation,
+            detail: format!("{error:?}"),
+        },
+        VirtioError::MemoryError | VirtioError::InvalidAddress => DeviceError::InvalidData {
+            operation,
+            detail: format!("{error:?}"),
+        },
+        VirtioError::InvalidAccessWidth
+        | VirtioError::InvalidDeviceIndex
+        | VirtioError::InvalidRegister
+        | VirtioError::InvalidRequest
+        | VirtioError::FeatureNegotiationFailed
+        | VirtioError::InvalidInput => DeviceError::InvalidInput {
+            operation,
+            detail: format!("{error:?}"),
+        },
+        VirtioError::NotFound => DeviceError::NotFound,
+        VirtioError::InvalidQueue
+        | VirtioError::InvalidDescriptor
+        | VirtioError::InvalidConfig
+        | VirtioError::InvalidBufferSize
+        | VirtioError::InvalidSector
+        | VirtioError::RingMisaligned
+        | VirtioError::RingOverlap
+        | VirtioError::InvalidRingLayout => DeviceError::InvalidData {
+            operation,
+            detail: format!("{error:?}"),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_runtime_error_categories() {
+        assert!(matches!(
+            map_virtio_error(VirtioError::BackendError, "test operation"),
+            DeviceError::Backend { .. }
+        ));
+        assert!(matches!(
+            map_virtio_error(VirtioError::QueueFaulted, "test operation"),
+            DeviceError::InvalidState { .. }
+        ));
+        assert!(matches!(
+            map_virtio_error(VirtioError::WouldBlock, "test operation"),
+            DeviceError::ResourceBusy { .. }
+        ));
+        assert!(matches!(
+            map_virtio_error(VirtioError::InvalidAddress, "test operation"),
+            DeviceError::InvalidData { .. }
+        ));
+    }
+}

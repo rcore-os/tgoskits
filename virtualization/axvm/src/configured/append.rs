@@ -15,10 +15,14 @@ pub(crate) fn append_configured_devices(
     nodes: &mut Vec<DeviceNodeSpec>,
     default_controller_node: &DeviceNodeId,
     default_controller: InterruptControllerId,
+    default_pci_host_key: Option<PciHostKey>,
 ) -> AxVmResult {
     let base_context = DeviceInstantiationContext::new()
         .with_vm_id(config.id())
         .with_default_wired_controller(default_controller_node.clone(), default_controller);
+    let base_context = default_pci_host_key.map_or(base_context.clone(), |host| {
+        base_context.clone().with_default_pci_host_key(host)
+    });
     let default = default_serial_intent(config, default_controller)?;
     let request = config
         .virtual_device_requests()
@@ -256,6 +260,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
         )
         .unwrap();
 
@@ -307,6 +312,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
         )
         .unwrap();
 

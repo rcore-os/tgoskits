@@ -1,6 +1,12 @@
 //! Validated controller and endpoint indices owned by `DeviceRuntime`.
 
-use alloc::{collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    format,
+    string::String,
+    sync::Arc,
+    vec::Vec,
+};
 
 use axdevice_base::*;
 
@@ -94,6 +100,13 @@ pub(crate) struct InterruptRegistry {
     endpoints: EndpointIndex,
 }
 
+#[derive(Clone)]
+pub(crate) struct InterruptRegistryCheckpoint {
+    controller_ids: BTreeSet<InterruptControllerId>,
+    message_len: usize,
+    registration_len: usize,
+}
+
 impl InterruptRegistry {
     pub(crate) const fn new() -> Self {
         Self {
@@ -152,6 +165,36 @@ impl InterruptRegistry {
                 }
             }
             self.endpoints.registrations.push(endpoint);
+        }
+    }
+
+    pub(crate) fn checkpoint(&self) -> InterruptRegistryCheckpoint {
+        InterruptRegistryCheckpoint {
+            controller_ids: self.controllers.keys().copied().collect(),
+            message_len: self.endpoints.messages.len(),
+            registration_len: self.endpoints.registrations.len(),
+        }
+    }
+
+    pub(crate) fn rollback(&mut self, checkpoint: InterruptRegistryCheckpoint) {
+        self.controllers
+            .retain(|id, _| checkpoint.controller_ids.contains(id));
+        self.endpoints.messages.truncate(checkpoint.message_len);
+        self.endpoints
+            .registrations
+            .truncate(checkpoint.registration_len);
+        self.endpoints.wired.clear();
+        for endpoint in &self.endpoints.registrations {
+            if let EndpointRegistration::Wired(registration) = endpoint {
+                self.endpoints
+                    .wired
+                    .entry(wired_key(registration.resolved))
+                    .or_insert_with(|| WiredPolicy {
+                        trigger: registration.resolved.trigger(),
+                        sharing: registration.resolved.sharing(),
+                        owner: registration.lease.device_id().into(),
+                    });
+            }
         }
     }
 

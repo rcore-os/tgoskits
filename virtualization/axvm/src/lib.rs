@@ -52,7 +52,7 @@ pub use axvm_types::{
 pub use configured::{
     ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
     ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
-    FixedDeviceBindings, FixedWiredBinding,
+    FixedDeviceBindings, FixedWiredBinding, VirtioPciFunction, virtio_capabilities,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};

@@ -104,6 +104,7 @@ extern crate alloc;
 mod device;
 
 use alloc::{string::String, sync::Arc};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, InterruptTriggerMode, IrqLineId};
 
@@ -386,6 +387,256 @@ define_grant!(
     StopGrant
 );
 
+/// Binding generation for one routed-device grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RoutedBindingGeneration(u64);
+
+impl RoutedBindingGeneration {
+    /// Creates a binding generation value.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the numeric generation value for diagnostics and comparisons.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Admission epoch for one routed-device grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RoutedAdmissionEpoch(u64);
+
+impl RoutedAdmissionEpoch {
+    /// Creates an admission epoch value.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the numeric epoch value for diagnostics and comparisons.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Runtime-created capability for entering one routed device context.
+///
+/// The constructor only creates an inert handle. The device runtime gives a
+/// handle authority by registering the exact token for one final device,
+/// binding generation, and admission epoch. The DMA flag is a root-side
+/// snapshot: it never replaces the endpoint's separately registered
+/// [`DmaGrant`].
+struct RoutedGrantAdmission {
+    open: AtomicBool,
+    epoch: AtomicU64,
+}
+
+impl RoutedGrantAdmission {
+    #[cfg(feature = "runtime-internal")]
+    fn new(epoch: RoutedAdmissionEpoch) -> Self {
+        Self {
+            open: AtomicBool::new(true),
+            epoch: AtomicU64::new(epoch.value()),
+        }
+    }
+
+    fn is_open_at(&self, epoch: RoutedAdmissionEpoch) -> bool {
+        self.epoch.load(Ordering::Acquire) == epoch.value() && self.open.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "runtime-internal")]
+    fn close(&self) {
+        self.open.store(false, Ordering::Release);
+    }
+
+    #[cfg(feature = "runtime-internal")]
+    fn reopen(&self, epoch: RoutedAdmissionEpoch) {
+        self.epoch.store(epoch.value(), Ordering::Release);
+        self.open.store(true, Ordering::Release);
+    }
+}
+
+/// Lifetime state for a grant that has already passed routed admission.
+///
+/// This state is deliberately separate from [`RoutedGrantAdmission`]. The
+/// latter controls whether a new callback may be admitted; this state keeps
+/// one callback admitted until its runtime-owned scope guard is dropped.
+struct ScopedRoutedGrantAdmission {
+    active: AtomicBool,
+}
+
+impl ScopedRoutedGrantAdmission {
+    #[cfg(feature = "runtime-internal")]
+    fn new() -> Self {
+        Self {
+            active: AtomicBool::new(true),
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        // Acquire observes the Release performed by the scope guard's Drop.
+        self.active.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "runtime-internal")]
+    fn close(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+/// Runtime-owned guard that keeps an admitted routed grant valid.
+///
+/// This type is only constructed by the device runtime after a route
+/// admission succeeds. Cloning the associated grant does not extend this
+/// guard's lifetime: every clone observes the same active bit.
+#[cfg(feature = "runtime-internal")]
+#[doc(hidden)]
+#[must_use = "the scope guard keeps an admitted routed grant valid"]
+pub struct RoutedGrantScope {
+    admission: Arc<ScopedRoutedGrantAdmission>,
+}
+
+#[cfg(feature = "runtime-internal")]
+impl Drop for RoutedGrantScope {
+    fn drop(&mut self) {
+        self.admission.close();
+    }
+}
+
+/// An inert or scope-bound handle for temporarily entering one runtime-routed
+/// device.
+#[derive(Clone)]
+pub struct RoutedDeviceGrant {
+    device_id: DeviceId,
+    binding_generation: RoutedBindingGeneration,
+    admission_epoch: RoutedAdmissionEpoch,
+    dma_enabled: bool,
+    token: Arc<()>,
+    admission: Arc<RoutedGrantAdmission>,
+    scoped_admission: Option<Arc<ScopedRoutedGrantAdmission>>,
+}
+
+impl RoutedDeviceGrant {
+    /// Creates an inert routed-device handle for a binding snapshot.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn new(
+        device_id: DeviceId,
+        binding_generation: RoutedBindingGeneration,
+        admission_epoch: RoutedAdmissionEpoch,
+        dma_enabled: bool,
+    ) -> Self {
+        Self {
+            device_id,
+            binding_generation,
+            admission_epoch,
+            dma_enabled,
+            token: Arc::new(()),
+            admission: Arc::new(RoutedGrantAdmission::new(admission_epoch)),
+            scoped_admission: None,
+        }
+    }
+
+    /// Returns the final device identity selected by this route.
+    pub const fn device_id(&self) -> DeviceId {
+        self.device_id
+    }
+
+    /// Returns the binding generation selected by this route.
+    pub const fn binding_generation(&self) -> RoutedBindingGeneration {
+        self.binding_generation
+    }
+
+    /// Returns the admission epoch selected by this route.
+    pub const fn admission_epoch(&self) -> RoutedAdmissionEpoch {
+        self.admission_epoch
+    }
+
+    /// Returns the root's bus-master-enable snapshot.
+    pub const fn dma_enabled(&self) -> bool {
+        self.dma_enabled
+    }
+
+    /// Returns whether two handles carry the same routing authority.
+    pub fn same_token(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.token, &other.token)
+    }
+
+    /// Returns whether this snapshot may enter a routed device context.
+    ///
+    /// Ordinary snapshots require their shared admission epoch to remain
+    /// open. A snapshot produced by the runtime's admission conversion
+    /// instead remains valid until its scope guard is dropped, so closing the
+    /// shared admission does not revoke an already admitted callback.
+    pub fn admission_is_open(&self) -> bool {
+        self.scoped_admission.as_ref().map_or_else(
+            || self.admission.is_open_at(self.admission_epoch),
+            |admission| admission.is_active(),
+        )
+    }
+
+    /// Converts an already validated, currently admitted grant into a
+    /// scope-bound grant.
+    ///
+    /// The caller must retain the returned guard for the full callback
+    /// lifetime. Dropping it invalidates this grant and all of its clones.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn admit(mut self) -> Option<(Self, RoutedGrantScope)> {
+        if self.scoped_admission.is_some() || !self.admission.is_open_at(self.admission_epoch) {
+            return None;
+        }
+        let admission = Arc::new(ScopedRoutedGrantAdmission::new());
+        self.scoped_admission = Some(admission.clone());
+        Some((self, RoutedGrantScope { admission }))
+    }
+
+    /// Closes validation for this grant's current epoch.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn close_admission(&self) {
+        self.admission.close();
+    }
+
+    /// Creates the next admission-epoch snapshot without changing binding
+    /// generation or routing identity.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn with_admission_epoch(&self, admission_epoch: RoutedAdmissionEpoch) -> Self {
+        Self {
+            device_id: self.device_id,
+            binding_generation: self.binding_generation,
+            admission_epoch,
+            dma_enabled: self.dma_enabled,
+            token: self.token.clone(),
+            admission: self.admission.clone(),
+            scoped_admission: None,
+        }
+    }
+
+    /// Reopens this grant's shared admission at a fresh epoch.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn reopen_admission(&self, admission_epoch: RoutedAdmissionEpoch) {
+        self.admission.reopen(admission_epoch);
+    }
+
+    /// Copies this route with a freshly captured bus-master-enable snapshot.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn with_dma_enabled(&self, dma_enabled: bool) -> Self {
+        Self {
+            device_id: self.device_id,
+            binding_generation: self.binding_generation,
+            admission_epoch: self.admission_epoch,
+            dma_enabled,
+            token: self.token.clone(),
+            admission: self.admission.clone(),
+            scoped_admission: self.scoped_admission.clone(),
+        }
+    }
+}
+
 /// Guest-memory operations made available to a device runtime.
 ///
 /// This boundary deliberately carries no device identity or grant. The
@@ -409,6 +660,21 @@ pub trait GuestMemoryAccess {
 pub trait DeviceContext {
     /// Returns the identity of the device currently handling this access.
     fn device_id(&self) -> DeviceId;
+
+    /// Enters a runtime-created routed device context.
+    ///
+    /// The default implementation is deliberately denied. Only the sealed
+    /// device runtime can validate and materialize a routed context.
+    fn with_routed_device(
+        &mut self,
+        _grant: &RoutedDeviceGrant,
+        _callback: &mut dyn FnMut(&mut dyn DeviceContext) -> DeviceResult,
+    ) -> DeviceResult {
+        Err(DeviceError::Unsupported {
+            operation: "enter routed device context",
+            detail: "this device access has no routed-device grant".into(),
+        })
+    }
 
     /// Reads guest memory on behalf of the currently dispatched device.
     ///

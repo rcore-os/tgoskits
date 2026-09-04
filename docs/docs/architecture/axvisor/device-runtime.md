@@ -65,9 +65,17 @@ AxVM 不把 `AxVM` 整体暴露给设备。设备在 bundle 中声明 grant；ru
 
 `RuntimeAccessPorts` 在 prepare 时装入 timer/wake/stop adapter。DMA 有意不成为可长期保存的 runtime port：`AxVM::try_write_device()` 等需要 guest memory 的入口以及 `poll_dma_devices()` 才创建 `VmGuestMemoryAccess`，调用返回后端口即失效。读访问不隐式注入 guest-memory port；写访问也只有同时具备临时 port 和匹配 grant 才能访问 guest memory。完整 grant API 和失败条件见[模拟设备框架第 6 章](./emulated-devices.md#6-访问上下文与运行时能力)。
 
+### 3.2 PCI routed endpoint 与生命周期屏障
+
+PCI host、resolved topology 和 endpoint bundle 共享同一个 `PciRootState`。endpoint 的 `PciRootBinding` lease 只在 endpoint object、validated contract、routed grant、`DmaGrant` 和 `IrqLine` 全部准备完成后发布；route 发布前，PCI BDF、BAR 和 capability metadata 对 guest 不可达。BAR/config callback 取得带 endpoint final `DeviceId` 的 `DeviceContext`，并在锁外使用 endpoint-owned `DmaGrant`，不会退回 root grant 或 `NoopDeviceContext`。
+
+每个 token 同时校验 `EndpointBindingGeneration`、`RoutedAdmissionEpoch` 和 admission-open 状态。普通 callback 的 IRQ 电平变化必须取得同一 binding generation 作用域的 `EndpointIrqTransitionPermit`；root registration、full reset 和 teardown 的 owner-side line cleanup 通过 lifecycle owner gate 串行执行。teardown 先撤回 route、关闭 admission、drain scoped leases/permits，再失效 binding generation，最后撤销物理 line。full reset 在向 guest 发布 status 0 前推进 `VirtioQueueGeneration`、等待所有 `ActivityPermit`，并重新应用 root 的最新 Command snapshot；任一阶段失败都保持 fail-closed，不能恢复 guest 或 IRQ admission。
+
+VirtIO PCI block 的 queue notify 只有在 `queue_enable && DRIVER_OK && BME && endpoint DmaGrant` 同时成立时才消费 guest descriptor。`ActivityPermit` 覆盖 backend、guest-memory、used/status 和 ISR/INTx publication/suppression 的完整 terminal path；reset 不持有 root、transport、router 或 ramdisk 锁等待 permit。BME 清除或 admission close 后新 operation 必须停止，已升级的旧 operation 依 captured snapshot 完成并在 permit drop 后才允许 reset 完成。
+
 每次 MMIO、PIO 或 SysReg 请求都构造成不可变的 `DeviceAccess`，其中包含总线、地址、宽度以及发起访问的 VM-local `DeviceVcpuId`。源 vCPU 必须由 exit handler 显式传入，不能从宿主 CPU 或当前执行上下文推断；它描述“谁发起了访问”，也不等同于设备随后选择的中断目标。runtime 按地址找到设备后，为这一次 `Device::read()` 或 `Device::write()` 创建 `DeviceContext`，回调返回后立即丢弃。
 
-### 3.2 typed services 的架构消费者
+### 3.3 typed services 的架构消费者
 
 `DeviceServices` 保存类型化的 VM-local capability。AxVM 在 prepare、exit 或 IRQ 路径中按 key 取出所需 service，无需用字符串或向下转换查找 `Device`。
 

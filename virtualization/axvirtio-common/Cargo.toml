@@ -10,6 +10,7 @@ keywords = ["virtio", "hypervisor", "no_std", "arceos"]
 categories = ["no-std", "embedded", "hardware-support"]
 
 [dependencies]
+axdevice_base.workspace = true
 ax-memory-addr.workspace = true
 axaddrspace.workspace = true
 axvm-types.workspace = true

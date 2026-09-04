@@ -103,7 +103,7 @@ AxVM 公共注册入口显式注册的用户可选 model 如下。
 | `uart16550-mmio` | MMIO 16550 串口 | MMIO `registers` + wired IRQ `irq` |
 | `uart16550-pio` | x86 PIO 16550 串口 | PIO `registers` + wired IRQ `irq` |
 | `ivc-channel` | Axvisor IVC 共享窗口与通知端点 | MMIO `registers` + wired IRQ `notify` |
-| `virtio-blk` | VirtIO MMIO 块设备 | auto MMIO `mmio` + wired IRQ `irq` |
+| `virtio-blk` | VirtIO MMIO 块设备，或现代 VirtIO PCI 同步 ramdisk | MMIO `mmio` + wired IRQ `irq`，或 PCI host/BAR0 + endpoint-owned INTA + `DmaGrant` |
 | `virtio-net` | VirtIO MMIO 网卡与 AxVM 内部交换机端口 | auto MMIO `mmio` + wired IRQ `irq` |
 
 `ConfiguredDeviceCatalog::new()` 创建空 catalog。Axvisor 构造 VM 参数时显式调用 `axvm::machine::register_devices()`，但不拥有上述通用设备的 model、backend 或 runtime 实现。未注册 model 返回 `UnknownVirtualDeviceModel`，prepare 阶段会明确失败。
@@ -381,6 +381,8 @@ grant 使用 bundle-local 设备下标记录归属，直到注册成功后才换
 
 设备对象按 bundle 内顺序注册。若中途出现地址资源冲突，runtime 会把本 bundle 已追加的设备弹出，并按每个设备的 `resources()` 删除刚插入的索引；之前已经成功注册的 bundle 不受影响。只有所有设备注册成功后，grant、pollable、lifecycle、service 和 planned 资源才并入 runtime。
 
+PCI endpoint bundle 还必须在 route publication 前完成 endpoint object、validated PCI contract、最终 `DeviceId`、routed grant、endpoint `DmaGrant`、`IrqLine` 和 root binding lease 的整组提交。route 撤回、`RoutedAdmissionEpoch` 关闭、scoped lease/IRQ permit drain、`EndpointBindingGeneration` 失效和 owner-side line withdrawal 按固定顺序执行；任何中途失败都保持 closed admission，不能释放仍可能被旧 callback 使用的 runtime handle。
+
 ## 5. 设备与访问模型
 
 运行时只认识统一的 `Device` trait。设备协议状态保存在具体实现内部，框架通过静态 `resources()` 建立分派索引，通过 `read()` 或 `write()` 处理一次已经解码的客户机访问。
@@ -498,6 +500,8 @@ VM 内存由独立的 `GuestMemoryAccess` capability 实现。该 trait 不携�
 
 guest-memory 端口不会长期保存在设备中。guest 写路径可以给 runtime 注入临时 memory port；读路径没有隐式 VM 内存能力。VM 主动调用 `poll_dma_devices()` 时也会创建一次性 `RuntimeDeviceContext`。
 
+VirtIO PCI 的 BAR/config callback 使用 routed endpoint context，而不是 root 或 `NoopDeviceContext`。callback 取得的 `DmaGrant` 必须属于该 endpoint，且 BME snapshot、binding generation 和 routed admission epoch 均有效。full reset 先关闭旧 epoch、推进 `VirtioQueueGeneration` 并等待所有 `ActivityPermit`，再发布 status 0；旧 permit 覆盖到 used/status 和 ISR/INTx publication 或 suppression 的 terminal boundary。
+
 ```mermaid
 sequenceDiagram
     participant VM as AxVM
@@ -562,14 +566,14 @@ reset 和 resume 按注册顺序执行，suspend 按逆序执行。pollable 去�
 | `uart16550-mmio` | 16550 MMIO 设备，wired IRQ，串口 service/固件元数据 | 同上 |
 | `uart16550-pio` | 16550 PIO 设备，wired IRQ，x86 端口访问 | `clock_hz`、`backend` |
 | `ivc-channel` | IVC aperture allocator service + wired notify endpoint service | options 为空且拒绝未知字段 |
-| `virtio-blk` | VirtIO MMIO block runtime + DMA grant/poller；ramdisk 或 file backend | `capacity`/`capacity_sectors`、`backend`、`path` |
+| `virtio-blk` | VirtIO MMIO block runtime + DMA grant/poller；PCI transport 当前只接受同步 ramdisk | `transport`、`capacity`/`capacity_sectors`、`backend`、`path`、`read_only` |
 | `virtio-net` | VirtIO MMIO net runtime + DMA grant/poller；连接 AxVM 内部 L2 switch | `guest_mac` |
 
 串口 backend 目前支持 `{ type = "host-console" }` 和 `{ type = "null" }`。`host-console` 每台 VM 只能有一个 owner。
 
 `ivc-channel` 不注册可直接读写的 `Device`；它通过 service 提供共享 MMIO aperture 分配器和 notify endpoint。判断 IVC 是否生效不能只看 `device_count()`。
 
-virtio-blk/net 的 model、MMIO transport、DMA 接线、IRQ 和 backend glue 都由 AxVM 拥有；Axvisor 不再维护单独的 `virtual_devices` 模块或 model registration。两者的 MMIO/IRQ 均来自 auto pool，因此多实例按 graph ID 确定性分配，固件节点与实例一一对应。
+virtio-blk/net 的 model、transport、DMA 接线、IRQ 和 backend glue 都由 AxVM 拥有；Axvisor 不再维护单独的 `virtual_devices` 模块或 model registration。virtio-blk 默认仍是 MMIO；指定 `transport = "pci"` 时必须使用 `backend = "ramdisk"`，由同一 resolved PCI topology 分配 BAR0 和 INTA，并在 endpoint bundle 中注册 `DmaGrant`。MMIO/PCI 资源均按 graph ID 确定性规划，固件节点与实例一一对应。
 
 ### 8.2 `fw_cfg`
 

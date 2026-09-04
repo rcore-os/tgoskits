@@ -276,6 +276,23 @@ impl DeviceRequirements {
         Ok(self)
     }
 
+    pub(crate) fn with_derived_wired_irq(
+        &mut self,
+        slot: ResourceSlot,
+        controller: InterruptControllerId,
+        trigger: InterruptTrigger,
+        sharing: InterruptSharing,
+        request: ResourceRequest<ControllerInputId>,
+    ) -> DeviceManagerResult {
+        self.insert(DeviceRequirement::WiredIrq {
+            slot,
+            controller,
+            trigger,
+            sharing,
+            request,
+        })
+    }
+
     /// Adds one host physical interrupt requirement.
     pub fn with_host_irq(
         mut self,

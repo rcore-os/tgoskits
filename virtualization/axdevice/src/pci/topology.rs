@@ -8,8 +8,9 @@ use alloc::{
 use core::{fmt, ops::Range};
 
 use super::{
-    FOUR_GIB, PciBarIndex, PciBdf, PciEndpointIdentity, PciError, PciFunctionSpec, PciResult,
-    bar::ResolvedBarPlan, config::PowerOnConfig, placement::resolve_bar_addresses,
+    FOUR_GIB, PciBarIndex, PciBdf, PciCapabilityLayout, PciEndpointIdentity, PciError,
+    PciFunctionSpec, PciResult, bar::ResolvedBarPlan, capability::layout_capabilities,
+    config::PowerOnConfig, placement::resolve_bar_addresses,
 };
 use crate::{DeviceNodeId, ResourceRequest};
 
@@ -19,6 +20,7 @@ const DEVICE_COUNT: u8 = 32;
 pub(crate) struct PciTopologyBuilder {
     functions: BTreeMap<DeviceNodeId, PciFunctionSpec>,
     reservations: BTreeSet<PciBdf>,
+    intx_routes: BTreeMap<DeviceNodeId, super::ResolvedPciIntx>,
 }
 
 impl PciTopologyBuilder {
@@ -27,6 +29,7 @@ impl PciTopologyBuilder {
         Self {
             functions: BTreeMap::new(),
             reservations: BTreeSet::new(),
+            intx_routes: BTreeMap::new(),
         }
     }
 
@@ -62,6 +65,37 @@ impl PciTopologyBuilder {
         Ok(())
     }
 
+    /// Records the resolved INTx route for one declared function.
+    pub(crate) fn set_intx_route(
+        &mut self,
+        function: &DeviceNodeId,
+        route: super::ResolvedPciIntx,
+    ) -> PciResult {
+        let Some(declaration) = self.functions.get(function) else {
+            return Err(PciError::UnknownFunction {
+                function: function.to_string(),
+            });
+        };
+        if declaration.intx.is_none() {
+            return Err(PciError::IntxRouteUnavailable {
+                function: function.to_string(),
+                detail: "the PCI function has no INTx requirement".into(),
+            });
+        }
+        if self.intx_routes.insert(function.clone(), route).is_some() {
+            return Err(PciError::IntxRouteUnavailable {
+                function: function.to_string(),
+                detail: "the PCI function already has a resolved INTx route".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Resolves fixed and automatic BDF requests without resolving BARs.
+    pub(crate) fn resolve_bdfs(&self) -> PciResult<BTreeMap<DeviceNodeId, PciBdf>> {
+        resolve_bdfs(&self.functions, &self.reservations)
+    }
+
     /// Resolves all fixed requests, performs deterministic automatic
     /// placement, and validates the complete topology before graph ownership
     /// is assigned.
@@ -79,11 +113,23 @@ impl PciTopologyBuilder {
     /// topology is returned.
     pub(crate) fn resolve(self, memory_aperture: Range<u64>) -> PciResult<ResolvedPciTopology> {
         validate_memory_aperture(&memory_aperture)?;
-        let bdfs = resolve_bdfs(&self.functions, &self.reservations)?;
-        let bar_addresses = resolve_bar_addresses(&memory_aperture, &self.functions)?;
-        let mut functions = Vec::with_capacity(self.functions.len());
-        for (id, spec) in self.functions {
+        let Self {
+            functions: declarations,
+            reservations,
+            intx_routes,
+        } = self;
+        let bdfs = resolve_bdfs(&declarations, &reservations)?;
+        let bar_addresses = resolve_bar_addresses(&memory_aperture, &declarations)?;
+        let mut functions = Vec::with_capacity(declarations.len());
+        for (id, spec) in declarations {
             let bdf = bdfs[&id];
+            let intx = intx_routes.get(&id).copied();
+            if spec.intx.is_some() && intx.is_none() {
+                return Err(PciError::IntxRouteUnavailable {
+                    function: id.to_string(),
+                    detail: "an INTx requirement has no resolved route".into(),
+                });
+            }
             let bars = spec
                 .bars
                 .iter()
@@ -93,7 +139,15 @@ impl PciTopologyBuilder {
                     address: bar_addresses[&(id.clone(), bar.index())],
                 })
                 .collect::<Vec<_>>();
-            let power_on = PowerOnConfig::build(spec.identity, &bars, &spec.config_bytes)?;
+            let capabilities = layout_capabilities(&spec.capabilities)?;
+            validate_capability_config_patches(&spec.config_bytes, &capabilities)?;
+            let power_on = PowerOnConfig::build(
+                spec.identity,
+                &bars,
+                &spec.config_bytes,
+                &capabilities,
+                intx_routes.get(&id).copied(),
+            )?;
             functions.push(ResolvedPciFunction {
                 owner: id.clone(),
                 host: id.clone(),
@@ -101,7 +155,9 @@ impl PciTopologyBuilder {
                 identity: spec.identity,
                 bdf,
                 bars,
+                capabilities,
                 power_on,
+                intx,
             });
         }
         functions.sort_by_key(|function| function.bdf);
@@ -110,6 +166,26 @@ impl PciTopologyBuilder {
             functions,
         })
     }
+}
+
+fn validate_capability_config_patches(
+    patches: &[super::function::PciConfigByte],
+    capabilities: &[PciCapabilityLayout],
+) -> PciResult {
+    for patch in patches {
+        let offset = usize::from(patch.offset.value());
+        if capabilities.iter().any(|capability| {
+            let start = usize::from(capability.offset().value());
+            let end = start + usize::from(capability.length());
+            start <= offset && offset < end
+        }) {
+            return Err(PciError::InvalidConfigPatch {
+                offset: patch.offset.value(),
+                detail: "platform config bytes cannot overlap a capability",
+            });
+        }
+    }
+    Ok(())
 }
 
 impl Default for PciTopologyBuilder {
@@ -136,6 +212,8 @@ pub struct ResolvedPciFunction {
     identity: PciEndpointIdentity,
     bdf: PciBdf,
     bars: Vec<ResolvedBarPlan>,
+    capabilities: Vec<PciCapabilityLayout>,
+    intx: Option<super::ResolvedPciIntx>,
     pub(crate) power_on: PowerOnConfig,
 }
 
@@ -174,6 +252,16 @@ impl ResolvedPciFunction {
             .map(ResolvedPciBar)
     }
 
+    /// Returns the capabilities in their resolved config-space order.
+    pub fn capabilities(&self) -> impl Iterator<Item = &PciCapabilityLayout> {
+        self.capabilities.iter()
+    }
+
+    /// Returns the resolved endpoint INTx route, if one was declared.
+    pub const fn intx(&self) -> Option<super::ResolvedPciIntx> {
+        self.intx
+    }
+
     pub(crate) fn bars(&self) -> &[ResolvedBarPlan] {
         &self.bars
     }
@@ -189,6 +277,8 @@ impl fmt::Debug for ResolvedPciFunction {
             .field("identity", &self.identity)
             .field("bdf", &self.bdf)
             .field("bars", &self.bars)
+            .field("capabilities", &self.capabilities)
+            .field("intx", &self.intx)
             .finish()
     }
 }
@@ -343,8 +433,15 @@ fn validate_supported_bdf(bdf: PciBdf) -> PciResult {
 
 #[cfg(test)]
 mod tests {
+    use axdevice_base::{
+        ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger,
+    };
+
     use super::*;
-    use crate::{ConfigOffset, PciClass, PciMemoryBar, PciSegment};
+    use crate::{
+        ConfigOffset, PciCapabilityId, PciCapabilitySpec, PciClass, PciIntxPin, PciIntxRouter,
+        PciMemoryBar, PciSegment,
+    };
 
     const APERTURE_START: u64 = 0x2000_0000;
     const APERTURE_END: u64 = 0x2040_0000;
@@ -420,6 +517,53 @@ mod tests {
         assert!(matches!(
             PciTopologyBuilder::new().resolve(APERTURE_START..(1_u64 << 32) + 1),
             Err(PciError::InvalidHostAperture { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_platform_config_bytes_overlapping_capabilities() {
+        let capability = PciCapabilitySpec::new(
+            PciCapabilityId::new(1),
+            alloc::vec![0; 2],
+            alloc::vec![0; 2],
+        )
+        .unwrap();
+        let function = function("overlapping-capability")
+            .with_capability(capability)
+            .with_platform_config_byte(ConfigOffset::new(0x40).unwrap(), 1, 0xff)
+            .unwrap();
+        let mut builder = PciTopologyBuilder::new();
+        builder.add_function(function).unwrap();
+
+        assert!(matches!(
+            builder.resolve(APERTURE_START..APERTURE_END),
+            Err(PciError::InvalidConfigPatch { offset: 0x40, .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_an_intx_route_for_a_function_without_an_intx_requirement() {
+        let function_id = node("no-intx");
+        let mut builder = PciTopologyBuilder::new();
+        builder.add_function(function("no-intx")).unwrap();
+        let route = PciIntxRouter::new(
+            InterruptControllerId::new(0),
+            [
+                ControllerInputId::new(16),
+                ControllerInputId::new(17),
+                ControllerInputId::new(18),
+                ControllerInputId::new(19),
+            ],
+            [16, 17, 18, 19],
+            InterruptTrigger::LevelTriggered,
+            InterruptSharing::Shared,
+        )
+        .resolve(&function_id, bdf(1, 0), PciIntxPin::A)
+        .unwrap();
+
+        assert!(matches!(
+            builder.set_intx_route(&function_id, route),
+            Err(PciError::IntxRouteUnavailable { .. })
         ));
     }
 

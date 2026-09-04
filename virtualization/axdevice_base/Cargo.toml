@@ -11,6 +11,9 @@ keywords = ["arceos", "hypervisor", "virtualization", "device", "no-std"]
 categories = ["no-std", "virtualization"]
 license = "Apache-2.0"
 
+[features]
+runtime-internal = []
+
 [dependencies]
 log = "0.4"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

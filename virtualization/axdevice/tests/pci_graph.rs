@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axdevice::*;
+use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
 
 struct EmptyModel {
     requirements: DeviceRequirements,
@@ -58,6 +59,21 @@ fn host_provider() -> PciHostProvider {
     )
 }
 
+fn intx_router() -> PciIntxRouter {
+    PciIntxRouter::new(
+        InterruptControllerId::new(0),
+        [
+            ControllerInputId::new(16),
+            ControllerInputId::new(17),
+            ControllerInputId::new(18),
+            ControllerInputId::new(19),
+        ],
+        [16, 17, 18, 19],
+        InterruptTrigger::LevelTriggered,
+        InterruptSharing::Shared,
+    )
+}
+
 fn fixed_bdf(device: u8) -> PciBdf {
     PciBdf::new(PciSegment::new(0), 0, device, 0).unwrap()
 }
@@ -73,6 +89,32 @@ fn pools() -> ResourcePools {
     let mut pools = ResourcePools::new();
     pools.add_auto_mmio(0xc000_0000..0xd000_0000).unwrap();
     pools
+}
+
+fn intx_pools() -> ResourcePools {
+    let mut pools = pools();
+    pools
+        .allow_fixed_controller_inputs(
+            InterruptControllerId::new(0),
+            ControllerInputId::new(16)..ControllerInputId::new(20),
+        )
+        .unwrap();
+    pools
+}
+
+fn intx_endpoint_node(name: &str) -> DeviceNodeSpec {
+    intx_endpoint_node_with_pin(name, PciIntxPin::A)
+}
+
+fn intx_endpoint_node_with_pin(name: &str, pin: PciIntxPin) -> DeviceNodeSpec {
+    let requirements = DeviceRequirements::new()
+        .with_pci_function(
+            endpoint_requirement()
+                .with_intx(PciIntxRequirement::new(pin, slot("intx")))
+                .unwrap(),
+        )
+        .unwrap();
+    DeviceNodeSpec::virtual_device(id(name), Arc::new(EmptyModel { requirements }))
 }
 
 #[test]
@@ -203,6 +245,148 @@ fn platform_functions_are_owned_by_the_host_and_reserve_their_bdfs() {
     assert_eq!(platform.owner(), &id("pci-host"));
     assert_eq!(platform.host(), &id("pci-host"));
     assert_eq!(endpoint.bdf(), fixed_bdf(1));
+}
+
+#[test]
+fn pci_intx_route_uses_the_resolved_bdf_and_is_planned_as_an_endpoint_resource() {
+    let host_function = PciFunctionSpec::new(
+        id("q35-host-function"),
+        PciEndpointIdentity::new(0x8086, 0x29c0, PciClass::new(0x06, 0, 0)),
+    )
+    .with_bdf(ResourceRequest::Fixed(fixed_bdf(0)));
+    let provider = host_provider()
+        .with_platform_function(host_function)
+        .unwrap()
+        .with_intx_router(intx_router());
+    let mut graph = DeviceGraphBuilder::new();
+    graph.register_pci_host(provider).unwrap();
+    graph.add(intx_endpoint_node("endpoint")).unwrap();
+
+    let declared = graph.declare().unwrap();
+    let requests = declared.requests().unwrap();
+    let endpoint_request = requests
+        .iter()
+        .find(|request| request.id() == "endpoint")
+        .unwrap();
+    assert!(
+        endpoint_request
+            .requirements()
+            .entries()
+            .iter()
+            .any(|requirement| {
+                matches!(
+                    requirement,
+                    DeviceRequirement::WiredIrq {
+                        controller,
+                        request: ResourceRequest::Fixed(input),
+                        ..
+                    } if *controller == InterruptControllerId::new(0)
+                        && *input == ControllerInputId::new(17)
+                )
+            })
+    );
+
+    let resolved = declared.resolve(intx_pools()).unwrap();
+    let topology = resolved.pci_topology(&host_key()).unwrap();
+    let endpoint = topology.function(&id("endpoint")).unwrap();
+    let route = endpoint.intx().unwrap();
+    assert_eq!(endpoint.bdf(), fixed_bdf(1));
+    assert_eq!(route.pin(), PciIntxPin::A);
+    assert_eq!(route.controller(), InterruptControllerId::new(0));
+    assert_eq!(route.input(), ControllerInputId::new(17));
+    assert_eq!(route.guest_line(), 17);
+    assert_eq!(route.trigger(), InterruptTrigger::LevelTriggered);
+    assert_eq!(route.sharing(), InterruptSharing::Shared);
+
+    let irq = resolved
+        .resources_for(&id("endpoint"))
+        .unwrap()
+        .wired_irq(&slot("intx"))
+        .unwrap();
+    assert_eq!(irq.controller(), route.controller());
+    assert_eq!(irq.input(), route.input());
+    assert_eq!(irq.trigger(), route.trigger());
+    assert_eq!(irq.sharing(), route.sharing());
+}
+
+#[test]
+fn pci_intx_requirement_requires_an_architecture_router() {
+    let mut graph = DeviceGraphBuilder::new();
+    graph.register_pci_host(host_provider()).unwrap();
+    graph.add(intx_endpoint_node("endpoint")).unwrap();
+
+    let error = match graph.declare().unwrap().resolve(intx_pools()) {
+        Ok(_) => panic!("an INTx endpoint without a router must fail resolution"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        DeviceManagerError::Pci(PciError::IntxRouteUnavailable { function, .. })
+            if function == "endpoint"
+    ));
+}
+
+#[test]
+fn pci_intx_router_adds_its_controller_dependency_to_the_host() {
+    let controller = id("intx-controller");
+    let provider = host_provider()
+        .with_intx_router(intx_router().with_controller_dependency(controller.clone()));
+    let mut graph = DeviceGraphBuilder::new();
+    graph
+        .add(DeviceNodeSpec::firmware_only(controller.clone()))
+        .unwrap();
+    graph.register_pci_host(provider).unwrap();
+
+    let resolved = graph.declare().unwrap().resolve(intx_pools()).unwrap();
+    let host = resolved
+        .nodes()
+        .find(|node| node.id() == &id("pci-host"))
+        .unwrap();
+    assert_eq!(host.dependencies(), &[controller]);
+}
+
+#[test]
+fn pci_intx_shared_level_route_keeps_each_endpoint_source_distinct() {
+    let host_function = PciFunctionSpec::new(
+        id("q35-host-function"),
+        PciEndpointIdentity::new(0x8086, 0x29c0, PciClass::new(0x06, 0, 0)),
+    )
+    .with_bdf(ResourceRequest::Fixed(fixed_bdf(0)));
+    let provider = host_provider()
+        .with_platform_function(host_function)
+        .unwrap()
+        .with_intx_router(intx_router());
+    let mut graph = DeviceGraphBuilder::new();
+    graph.register_pci_host(provider).unwrap();
+    graph
+        .add(intx_endpoint_node_with_pin("endpoint-a", PciIntxPin::A))
+        .unwrap();
+    graph
+        .add(intx_endpoint_node_with_pin("endpoint-b", PciIntxPin::D))
+        .unwrap();
+
+    let resolved = graph.declare().unwrap().resolve(intx_pools()).unwrap();
+    let topology = resolved.pci_topology(&host_key()).unwrap();
+    let first = topology.function(&id("endpoint-a")).unwrap();
+    let second = topology.function(&id("endpoint-b")).unwrap();
+    assert_eq!(first.bdf(), fixed_bdf(1));
+    assert_eq!(second.bdf(), fixed_bdf(2));
+    assert_eq!(first.intx().unwrap().input(), ControllerInputId::new(17));
+    assert_eq!(second.intx().unwrap().input(), ControllerInputId::new(17));
+
+    let first_irq = resolved
+        .resources_for(&id("endpoint-a"))
+        .unwrap()
+        .wired_irq(&slot("intx"))
+        .unwrap();
+    let second_irq = resolved
+        .resources_for(&id("endpoint-b"))
+        .unwrap()
+        .wired_irq(&slot("intx"))
+        .unwrap();
+    assert_eq!(first_irq.input(), second_irq.input());
+    assert_eq!(first_irq.sharing(), InterruptSharing::Shared);
+    assert_eq!(second_irq.sharing(), InterruptSharing::Shared);
 }
 
 #[test]

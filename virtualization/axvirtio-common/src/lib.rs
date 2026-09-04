@@ -7,6 +7,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 /// Re-export commonly used modules
 /// VirtIO device configuration structures and utilities
@@ -20,6 +22,8 @@ pub mod error;
 pub mod memory;
 /// MMIO transport layer for VirtIO devices
 pub mod mmio;
+/// VirtIO PCI transport state and common-config register handling.
+pub mod pci;
 /// VirtIO queue management and operations
 pub mod queue;
 
@@ -28,7 +32,12 @@ pub use config::VirtioConfig;
 /// Re-export commonly used constants
 pub use constants::*;
 pub use device_type::VirtioDeviceID;
-pub use error::{VirtioError, VirtioResult};
-pub use memory::{AddressSpaceMemory, GuestMemory, NoGuestMemoryAccessor};
+pub use error::{VirtioError, VirtioResult, map_virtio_error};
+pub use memory::{AddressSpaceMemory, DeviceContextMemory, GuestMemory, NoGuestMemoryAccessor};
 pub use mmio::state::{MmioReadOutcome, MmioWriteAction, VirtioMmioState};
+pub use pci::{
+    ActivityPermit, InterruptPublicationRequest, InterruptTransitionRequest, QueueNotification,
+    QueueNotifyOutcome, VirtioDeviceCore, VirtioPciTransport, VirtioPciWriteOutcome,
+    VirtioQueueGeneration,
+};
 pub use queue::{DescriptorChain, VirtioQueue};

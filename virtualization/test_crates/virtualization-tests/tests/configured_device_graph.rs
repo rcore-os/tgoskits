@@ -417,6 +417,197 @@ guest_mac = [2, 0, 0, 0, 0, 1]
 }
 
 #[test]
+fn virtio_blk_pci_requires_architecture_pci_host() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "disk0"
+model = "virtio-blk"
+transport = "pci"
+backend = "ramdisk"
+"#,
+    )
+    .unwrap();
+    let context = DeviceInstantiationContext::new().with_default_wired_controller(
+        DeviceNodeId::new("controller").unwrap(),
+        InterruptControllerId::new(0),
+    );
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut catalog).unwrap();
+
+    let result = catalog.instantiate_node(&config.devices.virtual_devices[0], &context);
+    assert!(matches!(
+        result,
+        Err(ConfiguredDeviceError::Instantiation { .. })
+    ));
+}
+
+#[test]
+fn virtio_blk_pci_declares_a_host_bound_function() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "disk0"
+model = "virtio-blk"
+transport = "pci"
+backend = "ramdisk"
+capacity = "1MiB"
+read_only = true
+"#,
+    )
+    .unwrap();
+    let context = DeviceInstantiationContext::new()
+        .with_default_wired_controller(
+            DeviceNodeId::new("controller").unwrap(),
+            InterruptControllerId::new(0),
+        )
+        .with_default_pci_host_key(PciHostKey::new("x86-q35").unwrap());
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut catalog).unwrap();
+
+    let node = catalog
+        .instantiate_node(&config.devices.virtual_devices[0], &context)
+        .unwrap();
+    let mut builder = DeviceGraphBuilder::new();
+    builder
+        .add(DeviceNodeSpec::firmware_only(
+            DeviceNodeId::new("controller").unwrap(),
+        ))
+        .unwrap();
+    builder.add(node).unwrap();
+    let requests = builder.requests().unwrap();
+    let requirements = requests[1].requirements();
+    assert!(requirements.entries().is_empty());
+    assert_eq!(
+        requirements.pci_function().unwrap().host(),
+        &PciHostKey::new("x86-q35").unwrap()
+    );
+}
+
+#[test]
+fn virtio_blk_pci_rejects_file_backend_and_unknown_options() {
+    let file_config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "disk0"
+model = "virtio-blk"
+transport = "pci"
+backend = "file"
+path = "/tmp/disk0.img"
+"#,
+    )
+    .unwrap();
+    let unknown_config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "disk1"
+model = "virtio-blk"
+backend = "ramdisk"
+unknown = true
+"#,
+    )
+    .unwrap();
+    let context = DeviceInstantiationContext::new()
+        .with_default_wired_controller(
+            DeviceNodeId::new("controller").unwrap(),
+            InterruptControllerId::new(0),
+        )
+        .with_default_pci_host_key(PciHostKey::new("x86-q35").unwrap());
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut catalog).unwrap();
+
+    assert!(matches!(
+        catalog.instantiate_node(&file_config.devices.virtual_devices[0], &context),
+        Err(ConfiguredDeviceError::InvalidOptions { .. })
+    ));
+    assert!(matches!(
+        catalog.instantiate_node(&unknown_config.devices.virtual_devices[0], &context),
+        Err(ConfiguredDeviceError::InvalidOptions { .. })
+    ));
+}
+
+#[test]
+fn virtio_blk_default_transport_keeps_mmio_requirements() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "disk0"
+model = "virtio-blk"
+backend = "ramdisk"
+"#,
+    )
+    .unwrap();
+    let context = DeviceInstantiationContext::new().with_default_wired_controller(
+        DeviceNodeId::new("controller").unwrap(),
+        InterruptControllerId::new(0),
+    );
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut catalog).unwrap();
+    let node = catalog
+        .instantiate_node(&config.devices.virtual_devices[0], &context)
+        .unwrap();
+    let mut builder = DeviceGraphBuilder::new();
+    builder
+        .add(DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("controller").unwrap(),
+            Arc::new(ControllerModel),
+        ))
+        .unwrap();
+    builder.add(node).unwrap();
+    let node_id = DeviceNodeId::new("disk0").unwrap();
+    let requests = builder.requests().unwrap();
+    let requirements = requests[1].requirements();
+    assert!(requirements.pci_function().is_none());
+    assert_eq!(requirements.entries().len(), 2);
+
+    let mut pools = ResourcePools::new();
+    pools.add_auto_mmio(0x1000_0000..0x1002_0000).unwrap();
+    pools
+        .add_auto_controller_inputs(
+            InterruptControllerId::new(0),
+            ControllerInputId::new(32)..ControllerInputId::new(33),
+        )
+        .unwrap();
+    let graph = builder.declare().unwrap().resolve(pools).unwrap();
+    let resolved_node = graph
+        .nodes()
+        .find(|node| node.id() == &node_id)
+        .expect("default virtio-blk node is present in the resolved graph");
+    let [FdtContributionSpec::Conventional(fdt)] = resolved_node.firmware().fdt().unwrap() else {
+        panic!("default virtio-blk must expose one conventional FDT node");
+    };
+    let [AcpiContributionSpec::Conventional(acpi)] = resolved_node.firmware().acpi().unwrap()
+    else {
+        panic!("default virtio-blk must expose one conventional ACPI node");
+    };
+    let registers = ResourceSlot::new("mmio").unwrap();
+    let irq = ResourceSlot::new("irq").unwrap();
+    assert_eq!(fdt.node_name(), "virtio_mmio");
+    assert_eq!(fdt.compatible(), ["virtio,mmio"]);
+    assert_eq!(fdt.register_slots(), [registers.clone()]);
+    assert_eq!(fdt.interrupt_slots(), [irq.clone()]);
+    assert_eq!(acpi.hid(), Some("LNRO0005"));
+    assert_eq!(acpi.register_slots(), [registers.clone()]);
+    assert_eq!(acpi.interrupt_slots(), [irq.clone()]);
+    let resources = graph.resources_for(&node_id).unwrap();
+    assert_eq!(resources.mmio(&registers).unwrap(), (0x1000_0000, 0x200));
+    assert_eq!(resources.wired_irq(&irq).unwrap().input().value(), 32);
+
+    let mut runtime = DeviceRuntimeBuilder::new(Default::default());
+    for graph_node in graph.nodes() {
+        runtime
+            .build_graph_node(graph_node, graph.resource_plan())
+            .unwrap();
+    }
+    runtime.finish(graph.resource_plan()).unwrap();
+}
+
+#[test]
 fn configured_catalog_rejects_ambiguous_or_untyped_requests() {
     let mut catalog = ConfiguredDeviceCatalog::new();
     catalog.register("first", BLOCK_LIKE_REGISTRATION).unwrap();

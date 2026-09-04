@@ -218,6 +218,40 @@ arch = "x86_64"
 cases = ["pci-enumeration-svm"]
 
 [[check]]
+id = "test-axvisor-x86-64-pci-block-vmx"
+impact_targets = ["axvisor:x86_64"]
+name = "VMX x86_64 · VirtIO PCI block RW/RO"
+runner = "kvm-intel"
+timeout_minutes = 45
+command = '''
+cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-vmx
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "x86_64"
+cases = ["pci-block-rw-vmx", "pci-block-ro-vmx"]
+
+[[check]]
+id = "test-axvisor-x86-64-pci-block-svm"
+impact_targets = ["axvisor:x86_64"]
+name = "SVM x86_64 · VirtIO PCI block RW/RO"
+runner = "kvm-amd"
+timeout_minutes = 45
+command = '''
+cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-svm
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-svm
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "x86_64"
+cases = ["pci-block-rw-svm", "pci-block-ro-svm"]
+
+[[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Linux guest"

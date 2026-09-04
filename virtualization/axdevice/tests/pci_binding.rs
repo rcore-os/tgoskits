@@ -94,14 +94,21 @@ impl DeviceModel for HostModel {
     }
 }
 
-#[derive(Default)]
 struct RecordingEndpoint {
     reads: Mutex<Vec<(DeviceId, PciBarAccess)>>,
+    resources: Vec<Resource>,
 }
 
 impl RecordingEndpoint {
     fn shared() -> Arc<Self> {
-        Arc::new(Self::default())
+        Self::with_resources(Vec::new())
+    }
+
+    fn with_resources(resources: Vec<Resource>) -> Arc<Self> {
+        Arc::new(Self {
+            reads: Mutex::new(Vec::new()),
+            resources,
+        })
     }
 }
 
@@ -110,7 +117,7 @@ impl Device for RecordingEndpoint {
         "recording-pci-endpoint"
     }
     fn resources(&self) -> &[Resource] {
-        &[]
+        &self.resources
     }
     fn read(&self, _access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
         Err(DeviceError::NotFound)
@@ -126,7 +133,11 @@ impl Device for RecordingEndpoint {
 }
 
 impl PciFunction for RecordingEndpoint {
-    fn read_bar(&self, access: PciBarAccess, context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+    fn read_bar(
+        &self,
+        access: PciBarAccess,
+        context: &mut dyn PciEndpointContext,
+    ) -> DeviceResult<u64> {
         self.reads
             .lock()
             .unwrap()
@@ -138,7 +149,7 @@ impl PciFunction for RecordingEndpoint {
         &self,
         _access: PciBarAccess,
         _value: u64,
-        _context: &mut dyn DeviceContext,
+        _context: &mut dyn PciEndpointContext,
     ) -> DeviceResult {
         Ok(())
     }
@@ -435,6 +446,18 @@ fn failed_bundle_registration_invalidates_the_provisional_route() {
 }
 
 #[test]
+fn endpoint_resources_are_rejected_before_pci_route_publication() {
+    let endpoint = RecordingEndpoint::with_resources(vec![Resource::MmioRange {
+        base: 0x5000_0000,
+        size: 0x1000,
+    }]);
+    let (graph, _root_slot, _binding_slot) = resolved_graph(endpoint, false);
+
+    let error = expect_build_error(&graph);
+    assert!(error.contains("PCI endpoint"));
+}
+
+#[test]
 fn host_bundles_without_exactly_one_matching_root_service_fail() {
     // Missing service entirely.
     let message = expect_build_error(
@@ -640,7 +663,7 @@ fn two_endpoints_route_through_their_own_functions_and_bar_indexes() {
         fn read_bar(
             &self,
             access: PciBarAccess,
-            _context: &mut dyn DeviceContext,
+            _context: &mut dyn PciEndpointContext,
         ) -> DeviceResult<u64> {
             self.reads.lock().unwrap().push((self.tag, access));
             Ok(self.tag << 16 | access.offset())
@@ -649,7 +672,7 @@ fn two_endpoints_route_through_their_own_functions_and_bar_indexes() {
             &self,
             _access: PciBarAccess,
             _value: u64,
-            _context: &mut dyn DeviceContext,
+            _context: &mut dyn PciEndpointContext,
         ) -> DeviceResult {
             Ok(())
         }

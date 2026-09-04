@@ -29,12 +29,32 @@ pub(super) struct X86InterruptPlan {
 }
 
 /// PCI INTx routing exposed by the current virtual IOAPIC policy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct X86PciPlan {
     pub(super) bus_range: (u16, u16),
     pub(super) io_windows: [(u16, u16); 2],
     pub(super) memory_windows: [X86PciMemoryWindow; 2],
-    pub(super) intx_gsis: [u32; 4],
+    pub(super) intx_routes: Vec<X86PciIntxRoute>,
+}
+
+/// One resolved PCI INTx route published to guest firmware.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct X86PciIntxRoute {
+    pub(crate) device: u8,
+    pub(crate) pin: u8,
+    pub(crate) gsi: u8,
+}
+
+impl X86PciIntxRoute {
+    /// Returns the ACPI PCI address matching this device's four INTx pins.
+    pub(crate) const fn acpi_address(self) -> u32 {
+        ((self.device as u32) << 16) | 0xffff
+    }
+
+    /// Returns the MP-table source IRQ encoding for this device and pin.
+    pub(crate) const fn mp_source_irq(self) -> u8 {
+        (self.device << 2) | self.pin
+    }
 }
 
 /// One firmware-visible PCI host bridge memory aperture.
@@ -86,6 +106,7 @@ impl X86FirmwarePlan {
     pub(crate) fn from_graph(
         graph: &ResolvedDeviceGraph,
         cpu_count: usize,
+        passthrough_intx_routes: &[X86PciIntxRoute],
     ) -> Result<Self, X86FirmwarePlanError> {
         let firmware = crate::boot::acpi::resolve_acpi_firmware(graph).map_err(|error| {
             DeviceManagerError::InvalidConfig {
@@ -130,6 +151,41 @@ impl X86FirmwarePlan {
                 value: "ACPI contribution differs from resolved PCI topology".into(),
             });
         }
+        let mut intx_routes = pci_topology
+            .functions()
+            .filter_map(|function| {
+                function
+                    .intx()
+                    .map(|route| -> Result<_, X86FirmwarePlanError> {
+                        let gsi = u8::try_from(route.guest_line()).map_err(|_| {
+                            X86FirmwarePlanError::InvalidValue {
+                                field: "PCI INTx GSI",
+                                value: route.guest_line().to_string(),
+                            }
+                        })?;
+                        Ok(X86PciIntxRoute {
+                            device: function.bdf().device(),
+                            pin: route.pin().ordinal(),
+                            gsi,
+                        })
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for route in passthrough_intx_routes {
+            if intx_routes
+                .iter()
+                .any(|existing| existing.device == route.device && existing.pin == route.pin)
+            {
+                return Err(X86FirmwarePlanError::InvalidValue {
+                    field: "PCI INTx route",
+                    value: format!(
+                        "duplicate route source for device {} pin {}",
+                        route.device, route.pin
+                    ),
+                });
+            }
+        }
+        intx_routes.extend_from_slice(passthrough_intx_routes);
         let pci_memory_end =
             pci_aperture
                 .end
@@ -194,7 +250,7 @@ impl X86FirmwarePlan {
                         cacheable: false,
                     },
                 ],
-                intx_gsis: [16, 17, 18, 19],
+                intx_routes,
             },
             power: X86PowerPlan {
                 sci_irq: u16::try_from(sci.input).map_err(|_| {
@@ -246,6 +302,10 @@ impl X86FirmwarePlan {
 
     pub(crate) const fn io_apic_base(&self) -> u32 {
         self.interrupts.io_apic_base
+    }
+
+    pub(crate) fn pci_intx_routes(&self) -> &[X86PciIntxRoute] {
+        &self.pci.intx_routes
     }
 
     pub(crate) fn fw_cfg_range(&self) -> Result<(usize, usize), X86FirmwarePlanError> {
@@ -589,7 +649,7 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
                     cacheable: false,
                 },
             ],
-            intx_gsis: [16, 17, 18, 19],
+            intx_routes: Vec::new(),
         },
         power: X86PowerPlan {
             sci_irq: 9,

@@ -196,6 +196,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
         )
         .unwrap();
         nodes
