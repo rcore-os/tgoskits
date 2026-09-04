@@ -1,0 +1,144 @@
+//! Per-CPU ARM PMUv3 discovery and sysfs capability cache.
+//!
+//! PMU registers are CPU-local. Initialization is therefore executed by the
+//! fixed worker that owns each CPU; readers only consume the resulting bounded
+//! cache and never issue remote system-register accesses.
+
+use alloc::{string::String, vec::Vec};
+
+use ax_cpu::pmu::{self, ClusterId, PmuInfo};
+
+use crate::sync::IrqMutex;
+
+const MAX_TRACKED_CPUS: usize = 64;
+
+#[derive(Clone, Copy)]
+struct CpuPmuState {
+    initialized: bool,
+    info: Option<PmuInfo>,
+}
+
+impl CpuPmuState {
+    const EMPTY: Self = Self {
+        initialized: false,
+        info: None,
+    };
+}
+
+static CPU_STATES: IrqMutex<[CpuPmuState; MAX_TRACKED_CPUS]> =
+    IrqMutex::new([CpuPmuState::EMPTY; MAX_TRACKED_CPUS]);
+
+/// Initializes the PMU owned by the executing CPU exactly once.
+pub(super) fn ensure_current_cpu_initialized() -> Option<PmuInfo> {
+    let cpu = ax_hal::percpu::this_cpu_id();
+    if cpu >= MAX_TRACKED_CPUS {
+        return None;
+    }
+    if let Some(state) = CPU_STATES.lock().get(cpu).copied()
+        && state.initialized
+    {
+        return state.info;
+    }
+
+    pmu::init_cpu();
+    pmu::counter::disable_all();
+    pmu::overflow::disable_all_irq();
+    pmu::overflow::clear_all();
+    let info = pmu::probe();
+    CPU_STATES.lock()[cpu] = CpuPmuState {
+        initialized: true,
+        info,
+    };
+    info
+}
+
+/// Returns the cached PMU information for one logical CPU.
+pub fn cpu_info(cpu: usize) -> Option<PmuInfo> {
+    CPU_STATES.lock().get(cpu).and_then(|state| state.info)
+}
+
+/// Returns whether at least one initialized PMU belongs to `cluster`.
+pub fn has_cluster(cluster: ClusterId) -> bool {
+    CPU_STATES.lock().iter().any(|state| {
+        state
+            .info
+            .is_some_and(|info| pmu::classify_midr(info.midr) == cluster)
+    })
+}
+
+/// Returns whether at least one online CPU has an initialized PMU.
+pub fn has_pmu() -> bool {
+    CPU_STATES.lock().iter().any(|state| state.info.is_some())
+}
+
+/// Returns whether every CPU represented by one sysfs PMU implements `event`.
+pub fn event_supported_on(cluster: Option<ClusterId>, event: u16) -> bool {
+    let states = CPU_STATES.lock();
+    let mut matched = false;
+    for info in states.iter().filter_map(|state| state.info) {
+        if cluster.is_some_and(|cluster| pmu::classify_midr(info.midr) != cluster) {
+            continue;
+        }
+        matched = true;
+        if !info.event_supported(event) {
+            return false;
+        }
+    }
+    matched
+}
+
+/// Resolves the Linux generic branch event to one encoding for a sysfs PMU.
+pub fn branch_event_for(cluster: Option<ClusterId>) -> Option<u16> {
+    let states = CPU_STATES.lock();
+    let mut encoding = None;
+    for info in states.iter().filter_map(|state| state.info) {
+        if cluster.is_some_and(|cluster| pmu::classify_midr(info.midr) != cluster) {
+            continue;
+        }
+        let event = pmu::hw_event_to_arm_with(info, 4)?;
+        if encoding.is_some_and(|encoding| encoding != event) {
+            return None;
+        }
+        encoding = Some(event);
+    }
+    encoding
+}
+
+/// Renders the PMU-capable CPUs, optionally filtered to one CPU cluster.
+pub fn cpu_list(cluster: Option<ClusterId>) -> String {
+    use core::fmt::Write;
+
+    let states = CPU_STATES.lock();
+    let cpus: Vec<_> = states
+        .iter()
+        .enumerate()
+        .take(ax_runtime::hal::cpu_num())
+        .filter_map(|(cpu, state)| {
+            let info = state.info?;
+            cluster
+                .is_none_or(|cluster| pmu::classify_midr(info.midr) == cluster)
+                .then_some(cpu)
+        })
+        .collect();
+    let mut output = String::new();
+    let mut cursor = 0;
+    while cursor < cpus.len() {
+        let start = cpus[cursor];
+        let mut end = start;
+        while cursor + 1 < cpus.len() && cpus[cursor + 1] == end + 1 {
+            cursor += 1;
+            end = cpus[cursor];
+        }
+        if !output.is_empty() {
+            output.push(',');
+        }
+        if start == end {
+            let _ = write!(output, "{start}");
+        } else {
+            let _ = write!(output, "{start}-{end}");
+        }
+        cursor += 1;
+    }
+    output.push('\n');
+    output
+}

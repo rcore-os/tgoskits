@@ -52,6 +52,9 @@ impl<T> PerfCompletion<T> {
 }
 
 enum PerfCpuCommand {
+    Initialize {
+        completion: Arc<PerfCompletion<()>>,
+    },
     SyncTaskContext {
         completion: Arc<PerfCompletion<()>>,
     },
@@ -89,6 +92,10 @@ enum PerfCpuCommand {
 impl PerfCpuCommand {
     fn execute(self) {
         match self {
+            Self::Initialize { completion } => {
+                super::percpu::ensure_current_cpu_initialized();
+                completion.finish(Ok(()));
+            }
             Self::SyncTaskContext { completion } => {
                 // Reaching this fixed per-CPU worker proves that a task which
                 // was running when the command was published crossed a
@@ -235,6 +242,16 @@ pub(super) fn init() {
             format!("perf-cpu/{cpu}"),
             affinity,
         );
+    }
+
+    for worker in CPU_WORKERS.iter() {
+        let completion = Arc::new(PerfCompletion::new());
+        worker.submit(PerfCpuCommand::Initialize {
+            completion: Arc::clone(&completion),
+        });
+        completion
+            .wait()
+            .expect("perf CPU worker initialization failed");
     }
 }
 

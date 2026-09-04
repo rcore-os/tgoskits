@@ -6,7 +6,9 @@
 
 use kbpf_basic::linux_bpf::perf_event_attr;
 
-pub use super::hw_event::ARMV8_PMUV3_PERF_TYPE;
+pub use super::hw_event::{
+    ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE,
+};
 use super::{access::AuthorizedPerfTarget, target::PerfTargetKind};
 
 /// Counter resource selected by side-effect-free hardware validation.

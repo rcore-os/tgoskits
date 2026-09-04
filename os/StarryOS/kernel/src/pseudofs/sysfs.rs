@@ -368,6 +368,10 @@ const PERF_EVENT_SOURCES: &[(&str, u32)] = &[
 /// Only meaningful on aarch64 (ARM PMUv3).
 #[cfg(target_arch = "aarch64")]
 const ARMV8_PMUV3_DEVICE: &str = "armv8_pmuv3_0";
+#[cfg(target_arch = "aarch64")]
+const ARMV8_CORTEX_A55_DEVICE: &str = "armv8_cortex_a55";
+#[cfg(target_arch = "aarch64")]
+const ARMV8_CORTEX_A76_DEVICE: &str = "armv8_cortex_a76";
 
 /// Named ARM PMUv3 event aliases exposed under
 /// `/sys/bus/event_source/devices/armv8_pmuv3_0/events/<name>`, each serving
@@ -419,26 +423,34 @@ struct EventSourceDevicesDir {
 
 impl SimpleDirOps for EventSourceDevicesDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        let tracing = PERF_EVENT_SOURCES.iter().map(|(n, _)| Cow::Borrowed(*n));
-        // The ARM PMUv3 CPU PMU is a hardware (counting/sampling) event source,
-        // distinct from the tracing sources above. It is always listed on
-        // aarch64 — the device is a static description of the architectural PMU,
-        // so it is advertised regardless of `ax_hal::pmu::info()` (which a
-        // `perf_event_open` against the type still consults and may reject).
+        let mut devices: Vec<Cow<'a, str>> = PERF_EVENT_SOURCES
+            .iter()
+            .map(|(name, _)| Cow::Borrowed(*name))
+            .collect();
         #[cfg(target_arch = "aarch64")]
-        let pmu = core::iter::once(Cow::Borrowed(ARMV8_PMUV3_DEVICE));
-        #[cfg(not(target_arch = "aarch64"))]
-        let pmu = core::iter::empty();
-        Box::new(tracing.chain(pmu))
+        {
+            use ax_cpu::pmu::ClusterId;
+
+            if crate::perf::percpu::has_pmu() {
+                devices.push(Cow::Borrowed(ARMV8_PMUV3_DEVICE));
+            }
+            if crate::perf::percpu::has_cluster(ClusterId::CortexA55) {
+                devices.push(Cow::Borrowed(ARMV8_CORTEX_A55_DEVICE));
+            }
+            if crate::perf::percpu::has_cluster(ClusterId::CortexA76) {
+                devices.push(Cow::Borrowed(ARMV8_CORTEX_A76_DEVICE));
+            }
+        }
+        Box::new(devices.into_iter())
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         #[cfg(target_arch = "aarch64")]
-        if name == ARMV8_PMUV3_DEVICE {
+        if let Some((ty, cluster)) = hw_pmu_source(name) {
             return Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
-                Arc::new(HwPmuDeviceDir { fs }),
+                Arc::new(HwPmuDeviceDir { fs, ty, cluster }),
             )));
         }
         let ty = PERF_EVENT_SOURCES
@@ -461,6 +473,8 @@ impl SimpleDirOps for EventSourceDevicesDir {
 #[cfg(target_arch = "aarch64")]
 struct HwPmuDeviceDir {
     fs: Arc<SimpleFs>,
+    ty: u32,
+    cluster: Option<ax_cpu::pmu::ClusterId>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -479,19 +493,26 @@ impl SimpleDirOps for HwPmuDeviceDir {
             // The dynamic perf type `perf` puts in `perf_event_attr.type`; the
             // dispatcher routes it to the hardware-PMU backend.
             "type" => {
-                let body = format!("{}\n", crate::perf::hw::ARMV8_PMUV3_PERF_TYPE);
+                let body = format!("{}\n", self.ty);
                 Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
             }
-            // CPUs this PMU covers; reuse the shared online-CPU range ("0\n"
-            // under smp1). Matches Linux's `<pmu>/cpus`.
-            "cpus" => Ok(SimpleFile::new_regular(fs, || Ok(cpu_range_string())).into()),
+            "cpus" => {
+                let cluster = self.cluster;
+                Ok(SimpleFile::new_regular(fs, move || {
+                    Ok(crate::perf::percpu::cpu_list(cluster))
+                })
+                .into())
+            }
             "format" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(HwPmuFormatDir { fs }),
             ))),
             "events" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
-                Arc::new(HwPmuEventsDir { fs }),
+                Arc::new(HwPmuEventsDir {
+                    fs,
+                    cluster: self.cluster,
+                }),
             ))),
             _ => Err(VfsError::NotFound),
         }
@@ -530,24 +551,58 @@ impl SimpleDirOps for HwPmuFormatDir {
 #[cfg(target_arch = "aarch64")]
 struct HwPmuEventsDir {
     fs: Arc<SimpleFs>,
+    cluster: Option<ax_cpu::pmu::ClusterId>,
 }
 
 #[cfg(target_arch = "aarch64")]
 impl SimpleDirOps for HwPmuEventsDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(ARMV8_PMUV3_EVENTS.iter().map(|(n, _)| Cow::Borrowed(*n)))
+        Box::new(ARMV8_PMUV3_EVENTS.iter().filter_map(|(name, _)| {
+            hw_pmu_alias(self.cluster, name).map(|_| Cow::Borrowed(*name))
+        }))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
-        let event = ARMV8_PMUV3_EVENTS
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, e)| *e)
-            .ok_or(VfsError::NotFound)?;
+        let event = hw_pmu_alias(self.cluster, name).ok_or(VfsError::NotFound)?;
         let body = format!("event={event:#04x}\n");
         Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn hw_pmu_source(name: &str) -> Option<(u32, Option<ax_cpu::pmu::ClusterId>)> {
+    use ax_cpu::pmu::ClusterId;
+    use crate::perf::hw::{
+        ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE,
+    };
+
+    match name {
+        ARMV8_PMUV3_DEVICE if crate::perf::percpu::has_pmu() => {
+            Some((ARMV8_PMUV3_PERF_TYPE, None))
+        }
+        ARMV8_CORTEX_A55_DEVICE if crate::perf::percpu::has_cluster(ClusterId::CortexA55) => {
+            Some((ARMV8_CORTEX_A55_PERF_TYPE, Some(ClusterId::CortexA55)))
+        }
+        ARMV8_CORTEX_A76_DEVICE if crate::perf::percpu::has_cluster(ClusterId::CortexA76) => {
+            Some((ARMV8_CORTEX_A76_PERF_TYPE, Some(ClusterId::CortexA76)))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn hw_pmu_alias(cluster: Option<ax_cpu::pmu::ClusterId>, name: &str) -> Option<u16> {
+    let declared = ARMV8_PMUV3_EVENTS
+        .iter()
+        .find(|(declared, _)| *declared == name)
+        .map(|(_, event)| *event)?;
+    let event = if name == "branch_instructions" {
+        crate::perf::percpu::branch_event_for(cluster)?
+    } else {
+        declared
+    };
+    crate::perf::percpu::event_supported_on(cluster, event).then_some(event)
 }
 
 struct EventSourceDeviceDir {
@@ -765,6 +820,7 @@ impl SimpleDirOps for SystemCpuEntryDir {
                 self.fs.clone(),
                 Arc::new(CpuRegsDir {
                     fs: self.fs.clone(),
+                    cpu: self.cpu,
                 }),
             ))),
             _ => Err(VfsError::NotFound),
@@ -775,6 +831,7 @@ impl SimpleDirOps for SystemCpuEntryDir {
 /// `/sys/devices/system/cpu/cpu<N>/regs/` — `identification/midr_el1` for perf.
 struct CpuRegsDir {
     fs: Arc<SimpleFs>,
+    cpu: usize,
 }
 
 impl SimpleDirOps for CpuRegsDir {
@@ -788,6 +845,7 @@ impl SimpleDirOps for CpuRegsDir {
                 self.fs.clone(),
                 Arc::new(CpuIdRegsDir {
                     fs: self.fs.clone(),
+                    cpu: self.cpu,
                 }),
             ))),
             _ => Err(VfsError::NotFound),
@@ -798,6 +856,7 @@ impl SimpleDirOps for CpuRegsDir {
 /// `/sys/devices/system/cpu/cpu<N>/regs/identification/` — `midr_el1` for perf.
 struct CpuIdRegsDir {
     fs: Arc<SimpleFs>,
+    cpu: usize,
 }
 
 impl SimpleDirOps for CpuIdRegsDir {
@@ -807,11 +866,16 @@ impl SimpleDirOps for CpuIdRegsDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         match name {
-            "midr_el1" => Ok(SimpleFile::new_regular(self.fs.clone(), || {
-                let midr = crate::perf::read_midr_el1();
+            "midr_el1" => {
+                let cpu = self.cpu;
+                Ok(SimpleFile::new_regular(self.fs.clone(), move || {
+                let midr = crate::perf::percpu::cpu_info(cpu)
+                    .map(|info| info.midr)
+                    .unwrap_or(0);
                 Ok(alloc::format!("{midr:016x}\n"))
             })
-            .into()),
+            .into())
+            }
             _ => Err(VfsError::NotFound),
         }
     }

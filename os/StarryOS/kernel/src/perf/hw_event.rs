@@ -80,6 +80,10 @@ use crate::sync::Mutex;
 /// [`perf_event_open_hw`] then treats it exactly like `PERF_TYPE_RAW`: the low
 /// 16 bits of `config` are the ARM event number on a programmable counter.
 pub const ARMV8_PMUV3_PERF_TYPE: u32 = 8;
+/// Sysfs-discovered type for the Cortex-A55 PMU instance.
+pub const ARMV8_CORTEX_A55_PERF_TYPE: u32 = 9;
+/// Sysfs-discovered type for the Cortex-A76 PMU instance.
+pub const ARMV8_CORTEX_A76_PERF_TYPE: u32 = 10;
 
 /// A hardware-PMU perf event: one allocated counter plus the timing
 /// accumulators `perf stat` reads back through `read_format`, and — for sampling

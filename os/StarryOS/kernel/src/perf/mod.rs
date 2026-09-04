@@ -30,6 +30,8 @@ mod inheritance_lifecycle;
 pub mod kprobe;
 #[cfg(target_arch = "aarch64")]
 mod output;
+#[cfg(target_arch = "aarch64")]
+pub mod percpu;
 pub mod raw_tracepoint;
 #[cfg(target_arch = "aarch64")]
 mod rdpmc;
