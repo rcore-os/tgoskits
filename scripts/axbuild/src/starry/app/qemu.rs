@@ -45,7 +45,7 @@ pub(crate) async fn prepare_qemu_app_case(
     explicit_qemu_config: Option<&Path>,
 ) -> anyhow::Result<StarryAppQemuCase> {
     ensure!(
-        app.kind == StarryAppKind::Qemu,
+        matches!(app.kind, StarryAppKind::Qemu | StarryAppKind::Both),
         "Starry app `{}` is not a QEMU app",
         app.name
     );

@@ -16,6 +16,7 @@ pub(crate) fn print_apps(workspace_root: &Path, kind: Option<StarryAppKind>) -> 
         let kind = match app.kind {
             StarryAppKind::Qemu => "qemu",
             StarryAppKind::Board => "board",
+            StarryAppKind::Both => "qemu+board",
         };
         let prebuild = if app.prebuild_path.is_some() {
             " prebuild"
@@ -42,11 +43,13 @@ pub(crate) fn selected_apps(
     } else {
         discover_apps(workspace_root)?
     };
-    apps.retain(|app| app.kind == kind);
+    apps.retain(|app| app_supports_kind(app.kind, kind));
     if args.all && args.qemu_config.is_none() {
         // Keep app selection aligned with the generic Starry command default.
         let arch = args.arch.as_deref().unwrap_or(DEFAULT_STARRY_ARCH);
-        apps.retain(|app| app.kind != StarryAppKind::Qemu || qemu_app_supports_arch(app, arch));
+        apps.retain(|app| {
+            !app_supports_kind(app.kind, StarryAppKind::Qemu) || qemu_app_supports_arch(app, arch)
+        });
     }
     if let Some(case_name) = args.test_case.as_deref() {
         let case_name = validate_case_name(case_name)?;
@@ -74,9 +77,13 @@ fn filtered_apps(
 ) -> anyhow::Result<Vec<StarryAppCase>> {
     let mut apps = discover_apps(workspace_root)?;
     if let Some(kind) = kind {
-        apps.retain(|app| app.kind == kind);
+        apps.retain(|app| app_supports_kind(app.kind, kind));
     }
     Ok(apps)
+}
+
+fn app_supports_kind(actual: StarryAppKind, requested: StarryAppKind) -> bool {
+    actual == requested || actual == StarryAppKind::Both
 }
 
 #[cfg(test)]

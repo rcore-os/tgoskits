@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, bail, ensure};
+use anyhow::{Context, ensure};
 
 use super::{
     build_config::collect_prefixed_toml_files,
@@ -122,10 +122,7 @@ fn infer_app_kind(case_dir: &Path) -> anyhow::Result<Option<StarryAppKind>> {
         (false, true, _) => Ok(Some(StarryAppKind::Board)),
         (false, false, true) => Ok(Some(StarryAppKind::Qemu)),
         (false, false, false) => Ok(None),
-        (true, true, _) => bail!(
-            "Starry app `{}` has both qemu-* and board-* configs; split it or make kind explicit",
-            case_dir.display()
-        ),
+        (true, true, _) => Ok(Some(StarryAppKind::Both)),
     }
 }
 

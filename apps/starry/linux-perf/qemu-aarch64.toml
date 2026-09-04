@@ -1,0 +1,21 @@
+args = [
+  "-nographic",
+  "-machine", "virt,gic-version=3,its=on",
+  "-m", "1024M",
+  "-cpu", "cortex-a53,pmu=on",
+  "-smp", "4",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,snapshot=on",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "LINUX_PERF_RUNTIME_ARCHIVE_PARTS='/usr/share/linux-perf/runtime.tar.gz.part-0 /usr/share/linux-perf/runtime.tar.gz.part-1' LINUX_PERF_WORKLOAD=/usr/bin/linux-perf-workload /usr/bin/linux-perf-run"
+success_regex = ["(?m)^STARRY_LINUX_PERF_PASSED\\s*$"]
+fail_regex = [
+  "(?m)^STARRY_LINUX_PERF_FAILED:",
+  "(?i)kernel panic",
+  "(?i)panicked at",
+  "(?i)segmentation fault",
+]
+timeout = 900

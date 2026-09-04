@@ -1,0 +1,31 @@
+# Alpine v3.23 main/aarch64 package closure for perf-6.19.14-r0.
+# sha256 filename url
+d8981e56b4c16722424ef642313bb710e42cc7181f204e14856a1f21887adf17 gdbm-1.26-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/gdbm-1.26-r0.apk
+ccd478f4d5346a25911d4ee977690e2695e0ca3acf3e6b1a8c1300b2f4311e2f libbz2-1.0.8-r6.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libbz2-1.0.8-r6.apk
+2be40da5877bce1780361cb58cc499bc17b9d747c0286dccad46c026f48c95f8 libcrypto3-3.5.8-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libcrypto3-3.5.8-r0.apk
+4a9dec2e65782a6c47384d1a761f77f02b503b27bcff36ff958776bd503808c9 libdw-0.194-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libdw-0.194-r0.apk
+a92cb7309a0096234fbdd4e19a499e56337d9bb1fe18eb9d5ef6a89a4b46dbc6 libelf-0.194-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libelf-0.194-r0.apk
+bb8c839e63bc75dda85e422280791438fccfb17930f10216b5cf9c998d6a0b09 libexpat-2.8.4-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libexpat-2.8.4-r0.apk
+ebf430b246a6b1167350431e2af59a09f4edbc42dc3e03f3b9d74800ba5f9e7f libffi-3.5.2-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libffi-3.5.2-r0.apk
+eaaafda78fde1c904e1741680ddea91649f051e29a343152c8a4327605704b0f libgcc-15.2.0-r2.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libgcc-15.2.0-r2.apk
+7fe332c8af8b97579e89df56466f83f4abda5040a18e1842c07d684320bbef4b libncursesw-6.5_p20251123-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libncursesw-6.5_p20251123-r0.apk
+d2d6c6eaf1ef0894ae777adb36e063c9fe1f08eba8d318163073557d901cdcd3 libpanelw-6.5_p20251123-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libpanelw-6.5_p20251123-r0.apk
+77a8ef8f87a3fe6b621fd2c06bb983dea55013a3e67c60741df83f5221983247 libssl3-3.5.8-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libssl3-3.5.8-r0.apk
+10d72e25f6fcc0f3d9fdd801c9bdaed81d6e836aa2b65b63f25d2d97f860a7d1 libstdc++-15.2.0-r2.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libstdc++-15.2.0-r2.apk
+ff89589e44a71debb94ce1b2e822de0762cae3346a27c6360463584f1470bccb libtraceevent-1.8.6-r1.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libtraceevent-1.8.6-r1.apk
+86f0acd0312c46a05271374fa1e88f2e4b8024153cd403b3bc0d25291424099e libtraceevent-plugins-1.8.6-r1.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libtraceevent-plugins-1.8.6-r1.apk
+91d3e730edbd5214c501696725e7af9a93e12a9dd6a296e719dca2f3de0697d5 libxml2-2.13.9-r1.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libxml2-2.13.9-r1.apk
+5b3fced0bbf4a50b72e1f54f7f4bd5e01b1baef3442a32ef36199f06906c93ed llvm21-libs-21.1.2-r1.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/llvm21-libs-21.1.2-r1.apk
+65f85194314576a50e0d3755ed42726c0ce37c846d2f22f558ea81a5ceb8278f mpdecimal-4.0.1-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/mpdecimal-4.0.1-r0.apk
+6a3edd924ead1fad88a69e28c5775809af3026b322f58428001cd02fedc5299e musl-1.2.5-r23.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/musl-1.2.5-r23.apk
+9d0d6a40b16b746475d6e45a65415ac542afc47a167c129a775068be803f4f96 musl-fts-1.2.7-r7.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/musl-fts-1.2.7-r7.apk
+6952a6b39abaf7bbc498cb085f0f59bf23619b53b3f7328b08fe50c0198a2bd4 ncurses-terminfo-base-6.5_p20251123-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/ncurses-terminfo-base-6.5_p20251123-r0.apk
+3a5f79cb088113112b3a968f315ef5d4d8f62ff6d1a3ac6d6a33ddaa1007d8e0 numactl-2.0.18-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/numactl-2.0.18-r0.apk
+3ee87e4fa20252f27281dacdb7fce35b73007f15960fe820476e793c3e4577dd perf-6.19.14-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/perf-6.19.14-r0.apk
+e7c549a9871334c3fb95aaa943b552cdc5bf1807e5e523893cb63e4057bba810 python3-3.12.14-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/python3-3.12.14-r0.apk
+70d288a6c3d8daf19b10fb220120d2ebd6f154011c96ca5bc84923b658cb21f7 readline-8.3.1-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/readline-8.3.1-r0.apk
+c90decd3546bc1f8e16e81dd085edcde391495cb785da2a67a62b78af7517031 slang-2.3.3-r3.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/slang-2.3.3-r3.apk
+badbc86e4586a716f98a1da9087a694a276a002e3c9f73d4a8efd14f3a9881e2 sqlite-libs-3.53.4-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/sqlite-libs-3.53.4-r0.apk
+6123d4fc5be222318236887639047b844214f609e75abee6b4e6528f44d76be4 xz-libs-5.8.3-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/xz-libs-5.8.3-r0.apk
+ecda4cc94fd18f90182f1d3a615889df5e0db9cf78926d11627dd23e06d2e6e8 zlib-1.3.2-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/zlib-1.3.2-r0.apk
+50a998e56e4bf31504996e49c1b4a23eed5e0cd4e24b8a1356a54daf1a6eabbe zstd-libs-1.5.7-r2.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/zstd-libs-1.5.7-r2.apk

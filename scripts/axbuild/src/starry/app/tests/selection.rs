@@ -133,3 +133,34 @@ fn selected_qemu_case_allows_ignored_nested_app_when_explicit() {
 
     assert!(names.contains(&"k230-qemu/qemu-k230/kpu-smoke"));
 }
+
+#[test]
+fn selected_qemu_case_accepts_combined_app() {
+    let root = tempdir().unwrap();
+    write_case_file(
+        root.path(),
+        "linux-perf",
+        "qemu-aarch64.toml",
+        "args = []\n",
+    );
+    write_case_file(
+        root.path(),
+        "linux-perf",
+        "board-orangepi-5-plus.toml",
+        "args = []\n",
+    );
+    write_case_file(root.path(), "linux-perf", "init.sh", "#!/bin/sh\n");
+    let args = ArgsAppQemu {
+        all: false,
+        test_case: Some("linux-perf".to_string()),
+        caps: Vec::new(),
+        arch: Some("aarch64".to_string()),
+        qemu_config: None,
+        debug: false,
+    };
+
+    let apps = selected_apps(root.path(), &args, StarryAppKind::Qemu).unwrap();
+
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].kind, StarryAppKind::Both);
+}
