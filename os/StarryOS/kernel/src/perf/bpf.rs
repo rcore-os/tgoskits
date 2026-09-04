@@ -22,13 +22,15 @@ use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
-    linux_bpf::{perf_event_mmap_page, perf_event_sample_format},
+    linux_bpf::{perf_event_attr, perf_event_mmap_page, perf_event_sample_format},
     perf::{PerfProbeArgs, bpf::BpfPerfEvent},
 };
 use kprobe::PtRegs;
 use rbpf::EbpfVmRaw;
 
 use super::PerfEventOps;
+#[cfg(target_arch = "aarch64")]
+use super::{sampling::RingEndpoint, sideband::SystemSidebandSource};
 #[cfg(target_arch = "x86_64")]
 use crate::perf::BPFJitMemory;
 use crate::{
@@ -116,6 +118,12 @@ pub struct BpfPerfEventWrapper {
     poll_ready: Arc<PollSet>,
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
+    /// Upstream `perf record` uses `PERF_COUNT_SW_DUMMY` as a side-band-only
+    /// event and redirects it into the hardware sample ring. It intentionally
+    /// shares this wrapper with the BPF-output software events, but owns no
+    /// ring until that redirect is installed.
+    #[cfg(target_arch = "aarch64")]
+    sideband: Option<Arc<SystemSidebandSource>>,
 }
 
 impl BpfPerfEventWrapper {
@@ -130,7 +138,27 @@ impl BpfPerfEventWrapper {
             poll_ready,
             poll_notify,
             poll_alive,
+            #[cfg(target_arch = "aarch64")]
+            sideband: None,
         }
+    }
+
+    /// Adds Linux `PERF_COUNT_SW_DUMMY` tracking semantics for a fixed CPU.
+    #[cfg(target_arch = "aarch64")]
+    fn with_system_sideband(
+        mut self,
+        owner_cpu: usize,
+        attr: &perf_event_attr,
+    ) -> Self {
+        self.sideband = SystemSidebandSource::register(
+            owner_cpu,
+            attr.sample_type,
+            attr.sample_id_all() != 0,
+            attr.comm() != 0,
+            attr.mmap2() != 0 || attr.mmap() != 0,
+            attr.task() != 0,
+        );
+        self
     }
 
     pub(super) fn output_handle(&self) -> BpfPerfOutput {
@@ -143,6 +171,10 @@ impl BpfPerfEventWrapper {
 
 impl Drop for BpfPerfEventWrapper {
     fn drop(&mut self) {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(sideband) = &self.sideband {
+            sideband.set_enabled(false);
+        }
         self.poll_alive.store(false, Ordering::Release);
         self.poll_notify.notify();
     }
@@ -175,16 +207,59 @@ impl Debug for BpfPerfEventWrapper {
 impl PerfEventOps for BpfPerfEventWrapper {
     fn enable(&mut self) -> StarryResult<()> {
         self.state.lock().inner.enable().into_starry_result()?;
+        #[cfg(target_arch = "aarch64")]
+        if let Some(sideband) = &self.sideband {
+            sideband.set_enabled(true);
+        }
         Ok(())
     }
 
     fn disable(&mut self) -> StarryResult<()> {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(sideband) = &self.sideband {
+            sideband.set_enabled(false);
+        }
         self.state.lock().inner.disable().into_starry_result()?;
         Ok(())
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn set_sample_id(&mut self, id: u64) {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(sideband) = &self.sideband {
+            sideband.set_sample_id(id);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = id;
+    }
+
+    fn redirect_output(
+        &mut self,
+        _ring_vaddr: usize,
+        _ring_len: usize,
+        anchor: Arc<dyn Any + Send + Sync>,
+    ) -> StarryResult<()> {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(sideband) = &self.sideband {
+            let endpoint = anchor
+                .downcast::<RingEndpoint>()
+                .map_err(|_| StarryError::InvalidInput)?;
+            sideband.set_redirect(Some(endpoint));
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = anchor;
+        Ok(())
+    }
+
+    fn detach_output(&mut self) -> StarryResult<()> {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(sideband) = &self.sideband {
+            sideband.set_redirect(None);
+        }
+        Ok(())
     }
 
     fn device_mmap(&mut self, len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
@@ -246,7 +321,12 @@ impl PerfEventOps for BpfPerfEventWrapper {
 
 impl Pollable for BpfPerfEventWrapper {
     fn poll(&self) -> axpoll::IoEvents {
-        if self.state.lock().inner.readable() {
+        // `perf` probes BPF capabilities with an unmapped perf event and may
+        // poll that fd before deciding the feature is unavailable.  The inner
+        // ring keeps a raw header pointer which is null until `device_mmap`;
+        // do not call `readable` until the VMA-owned pages exist.
+        let state = self.state.lock();
+        if state.is_mapped() && state.inner.readable() {
             IoEvents::IN
         } else {
             IoEvents::empty()
@@ -270,6 +350,23 @@ pub fn perf_event_open_bpf(args: PerfProbeArgs) -> BpfPerfEventWrapper {
         Some(perf_event_sample_format::PERF_SAMPLE_RAW)
     );
     BpfPerfEventWrapper::new(BpfPerfEvent::new(args))
+}
+
+/// Builds the side-band-only `PERF_COUNT_SW_DUMMY` event used by upstream
+/// `perf record`. Only fixed-CPU AArch64 targets need a kernel subscription;
+/// other uses retain the historical inert dummy-event behaviour.
+pub fn perf_event_open_tracking(
+    args: PerfProbeArgs,
+    attr: &perf_event_attr,
+    target: &super::target::ResolvedPerfTarget,
+) -> BpfPerfEventWrapper {
+    let wrapper = BpfPerfEventWrapper::new(BpfPerfEvent::new(args));
+    #[cfg(target_arch = "aarch64")]
+    if let super::target::ResolvedPerfTarget::Cpu(cpu) = target {
+        return wrapper.with_system_sideband(cpu.as_usize(), attr);
+    }
+    let _ = (attr, target);
+    wrapper
 }
 
 /// A loaded BPF program bundled with an `rbpf` interpreter that borrows

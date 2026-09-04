@@ -16,14 +16,12 @@ const MAX_TRACKED_CPUS: usize = 64;
 #[derive(Clone, Copy, Debug)]
 struct HwAlloc {
     programmable: u32,
-    cycle: bool,
 }
 
 impl HwAlloc {
     const fn new() -> Self {
         Self {
             programmable: 0,
-            cycle: false,
         }
     }
 }
@@ -257,22 +255,6 @@ pub fn next_rotation_start(event_count: usize) -> usize {
     })
 }
 
-/// Allocates the dedicated cycle counter on the executing CPU.
-pub fn alloc_cycle() -> bool {
-    with_core_mut(|core| {
-        if core.info.is_none() || core.alloc.cycle {
-            return false;
-        }
-        core.alloc.cycle = true;
-        true
-    })
-}
-
-/// Releases the dedicated cycle counter on the executing CPU.
-pub fn free_cycle() {
-    with_core_mut(|core| core.alloc.cycle = false);
-}
-
 struct RemoteCall<F, R> {
     operation: Option<F>,
     result: MaybeUninit<R>,
@@ -307,6 +289,10 @@ where
 {
     let _guard = crate::sync::PreemptGuard::new();
     if cpu == ax_hal::percpu::this_cpu_id() {
+        // Linux serializes local perf context operations with local IRQs
+        // disabled. A timer interrupt on this CPU uses the same allocator and
+        // PMU registers, so preemption pinning alone is not sufficient.
+        let _irq_guard = PreemptIrqSaveGuard::new();
         return Ok(operation());
     }
     let mut request = RemoteCall {

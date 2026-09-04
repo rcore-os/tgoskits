@@ -24,6 +24,10 @@ pub mod sampling;
 /// gated like `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod sideband;
+/// Per-CPU Linux perf context and timer-driven multiplexing for system-wide
+/// ARM PMUv3 counting events.
+#[cfg(target_arch = "aarch64")]
+pub mod system;
 /// Core `PERF_TYPE_SOFTWARE` counting events. This is architecture independent
 /// and is driven by scheduler, fault, clone, exec, and exit hooks.
 pub mod sw;
@@ -107,7 +111,7 @@ pub fn read_midr_el1() -> u64 {
 pub fn cpu_midr(cpu: usize) -> u64 {
     #[cfg(target_arch = "aarch64")]
     {
-        return percpu::cpu_info(cpu).map(|info| info.midr).unwrap_or(0);
+        percpu::cpu_info(cpu).map(|info| info.midr).unwrap_or(0)
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -122,6 +126,8 @@ const PERF_IOC_TYPE: u32 = 0x24;
 const PERF_IOC_NR_SET_OUTPUT: u32 = 5;
 /// `PERF_EVENT_IOC_ID` request number (`_IOR('$', 7, __u64 *)`).
 const PERF_IOC_NR_ID: u32 = 7;
+/// Apply a control ioctl to the complete event group.
+const PERF_IOC_FLAG_GROUP: usize = 1;
 
 /// Behaviour every perf event implements. Each variant in the dispatcher
 /// (kprobe / tracepoint / software-bpf / uprobe / hardware-PMU) provides a
@@ -175,12 +181,30 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
         Err(StarryError::Unsupported)
     }
 
+    /// Reset this event and, when the backend owns a hardware group topology,
+    /// all of its siblings in one owner-context transaction.
+    ///
+    /// Returns `true` when the backend handled the complete group. Backends
+    /// without a shared owner context reset only this event and return `false`,
+    /// so the file layer can visit the remaining sibling fds.
+    fn reset_group(&mut self) -> StarryResult<bool> {
+        self.reset()?;
+        Ok(false)
+    }
+
     /// Record the unique event id this event emits in its `PERF_SAMPLE_ID` /
     /// `PERF_SAMPLE_IDENTIFIER` sample fields. Called once by [`PerfEvent::new`]
     /// with the same id `PERF_EVENT_IOC_ID` reports, so a reader can demultiplex
     /// the events sharing one ring (`perf record -e a,b`). Default no-op: the
     /// tracing variants emit no hardware samples.
     fn set_sample_id(&mut self, _id: u64) {}
+
+    /// Complete backend initialization after the outer wrapper assigns the
+    /// stable event id. Backends that implement open-enabled sampling use this
+    /// point so the first IRQ-visible descriptor never carries id zero.
+    fn finish_open(&mut self) -> StarryResult<()> {
+        Ok(())
+    }
 
     /// Expose this event's mmap ring so another event can redirect its records
     /// into it (`PERF_EVENT_IOC_SET_OUTPUT`, target side).
@@ -300,14 +324,15 @@ impl PerfEvent {
         mut event: Box<dyn PerfEventOps>,
         context: Option<PerfContextKey>,
         inherit: bool,
-    ) -> Self {
+    ) -> StarryResult<Self> {
         let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
         event.set_sample_id(id);
+        event.finish_open()?;
         let irq_output = event
             .as_any_mut()
             .downcast_mut::<BpfPerfEventWrapper>()
             .map(|event| event.output_handle());
-        PerfEvent {
+        Ok(PerfEvent {
             event: Mutex::new(event),
             irq_output,
             id,
@@ -316,7 +341,7 @@ impl PerfEvent {
             inherit,
             members: NoPreemptMutex::new(Vec::new()),
             group_leader: NoPreemptMutex::new(None),
-        }
+        })
     }
 
     fn live_members(&self) -> Vec<Arc<PerfEvent>> {
@@ -353,6 +378,10 @@ impl PerfEvent {
             member.event.lock().reset()?;
         }
         Ok(())
+    }
+
+    fn live_group_leader(&self) -> Option<Arc<PerfEvent>> {
+        self.group_leader.lock().as_ref().and_then(Weak::upgrade)
     }
 
     fn read_group(
@@ -544,25 +573,53 @@ impl FileLike for PerfEvent {
         // the default and return `Unsupported`.
         const PERF_EVENT_IOC_RESET: u32 = 0x2403;
         if cmd == PERF_EVENT_IOC_RESET {
-            self.event.lock().reset()?;
-            self.reset_members()?;
+            if arg & PERF_IOC_FLAG_GROUP != 0
+                && let Some(leader) = self.live_group_leader()
+            {
+                return leader.ioctl(cmd, arg);
+            }
+            let handled_group = if arg & PERF_IOC_FLAG_GROUP != 0 {
+                self.event.lock().reset_group()?
+            } else {
+                self.event.lock().reset()?;
+                false
+            };
+            if arg & PERF_IOC_FLAG_GROUP != 0 && !handled_group {
+                self.reset_members()?;
+            }
             return Ok(0);
         }
         let req = PerfEventIoc::try_from(cmd).map_err(|_| StarryError::InvalidInput)?;
         match req {
             PerfEventIoc::Enable => {
-                // Linux enables siblings before the leader enters the PMU
-                // transaction. The final leader enable can therefore reserve
-                // and arm the complete group atomically in the backend.
-                self.propagate_members(true)?;
-                if let Err(error) = self.event.lock().enable() {
-                    let _ = self.propagate_members(false);
-                    return Err(error);
+                if arg & PERF_IOC_FLAG_GROUP != 0
+                    && let Some(leader) = self.live_group_leader()
+                {
+                    return leader.ioctl(cmd, arg);
+                }
+                if arg & PERF_IOC_FLAG_GROUP != 0 {
+                    // Siblings become eligible before the leader enters the
+                    // backend transaction, so hardware groups are placed as a
+                    // single leader-first unit.
+                    self.propagate_members(true)?;
+                    if let Err(error) = self.event.lock().enable() {
+                        let _ = self.propagate_members(false);
+                        return Err(error);
+                    }
+                } else {
+                    self.event.lock().enable()?;
                 }
             }
             PerfEventIoc::Disable => {
+                if arg & PERF_IOC_FLAG_GROUP != 0
+                    && let Some(leader) = self.live_group_leader()
+                {
+                    return leader.ioctl(cmd, arg);
+                }
                 self.event.lock().disable()?;
-                self.propagate_members(false)?;
+                if arg & PERF_IOC_FLAG_GROUP != 0 {
+                    self.propagate_members(false)?;
+                }
             }
             PerfEventIoc::SetBpf => {
                 let bpf_prog_fd = arg as i32;
@@ -705,6 +762,9 @@ pub(crate) fn perf_event_open(
                 PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(sw_id) => {
                     Box::new(sw::perf_event_open_sw(attr, sw_id, &resolved)?)
                 }
+                PerfProbeConfig::PerfSwIds(sw_id) if sw::is_tracking_dummy(sw_id) => {
+                    Box::new(bpf::perf_event_open_tracking(args, attr, &resolved))
+                }
                 _ => Box::new(bpf::perf_event_open_bpf(args)),
             },
             PerfTypeId::PERF_TYPE_TRACEPOINT => {
@@ -723,7 +783,7 @@ pub(crate) fn perf_event_open(
         event,
         Some(context),
         attr.inherit() != 0,
-    ));
+    )?);
 
     if let Some(leader) = group_leader {
         if leader.context != perf_event.context
@@ -737,8 +797,10 @@ pub(crate) fn perf_event_open(
         {
             let mut leader_backend = leader.event.lock();
             let mut member_backend = perf_event.event.lock();
+            // Keep the member's own attr.disabled state. Linux gates an
+            // enabled sibling behind an OFF leader, but does not rewrite the
+            // sibling to OFF when it joins the group.
             member_backend.link_group(&mut **leader_backend)?;
-            member_backend.disable()?;
         }
         *perf_event.group_leader.lock() = Some(Arc::downgrade(&leader));
         leader.members.lock().push(Arc::downgrade(&perf_event));
@@ -774,7 +836,11 @@ pub fn perf_event_init() {
     PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
     sw::initialize();
     #[cfg(target_arch = "aarch64")]
-    percpu::initialize_all_cpus();
+    {
+        sideband::initialize();
+        system::initialize();
+        percpu::initialize_all_cpus();
+    }
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,
@@ -834,7 +900,7 @@ fn control_callback_runs_preemptible_for_test() -> bool {
         }
     }
 
-    let event = PerfEvent::new(Box::new(YieldingControl), None, false);
+    let event = PerfEvent::new(Box::new(YieldingControl), None, false).unwrap();
     event.ioctl(PerfEventIoc::Enable as u32, 0).is_ok()
 }
 

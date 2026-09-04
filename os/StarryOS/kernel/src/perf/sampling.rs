@@ -126,7 +126,7 @@ const MAX_STACK_DEPTH: usize = 64;
 const MAX_CALLCHAIN_ENTRIES: usize = 1 + MAX_STACK_DEPTH;
 const SAMPLE_READ_MAX_U64S: usize = 3 + MAX_SAMPLE_READ_EVENTS * 3;
 const SAMPLE_RECORD_MAX_LEN: usize =
-    8 + 9 * 8 + SAMPLE_READ_MAX_U64S * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8;
+    8 + 10 * 8 + SAMPLE_READ_MAX_U64S * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8;
 const LOST_RECORD_LEN: usize = 8 + 2 * 8;
 
 /// One physical perf mmap ring and its IRQ-safe multi-producer writer.
@@ -263,7 +263,7 @@ impl LossState {
 
 // `perf_event_sample_format` bits from Linux v7.1 UAPI. Only the fields below
 // are supported; every other bit (RAW,
-// BRANCH_STACK, REGS_USER/INTR, STACK_USER, WEIGHT, DATA_SRC, TRANSACTION,
+// BRANCH_STACK, REGS_INTR, STACK_USER, WEIGHT, DATA_SRC, TRANSACTION,
 // PHYS_ADDR, …) is rejected at open time.
 /// `PERF_SAMPLE_IP`: instruction pointer. Always set by real `perf` for samples.
 const PERF_SAMPLE_IP: u64 = 1 << 0;
@@ -285,6 +285,14 @@ const PERF_SAMPLE_CPU: u64 = 1 << 7;
 const PERF_SAMPLE_PERIOD: u64 = 1 << 8;
 /// `PERF_SAMPLE_STREAM_ID`: stream id (`u64`).
 const PERF_SAMPLE_STREAM_ID: u64 = 1 << 9;
+/// `PERF_SAMPLE_REGS_USER`: register ABI followed by the requested registers.
+///
+/// The IRQ boundary deliberately retains only the bounded `{pc, sp, fp}`
+/// snapshot needed by the in-kernel frame-pointer walker, not a raw trap frame.
+/// Linux permits the field to contain `PERF_SAMPLE_REGS_ABI_NONE` when no
+/// register dump is available, so emit that single zero word. Upstream arm64
+/// `perf record --call-graph fp` requests this bit in addition to CALLCHAIN.
+const PERF_SAMPLE_REGS_USER: u64 = 1 << 12;
 /// `PERF_SAMPLE_IDENTIFIER`: leading event id (`u64`), emitted first.
 const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
 
@@ -302,6 +310,7 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_CPU
     | PERF_SAMPLE_PERIOD
     | PERF_SAMPLE_STREAM_ID
+    | PERF_SAMPLE_REGS_USER
     | PERF_SAMPLE_IDENTIFIER;
 
 /// One value returned by an IRQ-safe `PERF_SAMPLE_READ` callback.
@@ -318,10 +327,12 @@ pub struct SampleReadValue {
 /// The callback and its context are installed while the corresponding event is
 /// strongly owned by the task or system-wide perf fd. Teardown unregisters the
 /// `SampleSlot` synchronously before that owner can be released.
+type SampleReadCallback = unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue;
+
 #[derive(Clone, Copy)]
 pub struct SampleReadEntry {
     context: *const (),
-    callback: Option<unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue>,
+    callback: Option<SampleReadCallback>,
     pub id: u64,
 }
 
@@ -334,7 +345,7 @@ impl SampleReadEntry {
 
     pub fn new(
         context: *const (),
-        callback: unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue,
+        callback: SampleReadCallback,
         id: u64,
     ) -> Self {
         Self {
@@ -869,6 +880,11 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
         for &entry in d.callchain {
             put!(entry);
         }
+    }
+    if sample_type & PERF_SAMPLE_REGS_USER != 0 {
+        // Linux's sample ABI requires only the ABI discriminator when it is
+        // `PERF_SAMPLE_REGS_ABI_NONE`; no register payload follows a zero.
+        put!(0u64);
     }
 
     // Back-patch the header's `size` field now that the total length is known.

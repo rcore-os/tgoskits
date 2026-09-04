@@ -71,6 +71,14 @@ pub fn is_counting_sw(id: perf_sw_ids) -> bool {
     SwId::from_raw(id).is_some()
 }
 
+/// Returns whether this is Linux's non-counting tracking event. Upstream
+/// `perf record` creates one `PERF_COUNT_SW_DUMMY` event per CPU and places all
+/// COMM/MMAP/TASK side-band subscriptions on it, then redirects it into the
+/// hardware sampling ring with `PERF_EVENT_IOC_SET_OUTPUT`.
+pub fn is_tracking_dummy(id: perf_sw_ids) -> bool {
+    id == perf_sw_ids::PERF_COUNT_SW_DUMMY
+}
+
 /// Aggregate state owned by one perf event and shared with inherited task
 /// bindings. Scheduling-window state deliberately stays in each binding.
 #[derive(Debug)]
@@ -409,6 +417,13 @@ impl PerfEventOps for SwPerfEvent {
         }
         Ok(())
     }
+
+    fn link_group(&mut self, leader: &mut dyn PerfEventOps) -> StarryResult<()> {
+        if leader.as_any_mut().downcast_mut::<SwPerfEvent>().is_none() {
+            return Err(StarryError::InvalidInput);
+        }
+        Ok(())
+    }
 }
 
 impl Pollable for SwPerfEvent {
@@ -446,7 +461,10 @@ pub fn perf_event_open_sw(
     target: &ResolvedPerfTarget,
 ) -> StarryResult<SwPerfEvent> {
     let raw_period = unsafe { attr.__bindgen_anon_1.sample_period };
-    if raw_period != 0 || attr.sample_type != 0 {
+    // Linux accepts sample_type on a counting event and simply does not emit
+    // samples while sample_period/freq is zero. Upstream `perf stat -vv` sets
+    // PERF_SAMPLE_IDENTIFIER on its software counting events.
+    if raw_period != 0 {
         return Err(StarryError::OperationNotSupported);
     }
     let kind = SwId::from_raw(sw_id).ok_or(StarryError::OperationNotSupported)?;

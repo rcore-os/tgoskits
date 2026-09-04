@@ -149,8 +149,13 @@ pub struct PerTaskCounter {
 
     /// Userspace wants this event counting (see the struct-level state machine).
     enabled: AtomicBool,
-    /// The target task is currently executing in an eligible CPU context.
+    /// The target task is currently executing, regardless of enable/filter
+    /// state. This lets an ioctl enable reschedule the live task immediately.
     on_cpu: AtomicBool,
+    /// Even while CPU ownership is stable; odd while scheduler hooks publish
+    /// a sched-in/out transition. RESET uses this as a generation check so a
+    /// concurrent migration cannot reintroduce a pre-reset hardware delta.
+    context_sequence: AtomicU64,
     /// The event is programmed onto HW right now (target task is running).
     running: AtomicBool,
     /// Sum of completed-slice deltas (raw event count).
@@ -346,6 +351,7 @@ impl PerTaskCounter {
             pinned: cfg.pinned,
             enabled: AtomicBool::new(cfg.enabled),
             on_cpu: AtomicBool::new(false),
+            context_sequence: AtomicU64::new(0),
             running: AtomicBool::new(false),
             accumulated: AtomicU64::new(0),
             time_enabled_ns: AtomicU64::new(0),
@@ -435,7 +441,13 @@ impl PerTaskCounter {
         }
         *member.group_leader.lock() = Some(Arc::downgrade(leader));
         members.push(Arc::downgrade(member));
-        Ok(())
+        drop(members);
+
+        // The target can be preempted after the member is attached but before
+        // this backend link is installed. Fold any standalone slice, then
+        // rebuild the complete group under the leader's current owner.
+        disarm_group_on_owner(leader)?;
+        schedule_if_on_cpu(leader)
     }
 
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
@@ -459,14 +471,22 @@ impl PerTaskCounter {
                     .fetch_add(now_ns().saturating_sub(enabled_at), Ordering::AcqRel);
             }
         }
-        disarm_on_owner(self)
+        if !self.group_members.lock().is_empty() {
+            disarm_group_on_owner(self)
+        } else {
+            disarm_on_owner(self)
+        }
     }
 
     /// Zero the accumulated value (`ioctl(RESET)`), leaving timing intact.
     /// Mirrors Linux's `PERF_EVENT_IOC_RESET`, which resets the count only.
     pub fn reset(&self) -> crate::StarryResult<()> {
-        self.accumulated.store(0, Ordering::Release);
-        reset_on_owner(self)
+        reset_on_owner(self, false)
+    }
+
+    /// Reset the complete hardware group at one stable task-context generation.
+    pub fn reset_group(&self) -> crate::StarryResult<()> {
+        reset_on_owner(self, true)
     }
 
     /// Whether a counting event already owns an mmap metadata page.
@@ -515,8 +535,18 @@ impl PerTaskCounter {
             0
         };
         let offset = self.accumulated.load(Ordering::Acquire) as i64;
-        let time_enabled = self.time_enabled_ns.load(Ordering::Acquire);
-        let time_running = self.time_running_ns.load(Ordering::Acquire);
+        let now = now_ns();
+        let mut time_enabled = self.time_enabled_ns.load(Ordering::Acquire);
+        let enabled_at = self.enabled_at_ns.load(Ordering::Acquire);
+        if self.enabled.load(Ordering::Acquire) && enabled_at != 0 {
+            time_enabled = time_enabled.saturating_add(now.saturating_sub(enabled_at));
+        }
+        let mut time_running = self.time_running_ns.load(Ordering::Acquire);
+        let run_since = self.run_since_ns.load(Ordering::Acquire);
+        if active && run_since != 0 {
+            time_running = time_running.saturating_add(now.saturating_sub(run_since));
+        }
+        let capabilities = (1u64 << 1) | if index != 0 { 1u64 << 2 } else { 0 };
 
         // SAFETY: `page` pins a zeroed, page-sized allocation and `lock` is a
         // naturally aligned u32 in `perf_event_mmap_page`. The `rdpmc_page`
@@ -530,6 +560,8 @@ impl PerTaskCounter {
             core::ptr::addr_of_mut!((*header).offset).write_volatile(offset);
             core::ptr::addr_of_mut!((*header).time_enabled).write_volatile(time_enabled);
             core::ptr::addr_of_mut!((*header).time_running).write_volatile(time_running);
+            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities)
+                .write_volatile(capabilities);
             fence(Ordering::Release);
             sequence.store(odd.wrapping_add(1), Ordering::Release);
         }
@@ -696,12 +728,17 @@ fn now_ns() -> u64 {
 /// this IRQ-context path only performs bounded locking, atomics, and PMU sysreg
 /// operations.
 pub fn perf_timer_tick() {
+    let now = now_ns();
+    super::system::disarm_flexible_current(now);
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        super::system::schedule_flexible_current(now);
         return;
     }
     let current = ax_task::current();
     if let Some(thread) = current.try_as_thread() {
-        perf_rotate_current(thread);
+        perf_rotate_current(thread, now);
+    } else {
+        super::system::schedule_flexible_current(now);
     }
 }
 
@@ -899,6 +936,18 @@ fn disarm_slice(ptc: &PerTaskCounter, now: u64, accumulate: bool) {
     }
 }
 
+fn disarm_group(leader: &PerTaskCounter, now: u64, accumulate: bool) {
+    if leader.running.load(Ordering::Acquire) {
+        disarm_slice(leader, now, accumulate);
+    }
+    let members = leader.group_members.lock();
+    for member in members.iter().filter_map(Weak::upgrade) {
+        if member.running.load(Ordering::Acquire) {
+            disarm_slice(&member, now, accumulate);
+        }
+    }
+}
+
 fn schedule_if_on_cpu(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
     let group_leader = live_group_leader(ptc);
     let root = group_leader.as_deref().unwrap_or(ptc);
@@ -921,13 +970,27 @@ fn schedule_if_on_cpu(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
             {
                 return;
             }
-            if !root.group_members.lock().is_empty() {
-                schedule_group(root, now_ns());
-            } else if let Some(slot) = super::percpu::alloc_programmable() {
-                arm_slice(root, slot, now_ns());
-            } else if root.pinned {
-                root.scheduling_error.store(true, Ordering::Release);
+            let now = now_ns();
+            if effective_pinned(root) {
+                // Linux orders CPU-pinned, task-pinned, CPU-flexible, then
+                // task-flexible. Rebuild both flexible layers before placing a
+                // task-pinned event that was enabled while its task was live.
+                super::system::disarm_flexible_current(now);
+                disarm_current_flexible(now);
             }
+            let placed = if !root.group_members.lock().is_empty() {
+                schedule_group(root, now)
+            } else if let Some(slot) = super::percpu::alloc_programmable() {
+                arm_slice(root, slot, now);
+                true
+            } else {
+                false
+            };
+            if !placed && effective_pinned(root) {
+                enter_scheduling_error(root, now);
+            }
+            super::system::schedule_flexible_current(now);
+            schedule_current_flexible(now);
         })
     }
 }
@@ -946,7 +1009,7 @@ fn schedule_group(leader: &PerTaskCounter, now: u64) -> bool {
             }
             if member_len + 1 == MAX_SAMPLE_READ_EVENTS || !eligible_on_current_cpu(&member) {
                 if leader.pinned {
-                    leader.scheduling_error.store(true, Ordering::Release);
+                    enter_scheduling_error(leader, now);
                 }
                 return false;
             }
@@ -957,17 +1020,7 @@ fn schedule_group(leader: &PerTaskCounter, now: u64) -> bool {
 
     // A member may have been enabled while the leader was already running.
     // Remove the old (smaller) placement before attempting the new transaction.
-    if leader.running.load(Ordering::Acquire) {
-        disarm_slice(leader, now, true);
-    }
-    for member in members_snapshot[..member_len]
-        .iter()
-        .filter_map(Option::as_deref)
-    {
-        if member.running.load(Ordering::Acquire) {
-            disarm_slice(member, now, true);
-        }
-    }
+    disarm_group(leader, now, true);
 
     let mut slots = [NO_SLOT; MAX_SAMPLE_READ_EVENTS];
     for index in 0..=member_len {
@@ -976,7 +1029,7 @@ fn schedule_group(leader: &PerTaskCounter, now: u64) -> bool {
                 super::percpu::free_programmable(reserved);
             }
             if leader.pinned {
-                leader.scheduling_error.store(true, Ordering::Release);
+                enter_scheduling_error(leader, now);
             }
             return false;
         };
@@ -1011,39 +1064,113 @@ fn disarm_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
             if ptc.last_cpu.load(Ordering::Acquire) == ax_hal::percpu::this_cpu_id()
                 && ptc.running.load(Ordering::Acquire)
             {
-                disarm_slice(ptc, now_ns(), true);
+                let now = now_ns();
+                disarm_slice(ptc, now, true);
+                super::system::schedule_flexible_current(now);
+                schedule_current_flexible(now);
             }
         })
     }
 }
 
-fn reset_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
-    if !ptc.running.load(Ordering::Acquire) {
-        if !ptc.is_sampling {
-            ptc.publish_rdpmc_page(false);
-        }
-        return Ok(());
-    }
-    let owner = ptc.last_cpu.load(Ordering::Acquire);
+fn disarm_group_on_owner(leader: &PerTaskCounter) -> crate::StarryResult<()> {
+    let owner = leader.last_cpu.load(Ordering::Acquire);
     if owner == usize::MAX {
         return Ok(());
     }
-    // SAFETY: the owner-side operation is a bounded PMU register write.
+    // SAFETY: group teardown is bounded by MAX_SAMPLE_READ_EVENTS and uses
+    // only owner-local PMU state plus IRQ-safe locks.
     unsafe {
         super::percpu::run_on_cpu_sync(owner, || {
-            let slot = ptc.slot.load(Ordering::Acquire);
-            if ptc.last_cpu.load(Ordering::Acquire) != ax_hal::percpu::this_cpu_id()
-                || slot == NO_SLOT
+            if leader.last_cpu.load(Ordering::Acquire) == ax_hal::percpu::this_cpu_id()
             {
-                return;
-            }
-            if ptc.is_sampling {
-                ax_cpu::pmu::counter::preload(slot, ptc.sample_period);
-            } else {
-                ax_cpu::pmu::counter::reset(slot);
-                ptc.publish_rdpmc_page(true);
+                let now = now_ns();
+                disarm_group(leader, now, true);
+                super::system::schedule_flexible_current(now);
+                schedule_current_flexible(now);
             }
         })
+    }
+}
+
+fn reset_one_on_owner(ptc: &PerTaskCounter) {
+    ptc.accumulated.store(0, Ordering::Release);
+    let slot = ptc.slot.load(Ordering::Acquire);
+    if ptc.running.load(Ordering::Acquire) && slot != NO_SLOT {
+        if ptc.is_sampling {
+            ax_cpu::pmu::counter::preload(slot, ptc.sample_period);
+        } else {
+            ax_cpu::pmu::counter::reset(slot);
+        }
+    }
+    if !ptc.is_sampling {
+        ptc.publish_rdpmc_page(ptc.running.load(Ordering::Acquire));
+    }
+}
+
+fn reset_on_owner(ptc: &PerTaskCounter, include_group: bool) -> crate::StarryResult<()> {
+    loop {
+        let sequence = ptc.context_sequence.load(Ordering::Acquire);
+        if sequence & 1 != 0 {
+            core::hint::spin_loop();
+            continue;
+        }
+        let owner = ptc.last_cpu.load(Ordering::Acquire);
+        if owner == usize::MAX {
+            reset_one_on_owner(ptc);
+            if include_group {
+                let members = ptc.group_members.lock();
+                for member in members.iter().filter_map(Weak::upgrade) {
+                    if !member.dead.load(Ordering::Acquire) {
+                        reset_one_on_owner(&member);
+                    }
+                }
+            }
+            if ptc.context_sequence.load(Ordering::Acquire) == sequence {
+                return Ok(());
+            }
+            continue;
+        }
+        // SAFETY: the closure is bounded by MAX_SAMPLE_READ_EVENTS, performs no
+        // allocation, and validates that the task-context generation still
+        // belongs to this owner CPU before touching banked PMU registers.
+        let completed = unsafe {
+            super::percpu::run_on_cpu_sync(owner, || {
+                if ptc.context_sequence.load(Ordering::Acquire) != sequence
+                    || ptc.last_cpu.load(Ordering::Acquire)
+                        != ax_hal::percpu::this_cpu_id()
+                {
+                    return false;
+                }
+                reset_one_on_owner(ptc);
+                if include_group {
+                    let members = ptc.group_members.lock();
+                    for member in members.iter().filter_map(Weak::upgrade) {
+                        if !member.dead.load(Ordering::Acquire) {
+                            reset_one_on_owner(&member);
+                        }
+                    }
+                }
+                ptc.context_sequence.load(Ordering::Acquire) == sequence
+            })
+        }?;
+        if completed {
+            return Ok(());
+        }
+    }
+}
+
+fn enter_scheduling_error(ptc: &PerTaskCounter, now: u64) {
+    if ptc.enabled.swap(false, Ordering::AcqRel) {
+        let enabled_at = ptc.enabled_at_ns.swap(0, Ordering::AcqRel);
+        if enabled_at != 0 {
+            ptc.time_enabled_ns
+                .fetch_add(now.saturating_sub(enabled_at), Ordering::AcqRel);
+        }
+    }
+    ptc.scheduling_error.store(true, Ordering::Release);
+    if !ptc.is_sampling {
+        ptc.publish_rdpmc_page(false);
     }
 }
 
@@ -1063,7 +1190,7 @@ fn schedule_pinned(counters: &[Arc<PerTaskCounter>], now: u64) {
         if let Some(slot) = super::percpu::alloc_programmable() {
             arm_slice(ptc, slot, now);
         } else {
-            ptc.scheduling_error.store(true, Ordering::Release);
+            enter_scheduling_error(ptc, now);
         }
     }
 }
@@ -1089,6 +1216,41 @@ fn schedule_flexible(counters: &[Arc<PerTaskCounter>], start: usize, now: u64) {
     }
 }
 
+/// Removes the current task's flexible layer before the owner CPU rebuilds the
+/// Linux CPU-context-before-task-context scheduling order.
+pub(crate) fn disarm_current_flexible(now: u64) {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let current = ax_task::current();
+    let Some(thread) = current.try_as_thread() else {
+        return;
+    };
+    let counters = thread.perf_counters.lock();
+    for counter in counters.iter() {
+        if !effective_pinned(counter) && counter.running.load(Ordering::Acquire) {
+            disarm_slice(counter, now, true);
+        }
+    }
+}
+
+/// Refills the current task's flexible layer after CPU-context placement.
+pub(crate) fn schedule_current_flexible(now: u64) {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let current = ax_task::current();
+    let Some(thread) = current.try_as_thread() else {
+        return;
+    };
+    let counters = thread.perf_counters.lock();
+    if counters.is_empty() {
+        return;
+    }
+    let start = super::percpu::next_rotation_start(counters.len());
+    schedule_flexible(&counters, start, now);
+}
+
 /// Scheduler hook: marks the task on this CPU, schedules pinned events first,
 /// then fills remaining PMU slots with flexible events.
 pub fn perf_sched_in(thr: &Thread) {
@@ -1101,13 +1263,17 @@ pub fn perf_sched_in(thr: &Thread) {
     }
     let now = now_ns();
     let cpu = ax_hal::percpu::this_cpu_id();
+    super::system::disarm_flexible_current(now);
     for ptc in counters.iter() {
-        if eligible_on_current_cpu(ptc) {
-            ptc.on_cpu.store(true, Ordering::Release);
+        if !ptc.dead.load(Ordering::Acquire) {
+            ptc.context_sequence.fetch_add(1, Ordering::AcqRel);
             ptc.last_cpu.store(cpu, Ordering::Release);
+            ptc.on_cpu.store(true, Ordering::Release);
+            ptc.context_sequence.fetch_add(1, Ordering::Release);
         }
     }
     schedule_pinned(&counters, now);
+    super::system::schedule_flexible_current(now);
     schedule_flexible(&counters, 0, now);
 }
 
@@ -1134,37 +1300,32 @@ pub fn perf_sched_out(thr: &Thread) {
     }
     let now = now_ns();
     for ptc in counters.iter() {
+        ptc.context_sequence.fetch_add(1, Ordering::AcqRel);
         if ptc.running.load(Ordering::Acquire) {
             disarm_slice(ptc, now, !ptc.dead.load(Ordering::Acquire));
         }
         ptc.on_cpu.store(false, Ordering::Release);
+        ptc.context_sequence.fetch_add(1, Ordering::Release);
     }
+    super::system::schedule_flexible_current(now);
 }
 
 /// Timer-IRQ multiplexing step for the currently running task.
-fn perf_rotate_current(thr: &Thread) {
+fn perf_rotate_current(thr: &Thread, now: u64) {
     let counters = thr.perf_counters.lock();
-    if counters.len() < 2 {
+    if counters.is_empty() {
+        super::system::schedule_flexible_current(now);
         return;
     }
-    let mut eligible = 0usize;
-    for ptc in counters.iter() {
-        if !effective_pinned(ptc)
-            && !is_live_group_member(ptc)
-            && eligible_on_current_cpu(ptc)
-        {
-            eligible += 1;
-        }
-    }
-    if eligible < 2 {
-        return;
-    }
-    let now = now_ns();
+    // Rotate the complete flexible layer even when it contains a single task
+    // event: a newly-enabled CPU context has priority over task-flexible work
+    // in Linux's scheduling order and must be allowed to claim the slot.
     for ptc in counters.iter() {
         if !effective_pinned(ptc) && ptc.running.load(Ordering::Acquire) {
             disarm_slice(ptc, now, true);
         }
     }
+    super::system::schedule_flexible_current(now);
     let start = super::percpu::next_rotation_start(counters.len());
     schedule_flexible(&counters, start, now);
 }
@@ -1228,6 +1389,21 @@ fn sideband_target(ptc: &PerTaskCounter, thread: &Thread) -> Option<SidebandTarg
     })
 }
 
+fn system_sideband_targets(thread: &Thread) -> Vec<sideband::SystemSidebandTarget> {
+    let observer = crate::task::ROOT_PID_NS.id();
+    let pid = thread
+        .proc_data
+        .identity()
+        .visible_number_in(observer)
+        .map(TgidNumber::from);
+    let tid = thread
+        .pid_identity()
+        .visible_number_in(observer)
+        .map(TidNumber::from);
+    pid.zip(tid)
+        .map_or_else(Vec::new, |(pid, tid)| sideband::system_targets(pid, tid))
+}
+
 /// Snapshot the executable file-backed mappings of `thr`'s address space as
 /// `MMAP2` records. Collected under the aspace lock and returned owned, so the
 /// caller writes the ring (which masks IRQs) without holding that lock.
@@ -1276,9 +1452,6 @@ fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
 /// (so [`current`] is this task and `thr`'s address space is the new image).
 /// `perf record` mmaps the ring before releasing the child, so the ring exists.
 pub fn on_exec_sideband(thr: &Thread) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
     /// A target plus which record kinds it wants (so the COMM/MMAP2 loops below
     /// can each skip non-subscribers without re-walking the counter list).
     struct WantTarget {
@@ -1287,7 +1460,9 @@ pub fn on_exec_sideband(thr: &Thread) {
         mmap2: bool,
     }
     // Snapshot targets, then drop the counter lock before any ring write.
-    let targets: Vec<WantTarget> = {
+    let targets: Vec<WantTarget> = if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        Vec::new()
+    } else {
         let counters = thr.perf_counters.lock();
         counters
             .iter()
@@ -1300,7 +1475,8 @@ pub fn on_exec_sideband(thr: &Thread) {
             })
             .collect()
     };
-    if targets.is_empty() {
+    let system_targets = system_sideband_targets(thr);
+    if targets.is_empty() && system_targets.is_empty() {
         return;
     }
 
@@ -1312,11 +1488,23 @@ pub fn on_exec_sideband(thr: &Thread) {
             sideband::emit_comm(&wt.target, &name, true);
         }
     }
+    for wt in &system_targets {
+        if wt.comm {
+            sideband::emit_comm(&wt.target, &name, true);
+        }
+    }
 
     // MMAP2: one per executable file-backed mapping of the new image.
-    if targets.iter().any(|wt| wt.mmap2) {
+    if targets.iter().any(|wt| wt.mmap2) || system_targets.iter().any(|wt| wt.mmap2) {
         let maps = collect_exec_maps(thr);
         for wt in &targets {
+            if wt.mmap2 {
+                for m in &maps {
+                    sideband::emit_mmap2(&wt.target, m);
+                }
+            }
+        }
+        for wt in &system_targets {
             if wt.mmap2 {
                 for m in &maps {
                     sideband::emit_mmap2(&wt.target, m);
@@ -1340,10 +1528,9 @@ pub fn on_mmap_sideband(
     shared: bool,
     filename: &str,
 ) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let targets: Vec<SidebandTarget> = {
+    let targets: Vec<SidebandTarget> = if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        Vec::new()
+    } else {
         let counters = thr.perf_counters.lock();
         counters
             .iter()
@@ -1351,7 +1538,8 @@ pub fn on_mmap_sideband(
             .filter_map(|ptc| sideband_target(ptc, thr))
             .collect()
     };
-    if targets.is_empty() {
+    let system_targets = system_sideband_targets(thr);
+    if targets.is_empty() && !system_targets.iter().any(|target| target.mmap2) {
         return;
     }
     let m = Mmap2Info {
@@ -1368,6 +1556,11 @@ pub fn on_mmap_sideband(
     for t in &targets {
         sideband::emit_mmap2(t, &m);
     }
+    for target in &system_targets {
+        if target.mmap2 {
+            sideband::emit_mmap2(&target.target, &m);
+        }
+    }
 }
 
 /// Clone side-band hook: emit a `PERF_RECORD_FORK` describing the new child into
@@ -1382,11 +1575,10 @@ pub fn on_clone_sideband(
     child_process: &PidIdentity,
     child_thread: &PidIdentity,
 ) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
     // Snapshot want_task targets, then drop the counter lock before any ring write.
-    let targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = {
+    let targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        Vec::new()
+    } else {
         let counters = parent_thr.perf_counters.lock();
         counters
             .iter()
@@ -1404,6 +1596,43 @@ pub fn on_clone_sideband(
     };
     for (target, child_pid, child_tid, parent_pid, parent_tid) in &targets {
         sideband::emit_fork(target, *child_pid, *parent_pid, *child_tid, *parent_tid);
+    }
+
+    let observer = crate::task::ROOT_PID_NS.id();
+    let system_targets = system_sideband_targets(parent_thr);
+    let child_pid = child_process
+        .visible_number_in(observer)
+        .map(TgidNumber::from);
+    let child_tid = child_thread
+        .visible_number_in(observer)
+        .map(TidNumber::from);
+    let parent_pid = parent_thr
+        .proc_data
+        .identity()
+        .visible_number_in(observer)
+        .map(TgidNumber::from);
+    let parent_tid = parent_thr
+        .pid_identity()
+        .visible_number_in(observer)
+        .map(TidNumber::from);
+    if let Some((child_pid, child_tid, parent_pid, parent_tid)) = child_pid
+        .zip(child_tid)
+        .zip(parent_pid.zip(parent_tid))
+        .map(|((child_pid, child_tid), (parent_pid, parent_tid))| {
+            (child_pid, child_tid, parent_pid, parent_tid)
+        })
+    {
+        for target in &system_targets {
+            if target.task {
+                sideband::emit_fork(
+                    &target.target,
+                    child_pid,
+                    parent_pid,
+                    child_tid,
+                    parent_tid,
+                );
+            }
+        }
     }
 }
 
@@ -1428,6 +1657,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
     /// Everything needed to rebuild a child counter, snapshotted under the parent
     /// lock so the (allocating) child construction happens lock-free.
     struct InheritSpec {
+        parent: Arc<PerTaskCounter>,
         cfg: PerTaskConfig,
         sample_id: u64,
         ring: Option<Arc<RingEndpoint>>,
@@ -1439,6 +1669,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             .iter()
             .filter(|p| p.inherit && !p.dead.load(Ordering::Acquire))
             .map(|p| InheritSpec {
+                parent: p.clone(),
                 cfg: PerTaskConfig {
                     cpu_filter: p.cpu_filter,
                     owner_identity: child_thr.pid_identity().id(),
@@ -1470,6 +1701,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             })
             .collect()
     };
+    let mut inherited = Vec::with_capacity(specs.len());
     for spec in specs {
         // A sampling event with no ring yet has nowhere to write the child's
         // samples; skip (perf maps the ring before enabling, so this is rare).
@@ -1485,6 +1717,24 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         {
             continue;
         }
+        inherited.push((spec.parent, child));
+    }
+    // Rebuild the parent's weak group graph with child-local counters. Linking
+    // before attach means the child cannot run with a partially published
+    // topology, and no parent Arc is retained after this hook returns.
+    for (parent, child) in &inherited {
+        let Some(parent_leader) = live_group_leader(parent) else {
+            continue;
+        };
+        let Some((_, child_leader)) = inherited
+            .iter()
+            .find(|(candidate, _)| Arc::ptr_eq(candidate, &parent_leader))
+        else {
+            continue;
+        };
+        let _ = PerTaskCounter::link_group(child_leader, child);
+    }
+    for (_, child) in inherited {
         attach(child_thr, child);
     }
 }
@@ -1499,6 +1749,25 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
 /// `free_hw` is idempotent per counter; safe even if the perf fd is still open
 /// (its `Drop` will call `free_hw` again and find it already freed).
 pub fn on_task_exit(thr: &Thread) {
+    let observer = crate::task::ROOT_PID_NS.id();
+    let system_targets = system_sideband_targets(thr);
+    for target in &system_targets {
+        if !target.task {
+            continue;
+        }
+        let parent = thr.proc_data.proc.parent().and_then(|parent| {
+            let number = parent.identity().visible_number_in(observer)?;
+            Some((TgidNumber::from(number), TidNumber::from(number)))
+        });
+        sideband::emit_exit(
+            &target.target,
+            target.target.pid,
+            parent.map(|(pid, _)| pid),
+            target.target.tid,
+            parent.map(|(_, tid)| tid),
+        );
+    }
+
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }

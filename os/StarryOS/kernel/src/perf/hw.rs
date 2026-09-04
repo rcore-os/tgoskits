@@ -20,8 +20,9 @@
 //! into the ring and wakes the worker, which delivers `POLLIN`. M2 supports only
 //! `PERF_SAMPLE_IP`.
 //!
-//! Scope: single CPU (the current one), no multiplexing. Because there is no
-//! multiplexing, `time_running` always equals `time_enabled`.
+//! System-wide counting events live in a per-CPU logical context and are
+//! multiplexed by the local timer. Sampling events retain a physical slot for
+//! their lifetime because overflow state is bound to that slot.
 
 #[cfg(target_arch = "aarch64")]
 use alloc::sync::Arc;
@@ -44,7 +45,7 @@ use kbpf_basic::linux_bpf::perf_event_attr;
 #[cfg(target_arch = "aarch64")]
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 #[cfg(target_arch = "aarch64")]
-use kbpf_basic::linux_bpf::{perf_hw_id, perf_type_id};
+use kbpf_basic::linux_bpf::perf_type_id;
 
 #[cfg(target_arch = "aarch64")]
 use super::PerfReadValues;
@@ -89,13 +90,11 @@ const RING_DATA_OFFSET: usize = ax_memory_addr::PAGE_SIZE_4K;
 
 /// The hardware counter a [`HwPerfEvent`] is bound to.
 ///
-/// `Cycle` is the dedicated 64-bit cycle counter (`PMCCNTR_EL0`);
-/// `Programmable(n)` is one of the 32-bit event counters at logical index
-/// `n` in `0..num_counters`.
+/// Sampling retains one 32-bit programmable event counter at logical index
+/// `n` in `0..num_counters`; counting events use [`super::system`].
 #[cfg(target_arch = "aarch64")]
 #[derive(Debug, Clone, Copy)]
 enum Counter {
-    Cycle,
     Programmable(usize),
 }
 
@@ -205,6 +204,8 @@ struct SamplingState {
     enabled_at_ns: AtomicU64,
     time_enabled_ns: AtomicU64,
     time_running_ns: AtomicU64,
+    /// Process side-band subscription for a system-wide sampling ring.
+    sideband: Option<Arc<super::sideband::SystemSidebandSource>>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -381,6 +382,13 @@ pub struct HwPerfEvent {
     /// the `PerfEventOps` methods + `Drop` delegate to the per-task path. The
     /// `Arc` is shared with the target [`crate::task::Thread`]'s counter list.
     per_task: Option<Arc<super::task::PerTaskCounter>>,
+    /// Per-CPU logical counting state for a system-wide event. Flexible events
+    /// acquire a programmable PMU slot only for their current timer slice.
+    system: Option<Arc<super::system::SystemCounter>>,
+    /// Direct system-wide sampling events cannot be armed until the outer
+    /// [`PerfEvent`] assigns their sample id. `set_sample_id` consumes this bit
+    /// and performs Linux's open-enabled transition before the fd is returned.
+    enable_on_open: bool,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -389,7 +397,6 @@ impl HwPerfEvent {
     /// 32-bit zero-extended).
     fn raw_value_on_owner(&self) -> u64 {
         match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::read(),
             Counter::Programmable(n) => ax_cpu::pmu::counter::read(n),
         }
     }
@@ -399,7 +406,6 @@ impl HwPerfEvent {
     fn programmable_index(&self) -> Option<usize> {
         match self.counter {
             Counter::Programmable(n) => Some(n),
-            Counter::Cycle => None,
         }
     }
 
@@ -426,7 +432,6 @@ impl HwPerfEvent {
 
     fn disable_counter_on_owner(&self) {
         match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::disable(),
             Counter::Programmable(n) => ax_cpu::pmu::counter::disable(n),
         }
     }
@@ -434,25 +439,28 @@ impl HwPerfEvent {
     fn release_counter_on_owner(&self) {
         self.disable_counter_on_owner();
         match self.counter {
-            Counter::Cycle => percpu::free_cycle(),
             Counter::Programmable(n) => percpu::free_programmable(n),
         }
     }
 
     fn enable_on_owner(&mut self) -> StarryResult<()> {
+        let now = ax_runtime::hal::time::monotonic_time_nanos();
         if self.enabled_since.is_none() {
-            self.enabled_since = Some(ax_runtime::hal::time::monotonic_time_nanos());
+            self.enabled_since = Some(now);
         }
         if let Some(sampling) = &self.sampling {
-            let Counter::Programmable(n) = self.counter else {
-                return Err(StarryError::OperationNotSupported);
-            };
+            let Counter::Programmable(n) = self.counter;
             let endpoint = sampling.redirect.as_ref().or(sampling.ring.as_ref());
             let mut read_entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
             read_entries[0] = sampling.read_entry(self.sample_id);
-            sampling.enabled_at_ns.store(
-                ax_runtime::hal::time::monotonic_time_nanos(),
-                Ordering::Release,
+            // Repeated ENABLE on an already-enabled event is a Linux no-op;
+            // keep the original start so PERF_SAMPLE_READ timing cannot move
+            // forward and lose an enabled interval.
+            let _ = sampling.enabled_at_ns.compare_exchange(
+                0,
+                now,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             );
             ax_cpu::pmu::counter::preload(n, sampling.period);
             sampling::register(
@@ -475,9 +483,11 @@ impl HwPerfEvent {
             );
             ax_cpu::pmu::overflow::enable_irq(n);
             ax_cpu::pmu::counter::enable(n);
+            if let Some(sideband) = &sampling.sideband {
+                sideband.set_enabled(true);
+            }
         } else {
             match self.counter {
-                Counter::Cycle => ax_cpu::pmu::cycles::enable(),
                 Counter::Programmable(n) => ax_cpu::pmu::counter::enable(n),
             }
         }
@@ -485,6 +495,13 @@ impl HwPerfEvent {
     }
 
     fn disable_on_owner(&mut self) {
+        if let Some(sideband) = self
+            .sampling
+            .as_ref()
+            .and_then(|sampling| sampling.sideband.as_ref())
+        {
+            sideband.set_enabled(false);
+        }
         if self.sampling.is_some() {
             self.teardown_sampling_irq_on_owner();
         } else {
@@ -520,7 +537,6 @@ impl HwPerfEvent {
             return;
         }
         match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::reset(),
             Counter::Programmable(n) => ax_cpu::pmu::counter::reset(n),
         }
     }
@@ -571,6 +587,9 @@ impl HwPerfEvent {
         &self,
         len: usize,
     ) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        if let Some(system) = &self.system {
+            return system.device_mmap(len);
+        }
         // Exactly one metadata page is allocated below. Accepting a larger VMA
         // would make the physical mapping continue into unrelated adjacent
         // memory after that page.
@@ -596,9 +615,7 @@ impl HwPerfEvent {
         // dedicated cycle counter (ARM index 31 ⇒ page index 32).
         let (index, pmc_width): (u32, u16) = match (&self.per_task, self.counter) {
             (Some(_), Counter::Programmable(_)) => (0, 32),
-            (None, Counter::Cycle) => (32, 64),
             (None, Counter::Programmable(n)) => (n as u32 + 1, 32),
-            (Some(_), Counter::Cycle) => return Err(StarryError::Unsupported),
         };
 
         let header = kvirt.as_usize() as *mut perf_event_mmap_page;
@@ -610,6 +627,12 @@ impl HwPerfEvent {
             core::ptr::addr_of_mut!((*header).index).write(index);
             core::ptr::addr_of_mut!((*header).offset).write(0);
             core::ptr::addr_of_mut!((*header).pmc_width).write(pmc_width);
+            core::ptr::addr_of_mut!((*header).size).write(
+                core::mem::offset_of!(perf_event_mmap_page, __reserved) as u32,
+            );
+            core::ptr::addr_of_mut!((*header).data_offset)
+                .write(ax_memory_addr::PAGE_SIZE_4K as u64);
+            core::ptr::addr_of_mut!((*header).data_size).write(0);
             // `cap_bit0_is_deprecated` (bit 1) tells userspace the capability
             // bits have their post-3.12 meanings; `cap_user_rdpmc` is bit 2.
             core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities)
@@ -630,6 +653,10 @@ impl HwPerfEvent {
 #[cfg(target_arch = "aarch64")]
 impl Drop for HwPerfEvent {
     fn drop(&mut self) {
+        if let Some(system) = &self.system {
+            system.release();
+            return;
+        }
         // Per-task events do not own a system-wide counter or sampling state:
         // release the HW counter through the per-task path (idempotent — the
         // task-exit hook may have freed it already) and stop here.
@@ -656,6 +683,9 @@ impl Drop for HwPerfEvent {
         // Stop the deferred worker (mirrors `BpfPerfEventWrapper::drop`). The
         // `Arc`s in `sampling` drop after this returns.
         if let Some(sampling) = &self.sampling {
+            if let Some(sideband) = &sampling.sideband {
+                sideband.set_enabled(false);
+            }
             sampling.poll_alive.store(false, Ordering::Release);
             sampling.notify.notify();
         }
@@ -665,6 +695,9 @@ impl Drop for HwPerfEvent {
 #[cfg(target_arch = "aarch64")]
 impl Pollable for HwPerfEvent {
     fn poll(&self) -> IoEvents {
+        if self.system.is_some() {
+            return IoEvents::IN;
+        }
         // Per-task events: a sampling one is readable when its ring (on the
         // shared `PerTaskCounter`) has unread bytes; a counting one is always
         // readable (`read(perf_fd)` returns the current value without blocking).
@@ -696,6 +729,9 @@ impl Pollable for HwPerfEvent {
     }
 
     fn register(&self, context: &mut core::task::Context<'_>, events: IoEvents) {
+        if self.system.is_some() {
+            return;
+        }
         // Per-task sampling events register a waker on the ptc's `PollSet` (the
         // one the per-task notify worker wakes). Counting events (per-task or
         // system-wide) never transition readiness, so they register nothing.
@@ -718,6 +754,9 @@ impl Pollable for HwPerfEvent {
 #[cfg(target_arch = "aarch64")]
 impl PerfEventOps for HwPerfEvent {
     fn enable(&mut self) -> StarryResult<()> {
+        if let Some(system) = &self.system {
+            return system.set_enabled();
+        }
         // Per-task: just record userspace intent. The target task's next
         // `perf_sched_in` programs the counter onto HW (or an immediate one if
         // it is the running task at the next switch).
@@ -731,6 +770,9 @@ impl PerfEventOps for HwPerfEvent {
     }
 
     fn disable(&mut self) -> StarryResult<()> {
+        if let Some(system) = &self.system {
+            return system.set_disabled();
+        }
         // Per-task: clear userspace intent. The next `perf_sched_out` folds the
         // live slice and stops the HW counter; future slices skip it.
         if let Some(ptc) = &self.per_task {
@@ -743,6 +785,9 @@ impl PerfEventOps for HwPerfEvent {
     }
 
     fn reset(&mut self) -> StarryResult<()> {
+        if let Some(system) = &self.system {
+            return system.reset();
+        }
         // Per-task: zero the accumulated count only (Linux `PERF_EVENT_IOC_RESET`
         // semantics); timing is preserved.
         if let Some(ptc) = &self.per_task {
@@ -754,7 +799,23 @@ impl PerfEventOps for HwPerfEvent {
         Ok(())
     }
 
+    fn reset_group(&mut self) -> StarryResult<bool> {
+        if let Some(system) = &self.system {
+            system.reset_group()?;
+            return Ok(true);
+        }
+        if let Some(ptc) = &self.per_task {
+            ptc.reset_group()?;
+            return Ok(true);
+        }
+        self.reset()?;
+        Ok(false)
+    }
+
     fn read_values(&mut self) -> StarryResult<PerfReadValues> {
+        if let Some(system) = &self.system {
+            return system.read_values();
+        }
         // Per-task: the accumulated count + live slice lives on the shared
         // `PerTaskCounter`; serialize it per this fd's `read_format`.
         if let Some(ptc) = &self.per_task {
@@ -779,10 +840,29 @@ impl PerfEventOps for HwPerfEvent {
 
     fn set_sample_id(&mut self, id: u64) {
         self.sample_id = id;
+        if let Some(sideband) = self
+            .sampling
+            .as_ref()
+            .and_then(|sampling| sampling.sideband.as_ref())
+        {
+            sideband.set_sample_id(id);
+        }
         // Per-task: mirror onto the shared counter the scheduler hook reads.
         if let Some(ptc) = &self.per_task {
             ptc.set_sample_id(id);
         }
+    }
+
+    fn finish_open(&mut self) -> StarryResult<()> {
+        if !self.enable_on_open {
+            return Ok(());
+        }
+        self.enable_on_open = false;
+        let owner = self.owner_cpu;
+        // SAFETY: the physical slot was reserved during construction and the
+        // owner operation is bounded and allocation-free. This runs after
+        // `set_sample_id`, so the first IRQ-visible descriptor has a stable id.
+        unsafe { percpu::run_on_cpu_sync(owner, || self.enable_on_owner()) }?
     }
 
     fn output_ring(&self) -> Option<(usize, usize, Arc<dyn Any + Send + Sync>)> {
@@ -818,7 +898,11 @@ impl PerfEventOps for HwPerfEvent {
                 // SAFETY: bounded owner-local PMU teardown.
                 unsafe { percpu::run_on_cpu_sync(owner, || self.teardown_sampling_irq_on_owner()) }?;
             }
-            self.sampling.as_mut().unwrap().redirect = Some(endpoint);
+            let sampling = self.sampling.as_mut().unwrap();
+            sampling.redirect = Some(endpoint.clone());
+            if let Some(sideband) = &sampling.sideband {
+                sideband.set_redirect(Some(endpoint));
+            }
             if was_enabled {
                 // SAFETY: bounded owner-local PMU arm.
                 unsafe { percpu::run_on_cpu_sync(owner, || self.enable_on_owner()) }??;
@@ -838,7 +922,11 @@ impl PerfEventOps for HwPerfEvent {
                 // SAFETY: bounded owner-local PMU teardown.
                 unsafe { percpu::run_on_cpu_sync(owner, || self.teardown_sampling_irq_on_owner()) }?;
             }
-            self.sampling.as_mut().unwrap().redirect = None;
+            let sampling = self.sampling.as_mut().unwrap();
+            sampling.redirect = None;
+            if let Some(sideband) = &sampling.sideband {
+                sideband.set_redirect(None);
+            }
             if was_enabled {
                 // SAFETY: bounded owner-local PMU arm.
                 unsafe { percpu::run_on_cpu_sync(owner, || self.enable_on_owner()) }??;
@@ -849,20 +937,29 @@ impl PerfEventOps for HwPerfEvent {
 
     fn link_group(&mut self, leader: &mut dyn PerfEventOps) -> StarryResult<()> {
         let Some(leader) = leader.as_any_mut().downcast_mut::<HwPerfEvent>() else {
-            // A hardware member of a software leader consumes no shared
-            // backend topology; the file layer still owns group control/read.
-            return Ok(());
+            return Err(StarryError::InvalidInput);
         };
-        match (&leader.per_task, &self.per_task) {
-            (Some(leader), Some(member)) => super::task::PerTaskCounter::link_group(leader, member),
-            // System-wide counters are owner-CPU fixed and reserved at open;
-            // their all-or-nothing capacity check is therefore already done.
-            (None, None) => Ok(()),
+        match (
+            &leader.per_task,
+            &self.per_task,
+            &leader.system,
+            &self.system,
+        ) {
+            (Some(leader), Some(member), None, None) => {
+                super::task::PerTaskCounter::link_group(leader, member)
+            }
+            (None, None, Some(leader), Some(member)) => {
+                super::system::SystemCounter::link_group(leader, member)
+            }
+            (None, None, None, None) => Ok(()),
             _ => Err(StarryError::InvalidInput),
         }
     }
 
     fn device_mmap(&mut self, len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        if let Some(system) = &self.system {
+            return system.device_mmap(len);
+        }
         // Per-task sampling owns a ring on `PerTaskCounter`; per-task counting
         // exposes the same one-page rdpmc metadata ABI as system-wide counting.
         // The reserved programmable slot remains stable for the event lifetime,
@@ -889,6 +986,9 @@ impl PerfEventOps for HwPerfEvent {
 
         let (endpoint, paddr) = alloc_sampling_ring(len, sampling.notify.clone())?;
         sampling.ring = Some(endpoint.clone());
+        if let Some(sideband) = &sampling.sideband {
+            sideband.set_ring(endpoint.clone());
+        }
         if self.enabled_since.is_some() {
             let owner = self.owner_cpu;
             // SAFETY: replace the null pre-mmap registry route with the newly
@@ -1032,45 +1132,44 @@ pub fn perf_event_open_hw(
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
-    // Select the ARM event and counter. Sampling events ALWAYS take a
-    // programmable counter — even CPU_CYCLES maps to ARM event 0x11 — because
-    // the dedicated cycle counter is not used by the M2 overflow path.
-    enum CounterRequest {
-        Cycle,
-        Programmable(u16),
-    }
     let spec = event_spec(attr)?;
-    let request = if matches!(spec, PmuEventSpec::Hardware(config) if config == perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32)
-        && !is_sampling
-    {
-        CounterRequest::Cycle
-    } else {
-        CounterRequest::Programmable(spec.resolve(info)?)
-    };
+    if !is_sampling {
+        let system = super::system::SystemCounter::open(super::system::SystemCounterConfig {
+            owner_cpu,
+            event: spec,
+            exclude_user,
+            exclude_kernel,
+            read_format: attr.read_format,
+            pinned: attr.pinned() != 0,
+            enabled: attr.disabled() == 0,
+        })?;
+        return Ok(HwPerfEvent {
+            owner_cpu,
+            counter: Counter::Programmable(0),
+            sample_id: 0,
+            read_format: attr.read_format,
+            enabled_since: None,
+            time_enabled: 0,
+            time_running: 0,
+            sampling: None,
+            per_task: None,
+            system: Some(system),
+            enable_on_open: false,
+        });
+    }
+    // Sampling events always retain a programmable counter because overflow
+    // registration is indexed by the physical PMU slot.
+    let event = spec.resolve(info)?;
 
     // SAFETY: allocation and configuration touch only owner-local PMU state;
     // the closure is bounded, allocation-free, and safe in IPI context.
     let counter = unsafe {
-        percpu::run_on_cpu_sync(owner_cpu, move || match request {
-            CounterRequest::Cycle => {
-                if !percpu::alloc_cycle() {
-                    return Err(StarryError::ResourceBusy);
-                }
-                ax_cpu::pmu::cycles::configure(exclude_user, exclude_kernel);
-                Ok(Counter::Cycle)
-            }
-            CounterRequest::Programmable(event) => {
-                let Some(counter) = percpu::alloc_programmable() else {
-                    return Err(StarryError::ResourceBusy);
-                };
-                ax_cpu::pmu::counter::configure(
-                    counter,
-                    event,
-                    exclude_user,
-                    exclude_kernel,
-                );
-                Ok(Counter::Programmable(counter))
-            }
+        percpu::run_on_cpu_sync(owner_cpu, move || {
+            let Some(counter) = percpu::alloc_programmable() else {
+                return Err(StarryError::ResourceBusy);
+            };
+            ax_cpu::pmu::counter::configure(counter, event, exclude_user, exclude_kernel);
+            Ok(Counter::Programmable(counter))
         })
     }??;
 
@@ -1102,6 +1201,14 @@ pub fn perf_event_open_hw(
             enabled_at_ns: AtomicU64::new(0),
             time_enabled_ns: AtomicU64::new(0),
             time_running_ns: AtomicU64::new(0),
+            sideband: super::sideband::SystemSidebandSource::register(
+                owner_cpu,
+                attr.sample_type,
+                attr.sample_id_all() != 0,
+                attr.comm() != 0,
+                attr.mmap2() != 0,
+                attr.task() != 0,
+            ),
         })
     } else {
         None
@@ -1120,6 +1227,9 @@ pub fn perf_event_open_hw(
         sampling,
         // System-wide / self event: not per-task.
         per_task: None,
+        // Sampling retains the direct physical-counter path above.
+        system: None,
+        enable_on_open: attr.disabled() == 0,
     })
 }
 
@@ -1258,6 +1368,8 @@ fn perf_event_open_hw_per_task(
         time_running: 0,
         sampling: None,
         per_task: Some(ptc),
+        system: None,
+        enable_on_open: false,
     })
 }
 

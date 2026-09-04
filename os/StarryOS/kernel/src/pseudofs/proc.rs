@@ -18,8 +18,6 @@ use core::{
 use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
-#[cfg(target_arch = "aarch64")]
-use ax_runtime::hal::pmu;
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -275,7 +273,11 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     // tools key off implementer/part to identify the microarchitecture). On
     // RK3588 this yields A76 (0x41/0xd0b) and A55 (0x41/0xd05); under QEMU
     // cortex-a53 it reads 0x41/0xd03.
-    let midr = pmu::cpu_id_raw().unwrap_or(0);
+    // `render_cpuinfo()` walks logical CPUs from one caller. Reading MIDR_EL1
+    // here would therefore repeat that caller's core type for every stanza on
+    // a heterogeneous machine. Perf initializes and caches MIDR on each CPU;
+    // use the indexed snapshot just like Linux's per-CPU cpuinfo path.
+    let midr = crate::perf::cpu_midr(idx);
     let implementer = (midr >> 24) & 0xff;
     let variant = (midr >> 20) & 0xf;
     let part = (midr >> 4) & 0xfff;
