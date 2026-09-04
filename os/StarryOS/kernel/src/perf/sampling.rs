@@ -102,6 +102,8 @@ fn next_freq_period(cur: u32, target_freq: u32, delta_ns: u64) -> u32 {
 
 /// `PERF_RECORD_SAMPLE` discriminant (`perf_event_type::PERF_RECORD_SAMPLE`).
 const PERF_RECORD_SAMPLE: u32 = 9;
+/// `PERF_RECORD_LOST`: dropped samples since the previous loss record.
+const PERF_RECORD_LOST: u32 = 2;
 /// `PERF_RECORD_MISC_KERNEL`: the sample landed in kernel (EL1) context.
 const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
@@ -112,6 +114,32 @@ const PERF_RECORD_MISC_USER: u16 = 2;
 /// STREAM_ID, CPU(cpu+res), PERIOD). [`build_sample`] writes into a stack buffer
 /// of this size and returns the actual length.
 const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8;
+const LOST_RECORD_LEN: usize = 8 + 2 * 8;
+
+/// Per-source loss accounting, independent of a possibly shared output ring.
+#[derive(Debug)]
+pub struct LossState {
+    pending: AtomicU64,
+    total: AtomicU64,
+}
+
+impl LossState {
+    pub const fn new() -> Self {
+        Self {
+            pending: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+        }
+    }
+
+    fn record_drop(&self) {
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        self.total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn total(&self) -> u64 {
+        self.total.load(Ordering::Acquire)
+    }
+}
 
 // `perf_event_sample_format` bits (see `man perf_event_open`). Only the scalar
 // fields below are supported; every other bit (READ, CALLCHAIN, RAW,
@@ -155,6 +183,7 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
 pub struct SampleOutput {
     ring: Option<PerfRingOutput>,
     notify: Option<Arc<IrqNotify>>,
+    loss: Arc<LossState>,
 }
 
 impl core::fmt::Debug for SampleOutput {
@@ -174,8 +203,12 @@ impl core::fmt::Debug for SampleOutput {
 
 impl SampleOutput {
     /// Creates an output whose ring geometry and lifetime are one value.
-    pub fn new(ring: Option<PerfRingOutput>, notify: Option<Arc<IrqNotify>>) -> Self {
-        Self { ring, notify }
+    pub fn new(
+        ring: Option<PerfRingOutput>,
+        notify: Option<Arc<IrqNotify>>,
+        loss: Arc<LossState>,
+    ) -> Self {
+        Self { ring, notify, loss }
     }
 }
 
@@ -410,9 +443,7 @@ fn service_overflowed_slots(
         let len = build_sample(&mut record, sample_type, misc, &data);
 
         if let Some(ring) = &slot.output.ring {
-            // SAFETY: `ring` owns the reference that pins this kernel mapping
-            // until generation-checked unregister removes the complete slot.
-            unsafe { ring_write(ring, &record[..len]) };
+            write_sample(ring, &slot.output.loss, id, &record[..len]);
         }
 
         let next_period = if slot.freq {
@@ -600,18 +631,14 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
 /// `ring` must describe a kernel-mapped ring whose header was initialized by
 /// `HwPerfEvent::device_mmap`. Its owned lifetime anchor must keep that mapping
 /// valid for this call.
-unsafe fn ring_write(ring: &PerfRingOutput, record: &[u8]) {
-    let Some(_writer) = ring.try_begin_write() else {
-        ring.record_contention_drop();
-        return;
-    };
+unsafe fn ring_write_locked(ring: &PerfRingOutput, record: &[u8]) -> bool {
     let ring_vaddr = ring.ring_vaddr();
     let ring_len = ring.ring_len();
     // Guard the enable-before-mmap case (slot registered with a zero ring) and
     // any ring too small to even hold the header page: there is nowhere to
     // write, and the header pointer would be null/out of bounds.
     if ring_vaddr == 0 || ring_len < core::mem::size_of::<perf_event_mmap_page>() {
-        return;
+        return false;
     }
 
     let header = ring_vaddr as *mut perf_event_mmap_page;
@@ -624,12 +651,12 @@ unsafe fn ring_write(ring: &PerfRingOutput, record: &[u8]) {
     // Defensive: a malformed/zero header (no data region, or a data window that
     // does not fit in the buffer) means there is nowhere safe to write.
     if data_size == 0 || data_offset > ring_len || data_offset + data_size > ring_len {
-        return;
+        return false;
     }
 
     let len = record.len();
     if len > data_size {
-        return;
+        return false;
     }
 
     // SAFETY: header page is initialized; these are plain u64 fields.
@@ -639,7 +666,7 @@ unsafe fn ring_write(ring: &PerfRingOutput, record: &[u8]) {
     // Would this record overwrite bytes the reader has not consumed yet? Drop it
     // if so (back-pressure; no lost-record accounting in M2).
     if head.wrapping_sub(tail).wrapping_add(len as u64) > data_size as u64 {
-        return;
+        return false;
     }
 
     let data_base = ring_vaddr + data_offset;
@@ -666,6 +693,37 @@ unsafe fn ring_write(ring: &PerfRingOutput, record: &[u8]) {
     unsafe {
         core::ptr::addr_of_mut!((*header).data_head).write_volatile(head.wrapping_add(len as u64));
     }
+    true
+}
+
+fn write_sample(ring: &PerfRingOutput, loss: &LossState, id: u64, sample: &[u8]) {
+    let Some(_writer) = ring.try_begin_write() else {
+        ring.record_contention_drop();
+        loss.record_drop();
+        return;
+    };
+
+    let pending = loss.pending.load(Ordering::Relaxed);
+    if pending != 0 {
+        let mut record = [0u8; LOST_RECORD_LEN];
+        record[0..4].copy_from_slice(&PERF_RECORD_LOST.to_ne_bytes());
+        record[4..6].copy_from_slice(&0u16.to_ne_bytes());
+        record[6..8].copy_from_slice(&(LOST_RECORD_LEN as u16).to_ne_bytes());
+        record[8..16].copy_from_slice(&id.to_ne_bytes());
+        record[16..24].copy_from_slice(&pending.to_ne_bytes());
+        // SAFETY: the producer lease is the ring's unique kernel writer.
+        if !unsafe { ring_write_locked(ring, &record) } {
+            loss.record_drop();
+            return;
+        }
+        loss.pending.fetch_sub(pending, Ordering::Relaxed);
+    }
+
+    // SAFETY: the same producer lease covers the sample reservation.
+    if unsafe { ring_write_locked(ring, sample) } {
+    } else {
+        loss.record_drop();
+    }
 }
 
 /// Write one record into a sampling ring from **process context** (the side-band
@@ -681,9 +739,13 @@ unsafe fn ring_write(ring: &PerfRingOutput, record: &[u8]) {
 /// Same contract as [`ring_write`]: `ring` must keep the initialized mapping
 /// pinned for the duration of the call.
 pub(crate) unsafe fn ring_write_process(ring: &PerfRingOutput, record: &[u8]) {
-    // SAFETY: the caller upholds the mapping initialization contract; `ring`
-    // owns the lifetime and cross-CPU producer gate.
-    unsafe { ring_write(ring, record) };
+    let Some(_writer) = ring.try_begin_write() else {
+        ring.record_contention_drop();
+        return;
+    };
+    // SAFETY: the caller upholds the mapping contract and the producer lease
+    // is the ring's unique kernel writer.
+    let _ = unsafe { ring_write_locked(ring, record) };
 }
 
 #[cfg(all(test, axtest))]

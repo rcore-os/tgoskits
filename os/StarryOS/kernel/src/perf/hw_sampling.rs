@@ -33,6 +33,7 @@ pub(super) struct SamplingState {
     pub(super) notify: Arc<IrqNotify>,
     pub(super) poll_alive: Arc<AtomicBool>,
     pub(super) output: PerfOutputRoute,
+    pub(super) loss: Arc<sampling::LossState>,
 }
 
 impl core::fmt::Debug for SamplingState {

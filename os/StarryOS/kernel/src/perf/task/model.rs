@@ -74,6 +74,8 @@ pub struct PerTaskCounter {
     /// once via [`set_sample_id`](Self::set_sample_id) from the `PerfEvent`
     /// wrapper, before any scheduler hook runs); `0` until then.
     pub(super) sample_id: AtomicU64,
+    /// Samples dropped by this source because its selected ring was full.
+    loss: Arc<super::super::sampling::LossState>,
     /// `attr.comm`: this event wants `PERF_RECORD_COMM` side-band records.
     pub(super) want_comm: bool,
     /// `attr.mmap2`: this event wants `PERF_RECORD_MMAP2` side-band records.
@@ -240,6 +242,7 @@ impl PerTaskCounter {
             freq: cfg.freq,
             freq_target: cfg.target_freq,
             sample_id: AtomicU64::new(0),
+            loss: Arc::new(super::super::sampling::LossState::new()),
             want_comm: cfg.want_comm,
             want_mmap2: cfg.want_mmap2,
             want_task: cfg.want_task,
@@ -449,6 +452,10 @@ impl PerTaskCounter {
         self.sample_id.load(Ordering::Relaxed)
     }
 
+    pub(in crate::perf) fn lost_samples(&self) -> u64 {
+        self.loss.total()
+    }
+
     /// Record the ring buffer + notify/poll machinery for a sampling event.
     ///
     /// Called once, in process context, from
@@ -521,7 +528,7 @@ impl PerTaskCounter {
                 .as_ref()
                 .map(|anchors| Arc::clone(&anchors.notify))
         };
-        Some(SampleOutput::new(Some(ring), notify))
+        Some(SampleOutput::new(Some(ring), notify, Arc::clone(&self.loss)))
     }
 
     /// Readiness for `poll(perf_fd)`: `true` when the ring has unread bytes.

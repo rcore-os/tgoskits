@@ -284,7 +284,7 @@ impl HwPerfEventState {
             Some((
                 period,
                 SampleSlot::new(
-                    SampleOutput::new(ring, notify),
+                    SampleOutput::new(ring, notify, Arc::clone(&sampling.loss)),
                     SampleSlotConfig {
                         period,
                         sample_type: sampling.sample_type,
@@ -367,6 +367,7 @@ impl HwPerfEventState {
                 value,
                 time_enabled,
                 time_running,
+                lost: root.lost_samples(),
                 read_format: root.read_format(),
             });
         }
@@ -387,6 +388,7 @@ impl HwPerfEventState {
             value: snapshot.value,
             time_enabled,
             time_running,
+            lost: self.sampling.as_ref().map_or(0, |sampling| sampling.loss.total()),
             read_format: self.read_format,
         })
     }
@@ -599,6 +601,7 @@ impl PerfControl for HwPerfControl {
                 value,
                 time_enabled,
                 time_running,
+                lost: family.root().lost_samples(),
                 read_format: family.root().read_format(),
             });
         }

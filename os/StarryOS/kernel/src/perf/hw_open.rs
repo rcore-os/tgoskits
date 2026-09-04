@@ -152,6 +152,7 @@ pub(super) fn perf_event_open_hw(
             notify,
             poll_alive,
             output: PerfOutputRoute::new(),
+            loss: Arc::new(sampling::LossState::new()),
         }
     });
 
