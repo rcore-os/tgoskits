@@ -46,6 +46,22 @@ cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
 
 See `iperf3/README.md` for the fixed T01--T07 profile.
 
+## AArch64 Linux perf
+
+The `linux-perf` app runs Alpine's upstream `perf 6.19.14` inside StarryOS on
+AArch64 QEMU and Orange Pi 5 Plus. It validates the guest `perf_event_open`
+ABI, sampling ring, user frame-pointer callchains, system-wide recording, and
+real-board PMUv3 events. This is separate from `tools/qperf`, which profiles
+QEMU translation blocks on the host.
+
+```bash
+cargo xtask starry app qemu -t linux-perf --arch aarch64
+cargo xtask starry app board -t linux-perf -b OrangePi-5-Plus
+```
+
+See `linux-perf/README.md` for the locked Alpine package closure and the QEMU
+versus physical-board acceptance boundary.
+
 ## Resource Monitor
 
 The `resource-monitor` case provides an offline user-space collector and a static

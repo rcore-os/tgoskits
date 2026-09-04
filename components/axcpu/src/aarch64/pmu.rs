@@ -12,13 +12,35 @@
 
 use core::arch::asm;
 
-/// Information probed from the PMU.
+/// Information probed from the current CPU's PMU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PmuInfo {
     /// `PMCR_EL0.N`: number of programmable event counters.
     ///
     /// The dedicated cycle counter (`PMCCNTR_EL0`) is separate and not included
     /// in this count.
     pub num_counters: usize,
+    /// Width of each programmable event counter.
+    pub counter_width: u8,
+    /// Width of the dedicated cycle counter.
+    pub cycle_counter_width: u8,
+    /// Raw `MIDR_EL1`, used to classify heterogeneous CPU clusters.
+    pub midr: u64,
+    /// Common-event capability bitmap for event ids `0x00..=0x1f`.
+    pub pmceid0: u32,
+    /// Common-event capability bitmap for event ids `0x20..=0x3f`.
+    pub pmceid1: u32,
+}
+
+impl PmuInfo {
+    /// Returns whether this PMU implements an architectural common event.
+    pub const fn event_supported(self, event: u16) -> bool {
+        match event {
+            0x00..=0x1f => self.pmceid0 & (1 << event) != 0,
+            0x20..=0x3f => self.pmceid1 & (1 << (event - 0x20)) != 0,
+            _ => true,
+        }
+    }
 }
 
 /// Reads `ID_AA64DFR0_EL1` (debug feature register 0).
@@ -85,16 +107,23 @@ pub fn probe() -> Option<PmuInfo> {
     }
 
     // PMCR_EL0.N: bits [15:11], number of programmable event counters.
-    let num_counters = ((read_pmcr_el0() >> 11) & 0x1f) as usize;
-    Some(PmuInfo { num_counters })
+    let pmcr = read_pmcr_el0();
+    let num_counters = ((pmcr >> 11) & 0x1f) as usize;
+    Some(PmuInfo {
+        num_counters,
+        // Starry does not enable PMUv3.5 long programmable counters yet.
+        counter_width: 32,
+        cycle_counter_width: if pmcr & (1 << 6) != 0 { 64 } else { 32 },
+        midr: read_midr_el1(),
+        pmceid0: read_pmceid0_el0() as u32,
+        pmceid1: read_pmceid1_el0() as u32,
+    })
 }
 
-/// Per-CPU one-time init: set `PMCR_EL0.E` (global counter enable) and reset all
-/// event counters once so they start clean.
+/// Per-CPU one-time init: enable long cycle counting, set `PMCR_EL0.E` (global
+/// counter enable), and reset all event counters once so they start clean.
 ///
 /// Idempotent and safe to call on each CPU. No-op if [`probe`] returns `None`.
-/// Does not touch the dedicated cycle counter (`PMCCNTR_EL0`), whose own reset is
-/// controlled by `PMCR_EL0.C` and left to [`cycles`].
 pub fn init_cpu() {
     if !pmu_present() {
         return;
@@ -102,8 +131,12 @@ pub fn init_cpu() {
 
     // PMCR_EL0.E (bit 0): enable all counters.
     // PMCR_EL0.P (bit 1, W1): reset all programmable event counters to 0.
+    // PMCR_EL0.C (bit 2, W1): reset the dedicated cycle counter to 0.
+    // PMCR_EL0.LC (bit 6): use the architectural 64-bit cycle counter. This is
+    // the same reset policy as Linux armv8pmu_reset(); it must run only once per
+    // CPU because P/C are destructive to already-running events.
     let pmcr = read_pmcr_el0();
-    write_pmcr_el0(pmcr | (1 << 0) | (1 << 1));
+    write_pmcr_el0(pmcr | (1 << 0) | (1 << 1) | (1 << 2) | (1 << 6));
 
     // Allow EL0 to read the counters directly, for `rdpmc`-style self-monitoring
     // (a process reads its event via `mrs PMEVCNTRn_EL0` / `PMCCNTR_EL0` using
@@ -126,6 +159,38 @@ pub fn read_midr_el1() -> u64 {
         asm!("mrs {}, MIDR_EL1", out(reg) value);
     }
     value
+}
+
+/// CPU-cluster class derived from `MIDR_EL1`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClusterId {
+    /// Arm Cortex-A55, used by the RK3588 LITTLE cluster.
+    CortexA55,
+    /// Arm Cortex-A76, used by the RK3588 big clusters.
+    CortexA76,
+    /// Any other CPU, retaining its implementer and part number.
+    Other {
+        /// `MIDR_EL1.Implementer`.
+        implementer: u8,
+        /// `MIDR_EL1.PartNum`.
+        part: u16,
+    },
+}
+
+/// Classifies a raw `MIDR_EL1` using the same implementer/part fields as Linux.
+pub const fn classify_midr(midr: u64) -> ClusterId {
+    let implementer = ((midr >> 24) & 0xff) as u8;
+    let part = ((midr >> 4) & 0xfff) as u16;
+    match (implementer, part) {
+        (0x41, 0xd05) => ClusterId::CortexA55,
+        (0x41, 0xd0b) => ClusterId::CortexA76,
+        _ => ClusterId::Other { implementer, part },
+    }
+}
+
+/// Returns the current CPU's cluster class.
+pub fn cluster_id() -> ClusterId {
+    classify_midr(read_midr_el1())
 }
 
 /// Self-check guarding against firmware / `MDCR_EL2` issues that keep the cycle
@@ -258,11 +323,7 @@ fn read_pmceid1_el0() -> u64 {
 /// or otherwise outside the common-event bitmaps and cannot be validated here,
 /// so they are let through (return `true`).
 pub fn event_supported(event: u16) -> bool {
-    match event {
-        0x00..=0x1F => (read_pmceid0_el0() >> event) & 1 != 0,
-        0x20..=0x3F => (read_pmceid1_el0() >> (event - 0x20)) & 1 != 0,
-        _ => true,
-    }
+    probe().is_some_and(|info| info.event_supported(event))
 }
 
 /// Maps a Linux `perf_hw_id` to an ARMv8 PMUv3 common event number.
@@ -272,6 +333,12 @@ pub fn event_supported(event: u16) -> bool {
 /// takes a raw `u32` rather than an enum. Returns `None` for unmapped ids
 /// (including `REF_CPU_CYCLES` and anything out of range).
 pub fn hw_event_to_arm(hw_id: u32) -> Option<u16> {
+    let info = probe()?;
+    hw_event_to_arm_with(info, hw_id)
+}
+
+/// Maps a Linux generic hardware event using one CPU's cached PMCEID bitmap.
+pub const fn hw_event_to_arm_with(info: PmuInfo, hw_id: u32) -> Option<u16> {
     match hw_id {
         // PERF_COUNT_HW_CPU_CYCLES => CPU_CYCLES.
         0 => Some(0x11),
@@ -281,8 +348,10 @@ pub fn hw_event_to_arm(hw_id: u32) -> Option<u16> {
         2 => Some(0x04),
         // PERF_COUNT_HW_CACHE_MISSES => L1D_CACHE_REFILL.
         3 => Some(0x03),
-        // PERF_COUNT_HW_BRANCH_INSTRUCTIONS => BR_RETIRED.
-        4 => Some(0x21),
+        // Linux prefers BR_RETIRED and falls back to PC_WRITE_RETIRED.
+        4 if info.event_supported(0x21) => Some(0x21),
+        4 if info.event_supported(0x0c) => Some(0x0c),
+        4 => None,
         // PERF_COUNT_HW_BRANCH_MISSES => BR_MIS_PRED.
         5 => Some(0x10),
         // PERF_COUNT_HW_BUS_CYCLES => BUS_CYCLES.
@@ -293,6 +362,47 @@ pub fn hw_event_to_arm(hw_id: u32) -> Option<u16> {
         8 => Some(0x24),
         // PERF_COUNT_HW_REF_CPU_CYCLES (9) and anything else are unmapped.
         _ => None,
+    }
+}
+
+/// Failure class returned by [`hw_cache_to_arm`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheEventError {
+    /// A cache, operation, or result selector is outside the Linux UAPI range.
+    Invalid,
+    /// The selector is valid but the generic ARM PMUv3 map has no event for it.
+    Unsupported,
+}
+
+/// Maps Linux `PERF_TYPE_HW_CACHE` onto the generic ARM PMUv3 event table.
+///
+/// Cortex-A55 and Cortex-A76 use Linux's `PMUV3_INIT_SIMPLE` setup, so only
+/// generic read operations are accepted. Microarchitecture-specific A53 maps
+/// are intentionally not applied to A55/A76.
+pub const fn hw_cache_to_arm(config: u64) -> Result<u16, CacheEventError> {
+    let cache = (config & 0xff) as u8;
+    let operation = ((config >> 8) & 0xff) as u8;
+    let result = ((config >> 16) & 0xff) as u8;
+    if cache >= 7 || operation >= 3 || result >= 2 {
+        return Err(CacheEventError::Invalid);
+    }
+    if operation != 0 {
+        return Err(CacheEventError::Unsupported);
+    }
+    match (cache, result) {
+        (0, 0) => Ok(0x04), // L1D access
+        (0, 1) => Ok(0x03), // L1D refill
+        (1, 0) => Ok(0x14), // L1I access
+        (1, 1) => Ok(0x01), // L1I refill
+        (2, 0) => Ok(0x36), // last-level read
+        (2, 1) => Ok(0x37), // last-level read miss
+        (3, 0) => Ok(0x25), // DTLB access
+        (3, 1) => Ok(0x05), // DTLB refill
+        (4, 0) => Ok(0x26), // ITLB access
+        (4, 1) => Ok(0x02), // ITLB refill
+        (5, 0) => Ok(0x12), // branch prediction access
+        (5, 1) => Ok(0x10), // branch misprediction
+        _ => Err(CacheEventError::Unsupported),
     }
 }
 
@@ -476,6 +586,13 @@ pub mod counter {
         }
     }
 
+    /// Disables all programmable counters and the dedicated cycle counter.
+    pub fn disable_all() {
+        unsafe {
+            asm!("msr PMCNTENCLR_EL0, {}", in(reg) u32::MAX as u64);
+        }
+    }
+
     /// Resets counter `n` (`PMEVCNTRn_EL0 = 0`).
     ///
     /// Out-of-range `n` is a no-op (debug builds assert).
@@ -592,6 +709,134 @@ pub mod overflow {
             asm!("msr PMINTENCLR_EL1, {}", in(reg) 1u64 << n);
         }
     }
+
+    /// Disables overflow interrupts for every PMU counter on this CPU.
+    pub fn disable_all_irq() {
+        unsafe {
+            asm!("msr PMINTENCLR_EL1, {}", in(reg) u32::MAX as u64);
+        }
+    }
+
+    /// Clears all pending PMU overflow flags on this CPU.
+    pub fn clear_all() {
+        clear(u32::MAX);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn info(pmceid0: u32, pmceid1: u32) -> PmuInfo {
+        PmuInfo {
+            num_counters: 6,
+            counter_width: 32,
+            cycle_counter_width: 64,
+            midr: 0,
+            pmceid0,
+            pmceid1,
+        }
+    }
+
+    #[test]
+    fn classifies_rk3588_clusters_by_midr_part() {
+        assert_eq!(classify_midr(0x410f_d050), ClusterId::CortexA55);
+        assert_eq!(classify_midr(0x410f_d0b0), ClusterId::CortexA76);
+        assert_eq!(
+            classify_midr(0x410f_d030),
+            ClusterId::Other {
+                implementer: 0x41,
+                part: 0xd03
+            }
+        );
+    }
+
+    #[test]
+    fn branch_mapping_uses_linux_pmceid_fallback_order() {
+        assert_eq!(hw_event_to_arm_with(info(1 << 12, 1 << 1), 4), Some(0x21));
+        assert_eq!(hw_event_to_arm_with(info(1 << 12, 0), 4), Some(0x0c));
+        assert_eq!(hw_event_to_arm_with(info(0, 0), 4), None);
+    }
+
+    #[test]
+    fn generic_cache_map_accepts_read_and_rejects_write() {
+        assert_eq!(hw_cache_to_arm(0), Ok(0x04));
+        assert_eq!(hw_cache_to_arm(1 << 16), Ok(0x03));
+        assert_eq!(hw_cache_to_arm(1 << 8), Err(CacheEventError::Unsupported));
+        assert_eq!(hw_cache_to_arm(7), Err(CacheEventError::Invalid));
+    }
+}
+
+/// Privilege domain of the register image captured at an IRQ boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptedPrivilege {
+    /// The interrupted context was executing at EL0.
+    User,
+    /// The interrupted context was executing in the kernel.
+    Kernel,
+}
+
+/// Value snapshot of the context interrupted by the IRQ currently dispatched
+/// on this CPU. No trap-frame pointer escapes the boundary that owns it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InterruptedContext {
+    /// Program counter at the interruption point.
+    pub pc: usize,
+    /// Stack pointer belonging to the interrupted context.
+    pub sp: usize,
+    /// Frame pointer belonging to the interrupted context.
+    pub fp: usize,
+    /// Privilege domain of the interrupted context.
+    pub privilege: InterruptedPrivilege,
+}
+
+#[ax_percpu::def_percpu]
+static INTERRUPTED_CONTEXT: Option<InterruptedContext> = None;
+
+fn replace_interrupted_context(context: Option<InterruptedContext>) -> Option<InterruptedContext> {
+    // SAFETY: IRQ boundary callers remain on the current CPU with local IRQs
+    // masked for the complete publish-dispatch-restore scope.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                INTERRUPTED_CONTEXT
+                    .with_current_mut(exclusive, |current| core::mem::replace(current, context))
+            })
+        })
+    }
+    .ok()
+    .flatten()
+}
+
+/// Scope guard that restores the previous per-CPU IRQ snapshot on drop.
+#[must_use]
+pub struct InterruptedContextGuard {
+    previous: Option<InterruptedContext>,
+    _not_send: core::marker::PhantomData<*mut ()>,
+}
+
+impl Drop for InterruptedContextGuard {
+    fn drop(&mut self) {
+        replace_interrupted_context(self.previous);
+    }
+}
+
+/// Publishes a by-value IRQ register snapshot until the returned guard drops.
+pub fn publish_interrupted_context(context: InterruptedContext) -> InterruptedContextGuard {
+    InterruptedContextGuard {
+        previous: replace_interrupted_context(Some(context)),
+        _not_send: core::marker::PhantomData,
+    }
+}
+
+/// Copies the current CPU's IRQ snapshot for PMU sampling.
+pub fn interrupted_context() -> Option<InterruptedContext> {
+    // SAFETY: called inside IRQ dispatch, which pins execution to this CPU.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| INTERRUPTED_CONTEXT.with_current(pin, |context| *context))
+    }
+    .ok()
+    .flatten()
 }
 
 /// The interrupted program counter (`ELR_EL1`).

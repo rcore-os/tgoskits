@@ -59,6 +59,7 @@
 
 /* sysfs/procfs paths that upstream perf consults at startup. */
 #define PATH_PARANOID "/proc/sys/kernel/perf_event_paranoid"
+#define PATH_SOFTWARE_TYPE "/sys/bus/event_source/devices/software/type"
 #define PMU_DIR "/sys/bus/event_source/devices/armv8_pmuv3_0"
 #define PATH_PMU_TYPE PMU_DIR "/type"
 #define PATH_PMU_CPUS PMU_DIR "/cpus"
@@ -293,6 +294,25 @@ int main(void) {
             /* Readable but unparseable is still "supported"; just echo raw. */
             printf("STARRY_PERF_PMU_SYSFS paranoid_raw=\"%s\"\n", buf);
         }
+    }
+
+    /* Linux registers perf_swevent as the `software` PMU with fixed type 1.
+     * Upstream perf requires this sysfs source to resolve names such as
+     * `task-clock`, even though perf_event_open itself uses the fixed type. */
+    n = read_small_file(PATH_SOFTWARE_TYPE, buf, sizeof(buf));
+    if (n < 0) {
+        char msg[160];
+        snprintf(msg, sizeof(msg), "open(%s) failed errno=%d",
+                 PATH_SOFTWARE_TYPE, errno);
+        return fail(msg);
+    }
+    rstrip(buf);
+    long software_type = 0;
+    if (parse_int(buf, &software_type) != 0 || software_type != 1) {
+        char msg[160];
+        snprintf(msg, sizeof(msg), "invalid %s contents=\"%.48s\"",
+                 PATH_SOFTWARE_TYPE, buf);
+        return fail(msg);
     }
 
     /*

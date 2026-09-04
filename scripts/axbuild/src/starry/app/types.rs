@@ -9,6 +9,7 @@ use crate::test::case::{HostHttpServerConfig, TestQemuSubcase};
 pub enum StarryAppKind {
     Qemu,
     Board,
+    Both,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

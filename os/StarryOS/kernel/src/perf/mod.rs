@@ -9,7 +9,12 @@
 pub mod bpf;
 pub mod hw;
 pub mod kprobe;
+#[cfg(target_arch = "aarch64")]
+mod nofault;
+#[cfg(target_arch = "aarch64")]
+pub mod percpu;
 pub mod raw_tracepoint;
+pub mod target;
 /// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
 /// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
 #[cfg(target_arch = "aarch64")]
@@ -19,15 +24,30 @@ pub mod sampling;
 /// gated like `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod sideband;
+/// Per-CPU Linux perf context and timer-driven multiplexing for system-wide
+/// ARM PMUv3 counting events.
+#[cfg(target_arch = "aarch64")]
+pub mod system;
+/// Core `PERF_TYPE_SOFTWARE` counting events. This is architecture independent
+/// and is driven by scheduler, fault, clone, exec, and exit hooks.
+pub mod sw;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
 /// scheduler hooks call into CPU PMU register helpers, so it is gated like
 /// `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod task;
 pub mod tracepoint;
+pub mod uapi;
+#[cfg(target_arch = "aarch64")]
+mod unwind;
 pub mod uprobe;
 
-use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
+use alloc::{
+    borrow::Cow,
+    boxed::Box,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
     ffi::c_void,
@@ -35,7 +55,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use ax_io::{Read, Write};
+use ax_io::Write;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, pmu};
@@ -43,19 +63,21 @@ use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
-    linux_bpf::{PERF_FLAG_FD_CLOEXEC, perf_event_attr},
-    perf::{PerfEventIoc, PerfProbeArgs, PerfTypeId},
+    linux_bpf::perf_event_attr,
+    perf::{PerfEventIoc, PerfProbeArgs, PerfProbeConfig, PerfTypeId},
 };
 
 use crate::{
     StarryError, StarryResult,
     ebpf::{error::BpfResultExt, transform::EbpfKernelAuxiliary},
     file::{FileLike, Kstat, add_file_like, get_file_like},
-    mm::{VmBytes, VmBytesMut},
+    mm::VmBytesMut,
     pseudofs::DeviceMmap,
-    sync::{IrqMutex, Mutex},
+    sync::{IrqMutex, Mutex, NoPreemptMutex},
     task::TidNumber,
 };
+use target::{PerfContextKey, PerfTarget, PerfTaskTarget};
+use uapi::{PerfOpenFlags, copy_perf_event_attr};
 
 /// Typed interpretation of `perf_event_open(2)`'s overloaded `pid` argument.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,26 +85,6 @@ pub(crate) enum PerfEventTarget {
     AllTasks,
     Current,
     Thread(TidNumber),
-}
-
-impl PerfEventTarget {
-    fn parse(pid: i32) -> StarryResult<Self> {
-        match pid {
-            -1 => Ok(Self::AllTasks),
-            0 => Ok(Self::Current),
-            1.. => Ok(Self::Thread(TidNumber::try_from(pid as u32)?)),
-            _ => Err(StarryError::InvalidInput),
-        }
-    }
-
-    /// Converts back only for the external `kbpf_basic::PerfProbeArgs` wire adapter.
-    const fn external_pid(self) -> i32 {
-        match self {
-            Self::AllTasks => -1,
-            Self::Current => 0,
-            Self::Thread(tid) => tid.get() as i32,
-        }
-    }
 }
 
 /// Monotonic source of per-event `perf` ids (`PERF_EVENT_IOC_ID`,
@@ -104,12 +106,28 @@ pub fn read_midr_el1() -> u64 {
     pmu::cpu_id_raw().unwrap_or(0)
 }
 
+/// Cached MIDR for one logical CPU. Non-AArch64 targets expose zero through
+/// the compatibility sysfs node without depending on the ARM per-CPU backend.
+pub fn cpu_midr(cpu: usize) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        percpu::cpu_info(cpu).map(|info| info.midr).unwrap_or(0)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = cpu;
+        read_midr_el1()
+    }
+}
+
 /// `ioctl` type byte for the perf-event ioctls (`'$'`).
 const PERF_IOC_TYPE: u32 = 0x24;
 /// `PERF_EVENT_IOC_SET_OUTPUT` request number (`_IO('$', 5)`).
 const PERF_IOC_NR_SET_OUTPUT: u32 = 5;
 /// `PERF_EVENT_IOC_ID` request number (`_IOR('$', 7, __u64 *)`).
 const PERF_IOC_NR_ID: u32 = 7;
+/// Apply a control ioctl to the complete event group.
+const PERF_IOC_FLAG_GROUP: usize = 1;
 
 /// Behaviour every perf event implements. Each variant in the dispatcher
 /// (kprobe / tracepoint / software-bpf / uprobe / hardware-PMU) provides a
@@ -163,12 +181,30 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
         Err(StarryError::Unsupported)
     }
 
+    /// Reset this event and, when the backend owns a hardware group topology,
+    /// all of its siblings in one owner-context transaction.
+    ///
+    /// Returns `true` when the backend handled the complete group. Backends
+    /// without a shared owner context reset only this event and return `false`,
+    /// so the file layer can visit the remaining sibling fds.
+    fn reset_group(&mut self) -> StarryResult<bool> {
+        self.reset()?;
+        Ok(false)
+    }
+
     /// Record the unique event id this event emits in its `PERF_SAMPLE_ID` /
     /// `PERF_SAMPLE_IDENTIFIER` sample fields. Called once by [`PerfEvent::new`]
     /// with the same id `PERF_EVENT_IOC_ID` reports, so a reader can demultiplex
     /// the events sharing one ring (`perf record -e a,b`). Default no-op: the
     /// tracing variants emit no hardware samples.
     fn set_sample_id(&mut self, _id: u64) {}
+
+    /// Complete backend initialization after the outer wrapper assigns the
+    /// stable event id. Backends that implement open-enabled sampling use this
+    /// point so the first IRQ-visible descriptor never carries id zero.
+    fn finish_open(&mut self) -> StarryResult<()> {
+        Ok(())
+    }
 
     /// Expose this event's mmap ring so another event can redirect its records
     /// into it (`PERF_EVENT_IOC_SET_OUTPUT`, target side).
@@ -197,21 +233,42 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     ) -> StarryResult<()> {
         Ok(())
     }
+
+    /// Detaches a previous output redirect.
+    fn detach_output(&mut self) -> StarryResult<()> {
+        Ok(())
+    }
+
+    /// Connect this backend to an already validated group leader.
+    ///
+    /// Most perf event kinds need only the file-layer group control. Hardware
+    /// task events override this so their scheduler can place the complete PMU
+    /// group transactionally and build `PERF_SAMPLE_READ` snapshots without
+    /// following file objects from IRQ context.
+    fn link_group(&mut self, _leader: &mut dyn PerfEventOps) -> StarryResult<()> {
+        Ok(())
+    }
 }
 
 /// `read_format` bit selecting `time_enabled` in `read(perf_fd)`.
-const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1 << 0;
+pub(crate) const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1 << 0;
 /// `read_format` bit selecting `time_running` in `read(perf_fd)`.
-const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
+pub(crate) const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
 /// `read_format` bit selecting the per-event `id` in `read(perf_fd)`.
-const PERF_FORMAT_ID: u64 = 1 << 2;
+pub(crate) const PERF_FORMAT_ID: u64 = 1 << 2;
+/// `read_format` bit selecting a leader-first group snapshot.
+pub(crate) const PERF_FORMAT_GROUP: u64 = 1 << 3;
+/// `read_format` bit selecting a per-event lost-sample count.
+pub(crate) const PERF_FORMAT_LOST: u64 = 1 << 4;
 
 /// Counter snapshot returned by [`PerfEventOps::read_values`].
 ///
 /// Mirrors the fields Linux's `read(perf_fd)` can emit, gated by
-/// `read_format`. M1 supports `value`, `time_enabled`, `time_running`, and
-/// `id`, but not `PERF_FORMAT_GROUP`.
+/// `read_format`. The file wrapper adds the leader-first layout selected by
+/// `PERF_FORMAT_GROUP` above the backend-specific snapshots.
 pub struct PerfReadValues {
+    /// Linux pinned-event ERROR state: `read()` completes with EOF.
+    pub eof: bool,
     /// The raw counter value.
     pub value: u64,
     /// Wall time the event has been enabled, in nanoseconds.
@@ -219,6 +276,8 @@ pub struct PerfReadValues {
     /// Wall time the event was scheduled onto hardware, in nanoseconds.
     /// Equal to `time_enabled` in M1 (no multiplexing).
     pub time_running: u64,
+    /// Samples dropped because the mmap ring had no free record space.
+    pub lost: u64,
     /// `attr.read_format`, controlling which fields [`PerfEvent::read`] emits.
     /// The `PERF_FORMAT_ID` value itself comes from the owning [`PerfEvent`]'s
     /// id (so `read` and `PERF_EVENT_IOC_ID` agree), not from this snapshot.
@@ -242,6 +301,14 @@ pub struct PerfEvent {
     /// would block (e.g. reading from an empty ring buffer) should return
     /// `EAGAIN` instead.
     nonblocking: AtomicBool,
+    /// Generation-stable task or fixed-CPU context used by group/output checks.
+    context: Option<PerfContextKey>,
+    /// `attr.inherit`, which Linux requires to agree inside a task group.
+    inherit: bool,
+    /// Live group members, weak so closing either fd cannot form a reference cycle.
+    members: NoPreemptMutex<Vec<Weak<PerfEvent>>>,
+    /// The group leader for an ordinary member.
+    group_leader: NoPreemptMutex<Option<Weak<PerfEvent>>>,
 }
 
 impl Debug for PerfEvent {
@@ -253,19 +320,124 @@ impl Debug for PerfEvent {
 impl PerfEvent {
     /// Wrap a per-type perf event impl, assigning it a fresh unique id and
     /// threading that id into the inner event so its samples carry it.
-    pub fn new(mut event: Box<dyn PerfEventOps>) -> Self {
+    pub fn new(
+        mut event: Box<dyn PerfEventOps>,
+        context: Option<PerfContextKey>,
+        inherit: bool,
+    ) -> StarryResult<Self> {
         let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
         event.set_sample_id(id);
+        event.finish_open()?;
         let irq_output = event
             .as_any_mut()
             .downcast_mut::<BpfPerfEventWrapper>()
             .map(|event| event.output_handle());
-        PerfEvent {
+        Ok(PerfEvent {
             event: Mutex::new(event),
             irq_output,
             id,
             nonblocking: AtomicBool::new(false),
+            context,
+            inherit,
+            members: NoPreemptMutex::new(Vec::new()),
+            group_leader: NoPreemptMutex::new(None),
+        })
+    }
+
+    fn live_members(&self) -> Vec<Arc<PerfEvent>> {
+        let mut members = self.members.lock();
+        let live = members.iter().filter_map(Weak::upgrade).collect::<Vec<_>>();
+        members.retain(|member| member.strong_count() != 0);
+        live
+    }
+
+    fn propagate_members(&self, enable: bool) -> StarryResult<()> {
+        let members = self.live_members();
+        let mut changed: alloc::vec::Vec<Arc<PerfEvent>> = Vec::new();
+        for member in members {
+            let result = if enable {
+                member.event.lock().enable()
+            } else {
+                member.event.lock().disable()
+            };
+            if let Err(error) = result {
+                if enable {
+                    for previous in changed {
+                        let _ = previous.event.lock().disable();
+                    }
+                }
+                return Err(error);
+            }
+            changed.push(member);
         }
+        Ok(())
+    }
+
+    fn reset_members(&self) -> StarryResult<()> {
+        for member in self.live_members() {
+            member.event.lock().reset()?;
+        }
+        Ok(())
+    }
+
+    fn live_group_leader(&self) -> Option<Arc<PerfEvent>> {
+        self.group_leader.lock().as_ref().and_then(Weak::upgrade)
+    }
+
+    fn read_group(
+        &self,
+        dst: &mut crate::file::IoDst,
+        leader: &PerfReadValues,
+    ) -> StarryResult<usize> {
+        let members = self.live_members();
+        let mut fields = Vec::with_capacity(4 + members.len() * 2);
+        fields.push(1 + members.len() as u64);
+        if leader.read_format & PERF_FORMAT_TOTAL_TIME_ENABLED != 0 {
+            fields.push(leader.time_enabled);
+        }
+        if leader.read_format & PERF_FORMAT_TOTAL_TIME_RUNNING != 0 {
+            fields.push(leader.time_running);
+        }
+        fields.push(leader.value);
+        if leader.read_format & PERF_FORMAT_ID != 0 {
+            fields.push(self.id);
+        }
+        if leader.read_format & PERF_FORMAT_LOST != 0 {
+            fields.push(leader.lost);
+        }
+        for member in members {
+            let values = member.event.lock().read_values()?;
+            fields.push(values.value);
+            if leader.read_format & PERF_FORMAT_ID != 0 {
+                fields.push(member.id);
+            }
+            if leader.read_format & PERF_FORMAT_LOST != 0 {
+                fields.push(values.lost);
+            }
+        }
+
+        let total = fields.len() * core::mem::size_of::<u64>();
+        if dst.remaining_mut() < total {
+            return Err(StarryError::StorageFull);
+        }
+        for value in fields {
+            dst.write(&value.to_ne_bytes())?;
+        }
+        Ok(total)
+    }
+
+    fn redirect_to(&self, target: &PerfEvent) -> StarryResult<()> {
+        if core::ptr::eq(self, target) || self.context != target.context {
+            return Err(StarryError::InvalidInput);
+        }
+        let output = target
+            .event
+            .lock()
+            .output_ring()
+            .ok_or(StarryError::InvalidInput)?;
+        self.event
+            .lock()
+            .redirect_output(output.0, output.1, output.2)
     }
 
     /// Handle `PERF_EVENT_IOC_SET_OUTPUT`: redirect this event's records into the
@@ -278,27 +450,17 @@ impl PerfEvent {
     /// -e a,b` captures both events). Sources that produce no ring records (the
     /// `PERF_COUNT_SW_DUMMY` tracking event, tracing variants) accept as a no-op.
     fn set_output(&self, arg: usize) -> StarryResult<usize> {
-        // `arg == -1` detaches the output (Linux semantics); nothing to wire.
+        // `arg == -1` detaches the output and restores this event's own ring.
         if arg as i32 == -1 {
+            self.event.lock().detach_output()?;
             return Ok(0);
         }
-        // The target must be an open perf-event fd, else EINVAL (Linux behaviour
-        // for a non-perf or bad output fd).
-        let target = get_file_like(arg as i32)?;
+        let target = get_file_like(arg as i32).map_err(|_| StarryError::BadFileDescriptor)?;
         let target = target
             .into_any_arc()
             .downcast::<PerfEvent>()
-            .map_err(|_| StarryError::InvalidInput)?;
-        // Pull the target's ring (a mapped HW sampling event) and point this
-        // event's output at it. If the target has no ring (e.g. it is itself a
-        // non-mmap'd or non-sampling event), there is nothing to merge into; the
-        // source keeps its own ring — `redirect_output` is then never called.
-        let target_output = target.event.lock().output_ring();
-        if let Some((ring_vaddr, ring_len, anchor)) = target_output {
-            self.event
-                .lock()
-                .redirect_output(ring_vaddr, ring_len, anchor)?;
-        }
+            .map_err(|_| StarryError::BadFileDescriptor)?;
+        self.redirect_to(&target)?;
         Ok(0)
     }
 }
@@ -319,14 +481,21 @@ impl FileLike for PerfEvent {
         // Linux's strict `read_format` order: always `value`; then
         // `time_enabled` if `PERF_FORMAT_TOTAL_TIME_ENABLED`; then
         // `time_running` if `PERF_FORMAT_TOTAL_TIME_RUNNING`; then `id` if
-        // `PERF_FORMAT_ID`. `PERF_FORMAT_GROUP` is unsupported in M1. With
-        // `read_format == 0` this is exactly the 8-byte bare counter value
+        // `PERF_FORMAT_ID`. With `read_format == 0` this is exactly the 8-byte bare counter value
         // (M0 behaviour). The tracing variants keep the default `read_values`
         // and propagate `Unsupported` here.
         let values = self.event.lock().read_values()?;
 
+        if values.eof {
+            return Ok(0);
+        }
+
+        if values.read_format & PERF_FORMAT_GROUP != 0 {
+            return self.read_group(dst, &values);
+        }
+
         // Build the field sequence gated by `read_format`, in Linux order.
-        let mut fields = [0u64; 4];
+        let mut fields = [0u64; 5];
         let mut n = 0;
         fields[n] = values.value;
         n += 1;
@@ -344,10 +513,14 @@ impl FileLike for PerfEvent {
             fields[n] = self.id;
             n += 1;
         }
+        if values.read_format & PERF_FORMAT_LOST != 0 {
+            fields[n] = values.lost;
+            n += 1;
+        }
 
         let total = n * core::mem::size_of::<u64>();
         if dst.remaining_mut() < total {
-            return Err(StarryError::InvalidInput);
+            return Err(StarryError::StorageFull);
         }
         for value in &fields[..n] {
             dst.write(&value.to_ne_bytes())?;
@@ -400,16 +573,53 @@ impl FileLike for PerfEvent {
         // the default and return `Unsupported`.
         const PERF_EVENT_IOC_RESET: u32 = 0x2403;
         if cmd == PERF_EVENT_IOC_RESET {
-            self.event.lock().reset()?;
+            if arg & PERF_IOC_FLAG_GROUP != 0
+                && let Some(leader) = self.live_group_leader()
+            {
+                return leader.ioctl(cmd, arg);
+            }
+            let handled_group = if arg & PERF_IOC_FLAG_GROUP != 0 {
+                self.event.lock().reset_group()?
+            } else {
+                self.event.lock().reset()?;
+                false
+            };
+            if arg & PERF_IOC_FLAG_GROUP != 0 && !handled_group {
+                self.reset_members()?;
+            }
             return Ok(0);
         }
         let req = PerfEventIoc::try_from(cmd).map_err(|_| StarryError::InvalidInput)?;
         match req {
             PerfEventIoc::Enable => {
-                self.event.lock().enable()?;
+                if arg & PERF_IOC_FLAG_GROUP != 0
+                    && let Some(leader) = self.live_group_leader()
+                {
+                    return leader.ioctl(cmd, arg);
+                }
+                if arg & PERF_IOC_FLAG_GROUP != 0 {
+                    // Siblings become eligible before the leader enters the
+                    // backend transaction, so hardware groups are placed as a
+                    // single leader-first unit.
+                    self.propagate_members(true)?;
+                    if let Err(error) = self.event.lock().enable() {
+                        let _ = self.propagate_members(false);
+                        return Err(error);
+                    }
+                } else {
+                    self.event.lock().enable()?;
+                }
             }
             PerfEventIoc::Disable => {
+                if arg & PERF_IOC_FLAG_GROUP != 0
+                    && let Some(leader) = self.live_group_leader()
+                {
+                    return leader.ioctl(cmd, arg);
+                }
                 self.event.lock().disable()?;
+                if arg & PERF_IOC_FLAG_GROUP != 0 {
+                    self.propagate_members(false)?;
+                }
             }
             PerfEventIoc::SetBpf => {
                 let bpf_prog_fd = arg as i32;
@@ -432,7 +642,7 @@ impl FileLike for PerfEvent {
         // Anchor the ringbuf pages to the VMA: the retainer keeps them alive
         // until `munmap`/exit, so closing the perf fd can't free memory the
         // user address space still maps. See `BpfPerfEventWrapper::pages`.
-        Ok(DeviceMmap::Physical(
+        Ok(DeviceMmap::PhysicalCached(
             PhysAddrRange::from_start_size(paddr, len),
             Some(anchor),
         ))
@@ -458,18 +668,18 @@ pub fn sys_perf_event_open(
     group_fd: i32,
     flags: u64,
 ) -> StarryResult<isize> {
-    let mut buf = vec![0u8; core::mem::size_of::<perf_event_attr>()];
-    VmBytes::new(attr_uptr as *mut u8, buf.len()).read(&mut buf)?;
-    // SAFETY: perf_event_attr is a `repr(C)` POD; the user buffer is copied
-    // bytewise above and we treat the result as the structure.
-    let attr = unsafe { &*(buf.as_ptr() as *const perf_event_attr) };
-    perf_event_open(
-        attr,
-        PerfEventTarget::parse(pid)?,
-        cpu,
-        group_fd,
-        flags as u32,
-    )
+    // Linux rejects unknown flags before touching `attr_uptr`.
+    let flags = PerfOpenFlags::parse(flags)?;
+    let attr = copy_perf_event_attr(attr_uptr)?;
+
+    if flags.contains(PerfOpenFlags::PID_CGROUP) {
+        if pid == -1 || cpu == -1 {
+            return Err(StarryError::InvalidInput);
+        }
+        return Err(StarryError::OperationNotSupported);
+    }
+
+    perf_event_open(&attr, pid, cpu, group_fd, flags)
 }
 
 /// Dispatcher entry point for `perf_event_open(2)`. Reads the user-supplied
@@ -478,51 +688,132 @@ pub fn sys_perf_event_open(
 /// ringbuf output path can locate the event by fd later.
 pub(crate) fn perf_event_open(
     attr: &perf_event_attr,
-    target: PerfEventTarget,
+    pid: i32,
     cpu: i32,
     group_fd: i32,
-    flags: u32,
+    flags: PerfOpenFlags,
 ) -> StarryResult<isize> {
+    // Linux resolves and validates `group_fd` before looking up a positive PID.
+    let group_file = if group_fd == -1 {
+        None
+    } else {
+        let file = get_file_like(group_fd).map_err(|_| StarryError::BadFileDescriptor)?;
+        Some(
+            file.into_any_arc()
+                .downcast::<PerfEvent>()
+                .map_err(|_| StarryError::BadFileDescriptor)?,
+        )
+    };
+    let output_event = flags
+        .contains(PerfOpenFlags::FD_OUTPUT)
+        .then(|| group_file.clone())
+        .flatten();
+    let group_leader = if flags.contains(PerfOpenFlags::FD_NO_GROUP) {
+        None
+    } else {
+        group_file
+    };
+
+    let target = PerfTarget::parse(pid, cpu).map_err(StarryError::from)?;
+    let resolved = target.resolve()?;
+    let context = resolved.context_key();
+    let legacy_target = match target {
+        PerfTarget::Cpu(_) => PerfEventTarget::AllTasks,
+        PerfTarget::Task {
+            task: PerfTaskTarget::Current,
+            ..
+        } => PerfEventTarget::Current,
+        PerfTarget::Task {
+            task: PerfTaskTarget::Tid(tid),
+            ..
+        } => PerfEventTarget::Thread(TidNumber::try_from(tid)?),
+    };
+    let cpu = resolved.cpu();
+
     // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus the
     // dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE` the real `perf` tool
     // resolves from sysfs) must be dispatched before
     // `PerfProbeArgs::try_from_perf_attr`, which maps any non-probe type through
     // `perf_sw_ids` and rejects hardware configs with `EINVAL`.
     let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
+        || attr.type_ == PerfTypeId::PERF_TYPE_HW_CACHE as u32
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A55_PERF_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A76_PERF_TYPE
     {
         // Thread the typed target into the hardware path so task identities
         // cannot be confused with a system-wide selector.
         // `cpu` / `group_fd` / `flags` are not consumed by the hardware path
         // (single-CPU, no event groups), so they are intentionally dropped.
-        Box::new(hw::perf_event_open_hw(attr, target)?)
+        Box::new(hw::perf_event_open_hw(attr, &resolved)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
             attr,
-            target.external_pid(),
+            resolved.external_pid(),
             cpu,
             group_fd,
-            flags,
+            flags.bits(),
         )
         .into_starry_result()?;
         match args.type_ {
             PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
-            PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
+            PerfTypeId::PERF_TYPE_SOFTWARE => match args.config {
+                PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(sw_id) => {
+                    Box::new(sw::perf_event_open_sw(attr, sw_id, &resolved)?)
+                }
+                PerfProbeConfig::PerfSwIds(sw_id) if sw::is_tracking_dummy(sw_id) => {
+                    Box::new(bpf::perf_event_open_tracking(args, attr, &resolved))
+                }
+                _ => Box::new(bpf::perf_event_open_bpf(args)),
+            },
             PerfTypeId::PERF_TYPE_TRACEPOINT => {
                 Box::new(tracepoint::perf_event_open_tracepoint(args)?)
             }
-            PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args, target)?),
+            PerfTypeId::PERF_TYPE_UPROBE => {
+                Box::new(uprobe::perf_event_open_uprobe(args, legacy_target)?)
+            }
             _ => {
                 warn!("perf_event_open: unsupported type {:?}", args.type_);
                 return Err(StarryError::Unsupported);
             }
         }
     };
-    let event_arc: Arc<dyn FileLike> = Arc::new(PerfEvent::new(event));
+    let perf_event = Arc::new(PerfEvent::new(
+        event,
+        Some(context),
+        attr.inherit() != 0,
+    )?);
+
+    if let Some(leader) = group_leader {
+        if leader.context != perf_event.context
+            || leader.inherit != perf_event.inherit
+            || leader.group_leader.lock().is_some()
+            || attr.pinned() != 0
+            || attr.exclusive() != 0
+        {
+            return Err(StarryError::InvalidInput);
+        }
+        {
+            let mut leader_backend = leader.event.lock();
+            let mut member_backend = perf_event.event.lock();
+            // Keep the member's own attr.disabled state. Linux gates an
+            // enabled sibling behind an OFF leader, but does not rewrite the
+            // sibling to OFF when it joins the group.
+            member_backend.link_group(&mut **leader_backend)?;
+        }
+        *perf_event.group_leader.lock() = Some(Arc::downgrade(&leader));
+        leader.members.lock().push(Arc::downgrade(&perf_event));
+    }
+
+    if let Some(output) = output_event {
+        perf_event.redirect_to(&output)?;
+    }
+
+    let event_arc: Arc<dyn FileLike> = perf_event;
     // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC when
     // the caller sets this flag, otherwise the fd survives execve.
-    let cloexec = flags & PERF_FLAG_FD_CLOEXEC != 0;
+    let cloexec = flags.contains(PerfOpenFlags::FD_CLOEXEC);
     let fd = add_file_like(event_arc.clone(), cloexec)?;
 
     PERF_FILE
@@ -543,6 +834,13 @@ static PERF_FILE: LazyInit<IrqMutex<HashMap<usize, alloc::sync::Weak<dyn FileLik
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
     PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
+    sw::initialize();
+    #[cfg(target_arch = "aarch64")]
+    {
+        sideband::initialize();
+        system::initialize();
+        percpu::initialize_all_cpus();
+    }
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,
@@ -602,7 +900,7 @@ fn control_callback_runs_preemptible_for_test() -> bool {
         }
     }
 
-    let event = PerfEvent::new(Box::new(YieldingControl));
+    let event = PerfEvent::new(Box::new(YieldingControl), None, false).unwrap();
     event.ioctl(PerfEventIoc::Enable as u32, 0).is_ok()
 }
 

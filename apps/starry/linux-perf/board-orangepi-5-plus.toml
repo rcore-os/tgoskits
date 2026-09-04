@@ -1,0 +1,18 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = """
+export STARRY_LINUX_PERF_ARCHIVE_0_URL='${sessionFile:usr/share/linux-perf/runtime.tar.gz.part-0}'
+export STARRY_LINUX_PERF_ARCHIVE_1_URL='${sessionFile:usr/share/linux-perf/runtime.tar.gz.part-1}'
+export STARRY_LINUX_PERF_RUNNER_URL='${sessionFile:usr/bin/linux-perf-run}'
+export STARRY_LINUX_PERF_WORKLOAD_URL='${sessionFile:usr/bin/linux-perf-workload}'
+"""
+success_regex = [
+  '(?m)^STARRY_LINUX_PERF_PASSED$',
+]
+fail_regex = [
+  '(?m)^STARRY_LINUX_PERF_FAILED:',
+  '(?i)kernel panic',
+  '(?i)panicked at',
+  '(?i)segmentation fault',
+]
+timeout = 900

@@ -233,6 +233,14 @@ unsafe extern "C" fn aarch64_trap_handler(raw: *mut RawTrapFrame, raw_kind: u8, 
             );
         }
         TrapKind::Irq => {
+            let snapshot = tf.snapshot();
+            let _interrupted =
+                super::pmu::publish_interrupted_context(super::pmu::InterruptedContext {
+                    pc: snapshot.ip(),
+                    sp: snapshot.sp as usize,
+                    fp: snapshot.x[29] as usize,
+                    privilege: super::pmu::InterruptedPrivilege::Kernel,
+                });
             crate::trap::dispatch_irq(0);
         }
         TrapKind::Synchronous => {

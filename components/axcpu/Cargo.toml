@@ -33,6 +33,7 @@ xuantie-c9xx = []
 
 [dependencies]
 axbacktrace = { workspace = true }
+ax-percpu = { workspace = true }
 cpu-local = { workspace = true }
 cfg-if = "1.0"
 log = "0.4"
@@ -41,7 +42,6 @@ bitflags.workspace = true
 page-table-generic.workspace = true
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-lazyinit = { workspace = true }
-ax-percpu = { workspace = true }
 x86 = "0.52"
 x86_64 = { version = "0.15", default-features = false, features = [
     "instructions",

@@ -49,6 +49,16 @@ pub fn init(ip_range: Range<usize>, fp_range: Range<usize>) {
     dwarf::init();
 }
 
+/// Returns the initialized kernel instruction range.
+pub fn ip_range() -> Option<Range<usize>> {
+    IP_RANGE.get().cloned()
+}
+
+/// Returns the initialized kernel frame-pointer range.
+pub fn fp_range() -> Option<Range<usize>> {
+    FP_RANGE.get().cloned()
+}
+
 /// Represents a single stack frame in the unwound stack.
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -101,6 +111,63 @@ impl fmt::Display for Frame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "fp={:#x}, ip={:#x}", self.fp, self.ip)
     }
+}
+
+/// Walks an AAPCS-style frame-pointer chain without allocation.
+///
+/// `read` is injected by the caller so hard-IRQ users can perform no-fault page
+/// table reads instead of dereferencing an untrusted frame pointer. `out[0]`
+/// receives the sampled leaf PC; later entries are saved link registers.
+pub fn walk_fp(
+    pc: usize,
+    mut fp: usize,
+    ip_range: &Range<usize>,
+    fp_range: &Range<usize>,
+    read: impl Fn(usize) -> Option<usize>,
+    out: &mut [u64],
+) -> usize {
+    const FP_TO_LR_OFFSET: usize = core::mem::size_of::<usize>();
+    const FRAME_RECORD_SIZE: usize = 2 * FP_TO_LR_OFFSET;
+    const MAX_FRAME_GAP: usize = 8 * 1024 * 1024;
+    const MAX_STEP_FACTOR: usize = 4;
+
+    let Some(leaf) = out.first_mut() else {
+        return 0;
+    };
+    *leaf = pc as u64;
+    let mut count = 1;
+    let mut steps = 0;
+    let max_steps = out.len().saturating_mul(MAX_STEP_FACTOR);
+
+    while count < out.len() && steps < max_steps {
+        steps += 1;
+        let Some(record_end) = fp.checked_add(FRAME_RECORD_SIZE) else {
+            break;
+        };
+        if !fp.is_multiple_of(core::mem::align_of::<usize>())
+            || !fp_range.contains(&fp)
+            || record_end > fp_range.end
+        {
+            break;
+        }
+        let Some(caller_fp) = read(fp) else {
+            break;
+        };
+        let Some(lr_address) = fp.checked_add(FP_TO_LR_OFFSET) else {
+            break;
+        };
+        let Some(lr) = read(lr_address) else { break };
+
+        if ip_range.contains(&lr) {
+            out[count] = lr as u64;
+            count += 1;
+        }
+        if caller_fp == 0 || caller_fp <= fp || caller_fp.saturating_sub(fp) >= MAX_FRAME_GAP {
+            break;
+        }
+        fp = caller_fp;
+    }
+    count
 }
 
 /// Capacity of the on-stack capture buffer. Matches the default `max_depth()`.
@@ -763,5 +830,35 @@ mod tests {
         }
         // Zero is always rejected
         assert!(Frame::read(0).is_none());
+    }
+
+    #[test]
+    fn injected_fp_walker_captures_leaf_and_callers() {
+        let (_chain, fp) = boxed_frame_chain(&[0x1110, 0x2220, 0x3330]);
+        let mut out = [0; 8];
+        let count = walk_fp(
+            0x1000,
+            fp,
+            &(1..usize::MAX),
+            &(fp..usize::MAX),
+            |address| Some(unsafe { *(address as *const usize) }),
+            &mut out,
+        );
+        assert_eq!(&out[..count], &[0x1000, 0x1110, 0x2220, 0x3330]);
+    }
+
+    #[test]
+    fn injected_fp_walker_rejects_overflow_before_read() {
+        let mut out = [0; 4];
+        let count = walk_fp(
+            0x1000,
+            usize::MAX - 7,
+            &(1..usize::MAX),
+            &(0..usize::MAX),
+            |_| panic!("overflowing frame must not be read"),
+            &mut out,
+        );
+        assert_eq!(count, 1);
+        assert_eq!(out[0], 0x1000);
     }
 }

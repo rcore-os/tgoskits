@@ -259,6 +259,14 @@ pub struct Thread {
     /// where no per-task perf event targets this thread.
     #[cfg(target_arch = "aarch64")]
     pub(crate) perf_counters: IrqMutex<Vec<Arc<crate::perf::task::PerTaskCounter>>>,
+
+    /// Per-task software perf bindings. Each inherited task owns separate
+    /// scheduling-window state while sharing the event's aggregate count.
+    pub(crate) perf_sw_counters: IrqMutex<Vec<Arc<crate::perf::sw::SwPerTaskCounter>>>,
+
+    /// Last CPU observed by the software perf scheduler hook. This is kept per
+    /// task so migration events are generation-safe and need no global map.
+    pub(crate) perf_sw_last_cpu: AtomicU32,
 }
 
 impl Thread {
@@ -321,6 +329,8 @@ impl Thread {
 
             #[cfg(target_arch = "aarch64")]
             perf_counters: IrqMutex::new(Vec::new()),
+            perf_sw_counters: IrqMutex::new(Vec::new()),
+            perf_sw_last_cpu: AtomicU32::new(crate::perf::sw::CPU_UNSET),
         })
     }
 
@@ -726,6 +736,7 @@ impl TaskExt for Box<Thread> {
         // no per-task perf event exists anywhere.
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_in(self);
+        crate::perf::sw::sched_in(self);
     }
 
     fn on_leave(&self) {
@@ -733,6 +744,7 @@ impl TaskExt for Box<Thread> {
         // before the scope is torn down. Same hot-path constraints as on_enter.
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_out(self);
+        crate::perf::sw::sched_out(self);
         ActiveScope::set_global();
         unsafe { self.scope.release_context_switch_reader() };
     }

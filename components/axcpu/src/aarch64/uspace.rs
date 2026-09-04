@@ -183,6 +183,13 @@ impl UserContext {
 
         let ret = match kind {
             TrapKind::Irq => {
+                let _interrupted =
+                    super::pmu::publish_interrupted_context(super::pmu::InterruptedContext {
+                        pc: self.tf.ip(),
+                        sp: self.sp(),
+                        fp: self.tf.x[29] as usize,
+                        privilege: super::pmu::InterruptedPrivilege::User,
+                    });
                 crate::trap::dispatch_irq(0);
                 ReturnReason::Interrupt
             }

@@ -366,6 +366,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // exiting thread, not just the last in the group.
     #[cfg(target_arch = "aarch64")]
     crate::perf::task::on_task_exit(thr);
+    crate::perf::sw::on_task_exit(thr);
 
     // Robust futex ownership must be released before clone-child-tid wakes a
     // pthread joiner; otherwise userspace can observe thread exit before the

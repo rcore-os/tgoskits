@@ -524,6 +524,7 @@ impl CloneArgs {
         // yet spawned) so the counter is present the first time the child runs.
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::on_clone_inherit(curr_thread, &thr);
+        crate::perf::sw::on_clone_inherit(curr_thread, &thr);
         *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
         // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child

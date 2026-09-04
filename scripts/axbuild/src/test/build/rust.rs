@@ -111,6 +111,29 @@ pub(crate) fn prepare_rust_case_overlay_sync(
             .with_context(|| format!("failed to run rust case prebuild.sh for `{}`", case.name))?;
     }
 
+    // Some Rust cases need host-side artifact preparation (for example,
+    // downloading a checksum-pinned runtime bundle). Keep it separate from
+    // `prebuild.sh`, whose contract is to run target binaries through qemu-user.
+    let host_prebuild_script = rust_dir.join("host-prebuild.sh");
+    if host_prebuild_script.is_file() {
+        let mut command = Command::new("bash");
+        command
+            .arg(&host_prebuild_script)
+            .current_dir(&rust_dir)
+            .env("STARRY_ARCH", arch)
+            .env("STARRY_CASE_DIR", &case.case_dir)
+            .env("STARRY_CASE_WORK_DIR", &layout.work_dir)
+            .env("STARRY_CASE_BUILD_DIR", &layout.build_dir)
+            .env("STARRY_CASE_OVERLAY_DIR", &layout.overlay_dir)
+            .env("STARRY_STAGING_ROOT", &layout.staging_root);
+        command.exec().with_context(|| {
+            format!(
+                "failed to run rust case host-prebuild.sh for `{}`",
+                case.name
+            )
+        })?;
+    }
+
     // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
     let linker_env_key = format!(
         "CARGO_TARGET_{}_LINKER",
