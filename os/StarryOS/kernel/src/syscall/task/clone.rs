@@ -573,6 +573,8 @@ impl CloneArgs {
         #[cfg(target_arch = "aarch64")]
         prepared_task
             .with_task(|task| crate::perf::task::on_clone_inherit(curr_thread, task.as_thread()));
+        prepared_task
+            .with_task(|task| crate::perf::sw::on_clone_inherit(curr_thread, task.as_thread()));
 
         let staged_task = prepared_task.stage().map_err(map_task_creation_error)?;
         if let Some((pidfd_ptr, fd)) = pidfd_copyout {

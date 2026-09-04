@@ -200,6 +200,7 @@ pub fn new_user_task(
                     }
                 }
                 ReturnReason::PageFault(addr, flags) => {
+                    crate::perf::sw::on_page_fault(thr);
                     handle_user_page_fault(thr, addr, flags, &uctx);
                 }
                 ReturnReason::Interrupt => {}

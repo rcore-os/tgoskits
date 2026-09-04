@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(perf-sw-counters C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(perf-sw-counters src/perf_sw_counters.c)
+target_compile_options(perf-sw-counters PRIVATE -Wall -Wextra -Werror -O0)
+install(TARGETS perf-sw-counters RUNTIME DESTINATION usr/bin/starry-test-suit)

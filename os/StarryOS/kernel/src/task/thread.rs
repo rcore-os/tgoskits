@@ -328,6 +328,10 @@ pub struct Thread {
     signals: ThreadSignals,
     security: ThreadSecurity,
     trace: ThreadTrace,
+    /// Per-task software perf bindings. Inherited tasks own slice-local state.
+    pub(crate) perf_sw_counters: IrqMutex<Vec<Arc<crate::perf::sw::SwPerTaskCounter>>>,
+    /// Last CPU observed by the software perf scheduler hook.
+    pub(crate) perf_sw_last_cpu: AtomicU32,
 }
 
 impl Thread {
@@ -361,6 +365,8 @@ impl Thread {
             signals: ThreadSignals::new(tid, process_signal, signal_mask),
             security: ThreadSecurity::new(parent_cred),
             trace: ThreadTrace::new(),
+            perf_sw_counters: IrqMutex::new(Vec::new()),
+            perf_sw_last_cpu: AtomicU32::new(crate::perf::sw::CPU_UNSET),
         });
         identity.bind_thread_pidfd(&process_identity, thread.exit_flag());
         thread
@@ -557,6 +563,7 @@ impl Thread {
         unsafe { self.scope.activate_pinned(cpu_pin) };
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_in(self);
+        crate::perf::sw::sched_in(self);
     }
 
     pub(super) fn scheduler_switch_out(
@@ -566,6 +573,7 @@ impl Thread {
     ) {
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_out(self);
+        crate::perf::sw::sched_out(self);
         // SAFETY: switch-in established exactly one activation for this task,
         // and the scheduler baton still pins the same CPU during switch-out.
         unsafe { self.scope.deactivate_pinned(cpu_pin) };

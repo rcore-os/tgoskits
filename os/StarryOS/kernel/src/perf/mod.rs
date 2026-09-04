@@ -52,6 +52,8 @@ mod sampling_registry;
 /// gated like `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod sideband;
+/// Linux core `PERF_TYPE_SOFTWARE` counting events.
+pub mod sw;
 mod target;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
 /// scheduler hooks call into CPU PMU register helpers, so it is gated like
@@ -92,7 +94,7 @@ pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
     linux_bpf::perf_event_attr,
-    perf::{PerfEventIoc, PerfProbeArgs, PerfTypeId},
+    perf::{PerfEventIoc, PerfProbeArgs, PerfProbeConfig, PerfTypeId},
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -738,8 +740,11 @@ pub fn perf_event_open(
     }
 
     let is_hardware = attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
+        || attr.type_ == PerfTypeId::PERF_TYPE_HW_CACHE as u32
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
-        || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE;
+        || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A55_PERF_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A76_PERF_TYPE;
     let validated_hw = is_hardware
         .then(|| hw::validate_perf_event_open_hw(attr, target.kind()))
         .transpose()?;
@@ -773,7 +778,12 @@ pub fn perf_event_open(
             let args = probe_args.expect("non-hardware perf open has validated probe arguments");
             match args.type_ {
                 PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
-                PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
+                PerfTypeId::PERF_TYPE_SOFTWARE => match args.config {
+                    PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(sw_id) => {
+                        Box::new(sw::perf_event_open_sw(attr, sw_id, &target)?)
+                    }
+                    _ => Box::new(bpf::perf_event_open_bpf(args)),
+                },
                 PerfTypeId::PERF_TYPE_TRACEPOINT => {
                     Box::new(tracepoint::perf_event_open_tracepoint(args)?)
                 }
@@ -828,6 +838,7 @@ static PERF_FILE: LazyInit<IrqMutex<HashMap<usize, alloc::sync::Weak<dyn FileLik
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
     PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
+    sw::initialize();
     #[cfg(target_arch = "aarch64")]
     cpu_worker::init();
 }
