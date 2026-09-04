@@ -286,6 +286,10 @@ impl WaitQueue {
         woke
     }
 
+    fn lock_order(&self, target: &WaitQueue) -> Ordering {
+        core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target))
+    }
+
     /// Serializes a FUTEX_WAKE_OP user RMW with both futex wait queues.
     pub fn wake_op(
         &self,
@@ -297,7 +301,12 @@ impl WaitQueue {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
-        match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
+        // `FutexGuard` keeps both entries alive, so their queue addresses are
+        // stable for this operation. Shared futex keys resolve to the same
+        // queue objects across processes even when mapped at different virtual
+        // addresses, making this a process-independent global lock order.
+        let ordering = self.lock_order(target);
+        match ordering {
             Ordering::Less => {
                 let mut src = self.inner.lock();
                 let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
@@ -387,7 +396,10 @@ impl WaitQueue {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
-        let count = match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
+        // See `wake_op`: queue identity provides one global order for private
+        // and shared futexes, while equality preserves the single-queue path.
+        let ordering = self.lock_order(target);
+        let count = match ordering {
             Ordering::Less => {
                 let mut src = self.inner.lock();
                 let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
@@ -743,6 +755,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lock_order_is_process_independent_for_reversed_shared_mappings() {
+        let first_shared_queue = WaitQueue::new();
+        let second_shared_queue = WaitQueue::new();
+
+        // Process A sees first/second at 0x1000/0x2000, while process B may
+        // map the same objects at 0x2000/0x1000. Neither mapping participates
+        // in the order: both callers compare the shared queue identities.
+        let process_a_order = first_shared_queue.lock_order(&second_shared_queue);
+        let process_b_order = second_shared_queue.lock_order(&first_shared_queue);
+
+        assert_eq!(process_a_order, process_b_order.reverse());
+    }
+
+    #[test]
     fn nofault_failure_is_transactional() {
         let wait_queue = WaitQueue::new();
         let mut wait = Box::pin(WaitIfFuture {
@@ -769,7 +795,7 @@ mod tests {
         });
 
         assert!(matches!(
-            source.wake_op(1, &target, 1, || Err(FutexAccessError::Fault)),
+            source.wake_op(1, &target, 1, || { Err(FutexAccessError::Fault) }),
             Err(FutexAccessError::Fault)
         ));
         assert_eq!(source.inner.lock().queue.len(), 1);

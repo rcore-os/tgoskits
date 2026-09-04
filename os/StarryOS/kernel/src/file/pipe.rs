@@ -552,6 +552,14 @@ fn raise_pipe() {
 }
 
 impl FileLike for Pipe {
+    fn validate_write_access(&self) -> StarryResult {
+        if self.is_write() {
+            Ok(())
+        } else {
+            Err(StarryError::BadFileDescriptor)
+        }
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if !self.is_read() {
             return Err(StarryError::BadFileDescriptor);

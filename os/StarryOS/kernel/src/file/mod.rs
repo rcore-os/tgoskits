@@ -169,6 +169,15 @@ pub type IoSrc<'a> = dyn ReadBuf + 'a;
 
 #[allow(dead_code)]
 pub trait FileLike: Pollable + DowncastSync {
+    /// Validate write access before importing a user buffer.
+    ///
+    /// Bidirectional anonymous objects can use the default. File types whose
+    /// open mode or endpoint direction restricts writes must override this
+    /// hook without performing operation-specific checks such as memfd seals.
+    fn validate_write_access(&self) -> StarryResult {
+        Ok(())
+    }
+
     /// Validate a scalar write length before importing the user buffer.
     ///
     /// File types with count errors that take precedence over `EFAULT` can

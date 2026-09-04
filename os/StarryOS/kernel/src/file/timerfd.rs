@@ -330,17 +330,10 @@ impl FileLike for Timerfd {
                     break observed;
                 }
             };
-            // Linux's timerfd_read(2): a failed read does not discard
-            // expirations. Restore the claimed count on copyout failure,
-            // and re-wake `poll_rx` so any reader or poller that
-            // entered its wait between our CAS-to-zero and this restore
-            // notices the fd is readable again.
-            if let Err(e) = dst.write(&n.to_ne_bytes()) {
-                self.expire_count.fetch_add(n, Ordering::AcqRel);
-                // Restored expire_count is visible before re-waking readers.
-                unsafe { self.poll_rx.wake(IoEvents::IN) };
-                return Err(e.into());
-            }
+            // Linux claims the expiration count before copyout. If copyout
+            // fails with EFAULT, that claimed count remains consumed; a
+            // following non-blocking read therefore observes EAGAIN.
+            dst.write(&n.to_ne_bytes())?;
             Ok(core::mem::size_of::<u64>())
         }))
     }

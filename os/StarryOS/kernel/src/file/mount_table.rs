@@ -110,6 +110,10 @@ impl MountTableFile {
 }
 
 impl FileLike for MountTableFile {
+    fn validate_write_access(&self) -> StarryResult {
+        self.file.validate_write_access()
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.file.read(dst)
     }

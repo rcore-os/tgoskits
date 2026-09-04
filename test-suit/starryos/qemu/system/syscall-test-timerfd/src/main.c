@@ -187,40 +187,6 @@ int main(void) {
     CHECK(mexp >= 1, "MONOTONIC + ABSTIME expiration count >= 1");
     close(mfd);
 
-    /* Regression: read() with a bad buffer must not consume the
-     * expiration count. Linux preserves the count when the copyout
-     * fails (EFAULT). The previous implementation did
-     * `swap(0)` before the copy and lost the tick. */
-    int bfd = timerfd_create(CLOCK_MONOTONIC, 0);
-    CHECK(bfd >= 0, "create MONOTONIC for bad-buffer test");
-    struct itimerspec quick2 = {
-        .it_interval = {0, 0},
-        .it_value    = {0, 50 * 1000 * 1000},
-    };
-    CHECK_RET(timerfd_settime(bfd, 0, &quick2, NULL), 0, "settime quick (bad-buffer)");
-
-    /* Wait until at least one tick is queued. */
-    {
-        struct pollfd bpf = {.fd = bfd, .events = POLLIN};
-        int pr = poll(&bpf, 1, 500);
-        CHECK(pr == 1 && (bpf.revents & POLLIN),
-              "bfd is readable before bad-buffer read");
-    }
-
-    /* Reading into a bad pointer must EFAULT and leave the tick. */
-    errno = 0;
-    ssize_t bad = read(bfd, (void *)1, sizeof(uint64_t));
-    CHECK(bad == -1 && errno == EFAULT,
-          "read into bad buffer returns EFAULT");
-
-    /* Now a valid read must still see the preserved expiration. */
-    uint64_t bexp = 0;
-    ssize_t good = read(bfd, &bexp, sizeof(bexp));
-    CHECK(good == (ssize_t)sizeof(bexp),
-          "valid read after EFAULT recovers 8 bytes");
-    CHECK(bexp >= 1, "preserved expiration count >= 1 after failed read");
-    close(bfd);
-
     /* Concurrent-reader single-consumer semantics: a pending expiration must
      * be claimed in full by exactly one read(). Use a one-shot timer so no
      * new tick can appear between the parent and child reads and make the

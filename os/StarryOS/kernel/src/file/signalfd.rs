@@ -127,19 +127,41 @@ impl Signalfd {
 }
 
 impl FileLike for Signalfd {
+    fn validate_write_access(&self) -> StarryResult {
+        // Linux rejects signalfd writes because the descriptor has no write
+        // operation. This check precedes user-buffer validation, so EINVAL
+        // also takes priority over EFAULT for an invalid source pointer.
+        Err(StarryError::InvalidInput)
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < SIGNALFD_SIGINFO_SIZE {
             return Err(StarryError::InvalidInput);
         }
+        let max_records = dst.remaining_mut() / SIGNALFD_SIGINFO_SIZE;
 
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            if let Some(sig_info) = self.dequeue_signal() {
-                // Convert SignalInfo to SignalfdSiginfo
-                let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
+            if let Some(mut sig_info) = self.dequeue_signal() {
+                let mut written = 0;
 
-                // Write the structure to the destination buffer
-                let bytes = sfd_info.as_bytes();
-                dst.write(bytes)?;
+                loop {
+                    // Convert SignalInfo to SignalfdSiginfo
+                    let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
+
+                    // Write the structure to the destination buffer
+                    let bytes = sfd_info.as_bytes();
+                    dst.write(bytes)?;
+                    written += SIGNALFD_SIGINFO_SIZE;
+
+                    if written / SIGNALFD_SIGINFO_SIZE == max_records {
+                        break;
+                    }
+
+                    let Some(next_sig_info) = self.dequeue_signal() else {
+                        break;
+                    };
+                    sig_info = next_sig_info;
+                }
 
                 // Wake up other waiters if there are more signals pending
                 if self.has_pending_signals() {
@@ -147,7 +169,7 @@ impl FileLike for Signalfd {
                     unsafe { self.poll_rx.wake(IoEvents::IN) };
                 }
 
-                Ok(SIGNALFD_SIGINFO_SIZE)
+                Ok(written)
             } else {
                 Err(StarryError::WouldBlock)
             }
@@ -155,8 +177,9 @@ impl FileLike for Signalfd {
     }
 
     fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
-        // signalfd is read-only
-        Err(StarryError::BadFileDescriptor)
+        // Linux signalfd descriptors reject write(2) through the file
+        // operation with EINVAL, rather than treating the live fd as bad.
+        Err(StarryError::InvalidInput)
     }
 
     fn nonblocking(&self) -> bool {

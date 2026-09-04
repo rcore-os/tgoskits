@@ -168,7 +168,9 @@ fn futex_value_matches_nofault(uaddr: *const u32, expected: u32) -> Result<bool,
 fn parse_futex_op(futex_op: u32) -> StarryResult<ParsedFutexOp> {
     let flags = futex_op & !FUTEX_COMMAND_MASK;
     if flags & !SUPPORTED_FLAGS != 0 {
-        return Err(StarryError::InvalidInput);
+        // Linux leaves unknown flag bits in the decoded command and reports
+        // ENOSYS, rather than treating them as an EINVAL flag combination.
+        return Err(StarryError::Unsupported);
     }
 
     let command = match futex_op & FUTEX_COMMAND_MASK {
@@ -292,8 +294,15 @@ pub fn sys_futex(
             Ok(0)
         }
         FutexCommand::Wake | FutexCommand::WakeBitset => {
-            let wake_count = assert_non_negative_i32(value)? as usize;
-            validate_futex_word(uaddr)?;
+            // Linux resolves private wake keys from the process address alone;
+            // an unmapped private address is therefore a valid no-op.  Shared
+            // (auto) keys must resolve the backing VMA and report EFAULT.
+            if matches!(op.key_mode, FutexKeyMode::Auto) {
+                validate_futex_word(uaddr)?;
+            }
+            // The syscall ABI treats val as an unsigned wake limit.  In
+            // particular, -1 is a very large limit, not EINVAL.
+            let wake_count = value as usize;
 
             let futex = futex_table.get(&key);
             let mut count = 0;
@@ -414,6 +423,12 @@ pub fn sys_set_robust_list(head: *const robust_list_head, size: usize) -> Starry
 
 #[cfg(all(test, not(axtest)))]
 fn futex_op_and_compare_rules_hold_for_test() -> bool {
+    // Unknown flag bits follow Linux's ENOSYS result.
+    assert!(matches!(
+        parse_futex_op(FUTEX_WAIT | 0x4000_0000),
+        Err(StarryError::Unsupported)
+    ));
+
     // sign_extend_12: sign-extends a 12-bit value.
     assert!(sign_extend_12(0x000) == 0);
     assert!(sign_extend_12(0x7FF) == 2047); // max positive

@@ -25,7 +25,7 @@ use super::memfd::{
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, File, FileLike, Pipe, get_file_like,
+        Directory, File, FileLike, MountTableFile, Pipe, get_file_like,
         memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
     },
     ipc::mqueue::MqDescriptor,
@@ -62,6 +62,26 @@ fn file_or_espipe_write(fd: c_int) -> StarryResult<Arc<File>> {
     })?;
     let _ = f.inner().access(FileFlags::WRITE)?;
     Ok(f)
+}
+
+/// Resolve the regular-file backend for a positioned write.
+///
+/// Linux rejects nonseekable objects with `ESPIPE`, but a seekable file that
+/// is not open for writing must report `EBADF` before user-buffer import.
+fn positioned_write_file(file_like: &Arc<dyn FileLike>) -> StarryResult<&File> {
+    let file = if let Some(file) = file_like.downcast_ref::<File>() {
+        file
+    } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
+        memfd.inner().as_ref()
+    } else if let Some(mount_table) = file_like.downcast_ref::<MountTableFile>() {
+        mount_table.inner().as_ref()
+    } else if file_like.is::<Directory>() {
+        return Err(StarryError::BadFileDescriptor);
+    } else {
+        return Err(StarryError::from(Errno::ESPIPE));
+    };
+    file.validate_write_access()?;
+    Ok(file)
 }
 
 fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
@@ -122,6 +142,7 @@ pub fn sys_readv(fd: i32, iov: *const IoVec, iovcnt: usize) -> StarryResult<isiz
 pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
+    file_like.validate_write_access()?;
     file_like.validate_write_len(len)?;
     // `copy_user_read_buf` validates the buffer itself (via `get_as_slice`), so a
     // separate `validate_user_read_buf` here was a redundant second `check_region`
@@ -138,6 +159,7 @@ pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
 pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> StarryResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
     let file_like = get_file_like(fd)?;
+    file_like.validate_write_access()?;
     // Check length invariants (e.g. eventfd count) before importing segment
     // data, so a count error (EINVAL) takes precedence over a bad segment
     // pointer (EFAULT), matching Linux vfs_writev / eventfd_write ordering.
@@ -256,6 +278,15 @@ pub fn sys_ftruncate(fd: c_int, length: __kernel_off_t) -> StarryResult<isize> {
             e
         }
     })?;
+    // O_PATH handles do not permit file operations and must report EBADF
+    // before length validation. Other non-path files opened read-only report
+    // EINVAL on Linux.
+    if f.inner().is_path() {
+        return Err(StarryError::BadFileDescriptor);
+    }
+    if !f.inner().flags().contains(FileFlags::WRITE) {
+        return Err(StarryError::from(Errno::EINVAL));
+    }
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(StarryError::from(Errno::EFBIG));
     }
@@ -473,10 +504,12 @@ pub fn sys_pread64(
     len: usize,
     offset: __kernel_off_t,
 ) -> StarryResult<isize> {
-    let f = file_or_espipe(fd)?;
+    // Linux validates the signed offset before resolving the descriptor.  In
+    // particular, pread64(-1, ..., -1) returns EINVAL rather than EBADF.
     if offset < 0 {
         return Err(StarryError::InvalidInput);
     }
+    let f = file_or_espipe(fd)?;
     let read = f.inner().read_at(VmBytesMut::new(buf, len), offset as _)?;
     Ok(read as _)
 }
@@ -596,27 +629,24 @@ pub fn sys_pwritev2(
     if offset == -1 {
         // offset == -1: use current file position (like writev)
         let file_like = get_file_like(fd)?;
+        file_like.validate_write_access()?;
         file_like.validate_write_len(iov_total_len(iov, iovcnt)?)?;
         let total = validate_user_iov_buf_regions(iov, iovcnt)?;
         memfd_checks_before_stream_write(&file_like, total as u64)?;
         let data = copy_user_iov_read_buf(iov, iovcnt)?;
         file_like.write(&mut data.as_slice()).map(|n| n as _)
-    } else if let Ok(memfd) = Memfd::from_fd(fd) {
-        // Route memfd offset writes through the seal-aware path.
-        validate_user_iov_buf_regions(iov, iovcnt)?;
-        let data = copy_user_iov_read_buf(iov, iovcnt)?;
-        memfd
-            .write_at(data.as_slice(), offset as u64)
-            .map(|n| n as _)
     } else {
-        let total = validate_user_iov_buf_regions(iov, iovcnt)?;
-        let f = file_or_espipe_write(fd)?;
         let file_like = get_file_like(fd)?;
-        memfd_checks_before_write_at(&file_like, offset as u64, total as u64)?;
+        let file = positioned_write_file(&file_like)?;
+        let total = validate_user_iov_buf_regions(iov, iovcnt)?;
         let data = copy_user_iov_read_buf(iov, iovcnt)?;
-        Ok(f.inner()
-            .write_at(data.as_slice(), offset as _)
-            .map(|n| n as _)?)
+        if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
+            // Route memfd offset writes through the seal-aware path.
+            Ok(memfd.write_at(data.as_slice(), offset as u64)? as _)
+        } else {
+            memfd_checks_before_write_at(&file_like, offset as u64, total as u64)?;
+            Ok(file.inner().write_at(data.as_slice(), offset as _)? as _)
+        }
     }
 }
 

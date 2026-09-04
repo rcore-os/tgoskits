@@ -175,6 +175,14 @@ fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
 }
 
 impl FileLike for File {
+    fn validate_write_access(&self) -> StarryResult {
+        if self.inner().flags().contains(FileFlags::WRITE) && !self.inner().is_path() {
+            Ok(())
+        } else {
+            Err(StarryError::BadFileDescriptor)
+        }
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         let inner = self.inner();
         if likely(self.is_blocking()) {
@@ -358,6 +366,10 @@ impl Directory {
 }
 
 impl FileLike for Directory {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::BadFileDescriptor)
+    }
+
     fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
         Err(StarryError::IsADirectory)
     }
