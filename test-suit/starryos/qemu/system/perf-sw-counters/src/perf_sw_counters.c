@@ -28,6 +28,7 @@ extern char **environ;
 #define ATTR_DISABLED (1ull << 0)
 #define ATTR_INHERIT (1ull << 1)
 #define ATTR_ENABLE_ON_EXEC (1ull << 12)
+#define PERF_SAMPLE_IDENTIFIER (1ull << 16)
 #define MADV_DONTNEED 4
 #ifndef SYS_perf_event_open
 #define SYS_perf_event_open 241
@@ -65,6 +66,23 @@ static int open_cpu_clock(int cpu) {
     attr.config = PERF_COUNT_SW_CPU_CLOCK;
     attr.flags = ATTR_DISABLED;
     return (int)syscall(SYS_perf_event_open, &attr, -1, cpu, -1, 0ul);
+}
+
+static int test_counting_sample_type(void) {
+    struct perf_event_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.type = PERF_TYPE_SOFTWARE;
+    attr.size = sizeof(attr);
+    attr.config = PERF_COUNT_SW_TASK_CLOCK;
+    attr.sample_period = 0;
+    attr.sample_type = PERF_SAMPLE_IDENTIFIER;
+    attr.flags = ATTR_DISABLED;
+    int fd = (int)syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0ul);
+    if (fd < 0) {
+        return -1;
+    }
+    close(fd);
+    return 0;
 }
 
 static volatile uint64_t sink;
@@ -209,7 +227,8 @@ int main(int argc, char **argv) {
                (unsigned long long)value);
         close(fds[i]);
     }
-    if (test_enable_on_exec() != 0 || test_inherit() != 0 ||
+    if (test_counting_sample_type() != 0 || test_enable_on_exec() != 0 ||
+        test_inherit() != 0 ||
         test_systemwide() != 0) {
         printf("perf-sw-counters FAILED: exec/inherit/systemwide\n");
         return 1;

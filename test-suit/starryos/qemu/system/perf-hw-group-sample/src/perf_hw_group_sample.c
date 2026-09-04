@@ -88,7 +88,7 @@ int main(void) {
         .type = PERF_TYPE_RAW,
         .size = sizeof(member_attr),
         .config = 0x11,
-        .flags = PERF_ATTR_FLAG_DISABLED,
+        /* Linux groups are gated by the disabled leader; siblings stay enabled. */
     };
     int member =
         (int)syscall(SYS_PERF_EVENT_OPEN, &member_attr, 0, -1, leader, 0ul);

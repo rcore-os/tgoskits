@@ -7,11 +7,13 @@
  * per executable mapping (the exec image + dynamic loader) into the same mmap
  * ring as the samples, gated by attr.comm / attr.mmap2.
  *
- * This test drives exactly that: fork a child, open a per-task sampling event on
- * it with attr.comm = attr.mmap2 = attr.sample_id_all = 1 and enable_on_exec,
- * mmap the ring, release the child (it execs itself in --busy mode), then walk
- * the ring and confirm a COMM record (non-empty name) and an MMAP2 record
- * (non-empty filename) are present. sample_id_all is set with a non-trivial
+ * This test drives the path used by upstream `perf record -a`: open a CPU-0
+ * hardware sampling event, then open PERF_COUNT_SW_DUMMY with attr.comm,
+ * attr.mmap2 and attr.sample_id_all and redirect the dummy event into the
+ * hardware ring with PERF_EVENT_IOC_SET_OUTPUT. It polls the dummy before mmap
+ * to cover the tracking-event lifetime, enables both events, then releases a
+ * child which execs itself in --busy mode. Finally it walks the shared ring and
+ * confirms a COMM record and executable MMAP2 records. sample_id_all uses a
  * sample_type (IP|TID|TIME) so each record carries the trailer, exercising the
  * size accounting the ring walk relies on.
  *
@@ -23,18 +25,26 @@
 #endif
 
 #include <errno.h>
+#include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sched.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef PERF_TYPE_RAW
 #define PERF_TYPE_RAW 4u
+#endif
+#ifndef PERF_TYPE_SOFTWARE
+#define PERF_TYPE_SOFTWARE 1u
+#endif
+#ifndef PERF_COUNT_SW_DUMMY
+#define PERF_COUNT_SW_DUMMY 9ull
 #endif
 #ifndef ARM_PMU_EVT_CPU_CYCLES
 #define ARM_PMU_EVT_CPU_CYCLES 0x11ull
@@ -50,10 +60,15 @@
 #ifndef PERF_EVENT_IOC_DISABLE
 #define PERF_EVENT_IOC_DISABLE 0x2401u
 #endif
+#ifndef PERF_EVENT_IOC_ENABLE
+#define PERF_EVENT_IOC_ENABLE 0x2400u
+#endif
+#ifndef PERF_EVENT_IOC_SET_OUTPUT
+#define PERF_EVENT_IOC_SET_OUTPUT 0x2405u
+#endif
 /* perf_event_attr flag bit positions (see the bitfield in <linux/perf_event.h>). */
 #define PERF_ATTR_FLAG_DISABLED (1ull << 0)
 #define PERF_ATTR_FLAG_COMM (1ull << 9)
-#define PERF_ATTR_FLAG_ENABLE_ON_EXEC (1ull << 12)
 #define PERF_ATTR_FLAG_SAMPLE_ID_ALL (1ull << 18)
 #define PERF_ATTR_FLAG_MMAP2 (1ull << 23)
 
@@ -181,6 +196,13 @@ int main(int argc, char **argv) {
         return (int)(spin & 1);
     }
 
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(0, &affinity);
+    if (sched_setaffinity(0, sizeof(affinity), &affinity) != 0) {
+        return fail("sched_setaffinity CPU 0");
+    }
+
     int go[2];
     if (pipe(go) != 0) {
         return fail("pipe");
@@ -207,11 +229,9 @@ int main(int argc, char **argv) {
     attr.size = (uint32_t)sizeof(attr);
     attr.sample_period = SAMPLE_PERIOD;
     attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME;
-    attr.flags = PERF_ATTR_FLAG_DISABLED | PERF_ATTR_FLAG_ENABLE_ON_EXEC |
-                 PERF_ATTR_FLAG_COMM | PERF_ATTR_FLAG_MMAP2 |
-                 PERF_ATTR_FLAG_SAMPLE_ID_ALL;
+    attr.flags = PERF_ATTR_FLAG_DISABLED;
 
-    long fd = perf_event_open(&attr, child, -1, -1, 0ul);
+    long fd = perf_event_open(&attr, -1, 0, -1, 0ul);
     if (fd < 0) {
         (void)!write(go[1], "g", 1);
         close(go[1]);
@@ -231,12 +251,42 @@ int main(int argc, char **argv) {
     }
     struct perf_event_mmap_page *meta = (struct perf_event_mmap_page *)base;
 
+    /* Match upstream perf record: COMM/MMAP2/TASK subscriptions live on a
+     * PERF_COUNT_SW_DUMMY event which redirects into the PMU event's ring. */
+    struct perf_event_attr tracking;
+    memset(&tracking, 0, sizeof(tracking));
+    tracking.type = PERF_TYPE_SOFTWARE;
+    tracking.config = PERF_COUNT_SW_DUMMY;
+    tracking.size = (uint32_t)sizeof(tracking);
+    tracking.sample_period = SAMPLE_PERIOD;
+    tracking.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME;
+    tracking.flags = PERF_ATTR_FLAG_DISABLED | PERF_ATTR_FLAG_COMM |
+                     PERF_ATTR_FLAG_MMAP2 | PERF_ATTR_FLAG_SAMPLE_ID_ALL;
+    long tracking_fd = perf_event_open(&tracking, -1, 0, -1, 0ul);
+    if (tracking_fd < 0) {
+        return fail("open software tracking event");
+    }
+    struct pollfd pfd = {.fd = (int)tracking_fd, .events = POLLIN};
+    if (poll(&pfd, 1, 0) < 0) {
+        return fail("poll unmapped tracking event");
+    }
+    if (ioctl((int)tracking_fd, PERF_EVENT_IOC_SET_OUTPUT, efd) != 0) {
+        return fail("redirect tracking output");
+    }
+    if (ioctl((int)tracking_fd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
+        return fail("enable software tracking event");
+    }
+    if (ioctl(efd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
+        return fail("enable system-wide event");
+    }
+
     /* Release the child: it execs (-> COMM + MMAP2 emitted) and runs. */
     (void)!write(go[1], "g", 1);
     close(go[1]);
     int status = 0;
     waitpid(child, &status, 0);
     (void)ioctl(efd, PERF_EVENT_IOC_DISABLE, 0);
+    (void)ioctl((int)tracking_fd, PERF_EVENT_IOC_DISABLE, 0);
 
     uint64_t data_head = meta->data_head;
     __sync_synchronize();
@@ -295,6 +345,7 @@ int main(int argc, char **argv) {
     }
 
     (void)munmap(base, PERF_MMAP_TOTAL_BYTES);
+    close((int)tracking_fd);
     close(efd);
     if (rc == 0) {
         printf("STARRY_PERF_SIDEBAND_OK\n");

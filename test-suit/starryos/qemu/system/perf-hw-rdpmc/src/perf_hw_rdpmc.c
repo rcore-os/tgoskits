@@ -15,9 +15,9 @@
  * If EL0 access were not enabled the system-register access would trap (SIGILL),
  * so reaching the comparison already proves it.
  *
- * SUCCESS == cap_user_rdpmc set AND the active mmap count is non-zero and does
- * not exceed a following read(fd), then after disable + sched-out the mmap page
- * reports index=0 and retains exactly the read(fd) total in offset.
+ * SUCCESS == inactive metadata publishes index=0 and no cap_user_rdpmc; while
+ * scheduled both become non-zero and the mmap count does not exceed a following
+ * read(fd); after disable both return to zero while offset retains the total.
  * Prints the single sentinel STARRY_PERF_RDPMC_OK.
  */
 #ifndef _GNU_SOURCE
@@ -247,10 +247,10 @@ int main(void) {
     printf("STARRY_PERF_RDPMC index=%u caps=0x%llx pmc_width=%u\n", index,
            (unsigned long long)caps, width);
 
-    if ((caps & CAP_USER_RDPMC) == 0) {
+    if ((caps & CAP_USER_RDPMC) != 0) {
         munmap(base, 4096);
         close(efd);
-        return fail("cap_user_rdpmc not set");
+        return fail("disabled event advertises cap_user_rdpmc");
     }
     if (index != 0) {
         munmap(base, 4096);
@@ -296,6 +296,7 @@ int main(void) {
      * selected hardware counter, guarded by the metadata seqlock. */
     int64_t offset = 0;
     uint64_t rd = read_mmap_count(pc, &index, &offset);
+    caps = __atomic_load_n(&pc->capabilities, __ATOMIC_ACQUIRE);
     uint64_t sys = 0;
     if (read(efd, &sys, sizeof(sys)) != (ssize_t)sizeof(sys)) {
         munmap(base, 4096);
@@ -309,7 +310,9 @@ int main(void) {
            (unsigned long long)sys, (unsigned long long)spin);
 
     int rc = 0;
-    if (index == 0) {
+    if ((caps & CAP_USER_RDPMC) == 0) {
+        rc = fail("scheduled event did not advertise cap_user_rdpmc");
+    } else if (index == 0) {
         rc = fail("enabled event did not publish a hardware counter");
     } else if (index >= CYCLE_PAGE_INDEX) {
         rc = fail("per-task event published an invalid programmable counter");
@@ -352,6 +355,9 @@ int main(void) {
                    (unsigned long long)fd_total);
             if (inactive_index != 0) {
                 rc = fail("inactive mmap page still exposes a hardware counter");
+            } else if ((__atomic_load_n(&pc->capabilities, __ATOMIC_ACQUIRE) &
+                        CAP_USER_RDPMC) != 0) {
+                rc = fail("inactive mmap page still advertises cap_user_rdpmc");
             } else if (inactive_offset <= 0) {
                 rc = fail("inactive mmap page did not retain the completed count");
             } else if (mmap_total != fd_total) {
