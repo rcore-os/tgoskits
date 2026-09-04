@@ -61,7 +61,7 @@
 //! (`-c <period>`) and frequency mode (`-F`, `sample_freq`); inherited child
 //! events share the root output through the same owned redirect boundary.
 
-use alloc::sync::Arc;
+use alloc::{sync::{Arc, Weak}, vec::Vec};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -79,7 +79,10 @@ use super::{
     output::{PerfOutputRoute, PerfRingOutput},
     rdpmc::{RdpmcMapping, RdpmcSnapshot, mapping_result},
     resource_lifecycle::{PmuResourceClaim, PmuResourceRelease},
-    sampling::{self, SampleOutput, SampleSlot, SampleSlotConfig},
+    sampling::{
+        self, MAX_SAMPLE_READ_EVENTS, SampleOutput, SampleReadEntry, SampleReadValue, SampleSlot,
+        SampleSlotConfig,
+    },
     sampling_lifecycle::{PmuCloseAction, PmuRunLease, PmuRunState, PmuStopClaim},
     sideband::{self, SidebandTarget},
     target::PerfCpuId,

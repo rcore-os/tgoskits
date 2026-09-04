@@ -50,6 +50,7 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
         };
         if let Some(output) = sample_output {
             let n = ptc.programmable_index();
+            let (read_entries, read_len) = ptc.sample_read_entries();
             if let Err(error) = sampling::enable_local_pmu_irq() {
                 run_state.cancel_arm(ticket);
                 warn!(
@@ -72,6 +73,9 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
                         period: ptc.sample_period,
                         sample_type: ptc.sample_type,
                         id: ptc.sample_id.load(Ordering::Relaxed),
+                        read_format: ptc.read_format,
+                        read_entries,
+                        read_len,
                         observer: ptc.observer,
                         owner_ids: ptc.owner_ids,
                         // Frequency mode adapts the period within each slice; the

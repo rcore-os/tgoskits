@@ -31,7 +31,7 @@ pub struct PerTaskCounter {
     /// `attr.exclude_kernel`: do not count EL1 (`PMEVTYPERn_EL0.P`).
     pub(super) exclude_kernel: bool,
     /// `attr.read_format`, controlling which fields `read(perf_fd)` emits.
-    read_format: u64,
+    pub(super) read_format: u64,
     /// `attr.enable_on_exec`: start counting only when the attached task
     /// `execve`s a new image (consumed by [`on_exec`]).
     pub(super) enable_on_exec: bool,
@@ -91,6 +91,8 @@ pub struct PerTaskCounter {
     pub(super) observer: PidNamespaceId,
     /// Target task identity in the event's captured PID namespace.
     pub(super) owner_ids: Option<(TgidNumber, TidNumber)>,
+    group_leader: IrqMutex<Option<Weak<PerTaskCounter>>>,
+    group_members: IrqMutex<Vec<Weak<PerTaskCounter>>>,
     /// Weak fd-owned family identity. The family owns members strongly, so a
     /// weak back-reference avoids a root/member cycle.
     family: IrqMutex<Option<FamilyBinding>>,
@@ -253,6 +255,8 @@ impl PerTaskCounter {
             inherit: cfg.inherit,
             observer: cfg.observer,
             owner_ids: cfg.owner_ids,
+            group_leader: IrqMutex::new(None),
+            group_members: IrqMutex::new(Vec::new()),
             family: IrqMutex::new(None),
             resources: PmuResourceRelease::new(),
             rdpmc: RdpmcMapping::new(),
@@ -462,6 +466,53 @@ impl PerTaskCounter {
         self.loss.total()
     }
 
+    fn sample_read_entry(&self) -> SampleReadEntry {
+        SampleReadEntry::new(
+            core::ptr::from_ref(self).cast(),
+            per_task_sample_read_irq,
+            self.sample_id(),
+        )
+    }
+
+    pub(in crate::perf) fn link_group(
+        leader: &Arc<Self>,
+        member: &Arc<Self>,
+    ) -> crate::StarryResult<()> {
+        if leader.scheduler_id != member.scheduler_id || leader.cpu_filter != member.cpu_filter {
+            return Err(crate::StarryError::InvalidInput);
+        }
+        let mut members = leader.group_members.lock();
+        members.retain(|member| member.strong_count() != 0);
+        if members.len() + 1 >= MAX_SAMPLE_READ_EVENTS {
+            return Err(crate::StarryError::InvalidInput);
+        }
+        *member.group_leader.lock() = Some(Arc::downgrade(leader));
+        members.push(Arc::downgrade(member));
+        Ok(())
+    }
+
+    pub(super) fn sample_read_entries(
+        &self,
+    ) -> ([SampleReadEntry; MAX_SAMPLE_READ_EVENTS], u8) {
+        let leader = self
+            .group_leader
+            .lock()
+            .as_ref()
+            .and_then(Weak::upgrade);
+        let leader = leader.as_deref().unwrap_or(self);
+        let mut entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
+        entries[0] = leader.sample_read_entry();
+        let mut len = 1;
+        for member in leader.group_members.lock().iter().filter_map(Weak::upgrade) {
+            if len == MAX_SAMPLE_READ_EVENTS {
+                break;
+            }
+            entries[len] = member.sample_read_entry();
+            len += 1;
+        }
+        (entries, len as u8)
+    }
+
     /// Record the ring buffer + notify/poll machinery for a sampling event.
     ///
     /// Called once, in process context, from
@@ -574,5 +625,44 @@ impl PerTaskCounter {
         if let Some(anchors) = guard.as_ref() {
             unsafe { sink.register_exclusive(&anchors.poll_ready, axpoll::IoEvents::IN) };
         }
+    }
+}
+
+unsafe fn per_task_sample_read_irq(
+    context: *const (),
+    source_slot: usize,
+    now: u64,
+    period: u32,
+    account_source: bool,
+) -> SampleReadValue {
+    // SAFETY: task context ownership keeps the counter alive until its sampling
+    // registration has been synchronously removed.
+    let counter = unsafe { &*context.cast::<PerTaskCounter>() };
+    if account_source {
+        counter.accumulated.fetch_add(period as u64, Ordering::AcqRel);
+    }
+    let mut value = counter.accumulated.load(Ordering::Acquire);
+    let running = counter.run_state.lock().running();
+    if !account_source
+        && running.is_some_and(|lease| lease.owner().as_usize() == ax_hal::percpu::this_cpu_id())
+    {
+        value = value.saturating_add(if counter.programmable_index() == source_slot {
+            0
+        } else {
+            counter.counter.read()
+        });
+    }
+    let mut time_enabled = counter.time_enabled_ns.load(Ordering::Acquire);
+    let mut time_running = counter.time_running_ns.load(Ordering::Acquire);
+    if running.is_some() {
+        let elapsed = now.saturating_sub(counter.last_in_ns.load(Ordering::Acquire));
+        time_enabled = time_enabled.saturating_add(elapsed);
+        time_running = time_running.saturating_add(elapsed);
+    }
+    SampleReadValue {
+        value,
+        time_enabled,
+        time_running,
+        lost: counter.loss.total(),
     }
 }

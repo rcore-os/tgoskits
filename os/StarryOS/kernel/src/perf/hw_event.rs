@@ -60,11 +60,56 @@ use super::{
     inheritance::PerfInheritanceFamily,
     output::{PerfOutputScope, PerfRingOutput},
     rdpmc::{RdpmcMapping, RdpmcSnapshot, mapping_result},
-    sampling::{SampleOutput, SampleSlot, SampleSlotConfig},
+    sampling::{
+        MAX_SAMPLE_READ_EVENTS, SampleOutput, SampleReadEntry, SampleReadValue, SampleSlot,
+        SampleSlotConfig,
+    },
     sampling_lifecycle::SampleRegistration,
 };
 #[cfg(target_arch = "aarch64")]
+use super::task::PerTaskCounter;
+#[cfg(target_arch = "aarch64")]
 use crate::sync::Mutex;
+
+#[cfg(target_arch = "aarch64")]
+fn system_sampling_snapshot(sampling: &SamplingState, now: u64) -> SampleReadValue {
+    let mut time_enabled = sampling.time_enabled_ns.load(Ordering::Acquire);
+    let mut time_running = sampling.time_running_ns.load(Ordering::Acquire);
+    let enabled_at = sampling.enabled_at_ns.load(Ordering::Acquire);
+    if enabled_at != 0 {
+        let elapsed = now.saturating_sub(enabled_at);
+        time_enabled = time_enabled.saturating_add(elapsed);
+        time_running = time_running.saturating_add(elapsed);
+    }
+    SampleReadValue {
+        value: sampling.sample_count.load(Ordering::Acquire),
+        time_enabled,
+        time_running,
+        lost: sampling.loss.total(),
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn system_sample_read_irq(
+    context: *const (),
+    _source_slot: usize,
+    now: u64,
+    period: u32,
+    account_source: bool,
+) -> SampleReadValue {
+    // SAFETY: the system event retains its state until synchronous unregister.
+    let state = unsafe { &*context.cast::<HwPerfEventState>() };
+    let sampling = state
+        .sampling
+        .as_ref()
+        .expect("sampling callback belongs to sampling state");
+    if account_source {
+        sampling
+            .sample_count
+            .fetch_add(period as u64, Ordering::AcqRel);
+    }
+    system_sampling_snapshot(sampling, now)
+}
 
 /// Dynamically-assigned `perf_event_attr.type` for the ARM PMUv3 CPU PMU,
 /// exposed at `/sys/bus/event_source/devices/armv8_pmuv3_0/type`.
@@ -149,6 +194,13 @@ pub(super) struct TaskEventInit {
 
 #[cfg(target_arch = "aarch64")]
 impl HwPerfEventState {
+    fn system_sample_read_entry(&self) -> SampleReadEntry {
+        SampleReadEntry::new(
+            core::ptr::from_ref(self).cast(),
+            system_sample_read_irq,
+            self.sample_id,
+        )
+    }
     fn system_rdpmc_snapshot(&self, offset: u64, observed_at: u64) -> RdpmcSnapshot {
         let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
         if let Some(since) = self.enabled_since {
@@ -276,6 +328,12 @@ impl HwPerfEventState {
                 return Err(crate::StarryError::BadState);
             };
             let period = sampling.period;
+            let mut read_entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
+            read_entries[0] = self.system_sample_read_entry();
+            sampling.enabled_at_ns.store(
+                ax_runtime::hal::time::monotonic_time_nanos(),
+                Ordering::Release,
+            );
             let (ring, redirected) = sampling
                 .output
                 .effective()
@@ -289,6 +347,9 @@ impl HwPerfEventState {
                         period,
                         sample_type: sampling.sample_type,
                         id: self.sample_id,
+                        read_format: self.read_format,
+                        read_entries,
+                        read_len: 1,
                         observer: sampling.observer,
                         owner_ids: None,
                         freq: sampling.freq,
@@ -334,6 +395,14 @@ impl HwPerfEventState {
         let elapsed = stopped.stopped_at.saturating_sub(since);
         self.time_enabled = self.time_enabled.saturating_add(elapsed);
         self.time_running = self.time_running.saturating_add(elapsed);
+        if let Some(sampling) = &self.sampling {
+            let since = sampling.enabled_at_ns.swap(0, Ordering::AcqRel);
+            if since != 0 {
+                let elapsed = stopped.stopped_at.saturating_sub(since);
+                sampling.time_enabled_ns.fetch_add(elapsed, Ordering::AcqRel);
+                sampling.time_running_ns.fetch_add(elapsed, Ordering::AcqRel);
+            }
+        }
         self.rdpmc
             .publish_inactive(self.system_rdpmc_snapshot(stopped.value, stopped.stopped_at));
         Ok(())
@@ -351,6 +420,9 @@ impl HwPerfEventState {
                 sampling_period: self.sampling.as_ref().map(|sampling| sampling.period),
             },
         )?;
+        if let Some(sampling) = &self.sampling {
+            sampling.sample_count.store(0, Ordering::Release);
+        }
         let snapshot = self.system_rdpmc_snapshot(0, ax_runtime::hal::time::monotonic_time_nanos());
         if self.enabled_since.is_some() {
             self.rdpmc.publish_active(snapshot);
@@ -373,6 +445,19 @@ impl HwPerfEventState {
             });
         }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
+        if let Some(sampling) = &self.sampling {
+            let snapshot = system_sampling_snapshot(
+                sampling,
+                ax_runtime::hal::time::monotonic_time_nanos(),
+            );
+            return Ok(PerfReadValues {
+                value: snapshot.value,
+                time_enabled: snapshot.time_enabled,
+                time_running: snapshot.time_running,
+                lost: snapshot.lost,
+                read_format: self.read_format,
+            });
+        }
         let snapshot = cpu_worker::read_system(
             owner,
             SystemPmuRead {
@@ -781,6 +866,21 @@ impl PerfEventOps for HwPerfEvent {
 
     fn set_sample_id(&mut self, id: u64) {
         self.control.state.lock().set_sample_id(id);
+    }
+
+    fn link_group(&mut self, leader: &mut dyn PerfEventOps) -> crate::StarryResult<()> {
+        let Some(leader) = leader.as_any_mut().downcast_mut::<HwPerfEvent>() else {
+            return Ok(());
+        };
+        let leader_family = leader.control.state.lock().per_task.clone();
+        let member_family = self.control.state.lock().per_task.clone();
+        match (leader_family, member_family) {
+            (Some(leader), Some(member)) => {
+                PerTaskCounter::link_group(&leader.root(), &member.root())
+            }
+            (None, None) => Ok(()),
+            _ => Err(crate::StarryError::InvalidInput),
+        }
     }
 
     fn device_mmap(

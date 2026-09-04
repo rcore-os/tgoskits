@@ -203,18 +203,23 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// the events sharing one ring (`perf record -e a,b`). Default no-op: the
     /// tracing variants emit no hardware samples.
     fn set_sample_id(&mut self, _id: u64) {}
+
+    /// Connects a backend to an already validated file-layer group leader.
+    fn link_group(&mut self, _leader: &mut dyn PerfEventOps) -> StarryResult<()> {
+        Ok(())
+    }
 }
 
 /// `read_format` bit selecting `time_enabled` in `read(perf_fd)`.
-const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1 << 0;
+pub(crate) const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1 << 0;
 /// `read_format` bit selecting `time_running` in `read(perf_fd)`.
-const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
+pub(crate) const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
 /// `read_format` bit selecting the per-event `id` in `read(perf_fd)`.
-const PERF_FORMAT_ID: u64 = 1 << 2;
+pub(crate) const PERF_FORMAT_ID: u64 = 1 << 2;
 /// `read_format` bit selecting a leader-first group snapshot.
-const PERF_FORMAT_GROUP: u64 = 1 << 3;
+pub(crate) const PERF_FORMAT_GROUP: u64 = 1 << 3;
 /// `read_format` bit selecting a per-event lost-sample count.
-const PERF_FORMAT_LOST: u64 = 1 << 4;
+pub(crate) const PERF_FORMAT_LOST: u64 = 1 << 4;
 
 /// Counter snapshot returned by [`PerfEventOps::read_values`].
 ///
@@ -622,9 +627,9 @@ impl FileLike for PerfEvent {
         let req = PerfEventIoc::try_from(cmd).map_err(|_| StarryError::InvalidInput)?;
         match req {
             PerfEventIoc::Enable => {
-                self.set_enabled(true)?;
-                if let Err(error) = self.propagate_members(true) {
-                    let _ = self.set_enabled(false);
+                self.propagate_members(true)?;
+                if let Err(error) = self.set_enabled(true) {
+                    let _ = self.propagate_members(false);
                     return Err(error);
                 }
             }
@@ -806,7 +811,12 @@ pub fn perf_event_open(
             {
                 return Err(StarryError::InvalidInput);
             }
-            perf_event.set_enabled(false)?;
+            {
+                let mut leader_backend = leader.event.lock();
+                let mut member_backend = perf_event.event.lock();
+                member_backend.link_group(&mut **leader_backend)?;
+                member_backend.disable()?;
+            }
             *perf_event.group_leader.lock() = Some(Arc::downgrade(&leader));
             leader.members.lock().push(Arc::downgrade(&perf_event));
         }

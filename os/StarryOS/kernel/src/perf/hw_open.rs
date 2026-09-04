@@ -45,6 +45,12 @@ pub(super) fn validate_perf_event_open_hw(
         PerfTargetKind::Cpu => "sampling",
     };
     validate_sampling(attr, raw, is_freq, kind)?;
+    if attr.inherit() != 0
+        && attr.sample_type & sampling::PERF_SAMPLE_READ != 0
+        && attr.sample_type & sampling::PERF_SAMPLE_TID == 0
+    {
+        return Err(crate::StarryError::InvalidInput);
+    }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
     let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
@@ -153,6 +159,10 @@ pub(super) fn perf_event_open_hw(
             poll_alive,
             output: PerfOutputRoute::new(),
             loss: Arc::new(sampling::LossState::new()),
+            sample_count: core::sync::atomic::AtomicU64::new(0),
+            enabled_at_ns: core::sync::atomic::AtomicU64::new(0),
+            time_enabled_ns: core::sync::atomic::AtomicU64::new(0),
+            time_running_ns: core::sync::atomic::AtomicU64::new(0),
         }
     });
 
