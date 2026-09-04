@@ -41,7 +41,7 @@ pub(super) struct OwnerDispatchCommit {
 }
 
 impl OwnerDispatchCommit {
-    const NONE: Self = Self { overrun_work: None };
+    pub(super) const NONE: Self = Self { overrun_work: None };
 
     pub(super) const fn has_deferred_task_lock_work(&self) -> bool {
         self.overrun_work.is_some()

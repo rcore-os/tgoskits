@@ -10,7 +10,6 @@ pub(crate) struct SwitchHandoff {
     incoming_policy: SchedulePolicy,
     previous_disposition: PreviousSwitchDisposition,
     route: SwitchRoute,
-    rq_state: SwitchRqState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,20 +20,14 @@ pub(crate) enum PreviousSwitchDisposition {
 
 #[derive(Debug)]
 enum SwitchRoute {
-    Local,
+    Local { rq_baton: Option<RqSwitchBaton> },
     Migration(PreparedMigrationDelivery),
 }
 
-#[derive(Debug)]
-enum SwitchRqState {
-    Released,
-    Retained(RqSwitchBaton),
-}
-
-pub(crate) struct CompletedSwitchHandoff {
+pub(crate) struct CompletedMigrationSwitchHandoff {
     pub(crate) incoming: SchedulerThreadRef,
     pub(crate) incoming_policy: SchedulePolicy,
-    pub(crate) migration: Option<PreparedMigrationDelivery>,
+    pub(crate) migration: PreparedMigrationDelivery,
     pub(crate) reclaim_ready: bool,
     pub(crate) previous_exited: bool,
 }
@@ -54,31 +47,31 @@ impl SwitchHandoff {
             previous_disposition,
             route: match migration {
                 Some(migration) => SwitchRoute::Migration(migration),
-                None => SwitchRoute::Local,
+                None => SwitchRoute::Local { rq_baton: None },
             },
-            rq_state: SwitchRqState::Released,
         }
     }
 
     pub(crate) fn install_rq_baton(&mut self, baton: RqSwitchBaton) -> Result<(), TaskError> {
-        if !matches!(self.route, SwitchRoute::Local)
-            || !matches!(self.rq_state, SwitchRqState::Released)
-        {
-            return Err(TaskError::InvalidConfiguration);
+        match &mut self.route {
+            SwitchRoute::Local { rq_baton } if rq_baton.is_none() => {
+                *rq_baton = Some(baton);
+                Ok(())
+            }
+            SwitchRoute::Local { .. } | SwitchRoute::Migration(_) => {
+                Err(TaskError::InvalidConfiguration)
+            }
         }
-        self.rq_state = SwitchRqState::Retained(baton);
-        Ok(())
     }
 
     pub(crate) fn has_rq_baton(&self) -> bool {
-        matches!(self.rq_state, SwitchRqState::Retained(_))
+        matches!(self.route, SwitchRoute::Local { rq_baton: Some(_) })
     }
 
-    pub(crate) fn take_rq_baton(&mut self) -> Option<RqSwitchBaton> {
-        let rq_state = core::mem::replace(&mut self.rq_state, SwitchRqState::Released);
-        match rq_state {
-            SwitchRqState::Released => None,
-            SwitchRqState::Retained(baton) => Some(baton),
+    pub(crate) fn take_local_rq_baton(&mut self) -> Result<Option<RqSwitchBaton>, TaskError> {
+        match &mut self.route {
+            SwitchRoute::Local { rq_baton } => Ok(rq_baton.take()),
+            SwitchRoute::Migration(_) => Err(TaskError::InvalidConfiguration),
         }
     }
 
@@ -90,9 +83,17 @@ impl SwitchHandoff {
         self.incoming.as_ref()
     }
 
+    pub(crate) const fn incoming_ref(&self) -> SchedulerThreadRef {
+        self.incoming
+    }
+
+    pub(crate) const fn incoming_policy(&self) -> SchedulePolicy {
+        self.incoming_policy
+    }
+
     pub(crate) fn migration_target(&self) -> Option<CpuId> {
         match &self.route {
-            SwitchRoute::Local => None,
+            SwitchRoute::Local { .. } => None,
             SwitchRoute::Migration(migration) => Some(migration.target()),
         }
     }
@@ -102,26 +103,25 @@ impl SwitchHandoff {
     }
 
     #[inline(always)]
-    pub(crate) fn complete(self, reclaim_ready: bool) -> Result<CompletedSwitchHandoff, TaskError> {
+    pub(crate) fn complete_migration(
+        self,
+        reclaim_ready: bool,
+    ) -> Result<CompletedMigrationSwitchHandoff, TaskError> {
         let SwitchHandoff {
             previous,
             incoming,
             incoming_policy,
             previous_disposition,
             route,
-            rq_state,
         } = self;
-        if !matches!(rq_state, SwitchRqState::Released) {
+        let SwitchRoute::Migration(migration) = route else {
             return Err(TaskError::InvalidConfiguration);
-        }
+        };
         drop(previous);
-        Ok(CompletedSwitchHandoff {
+        Ok(CompletedMigrationSwitchHandoff {
             incoming,
             incoming_policy,
-            migration: match route {
-                SwitchRoute::Local => None,
-                SwitchRoute::Migration(migration) => Some(migration),
-            },
+            migration,
             reclaim_ready,
             previous_exited: matches!(previous_disposition, PreviousSwitchDisposition::Exited),
         })

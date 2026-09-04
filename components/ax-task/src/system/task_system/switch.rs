@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::{
+    LinkedRqTaskRef,
     scheduler::{PickTaskResult, RtEligibility},
     system::cpu::{PreviousSwitchDisposition, SwitchHandoff},
 };
@@ -154,6 +155,43 @@ impl TaskSystem {
             endpoint,
             policy,
             urgency,
+        }
+    }
+
+    /// Linux `yield_task_rt()` followed by `put_prev_task_rt()` after the
+    /// owner transaction has proved that current is a linked FIFO/RR task.
+    #[inline(always)]
+    pub(super) fn yield_linked_realtime_owner_rq(
+        &self,
+        transaction: &mut OwnerRqTxn<'_>,
+        thread: ThreadId,
+    ) -> OwnerRqScheduledOut {
+        let current = transaction.current().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1105, transaction.owner().as_u32() as usize)
+        });
+        debug_assert_eq!(current.thread(), thread);
+        let endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
+        });
+        let policy = current.schedule_policy();
+        debug_assert!(matches!(
+            policy,
+            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+        ));
+        let migration_capable = current.metadata().affinity.is_migration_capable();
+
+        // Pairs prior task accesses with publication of a different rq->curr.
+        crate::lock::smp_mb_after_spinlock();
+        transaction.yield_realtime_current(thread);
+        transaction.put_prev_realtime_task(thread, migration_capable);
+        let core = transaction.current_core().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
+        });
+        OwnerRqScheduledOut {
+            core,
+            endpoint,
+            policy,
+            urgency: policy.scheduling_urgency(),
         }
     }
 
@@ -704,10 +742,46 @@ impl TaskSystem {
         owner: CpuId,
         transaction: &mut OwnerRqTxn<'_>,
     ) -> OwnerNext {
-        let queued = transaction.pick_realtime_task().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1113, owner.as_u32() as usize)
+        let queued = transaction
+            .pick_realtime_task()
+            .unwrap_or_else(|| task_runtime::fatal_invariant(0x5343_1113, owner.as_u32() as usize));
+        self.install_owner_realtime_picked_in_rq(owner, transaction, queued)
+    }
+
+    /// Installs one RT selection without rebuilding the generic class result.
+    #[inline(always)]
+    fn install_owner_realtime_picked_in_rq(
+        &self,
+        owner: CpuId,
+        transaction: &mut OwnerRqTxn<'_>,
+        queued: LinkedRqTaskRef,
+    ) -> OwnerNext {
+        transaction.set_next_realtime_task(queued);
+        let (thread, policy) = {
+            let linked = queued.thread();
+            (linked.id, linked.policy())
+        };
+        if transaction.has_pushable_class_tasks(SchedulingClass::Realtime) {
+            self.root_domain
+                .start_rt_deadline_push_from(RootDomainPushClass::Realtime, owner);
+        }
+        queued
+            .thread()
+            .core
+            .sched()
+            .placement()
+            .set_next_task(owner);
+        transaction.set_linked_task_current(queued, transaction.clock().task());
+        let current = transaction.current_core_ref().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1113, thread.as_u64() as usize)
         });
-        self.install_owner_picked_in_rq(owner, transaction, PickedThread::Linked(queued))
+        // SAFETY: the selected RT node remains rq-owned through switch tail.
+        let core = unsafe { SchedulerThreadRef::from_scheduler_owned(current) };
+        OwnerNext {
+            core,
+            policy,
+            urgency: policy.scheduling_urgency(),
+        }
     }
 
     /// Installs one class-owned selection as Linux's `set_next_task()` result.

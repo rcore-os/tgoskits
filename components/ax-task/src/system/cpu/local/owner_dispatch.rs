@@ -162,6 +162,19 @@ impl CpuLocal {
         self.dispatch_state_mut().switch_handoff.take()
     }
 
+    pub(crate) fn switch_handoff_mut(self: Pin<&mut Self>) -> Option<&mut SwitchHandoff> {
+        self.dispatch_state_mut().switch_handoff.as_mut()
+    }
+
+    pub(crate) fn clear_switch_handoff(self: Pin<&mut Self>) -> Result<(), TaskError> {
+        let handoff = &mut self.dispatch_state_mut().switch_handoff;
+        if handoff.is_none() {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        *handoff = None;
+        Ok(())
+    }
+
     pub(crate) fn switch_handoff(&self) -> Option<&SwitchHandoff> {
         self.dispatch.switch_handoff.as_ref()
     }

@@ -674,6 +674,11 @@ impl<'a> OwnerRqTxn<'a> {
         self.scheduler_queue_mut().set_next_task(picked);
     }
 
+    #[inline(always)]
+    pub(crate) fn set_next_realtime_task(&mut self, picked: LinkedRqTaskRef) {
+        self.scheduler_queue_mut().set_next_realtime_task(picked);
+    }
+
     pub(crate) fn update_thread_affinity(&mut self, thread: ThreadId, affinity: Arc<CpuSet>) {
         if !self
             .run_queue_mut()
@@ -792,11 +797,7 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn set_linked_task_current(
-        &mut self,
-        linked: LinkedRqTaskRef,
-        now: RqTaskTime,
-    ) {
+    pub(crate) fn set_linked_task_current(&mut self, linked: LinkedRqTaskRef, now: RqTaskTime) {
         if self.current().is_some() {
             self.run_queue_mut().replace_linked_current(linked, now);
         } else {
@@ -974,6 +975,31 @@ impl<'a> OwnerRqTxn<'a> {
             )
         };
         self.charge_current_for_policy(runtime_ns, reclaimed_ns, current_policy)
+    }
+
+    /// Linux `update_curr_rt()` for a current already proved to be FIFO/RR.
+    #[inline(always)]
+    pub(crate) fn settle_fixed_realtime_current(&mut self) {
+        let now_ns = self.clock.task().as_nanos();
+        let runtime_ns = self
+            .current()
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5251_1002, self.remote.owner().as_u32() as usize)
+            })
+            .unaccounted_runtime(now_ns);
+        let (charge, rt_quota_exempt) = self
+            .scheduler_queue_mut()
+            .charge_fixed_realtime_current(runtime_ns, now_ns);
+        debug_assert_eq!(charge, DispatchCharge::default());
+        let _ = self.apply_current_update(
+            runtime_ns,
+            RqCurrentUpdate::Task {
+                charge,
+                reschedule: None,
+                realtime: true,
+                rt_quota_exempt,
+            },
+        );
     }
 
     pub(crate) fn task_tick_current_until(

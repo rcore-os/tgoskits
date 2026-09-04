@@ -1176,8 +1176,17 @@ impl TaskSystem {
         let qperf_phase_started_ns = task_runtime::monotonic_now().as_nanos();
         let now_ns = transaction.clock().wall().as_nanos();
         let previous = transaction.current_thread();
-        let _settled = transaction.settle_current(0);
-        let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
+        let linked_realtime_thread = match &schedule_out {
+            OwnerRqScheduleOut::LinkedRealtime { thread } => Some(*thread),
+            OwnerRqScheduleOut::Idle { .. } | OwnerRqScheduleOut::Unlinked { .. } => None,
+        };
+        let dispatch_commit = if linked_realtime_thread.is_some() {
+            transaction.settle_fixed_realtime_current();
+            OwnerDispatchCommit::NONE
+        } else {
+            let _settled = transaction.settle_current(0);
+            self.sync_owner_settled_current_dispatch_in_rq(&mut transaction)
+        };
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
         #[cfg(feature = "qperf-metrics")]
         let qperf_account_finished_ns = task_runtime::monotonic_now().as_nanos();
@@ -1192,7 +1201,14 @@ impl TaskSystem {
             endpoint: previous_endpoint,
             policy: previous_policy,
             urgency: previous_urgency,
-        } = self.schedule_out_owner_rq_owned(&mut transaction, schedule_out, EnqueueReason::Yield);
+        } = match linked_realtime_thread {
+            Some(thread) => self.yield_linked_realtime_owner_rq(&mut transaction, thread),
+            None => self.schedule_out_owner_rq_owned(
+                &mut transaction,
+                schedule_out,
+                EnqueueReason::Yield,
+            ),
+        };
         #[cfg(feature = "qperf-metrics")]
         let qperf_put_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
         #[cfg(feature = "qperf-metrics")]
@@ -1203,10 +1219,8 @@ impl TaskSystem {
         );
         let next = if SchedulerClass::for_policy(previous_policy) == SchedulerClass::Realtime
             && !transaction.rt_is_effectively_throttled()
-            && !transaction.has_selectable_higher_class(
-                SchedulerClass::Realtime,
-                RtEligibility::Runnable,
-            )
+            && !transaction
+                .has_selectable_higher_class(SchedulerClass::Realtime, RtEligibility::Runnable)
         {
             // `yield_task_rt()` has just rotated the retained current node.
             // With the static higher-class prefix proved empty, Linux enters

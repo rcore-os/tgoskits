@@ -135,4 +135,17 @@ impl RunQueue {
             self.refresh_class_pushable(picked.id(), Some(picked.id()));
         }
     }
+
+    /// Linux `set_next_task_rt()` after RT class selection retained its node.
+    #[inline(always)]
+    pub(crate) fn set_next_realtime_task(&mut self, picked: LinkedRqTaskRef) {
+        let thread = picked.thread();
+        debug_assert!(matches!(
+            thread.policy(),
+            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+        ));
+        if thread.metadata.affinity.is_migration_capable() {
+            self.refresh_class_pushable(thread.id, Some(thread.id));
+        }
+    }
 }

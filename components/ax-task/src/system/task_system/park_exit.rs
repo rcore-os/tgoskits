@@ -929,6 +929,9 @@ impl TaskSystem {
             return Ok(SwitchInCompletion::NONE);
         };
         let owner = cpu.owner();
+        // SAFETY: this owner-only switch tail retains the pinned CPU-local
+        // capability until every derived rq transaction is complete.
+        let remote = unsafe { cpu.as_ref().get_ref().remote_for_owner() };
         let previous_id = initial_handoff.previous().id();
         let migration_target = initial_handoff.migration_target();
         debug_assert_ne!(previous_id, initial_handoff.incoming().id());
@@ -953,7 +956,7 @@ impl TaskSystem {
             // SAFETY: propagated from this method's selected entry contract.
             let sched = unsafe { rq_entry.lock_thread_sched(initial_handoff.previous().sched()) };
             // SAFETY: propagated from this method's selected entry contract.
-            let transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
+            let transaction = unsafe { rq_entry.begin(self, remote) };
             let validation = self.validate_switch_handoff_state(
                 owner,
                 transaction.deadline_bandwidth(),
@@ -967,21 +970,80 @@ impl TaskSystem {
         let reclaim_ready = task_runtime::finish_context_switch_tail();
         #[cfg(feature = "qperf-metrics")]
         let qperf_owner_runtime_publish_finished_ns = task_runtime::monotonic_now().as_nanos();
+        if migration_target.is_none() {
+            // Linux's ordinary `finish_task_switch()` consumes only the local
+            // previous-task and rq-lock state. Keep that state in its
+            // CPU-local slot so the hot path never moves the much wider remote
+            // migration reservation through the scheduler stack.
+            let handoff = cpu.as_mut().switch_handoff_mut().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5357_0003, previous_id.as_u64() as usize)
+            });
+            let rq_baton = handoff.take_local_rq_baton().unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5357_0006, previous_id.as_u64() as usize)
+            });
+            handoff.previous().sched().placement().finish_task(owner);
+            if let Some(baton) = rq_baton {
+                if baton.finish(owner).is_err() {
+                    task_runtime::fatal_invariant(0x5357_0005, previous_id.as_u64() as usize);
+                }
+            } else {
+                // SAFETY: propagated from this method's selected entry contract.
+                let transaction = unsafe { rq_entry.begin(self, remote) };
+                transaction.commit();
+            }
+            let incoming = handoff.incoming_ref();
+            let incoming_policy = handoff.incoming_policy();
+            let previous_exited = handoff.previous_exited();
+            #[cfg(feature = "qperf-metrics")]
+            let qperf_owner_finish_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
+            #[cfg(feature = "qperf-metrics")]
+            crate::metrics::qperf_record_switch_scheduler_detail(
+                24,
+                qperf_owner_runtime_publish_finished_ns,
+                qperf_owner_finish_prev_finished_ns,
+            );
+            cpu.as_mut().clear_switch_handoff().unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5357_0004, previous_id.as_u64() as usize)
+            });
+            #[cfg(feature = "qperf-metrics")]
+            let qperf_owner_consume_handoff_finished_ns = task_runtime::monotonic_now().as_nanos();
+            #[cfg(feature = "qperf-metrics")]
+            crate::metrics::qperf_record_switch_scheduler_detail(
+                25,
+                qperf_owner_finish_prev_finished_ns,
+                qperf_owner_consume_handoff_finished_ns,
+            );
+            if reclaim_ready {
+                self.publish_resource_release_ready();
+            }
+            if previous_exited {
+                self.task_work.publish();
+            }
+            #[cfg(feature = "qperf-metrics")]
+            crate::metrics::qperf_record_switch_phase_owner_tail(
+                qperf_owner_runtime_publish_finished_ns,
+                task_runtime::monotonic_now().as_nanos(),
+            );
+            return Ok(SwitchInCompletion::for_core(
+                incoming.as_ref(),
+                incoming_policy,
+            ));
+        }
         // The architecture switch is now irreversible. Move the one owner
         // token out of the CPU-local slot and consume that exact state through
-        // the remainder of the tail; no post-switch path may rediscover or
-        // revalidate a second mutable identity.
-        let mut handoff = cpu.as_mut().take_switch_handoff().unwrap_or_else(|| {
+        // the migration tail; no post-switch path may rediscover or revalidate
+        // a second mutable identity.
+        let handoff = cpu.as_mut().take_switch_handoff().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5357_0003, previous_id.as_u64() as usize)
         });
-        let affinity_completed = if migration_target.is_some() {
+        let affinity_completed = {
             let previous_core = Arc::clone(handoff.previous());
             let placement = previous_core.sched().placement();
 
             // SAFETY: propagated from this method's selected entry contract.
             let mut sched = unsafe { rq_entry.lock_thread_sched(previous_core.sched()) };
             // SAFETY: propagated from this method's selected entry contract.
-            let mut transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
+            let mut transaction = unsafe { rq_entry.begin(self, remote) };
 
             let validation = self.validate_switch_handoff_state(
                 owner,
@@ -1002,7 +1064,7 @@ impl TaskSystem {
                 Self::detach_owner_deadline_bandwidth_in_rq(
                     &previous_core,
                     &mut sched,
-                    cpu.remote(),
+                    remote,
                     &mut transaction,
                 );
             }
@@ -1017,30 +1079,6 @@ impl TaskSystem {
             let affinity_completed =
                 Self::complete_affinity_if_satisfied_locked(&previous_core, &sched);
             affinity_completed
-        } else {
-            // Linux `finish_task_switch()` runs `finish_task(prev)` — the
-            // release-store of `prev->on_cpu` — while still holding
-            // `rq->lock`, and only then `finish_lock_switch()` drops it.
-            // Publishing the release inside the owner rq transaction keeps a
-            // concurrent owner transaction (policy update classification and
-            // re-link, wake, affinity reconcile) from observing `on_cpu`
-            // flipping mid-transaction. Like Linux, ordinary switch tail does
-            // not reopen `p->pi_lock`: remote affinity changes are serialized
-            // through the rq owner's inbox, while current-task changes request
-            // migration and rescheduling before reaching this tail.
-            if let Some(baton) = handoff.take_rq_baton() {
-                handoff.previous().sched().placement().finish_task(owner);
-                if baton.finish(owner).is_err() {
-                    task_runtime::fatal_invariant(0x5357_0005, previous_id.as_u64() as usize);
-                }
-            } else {
-                // SAFETY: propagated from this method's selected entry contract.
-                let transaction = unsafe { rq_entry.begin(self, cpu.remote()) };
-                handoff.previous().sched().placement().finish_task(owner);
-                transaction.commit();
-            }
-
-            false
         };
         #[cfg(feature = "qperf-metrics")]
         let qperf_owner_finish_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
@@ -1054,9 +1092,11 @@ impl TaskSystem {
         if affinity_completed {
             handoff.previous().notify_affinity_waiters();
         }
-        let completed = handoff.complete(reclaim_ready).unwrap_or_else(|_| {
-            task_runtime::fatal_invariant(0x5357_0004, previous_id.as_u64() as usize)
-        });
+        let completed = handoff
+            .complete_migration(reclaim_ready)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5357_0004, previous_id.as_u64() as usize)
+            });
         #[cfg(feature = "qperf-metrics")]
         let qperf_owner_consume_handoff_finished_ns = task_runtime::monotonic_now().as_nanos();
         #[cfg(feature = "qperf-metrics")]
@@ -1065,9 +1105,7 @@ impl TaskSystem {
             qperf_owner_finish_prev_finished_ns,
             qperf_owner_consume_handoff_finished_ns,
         );
-        if let Some(migration) = completed.migration {
-            migration.commit();
-        }
+        completed.migration.commit();
         if completed.reclaim_ready {
             self.publish_resource_release_ready();
         }
