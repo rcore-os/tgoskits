@@ -85,10 +85,14 @@ impl TaskSystem {
             return Err(TaskError::InvalidConfiguration);
         }
         let next_handle = address_space.handle();
-        let binding = crate::runtime::ThreadRuntimeBinding::new(sched.runtime.context, next_handle);
+        let next_membarrier_state = task_runtime::address_space_membarrier_state(next_handle);
+        let binding = crate::runtime::ThreadRuntimeBinding::new(
+            sched.runtime.context,
+            next_handle,
+        );
         let remote = Arc::clone(cpu.remote());
         let mut transaction = OwnerRqTxn::begin(self, &remote);
-        transaction.update_current_runtime_binding(current, binding);
+        transaction.update_current_runtime_binding(current, binding, next_membarrier_state);
         let next = core::mem::replace(address_space, crate::runtime::AddressSpaceToken::NONE);
         transaction.commit();
         let previous = record.resources.replace_address_space(next);
@@ -124,7 +128,11 @@ impl TaskSystem {
         );
         let remote = Arc::clone(cpu.remote());
         let mut transaction = OwnerRqTxn::begin(self, &remote);
-        transaction.update_current_runtime_binding(current, binding);
+        transaction.update_current_runtime_binding(
+            current,
+            binding,
+            crate::runtime::AddressSpaceMembarrierState::NONE,
+        );
         let previous = record.resources.take_address_space();
         transaction.commit();
         sched.runtime.address_space = crate::runtime::AddressSpaceHandle::NONE;

@@ -615,7 +615,10 @@ impl CpuRunQueueState {
         if self.queue.current().is_some() {
             task_runtime::fatal_invariant(0x5251_0001, self.owner.as_u32() as usize);
         }
-        let task_membarrier_state = Self::state_for_address_space(current.address_space());
+        let task_membarrier_state = self.state_for_task(
+            current.runtime_core().membarrier_identity(),
+            current.address_space(),
+        );
         self.membarrier_state = crate::runtime::scheduled_membarrier_state(
             self.membarrier_state,
             task_membarrier_state,
@@ -624,12 +627,33 @@ impl CpuRunQueueState {
     }
 
     pub(crate) fn replace_linked_current(&mut self, current: CurrentDispatch) {
-        let task_membarrier_state = Self::state_for_address_space(current.address_space());
+        let task_membarrier_state = self.state_for_task(
+            current.runtime_core().membarrier_identity(),
+            current.address_space(),
+        );
         self.membarrier_state = crate::runtime::scheduled_membarrier_state(
             self.membarrier_state,
             task_membarrier_state,
         );
         self.queue.replace_linked_current(current);
+    }
+
+    fn state_for_task(
+        &self,
+        identity: crate::runtime::AddressSpaceMembarrierId,
+        address_space: crate::runtime::AddressSpaceHandle,
+    ) -> AddressSpaceMembarrierState {
+        if identity.is_none() {
+            return AddressSpaceMembarrierState::NONE;
+        }
+        if self.membarrier_state.identity() == identity {
+            return self.membarrier_state;
+        }
+        let state = Self::state_for_address_space(address_space);
+        if state.identity() != identity {
+            task_runtime::fatal_invariant(0x5251_0010, identity.into_raw());
+        }
+        state
     }
 
     fn state_for_address_space(
@@ -823,8 +847,8 @@ impl CpuRunQueueState {
         &mut self,
         thread: ThreadId,
         binding: crate::runtime::ThreadRuntimeBinding,
+        next_membarrier_state: AddressSpaceMembarrierState,
     ) -> Result<(), TaskError> {
-        let next_membarrier_state = Self::state_for_address_space(binding.address_space());
         let current = self
             .queue
             .current_mut()
@@ -833,6 +857,9 @@ impl CpuRunQueueState {
             return Err(TaskError::InvalidConfiguration);
         }
         current.update_runtime_binding(binding);
+        current
+            .runtime_core()
+            .publish_membarrier_identity(next_membarrier_state.identity());
         if self.membarrier_state.identity() != next_membarrier_state.identity() {
             // Linux pairs exit_mm()/exec's rq->curr mm transition with
             // membarrier's entry/exit barriers before user execution resumes.
@@ -848,8 +875,19 @@ impl CpuRunQueueState {
         metadata: RqTaskMetadata,
         rt_quota_exempt: bool,
     ) {
-        let next_membarrier_state =
-            Self::state_for_address_space(metadata.runtime_binding.address_space());
+        let next_membarrier_state = {
+            let current = self
+                .queue
+                .current()
+                .filter(|current| current.thread() == thread)
+                .unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5251_100d, thread.as_u64() as usize)
+                });
+            self.state_for_task(
+                current.runtime_core().membarrier_identity(),
+                metadata.runtime_binding.address_space(),
+            )
+        };
         let current = self
             .queue
             .current_mut()

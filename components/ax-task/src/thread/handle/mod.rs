@@ -19,7 +19,7 @@ use crate::{
     ThreadAffinityCompletion, ThreadExtensionView, ThreadId, ThreadLifecycle, ThreadSchedCell,
     ThreadState, WakePublication,
     inbox::{InboxKind, InboxNode},
-    runtime::{PreemptGuardToken, task_runtime},
+    runtime::{AddressSpaceMembarrierId, PreemptGuardToken, task_runtime},
     task_work::TaskWorkDoorbell,
     timer::TaskDeadlineNode,
 };
@@ -442,6 +442,9 @@ impl ThreadReapSignal {
 pub(crate) struct ThreadCore {
     id: ThreadId,
     sched: Arc<ThreadSchedCell>,
+    // Stable `mm` identity. Registration bits remain rq-owned and are
+    // refreshed explicitly by the membarrier synchronization protocol.
+    membarrier_identity: AtomicUsize,
     runqueue_nodes: RunQueueNodeStorage,
     pi_wait_nodes: PiWaitNodeStorage,
     // Immutable after publication. Every handle retaining this copy also pins
@@ -491,6 +494,7 @@ impl ThreadCore {
         extension: Option<ThreadExtensionView>,
         scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
         scheduler_tick_work: Option<SchedulerTickWork>,
+        membarrier_identity: AddressSpaceMembarrierId,
         task_work: Option<Arc<TaskWorkDoorbell>>,
     ) -> Self {
         debug_assert_eq!(id, sched.id());
@@ -499,6 +503,7 @@ impl ThreadCore {
         Self {
             id,
             sched,
+            membarrier_identity: AtomicUsize::new(membarrier_identity.into_raw()),
             runqueue_nodes: RunQueueNodeStorage::new(),
             pi_wait_nodes: PiWaitNodeStorage::new(),
             extension,
@@ -545,6 +550,19 @@ impl ThreadCore {
 
     pub(crate) const fn pi_wait_nodes(&self) -> &PiWaitNodeStorage {
         &self.pi_wait_nodes
+    }
+
+    pub(crate) fn membarrier_identity(&self) -> AddressSpaceMembarrierId {
+        let raw = self.membarrier_identity.load(Ordering::Acquire);
+        // SAFETY: the thread's runtime resources keep the corresponding
+        // address-space generation alive until this value is replaced inside
+        // the owner-rq address-space transition.
+        unsafe { AddressSpaceMembarrierId::from_raw(raw) }
+    }
+
+    pub(crate) fn publish_membarrier_identity(&self, identity: AddressSpaceMembarrierId) {
+        self.membarrier_identity
+            .store(identity.into_raw(), Ordering::Release);
     }
 
     /// Mutates lockdep state owned by this currently executing thread.

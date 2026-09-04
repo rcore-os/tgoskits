@@ -430,9 +430,10 @@ impl<'a> OwnerRqTxn<'a> {
         &mut self,
         thread: ThreadId,
         binding: crate::runtime::ThreadRuntimeBinding,
+        membarrier_state: crate::runtime::AddressSpaceMembarrierState,
     ) {
         self.run_queue_mut()
-            .update_current_runtime_binding(thread, binding)
+            .update_current_runtime_binding(thread, binding, membarrier_state)
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5251_1003, thread.as_u64() as usize)
             });

@@ -97,6 +97,12 @@ impl TaskSystem {
         let scheduler_tick_work = extension
             .as_ref()
             .and_then(ThreadExtension::scheduler_tick_work);
+        let address_space = resources.address_space();
+        let membarrier_identity = if address_space.is_none() {
+            crate::runtime::AddressSpaceMembarrierId::NONE
+        } else {
+            task_runtime::address_space_membarrier_state(address_space).identity()
+        };
         let sched = Arc::new(ThreadSchedCell::new(
             id,
             ThreadSchedInit {
@@ -111,7 +117,7 @@ impl TaskSystem {
                 },
                 runtime: ThreadRuntimeInit {
                     context: resources.context(),
-                    address_space: resources.address_space(),
+                    address_space,
                 },
             },
         ));
@@ -122,6 +128,7 @@ impl TaskSystem {
             switch_extension,
             scheduler_tick_cpu_time,
             scheduler_tick_work,
+            membarrier_identity,
             Some(Arc::clone(&self.task_work)),
         ));
         let record = ThreadRecord {
