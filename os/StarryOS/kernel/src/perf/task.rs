@@ -52,14 +52,10 @@
 //! is exactly the M2 [`super::sampling::pmu_overflow_handler`] — nothing here
 //! runs in IRQ context except via the registered slot.
 //!
-//! ## Scope / deferrals
-//!
-//! Single-core M2 scope: no counter multiplexing (so `time_running ==
-//! time_enabled`), no cross-core migration. Sampling supports both fixed-period
-//! (`-c <period>`) and frequency mode (`-F`, `sample_freq`); in frequency mode
-//! the overflow handler adapts the period per slice toward the target rate.
-//! `attr.inherit` (following `fork`/`clone` children) is deferred: the counter
-//! follows the single attached task only.
+//! Task events acquire counters from the CPU on which the task actually runs;
+//! migration therefore releases the old CPU's slot before a later sched-in
+//! allocates from the new CPU. The local timer rotates flexible events when a
+//! task has more enabled events than available programmable counters.
 
 use alloc::{
     string::String,
@@ -77,13 +73,12 @@ use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::{
-    hw,
     sampling::{self, SampleSlot},
     sideband::{self, Mmap2Info, SidebandTarget},
 };
 use crate::{
     sync::IrqMutex,
-    task::{PidIdentity, PidNamespaceId, TgidNumber, Thread, TidNumber},
+    task::{AsThread, PidIdentity, PidNamespaceId, TgidNumber, Thread, TidNumber},
 };
 
 // `PROT_*` / `MAP_*` values for the `prot`/`flags` fields of MMAP2 records.
@@ -99,6 +94,9 @@ const MAP_PRIVATE: u32 = 2;
 /// is released). The scheduler hooks early-return while this is `0`, so an
 /// idle perf subsystem costs one relaxed atomic load per context switch.
 static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// [`PerTaskCounter::slot`] sentinel: no programmable counter is held.
+const NO_SLOT: usize = usize::MAX;
 
 /// A hardware counter bound to one specific task.
 ///
@@ -120,11 +118,15 @@ static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 /// sched-out time; [`PerTaskCounter::accumulated`] sums those deltas.
 #[derive(Debug)]
 pub struct PerTaskCounter {
-    /// Programmable PMU counter index (`0..num_counters`) reserved from the M1
-    /// allocator. Per-task events never use the dedicated cycle counter.
-    n: usize,
-    /// ARM PMUv3 event number programmed into `PMEVTYPERn_EL0`.
-    event: u16,
+    /// Programmable PMU counter index on [`Self::last_cpu`], or [`NO_SLOT`].
+    /// Slots are acquired and released within one scheduling/multiplexing slice.
+    slot: AtomicUsize,
+    /// Last CPU on which this event entered the task context.
+    last_cpu: AtomicUsize,
+    /// Optional CPU constraint from `perf_event_open(pid, cpu, ...)`.
+    cpu_filter: Option<usize>,
+    /// Generic/raw/cache request resolved against each scheduling CPU.
+    event: super::hw::PmuEventSpec,
     /// `attr.exclude_user`: do not count EL0 (`PMEVTYPERn_EL0.U`).
     exclude_user: bool,
     /// `attr.exclude_kernel`: do not count EL1 (`PMEVTYPERn_EL0.P`).
@@ -134,9 +136,14 @@ pub struct PerTaskCounter {
     /// `attr.enable_on_exec`: start counting only when the attached task
     /// `execve`s a new image (consumed by [`on_exec`]).
     enable_on_exec: bool,
+    /// `attr.pinned`: a scheduling failure moves the event to Linux's ERROR
+    /// state until userspace disables and enables it again.
+    pinned: bool,
 
     /// Userspace wants this event counting (see the struct-level state machine).
     enabled: AtomicBool,
+    /// The target task is currently executing in an eligible CPU context.
+    on_cpu: AtomicBool,
     /// The event is programmed onto HW right now (target task is running).
     running: AtomicBool,
     /// Sum of completed-slice deltas (raw event count).
@@ -146,12 +153,14 @@ pub struct PerTaskCounter {
     /// Accumulated running time across past windows (ns). Equal to
     /// `time_enabled_ns` with no multiplexing.
     time_running_ns: AtomicU64,
-    /// Monotonic ns timestamp of the last [`perf_sched_in`] (live slice start).
-    last_in_ns: AtomicU64,
+    /// Monotonic ns timestamp of the current hardware-running sub-slice.
+    run_since_ns: AtomicU64,
     /// Monotonic ns timestamp at which the event last became `enabled`.
     /// Unused for the no-multiplexing timing math but kept for parity with the
     /// system-wide path and future multiplexing accounting.
     enabled_at_ns: AtomicU64,
+    /// Pinned scheduling failure. Linux exposes this as EOF from `read()`.
+    scheduling_error: AtomicBool,
     /// The attached task has exited: the hooks must stop touching HW for it.
     dead: AtomicBool,
     /// The HW counter slot has been released back to the allocator. Guards
@@ -266,10 +275,10 @@ impl core::fmt::Debug for SamplingAnchors {
 /// is `0`; for a sampling event it is the fixed `-c` period and `sample_type` is
 /// `PERF_SAMPLE_IP`.
 pub struct PerTaskConfig {
-    /// Reserved programmable PMU counter index.
-    pub n: usize,
-    /// ARM PMUv3 event number.
-    pub event: u16,
+    /// Optional CPU constraint from `perf_event_open`.
+    pub cpu_filter: Option<usize>,
+    /// Generic/raw/cache event request.
+    pub event: super::hw::PmuEventSpec,
     /// `attr.exclude_user`.
     pub exclude_user: bool,
     /// `attr.exclude_kernel`.
@@ -280,6 +289,8 @@ pub struct PerTaskConfig {
     pub enabled: bool,
     /// `attr.enable_on_exec`.
     pub enable_on_exec: bool,
+    /// `attr.pinned`.
+    pub pinned: bool,
     /// Sampling period (`> 0` ⇒ sampling event); `0` ⇒ counting event. In
     /// frequency mode this is the initial estimate the overflow handler adapts.
     pub sample_period: u32,
@@ -305,26 +316,31 @@ pub struct PerTaskConfig {
 }
 
 impl PerTaskCounter {
-    /// Build a per-task counter around an already-reserved programmable slot `n`.
+    /// Build a per-task counter with no hardware slot initially assigned.
     ///
     /// The HW counter is *not* programmed here; it is configured + enabled lazily
     /// in [`perf_sched_in`] the next time the target task runs (or immediately
     /// from [`on_exec`] when the target is current during `execve`).
     pub fn new(cfg: PerTaskConfig) -> Self {
         PerTaskCounter {
-            n: cfg.n,
+            slot: AtomicUsize::new(NO_SLOT),
+            last_cpu: AtomicUsize::new(usize::MAX),
+            cpu_filter: cfg.cpu_filter,
             event: cfg.event,
             exclude_user: cfg.exclude_user,
             exclude_kernel: cfg.exclude_kernel,
             read_format: cfg.read_format,
             enable_on_exec: cfg.enable_on_exec,
+            pinned: cfg.pinned,
             enabled: AtomicBool::new(cfg.enabled),
+            on_cpu: AtomicBool::new(false),
             running: AtomicBool::new(false),
             accumulated: AtomicU64::new(0),
             time_enabled_ns: AtomicU64::new(0),
             time_running_ns: AtomicU64::new(0),
-            last_in_ns: AtomicU64::new(0),
-            enabled_at_ns: AtomicU64::new(0),
+            run_since_ns: AtomicU64::new(0),
+            enabled_at_ns: AtomicU64::new(if cfg.enabled { now_ns() } else { 0 }),
+            scheduling_error: AtomicBool::new(false),
             dead: AtomicBool::new(false),
             hw_freed: AtomicBool::new(false),
             is_sampling: cfg.sample_period > 0,
@@ -353,6 +369,11 @@ impl PerTaskCounter {
         self.read_format
     }
 
+    /// Whether this pinned event entered Linux's scheduling ERROR state.
+    pub fn scheduling_error(&self) -> bool {
+        self.scheduling_error.load(Ordering::Acquire)
+    }
+
     /// Record the unique event id for `PERF_SAMPLE_ID` / `IDENTIFIER`. Called
     /// once at open (before the scheduler hooks run), so a relaxed store suffices.
     pub fn set_sample_id(&self, id: u64) {
@@ -361,34 +382,33 @@ impl PerTaskCounter {
 
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
     /// [`perf_sched_in`] programs the counter onto HW.
-    pub fn set_enabled(&self) {
+    pub fn set_enabled(&self) -> crate::StarryResult<()> {
         if !self.enabled.swap(true, Ordering::AcqRel) {
             self.enabled_at_ns.store(now_ns(), Ordering::Relaxed);
         }
+        self.scheduling_error.store(false, Ordering::Release);
+        schedule_if_on_cpu(self)
     }
 
     /// Mark userspace-disabled (`ioctl(DISABLE)`). The next [`perf_sched_out`]
     /// (or an immediate one if the target is running) stops counting; here we
     /// only clear the intent so future slices do not re-program it.
-    pub fn set_disabled(&self) {
-        self.enabled.store(false, Ordering::Release);
+    pub fn set_disabled(&self) -> crate::StarryResult<()> {
+        if self.enabled.swap(false, Ordering::AcqRel) {
+            let enabled_at = self.enabled_at_ns.swap(0, Ordering::AcqRel);
+            if enabled_at != 0 {
+                self.time_enabled_ns
+                    .fetch_add(now_ns().saturating_sub(enabled_at), Ordering::AcqRel);
+            }
+        }
+        disarm_on_owner(self)
     }
 
     /// Zero the accumulated value (`ioctl(RESET)`), leaving timing intact.
     /// Mirrors Linux's `PERF_EVENT_IOC_RESET`, which resets the count only.
-    pub fn reset(&self) {
+    pub fn reset(&self) -> crate::StarryResult<()> {
         self.accumulated.store(0, Ordering::Release);
-        let active = self.running.load(Ordering::Acquire);
-        if active {
-            if self.is_sampling {
-                ax_cpu::pmu::counter::preload(self.n, self.sample_period);
-            } else {
-                ax_cpu::pmu::counter::reset(self.n);
-            }
-        }
-        if !self.is_sampling {
-            self.publish_rdpmc_page(active);
-        }
+        reset_on_owner(self)
     }
 
     /// Whether a counting event already owns an mmap metadata page.
@@ -430,7 +450,12 @@ impl PerTaskCounter {
 
     fn write_rdpmc_snapshot(&self, page: &GlobalPage, active: bool) {
         let header = page.start_vaddr().as_usize() as *mut perf_event_mmap_page;
-        let index = if active { self.n as u32 + 1 } else { 0 };
+        let slot = self.slot.load(Ordering::Acquire);
+        let index = if active && slot != NO_SLOT {
+            slot as u32 + 1
+        } else {
+            0
+        };
         let offset = self.accumulated.load(Ordering::Acquire) as i64;
         let time_enabled = self.time_enabled_ns.load(Ordering::Acquire);
         let time_running = self.time_running_ns.load(Ordering::Acquire);
@@ -638,6 +663,21 @@ fn now_ns() -> u64 {
     ax_runtime::hal::time::monotonic_time_nanos()
 }
 
+/// Per-CPU timer hook used by the PMU multiplexing scheduler.
+///
+/// The callback is registered once on every CPU during perf initialization, so
+/// this IRQ-context path only performs bounded locking, atomics, and PMU sysreg
+/// operations.
+pub fn perf_timer_tick() {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let current = ax_task::current();
+    if let Some(thread) = current.try_as_thread() {
+        perf_rotate_current(thread);
+    }
+}
+
 /// Attach `ptc` to `thr` and arm the scheduler hooks.
 ///
 /// Called from [`hw::perf_event_open_hw`] in `pid > 0` mode. Bumping
@@ -648,22 +688,209 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
     PERF_TASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
 }
 
-/// Scheduler hook: the given thread is about to start running on this CPU.
-///
-/// Programs every enabled, not-yet-running, live per-task counter onto HW and
-/// starts it. `configure` resets the counter to 0, so the slice delta will equal
-/// `counter::read(n)` at the matching [`perf_sched_out`].
-///
-/// For a *sampling* counter (`is_sampling`) whose ring is mapped, it instead arms
-/// the M2 overflow-IRQ path for this slice: `configure`, `preload` to overflow
-/// after `sample_period` events, register a [`SampleSlot`] pointing at the ptc's
-/// ring + notify, `enable_irq`, then `enable`. So overflows fire `PERF_RECORD_SAMPLE`
-/// into the task's ring only while the task runs. (If the ring is not mapped yet,
-/// the slice is skipped — `perf` always mmaps before enable, so this is a rare race.)
-///
-/// Runs with IRQs disabled inside `switch_to`: [`IrqMutex`](crate::sync::IrqMutex)
-/// + atomics + sysreg writes only, no allocation. `sampling::register` nests a
-///   further local-IRQ-off section, which is fine.
+fn eligible_on_current_cpu(ptc: &PerTaskCounter) -> bool {
+    if ptc.dead.load(Ordering::Acquire)
+        || !ptc.enabled.load(Ordering::Acquire)
+        || ptc.scheduling_error.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    let cpu = ax_hal::percpu::this_cpu_id();
+    if ptc.cpu_filter.is_some_and(|filter| filter != cpu) {
+        return false;
+    }
+    if ptc.is_sampling && !ptc.ring_mapped() {
+        return false;
+    }
+    super::percpu::current_info().is_some_and(|info| ptc.event.resolve(info).is_ok())
+}
+
+/// Arms one event on a slot owned by the executing CPU.
+fn arm_slice(ptc: &PerTaskCounter, slot: usize, now: u64) {
+    let Some(info) = super::percpu::current_info() else {
+        super::percpu::free_programmable(slot);
+        return;
+    };
+    let Ok(event) = ptc.event.resolve(info) else {
+        super::percpu::free_programmable(slot);
+        return;
+    };
+    if ptc.is_sampling {
+        ax_cpu::pmu::counter::configure(
+            slot,
+            event,
+            ptc.exclude_user,
+            ptc.exclude_kernel,
+        );
+        ax_cpu::pmu::counter::preload(slot, ptc.sample_period);
+        sampling::register(
+            slot,
+            SampleSlot {
+                ring_vaddr: ptc.ring_vaddr.load(Ordering::Acquire),
+                ring_len: ptc.ring_len.load(Ordering::Acquire),
+                period: ptc.sample_period,
+                sample_type: ptc.sample_type,
+                id: ptc.sample_id.load(Ordering::Relaxed),
+                observer: ptc.observer,
+                notify: ptc.notify_ptr.load(Ordering::Acquire) as *const (),
+                freq: ptc.freq,
+                target_freq: ptc.freq_target,
+                last_time: 0,
+            },
+        );
+        ax_cpu::pmu::overflow::enable_irq(slot);
+    } else {
+        ax_cpu::pmu::counter::configure(
+            slot,
+            event,
+            ptc.exclude_user,
+            ptc.exclude_kernel,
+        );
+    }
+    ptc.slot.store(slot, Ordering::Release);
+    ptc.run_since_ns.store(now, Ordering::Release);
+    ptc.running.store(true, Ordering::Release);
+    ax_cpu::pmu::counter::enable(slot);
+    if !ptc.is_sampling {
+        ptc.publish_rdpmc_page(true);
+    }
+}
+
+/// Disarms an event on the CPU that owns its current slot.
+fn disarm_slice(ptc: &PerTaskCounter, now: u64, accumulate: bool) {
+    let slot = ptc.slot.load(Ordering::Acquire);
+    if slot == NO_SLOT {
+        ptc.running.store(false, Ordering::Release);
+        return;
+    }
+    ax_cpu::pmu::counter::disable(slot);
+    if ptc.is_sampling {
+        ax_cpu::pmu::overflow::disable_irq(slot);
+        sampling::unregister(slot);
+    } else if accumulate {
+        ptc.accumulated
+            .fetch_add(ax_cpu::pmu::counter::read(slot), Ordering::AcqRel);
+    }
+    let run_since = ptc.run_since_ns.swap(0, Ordering::AcqRel);
+    if accumulate && run_since != 0 {
+        ptc.time_running_ns
+            .fetch_add(now.saturating_sub(run_since), Ordering::AcqRel);
+    }
+    super::percpu::free_programmable(slot);
+    ptc.slot.store(NO_SLOT, Ordering::Release);
+    ptc.running.store(false, Ordering::Release);
+    if !ptc.is_sampling {
+        ptc.publish_rdpmc_page(false);
+    }
+}
+
+fn schedule_if_on_cpu(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
+    if !ptc.on_cpu.load(Ordering::Acquire) || ptc.running.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let owner = ptc.last_cpu.load(Ordering::Acquire);
+    if owner == usize::MAX {
+        return Ok(());
+    }
+    // SAFETY: the closure performs only bounded atomic, PMU, and IRQ-registry
+    // operations and keeps `ptc` borrowed until the synchronous IPI returns.
+    unsafe {
+        super::percpu::run_on_cpu_sync(owner, || {
+            if ptc.last_cpu.load(Ordering::Acquire) != ax_hal::percpu::this_cpu_id()
+                || !ptc.on_cpu.load(Ordering::Acquire)
+                || !eligible_on_current_cpu(ptc)
+                || ptc.running.load(Ordering::Acquire)
+            {
+                return;
+            }
+            if let Some(slot) = super::percpu::alloc_programmable() {
+                arm_slice(ptc, slot, now_ns());
+            } else if ptc.pinned {
+                ptc.scheduling_error.store(true, Ordering::Release);
+            }
+        })
+    }
+}
+
+fn disarm_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
+    if !ptc.running.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let owner = ptc.last_cpu.load(Ordering::Acquire);
+    if owner == usize::MAX {
+        return Ok(());
+    }
+    // SAFETY: see `schedule_if_on_cpu`; disarming is allocation-free and the
+    // borrowed event remains live through the synchronous call.
+    unsafe {
+        super::percpu::run_on_cpu_sync(owner, || {
+            if ptc.last_cpu.load(Ordering::Acquire) == ax_hal::percpu::this_cpu_id()
+                && ptc.running.load(Ordering::Acquire)
+            {
+                disarm_slice(ptc, now_ns(), true);
+            }
+        })
+    }
+}
+
+fn reset_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<()> {
+    if !ptc.running.load(Ordering::Acquire) {
+        if !ptc.is_sampling {
+            ptc.publish_rdpmc_page(false);
+        }
+        return Ok(());
+    }
+    let owner = ptc.last_cpu.load(Ordering::Acquire);
+    if owner == usize::MAX {
+        return Ok(());
+    }
+    // SAFETY: the owner-side operation is a bounded PMU register write.
+    unsafe {
+        super::percpu::run_on_cpu_sync(owner, || {
+            let slot = ptc.slot.load(Ordering::Acquire);
+            if ptc.last_cpu.load(Ordering::Acquire) != ax_hal::percpu::this_cpu_id()
+                || slot == NO_SLOT
+            {
+                return;
+            }
+            if ptc.is_sampling {
+                ax_cpu::pmu::counter::preload(slot, ptc.sample_period);
+            } else {
+                ax_cpu::pmu::counter::reset(slot);
+                ptc.publish_rdpmc_page(true);
+            }
+        })
+    }
+}
+
+fn schedule_pinned(counters: &[Arc<PerTaskCounter>], now: u64) {
+    for ptc in counters {
+        if !ptc.pinned || !eligible_on_current_cpu(ptc) || ptc.running.load(Ordering::Acquire) {
+            continue;
+        }
+        if let Some(slot) = super::percpu::alloc_programmable() {
+            arm_slice(ptc, slot, now);
+        } else {
+            ptc.scheduling_error.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn schedule_flexible(counters: &[Arc<PerTaskCounter>], start: usize, now: u64) {
+    for offset in 0..counters.len() {
+        let ptc = &counters[(start + offset) % counters.len()];
+        if ptc.pinned || !eligible_on_current_cpu(ptc) || ptc.running.load(Ordering::Acquire) {
+            continue;
+        }
+        let Some(slot) = super::percpu::alloc_programmable() else {
+            break;
+        };
+        arm_slice(ptc, slot, now);
+    }
+}
+
+/// Scheduler hook: marks the task on this CPU, schedules pinned events first,
+/// then fills remaining PMU slots with flexible events.
 pub fn perf_sched_in(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
@@ -673,61 +900,15 @@ pub fn perf_sched_in(thr: &Thread) {
         return;
     }
     let now = now_ns();
+    let cpu = ax_hal::percpu::this_cpu_id();
     for ptc in counters.iter() {
-        if ptc.dead.load(Ordering::Acquire) {
-            continue;
-        }
-        if !ptc.enabled.load(Ordering::Acquire) {
-            continue;
-        }
-        if ptc.running.load(Ordering::Acquire) {
-            continue;
-        }
-        if ptc.is_sampling {
-            // Sampling: only arm if the ring is mmap'd (else skip this slice).
-            if !ptc.ring_mapped() {
-                continue;
-            }
-            // Make sure the PMU overflow handler is installed + the PPI enabled.
-            sampling::ensure_pmu_irq_registered();
-            // configure() programs event + EL filter AND resets the counter to 0.
-            ax_cpu::pmu::counter::configure(ptc.n, ptc.event, ptc.exclude_user, ptc.exclude_kernel);
-            // Overflow after `sample_period` events.
-            ax_cpu::pmu::counter::preload(ptc.n, ptc.sample_period);
-            // Publish the slot the overflow handler writes through. The ring +
-            // notify pointers were set by `device_mmap`; they are alloc-free
-            // reads here.
-            sampling::register(
-                ptc.n,
-                SampleSlot {
-                    ring_vaddr: ptc.ring_vaddr.load(Ordering::Acquire),
-                    ring_len: ptc.ring_len.load(Ordering::Acquire),
-                    period: ptc.sample_period,
-                    sample_type: ptc.sample_type,
-                    id: ptc.sample_id.load(Ordering::Relaxed),
-                    observer: ptc.observer,
-                    notify: ptc.notify_ptr.load(Ordering::Acquire) as *const (),
-                    // Frequency mode adapts the period within each slice; the slot
-                    // starts at the initial estimate with no prior timestamp.
-                    freq: ptc.freq,
-                    target_freq: ptc.freq_target,
-                    last_time: 0,
-                },
-            );
-            // Arm the per-counter overflow interrupt, then start counting.
-            ax_cpu::pmu::overflow::enable_irq(ptc.n);
-            ax_cpu::pmu::counter::enable(ptc.n);
-        } else {
-            // Counting: configure() programs event + EL filter AND resets to 0.
-            ax_cpu::pmu::counter::configure(ptc.n, ptc.event, ptc.exclude_user, ptc.exclude_kernel);
-            ax_cpu::pmu::counter::enable(ptc.n);
-        }
-        ptc.last_in_ns.store(now, Ordering::Release);
-        ptc.running.store(true, Ordering::Release);
-        if !ptc.is_sampling {
-            ptc.publish_rdpmc_page(true);
+        if eligible_on_current_cpu(ptc) {
+            ptc.on_cpu.store(true, Ordering::Release);
+            ptc.last_cpu.store(cpu, Ordering::Release);
         }
     }
+    schedule_pinned(&counters, now);
+    schedule_flexible(&counters, 0, now);
 }
 
 /// Scheduler hook: the given thread is about to stop running on this CPU.
@@ -753,35 +934,36 @@ pub fn perf_sched_out(thr: &Thread) {
     }
     let now = now_ns();
     for ptc in counters.iter() {
-        if ptc.dead.load(Ordering::Acquire) {
-            continue;
+        if ptc.running.load(Ordering::Acquire) {
+            disarm_slice(ptc, now, !ptc.dead.load(Ordering::Acquire));
         }
-        if !ptc.running.load(Ordering::Acquire) {
-            continue;
-        }
-        if ptc.is_sampling {
-            // Disarm in the M2 teardown order: stop the counter, mask the IRQ,
-            // then clear the slot so a later overflow on `n` (a different task)
-            // cannot reach this ring/notify.
-            ax_cpu::pmu::counter::disable(ptc.n);
-            ax_cpu::pmu::overflow::disable_irq(ptc.n);
-            sampling::unregister(ptc.n);
-        } else {
-            // Slice started at 0 (configure reset it), so delta is the raw read.
-            let delta = ax_cpu::pmu::counter::read(ptc.n);
-            ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
-            ax_cpu::pmu::counter::disable(ptc.n);
-        }
-        ptc.running.store(false, Ordering::Release);
+        ptc.on_cpu.store(false, Ordering::Release);
+    }
+}
 
-        let last_in = ptc.last_in_ns.load(Ordering::Acquire);
-        let dt = now.saturating_sub(last_in);
-        ptc.time_enabled_ns.fetch_add(dt, Ordering::AcqRel);
-        ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
-        if !ptc.is_sampling {
-            ptc.publish_rdpmc_page(false);
+/// Timer-IRQ multiplexing step for the currently running task.
+fn perf_rotate_current(thr: &Thread) {
+    let counters = thr.perf_counters.lock();
+    if counters.len() < 2 {
+        return;
+    }
+    let mut eligible = 0usize;
+    for ptc in counters.iter() {
+        if !ptc.pinned && eligible_on_current_cpu(ptc) {
+            eligible += 1;
         }
     }
+    if eligible < 2 {
+        return;
+    }
+    let now = now_ns();
+    for ptc in counters.iter() {
+        if !ptc.pinned && ptc.running.load(Ordering::Acquire) {
+            disarm_slice(ptc, now, true);
+        }
+    }
+    let start = super::percpu::next_rotation_start(counters.len());
+    schedule_flexible(&counters, start, now);
 }
 
 /// Exec hook: the given (current) thread has committed a new image in `execve`.
@@ -803,6 +985,7 @@ pub fn on_exec(thr: &Thread) {
             }
             if ptc.enable_on_exec && !ptc.enabled.swap(true, Ordering::AcqRel) {
                 ptc.enabled_at_ns.store(now, Ordering::Release);
+                ptc.scheduling_error.store(false, Ordering::Release);
             }
         }
     }
@@ -1055,7 +1238,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             .filter(|p| p.inherit && !p.dead.load(Ordering::Acquire))
             .map(|p| InheritSpec {
                 cfg: PerTaskConfig {
-                    n: 0, // assigned after the slot is reserved below
+                    cpu_filter: p.cpu_filter,
                     event: p.event,
                     exclude_user: p.exclude_user,
                     exclude_kernel: p.exclude_kernel,
@@ -1064,6 +1247,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
                     // monitored workload from birth, so it does not wait on exec.
                     enabled: p.enabled.load(Ordering::Acquire),
                     enable_on_exec: false,
+                    pinned: p.pinned,
                     sample_period: p.sample_period,
                     sample_type: p.sample_type,
                     freq: p.freq,
@@ -1081,20 +1265,12 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             })
             .collect()
     };
-    for mut spec in specs {
+    for spec in specs {
         // A sampling event with no ring yet has nowhere to write the child's
         // samples; skip (perf maps the ring before enabling, so this is rare).
         if spec.is_sampling && spec.ring.is_none() {
             continue;
         }
-        let Some(n) = hw::alloc_programmable_counter() else {
-            warn!(
-                "perf: attr.inherit skipped for child tid {} (no free PMU counter)",
-                child_thr.tid()
-            );
-            continue;
-        };
-        spec.cfg.n = n;
         let child = Arc::new(PerTaskCounter::new(spec.cfg));
         // Share the parent event's id so inherited samples aggregate under it.
         child.set_sample_id(spec.sample_id);
@@ -1119,8 +1295,8 @@ pub fn on_task_exit(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let counters = thr.perf_counters.lock();
-    for ptc in counters.iter() {
+    let counters = thr.perf_counters.lock().clone();
+    for ptc in &counters {
         if ptc.want_task
             && let Some(target) = sideband_target(ptc, thr)
         {
@@ -1142,13 +1318,12 @@ pub fn on_task_exit(thr: &Thread) {
     }
 }
 
-/// Release the HW counter backing `ptc` and tear down its bookkeeping, once.
+/// Release the live per-CPU slice and tear down this event once.
 ///
 /// Idempotent: the `hw_freed` compare-exchange ensures only the first caller
 /// (either [`HwPerfEvent::drop`] on the fd side or [`on_task_exit`] on the task
-/// side) does the work. It stops the counter if it was running, returns the
-/// slot to the M1 allocator, decrements [`PERF_TASK_ACTIVE`], and marks the
-/// counter `dead` so the scheduler hooks skip it forever after.
+/// side) does the work. A live slice is synchronously stopped on the CPU that
+/// owns the banked PMU registers before its ring/notify anchors may be dropped.
 ///
 /// For a *sampling* counter that is currently armed, the overflow-IRQ path is
 /// torn down in the UAF-safe order before the slot/ring `Arc`s drop: stop the
@@ -1165,18 +1340,25 @@ pub fn free_hw(ptc: &PerTaskCounter) {
         // Already freed by the other side; nothing to do.
         return;
     }
-    // Mark dead before touching HW so a concurrent hook (single-core: not truly
-    // concurrent, but cheap insurance) observes the teardown.
+    // Mark dead before touching HW so scheduler/timer paths stop re-arming it.
     ptc.dead.store(true, Ordering::Release);
-    let was_running = ptc.running.swap(false, Ordering::AcqRel);
-    if ptc.is_sampling {
-        if was_running {
-            // Strict teardown: stop the counter, mask the IRQ, clear the slot.
-            // After `unregister` the handler can no longer reference this ring.
-            ax_cpu::pmu::counter::disable(ptc.n);
-            ax_cpu::pmu::overflow::disable_irq(ptc.n);
-            sampling::unregister(ptc.n);
+    if ptc.enabled.swap(false, Ordering::AcqRel) {
+        let enabled_at = ptc.enabled_at_ns.swap(0, Ordering::AcqRel);
+        if enabled_at != 0 {
+            ptc.time_enabled_ns
+                .fetch_add(now_ns().saturating_sub(enabled_at), Ordering::AcqRel);
         }
+    }
+    if let Err(error) = disarm_on_owner(ptc) {
+        // Keep the event and its strong anchors reachable from the task list if
+        // owner-CPU teardown failed. Dropping them here could leave the PMU IRQ
+        // registry with dangling ring/notify pointers.
+        warn!("perf: failed to stop task event on its owner CPU: {error}");
+        ptc.hw_freed.store(false, Ordering::Release);
+        return;
+    }
+    ptc.on_cpu.store(false, Ordering::Release);
+    if ptc.is_sampling {
         // Stop the deferred worker and drop the ring/notify anchors. This must
         // run AFTER the slot is unregistered above (the overflow handler keeps
         // the `notify`/ring pointers live only while a slot references them).
@@ -1196,18 +1378,9 @@ pub fn free_hw(ptc: &PerTaskCounter) {
         ptc.ring_vaddr.store(0, Ordering::Release);
         ptc.notify_ptr.store(0, Ordering::Release);
     } else {
-        if was_running {
-            let delta = ax_cpu::pmu::counter::read(ptc.n);
-            ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
-            ax_cpu::pmu::counter::disable(ptc.n);
-            let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
-            ptc.time_enabled_ns.fetch_add(dt, Ordering::AcqRel);
-            ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
-        }
         ptc.publish_rdpmc_page(false);
         ptc.release_rdpmc_page();
     }
-    hw::free_programmable_counter(ptc.n);
     PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
 }
 
@@ -1216,19 +1389,43 @@ pub fn free_hw(ptc: &PerTaskCounter) {
 /// `value` is the accumulated delta plus the live slice if the counter is
 /// currently running. For `perf stat -- cmd` the child has already exited by the
 /// time the parent reads, so `running == false` and `accumulated` is final.
-pub fn read_values(ptc: &PerTaskCounter) -> (u64, u64, u64) {
+pub fn read_values(ptc: &PerTaskCounter) -> crate::StarryResult<(u64, u64, u64)> {
     let mut value = ptc.accumulated.load(Ordering::Acquire);
     let mut time_enabled = ptc.time_enabled_ns.load(Ordering::Acquire);
     let mut time_running = ptc.time_running_ns.load(Ordering::Acquire);
-    if ptc.running.load(Ordering::Acquire) {
-        // Live slice: add the in-progress count and elapsed time. This is a
-        // cross-task read of HW counter state; on single-core M2 the target is
-        // not running concurrently with this reader, so the read is a coherent
-        // (if slightly stale) snapshot.
-        value += ax_cpu::pmu::counter::read(ptc.n);
-        let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
-        time_enabled += dt;
-        time_running += dt;
+    let now = now_ns();
+    let enabled_at = ptc.enabled_at_ns.load(Ordering::Acquire);
+    if ptc.enabled.load(Ordering::Acquire) && enabled_at != 0 {
+        time_enabled += now.saturating_sub(enabled_at);
     }
-    (value, time_enabled, time_running)
+    if ptc.running.load(Ordering::Acquire) {
+        let owner = ptc.last_cpu.load(Ordering::Acquire);
+        if owner != usize::MAX {
+            // SAFETY: the closure only reads owner-local PMU/atomic state and
+            // returns before `ptc` can be released.
+            let (live_value, live_running) = unsafe {
+                super::percpu::run_on_cpu_sync(owner, || {
+                    let slot = ptc.slot.load(Ordering::Acquire);
+                    if !ptc.running.load(Ordering::Acquire)
+                        || ptc.last_cpu.load(Ordering::Acquire)
+                            != ax_hal::percpu::this_cpu_id()
+                        || slot == NO_SLOT
+                    {
+                        return (0, 0);
+                    }
+                    let value = if ptc.is_sampling {
+                        0
+                    } else {
+                        ax_cpu::pmu::counter::read(slot)
+                    };
+                    let running = now_ns()
+                        .saturating_sub(ptc.run_since_ns.load(Ordering::Acquire));
+                    (value, running)
+                })
+            }?;
+            value += live_value;
+            time_running += live_running;
+        }
+    }
+    Ok((value, time_enabled, time_running))
 }

@@ -9,6 +9,8 @@
 pub mod bpf;
 pub mod hw;
 pub mod kprobe;
+#[cfg(target_arch = "aarch64")]
+pub mod percpu;
 pub mod raw_tracepoint;
 pub mod target;
 /// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
@@ -208,6 +210,8 @@ const PERF_FORMAT_GROUP: u64 = 1 << 3;
 /// `read_format`. The file wrapper adds the leader-first layout selected by
 /// `PERF_FORMAT_GROUP` above the backend-specific snapshots.
 pub struct PerfReadValues {
+    /// Linux pinned-event ERROR state: `read()` completes with EOF.
+    pub eof: bool,
     /// The raw counter value.
     pub value: u64,
     /// Wall time the event has been enabled, in nanoseconds.
@@ -411,6 +415,10 @@ impl FileLike for PerfEvent {
         // (M0 behaviour). The tracing variants keep the default `read_values`
         // and propagate `Unsupported` here.
         let values = self.event.lock().read_values()?;
+
+        if values.eof {
+            return Ok(0);
+        }
 
         if values.read_format & PERF_FORMAT_GROUP != 0 {
             return self.read_group(dst, &values);
@@ -623,14 +631,17 @@ pub(crate) fn perf_event_open(
     // `PerfProbeArgs::try_from_perf_attr`, which maps any non-probe type through
     // `perf_sw_ids` and rejects hardware configs with `EINVAL`.
     let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
+        || attr.type_ == PerfTypeId::PERF_TYPE_HW_CACHE as u32
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A55_PERF_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A76_PERF_TYPE
     {
         // Thread the typed target into the hardware path so task identities
         // cannot be confused with a system-wide selector.
         // `cpu` / `group_fd` / `flags` are not consumed by the hardware path
         // (single-CPU, no event groups), so they are intentionally dropped.
-        Box::new(hw::perf_event_open_hw(attr, legacy_target)?)
+        Box::new(hw::perf_event_open_hw(attr, &resolved)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
             attr,
@@ -703,6 +714,8 @@ static PERF_FILE: LazyInit<IrqMutex<HashMap<usize, alloc::sync::Weak<dyn FileLik
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
     PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
+    #[cfg(target_arch = "aarch64")]
+    percpu::initialize_all_cpus();
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,
