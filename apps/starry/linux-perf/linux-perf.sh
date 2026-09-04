@@ -18,6 +18,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$runtime"
+echo "linux-perf: prepare runtime"
 archive="${LINUX_PERF_RUNTIME_ARCHIVE:-}"
 if [ -z "$archive" ]; then
     archive="$work_dir/runtime.tar.gz"
@@ -40,6 +41,7 @@ fi
 [ -x "$loader" ] || fail "missing musl loader"
 [ -x "$perf_binary" ] || fail "missing perf binary"
 [ -x "$workload" ] || fail "missing workload"
+echo "linux-perf: runtime ready"
 
 runtime_library_path="$runtime/lib:$runtime/usr/lib"
 export LD_LIBRARY_PATH="$runtime_library_path"
@@ -50,9 +52,11 @@ run_perf() {
     "$loader" --library-path "$runtime_library_path" "$perf_binary" "$@"
 }
 
+echo "linux-perf: perf version"
 run_perf --version > "$work_dir/version.log" 2>&1 || fail "perf --version"
 grep -q "perf version 6.19.14" "$work_dir/version.log" || fail "unexpected perf version"
 
+echo "linux-perf: perf stat"
 if ! run_perf stat -e cycles -e task-clock -- "$workload" \
     > "$work_dir/stat.out" 2> "$work_dir/stat.log"; then
     sed -n '1,120p' "$work_dir/stat.log"
@@ -68,6 +72,7 @@ grep -Eq '([1-9][0-9,]*(\.[0-9]+)?|0\.[0-9]*[1-9][0-9]*)[[:space:]]+(msec[[:spac
 }
 
 data="$work_dir/perf.data"
+echo "linux-perf: perf record"
 if ! run_perf record -a -g --call-graph fp -e cycles:u -c 1000000 -o "$data" -- "$workload" \
     > "$work_dir/record.out" 2> "$work_dir/record.log"; then
     sed -n '1,120p' "$work_dir/record.log"
@@ -75,6 +80,7 @@ if ! run_perf record -a -g --call-graph fp -e cycles:u -c 1000000 -o "$data" -- 
 fi
 [ -s "$data" ] || fail "empty perf.data"
 
+echo "linux-perf: perf report"
 if ! run_perf report --stdio --no-children --sort comm,dso,symbol -i "$data" \
     > "$work_dir/report.log" 2>&1; then
     sed -n '1,160p' "$work_dir/report.log"
@@ -103,6 +109,7 @@ for frame in perf_level_one perf_level_two perf_level_three; do
 done
 
 if [ "${LINUX_PERF_BOARD:-0}" = "1" ]; then
+    echo "linux-perf: board checks"
     cpu_count="$(grep -c '^processor' /proc/cpuinfo || true)"
     [ "$cpu_count" = "8" ] || fail "expected 8 OrangePi CPUs, got $cpu_count"
     grep -Eqi 'CPU part[[:space:]]*:[[:space:]]*0xd05' /proc/cpuinfo \
