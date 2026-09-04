@@ -43,7 +43,7 @@ sidebar_label: "架构与平台"
 
 | 类别 | 工具 | 用途 | 安装方式 |
 |------|------|------|---------|
-| 模拟器 | QEMU ≥ 10.2.1 | 系统级验证的执行环境 | 源码构建或发行版包（Container 内已预装） |
+| 模拟器 | QEMU ≥ 11.1.1 | 系统级验证的执行环境 | 源码构建或发行版包（Container 内已预装） |
 | 辅助构建 | `cmake`, `make`, `ninja-build` | C 测试用例交叉编译 | 系统 apt 包 |
 | 辅助分析 | `cargo-binutils` | 二进制分析（`cargo size`, `cargo objdump`） | `cargo install cargo-binutils` |
 | 镜像操作 | `ostool` | ELF / 镜像格式转换与 QEMU/U-Boot 运行支持 | Cargo 依赖（v0.24） |
@@ -54,7 +54,7 @@ sidebar_label: "架构与平台"
 
 | 内容 | 版本 / 说明 |
 |------|------------|
-| QEMU | 10.2.1 源码构建，覆盖 system + linux-user target |
+| QEMU | 11.1.1 源码构建，覆盖 system + linux-user target |
 | 交叉编译器 | aarch64 / riscv64 / x86_64 / loongarch64 musl 工具链 |
 | Rust toolchain | 与 `rust-toolchain.toml` 一致 |
 | 工作目录 | `/workspace` |

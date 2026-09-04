@@ -3,7 +3,7 @@ set -euo pipefail
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
-image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}"
+image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu11.1.1}"
 rootfs="${PICOCLAW_USER_ROOTFS:-tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-user.img}"
 qemu_config="${PICOCLAW_USER_QEMU_CONFIG:-apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-interactive.toml}"
 provider="${PICOCLAW_PROVIDER:-openai}"
@@ -169,7 +169,7 @@ if [[ "$should_prepare" -eq 1 ]]; then
     echo "model:     $model"
     echo "api_base:  $api_base"
     echo "rootfs:    $rootfs"
-    run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --rootfs '$rootfs'"
+    run_docker "export PATH=/opt/qemu-11.1.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --rootfs '$rootfs'"
 else
     say "复用已有 PicoClaw rootfs"
     echo "rootfs: $rootfs"
@@ -187,4 +187,4 @@ echo "  picoclaw agent"
 echo
 echo "退出 QEMU：Ctrl-a x"
 
-run_docker_interactive "export PATH=/opt/qemu-10.2.1/bin:/opt/x86_64-linux-musl-cross/bin:\$PATH; cargo xtask starry qemu --arch x86_64 --qemu-config '$qemu_config' --rootfs '$rootfs'"
+run_docker_interactive "export PATH=/opt/qemu-11.1.1/bin:/opt/x86_64-linux-musl-cross/bin:\$PATH; cargo xtask starry qemu --arch x86_64 --qemu-config '$qemu_config' --rootfs '$rootfs'"
