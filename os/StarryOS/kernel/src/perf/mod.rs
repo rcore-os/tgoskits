@@ -24,6 +24,9 @@ pub mod sampling;
 /// gated like `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod sideband;
+/// Core `PERF_TYPE_SOFTWARE` counting events. This is architecture independent
+/// and is driven by scheduler, fault, clone, exec, and exit hooks.
+pub mod sw;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
 /// scheduler hooks call into CPU PMU register helpers, so it is gated like
 /// `sampling`.
@@ -57,7 +60,7 @@ pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
     linux_bpf::perf_event_attr,
-    perf::{PerfEventIoc, PerfProbeArgs, PerfTypeId},
+    perf::{PerfEventIoc, PerfProbeArgs, PerfProbeConfig, PerfTypeId},
 };
 
 use crate::{
@@ -97,6 +100,20 @@ static NEXT_PERF_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 /// agnostic (and compile under multi-target clippy).
 pub fn read_midr_el1() -> u64 {
     pmu::cpu_id_raw().unwrap_or(0)
+}
+
+/// Cached MIDR for one logical CPU. Non-AArch64 targets expose zero through
+/// the compatibility sysfs node without depending on the ARM per-CPU backend.
+pub fn cpu_midr(cpu: usize) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        return percpu::cpu_info(cpu).map(|info| info.midr).unwrap_or(0);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = cpu;
+        read_midr_el1()
+    }
 }
 
 /// `ioctl` type byte for the perf-event ioctls (`'$'`).
@@ -671,7 +688,12 @@ pub(crate) fn perf_event_open(
         .into_starry_result()?;
         match args.type_ {
             PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
-            PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
+            PerfTypeId::PERF_TYPE_SOFTWARE => match args.config {
+                PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(sw_id) => {
+                    Box::new(sw::perf_event_open_sw(attr, sw_id, &resolved)?)
+                }
+                _ => Box::new(bpf::perf_event_open_bpf(args)),
+            },
             PerfTypeId::PERF_TYPE_TRACEPOINT => {
                 Box::new(tracepoint::perf_event_open_tracepoint(args)?)
             }
@@ -732,6 +754,7 @@ static PERF_FILE: LazyInit<IrqMutex<HashMap<usize, alloc::sync::Weak<dyn FileLik
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
     PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
+    sw::initialize();
     #[cfg(target_arch = "aarch64")]
     percpu::initialize_all_cpus();
 }

@@ -430,6 +430,7 @@ pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -
         return false;
     }
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::perf::sw::on_page_fault(thr);
     aspace_arc.lock().handle_page_fault(vaddr, access_flags)
 }
 

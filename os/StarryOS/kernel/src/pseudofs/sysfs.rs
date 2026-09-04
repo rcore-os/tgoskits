@@ -423,10 +423,12 @@ struct EventSourceDevicesDir {
 
 impl SimpleDirOps for EventSourceDevicesDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        let mut devices: Vec<Cow<'a, str>> = PERF_EVENT_SOURCES
+        let devices: Vec<Cow<'a, str>> = PERF_EVENT_SOURCES
             .iter()
             .map(|(name, _)| Cow::Borrowed(*name))
             .collect();
+        #[cfg(target_arch = "aarch64")]
+        let mut devices = devices;
         #[cfg(target_arch = "aarch64")]
         {
             use ax_cpu::pmu::ClusterId;
@@ -869,12 +871,10 @@ impl SimpleDirOps for CpuIdRegsDir {
             "midr_el1" => {
                 let cpu = self.cpu;
                 Ok(SimpleFile::new_regular(self.fs.clone(), move || {
-                let midr = crate::perf::percpu::cpu_info(cpu)
-                    .map(|info| info.midr)
-                    .unwrap_or(0);
-                Ok(alloc::format!("{midr:016x}\n"))
-            })
-            .into())
+                    let midr = crate::perf::cpu_midr(cpu);
+                    Ok(alloc::format!("{midr:016x}\n"))
+                })
+                .into())
             }
             _ => Err(VfsError::NotFound),
         }

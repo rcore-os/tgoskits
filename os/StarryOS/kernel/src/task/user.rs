@@ -181,6 +181,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
                     }
                     ReturnReason::PageFault(addr, flags) => {
+                        crate::perf::sw::on_page_fault(thr);
                         handle_user_page_fault(thr, addr, flags, &uctx);
                     }
                     ReturnReason::Interrupt => {}
