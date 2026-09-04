@@ -6,7 +6,9 @@ use super::{
     access_policy::{
         PerfAccessCapabilities, PerfCredentialIds, PerfCredentialSnapshot, perf_task_access_allowed,
     },
-    target::{PerfCpuId, PerfTarget, PerfTargetError, PerfTargetKind, PerfTaskTarget},
+    target::{
+        PerfContextKey, PerfCpuId, PerfTarget, PerfTargetError, PerfTargetKind, PerfTaskTarget,
+    },
 };
 use crate::task::{Cred, TidNumber, UserTaskRef, current_user_task, get_user_task_by_number};
 
@@ -101,6 +103,20 @@ impl ResolvedPerfTarget {
 }
 
 impl AuthorizedPerfTarget {
+    /// Returns the generation-bearing context used by group validation.
+    pub(crate) fn context_key(&self) -> crate::StarryResult<PerfContextKey> {
+        match self {
+            Self::Task { task, cpu } => Ok(PerfContextKey::Task {
+                scheduler_id: task
+                    .as_thread()
+                    .scheduler_id()
+                    .ok_or(crate::StarryError::NoSuchProcess)?,
+                cpu: *cpu,
+            }),
+            Self::Cpu(cpu) => Ok(PerfContextKey::Cpu(*cpu)),
+        }
+    }
+
     /// Returns the strongly held task target for task-specific event backends.
     ///
     /// The syscall PID was resolved in the caller's active PID namespace and

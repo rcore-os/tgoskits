@@ -45,41 +45,6 @@ pub(crate) enum PerfTargetError {
     NoSuchProcess,
 }
 
-/// Validated `perf_event_open(2)` flag set.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PerfOpenFlags(u32);
-
-impl PerfOpenFlags {
-    /// `PERF_FLAG_FD_NO_GROUP`.
-    pub(crate) const FD_NO_GROUP: u32 = 1 << 0;
-    /// `PERF_FLAG_FD_OUTPUT`.
-    pub(crate) const FD_OUTPUT: u32 = 1 << 1;
-    /// `PERF_FLAG_PID_CGROUP`.
-    pub(crate) const PID_CGROUP: u32 = 1 << 2;
-    /// `PERF_FLAG_FD_CLOEXEC`.
-    pub(crate) const FD_CLOEXEC: u32 = 1 << 3;
-    const ALL: u64 =
-        (Self::FD_NO_GROUP | Self::FD_OUTPUT | Self::PID_CGROUP | Self::FD_CLOEXEC) as u64;
-
-    /// Parses the complete syscall-width flag word.
-    pub(crate) const fn parse(flags: u64) -> Result<Self, PerfTargetError> {
-        if flags & !Self::ALL != 0 {
-            return Err(PerfTargetError::InvalidTuple);
-        }
-        Ok(Self(flags as u32))
-    }
-
-    /// Returns the validated Linux flag bits.
-    pub(crate) const fn bits(self) -> u32 {
-        self.0
-    }
-
-    /// Reports whether one validated flag is set.
-    pub(crate) const fn contains(self, flag: u32) -> bool {
-        self.0 & flag != 0
-    }
-}
-
 /// Task identity accepted by `perf_event_open(2)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PerfTaskTarget {
@@ -96,6 +61,18 @@ pub(crate) enum PerfTargetKind {
     Task,
     /// A fixed logical CPU context.
     Cpu,
+}
+
+/// Generation-bearing scheduler or fixed-CPU context used by event groups.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PerfContextKey {
+    /// One scheduler thread generation and its optional CPU constraint.
+    Task {
+        scheduler_id: ax_runtime::task::ThreadId,
+        cpu: Option<PerfCpuId>,
+    },
+    /// One fixed system-wide CPU context.
+    Cpu(PerfCpuId),
 }
 
 /// Scheduler or CPU context that owns one perf event.
