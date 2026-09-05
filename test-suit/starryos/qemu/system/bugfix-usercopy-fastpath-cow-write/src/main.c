@@ -15,8 +15,10 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -307,6 +309,43 @@ static void top_of_address_space_string_is_efault(void)
     }
 }
 
+static void file_read_into_its_unfaulted_private_mapping(void)
+{
+    char path[] = "/tmp/usercopy-file-cow-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        note_fail("create file for recursive COW read", strerror(errno));
+        return;
+    }
+    unlink(path);
+    unsigned char expected[4096];
+    memset(expected, 0x5a, sizeof(expected));
+    if (write(fd, expected, sizeof(expected)) != (ssize_t)sizeof(expected) ||
+        lseek(fd, 0, SEEK_SET) != 0) {
+        note_fail("prepare file for recursive COW read", strerror(errno));
+        close(fd);
+        return;
+    }
+    void *mapping = mmap(NULL, sizeof(expected), PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE, fd, 0);
+    if (mapping == MAP_FAILED) {
+        note_fail("map file for recursive COW read", strerror(errno));
+        close(fd);
+        return;
+    }
+    /* Keep the destination unfaulted. Its first kernel write must read the
+       same cached file to materialize the private COW page. */
+    ssize_t count = syscall(SYS_read, fd, mapping, sizeof(expected));
+    if (count == (ssize_t)sizeof(expected) &&
+        memcmp(mapping, expected, sizeof(expected)) == 0) {
+        note_pass("file read into its unfaulted private mapping completes");
+    } else {
+        note_fail("file read into its unfaulted private mapping", strerror(errno));
+    }
+    munmap(mapping, sizeof(expected));
+    close(fd);
+}
+
 int main(void)
 {
     printf("=== usercopy-fastpath-cow-write ===\n");
@@ -317,6 +356,7 @@ int main(void)
     cow_page_write_via_syscall();
     mremap_moved_page_faults_on_old_address();
     top_of_address_space_string_is_efault();
+    file_read_into_its_unfaulted_private_mapping();
 
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);
     if (failed == 0) {

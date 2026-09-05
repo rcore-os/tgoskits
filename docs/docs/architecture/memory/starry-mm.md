@@ -230,6 +230,8 @@ clean file eviction 先取得 `EvictionLease`，再从 `RmapSet` 撤销所有 PT
 
 分配器压力回收在同一 endpoint 排他范围内检查并摘除 clean page，避免竞态失败后重新分配 LRU 节点。它只检查 `Weak` 的强引用数，不升级再丢弃可能成为最后所有者的 endpoint；缓存文件由 registry 读侧保活，回收不会触发缓存文件的最终析构。普通任务上下文的缓存索引仍可管理 LRU 元数据分配，这一限制与 allocator-pressure 路径区分。
 
+`CachedFile::read_at` 只在每块缓存取样时持有布局锁与 `io_lock`，复制到用户缓冲区前全部释放；因此目标是同一文件的未物化私有映射时，COW 缺页可以再次读取缓存。下一块取样前重检 EOF，避免锁外复制期间的 truncate 被忽略。
+
 写回的 mapping-protect 回调在 `io_lock` 外执行；回调窗口允许 truncate 和后续写入提交。`writeback_page_runs` 使用重新取得 `io_lock` 后读取的当前文件长度，避免按旧 EOF 写回而重新扩展已截短文件。
 
 ## 5. 页表、TLB 与大页

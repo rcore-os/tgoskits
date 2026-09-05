@@ -3106,14 +3106,14 @@ impl AddrSpace {
             ..PteDelta::default()
         });
         {
-            let pt = &mut self.pt as *mut PageTable;
-            let _stripe = self.lock_pte_range(VirtAddrRange::from_start_size(
+            let pt = &mut self.pt;
+            let _stripe = self.pte_domain.lock_range(VirtAddrRange::from_start_size(
                 key.va,
                 PAGE_SIZE_4K,
             ));
-            // SAFETY: the address-space mutex and ordered stripe guard exclude
-            // every competing writer for this leaf.
-            unsafe { (&mut *pt).remap_page(key.va, paddr, flags - MappingFlags::WRITE) }?;
+            // Disjoint field borrows retain stripe exclusion without aliasing
+            // the mutable page-table owner through a raw pointer.
+            pt.remap_page(key.va, paddr, flags - MappingFlags::WRITE)?;
         }
         // `commit_mutation` publishes the PTE delta and synchronously services
         // its tagged TLB request.  The WritebackLease is completed only after
@@ -4314,24 +4314,22 @@ impl AddrSpace {
         }
 
         let mut mutation = self.prepare_mutation_range(start, size);
-        let pt = &mut self.pt as *mut PageTable;
-        let stripes = self.lock_pte_range(range);
+        let pt = &mut self.pt;
+        let stripes = self.pte_domain.lock_range(range);
         let mut protected = 0usize;
         for &(va, paddr, flags, _) in &candidates {
             if !flags.contains(MappingFlags::WRITE) {
                 continue;
             }
-            // SAFETY: the address-space mutex and the ordered stripe cursor
-            // exclude every competing writer to these leaves.
-            if unsafe {
-                (&mut *pt).remap_page(va, paddr, flags - MappingFlags::WRITE)
-            }
+            // The ordered stripe cursor borrows only the lock domain; the
+            // page table remains exclusively borrowed throughout apply.
+            if pt.remap_page(va, paddr, flags - MappingFlags::WRITE)
             .is_err()
             {
                 for &(old_va, old_paddr, old_flags, _) in candidates.iter().rev() {
                     if old_flags.contains(MappingFlags::WRITE) {
-                        // SAFETY: covered by the same stripe cursor.
-                        let _ = unsafe { (&mut *pt).remap_page(old_va, old_paddr, old_flags) };
+                        // Covered by the same stripe cursor.
+                        let _ = pt.remap_page(old_va, old_paddr, old_flags);
                     }
                 }
                 return Err(StarryError::BadState);
@@ -4345,12 +4343,12 @@ impl AddrSpace {
                 for (_, _, _, marked_page) in candidates[..marked].iter().rev() {
                     let _ = marked_page.clear_lazy_free();
                 }
-                let pt = &mut self.pt as *mut PageTable;
-                let _stripes = self.lock_pte_range(range);
+                let pt = &mut self.pt;
+                let _stripes = self.pte_domain.lock_range(range);
                 for &(va, paddr, flags, _) in &candidates {
                     if flags.contains(MappingFlags::WRITE) {
-                        // SAFETY: covered by the ordered stripe cursor.
-                        let _ = unsafe { (&mut *pt).remap_page(va, paddr, flags) };
+                        // Covered by the ordered stripe cursor.
+                        let _ = pt.remap_page(va, paddr, flags);
                     }
                 }
                 return Err(StarryError::ResourceBusy);
@@ -4379,11 +4377,11 @@ impl AddrSpace {
                         return Err(StarryError::BadState);
                     }
                 }
-                let pt = &mut self.pt as *mut PageTable;
-                let _stripes = self.lock_pte_range(range);
+                let pt = &mut self.pt;
+                let _stripes = self.pte_domain.lock_range(range);
                 for &(va, paddr, flags, _) in &candidates {
                     if flags.contains(MappingFlags::WRITE)
-                        && unsafe { (&mut *pt).remap_page(va, paddr, flags) }.is_err()
+                        && pt.remap_page(va, paddr, flags).is_err()
                     {
                         self.mutation_gate.mark_needs_repair();
                         return Err(StarryError::BadState);
@@ -6522,12 +6520,12 @@ impl AddrSpace {
             ptes,
             ranges,
         } = prepared;
-        let pt = &mut self.pt as *mut PageTable;
-        let pte_stripes = self.lock_pte_ranges(&ranges);
-        // SAFETY: the outer `&mut self` excludes other address-space mutations,
+        let pt = &mut self.pt;
+        let pte_stripes = self.pte_domain.lock_ranges(&ranges);
+        // The outer `&mut self` excludes other address-space mutations,
         // and `pte_stripes` covers every captured parent leaf in ascending
         // stripe order.
-        let cursor = unsafe { &mut *pt };
+        let cursor = pt;
         for (applied, protection) in ptes.iter().enumerate() {
             let preimage_matches = cursor.query(protection.va).is_ok_and(
                 |(paddr, flags, page_size)| {
@@ -6559,12 +6557,12 @@ impl AddrSpace {
             Ok(()) => Ok(()),
             Err(CommitMutationError::PublishedPendingTlb(error)) => Err(error),
             Err(CommitMutationError::Unpublished(error)) => {
-                let pt = &mut self.pt as *mut PageTable;
-                let _pte_stripes = self.lock_pte_ranges(&ranges);
-                // SAFETY: `&mut self` excludes competing address-space
+                let pt = &mut self.pt;
+                let _pte_stripes = self.pte_domain.lock_ranges(&ranges);
+                // Disjoint field borrows exclude competing address-space
                 // mutations and the ordered stripe cursor covers every leaf
                 // whose preimage is restored below.
-                let restored = Self::rollback_fork_parent_ptes(unsafe { &mut *pt }, &ptes);
+                let restored = Self::rollback_fork_parent_ptes(pt, &ptes);
                 if restored {
                     self.mutation_gate.clear_repair();
                     Err(error)

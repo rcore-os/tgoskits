@@ -434,6 +434,52 @@ fn writeback_rechecks_eof_after_truncate_during_mapping_protection() {
 }
 
 #[test]
+fn cached_read_releases_layout_before_faultable_destination_copy() {
+    struct FaultingDestination {
+        source: CachedFile,
+        remaining: usize,
+    }
+
+    impl ax_io::IoBufMut for FaultingDestination {
+        fn remaining_mut(&self) -> usize {
+            self.remaining
+        }
+    }
+
+    impl ax_io::Write for FaultingDestination {
+        fn write(&mut self, bytes: &[u8]) -> ax_io::IoResult<usize> {
+            assert!(
+                self.source.shared.mapping_layout_lock_is_free_for_test(),
+                "copying into a private mapping of the source file must not recurse into its \
+                 layout lock"
+            );
+            // Execute the same nested cached read required by a private file
+            // fault, rather than relying solely on the lock-state probe.
+            let mut nested = [0; 1];
+            self.source.read_at(&mut nested.as_mut_slice(), 0).unwrap();
+            assert_eq!(nested[0], 0x5a);
+            assert!(bytes.iter().all(|byte| *byte == 0x5a));
+            self.remaining -= bytes.len();
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> ax_io::IoResult<()> {
+            Ok(())
+        }
+    }
+
+    with_test_page_provider(true, |_| {
+        let cached = reopen_cached_file(Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 2])));
+        let mut destination = FaultingDestination {
+            source: cached.clone(),
+            remaining: PAGE_SIZE * 2,
+        };
+        assert_eq!(cached.read_at(&mut destination, 0).unwrap(), PAGE_SIZE * 2);
+        assert_eq!(destination.remaining, 0);
+    });
+}
+
+#[test]
 fn writeback_protect_endpoint_runs_without_endpoint_lock() {
     with_test_page_provider(true, |_| {
         let shared = Arc::new(CachedFileShared::new_unbounded(PAGE_SIZE as u64));
