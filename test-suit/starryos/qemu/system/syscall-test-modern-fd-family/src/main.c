@@ -963,7 +963,8 @@ static void test_memfd_seal_syscall_ordering_regressions(void)
 
     void *bad_addr = unmapped_user_addr();
 
-    /* writev: bad iovec buffer on sealed memfd -> EFAULT (access_ok before seal denial). */
+    /* The iovec itself and its address geometry are valid. Linux shmem checks
+     * the write seal before attempting the payload copy and its page fault. */
     errno = 0;
     int sealed = memfd_create("seal_order_writev", MFD_ALLOW_SEALING);
     CHECK(sealed >= 0, "memfd_create(seal_order_writev)");
@@ -975,11 +976,12 @@ static void test_memfd_seal_syscall_ordering_regressions(void)
         bad_iov.iov_len = 1;
         errno = 0;
         ssize_t w = writev(sealed, &bad_iov, 1);
-        CHECK(w == -1 && errno == EFAULT, "sealed memfd + 坏 iov -> EFAULT");
+        CHECK(w == -1 && errno == EPERM,
+              "sealed memfd + inaccessible iovec payload -> EPERM");
         CHECK_RET(close(sealed), 0, "close sealed memfd (writev case)");
     }
 
-    /* write: bad user buffer on sealed memfd -> EFAULT. */
+    /* The same write_begin ordering applies to a scalar write. */
     errno = 0;
     sealed = memfd_create("seal_order_write", MFD_ALLOW_SEALING);
     CHECK(sealed >= 0, "memfd_create(seal_order_write)");
@@ -988,7 +990,8 @@ static void test_memfd_seal_syscall_ordering_regressions(void)
         CHECK_RET(fcntl(sealed, F_ADD_SEALS, F_SEAL_WRITE), 0, "ADD_SEALS(F_SEAL_WRITE)");
         errno = 0;
         ssize_t ww = write(sealed, bad_addr, 1);
-        CHECK(ww == -1 && errno == EFAULT, "sealed memfd + 坏 buf -> EFAULT");
+        CHECK(ww == -1 && errno == EPERM,
+              "sealed memfd + inaccessible payload -> EPERM");
         CHECK_RET(close(sealed), 0, "close sealed memfd (write case)");
     }
 
