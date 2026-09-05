@@ -144,6 +144,10 @@ _guest_exit:
     RESTORE_HOST_ANCHORS
 
 _restore_csrs:
+    /* Restore the host vector before re-enabling host interrupts. */
+    ld    t1, ({hyp_stvec})(a0)
+    csrw  stvec, t1
+
     /* Swap in hypervisor CSRs. */
     ld    t1, ({hyp_sstatus})(a0)
     csrrw t1, sstatus, t1
@@ -156,9 +160,6 @@ _restore_csrs:
     ld    t1, ({hyp_scounteren})(a0)
     csrrw t1, scounteren, t1
     sd    t1, ({guest_scounteren})(a0)
-
-    ld    t1, ({hyp_stvec})(a0)
-    csrw  stvec, t1
 
     /* Save guest EPC. */
     csrr  t1, sepc
