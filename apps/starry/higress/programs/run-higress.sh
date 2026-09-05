@@ -46,18 +46,26 @@ ac() { wget -S -O /dev/null -T 10 "http://127.0.0.1:9901$1" 2>&1 | grep -oE 'HTT
 
 # --- TLS client helpers (openssl s_client, downstream TLS listener :10443) ---
 # tlsq METHOD PATH [EXTRA-HEADER]  -> full HTTP response (status line + headers + body)
+# openssl s_client is a bidirectional relay: after stdin EOF it half-closes and
+# blocks reading the socket until the peer's TLS close_notify arrives. The request
+# response is already complete by then (Connection: close), so bound the wait like
+# the wget helpers' -T, otherwise a slow peer-side shutdown stalls the probe.
 tlsq() {
     { printf '%s %s HTTP/1.1\r\n' "$1" "$2"
       printf 'Host: localhost\r\n'
       [ -n "${3:-}" ] && printf '%s\r\n' "$3"
       printf 'Connection: close\r\n\r\n'
-    } | openssl s_client -connect 127.0.0.1:10443 -quiet 2>/dev/null
+    } | timeout 20 openssl s_client -connect 127.0.0.1:10443 -quiet 2>/dev/null
 }
 tlsinfo() { openssl s_client -connect 127.0.0.1:10443 -servername localhost </dev/null 2>&1; }
 
+# Envoy is a large binary; on the emulated riscv64/loongarch64 targets its
+# startup (extension registration, cluster + listener init) can take a couple of
+# minutes under TCG before the server reaches LIVE, so the readiness budget is
+# generous. It returns as soon as /ready reports LIVE, so fast arches pay nothing.
 wait_ready() { # tries
     i=0
-    while [ "$i" -lt "${1:-60}" ]; do
+    while [ "$i" -lt "${1:-300}" ]; do
         [ "$(ab /ready)" = "LIVE" ] && return 0
         sleep 1; i=$((i+1))
     done
@@ -94,10 +102,10 @@ sleep 2
 
 # --- 3. baseline Envoy (enable_reuse_port:false) ---
 envoy_pid=$(start_envoy "$CONF_DIR/bootstrap.yaml" 1)
-if wait_ready 60; then
+if wait_ready 300; then
     # admin endpoints
     ck_eq  "admin: /ready LIVE"            "$(ab /ready)" "LIVE"
-    ck_has "admin: /stats server.state"    "$(ab /stats)" "server.state"
+    if ab /stats | grep -qF "server.state"; then ok "admin: /stats server.state"; else bad "admin: /stats server.state | missing[server.state]"; fi
     ck_has "admin: /server_info LIVE"      "$(ab /server_info)" "LIVE"
     ck_has "admin: /clusters backend_a"    "$(ab /clusters)" "backend_a"
     listeners=$(ab /listeners)
@@ -146,8 +154,11 @@ if wait_ready 60; then
     rr=""; i=0; while [ "$i" -lt 12 ]; do rr="$rr$(hb /rr)"; i=$((i+1)); done
     ck_has "lb: round_robin hits a"        "$rr" "BACKEND=backend_a"
     ck_has "lb: round_robin hits b"        "$rr" "BACKEND=backend_b"
+    # weighted_clusters picks a cluster by weighted-random per request, so the 2:1
+    # split only shows over a large enough sample; 120 draws keep a>b robust
+    # (P(inversion) < 1e-4) where 40 could invert by chance under the binomial tail.
     ca=0; cb=0; i=0
-    while [ "$i" -lt 40 ]; do
+    while [ "$i" -lt 120 ]; do
         r=$(hb /api/x)
         case "$r" in *backend_a*) ca=$((ca+1)) ;; esac
         case "$r" in *backend_b*) cb=$((cb+1)) ;; esac
@@ -204,9 +215,18 @@ sleep 2
 
 # --- 4. reuse_port:true (exercises SO_REUSEPORT) ---
 envoy_rp_pid=$(start_envoy "$CONF_DIR/bootstrap-reuseport.yaml" 2)
-if wait_ready 60; then
+if wait_ready 300; then
     ck_eq  "reuse_port: /ready LIVE"       "$(ab /ready)" "LIVE"
-    ck_has "reuse_port: listener serves"   "$(hb /)" "BACKEND=backend_a"
+    # The reuse_port data listener (:10000) can accept a beat after admin /ready
+    # first reports LIVE on the freshly restarted server, so give the first
+    # proxied request a few tries before asserting it reaches the backend.
+    rp=""; i=0
+    while [ "$i" -lt 10 ]; do
+        rp=$(hb /)
+        case "$rp" in *BACKEND=backend_a*) break ;; esac
+        sleep 1; i=$((i+1))
+    done
+    ck_has "reuse_port: listener serves"   "$rp" "BACKEND=backend_a"
 else
     echo "  FAIL | reuse_port Envoy did not become ready (SO_REUSEPORT?)"
     tail -40 "$WORK/envoy-2.log" 2>/dev/null || true
