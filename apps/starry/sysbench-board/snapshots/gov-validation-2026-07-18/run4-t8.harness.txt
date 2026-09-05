@@ -1,0 +1,26 @@
+GOV_HARNESS_BEGIN
+GH_UNAME 10.0.0 aarch64 threads=8
+GH_PHASE 1 idle_settle 4s (expect gov step-DOWN)
+GH_PHASE 2 cpuprobe_sweep (expect gov step-UP; ips = scaled freq)
+GH_PC req=0 landed=0 cntfrq=24000000 iters=32000000 sec=0.4421 ips=72381691 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=269b78c8ba016e15
+GH_PC req=1 landed=1 cntfrq=24000000 iters=32000000 sec=0.4388 ips=72926945 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=37621d27d8368adc
+GH_PC req=2 landed=2 cntfrq=24000000 iters=32000000 sec=0.4389 ips=72914634 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=860d0c5b395f3986
+GH_PC req=3 landed=3 cntfrq=24000000 iters=32000000 sec=0.4388 ips=72928108 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=27fd1279313a1f02
+GH_PC req=4 landed=4 cntfrq=24000000 iters=64000000 sec=0.5655 ips=113166953 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=6c141bb2a7880e23
+GH_PC req=5 landed=5 cntfrq=24000000 iters=64000000 sec=0.5655 ips=113166311 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=62a8a126fe3edfeb
+GH_PC req=6 landed=6 cntfrq=24000000 iters=64000000 sec=0.5684 ips=112600287 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=ad919febbb548a0b
+GH_PC req=7 landed=7 cntfrq=24000000 iters=64000000 sec=0.5684 ips=112597225 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=345670d9dce217ec
+GH_PHASE 3 idle_gap 3s (expect gov step-DOWN)
+GH_PHASE 4 sysbench cpu threads=8 time=12 (expect gov step-UP; PSU stress)
+GH_SB eps=201.58
+GH_PHASE 5 idle_return 4s (expect gov step-DOWN)
+GH_FINAL_PROBE
+GH_PC req=0 landed=0 cntfrq=24000000 iters=32000000 sec=0.4422 ips=72361020 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=2238df315f30276a
+GH_PC req=1 landed=1 cntfrq=24000000 iters=32000000 sec=0.4388 ips=72931259 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=1cb149f4c826480f
+GH_PC req=2 landed=2 cntfrq=24000000 iters=32000000 sec=0.4389 ips=72914828 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=78db355bc0ce3cea
+GH_PC req=3 landed=3 cntfrq=24000000 iters=32000000 sec=0.4387 ips=72934798 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=289027a724ab214f
+GH_PC req=4 landed=4 cntfrq=24000000 iters=64000000 sec=0.5657 ips=113140812 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=5247458ca85bda56
+GH_PC req=5 landed=5 cntfrq=24000000 iters=64000000 sec=0.5656 ips=113156040 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=e73112b40d60740e
+GH_PC req=6 landed=6 cntfrq=24000000 iters=64000000 sec=0.5684 ips=112587115 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=aa72aef25611a619
+GH_PC req=7 landed=7 cntfrq=24000000 iters=64000000 sec=0.5684 ips=112589252 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=fa8400ca0d4e905e
+GOV_HARNESS_DONE
