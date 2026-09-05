@@ -1093,8 +1093,8 @@ impl<'a> OwnerRqTxn<'a> {
     /// A request published after the decision sets a sticky entry bit for the
     /// next pass. Owner-inbox work that remains after this transaction is
     /// explicitly rearmed after the rq state becomes visible.
-    pub(crate) fn commit_and_finish_scheduler_request(mut self) {
-        let _claim = self
+    pub(crate) fn commit_and_finish_scheduler_request(mut self) -> SchedulerRequestClaim {
+        let claim = self
             .request
             .take()
             .expect("a scheduler rq transaction must merge its decision claim");
@@ -1107,6 +1107,7 @@ impl<'a> OwnerRqTxn<'a> {
         self.finished = true;
         drop(self.run_queue.take());
         remote.finish_scheduler_request();
+        claim
     }
 
     /// Publishes the selected rq state but transfers its raw lock to switch

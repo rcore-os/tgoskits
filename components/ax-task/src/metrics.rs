@@ -95,7 +95,6 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub direct_wake_preemptions: u64,
     pub direct_wake_current_kept: u64,
     pub direct_wake_queued_candidate_selected: u64,
-    pub direct_wake_scheduler_republications: u64,
     pub fair_pick_protected_current: u64,
     pub fair_wake_wakee_ineligible: u64,
     pub fair_wake_current_ineligible: u64,
@@ -184,7 +183,6 @@ struct QperfSchedulerMetrics {
     direct_wake_preemptions: AtomicU64,
     direct_wake_current_kept: AtomicU64,
     direct_wake_queued_candidate_selected: AtomicU64,
-    direct_wake_scheduler_republications: AtomicU64,
     fair_pick_protected_current: AtomicU64,
     fair_wake_wakee_ineligible: AtomicU64,
     fair_wake_current_ineligible: AtomicU64,
@@ -290,7 +288,6 @@ impl QperfSchedulerMetrics {
             direct_wake_preemptions: AtomicU64::new(0),
             direct_wake_current_kept: AtomicU64::new(0),
             direct_wake_queued_candidate_selected: AtomicU64::new(0),
-            direct_wake_scheduler_republications: AtomicU64::new(0),
             fair_pick_protected_current: AtomicU64::new(0),
             fair_wake_wakee_ineligible: AtomicU64::new(0),
             fair_wake_current_ineligible: AtomicU64::new(0),
@@ -616,9 +613,6 @@ impl QperfSchedulerMetrics {
             direct_wake_current_kept: self.direct_wake_current_kept.load(Ordering::Relaxed),
             direct_wake_queued_candidate_selected: self
                 .direct_wake_queued_candidate_selected
-                .load(Ordering::Relaxed),
-            direct_wake_scheduler_republications: self
-                .direct_wake_scheduler_republications
                 .load(Ordering::Relaxed),
             fair_pick_protected_current: self.fair_pick_protected_current.load(Ordering::Relaxed),
             fair_wake_wakee_ineligible: self.fair_wake_wakee_ineligible.load(Ordering::Relaxed),

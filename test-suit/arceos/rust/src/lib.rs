@@ -341,7 +341,7 @@ const SELECTED_TESTS: &[TestCase] = &[
     #[cfg(feature = "task-scheduler-owner-claim")]
     TestCase::new(
         "task-scheduler-owner-claim",
-        "no-switch scheduler frame reuses one CPU owner claim",
+        "no-switch scheduler frame avoids redundant CPU owner claims",
         run_task_scheduler_owner_claim,
     ),
     #[cfg(feature = "task-sleep")]

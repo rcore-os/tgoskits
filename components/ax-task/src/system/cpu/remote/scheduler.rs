@@ -73,6 +73,7 @@ impl SchedulerRequestPublication {}
 pub(crate) struct SchedulerRequestClaim {
     immediate_preempt: bool,
     lazy_preempt: bool,
+    owner_work: bool,
 }
 
 impl SchedulerRequestClaim {
@@ -88,10 +89,15 @@ impl SchedulerRequestClaim {
         self.immediate_preempt || self.lazy_preempt
     }
 
+    pub(crate) const fn owner_work_requested(self) -> bool {
+        self.owner_work
+    }
+
     pub(crate) const fn merge(self, other: Self) -> Self {
         Self {
             immediate_preempt: self.immediate_preempt || other.immediate_preempt,
             lazy_preempt: self.lazy_preempt || other.lazy_preempt,
+            owner_work: self.owner_work || other.owner_work,
         }
     }
 }
@@ -171,6 +177,7 @@ impl SchedulerRequestState {
             immediate_preempt: request & REQUEST_PREEMPT != 0,
             lazy_preempt: request & REQUEST_PREEMPT_LAZY != 0
                 && scope == SchedulerRequestScope::All,
+            owner_work: request & REQUEST_OWNER_WORK != 0,
         }
     }
 

@@ -10,16 +10,21 @@ use crate::{
     system::cpu::{PreviousSwitchDisposition, PreviousSwitchOwnership, SchedulerRequestClaim},
 };
 
-fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
+fn realtime_current_remains_selected(
+    transaction: &mut OwnerRqTxn<'_>,
+    current_policy: SchedulePolicy,
+) -> bool {
     if transaction.rt_is_effectively_throttled() {
         return false;
     }
-    let Some(priority) = transaction.current().and_then(|current| {
-        current
-            .schedule_policy()
-            .rt_priority()
-            .map(|priority| priority.get())
-    }) else {
+    // rq->nr_running already includes a linked RT current. With no other
+    // runnable entity, the class chain must select that current again; only
+    // RT throttling can make idle win. Avoid rediscovering the same fact
+    // through the priority bitmap and per-priority list length.
+    if transaction.nr_queued() == 0 {
+        return true;
+    }
+    let Some(priority) = current_policy.rt_priority().map(|priority| priority.get()) else {
         return false;
     };
     if transaction.highest_rt_priority() != Some(priority)
@@ -35,11 +40,11 @@ fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
     !transaction.has_selectable_higher_class(SchedulerClass::Realtime, RtEligibility::Runnable)
 }
 
-fn owner_yield_kept_class(transaction: &mut OwnerRqTxn<'_>) -> Option<SchedulerClass> {
-    let policy = transaction
-        .current()
-        .map(|current| current.schedule_policy())?;
-    let class = SchedulerClass::for_policy(policy);
+fn owner_yield_kept_class(
+    transaction: &mut OwnerRqTxn<'_>,
+    current_policy: SchedulePolicy,
+) -> Option<SchedulerClass> {
+    let class = SchedulerClass::for_policy(current_policy);
     let keeps_current = match class {
         SchedulerClass::Fair => transaction.nr_queued() == 0,
         SchedulerClass::Realtime => {
@@ -47,7 +52,7 @@ fn owner_yield_kept_class(transaction: &mut OwnerRqTxn<'_>) -> Option<SchedulerC
             // policy belongs to the same rq-owned current dispatch, so class
             // selection must not rediscover its entity through the queued
             // generation index.
-            realtime_current_remains_selected(transaction)
+            realtime_current_remains_selected(transaction, current_policy)
         }
         SchedulerClass::Stop | SchedulerClass::Deadline => false,
     };
@@ -147,7 +152,11 @@ impl TaskSystem {
         transaction: &mut OwnerRqTxn<'_>,
         current: &ThreadCore,
     ) -> bool {
-        realtime_current_remains_selected(transaction)
+        let Some(current_policy) = transaction.current().map(CurrentDispatch::schedule_policy)
+        else {
+            return false;
+        };
+        realtime_current_remains_selected(transaction, current_policy)
             && self
                 .prepare_owner_rq_schedule_out(transaction, current)
                 .is_some()
@@ -162,12 +171,13 @@ impl TaskSystem {
         scheduler_deadline: OwnerSchedulerDeadline,
     ) -> Result<SchedulerOutcome, TaskError> {
         let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
-        transaction.commit_and_finish_scheduler_request();
+        let request = transaction.commit_and_finish_scheduler_request();
 
         if let Some(core) = runtime_overrun_work {
             self.publish_deadline_overrun_work(core);
         }
-        let run_queue_changed = if self.owner_balance_work_pending(cpu.as_ref().get_ref(), current)
+        let run_queue_changed = if request.owner_work_requested()
+            && self.owner_balance_work_pending(cpu.as_ref().get_ref(), current)
         {
             self.service_owner_balance(cpu.as_mut(), current)?
                 .run_queue_changed()
@@ -954,29 +964,38 @@ impl TaskSystem {
         let mut transaction = unsafe { rq_entry.begin(self, remote) };
         #[cfg(feature = "qperf-metrics")]
         let rq_begin_finished_ns = task_runtime::monotonic_now().as_nanos();
-        let previous = {
-            let previous_core = transaction.current_core_ref().unwrap_or_else(|| {
+        let (previous, current_policy, deadline_task_control) = {
+            let current = transaction.current().unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
             });
+            let previous_core = current.runtime_core();
             if expected_current.is_some_and(|expected| !core::ptr::eq(expected, previous_core)) {
                 task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
             }
-            previous_core.id()
+            (
+                previous_core.id(),
+                current.schedule_policy(),
+                current.metadata().deadline_bandwidth_scaled != 0,
+            )
         };
-        let requires_task_control = {
-            let previous_core = transaction.current_core_ref().unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
-            });
-            let placement = previous_core.sched().placement();
-            placement.requested_migration().is_some()
-                || transaction
-                    .current()
-                    .is_some_and(|dispatch| dispatch.metadata().deadline_bandwidth_scaled != 0)
-        };
+        // Linux does not inspect p->migration_pending on every sched_yield().
+        // A running task migration first publishes an ordinary reschedule
+        // request; only that exceptional decision needs to consult task-local
+        // placement before deciding whether rq ownership alone is sufficient.
+        // A request racing after this claim remains sticky for the frame's
+        // final scheduler recheck.
+        let request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
+        let migration_task_control = request.preemption_requested()
+            && transaction
+                .current_core_ref()
+                .is_some_and(|core| core.sched().placement().requested_migration().is_some());
+        let requires_task_control = deadline_task_control
+            || matches!(current_policy, SchedulePolicy::Deadline(_))
+            || migration_task_control;
         let kept_class = if requires_task_control {
             None
         } else {
-            owner_yield_kept_class(&mut transaction)
+            owner_yield_kept_class(&mut transaction, current_policy)
         };
         if let Some(kept_class) = kept_class {
             // For a lone Fair task, Linux's yield hook returns early but
@@ -988,7 +1007,6 @@ impl TaskSystem {
             if kept_class == SchedulerClass::Fair {
                 let _settled = transaction.settle_current(0);
             }
-            transaction.merge_scheduler_request(SchedulerRequestScope::All);
             #[cfg(feature = "qperf-metrics")]
             {
                 let rq_preflight_finished_ns = task_runtime::monotonic_now().as_nanos();
@@ -1090,8 +1108,14 @@ impl TaskSystem {
         }
         if let Some(core) = previous_core.as_ref() {
             let owner = cpu.owner();
+            let current_policy = transaction
+                .current()
+                .map(CurrentDispatch::schedule_policy)
+                .unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1207, owner.as_u32() as usize)
+                });
             let continuing_dispatch = {
-                owner_yield_kept_class(&mut transaction).is_some()
+                owner_yield_kept_class(&mut transaction, current_policy).is_some()
                     && transaction
                         .task_state(core.id(), core.sched().placement())
                         .is_current()
