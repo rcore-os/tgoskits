@@ -8,6 +8,8 @@ use virtio_drivers::{
     transport::{DeviceType, Transport, mmio::MmioTransport},
 };
 
+#[cfg(feature = "virtio-blk")]
+pub mod blk;
 #[cfg(feature = "virtio-gpu")]
 pub mod display;
 #[cfg(feature = "virtio-input")]
@@ -24,6 +26,7 @@ pub const MMIO_DEVICE_NAME: &str = "virtio-mmio";
     feature = "virtio-gpu",
     feature = "virtio-input",
     feature = "virtio-socket",
+    feature = "virtio-blk",
 ))]
 crate::model_register!(
     name: "VirtIO MMIO",
@@ -40,14 +43,23 @@ crate::model_register!(
     feature = "virtio-gpu",
     feature = "virtio-input",
     feature = "virtio-socket",
+    feature = "virtio-blk",
 ))]
 fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe::OnProbeError> {
+    let (device_type, transport) = {
+        let info = probe.info();
+        probe_fdt_mmio_device(info)?
+    };
+    #[cfg(feature = "virtio-blk")]
+    if device_type == DeviceType::Block {
+        return blk::register_fdt_transport(probe, transport);
+    }
     let (info, platform_device) = probe.into_parts();
-    let (device_type, transport) = probe_fdt_mmio_device(&info)?;
     #[cfg(feature = "virtio-net")]
     if device_type == DeviceType::Network {
         return net::register_fdt_transport(&info, platform_device, transport);
     }
+    drop(info);
     register_static_transport(platform_device, device_type, transport)
 }
 
@@ -59,6 +71,7 @@ pub const fn has_static_mmio_drivers() -> bool {
         feature = "virtio-gpu",
         feature = "virtio-input",
         feature = "virtio-socket",
+        feature = "virtio-blk",
     ))
 }
 
@@ -133,6 +146,7 @@ pub fn register_static_mmio(
     feature = "virtio-gpu",
     feature = "virtio-input",
     feature = "virtio-socket",
+    feature = "virtio-blk",
 ))]
 pub fn register_static_transport<T: Transport + 'static>(
     plat_dev: rdrive::PlatformDevice,
@@ -148,6 +162,8 @@ pub fn register_static_transport<T: Transport + 'static>(
         DeviceType::Input => input::register_transport(plat_dev, transport),
         #[cfg(feature = "virtio-socket")]
         DeviceType::Socket => vsock::register_transport(plat_dev, transport),
+        #[cfg(feature = "virtio-blk")]
+        DeviceType::Block => blk::register_static(plat_dev, transport),
         _ => Err(rdrive::probe::OnProbeError::NotMatch),
     }
 }
@@ -157,6 +173,7 @@ pub fn register_static_transport<T: Transport + 'static>(
     feature = "virtio-gpu",
     feature = "virtio-input",
     feature = "virtio-socket",
+    feature = "virtio-blk",
 )))]
 pub fn register_static_transport<T: Transport + 'static>(
     _plat_dev: rdrive::PlatformDevice,

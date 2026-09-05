@@ -1,0 +1,7 @@
+features = [
+  "ax-driver/nvme",
+  "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/qemu/aarch64/starry-smp1.toml"]

@@ -30,6 +30,7 @@ virtio-net = ["net", "virtio", "pci", "dep:ax-sync"]
 virtio-gpu = ["display", "virtio", "pci"]
 virtio-input = ["input", "virtio", "pci"]
 virtio-socket = ["vsock", "virtio", "pci"]
+virtio-blk = ["block", "virtio", "dep:ax-sync"]
 
 ls2k1000-gmac = ["net", "dep:ax-sync"]
 ahci = ["block", "pci", "dep:ahci-driver"]
@@ -155,6 +156,7 @@ axklib.workspace = true
 crab-usb = { workspace = true, optional = true }
 cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
+bitflags = { workspace = true }
 dwmmc-host = { workspace = true, optional = true }
 eth-intel = { workspace = true, optional = true }
 fdt-edit = { workspace = true }
