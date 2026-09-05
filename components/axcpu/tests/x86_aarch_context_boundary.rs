@@ -80,6 +80,34 @@ fn x86_cpu_initialization_does_not_rebind_the_platform_cpu_area() {
     assert!(!source.contains("ax_percpu::init_percpu_reg"));
 }
 
+#[test]
+fn aarch64_tlb_sequences_complete_page_table_stores_before_invalidation() {
+    // This checks the literal ISA protocol, rather than modeling hardware
+    // ordering with a fake runtime. QEMU execution supplements it but cannot
+    // deterministically expose a missing architectural store-completion barrier.
+    let source = read_arch_source("aarch64/asm.rs");
+    let body = function_body(&source, "pub fn flush_tlb(");
+    let sequences: Vec<_> = body
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("asm!(\""))
+        .map(|literal| literal.split('"').next().unwrap())
+        .collect();
+    assert_eq!(sequences.len(), 4, "EL1/EL2, address/full invalidation");
+    for sequence in sequences {
+        let instructions: Vec<_> = sequence.split(';').map(str::trim).collect();
+        assert!(
+            matches!(instructions[0], "dsb ishst" | "dsb sy"),
+            "page-table stores must complete before TLBI: {sequence}",
+        );
+        assert!(instructions.iter().any(|op| op.starts_with("tlbi ")));
+        assert_eq!(instructions.last(), Some(&"isb"));
+        assert!(matches!(
+            instructions[instructions.len() - 2],
+            "dsb ish" | "dsb sy"
+        ));
+    }
+}
+
 fn read_arch_source(relative: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("src")
