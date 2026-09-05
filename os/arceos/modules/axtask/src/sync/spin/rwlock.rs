@@ -205,6 +205,17 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
         }
     }
 
+    #[cfg(feature = "lockdep")]
+    #[inline(always)]
+    #[track_caller]
+    fn observe_irqsave_lock(lockdep: LockdepAcquire) {
+        lockdep.observe_irqsave::<G>("spin-rwlock");
+    }
+
+    #[cfg(not(feature = "lockdep"))]
+    #[inline(always)]
+    fn observe_irqsave_lock(_lockdep: LockdepAcquire) {}
+
     #[inline(always)]
     fn try_acquire_read(&self) -> bool {
         let old = self.state.fetch_add(READER, Ordering::Acquire);
@@ -236,6 +247,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
         }
         pending.mark_acquired(RwLockMode::Read);
         Self::finish_lockdep(lockdep, true);
+        Self::observe_irqsave_lock(lockdep);
         let guard_state = pending.into_state();
         BaseSpinRwLockReadGuard {
             _phantom: &PhantomData,
@@ -260,6 +272,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
         }
         pending.mark_acquired(RwLockMode::Write);
         Self::finish_lockdep(lockdep, true);
+        Self::observe_irqsave_lock(lockdep);
         let guard_state = pending.into_state();
         BaseSpinRwLockWriteGuard {
             _phantom: &PhantomData,
@@ -284,6 +297,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
         Self::finish_lockdep(lockdep, acquired);
 
         if acquired {
+            Self::observe_irqsave_lock(lockdep);
             let guard_state = pending.into_state();
             Some(BaseSpinRwLockReadGuard {
                 _phantom: &PhantomData,
@@ -311,6 +325,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinRwLock<G, T> {
         Self::finish_lockdep(lockdep, acquired);
 
         if acquired {
+            Self::observe_irqsave_lock(lockdep);
             let guard_state = pending.into_state();
             Some(BaseSpinRwLockWriteGuard {
                 _phantom: &PhantomData,

@@ -179,6 +179,17 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
         }
     }
 
+    #[cfg(feature = "lockdep")]
+    #[inline(always)]
+    #[track_caller]
+    fn observe_irqsave_lock(lockdep: LockdepAcquire) {
+        lockdep.observe_irqsave::<G>("spin");
+    }
+
+    #[cfg(not(feature = "lockdep"))]
+    #[inline(always)]
+    fn observe_irqsave_lock(_lockdep: LockdepAcquire) {}
+
     #[inline(always)]
     #[cfg(feature = "smp")]
     fn acquire_once_weak(
@@ -282,6 +293,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
         let mut pending = PendingSpinLockAcquire::new(self);
         let lockdep = LockdepAcquire::prepare_nested(self, false, subclass);
         self.blocking_acquire(&mut pending, lockdep);
+        Self::observe_irqsave_lock(lockdep);
         let irq_state = pending.into_state();
         BaseSpinLockGuard {
             _phantom: &PhantomData,
@@ -320,6 +332,7 @@ impl<G: GuardState, T: ?Sized> BaseSpinLock<G, T> {
         let is_unlocked = self.try_acquire(&mut pending, lockdep);
 
         if is_unlocked {
+            Self::observe_irqsave_lock(lockdep);
             let irq_state = pending.into_state();
             Some(BaseSpinLockGuard {
                 _phantom: &PhantomData,

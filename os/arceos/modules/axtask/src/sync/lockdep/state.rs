@@ -45,6 +45,10 @@ impl LockdepMap {
         }
     }
 
+    pub(crate) fn class_key(&self) -> usize {
+        self.class_key.load(Ordering::Acquire) as usize
+    }
+
     /// Borrows lock-class storage supplied by the `ax-sync` bridge.
     ///
     /// # Safety

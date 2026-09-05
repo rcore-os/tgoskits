@@ -316,6 +316,7 @@ impl Drop for PendingSpinAcquire<'_> {
 
 /// Performs a complete spin acquisition transaction.
 pub fn spin_acquire(request: SpinAcquireRequest<'_>) -> (bool, usize) {
+    let class_key = request.class.class_key.load(Ordering::Acquire) as usize;
     let mut pending = PendingSpinAcquire::new(request.locked, request.context);
     let lockdep = BridgeLockdepAcquire::prepare(LockdepAcquireRequest {
         class: request.class,
@@ -356,6 +357,13 @@ pub fn spin_acquire(request: SpinAcquireRequest<'_>) -> (bool, usize) {
     pending.acquired = acquired;
     lockdep.finish(acquired);
     if acquired {
+        observe_irqsave_bridge_acquire(
+            "spin",
+            request.lock_addr,
+            request.context,
+            class_key,
+            request.caller,
+        );
         (true, pending.finish())
     } else {
         (false, 0)
@@ -451,6 +459,7 @@ fn try_write(state: &AtomicUsize) -> bool {
 
 /// Performs a complete read or write acquisition transaction.
 pub fn rwlock_acquire(request: RwLockAcquireRequest<'_>) -> (bool, usize) {
+    let class_key = request.class.class_key.load(Ordering::Acquire) as usize;
     let mut pending = PendingRwAcquire::new(request.state, request.context);
     let lockdep = BridgeLockdepAcquire::prepare(LockdepAcquireRequest {
         class: request.class,
@@ -496,10 +505,40 @@ pub fn rwlock_acquire(request: RwLockAcquireRequest<'_>) -> (bool, usize) {
     }
     lockdep.finish(acquired);
     if acquired {
+        observe_irqsave_bridge_acquire(
+            "spin-rwlock",
+            request.lock_addr,
+            request.context,
+            class_key,
+            request.caller,
+        );
         (true, pending.finish())
     } else {
         (false, 0)
     }
+}
+
+#[cfg(feature = "lockdep")]
+fn observe_irqsave_bridge_acquire(
+    kind: &'static str,
+    addr: usize,
+    context: u8,
+    class_key: usize,
+    caller: &'static Location<'static>,
+) {
+    if context == CONTEXT_PREEMPT_IRQSAVE || context == CONTEXT_IRQSAVE {
+        super::lockdep::observe_irqsave_lock_acquire(kind, addr, class_key, caller);
+    }
+}
+
+#[cfg(not(feature = "lockdep"))]
+fn observe_irqsave_bridge_acquire(
+    _kind: &'static str,
+    _addr: usize,
+    _context: u8,
+    _class_key: usize,
+    _caller: &'static Location<'static>,
+) {
 }
 
 /// Releases a read or write acquisition and restores its context.
