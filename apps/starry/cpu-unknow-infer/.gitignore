@@ -1,0 +1,8 @@
+build-starry/
+target/
+*.o
+*.so
+*.so.*
+*.gguf
+vendor/
+programs/carpets/infer_llamacpp/bin/

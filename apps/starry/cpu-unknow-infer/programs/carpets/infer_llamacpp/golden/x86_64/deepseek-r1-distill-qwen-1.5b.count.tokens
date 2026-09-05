@@ -1,0 +1,4 @@
+PROMPT Count from one to five:
+NPREDICT 8
+ARGMAX0 220
+GEN 220 16 11 220 17 11 220 18
