@@ -320,7 +320,6 @@ impl JBD2DEVSYSTEM {
         };
         let mut tags = Vec::new();
         let mut off = JBD2_DESCRIPTOR_HEADER_SIZE;
-        let mut saw_last_tag = false;
 
         while off < descriptor_end {
             let parsed = if checksum_mode == Jbd2ChecksumMode::CsumV3 {
@@ -398,12 +397,12 @@ impl JBD2DEVSYSTEM {
 
             let (block, flags, checksum, all_zero) = parsed;
             if all_zero && desc_buf[off..descriptor_end].iter().all(|b| *b == 0) {
-                if tags.is_empty() {
-                    return Ok(ReplayDescriptor::EmptyTail);
-                }
-                return Err(
-                    Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_missing_last")
-                );
+                // Linux count_tags() does not reject a descriptor without
+                // LAST_TAG. Zero padding makes it skip past the real payloads
+                // and treat the transaction as an incomplete log tail. Keep
+                // that transaction invisible rather than turning a previous
+                // lifetime's torn descriptor into a mount failure.
+                return Ok(ReplayDescriptor::EmptyTail);
             }
 
             let last = (flags & u32::from(JBD2_FLAG_LAST_TAG)) != 0;
@@ -424,15 +423,8 @@ impl JBD2DEVSYSTEM {
                 off = uuid_end;
             }
             if last {
-                saw_last_tag = true;
                 break;
             }
-        }
-
-        if !saw_last_tag {
-            return Err(
-                Ext4Error::corrupted().with_operation("jbd2:replay_descriptor_missing_last")
-            );
         }
 
         Ok(ReplayDescriptor::Tagged {
@@ -547,6 +539,25 @@ impl JBD2DEVSYSTEM {
             journal_blocks,
             WriteFlags::METADATA | WriteFlags::FUA,
         )
+    }
+
+    /// Clears a prior mount's recorded error with an ordered superblock write.
+    pub(crate) fn clear_recorded_error_with_mapping<D: FilesystemBlockIo>(
+        &mut self,
+        block_dev: &mut D,
+        journal_blocks: &[AbsoluteBN],
+    ) -> Ext4Result<()> {
+        let previous_superblock = self.jbd2_super_block;
+        self.jbd2_super_block.s_errno = 0;
+        if let Err(error) = self.write_journal_superblock_with_mapping_flags(
+            block_dev,
+            journal_blocks,
+            WriteFlags::METADATA | WriteFlags::FUA,
+        ) {
+            self.jbd2_super_block = previous_superblock;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Returns the next writable journal block using the journal inode mapping.
@@ -2190,7 +2201,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_rejects_descriptor_without_a_last_tag() {
+    fn replay_discards_an_incomplete_descriptor_without_a_last_tag() {
         let system = transaction_system(Jbd2RunningTransactionPhase::Running);
         let mut descriptor = vec![0; BLOCK_SIZE];
         JournalHeaderS {
@@ -2209,11 +2220,11 @@ mod tests {
                 [JBD2_DESCRIPTOR_HEADER_SIZE..JBD2_DESCRIPTOR_HEADER_SIZE + JBD2_TAG_SIZE],
         );
 
-        let error = system
+        let descriptor = system
             .parse_replay_tags(&descriptor)
-            .expect_err("descriptor tags must terminate with LAST_TAG");
+            .expect("an incomplete descriptor is a clean journal tail");
 
-        assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+        assert!(matches!(descriptor, ReplayDescriptor::EmptyTail));
     }
 
     #[test]
