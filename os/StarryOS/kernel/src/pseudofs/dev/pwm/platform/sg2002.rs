@@ -1,4 +1,4 @@
-use ax_hal::mem::{PhysAddr, phys_to_virt};
+use ax_memory_addr::PhysAddr;
 use axfs_ng_vfs::{VfsError, VfsResult};
 use rdif_pwm::{DriverGeneric, Interface as PwmInterface, PwmError, PwmPolarity, PwmState};
 use sg200x_bsp::{
@@ -45,10 +45,12 @@ pub(in crate::pseudofs::dev::pwm) fn pwmchip_index(chip_number: u8) -> Option<u8
 impl PwmHardware {
     pub(in crate::pseudofs::dev::pwm) fn new(index: u8) -> Self {
         let pwm_paddr = PWM0_BASE + index as usize * 0x1000;
-        let pwm_addr = phys_to_virt(PhysAddr::from_usize(pwm_paddr)).as_usize();
+        let pwm_vaddr = axklib::mem::iomap(PhysAddr::from(pwm_paddr), 0x1000)
+            .expect("failed to iomap PWM controller")
+            .as_usize();
         Self {
             controller: Sg2002Pwm {
-                pwm: unsafe { Pwm::new(pwm_addr) },
+                pwm: unsafe { Pwm::new(pwm_vaddr) },
             },
         }
     }
