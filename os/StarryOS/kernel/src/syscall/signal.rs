@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use core::{future::poll_fn, task::Poll};
+use core::{future::poll_fn, slice, task::Poll};
 
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{
@@ -11,7 +11,7 @@ use linux_raw_sys::general::{
     SS_ONSTACK, kernel_sigaction, siginfo, timespec,
 };
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
-use starry_vm::{VmMutPtr, VmPtr};
+use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     Errno, StarryError, StarryResult,
@@ -90,8 +90,16 @@ pub fn sys_rt_sigaction(
 }
 
 pub fn sys_rt_sigpending(set: *mut SignalSet, sigsetsize: usize) -> StarryResult<isize> {
-    check_sigset_size(sigsetsize)?;
-    set.vm_write(current().as_thread().signal.pending())?;
+    if sigsetsize > size_of::<SignalSet>() {
+        return Err(StarryError::InvalidInput);
+    }
+    if sigsetsize != 0 {
+        let pending = current().as_thread().signal.pending();
+        let bytes = unsafe {
+            slice::from_raw_parts((&pending as *const SignalSet).cast::<u8>(), sigsetsize)
+        };
+        vm_write_slice(set.cast::<u8>(), bytes)?;
+    }
     Ok(0)
 }
 
