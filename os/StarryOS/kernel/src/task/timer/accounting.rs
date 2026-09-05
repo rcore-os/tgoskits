@@ -142,7 +142,7 @@ impl CpuTimeAccounting {
                 .expect("RTTIME generation overflow");
         }
         self.realtime_state.store(
-            u8::from(realtime_policy) * REALTIME_POLICY_ACTIVE | REALTIME_BASELINE_PENDING,
+            (u8::from(realtime_policy) * REALTIME_POLICY_ACTIVE) | REALTIME_BASELINE_PENDING,
             Ordering::Release,
         );
     }
@@ -191,10 +191,11 @@ impl CpuTimeAccounting {
             raw_user_ns: tick.user_ns(),
             raw_system_ns: tick.system_ns(),
             runtime_ns,
-            realtime_continuous_ns: realtime
-                .policy
-                .then(|| runtime_ns.saturating_sub(realtime.baseline_runtime_ns))
-                .unwrap_or(0),
+            realtime_continuous_ns: if realtime.policy {
+                runtime_ns.saturating_sub(realtime.baseline_runtime_ns)
+            } else {
+                0
+            },
             realtime_reset_generation: realtime.reset_generation,
             realtime_policy: realtime.policy,
         }

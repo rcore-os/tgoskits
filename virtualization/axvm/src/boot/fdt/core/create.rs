@@ -1188,6 +1188,12 @@ mod tests {
             ..Default::default()
         });
         let passthrough_devices = find_all_passthrough_devices(&vm_cfg, &host);
+        let excluded_device_paths = vm_cfg
+            .excluded_devices()
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
 
         let cfg = GuestConfig {
             base: axvmconfig::VMBaseConfig {
@@ -1197,7 +1203,9 @@ mod tests {
             ..Default::default()
         };
 
-        let dtb = super::create_guest_fdt(&host, &passthrough_devices, &cfg).unwrap();
+        let dtb =
+            super::create_guest_fdt(&host, &passthrough_devices, &cfg, &excluded_device_paths)
+                .unwrap();
         let guest = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(guest.get_by_path_id("/soc").is_some());

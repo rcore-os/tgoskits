@@ -622,11 +622,7 @@ mod tests {
             ClockEventAction::Resume(deadline(100))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(1_000)),
-                Some(scheduler_deadline(1_000)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(1_000)),),
             ClockEventAction::None
         );
 
@@ -664,11 +660,7 @@ mod tests {
     fn stale_scheduler_generation_cannot_cross_an_offline_cycle() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
-            event.publish_scheduler(
-                7,
-                Some(scheduler_deadline(90)),
-                Some(scheduler_deadline(90)),
-            ),
+            event.publish_scheduler(7, Some(scheduler_deadline(90)),),
             ClockEventAction::None
         );
         assert_eq!(
@@ -677,11 +669,7 @@ mod tests {
         );
         assert_eq!(event.take_offline(), ClockEventAction::Stop);
         assert_eq!(
-            event.publish_scheduler(
-                6,
-                Some(scheduler_deadline(50)),
-                Some(scheduler_deadline(50)),
-            ),
+            event.publish_scheduler(6, Some(scheduler_deadline(50)),),
             ClockEventAction::None
         );
         assert_eq!(
@@ -712,11 +700,7 @@ mod tests {
             ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(300)),
-                Some(scheduler_deadline(300)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(300)),),
             ClockEventAction::Program(deadline(300))
         );
         assert!(
@@ -725,11 +709,7 @@ mod tests {
         );
 
         assert_eq!(
-            event.publish_scheduler(
-                2,
-                Some(scheduler_deadline(400)),
-                Some(scheduler_deadline(400)),
-            ),
+            event.publish_scheduler(2, Some(scheduler_deadline(400)),),
             ClockEventAction::None,
             "a later current-task expiry must not move the physical edge later"
         );
@@ -745,20 +725,12 @@ mod tests {
             ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(300)),
-                Some(scheduler_deadline(300)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(300)),),
             ClockEventAction::Program(deadline(300))
         );
 
         assert_eq!(
-            event.publish_scheduler(
-                2,
-                Some(scheduler_deadline(400)),
-                Some(scheduler_deadline(400)),
-            ),
+            event.publish_scheduler(2, Some(scheduler_deadline(400)),),
             ClockEventAction::None,
             "Linux keeps an already armed earlier hrtimer edge instead of moving it later"
         );
@@ -785,25 +757,14 @@ mod tests {
             ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(300)),
-                Some(scheduler_deadline(300)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(300)),),
             ClockEventAction::Program(deadline(300))
         );
         assert_eq!(
-            event.publish_scheduler(
-                2,
-                Some(scheduler_deadline(400)),
-                Some(scheduler_deadline(400)),
-            ),
+            event.publish_scheduler(2, Some(scheduler_deadline(400)),),
             ClockEventAction::None
         );
-        assert_eq!(
-            event.publish_scheduler(3, None, None),
-            ClockEventAction::None
-        );
+        assert_eq!(event.publish_scheduler(3, None), ClockEventAction::None);
         assert_eq!(event.armed_deadline(), Some(deadline(300)));
     }
 
@@ -815,11 +776,7 @@ mod tests {
             ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(300)),
-                Some(scheduler_deadline(300)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(300)),),
             ClockEventAction::Program(deadline(300))
         );
         assert!(
@@ -828,11 +785,7 @@ mod tests {
         );
 
         assert_eq!(
-            event.publish_scheduler(
-                2,
-                Some(scheduler_deadline(400)),
-                Some(scheduler_deadline(400)),
-            ),
+            event.publish_scheduler(2, Some(scheduler_deadline(400)),),
             ClockEventAction::None,
             "the elapsed edge is retained as an early hrtimer wakeup"
         );
@@ -852,11 +805,7 @@ mod tests {
     fn stopped_to_armed_and_reprogram_are_distinct_device_actions() {
         let mut event = LocalClockEvent::offline();
         let start = event.online(deadline(500));
-        let reprogram = event.publish_scheduler(
-            1,
-            Some(scheduler_deadline(300)),
-            Some(scheduler_deadline(300)),
-        );
+        let reprogram = event.publish_scheduler(1, Some(scheduler_deadline(300)));
 
         assert_eq!(start, ClockEventAction::Resume(deadline(500)));
         assert_eq!(reprogram, ClockEventAction::Program(deadline(300)));
@@ -871,17 +820,10 @@ mod tests {
         );
         assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::Stop);
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(300)),
-                Some(scheduler_deadline(300)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(300)),),
             ClockEventAction::Resume(deadline(300))
         );
-        assert_eq!(
-            event.publish_scheduler(2, None, None),
-            ClockEventAction::Stop
-        );
+        assert_eq!(event.publish_scheduler(2, None), ClockEventAction::Stop);
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
         assert_eq!(event.claim_irq(instant(300)), ClockEventIrqClaim::Ignored);
@@ -891,19 +833,11 @@ mod tests {
     fn stale_generation_is_ignored() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
-            event.publish_scheduler(
-                7,
-                Some(scheduler_deadline(200)),
-                Some(scheduler_deadline(200)),
-            ),
+            event.publish_scheduler(7, Some(scheduler_deadline(200)),),
             ClockEventAction::None
         );
         assert_eq!(
-            event.publish_scheduler(
-                6,
-                Some(scheduler_deadline(100)),
-                Some(scheduler_deadline(100)),
-            ),
+            event.publish_scheduler(6, Some(scheduler_deadline(100)),),
             ClockEventAction::None
         );
         assert_eq!(event.scheduler_generation(), 7);
@@ -920,19 +854,11 @@ mod tests {
         let firing = fire_due(&mut event, 500);
         assert_eq!(event.phase(), ClockEventPhase::Firing);
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(450)),
-                Some(scheduler_deadline(450)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(450)),),
             ClockEventAction::None
         );
         assert_eq!(
-            event.publish_scheduler(
-                2,
-                Some(scheduler_deadline(250)),
-                Some(scheduler_deadline(250)),
-            ),
+            event.publish_scheduler(2, Some(scheduler_deadline(250)),),
             ClockEventAction::None
         );
         assert_eq!(
@@ -949,11 +875,7 @@ mod tests {
         let firing = fire_due(&mut event, 100);
         assert!(!firing.scheduler_deadline_elapsed());
         assert!(event.advance_periodic(instant(100), 25));
-        event.publish_scheduler(
-            1,
-            Some(scheduler_deadline(140)),
-            Some(scheduler_deadline(140)),
-        );
+        event.publish_scheduler(1, Some(scheduler_deadline(140)));
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Resume(deadline(125))
@@ -968,21 +890,18 @@ mod tests {
             ClockEventAction::Resume(deadline(100))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(100)),
-                Some(scheduler_deadline(100)),
-            ),
+            event.publish_runtime_deadline(Some(scheduler_deadline(100))),
+            ClockEventAction::None
+        );
+        assert_eq!(
+            event.publish_scheduler(1, Some(scheduler_deadline(100)),),
             ClockEventAction::None
         );
 
         let firing = fire_due(&mut event, 100);
         assert!(firing.scheduler_deadline_elapsed());
         assert!(event.advance_periodic(instant(100), 25));
-        assert_eq!(
-            event.publish_scheduler(2, None, None),
-            ClockEventAction::None
-        );
+        assert_eq!(event.publish_scheduler(2, None), ClockEventAction::None);
 
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
@@ -999,11 +918,11 @@ mod tests {
             ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(100)),
-                Some(scheduler_deadline(300)),
-            ),
+            event.publish_runtime_deadline(Some(scheduler_deadline(300))),
+            ClockEventAction::Program(deadline(300))
+        );
+        assert_eq!(
+            event.publish_scheduler(1, Some(scheduler_deadline(100))),
             ClockEventAction::Program(deadline(100))
         );
 
@@ -1023,11 +942,7 @@ mod tests {
             ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(100)),
-                Some(scheduler_deadline(100)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(100)),),
             ClockEventAction::Program(deadline(100))
         );
 
@@ -1041,11 +956,7 @@ mod tests {
         assert_eq!(event.armed_deadline(), None);
 
         assert_eq!(
-            event.publish_scheduler(
-                2,
-                Some(scheduler_deadline(400)),
-                Some(scheduler_deadline(400)),
-            ),
+            event.publish_scheduler(2, Some(scheduler_deadline(400)),),
             ClockEventAction::None,
             "logical publication cannot commit hardware before scheduler tail"
         );
@@ -1067,20 +978,13 @@ mod tests {
             ClockEventAction::Resume(deadline(100))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(100)),
-                Some(scheduler_deadline(100)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(100)),),
             ClockEventAction::None
         );
         assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::None);
 
         let firing = fire_due(&mut event, 100);
-        assert_eq!(
-            event.publish_scheduler(2, None, None),
-            ClockEventAction::None
-        );
+        assert_eq!(event.publish_scheduler(2, None), ClockEventAction::None);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Deferred),
             ClockEventAction::None
@@ -1132,11 +1036,7 @@ mod tests {
             ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(100)),
-                Some(scheduler_deadline(100)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(100)),),
             ClockEventAction::Program(deadline(100))
         );
 
@@ -1167,20 +1067,13 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         event.online(deadline(500));
         assert_eq!(
-            event.publish_scheduler(
-                1,
-                Some(scheduler_deadline(90)),
-                Some(scheduler_deadline(90)),
-            ),
+            event.publish_scheduler(1, Some(scheduler_deadline(90)),),
             ClockEventAction::Program(deadline(90))
         );
         assert!(event.has_immediate_work(instant(100)));
 
         let firing = fire_due(&mut event, 100);
-        assert_eq!(
-            event.publish_scheduler(2, None, None),
-            ClockEventAction::None
-        );
+        assert_eq!(event.publish_scheduler(2, None), ClockEventAction::None);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Resume(deadline(500))

@@ -291,7 +291,7 @@ impl_task_runtime! {
                 .unwrap_or_else(|error| {
                     panic!("current scheduler clock source is unavailable: {error}")
                 });
-            #[cfg(any(feature = "qperf-metrics", feature = "irq-time-accounting"))]
+            #[cfg(feature = "qperf-metrics")]
             let irq_time_started_ns = ax_hal::time::monotonic_time_nanos();
             #[cfg(feature = "irq-time-accounting")]
             let irq_time_ns = crate::irq_time::total_current();

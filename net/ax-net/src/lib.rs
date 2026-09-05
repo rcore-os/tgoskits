@@ -959,7 +959,7 @@ impl DnsSocketGuard {
 }
 
 pub(crate) fn yield_network_thread() {
-    let _decision = ax_task::yield_current_cpu()
+    ax_task::yield_current_cpu()
         .unwrap_or_else(|error| panic!("network executor could not yield: {error}"));
 }
 

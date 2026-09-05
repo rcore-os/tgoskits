@@ -486,17 +486,29 @@ pub(crate) struct ThreadCore {
     pi_wait_state: PiWaitState,
 }
 
+pub(crate) struct ThreadCoreInit {
+    pub(crate) id: ThreadId,
+    pub(crate) policy: SchedulePolicy,
+    pub(crate) sched: Arc<ThreadSchedCell>,
+    pub(crate) extension: Option<ThreadExtensionView>,
+    pub(crate) scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
+    pub(crate) scheduler_tick_work: Option<SchedulerTickWork>,
+    pub(crate) membarrier_identity: AddressSpaceMembarrierId,
+    pub(crate) task_work: Option<Arc<TaskWorkDoorbell>>,
+}
+
 impl ThreadCore {
-    pub(crate) fn new(
-        id: ThreadId,
-        policy: SchedulePolicy,
-        sched: Arc<ThreadSchedCell>,
-        extension: Option<ThreadExtensionView>,
-        scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
-        scheduler_tick_work: Option<SchedulerTickWork>,
-        membarrier_identity: AddressSpaceMembarrierId,
-        task_work: Option<Arc<TaskWorkDoorbell>>,
-    ) -> Self {
+    pub(crate) fn new(init: ThreadCoreInit) -> Self {
+        let ThreadCoreInit {
+            id,
+            policy,
+            sched,
+            extension,
+            scheduler_tick_cpu_time,
+            scheduler_tick_work,
+            membarrier_identity,
+            task_work,
+        } = init;
         debug_assert_eq!(id, sched.id());
         let lifecycle = Arc::clone(sched.lifecycle());
         let reap_signal = Arc::new(ThreadReapSignal::new(task_work));

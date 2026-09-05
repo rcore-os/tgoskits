@@ -121,16 +121,16 @@ impl TaskSystem {
                 },
             },
         ));
-        let core = Arc::new(ThreadCore::new(
+        let core = Arc::new(ThreadCore::new(ThreadCoreInit {
             id,
             policy,
-            Arc::clone(&sched),
-            switch_extension,
+            sched: Arc::clone(&sched),
+            extension: switch_extension,
             scheduler_tick_cpu_time,
             scheduler_tick_work,
             membarrier_identity,
-            Some(Arc::clone(&self.task_work)),
-        ));
+            task_work: Some(Arc::clone(&self.task_work)),
+        }));
         let record = ThreadRecord {
             core: Arc::clone(&core),
             sched,

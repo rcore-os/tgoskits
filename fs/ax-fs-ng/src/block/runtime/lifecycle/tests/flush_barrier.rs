@@ -7,7 +7,6 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
         name: String::from("barrier-test"),
         device_info: IrqMutex::new(DeviceInfoEpoch::new(test_queue_info().device)),
         max_io_queues: 1,
-        irq_ownership: IrqOwnership::Device,
         irq_sources: Vec::new(),
         hctxs: IrqMutex::new(Vec::new()),
         detached_queues: IrqMutex::new(Vec::new()),

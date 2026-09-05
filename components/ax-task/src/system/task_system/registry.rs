@@ -91,7 +91,7 @@ impl TaskSystemState {
                 .ok_or(TaskError::InvalidConfiguration)?;
             if let Some(divisor) = divisor {
                 distributed_scaled = distributed_scaled
-                    .checked_add(held / divisor.get())
+                    .checked_add(held / divisor)
                     .ok_or(TaskError::InvalidConfiguration)?;
             } else if held != 0 {
                 return Err(TaskError::DeadlineAdmission);

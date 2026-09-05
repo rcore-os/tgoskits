@@ -504,21 +504,22 @@ pub(super) enum AddressSpaceTransitionPhase {
 /// immediately before the naked architecture switch.
 #[must_use = "a prepared address-space switch must be committed with its context switch"]
 pub(super) struct PreparedAddressSpaceSwitch<'pin, 'cpu> {
+    #[cfg(feature = "uspace")]
     pin: &'pin CpuPin<'cpu>,
-    cpu_id: usize,
     phase: AddressSpaceTransitionPhase,
     #[cfg(feature = "uspace")]
     previous_raw: usize,
     #[cfg(feature = "uspace")]
     previous: Option<&'static RuntimeAddressSpace>,
     action: PreparedAddressSpaceAction,
-    _not_send_or_sync: PhantomData<*mut ()>,
+    _not_send_or_sync: PhantomData<(&'pin CpuPin<'cpu>, *mut ())>,
 }
 
 impl PreparedAddressSpaceSwitch<'_, '_> {
     /// Commits the active-mm transition without running fallible logic.
     #[inline(always)]
     pub(super) fn commit(self) {
+        #[cfg(feature = "uspace")]
         let pin = self.pin;
         match self.phase {
             #[cfg(feature = "uspace")]
@@ -555,7 +556,7 @@ impl PreparedAddressSpaceSwitch<'_, '_> {
             #[cfg(feature = "uspace")]
             PreparedAddressSpaceAction::User { next_raw, next } => {
                 let reclaim_ready = commit_user_address_space_activation(
-                    self.cpu_id,
+                    pin.area().cpu_index().as_usize(),
                     self.previous_raw,
                     self.previous,
                     next_raw,
@@ -584,12 +585,15 @@ impl PreparedAddressSpaceSwitch<'_, '_> {
 
 /// Validates and prepares the address-space half of a scheduler switch.
 pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
-    pin: &'pin CpuPin<'cpu>,
+    _pin: &'pin CpuPin<'cpu>,
     previous_selected: AddressSpaceHandle,
     next_selected: AddressSpaceHandle,
     same_address_space: bool,
     phase: AddressSpaceTransitionPhase,
 ) -> Result<PreparedAddressSpaceSwitch<'pin, 'cpu>, RuntimeStatus> {
+    #[cfg(feature = "uspace")]
+    let pin = _pin;
+    #[cfg(feature = "uspace")]
     let cpu_id = pin.area().cpu_index().as_usize();
     #[cfg(any(not(feature = "uspace"), target_arch = "aarch64"))]
     let _ = same_address_space;
@@ -604,7 +608,6 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
             debug_assert_ne!(previous_raw, 0);
             return Ok(PreparedAddressSpaceSwitch {
                 pin,
-                cpu_id,
                 phase,
                 previous_raw,
                 previous: None,
@@ -646,7 +649,6 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
             );
             return Ok(PreparedAddressSpaceSwitch {
                 pin,
-                cpu_id,
                 phase,
                 previous_raw,
                 previous: Some(previous),
@@ -708,7 +710,6 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
 
         Ok(PreparedAddressSpaceSwitch {
             pin,
-            cpu_id,
             phase,
             previous_raw,
             previous,
@@ -723,8 +724,6 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
             return Err(RuntimeStatus::Unsupported);
         }
         Ok(PreparedAddressSpaceSwitch {
-            pin,
-            cpu_id,
             phase,
             action: PreparedAddressSpaceAction::KernelLazy,
             _not_send_or_sync: PhantomData,

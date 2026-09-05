@@ -754,6 +754,7 @@ mod tests {
                         binding,
                         #[cfg(feature = "qperf-metrics")]
                         qperf_runtime_tail_started_ns: 0,
+                        #[cfg(feature = "qperf-metrics")]
                         qperf_switch_started_ns: 0,
                     })
                     .unwrap();

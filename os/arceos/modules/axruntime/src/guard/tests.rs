@@ -263,7 +263,7 @@ fn scheduler_baton_is_exactly_one_cpu_local_frame() {
     assert!(state.preempt.has_one_scheduler_frame());
     assert_eq!(state.preempt.scheduler_baton, SchedulerBatonState::Active);
 
-    state.transfer_scheduler_preempt();
+    state.commit_prepared_scheduler_preempt();
     assert_eq!(
         state.preempt.scheduler_baton,
         SchedulerBatonState::Transferred
@@ -334,7 +334,7 @@ fn owner_cpu_context_requires_irq_pin_or_scheduler_baton() {
 
     assert!(state.claim_task_scheduler(0));
     assert!(state.owns_cpu_context());
-    state.transfer_scheduler_preempt();
+    state.commit_prepared_scheduler_preempt();
     assert!(state.owns_cpu_context());
     state.exit_scheduler_preempt("test scheduler frame");
     assert!(!state.owns_cpu_context());

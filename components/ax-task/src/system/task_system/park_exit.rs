@@ -1084,9 +1084,7 @@ impl TaskSystem {
             if let Some(target) = migration_target {
                 previous_core.set_wake_cpu_hint(target);
             }
-            let affinity_completed =
-                Self::complete_affinity_if_satisfied_locked(&previous_core, &sched);
-            affinity_completed
+            Self::complete_affinity_if_satisfied_locked(&previous_core, &sched)
         };
         #[cfg(feature = "qperf-metrics")]
         let qperf_owner_finish_prev_finished_ns = task_runtime::monotonic_now().as_nanos();

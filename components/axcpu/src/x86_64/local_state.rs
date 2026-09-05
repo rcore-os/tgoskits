@@ -45,7 +45,7 @@ const CPU_USER_TLS_GENERATION_OFFSET: usize =
 #[cfg(not(feature = "host-test"))]
 const CPU_USER_FP_OWNER_OFFSET: usize =
     CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserState, user_fp_owner);
-#[cfg(not(feature = "host-test"))]
+#[cfg(all(feature = "fp-simd", not(feature = "host-test")))]
 const CPU_USER_XSAVE_CONFIG_OFFSET: usize =
     CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuUserState, xsave_config);
 
