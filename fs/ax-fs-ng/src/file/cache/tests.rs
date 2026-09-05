@@ -456,7 +456,7 @@ fn cached_read_releases_layout_before_faultable_destination_copy() {
             // Execute the same nested cached read required by a private file
             // fault, rather than relying solely on the lock-state probe.
             let mut nested = [0; 1];
-            self.source.read_at(&mut nested.as_mut_slice(), 0).unwrap();
+            self.source.read_at(nested.as_mut_slice(), 0).unwrap();
             assert_eq!(nested[0], 0x5a);
             assert!(bytes.iter().all(|byte| *byte == 0x5a));
             self.remaining -= bytes.len();
