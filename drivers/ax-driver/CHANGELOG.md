@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.4](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.13.3...ax-driver-v0.13.4) - 2026-09-05
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Fixed
+
+- *(starry)* enforce warning-free builds ([#2244](https://github.com/rcore-os/tgoskits/pull/2244))
+- *(ax-driver)* align RK3588 DWCMSHC clock setup ([#2242](https://github.com/rcore-os/tgoskits/pull/2242))
+
 ## [0.13.3](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.13.2...ax-driver-v0.13.3) - 2026-08-27
 
 ### Other

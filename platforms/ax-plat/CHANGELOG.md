@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.13.1...ax-plat-v0.14.0) - 2026-09-05
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
 ### Changed
 
 - **Breaking:** replace the kernel-address-space tuple with a typed, fallible

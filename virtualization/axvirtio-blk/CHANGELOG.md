@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/axvirtio-blk-v0.2.0...axvirtio-blk-v0.2.1) - 2026-09-05
+
+### Added
+
+- *(virtio)* implement split-ring event index ([#2255](https://github.com/rcore-os/tgoskits/pull/2255))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/axvirtio-blk-v0.1.0...axvirtio-blk-v0.2.0) - 2026-08-20
 
 ### Added

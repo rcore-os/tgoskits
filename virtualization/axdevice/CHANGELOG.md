@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.6.2...axdevice-v0.7.0) - 2026-09-05
+
+### Added
+
+- *(axvisor)* add generic vPCI foundation with x86 PCI enumeration ([#2197](https://github.com/rcore-os/tgoskits/pull/2197))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.6.1...axdevice-v0.6.2) - 2026-08-27
 
 ### Fixed

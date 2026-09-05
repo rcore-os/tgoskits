@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.9...aic8800-v0.3.0) - 2026-09-05
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Other
+
+- *(repo)* narrow SDIO rearm and TX queue policies ([#2250](https://github.com/rcore-os/tgoskits/pull/2250))
+
 ## [0.2.9](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.8...aic8800-v0.2.9) - 2026-08-27
 
 ### Other

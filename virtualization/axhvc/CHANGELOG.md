@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axhvc-v0.5.0...axhvc-v0.5.1) - 2026-09-05
+
+### Added
+
+- feat(StarryOS)：Enhance axivc IVC char devices and improve ioctl handling ([#2214](https://github.com/rcore-os/tgoskits/pull/2214))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axhvc-v0.4.13...axhvc-v0.5.0) - 2026-08-20
 
 ### Added

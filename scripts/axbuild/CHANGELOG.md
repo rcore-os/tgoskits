@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.5.3...axbuild-v0.6.0) - 2026-09-05
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+- *(axvisor)* add generic vPCI foundation with x86 PCI enumeration ([#2197](https://github.com/rcore-os/tgoskits/pull/2197))
+
+### Fixed
+
+- *(ax-fs-ng)* linearize block runtime lifecycle ([#2256](https://github.com/rcore-os/tgoskits/pull/2256))
+- *(starry-test)* keep AKA Wi-Fi smoke to one transfer ([#2257](https://github.com/rcore-os/tgoskits/pull/2257))
+- *(axvisor)* preserve structured console output ([#2204](https://github.com/rcore-os/tgoskits/pull/2204))
+- *(starry)* enforce warning-free builds ([#2244](https://github.com/rcore-os/tgoskits/pull/2244))
+- *(test)* separate host and QEMU test layers ([#2240](https://github.com/rcore-os/tgoskits/pull/2240))
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+- *(axbuild)* keep executable helpers off noexec tmpfs ([#2243](https://github.com/rcore-os/tgoskits/pull/2243))
+- *(axbuild)* streamline test coverage ([#2245](https://github.com/rcore-os/tgoskits/pull/2245))
+- *(repo)* migrate guidelines into project skills ([#2236](https://github.com/rcore-os/tgoskits/pull/2236))
+- *(repo)* standardize project skill layout ([#2215](https://github.com/rcore-os/tgoskits/pull/2215))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.5.2...axbuild-v0.5.3) - 2026-08-27
 
 ### Other

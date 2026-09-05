@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.11](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.10...ax-net-v0.12.11) - 2026-09-05
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Other
+
+- *(repo)* narrow SDIO rearm and TX queue policies ([#2250](https://github.com/rcore-os/tgoskits/pull/2250))
+
 ## [0.12.10](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.9...ax-net-v0.12.10) - 2026-08-27
 
 ### Other

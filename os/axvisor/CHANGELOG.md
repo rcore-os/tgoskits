@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.6.2...axvisor-v0.6.3) - 2026-09-05
+
+### Added
+
+- *(axvisor)* add browser console ([#2211](https://github.com/rcore-os/tgoskits/pull/2211))
+- *(axvisor)* add generic vPCI foundation with x86 PCI enumeration ([#2197](https://github.com/rcore-os/tgoskits/pull/2197))
+
+### Fixed
+
+- *(axvm)* align implicit PCI ownership with guest FDT ([#2262](https://github.com/rcore-os/tgoskits/pull/2262))
+- *(axvisor)* preserve structured console output ([#2204](https://github.com/rcore-os/tgoskits/pull/2204))
+- *(axvisor)* stabilize physical console logs ([#2248](https://github.com/rcore-os/tgoskits/pull/2248))
+- *(axvisor)* stabilize browser console delivery ([#2241](https://github.com/rcore-os/tgoskits/pull/2241))
+- *(axvm)* exclude disabled devices from generated guest FDT ([#2207](https://github.com/rcore-os/tgoskits/pull/2207))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.6.1...axvisor-v0.6.2) - 2026-08-27
 
 ### Fixed

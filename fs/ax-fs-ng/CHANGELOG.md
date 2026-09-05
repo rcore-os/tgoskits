@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.3...ax-fs-ng-v0.10.0) - 2026-09-05
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+- *(virtio)* implement split-ring event index ([#2255](https://github.com/rcore-os/tgoskits/pull/2255))
+
+### Fixed
+
+- *(ax-fs-ng)* linearize block runtime lifecycle ([#2256](https://github.com/rcore-os/tgoskits/pull/2256))
+
+### Other
+
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
 ### Added
 
 - Route typed ext4 preallocation, range mutation, extent inspection, and xattr

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/axvirtio-net-v0.2.0...axvirtio-net-v0.2.1) - 2026-09-05
+
+### Other
+
+- updated the following local packages: axaddrspace
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/axvirtio-net-v0.1.0...axvirtio-net-v0.2.0) - 2026-08-20
 
 ### Fixed

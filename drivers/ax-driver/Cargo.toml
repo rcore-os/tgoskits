@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.13.3"
+version = "0.13.4"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true

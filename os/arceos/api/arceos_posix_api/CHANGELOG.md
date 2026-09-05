@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.34...ax-posix-api-v0.6.0) - 2026-09-05
+
+### Fixed
+
+- *(ax-posix-api)* deliver EPOLLIN/EPOLLOUT edges via direction-split readiness versions ([#2235](https://github.com/rcore-os/tgoskits/pull/2235))
+
+### Other
+
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
 ## [0.5.34](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.33...ax-posix-api-v0.5.34) - 2026-08-27
 
 ### Other

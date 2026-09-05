@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.14](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.13...arm-gic-driver-v0.17.14) - 2026-09-05
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.17.13](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.12...arm-gic-driver-v0.17.13) - 2026-08-25
 
 ### Added
