@@ -87,7 +87,7 @@ impl TaskSystem {
         );
         let OwnerNext {
             core: next_core,
-            policy: next_policy,
+            policy: next_policy_ref,
             urgency: next_urgency,
         } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
@@ -98,7 +98,7 @@ impl TaskSystem {
             state.previous,
             state.previous_core,
             next_core,
-            next_policy,
+            next_policy_ref,
             PreviousSwitchDisposition::Live,
             state.migration,
         );
@@ -655,7 +655,7 @@ impl TaskSystem {
             self.pick_owner_next_after_preemption_in_rq(cpu.as_mut(), &mut transaction, previous);
         let OwnerNext {
             core: next_core,
-            policy: next_policy,
+            policy: next_policy_ref,
             urgency: next_urgency,
         } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
@@ -666,7 +666,7 @@ impl TaskSystem {
             previous,
             previous_core.map(PreviousSwitchOwnership::retained),
             next_core,
-            next_policy,
+            next_policy_ref,
             PreviousSwitchDisposition::Live,
             migration,
         );
@@ -810,8 +810,9 @@ impl TaskSystem {
             let OwnerRqScheduledOut {
                 core: previous_core,
                 endpoint: previous_endpoint,
-                policy: _,
+                fifo: _,
                 urgency: previous_urgency,
+                realtime_yield_head: _,
             } = self.schedule_out_owner_rq_owned(
                 &mut transaction,
                 schedule_out,
@@ -978,11 +979,10 @@ impl TaskSystem {
                     rq_preflight_finished_ns,
                 );
             }
-            return Ok(match schedule_out {
-                linked @ OwnerRqScheduleOut::LinkedRealtime { .. } => {
-                    self.yield_current_rq_owned::<true>(cpu.as_mut(), transaction, linked)
-                }
-                other => self.yield_current_rq_owned::<false>(cpu.as_mut(), transaction, other),
+            return Ok(if schedule_out.is_linked_realtime() {
+                self.yield_current_rq_owned::<true>(cpu.as_mut(), transaction, schedule_out)
+            } else {
+                self.yield_current_rq_owned::<false>(cpu.as_mut(), transaction, schedule_out)
             });
         }
         // Preserve requests merged by the rq-owned probe while restoring the
@@ -1129,7 +1129,7 @@ impl TaskSystem {
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
         let OwnerNext {
             core: next_core,
-            policy: next_policy,
+            policy: next_policy_ref,
             urgency: next_urgency,
         } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
@@ -1140,7 +1140,7 @@ impl TaskSystem {
             previous_endpoint.map(SwitchEndpoint::thread),
             previous_core.map(PreviousSwitchOwnership::retained),
             next_core,
-            next_policy,
+            next_policy_ref,
             PreviousSwitchDisposition::Live,
             migration,
         );
@@ -1202,16 +1202,10 @@ impl TaskSystem {
         let OwnerRqScheduledOut {
             core: previous_core,
             endpoint: previous_endpoint,
-            policy: previous_policy,
+            fifo: previous_fifo,
             urgency: previous_urgency,
-        } = if LINKED_REALTIME {
-            let OwnerRqScheduleOut::LinkedRealtime { thread } = schedule_out else {
-                task_runtime::fatal_invariant(0x5343_1217, cpu.owner().as_u32() as usize)
-            };
-            self.yield_linked_realtime_owner_rq(&mut transaction, thread)
-        } else {
-            self.schedule_out_owner_rq_owned(&mut transaction, schedule_out, EnqueueReason::Yield)
-        };
+            realtime_yield_head,
+        } = self.schedule_out_owner_rq_owned(&mut transaction, schedule_out, EnqueueReason::Yield);
         #[cfg(feature = "qperf-metrics")]
         let qperf_put_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
         #[cfg(feature = "qperf-metrics")]
@@ -1228,15 +1222,22 @@ impl TaskSystem {
             // `yield_task_rt()` has just rotated the retained current node.
             // With the static higher-class prefix proved empty, Linux enters
             // `pick_next_task_rt()` directly and selects that class head.
-            self.pick_owner_realtime_after_yield_in_rq(cpu.owner(), &mut transaction)
+            self.pick_owner_realtime_after_yield_in_rq(
+                cpu.owner(),
+                &mut transaction,
+                realtime_yield_head.unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1217, cpu.owner().as_u32() as usize)
+                }),
+            )
         } else {
             self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None)
         };
         let OwnerNext {
             core: next_core,
-            policy: next_policy,
+            policy: next_policy_ref,
             urgency: next_urgency,
         } = next;
+        let next_policy = next_policy_ref.get();
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1216, next_core.as_ref().id().as_u64() as usize)
         });
@@ -1254,7 +1255,7 @@ impl TaskSystem {
             Some(previous_endpoint.thread()),
             Some(previous_core),
             next_core,
-            next_policy,
+            next_policy_ref,
             PreviousSwitchDisposition::Live,
             None,
         );
@@ -1266,15 +1267,14 @@ impl TaskSystem {
         );
         #[cfg(feature = "qperf-metrics")]
         let qperf_rq_commit_started_ns = task_runtime::monotonic_now().as_nanos();
-        let scheduler_deadline = if matches!(previous_policy, SchedulePolicy::Fifo { .. })
-            && matches!(next_policy, SchedulePolicy::Fifo { .. })
-        {
-            OwnerSchedulerDeadline::Unchanged
-        } else {
-            OwnerSchedulerDeadline::Reevaluate(
-                transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref()),
-            )
-        };
+        let scheduler_deadline =
+            if previous_fifo && matches!(next_policy, SchedulePolicy::Fifo { .. }) {
+                OwnerSchedulerDeadline::Unchanged
+            } else {
+                OwnerSchedulerDeadline::Reevaluate(
+                    transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref()),
+                )
+            };
         self.commit_owner_switch_selection(
             cpu.as_mut(),
             transaction,

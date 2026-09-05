@@ -13,15 +13,22 @@ pub(super) struct OwnerScheduleOut {
 
 pub(super) enum OwnerRqScheduleOut {
     Idle { thread: ThreadId },
-    LinkedRealtime { thread: ThreadId },
+    LinkedRealtime { previous: LinkedRqTaskRef },
     Unlinked { thread: ThreadId },
+}
+
+impl OwnerRqScheduleOut {
+    pub(super) const fn is_linked_realtime(&self) -> bool {
+        matches!(self, Self::LinkedRealtime { .. })
+    }
 }
 
 pub(super) struct OwnerRqScheduledOut {
     pub(super) core: PreviousSwitchOwnership,
     pub(super) endpoint: SwitchEndpoint,
-    pub(super) policy: SchedulePolicy,
+    pub(super) fifo: bool,
     pub(super) urgency: SchedulingUrgency,
+    pub(super) realtime_yield_head: Option<LinkedRqTaskRef>,
 }
 
 impl TaskSystem {
@@ -71,6 +78,7 @@ impl TaskSystem {
     /// Linux's `__schedule()` handles the common put-prev path with only
     /// `rq->lock`. Ax-task needs the task scheduler lock only when a migration
     /// request or Deadline timer ownership must cross the task/rq boundary.
+    #[inline(always)]
     pub(super) fn prepare_owner_rq_schedule_out(
         &self,
         transaction: &OwnerRqTxn<'_>,
@@ -90,12 +98,13 @@ impl TaskSystem {
         {
             return None;
         }
+        let thread = core.id();
         if dispatch.is_dedicated_idle() {
-            Some(OwnerRqScheduleOut::Idle { thread: core.id() })
-        } else if dispatch.is_linked() {
-            Some(OwnerRqScheduleOut::LinkedRealtime { thread: core.id() })
+            Some(OwnerRqScheduleOut::Idle { thread })
+        } else if let Some(previous) = dispatch.linked_task_ref() {
+            Some(OwnerRqScheduleOut::LinkedRealtime { previous })
         } else {
-            Some(OwnerRqScheduleOut::Unlinked { thread: core.id() })
+            Some(OwnerRqScheduleOut::Unlinked { thread })
         }
     }
 
@@ -107,25 +116,27 @@ impl TaskSystem {
         ownership: OwnerRqScheduleOut,
         reason: EnqueueReason,
     ) -> OwnerRqScheduledOut {
-        let current = transaction.current().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1105, transaction.owner().as_u32() as usize)
-        });
-        let current_thread = current.thread();
-        let endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1105, current_thread.as_u64() as usize)
-        });
-        let policy = current.schedule_policy();
-        let migration_capable = current.metadata().affinity.is_migration_capable();
-        let urgency = policy.scheduling_urgency();
+        let thread = match &ownership {
+            OwnerRqScheduleOut::Idle { thread } | OwnerRqScheduleOut::Unlinked { thread } => {
+                *thread
+            }
+            OwnerRqScheduleOut::LinkedRealtime { previous } => previous.thread().id,
+        };
         if !matches!(reason, EnqueueReason::Preempted | EnqueueReason::Yield) {
-            task_runtime::fatal_invariant(0x5343_111b, current_thread.as_u64() as usize);
+            task_runtime::fatal_invariant(0x5343_111b, thread.as_u64() as usize);
         }
-
         // Pairs prior task accesses with publication of a different rq->curr.
         crate::lock::smp_mb_after_spinlock();
-        let core = match ownership {
-            OwnerRqScheduleOut::Idle { thread } => {
-                debug_assert_eq!(thread, current_thread);
+        match ownership {
+            OwnerRqScheduleOut::Idle { .. } => {
+                let current = transaction.current().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
+                });
+                debug_assert_eq!(current.thread(), thread);
+                let endpoint = current.switch_endpoint();
+                let policy = current.schedule_policy_ref();
+                let urgency = policy.scheduling_urgency();
+                let fifo = matches!(policy, SchedulePolicy::Fifo { .. });
                 let dispatch = transaction.take_current().unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
                 });
@@ -134,73 +145,63 @@ impl TaskSystem {
                     task_runtime::fatal_invariant(0x5343_1107, thread.as_u64() as usize)
                 });
                 transaction.return_idle_schedule(thread, active);
-                core
-            }
-            OwnerRqScheduleOut::LinkedRealtime { thread } => {
-                debug_assert_eq!(thread, current_thread);
-                if reason == EnqueueReason::Yield {
-                    transaction.yield_realtime_current(thread);
+                OwnerRqScheduledOut {
+                    core: PreviousSwitchOwnership::retained(core),
+                    endpoint,
+                    fifo,
+                    urgency,
+                    realtime_yield_head: None,
                 }
+            }
+            OwnerRqScheduleOut::LinkedRealtime { previous } => {
+                let previous_thread = previous.thread();
+                debug_assert_eq!(previous_thread.id, thread);
+                let endpoint = previous_thread.switch_endpoint();
+                let policy = previous_thread.policy_ref();
+                let urgency = policy.scheduling_urgency();
+                let fifo = matches!(policy, SchedulePolicy::Fifo { .. });
+                let migration_capable = previous_thread.migration_capable;
+                // SAFETY: the linked RT node pins the previous core until the
+                // owner-rq lock baton reaches context-switch completion.
+                let core = unsafe {
+                    SchedulerThreadRef::from_scheduler_owned(previous_thread.core.as_ref())
+                };
+                let realtime_yield_head = if reason == EnqueueReason::Yield {
+                    Some(transaction.yield_realtime_current(thread))
+                } else {
+                    None
+                };
                 transaction.put_prev_realtime_task(thread, migration_capable);
-                let core = transaction.current_core().unwrap_or_else(|| {
+                OwnerRqScheduledOut {
+                    core: PreviousSwitchOwnership::scheduler_owned(core),
+                    endpoint,
+                    fifo,
+                    urgency,
+                    realtime_yield_head,
+                }
+            }
+            OwnerRqScheduleOut::Unlinked { .. } => {
+                let current = transaction.current().unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
                 });
-                core
-            }
-            OwnerRqScheduleOut::Unlinked { thread } => {
-                debug_assert_eq!(thread, current_thread);
+                debug_assert_eq!(current.thread(), thread);
+                let endpoint = current.switch_endpoint();
+                let policy = current.schedule_policy();
+                let urgency = policy.scheduling_urgency();
+                let fifo = matches!(policy, SchedulePolicy::Fifo { .. });
                 let core = transaction.current_core().unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
                 });
                 let queued_entity = transaction.put_prev_unlinked_current(thread, reason);
                 core.publish_effective_schedule(policy, &queued_entity);
-                core
+                OwnerRqScheduledOut {
+                    core: PreviousSwitchOwnership::retained(core),
+                    endpoint,
+                    fifo,
+                    urgency,
+                    realtime_yield_head: None,
+                }
             }
-        };
-        OwnerRqScheduledOut {
-            core: PreviousSwitchOwnership::retained(core),
-            endpoint,
-            policy,
-            urgency,
-        }
-    }
-
-    /// Linux `yield_task_rt()` followed by `put_prev_task_rt()` after the
-    /// owner transaction has proved that current is a linked FIFO/RR task.
-    #[inline(always)]
-    pub(super) fn yield_linked_realtime_owner_rq(
-        &self,
-        transaction: &mut OwnerRqTxn<'_>,
-        thread: ThreadId,
-    ) -> OwnerRqScheduledOut {
-        let current = transaction.current().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1105, transaction.owner().as_u32() as usize)
-        });
-        debug_assert_eq!(current.thread(), thread);
-        let endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
-        });
-        let policy = current.schedule_policy();
-        debug_assert!(matches!(
-            policy,
-            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
-        ));
-        let migration_capable = current.metadata().affinity.is_migration_capable();
-        // SAFETY: this linked current remains in its RT node, and the caller
-        // transfers the owner rq lock into the matching local switch handoff.
-        let core = PreviousSwitchOwnership::scheduler_owned(unsafe {
-            SchedulerThreadRef::from_scheduler_owned(current.runtime_core())
-        });
-
-        // Pairs prior task accesses with publication of a different rq->curr.
-        crate::lock::smp_mb_after_spinlock();
-        transaction.yield_realtime_current(thread);
-        transaction.put_prev_realtime_task(thread, migration_capable);
-        OwnerRqScheduledOut {
-            core,
-            endpoint,
-            policy,
-            urgency: policy.scheduling_urgency(),
         }
     }
 
@@ -224,18 +225,25 @@ impl TaskSystem {
         // before this tail. Reporting a recoverable error would let block or
         // yield callers attempt to resume an outgoing thread that is no longer
         // current, so runtime failures beyond this boundary are fatal.
-        self.notify_overloaded_owners_after_priority_drop(
-            cpu.owner(),
-            previous_urgency,
-            next_urgency,
-        );
         // FIFO has no per-task scheduler deadline. Owner work that races the
         // initial drain already owns a sticky scheduler request, so a plain
         // FIFO-to-FIFO rotation does not scan unrelated idle/Fair/Deadline
         // balance state before returning to the selected task.
         if matches!(scheduler_deadline, OwnerSchedulerDeadline::Unchanged) {
+            if previous_urgency != Some(next_urgency) {
+                self.notify_overloaded_owners_after_priority_drop(
+                    cpu.owner(),
+                    previous_urgency,
+                    next_urgency,
+                );
+            }
             return;
         }
+        self.notify_overloaded_owners_after_priority_drop(
+            cpu.owner(),
+            previous_urgency,
+            next_urgency,
+        );
         let idle = cpu.remote().idle_thread();
         let next_is_idle = idle == Some(next);
         let previous_was_idle = idle.is_some() && previous == idle;
@@ -750,10 +758,8 @@ impl TaskSystem {
         &self,
         owner: CpuId,
         transaction: &mut OwnerRqTxn<'_>,
+        queued: LinkedRqTaskRef,
     ) -> OwnerNext {
-        let queued = transaction
-            .pick_realtime_task()
-            .unwrap_or_else(|| task_runtime::fatal_invariant(0x5343_1113, owner.as_u32() as usize));
         self.install_owner_realtime_picked_in_rq(owner, transaction, queued)
     }
 
@@ -766,9 +772,16 @@ impl TaskSystem {
         queued: LinkedRqTaskRef,
     ) -> OwnerNext {
         transaction.set_next_realtime_task(queued);
-        let (thread, policy) = {
+        let (thread, policy_ref, urgency) = {
             let linked = queued.thread();
-            (linked.id, linked.policy())
+            // SAFETY: the selected RT node remains linked through switch tail.
+            let policy_ref =
+                unsafe { SchedulerPolicyRef::from_scheduler_owned(linked.policy_ref()) };
+            (
+                linked.id,
+                policy_ref,
+                linked.policy_ref().scheduling_urgency(),
+            )
         };
         if transaction.has_pushable_class_tasks(SchedulingClass::Realtime) {
             self.root_domain
@@ -788,8 +801,8 @@ impl TaskSystem {
         let core = unsafe { SchedulerThreadRef::from_scheduler_owned(current) };
         OwnerNext {
             core,
-            policy,
-            urgency: policy.scheduling_urgency(),
+            policy: policy_ref,
+            urgency,
         }
     }
 
@@ -803,6 +816,10 @@ impl TaskSystem {
     ) -> OwnerNext {
         transaction.set_next_task(&queued);
         let next_policy = queued.policy();
+        // SAFETY: selection transfers the boxed active record into rq current
+        // or retains its linked node through the context-switch tail.
+        let next_policy_ref =
+            unsafe { SchedulerPolicyRef::from_scheduler_owned(queued.policy_ref()) };
 
         // Linux set_next_task_{rt,dl} queues its class push callback after the
         // preempted task has become pushable in the same rq transaction.
@@ -852,7 +869,7 @@ impl TaskSystem {
         };
         OwnerNext {
             core,
-            policy: next_policy,
+            policy: next_policy_ref,
             urgency,
         }
     }
@@ -939,6 +956,10 @@ impl TaskSystem {
                     task_runtime::fatal_invariant(0x5343_1110, owner.as_u32() as usize)
                 });
             let policy = active.policy();
+            // SAFETY: `set_idle_current` transfers this stable boxed record to
+            // rq current, which retains it through the incoming switch tail.
+            let policy_ref =
+                unsafe { SchedulerPolicyRef::from_scheduler_owned(active.policy_ref()) };
             let urgency = active.entity().scheduling_urgency(policy);
             let placement = core.sched().placement();
             if core.state() != ThreadState::Running
@@ -966,7 +987,7 @@ impl TaskSystem {
             let core = unsafe { SchedulerThreadRef::from_scheduler_owned(current) };
             return OwnerNext {
                 core,
-                policy,
+                policy: policy_ref,
                 urgency,
             };
         };
@@ -978,7 +999,7 @@ impl TaskSystem {
         previous: Option<ThreadId>,
         previous_core: Option<PreviousSwitchOwnership>,
         next: SchedulerThreadRef,
-        next_policy: SchedulePolicy,
+        next_policy: SchedulerPolicyRef,
         previous_disposition: PreviousSwitchDisposition,
         migration: Option<PreparedMigrationDelivery>,
     ) -> Option<SwitchHandoff> {

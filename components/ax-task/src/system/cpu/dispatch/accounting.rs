@@ -6,7 +6,6 @@ use crate::{SchedulerTimestamp, SchedulingEntity};
 struct DispatchChargeState<'a> {
     accumulated_deadline_overrun: &'a mut bool,
     accounted_until_ns: &'a mut u64,
-    charged_runtime_ns: &'a mut u64,
 }
 
 impl CurrentDispatch {
@@ -27,7 +26,6 @@ impl CurrentDispatch {
             DispatchChargeState {
                 accumulated_deadline_overrun: &mut self.class.deadline_overrun,
                 accounted_until_ns: &mut self.accounting.accounted_until_ns,
-                charged_runtime_ns: &mut self.accounting.charged_runtime_ns,
             },
             runtime_ns,
             now_ns,
@@ -53,7 +51,6 @@ impl CurrentDispatch {
             DispatchChargeState {
                 accumulated_deadline_overrun: &mut self.class.deadline_overrun,
                 accounted_until_ns: &mut self.accounting.accounted_until_ns,
-                charged_runtime_ns: &mut self.accounting.charged_runtime_ns,
             },
             runtime_ns,
             now_ns,
@@ -68,11 +65,7 @@ impl CurrentDispatch {
     /// `task_tick_rt()`, so an ordinary scheduler entry need not resolve and
     /// copy the linked RT entity merely to call a no-op entity charge.
     #[inline(always)]
-    pub(crate) fn charge_runtime_only(&mut self, runtime_ns: u64, now_ns: u64) -> DispatchCharge {
-        self.accounting.charged_runtime_ns = self
-            .accounting
-            .charged_runtime_ns
-            .saturating_add(runtime_ns);
+    pub(crate) fn charge_runtime_only(&mut self, now_ns: u64) -> DispatchCharge {
         self.accounting.accounted_until_ns = now_ns;
         DispatchCharge::default()
     }
@@ -84,7 +77,6 @@ impl CurrentDispatch {
         now_ns: u64,
         reclaimed_ns: u64,
     ) -> DispatchCharge {
-        *state.charged_runtime_ns = state.charged_runtime_ns.saturating_add(runtime_ns);
         *state.accounted_until_ns = now_ns;
         let (slice_expired, deadline_overrun, deadline_replenished) = {
             let mut slice_expired = entity.charge(runtime_ns, 0, reclaimed_ns);
@@ -121,14 +113,8 @@ impl CurrentDispatch {
         self.accounting.accounted_until_ns = now_ns;
     }
 
-    pub(crate) fn take_runtime_interval_charge(&mut self) -> u64 {
-        core::mem::take(&mut self.accounting.charged_runtime_ns)
-    }
-
     pub(crate) fn runtime_interval_ns(&self, now_ns: u64) -> u64 {
-        self.accounting
-            .charged_runtime_ns
-            .saturating_add(self.unaccounted_runtime(now_ns))
+        self.unaccounted_runtime(now_ns)
     }
 
     pub(crate) fn take_deadline_overrun(&mut self) -> bool {

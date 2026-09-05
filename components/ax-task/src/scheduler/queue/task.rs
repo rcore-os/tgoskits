@@ -6,7 +6,7 @@ use core::{cell::UnsafeCell, fmt, ops::ControlFlow, ptr::NonNull};
 use super::{deadline, deadline_pushable, realtime};
 use crate::{
     ActiveSchedulingState, CpuSet, CurrentRemotePublication, SchedulePolicy, SchedulingEntity,
-    ThreadCore, ThreadId,
+    SwitchEndpoint, ThreadCore, ThreadId,
 };
 
 /// Task-control facts published into one owner rq transaction.
@@ -234,6 +234,13 @@ impl PickedThread {
         }
     }
 
+    pub(crate) fn policy_ref(&self) -> &SchedulePolicy {
+        match self {
+            Self::Owned(thread) => thread.active.policy_ref(),
+            Self::Linked(thread) => thread.thread().active.policy_ref(),
+        }
+    }
+
     pub(crate) fn metadata(&self) -> &RqTaskMetadata {
         match self {
             Self::Owned(thread) => &thread.metadata,
@@ -267,6 +274,18 @@ impl QueuedThread {
 
     pub(crate) fn policy(&self) -> SchedulePolicy {
         self.active.policy()
+    }
+
+    pub(crate) fn policy_ref(&self) -> &SchedulePolicy {
+        self.active.policy_ref()
+    }
+
+    pub(crate) fn switch_endpoint(&self) -> SwitchEndpoint {
+        SwitchEndpoint::new(
+            self.id,
+            self.metadata.runtime_binding,
+            self.core.membarrier_identity(),
+        )
     }
 
     pub(crate) fn entity(&self) -> &SchedulingEntity {

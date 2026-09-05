@@ -7,7 +7,7 @@ use super::super::*;
 pub(crate) struct SwitchHandoff {
     previous: PreviousSwitchOwnership,
     incoming: SchedulerThreadRef,
-    incoming_policy: SchedulePolicy,
+    incoming_policy: SchedulerPolicyRef,
     previous_disposition: PreviousSwitchDisposition,
     route: SwitchRoute,
 }
@@ -63,7 +63,7 @@ enum SwitchRoute {
 
 pub(crate) struct CompletedMigrationSwitchHandoff {
     pub(crate) incoming: SchedulerThreadRef,
-    pub(crate) incoming_policy: SchedulePolicy,
+    pub(crate) incoming_policy: SchedulerPolicyRef,
     pub(crate) migration: PreparedMigrationDelivery,
     pub(crate) reclaim_ready: bool,
     pub(crate) previous_exited: bool,
@@ -73,7 +73,7 @@ impl SwitchHandoff {
     pub(crate) fn prepared(
         previous: PreviousSwitchOwnership,
         incoming: SchedulerThreadRef,
-        incoming_policy: SchedulePolicy,
+        incoming_policy: SchedulerPolicyRef,
         previous_disposition: PreviousSwitchDisposition,
         migration: Option<PreparedMigrationDelivery>,
     ) -> Self {
@@ -132,8 +132,8 @@ impl SwitchHandoff {
         self.incoming
     }
 
-    pub(crate) const fn incoming_policy(&self) -> SchedulePolicy {
-        self.incoming_policy
+    pub(crate) fn incoming_policy(&self) -> SchedulePolicy {
+        self.incoming_policy.get()
     }
 
     pub(crate) fn migration_target(&self) -> Option<CpuId> {

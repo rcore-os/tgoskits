@@ -216,8 +216,6 @@ impl RunQueue {
             "only a linked class can retain rq->curr through selection"
         );
         let previous_publication = previous.remote_publication();
-        let runtime_ns = previous.take_runtime_interval_charge();
-        previous.runtime_core().commit_runtime_interval(runtime_ns);
         let current_publication = linked.thread().remote_publication;
         previous.replace_linked(linked, now);
         if previous_publication != current_publication {
@@ -240,8 +238,6 @@ impl RunQueue {
             "only a linked class can retain rq->curr through selection"
         );
         let previous_publication = previous.remote_publication();
-        let runtime_ns = previous.take_runtime_interval_charge();
-        previous.runtime_core().commit_runtime_interval(runtime_ns);
         let current_publication = current.remote_publication();
         self.current = Some(current);
         if previous_publication != current_publication {
@@ -260,14 +256,6 @@ impl RunQueue {
                 .is_none(),
             "rq->curr publication must be reinstalled before another take"
         );
-        let runtime_ns = self
-            .current
-            .as_mut()
-            .expect("rq->curr publication came from a live dispatch")
-            .take_runtime_interval_charge();
-        self.current_runtime_core()
-            .expect("rq->curr must retain one runtime core owner")
-            .commit_runtime_interval(runtime_ns);
         self.current.take()
     }
 

@@ -61,7 +61,7 @@ impl SchedulerClass {
         rt_eligibility: RtEligibility,
     ) -> bool {
         let stop = run_queue.stop.is_some();
-        let deadline = run_queue.deadline.earliest_deadline_ns().is_some();
+        let deadline = run_queue.deadline.has_runnable();
         let realtime =
             matches!(rt_eligibility, RtEligibility::Runnable) && run_queue.rt.has_any_rt();
 

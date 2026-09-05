@@ -676,9 +676,15 @@ impl RealtimeRunQueue {
 
     /// Linux `yield_task_rt()`: rotates only the current priority list.
     #[inline(always)]
-    pub(super) fn yield_current(&mut self, key: RealtimeQueueKey) -> bool {
+    pub(super) fn yield_current(&mut self, key: RealtimeQueueKey) -> Option<LinkedRqTaskRef> {
         let index = key.index();
-        self.active[index].move_to_back(key.node)
+        self.active[index].move_to_back(key.node).then(|| {
+            let head = self.active[index]
+                .head
+                .as_deref()
+                .expect("a rotated RT current must retain its priority list");
+            LinkedRqTaskRef::from(RealtimeNode::thread(head))
+        })
     }
 
     /// Linux `requeue_task_rt(..., head = 1)` for an already linked wakee.

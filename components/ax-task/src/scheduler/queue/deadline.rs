@@ -238,6 +238,10 @@ impl DeadlineRunQueue {
         self.pushable.prepare_thread_slot(slot);
     }
 
+    pub(super) const fn has_runnable(&self) -> bool {
+        self.len != 0
+    }
+
     pub(super) fn install_throttled(&mut self, thread: QueuedThread) -> Result<(), TaskError> {
         let entry = self
             .throttled

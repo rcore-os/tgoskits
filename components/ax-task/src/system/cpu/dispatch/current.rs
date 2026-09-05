@@ -32,11 +32,25 @@ pub(super) struct CurrentTaskIdentity {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SchedulerThreadRef(NonNull<ThreadCore>);
 
-// SAFETY: the pointed-to object is Arc-allocated. While the reference is live,
+/// Stable reference to the selected task's effective policy record.
+///
+/// The policy lives in the same boxed scheduling record that is retained by
+/// rq current or its linked RT/Deadline node. It therefore follows the same
+/// switch-tail lifetime as [`SchedulerThreadRef`] without copying the widest
+/// policy variant through each scheduler result.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SchedulerPolicyRef(NonNull<SchedulePolicy>);
+
+// SAFETY: the pointed-to core is Arc-allocated. While the reference is live,
 // an owned current dispatch or a linked RT/DL rq node retains that same Arc.
 // All ownership transitions happen under the owner rq lock.
 unsafe impl Send for SchedulerThreadRef {}
 unsafe impl Sync for SchedulerThreadRef {}
+
+// SAFETY: SchedulePolicy is Send + Sync, and the scheduler-owned box that pins
+// this pointer cannot be moved out or mutated before switch-tail consumption.
+unsafe impl Send for SchedulerPolicyRef {}
+unsafe impl Sync for SchedulerPolicyRef {}
 
 impl SchedulerThreadRef {
     fn from_ref(core: &ThreadCore) -> Self {
@@ -71,6 +85,24 @@ impl SchedulerThreadRef {
     }
 }
 
+impl SchedulerPolicyRef {
+    /// Captures a non-owning policy reference pinned by scheduler state.
+    ///
+    /// # Safety
+    ///
+    /// The active scheduling record containing `policy` must remain owned by
+    /// rq current or a linked rq node until the context-switch tail consumes
+    /// this reference, and the policy must not be updated during that span.
+    pub(crate) unsafe fn from_scheduler_owned(policy: &SchedulePolicy) -> Self {
+        Self(NonNull::from(policy))
+    }
+
+    pub(crate) fn get(self) -> SchedulePolicy {
+        // SAFETY: construction transfers the scheduler-owned lifetime proof.
+        unsafe { *self.0.as_ref() }
+    }
+}
+
 /// Scheduler-class state owned by the current runqueue interval.
 #[derive(Debug)]
 pub(super) struct CurrentClassDispatch {
@@ -84,7 +116,6 @@ pub(super) struct CurrentClassDispatch {
 #[derive(Debug)]
 pub(super) struct CurrentRuntimeAccounting {
     pub(super) accounted_until_ns: u64,
-    pub(super) charged_runtime_ns: u64,
 }
 
 /// Load-placement facts contributed by the running task.
@@ -162,15 +193,20 @@ impl CurrentDispatch {
     }
 
     pub(crate) fn schedule_policy(&self) -> SchedulePolicy {
+        *self.schedule_policy_ref()
+    }
+
+    pub(crate) fn schedule_policy_ref(&self) -> &SchedulePolicy {
         match self.schedule() {
-            CurrentClassState::Owned(active) => active.policy(),
+            CurrentClassState::Owned(active) => active.policy_ref(),
             CurrentClassState::Linked => self
                 .task
                 .linked
+                .as_ref()
                 .expect("linked class state must retain its rq node")
                 .thread()
                 .active
-                .policy(),
+                .policy_ref(),
         }
     }
 
@@ -183,6 +219,14 @@ impl CurrentDispatch {
 
     pub(crate) const fn is_linked(&self) -> bool {
         matches!(self.class.schedule, Some(CurrentClassState::Linked))
+    }
+
+    pub(crate) fn linked_task_ref(&self) -> Option<LinkedRqTaskRef> {
+        self.is_linked().then(|| {
+            self.task
+                .linked
+                .expect("linked class state must retain its rq node")
+        })
     }
 
     pub(crate) fn owned_base_scheduling_entity_ref(&self) -> Option<&SchedulingEntity> {
@@ -421,7 +465,6 @@ impl CurrentDispatch {
             },
             accounting: CurrentRuntimeAccounting {
                 accounted_until_ns: now_ns,
-                charged_runtime_ns: 0,
             },
             remote_publication,
         }
@@ -446,7 +489,6 @@ impl CurrentDispatch {
             },
             accounting: CurrentRuntimeAccounting {
                 accounted_until_ns: now.as_nanos(),
-                charged_runtime_ns: 0,
             },
             remote_publication: thread.remote_publication,
         }
@@ -462,7 +504,6 @@ impl CurrentDispatch {
         self.class.rt_quota_exempt = thread.rt_quota_exempt;
         self.class.deadline_overrun = false;
         self.accounting.accounted_until_ns = now.as_nanos();
-        self.accounting.charged_runtime_ns = 0;
         self.remote_publication = thread.remote_publication;
     }
 

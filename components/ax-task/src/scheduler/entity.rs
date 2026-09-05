@@ -77,6 +77,10 @@ impl ActiveSchedulingState {
         self.record.effective_policy
     }
 
+    pub(crate) fn policy_ref(&self) -> &SchedulePolicy {
+        &self.record.effective_policy
+    }
+
     pub(crate) fn entity(&self) -> &SchedulingEntity {
         self.record
             .inherited_entity

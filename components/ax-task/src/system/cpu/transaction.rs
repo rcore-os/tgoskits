@@ -665,11 +665,6 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn pick_realtime_task(&mut self) -> Option<LinkedRqTaskRef> {
-        self.scheduler_queue_mut().pick_realtime_task()
-    }
-
-    #[inline(always)]
     pub(crate) fn set_next_task(&mut self, picked: &PickedThread) {
         self.scheduler_queue_mut().set_next_task(picked);
     }
@@ -761,12 +756,12 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn yield_realtime_current(&mut self, thread: ThreadId) {
+    pub(crate) fn yield_realtime_current(&mut self, thread: ThreadId) -> LinkedRqTaskRef {
         self.scheduler_queue_mut()
             .yield_realtime_current(thread)
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5251_1011, thread.as_u64() as usize)
-            });
+            })
     }
 
     #[inline(always)]
@@ -841,7 +836,7 @@ impl<'a> OwnerRqTxn<'a> {
             let now_ns = self.clock.task().as_nanos();
             let (charge, rt_quota_exempt) = self
                 .scheduler_queue_mut()
-                .charge_fixed_realtime_current(runtime_ns, now_ns);
+                .charge_fixed_realtime_current(now_ns);
             return self.apply_current_update(
                 runtime_ns,
                 RqCurrentUpdate::Task {
@@ -928,6 +923,15 @@ impl<'a> OwnerRqTxn<'a> {
                 realtime,
                 rt_quota_exempt,
             } => {
+                self.current()
+                    .unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(
+                            0x5251_1001,
+                            self.remote.owner().as_u32() as usize,
+                        )
+                    })
+                    .runtime_core()
+                    .commit_runtime_interval(runtime_ns);
                 let already_throttled = self.run_queue().rt_is_throttled();
                 let rt_throttled = realtime
                     && self.system.rt_bandwidth_enabled()
@@ -989,7 +993,7 @@ impl<'a> OwnerRqTxn<'a> {
             .unaccounted_runtime(now_ns);
         let (charge, rt_quota_exempt) = self
             .scheduler_queue_mut()
-            .charge_fixed_realtime_current(runtime_ns, now_ns);
+            .charge_fixed_realtime_current(now_ns);
         debug_assert_eq!(charge, DispatchCharge::default());
         let _ = self.apply_current_update(
             runtime_ns,

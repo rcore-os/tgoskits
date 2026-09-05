@@ -327,7 +327,7 @@ impl TaskSystem {
         );
         let OwnerNext {
             core: next_core,
-            policy: next_policy,
+            policy: next_policy_ref,
             urgency: next_urgency,
         } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
@@ -337,7 +337,7 @@ impl TaskSystem {
             Some(token.thread()),
             Some(PreviousSwitchOwnership::retained(previous_core)),
             next_core,
-            next_policy,
+            next_policy_ref,
             PreviousSwitchDisposition::Live,
             None,
         );
@@ -563,7 +563,7 @@ impl TaskSystem {
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
         let OwnerNext {
             core: next_core,
-            policy: next_policy,
+            policy: next_policy_ref,
             urgency: next_urgency,
         } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
@@ -573,7 +573,7 @@ impl TaskSystem {
             Some(token.thread()),
             Some(PreviousSwitchOwnership::retained(Arc::clone(previous_core))),
             next_core,
-            next_policy,
+            next_policy_ref,
             PreviousSwitchDisposition::Live,
             None,
         );
@@ -848,7 +848,7 @@ impl TaskSystem {
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
         let OwnerNext {
             core: next_core,
-            policy: next_policy,
+            policy: next_policy_ref,
             urgency: next_urgency,
         } = next;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
@@ -858,7 +858,7 @@ impl TaskSystem {
             Some(exiting),
             Some(PreviousSwitchOwnership::retained(Arc::clone(&exited_core))),
             next_core,
-            next_policy,
+            next_policy_ref,
             PreviousSwitchDisposition::Exited,
             None,
         );
@@ -1125,8 +1125,10 @@ impl TaskSystem {
             qperf_owner_runtime_publish_finished_ns,
             task_runtime::monotonic_now().as_nanos(),
         );
-        let completion =
-            SwitchInCompletion::for_core(completed.incoming.as_ref(), completed.incoming_policy);
+        let completion = SwitchInCompletion::for_core(
+            completed.incoming.as_ref(),
+            completed.incoming_policy.get(),
+        );
         Ok(completion)
     }
 

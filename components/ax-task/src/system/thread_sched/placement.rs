@@ -315,13 +315,13 @@ impl SchedulerPlacement {
 
     /// Linux `set_next_task()`.
     pub(in crate::system) fn set_next_task(&self, cpu: CpuId) {
-        self.publish_on_cpu(cpu, 0x504c_0008);
+        self.publish_on_cpu(cpu);
     }
 
     /// Linux idle-class `set_next_task_idle()`: idle remains logically on its
     /// rq but is never represented in a scheduling-class queue.
     pub(in crate::system) fn set_next_idle(&self, cpu: CpuId) {
-        self.publish_on_cpu(cpu, 0x504c_000b);
+        self.publish_on_cpu(cpu);
     }
 
     /// Linux idle-class `put_prev_task_idle()` retains logical rq membership
@@ -366,15 +366,17 @@ impl SchedulerPlacement {
         self.requested_cpu.store(0, Ordering::Release);
     }
 
-    fn publish_on_cpu(&self, cpu: CpuId, code: u32) {
-        let state = self.snapshot();
-        placement_invariant(
-            state.on_rq == TaskOnRunQueue::Queued
-                && state.task_cpu == Some(cpu)
-                && self.on_cpu().is_none_or(|owner| owner == cpu),
-            code,
-            cpu.as_u32() as usize,
-        );
+    fn publish_on_cpu(&self, cpu: CpuId) {
+        #[cfg(debug_assertions)]
+        {
+            let state = self.snapshot();
+            debug_assert!(
+                state.on_rq == TaskOnRunQueue::Queued
+                    && state.task_cpu == Some(cpu)
+                    && self.on_cpu().is_none_or(|owner| owner == cpu),
+                "set_next_task requires an owner-rq selected task"
+            );
+        }
         self.on_cpu.store(encode_cpu(Some(cpu)), Ordering::Release);
     }
 

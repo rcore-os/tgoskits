@@ -21,14 +21,14 @@ impl RunQueue {
     /// Runs the fixed-priority RT put-prev hook without cloning its unchanged
     /// scheduling entity for a lock-free publication that is not needed.
     #[inline(always)]
-    pub(crate) fn yield_realtime_current(&mut self, id: ThreadId) -> Result<(), TaskError> {
+    pub(crate) fn yield_realtime_current(
+        &mut self,
+        id: ThreadId,
+    ) -> Result<LinkedRqTaskRef, TaskError> {
         let Some(QueueMembershipClass::Realtime(key)) = self.membership_class(id) else {
             return Err(TaskError::InvalidConfiguration);
         };
-        if !self.rt.yield_current(key) {
-            return Err(TaskError::NotReady);
-        }
-        Ok(())
+        self.rt.yield_current(key).ok_or(TaskError::NotReady)
     }
 
     /// Linux `put_prev_task_rt()`: updates current accounting and pushable
@@ -111,13 +111,6 @@ impl RunQueue {
             }
         }
         None
-    }
-
-    /// Selects the RT class head after the caller has proved that no higher
-    /// scheduler class is runnable and the RT runqueue is not throttled.
-    #[inline(always)]
-    pub(crate) fn pick_realtime_task(&self) -> Option<LinkedRqTaskRef> {
-        self.rt.select()
     }
 
     /// Linux `set_next_task()`: commits the rq-owned class pick as current.

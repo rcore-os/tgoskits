@@ -63,11 +63,12 @@ use crate::{
     DeadlineServer, EnqueueReason, FairMode, OwnedThreadSchedulerExit, ParkCommit, ParkPrepare,
     ParkTicket, PiDonation, PiMutexRaw, PiWaitKey, PiWaitRegistration, PiWaitToken, PickedThread,
     QueuedThread, QueuedThreadSnapshot, REALTIME_CLASS_RANK, RqTaskMetadata, SchedulePolicy,
-    SchedulerDeadlineDerivationSource, SchedulerTimestamp, SchedulingClass, SchedulingEntity,
-    SchedulingUrgency, SwitchReason, TaskError, TaskSystemConfig, ThreadAffinityChange, ThreadCore,
-    ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView,
-    ThreadHandle, ThreadId, ThreadResources, ThreadRuntimeSnapshot, ThreadSpec, ThreadState,
-    ThreadWakeBatch, ThreadWakeHandle, WaitWakeClaim, WaitWakeDelivery, WakeIntent, WakeResult,
+    SchedulerDeadlineDerivationSource, SchedulerPolicyRef, SchedulerTimestamp, SchedulingClass,
+    SchedulingEntity, SchedulingUrgency, SwitchReason, TaskError, TaskSystemConfig,
+    ThreadAffinityChange, ThreadCore, ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease,
+    ThreadExtensionView, ThreadHandle, ThreadId, ThreadResources, ThreadRuntimeSnapshot,
+    ThreadSpec, ThreadState, ThreadWakeBatch, ThreadWakeHandle, WaitWakeClaim, WaitWakeDelivery,
+    WakeIntent, WakeResult,
     executor::CoroutineHeader,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketLock, PreemptTicketLock},
@@ -214,7 +215,7 @@ fn pi_reuses_base_entity(base: SchedulePolicy, effective: SchedulePolicy) -> boo
 
 struct OwnerNext {
     core: SchedulerThreadRef,
-    policy: SchedulePolicy,
+    policy: SchedulerPolicyRef,
     urgency: SchedulingUrgency,
 }
 

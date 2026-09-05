@@ -20,7 +20,8 @@ use core::{
 pub(crate) use clock::{RqTaskTime, RunQueueClock, RunQueueClockSnapshot};
 pub(crate) use dispatch::{
     CurrentDispatch, CurrentRemotePublication, DispatchCharge, DispatchRole,
-    PreviousSwitchDisposition, PreviousSwitchOwnership, SchedulerThreadRef, SwitchHandoff,
+    PreviousSwitchDisposition, PreviousSwitchOwnership, SchedulerPolicyRef, SchedulerThreadRef,
+    SwitchHandoff,
 };
 pub use load::{CpuLoadSummary, DeadlineBandwidthSnapshot, SchedulingClass};
 use load::{SUMMARY_FAIR_IDLE_ONLY, SUMMARY_FAIR_PUSHABLE};

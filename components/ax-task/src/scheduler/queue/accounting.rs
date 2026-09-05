@@ -3,11 +3,7 @@ use super::*;
 impl RunQueue {
     /// Accounts the common execution-time portion of a linked FIFO/RR task.
     #[inline(always)]
-    pub(crate) fn charge_fixed_realtime_current(
-        &mut self,
-        runtime_ns: u64,
-        now_ns: u64,
-    ) -> (DispatchCharge, bool) {
+    pub(crate) fn charge_fixed_realtime_current(&mut self, now_ns: u64) -> (DispatchCharge, bool) {
         let current = self
             .current
             .as_mut()
@@ -17,10 +13,7 @@ impl RunQueue {
             SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
         ));
         let rt_quota_exempt = current.rt_quota_exempt();
-        (
-            current.charge_runtime_only(runtime_ns, now_ns),
-            rt_quota_exempt,
-        )
+        (current.charge_runtime_only(now_ns), rt_quota_exempt)
     }
 
     /// Charges `rq->curr` and its class-owned entity in one rq transaction.

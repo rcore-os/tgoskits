@@ -297,7 +297,7 @@ impl SchedulePolicy {
     /// policy tasks share this rank and compete inside one EEVDF tree. The
     /// per-CPU dedicated idle thread is not a policy class and remains the
     /// dispatch layer's last-choice fallback.
-    pub const fn class_rank(self) -> u8 {
+    pub const fn class_rank(&self) -> u8 {
         match self {
             Self::KernelStop => 0,
             Self::Deadline(_) => DEADLINE_CLASS_RANK,
@@ -321,7 +321,7 @@ impl SchedulePolicy {
     }
 
     /// Returns scheduler urgency without an identity or arrival tie-break.
-    pub(crate) const fn scheduling_urgency(self) -> SchedulingUrgency {
+    pub(crate) const fn scheduling_urgency(&self) -> SchedulingUrgency {
         let primary = match self {
             Self::KernelStop => 0,
             Self::Deadline(policy) => policy.deadline_ns(),
