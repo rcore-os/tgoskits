@@ -160,10 +160,9 @@ impl TaskSystem {
         mut transaction: OwnerRqTxn<'_>,
         current: ThreadId,
         request_scope: SchedulerRequestScope,
+        scheduler_deadline: OwnerSchedulerDeadline,
     ) -> Result<SchedulerOutcome, TaskError> {
         let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
-        let deadline_rq_observation =
-            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit_and_finish_scheduler_request();
 
         if let Some(core) = runtime_overrun_work {
@@ -176,17 +175,18 @@ impl TaskSystem {
         } else {
             false
         };
-        if run_queue_changed {
-            self.program_local_timer(
+        match (run_queue_changed, scheduler_deadline) {
+            (true, _) => self.program_local_timer(
                 cpu.as_mut(),
                 SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
-            )?;
-        } else {
-            self.program_local_timer_from_rq_observation(
-                cpu.as_mut(),
-                deadline_rq_observation,
-                SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
-            )?;
+            )?,
+            (false, OwnerSchedulerDeadline::Unchanged) => {}
+            (false, OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation)) => self
+                .program_local_timer_from_rq_observation(
+                    cpu.as_mut(),
+                    deadline_rq_observation,
+                    SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+                )?,
         }
         Ok(
             if cpu.scheduler_request_pending(request_scope) || cpu.has_remote_work() {
@@ -795,11 +795,14 @@ impl TaskSystem {
         if !switch_requested
             || self.lone_realtime_preemption_keeps_dispatch(&mut transaction, previous_core_hint)
         {
+            let deadline_rq_observation =
+                transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
             return self.finish_owner_no_switch(
                 cpu.as_mut(),
                 transaction,
                 previous_core_hint.id(),
                 request_scope,
+                OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation),
             );
         }
         if let Some(schedule_out) =
@@ -999,6 +1002,7 @@ impl TaskSystem {
                 transaction,
                 previous,
                 SchedulerRequestScope::All,
+                OwnerSchedulerDeadline::Unchanged,
             )?;
             return Ok(YieldOutcome::Unchanged);
         }
