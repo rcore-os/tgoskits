@@ -65,7 +65,7 @@ impl SignalfdSiginfo {
             ssi_fd: -1,
             ssi_tid: 0,
             ssi_band: 0,
-            ssi_overrun: 0,
+            ssi_overrun: sig_info.timer_overrun(),
             ssi_trapno: 0,
             ssi_status: 0,
             ssi_int: 0,

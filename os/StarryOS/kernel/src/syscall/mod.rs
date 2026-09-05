@@ -888,6 +888,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::alarm => sys_alarm(uctx.arg0() as _),
         Sysno::gettimeofday => sys_gettimeofday(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::times => sys_times(uctx.arg0() as _),
+        Sysno::clock_settime => sys_clock_settime(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::clock_gettime => sys_clock_gettime(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::clock_getres => sys_clock_getres(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::getitimer => sys_getitimer(uctx.arg0() as _, uctx.arg1() as _),

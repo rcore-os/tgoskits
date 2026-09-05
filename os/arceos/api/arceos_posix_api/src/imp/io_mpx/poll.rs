@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use ax_hal::time::wall_time;
+use ax_hal::time::monotonic_time;
 
 use crate::{PosixError, ctypes, imp::fd_ops::get_file_like};
 
@@ -38,9 +38,9 @@ pub fn sys_poll(fds: *mut ctypes::pollfd, nfds: ctypes::nfds_t, timeout: c_int) 
         let deadline = if timeout < 0 {
             None // block indefinitely
         } else if timeout == 0 {
-            Some(wall_time()) // immediate, non-blocking
+            Some(monotonic_time()) // immediate, non-blocking
         } else {
-            Some(wall_time() + core::time::Duration::from_millis(timeout as u64))
+            Some(monotonic_time() + core::time::Duration::from_millis(timeout as u64))
         };
 
         loop {
@@ -86,7 +86,7 @@ pub fn sys_poll(fds: *mut ctypes::pollfd, nfds: ctypes::nfds_t, timeout: c_int) 
                 return Ok(ready_count);
             }
 
-            if deadline.is_some_and(|ddl| wall_time() >= ddl) {
+            if deadline.is_some_and(|ddl| monotonic_time() >= ddl) {
                 debug!("    poll timeout!");
                 return Ok(0);
             }

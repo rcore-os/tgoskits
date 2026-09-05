@@ -1,12 +1,18 @@
 use alloc::collections::BTreeMap;
 use core::{
-    pin::Pin,
+    pin::{Pin, pin},
+    sync::atomic::{AtomicU64, Ordering},
     task::{Context, Poll, Waker},
     time::Duration,
 };
 
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
+use ax_lazyinit::LazyLock;
+use event_listener::{Event, listener};
 use futures_util::{FutureExt, select_biased};
+
+static WALL_CLOCK_CHANGE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static WALL_CLOCK_CHANGE_EVENT: LazyLock<Event> = LazyLock::new(Event::new);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct TimerKey {
@@ -186,12 +192,47 @@ pub async fn timeout_at_wall<F: IntoFuture>(
     deadline: Option<TimeValue>,
     f: F,
 ) -> Result<F::Output, Elapsed> {
-    timeout_at(deadline.map(wall_deadline_to_monotonic), f).await
+    let Some(deadline) = deadline else {
+        return Ok(f.await);
+    };
+
+    let mut future = pin!(f.into_future().fuse());
+    loop {
+        let generation = WALL_CLOCK_CHANGE_GENERATION.load(Ordering::Acquire);
+        listener!(WALL_CLOCK_CHANGE_EVENT => clock_changed);
+        if WALL_CLOCK_CHANGE_GENERATION.load(Ordering::Acquire) != generation {
+            continue;
+        }
+
+        let mut timer = pin!(sleep_until(wall_deadline_to_monotonic(deadline)).fuse());
+        let mut clock_changed = pin!(clock_changed.fuse());
+        select_biased! {
+            result = future.as_mut() => return Ok(result),
+            _ = clock_changed.as_mut() => continue,
+            _ = timer.as_mut() => return Err(Elapsed(())),
+        }
+    }
+}
+
+/// Wakes wall-clock deadline waiters after a discontinuous realtime change.
+///
+/// Callers must publish the new wall-clock value before invoking this
+/// function. Waiters then re-read the clock and rebuild their monotonic timer,
+/// while relative and monotonic waits remain untouched.
+pub fn notify_wall_clock_changed() {
+    WALL_CLOCK_CHANGE_GENERATION.fetch_add(1, Ordering::AcqRel);
+    WALL_CLOCK_CHANGE_EVENT.notify(usize::MAX);
 }
 
 fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
-    let now_wall = wall_time();
-    let now_mono = monotonic_time();
+    wall_deadline_to_monotonic_at(deadline, wall_time(), monotonic_time())
+}
+
+fn wall_deadline_to_monotonic_at(
+    deadline: TimeValue,
+    now_wall: TimeValue,
+    now_mono: TimeValue,
+) -> TimeValue {
     if deadline <= now_wall {
         now_mono
     } else {
@@ -262,6 +303,28 @@ mod timer_regression_tests {
 
         assert!(runtime.publish_due_work(deadline));
         assert_eq!(runtime.next_deadline(), None);
+    }
+
+    #[test]
+    fn wall_deadline_conversion_preserves_only_the_remaining_interval() {
+        let deadline = TimeValue::from_secs(120);
+
+        assert_eq!(
+            wall_deadline_to_monotonic_at(
+                deadline,
+                TimeValue::from_secs(100),
+                TimeValue::from_secs(5),
+            ),
+            TimeValue::from_secs(25),
+        );
+        assert_eq!(
+            wall_deadline_to_monotonic_at(
+                deadline,
+                TimeValue::from_secs(130),
+                TimeValue::from_secs(7),
+            ),
+            TimeValue::from_secs(7),
+        );
     }
 
     #[test]

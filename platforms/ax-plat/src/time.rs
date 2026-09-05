@@ -1,5 +1,6 @@
 //! Time-related operations.
 
+use core::sync::atomic::{AtomicI64, Ordering};
 pub use core::time::Duration;
 
 /// A measurement of the system clock.
@@ -7,6 +8,8 @@ pub use core::time::Duration;
 /// Currently, it reuses the [`core::time::Duration`] type. But it does not
 /// represent a duration, but a clock time.
 pub type TimeValue = Duration;
+
+static WALL_TIME_ADJUSTMENT_NANOS: AtomicI64 = AtomicI64::new(0);
 
 /// Number of milliseconds in a second.
 pub const MILLIS_PER_SEC: u64 = 1_000;
@@ -49,6 +52,17 @@ pub enum SchedulerClockError {
     /// The CPU scheduler clock is offline.
     #[error("the scheduler clock CPU is offline")]
     CpuOffline,
+}
+
+/// Failure to install a new wall-clock value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum WallTimeError {
+    /// The requested wall time precedes the current monotonic time.
+    #[error("wall time cannot precede the current monotonic time")]
+    BeforeMonotonic,
+    /// The requested adjustment cannot be represented by the wall-clock state.
+    #[error("wall-time adjustment is outside the supported range")]
+    AdjustmentOutOfRange,
 }
 
 /// Time-related interfaces.
@@ -171,12 +185,55 @@ pub fn monotonic_time() -> TimeValue {
 
 /// Returns nanoseconds elapsed since epoch (also known as realtime).
 pub fn wall_time_nanos() -> u64 {
-    monotonic_time_nanos() + epochoffset_nanos()
+    adjusted_wall_time_nanos(
+        base_wall_time_nanos(),
+        WALL_TIME_ADJUSTMENT_NANOS.load(Ordering::Acquire),
+    )
 }
 
 /// Returns the time elapsed since epoch (also known as realtime) in [`TimeValue`].
 pub fn wall_time() -> TimeValue {
-    TimeValue::from_nanos(monotonic_time_nanos() + epochoffset_nanos())
+    TimeValue::from_nanos(wall_time_nanos())
+}
+
+/// Sets the system-wide wall clock without changing the monotonic clock.
+///
+/// The platform epoch remains the boot-time reference. This function stores a
+/// signed adjustment relative to that reference so every wall-clock consumer
+/// observes the same value while scheduler and relative-time accounting remain
+/// tied to the monotonic counter.
+///
+/// # Errors
+///
+/// Returns [`WallTimeError::BeforeMonotonic`] if `new_time` is earlier than
+/// the current monotonic time. Returns
+/// [`WallTimeError::AdjustmentOutOfRange`] if either the timestamp or its
+/// adjustment cannot be represented by the shared clock state.
+pub fn set_wall_time(new_time: TimeValue) -> Result<(), WallTimeError> {
+    let monotonic_nanos = monotonic_time_nanos();
+    let requested_nanos =
+        u64::try_from(new_time.as_nanos()).map_err(|_| WallTimeError::AdjustmentOutOfRange)?;
+    if requested_nanos < monotonic_nanos {
+        return Err(WallTimeError::BeforeMonotonic);
+    }
+
+    let base_nanos = monotonic_nanos.saturating_add(epochoffset_nanos());
+    let adjustment = i128::from(requested_nanos) - i128::from(base_nanos);
+    let adjustment = i64::try_from(adjustment).map_err(|_| WallTimeError::AdjustmentOutOfRange)?;
+    WALL_TIME_ADJUSTMENT_NANOS.store(adjustment, Ordering::Release);
+    Ok(())
+}
+
+fn base_wall_time_nanos() -> u64 {
+    monotonic_time_nanos().saturating_add(epochoffset_nanos())
+}
+
+fn adjusted_wall_time_nanos(base_nanos: u64, adjustment_nanos: i64) -> u64 {
+    if adjustment_nanos >= 0 {
+        base_nanos.saturating_add(adjustment_nanos as u64)
+    } else {
+        base_nanos.saturating_sub(adjustment_nanos.unsigned_abs())
+    }
 }
 
 /// Busy waiting for the given duration.
@@ -188,5 +245,22 @@ pub fn busy_wait(dur: Duration) {
 pub fn busy_wait_until(deadline: TimeValue) {
     while monotonic_time() < deadline {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wall_time_adjustment_moves_forward_and_backward() {
+        assert_eq!(adjusted_wall_time_nanos(20, 5), 25);
+        assert_eq!(adjusted_wall_time_nanos(20, -5), 15);
+    }
+
+    #[test]
+    fn wall_time_adjustment_saturates_at_clock_bounds() {
+        assert_eq!(adjusted_wall_time_nanos(u64::MAX - 1, 5), u64::MAX);
+        assert_eq!(adjusted_wall_time_nanos(1, -5), 0);
     }
 }

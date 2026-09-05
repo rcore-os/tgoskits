@@ -15,10 +15,10 @@ use core::{
 
 use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
-use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
+use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time};
 use ax_task::{
     WaitQueue,
-    future::{block_on, interruptible, timeout_at_wall},
+    future::{block_on, interruptible, timeout_at},
 };
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::timespec;
@@ -1100,7 +1100,7 @@ fn wait_for_completion(
         }
     });
 
-    match block_on(interruptible(timeout_at_wall(deadline, wait))) {
+    match block_on(interruptible(timeout_at(deadline, wait))) {
         Ok(Ok(())) => Ok(true),
         Ok(Err(_)) => Ok(false),
         Err(_) => Err(StarryError::Interrupted),
@@ -1203,7 +1203,8 @@ fn do_io_getevents(
 
     let min_nr = min_nr as usize;
     let nr = nr as usize;
-    let deadline = read_timeout(timeout)?.and_then(|duration| wall_time().checked_add(duration));
+    let deadline =
+        read_timeout(timeout)?.and_then(|duration| monotonic_time().checked_add(duration));
     let mut completed = 0usize;
 
     loop {

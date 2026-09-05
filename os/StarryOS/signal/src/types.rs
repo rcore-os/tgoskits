@@ -331,10 +331,10 @@ impl SignalInfo {
 
     /// Construct a SignalInfo for a POSIX timer expiry.
     ///
-    /// Sets si_code = SI_TIMER and si_value = sigev_value (the value the user
-    /// passed to timer_create). The si_value is stored in the _timer._sigval
-    /// field of the siginfo_t union.
-    pub fn new_timer(signo: Signo, sigev_value: i64) -> Self {
+    /// Sets `si_code = SI_TIMER`, `si_value` to the value passed to
+    /// `timer_create`, and `si_overrun` to the number of additional periodic
+    /// expirations merged into this notification.
+    pub fn new_timer(signo: Signo, sigev_value: i64, overrun: i32) -> Self {
         // FIXME: Zeroable
         let mut result: Self = unsafe { mem::zeroed() };
         result.set_signo(signo);
@@ -352,6 +352,32 @@ impl SignalInfo {
             ._sigval
             .sival_ptr = sigev_value as *mut core::ffi::c_void;
         result
+            .0
+            .__bindgen_anon_1
+            .__bindgen_anon_1
+            ._sifields
+            ._timer
+            ._overrun = overrun;
+        result
+    }
+
+    /// Returns the POSIX timer overrun count carried by an `SI_TIMER` signal.
+    pub fn timer_overrun(&self) -> u32 {
+        if self.code() != SI_TIMER {
+            return 0;
+        }
+        // SAFETY: The raw siginfo storage is fully initialized before it is
+        // queued, and `_overrun` is an integer field with no invalid bit
+        // patterns. Negative user-provided values are not published.
+        unsafe {
+            self.0
+                .__bindgen_anon_1
+                .__bindgen_anon_1
+                ._sifields
+                ._timer
+                ._overrun
+                .max(0) as u32
+        }
     }
 
     /// Construct a SignalInfo for a POSIX message-queue notification
@@ -420,6 +446,19 @@ impl SignalInfo {
         // this layout, so it is safe to read the errno field through the
         // anonymous union.
         unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_errno }
+    }
+}
+
+#[cfg(test)]
+mod signal_info_tests {
+    use super::*;
+
+    #[test]
+    fn posix_timer_signal_carries_merged_overrun_count() {
+        let info = SignalInfo::new_timer(Signo::SIGRTMIN, 0x2237, 119);
+
+        assert_eq!(info.code(), SI_TIMER);
+        assert_eq!(info.timer_overrun(), 119);
     }
 }
 

@@ -6,7 +6,7 @@ use ax_net::{
     CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketCmsg,
     SocketOps,
 };
-use ax_runtime::hal::time::wall_time;
+use ax_runtime::hal::time::monotonic_time;
 use linux_raw_sys::{
     general::{timespec, timeval},
     net::{
@@ -567,13 +567,13 @@ pub fn sys_recvmmsg(
     // recv_impl blocks waiting for data (socket has nothing to read), the
     // deadline cannot interrupt it. Needs a non-blocking recv path or
     // SO_RCVTIMEO support at the socket layer to fix.
-    let deadline = timeout.map(|t| wall_time() + t);
+    let deadline = timeout.map(|t| monotonic_time() + t);
     let _socket = Socket::from_fd(fd)?;
     let mut received = 0;
     let mut flags = flags;
     for index in 0..vlen as usize {
         if let Some(deadline) = deadline
-            && wall_time() >= deadline
+            && monotonic_time() >= deadline
         {
             if received == 0 {
                 return Err(StarryError::WouldBlock);

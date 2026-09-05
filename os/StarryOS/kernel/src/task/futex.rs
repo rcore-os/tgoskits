@@ -16,6 +16,7 @@ use core::{
 };
 
 use ax_memory_addr::VirtAddr;
+use ax_runtime::hal::time::{TimeValue, monotonic_time};
 use ax_task::{
     current,
     future::{self, block_on, interruptible},
@@ -194,6 +195,17 @@ pub struct FutexWaitCleanup {
     key: usize,
 }
 
+/// Absolute deadline used by a futex wait.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FutexWaitDeadline {
+    /// Wait without a deadline.
+    Infinite,
+    /// Wait until an absolute monotonic deadline.
+    Monotonic(TimeValue),
+    /// Wait until an absolute realtime deadline.
+    Realtime(TimeValue),
+}
+
 impl WaitQueue {
     /// Creates a new `WaitQueue`.
     pub fn new() -> Self {
@@ -210,7 +222,12 @@ impl WaitQueue {
         timeout: Option<Duration>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> StarryResult<bool> {
-        self.wait_if_with_cleanup(bitset, timeout, None, condition)
+        let deadline = timeout
+            .map(|duration| {
+                FutexWaitDeadline::Monotonic(monotonic_time().saturating_add(duration))
+            })
+            .unwrap_or(FutexWaitDeadline::Infinite);
+        self.wait_if_with_cleanup(bitset, deadline, None, condition)
     }
 
     /// Waits with explicit futex-table cleanup metadata.
@@ -220,11 +237,11 @@ impl WaitQueue {
     pub fn wait_if_with_cleanup(
         &self,
         bitset: u32,
-        timeout: Option<Duration>,
+        deadline: FutexWaitDeadline,
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> StarryResult<bool> {
-        match self.wait_if_with_cleanup_nofault(bitset, timeout, cleanup, || Ok(condition())) {
+        match self.wait_if_with_cleanup_nofault(bitset, deadline, cleanup, || Ok(condition())) {
             Ok(waited) => Ok(waited),
             Err(FutexAccessError::Operation(error)) => Err(error),
             Err(FutexAccessError::Fault | FutexAccessError::Retry) => {
@@ -237,20 +254,28 @@ impl WaitQueue {
     pub fn wait_if_with_cleanup_nofault(
         &self,
         bitset: u32,
-        timeout: Option<Duration>,
+        deadline: FutexWaitDeadline,
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
     ) -> Result<bool, FutexAccessError> {
-        let timed = block_on(interruptible(future::timeout(
-            timeout,
-            WaitIfFuture {
-                queue: self,
-                bitset,
-                cleanup,
-                condition: Some(condition),
-                state: None,
-            },
-        )))
+        let wait = WaitIfFuture {
+            queue: self,
+            bitset,
+            cleanup,
+            condition: Some(condition),
+            state: None,
+        };
+        let timed = match deadline {
+            FutexWaitDeadline::Infinite => {
+                block_on(interruptible(future::timeout_at(None, wait)))
+            }
+            FutexWaitDeadline::Monotonic(deadline) => {
+                block_on(interruptible(future::timeout_at(Some(deadline), wait)))
+            }
+            FutexWaitDeadline::Realtime(deadline) => block_on(interruptible(
+                future::timeout_at_wall(Some(deadline), wait),
+            )),
+        }
         .map_err(|error| FutexAccessError::Operation(error.into()))?;
         timed.map_err(|error| FutexAccessError::Operation(error.into()))?
     }

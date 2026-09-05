@@ -1,5 +1,5 @@
 use ax_runtime::hal::time::{
-    NANOS_PER_SEC, TimeValue, monotonic_time, wall_time,
+    NANOS_PER_SEC, TimeValue, monotonic_time, set_wall_time, wall_time,
 };
 use ax_task::current;
 use linux_raw_sys::general::{
@@ -11,9 +11,18 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     StarryError, StarryResult,
-    task::{AsThread, ITimerType, posix_timer::TimerSpec},
+    file::timerfd::notify_realtime_clock_changed,
+    task::{
+        AsThread, ITimerType, notify_realtime_clock_changed as notify_alarm_clock_changed,
+        posix_timer::TimerSpec,
+    },
     time::TimeValueLike,
 };
+
+// Linux reserves 30 years for future uptime when validating a new wall-clock
+// value (`TIME_SETTOD_SEC_MAX`).
+const TIME_UPTIME_SEC_MAX: u64 = 30 * 365 * 24 * 60 * 60;
+const TIME_SETTOD_SEC_MAX: u64 = i64::MAX as u64 / NANOS_PER_SEC - TIME_UPTIME_SEC_MAX;
 
 pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> StarryResult<isize> {
     let now = match clock_id as u32 {
@@ -30,6 +39,32 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> Sta
         }
     };
     ts.vm_write(timespec::from_time_value(now))?;
+    Ok(0)
+}
+
+pub fn sys_clock_settime(
+    clock_id: __kernel_clockid_t,
+    ts: *const timespec,
+) -> StarryResult<isize> {
+    if clock_id as u32 != CLOCK_REALTIME {
+        return Err(StarryError::InvalidInput);
+    }
+
+    // SAFETY: every bit pattern is a valid `timespec`; the field ranges are
+    // checked before the value reaches the shared clock state.
+    let requested = unsafe { ts.vm_read_uninit()?.assume_init() };
+    let requested = requested.try_into_time_value()?;
+    if requested.as_secs() >= TIME_SETTOD_SEC_MAX {
+        return Err(StarryError::InvalidInput);
+    }
+    if !current().as_thread().cred().has_cap_sys_time() {
+        return Err(StarryError::OperationNotPermitted);
+    }
+
+    set_wall_time(requested).map_err(|_| StarryError::InvalidInput)?;
+    notify_realtime_clock_changed();
+    notify_alarm_clock_changed();
+    ax_task::future::notify_wall_clock_changed();
     Ok(0)
 }
 

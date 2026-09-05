@@ -56,6 +56,7 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
             "future::time::timer_regression_tests::future_deadline_is_republished_after_the_due_pass_finishes",
             "future::time::timer_regression_tests::future_timer_drop_cancels_the_registration_cpu_after_migration",
             "future::time::timer_regression_tests::future_timer_poll_uses_the_registration_cpu_after_migration",
+            "future::time::timer_regression_tests::wall_deadline_conversion_preserves_only_the_remaining_interval",
         ],
     },
     PackageFeatureProfile {

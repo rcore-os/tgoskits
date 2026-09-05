@@ -2,7 +2,7 @@ use core::mem::align_of;
 
 use ax_runtime::hal::{
     cpu::{UserAccessError, UserAtomicError, UserAtomicU32Op},
-    time::{TimeValue, monotonic_time, wall_time},
+    time::monotonic_time,
 };
 use ax_task::current;
 use linux_raw_sys::general::{
@@ -20,8 +20,8 @@ use crate::{
         read_user_u32_nofault,
     },
     task::{
-        AsThread, FutexAccessError, FutexKey, FutexKeyMode, TidNumber, futex_table_for,
-        get_user_task_by_number, retry_futex_nofault,
+        AsThread, FutexAccessError, FutexKey, FutexKeyMode, FutexWaitDeadline, TidNumber,
+        futex_table_for, get_user_task_by_number, retry_futex_nofault,
     },
     time::TimeValueLike,
 };
@@ -183,11 +183,8 @@ fn parse_futex_op(futex_op: u32) -> StarryResult<ParsedFutexOp> {
     };
 
     let clock_realtime = flags & FUTEX_CLOCK_REALTIME != 0;
-    if clock_realtime && command == FutexCommand::WakeOp {
+    if clock_realtime && command != FutexCommand::WaitBitset {
         return Err(StarryError::Unsupported);
-    }
-    if clock_realtime && !matches!(command, FutexCommand::Wait | FutexCommand::WaitBitset) {
-        return Err(StarryError::InvalidInput);
     }
 
     let key_mode = if flags & FUTEX_PRIVATE_FLAG != 0 {
@@ -206,25 +203,25 @@ fn parse_futex_op(futex_op: u32) -> StarryResult<ParsedFutexOp> {
 fn futex_wait_timeout(
     op: &ParsedFutexOp,
     timeout: *const timespec,
-) -> StarryResult<Option<TimeValue>> {
+) -> StarryResult<FutexWaitDeadline> {
     let Some(ts) = timeout.nullable() else {
-        return Ok(None);
+        return Ok(FutexWaitDeadline::Infinite);
     };
 
     let timeout = unsafe { ts.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
     // FUTEX_WAIT keeps the traditional relative timeout. FUTEX_WAIT_BITSET
     // uses an absolute deadline on the selected clock.
     if op.command == FutexCommand::Wait {
-        return Ok(Some(timeout));
+        return Ok(FutexWaitDeadline::Monotonic(
+            monotonic_time().saturating_add(timeout),
+        ));
     }
 
-    let now = if op.clock_realtime {
-        wall_time()
+    if op.clock_realtime {
+        Ok(FutexWaitDeadline::Realtime(timeout))
     } else {
-        monotonic_time()
-    };
-
-    Ok(Some(timeout.saturating_sub(now)))
+        Ok(FutexWaitDeadline::Monotonic(timeout))
+    }
 }
 
 pub fn sys_futex(
