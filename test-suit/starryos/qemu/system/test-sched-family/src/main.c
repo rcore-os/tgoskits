@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <sched.h>
+#include <stdint.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -93,6 +94,28 @@ int main(void)
             CHECK_RET(sched_getaffinity(0, sizeof(readback), &readback), 0, "getaffinity current pid");
             CHECK(contains_online_cpus(&readback, nprocs), "getaffinity result contains online CPUs");
         }
+
+#if SIZE_MAX > UINT32_MAX
+        // Linux raw syscalls accept cpusetsize as unsigned int.  A 64-bit
+        // value of 2^32 therefore reaches the kernel as zero bytes.
+        {
+            cpu_set_t mask;
+            size_t oversized_cpusetsize = (size_t)UINT32_MAX + 1U;
+
+            fill_online_cpu_mask(&mask);
+            CHECK_ERR(syscall(SYS_SCHED_GETAFFINITY, 0, oversized_cpusetsize, &mask), EINVAL,
+                      "raw sched_getaffinity truncates oversized cpusetsize to EINVAL");
+            CHECK_ERR(syscall(SYS_SCHED_SETAFFINITY, 0, oversized_cpusetsize, &mask), EINVAL,
+                      "raw sched_setaffinity truncates oversized cpusetsize to EINVAL");
+
+            // This is a valid unsigned-int length. The implementation must
+            // compare it in bytes, rather than overflow it while converting
+            // to a number of CPU bits.
+            size_t large_cpusetsize = (size_t)1 << 29;
+            CHECK(syscall(SYS_SCHED_GETAFFINITY, 0, large_cpusetsize, &mask) > 0,
+                  "raw sched_getaffinity accepts a large valid cpusetsize");
+        }
+#endif
 
         // EFAULT: supplied memory address was invalid
         {

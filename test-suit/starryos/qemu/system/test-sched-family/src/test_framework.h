@@ -8,21 +8,29 @@
     #define SYS_SCHED_GETPARAM      143
     #define SYS_SCHED_GETSCHEDULER  145
     #define SYS_SCHED_SETSCHEDULER  144
+    #define SYS_SCHED_SETAFFINITY   203
+    #define SYS_SCHED_GETAFFINITY   204
 
 #elif defined(__riscv)
     #define SYS_SCHED_GETPARAM      121
     #define SYS_SCHED_GETSCHEDULER  120
     #define SYS_SCHED_SETSCHEDULER  119
+    #define SYS_SCHED_SETAFFINITY   122
+    #define SYS_SCHED_GETAFFINITY   123
 
 #elif defined(__aarch64__)
     #define SYS_SCHED_GETPARAM      121
     #define SYS_SCHED_GETSCHEDULER  120
     #define SYS_SCHED_SETSCHEDULER  119
+    #define SYS_SCHED_SETAFFINITY   122
+    #define SYS_SCHED_GETAFFINITY   123
 
 #elif defined(__loongarch64)
     #define SYS_SCHED_GETPARAM      121
     #define SYS_SCHED_GETSCHEDULER  120
     #define SYS_SCHED_SETSCHEDULER  119
+    #define SYS_SCHED_SETAFFINITY   122
+    #define SYS_SCHED_GETAFFINITY   123
 
 #else
     #error "unsupported architecture for sched syscalls"
@@ -87,4 +95,3 @@ static int __fail = 0;
     printf("  DONE: %d pass, %d fail\n", __pass, __fail);               \
     printf("================================================\n\n");    \
     return __fail > 0 ? 1 : 0
-    
