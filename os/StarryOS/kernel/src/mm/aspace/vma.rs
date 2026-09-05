@@ -426,12 +426,10 @@ pub(crate) struct SharedFileVmaRecord {
     pub file: SharedFileMappingLease,
 }
 
-/// Narrow, owned capability for `mincore`: permission metadata plus a
-/// non-I/O cache residency probe. It cannot mutate a mapping or expose the
-/// backing executor.
+/// Narrow, owned capability for lock-external mincore queries. It cannot
+/// mutate a mapping or expose the backing executor.
 #[derive(Clone)]
 pub(crate) struct VmaResidencyProbe {
-    rights: MappingRights,
     operation: MappingOperation,
 }
 
@@ -506,12 +504,8 @@ impl VmaMremapSource {
 }
 
 impl VmaResidencyProbe {
-    pub fn rights(&self) -> MappingRights {
-        self.rights
-    }
-
-    pub fn page_cache_resident(&self, address: VirtAddr) -> bool {
-        self.operation.page_cache_resident(address)
+    pub fn mincore_resident(&self, address: VirtAddr, cred: &crate::task::Cred) -> bool {
+        self.operation.mincore_resident(address, cred)
     }
 }
 
@@ -739,7 +733,6 @@ impl VmaEntry {
 
     pub(super) fn residency_probe(&self) -> VmaResidencyProbe {
         VmaResidencyProbe {
-            rights: self.rights(),
             operation: self.operation.clone(),
         }
     }

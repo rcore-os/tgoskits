@@ -220,6 +220,8 @@ RSS 分类属于 slot，而不是 VMA 或全局 frame table。私有 file page �
 
 `SharedMemoryObject` 为共享匿名与 SysV SHM 提供 typed backing。自行分配的页面使用 owned `FrameLease`；dma-buf、设备或其他外部 backing 使用 borrowed lease 与 `Arc` retainer，最后一个进程 unmap 只删除自己的 slot，不会错误释放 provider-owned frame。
 
+共享匿名对象使用 `SharedPageIndex` 稀疏 radix 索引，逻辑容量与驻留索引分离。空对象不按虚拟跨度分配槽数组；缺页先在 IRQ 锁外通过 `SharedPagePath` 准备节点，再重检并链接。未使用路径和竞争候选均在解锁后释放，查找与发布的成本受地址位宽约束。
+
 ### 4.4 文件 fault 与回收
 
 shared file mapping 使用 file page domain 与 page cache identity。fault 在 I/O 前后都核对 file epoch/EOF；超过 EOF 返回 `FaultResult::Sigbus(BusCode::AdrErr)`，对象 I/O 错误返回 `BusCode::ObjErr`，锁或 eviction 竞争返回 `Retry`。
@@ -302,6 +304,8 @@ faultable copy 先尝试最多 16 页的 `user_range_probe_ready()`。AArch64 EL
 
 RSS 从 published `MappingSlot` 的 `resident_kind` 派生，VmHWM 由 `ResidentWatermark` 单调维护。VSS、VmPeak 与 heap/VMA 分类继续由 `ProcessVmStat` 和 `ProcessMemStats` 汇总；procfs reader 取得 owned inspection records，不借用 VMA 内部 operation。
 
+`mincore` 使用 32 项有界批次，缓存查询与用户结果复制在 MM 锁外完成。驻留状态来自 `MappingSlot` 与共享对象，不由当前访问权限决定；批次在后续区间失败前保留已完成结果，文件查询遵守当前凭据的普通访问规则。
+
 `VmRSS` 是 Anon、File 与 Shmem slot 之和，shared 展示由 File/Shmem 组成。`Committed_AS`、完整 overcommit ledger、swap totals 与 OOM victim accounting 尚未实现，procfs 占位值不能被描述成完整 Linux memory commitment 策略。
 
 ## 7. Reclaim 与显式限制
@@ -312,7 +316,7 @@ RSS 从 published `MappingSlot` 的 `resident_kind` 派生，VmHWM 由 `Resident
 
 file cache 通过单一 typed mapping endpoint 发布 eviction/writeback 事件，不扫描所有 VMA，也不把 `Weak<AddrSpace>` callback 转成裸指针。地址空间按 rmap 启动事务，`Busy` 或 `Quarantined` 会保留页面和 cache pin 供后续重试。
 
-allocator 的 page reclaim callback 在 allocator 锁外执行，并保持有界重试。MM 层不会在 VMA publication lock、PTE stripe、rmap lock 或 page-cache index lock 内执行文件 I/O。
+allocator 的 page reclaim callback 在 allocator 锁外执行，并保持有界重试。`GlobalAlloc` 接口在失败时返回空指针，使 `try_reserve` 与 `Box::try_new` 可以返回错误；失败请求不写入 tracking 记录。标准库的非 fallible 容器入口仍保留其分配失败处理语义。MM 层不会在 VMA publication lock、PTE stripe、rmap lock 或 page-cache index lock 内执行文件 I/O。
 
 ### 7.2 尚未实现
 

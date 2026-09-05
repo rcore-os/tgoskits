@@ -6,14 +6,15 @@
 //
 // This file has been modified by KylinSoft on 2025.
 
-use alloc::vec;
-
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
 use starry_vm::vm_write_slice;
 
 use crate::{StarryError, StarryResult, task::AsThread};
+
+// A cache query owns a backend snapshot, so keep fewer entries than Linux
+// needs for its byte-only scratch page. Neither batch buffer can allocate.
+const MINCORE_BATCH_PAGES: usize = 32;
 
 fn validate_mincore_request(
     addr: usize,
@@ -74,13 +75,13 @@ fn validate_mincore_request(
 pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isize> {
     let start_addr = VirtAddr::from(addr);
     let curr = current();
+    let cred = curr.as_thread().cred();
     let aspace_pin = curr.as_thread().proc_data.pin_aspace()?;
     let (user_base, user_end) = {
         let aspace = aspace_pin.lock();
         (aspace.base().as_usize(), aspace.end().as_usize())
     };
-    let page_count =
-        validate_mincore_request(addr, length, vec.is_null(), user_base, user_end)?;
+    let page_count = validate_mincore_request(addr, length, vec.is_null(), user_base, user_end)?;
 
     debug!("sys_mincore <= addr: {addr:#x}, length: {length:#x}, vec: {vec:?}");
 
@@ -88,64 +89,54 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isi
         return Ok(0);
     }
 
-    let mut result = vec![0u8; page_count];
-    let mut cache_queries = alloc::vec::Vec::new();
-
-    {
-        // Get current address space
-        let aspace = aspace_pin.lock();
-        let mut i = 0;
-
-        while i < page_count {
-            let addr = start_addr + i * PAGE_SIZE_4K;
-
-            // ENOMEM: Check if this page is within a valid VMA
-            let probe = aspace.mincore_probe(addr).ok_or(StarryError::NoMemory)?;
-
-            // Verify we have at least USER access permission
-            if !probe.rights().contains(MappingFlags::USER) {
-                return Err(StarryError::NoMemory);
-            }
-
-            // Query page table with batch awareness
-            let (is_resident, size) = match aspace.resident_span(addr) {
-                Some(size) => {
-                    // Physical page exists and is resident
-                    // page_size tells us how many contiguous pages have the same status
-                    (true, size as _)
+    crate::mm::check_access(vec.addr(), page_count)?;
+    let mut completed = 0;
+    while completed < page_count {
+        let batch_pages = (page_count - completed).min(MINCORE_BATCH_PAGES);
+        let mut result = [0u8; MINCORE_BATCH_PAGES];
+        let mut cache_queries = heapless::Vec::<_, MINCORE_BATCH_PAGES>::new();
+        let mut filled = 0;
+        let mut range_error = None;
+        {
+            let aspace = aspace_pin.lock();
+            while filled < batch_pages {
+                let address = start_addr + (completed + filled) * PAGE_SIZE_4K;
+                let Some(probe) = aspace.mincore_probe(address) else {
+                    range_error = Some(StarryError::NoMemory);
+                    break;
+                };
+                // Residency is independent of access permission. In
+                // particular, PROT_NONE does not relinquish a resident owner.
+                if let Some(bytes) = aspace.resident_bytes_from(address) {
+                    let pages = (bytes / PAGE_SIZE_4K).min(batch_pages - filled);
+                    debug_assert!(pages != 0);
+                    result[filled..filled + pages].fill(1);
+                    filled += pages;
+                } else {
+                    if cache_queries.push((filled, address, probe)).is_err() {
+                        unreachable!("one cache query per bounded output byte");
+                    }
+                    filled += 1;
                 }
-                None => {
-                    // Page is mapped but not populated (lazy allocation)
-                    // We need to determine how many contiguous pages are also not populated
-                    // For safety, we check the next page or use PAGE_SIZE_4K as minimum step
-                    (false, PAGE_SIZE_4K)
-                }
-            };
-            let n = size / PAGE_SIZE_4K;
-
-            if is_resident {
-                let end = (i + n).min(page_count);
-                result[i..end].fill(1);
-            } else {
-                cache_queries.push((i, addr, probe));
             }
-
-            i += n;
         }
-    }
 
-    // A file page can be resident in the page cache even when this address
-    // space has no present PTE.  Perform those cache-index snapshots only
-    // after releasing the address-space lock; no lookup performs I/O.
-    for (index, addr, probe) in cache_queries {
-        if probe.page_cache_resident(addr) {
-            result[index] = 1;
+        // Cache lookups and copyout may take independent locks or fault.
+        // Finish them after releasing MM metadata, then discard these owned
+        // snapshots before beginning another bounded batch.
+        for (index, address, probe) in cache_queries {
+            if probe.mincore_resident(address, &cred) {
+                result[index] = 1;
+            }
         }
+        if filled != 0 {
+            vm_write_slice(vec.wrapping_add(completed), &result[..filled])?;
+        }
+        if let Some(error) = range_error {
+            return Err(error);
+        }
+        completed += filled;
     }
-
-    // EFAULT: Write result to user space
-    // vm_write_slice will return EFAULT if vec is invalid
-    vm_write_slice(vec, result.as_slice())?;
 
     Ok(0)
 }

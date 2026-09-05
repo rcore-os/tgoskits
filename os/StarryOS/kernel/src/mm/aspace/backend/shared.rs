@@ -16,6 +16,9 @@ use super::super::vma::{
 };
 use crate::{StarryResult, sync::IrqMutex};
 
+mod page_index;
+use page_index::{SharedPageIndex, SharedPagePath};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SharedPageProvider {
     Anonymous,
@@ -62,7 +65,8 @@ pub struct SharedMemoryObject {
     /// slots start empty and are populated by faults; imported slots are
     /// present from construction. The object, rather than any VMA, is the
     /// serialization and ownership point shared by all address spaces.
-    pages: IrqMutex<Vec<Option<Arc<PageObject>>>>,
+    pages: IrqMutex<SharedPageIndex>,
+    page_count: usize,
     page_size: usize,
     mapping_id: MappingId,
     source: MappingSource,
@@ -79,13 +83,9 @@ impl SharedMemoryObject {
             return Err(crate::StarryError::InvalidInput);
         }
         let num_pages = divide_page(size, page_size);
-        let mut pages = Vec::new();
-        pages
-            .try_reserve(num_pages)
-            .map_err(|_| crate::StarryError::NoMemory)?;
-        pages.resize_with(num_pages, || None);
         Ok(Self {
-            pages: IrqMutex::new(pages),
+            pages: IrqMutex::new(SharedPageIndex::new(num_pages)),
+            page_count: num_pages,
             page_size,
             mapping_id: allocate_mapping_id(),
             source: MappingSource::Anonymous(AnonymousSource),
@@ -101,21 +101,23 @@ impl SharedMemoryObject {
         if phys_pages.is_empty() || page_size == 0 || !page_size.is_power_of_two() {
             return Err(crate::StarryError::InvalidInput);
         }
-        let mut pages = Vec::new();
-        pages
-            .try_reserve(phys_pages.len())
-            .map_err(|_| crate::StarryError::NoMemory)?;
-        for paddr in phys_pages {
+        let page_count = phys_pages.len();
+        page_count.checked_mul(page_size).ok_or(crate::StarryError::InvalidInput)?;
+        let mut pages = SharedPageIndex::new(page_count);
+        for (index, paddr) in phys_pages.into_iter().enumerate() {
             let lease = FrameLease::borrowed(paddr, page_size, retain.clone())
                 .ok_or(crate::StarryError::InvalidInput)?;
-            pages.push(Some(PageObject::new_present_with_resident_kind(
-                PageId::allocate(),
-                lease,
-                Some(RssKind::Shmem),
-            )));
+            let page = PageObject::new_present_with_resident_kind(
+                PageId::allocate(), lease, Some(RssKind::Shmem),
+            );
+            let mut path = SharedPagePath::prepare(index, pages.missing_level(index))?;
+            if pages.insert(index, page, &mut path).is_err() {
+                return Err(crate::StarryError::BadState);
+            }
         }
         Ok(Self {
             pages: IrqMutex::new(pages),
+            page_count,
             page_size,
             mapping_id: allocate_mapping_id(),
             source: MappingSource::External(ExternalSource),
@@ -124,7 +126,7 @@ impl SharedMemoryObject {
     }
 
     fn page_count(&self) -> usize {
-        self.pages.lock().len()
+        self.page_count
     }
 
     pub const fn page_size(&self) -> usize {
@@ -140,7 +142,8 @@ impl SharedMemoryObject {
     }
 
     fn resident_page(&self, index: usize) -> Option<Arc<PageObject>> {
-        self.pages.lock().get(index)?.clone()
+        if index >= self.page_count { return None; }
+        self.pages.lock().get(index).cloned()
     }
 
     fn publish_fault_candidate(
@@ -148,17 +151,24 @@ impl SharedMemoryObject {
         index: usize,
         candidate: Arc<PageObject>,
     ) -> StarryResult<Arc<PageObject>> {
-        let selected = {
-            let mut pages = self.pages.lock();
-            let slot = pages.get_mut(index).ok_or(crate::StarryError::BadState)?;
-            select_shared_page(slot, candidate)
-        };
-        let SharedPageSelection { winner, loser } = selected;
-        // A racing candidate owns a FrameLease. Release it only after the
-        // IRQ-saving object lock is gone so allocator reclaim cannot re-enter
-        // this shared page index.
-        drop(loser);
-        Ok(winner)
+        if index >= self.page_count { return Err(crate::StarryError::InvalidInput); }
+        let mut candidate = candidate;
+        loop {
+            let missing = self.pages.lock().missing_level(index);
+            let mut path = SharedPagePath::prepare(index, missing)?;
+            let outcome = { self.pages.lock().insert(index, candidate, &mut path) };
+            // A racing producer may have installed part of this path. Any
+            // unused nodes, and the losing frame below, leave IRQ exclusion
+            // before reaching their allocator destructors.
+            drop(path);
+            match outcome {
+                Ok(SharedPageSelection { winner, loser }) => {
+                    drop(loser);
+                    return Ok(winner);
+                }
+                Err(retry) => candidate = retry,
+            }
+        }
     }
 
     /// Obtains the unique PageObject for one shared-object page. Anonymous
@@ -297,6 +307,11 @@ impl SharedBackend {
             offset / self.object.page_size,
             offset % self.object.page_size,
         ))
+    }
+
+    pub(super) fn page_cache_resident(&self, address: VirtAddr) -> bool {
+        self.page_location(address)
+            .is_some_and(|(index, _)| self.object.resident_page(index).is_some())
     }
 
     fn mapped_paddr_at(&self, address: VirtAddr, bytes: usize) -> Option<PhysAddr> {
@@ -985,6 +1000,26 @@ fn shared_prot_none_mapping_materializes_only_after_access_for_test() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(axtest)]
+    #[axtest::axtest]
+    fn shared_object_metadata_tracks_materialized_pages() {
+        use super::{SharedMemoryObject, PAGE_SIZE_4K};
+        use alloc::sync::Arc;
+
+        // The logical object may be much larger than physical RAM. Creating
+        // it must not allocate one metadata slot per still-unfaulted page.
+        let bytes = 1usize << 46;
+        let object = SharedMemoryObject::allocate(bytes, PAGE_SIZE_4K)
+            .expect("an empty shared object needs only bounded root metadata");
+        assert_eq!(object.capacity_bytes(), Some(bytes));
+        let last_index = bytes / PAGE_SIZE_4K - 1;
+        let first = object.page_for_fault(0).unwrap();
+        let last = object.page_for_fault(last_index).unwrap();
+        assert!(!Arc::ptr_eq(&first, &last));
+        assert!(Arc::ptr_eq(&first, &object.page_for_fault(0).unwrap()));
+        assert!(object.resident_page(last_index / 2).is_none());
+    }
+
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn shared_partial_unmap_keeps_one_page_object() {

@@ -906,6 +906,20 @@ impl AddrSpace {
         self.pt.query(vaddr).ok().map(|(_, _, size)| size)
     }
 
+    /// Returns resident bytes from an address to its owning leaf's end,
+    /// including permissionless leaves. This is a residency snapshot, not an
+    /// access capability; callers must validate VMA coverage separately.
+    pub(crate) fn resident_bytes_from(&self, vaddr: VirtAddr) -> Option<usize> {
+        let key = MappingSlotKey { space_id: self.id, va: vaddr };
+        let (_, slot) = self.mapping_slots.range(..=key).next_back()?;
+        if slot.state() != SlotState::Present {
+            return None;
+        }
+        let bytes = PAGE_SIZE_4K.checked_shl(slot.page_order.get().into())?;
+        let end = slot.va.checked_add(bytes)?;
+        (vaddr >= slot.va && vaddr < end).then(|| end.as_usize() - vaddr.as_usize())
+    }
+
     /// Iterates only MappingSlots that can overlap `range`.
     ///
     /// A huge leaf may begin before `range.start`, so the ordered walk includes

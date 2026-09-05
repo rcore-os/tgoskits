@@ -604,6 +604,10 @@ impl CowBackend {
         self.file.is_none()
     }
 
+    pub(super) fn mincore_location(&self) -> Option<&axfs_ng_vfs::Location> {
+        self.file.as_ref().map(|(file, ..)| file.location())
+    }
+
     pub(crate) fn page_cache_resident(&self, va: VirtAddr) -> bool {
         let Some((FileBackend::Cached(cache), file_vaddr_base, file_start, file_end)) = &self.file
         else {

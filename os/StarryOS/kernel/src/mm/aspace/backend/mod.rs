@@ -27,6 +27,20 @@ pub use self::shared::SharedMemoryObject;
 pub use super::accounting::RssKind;
 use super::{AddressSpaceId, vma::{MappingId, VmaDescriptor}};
 
+fn mincore_file_visible(location: &axfs_ng_vfs::Location, cred: &crate::task::Cred) -> bool {
+    use axfs_ng_vfs::NodePermission;
+
+    let Ok(metadata) = location.metadata() else { return false; };
+    cred.fsuid == metadata.uid
+        || cred.has_cap_fowner()
+        || cred.has_cap_dac_override()
+        || metadata.mode.contains(if cred.in_group(metadata.gid) {
+            NodePermission::GROUP_WRITE
+        } else {
+            NodePermission::OTHER_WRITE
+        })
+}
+
 scope_local! {
     static DEFER_TLB_RETIRE: AtomicUsize = AtomicUsize::new(0);
 }
@@ -1138,14 +1152,21 @@ impl MappingOperation {
         }
     }
 
-    /// Reports page-cache residency without performing I/O or installing a
-    /// PTE.  `mincore` uses this after releasing the address-space metadata
-    /// lock so cache and VMA locks never nest.
-    pub(crate) fn page_cache_resident(&self, va: VirtAddr) -> bool {
+    /// Reports the mincore bit after releasing the MM metadata lock. File
+    /// queries use the caller's ordinary inode ownership/write-access policy;
+    /// unavailable precise information is represented as resident, as Linux
+    /// can_do_mincore specifies.
+    pub(crate) fn mincore_resident(&self, va: VirtAddr, cred: &crate::task::Cred) -> bool {
         match &self.kind {
-            MappingOperationKind::Cow(cow) => cow.page_cache_resident(va),
-            MappingOperationKind::File(file) => file.page_cache_resident(va),
-            MappingOperationKind::Linear(_) | MappingOperationKind::Shared(_) => false,
+            MappingOperationKind::Cow(cow) => {
+                cow.mincore_location().is_some_and(|location| !mincore_file_visible(location, cred))
+                    || cow.page_cache_resident(va)
+            }
+            MappingOperationKind::File(file) => {
+                !mincore_file_visible(file.mincore_location(), cred) || file.page_cache_resident(va)
+            }
+            MappingOperationKind::Shared(shared) => shared.page_cache_resident(va),
+            MappingOperationKind::Linear(_) => true,
         }
     }
 

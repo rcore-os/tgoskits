@@ -736,6 +736,10 @@ impl FileBackend {
         Ok(pin)
     }
 
+    pub(super) fn mincore_location(&self) -> &Location {
+        self.0.cache.location()
+    }
+
     pub(crate) fn page_cache_resident(&self, va: VirtAddr) -> bool {
         let Some(local_offset) = va.checked_sub_addr(self.0.start) else {
             return false;
