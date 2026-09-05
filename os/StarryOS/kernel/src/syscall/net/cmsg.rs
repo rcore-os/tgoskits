@@ -5,21 +5,15 @@ use starry_vm::vm_write_slice;
 
 use crate::{
     StarryError, StarryResult,
-    file::{FileLike, get_file_like},
+    file::{FileLike, get_file_like, prepare_file_like},
 };
 
-fn cmsg_align(len: usize) -> usize {
-    let align = size_of::<usize>();
-    (len + align - 1) & !(align - 1)
-}
-
-fn cmsg_align_down(len: usize) -> usize {
-    let align = size_of::<usize>();
-    len & !(align - 1)
-}
-
 pub fn cmsg_space(len: usize) -> Option<usize> {
-    size_of::<cmsghdr>().checked_add(len).map(cmsg_align)
+    let align = size_of::<usize>();
+    size_of::<cmsghdr>()
+        .checked_add(len)?
+        .checked_add(align - 1)
+        .map(|length| length & !(align - 1))
 }
 
 #[derive(Clone)]
@@ -66,33 +60,95 @@ pub struct CMsgBuilder<'a> {
     user_buffer: *mut u8,
     len: &'a mut usize,
     capacity: usize,
-    data: Vec<u8>,
+    written: usize,
 }
 impl<'a> CMsgBuilder<'a> {
     pub fn new(msg: *mut cmsghdr, len: &'a mut usize) -> Self {
-        let capacity = *len;
         Self {
             user_buffer: msg.cast(),
+            capacity: *len,
             len,
-            capacity,
-            data: Vec::new(),
+            written: 0,
         }
     }
 
-    pub fn finish(self) -> StarryResult<()> {
-        vm_write_slice(self.user_buffer, &self.data)?;
-        *self.len = self.data.len();
+    pub fn finish(self) {
+        *self.len = self.written;
+    }
+
+    fn user_address(&self, offset: usize) -> StarryResult<*mut u8> {
+        self.user_buffer
+            .addr()
+            .checked_add(offset)
+            .map(|address| self.user_buffer.with_addr(address))
+            .ok_or(StarryError::BadAddress)
+    }
+
+    fn body_capacity(&self) -> Option<usize> {
+        self.capacity
+            .checked_sub(self.written)?
+            .checked_sub(size_of::<cmsghdr>())
+    }
+
+    fn write_header(&self, level: u32, ty: u32, body_len: usize) -> StarryResult<()> {
+        let length = size_of::<cmsghdr>()
+            .checked_add(body_len)
+            .ok_or(StarryError::InvalidInput)?;
+        // Linux cmsghdr is a native usize followed by two native i32 fields.
+        // Byte copies permit unaligned user control buffers without creating
+        // a reference to user memory or exposing struct padding.
+        let mut bytes = [0u8; size_of::<cmsghdr>()];
+        let word = size_of::<usize>();
+        bytes[..word].copy_from_slice(&length.to_ne_bytes());
+        bytes[word..word + 4].copy_from_slice(&level.to_ne_bytes());
+        bytes[word + 4..word + 8].copy_from_slice(&ty.to_ne_bytes());
+        vm_write_slice(self.user_address(self.written)?, &bytes)?;
         Ok(())
     }
 
-    /// Number of SCM_RIGHTS fds that still fit in the remaining control space.
-    /// Used to deliver as many fds as fit and flag MSG_CTRUNC for the rest,
-    /// matching Linux net/core/scm.c scm_detach_fds.
-    pub fn rights_capacity(&self) -> usize {
-        self.capacity
-            .checked_sub(self.data.len())
-            .and_then(|remaining| cmsg_align_down(remaining).checked_sub(size_of::<cmsghdr>()))
-            .map_or(0, |body_cap| body_cap / size_of::<i32>())
+    fn advance(&mut self, body_len: usize) -> StarryResult<()> {
+        let space = cmsg_space(body_len).ok_or(StarryError::InvalidInput)?;
+        self.written += space.min(self.capacity - self.written);
+        Ok(())
+    }
+
+    /// Copies each reserved fd number before installation, like Linux
+    /// scm_recv_one_fd(). Dropping an unsuccessful reservation cannot remove
+    /// a concurrently reused descriptor and never leaves an invisible fd.
+    pub fn push_rights(
+        &mut self,
+        fds: Vec<Arc<dyn FileLike>>,
+        cloexec: bool,
+    ) -> StarryResult<usize> {
+        let maximum = self.body_capacity().unwrap_or(0) / size_of::<i32>();
+        let mut installed = 0;
+        for file in fds.into_iter().take(maximum) {
+            let Ok(prepared) = prepare_file_like(file, cloexec) else {
+                break;
+            };
+            let offset = self
+                .written
+                .checked_add(size_of::<cmsghdr>())
+                .and_then(|offset| offset.checked_add(installed * size_of::<i32>()));
+            let Some(pointer) = offset.and_then(|offset| self.user_address(offset).ok()) else {
+                break;
+            };
+            if vm_write_slice(pointer, &prepared.fd().to_ne_bytes()).is_err() {
+                break;
+            }
+            prepared.install();
+            installed += 1;
+        }
+        // Linux keeps successfully delivered descriptors even if the later
+        // header copy fails; only a complete header advances msg_controllen.
+        if installed != 0
+            && self
+                .write_header(SOL_SOCKET, SCM_RIGHTS, installed * size_of::<i32>())
+                .is_ok()
+        {
+            self.advance(installed * size_of::<i32>())?;
+        }
+        Ok(installed)
     }
 
     pub fn push_sized(
@@ -102,59 +158,29 @@ impl<'a> CMsgBuilder<'a> {
         body_len: usize,
         body: impl FnOnce(&mut [u8]) -> StarryResult<usize>,
     ) -> StarryResult<bool> {
-        let Some(body_capacity) = self
-            .capacity
-            .checked_sub(self.data.len())
-            .and_then(|remaining| cmsg_align_down(remaining).checked_sub(size_of::<cmsghdr>()))
-        else {
-            return Ok(false);
-        };
-        if body_capacity < body_len {
+        if self
+            .body_capacity()
+            .is_none_or(|capacity| capacity < body_len)
+        {
             return Ok(false);
         }
-
-        let mut body_data = vec![0; body_len];
-        let written = body(&mut body_data)?;
+        let mut bytes = vec![0; body_len];
+        let written = body(&mut bytes)?;
         debug_assert_eq!(written, body_len);
-
-        let Some(cmsg_len) = size_of::<cmsghdr>().checked_add(body_len) else {
-            return Err(StarryError::InvalidInput);
-        };
-        let hdr = cmsghdr {
-            cmsg_len,
-            cmsg_level: level as _,
-            cmsg_type: ty as _,
-        };
-        let cmsg_space = cmsg_align(cmsg_len);
-        // SAFETY: `hdr` remains alive for the copy and `cmsghdr` is a C ABI
-        // record made only of initialized integer fields.
-        self.data.extend_from_slice(unsafe {
-            core::slice::from_raw_parts(
-                (&hdr as *const cmsghdr).cast::<u8>(),
-                size_of::<cmsghdr>(),
-            )
-        });
-        self.data.extend_from_slice(&body_data);
-        self.data.resize(self.data.len() + cmsg_space - cmsg_len, 0);
+        self.write_header(level, ty, body_len)?;
+        let offset = self
+            .written
+            .checked_add(size_of::<cmsghdr>())
+            .ok_or(StarryError::BadAddress)?;
+        vm_write_slice(self.user_address(offset)?, &bytes)?;
+        self.advance(body_len)?;
         Ok(true)
     }
 }
 
 #[cfg(all(test, not(axtest)))]
 fn cmsg_alignment_and_space_rules_hold_for_test() -> bool {
-    // cmsg_align: rounds up to alignment boundary (usize-aligned).
     let align = size_of::<usize>();
-    assert!(cmsg_align(0) == 0);
-    assert!(cmsg_align(1) == align);
-    assert!(cmsg_align(align) == align);
-    assert!(cmsg_align(align + 1) == 2 * align);
-
-    // cmsg_align_down: rounds down to alignment boundary.
-    assert!(cmsg_align_down(0) == 0);
-    assert!(cmsg_align_down(1) == 0);
-    assert!(cmsg_align_down(align) == align);
-    assert!(cmsg_align_down(align + 1) == align);
-
     // cmsg_space: returns Some(len + hdr_size) aligned, or None on overflow.
     let hdr_size = size_of::<cmsghdr>();
     let space0 = cmsg_space(0).unwrap();
@@ -163,6 +189,7 @@ fn cmsg_alignment_and_space_rules_hold_for_test() -> bool {
     // Overflow case: very large len should return None.
     let overflow = cmsg_space(usize::MAX);
     assert!(overflow.is_none());
+    assert!(cmsg_space(usize::MAX - hdr_size).is_none());
 
     true
 }

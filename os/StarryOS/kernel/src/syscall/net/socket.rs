@@ -226,11 +226,7 @@ pub fn sys_listen(fd: i32, backlog: i32) -> StarryResult<isize> {
     Ok(0)
 }
 
-pub fn sys_accept(
-    fd: i32,
-    addr: *mut sockaddr,
-    addrlen: *mut socklen_t,
-) -> StarryResult<isize> {
+pub fn sys_accept(fd: i32, addr: *mut sockaddr, addrlen: *mut socklen_t) -> StarryResult<isize> {
     sys_accept4(fd, addr, addrlen, 0)
 }
 
@@ -249,12 +245,6 @@ pub fn sys_accept4(
     }
 
     let cloexec = flags & O_CLOEXEC != 0;
-    let mut output_len = if addr.is_null() {
-        None
-    } else {
-        Some(addrlen.vm_read()?)
-    };
-
     let listener = Socket::from_fd(fd)?;
     let socket = Socket::new(listener.accept()?, listener.ip_domain());
     if flags & O_NONBLOCK != 0 {
@@ -262,6 +252,14 @@ pub fn sys_accept4(
     }
 
     let remote_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.peer_addr()?);
+    // Linux accepts the connection before reading the output length. A bad
+    // copyout drops this uninstalled socket rather than leaking its fd.
+    let mut output_len = if addr.is_null() {
+        None
+    } else {
+        Some(addrlen.vm_read()?)
+    };
+
     if let Some(output_len) = output_len.as_mut() {
         remote_addr.write_to_user(addr, output_len)?;
         addrlen.vm_write(*output_len)?;
@@ -326,10 +324,13 @@ pub fn sys_socketpair(
     }
     let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    fds.vm_write([
-        sock1.add_to_fd_table(cloexec)?,
-        sock2.add_to_fd_table(cloexec)?,
-    ])?;
+    let first = crate::file::prepare_file_like(alloc::sync::Arc::new(sock1), cloexec)?;
+    let second = crate::file::prepare_file_like(alloc::sync::Arc::new(sock2), cloexec)?;
+    // Both numbers stay reserved but unpublished until the entire result
+    // reaches user memory. Any failure drops the typed reservations.
+    fds.vm_write([first.fd(), second.fd()])?;
+    first.install();
+    second.install();
     Ok(0)
 }
 

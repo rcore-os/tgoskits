@@ -296,6 +296,8 @@ faultable copy 先尝试最多 16 页的 `user_range_probe_ready()`。AArch64 EL
 
 写 probe 要求页已经 EL0-writable，因此只读 COW PTE 必然 miss 并进入 `populate_area()` 完成 COW。这个接口把 fast path 设计为可选 architecture capability，而不是条件编译掉 correctness slow path。
 
+套接字等 user-copy 调用方把输入描述符保留在内核栈中，但结果仅回填 ABI 规定的字段。批量接口将每一项的输入导入、执行与结果回填写入同一错误边界，后续项失败时保留已完成数量。描述符传递和成对创建复用 `PreparedFileDescriptor`，先预留编号、完成结果复制，再发布对应 fd；不通过长寿命用户引用完成这些操作。
+
 ### 6.4 RSS 与 procfs
 
 RSS 从 published `MappingSlot` 的 `resident_kind` 派生，VmHWM 由 `ResidentWatermark` 单调维护。VSS、VmPeak 与 heap/VMA 分类继续由 `ProcessVmStat` 和 `ProcessMemStats` 汇总；procfs reader 取得 owned inspection records，不借用 VMA 内部 operation。

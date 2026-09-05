@@ -11,8 +11,8 @@ use linux_raw_sys::{
     general::{timespec, timeval},
     net::{
         IP_TOS, IP_TTL, IPPROTO_IPV6, IPV6_TCLASS, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT,
-        MSG_OOB, MSG_PEEK, MSG_TRUNC, SCM_CREDENTIALS, SCM_RIGHTS, SCM_TIMESTAMP, SOL_SOCKET,
-        cmsghdr, mmsghdr, msghdr, sockaddr, socklen_t, ucred,
+        MSG_OOB, MSG_PEEK, MSG_TRUNC, SCM_CREDENTIALS, SCM_TIMESTAMP, SOL_SOCKET, cmsghdr, mmsghdr,
+        msghdr, sockaddr, socklen_t, ucred,
     },
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_load};
@@ -22,7 +22,7 @@ use super::addr::{
 };
 use crate::{
     StarryError, StarryResult,
-    file::{FileLike, PacketSocket, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
+    file::{FileLike, PacketSocket, Socket, get_file_like, netlink::NetlinkSocket},
     mm::{IoVec, IoVectorBuf, VmBytes, VmBytesMut},
     syscall::net::{CMsg, CMsgBuilder, cmsg_space},
     time::TimeValueLike,
@@ -169,7 +169,22 @@ pub fn sys_sendmsg(fd: i32, msg: *const msghdr, flags: u32) -> StarryResult<isiz
 #[derive(Clone, Copy)]
 struct RecvName {
     addr: *mut sockaddr,
-    capacity: socklen_t,
+    capacity: RecvNameCapacity,
+}
+
+#[derive(Clone, Copy)]
+enum RecvNameCapacity {
+    Header(socklen_t),
+    User(*const socklen_t),
+}
+
+impl RecvNameCapacity {
+    fn read(self) -> StarryResult<socklen_t> {
+        match self {
+            Self::Header(capacity) => Ok(capacity),
+            Self::User(pointer) => Ok(pointer.vm_read()?),
+        }
+    }
 }
 
 struct RecvOutcome {
@@ -192,14 +207,14 @@ fn recv_impl(
     if let Ok(packet) = PacketSocket::from_fd(fd) {
         let (recv, from) = packet.recv_packet(&mut dst)?;
         let name_len = if let Some(name) = name {
-            let mut len = name.capacity;
+            let mut len = name.capacity.read()?;
             from.write_to_user(name.addr, &mut len)?;
             Some(len)
         } else {
             None
         };
         if let Some(builder) = cmsg_builder.take() {
-            builder.finish()?;
+            builder.finish();
         }
         return Ok(RecvOutcome {
             received: recv as isize,
@@ -224,18 +239,14 @@ fn recv_impl(
             // did not fit (Linux sets it; getifaddrs sizes its buffer from it).
             *truncated_out = truncated;
             let name_len = if let Some(name) = name {
-                let mut len = name.capacity;
-                super::addr::write_netlink_addr(
-                    &netlink.kernel_addr(),
-                    name.addr,
-                    &mut len,
-                )?;
+                let mut len = name.capacity.read()?;
+                super::addr::write_netlink_addr(&netlink.kernel_addr(), name.addr, &mut len)?;
                 Some(len)
             } else {
                 None
             };
             if let Some(builder) = cmsg_builder.take() {
-                builder.finish()?;
+                builder.finish();
             }
             return Ok(RecvOutcome {
                 received: recv as isize,
@@ -265,8 +276,7 @@ fn recv_impl(
 
     let mut cmsg = Vec::new();
 
-    let mut remote_addr =
-        name.map(|_| SocketAddrEx::Ip((Ipv4Addr::UNSPECIFIED, 0).into()));
+    let mut remote_addr = name.map(|_| SocketAddrEx::Ip((Ipv4Addr::UNSPECIFIED, 0).into()));
     let recv = socket.recv(
         &mut dst,
         RecvOptions {
@@ -278,7 +288,7 @@ fn recv_impl(
     )?;
 
     let name_len = if let (Some(remote_addr), Some(name)) = (remote_addr, name) {
-        let mut len = name.capacity;
+        let mut len = name.capacity.read()?;
         socket_addr_ex_for_user_name(socket.ip_domain(), remote_addr)
             .write_to_user(name.addr, &mut len)?;
         Some(len)
@@ -294,31 +304,12 @@ fn recv_impl(
             let pushed = match cmsg.into_any().downcast::<CMsg>() {
                 Ok(cmsg) => match *cmsg {
                     CMsg::Rights { fds } => {
-                        // Deliver as many fds as fit; excess are dropped (closed)
-                        // and MSG_CTRUNC is flagged, matching Linux scm_detach_fds.
                         let total = fds.len();
-                        let install = total.min(builder.rights_capacity());
-                        if install < total {
+                        let installed = builder.push_rights(fds, cmsg_cloexec)?;
+                        if installed < total {
                             *control_truncated_out = true;
                         }
-                        if install == 0 {
-                            false
-                        } else {
-                            let body_len = install * size_of::<i32>();
-                            builder.push_sized(SOL_SOCKET, SCM_RIGHTS, body_len, |data| {
-                                let mut written = 0;
-                                for (f, chunk) in fds
-                                    .into_iter()
-                                    .take(install)
-                                    .zip(data.as_chunks_mut::<{ size_of::<i32>() }>().0)
-                                {
-                                    let fd = add_file_like(f, cmsg_cloexec)?;
-                                    chunk.copy_from_slice(&fd.to_ne_bytes());
-                                    written += size_of::<i32>();
-                                }
-                                Ok(written)
-                            })?
-                        }
+                        installed != 0
                     }
                 },
                 Err(cmsg) => match cmsg.downcast::<IpCmsg>() {
@@ -403,7 +394,7 @@ fn recv_impl(
                 break;
             }
         }
-        builder.finish()?;
+        builder.finish();
     }
 
     debug!("sys_recv => fd: {fd}, recv: {recv}");
@@ -426,7 +417,7 @@ pub fn sys_recvfrom(
     } else {
         Some(RecvName {
             addr,
-            capacity: addrlen.vm_read()?,
+            capacity: RecvNameCapacity::User(addrlen),
         })
     };
     let outcome = recv_impl(
@@ -451,7 +442,7 @@ pub fn sys_recvmsg(fd: i32, msg: *mut msghdr, flags: u32) -> StarryResult<isize>
     let mut control_truncated = false;
     let name = (!header.msg_name.is_null()).then_some(RecvName {
         addr: header.msg_name.cast(),
-        capacity: header.msg_namelen as socklen_t,
+        capacity: RecvNameCapacity::Header(header.msg_namelen as socklen_t),
     });
     let outcome = recv_impl(
         fd,
@@ -459,7 +450,10 @@ pub fn sys_recvmsg(fd: i32, msg: *mut msghdr, flags: u32) -> StarryResult<isize>
         flags,
         name,
         (!header.msg_control.is_null()).then(|| {
-            CMsgBuilder::new(header.msg_control as *mut cmsghdr, &mut header.msg_controllen)
+            CMsgBuilder::new(
+                header.msg_control as *mut cmsghdr,
+                &mut header.msg_controllen,
+            )
         }),
         &mut truncated,
         &mut control_truncated,
@@ -476,17 +470,44 @@ pub fn sys_recvmsg(fd: i32, msg: *mut msghdr, flags: u32) -> StarryResult<isize>
         mf |= MSG_CTRUNC;
     }
     header.msg_flags = mf;
-    msg.vm_write(header)?;
+    write_recvmsg_outputs(msg, &header)?;
     Ok(outcome.received)
 }
 
+/// Copies only Linux's value-result fields. Input pointers may reside in a
+/// read-only page and must not be overwritten by a whole-structure copyout.
+fn write_recvmsg_outputs(pointer: *mut msghdr, header: &msghdr) -> StarryResult<()> {
+    if !header.msg_name.is_null() {
+        pointer
+            .cast::<u8>()
+            .wrapping_add(core::mem::offset_of!(msghdr, msg_namelen))
+            .cast::<i32>()
+            .vm_write(header.msg_namelen)?;
+    }
+    pointer
+        .cast::<u8>()
+        .wrapping_add(core::mem::offset_of!(msghdr, msg_flags))
+        .cast::<u32>()
+        .vm_write(header.msg_flags)?;
+    pointer
+        .cast::<u8>()
+        .wrapping_add(core::mem::offset_of!(msghdr, msg_controllen))
+        .cast::<usize>()
+        .vm_write(header.msg_controllen)?;
+    Ok(())
+}
+
+fn write_mmsg_len(pointer: *mut mmsghdr, len: u32) -> StarryResult<()> {
+    pointer
+        .cast::<u8>()
+        .wrapping_add(core::mem::offset_of!(mmsghdr, msg_len))
+        .cast::<u32>()
+        .vm_write(len)?;
+    Ok(())
+}
+
 /// Send multiple datagrams in one syscall.
-pub fn sys_sendmmsg(
-    fd: i32,
-    msgvec: *mut mmsghdr,
-    vlen: u32,
-    flags: u32,
-) -> StarryResult<isize> {
+pub fn sys_sendmmsg(fd: i32, msgvec: *mut mmsghdr, vlen: u32, flags: u32) -> StarryResult<isize> {
     if vlen == 0 {
         return Ok(0);
     }
@@ -497,30 +518,28 @@ pub fn sys_sendmmsg(
     let mut sent = 0;
     for index in 0..vlen as usize {
         let slot = msgvec.wrapping_add(index);
-        // SAFETY: Linux `mmsghdr` contains only integer fields and raw
-        // pointers through its nested `msghdr`.
-        let mut msg = unsafe { slot.vm_read_any()? };
-        let cmsg = parse_send_cmsgs(msg.msg_hdr.msg_control as usize, msg.msg_hdr.msg_controllen)?;
-        match send_impl(
-            fd,
-            IoVectorBuf::new(msg.msg_hdr.msg_iov as *const IoVec, msg.msg_hdr.msg_iovlen)?
-                .into_io(),
-            flags,
-            msg.msg_hdr.msg_name.cast(),
-            msg.msg_hdr.msg_namelen as socklen_t,
-            cmsg,
-        ) {
-            Ok(n) => {
-                msg.msg_len = n as u32;
-                slot.vm_write(msg)?;
-                sent += 1;
-            }
-            Err(e) => {
-                if sent == 0 {
-                    return Err(e);
-                }
-                break;
-            }
+        // Include import and copyout failures in the per-message result:
+        // once a prefix completed, Linux returns its count over a later error.
+        let result = (|| -> StarryResult<()> {
+            // SAFETY: Linux mmsghdr contains only integers and raw pointers.
+            let msg = unsafe { slot.vm_read_any()? };
+            let cmsg =
+                parse_send_cmsgs(msg.msg_hdr.msg_control as usize, msg.msg_hdr.msg_controllen)?;
+            let sent = send_impl(
+                fd,
+                IoVectorBuf::new(msg.msg_hdr.msg_iov as *const IoVec, msg.msg_hdr.msg_iovlen)?
+                    .into_io(),
+                flags,
+                msg.msg_hdr.msg_name.cast(),
+                msg.msg_hdr.msg_namelen as socklen_t,
+                cmsg,
+            )?;
+            write_mmsg_len(slot, sent as u32)
+        })();
+        match result {
+            Ok(()) => sent += 1,
+            Err(error) if sent == 0 => return Err(error),
+            Err(_) => break,
         }
     }
     Ok(sent)
@@ -563,39 +582,46 @@ pub fn sys_recvmmsg(
         }
 
         let slot = msgvec.wrapping_add(index);
-        // SAFETY: Linux `mmsghdr` contains only integer fields and raw
-        // pointers through its nested `msghdr`.
-        let mut msg = unsafe { slot.vm_read_any()? };
-        let name = (!msg.msg_hdr.msg_name.is_null()).then_some(RecvName {
-            addr: msg.msg_hdr.msg_name.cast(),
-            capacity: msg.msg_hdr.msg_namelen as socklen_t,
-        });
-        let mut truncated = false;
-        let mut control_truncated = false;
-        let recv = recv_impl(
-            fd,
-            IoVectorBuf::new(msg.msg_hdr.msg_iov as *mut IoVec, msg.msg_hdr.msg_iovlen)?.into_io(),
-            flags,
-            name,
-            (!msg.msg_hdr.msg_control.is_null()).then(|| {
-                CMsgBuilder::new(
-                    msg.msg_hdr.msg_control as *mut cmsghdr,
-                    &mut msg.msg_hdr.msg_controllen,
-                )
-            }),
-            &mut truncated,
-            &mut control_truncated,
-        );
+        let result = (|| -> StarryResult<()> {
+            // SAFETY: Linux `mmsghdr` contains only integer fields and raw
+            // pointers through its nested `msghdr`.
+            let mut msg = unsafe { slot.vm_read_any()? };
+            let name = (!msg.msg_hdr.msg_name.is_null()).then_some(RecvName {
+                addr: msg.msg_hdr.msg_name.cast(),
+                capacity: RecvNameCapacity::Header(msg.msg_hdr.msg_namelen as socklen_t),
+            });
+            let mut truncated = false;
+            let mut control_truncated = false;
+            let outcome = recv_impl(
+                fd,
+                IoVectorBuf::new(msg.msg_hdr.msg_iov as *mut IoVec, msg.msg_hdr.msg_iovlen)?
+                    .into_io(),
+                flags,
+                name,
+                (!msg.msg_hdr.msg_control.is_null()).then(|| {
+                    CMsgBuilder::new(
+                        msg.msg_hdr.msg_control as *mut cmsghdr,
+                        &mut msg.msg_hdr.msg_controllen,
+                    )
+                }),
+                &mut truncated,
+                &mut control_truncated,
+            )?;
 
-        match recv {
-            Ok(outcome) => {
-                msg.msg_len = outcome.received as u32;
-                if let Some(name_len) = outcome.name_len {
-                    msg.msg_hdr.msg_namelen = name_len as _;
-                }
-                msg.msg_hdr.msg_flags =
-                    u32::from(truncated) * MSG_TRUNC + u32::from(control_truncated) * MSG_CTRUNC;
-                slot.vm_write(msg)?;
+            if let Some(name_len) = outcome.name_len {
+                msg.msg_hdr.msg_namelen = name_len as _;
+            }
+            msg.msg_hdr.msg_flags =
+                u32::from(truncated) * MSG_TRUNC + u32::from(control_truncated) * MSG_CTRUNC;
+            let header_pointer = slot
+                .cast::<u8>()
+                .wrapping_add(core::mem::offset_of!(mmsghdr, msg_hdr))
+                .cast::<msghdr>();
+            write_recvmsg_outputs(header_pointer, &msg.msg_hdr)?;
+            write_mmsg_len(slot, outcome.received as u32)
+        })();
+        match result {
+            Ok(()) => {
                 received += 1;
                 // MSG_WAITFORONE: once a datagram is received, remaining
                 // recvs must not block (Linux do_recvmmsg net/socket.c:3055

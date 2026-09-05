@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-usercopy-socket-results C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_executable(test-usercopy-socket-results src/main.c)
+target_compile_options(test-usercopy-socket-results PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-usercopy-socket-results RUNTIME DESTINATION usr/bin/starry-test-suit)
