@@ -1,11 +1,14 @@
 //! Thread-owned state and its synchronization boundaries.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
+};
 
 use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin, time::TimeValue};
 use axpoll_set::PollSet;
-use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
+use scope_local::{ActiveScope, LocalItem, Scope};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
@@ -47,29 +50,40 @@ struct ThreadPidOwnership {
 
 /// Scope-local resources and their task-context serialization.
 struct ThreadScope {
-    cell: ScopeCell,
+    scope: UnsafeCell<Scope>,
     access: PiMutex<()>,
 }
+
+// SAFETY: immutable active-task and remote reads may overlap because every
+// scope-local payload is `Sync`. `access` serializes every remote read with the
+// only mutable path, while that current-task mutation also disables local IRQs
+// and preemption so no active-scope access can overlap it on the owner CPU.
+unsafe impl Sync for ThreadScope {}
 
 impl ThreadScope {
     fn new(scope: Scope) -> Self {
         Self {
-            cell: ScopeCell::from_scope(scope),
+            scope: UnsafeCell::new(scope),
             access: PiMutex::new(()),
         }
     }
 
-    fn with_current_mut<R>(&self, operation: impl FnOnce(&mut ScopeCellWriteGuard<'_>) -> R) -> R {
+    fn with_current_mut<R>(&self, operation: impl FnOnce(&mut Scope) -> R) -> R {
         let _access = self.access.lock();
         let _guard = NoPreemptIrqSave::new();
-        // SAFETY: the combined guard pins this task to the CPU and prevents
-        // local IRQ reentry for the bounded lease transition and callback.
+        // SAFETY: `access` excludes remote scope readers and the IRQ/preempt
+        // guard excludes every local active-scope access. The scheduler's
+        // current publication proves that this thread owns the selected scope.
         unsafe {
             ax_runtime::hal::percpu::with_cpu_pin(|pin| {
-                self.cell.try_with_active_mut_pinned(pin, operation)
+                let scope = &mut *self.scope.get();
+                assert!(
+                    ActiveScope::is_pinned(scope, pin),
+                    "Starry scope mutation does not belong to the current task"
+                );
+                operation(scope)
             })
             .expect("Starry scope mutation requires an installed CPU area")
-            .expect("serialized current scope mutation lost its sole scheduler activation")
         }
     }
 
@@ -78,30 +92,31 @@ impl ThreadScope {
         T: Clone + Send + Sync + 'static,
     {
         let _access = self.access.lock();
-        let scope = self
-            .cell
-            .try_read()
-            .expect("serialized Starry scope read found an active writer");
-        item.scope_cell(&scope).clone()
+        // SAFETY: the PI mutex serializes this immutable view with the only
+        // mutable path. An on-CPU task may concurrently read the same `Sync`
+        // payload through its active scope.
+        item.scope(unsafe { &*self.scope.get() }).clone()
     }
 
     unsafe fn activate_pinned(&self, pin: &CpuPin<'_>) {
-        // SAFETY: the scheduler switch baton retains this object and pins the
-        // CPU until the matching switch-out callback.
-        match unsafe { self.cell.try_activate_pinned(pin) } {
-            Ok(()) => {}
-            Err(ScopeActivationError::AlreadyActive) => {
-                panic!("Starry scheduler attempted to activate one thread on two CPUs")
-            }
-            Err(ScopeActivationError::ExclusiveLease) => {
-                panic!("Starry scheduler activated a thread during exclusive scope mutation")
-            }
-        }
+        assert!(
+            ActiveScope::is_global_pinned(pin),
+            "Starry scope activation requires the global scope"
+        );
+        // SAFETY: Linux-style scheduler placement is the sole on-CPU claim.
+        // The switch baton retains this thread and pin until switch-out; the
+        // task-local access mutex separately serializes the only mutation.
+        unsafe { ActiveScope::set_pinned(&*self.scope.get(), pin) };
     }
 
     unsafe fn deactivate_pinned(&self, pin: &CpuPin<'_>) {
-        // SAFETY: forwarded from the matching scheduler switch-out callback.
-        unsafe { self.cell.deactivate_pinned(pin) };
+        assert!(
+            ActiveScope::is_pinned(unsafe { &*self.scope.get() }, pin),
+            "Starry scope deactivation does not match the current task"
+        );
+        // SAFETY: the matching scheduler switch-in published this scope under
+        // the same CPU's switch baton.
+        unsafe { ActiveScope::set_global_pinned(pin) };
     }
 }
 
@@ -359,7 +374,7 @@ impl Thread {
     /// only install already-prepared scope entries.
     pub(crate) fn with_current_scope_mut<R>(
         &self,
-        f: impl FnOnce(&mut ScopeCellWriteGuard<'_>) -> R,
+        f: impl FnOnce(&mut Scope) -> R,
     ) -> R {
         self.scope.with_current_mut(f)
     }

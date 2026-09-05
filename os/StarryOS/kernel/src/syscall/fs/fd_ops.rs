@@ -707,7 +707,7 @@ pub fn sys_close_range(
             crate::file::current_fd_table().read().clone(),
         ));
         curr.as_thread().with_current_scope_mut(|scope| {
-            *FD_TABLE.scope_cell_mut(scope).deref_mut() =
+            *FD_TABLE.scope_mut(scope).deref_mut() =
                 crate::file::new_file_table_scope(new_files);
         });
     }

@@ -864,6 +864,15 @@ impl ActiveScope {
         ACTIVE_SCOPE_PTR.read_current(pin) == 0
     }
 
+    /// Returns whether `scope` is the active scope selected by `pin`.
+    ///
+    /// This does not acquire a scope lease. Callers must already own the
+    /// scheduler or task-local serialization that keeps the selected scope
+    /// alive and excludes mutation for the duration of their operation.
+    pub fn is_pinned(scope: &Scope, pin: &CpuPin<'_>) -> bool {
+        Self::current_scope_ptr_pinned(pin) == scope.inner_ptr().expose_provenance()
+    }
+
     pub(crate) fn with_item<'pin, R>(
         item: &'static Item,
         pin: &CpuPin<'pin>,
