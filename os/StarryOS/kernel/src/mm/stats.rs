@@ -140,10 +140,11 @@ impl ProcessMemStats {
     ///
     /// Current VSS / VMA breakdown comes from a VMA walk; VmPeak from
     /// [`AddrSpace::vm_stat`]; resident RSS from the published MappingSlot set.
-    pub fn collect(aspace: &AddrSpace) -> Self {
+    /// Metadata and allocation errors are returned without fabricating an empty VMA set.
+    pub fn collect(aspace: &AddrSpace) -> crate::StarryResult<Self> {
         let mut stats = Self::default();
         let stack_top = aspace.stack_top().as_usize();
-        for area in aspace.vma_inspection_records().unwrap_or_default() {
+        for area in aspace.vma_inspection_records()? {
             let pages = (area.size() / PAGE_SIZE_4K) as u64;
             let flags = area.flags();
             let file_info = area.file_info();
@@ -167,7 +168,7 @@ impl ProcessMemStats {
         stats.resident_pages = resident.total();
         stats.hiwater_rss_pages = aspace.resident_hiwater_pages();
         stats.peak_pages = aspace.vm_stat.peak_vss_pages().max(stats.vss_pages);
-        stats
+        Ok(stats)
     }
 
     /// Virtual size in bytes (`stat` field 23).

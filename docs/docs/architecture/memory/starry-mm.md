@@ -306,6 +306,8 @@ faultable copy 先尝试最多 16 页的 `user_range_probe_ready()`。AArch64 EL
 
 RSS 从 published `MappingSlot` 的 `resident_kind` 派生，VmHWM 由 `ResidentWatermark` 单调维护。VSS、VmPeak 与 heap/VMA 分类继续由 `ProcessVmStat` 和 `ProcessMemStats` 汇总；procfs reader 取得 owned inspection records，不借用 VMA 内部 operation。
 
+memfd 的共享与私有映射从 inode 持有的元数据取得展示名称，fd 关闭后仍显示 `/memfd:name (deleted)`。查询不要求匿名文件具有目录父节点；VMA 检查失败则沿类型化错误返回，不将整个地址空间的统计替换为空集合。
+
 `mincore` 使用 32 项有界批次，缓存查询与用户结果复制在 MM 锁外完成。驻留状态来自 `MappingSlot` 与共享对象，不由当前访问权限决定；批次在后续区间失败前保留已完成结果，文件查询遵守当前凭据的普通访问规则。
 
 `VmRSS` 是 Anon、File 与 Shmem slot 之和，shared 展示由 File/Shmem 组成。`Committed_AS`、完整 overcommit ledger、swap totals 与 OOM victim accounting 尚未实现，procfs 占位值不能被描述成完整 Linux memory commitment 策略。

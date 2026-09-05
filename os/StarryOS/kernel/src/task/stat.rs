@@ -98,7 +98,7 @@ impl TaskStat {
 
         let aspace = proc_data.pin_aspace()?;
         let aspace = aspace.lock();
-        let mem = ProcessMemStats::collect(&aspace);
+        let mem = ProcessMemStats::collect(&aspace)?;
         let (start_data, end_data) = aspace.executable_data_bounds();
 
         Ok(Self {

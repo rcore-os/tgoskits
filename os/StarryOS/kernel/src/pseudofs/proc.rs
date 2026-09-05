@@ -765,7 +765,7 @@ fn render_thread_status(
     let thread = task.as_thread();
     let aspace = proc_data.pin_aspace().map_err(VfsError::from)?;
     let aspace = aspace.lock();
-    let mem = ProcessMemStats::collect(&aspace);
+    let mem = ProcessMemStats::collect(&aspace).map_err(VfsError::from)?;
     let cred = thread.cred();
     let name = task.name();
     let num_threads = proc_data.proc.threads().len() as u32;
@@ -1282,7 +1282,7 @@ fn render_thread_statm(
     };
     let aspace = proc_data.pin_aspace().map_err(VfsError::from)?;
     let mm = aspace.lock();
-    Ok(ProcessMemStats::collect(&mm).format_statm())
+    Ok(ProcessMemStats::collect(&mm).map_err(VfsError::from)?.format_statm())
 }
 
 fn render_thread_stat(
@@ -1296,7 +1296,7 @@ fn render_thread_stat(
     let mut stat = TaskStat::from_thread(&task)?;
     let aspace = proc_data.pin_aspace().map_err(VfsError::from)?;
     let mm = aspace.lock();
-    let mem = ProcessMemStats::collect(&mm);
+    let mem = ProcessMemStats::collect(&mm).map_err(VfsError::from)?;
     stat.vsize = mem.vsize_bytes();
     stat.rss = mem.rss_pages();
     stat.start_code = mem.start_code;

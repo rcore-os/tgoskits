@@ -1158,16 +1158,13 @@ impl CowBackend {
     }
 
     pub fn file_info(&self) -> StarryResult<MappingFileInfo> {
-        let loc = self
+        let source = self
             .file
             .as_ref()
             .map(|(file, file_vaddr_base, file_start, ..)| {
-                (file.location(), *file_vaddr_base, *file_start)
+                (file, *file_vaddr_base, *file_start)
             });
-        if let Some((loc, file_vaddr_base, file_start)) = loc {
-            let path = loc.absolute_path().map(|pb| pb.to_string())?;
-            let inode = loc.inode();
-            let dev = loc.metadata()?.device;
+        if let Some((file, file_vaddr_base, file_start)) = source {
             // Same invariant as `alloc_new_at`: a virtual address maps to
             // `file_start + (vaddr - file_vaddr_base)`, clamped to file_start
             // for the unaligned first page (where self.start < file_vaddr_base).
@@ -1181,13 +1178,7 @@ impl CowBackend {
             let offset = align_down_4k(
                 usize::try_from(offset).map_err(|_| StarryError::InvalidInput)?,
             ) as u64;
-            return Ok(MappingFileInfo {
-                path,
-                offset: Some(offset),
-                inode: Some(inode),
-                dev: Some(dev),
-                shared: self.shared,
-            });
+            return super::file::mapping_file_info(file.location(), offset, self.shared);
         }
         if let Some(name) = &self.name {
             return Ok(MappingFileInfo {

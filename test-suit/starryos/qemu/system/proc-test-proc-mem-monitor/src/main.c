@@ -1462,6 +1462,37 @@ static void test_child_proc_memory(long page_size, unsigned long parent_statm_si
     expect(WIFEXITED(status) && WEXITSTATUS(status) == 0, "child exits cleanly");
 }
 
+static void test_memfd_mapping_metadata(long page_size)
+{
+    long before = read_self_status_kb("VmSize");
+    int fd = memfd_create_sys("vm-stat-owner", MFD_CLOEXEC);
+    expect(fd >= 0, "create memfd for mapping metadata");
+    expect(ftruncate(fd, page_size) == 0, "size mapping metadata memfd");
+    void *shared = mmap(NULL, page_size, PROT_READ, MAP_SHARED, fd, 0);
+    void *private = mmap(NULL, page_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    expect(shared != MAP_FAILED && private != MAP_FAILED,
+           "map shared and private memfd views");
+    expect(close(fd) == 0, "close memfd while both mappings retain it");
+    long after = read_self_status_kb("VmSize");
+    expect(after >= before + 2 * page_size / 1024,
+           "memfd mappings preserve virtual-size statistics after fd close");
+
+    FILE *maps = fopen("/proc/self/maps", "r");
+    expect(maps != NULL, "open maps with retained memfd mappings");
+    char line[512];
+    int named = 0;
+    while (fgets(line, sizeof(line), maps)) {
+        if (strstr(line, "/memfd:vm-stat-owner (deleted)"))
+            named++;
+    }
+    expect(!ferror(maps), "read maps with retained memfd mappings");
+    fclose(maps);
+    expect(named == 2, "both memfd mappings retain their display identity");
+    expect(munmap(shared, page_size) == 0, "unmap shared metadata view");
+    expect(munmap(private, page_size) == 0, "unmap private metadata view");
+    puts("PASS: retained memfd mapping metadata");
+}
+
 int main(void)
 {
     long page_size = 0;
@@ -1473,6 +1504,8 @@ int main(void)
 
     page_size = sysconf(_SC_PAGESIZE);
     expect(page_size > 0, "sysconf(_SC_PAGESIZE) must be positive");
+
+    test_memfd_mapping_metadata(page_size);
 
     read_statm_fields_from(
         "/proc/self/statm",

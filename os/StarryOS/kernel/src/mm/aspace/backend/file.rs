@@ -1,5 +1,6 @@
 use alloc::{
     collections::BTreeMap,
+    format,
     string::ToString,
     sync::{Arc, Weak},
     vec::Vec,
@@ -831,19 +832,38 @@ impl FileBackend {
     }
 
     pub fn file_info(&self) -> StarryResult<MappingFileInfo> {
-        let loc = self.0.cache.location();
-        let name = loc.absolute_path().map(|pb| pb.to_string())?;
         let offset = (self.0.offset_page as u64) * PAGE_SIZE_4K as u64;
-        let inode = loc.inode();
-        let dev = loc.metadata()?.device;
-        Ok(MappingFileInfo {
-            path: name,
-            offset: Some(offset),
-            inode: Some(inode),
-            dev: Some(dev),
-            shared: self.0.shared,
-        })
+        mapping_file_info(self.0.cache.location(), offset, self.0.shared)
     }
+}
+
+pub(super) fn mapping_file_info(
+    loc: &Location,
+    offset: u64,
+    shared: bool,
+) -> StarryResult<MappingFileInfo> {
+    // An anonymous memfd has no parent dentry. Keep its inode-owned
+    // identity after fd close, without asking the path walker to invent
+    // a directory link. Release the user-data lock before formatting.
+    let memfd = {
+        loc.user_data()
+            .get::<crate::file::memfd::MemfdRef>()
+            .map(|memfd| memfd.0.clone())
+    };
+    let name = if let Some(memfd) = memfd {
+        format!("/memfd:{} (deleted)", memfd.name())
+    } else {
+        loc.absolute_path()?.to_string()
+    };
+    let inode = loc.inode();
+    let dev = loc.metadata()?.device;
+    Ok(MappingFileInfo {
+        path: name,
+        offset: Some(offset),
+        inode: Some(inode),
+        dev: Some(dev),
+        shared,
+    })
 }
 
 impl MappingExecution for FileBackend {
