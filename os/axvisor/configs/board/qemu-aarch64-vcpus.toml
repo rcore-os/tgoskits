@@ -1,0 +1,9 @@
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "os/axvisor/configs/vms/qemu/aarch64/vcpus/arceos-multi-vcpu-vm1.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/vcpus/arceos-multi-vcpu-vm2.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/vcpus/arceos-multi-vcpu-vm3.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/vcpus/arceos-multi-vcpu-vm4.toml",
+]

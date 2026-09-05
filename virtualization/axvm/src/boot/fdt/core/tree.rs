@@ -1,4 +1,4 @@
-use std::{format, string::String, vec::Vec};
+use std::{collections::BTreeSet, format, string::String, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId, Property};
 use fdt_raw::{Header, RegInfo};
@@ -230,6 +230,73 @@ impl FdtTree {
         }
 
         Ok(dest)
+    }
+
+    /// Ensures the guest FDT exposes one `/cpus/cpu@<id>` node per guest
+    /// virtual CPU id in `phys_cpu_ids`.
+    ///
+    /// The CPU nodes are copied from the host FDT, so when the guest has more
+    /// vCPUs than host physical CPUs (vCPU over-subscription) some ids have no
+    /// host counterpart. For every missing id a fresh CPU node is cloned from
+    /// the first host CPU node, named `cpu@<id>` and re-registered with
+    /// `reg = <id>`, so that the guest SMP bootstrap sees all CPUs and powers
+    /// the secondaries up via PSCI.
+    pub(crate) fn ensure_guest_cpu_nodes(
+        &mut self,
+        host: &Fdt,
+        phys_cpu_ids: &[usize],
+    ) -> AxVmResult {
+        let existing = self
+            .node_paths()
+            .into_iter()
+            .filter_map(|(_, path)| {
+                path.strip_prefix("/cpus/cpu@")
+                    .and_then(|id| id.split('/').next())
+                    .and_then(|id| usize::from_str_radix(id, 16).ok())
+            })
+            .collect::<BTreeSet<_>>();
+
+        let missing = phys_cpu_ids
+            .iter()
+            .copied()
+            .filter(|id| !existing.contains(id))
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let template_id = host
+            .iter_node_ids()
+            .find(|node_id| host.path_of(*node_id).starts_with("/cpus/cpu@"))
+            .ok_or_else(|| ax_err_type!(InvalidInput, "host FDT has no CPU node template"))?;
+        let template = host
+            .node(template_id)
+            .ok_or_else(|| ax_err_type!(InvalidData, "host FDT CPU node template is missing"))?;
+
+        let cpus_id = self.ensure_path("/cpus")?;
+        let template_has_affinity = template
+            .properties()
+            .iter()
+            .any(|prop| prop.name() == "mpidr-affinity");
+        for id in missing {
+            let node_id = self.add_node(cpus_id, Node::new(&format!("cpu@{id:x}")));
+            for prop in template.properties() {
+                if should_skip_guest_cpu_prop(host, prop.name()) {
+                    continue;
+                }
+                self.set_property(node_id, prop.clone())?;
+            }
+            self.fdt
+                .view_typed_mut(node_id)
+                .ok_or_else(|| ax_err_type!(InvalidData, "new guest CPU node is missing"))?
+                .set_regs(&[RegInfo::new(id as u64, None)]);
+            // Keep `mpidr-affinity` consistent with the virtualized MPIDR
+            // (`VMPIDR_EL2 = 1<<31 | id`) when the host template carries it.
+            if template_has_affinity {
+                self.set_property(node_id, prop_u32_list("mpidr-affinity", &[id as u32]))?;
+            }
+        }
+        Ok(())
     }
 
     fn remove_paths_deepest_first(&mut self, mut paths: Vec<String>) {

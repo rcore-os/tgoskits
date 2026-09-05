@@ -516,6 +516,53 @@ pub fn set_phys_cpu_sets(
         .as_ref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
+    let policy = super::selected_guest_fdt_policy();
+    let host_cpu_count = (policy.host_cpu_count)();
+
+    // When `phys_cpu_sets` is configured explicitly, each entry is the final
+    // physical-CPU affinity mask of the corresponding vCPU, so `phys_cpu_ids`
+    // only carries the guest-visible virtual CPU id (the low bits of the
+    // virtualized MPIDR) and must not be required to exist in the host FDT.
+    // This is what makes vCPU over-subscription possible: more guest vCPUs
+    // than host physical CPUs, all scheduled on the CPUs selected by the mask.
+    if let Some(phys_cpu_sets) = crate_config.base.phys_cpu_sets.as_ref() {
+        if phys_cpu_sets.len() != phys_cpu_ids.len() {
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!(
+                    "phys_cpu_sets length ({}) must equal phys_cpu_ids length ({})",
+                    phys_cpu_sets.len(),
+                    phys_cpu_ids.len()
+                )
+            ));
+        }
+        if host_cpu_count >= usize::BITS as usize {
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!("host CPU count {host_cpu_count} exceeds the affinity mask width")
+            ));
+        }
+        let valid_masks = if host_cpu_count == 0 {
+            0usize
+        } else {
+            (1usize << host_cpu_count) - 1
+        };
+        for &mask in phys_cpu_sets {
+            if mask == 0 || mask & !valid_masks != 0 {
+                return Err(ax_err_type!(
+                    InvalidInput,
+                    format!(
+                        "phys_cpu_sets mask 0x{mask:x} is not within the {host_cpu_count} host CPUs"
+                    )
+                ));
+            }
+        }
+        let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
+        phys_cpu_ls.set_guest_cpu_sets(phys_cpu_sets.clone());
+        phys_cpu_ls.set_guest_phys_cpu_ids(phys_cpu_ids.clone());
+        return Ok(());
+    }
+
     let cpu_nodes_info: Vec<_> = fdt
         .iter_node_ids()
         .filter_map(|node_id| {
@@ -534,11 +581,10 @@ pub fn set_phys_cpu_sets(
         .collect();
     info!("Found {} host CPU nodes", cpu_nodes_info.len());
 
-    let policy = super::selected_guest_fdt_policy();
     let (new_phys_cpu_sets, guest_phys_cpu_ids) = resolve_phys_cpu_sets(
         phys_cpu_ids,
         &cpu_nodes_info,
-        (policy.host_cpu_count)(),
+        host_cpu_count,
         policy.resolve_cpu_index,
     )?;
 
