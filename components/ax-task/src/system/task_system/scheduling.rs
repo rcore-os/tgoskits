@@ -158,7 +158,7 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         mut transaction: OwnerRqTxn<'_>,
-        current: &ThreadCore,
+        current: ThreadId,
         request_scope: SchedulerRequestScope,
     ) -> Result<SchedulerOutcome, TaskError> {
         let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
@@ -169,13 +169,13 @@ impl TaskSystem {
         if let Some(core) = runtime_overrun_work {
             self.publish_deadline_overrun_work(core);
         }
-        let run_queue_changed =
-            if self.owner_balance_work_pending(cpu.as_ref().get_ref(), current.id()) {
-                self.service_owner_balance(cpu.as_mut(), current.id())?
-                    .run_queue_changed()
-            } else {
-                false
-            };
+        let run_queue_changed = if self.owner_balance_work_pending(cpu.as_ref().get_ref(), current)
+        {
+            self.service_owner_balance(cpu.as_mut(), current)?
+                .run_queue_changed()
+        } else {
+            false
+        };
         if run_queue_changed {
             self.program_local_timer(
                 cpu.as_mut(),
@@ -798,7 +798,7 @@ impl TaskSystem {
             return self.finish_owner_no_switch(
                 cpu.as_mut(),
                 transaction,
-                previous_core_hint,
+                previous_core_hint.id(),
                 request_scope,
             );
         }
@@ -952,14 +952,57 @@ impl TaskSystem {
         let mut transaction = unsafe { rq_entry.begin(self, remote) };
         #[cfg(feature = "qperf-metrics")]
         let rq_begin_finished_ns = task_runtime::monotonic_now().as_nanos();
-        let previous_core = transaction.current_core_ref().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
-        });
-        if expected_current.is_some_and(|expected| !core::ptr::eq(expected, previous_core)) {
-            task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
+        let previous = {
+            let previous_core = transaction.current_core_ref().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
+            });
+            if expected_current.is_some_and(|expected| !core::ptr::eq(expected, previous_core)) {
+                task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
+            }
+            previous_core.id()
+        };
+        let keeps_current_dispatch = owner_yield_keeps_current_dispatch(&mut transaction);
+        let schedule_out = {
+            let previous_core = transaction.current_core_ref().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
+            });
+            self.prepare_owner_rq_schedule_out(&transaction, previous_core)
+        };
+        if keeps_current_dispatch && schedule_out.is_some() {
+            // Linux `yield_task_fair()` returns before `update_curr()` when
+            // `rq->nr_running == 1`. A single-node RT queue is rotated onto
+            // itself and `put_prev_set_next_task()` returns for `next == prev`.
+            // In either case the rq-owned current dispatch stays installed;
+            // do not manufacture a put-prev/pick-next cycle or take p->pi_lock.
+            transaction.merge_scheduler_request(SchedulerRequestScope::All);
+            #[cfg(feature = "qperf-metrics")]
+            {
+                let rq_preflight_finished_ns = task_runtime::monotonic_now().as_nanos();
+                crate::metrics::qperf_record_switch_scheduler_detail(
+                    10,
+                    owner_entry_started_ns,
+                    owner_drain_finished_ns,
+                );
+                crate::metrics::qperf_record_switch_scheduler_detail(
+                    11,
+                    rq_begin_started_ns,
+                    rq_begin_finished_ns,
+                );
+                crate::metrics::qperf_record_switch_scheduler_detail(
+                    12,
+                    rq_begin_finished_ns,
+                    rq_preflight_finished_ns,
+                );
+            }
+            let _ = self.finish_owner_no_switch(
+                cpu.as_mut(),
+                transaction,
+                previous,
+                SchedulerRequestScope::All,
+            )?;
+            return Ok(YieldOutcome::Unchanged);
         }
-        if let Some(schedule_out) = self.prepare_owner_rq_schedule_out(&transaction, previous_core)
-        {
+        if let Some(schedule_out) = schedule_out {
             #[cfg(feature = "qperf-metrics")]
             {
                 let rq_preflight_finished_ns = task_runtime::monotonic_now().as_nanos();
