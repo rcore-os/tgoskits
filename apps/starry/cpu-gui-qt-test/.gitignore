@@ -1,0 +1,7 @@
+target/
+*.o
+gui_render
+gui_layout
+gui_interact
+gui_realassets
+assets/

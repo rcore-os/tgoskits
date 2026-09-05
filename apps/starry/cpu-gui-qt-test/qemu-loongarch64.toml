@@ -1,0 +1,20 @@
+# cpu-gui-qt-test loongarch64 - "pyte for GUI widgets" offscreen/raster carpet. Real Qt Widgets/QPainter on
+# the CPU raster engine (QT_QPA_PLATFORM=offscreen, no display server); closed-form per-pixel render goldens,
+# exact layout geometry(), injected-QTest interaction state. Qt6 linked (carpet tests Qt); runtime libs +
+# offscreen plugin staged into the overlay. Platform: dynamic (axplat-dyn) - build-loongarch64*.toml carries
+# ax-driver/serial and does not opt out of dynamic platform mode; the retired static LoongArch path lacked
+# the serial console binding. uefi=false / to_bin=true is the dynamic platform's raw-binary boot path.
+# -smp 1: single vCPU. 1024M: Qt6 raster + font engine.
+args = [
+    "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "1024M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 30000

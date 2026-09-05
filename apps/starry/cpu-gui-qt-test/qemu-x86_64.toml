@@ -1,0 +1,21 @@
+# cpu-gui-qt-test x86_64 - the "pyte for GUI widgets" carpet: render real Qt Widgets / QPainter on the CPU
+# RASTER paint engine with the offscreen QPA platform plugin (QT_QPA_PLATFORM=offscreen, no display server),
+# asserting CLOSED-FORM goldens: exact per-pixel fillRect/drawLine/drawEllipse coverage, Porter-Duff "over"
+# alpha compositing per pixel, exact QVBox/QHBox/QGrid geometry() layout math, and post-event widget state
+# from injected QTest mouse/key events. Qt6 is linked (the carpet TESTS Qt, it does not reimplement widgets);
+# the runtime libs + offscreen plugin are staged into the overlay by prebuild. No GPU, no display.
+# -smp 1: single vCPU. 1024M: Qt6 raster + font engine need more than a text parser.
+args = [
+    "-machine", "q35",
+    "-nographic", "-cpu", "Haswell", "-m", "1024M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 20000
