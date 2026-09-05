@@ -319,7 +319,10 @@ unsafe impl GlobalAlloc for GlobalAllocator {
             if let Ok(ptr) = GlobalAllocator::alloc(self, layout) {
                 ptr.as_ptr()
             } else {
-                alloc::alloc::handle_alloc_error(layout)
+                // Let fallible containers observe allocation failure. The
+                // standard library still calls its allocation-error handler
+                // for infallible Box/Vec/Arc construction after a null result.
+                core::ptr::null_mut()
             }
         };
 
@@ -329,6 +332,9 @@ unsafe impl GlobalAlloc for GlobalAllocator {
                 None => inner(),
                 Some(state) => {
                     let ptr = inner();
+                    if ptr.is_null() {
+                        return ptr;
+                    }
                     let generation = state.generation;
                     state.generation += 1;
                     state.map.insert(
