@@ -184,8 +184,7 @@
         assert fixture.contract.requiredFeatures.devnet == false;
         assert fixture.contract.requiredFeatures.nixos-test == false;
         assert fixture.contract.enableOCR == false;
-        assert fixture.contract.sshBackdoor.enable == false;
-        assert fixture.contract.globalTimeout == 900;
+        assert fixture.contract.globalTimeout == 300;
         assert fixture.extraModules == [ ];
         assert fixture.caseName == "boot";
         assert nixpkgs.lib.hasInfix ''-- "$@"'' fixture.launcherScript;

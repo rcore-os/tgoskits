@@ -52,7 +52,7 @@ pub(crate) struct ProcessSpec {
     pub(crate) output: OutputMode,
 }
 
-pub(super) async fn run(starry: &mut Starry, args: ArgsTestNixos) -> anyhow::Result<()> {
+pub(crate) async fn run(starry: &mut Starry, args: ArgsTestNixos) -> anyhow::Result<()> {
     let workspace = starry.app.workspace_root().to_path_buf();
     match plan_nixos_action(&workspace, &args)? {
         NixosAction::List { cases } => {

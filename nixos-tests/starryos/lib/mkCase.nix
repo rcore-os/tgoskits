@@ -54,7 +54,7 @@ let
     console, terminal_seen, qemu_exited = wait_for_console_evidence(
         machine,
         ${builtins.toJSON terminalPattern},
-        deadline=time.monotonic() + 600,
+        deadline=time.monotonic() + 300,
     )
     evaluate_boot_console(console, terminal_seen=terminal_seen, qemu_exited=qemu_exited)
 
@@ -71,11 +71,11 @@ let
     machine = wrap_machine(create_machine(${launcherJson}, name=${builtins.toJSON machineName}))
     machine.start()
 
-    global_deadline = time.monotonic() + 900
+    global_deadline = time.monotonic() + 300
     console, terminal_seen, qemu_exited = wait_for_console_evidence(
         machine,
         ${builtins.toJSON terminalPattern},
-        deadline=min(time.monotonic() + 600, global_deadline),
+        deadline=min(time.monotonic() + 300, global_deadline),
     )
     evaluate_boot_console(console, terminal_seen=terminal_seen, qemu_exited=qemu_exited)
 
@@ -140,8 +140,7 @@ in
       nixos-test = false;
     };
     enableOCR = false;
-    sshBackdoor.enable = false;
-    globalTimeout = 900;
+    globalTimeout = 300;
     inherit testScript;
   };
 }

@@ -436,6 +436,32 @@ fn command_parses_app_qemu_all() {
 }
 
 #[test]
+fn command_parses_app_qemu_nixos_case_modes() {
+    for (flag, value) in [
+        ("--list-cases", None),
+        ("--all-cases", None),
+        ("--case", Some("service")),
+    ] {
+        let mut argv = vec!["starry", "app", "qemu", "-t", "nixos", flag];
+        if let Some(value) = value {
+            argv.push(value);
+        }
+        match parse(argv) {
+            Command::App(args) => match args.command {
+                app::AppCommand::Qemu(args) => {
+                    assert_eq!(args.test_case.as_deref(), Some("nixos"));
+                    assert_eq!(args.list_nixos_cases, flag == "--list-cases");
+                    assert_eq!(args.all_nixos_cases, flag == "--all-cases");
+                    assert_eq!(args.nixos_case.as_deref(), value);
+                }
+                _ => panic!("expected app qemu command"),
+            },
+            _ => panic!("expected app command"),
+        }
+    }
+}
+
+#[test]
 fn command_rejects_app_board_without_case() {
     assert!(Cli::try_parse_from(["starry", "app", "board"]).is_err());
 }

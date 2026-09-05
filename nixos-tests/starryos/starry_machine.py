@@ -183,8 +183,7 @@ def evaluate_boot_console(
         )
         if phase == PHASE_TIMEOUT:
             raise_phase(
-                PHASE_TIMEOUT,
-                "StarryNixOS boot produced no terminal evidence within 600 seconds",
+                "StarryNixOS boot produced no terminal evidence within 300 seconds",
                 console,
             )
         if phase == PHASE_MACHINE_STARTUP:

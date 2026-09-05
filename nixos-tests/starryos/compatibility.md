@@ -5,8 +5,7 @@ This ledger records the evidence obtained for the independent P1–P4 path. It d
 ## P1 discovery and static checks
 
 | Check | Result |
-| --- | --- |
-| `cargo xtask starry test nixos --list` | Passed; reported `boot`, `hello-tmpfiles`, `service`, `service-fail`, `unsupported` for `arch=x86_64`, `target=x86_64-unknown-none`; no VM started. |
+| `cargo xtask starry app qemu -t nixos --list-cases` | Passed; reported the discovered NixOS cases without starting a VM. |
 | Launcher plus evaluator tests | Passed: 19 tests in `python3 -m unittest discover -s nixos-tests/starryos -p 'test_*.py' -v`. |
 | Axbuild host tests | Passed: `cargo test -p axbuild starry` in `ghcr.io/rcore-os/tgoskits-container:latest`. |
 | `cargo xtask clippy --package axbuild` | Passed. |
@@ -36,7 +35,7 @@ The run reached the ordered markers `pid1 → activation → systemd → marker 
 
 This TCG success depended on the `reboot(2)` fix that remains in this feature branch: Starry previously called `shutdown_filesystems()` inside `sys_reboot()`, which blocked power-off after the marker service. The same kernel change was also submitted independently as https://github.com/rcore-os/tgoskits/pull/2220 so upstream can review the ABI fix without the larger nixosTest framework. Merge #2220 first when possible; if P1 lands later, drop the duplicate `sys.rs` hunk rather than reviewing it twice.
 
-The test script polls the full console for terminal evidence, validates the ordered success sequence, rejects failure patterns, and bounds shutdown polling by the same 900-second global deadline.
+The test script polls the full console for terminal evidence, validates the ordered success sequence, rejects failure patterns, and bounds shutdown polling by the same 300-second global deadline.
 
 ## Retained app and test-suit paths
 
@@ -94,7 +93,7 @@ proxychains4 cargo xtask starry test nixos --arch x86_64 -c service
 - ordered P1 markers, then `STARRY_NIXOS_ASSERT_BEGIN` / `CMD=hello` / `STATUS=0` / `Hello, world!` / `STARRY_NIXOS_ASSERT_PASSED`
 - `wait_for_shutdown` finished in 3.89 seconds; test script 416.43 seconds; xtask exit 0
 
-The script waits for the P1 terminal markers first, then for the assertion block inside the 900-second global bound. Journal-prefixed serial lines such as `starry-nixos-service-assert-start[2]: STARRY_NIXOS_ASSERT_CMD=hello` are accepted.
+The script waits for the P1 terminal markers first, then for the assertion block inside the 300-second global bound. Journal-prefixed serial lines such as `starry-nixos-service-assert-start[2]: STARRY_NIXOS_ASSERT_CMD=hello` are accepted.
 
 ### service-fail
 

@@ -16,13 +16,13 @@ Host-installed QEMU and OVMF are not prerequisites. The workflow does not change
 From the repository root:
 
 ```bash
-cargo xtask starry test nixos --list
-cargo xtask starry test nixos --arch x86_64 -c boot
-cargo xtask starry test nixos --arch x86_64 -c service
-cargo xtask starry test nixos --arch x86_64 -c service-fail
-cargo xtask starry test nixos --arch x86_64 -c unsupported
-cargo xtask starry test nixos --arch x86_64 -c hello-tmpfiles
+cargo xtask starry app qemu -t nixos
+cargo xtask starry app qemu -t nixos --list-cases
+cargo xtask starry app qemu -t nixos --case service
+cargo xtask starry app qemu -t nixos --all-cases
 ```
+
+The default command runs the `boot` case. `--list-cases` only discovers cases; `--case` runs one case; `--all-cases` runs the discovered catalog.
 
 `--list` is discovery-only: it reads `cases/*.nix` stems, does not build, evaluate Nix, or start QEMU, and does not require the runner to name those stems in source. The run command builds the current-checkout Starry UEFI image through the existing axbuild path, verifies its NAR hash, imports that exact content into the independent test flake, constructs the shared app-owned stage-2 system, and starts the pinned test driver.
 
@@ -40,7 +40,7 @@ STARRY_NIXOS_PHASE=marker
 STARRY_NIXOS_SYSTEM_PASSED
 ```
 
-The driver waits at most 600 seconds for terminal evidence and has a 900-second global timeout. A pass additionally requires no panic, fatal record, marker-unit failure, explicit `STARRY_NIXOS_SYSTEM_FAILED:` line, premature QEMU exit, or nonzero QEMU/test status. The marker is not sufficient by itself: the guest must power off cleanly.
+The driver waits at most 300 seconds for terminal evidence and uses the same 300-second global timeout. A pass additionally requires no panic, fatal record, marker-unit failure, explicit `STARRY_NIXOS_SYSTEM_FAILED:` line, premature QEMU exit, or nonzero QEMU/test status.
 
 `service` continues after those markers until a structured `STARRY_NIXOS_ASSERT_*` block appears, then requires status 0, the expected command output, and clean poweroff. `service-fail` must return nonzero with `STARRY_NIXOS_PHASE_FAILED=guest-assertion` and the named failed expectation. `unsupported` must return nonzero immediately with `unsupported Starry nixosTest operation: succeed` and must not wait for `/dev/hvc0`.
 
@@ -69,11 +69,11 @@ Do not write a `testScript` and do not call `machine.succeed`. Extra modules mus
 Function-form NixOS modules are supported and are evaluated by `mkNixosSystem` before the final baseline assertions inspect `config`. A function module that enables a forbidden option still fails during system evaluation; a function module that only declares allowed state is accepted. Extra modules also cannot clear the Stage-2 `kernel.pid_max` and `vm.max_map_count` assertions: `function-forbidden` still fails after `assertions = lib.mkForce [ ]`, and `sysctl-forbidden` fails when an extra module writes `kernel.pid_max`. The `nixos-tests/starryos/flake.nix` interface check covers these cases with `function-allowed`, `function-forbidden`, and `sysctl-forbidden`.
 
 ```bash
-cargo xtask starry test nixos --list
-cargo xtask starry test nixos --arch x86_64 -c <stem>
+cargo xtask starry app qemu -t nixos --list-cases
+cargo xtask starry app qemu -t nixos --case <stem>
 ```
 
-A failing case sets `expectPass = false`. Zero exit on that case is a framework bug. Illegal stems fail listing. Unknown `-c` names fail with the discovered catalog.
+A failing case sets `expectPass = false`. Zero exit on that case is a framework bug. Illegal stems fail listing. Unknown `--case` names fail with the discovered catalog.
 
 ## Retained compatibility paths
 
@@ -103,7 +103,7 @@ Guest commands are declared systemd oneshots observed on serial, not `machine.su
 
 最新 TCG 身份、断言块、阶段名和三次 `service-fail` 隔离结果记在 `nixos-tests/starryos/compatibility.md`。
 
-- `cargo xtask starry test nixos --list` 报告 `cases/*.nix` 中的 x86_64 用例且不启动 VM。
+ - `cargo xtask starry app qemu -t nixos --list-cases` 报告 `cases/*.nix` 中的 x86_64 用例且不启动 VM。
 - `python3 -m unittest discover -s nixos-tests/starryos -p 'test_*.py' -v` 覆盖 launcher 与 `starry_machine` 合同。
 - TCG `hello-tmpfiles` 在 P1 marker 后看到 `STARRY_NIXOS_ASSERT_PASSED` 并以零退出。
 - TCG `service` 在 P1 marker 后看到 `STARRY_NIXOS_ASSERT_PASSED` 并以零退出。
@@ -116,8 +116,8 @@ Guest commands are declared systemd oneshots observed on serial, not `machine.su
 如果 GitHub image registry 或 flake 内容请求超时，而本机 SOCKS5 代理监听在 `127.0.0.1:7890`，可用 `proxychains4` 包裹需要联网的命令：
 
 ```bash
-proxychains4 cargo xtask starry test nixos --arch x86_64 -c boot
-proxychains4 cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
+proxychains4 cargo xtask starry app qemu -t nixos --case boot
+proxychains4 cargo xtask starry app qemu -t nixos --case boot --arch x86_64
 ```
 
 `proxychains4` 只解决宿主机下载路径；不会改变 guest 的 QEMU、TCG、串口或关机语义。不要把 `proxychains4` 注入 guest 的 `qemu-x86_64` 用户态预构建命令：该命令运行在 Starry 测试 rootfs 的动态链接环境中，代理库可能因 glibc 符号不兼容而导致预构建失败。
