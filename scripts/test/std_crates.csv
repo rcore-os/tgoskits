@@ -41,6 +41,7 @@ starry-kernel
 starry-vm
 ax-timer-list
 ax-alloc
+buddy-slab-allocator
 ax-display
 ax-driver
 rdrive
