@@ -109,6 +109,12 @@ pub fn mount_all() -> StarryResult<()> {
         proc::new_procfs(crate::task::ROOT_PID_NS.clone()),
     )?;
 
+    // Detect the primary CPU's cache leaves before sysfs is mounted, so
+    // `/sys/.../cpuN/cache` serves a stable set regardless of which PE later
+    // reads it. On QEMU's homogeneous vCPUs this is every CPU's true geometry;
+    // per-core heterogeneity would need a secondary-CPU bring-up hook this crate
+    // cannot reach (see `sysfs::init_cpu_cache`).
+    sysfs::init_cpu_cache();
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
     if usbfs::has_manager() {
         mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;
