@@ -138,9 +138,13 @@ pub(crate) fn extract_rootfs(rootfs_img: &Path, output_dir: &Path) -> anyhow::Re
 /// `debugfs rdump` always attempts to restore inode ownership. Callers that
 /// cannot safely perform those `chown` calls therefore run it inside
 /// `fakeroot` before `debugfs` starts. There is intentionally no
-/// direct-execution fallback: a missing `fakeroot` fails before extraction
-/// instead of producing thousands of permission warnings and continuing with
-/// partially restored metadata.
+/// direct-execution fallback on Linux: a missing `fakeroot` fails before
+/// extraction instead of producing thousands of permission warnings and
+/// continuing with partially restored metadata. On non-Linux Unix hosts no
+/// usable `fakeroot` exists — the common packaging wraps `debugfs` in a shell
+/// shim that re-splits quoted requests and exits 0 after failed extractions —
+/// so `debugfs` runs directly and [`RootfsExtraction::run`] validates
+/// top-level completeness instead of trusting the exit status alone.
 struct RootfsExtraction<'a> {
     rootfs_img: &'a Path,
     output_dir: &'a Path,
@@ -165,6 +169,7 @@ impl RootfsExtraction<'_> {
         })?;
 
         if output.status.success() {
+            self.validate_top_level_entries()?;
             return Ok(());
         }
 
@@ -183,7 +188,46 @@ impl RootfsExtraction<'_> {
         );
     }
 
+    /// Guards against extraction wrappers that report success without
+    /// extracting: every top-level image entry must exist in the staging
+    /// directory. Symlinks are checked with `symlink_metadata` because their
+    /// targets have not been relativized yet.
+    fn validate_top_level_entries(&self) -> anyhow::Result<()> {
+        let mut command = self.request_command("ls -p /");
+        let output = command.output().with_context(|| {
+            format!(
+                "failed to list {} for extraction validation",
+                self.rootfs_img.display()
+            )
+        })?;
+        if !output.status.success() {
+            bail!(
+                "failed to list {} to validate extraction: debugfs exited with status {}",
+                self.rootfs_img.display(),
+                output.status
+            );
+        }
+
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let missing: Vec<String> = listing
+            .lines()
+            .filter_map(top_level_entry_name)
+            .filter(|name| !self.output_dir.join(name).symlink_metadata().is_ok())
+            .collect();
+        ensure!(
+            missing.is_empty(),
+            "rootfs extraction into {} is incomplete; missing top-level entries: {}",
+            self.output_dir.display(),
+            missing.join(", ")
+        );
+        Ok(())
+    }
+
     fn command(&self) -> Command {
+        self.request_command(&format!("rdump / {}", self.output_dir.display()))
+    }
+
+    fn request_command(&self, request: &str) -> Command {
         let mut command = if let Some(fakeroot) = self.fakeroot_program {
             let mut command = Command::new(fakeroot);
             command.arg("--").arg(self.debugfs_program);
@@ -191,15 +235,12 @@ impl RootfsExtraction<'_> {
         } else {
             Command::new(self.debugfs_program)
         };
-        command
-            .arg("-R")
-            .arg(format!("rdump / {}", self.output_dir.display()))
-            .arg(self.rootfs_img);
+        command.arg("-R").arg(request).arg(self.rootfs_img);
         command
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn effective_uid() -> libc::uid_t {
     // SAFETY: `geteuid` has no arguments or caller-side safety preconditions.
     unsafe { libc::geteuid() }
@@ -218,8 +259,26 @@ fn current_process_requires_fakeroot() -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        effective_uid() != 0
+        // Non-Linux hosts have no usable fakeroot: the common packaging is a
+        // shell shim that re-splits quoted debugfs requests and exits 0 even
+        // when nothing was extracted (reproduced with Homebrew fakeroot on
+        // macOS). Wrapping would corrupt the extraction silently, so run
+        // `debugfs` directly and rely on top-level validation instead.
+        false
     }
+}
+
+/// Parses a `debugfs ls -p` line into the entry name. The format is
+/// `/<inode>/<mode>/<uid>/<gid>/<name>/` for directories and appends a final
+/// `/<size>/` segment for regular files, so the name is always the fifth
+/// field. `.` and `..` are skipped.
+fn top_level_entry_name(line: &str) -> Option<String> {
+    let fields: Vec<&str> = line.trim().split('/').filter(|f| !f.is_empty()).collect();
+    let name = fields.get(4)?;
+    if name.is_empty() || *name == "." || *name == ".." {
+        return None;
+    }
+    Some((*name).to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -745,7 +804,8 @@ mod tests {
         write_executable(
             &debugfs,
             &format!(
-                "#!/bin/sh\ntest \"${{AXBUILD_TEST_FAKEROOT:-}}\" = \"1\" || exit 92\ntouch '{}'\n",
+                "#!/bin/sh\ntest \"${{AXBUILD_TEST_FAKEROOT:-}}\" = \"1\" || exit 92\ncase \
+                 \"${{2:-}}\" in\nrdump*) touch '{}'\nexit 0\nesac\nexit 0\n",
                 marker.display()
             ),
         );
@@ -762,6 +822,88 @@ mod tests {
         .unwrap();
 
         assert!(marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn silent_empty_extraction_fails_top_level_validation() {
+        let root = executable_helper_tempdir();
+        let debugfs = root.path().join("debugfs");
+        // Simulates a wrapper that reports success without extracting: `rdump`
+        // exits 0 and writes nothing, while `ls -p /` still lists image entries.
+        write_executable(
+            &debugfs,
+            "#!/bin/sh\ncase \"${2:-}\" in\nrdump*) exit 0 ;;\n*ls*-p*) printf '%s\\n' \
+             '/2/040755/0/0/etc//' '/2/040755/0/0/usr//' ;;\n*) exit 0 ;;\nesac\n",
+        );
+
+        let output_dir = root.path().join("staging");
+        fs::create_dir(&output_dir).unwrap();
+        let error = RootfsExtraction {
+            rootfs_img: Path::new("rootfs.img"),
+            output_dir: &output_dir,
+            debugfs_program: &debugfs,
+            fakeroot_program: None,
+        }
+        .run()
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(
+            message.contains("missing top-level entries"),
+            "unexpected error: {message}"
+        );
+        assert!(message.contains("etc"), "unexpected error: {message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_extraction_passes_top_level_validation() {
+        let root = executable_helper_tempdir();
+        let debugfs = root.path().join("debugfs");
+        let staging = root.path().join("staging");
+        fs::create_dir_all(staging.join("etc")).unwrap();
+        fs::create_dir(staging.join("lost+found")).unwrap();
+        fs::write(staging.join(".ash_history"), b"").unwrap();
+        write_executable(
+            &debugfs,
+            "#!/bin/sh\ncase \"${2:-}\" in\nrdump*) exit 0 ;;\n*ls*-p*) printf '%s\\n' \
+             '/2/040755/0/0/etc//' '/11/040700/0/0/lost+found//' \
+             '/12/100600/0/0/.ash_history/532/' ;;\n*) exit 0 ;;\nesac\n",
+        );
+
+        RootfsExtraction {
+            rootfs_img: Path::new("rootfs.img"),
+            output_dir: &staging,
+            debugfs_program: &debugfs,
+            fakeroot_program: None,
+        }
+        .run()
+        .unwrap();
+    }
+
+    #[test]
+    fn top_level_entry_parser_matches_debugfs_ls_p_shapes() {
+        // Directories: `/inode/mode/uid/gid/name//`.
+        assert_eq!(
+            top_level_entry_name("/11/040700/0/0/lost+found//").as_deref(),
+            Some("lost+found")
+        );
+        // Regular files: `/inode/mode/uid/gid/name/<size>/`.
+        assert_eq!(
+            top_level_entry_name("/12/100600/0/0/.ash_history/532/").as_deref(),
+            Some(".ash_history")
+        );
+        assert!(top_level_entry_name("/2/040755/0/0/.//").is_none());
+        assert!(top_level_entry_name("/2/040755/0/0/..//").is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_does_not_wrap_debugfs_in_fakeroot() {
+        // Homebrew fakeroot re-splits quoted debugfs requests and exits 0 after
+        // failed extractions, so wrapping must stay a Linux-only strategy.
+        assert!(!current_process_requires_fakeroot());
     }
 
     #[cfg(unix)]
