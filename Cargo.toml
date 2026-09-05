@@ -17,6 +17,7 @@ members = [
 
     "bootloader/axloader",
 
+    "components/aicp-protocol",
     "components/axtest/axtest",
     "components/axtest/axtest_macros",
     "components/cpu-local",
@@ -121,6 +122,7 @@ exclude = [
 
 [workspace.dependencies]
 # Local workspace crates
+aicp-rust-protocol = { version = "0.1.0", path = "components/aicp-protocol" }
 # Keep local dependency requirements at major.minor precision so release-plz does not
 # propagate patch-only releases to dependent workspace crates.
 aarch64_sysreg = { version = "0.3", path = "virtualization/aarch64_sysreg" }
