@@ -108,12 +108,14 @@ fn validate_local_tsc() {
         .get_advanced_power_mgmt_info()
         .is_some_and(|info| info.has_invariant_tsc());
     let cpu_count = crate::smp::cpu_count();
+    let reliable_virtual_tsc = HAS_RELIABLE_VIRTUAL_TSC.load(Ordering::Acquire);
+    let rate_stable = invariant_tsc || reliable_virtual_tsc;
     let synchronization_trusted = if HAS_TSC_ADJUST.load(Ordering::Acquire) {
         tsc_adjust_matches_reference()
     } else {
-        cpu_count == 1 || HAS_RELIABLE_VIRTUAL_TSC.load(Ordering::Acquire)
+        cpu_count == 1 || reliable_virtual_tsc
     };
-    if classify_scheduler_counter(invariant_tsc, cpu_count, synchronization_trusted)
+    if classify_scheduler_counter(rate_stable, cpu_count, synchronization_trusted)
         == crate::timer::CounterStability::Unstable
     {
         TSC_STABILITY.store(2, Ordering::Release);
@@ -140,11 +142,11 @@ fn tsc_adjust_matches_reference() -> bool {
 }
 
 const fn classify_scheduler_counter(
-    invariant_tsc: bool,
+    rate_stable: bool,
     cpu_count: usize,
     synchronization_trusted: bool,
 ) -> crate::timer::CounterStability {
-    if invariant_tsc && (cpu_count == 1 || synchronization_trusted) {
+    if rate_stable && (cpu_count == 1 || synchronization_trusted) {
         crate::timer::CounterStability::Stable
     } else {
         crate::timer::CounterStability::Unstable
@@ -428,7 +430,7 @@ mod tests {
     use crate::timer::CounterStability;
 
     #[test]
-    fn invariant_tsc_uses_stable_path_only_with_trusted_synchronization() {
+    fn stable_tsc_rate_uses_stable_path_only_with_trusted_synchronization() {
         assert_eq!(
             classify_scheduler_counter(true, 1, true),
             CounterStability::Stable
