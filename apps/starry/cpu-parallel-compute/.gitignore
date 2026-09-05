@@ -1,0 +1,4 @@
+target/
+*.spv
+*_full_api
+*.o
