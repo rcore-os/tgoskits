@@ -69,7 +69,7 @@ pub use self::objects::{
     EvictionError, EvictionLease, FrameLease, MappingGraphError, MappingSlot, MappingSlotKey, PageId,
     PageObject, PageState, RmapSet, SlotState, WritebackError, WritebackLease,
 };
-pub(crate) use self::domain::{PageTableDomain, PteStripeCursor};
+pub(crate) use self::domain::PageTableDomain;
 
 #[cfg(all(test, axtest))]
 static MAPPING_GRAPH_SNAPSHOT_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -3213,17 +3213,6 @@ impl AddrSpace {
 
     pub(crate) fn resident_hiwater_pages(&self) -> u64 {
         self.resident_watermark.hiwater_pages()
-    }
-
-    /// Acquires the ordered PTE stripes for a bounded operation.  The cursor
-    /// deliberately exposes no I/O or user-copy APIs; callers must drop it
-    /// before entering a sleeping backend or issuing a remote shootdown.
-    pub(crate) fn lock_pte_range(&self, range: VirtAddrRange) -> PteStripeCursor<'_> {
-        self.pte_domain.lock_range(range)
-    }
-
-    pub(crate) fn lock_pte_ranges(&self, ranges: &[VirtAddrRange]) -> PteStripeCursor<'_> {
-        self.pte_domain.lock_ranges(ranges)
     }
 
     /// Collects executable operations for every VMA intersection in virtual
