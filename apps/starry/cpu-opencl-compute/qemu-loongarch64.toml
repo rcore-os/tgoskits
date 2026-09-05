@@ -1,0 +1,20 @@
+# cpu-opencl-compute loongarch64 - OpenCL carpet on the dynamic LoongArch platform.
+# Platform: dynamic (axplat-dyn) - build-loongarch64*.toml carries ax-driver/serial and does not
+# opt out of dynamic platform mode; the retired static LoongArch path lacked the serial console
+# binding ("/dev/console has no serial TTY binding").
+# The dynamic-platform kernel is a PIC/PIE image, so on LoongArch it must be loaded
+# through the UEFI handoff (uefi=true) for relocation; a raw -kernel load leaves it
+# unrelocated and hangs before serial.
+args = [
+    "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "4096M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 18000

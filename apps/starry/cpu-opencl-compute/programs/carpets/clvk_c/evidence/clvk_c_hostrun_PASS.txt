@@ -1,0 +1,70 @@
+[ok] precompiled clvk SPIR-V binary loaded
+[ok] clGetPlatformIDs count>=1
+[ok] clGetPlatformIDs list
+[ok] clvk platform located among ICDs
+[ok] CL_PLATFORM_NAME == "clvk" (routing through clvk)
+[ok] CL_PLATFORM_VENDOR == "clvk"
+[ok] CL_PLATFORM_VERSION contains "OpenCL" and "clvk"
+[ok] CL_PLATFORM_PROFILE == FULL_PROFILE
+[ok] active platform NAME is clvk, not pocl/rusticl (negative control)
+[ok] CL_PLATFORM_ICD_SUFFIX_KHR == "clvk"
+[ok] clGetPlatformInfo too-small buffer == CL_INVALID_VALUE
+[ok] clGetDeviceIDs>=1 on clvk
+[ok] clGetDeviceInfo TYPE is a real device class
+[ok] CL_DEVICE_NAME non-empty (Vulkan device behind clvk)
+clvk device: llvmpipe (LLVM 20.1.2, 256 bits)
+[ok] CL_DEVICE_VENDOR non-empty
+[ok] MAX_COMPUTE_UNITS>=1
+[ok] MAX_WORK_GROUP_SIZE>=1
+[ok] LOCAL_MEM_SIZE>=1KB (Vulkan shared memory)
+[ok] CL_DEVICE_AVAILABLE == CL_TRUE
+[ok] CL_DEVICE_COMPILER_AVAILABLE == CL_FALSE (no-compiler clvk, kernels from precompiled binary)
+[ok] clCreateContext
+[ok] clGetContextInfo NUM_DEVICES==1
+[ok] clCreateCommandQueueWithProperties
+[ok] clGetCommandQueueInfo CONTEXT==ctx
+[ok] clCreateBuffer A COPY_HOST_PTR
+[ok] clCreateBuffer B COPY_HOST_PTR
+[ok] clCreateBuffer C
+[ok] clGetMemObjectInfo TYPE==BUFFER
+[ok] clGetMemObjectInfo SIZE==bytes
+[ok] clCreateBuffer(size 0) == CL_INVALID_BUFFER_SIZE
+[ok] clCreateProgramWithBinary (host-precompiled SPIR-V)
+[ok] clCreateProgramWithBinary binary_status == CL_SUCCESS
+[ok] CL_PROGRAM_BINARY_TYPE == EXECUTABLE (Vulkan SPIR-V executable)
+[ok] clBuildProgram (no-op compile: materialise Vulkan pipeline from SPIR-V)
+[ok] clGetProgramBuildInfo STATUS==SUCCESS
+[ok] clCreateKernel vadd
+[ok] clCreateKernel vmul
+[ok] clCreateKernel saxpy
+[ok] clCreateKernel reduce_sum
+[ok] clGetKernelInfo FUNCTION_NAME==vadd
+[ok] clGetKernelInfo NUM_ARGS==4
+[ok] clCreateKernel(unknown) == CL_INVALID_KERNEL_NAME
+[ok] clEnqueueNDRangeKernel vadd
+[ok] clEnqueueReadBuffer vadd result
+[ok] vadd: c[i]==a[i]+b[i] for all i (vs host reference)
+[ok] vadd negative control: wrong reference is flagged
+[ok] clEnqueueNDRangeKernel vmul
+[ok] clEnqueueReadBuffer vmul result
+[ok] vmul: c[i]==a[i]*b[i] for all i
+[ok] clCreateBuffer Y for saxpy
+[ok] clEnqueueNDRangeKernel saxpy
+[ok] clEnqueueReadBuffer saxpy result
+[ok] saxpy: y[i]==alpha*x[i]+y[i] for all i (vs host reference)
+[ok] clCreateBuffer reduce input
+[ok] clCreateBuffer reduce output
+[ok] clEnqueueNDRangeKernel reduce_sum (local memory + barrier)
+[ok] clEnqueueReadBuffer reduce partials
+[ok] reduce_sum: each group partial == sum of its LS inputs (closed-form)
+[ok] reduce_sum: sum of group partials == total input sum
+[ok] clEnqueueNDRangeKernel vadd tail-guard (global>n)
+[ok] clEnqueueReadBuffer tail-guard result
+[ok] tail-guard: all M elements computed, no stray writes past n
+[ok] dispatch(global=0): output untouched or rejected (no partial writes)
+[ok] clFinish drains the queue
+[ok] clReleaseKernel vadd
+[ok] clReleaseCommandQueue
+[ok] clReleaseContext
+clvk-c: PASS=67 FAIL=0 TOTAL=67 EXPECTED=67
+CLVK_C_FULL_API OK 67
