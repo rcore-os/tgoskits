@@ -162,6 +162,33 @@ int main(void)
         CHECK_RET(sched_yield(), 0, "sched_yield returns 0");
     }
 
+    // Test Linux priority bounds for every recognized scheduling policy.
+    {
+        CHECK_RET(syscall(SYS_SCHED_GET_PRIORITY_MAX, SCHED_FIFO), 99,
+            "sched_get_priority_max SCHED_FIFO returns 99");
+        CHECK_RET(syscall(SYS_SCHED_GET_PRIORITY_MIN, SCHED_FIFO), 1,
+            "sched_get_priority_min SCHED_FIFO returns 1");
+        CHECK_RET(syscall(SYS_SCHED_GET_PRIORITY_MAX, SCHED_RR), 99,
+            "sched_get_priority_max SCHED_RR returns 99");
+        CHECK_RET(syscall(SYS_SCHED_GET_PRIORITY_MIN, SCHED_RR), 1,
+            "sched_get_priority_min SCHED_RR returns 1");
+
+        int non_rt_policies[] = {
+            SCHED_OTHER, SCHED_BATCH, SCHED_IDLE, SCHED_DEADLINE, SCHED_EXT,
+        };
+        for (size_t i = 0; i < sizeof(non_rt_policies) / sizeof(non_rt_policies[0]); i++) {
+            CHECK_RET(syscall(SYS_SCHED_GET_PRIORITY_MAX, non_rt_policies[i]), 0,
+                "sched_get_priority_max non-RT policy returns 0");
+            CHECK_RET(syscall(SYS_SCHED_GET_PRIORITY_MIN, non_rt_policies[i]), 0,
+                "sched_get_priority_min non-RT policy returns 0");
+        }
+
+        CHECK_ERR(syscall(SYS_SCHED_GET_PRIORITY_MAX, 1000), EINVAL,
+            "sched_get_priority_max invalid policy returns EINVAL");
+        CHECK_ERR(syscall(SYS_SCHED_GET_PRIORITY_MIN, 1000), EINVAL,
+            "sched_get_priority_min invalid policy returns EINVAL");
+    }
+
     // 测试 sched_setscheduler() / sched_getscheduler 
     {
         #define SCHED_RESET_ON_FORK 0x40000000

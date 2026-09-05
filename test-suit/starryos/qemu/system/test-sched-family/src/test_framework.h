@@ -7,25 +7,41 @@
 #if defined(__x86_64__)
     #define SYS_SCHED_GETPARAM      143
     #define SYS_SCHED_GETSCHEDULER  145
+    #define SYS_SCHED_GET_PRIORITY_MAX 146
+    #define SYS_SCHED_GET_PRIORITY_MIN 147
     #define SYS_SCHED_SETSCHEDULER  144
 
 #elif defined(__riscv)
     #define SYS_SCHED_GETPARAM      121
     #define SYS_SCHED_GETSCHEDULER  120
+    #define SYS_SCHED_GET_PRIORITY_MAX 125
+    #define SYS_SCHED_GET_PRIORITY_MIN 126
     #define SYS_SCHED_SETSCHEDULER  119
 
 #elif defined(__aarch64__)
     #define SYS_SCHED_GETPARAM      121
     #define SYS_SCHED_GETSCHEDULER  120
+    #define SYS_SCHED_GET_PRIORITY_MAX 125
+    #define SYS_SCHED_GET_PRIORITY_MIN 126
     #define SYS_SCHED_SETSCHEDULER  119
 
 #elif defined(__loongarch64)
     #define SYS_SCHED_GETPARAM      121
     #define SYS_SCHED_GETSCHEDULER  120
+    #define SYS_SCHED_GET_PRIORITY_MAX 125
+    #define SYS_SCHED_GET_PRIORITY_MIN 126
     #define SYS_SCHED_SETSCHEDULER  119
 
 #else
     #error "unsupported architecture for sched syscalls"
+#endif
+
+#ifndef SCHED_DEADLINE
+    #define SCHED_DEADLINE 6
+#endif
+
+#ifndef SCHED_EXT
+    #define SCHED_EXT 7
 #endif
 
 #include <stdio.h>
@@ -87,4 +103,3 @@ static int __fail = 0;
     printf("  DONE: %d pass, %d fail\n", __pass, __fail);               \
     printf("================================================\n\n");    \
     return __fail > 0 ? 1 : 0
-    
