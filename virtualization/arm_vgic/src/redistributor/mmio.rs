@@ -84,7 +84,16 @@ impl RedistributorState {
                 require_width(offset, width, AccessWidth::Qword, "read")?;
                 Ok(self.typer(config))
             }
-            GICR_WAKER | GICR_SYNCR => read_dword(offset, width, 0),
+            GICR_WAKER => {
+                require_width(offset, width, AccessWidth::Dword, "read")?;
+                let mut value = if self.waker_processor_sleep { 0b10 } else { 0 };
+                if self.waker_processor_sleep && self.queued_deliveries.is_empty() {
+                    // ChildrenAsleep (bit 0): the Redistributor is quiescent.
+                    value |= 0b1;
+                }
+                Ok(value)
+            }
+            GICR_SYNCR => read_dword(offset, width, 0),
             GICR_PROPBASER => {
                 require_width(offset, width, AccessWidth::Qword, "read")?;
                 Ok(if config.exposes_guest_lpis() {
@@ -131,7 +140,11 @@ impl RedistributorState {
                     }
                 }
             }
-            GICR_WAKER | GICR_SYNCR => {
+            GICR_WAKER => {
+                require_width(offset, width, AccessWidth::Dword, "write")?;
+                self.waker_processor_sleep = value & 0b10 != 0;
+            }
+            GICR_SYNCR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
             }
             GICR_PROPBASER => {
