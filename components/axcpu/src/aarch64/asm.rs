@@ -196,13 +196,16 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 
         #[cfg(not(feature = "arm-el2"))]
         unsafe {
-            // TLB Invalidate by VA, All ASID, EL1, Inner Shareable
-            asm!("tlbi vaae1is, {}; dsb sy; isb", in(reg) operand)
+            // SAFETY: this runs at EL1. Complete the preceding descriptor
+            // stores before invalidating walk caches, then wait for completion
+            // before any retired frame can be reused.
+            asm!("dsb ishst; tlbi vaae1is, {}; dsb sy; isb", in(reg) operand)
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
-            // TLB Invalidate by VA, EL2, Inner Shareable
-            asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) operand)
+            // SAFETY: this build owns the EL2 translation regime. The store
+            // barrier and completion barrier surround the EL2 invalidation.
+            asm!("dsb ishst; tlbi vae2is, {}; dsb sy; isb", in(reg) operand)
         }
     } else {
         // flush the entire TLB
@@ -213,8 +216,9 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
-            // TLB Invalidate All, EL2
-            asm!("tlbi alle2; dsb sy; isb")
+            // SAFETY: this build owns the EL2 translation regime. The HAL
+            // targets every required CPU and waits for its local completion.
+            asm!("dsb sy; tlbi alle2; dsb sy; isb")
         }
     }
 }
