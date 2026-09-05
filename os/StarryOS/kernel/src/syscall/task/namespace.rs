@@ -181,7 +181,11 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> StarryResult<isize> {
     let curr = current();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
-    if fd_type == CLONE_NEWCGROUP && !thread.cred().has_cap_sys_admin() {
+    // Linux requires CAP_SYS_ADMIN to join any namespace via setns (per-ns
+    // install in kernel/{utsname,user_namespace}.c, ipc/namespace.c,
+    // net/core/net_namespace.c). StarryOS only gated CLONE_NEWCGROUP, so an
+    // unprivileged process could join uts/ipc/mnt/pid/net/user namespaces.
+    if !thread.cred().has_cap_sys_admin() {
         return Err(StarryError::OperationNotPermitted);
     }
 
@@ -269,7 +273,9 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> StarryResult<isize> {
     let curr = current();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
-    if nstype & CLONE_NEWCGROUP != 0 && !thread.cred().has_cap_sys_admin() {
+    // setns requires CAP_SYS_ADMIN for every requested namespace (see the
+    // NsFd path); previously only CLONE_NEWCGROUP was gated.
+    if !thread.cred().has_cap_sys_admin() {
         return Err(StarryError::OperationNotPermitted);
     }
 
