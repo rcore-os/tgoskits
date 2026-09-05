@@ -1,0 +1,15 @@
+#version 450
+layout(local_size_x=256) in;
+layout(set=0,binding=0) readonly  buffer A { float a[]; };
+layout(set=0,binding=1) writeonly buffer O { float o[]; };
+shared float s[256];
+void main(){
+  uint lid=gl_LocalInvocationID.x; uint gid=gl_GlobalInvocationID.x;
+  s[lid] = (gid < a.length()) ? a[gid] : 0.0;
+  barrier();
+  for(uint stride=128u; stride>0u; stride>>=1u){
+    if(lid<stride) s[lid]+=s[lid+stride];
+    barrier();
+  }
+  if(lid==0u) o[gl_WorkGroupID.x]=s[0];
+}

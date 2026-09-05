@@ -1,0 +1,10 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer A { float a[]; };
+layout(std430, binding = 1) readonly buffer B { float b[]; };
+layout(std430, binding = 2) writeonly buffer C { float c[]; };
+layout(push_constant) uniform P { float alpha; uint n; } pc;
+void main(){
+  uint i = gl_GlobalInvocationID.x;
+  if (i < pc.n) c[i] = pc.alpha * a[i] + b[i];  // saxpy; alpha=1 => vadd
+}
