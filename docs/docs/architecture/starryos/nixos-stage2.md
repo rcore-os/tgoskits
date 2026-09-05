@@ -11,6 +11,14 @@ systemd。这个边界用于验证真实发行版工作负载，但不代表 Sta
 NixOS。
 
 构建命令位于 `apps/starry/nixos/README.md`，当前兼容性例外和运行证据位于 `apps/starry/nixos/compatibility.md`。
+独立的 StarryOS-backed nixosTest 路径统一通过 `cargo xtask starry app qemu -t nixos` 使用：默认运行 `boot`，`--list-cases` 只发现用例，`--case <name>` 运行单个用例，`--all-cases` 运行全部用例。它使用当前 checkout 构建的 Starry UEFI 内核和 app-owned stage-2 rootfs。该路径不属于 `test-suit/starryos` 的 TOML 用例。
+
+该测试框架的边界是单机 x86_64、串口证据和生命周期检查。nixosTest driver、QEMU 和 OVMF 来自独立锁定的 Nix 输入；TCG 是正确性基线，不要求 `/dev/kvm` 或主机单独安装 QEMU/OVMF。每次运行使用新的 qcow2 rootfs overlay、OVMF vars 副本和 ESP，终端证据与全局 driver 等待上限均为 300 秒。`boot` 只有完整的 `pid1 → activation → systemd → marker → STARRY_NIXOS_SYSTEM_PASSED` 序列、无既有失败模式、guest 正常关机且 QEMU 返回零才算通过。
+
+P4 把闭集四名字改成 `nixos-tests/starryos/cases/*.nix` 文件发现。作者增加一个 case 记录及其 extra module 即可被 `--list` / `-c` 选中，不必改 clap 或 xtask 名表。guest 命令仍是测试所有的 systemd oneshot；`machine.succeed` 仍是显式不支持。extra module 不得重新启用 udev、dbus、nscd、logind、getty、DHCP 或 Nix daemon。树外 flake、多机和上游未改 NixOS 测试仍不在范围内。使用、诊断和保留兼容性命令见 `nixos-tests/starryos/README.md`。
+
+---
+
 
 ## 目标与非目标
 

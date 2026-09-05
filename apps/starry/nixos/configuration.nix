@@ -56,9 +56,13 @@
     "systemd-udev-trigger.service"
   ];
 
-  # The reusable image intentionally keeps a transient per-boot machine ID.
-  # Committing it requires the mount-namespace transition used to replace the
-  # temporary /etc/machine-id mount, which is outside the Stage-2 baseline.
+  # The image already contains the immutable Nix store and generated system
+  # profile. These host-container maintenance units require Linux-only
+  # locking and mount-namespace behavior that StarryOS does not provide, and
+  # must not hold multi-user.target indefinitely.
+  systemd.services.register-nix-paths.enable = false;
+  systemd.services.systemd-tmpfiles-setup.enable = false;
+  systemd.services.systemd-sysusers.enable = false;
   systemd.services.systemd-machine-id-commit.enable = false;
 
   systemd.services.console-getty.enable = false;
@@ -120,7 +124,9 @@
       echo "STARRY_NIXOS_PHASE=systemd"
       echo "STARRY_NIXOS_PHASE=marker"
       echo "STARRY_NIXOS_SYSTEM_PASSED"
-      systemctl --force --force poweroff
+      if [ ! -e /etc/starry-nixos/keep-running ]; then
+        systemctl --force --force poweroff
+      fi
     '';
   };
 

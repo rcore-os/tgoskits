@@ -1,8 +1,15 @@
 mod board_tests;
+
 mod host_http_tests;
+
+mod nixos_tests;
+
 mod qemu_discovery_tests;
+
 mod qemu_run_tests;
+
 mod summary_tests;
+
 mod system_case_tests;
 
 #[cfg(unix)]

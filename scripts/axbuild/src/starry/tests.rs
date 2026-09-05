@@ -15,6 +15,10 @@ fn parse(args: impl IntoIterator<Item = &'static str>) -> Command {
     Cli::try_parse_from(args).unwrap().command
 }
 
+fn try_parse(args: impl IntoIterator<Item = &'static str>) -> Result<Command, clap::Error> {
+    Cli::try_parse_from(args).map(|cli| cli.command)
+}
+
 #[test]
 fn command_parses_test_qemu() {
     match parse(["starry", "test", "qemu", "--target", "x86_64"]) {
@@ -164,6 +168,76 @@ fn command_parses_test_qemu_with_target() {
                 assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
             }
             _ => panic!("expected qemu test command"),
+        },
+        _ => panic!("expected test command"),
+    }
+}
+
+#[test]
+fn command_parses_test_nixos_list() {
+    match parse(["starry", "test", "nixos", "--list"]) {
+        Command::Test(args) => match args.command {
+            TestCommand::Nixos(args) => {
+                assert!(args.list);
+                assert_eq!(args.arch, None);
+                assert_eq!(args.test_case, None);
+            }
+            _ => panic!("expected nixos test command"),
+        },
+        _ => panic!("expected test command"),
+    }
+}
+
+#[test]
+fn command_parses_test_nixos_boot() {
+    match parse(["starry", "test", "nixos", "--arch", "x86_64", "-c", "boot"]) {
+        Command::Test(args) => match args.command {
+            TestCommand::Nixos(args) => {
+                assert!(!args.list);
+                assert_eq!(args.arch.as_deref(), Some("x86_64"));
+                assert_eq!(args.test_case.as_deref(), Some("boot"));
+            }
+            _ => panic!("expected nixos test command"),
+        },
+        _ => panic!("expected test command"),
+    }
+}
+
+#[test]
+fn command_parses_test_nixos_p2_cases() {
+    for case_name in ["service", "service-fail", "unsupported", "hello-tmpfiles"] {
+        match parse([
+            "starry", "test", "nixos", "--arch", "x86_64", "-c", case_name,
+        ]) {
+            Command::Test(args) => match args.command {
+                TestCommand::Nixos(args) => {
+                    assert_eq!(args.test_case.as_deref(), Some(case_name));
+                }
+                _ => panic!("expected nixos test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+}
+
+#[test]
+fn command_rejects_test_nixos_without_case_selection() {
+    assert!(try_parse(["starry", "test", "nixos"]).is_err());
+    assert!(try_parse(["starry", "test", "nixos", "--arch", "x86_64"]).is_err());
+    assert!(try_parse(["starry", "test", "nixos", "-c", "boot"]).is_err());
+}
+
+#[test]
+fn command_rejects_unknown_nixos_architecture_but_parses_unknown_case_name() {
+    assert!(try_parse(["starry", "test", "nixos", "--arch", "aarch64", "-c", "boot"]).is_err());
+    match parse([
+        "starry", "test", "nixos", "--arch", "x86_64", "-c", "unknown",
+    ]) {
+        Command::Test(args) => match args.command {
+            TestCommand::Nixos(args) => {
+                assert_eq!(args.test_case.as_deref(), Some("unknown"));
+            }
+            _ => panic!("expected nixos test command"),
         },
         _ => panic!("expected test command"),
     }
@@ -358,6 +432,32 @@ fn command_parses_app_qemu_all() {
             _ => panic!("expected app qemu command"),
         },
         _ => panic!("expected app command"),
+    }
+}
+
+#[test]
+fn command_parses_app_qemu_nixos_case_modes() {
+    for (flag, value) in [
+        ("--list-cases", None),
+        ("--all-cases", None),
+        ("--case", Some("service")),
+    ] {
+        let mut argv = vec!["starry", "app", "qemu", "-t", "nixos", flag];
+        if let Some(value) = value {
+            argv.push(value);
+        }
+        match parse(argv) {
+            Command::App(args) => match args.command {
+                app::AppCommand::Qemu(args) => {
+                    assert_eq!(args.test_case.as_deref(), Some("nixos"));
+                    assert_eq!(args.list_nixos_cases, flag == "--list-cases");
+                    assert_eq!(args.all_nixos_cases, flag == "--all-cases");
+                    assert_eq!(args.nixos_case.as_deref(), value);
+                }
+                _ => panic!("expected app qemu command"),
+            },
+            _ => panic!("expected app command"),
+        }
     }
 }
 
