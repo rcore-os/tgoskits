@@ -1,32 +1,18 @@
-/*
- * bug-write-bad-buffer-efault: sys_write dropped its redundant early
- * validate_user_read_buf. The single remaining copy_user_read_buf still
- * validates the user buffer, and — crucially — it runs *before* the memfd
- * seal check, so write(2)'s Linux errno priority is preserved:
- *
- *   1. data-consuming fd + unmapped buffer      -> EFAULT (buffer still checked)
- *   2. valid buffer on an F_SEAL_WRITE memfd     -> EPERM  (seal enforced)
- *   3. unmapped buffer on an F_SEAL_WRITE memfd  -> EFAULT, NOT EPERM
- *
- * Case 3 is the regression this test exists for: the bad-buffer fault must
- * take priority over the seal error, matching Linux generic_perform_write,
- * where fault_in_iov_iter_readable (EFAULT) runs before shmem_write_begin's
- * seal check (EPERM). Moving the copy back *after* memfd_checks_before_
- * stream_write would flip case 3 to EPERM and fail this test.
- *
- * The bad-buffer cases must target an fd that actually consumes the user
- * data. /dev/null never reads the buffer, so on Linux write(fd, badbuf, n)
- * to /dev/null succeeds (returns n) — a memfd is used instead so the copy is
- * really exercised.
+/* User input import and memfd write-seal ordering for the write family.
+ * Linux validates descriptor/address geometry before write_begin(), where
+ * shmem checks seals. Actual payload faults follow write_begin(). Test this
+ * through raw syscalls, including checked allocation of the input copy.
  */
 #define _GNU_SOURCE
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #ifndef F_ADD_SEALS
@@ -39,123 +25,90 @@
 #define MFD_ALLOW_SEALING 0x0002
 #endif
 
-enum { TEST_PAGE_SIZE = 4096 };
+static int passed, failed;
+static const char *const operations[] = {
+    "write", "writev", "pwrite64", "pwritev", "pwritev2"
+};
 
-static int memfd_create_sys(const char *name, unsigned int flags)
+static long write_input(int operation, int fd, const void *buffer, size_t length)
 {
-    return (int)syscall(SYS_memfd_create, name, flags);
+    struct iovec iov = { .iov_base = (void *)buffer, .iov_len = length };
+    switch (operation) {
+    case 0: return syscall(SYS_write, fd, buffer, length);
+    case 1: return syscall(SYS_writev, fd, &iov, 1);
+    case 2: return syscall(SYS_pwrite64, fd, buffer, length, 0);
+    case 3: return syscall(SYS_pwritev, fd, &iov, 1, 0, 0);
+    default: return syscall(SYS_pwritev2, fd, &iov, 1, 0, 0, 0);
+    }
 }
 
-/* Map then unmap a page to obtain a guaranteed-unmapped user address. */
-static void *make_unmapped_page(void)
+static void check_result(int operation, const char *scenario, long result,
+                         long expected, int expected_errno)
 {
-    void *page = mmap(NULL, TEST_PAGE_SIZE, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (page == MAP_FAILED) {
-        return MAP_FAILED;
+    if (result == expected && (expected != -1 || errno == expected_errno)) {
+        printf("PASS: %s %s\n", operations[operation], scenario);
+        passed++;
+    } else {
+        printf("FAIL: %s %s: result=%ld errno=%d; expected=%ld errno=%d\n",
+               operations[operation], scenario, result, errno,
+               expected, expected_errno);
+        failed++;
     }
-    if (munmap(page, TEST_PAGE_SIZE) != 0) {
-        return MAP_FAILED;
-    }
-    return page;
 }
 
 int main(void)
 {
-    printf("=== bug-write-bad-buffer-efault ===\n");
-    printf("Expected: write() still faults a bad buffer with EFAULT, and the\n");
-    printf("          bad-buffer fault outranks a memfd write seal (EFAULT,\n");
-    printf("          not EPERM), matching Linux write(2).\n\n");
-
-    /* A memfd actually consumes written bytes (unlike /dev/null), so it can
-     * observe both a valid write and a faulting buffer. MFD_ALLOW_SEALING lets
-     * us add F_SEAL_WRITE below. */
-    int fd = memfd_create_sys("bad-buf-efault", MFD_ALLOW_SEALING);
-    if (fd < 0) {
-        printf("FAIL: memfd_create: %s\n", strerror(errno));
-        printf("TEST FAILED\n");
+    int fd = (int)syscall(SYS_memfd_create, "write-input-order", MFD_ALLOW_SEALING);
+    if (fd < 0 || ftruncate(fd, 4096) != 0) {
+        perror("prepare memfd");
         return 1;
     }
-    if (ftruncate(fd, TEST_PAGE_SIZE) != 0) {
-        printf("FAIL: ftruncate: %s\n", strerror(errno));
-        printf("TEST FAILED\n");
+    void *bad = mmap(NULL, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (bad == MAP_FAILED || munmap(bad, 4096) != 0) {
+        perror("prepare unmapped input");
         close(fd);
         return 1;
     }
-
-    /* A known-valid write must still succeed (the dropped check was redundant). */
-    const char ok[] = "ok";
-    if (write(fd, ok, sizeof(ok)) != (ssize_t)sizeof(ok)) {
-        printf("FAIL: valid write to memfd failed: %s\n", strerror(errno));
-        printf("TEST FAILED\n");
-        close(fd);
-        return 1;
+    const char valid[] = "copy";
+    for (int op = 0; op < 5; op++) {
+        check_result(op, "valid input", write_input(op, fd, valid, sizeof(valid)),
+                     sizeof(valid), 0);
+        check_result(op, "unmapped input", write_input(op, fd, bad, sizeof(valid)),
+                     -1, EFAULT);
     }
-    printf("PASS: valid write succeeded\n");
-
-    /* Build a guaranteed-unmapped address by mapping then unmapping a page. */
-    void *bad = make_unmapped_page();
-    if (bad == MAP_FAILED) {
-        printf("FAIL: could not build unmapped page: %s\n", strerror(errno));
-        printf("TEST FAILED\n");
-        close(fd);
-        return 1;
-    }
-
-    /* 1) write() from the unmapped buffer to a data-consuming fd must fail with
-     *    EFAULT — proves copy_user_read_buf still validates after the de-dup. */
-    errno = 0;
-    ssize_t rc = write(fd, bad, TEST_PAGE_SIZE);
-    if (rc != -1 || errno != EFAULT) {
-        printf("FAIL: write(memfd, bad buf) returned %zd errno %d (%s); "
-               "want -1/EFAULT\n", rc, errno, strerror(errno));
-        printf("      the buffer is no longer validated after the de-dup\n");
-        printf("TEST FAILED\n");
-        close(fd);
-        return 1;
-    }
-    printf("PASS: unmapped buffer rejected with EFAULT on a data-consuming fd\n");
-
-    /* Seal the memfd against writes (no writable shared mapping is live, so
-     * F_ADD_SEALS(F_SEAL_WRITE) succeeds). */
     if (fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE) != 0) {
-        printf("FAIL: F_ADD_SEALS(F_SEAL_WRITE): %s\n", strerror(errno));
-        printf("TEST FAILED\n");
+        perror("seal memfd");
         close(fd);
         return 1;
     }
-
-    /* 2) A valid buffer on the sealed memfd surfaces the seal error (EPERM).
-     *    This is the "no bad buffer" baseline: with nothing to fault, the seal
-     *    is what write(2) reports. */
-    errno = 0;
-    rc = write(fd, ok, sizeof(ok));
-    if (rc != -1 || errno != EPERM) {
-        printf("FAIL: write(sealed memfd, valid buf) returned %zd errno %d "
-               "(%s); want -1/EPERM\n", rc, errno, strerror(errno));
-        printf("TEST FAILED\n");
-        close(fd);
-        return 1;
+    for (int op = 0; op < 5; op++) {
+        check_result(op, "sealed valid input", write_input(op, fd, valid, sizeof(valid)),
+                     -1, EPERM);
+        check_result(op, "seal precedes payload fault", write_input(op, fd, bad, sizeof(valid)),
+                     -1, EPERM);
+        check_result(op, "address geometry precedes seal",
+                     write_input(op, fd, (void *)UINTPTR_MAX, sizeof(valid)), -1, EFAULT);
+        check_result(op, "sealed empty write", write_input(op, fd, valid, 0), 0, 0);
     }
-    printf("PASS: sealed write with a valid buffer rejected with EPERM\n");
-
-    /* 3) The ordering guarantee: an unmapped buffer on the *sealed* memfd must
-     *    still report EFAULT, not the seal's EPERM. The bad-buffer fault takes
-     *    priority over the seal, matching Linux. Regressing the copy back
-     *    *after* the seal check would flip this to EPERM. */
-    errno = 0;
-    rc = write(fd, bad, TEST_PAGE_SIZE);
-    if (rc != -1 || errno != EFAULT) {
-        printf("FAIL: write(sealed memfd, bad buf) returned %zd errno %d (%s); "
-               "want -1/EFAULT (EFAULT must outrank the seal's EPERM)\n",
-               rc, errno, strerror(errno));
-        printf("TEST FAILED\n");
-        close(fd);
-        return 1;
+    for (int op = 1; op < 5; op++) {
+        if (op == 2)
+            continue;
+        long number = op == 1 ? SYS_writev : op == 3 ? SYS_pwritev : SYS_pwritev2;
+        long result = syscall(number, fd, (void *)1, 1, 0, 0, 0);
+        check_result(op, "descriptor import precedes seal", result, -1, EFAULT);
     }
-    printf("PASS: sealed memfd + bad buffer keeps EFAULT priority over EPERM\n");
-
     close(fd);
-    printf("TEST PASSED\n");
-    return 0;
+
+    fd = (int)syscall(SYS_memfd_create, "large-write-input", 0);
+    if (fd < 0) {
+        perror("prepare large import");
+        return 1;
+    }
+    fflush(stdout);
+    check_result(0, "large input validated before copy allocation",
+                 syscall(SYS_write, fd, bad, (size_t)1 << 46), -1, EFAULT);
+    close(fd);
+    printf("write import: %d passed, %d failed\n", passed, failed);
+    printf("%s\n", failed ? "TEST FAILED" : "TEST PASSED");
+    return failed != 0;
 }

@@ -15,7 +15,7 @@ use linux_raw_sys::general::{
     __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
     FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
 };
-use starry_vm::{VmMutPtr, VmPtr, vm_load};
+use starry_vm::{VmMutPtr, VmPtr, vm_read_slice};
 use syscalls::Sysno;
 
 use super::memfd::{
@@ -29,7 +29,7 @@ use crate::{
         memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
     },
     ipc::mqueue::MqDescriptor,
-    mm::{IoVec, IoVectorBuf, VmBytesMut, prepare_user_read, vm_load_path_string},
+    mm::{IoVec, IoVectorBuf, VmBytesMut, check_access, prepare_user_read, vm_load_path_string},
     task::AsThread,
 };
 
@@ -123,15 +123,11 @@ pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
     file_like.validate_write_len(len)?;
-    // `copy_user_read_buf` validates and imports the buffer through `vm_read`, so
-    // a separate `validate_user_read_buf` here would repeat the same fault-in
-    // and permission check on every write. Copy
-    // (which faults a bad buffer as EFAULT) runs *before* the memfd seal check
-    // (EPERM), matching Linux `generic_perform_write` (prefault precedes the
-    // shmem seal check) and `sys_writev`, so a sealed memfd + bad buffer still
-    // reports EFAULT, not EPERM.
-    let data = copy_user_read_buf(buf.cast_const(), len)?;
+    // Linux checks address geometry before entering the file write path,
+    // then shmem write_begin checks seals before faulting the payload.
+    check_access(buf as usize, len)?;
     memfd_checks_before_stream_write(&file_like, len as u64)?;
+    let data = copy_user_read_buf(buf.cast_const(), len)?;
     Ok(file_like.write(&mut data.as_slice())? as _)
 }
 
@@ -141,10 +137,11 @@ pub fn sys_writev(fd: i32, iov: *const IoVec, iovcnt: usize) -> StarryResult<isi
     // Check length invariants (e.g. eventfd count) before importing segment
     // data, so a count error (EINVAL) takes precedence over a bad segment
     // pointer (EFAULT), matching Linux vfs_writev / eventfd_write ordering.
-    file_like.validate_write_len(iov_total_len(iov, iovcnt)?)?;
-    let total = validate_user_iov_buf_regions(iov, iovcnt)?;
-    memfd_checks_before_stream_write(&file_like, total as u64)?;
-    let data = copy_user_iov_read_buf(iov, iovcnt)?;
+    let source = IoVectorBuf::new_with_len_validator(iov, iovcnt, |len| {
+        file_like.validate_write_len(len)
+    })?;
+    memfd_checks_before_stream_write(&file_like, source.byte_len() as u64)?;
+    let data = copy_user_iov_read_buf(source)?;
     file_like.write(&mut data.as_slice()).map(|n| n as _)
 }
 
@@ -498,6 +495,8 @@ pub fn sys_pwrite64(
         if len == 0 {
             return Ok(0);
         }
+        check_access(buf as usize, len)?;
+        memfd.check_write_seal()?;
         let data = copy_user_read_buf(buf, len)?;
         let write = memfd.write_at(data.as_slice(), offset as u64)?;
         return Ok(write as _);
@@ -508,7 +507,7 @@ pub fn sys_pwrite64(
         return Ok(0);
     }
     let file_like = get_file_like(fd)?;
-    validate_user_read_buf(buf, len)?;
+    check_access(buf as usize, len)?;
     memfd_checks_before_write_at(&file_like, offset as u64, len as u64)?;
     let data = copy_user_read_buf(buf, len)?;
     let write = f.inner().write_at(data.as_slice(), offset as _)?;
@@ -596,24 +595,28 @@ pub fn sys_pwritev2(
     if offset == -1 {
         // offset == -1: use current file position (like writev)
         let file_like = get_file_like(fd)?;
-        file_like.validate_write_len(iov_total_len(iov, iovcnt)?)?;
-        let total = validate_user_iov_buf_regions(iov, iovcnt)?;
-        memfd_checks_before_stream_write(&file_like, total as u64)?;
-        let data = copy_user_iov_read_buf(iov, iovcnt)?;
+        let source = IoVectorBuf::new_with_len_validator(iov, iovcnt, |len| {
+            file_like.validate_write_len(len)
+        })?;
+        memfd_checks_before_stream_write(&file_like, source.byte_len() as u64)?;
+        let data = copy_user_iov_read_buf(source)?;
         file_like.write(&mut data.as_slice()).map(|n| n as _)
     } else if let Ok(memfd) = Memfd::from_fd(fd) {
         // Route memfd offset writes through the seal-aware path.
-        validate_user_iov_buf_regions(iov, iovcnt)?;
-        let data = copy_user_iov_read_buf(iov, iovcnt)?;
+        let source = IoVectorBuf::new(iov, iovcnt)?;
+        if source.byte_len() != 0 {
+            memfd.check_write_seal()?;
+        }
+        let data = copy_user_iov_read_buf(source)?;
         memfd
             .write_at(data.as_slice(), offset as u64)
             .map(|n| n as _)
     } else {
-        let total = validate_user_iov_buf_regions(iov, iovcnt)?;
+        let source = IoVectorBuf::new(iov, iovcnt)?;
         let f = file_or_espipe_write(fd)?;
         let file_like = get_file_like(fd)?;
-        memfd_checks_before_write_at(&file_like, offset as u64, total as u64)?;
-        let data = copy_user_iov_read_buf(iov, iovcnt)?;
+        memfd_checks_before_write_at(&file_like, offset as u64, source.byte_len() as u64)?;
+        let data = copy_user_iov_read_buf(source)?;
         Ok(f.inner()
             .write_at(data.as_slice(), offset as _)
             .map(|n| n as _)?)
@@ -624,7 +627,18 @@ fn copy_user_read_buf(buf: *const u8, len: usize) -> StarryResult<Vec<u8>> {
     if len == 0 {
         return Ok(Vec::new());
     }
-    Ok(vm_load(buf, len)?)
+    // Preserve source validation before the potentially large allocation.
+    // No user reference is retained: copy-in still revalidates each access.
+    validate_user_read_buf(buf, len)?;
+    let mut copied = Vec::new();
+    copied
+        .try_reserve_exact(len)
+        .map_err(|_| StarryError::NoMemory)?;
+    vm_read_slice(buf, &mut copied.spare_capacity_mut()[..len])?;
+    // SAFETY: successful VM copy initialized every requested byte; capacity
+    // was reserved before borrowing the spare storage.
+    unsafe { copied.set_len(len) };
+    Ok(copied)
 }
 
 /// `access_ok`-style validation without copying payload (may surface `BadAddress` / EFAULT).
@@ -636,49 +650,14 @@ fn validate_user_read_buf(buf: *const u8, len: usize) -> StarryResult<()> {
     Ok(())
 }
 
-/// Sum of `iov_len` across the iovec array. Reads the iovec *struct* (so a bad
-/// array pointer still yields `EFAULT`) but does not touch `iov_base`, letting
-/// callers enforce length invariants (e.g. eventfd's 8-byte count) before any
-/// segment payload is imported. Same overflow cap as [`IoVectorBuf`].
-fn iov_total_len(iov: *const IoVec, iovcnt: usize) -> StarryResult<usize> {
-    if iovcnt > 1024 {
-        return Err(StarryError::InvalidInput);
-    }
-    let mut total = 0usize;
-    for i in 0..iovcnt {
-        let entry = iov.wrapping_add(i).vm_read()?;
-        if entry.iov_len < 0 {
-            return Err(StarryError::InvalidInput);
-        }
-        total = total
-            .checked_add(entry.iov_len as usize)
-            .ok_or(StarryError::InvalidInput)?;
-    }
-    Ok(total)
-}
-
-/// Validate each `iovec` segment is readable; returns total length (same cap as [`IoVectorBuf`]).
-fn validate_user_iov_buf_regions(iov: *const IoVec, iovcnt: usize) -> StarryResult<usize> {
-    if iovcnt > 1024 {
-        return Err(StarryError::InvalidInput);
-    }
-    let mut total = 0usize;
-    for i in 0..iovcnt {
-        let iov = iov.wrapping_add(i).vm_read()?;
-        if iov.iov_len < 0 {
-            return Err(StarryError::InvalidInput);
-        }
-        let seg = iov.iov_len as usize;
-        prepare_user_read(iov.iov_base as usize, seg)?;
-        total = total.checked_add(seg).ok_or(StarryError::InvalidInput)?;
-    }
-    Ok(total)
-}
-
-fn copy_user_iov_read_buf(iov: *const IoVec, iovcnt: usize) -> StarryResult<Vec<u8>> {
-    let mut src = IoVectorBuf::new(iov, iovcnt)?.into_io();
+fn copy_user_iov_read_buf(source: IoVectorBuf) -> StarryResult<Vec<u8>> {
+    source.prepare_read()?;
+    let mut src = source.into_io();
     let len = src.remaining();
-    let mut data = vec![0; len];
+    let mut data = Vec::new();
+    data.try_reserve_exact(len)
+        .map_err(|_| StarryError::NoMemory)?;
+    data.resize(len, 0);
     src.read_exact(&mut data)?;
     Ok(data)
 }

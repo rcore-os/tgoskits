@@ -300,6 +300,8 @@ faultable copy 先尝试最多 16 页的 `user_range_probe_ready()`。AArch64 EL
 
 套接字等 user-copy 调用方把输入描述符保留在内核栈中，但结果仅回填 ABI 规定的字段。批量接口将每一项的输入导入、执行与结果回填写入同一错误边界，后续项失败时保留已完成数量。描述符传递和成对创建复用 `PreparedFileDescriptor`，先预留编号、完成结果复制，再发布对应 fd；不通过长寿命用户引用完成这些操作。
 
+文件写入先检查地址几何与文件语义，再准备输入页并以可失败预留创建副本。`IoVectorBuf` 只导入一次描述符，长度验证、输入准备和复制都使用这一份快照；`F_SEAL_WRITE` 的检查早于实际 payload fault，与 Linux 7.1 的 `shmem_write_begin()` 一致。RISC-V `hwprobe` 逐项读取 key 并回填结果，不按 pair count 分配数组；后续项失败保留已完成前缀。
+
 ### 6.4 RSS 与 procfs
 
 RSS 从 published `MappingSlot` 的 `resident_kind` 派生，VmHWM 由 `ResidentWatermark` 单调维护。VSS、VmPeak 与 heap/VMA 分类继续由 `ProcessVmStat` 和 `ProcessMemStats` 汇总；procfs reader 取得 owned inspection records，不借用 VMA 内部 operation。

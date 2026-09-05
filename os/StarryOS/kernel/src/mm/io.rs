@@ -23,6 +23,16 @@ pub struct IoVectorBuf {
 
 impl IoVectorBuf {
     pub fn new(iovs: *const IoVec, iovcnt: usize) -> StarryResult<Self> {
+        Self::new_with_len_validator(iovs, iovcnt, |_| Ok(()))
+    }
+
+    /// Imports one stable descriptor snapshot. Descriptor-specific length
+    /// checks run before payload address checks, as required by eventfd writes.
+    pub(crate) fn new_with_len_validator(
+        iovs: *const IoVec,
+        iovcnt: usize,
+        validate_len: impl FnOnce(usize) -> StarryResult,
+    ) -> StarryResult<Self> {
         if iovcnt > 1024 {
             return Err(StarryError::InvalidInput);
         }
@@ -34,20 +44,38 @@ impl IoVectorBuf {
                 return Err(StarryError::InvalidInput);
             }
             let iov_len = iov.iov_len as usize;
-            if iov_len > 0 {
-                check_access(iov.iov_base as usize, iov_len)
-                    .map_err(|_| StarryError::BadAddress)?;
-            }
             len = len
                 .checked_add(iov_len)
                 .filter(|len| *len <= isize::MAX as usize)
                 .ok_or(StarryError::InvalidInput)?;
             owned_iovs.push(iov);
         }
+        validate_len(len)?;
+        for iov in &owned_iovs {
+            if iov.iov_len > 0 {
+                check_access(iov.iov_base as usize, iov.iov_len as usize)
+                    .map_err(|_| StarryError::BadAddress)?;
+            }
+        }
         Ok(Self {
             iovs: owned_iovs,
             len,
         })
+    }
+
+    pub(crate) const fn byte_len(&self) -> usize {
+        self.len
+    }
+
+    /// Faults the captured source ranges before allocating their owned copy.
+    /// Subsequent copy-in still revalidates accesses; no user reference escapes.
+    pub(crate) fn prepare_read(&self) -> StarryResult {
+        for iov in &self.iovs {
+            if iov.iov_len != 0 {
+                super::prepare_user_read(iov.iov_base as usize, iov.iov_len as usize)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn into_io(self) -> IoVectorBufIo {

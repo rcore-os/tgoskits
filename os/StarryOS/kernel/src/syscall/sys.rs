@@ -13,8 +13,6 @@ use ringbuf::{
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
-#[cfg(target_arch = "riscv64")]
-use starry_vm::vm_load_any;
 use crate::{
     Errno, StarryError, StarryResult,
     sync::Mutex,
@@ -1063,18 +1061,24 @@ pub fn sys_riscv_hwprobe(
     }
 
     let user_pairs = pairs.cast::<RiscvHwprobe>();
-    // SAFETY: RiscvHwprobe contains only integer fields, so every copied bit
-    // pattern is a valid value.
-    let mut pairs = unsafe { vm_load_any(user_pairs.cast_const(), pair_count)? };
-    for pair in &mut pairs {
-        if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
-            pair.value = value;
+    for index in 0..pair_count {
+        let pair = user_pairs.wrapping_add(index);
+        // Linux imports only the key, then publishes this pair before reading
+        // the next one. The value field is output-only and no array is staged.
+        let key_ptr = pair.cast::<i64>();
+        let mut key = key_ptr.vm_read()?;
+        let value = if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(key) {
+            value
         } else {
-            pair.key = -1;
-            pair.value = 0;
-        }
+            key = -1;
+            0
+        };
+        key_ptr.vm_write(key)?;
+        pair.cast::<u8>()
+            .wrapping_add(core::mem::offset_of!(RiscvHwprobe, value))
+            .cast::<u64>()
+            .vm_write(value)?;
     }
-    vm_write_slice(user_pairs, &pairs)?;
 
     Ok(0)
 }
