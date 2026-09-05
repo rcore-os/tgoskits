@@ -466,11 +466,11 @@ impl CurrentDispatch {
         self.remote_publication = thread.remote_publication;
     }
 
-    pub(crate) fn switch_endpoint_with_core(&self, runtime_core: &ThreadCore) -> SwitchEndpoint {
+    pub(crate) fn switch_endpoint(&self) -> SwitchEndpoint {
         SwitchEndpoint::new(
             self.thread(),
             self.metadata().runtime_binding,
-            runtime_core.extension_view(),
+            self.runtime_core().membarrier_identity(),
         )
     }
 

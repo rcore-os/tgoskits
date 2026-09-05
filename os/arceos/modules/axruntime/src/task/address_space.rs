@@ -586,13 +586,31 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
     pin: &'pin CpuPin<'cpu>,
     previous_selected: AddressSpaceHandle,
     next_selected: AddressSpaceHandle,
+    same_address_space: bool,
     phase: AddressSpaceTransitionPhase,
 ) -> Result<PreparedAddressSpaceSwitch<'pin, 'cpu>, RuntimeStatus> {
     let cpu_id = pin.area().cpu_index().as_usize();
+    #[cfg(any(not(feature = "uspace"), target_arch = "aarch64"))]
+    let _ = same_address_space;
 
     #[cfg(feature = "uspace")]
     {
         let previous_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
+        #[cfg(not(target_arch = "aarch64"))]
+        if same_address_space {
+            debug_assert!(!previous_selected.is_none());
+            debug_assert!(!next_selected.is_none());
+            debug_assert_ne!(previous_raw, 0);
+            return Ok(PreparedAddressSpaceSwitch {
+                pin,
+                cpu_id,
+                phase,
+                previous_raw,
+                previous: None,
+                action: PreparedAddressSpaceAction::SameUser,
+                _not_send_or_sync: PhantomData,
+            });
+        }
         let previous = if previous_raw == 0 {
             None
         } else {
@@ -853,6 +871,7 @@ fn commit_current_task_address_space_transition<T>(
                 pin,
                 previous_selected,
                 next_selected,
+                false,
                 AddressSpaceTransitionPhase::CurrentTask,
             )
             .map_err(super::runtime_status_error)?;

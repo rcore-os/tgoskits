@@ -362,7 +362,7 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
     )?;
     let current = scheduler_frame.current_thread_ref()?;
     let system = scheduler_frame.task_system();
-    let outcome = {
+    let mut outcome = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         let must_migrate = system.set_current_affinity(cpu.as_mut(), affinity)?;
         if !must_migrate {
@@ -381,7 +381,7 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
             task_runtime::fatal_invariant(0x4558_0021, current.id().as_u64() as usize);
         })
     };
-    let decision = outcome.decision().unwrap_or_else(|| {
+    let decision = outcome.decision_mut().unwrap_or_else(|| {
         task_runtime::fatal_invariant(0x4558_0022, current.id().as_u64() as usize)
     });
     execute_switch_plan(&mut scheduler_frame, decision);

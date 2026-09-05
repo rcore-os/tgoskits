@@ -106,16 +106,36 @@ impl RuntimeSwitchPlan {
     pub(crate) fn new(
         previous_context: ExecutionContextHandle,
         previous_address_space: AddressSpaceHandle,
+        previous_address_space_identity: AddressSpaceMembarrierId,
         next_context: ExecutionContextHandle,
         next_address_space: AddressSpaceHandle,
+        next_address_space_identity: AddressSpaceMembarrierId,
     ) -> Option<Self> {
+        debug_assert_eq!(
+            previous_address_space.is_none(),
+            previous_address_space_identity.is_none(),
+        );
+        debug_assert_eq!(
+            next_address_space.is_none(),
+            next_address_space_identity.is_none(),
+        );
+        debug_assert!(
+            previous_address_space != next_address_space
+                || previous_address_space_identity == next_address_space_identity,
+        );
         if previous_context.is_none() || next_context.is_none() || previous_context == next_context
         {
             None
         } else {
+            let same_address_space = !previous_address_space_identity.is_none()
+                && previous_address_space_identity == next_address_space_identity;
             Some(Self {
                 previous_context,
-                previous_address_space,
+                previous_address_space: if same_address_space {
+                    next_address_space
+                } else {
+                    previous_address_space
+                },
                 next_context,
                 next_address_space,
                 #[cfg(feature = "qperf-metrics")]
@@ -129,7 +149,8 @@ impl RuntimeSwitchPlan {
         self.previous_context
     }
 
-    /// Returns the outgoing scheduler-selected logical address space.
+    /// Returns the outgoing logical address space, canonicalized to the
+    /// incoming live token when both endpoints select the same `mm`.
     pub const fn previous_address_space(&self) -> AddressSpaceHandle {
         self.previous_address_space
     }
@@ -142,6 +163,12 @@ impl RuntimeSwitchPlan {
     /// Returns the incoming scheduler-selected logical address space.
     pub const fn next_address_space(&self) -> AddressSpaceHandle {
         self.next_address_space
+    }
+
+    /// Returns whether both scheduler endpoints select the same logical `mm`.
+    pub const fn same_address_space(&self) -> bool {
+        !self.next_address_space.is_none()
+            && self.previous_address_space.into_raw() == self.next_address_space.into_raw()
     }
 
     #[cfg(feature = "qperf-metrics")]
@@ -975,8 +1002,19 @@ mod switch_plan_tests {
         let previous_mm = unsafe { AddressSpaceHandle::from_raw(0x3000) };
         // SAFETY: see above.
         let next_mm = unsafe { AddressSpaceHandle::from_raw(0x4000) };
-        let plan = RuntimeSwitchPlan::new(previous_context, previous_mm, next_context, next_mm)
-            .expect("two distinct live contexts must form one runtime switch plan");
+        // SAFETY: opaque values are compared only and never dereferenced.
+        let previous_mm_identity = unsafe { AddressSpaceMembarrierId::from_raw(0x5000) };
+        // SAFETY: see above.
+        let next_mm_identity = unsafe { AddressSpaceMembarrierId::from_raw(0x6000) };
+        let plan = RuntimeSwitchPlan::new(
+            previous_context,
+            previous_mm,
+            previous_mm_identity,
+            next_context,
+            next_mm,
+            next_mm_identity,
+        )
+        .expect("two distinct live contexts must form one runtime switch plan");
 
         assert_eq!(plan.previous_context(), previous_context);
         assert_eq!(plan.previous_address_space(), previous_mm);

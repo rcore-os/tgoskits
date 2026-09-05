@@ -593,6 +593,7 @@ pub(super) fn install_initial_fp_state(context: usize, fp_state: ax_hal::cpu::Fp
 pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
     let previous_address_space = plan.previous_address_space();
     let next_address_space = plan.next_address_space();
+    let same_address_space = plan.same_address_space();
     let previous_raw = plan.previous_context().into_raw();
     let next_raw = plan.next_context().into_raw();
     let previous = ptr::with_exposed_provenance_mut::<RuntimeContext>(previous_raw);
@@ -625,6 +626,7 @@ pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
                     pin,
                     previous_address_space,
                     next_address_space,
+                    same_address_space,
                     super::address_space::AddressSpaceTransitionPhase::ContextSwitch,
                 )
                 .unwrap_or_else(|status| {

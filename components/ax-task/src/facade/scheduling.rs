@@ -1,5 +1,4 @@
 use super::*;
-use crate::runtime::RuntimeSwitchPlan;
 
 /// Runs one scheduler decision at a task/IRQ-return safe point.
 ///
@@ -56,7 +55,7 @@ fn schedule_current_cpu_with_entry(
             RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
         let system = scheduler_frame.task_system();
         let current_publication = scheduler_frame.current_thread_publication();
-        let (outcome, no_switch_request_pending) = {
+        let (mut outcome, no_switch_request_pending) = {
             let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
             // SAFETY: RuntimeSchedulerFrameGuard owns the IRQ-off scheduler baton.
             let current_state = unsafe { cpu.scheduler_current_lifecycle_state() };
@@ -86,7 +85,7 @@ fn schedule_current_cpu_with_entry(
             };
             (outcome, request_pending)
         };
-        if let Some(decision) = outcome.decision() {
+        if let Some(decision) = outcome.decision_mut() {
             execute_switch_plan(&mut scheduler_frame, decision);
         }
         let needs_reschedule = if let Some(request_pending) = no_switch_request_pending {
@@ -150,7 +149,7 @@ pub fn yield_current_cpu() -> Result<(), TaskError> {
     let system = scheduler_frame.task_system();
     #[cfg(feature = "qperf-metrics")]
     let scheduler_dispatch_started_ns;
-    let outcome = {
+    let mut outcome = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         #[cfg(feature = "qperf-metrics")]
         {
@@ -161,7 +160,7 @@ pub fn yield_current_cpu() -> Result<(), TaskError> {
     };
     #[cfg(feature = "qperf-metrics")]
     let scheduler_dispatch_finished_ns = task_runtime::monotonic_now().as_nanos();
-    if let Some(decision) = outcome.decision() {
+    if let Some(decision) = outcome.decision_mut() {
         #[cfg(feature = "qperf-metrics")]
         {
             crate::metrics::qperf_record_switch_scheduler_detail(
@@ -226,13 +225,13 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
         RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Exit, RuntimeSchedulerEntry::Task)
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0010, thread.as_u64() as _));
     let system = scheduler_frame.task_system();
-    let decision = {
+    let mut decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0013, thread.as_u64() as _));
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
         unsafe { system.commit_prepared_current_exit(cpu.as_mut(), permit.system) }
     };
-    execute_switch_plan(&mut scheduler_frame, &decision);
+    execute_switch_plan(&mut scheduler_frame, &mut decision);
     // An exited context is never re-enqueued, so returning here indicates a
     // broken architecture switch contract.
     task_runtime::fatal_invariant(4, decision.previous().map_or(0, ThreadId::as_u64) as usize)
@@ -240,24 +239,32 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
 
 pub(super) fn execute_switch_plan(
     scheduler_frame: &mut RuntimeSchedulerFrameGuard,
-    decision: &ScheduleDecision,
+    decision: &mut ScheduleDecision,
 ) {
     if !decision.requires_context_switch() {
         return;
     }
     #[cfg(feature = "qperf-metrics")]
     let prepare_started_ns = task_runtime::monotonic_now().as_nanos();
-    let Some(previous) = decision.previous_endpoint() else {
+    let Some(previous) = decision.previous() else {
         task_runtime::fatal_invariant(1, decision.next().as_u64() as usize);
     };
-    let next = decision.next_endpoint();
-    let plan = RuntimeSwitchPlan::new(
-        previous.context(),
-        previous.address_space(),
-        next.context(),
-        next.address_space(),
-    )
-    .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.thread().as_u64() as usize));
+    let next = decision.next();
+    let previous_extension = {
+        let mut cpu = runtime_current_cpu_mut(scheduler_frame)
+            .unwrap_or_else(|_| task_runtime::fatal_invariant(6, next.as_u64() as usize));
+        let handoff = cpu
+            .as_mut()
+            .switch_handoff_mut()
+            .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.as_u64() as usize));
+        if handoff.previous().id() != previous || handoff.incoming().id() != next {
+            task_runtime::fatal_invariant(6, next.as_u64() as usize);
+        }
+        handoff.previous().extension_view()
+    };
+    let plan = decision
+        .take_runtime_switch_plan()
+        .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.as_u64() as usize));
     #[cfg(feature = "qperf-metrics")]
     let switch_validate_finished_ns = task_runtime::monotonic_now().as_nanos();
     // Match Linux's sched_switch observation point: the trace runs while the
@@ -265,23 +272,19 @@ pub(super) fn execute_switch_plan(
     // scheduler locks have been released and the switch decision is final.
     task_runtime::trace_sched_switch(SchedSwitchRecord {
         cpu: scheduler_frame.cpu_id(),
-        previous_thread: previous.thread().as_u64(),
-        next_thread: next.thread().as_u64(),
+        previous_thread: previous.as_u64(),
+        next_thread: next.as_u64(),
         timestamp_ns: decision.timestamp_ns(),
         reason: decision.switch_reason() as u32,
     });
     #[cfg(feature = "qperf-metrics")]
     let switch_trace_finished_ns = task_runtime::monotonic_now().as_nanos();
-    if let Some(extension) = previous.extension() {
+    if let Some(extension) = previous_extension {
         // SAFETY: ThreadExtension construction guarantees callback validity;
         // TaskSystem released every internal lock and the scheduler baton
         // keeps local IRQs disabled.
         unsafe {
-            (extension.ops().on_switch_out)(
-                extension.data(),
-                previous.thread(),
-                decision.switch_reason(),
-            )
+            (extension.ops().on_switch_out)(extension.data(), previous, decision.switch_reason())
         };
     }
     #[cfg(feature = "qperf-metrics")]

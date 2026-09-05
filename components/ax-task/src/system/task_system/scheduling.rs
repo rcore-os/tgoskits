@@ -1015,7 +1015,6 @@ impl TaskSystem {
         let now_ns = transaction.clock().wall().as_nanos();
         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
-        let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
         let previous_urgency = transaction.current_scheduling_urgency();
@@ -1138,7 +1137,7 @@ impl TaskSystem {
         });
         let migrated = migration.is_some();
         let handoff = Self::prepare_switch_handoff(
-            previous,
+            previous_endpoint.map(SwitchEndpoint::thread),
             previous_core.map(PreviousSwitchOwnership::retained),
             next_core,
             next_policy,
@@ -1184,7 +1183,6 @@ impl TaskSystem {
         #[cfg(feature = "qperf-metrics")]
         let qperf_phase_started_ns = task_runtime::monotonic_now().as_nanos();
         let now_ns = transaction.clock().wall().as_nanos();
-        let previous = transaction.current_thread();
         let dispatch_commit = if LINKED_REALTIME {
             transaction.settle_fixed_realtime_current();
             OwnerDispatchCommit::NONE
@@ -1253,7 +1251,7 @@ impl TaskSystem {
         #[cfg(feature = "qperf-metrics")]
         let qperf_handoff_started_ns = task_runtime::monotonic_now().as_nanos();
         let handoff = Self::prepare_switch_handoff(
-            previous,
+            Some(previous_endpoint.thread()),
             Some(previous_core),
             next_core,
             next_policy,

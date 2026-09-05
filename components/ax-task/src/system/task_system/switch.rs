@@ -1009,9 +1009,28 @@ impl TaskSystem {
         switch_reason: SwitchReason,
         timestamp_ns: u64,
     ) -> ScheduleDecision {
+        let runtime_switch_plan = previous_endpoint
+            .filter(|previous| previous.thread() != next_endpoint.thread())
+            .map(|previous| {
+                crate::runtime::RuntimeSwitchPlan::new(
+                    previous.binding().context(),
+                    previous.binding().address_space(),
+                    previous.address_space_identity(),
+                    next_endpoint.binding().context(),
+                    next_endpoint.binding().address_space(),
+                    next_endpoint.address_space_identity(),
+                )
+                .unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(
+                        0x5343_1119,
+                        next_endpoint.thread().as_u64() as usize,
+                    )
+                })
+            });
         ScheduleDecision {
-            previous_endpoint,
-            next_endpoint,
+            previous: previous_endpoint.map(SwitchEndpoint::thread),
+            next: next_endpoint.thread(),
+            runtime_switch_plan,
             switch_reason,
             timestamp_ns,
         }

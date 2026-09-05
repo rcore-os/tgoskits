@@ -3,14 +3,15 @@
 use super::super::thread_sched::DeadlineActivity;
 use crate::{
     CpuId, SchedulePolicy, SwitchReason, ThreadCore, ThreadExtensionView, ThreadId,
-    runtime::{AddressSpaceHandle, ExecutionContextHandle},
+    runtime::{RuntimeSwitchPlan, ThreadRuntimeBinding},
 };
 
 /// Result of one scheduler safe-point decision.
 #[derive(Debug)]
 pub struct ScheduleDecision {
-    pub(super) previous_endpoint: Option<SwitchEndpoint>,
-    pub(super) next_endpoint: SwitchEndpoint,
+    pub(super) previous: Option<ThreadId>,
+    pub(super) next: ThreadId,
+    pub(super) runtime_switch_plan: Option<RuntimeSwitchPlan>,
     pub(super) switch_reason: SwitchReason,
     pub(super) timestamp_ns: u64,
 }
@@ -25,7 +26,7 @@ pub enum YieldOutcome {
 }
 
 impl YieldOutcome {
-    pub(crate) const fn decision(&self) -> Option<&ScheduleDecision> {
+    pub(crate) const fn decision_mut(&mut self) -> Option<&mut ScheduleDecision> {
         match self {
             Self::Unchanged => None,
             Self::Switch(decision) => Some(decision),
@@ -97,6 +98,13 @@ impl SchedulerOutcome {
         }
     }
 
+    pub(crate) const fn decision_mut(&mut self) -> Option<&mut ScheduleDecision> {
+        match self {
+            Self::Decision(decision) => Some(decision),
+            Self::Quiescent | Self::ParkingDeferred | Self::OwnerWorkPending => None,
+        }
+    }
+
     /// Returns whether the caller must finish a pending park handshake before
     /// scheduler task-work callbacks may execute.
     pub const fn parking_deferred(&self) -> bool {
@@ -112,15 +120,12 @@ impl SchedulerOutcome {
 impl ScheduleDecision {
     /// Returns the thread that stopped running, if any.
     pub const fn previous(&self) -> Option<ThreadId> {
-        match self.previous_endpoint {
-            Some(endpoint) => Some(endpoint.thread()),
-            None => None,
-        }
+        self.previous
     }
 
     /// Returns the selected thread or CPU idle thread.
     pub const fn next(&self) -> ThreadId {
-        self.next_endpoint.thread()
+        self.next
     }
 
     /// Returns why the previous thread relinquished the CPU.
@@ -138,34 +143,28 @@ impl ScheduleDecision {
         self.previous() != Some(self.next())
     }
 
-    pub(crate) const fn previous_endpoint(&self) -> Option<SwitchEndpoint> {
-        self.previous_endpoint
-    }
-
-    pub(crate) const fn next_endpoint(&self) -> SwitchEndpoint {
-        self.next_endpoint
+    pub(crate) fn take_runtime_switch_plan(&mut self) -> Option<RuntimeSwitchPlan> {
+        self.runtime_switch_plan.take()
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SwitchEndpoint {
     thread: ThreadId,
-    context: ExecutionContextHandle,
-    address_space: AddressSpaceHandle,
-    extension: Option<ThreadExtensionView>,
+    binding: ThreadRuntimeBinding,
+    address_space_identity: crate::runtime::AddressSpaceMembarrierId,
 }
 
 impl SwitchEndpoint {
     pub(crate) const fn new(
         thread: ThreadId,
-        binding: crate::runtime::ThreadRuntimeBinding,
-        extension: Option<ThreadExtensionView>,
+        binding: ThreadRuntimeBinding,
+        address_space_identity: crate::runtime::AddressSpaceMembarrierId,
     ) -> Self {
         Self {
             thread,
-            context: binding.context(),
-            address_space: binding.address_space(),
-            extension,
+            binding,
+            address_space_identity,
         }
     }
 
@@ -173,16 +172,12 @@ impl SwitchEndpoint {
         self.thread
     }
 
-    pub(crate) const fn context(self) -> ExecutionContextHandle {
-        self.context
+    pub(crate) const fn binding(self) -> ThreadRuntimeBinding {
+        self.binding
     }
 
-    pub(crate) const fn address_space(self) -> crate::runtime::AddressSpaceHandle {
-        self.address_space
-    }
-
-    pub(crate) const fn extension(self) -> Option<ThreadExtensionView> {
-        self.extension
+    pub(crate) const fn address_space_identity(self) -> crate::runtime::AddressSpaceMembarrierId {
+        self.address_space_identity
     }
 }
 

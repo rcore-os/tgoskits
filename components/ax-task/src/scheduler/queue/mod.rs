@@ -287,7 +287,7 @@ impl RunQueue {
 
     pub(crate) fn current_switch_endpoint(&self) -> Option<crate::SwitchEndpoint> {
         let current = self.current.as_ref()?;
-        Some(current.switch_endpoint_with_core(self.current_runtime_core()?))
+        Some(current.switch_endpoint())
     }
 
     fn linked_current(&self) -> Option<ThreadId> {

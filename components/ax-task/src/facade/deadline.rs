@@ -401,8 +401,8 @@ fn commit_current_park_with_system(
     };
     match commit {
         ParkCommit::Notified => Ok(CurrentParkDisposition::NotifiedBeforeBlock),
-        ParkCommit::Blocked(decision) => {
-            execute_switch_plan(&mut scheduler_frame, &decision);
+        ParkCommit::Blocked(mut decision) => {
+            execute_switch_plan(&mut scheduler_frame, &mut decision);
             Ok(CurrentParkDisposition::BlockedAndResumed)
         }
     }
