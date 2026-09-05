@@ -14,19 +14,10 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_hal::mem::VirtAddr;
-
-static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; crate::build_info::CPU_CAPACITY - 1] =
-    [const { AtomicUsize::new(usize::MAX) }; crate::build_info::CPU_CAPACITY - 1];
-
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
-fn secondary_boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
-    ax_hal::mem::boot_stack_bounds(cpu_id)
-}
-
-fn prepare_secondary_boot_stack(slot: usize, cpu_id: usize) {
-    SECONDARY_CPUID_BY_SLOT[slot].store(cpu_id, Ordering::Release);
+const fn secondary_cpu_is_usable(cpu_id: usize, runtime_cpu_count: usize) -> bool {
+    cpu_id < runtime_cpu_count
 }
 
 #[allow(clippy::absurd_extreme_comparisons)]
@@ -39,13 +30,9 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
         "SMP requires coherent cacheable memory shared by all CPUs"
     );
     for i in 0..cpu_num {
-        if i != primary_cpu_id && slot < cpu_num - 1 {
-            prepare_secondary_boot_stack(slot, i);
-
-            let stack_top = 0;
-
+        if i != primary_cpu_id && slot < cpu_num.saturating_sub(1) {
             debug!("starting CPU {i}...");
-            ax_hal::power::cpu_boot(i, stack_top);
+            ax_hal::power::cpu_boot(i);
             slot += 1;
 
             while ENTERED_CPUS.load(Ordering::Acquire) <= slot {
@@ -60,51 +47,58 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 /// It is called from the bootstrapping code in the specific platform crate.
 #[ax_plat::secondary_main]
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
-    // Park harts whose logical index is beyond the compile-time CPU count: QEMU
-    // may start more harts (`-smp M`) than the kernel was built for
-    // (`CPU_CAPACITY == N`). Mirror Linux — run on the first N CPUs and park the
-    // excess, rather than panicking in `percpu::init_secondary(cpu_id)` /
-    // `AxCpuMask::one_shot(cpu_id)` / `RUN_QUEUES[cpu_id]`, which all assert
-    // `index < CPU_CAPACITY`. Must precede `init_secondary`, which would otherwise
-    // mis-index the per-CPU area first.
-    if cpu_id >= crate::build_info::CPU_CAPACITY {
+    // The platform may enter more harts than the runtime topology selected.
+    // ax_hal::cpu_num() is already min(platform_cpu_count, CPU_CAPACITY); use
+    // that same limit for secondary admission and the BSP completion count.
+    // This must precede per-CPU initialization, which indexes the final area.
+    if !secondary_cpu_is_usable(cpu_id, ax_hal::cpu_num()) {
         loop {
             ax_hal::asm::wait_for_irqs();
         }
     }
     ax_hal::percpu::init_secondary(cpu_id);
+    crate::guard::assert_boot_preemption_held();
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
     // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
+
+    #[cfg(feature = "tls")]
+    crate::task::initialize_early_bootstrap_tls()
+        .expect("failed to initialize secondary bootstrap TLS");
 
     ENTERED_CPUS.fetch_add(1, Ordering::Release);
     info!("Secondary CPU {cpu_id} started.");
 
     #[cfg(feature = "paging")]
     ax_mm::init_memory_management_secondary();
+    super::bootstrap::initialize_scheduler_before_platform(
+        || crate::task::initialize_secondary(cpu_id),
+        || ax_hal::init_later_secondary(cpu_id),
+    )
+    .expect("failed to initialize secondary task scheduler");
 
-    ax_hal::init_later_secondary(cpu_id);
-
-    let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
-    ax_task::init_scheduler_secondary(stack_ptr, stack_size);
-    super::preempt::release_bootstrap();
-
-    #[cfg(feature = "ipi")]
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     ax_ipi::init();
 
     // Bring up local IRQ/IPI delivery before publishing INITED_CPUS so the
     // primary cannot enter user-visible init while remote CPUs still lack SGI
     // handlers or pending per-CPU IRQ enables.
-    super::init_percpu_irq(cpu_id);
+    super::interrupt_bootstrap::init_cpu(cpu_id);
 
-    ax_hal::asm::enable_irqs();
-
-    #[cfg(feature = "ipi")]
+    // Complete architecture-local IPI readiness before the scheduler exposes
+    // this CPU as a target. A scheduler safe point after publication may rearm
+    // a physical self-doorbell even while bootstrap preemption is still held.
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     {
         ax_hal::asm::flush_tlb(None);
         ax_ipi::mark_current_cpu_ready();
     }
+    let online_cpu = crate::task::publish_current_cpu_online()
+        .expect("failed to publish secondary scheduler CPU");
+    crate::task::start_current_ktimer_service().expect("failed to create secondary ktimer service");
+    super::clock_event_runtime::enable_irqs_after_scheduler_online(online_cpu);
+    crate::guard::release_bootstrap_preemption();
 
     // Publishing a log record is safe as soon as the per-CPU area exists, but
     // waking the owner worker may select a run queue or send an IPI. Publish
@@ -118,6 +112,18 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     while !super::is_init_ok() {
         core::hint::spin_loop();
     }
+    crate::task::run_idle();
+}
 
-    ax_task::run_idle();
+#[cfg(test)]
+mod tests {
+    use super::secondary_cpu_is_usable;
+
+    #[test]
+    fn secondary_admission_uses_the_runtime_cpu_limit() {
+        assert!(secondary_cpu_is_usable(0, 2));
+        assert!(secondary_cpu_is_usable(1, 2));
+        assert!(!secondary_cpu_is_usable(2, 2));
+        assert!(!secondary_cpu_is_usable(7, 2));
+    }
 }

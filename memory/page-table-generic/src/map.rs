@@ -184,9 +184,12 @@ where
         Ok(())
     }
 
-    /// 递归取消映射的核心实现
+    /// Recursively clears leaf mappings.
     ///
-    /// 返回值：bool 表示此帧是否为空（所有页表项都无效），可以回收
+    /// Returns whether this frame is empty and can be reclaimed by its caller.
+    /// This is the existing generic page-table contract used by stage-2 and
+    /// single-owner domains. Stage-1 owners that require remote shootdown
+    /// confirmation use `PageTableRef::unmap_page_deferred` instead.
     pub fn unmap_range_recursive(&mut self, config: UnmapRecursiveConfig) -> PagingResult<bool> {
         let mut vaddr = config.start_vaddr;
         let mut can_reclaim = true;
@@ -250,16 +253,11 @@ where
                     flush: config.flush,
                 };
 
-                // 递归取消子页表映射
                 let child_can_reclaim = child_frame.unmap_range_recursive(child_config)?;
-
                 if child_can_reclaim {
-                    // 子页表完全为空，可以回收
-                    // 清除指向子页表的PTE
                     pte_ref.clear();
                     allocator.dealloc_frame(child_paddr);
                 } else {
-                    // 子页表仍有有效映射，不能回收
                     can_reclaim = false;
                 }
             }
@@ -267,22 +265,9 @@ where
             vaddr = next_level_vaddr;
         }
 
-        // 检查此帧是否完全为空
         if can_reclaim {
-            can_reclaim = self.is_frame_empty();
+            can_reclaim = self.as_slice().iter().all(PageTableEntry::unused);
         }
-
         Ok(can_reclaim)
-    }
-
-    /// 检查页表帧是否全为空（所有页表项都未使用）
-    fn is_frame_empty(&self) -> bool {
-        let entries = self.as_slice();
-        for pte in entries {
-            if !pte.unused() {
-                return false;
-            }
-        }
-        true
     }
 }

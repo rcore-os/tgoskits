@@ -19,9 +19,11 @@
 use alloc::{string::String, vec::Vec};
 use core::mem::MaybeUninit;
 
-use starry_vm::{vm_read_slice, vm_write_slice};
-
-use crate::{StarryError, StarryResult, sync::IrqMutex as Mutex};
+use crate::{
+    StarryError, StarryResult,
+    mm::{vm_read_slice, vm_write_slice},
+    sync::PiMutex as Mutex,
+};
 
 // ---------------------------------------------------------------------------
 // Wireless-extensions ioctl numbers (not provided by linux_raw_sys).
@@ -119,27 +121,37 @@ fn take_pending(ifname: &str) -> Option<Pending> {
 // iwreq parsing helpers
 // ---------------------------------------------------------------------------
 
-fn read_user_array<const N: usize>(ptr: *const u8) -> StarryResult<[u8; N]> {
+fn read_user_array<const N: usize>(
+    current: &crate::task::UserTaskRef,
+    ptr: *const u8,
+) -> crate::StarryResult<[u8; N]> {
     let mut buf = [MaybeUninit::<u8>::uninit(); N];
-    vm_read_slice(ptr, &mut buf)?;
+    vm_read_slice(current, ptr, &mut buf)?;
     Ok(buf.map(|v| unsafe { v.assume_init() }))
 }
 
-fn read_ifname(arg: usize) -> StarryResult<String> {
-    let buf = read_user_array::<IWREQ_NAME_LEN>(arg as *const u8)?;
+fn read_ifname(current: &crate::task::UserTaskRef, arg: usize) -> crate::StarryResult<String> {
+    let buf = read_user_array::<IWREQ_NAME_LEN>(current, arg as *const u8)?;
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8(buf[..end].to_vec()).map_err(|_| StarryError::InvalidInput)
 }
 
 /// Reads the 16-byte `union iwreq_data` payload following the name.
-fn read_iwreq_data(arg: usize) -> StarryResult<[u8; 16]> {
-    read_user_array::<16>((arg + IWREQ_DATA_OFFSET) as *const u8)
+fn read_iwreq_data(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+) -> crate::StarryResult<[u8; 16]> {
+    read_user_array::<16>(current, (arg + IWREQ_DATA_OFFSET) as *const u8)
 }
 
 /// Reads a length-prefixed userspace buffer described by an `iw_point`
 /// (`{ void* pointer; u16 length; u16 flags; }`) embedded in `iwreq_data`.
-fn read_iw_point(arg: usize, max: usize) -> StarryResult<(Vec<u8>, u16)> {
-    let data = read_iwreq_data(arg)?;
+fn read_iw_point(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+    max: usize,
+) -> StarryResult<(Vec<u8>, u16)> {
+    let data = read_iwreq_data(current, arg)?;
     let ptr = usize::from_ne_bytes(
         data[..core::mem::size_of::<usize>()]
             .try_into()
@@ -155,7 +167,7 @@ fn read_iw_point(arg: usize, max: usize) -> StarryResult<(Vec<u8>, u16)> {
         return Err(StarryError::ArgumentListTooLong);
     }
     let mut buf = alloc::vec![MaybeUninit::<u8>::uninit(); len];
-    vm_read_slice(ptr as *const u8, &mut buf)?;
+    vm_read_slice(current, ptr as *const u8, &mut buf)?;
     Ok((
         buf.into_iter()
             .map(|v| unsafe { v.assume_init() })
@@ -170,19 +182,34 @@ fn parse_iw_frequency(data: &[u8; 16]) -> StarryResult<u8> {
     if exponent == 0 && (1..=14).contains(&mantissa) {
         return Ok(mantissa as u8);
     }
-    let mut frequency_hz = i64::from(mantissa);
-    for _ in 0..exponent {
-        frequency_hz = frequency_hz
-            .checked_mul(10)
-            .ok_or(StarryError::InvalidInput)?;
-    }
-    let frequency_mhz = frequency_hz / 1_000_000;
-    match frequency_mhz {
-        2_484 => Ok(14),
-        2_412..=2_472 if (frequency_mhz - 2_407) % 5 == 0 => {
-            Ok(((frequency_mhz - 2_407) / 5) as u8)
+    let frequency_hz = scale_iw_frequency_hz(mantissa, exponent)?;
+    match frequency_hz {
+        2_484_000_000 => Ok(14),
+        2_412_000_000..=2_472_000_000
+            if (frequency_hz - 2_407_000_000) % 5_000_000 == 0 =>
+        {
+            Ok(((frequency_hz - 2_407_000_000) / 5_000_000) as u8)
         }
         _ => Err(StarryError::InvalidInput),
+    }
+}
+
+fn scale_iw_frequency_hz(mantissa: i32, exponent: i16) -> StarryResult<i64> {
+    if mantissa <= 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    let mantissa = i64::from(mantissa);
+    let scale = 10_i64
+        .checked_pow(u32::from(exponent.unsigned_abs()))
+        .ok_or(StarryError::InvalidInput)?;
+    if exponent >= 0 {
+        mantissa
+            .checked_mul(scale)
+            .ok_or(StarryError::InvalidInput)
+    } else if mantissa % scale == 0 {
+        Ok(mantissa / scale)
+    } else {
+        Err(StarryError::InvalidInput)
     }
 }
 
@@ -200,12 +227,16 @@ pub fn is_wext_ioctl(cmd: u32) -> bool {
 
 /// Handles a wireless-extensions `ioctl`. Setters stage config; `SIOCSIWCOMMIT`
 /// applies it. Returns `Ok(0)` on success.
-pub fn handle(cmd: u32, arg: usize) -> StarryResult<usize> {
-    let ifname = read_ifname(arg)?;
+pub fn handle(
+    current: &crate::task::UserTaskRef,
+    cmd: u32,
+    arg: usize,
+) -> crate::StarryResult<usize> {
+    let ifname = read_ifname(current, arg)?;
 
     match cmd {
         SIOCSIWMODE => {
-            let data = read_iwreq_data(arg)?;
+            let data = read_iwreq_data(current, arg)?;
             let mode = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
             let staged = match mode {
                 IW_MODE_INFRA => StagedMode::Station,
@@ -215,7 +246,8 @@ pub fn handle(cmd: u32, arg: usize) -> StarryResult<usize> {
             with_pending(&ifname, |p| p.mode = Some(staged));
         }
         SIOCSIWESSID => {
-            let (mut ssid, flags) = read_iw_point(arg, IW_ESSID_MAX_SIZE + 1)?;
+            let (mut ssid, flags) =
+                read_iw_point(current, arg, IW_ESSID_MAX_SIZE + 1)?;
             if ssid.len() == IW_ESSID_MAX_SIZE + 1 {
                 if ssid.last() != Some(&0) {
                     return Err(StarryError::ArgumentListTooLong);
@@ -230,13 +262,16 @@ pub fn handle(cmd: u32, arg: usize) -> StarryResult<usize> {
             });
         }
         SIOCSIWENCODEEXT => {
-            let (encoded, _) =
-                read_iw_point(arg, IW_ENCODE_EXT_HEADER_SIZE + IW_ENCODE_TOKEN_MAX)?;
+            let (encoded, _) = read_iw_point(
+                current,
+                arg,
+                IW_ENCODE_EXT_HEADER_SIZE + IW_ENCODE_TOKEN_MAX,
+            )?;
             let pmk = parse_pmk_encode_ext(&encoded)?;
             with_pending(&ifname, |p| p.pmk = Some(pmk));
         }
         SIOCSIWFREQ => {
-            let data = read_iwreq_data(arg)?;
+            let data = read_iwreq_data(current, arg)?;
             let channel = parse_iw_frequency(&data)?;
             with_pending(&ifname, |p| p.channel = Some(channel));
         }
@@ -311,8 +346,16 @@ fn parse_pmk_encode_ext(encoded: &[u8]) -> StarryResult<ax_net::Wpa2Pmk> {
 /// Silences unused-write-helper warnings if a setter that echoes data back is
 /// added later. Currently all WE setters here only stage, so no write-back.
 #[allow(dead_code)]
-fn _write_iwreq_data(arg: usize, data: &[u8]) -> StarryResult<()> {
-    Ok(vm_write_slice((arg + IWREQ_DATA_OFFSET) as *mut u8, data)?)
+fn _write_iwreq_data(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+    data: &[u8],
+) -> crate::StarryResult<()> {
+    Ok(vm_write_slice(
+        current,
+        (arg + IWREQ_DATA_OFFSET) as *mut u8,
+        data,
+    )?)
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -374,5 +417,11 @@ mod tests {
 
         frequency[4..6].copy_from_slice(&(-1i16).to_ne_bytes());
         assert!(super::parse_iw_frequency(&frequency).is_err());
+
+        assert_eq!(
+            super::scale_iw_frequency_hz(20_000_000, -1).unwrap(),
+            2_000_000
+        );
+        assert!(super::scale_iw_frequency_hz(1, -1).is_err());
     }
 }

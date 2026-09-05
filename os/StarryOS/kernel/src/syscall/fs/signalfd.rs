@@ -1,11 +1,11 @@
 use bitflags::bitflags;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use starry_signal::SignalSet;
-use starry_vm::VmPtr;
 
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, add_file_like, signalfd::Signalfd},
+    mm::VmPtr,
     syscall::signal::check_sigset_size,
 };
 
@@ -39,6 +39,7 @@ bitflags! {
 /// * `flags` - Flags used when creating a new descriptor. Linux validates but
 ///   otherwise ignores these flags when updating an existing signalfd.
 pub fn sys_signalfd4(
+    current: &crate::task::UserTaskRef,
     fd: i32,
     mask: *const SignalSet,
     sigsetsize: usize,
@@ -49,7 +50,7 @@ pub fn sys_signalfd4(
     let flags = SignalfdFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
 
     // Read the signal mask from user space before handling the request mode.
-    let mask = unsafe { mask.vm_read_uninit()?.assume_init() };
+    let mask = unsafe { mask.vm_read_uninit(current)?.assume_init() };
 
     // Linux only updates the mask for an existing signalfd. Valid creation
     // flags do not alter its descriptor or file status flags.

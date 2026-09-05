@@ -9,9 +9,8 @@ use ax_std::os::arceos::modules::ax_runtime::console::{
     TaskConsoleOutput,
 };
 use ax_std::os::arceos::{
-    modules::{
-        ax_runtime::{RuntimeError, RuntimeResult, emergency_console},
-        ax_task::IrqNotify,
+    modules::ax_runtime::{
+        RuntimeError, RuntimeResult, emergency_console, task::FixedIrqWorkerSignal,
     },
     sync::NoPreemptMutex,
 };
@@ -33,7 +32,7 @@ struct HostConsole {
 
 struct HostOutput {
     queue: NoPreemptMutex<HostOutputQueue<HOST_OUTPUT_QUEUE_CAPACITY>>,
-    ready: IrqNotify,
+    ready: FixedIrqWorkerSignal,
     failed: AtomicBool,
 }
 
@@ -169,7 +168,13 @@ pub(crate) fn submit_host_transaction(transaction: impl FnOnce(&mut dyn FnMut(&[
 fn run_host_output_worker(output: TaskConsoleOutput) {
     let mut terminal = TerminalNewlineNormalizer::new();
     loop {
-        HOST_OUTPUT.ready.wait();
+        if let Err(error) = HOST_OUTPUT.ready.wait() {
+            HOST_OUTPUT.failed.store(true, Ordering::Release);
+            let _ = emergency_console::write_fmt(format_args!(
+                "\nAxvisor host console output worker stopped: {error}\n"
+            ));
+            return;
+        }
         if HOST_OUTPUT.failed.load(Ordering::Acquire) {
             return;
         }
@@ -212,7 +217,7 @@ impl HostOutput {
     const fn new() -> Self {
         Self {
             queue: NoPreemptMutex::new(HostOutputQueue::new()),
-            ready: IrqNotify::new(),
+            ready: FixedIrqWorkerSignal::new(),
             failed: AtomicBool::new(false),
         }
     }
@@ -244,7 +249,7 @@ impl HostOutput {
         drop(transaction_queue);
         drop(queue);
         if submitted {
-            self.ready.notify_irq();
+            self.ready.notify();
         }
     }
 

@@ -22,6 +22,8 @@ pub use identity::*;
 pub use pin::*;
 pub use preempt::*;
 pub use register::current_context;
+#[doc(hidden)]
+pub use register::current_cpu_index;
 #[cfg(feature = "tls")]
 #[doc(hidden)]
 pub use register::install_kernel_tls;

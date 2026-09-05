@@ -3,7 +3,7 @@
 use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Vec};
 use core::{ffi::CStr, iter, mem::size_of};
 
-use ax_fs_ng::vfs::{CachedFile, FileBackend};
+use ax_fs_ng::vfs::{CachedFile, FileBackend, current_fs_context};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
 use axfs_ng_vfs::Location;
@@ -16,7 +16,7 @@ use crate::{
     StarryError, StarryResult,
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
     mm::aspace::{AddrSpace, Backend},
-    sync::Mutex,
+    sync::PiMutex,
 };
 
 /// Largest argv/envp stack image accepted by execve.
@@ -86,15 +86,9 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> StarryResult {
         // kernel portion to the user page table.
         let kspace = ax_mm::kernel_aspace().lock();
         // SAFETY: the global kernel address space outlives every user address
-        // space, whose managed regions are restricted to user-space addresses.
-        unsafe {
-            _aspace.page_table_mut().share_root_entries_from(
-                kspace.page_table(),
-                kspace.base(),
-                kspace.size(),
-            )
-        }
-        .map_err(|_| StarryError::BadState)?;
+        // space, whose managed regions are restricted to user-space addresses,
+        // and exec has not published this new address space yet.
+        unsafe { _aspace.initialize_kernel_root_entries_from(&kspace) }?;
     }
     Ok(())
 }
@@ -607,7 +601,7 @@ impl ElfLoader {
             }
         }
 
-        uspace.clear();
+        uspace.clear()?;
         map_trampoline(uspace)?;
 
         let entry = self.0.front().unwrap();
@@ -644,7 +638,7 @@ impl ElfLoader {
         };
 
         let (elf, ldso) = if let Some(ldso) = ldso {
-            let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
+            let loc = current_fs_context().lock().resolve(ldso)?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
                 let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
                 self.0.insert(e);
@@ -704,7 +698,7 @@ impl ElfLoader {
     }
 }
 
-static ELF_LOADER: Mutex<ElfLoader> = Mutex::new(ElfLoader::new());
+static ELF_LOADER: PiMutex<ElfLoader> = PiMutex::new(ElfLoader::new());
 
 // Linux's exec path bounds chained binary-format rewrites and returns ELOOP
 // for a too-deep interpreter chain. Give StarryOS's recursive script loader
@@ -769,9 +763,7 @@ fn load_user_app_with_depth(
         let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
             .chain(args.iter().cloned())
             .collect();
-        let sh = ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .resolve("/bin/sh")?;
+        let sh = current_fs_context().lock().resolve("/bin/sh")?;
         return load_user_app_with_depth(
             uspace,
             sh,
@@ -803,9 +795,7 @@ fn load_user_app_with_depth(
                     .collect();
                 // Open the interpreter by path (Linux's `open_exec` on the
                 // shebang interpreter) and load it as the new executable.
-                let interp = ax_fs_ng::vfs::current_fs_context()
-                    .lock()
-                    .resolve(&new_args[0])?;
+                let interp = current_fs_context().lock().resolve(&new_args[0])?;
                 return load_user_app_with_depth(
                     uspace,
                     interp,

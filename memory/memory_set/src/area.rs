@@ -97,59 +97,81 @@ impl<B: MappingBackend> MemoryArea<B> {
     }
 
     /// Maps the whole memory area in the page table.
-    pub(crate) fn map_area(&self, page_table: &mut B::PageTable) -> MappingResult {
+    pub(crate) fn map_area(
+        &self,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
         self.backend
-            .map(self.start(), self.size(), self.flags, page_table)
+            .map(self.start(), self.size(), self.flags, context, page_table)
             .then_some(())
             .ok_or(MappingError::BadState)
     }
 
     /// Unmaps the whole memory area in the page table.
-    pub(crate) fn unmap_area(&self, page_table: &mut B::PageTable) -> MappingResult {
+    pub(crate) fn unmap_area(
+        &self,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        self.unmap_range(self.start(), self.size(), context, page_table)
+    }
+
+    /// Unmaps a sub-range without changing this area's metadata.
+    ///
+    /// Callers use this to complete the fallible backend transition before
+    /// committing a split or key change in the containing memory set.
+    pub(crate) fn unmap_range(
+        &self,
+        start: B::Addr,
+        size: usize,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        debug_assert!(
+            self.va_range
+                .contains_range(AddrRange::from_start_size(start, size))
+        );
         self.backend
-            .unmap(self.start(), self.size(), page_table)
+            .unmap(start, size, context, page_table)
             .then_some(())
             .ok_or(MappingError::BadState)
     }
 
-    /// Changes the flags in the page table.
-    pub(crate) fn protect_area(
-        &mut self,
-        new_flags: B::Flags,
-        page_table: &mut B::PageTable,
+    /// Preflights an unmap sub-range without changing page-table or metadata.
+    pub(crate) fn validate_unmap_range(
+        &self,
+        start: B::Addr,
+        size: usize,
+        page_table: &B::PageTable,
     ) -> MappingResult {
+        debug_assert!(
+            self.va_range
+                .contains_range(AddrRange::from_start_size(start, size))
+        );
         self.backend
-            .protect(self.start(), self.size(), new_flags, page_table);
-        Ok(())
+            .validate_unmap(start, size, page_table)
+            .then_some(())
+            .ok_or(MappingError::BadState)
     }
 
-    /// Shrinks the memory area at the left side.
-    ///
-    /// The memory area is shrunk to `new_size`, and the left-side part is
-    /// unmapped.
-    ///
-    /// The start address is increased by `old_size - new_size`.
-    ///
-    /// `new_size` must be greater than 0 and less than the current size.
-    pub(crate) fn shrink_left(
-        &mut self,
-        new_size: usize,
+    /// Changes page-table flags for a sub-range without changing metadata.
+    pub(crate) fn protect_range(
+        &self,
+        start: B::Addr,
+        size: usize,
+        new_flags: B::Flags,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
-        assert!(new_size > 0 && new_size < self.size());
-
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-
-        if !self.backend.unmap(self.start(), unmap_size, page_table) {
-            return Err(MappingError::BadState);
-        }
-        // Use wrapping_add to avoid overflow check.
-        // Safety: `unmap_size` is less than the current size, so it will never
-        // overflow.
-        self.va_range.start = self.va_range.start.wrapping_add(unmap_size);
-        self.backend.shrink_left(unmap_size);
-        Ok(())
+        debug_assert!(
+            self.va_range
+                .contains_range(AddrRange::from_start_size(start, size))
+        );
+        self.backend
+            .protect(start, size, new_flags, context, page_table)
+            .then_some(())
+            .ok_or(MappingError::BadState)
     }
 
     /// Shrinks the memory area at the left side without touching the page
@@ -161,37 +183,6 @@ impl<B: MappingBackend> MemoryArea<B> {
         let unmap_size = old_size - new_size;
         self.va_range.start = self.va_range.start.wrapping_add(unmap_size);
         self.backend.shrink_left(unmap_size);
-    }
-
-    /// Shrinks the memory area at the right side.
-    ///
-    /// The memory area is shrunk to `new_size`, and the right-side part is
-    /// unmapped.
-    ///
-    /// The end address is decreased by `old_size - new_size`.
-    ///
-    /// `new_size` must be greater than 0 and less than the current size.
-    pub(crate) fn shrink_right(
-        &mut self,
-        new_size: usize,
-        page_table: &mut B::PageTable,
-    ) -> MappingResult {
-        assert!(new_size > 0 && new_size < self.size());
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-
-        // Use wrapping_add to avoid overflow check.
-        // Safety: `new_size` is less than the current size, so it will never overflow.
-        let unmap_start = self.start().wrapping_add(new_size);
-
-        if !self.backend.unmap(unmap_start, unmap_size, page_table) {
-            return Err(MappingError::BadState);
-        }
-
-        // Use wrapping_sub to avoid overflow check, same as above.
-        self.va_range.end = self.va_range.end.wrapping_sub(unmap_size);
-        self.backend.shrink_right(unmap_size);
-        Ok(())
     }
 
     /// Shrinks the memory area at the right side without touching the page
@@ -210,6 +201,7 @@ impl<B: MappingBackend> MemoryArea<B> {
     pub(crate) fn grow_right(
         &mut self,
         additional_size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         assert!(additional_size > 0);
@@ -226,7 +218,7 @@ impl<B: MappingBackend> MemoryArea<B> {
             .ok_or(MappingError::InvalidParam)?;
         if !self
             .backend
-            .map(map_start, additional_size, self.flags, page_table)
+            .map(map_start, additional_size, self.flags, context, page_table)
         {
             return Err(MappingError::BadState);
         }

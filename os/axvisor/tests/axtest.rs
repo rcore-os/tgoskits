@@ -150,19 +150,24 @@ mod tests {
         use core::sync::atomic::{AtomicBool, Ordering};
         use std::{sync::Arc, thread, time::Duration};
 
-        use crate::browser_console_delivery::BlockingSignal;
+        use ax_std::os::arceos::modules::ax_runtime::task::{
+            IrqWaitCell, IrqWorkerWaiter, current_thread_handle,
+        };
 
-        let signal = Arc::new(BlockingSignal::new());
-        signal.notify_irq();
-        signal.drain();
+        let signal = Arc::new(IrqWaitCell::new());
         let waiting = Arc::new(AtomicBool::new(false));
         let woke = Arc::new(AtomicBool::new(false));
         let worker_signal = Arc::clone(&signal);
         let worker_waiting = Arc::clone(&waiting);
         let worker_woke = Arc::clone(&woke);
         let worker = thread::spawn(move || {
+            let current =
+                current_thread_handle().expect("delivery waiter must bind to its runtime worker");
+            let waiter = IrqWorkerWaiter::new(current.wake_handle());
             worker_waiting.store(true, Ordering::Release);
-            worker_signal.wait();
+            waiter
+                .wait(&worker_signal)
+                .expect("delivery waiter must accept one notification cell");
             worker_woke.store(true, Ordering::Release);
         });
 
@@ -172,7 +177,7 @@ mod tests {
         thread::sleep(Duration::from_millis(30));
         ax_assert!(!woke.load(Ordering::Acquire));
 
-        signal.notify();
+        let _result = signal.notify();
         worker
             .join()
             .expect("delivery waiter must exit after notify");

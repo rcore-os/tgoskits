@@ -1,4 +1,5 @@
 use ax_io::{BufReader, IoResult, prelude::*};
+use ax_lazyinit::OnceLock;
 #[cfg(feature = "fd")]
 use {crate::PosixError, crate::PosixResult, alloc::sync::Arc, ax_io::PollState};
 
@@ -85,8 +86,7 @@ impl Write for Stdout {
 
 /// Constructs a new handle to the standard input of the current process.
 pub fn stdin() -> Stdin {
-    static INSTANCE: ax_lazyinit::OnceLock<Mutex<BufReader<StdinRaw>>> =
-        ax_lazyinit::OnceLock::new();
+    static INSTANCE: OnceLock<Mutex<BufReader<StdinRaw>>> = OnceLock::new();
     Stdin {
         inner: INSTANCE.call_once(|| Mutex::new(BufReader::new(StdinRaw))),
     }

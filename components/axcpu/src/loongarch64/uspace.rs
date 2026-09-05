@@ -1,6 +1,9 @@
 //! Structures and functions for user space.
 
-use core::ops::{Deref, DerefMut};
+use core::{
+    mem::size_of,
+    ops::{Deref, DerefMut},
+};
 
 use ax_memory_addr::VirtAddr;
 use loongArch64::register::{
@@ -8,6 +11,7 @@ use loongArch64::register::{
     estat::{self, Exception, Trap},
 };
 
+use super::irq::is_spurious_interrupt;
 pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
 use crate::{TrapFrame, trap::PageFaultFlags};
 
@@ -19,6 +23,15 @@ const ECODE_BINARY_TRANSLATION_DISABLED: usize = 0x14;
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct UserContext(TrapFrame);
+
+// SAFETY: `TrapFrame` is a contiguous C-layout register image containing only
+// integer fields and has no padding.
+unsafe impl bytemuck::NoUninit for UserContext {}
+
+const _: () = {
+    assert!(size_of::<TrapFrame>() == 34 * size_of::<usize>());
+    assert!(size_of::<UserContext>() == size_of::<TrapFrame>());
+};
 
 impl UserContext {
     /// Creates a new context with the given entry point, user stack pointer,
@@ -54,18 +67,53 @@ impl UserContext {
         4
     }
 
-    /// Enter user space.
+    /// Returns whether this register image can be restored as an interruptible
+    /// PLV3 context.
+    pub const fn has_interruptible_user_return_mode(&self) -> bool {
+        const PPLV_MASK: usize = 0b11;
+        const PIE: usize = 1 << 2;
+
+        self.0.prmd & PPLV_MASK == PPLV_MASK && self.0.prmd & PIE != 0
+    }
+
+    /// Enters user space without validating the runtime transition.
     ///
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `sepc`).
     ///
     /// This function returns when an exception or syscall occurs.
-    pub fn run(&mut self) -> ReturnReason {
+    ///
+    /// # Safety
+    ///
+    /// The caller must be the runtime's prepared user-entry boundary for the
+    /// current scheduler task. Its context-switch tail must be complete, no
+    /// IRQ/preemption guard or hard interrupt may be active, and local IRQs
+    /// must remain disabled after the final scheduler-work check. The active
+    /// logical address space, hardware root and CPU footprint must match this
+    /// task and keep every user address referenced by `self` valid. PRMD must
+    /// describe an interruptible PLV3 return. No code may run between those
+    /// validations and this call.
+    ///
+    /// Safe code cannot invoke this raw boundary:
+    ///
+    /// ```compile_fail
+    /// fn bypass_runtime(context: &mut ax_cpu::uspace::UserContext) {
+    ///     context.run_unchecked();
+    /// }
+    /// ```
+    pub unsafe fn run_unchecked(&mut self) -> ReturnReason {
         unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
 
-        crate::asm::disable_irqs();
+        assert!(
+            !crate::asm::irqs_enabled(),
+            "raw user entry requires the prepared IRQ-off boundary"
+        );
+        assert!(
+            self.has_interruptible_user_return_mode(),
+            "raw user entry requires an interruptible PLV3 register image"
+        );
         unsafe { enter_user(self) };
 
         let estat = estat::read();
@@ -77,7 +125,7 @@ impl UserContext {
         let ret = match estat.cause() {
             Trap::Interrupt(_) => {
                 let irq_num: usize = estat.is().trailing_zeros() as usize;
-                crate::trap::dispatch_irq(irq_num);
+                crate::trap::dispatch_irq(irq_num, crate::trap::TrapOrigin::User);
                 ReturnReason::Interrupt
             }
             Trap::Exception(Exception::Syscall) => {
@@ -124,6 +172,7 @@ impl UserContext {
                     esubcode,
                 })
             }
+            Trap::Unknown if is_spurious_interrupt(&estat) => ReturnReason::Interrupt,
             _ => ReturnReason::Unknown,
         };
 
@@ -131,6 +180,8 @@ impl UserContext {
         ret
     }
 }
+
+const _: unsafe fn(&mut UserContext) -> ReturnReason = UserContext::run_unchecked;
 
 impl Deref for UserContext {
     type Target = TrapFrame;

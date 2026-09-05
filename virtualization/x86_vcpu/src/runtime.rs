@@ -281,6 +281,14 @@ impl<H: X86HostOps> X86Vcpu<H> {
         dispatch_vcpu!(self, inject_interrupt_with_trigger, vector, level_triggered)
     }
 
+    /// Returns whether the selected backend owns an event awaiting guest injection.
+    pub fn has_pending_event(&self) -> bool {
+        match &self.inner {
+            X86VcpuInner::Vmx(vcpu) => vcpu.has_pending_event(),
+            X86VcpuInner::Svm(vcpu) => vcpu.has_pending_event(),
+        }
+    }
+
     /// Handle a guest local-APIC end-of-interrupt notification.
     pub fn handle_eoi(&mut self) -> Option<u8> {
         dispatch_vcpu!(self, handle_eoi)

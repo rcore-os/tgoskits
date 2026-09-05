@@ -40,6 +40,7 @@ pub mod __priv {
     };
 
     /// Calculates one symbol's offset from the template prefix.
+    #[inline(always)]
     pub fn symbol_offset(symbol_address: usize) -> usize {
         symbol_address
             .checked_sub(crate::template_base())
@@ -47,6 +48,7 @@ pub mod __priv {
     }
 
     /// Calculates a symbol pointer covered by an explicit CPU pin.
+    #[inline(always)]
     pub fn current_symbol_ptr<T>(pin: &crate::CpuPin<'_>, offset: usize) -> core::ptr::NonNull<T> {
         // SAFETY: macro-generated offsets were validated before layout
         // publication and CpuPin carries an initialized permanent area.

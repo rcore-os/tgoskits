@@ -73,7 +73,12 @@ fn concurrent_blocked() {
 
     let mut uctx = UserContext::new(0, 0.into(), 0);
     let res = wait_until(|| {
-        if let Some((si, _)) = thr.check_signals(&mut uctx, None) {
+        if let Some((si, _)) = thr.check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        ) {
             assert_eq!(si.signo(), signo);
             true
         } else {
@@ -96,7 +101,14 @@ fn concurrent_check_signals() {
     let first = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
     assert!(thr.send_signal(first.clone()));
 
-    let (si, action) = thr.check_signals(&mut uctx, None).unwrap();
+    let (si, action) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
     assert_eq!(si.signo(), Signo::SIGTERM);
     assert_eq!(action, SignalOSAction::NoFurtherAction);
     assert!(thr.signal_blocked(Signo::SIGTERM));
@@ -113,13 +125,18 @@ fn concurrent_check_signals() {
     assert!(wait_until(|| thr.pending().has(Signo::SIGINT)));
 
     prepare_restore_context(&mut uctx);
-    thr.restore(&mut uctx).unwrap();
+    thr.restore(&mut vm(), &mut uctx).unwrap();
 
     assert!(!thr.signal_blocked(Signo::SIGTERM));
 
     let mut delivered = SignalSet::default();
     assert!(wait_until(|| {
-        if let Some((sig, _)) = thr.check_signals(&mut uctx, None) {
+        if let Some((sig, _)) = thr.check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        ) {
             delivered.add(sig.signo());
         }
         delivered.has(Signo::SIGINT) && delivered.has(Signo::SIGTERM)

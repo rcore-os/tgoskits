@@ -65,7 +65,7 @@ fn namespace_vfs_error(error: axfs_ng_vfs::VfsError) -> ax_net::NetError {
         VfsError::FileTooLarge => NetError::FileTooLarge,
         VfsError::InvalidData => NetError::InvalidData,
         VfsError::InvalidInput => NetError::InvalidInput,
-        VfsError::Interrupted => ax_task::future::Interrupted.into(),
+        VfsError::Interrupted => NetError::Interrupted,
         VfsError::Io => NetError::BackendIo,
         VfsError::IsADirectory => NetError::IsADirectory,
         VfsError::NameTooLong => NetError::NameTooLong,

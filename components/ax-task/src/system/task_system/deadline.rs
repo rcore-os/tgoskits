@@ -1,0 +1,922 @@
+//! Deadline diagnostics, deferred callbacks, and owner timer service.
+
+use super::*;
+use crate::{
+    SchedulerClockEvent,
+    runtime::SchedulerDeadlineUpdate,
+    scheduler_clock_event, scheduler_time_reached,
+    timer::{KernelTimerAction, KernelTimerEntry},
+};
+
+enum OwnerDeadlineTimerPlan {
+    Unchanged,
+    Cancel,
+    Arm(TaskDeadlineArmPlan),
+}
+
+#[derive(Clone, Copy)]
+struct OwnerDeadlineDue {
+    scheduler_now_ns: u64,
+    cbs_expired: bool,
+    zero_lag_reached: bool,
+}
+
+struct OwnerDeadlineReconcile<'a> {
+    core: &'a Arc<ThreadCore>,
+    sched: &'a mut ThreadSchedState,
+    cpu: Pin<&'a mut CpuLocal>,
+    due: OwnerDeadlineDue,
+}
+
+pub(crate) struct KtimerServiceBatch {
+    processed: usize,
+    pending: bool,
+    update: Option<SchedulerDeadlineUpdate>,
+    kernel_timer: Option<KernelTimerExecution>,
+    task_timer: Option<ExpiredTaskDeadline>,
+    completed_timer: Option<KernelTimerEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HardTimerServiceBatch {
+    processed: usize,
+    soft: SoftTimerExpireBatch,
+}
+
+pub(crate) struct KernelTimerCompletionBatch {
+    completed: Option<KernelTimerEntry>,
+    update: Option<SchedulerDeadlineUpdate>,
+}
+
+impl KernelTimerCompletionBatch {
+    pub(crate) const fn update(&self) -> Option<SchedulerDeadlineUpdate> {
+        self.update
+    }
+
+    pub(crate) fn take_completed(&mut self) -> Option<KernelTimerEntry> {
+        self.completed.take()
+    }
+}
+
+impl KtimerServiceBatch {
+    pub(crate) const fn processed(&self) -> usize {
+        self.processed
+    }
+
+    pub(crate) const fn pending(&self) -> bool {
+        self.pending
+    }
+
+    pub(crate) const fn update(&self) -> Option<SchedulerDeadlineUpdate> {
+        self.update
+    }
+
+    pub(crate) fn take_kernel_timer(&mut self) -> Option<KernelTimerExecution> {
+        self.kernel_timer.take()
+    }
+
+    pub(crate) fn take_task_timer(&mut self) -> Option<ExpiredTaskDeadline> {
+        self.task_timer.take()
+    }
+
+    pub(crate) fn take_completed_timer(&mut self) -> Option<KernelTimerEntry> {
+        self.completed_timer.take()
+    }
+}
+
+impl HardTimerServiceBatch {
+    pub(crate) const fn processed(self) -> usize {
+        self.processed
+    }
+
+    pub(crate) const fn soft(self) -> SoftTimerExpireBatch {
+        self.soft
+    }
+}
+
+impl TaskSystem {
+    pub(super) fn publish_deadline_overrun_work(&self, core: Arc<ThreadCore>) {
+        let core_ptr = Arc::into_raw(core);
+        let node = unsafe {
+            // SAFETY: Arc allocations remain pinned, and the strong count
+            // transferred below keeps the embedded node alive until drain.
+            Pin::new_unchecked((&*core_ptr).deadline_callback_node())
+        };
+        let result = self.deferred_deadline_callbacks.publish(
+            node,
+            InboxMessage::deadline_overrun(
+                unsafe {
+                    // SAFETY: the transferred Arc keeps this core alive.
+                    (*core_ptr).id()
+                },
+                core_ptr.expose_provenance(),
+            ),
+        );
+        if result == PublishResult::Published {
+            self.task_work.publish();
+            return;
+        }
+        unsafe {
+            // SAFETY: a coalesced or rejected publication did not consume the
+            // transferred strong count.
+            drop(Arc::from_raw(core_ptr));
+        }
+        if result == PublishResult::WrongKind {
+            task_runtime::fatal_invariant(0x444c_0001, result as usize);
+        }
+    }
+
+    fn task_deadline_error(error: TaskDeadlineError) -> TaskError {
+        match error {
+            TaskDeadlineError::Capacity => TaskError::TimerCapacity,
+            TaskDeadlineError::GenerationExhausted | TaskDeadlineError::KindMismatch => {
+                TaskError::InvalidConfiguration
+            }
+        }
+    }
+
+    fn prepare_owner_deadline_timer(
+        queue: &TaskDeadlineQueue,
+        node: &TaskDeadlineNode,
+        registration: Option<&TaskDeadlineRegistration>,
+        deadline: Option<MonotonicDeadline>,
+        kind: TaskDeadlineKind,
+    ) -> Result<OwnerDeadlineTimerPlan, TaskError> {
+        if registration.is_some_and(|registration| {
+            Some(registration.deadline()) == deadline && registration.kind() == kind
+        }) {
+            return Ok(OwnerDeadlineTimerPlan::Unchanged);
+        }
+        let Some(deadline) = deadline else {
+            return Ok(if registration.is_some() {
+                OwnerDeadlineTimerPlan::Cancel
+            } else {
+                OwnerDeadlineTimerPlan::Unchanged
+            });
+        };
+        queue
+            .prepare_arm(node, deadline, kind)
+            .map(OwnerDeadlineTimerPlan::Arm)
+            .map_err(Self::task_deadline_error)
+    }
+
+    fn commit_owner_deadline_timer(
+        queue: &mut TaskDeadlineQueue,
+        registration: &mut Option<TaskDeadlineRegistration>,
+        plan: OwnerDeadlineTimerPlan,
+    ) {
+        match plan {
+            OwnerDeadlineTimerPlan::Unchanged => {}
+            OwnerDeadlineTimerPlan::Cancel => {
+                if let Some(previous) = registration.take() {
+                    // Expiration may already have moved the entry into the
+                    // safe-point buffer. The registration is terminal either
+                    // way; a later token makes the buffered copy stale.
+                    let _removed = queue.cancel(&previous);
+                }
+            }
+            OwnerDeadlineTimerPlan::Arm(plan) => {
+                *registration = Some(queue.commit_arm(plan));
+            }
+        }
+    }
+
+    pub(super) fn refresh_owner_deadline_timers_locked(
+        &self,
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        mut cpu: Pin<&mut CpuLocal>,
+    ) {
+        let remote = Arc::clone(cpu.remote());
+        let mut transaction = OwnerRqTxn::begin(self, &remote);
+        let scheduler_now_ns = transaction.clock().wall().as_nanos();
+        let enqueue = self.refresh_owner_deadline_timers_in_rq(
+            core,
+            sched,
+            cpu.as_mut(),
+            scheduler_now_ns,
+            &mut transaction,
+        );
+        transaction.commit();
+        if let Some(preempts_current) = enqueue {
+            self.finish_owner_enqueue(
+                cpu,
+                EnqueueReason::Replenished,
+                preempts_current.then_some(RescheduleKind::Immediate),
+                false,
+                None,
+                None,
+            );
+        }
+    }
+
+    pub(super) fn refresh_owner_deadline_timers_in_rq(
+        &self,
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        mut cpu: Pin<&mut CpuLocal>,
+        scheduler_now_ns: u64,
+        run_queue: &mut OwnerRqTxn<'_>,
+    ) -> Option<bool> {
+        let owner = cpu.owner();
+        if sched.deadline.bandwidth.reservation_owner() != Some(owner)
+            && sched.deadline.cbs_timer.is_none()
+            && sched.deadline.zero_lag_timer.is_none()
+        {
+            // Linux keeps CBS and inactive timers in the Deadline class. A
+            // non-DL schedule-out or enqueue has no Deadline timer state to
+            // refresh; retained registrations still pass through so their
+            // old owner can cancel them before releasing rq ownership.
+            return None;
+        }
+        let monotonic_now = task_runtime::monotonic_now();
+        let mut owner_enqueue = None;
+
+        loop {
+            let owns_bandwidth = sched.deadline.bandwidth.reservation_owner() == Some(owner);
+            let owner_entity = if let Some(active) = core.sched().active_option(sched) {
+                active.base_entity().clone()
+            } else {
+                run_queue
+                    .base_scheduling_entity(core.id())
+                    .unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x444c_1101, core.id().as_u64() as usize)
+                    })
+            };
+            let cbs_scheduler_deadline = owns_bandwidth
+                .then_some(())
+                .and(owner_entity.deadline())
+                .and_then(DeadlineEntity::next_scheduler_event_ns);
+            let zero_lag_scheduler_deadline = owns_bandwidth
+                .then(|| sched.deadline.bandwidth.zero_lag())
+                .flatten()
+                .map(SchedulerTimestamp::as_nanos);
+            let cbs_event = cbs_scheduler_deadline
+                .map(|deadline| scheduler_clock_event(scheduler_now_ns, monotonic_now, deadline));
+            let zero_lag_event = zero_lag_scheduler_deadline
+                .map(|deadline| scheduler_clock_event(scheduler_now_ns, monotonic_now, deadline));
+            let cbs_due = matches!(cbs_event, Some(SchedulerClockEvent::Due));
+            let zero_lag_due = matches!(zero_lag_event, Some(SchedulerClockEvent::Due));
+            let cbs_deadline = match cbs_event {
+                Some(SchedulerClockEvent::Future(deadline)) => Some(deadline),
+                Some(SchedulerClockEvent::Due) | None => None,
+            };
+            let zero_lag_deadline = match zero_lag_event {
+                Some(SchedulerClockEvent::Future(deadline)) => Some(deadline),
+                Some(SchedulerClockEvent::Due) | None => None,
+            };
+            {
+                let mut deadline_base = cpu
+                    .remote()
+                    .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+                let cbs_plan = Self::prepare_owner_deadline_timer(
+                    &deadline_base.queue,
+                    core.deadline_cbs_timer(),
+                    sched.deadline.cbs_timer.as_ref(),
+                    cbs_deadline,
+                    TaskDeadlineKind::DeadlineCbs,
+                )
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x444c_0006, core.id().as_u64() as usize)
+                });
+                let zero_lag_plan = Self::prepare_owner_deadline_timer(
+                    &deadline_base.queue,
+                    core.deadline_zero_lag_timer(),
+                    sched.deadline.zero_lag_timer.as_ref(),
+                    zero_lag_deadline,
+                    TaskDeadlineKind::DeadlineZeroLag,
+                )
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x444c_0007, core.id().as_u64() as usize)
+                });
+                Self::commit_owner_deadline_timer(
+                    &mut deadline_base.queue,
+                    &mut sched.deadline.cbs_timer,
+                    cbs_plan,
+                );
+                Self::commit_owner_deadline_timer(
+                    &mut deadline_base.queue,
+                    &mut sched.deadline.zero_lag_timer,
+                    zero_lag_plan,
+                );
+            }
+
+            if !cbs_due && !zero_lag_due {
+                return owner_enqueue;
+            }
+            let reconcile = OwnerDeadlineReconcile {
+                core,
+                sched,
+                cpu: cpu.as_mut(),
+                due: OwnerDeadlineDue {
+                    scheduler_now_ns,
+                    cbs_expired: cbs_due,
+                    zero_lag_reached: zero_lag_due,
+                },
+            };
+            if let Some(preempts_current) =
+                self.reconcile_due_owner_deadline_locked(reconcile, run_queue)
+            {
+                owner_enqueue = Some(owner_enqueue.unwrap_or(false) || preempts_current);
+            }
+        }
+    }
+
+    fn reconcile_due_owner_deadline_locked(
+        &self,
+        reconcile: OwnerDeadlineReconcile<'_>,
+        run_queue: &mut OwnerRqTxn<'_>,
+    ) -> Option<bool> {
+        let OwnerDeadlineReconcile {
+            core,
+            sched,
+            cpu,
+            due,
+        } = reconcile;
+        let mut replenish = false;
+
+        if due.cbs_expired {
+            let rq_throttled = run_queue.is_deadline_throttled_member(core.id());
+            let base_entity = if let Some(active) = core.sched().active_option(sched) {
+                active.base_entity().clone()
+            } else {
+                run_queue
+                    .base_scheduling_entity(core.id())
+                    .unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x444c_1102, core.id().as_u64() as usize)
+                    })
+            };
+            let Some(deadline) = base_entity.deadline() else {
+                task_runtime::fatal_invariant(0x444c_1103, core.id().as_u64() as usize);
+            };
+            let replenish_due = deadline.is_throttled()
+                && deadline
+                    .next_scheduler_event_ns()
+                    .is_some_and(|event| scheduler_time_reached(due.scheduler_now_ns, event));
+            if replenish_due {
+                deadline.replenish(due.scheduler_now_ns);
+                let updated = SchedulingEntity::Deadline(deadline.clone());
+                if let Some(mut active) = core.sched().active_option(sched) {
+                    active.replace_base_entity(updated);
+                } else {
+                    let updated_in_rq = if rq_throttled && !deadline.is_throttled() {
+                        replenish = true;
+                        run_queue
+                            .replenish_throttled_deadline(core.id(), updated.clone())
+                            .is_ok()
+                    } else {
+                        run_queue.update_base_deadline_entity(core.id(), updated.clone())
+                    };
+                    if !updated_in_rq {
+                        task_runtime::fatal_invariant(0x444c_1104, core.id().as_u64() as usize);
+                    }
+                    if core.effective_policy_snapshot() == sched.policy.base {
+                        core.publish_effective_schedule(sched.policy.base, &updated);
+                    }
+                }
+            }
+        }
+
+        if due.zero_lag_reached
+            && sched.deadline.bandwidth.zero_lag().is_some_and(|zero_lag| {
+                zero_lag.is_reached_by(SchedulerTimestamp::from_nanos(due.scheduler_now_ns))
+            })
+        {
+            run_queue.deactivate_deadline_bandwidth(sched.deadline.bandwidth.reservation_scaled());
+            sched.deadline.bandwidth.deactivate();
+        }
+
+        if replenish {
+            if sched.lifecycle.state() != ThreadState::Running
+                || sched.placement.queued_cpu() != Some(cpu.owner())
+                || sched.placement.on_cpu().is_some()
+            {
+                task_runtime::fatal_invariant(0x444c_1108, core.id().as_u64() as usize);
+            }
+            let entity = run_queue.scheduling_entity(core.id()).unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x444c_1105, core.id().as_u64() as usize)
+            });
+            let preempts_current = run_queue
+                .wakeup_preempt(core.id(), sched.policy.base, &entity, 0)
+                .requests_reschedule();
+            core.set_wake_cpu_hint(cpu.owner());
+            return Some(preempts_current);
+        }
+        None
+    }
+
+    pub(super) fn cancel_owner_deadline_timers_locked(
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        remote: &CpuRemote,
+    ) {
+        let mut deadline_base =
+            remote.lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+        let cbs_plan = Self::prepare_owner_deadline_timer(
+            &deadline_base.queue,
+            core.deadline_cbs_timer(),
+            sched.deadline.cbs_timer.as_ref(),
+            None,
+            TaskDeadlineKind::DeadlineCbs,
+        )
+        .unwrap_or_else(|_| {
+            task_runtime::fatal_invariant(0x444c_0008, core.id().as_u64() as usize)
+        });
+        let zero_lag_plan = Self::prepare_owner_deadline_timer(
+            &deadline_base.queue,
+            core.deadline_zero_lag_timer(),
+            sched.deadline.zero_lag_timer.as_ref(),
+            None,
+            TaskDeadlineKind::DeadlineZeroLag,
+        )
+        .unwrap_or_else(|_| {
+            task_runtime::fatal_invariant(0x444c_0009, core.id().as_u64() as usize)
+        });
+        Self::commit_owner_deadline_timer(
+            &mut deadline_base.queue,
+            &mut sched.deadline.cbs_timer,
+            cbs_plan,
+        );
+        Self::commit_owner_deadline_timer(
+            &mut deadline_base.queue,
+            &mut sched.deadline.zero_lag_timer,
+            zero_lag_plan,
+        );
+    }
+
+    fn registration_matches(
+        registration: &TaskDeadlineRegistration,
+        event: ExpiredTaskDeadline,
+    ) -> bool {
+        event.thread() == Some(registration.thread())
+            && event.token() == registration.token()
+            && event.deadline() == Some(registration.deadline())
+            && event.kind() == Some(registration.kind())
+    }
+
+    fn take_expired_registration(
+        registration: &mut Option<TaskDeadlineRegistration>,
+        event: ExpiredTaskDeadline,
+    ) -> bool {
+        if registration
+            .as_ref()
+            .is_some_and(|registration| Self::registration_matches(registration, event))
+        {
+            registration.take();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns Deadline budget and PI rescue state for diagnostics and ABI glue.
+    pub fn deadline_runtime(&self, thread: ThreadId) -> Result<DeadlineRuntimeSnapshot, TaskError> {
+        let core = {
+            let state = self.state.lock();
+            Arc::clone(&state.thread_record(thread)?.core)
+        };
+        let sched = core.sched().lock();
+        let pi_boosted = sched.pi.deadline_donor.is_some();
+        let donor = sched.pi.deadline_donor;
+        let local_entity = core.sched().active_option(&sched).map(|active| {
+            if pi_boosted {
+                active.entity().clone()
+            } else {
+                active.base_entity().clone()
+            }
+        });
+        let effective_entity = if let Some(entity) = local_entity {
+            entity
+        } else {
+            let owner = sched
+                .placement
+                .assigned_cpu()
+                .ok_or(TaskError::InvalidConfiguration)?;
+            let remote = self
+                .cpu_remotes
+                .get(owner.as_usize())
+                .ok_or(TaskError::InvalidConfiguration)?;
+            // Keep the task-control lock across the owner-rq observation. This
+            // is the read-side equivalent of Linux `task_rq_lock()`: policy,
+            // placement, and CBS state come from one ordered transaction.
+            let transaction = OwnerRqTxn::begin(self, remote);
+            let entity = if pi_boosted {
+                transaction.scheduling_entity(thread)
+            } else {
+                transaction.base_scheduling_entity(thread)
+            };
+            let Some(entity) = entity else {
+                transaction.commit();
+                return Err(TaskError::InvalidConfiguration);
+            };
+            transaction.commit();
+            entity
+        };
+        let deadline = effective_entity
+            .deadline()
+            .ok_or(TaskError::InvalidConfiguration)?;
+        Ok(DeadlineRuntimeSnapshot {
+            remaining_runtime_ns: deadline.remaining_runtime_ns(),
+            overruns: deadline.overruns(),
+            pi_boosted,
+            donor,
+        })
+    }
+
+    /// Returns the thread's GRUB activity, zero-lag, and runqueue ownership.
+    pub fn deadline_activity(
+        &self,
+        thread: ThreadId,
+    ) -> Result<DeadlineActivitySnapshot, TaskError> {
+        let state = self.state.lock();
+        let record = state.thread_record(thread)?;
+        let sched = record.sched.lock();
+        if !matches!(sched.policy.base, SchedulePolicy::Deadline(_)) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        Ok(DeadlineActivitySnapshot {
+            activity: sched.deadline.bandwidth.activity(),
+            bandwidth_cpu: sched.deadline.bandwidth.reservation_owner(),
+            zero_lag_ns: sched
+                .deadline
+                .bandwidth
+                .zero_lag()
+                .map(SchedulerTimestamp::as_nanos),
+        })
+    }
+
+    /// Runs a bounded, allocation-free batch of deferred Deadline callbacks.
+    ///
+    /// Timer IRQ only publishes pending state. This task-context operation drops
+    /// the registry lock before invoking any OS extension callback. Callback
+    /// collection retains one existing thread-core reference at a time instead
+    /// of allocating temporary storage in a scheduler-adjacent safe point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskError::UnsafeContext`] without consuming an event in hard
+    /// IRQ context, and [`TaskError::ThreadBusy`] when another task-work
+    /// consumer is already active.
+    pub fn dispatch_deadline_overruns(&self, limit: usize) -> Result<usize, TaskError> {
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
+        let _consumer = self.task_work.try_claim_consumer()?;
+        self.dispatch_deadline_overruns_inner(limit)
+            .map(|(_, dispatched)| dispatched)
+    }
+
+    pub(super) fn dispatch_deadline_overruns_inner(
+        &self,
+        limit: usize,
+    ) -> Result<(usize, usize), TaskError> {
+        const MAX_DISPATCH_BATCH: usize = 64;
+
+        let mut messages = [InboxMessage::EMPTY; MAX_DISPATCH_BATCH];
+        let batch = self
+            .deferred_deadline_callbacks
+            .drain(limit.min(MAX_DISPATCH_BATCH), &mut messages);
+        let mut dispatched = 0;
+        for message in messages.iter().take(batch.drained()) {
+            if message.operation() != InboxOperation::DeadlineOverrun || message.payload() == 0 {
+                task_runtime::fatal_invariant(0x444c_0002, message.payload());
+            }
+            let core = unsafe {
+                // SAFETY: publication transferred exactly one Arc strong count
+                // whose pointer is carried by this detached message.
+                Arc::from_raw(ptr::with_exposed_provenance::<ThreadCore>(
+                    message.payload(),
+                ))
+            };
+            if core.id() != message.thread_id() {
+                task_runtime::fatal_invariant(0x444c_0003, message.payload());
+            }
+            let claim = self
+                .state
+                .lock()
+                .claim_pending_deadline_overrun(core.id())?;
+            match claim {
+                DeadlineCallbackClaim::NoCallback { has_more } => {
+                    if has_more {
+                        self.publish_deadline_overrun_work(Arc::clone(&core));
+                    }
+                }
+                DeadlineCallbackClaim::Callback { extension, thread } => {
+                    // SAFETY: the registry's callback claim prevents reaping
+                    // while the callback runs, and every scheduler lock was
+                    // released above.
+                    unsafe {
+                        (extension.ops().on_deadline_overrun)(extension.data(), thread);
+                    }
+                    if self.state.lock().finish_deadline_callback(thread)? {
+                        self.publish_deadline_overrun_work(Arc::clone(&core));
+                    }
+                    dispatched += 1;
+                }
+            }
+        }
+        if batch.pending() {
+            self.task_work.publish();
+        }
+        Ok((batch.drained(), dispatched))
+    }
+
+    /// Selects one PREEMPT_RT `ktimers/%u` task-context callback.
+    ///
+    /// Hard IRQ has already moved a bounded set of soft expirations into the
+    /// per-CPU deadline base. The worker repeats this operation up to its batch
+    /// limit, running each callback outside the base lock, before publishing a
+    /// remaining-work generation and yielding.
+    pub(crate) fn service_ktimer_work(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+    ) -> Result<KtimerServiceBatch, TaskError> {
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
+
+        let monotonic_now = task_runtime::monotonic_now();
+        let budget = cpu.batch_limit();
+        let mut kernel_timer = None;
+        let mut task_timer = None;
+        let mut completed_timer = None;
+        let (claim, pending) = cpu
+            .as_mut()
+            .claim_ktimer_service_step(monotonic_now, budget);
+        match claim {
+            Some(KtimerServiceClaim::Kernel(execution)) => {
+                kernel_timer = Some(execution);
+            }
+            Some(KtimerServiceClaim::Task(event)) => {
+                task_timer = Some(event);
+            }
+            Some(KtimerServiceClaim::Reap(entry)) => {
+                completed_timer = Some(entry);
+            }
+            None => {}
+        }
+        // A claimed callback may return a new deadline for the same stable
+        // entry. Keep the expired hardware edge authoritative until the
+        // callback completes, then publish one combined complete/rearm update.
+        // This matches hrtimer restart semantics and avoids a cancel/arm pair
+        // for every periodic callback.
+        let update = if kernel_timer.is_some() || task_timer.is_some() {
+            None
+        } else {
+            cpu.as_mut().next_scheduler_deadline_update_if_changed(
+                SchedulerDeadlineDerivationSource::KtimerService,
+            )?
+        };
+
+        Ok(KtimerServiceBatch {
+            processed: usize::from(
+                kernel_timer.is_some() || task_timer.is_some() || completed_timer.is_some(),
+            ),
+            pending,
+            update,
+            kernel_timer,
+            task_timer,
+            completed_timer,
+        })
+    }
+
+    pub(crate) fn complete_task_timer_execution(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        event: ExpiredTaskDeadline,
+        handle: Option<&ThreadHandle>,
+    ) -> Result<(Option<ThreadWakeHandle>, Option<SchedulerDeadlineUpdate>), TaskError> {
+        let mut deadline_base = cpu
+            .remote()
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
+        let non_timer = deadline_base.non_timer;
+        let cancel_requested = deadline_base
+            .complete_claimed_task_expiration(event)
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5444_0007, event.token().generation() as usize)
+            });
+        let completed = !cancel_requested
+            && handle
+                .is_some_and(|handle| handle.core.complete_sleep_timer(event.token().generation()));
+        let update = CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
+            &mut deadline_base,
+            non_timer,
+        )?;
+        let wake = completed
+            .then(|| handle.expect("a completed task timer retains its handle"))
+            .filter(|handle| {
+                event.kind().is_some_and(|kind| {
+                    kind.park_generation() == Some(handle.core.park_generation())
+                })
+            })
+            .map(ThreadHandle::wake_handle);
+        Ok((wake, update))
+    }
+
+    pub(crate) fn complete_kernel_timer_execution(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        execution: KernelTimerExecution,
+        action: KernelTimerAction,
+    ) -> Result<KernelTimerCompletionBatch, TaskError> {
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
+        let mut deadline_base = cpu
+            .remote()
+            .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
+        let non_timer = deadline_base.non_timer;
+        let completed = deadline_base
+            .kernel_timers
+            .complete_soft_execution(execution, action);
+        let update = CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
+            &mut deadline_base,
+            non_timer,
+        )?;
+        Ok(KernelTimerCompletionBatch { completed, update })
+    }
+
+    pub(super) fn service_expired_park_deadline(
+        &self,
+        event: ExpiredTaskDeadline,
+    ) -> Result<(), TaskError> {
+        let Some(thread) = event.thread() else {
+            return Ok(());
+        };
+        let handle = match self.thread_handle(thread) {
+            Ok(handle) => handle,
+            Err(TaskError::StaleThreadId) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let completed = handle.core.complete_sleep_timer(event.token().generation());
+        let park_matches = event
+            .kind()
+            .is_some_and(|kind| kind.park_generation() == Some(handle.core.park_generation()));
+        if completed && park_matches {
+            let _wake_result = handle.wake_handle().wake();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn service_expired_scheduler_deadline(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        event: ExpiredTaskDeadline,
+    ) -> Result<(), TaskError> {
+        let Some(thread) = event.thread() else {
+            return Ok(());
+        };
+        // Scheduler hard timers must not enter the task-only global registry.
+        // The owner rq retains every admitted Deadline core until both timers
+        // are cancelled and the reservation is detached, matching Linux's
+        // sched_dl_entity-embedded hrtimer lifetime.
+        let Some(core) = cpu
+            .remote()
+            .lock_run_queue(RunQueueGuardSource::DeadlineAccounting)
+            .deadline_member(thread)
+        else {
+            return Ok(());
+        };
+        match event.kind() {
+            Some(TaskDeadlineKind::DeadlineCbs) => {
+                self.service_expired_deadline_cbs(cpu, core, event)
+            }
+            Some(TaskDeadlineKind::DeadlineZeroLag) => {
+                self.service_expired_deadline_zero_lag(cpu, core, event)
+            }
+            Some(TaskDeadlineKind::ParkTimeout { .. }) | None => Ok(()),
+        }
+    }
+
+    /// Runs every hard timer due at this clock-event sample.
+    ///
+    /// Linux drains the hard hrtimer queue in `hrtimer_interrupt()` and never
+    /// transfers a remainder to task context. Callbacks may mutate or rearm
+    /// their stable entries after the deadline-base lock is released; the
+    /// complete queue is drained before one combined expires-next update.
+    pub(crate) fn service_due_hard_timers(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        now: MonotonicInstant,
+        budget: usize,
+    ) -> Result<HardTimerServiceBatch, TaskError> {
+        let mut processed = 0;
+        loop {
+            let claim = match cpu.as_mut().claim_due_hard_timer_step(now, budget)? {
+                HardTimerServiceStep::Claim(claim) => claim,
+                HardTimerServiceStep::Complete { soft } => {
+                    return Ok(HardTimerServiceBatch { processed, soft });
+                }
+            };
+            match claim {
+                HardTimerServiceClaim::Scheduler(event) => {
+                    self.service_expired_scheduler_deadline(cpu.as_mut(), event)?;
+                }
+                HardTimerServiceClaim::Park(thread) => {
+                    if let Some(thread) = thread {
+                        let _wake_result =
+                            self.wake_thread_from_current_cpu(&thread, WakeIntent::Normal);
+                    }
+                }
+                HardTimerServiceClaim::Kernel(mut execution) => {
+                    let action = unsafe {
+                        // SAFETY: this service runs with the owner CPU's IRQ
+                        // baton. The queue lock was released before returning
+                        // the explicitly hard-safe callback capability.
+                        execution.invoke_hard()
+                    };
+                    cpu.as_mut()
+                        .complete_hard_kernel_timer_execution(execution, action);
+                }
+            }
+            processed += 1;
+        }
+    }
+
+    fn service_expired_deadline_cbs(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+        event: ExpiredTaskDeadline,
+    ) -> Result<(), TaskError> {
+        let owner = cpu.owner();
+        let mut sched = core.sched().lock();
+        if !Self::take_expired_registration(&mut sched.deadline.cbs_timer, event) {
+            return Ok(());
+        }
+        if sched.deadline.bandwidth.reservation_owner() != Some(owner) {
+            return Err(TaskError::CpuOwnerMismatch {
+                expected: sched
+                    .deadline
+                    .bandwidth
+                    .reservation_owner()
+                    .map_or(u32::MAX, CpuId::as_u32),
+                actual: owner.as_u32(),
+            });
+        }
+        self.refresh_owner_deadline_timers_locked(&core, &mut sched, cpu);
+        Ok(())
+    }
+
+    fn service_expired_deadline_zero_lag(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+        event: ExpiredTaskDeadline,
+    ) -> Result<(), TaskError> {
+        let owner = cpu.owner();
+        let mut sched = core.sched().lock();
+        if !Self::take_expired_registration(&mut sched.deadline.zero_lag_timer, event) {
+            return Ok(());
+        }
+        if sched.deadline.bandwidth.reservation_owner() != Some(owner) {
+            return Err(TaskError::CpuOwnerMismatch {
+                expected: sched
+                    .deadline
+                    .bandwidth
+                    .reservation_owner()
+                    .map_or(u32::MAX, CpuId::as_u32),
+                actual: owner.as_u32(),
+            });
+        }
+        self.refresh_owner_deadline_timers_locked(&core, &mut sched, cpu);
+        Ok(())
+    }
+
+    pub(super) fn program_local_timer(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        source: SchedulerDeadlineDerivationSource,
+    ) -> Result<(), TaskError> {
+        let rq_observation = cpu.scheduler_deadline_rq_observation();
+        self.program_local_timer_from_rq_observation(cpu.as_mut(), rq_observation, source)
+    }
+
+    pub(super) fn program_local_timer_from_rq_observation(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        rq_observation: SchedulerDeadlineRqObservation,
+        source: SchedulerDeadlineDerivationSource,
+    ) -> Result<(), TaskError> {
+        let runtime_deadline = cpu
+            .as_mut()
+            .next_scheduler_runtime_deadline_update(rq_observation);
+        if !cpu
+            .as_ref()
+            .get_ref()
+            .can_reuse_scheduler_deadline_for_rq_observation(rq_observation)
+            && let Some(update) = cpu
+                .as_mut()
+                .next_scheduler_deadline_update_if_changed_from_rq_observation(
+                    rq_observation,
+                    source,
+                )?
+        {
+            task_runtime::publish_scheduler_deadline(update);
+        }
+        if let Some(runtime_deadline) = runtime_deadline {
+            task_runtime::publish_scheduler_runtime_deadline(runtime_deadline);
+        }
+        Ok(())
+    }
+}

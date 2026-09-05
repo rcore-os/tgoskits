@@ -42,8 +42,9 @@ and
 and pids implementation. It is retained as a behavioral reference, but it is
 not merged or cherry-picked because it replaces the current cgroup crate and
 pulls `axfs-ng-vfs` and `ax_errno` into the reusable domain layer. The chosen
-approach extends the current `CgroupNode` and `CgroupProvider` boundaries and
-keeps VFS text rendering and Linux errno conversion in StarryOS kernel glue.
+approach extends the current `CgroupNode` and process-owned
+`ProcessMembership` boundaries and keeps VFS text rendering and Linux errno
+conversion in StarryOS kernel glue.
 
 Open draft PR [#1379](https://github.com/rcore-os/tgoskits/pull/1379) has
 partial surface overlap because it also contains a pids controller among five
@@ -67,19 +68,31 @@ The root owns accounting state but does not expose `pids.*` files; those files
 exist only in non-root cgroups whose parent enabled pids in
 `cgroup.subtree_control`.
 
-`MembershipState` is the serialization boundary for task lifecycle changes. It
-owns pending task reservations and the committed task-to-cgroup mapping. A
-fork guard charges the selected cgroup path before the child is runnable and
-either commits the mapping or releases every charge on drop. Ordinary process
-and thread clones resolve the owning process's current cgroup while holding the
-membership lock. `clone3(CLONE_INTO_CGROUP)` instead reserves a process child
-directly in the validated target cgroup. A task exit
-removes exactly one committed mapping before uncharging its path. Process
-migration enumerates all committed TIDs for the process from the same ledger,
-moves their mappings as one membership transaction, charges the target-only
-path without checking limits, and releases the source-only path after
-publication. A pending reservation owned by that process makes migration
-return busy, so migration cannot split a thread group across two cgroups.
+Each StarryOS process owns an authoritative `ProcessMembership` behind its
+process transaction mutex. That lock serializes current-cgroup selection,
+migration, task exit, and de-thread rename without requiring the reusable
+cgroup layer to call back through a PID registry. `MembershipState` is the
+non-sleeping task-ledger boundary below that ownership lock. It owns pending
+task reservations and the committed task-to-cgroup mapping, but never invokes
+VFS, scheduling, PID, or process callbacks while locked.
+
+A fork guard charges the selected cgroup path before the child is runnable.
+Its state transition is deliberately three-stage: prepared reservations are
+not visible; `publish` installs the task ledger and process membership before
+PID visibility; final `commit` occurs only after the staged scheduler task can
+no longer fail. Dropping either a prepared or published guard releases every
+charge and removes every partially published record. Ordinary process and
+thread clones select the owning process's cgroup through its transaction lock.
+`clone3(CLONE_INTO_CGROUP)` instead reserves a process child directly in the
+validated target cgroup.
+
+A task exit removes exactly one committed mapping before uncharging its path.
+Process migration, while holding the same process transaction, enumerates all
+committed TIDs for the process from the ledger, moves their mappings as one
+operation, charges the target-only path without checking limits, and releases
+the source-only path after publication. A pending reservation owned by that
+process makes migration return busy, so migration cannot split a thread group
+across two cgroups.
 
 The per-node pids counter uses compare-and-exchange for limit-checked fork
 charges. The membership lock orders multi-node lifecycle operations and
@@ -89,10 +102,12 @@ being updated.
 
 ## Interfaces and errors
 
-`CgroupProvider` supplies the process's authoritative cgroup pointer, updates
-that pointer during migration, and reports zombie state. It does not enumerate
-threads: provider visibility is not the reservation commit boundary, so the
-owner-aware committed ledger is the authoritative task set for migration.
+`ProcessMembership` supplies the process's authoritative cgroup pointer and is
+updated only under the process transaction mutex. The committed ledger remains
+the authoritative task set for migration; the process object supplies
+lifecycle serialization rather than a callback interface. This lock ordering
+is one-way: process transaction mutex, then cgroup ledger lock, then node-local
+locks. The ledger never acquires a process mutex or resolves a PID.
 
 The domain API distinguishes a process child from a thread child. Both reserve
 a pids task charge, while only a process child is added to `cgroup.procs`.
@@ -116,7 +131,7 @@ existing entry points:
 | `clone` | `CloneArgs::do_clone` reserves one pids charge before publishing the TID and returns `EAGAIN` on a hierarchical limit, matching [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html) and Linux [`pids_can_fork()`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c#L273-L284). A `CLONE_PARENT_SETTID` pointer is written only after the reservation succeeds, so a rejected clone has no parent-TID side effect. |
 | `clone3` | Uses the same `CloneArgs::do_clone` path after existing ABI validation. Ordinary clones inherit through the owner-aware path. With `CLONE_INTO_CGROUP`, the process child is reserved and charged directly in the requested target; its `ProcessData.cgroup`, cgroup-namespace root, committed task ledger, and pids charge all derive from that same selected cgroup. `CLONE_INTO_CGROUP | CLONE_THREAD` and a flag/target mismatch return `EINVAL`. A target limit failure returns `EAGAIN` without publishing a child or writing `CLONE_PARENT_SETTID`. |
 | `fork` | The architecture wrapper uses the clone path with `SIGCHLD`; the pids rejection is therefore `EAGAIN`, matching [`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html). |
-| `vfork` | The architecture wrapper uses the clone path with `CLONE_VFORK | CLONE_VM`; the charge is committed before publication and before the parent waits, matching [`vfork(2)`](https://man7.org/linux/man-pages/man2/vfork.2.html). |
+| `vfork` | The architecture wrapper uses the clone path with `CLONE_VFORK | CLONE_VM`; the pids reservation is established before PID and task publication, then committed before scheduler activation and before the parent waits, matching [`vfork(2)`](https://man7.org/linux/man-pages/man2/vfork.2.html). |
 | `execve` | Successful de-threading renames the surviving task ledger entry without changing the charge; executable loading, argument handling, and errno ordering are unchanged. See [`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html). |
 | `execveat` | Shares the same `do_execve` de-thread path as `execve`; only the internal task identity mapping is updated. See [`execveat(2)`](https://man7.org/linux/man-pages/man2/execveat.2.html). |
 | `exit` | `do_exit` removes exactly one task charge after thread-group bookkeeping; repeated teardown is idempotent. See [`_exit(2)`](https://man7.org/linux/man-pages/man2/_exit.2.html). |
@@ -133,8 +148,9 @@ and read-back results.
 ## Validation evidence
 
 Host tests cover parse and read-back behavior, hierarchical charges, CAS limit
-races, peak updates after checked and unchecked charges, a stable peak after
-uncharge, rollback, thread accounting, idempotent exit, and migration above a
+races, peak updates after checked and unchecked charges, stable peak values
+after uncharge and migration, pre-publication and post-publication rollback,
+thread accounting, idempotent exit, de-thread rename, and migration above a
 limit. The Starry QEMU system test performs the user-visible sequence of
 enabling pids, migration, `pids.max` update, successful first fork, failed
 second fork with `EAGAIN`, a rejected raw `clone(CLONE_PARENT_SETTID)`,
@@ -153,26 +169,29 @@ The initial implementation received a four-architecture focused QEMU run on
 red/green `CLONE_PARENT_SETTID` ordering result, but it does not replace
 validation of later membership-ledger or clone3 target-selection repairs.
 
-The `pids.peak` increment was rebased and validated on `origin/dev` at
-`35aaf4003137575375bb2c4ef481a718c86f7286` on 2026-08-18
-(Asia/Shanghai):
+The current repair was validated after merging `origin/dev` at
+`9a505c828896a57456ed8bd3fb8bca70f5f9f94d` on 2026-08-17
+(Asia/Shanghai). The deterministic unit regressions first failed with the
+single-stage/pending-bypass implementations, then passed after the same-node
+migration, final-exit, and published rollback boundaries were restored:
 
 | Gate | Result |
 | --- | --- |
-| `cargo fmt --all -- --check` | passed |
+| `cargo fmt --all` | passed |
 | `git diff --check` | passed |
-| `cargo test --manifest-path components/ax-cgroup/Cargo.toml --all-features` | 26 passed, including ancestor-rejection peak rollback |
-| `cargo xtask clippy --package ax-cgroup` | passed, 1/1 |
-| `cargo xtask clippy --package starry-kernel` | passed, 25/25 feature/configuration checks; the transient AIC8800 firmware EOF passed on an isolated retry |
-| loongarch64 `qemu/system/cgroup-basic` | passed, 1/1; the controller-disabled child still hides `pids.peak` |
-| loongarch64 `qemu/system/cgroup-pids` | passed, 1/1; direct rejection, hierarchical rollback peaks, exit, and migration checks passed |
+| `cargo test -p ax-cgroup` | 15 passed |
+| `cargo xtask clippy --package ax-cgroup` | passed, 2/2 checks |
+| `cargo xtask clippy --package starry-kernel` | passed, 26/26 checks |
+| `cargo check -p starry-kernel` | passed |
+| `cargo test -p starry-kernel --test cgroup_exit_invariant` | passed, 1/1; the exact production invariant helper panics instead of silently leaking a committed charge after irreversible thread retirement |
+| `cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64` | passed, 427/427 kernel cases |
+| loongarch64 `qemu/system/cgroup-basic` | passed, 1/1; successful `CLONE_INTO_CGROUP` observed in the target |
+| loongarch64 `qemu/system/cgroup-pids` | passed, 1/1; target rejection, rollback, event, and parent-TID checks passed |
+| loongarch64 `qemu/system/syscall-test-pipe-syscalls` | passed, 1/1; zero-length I/O, `PIPE_BUF` nonblocking atomicity, shared `O_NONBLOCK`, and partial-progress-on-signal semantics passed |
+| `cargo xtask starry test qemu --arch loongarch64` | passed, `qemu/system` 453/453 and 2/2 top-level cases |
 
-A historical diagnostic loongarch64 grouped-system run also passed both cgroup
-binaries in their real order. It was stopped after the unrelated I/O-heavy
-`test-ext4-inode-unique` and `test-pagecache-cap` cases each reached their
-existing 240-second per-binary budget; it is not recorded as a full-suite pass.
-A direct `starry-kernel` lib-test attempt is currently blocked before test
-execution by pre-existing `pseudofs/proc.rs` fixtures that still initialize
-`TgidNumber`, `TidNumber`, and optional parent identities with raw integers;
-the normal kernel check above succeeds. Existing Cargo and rootfs artifacts
-were reused, and no `cargo clean` was run.
+The full loongarch64 run also covered the merged clone3, getdents64, signal,
+UTS-name, unshare, pipe, and task-lifecycle regressions in their normal grouped
+order. The focused host invariant test exercises the same source file used by
+`do_exit`; the complete QEMU runs cover the compiled retirement call chain.
+Existing Cargo and rootfs artifacts were reused, and no `cargo clean` was run.

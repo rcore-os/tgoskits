@@ -117,8 +117,17 @@ qemu/system/<subcase>/
 
 子测例目录不要再放 `qemu-*.toml`。架构过滤不能依赖子目录下的 runtime config，而应在代码或 CMake 中显式处理。
 
-`system/qemu-*.toml` 的 `test_commands` 使用 grouped runner 风格，扫描
-`/usr/bin/starry-test-suit/*` 并逐个执行。所有子测例通过后打印：
+`system/qemu-*.toml` 的 `test_commands` 统一调用
+`/usr/bin/starry-run-system-tests`。该 runner 稳定排序并扫描
+`/usr/bin/starry-test-suit/*`，为每个 binary 建立独立 PID 和 mount namespace，并重挂载
+绑定该 PID namespace 的 procfs。最小 namespace-init supervisor 等待 binary 主进程并保留
+其退出结果，随后以该结果退出；每个子测例最多运行 120 秒，超时后 outer runner 会杀死
+namespace init，内核通过 PID namespace shutdown 路径清理并回收全部 descendants。后代即使
+调用 `setpgid()` 或 `setsid()` 也不能逃出这个所有权边界。所有子测例
+通过后打印：
+
+这些配置同时声明 `grouped_command_selection = "preserve_all"`，表示单子测例过滤只裁剪
+要构建的 C subcase，不把共享聚合器误当作某个 subcase 的直接命令。
 
 ```text
 STARRY_GROUPED_TESTS_PASSED
@@ -136,12 +145,56 @@ timing 列表。例如：
 
 ```text
 STARRY_SYSTEM_TEST_BEGIN: /usr/bin/starry-test-suit/mytest
-STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/mytest elapsed_s=1
-STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=1
+STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/mytest elapsed_s=0.012
+STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 ```
 
 开始标记用于在超时时定位卡住的 binary；失败时保留该 binary 的原始输出、
 `STARRY_SYSTEM_TEST_FAILED`、退出码和耗时。
+
+### PR #1775 LTP 阶段
+
+`qemu/system/ltp-syscalls` 使用 rootfs 中固定的 Linux Test Project
+`20260529`（上游 commit `3a64d78f58bdceba93ed321e91215fb969a047ed`）。
+该目录不会复制 LTP 测试逻辑：`cases.txt` 中每个 testcase 会生成一个独立 wrapper，
+wrapper 在 guest 内依次确认 `/opt/ltp/Version`、`runtest/syscalls` 的唯一条目和对应
+可执行文件，然后原样运行上游命令并传播退出码；即使 LTP 返回 0，wrapper 也会检查
+输出并拒绝 `TCONF`、`TBROK`、`TFAIL`。因此这些结果及超时都不会被当成通过。
+
+system runner 固定分成两个顺序阶段：先按名称执行剩余的原生 C binary，再执行所有
+`ltp-syscalls-*` wrapper。两个阶段仍对每个 binary 分配独立 PID/mount namespace，日志用
+以下 marker 明确阶段边界；只有全部 binary 返回 0 后才打印
+`STARRY_GROUPED_TESTS_PASSED`：
+
+```text
+STARRY_SYSTEM_PHASE_BEGIN: native-c
+STARRY_SYSTEM_PHASE_END: native-c
+STARRY_SYSTEM_PHASE_BEGIN: ltp-syscalls
+STARRY_SYSTEM_PHASE_END: ltp-syscalls
+```
+
+`scripts/test/ltp-syscalls/probe-cases.txt` 保存从 PR #1775 所触及 C cases 对应到的
+官方 LTP families，包括
+process/namespace/pidfd/ptrace、futex/pipe/poll/epoll/socket、scheduler/affinity/timer/
+membarrier，以及 mmap/mprotect/memfd/perf。更新共同集时，先让候选集在四架构分别完成
+probe 并保存完整日志，再运行：
+
+```bash
+scripts/test/ltp-syscalls/generate-common.sh \
+  scripts/test/ltp-syscalls/probe-cases.txt \
+  test-suit/starryos/qemu/system/ltp-syscalls/cases.txt \
+  x86_64.log aarch64.log riscv64.log loongarch64.log
+```
+
+生成器只保留四份完整 LTP 阶段日志中都出现 `STARRY_SYSTEM_TEST_PASSED`，并且对应
+输出中没有 `TCONF`、`TBROK`、`TFAIL` 的 testcase，再按静态排序冻结 `cases.txt`。
+`qemu/system/ltp-syscalls` 运行目录只保存该最终 manifest 和 wrapper 生成资产。修改候选集、LTP
+版本或镜像内容后必须重新进行四架构 probe，不能依据单一架构或历史 TODO 清单手工放行。
+
+这次接管的边界有意收缩：PR #1775 新增或修改过可执行 C 源码的 Starry cases 从发现
+流程中整项移除，由最终共同集中的官方 LTP 结果承担回归；原 C cases 中 LTP 没有表达的
+自定义断言不再保留，也不再宣称仍被覆盖。ArceOS C 测试仍由 ArceOS 自己的测试入口维护。
+性能基准 `apps/starry/wakeup-latency-bench` 作为独立 Starry app 保留，供后续调优使用。
 
 子测例 CMake 产物应安装到：
 
@@ -344,7 +397,7 @@ success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
 ```
 
-运行器会稳定排序子目录、构建 C subcase，并注入 grouped runner 支持文件。每个命令执行前后都会打印带 `step=当前/总数`、`epoch=`、`status=` 和 `command=` 的标记，例如：
+普通（非 `qemu/system`）grouped case 的运行器会稳定排序子目录、构建 C subcase，并注入 grouped runner 支持文件。每个命令执行前后都会打印带 `step=当前/总数`、`epoch=`、`status=` 和 `command=` 的标记，例如：
 
 ```text
 STARRY_GROUPED_TEST_BEGIN: step=1/2 epoch=... command=/usr/bin/test-a

@@ -15,11 +15,14 @@ use alloc::{
 use core::{
     hash::{Hash, Hasher},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::{Context, Waker},
+    task::Waker,
 };
 
-use ax_task::current;
-use axpoll::{IoEvents, PollSet};
+use axpoll::{
+    ExclusiveConsumer, ExclusiveRegistrationSink, IoEvents, PollRegistrar, SharedObserver,
+    SharedRegistrationSink,
+};
+use axpoll_set::PollSet;
 use bitflags::bitflags;
 use hashbrown::HashMap;
 use linux_raw_sys::general::{EPOLLET, EPOLLEXCLUSIVE, EPOLLONESHOT, epoll_event};
@@ -34,7 +37,7 @@ use crate::{
     StarryError, StarryResult,
     file::{FileLike, get_file_like, signalfd::Signalfd},
     sync::IrqMutex,
-    task::{AsThread, ProcessData},
+    task::{ProcessData, current_user_task},
 };
 
 pub struct EpollEvent {
@@ -177,6 +180,12 @@ struct EpollInterest {
     exclusive: bool,
     in_ready_queue: AtomicBool,
     owner_repoll_pending: AtomicBool,
+    registration: IrqMutex<Option<InterestRegistration>>,
+}
+
+enum InterestRegistration {
+    Shared(PollRegistrar<SharedObserver>),
+    Exclusive(PollRegistrar<ExclusiveConsumer>),
 }
 
 impl EpollInterest {
@@ -191,7 +200,7 @@ impl EpollInterest {
             signalfd_registration_owner: key
                 .get_file()
                 .filter(|file| file.is::<Signalfd>())
-                .map(|_| Arc::downgrade(&current().as_thread().proc_data)),
+                .map(|_| Arc::downgrade(&current_user_task().as_thread().proc_data)),
             key,
             event,
             nested_link,
@@ -200,6 +209,7 @@ impl EpollInterest {
             exclusive: flags.contains(EpollFlags::EXCLUSIVE),
             in_ready_queue: AtomicBool::new(false),
             owner_repoll_pending: AtomicBool::new(false),
+            registration: IrqMutex::new(None),
         }
     }
 
@@ -283,13 +293,9 @@ impl EpollInterest {
         self.signalfd_registration_owner
             .as_ref()
             .is_none_or(|owner| {
-                let current_task = current();
-                let Some(thread) = current_task.try_as_thread() else {
-                    return false;
-                };
-                owner
-                    .upgrade()
-                    .is_some_and(|owner| Arc::ptr_eq(&owner, &thread.proc_data))
+                owner.upgrade().is_some_and(|owner| {
+                    Arc::ptr_eq(&owner, &current_user_task().as_thread().proc_data)
+                })
             })
     }
 
@@ -304,6 +310,22 @@ impl EpollInterest {
     fn take_owner_repoll_request(&self) -> bool {
         self.can_refresh_waker_from_current_process()
             && self.owner_repoll_pending.swap(false, Ordering::AcqRel)
+    }
+
+    fn replace_registration(&self, registration: Option<InterestRegistration>) {
+        let previous = core::mem::replace(&mut *self.registration.lock(), registration);
+        if let Some(mut previous) = previous {
+            previous.clear();
+        }
+    }
+}
+
+impl InterestRegistration {
+    fn clear(&mut self) {
+        match self {
+            Self::Shared(registrar) => registrar.clear(),
+            Self::Exclusive(registrar) => registrar.clear(),
+        }
     }
 }
 
@@ -383,26 +405,47 @@ impl EpollInner {
         !self.ready_queue.lock().is_empty() || self.overflow_ready.load(Ordering::Acquire)
     }
 
-    pub(super) fn register_poll_waiter(&self, context: &Context<'_>) {
-        // Registration happens from epoll wait task context.
-        unsafe { self.poll_ready.register(context.waker(), IoEvents::IN) };
+    pub(super) unsafe fn register_shared_poll_waiter(&self, sink: &mut dyn SharedRegistrationSink) {
+        unsafe { sink.register_shared(&self.poll_ready, IoEvents::IN) };
     }
 
-    fn register_waker_only(self: &Arc<Self>, interest: &Arc<EpollInterest>) {
+    pub(super) unsafe fn register_exclusive_poll_waiter(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+    ) {
+        unsafe { sink.register_exclusive(&self.poll_ready, IoEvents::IN) };
+    }
+
+    fn register_waker_only(
+        self: &Arc<Self>,
+        interest: &Arc<EpollInterest>,
+    ) -> Option<(Arc<dyn FileLike>, Waker)> {
         let Some(file) = interest.key.get_file() else {
-            return;
+            interest.replace_registration(None);
+            return None;
         };
 
         if !interest.is_enabled() {
-            return;
+            interest.replace_registration(None);
+            return None;
         }
 
         let waker = Waker::from(Arc::new(InterestWaker {
             epoll: Arc::downgrade(self),
             interest: Arc::downgrade(interest),
         }));
-        let mut context = Context::from_waker(&waker);
-        file.register(&mut context, register_events(interest.event.events));
+        let events = register_events(interest.event.events);
+        let registration = if interest.is_exclusive() {
+            let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
+            unsafe { file.register_exclusive(&mut registrar, events) };
+            InterestRegistration::Exclusive(registrar)
+        } else {
+            let mut registrar = PollRegistrar::<SharedObserver>::new(&waker);
+            unsafe { file.register_shared(&mut registrar, events) };
+            InterestRegistration::Shared(registrar)
+        };
+        interest.replace_registration(Some(registration));
+        Some((file, waker))
     }
 
     /// Remove an interest while the global topology mutex is held.
@@ -416,15 +459,18 @@ impl EpollInner {
 
     /// Remove a stale snapshot only if it is still the current map entry.
     fn remove_invalid_interest(&self, candidate: &Arc<EpollInterest>) {
-        let _topology = lock_epoll_topology();
-        let should_remove = self
-            .interests
-            .lock()
-            .get(&candidate.key)
-            .is_some_and(|current| Arc::ptr_eq(current, candidate));
-        if should_remove {
-            self.remove_interest_locked(&candidate.key);
-        }
+        let removed = {
+            let _topology = lock_epoll_topology();
+            let should_remove = self
+                .interests
+                .lock()
+                .get(&candidate.key)
+                .is_some_and(|current| Arc::ptr_eq(current, candidate));
+            should_remove
+                .then(|| self.remove_interest_locked(&candidate.key))
+                .flatten()
+        };
+        drop(removed);
     }
 
     fn reserve_ready_capacity(&self, min_capacity: usize) -> StarryResult<()> {
@@ -477,7 +523,7 @@ impl EpollInner {
         for _ in 0..published {
             // Each registered epoll waiter is exclusive. Stop once no waiter
             // remains instead of needlessly walking an empty poll set.
-            if unsafe { self.poll_ready.wake_one(IoEvents::IN) } == 0 {
+            if unsafe { self.poll_ready.wake(IoEvents::IN) } == 0 {
                 break;
             }
         }
@@ -612,7 +658,7 @@ impl EpollInner {
         if result.is_err() {
             self.overflow_ready.store(true, Ordering::Release);
             // Overflow state is published before waking one exclusive waiter.
-            unsafe { self.poll_ready.wake_one(IoEvents::IN) };
+            unsafe { self.poll_ready.wake(IoEvents::IN) };
         }
         result
     }
@@ -634,7 +680,7 @@ impl Epoll {
             return;
         }
 
-        self.inner.register_waker_only(interest);
+        let _ = self.inner.register_waker_only(interest);
     }
 
     fn register_waker_and_recheck(&self, interest: &Arc<EpollInterest>) {
@@ -642,21 +688,9 @@ impl Epoll {
             return;
         }
 
-        let Some(file) = interest.key.get_file() else {
+        let Some((file, waker)) = self.inner.register_waker_only(interest) else {
             return;
         };
-
-        if !interest.is_enabled() {
-            return;
-        }
-
-        let waker = Waker::from(Arc::new(InterestWaker {
-            epoll: Arc::downgrade(&self.inner),
-            interest: Arc::downgrade(interest),
-        }));
-
-        let mut context = Context::from_waker(&waker);
-        file.register(&mut context, register_events(interest.event.events));
 
         if !match_ready_events(file.poll(), interest.event.events).is_empty() {
             waker.wake_by_ref();
@@ -671,7 +705,7 @@ impl Epoll {
                 // A callback consumed outside owner context cannot safely poll
                 // signalfd readiness there. Recheck exactly once in the owner
                 // waiter without turning ordinary EPOLLET waits into LT polls.
-                self.inner.register_waker_only(interest);
+                let _ = self.inner.register_waker_only(interest);
                 self.inner.publish_ready_for_file(interest);
             } else {
                 self.register_waker_only(interest);
@@ -698,10 +732,12 @@ impl Epoll {
         let current = match_ready_events(file.poll(), interest.event.events);
 
         if !current.is_empty() {
+            interest.replace_registration(None);
             waker.wake_by_ref();
         } else {
-            let mut context = Context::from_waker(&waker);
-            file.register(&mut context, register_events(interest.event.events));
+            let Some((file, waker)) = self.inner.register_waker_only(interest) else {
+                return;
+            };
 
             let current = match_ready_events(file.poll(), interest.event.events);
             if !current.is_empty() {
@@ -845,13 +881,14 @@ impl Epoll {
         if was_in_queue {
             interest.in_ready_queue.store(true, Ordering::Release);
         }
-        *old = Arc::clone(&interest);
+        let old_interest = core::mem::replace(old, Arc::clone(&interest));
         drop(guard);
         drop(topology);
         if was_in_queue {
             self.inner.remove_ready_entries_for(&old_ready_entry);
             self.inner.enqueue_marked_ready(&interest);
         }
+        drop(old_interest);
         trace!(
             "Epoll: modify fd={}, events={:?}",
             fd, interest.event.events

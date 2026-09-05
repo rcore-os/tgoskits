@@ -1,8 +1,10 @@
 extern crate alloc;
 
+// Host tests must link the ax-std host capability provider.
 use alloc::{boxed::Box, string::String};
 use core::{cell::Cell, net::Ipv4Addr, time::Duration};
 
+use ax_io::IoError;
 use ax_net::{
     DeviceBinding, InterfaceConfig, InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind,
     InterfaceMatcher, Ipv4InterfaceConfig, NetError, NetResult, NetworkConfig, RouteInfo,
@@ -45,6 +47,11 @@ fn ax_net_interface_ids_bindings_and_config_snapshots_hold() {
     assert!(info.flags.contains(InterfaceFlags::UP));
     assert!(info.flags.contains(InterfaceFlags::RUNNING));
     assert!(matches!(info.kind, InterfaceKind::Ethernet));
+}
+
+#[test]
+fn ax_net_interrupted_error_preserves_io_semantics() {
+    assert_eq!(IoError::from(NetError::Interrupted), IoError::Interrupted);
 }
 
 #[test]

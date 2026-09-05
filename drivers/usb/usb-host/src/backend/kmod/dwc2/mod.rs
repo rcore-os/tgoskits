@@ -12,6 +12,7 @@ mod testutil;
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{task::Poll, time::Duration};
 
+use dma_api::DeviceDma;
 use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
@@ -50,7 +51,7 @@ use crate::{
             },
         },
         ty::{
-            DeviceOp, EventHandlerOp, HubParams,
+            ControllerIrqState, DeviceOp, EventHandlerOp, HubParams,
             ep::{EndpointHandle, EndpointOp},
         },
     },
@@ -120,9 +121,10 @@ impl Dwc2HostParams {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Dwc2NewParams {
     pub mmio: Mmio,
+    pub dma: DeviceDma,
     pub kernel: &'static dyn KernelOp,
     pub params: Dwc2HostParams,
 }
@@ -136,6 +138,7 @@ pub struct Dwc2 {
     next_addr: u8,
     channel_pool: HostChannelPool,
     stats: Dwc2Stats,
+    irq_state: ControllerIrqState,
 }
 
 unsafe impl Send for Dwc2 {}
@@ -149,17 +152,19 @@ impl Dwc2 {
 
         let regs = Dwc2Registers::new(params.mmio);
         let kernel = Kernel::new(
-            dma_api::DmaDeviceInfo::new(
-                dma_api::DmaDomainId::Direct,
-                dma_api::DmaCoherency::NonCoherent,
-                dma_api::DmaConstraints::new(params.params.dma_mask),
-            ),
+            crate::osal::narrow_dma_capability(&params.dma, params.params.dma_mask),
             params.kernel,
         );
         let root_hub = Dwc2RootHub::new(regs, kernel.clone());
         let channel_completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
-        let event_handler = Dwc2EventHandler::new(regs, channel_completions.clone(), stats.clone());
+        let irq_state = ControllerIrqState::new(false);
+        let event_handler = Dwc2EventHandler::new(
+            regs,
+            channel_completions.clone(),
+            stats.clone(),
+            irq_state.clone(),
+        );
         let channel_count = regs.host_channel_count();
         let periodic = Dwc2PeriodicSchedule::new(&kernel)
             .map_err(|err| USBError::Other(anyhow!("DWC2 frame list allocation failed: {err}")))?;
@@ -177,6 +182,7 @@ impl Dwc2 {
                 Arc::new(periodic),
             ),
             stats,
+            irq_state,
         })
     }
 
@@ -393,7 +399,7 @@ impl Dwc2 {
 }
 
 impl CoreOp for Dwc2 {
-    fn init<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
+    fn prepare_controller<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
         self.init_controller().boxed()
     }
 
@@ -421,12 +427,16 @@ impl CoreOp for Dwc2 {
     }
 
     fn enable_irq(&mut self) -> Result<()> {
-        self.regs.regs().gintmsk.set(DWC2_RUNTIME_GINTMSK);
+        self.irq_state.set_enabled(true, || {
+            self.regs.regs().gintmsk.set(DWC2_RUNTIME_GINTMSK);
+        });
         Ok(())
     }
 
     fn disable_irq(&mut self) -> Result<()> {
-        self.regs.regs().gintmsk.set(0);
+        self.irq_state.set_enabled(false, || {
+            self.regs.regs().gintmsk.set(0);
+        });
         Ok(())
     }
 

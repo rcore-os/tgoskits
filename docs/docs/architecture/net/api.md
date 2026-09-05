@@ -112,7 +112,7 @@ pub struct StaticIpConfig {
 
 ```rust
 pub fn init_network(
-    queue_runtime: Option<NetworkQueueRuntime>,
+    queue_runtime: NetworkQueueRuntime,
     frame_ports: EthernetFramePortList,
     config: NetworkConfig,
 );
@@ -127,6 +127,9 @@ pub fn init_network(
 - 安装已经通过 fixed-affinity 握手并完成 IRQ rearm 的 queue runtime。
 - 在选定 CPU 启动唯一 protocol executor。
 
+`NetworkQueueRuntime` 是必选参数：物理 NIC 必须已经完成 typed IRQ source 解析、
+fixed-affinity worker 启动和初始 rearm，网络栈没有 no-IRQ 或周期轮询降级路径。
+loopback 可以作为唯一接口存在，但仍由同一个 runtime 选择并持有唯一 protocol owner。
 `init_network()` 是一次性初始化入口，重复初始化会触发全局单例保护。
 
 ### 2.3 轮询触发
@@ -151,21 +154,40 @@ pub fn request_poll() {
 
 ### 2.4 Vsock 初始化
 
-`init_vsock()` 只负责发布 vsock 设备并启动其连接管理运行时，不参与 Ethernet `Router` 或 smoltcp `Interface` 的初始化。当前实现从传入列表末尾取一个设备，因此调用方必须把设备选择视为显式约束，而不能假定函数会注册列表中的第一个或全部设备。
+`init_vsock()` 只负责发布 vsock 设备并启动其连接管理运行时，不参与 Ethernet
+`Router` 或 smoltcp `Interface` 的初始化。设备输入必须同时携带已解析的 IRQ 和从
+driver 一次性转移的 hard-IRQ/task-rearm capability；当前拓扑只允许零个或恰好一个
+设备，多个设备会显式失败，不能再静默丢弃列表成员。
 
 ```rust
 #[cfg(feature = "vsock")]
-pub fn init_vsock(vsock_devs: VsockDeviceList);
+pub fn init_vsock(
+    devices: VsockDeviceList,
+    registrar: &dyn PinnedNetIrqRegistrar,
+    active_cpus: CpuSet,
+) -> Result<(), VsockRuntimeError>;
 
 #[cfg(feature = "vsock")]
 pub type VsockDevice = Box<dyn rdif_vsock::Interface>;
 #[cfg(feature = "vsock")]
-pub type VsockDeviceList = Vec<VsockDevice>;
+pub type VsockDeviceList = Vec<VsockDeviceInput>;
+
+pub struct VsockDeviceInput {
+    pub name: String,
+    pub device: VsockDevice,
+    pub irq: IrqId,
+    pub endpoints: VsockIrqEndpoints,
+}
 ```
 
-vsock 不进入 smoltcp `SocketSet`，也不实现 `ax-net` 内部 IP `Device` trait。它通过 `rdif_vsock::Interface` 和 vsock connection manager 进入 AF_VSOCK socket backend。
+vsock 不进入 smoltcp `SocketSet`，也不实现 `ax-net` 内部 IP `Device` trait。它通过
+`rdif_vsock::Interface` 和 vsock connection manager 进入 AF_VSOCK socket backend。
+固定 worker 复用 Ethernet runtime 选定的 protocol owner CPU；hard IRQ 只 ACK/coalesce，
+worker 在 task context 预算 drain 后执行 rearm/recheck，没有 timer fallback。
 
-`init_vsock()` 内部用 `pop()` 取传入列表的**最后一个**设备并注册，其余设备忽略；列表为空时仅记录 warning，不创建“已初始化但无设备”的独立状态位。AF_VSOCK 后续操作若没有设备，会在 `device::vsock_*()` 路径返回 `NotFound`。
+列表为空时仅记录 warning，不创建“已初始化但无设备”的独立状态位。没有注册设备时，
+AF_VSOCK 后续操作会在 `device::vsock_*()` 路径返回 `NotFound`。设备、IRQ binding、
+endpoint transfer、worker affinity 或 registration 任一步不完整都会 fail closed。
 
 ## 3. 运行时查询
 
@@ -520,7 +542,7 @@ pub struct TcpInfo {
 | `SendBuffer` / `ReceiveBuffer` | TCP/UDP/raw/Unix stream 等具体 backend | IP socket 返回固定 buffer 预算；`GeneralOptions` 只接受 set buffer TODO，不实际调整已分配缓冲区 |
 | `SendBufferForce` | 当前未实现 | 返回 `ENOPROTOOPT` |
 | `KeepAlive` | TCP | TCP backend 同步到 smoltcp keep-alive 配置；非 TCP backend 返回不支持 |
-| `SendTimeout` / `ReceiveTimeout` | `GeneralOptions` | 被 `send_poller*` / `recv_poller*` 使用，决定阻塞等待超时 |
+| `SendTimeout` / `ReceiveTimeout` | `GeneralOptions` | 形成 `SocketWaitPolicy`；由 ArceOS/StarryOS 驱动 `poll_socket_io()` 时执行，`ax-net` 不解释用户信号或自行 park task |
 | `PassCredentials` | Unix stream/datagram/seqpacket | 接收端启用时传递发送任务的真实 credentials |
 | `ReceiveTimestamp` | Unix datagram/seqpacket | 在消息入队时记录 wall-clock timestamp，并作为 `SocketCmsg::Timestamp` 返回 |
 | `PeerCredentials` | Unix stream/datagram/seqpacket | 返回 transport 保存的 `UnixCredentials`；StarryOS 还投影稳定进程身份到调用者 PID namespace |

@@ -14,9 +14,11 @@
 //!
 //! # Readiness
 //!
-//! A device may use platform IRQs, polling, or out-of-band notifications. The
-//! router asks devices for a readiness poll set and performs `PollSet`
-//! register/wake operations after releasing the concrete device lock.
+//! Physical devices enter the router only through the IRQ-backed queue runtime;
+//! periodic polling and out-of-band wake fallbacks are not supported. The
+//! in-memory loopback device has no hardware readiness source. The router asks
+//! devices for protocol-side readiness and performs `PollSet` register/wake
+//! operations after releasing the concrete device lock.
 
 use alloc::{string::String, vec::Vec};
 

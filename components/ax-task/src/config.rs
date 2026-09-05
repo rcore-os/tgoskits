@@ -1,0 +1,209 @@
+//! Scheduler configuration and topology identifiers.
+
+/// Normalized fair scheduling request in nanoseconds.
+pub const NORMALIZED_FAIR_SLICE_NS: u64 = 700_000;
+/// Default scheduler timing granularity used to bound EEVDF lag.
+pub const DEFAULT_TIMING_GRANULARITY_NS: u64 = 1_000_000;
+/// Default periodic fair balancing interval in nanoseconds.
+pub const DEFAULT_BALANCE_INTERVAL_NS: u64 = 10_000_000;
+/// Default round-robin quantum in nanoseconds.
+pub const DEFAULT_RR_QUANTUM_NS: u64 = 100_000_000;
+/// Default RT bandwidth period in nanoseconds.
+pub const DEFAULT_RT_PERIOD_NS: u64 = 1_000_000_000;
+/// Default unthrottled RT runtime matching Linux without `RT_GROUP_SCHED`.
+pub const DEFAULT_RT_RUNTIME_NS: u64 = DEFAULT_RT_PERIOD_NS;
+/// Default Deadline admission percentage.
+pub const DEFAULT_DEADLINE_CAP_PERCENT: u8 = 95;
+/// Default maximum number of scheduler threads.
+///
+/// Every CPU reserves class linkage, task-deadline, and Deadline membership
+/// storage for this many generation-bearing tasks. Like Linux embedding these
+/// nodes in `task_struct`, scheduler hot paths therefore never discover a
+/// capacity failure after a thread has been published.
+pub const DEFAULT_THREAD_CAPACITY: usize = 4096;
+/// Default bounded work budget for scheduler inboxes and timers.
+pub const DEFAULT_BATCH_LIMIT: usize = 64;
+/// Maximum PI owner-chain depth walked in one non-preemptible transaction.
+///
+/// Linux can use a larger default because `rt_mutex_adjust_prio_chain()` drops
+/// its local locks between steps. ax-task currently owns one scheduler graph
+/// transaction for the complete walk, so the bound must also cap worst-case
+/// non-preemptible latency.
+pub const DEFAULT_PI_CHAIN_LIMIT: usize = 64;
+
+/// A logical processor identifier in the configured topology.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CpuId(u32);
+
+impl CpuId {
+    /// Creates a logical processor identifier.
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns the numeric identifier.
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// Returns the identifier as an array index.
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Immutable sizing and bandwidth policy for one task system.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskSystemConfig {
+    cpu_count: usize,
+    fair_slice_ns: u64,
+    timing_granularity_ns: u64,
+    balance_interval_ns: u64,
+    rr_quantum_ns: u64,
+    rt_period_ns: u64,
+    rt_runtime_ns: u64,
+    deadline_cap_percent: u8,
+    thread_capacity: usize,
+    batch_limit: usize,
+    pi_chain_limit: usize,
+}
+
+impl TaskSystemConfig {
+    /// Creates a configuration with the project defaults.
+    pub const fn new(cpu_count: usize) -> Self {
+        Self {
+            cpu_count,
+            fair_slice_ns: NORMALIZED_FAIR_SLICE_NS * linux_logarithmic_cpu_factor(cpu_count),
+            timing_granularity_ns: DEFAULT_TIMING_GRANULARITY_NS,
+            balance_interval_ns: DEFAULT_BALANCE_INTERVAL_NS,
+            rr_quantum_ns: DEFAULT_RR_QUANTUM_NS,
+            rt_period_ns: DEFAULT_RT_PERIOD_NS,
+            rt_runtime_ns: DEFAULT_RT_RUNTIME_NS,
+            deadline_cap_percent: DEFAULT_DEADLINE_CAP_PERCENT,
+            thread_capacity: DEFAULT_THREAD_CAPACITY,
+            batch_limit: DEFAULT_BATCH_LIMIT,
+            pi_chain_limit: DEFAULT_PI_CHAIN_LIMIT,
+        }
+    }
+
+    /// Returns the topology size.
+    pub const fn cpu_count(self) -> usize {
+        self.cpu_count
+    }
+
+    /// Returns the fair service request.
+    pub const fn fair_slice_ns(self) -> u64 {
+        self.fair_slice_ns
+    }
+
+    /// Returns the scheduler timing granularity used to bound EEVDF lag.
+    pub const fn timing_granularity_ns(self) -> u64 {
+        self.timing_granularity_ns
+    }
+
+    /// Returns the balancing interval.
+    pub const fn balance_interval_ns(self) -> u64 {
+        self.balance_interval_ns
+    }
+
+    /// Returns the default round-robin quantum.
+    pub const fn rr_quantum_ns(self) -> u64 {
+        self.rr_quantum_ns
+    }
+
+    /// Returns the RT bandwidth period.
+    pub const fn rt_period_ns(self) -> u64 {
+        self.rt_period_ns
+    }
+
+    /// Returns the RT runtime budget.
+    pub const fn rt_runtime_ns(self) -> u64 {
+        self.rt_runtime_ns
+    }
+
+    /// Returns the Deadline admission cap in percent.
+    pub const fn deadline_cap_percent(self) -> u8 {
+        self.deadline_cap_percent
+    }
+
+    /// Returns the maximum number of published scheduler threads.
+    pub const fn thread_capacity(self) -> usize {
+        self.thread_capacity
+    }
+
+    /// Returns the maximum work items processed at one safe point.
+    pub const fn batch_limit(self) -> usize {
+        self.batch_limit
+    }
+
+    /// Returns the maximum owner-chain depth of one PI graph transaction.
+    pub const fn pi_chain_limit(self) -> usize {
+        self.pi_chain_limit
+    }
+
+    /// Overrides the Deadline admission cap.
+    pub const fn with_deadline_cap_percent(mut self, percent: u8) -> Self {
+        self.deadline_cap_percent = percent;
+        self
+    }
+
+    /// Overrides the minimum interval between owner-CPU fair migrations.
+    pub const fn with_balance_interval_ns(mut self, interval_ns: u64) -> Self {
+        self.balance_interval_ns = interval_ns;
+        self
+    }
+
+    /// Enables Linux-style RT group bandwidth with an explicit period and quota.
+    pub const fn with_rt_bandwidth(mut self, period_ns: u64, runtime_ns: u64) -> Self {
+        self.rt_period_ns = period_ns;
+        self.rt_runtime_ns = runtime_ns;
+        self
+    }
+
+    /// Overrides the scheduler thread capacity prepared by every CPU.
+    pub const fn with_thread_capacity(mut self, capacity: usize) -> Self {
+        self.thread_capacity = capacity;
+        self
+    }
+
+    /// Overrides the bounded scheduler work batch.
+    pub const fn with_batch_limit(mut self, limit: usize) -> Self {
+        self.batch_limit = limit;
+        self
+    }
+
+    /// Overrides the maximum owner-chain depth of one PI graph transaction.
+    pub const fn with_pi_chain_limit(mut self, limit: usize) -> Self {
+        self.pi_chain_limit = limit;
+        self
+    }
+}
+
+const fn linux_logarithmic_cpu_factor(cpu_count: usize) -> u64 {
+    let capped = if cpu_count == 0 {
+        1
+    } else if cpu_count > 8 {
+        8
+    } else {
+        cpu_count
+    };
+    1 + capped.ilog2() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_scheduler_parameters_match_linux_v71() {
+        let config = TaskSystemConfig::new(1);
+        assert_eq!(config.rr_quantum_ns(), 100_000_000);
+        assert_eq!(config.rt_runtime_ns(), config.rt_period_ns());
+        assert_eq!(config.fair_slice_ns(), 700_000);
+        assert_eq!(TaskSystemConfig::new(2).fair_slice_ns(), 1_400_000);
+        assert_eq!(TaskSystemConfig::new(4).fair_slice_ns(), 2_100_000);
+        assert_eq!(TaskSystemConfig::new(8).fair_slice_ns(), 2_800_000);
+        assert_eq!(TaskSystemConfig::new(16).fair_slice_ns(), 2_800_000);
+    }
+}

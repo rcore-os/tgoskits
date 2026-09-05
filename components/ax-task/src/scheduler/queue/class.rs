@@ -1,0 +1,597 @@
+//! Static scheduler-class chain used by one owner runqueue.
+//!
+//! Linux orders statically linked `sched_class` objects and enters each class
+//! through the same lifecycle hooks. ax-task has a closed policy set, so an
+//! enum expresses that chain without trait objects or compatibility dispatch.
+
+use super::*;
+use crate::{
+    DeadlineEntity, DispatchCharge, FairMode, SchedulePolicy, SchedulingEntity,
+    runtime::task_runtime,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SchedulerClass {
+    Stop,
+    Deadline,
+    Realtime,
+    /// Linux `fair_sched_class` covers Normal, Batch, and SCHED_IDLE. The
+    /// per-CPU dedicated idle thread remains outside every queued class.
+    Fair,
+}
+
+pub(super) struct ClassEnqueue {
+    pub(super) membership: QueueMembershipClass,
+    pub(super) entity: SchedulingEntity,
+    pub(super) reason: EnqueueReason,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ClassTick {
+    pub(crate) slice_expired: bool,
+    pub(crate) request_reschedule: bool,
+}
+
+impl SchedulerClass {
+    pub(super) const PICK_ORDER: [Self; 4] =
+        [Self::Stop, Self::Deadline, Self::Realtime, Self::Fair];
+
+    pub(crate) const fn for_policy(policy: SchedulePolicy) -> Self {
+        match policy {
+            SchedulePolicy::KernelStop => Self::Stop,
+            SchedulePolicy::Deadline(_) => Self::Deadline,
+            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. } => Self::Realtime,
+            // Linux maps SCHED_IDLE onto fair_sched_class; only the entity's
+            // weight and wakeup-preemption direction differ.
+            SchedulePolicy::Fair { .. } => Self::Fair,
+        }
+    }
+
+    /// Returns whether the static class chain has a selectable task above
+    /// `self` without disturbing any class-owned queue state.
+    ///
+    /// Linux compares scheduling classes before invoking a class picker. A
+    /// caller that only needs to prove that the current task still wins must
+    /// not dequeue a candidate and then roll the selection back. Throttled
+    /// Deadline tasks are absent from the EDF tree, while RT eligibility is a
+    /// property of the whole RT runqueue.
+    pub(crate) fn has_selectable_higher_class(
+        self,
+        run_queue: &RunQueue,
+        rt_eligibility: RtEligibility,
+    ) -> bool {
+        let stop = run_queue.stop.is_some();
+        let deadline = run_queue.deadline.has_runnable();
+        let realtime =
+            matches!(rt_eligibility, RtEligibility::Runnable) && run_queue.rt.has_any_rt();
+
+        match self {
+            Self::Stop => false,
+            Self::Deadline => stop,
+            Self::Realtime => stop || deadline,
+            Self::Fair => stop || deadline || realtime,
+        }
+    }
+
+    /// Linux `enqueue_task()` class hook. Common rq accounting and membership
+    /// publication are committed by [`RunQueue::enqueue_task`] after this
+    /// hook has installed the class-owned intrusive node.
+    pub(super) fn enqueue_task(
+        self,
+        run_queue: &mut RunQueue,
+        mut thread: QueuedThread,
+        reason: EnqueueReason,
+        current_fair: Option<FairEntity>,
+    ) -> Result<ClassEnqueue, TaskError> {
+        if let SchedulingEntity::Fair(fair) = thread.active.entity_mut() {
+            let virtual_time = run_queue.virtual_time();
+            match reason {
+                EnqueueReason::Wake => {
+                    let (queue_weight, current_weight) =
+                        run_queue.fair_placement_weights(current_fair);
+                    fair.place_after_activation(
+                        virtual_time,
+                        queue_weight.saturating_add(current_weight),
+                    )?;
+                }
+                EnqueueReason::Preempted => {}
+                EnqueueReason::Yield => fair.yield_request(virtual_time),
+                EnqueueReason::Migrated | EnqueueReason::PolicyChanged => {
+                    let (queue_weight, current_weight) =
+                        run_queue.fair_placement_weights(current_fair);
+                    fair.place_after_transfer(
+                        virtual_time,
+                        queue_weight.saturating_add(current_weight),
+                    )?;
+                }
+                EnqueueReason::Replenished => fair.place_at_least(virtual_time),
+            }
+            if !matches!(reason, EnqueueReason::Wake | EnqueueReason::Yield)
+                && fair.request_exhausted()
+            {
+                fair.renew_request();
+            }
+        }
+        let entity = thread.active.entity().clone();
+        let membership = match self {
+            Self::Stop => {
+                thread.migration_capable = false;
+                assert!(
+                    run_queue.stop.replace(thread).is_none(),
+                    "one CPU runqueue can own only one stopper task"
+                );
+                QueueMembershipClass::Stop
+            }
+            Self::Deadline => {
+                if thread.active.entity().deadline().is_none_or(|deadline| {
+                    deadline.absolute_deadline_ns().is_none() || deadline.is_throttled()
+                }) {
+                    return Err(TaskError::NotReady);
+                }
+                QueueMembershipClass::Deadline(run_queue.deadline.insert(thread))
+            }
+            Self::Realtime => QueueMembershipClass::Realtime(run_queue.rt.enqueue(thread, reason)),
+            Self::Fair => {
+                run_queue.fair.insert(thread);
+                QueueMembershipClass::Fair
+            }
+        };
+        Ok(ClassEnqueue {
+            membership,
+            entity,
+            reason,
+        })
+    }
+
+    /// Linux `dequeue_task()` class hook. The caller owns `nr_running`,
+    /// `nr_queued`, placement demand, and public membership accounting.
+    pub(super) fn dequeue_task(
+        self,
+        run_queue: &mut RunQueue,
+        membership: QueueMembershipClass,
+        id: ThreadId,
+    ) -> Option<QueuedThread> {
+        match (self, membership) {
+            (Self::Stop, QueueMembershipClass::Stop) => run_queue.stop.take(),
+            (Self::Deadline, QueueMembershipClass::Deadline(key)) => run_queue.deadline.remove(key),
+            (Self::Realtime, QueueMembershipClass::Realtime(key)) => run_queue.rt.remove(key),
+            (Self::Fair, QueueMembershipClass::Fair) => run_queue.fair.remove(id),
+            _ => task_runtime::fatal_invariant(0x5251_1001, id.as_u64() as usize),
+        }
+    }
+
+    /// Linux `migrate_task_rq()` class hook. The class removes its intrusive
+    /// node and transfers policy-local placement state while the common rq
+    /// layer owns runnable accounting and public membership.
+    pub(super) fn migrate_task_rq(
+        self,
+        run_queue: &mut RunQueue,
+        membership: QueueMembershipClass,
+        id: ThreadId,
+        timing_granularity_ns: u64,
+    ) -> Option<QueuedThread> {
+        if self == Self::Stop {
+            return None;
+        }
+        // Linux `dequeue_entity()` calls `update_entity_lag()` while the
+        // entity is still on cfs_rq, before `__dequeue_entity()` changes the
+        // weighted average. Capture the same source-rq value before removing
+        // our intrusive node; post-dequeue virtual time is not the task's
+        // migration lag.
+        let source_fair_context = run_queue
+            .queued_thread_including_current(id)
+            .and_then(|thread| thread.base_entity.fair())
+            .map(|fair| {
+                (
+                    run_queue.virtual_time(),
+                    run_queue
+                        .max_fair_service_request_ns()
+                        .unwrap_or(fair.service_request_ns())
+                        .max(fair.service_request_ns()),
+                )
+            });
+        let mut thread = self.dequeue_task(run_queue, membership, id)?;
+        if let Some((source_virtual_time, rq_max_slice_ns)) = source_fair_context {
+            thread.active.base_entity_mut().capture_fair_migration(
+                source_virtual_time,
+                rq_max_slice_ns,
+                timing_granularity_ns,
+            );
+        }
+        Some(thread)
+    }
+
+    /// Linux `pick_task()` class hook. RT and Deadline return a snapshot while
+    /// retaining their current node in the active structure; Fair and stop
+    /// transfer the selected node until `set_next_task()` commits.
+    #[inline(always)]
+    pub(super) fn pick_task(
+        self,
+        run_queue: &mut RunQueue,
+        rt_eligibility: RtEligibility,
+        skip_delayed: bool,
+        protected_fair_current: Option<ThreadId>,
+    ) -> Option<PickTaskResult> {
+        match self {
+            Self::Stop => {
+                let picked = run_queue.stop.take()?;
+                run_queue.mark_publication_dirty();
+                Some(PickTaskResult::Continue(PickedThread::Owned(picked)))
+            }
+            Self::Deadline => {
+                let picked = run_queue.deadline.select_first();
+                picked
+                    .map(PickedThread::Linked)
+                    .map(PickTaskResult::Continue)
+            }
+            Self::Realtime => {
+                let picked = matches!(rt_eligibility, RtEligibility::Runnable)
+                    .then(|| run_queue.rt.select())
+                    .flatten();
+                picked
+                    .map(PickedThread::Linked)
+                    .map(PickTaskResult::Continue)
+            }
+            Self::Fair => {
+                run_queue.update_fair_virtual_time(None);
+                let queue = &mut run_queue.fair;
+                let virtual_time = queue.virtual_time();
+                let (mut thread, starts_dispatch) = if let Some(thread) = protected_fair_current
+                    .and_then(|current| queue.take_protected_current(current, virtual_time))
+                {
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_fair_pick_protected_current();
+                    (thread, false)
+                } else {
+                    let thread = match queue.pick_eligible(virtual_time, skip_delayed)? {
+                        FairPick::Runnable(thread) => thread,
+                        FairPick::Delayed(core) => {
+                            run_queue.mark_publication_dirty();
+                            return Some(PickTaskResult::Break(core));
+                        }
+                    };
+                    (thread, true)
+                };
+                if starts_dispatch {
+                    let shortest_competing_slice_ns = queue.min_service_request_ns();
+                    let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
+                        unreachable!("FairRunQueue can select only Fair entities")
+                    };
+                    fair.set_slice_protection(shortest_competing_slice_ns);
+                }
+                run_queue.mark_publication_dirty();
+                Some(PickTaskResult::Continue(PickedThread::Owned(thread)))
+            }
+        }
+    }
+
+    /// Linux class-specific `put_prev_task()` hook for linked current classes.
+    pub(super) fn put_prev_task(
+        self,
+        run_queue: &mut RunQueue,
+        membership: QueueMembershipClass,
+        id: ThreadId,
+    ) -> Result<SchedulingEntity, TaskError> {
+        match (self, membership) {
+            (Self::Deadline, QueueMembershipClass::Deadline(key)) => {
+                let (new_key, entity) = run_queue
+                    .deadline
+                    .put_prev_current(key)
+                    .ok_or(TaskError::NotReady)?;
+                run_queue.replace_membership_class(id, QueueMembershipClass::Deadline(new_key));
+                Ok(entity)
+            }
+            (Self::Realtime, QueueMembershipClass::Realtime(key)) => run_queue
+                .rt
+                .put_prev_current(key)
+                .ok_or(TaskError::NotReady),
+            _ => Err(TaskError::InvalidConfiguration),
+        }
+    }
+
+    /// Linux class-specific `set_next_task()` ownership transition.
+    pub(super) fn set_next_task(self, run_queue: &mut RunQueue, picked: &PickedThread) {
+        match self {
+            // RT/DL keep their active-class linkage. `rq->curr`, installed by
+            // the common owner transaction immediately after this hook, is
+            // the sole marker that distinguishes the running node from
+            // queued candidates.
+            Self::Deadline | Self::Realtime => {}
+            Self::Stop | Self::Fair => {
+                run_queue.unregister_membership(picked.id());
+            }
+        }
+    }
+
+    /// Linux `task_tick()` class hook. Runtime accounting itself is common rq
+    /// state; the class owns the policy-specific reschedule decision.
+    pub(crate) fn task_tick(
+        self,
+        run_queue: &mut RunQueue,
+        current: ThreadId,
+        policy: SchedulePolicy,
+        current_entity: &SchedulingEntity,
+        charge: DispatchCharge,
+        periodic_tick_ns: Option<u64>,
+    ) -> ClassTick {
+        match self {
+            // Linux `update_curr_dl_se()` always dequeues and reschedules an
+            // exhausted CBS entity. `SCHED_FLAG_DL_OVERRUN` controls only
+            // user-visible overrun notification.
+            Self::Deadline => ClassTick {
+                slice_expired: charge.slice_expired,
+                request_reschedule: charge.slice_expired,
+            },
+            Self::Realtime => match policy {
+                SchedulePolicy::RoundRobin { .. } => {
+                    let tick_ns = periodic_tick_ns.unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x5251_1012, current.as_u64() as usize)
+                    });
+                    let key = match run_queue.membership_class(current) {
+                        Some(QueueMembershipClass::Realtime(key)) => key,
+                        _ => task_runtime::fatal_invariant(0x5251_1010, current.as_u64() as usize),
+                    };
+                    let tick = run_queue
+                        .rt
+                        .task_tick_round_robin(key, policy, tick_ns)
+                        .unwrap_or_else(|| {
+                            task_runtime::fatal_invariant(0x5251_1010, current.as_u64() as usize)
+                        });
+                    ClassTick {
+                        slice_expired: tick.quantum_expired,
+                        request_reschedule: tick.request_reschedule,
+                    }
+                }
+                SchedulePolicy::Fifo { .. } => ClassTick {
+                    slice_expired: false,
+                    request_reschedule: false,
+                },
+                _ => task_runtime::fatal_invariant(0x5251_1011, current.as_u64() as usize),
+            },
+            // Linux v7.1 requests lazy rescheduling when either the full
+            // request expires or RUN_TO_PARITY protection ends. A lone
+            // current still keeps running without a Fair clockevent.
+            Self::Fair => ClassTick {
+                slice_expired: charge.slice_expired,
+                // Every fair policy shares one cfs_rq, so any queued Fair
+                // contender keeps the current's runtime deadline active.
+                request_reschedule: fair_tick_requests_reschedule(
+                    run_queue.has_fair(),
+                    current_entity,
+                    charge,
+                ),
+            },
+            Self::Stop => ClassTick {
+                slice_expired: false,
+                request_reschedule: false,
+            },
+        }
+    }
+
+    pub(super) fn check_preempt_curr(
+        self,
+        current_policy: SchedulePolicy,
+        current_entity: &SchedulingEntity,
+        current_is_idle: bool,
+        wakee_policy: SchedulePolicy,
+        wakee_entity: &SchedulingEntity,
+        fair_virtual_time: u64,
+    ) -> bool {
+        if current_is_idle {
+            return true;
+        }
+        match self {
+            Self::Stop => !matches!(current_policy, SchedulePolicy::KernelStop),
+            Self::Deadline => match current_policy {
+                SchedulePolicy::KernelStop => false,
+                SchedulePolicy::Deadline(_) => {
+                    deadline_key(wakee_entity) < deadline_key(current_entity)
+                }
+                _ => true,
+            },
+            Self::Realtime => {
+                let wakee_priority = wakee_policy
+                    .rt_priority()
+                    .expect("RT wakee must carry a fixed priority");
+                match current_policy {
+                    SchedulePolicy::KernelStop | SchedulePolicy::Deadline(_) => false,
+                    SchedulePolicy::Fifo { priority: current }
+                    | SchedulePolicy::RoundRobin {
+                        priority: current, ..
+                    } => wakee_priority > current,
+                    SchedulePolicy::Fair { .. } => true,
+                }
+            }
+            Self::Fair => fair_wakeup_preempts(
+                current_policy,
+                current_entity,
+                wakee_policy,
+                wakee_entity,
+                fair_virtual_time,
+            ),
+        }
+    }
+}
+
+/// Linux `wakeup_preempt()` dispatch for the static class chain.
+pub(crate) fn wakeup_preempts(
+    current_policy: SchedulePolicy,
+    current_entity: &SchedulingEntity,
+    current_is_idle: bool,
+    wakee_policy: SchedulePolicy,
+    wakee_entity: &SchedulingEntity,
+    fair_virtual_time: u64,
+) -> bool {
+    SchedulerClass::for_policy(wakee_policy).check_preempt_curr(
+        current_policy,
+        current_entity,
+        current_is_idle,
+        wakee_policy,
+        wakee_entity,
+        fair_virtual_time,
+    )
+}
+
+/// Linux v7.1's default `WF_SYNC` wakeup-preemption decision.
+///
+/// `preempt_sync()` is nested under the disabled-by-default `NEXT_BUDDY`
+/// feature. ax-task does not implement that buddy state, so a synchronous wake
+/// uses the ordinary class/EEVDF decision. `WF_SYNC` still affects CPU
+/// selection before the task reaches its target runqueue.
+pub(crate) fn default_sync_wakeup_preempts(
+    current_policy: SchedulePolicy,
+    current_entity: &SchedulingEntity,
+    current_is_idle: bool,
+    wakee_policy: SchedulePolicy,
+    wakee_entity: &SchedulingEntity,
+    fair_virtual_time: u64,
+) -> bool {
+    wakeup_preempts(
+        current_policy,
+        current_entity,
+        current_is_idle,
+        wakee_policy,
+        wakee_entity,
+        fair_virtual_time,
+    )
+}
+
+fn fair_wakeup_preempts(
+    current_policy: SchedulePolicy,
+    current_entity: &SchedulingEntity,
+    wakee_policy: SchedulePolicy,
+    wakee_entity: &SchedulingEntity,
+    fair_virtual_time: u64,
+) -> bool {
+    match current_policy {
+        SchedulePolicy::KernelStop
+        | SchedulePolicy::Deadline(_)
+        | SchedulePolicy::Fifo { .. }
+        | SchedulePolicy::RoundRobin { .. } => false,
+        SchedulePolicy::Fair {
+            mode: current_mode, ..
+        } => {
+            let wakee_mode = match wakee_policy {
+                SchedulePolicy::Fair { mode, .. } => mode,
+                _ => unreachable!("fair scheduler class requires a fair policy"),
+            };
+            let wakee = wakee_entity
+                .fair()
+                .expect("fair policy must own a fair scheduling entity");
+            let current = current_entity
+                .fair()
+                .expect("fair policy must own a fair scheduling entity");
+            #[cfg(feature = "qperf-metrics")]
+            crate::metrics::record_fair_wake_distances(
+                crate::scheduler::virtual_delta(wakee.vruntime(), fair_virtual_time),
+                crate::scheduler::virtual_delta(current.vruntime(), fair_virtual_time),
+            );
+            // Linux rejects wakeup preemption from SCHED_IDLE even when the
+            // current entity is also idle. A non-idle wakee still immediately
+            // preempts an idle current before the SCHED_BATCH check below.
+            if wakee_mode == FairMode::Idle {
+                false
+            } else if current_mode == FairMode::Idle {
+                true
+            } else if wakee_mode == FairMode::Batch
+                || wakee_entity
+                    .fair()
+                    .is_some_and(|fair| !fair.is_eligible(fair_virtual_time))
+            {
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_fair_wake_wakee_ineligible();
+                false
+            } else {
+                if !current.is_eligible(fair_virtual_time) {
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_fair_wake_current_ineligible();
+                    true
+                } else if current.slice_is_protected() && !wakee.has_shorter_slice_than(current) {
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_fair_wake_current_protected();
+                    false
+                } else {
+                    // PREEMPT_SHORT bypasses protection, but the wakee must
+                    // still win the ordinary eligible EEVDF deadline pick.
+                    let precedes = wakee.deadline_precedes(current);
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_fair_wake_deadline(precedes);
+                    precedes
+                }
+            }
+        }
+    }
+}
+
+fn fair_tick_requests_reschedule(
+    has_queued_peer: bool,
+    current_entity: &SchedulingEntity,
+    charge: DispatchCharge,
+) -> bool {
+    let fair = current_entity
+        .fair()
+        .expect("Fair task_tick requires a Fair current entity");
+    has_queued_peer && (charge.slice_expired || !fair.slice_is_protected())
+}
+
+fn deadline_key(entity: &SchedulingEntity) -> u64 {
+    entity
+        .deadline()
+        .and_then(DeadlineEntity::absolute_deadline_ns)
+        .expect("a runnable Deadline entity must own an absolute deadline")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FairEntity, Nice};
+
+    fn fair(vruntime: u64, virtual_deadline: u64) -> SchedulingEntity {
+        SchedulingEntity::Fair(FairEntity::test_state(
+            Nice::ZERO,
+            FairMode::Normal,
+            vruntime,
+            virtual_deadline,
+        ))
+    }
+
+    fn normal_fair_policy() -> SchedulePolicy {
+        SchedulePolicy::fair(Nice::ZERO, FairMode::Normal)
+    }
+
+    #[test]
+    fn fair_wakeup_obeys_linux_eevdf_eligibility_and_slice_protection() {
+        let current = fair(2_000, 3_000);
+        let wakee = fair(1_000, 1_500);
+
+        assert!(!fair_wakeup_preempts(
+            normal_fair_policy(),
+            &current,
+            normal_fair_policy(),
+            &wakee,
+            2_000,
+        ));
+        let current = fair(3_000, 3_100);
+        let wakee = fair(1_000, 3_500);
+
+        assert!(fair_wakeup_preempts(
+            normal_fair_policy(),
+            &current,
+            normal_fair_policy(),
+            &wakee,
+            2_000,
+        ));
+
+        let mut current = FairEntity::new(Nice::ZERO, FairMode::Normal, 100, 2_000);
+        current.set_slice_protection(None);
+        let wakee = FairEntity::new(Nice::ZERO, FairMode::Normal, 50, 1_000);
+
+        assert!(fair_wakeup_preempts(
+            normal_fair_policy(),
+            &SchedulingEntity::Fair(current),
+            normal_fair_policy(),
+            &SchedulingEntity::Fair(wakee),
+            2_000,
+        ));
+    }
+}

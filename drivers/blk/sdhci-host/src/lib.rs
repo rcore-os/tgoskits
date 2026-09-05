@@ -214,10 +214,10 @@ enum SdhciClockState {
         target_hz: u32,
     },
     ExternalEnable {
-        polls: u32,
+        deadline_ns: u64,
     },
     InternalWaitStable {
-        polls: u32,
+        deadline_ns: u64,
     },
 }
 
@@ -238,7 +238,8 @@ enum SdhciTuningState {
 }
 
 const SDHCI_RESET_POLLS: u32 = 1_000;
-const SDHCI_CLOCK_POLLS: u32 = 1_000;
+// Linux `sdhci_enable_clk()` bounds this transition by monotonic elapsed time.
+const SDHCI_CLOCK_TIMEOUT_NS: u64 = 150_000_000;
 const SDHCI_TUNING_POLLS: u32 = 1_000_000;
 const SDHCI_VOLTAGE_SWITCH_DELAY_MS: u64 = 5;
 const SDHCI_REGISTER_RETRY_DELAY: Duration = Duration::from_micros(100);

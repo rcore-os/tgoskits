@@ -73,14 +73,10 @@ fn start_wifi_request(
         slot.control
             .start(request.transaction.operation(), now_nanos)
     });
-    schedule_owner_after_control_start(&group.shared, progress.is_ok());
-    finish_wifi_step(slot, group, request, progress);
-}
-
-fn schedule_owner_after_control_start(shared: &super::super::PollGroupState, accepted: bool) {
-    if accepted {
-        shared.schedule_task();
+    if progress.is_ok() {
+        group.shared.schedule_task();
     }
+    finish_wifi_step(slot, group, request, progress);
 }
 
 fn advance_wifi_request(
@@ -245,24 +241,7 @@ impl WifiExecutorSlot {
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
-    use core::sync::atomic::Ordering;
-
-    use super::{owner_progress_ready, schedule_owner_after_control_start};
-    use crate::queue_runtime::{PollGroupState, STATE_MASK, STATE_SCHEDULED};
-
-    #[test]
-    fn accepted_control_request_schedules_its_owner_group() {
-        let shared = PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new()));
-        shared.activate(false);
-
-        schedule_owner_after_control_start(&shared, true);
-
-        assert_eq!(
-            shared.state.load(Ordering::Acquire) & STATE_MASK,
-            STATE_SCHEDULED
-        );
-    }
+    use super::owner_progress_ready;
 
     #[test]
     fn owner_poll_wakes_control_progress_without_another_irq() {

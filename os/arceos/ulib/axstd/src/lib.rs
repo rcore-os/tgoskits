@@ -17,8 +17,6 @@
 //!     - `tls`: Enable thread-local storage.
 //! - Task management
 //!     - Multi-threading and timer-driven scheduling are always available.
-//!     - `sched-rr`: Use the Round-robin preemptive scheduler.
-//!     - `sched-cfs`: Use the Completely Fair Scheduler (CFS) preemptive scheduler.
 //! - Upperlayer stacks
 //!     - `fs`: Enable file system support.
 //!     - `ext4fs`: Enable the ext4 filesystem.

@@ -15,14 +15,11 @@ use core::{
     any::Any,
     ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
-    task::Context,
 };
 
-use ax_task::current;
 use axfs_ng_vfs::{Location, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use starry_signal::{SignalInfo, Signo};
-use starry_vm::{VmMutPtr, VmPtr};
 
 pub(crate) use self::pts::{DevPtsMount, DevPtsOptions, PtsInstance};
 use self::terminal::{
@@ -39,10 +36,12 @@ pub use self::{
 };
 use crate::{
     StarryError, StarryResult,
+    mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceOps},
-    sync::{IrqMutex, Mutex},
+    sync::{IrqMutex, Mutex, PiMutex},
     task::{
-        AsThread, PgidNumber, Process, get_process_group_by_number, send_signal_to_process_group,
+        PgidNumber, Process, current_user_task, get_process_group_by_number,
+        send_signal_to_process_group,
     },
 };
 
@@ -90,7 +89,7 @@ pub(crate) fn terminal_device(term: &(dyn Any + Send + Sync)) -> Option<Terminal
 pub struct Tty<R, W> {
     this: Weak<Self>,
     terminal: Arc<Terminal>,
-    ldisc: Mutex<LineDiscipline<R, W>>,
+    ldisc: PiMutex<LineDiscipline<R, W>>,
     writer: W,
     termios_update: Mutex<()>,
     is_ptm: bool,
@@ -102,7 +101,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
     fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
         let writer = config.writer.clone();
         let is_ptm = matches!(&config.process_mode, ProcessMode::Passive(_));
-        let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
+        let ldisc = PiMutex::new(LineDiscipline::new(terminal.clone(), config));
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
             terminal,
@@ -151,10 +150,10 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
     }
 
     fn bind_current_to_at(&self, location: Location) -> StarryResult<()> {
-        self.this
-            .upgrade()
-            .unwrap()
-            .bind_to_at(&current().as_thread().proc_data.proc, Some(location))
+        self.this.upgrade().unwrap().bind_to_at(
+            &current_user_task().as_thread().proc_data.proc,
+            Some(location),
+        )
     }
 }
 
@@ -210,23 +209,24 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         Ok(buf.len())
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         let operation = || -> StarryResult<usize> {
             use linux_raw_sys::ioctl::*;
             match cmd {
                 TCGETS => {
                     let termios = *self.terminal.termios.lock().as_ref().deref();
-                    (arg as *mut Termios).vm_write(termios)?;
+                    (arg as *mut Termios).vm_write(current, termios)?;
                 }
                 TCGETS2 => {
                     let termios = *self.terminal.termios.lock().as_ref();
-                    (arg as *mut Termios2).vm_write(termios)?;
+                    (arg as *mut Termios2).vm_write(current, termios)?;
                 }
                 TCSETS | TCSETSF | TCSETSW => {
                     // Note: vm_read() must complete before acquiring the terminal lock.
                     // Faultable user memory access inside an atomic context (preemption
                     // disabled) will call might_sleep() in handle_page_fault and panic.
-                    let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                    let termios =
+                        Arc::new(Termios2::new((arg as *const Termios).vm_read(current)?));
                     let _update = self.termios_update.lock();
                     apply_termios_update(
                         &self.writer,
@@ -239,7 +239,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     }
                 }
                 TCSETS2 | TCSETSF2 | TCSETSW2 => {
-                    let termios = Arc::new((arg as *const Termios2).vm_read()?);
+                    let termios = Arc::new((arg as *const Termios2).vm_read(current)?);
                     let _update = self.termios_update.lock();
                     apply_termios_update(
                         &self.writer,
@@ -257,19 +257,19 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         .job_control
                         .foreground()
                         .ok_or(StarryError::NoSuchProcess)?;
-                    (arg as *mut u32).vm_write(foreground.pgid().get())?;
+                    (arg as *mut u32).vm_write(current, foreground.pgid().get())?;
                 }
                 TIOCSPGRP => {
-                    let pgid: u32 = (arg as *const u32).vm_read()?;
+                    let pgid: u32 = (arg as *const u32).vm_read(current)?;
                     let pg = get_process_group_by_number(PgidNumber::try_from(pgid)?)?;
                     self.terminal.job_control.set_foreground(&pg)?;
                 }
                 TIOCGWINSZ => {
                     let window_size = *self.terminal.window_size.lock();
-                    (arg as *mut WindowSize).vm_write(window_size)?;
+                    (arg as *mut WindowSize).vm_write(current, window_size)?;
                 }
                 TIOCSWINSZ => {
-                    let window_size = (arg as *const WindowSize).vm_read()?;
+                    let window_size = (arg as *const WindowSize).vm_read(current)?;
                     let old = {
                         let mut guard = self.terminal.window_size.lock();
                         let old = *guard;
@@ -310,16 +310,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 },
                 TIOCSPTLCK => {}
                 TIOCGPTN => {
-                    (arg as *mut u32).vm_write(self.pty_number())?;
+                    (arg as *mut u32).vm_write(current, self.pty_number())?;
                 }
                 TIOCSCTTY => {
                     self.this
                         .upgrade()
                         .unwrap()
-                        .bind_to(&current().as_thread().proc_data.proc)?;
+                        .bind_to(&current.as_thread().proc_data.proc)?;
                 }
                 TIOCNOTTY => {
-                    let session = current().as_thread().proc_data.proc.group().session();
+                    let session = current.as_thread().proc_data.proc.group().session();
                     let this: Arc<dyn Any + Send + Sync> = self.this.upgrade().unwrap();
                     let binding = self
                         .binding
@@ -327,7 +327,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         .as_ref()
                         .and_then(Weak::upgrade)
                         .unwrap_or(this);
-                    if current()
+                    if current
                         .as_thread()
                         .proc_data
                         .proc
@@ -406,13 +406,37 @@ impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         let _ = self.writer.open();
         if !self.is_ptm {
-            self.terminal.job_control.register(context, events);
+            unsafe { self.terminal.job_control.register_shared(sink, events) };
         }
         if events.contains(IoEvents::IN) {
-            self.ldisc.lock().register_rx_waker(context.waker());
+            let source = self.ldisc.lock().rx_poll_source();
+            unsafe { sink.register_shared(&source, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        let _ = self.writer.open();
+        if !self.is_ptm {
+            unsafe {
+                self.terminal
+                    .job_control
+                    .register_shared(sink.as_shared(), events)
+            };
+        }
+        if events.contains(IoEvents::IN) {
+            let source = self.ldisc.lock().rx_poll_source();
+            unsafe { sink.register_exclusive(&source, IoEvents::IN) };
         }
     }
 }
@@ -427,7 +451,12 @@ impl DeviceOps for CurrentTty {
         Ok(0)
     }
 
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> VfsResult<usize> {
+    fn ioctl(
+        &self,
+        _current: &crate::task::UserTaskRef,
+        _cmd: u32,
+        _arg: usize,
+    ) -> VfsResult<usize> {
         unreachable!()
     }
 
@@ -443,7 +472,8 @@ mod tests {
     use super::{
         Terminal, Termios2, TtyWrite, apply_termios_update, filter_cursor_position_requests,
     };
-    use crate::{StarryResult, sync::Mutex};
+    use crate::StarryResult;
+    use std::sync::Mutex;
 
     struct TermiosOrderWriter {
         terminal: Arc<Terminal>,
@@ -455,7 +485,10 @@ mod tests {
         fn write(&self, _buf: &[u8]) {}
 
         fn drain(&self) -> StarryResult<()> {
-            self.events.lock().push("drain");
+            self.events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push("drain");
             Ok(())
         }
 
@@ -465,7 +498,10 @@ mod tests {
             } else {
                 "configure_before_publish"
             };
-            self.events.lock().push(event);
+            self.events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
             if self.fail_configuration {
                 return Err(crate::StarryError::InvalidInput);
             }
@@ -491,7 +527,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(*events.lock(), vec!["drain", "configure_before_publish"]);
+        assert_eq!(
+            *events.lock().unwrap_or_else(|error| error.into_inner()),
+            vec!["drain", "configure_before_publish"]
+        );
         assert_eq!(terminal.load_termios().baudrate(), Some(115_200));
     }
 

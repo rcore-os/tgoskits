@@ -14,7 +14,7 @@
 
 use core::marker::PhantomData;
 
-use riscv::register::{scause, sie, sstatus};
+use riscv::register::{scause, sstatus};
 use riscv_decode::{
     Instruction,
     types::{IType, SType},
@@ -85,10 +85,39 @@ fn initial_guest_hstatus() -> hstatus::Hstatus {
     // HS accesses performed on behalf of the guest use VS supervisor
     // privilege until a guest trap updates SPVP.
     status.set_spvp(true);
+    // Let the guest execute its normal supervisor instructions without
+    // spuriously trapping them back to the hypervisor.
     status.set_vtvm(false);
     status.set_vtw(false);
     status.set_vtsr(false);
     status
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GuestTimerProgram {
+    deadline: usize,
+    claims_host_clockevent: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SupervisorTimerTrapOwner {
+    HostClockevent,
+    GuestTimerEmulation,
+}
+
+const fn guest_timer_program(deadline: usize) -> GuestTimerProgram {
+    GuestTimerProgram {
+        deadline,
+        claims_host_clockevent: false,
+    }
+}
+
+const fn supervisor_timer_trap_owner() -> SupervisorTimerTrapOwner {
+    if guest_timer_program(0).claims_host_clockevent {
+        SupervisorTimerTrapOwner::GuestTimerEmulation
+    } else {
+        SupervisorTimerTrapOwner::HostClockevent
+    }
 }
 
 #[inline]
@@ -233,24 +262,18 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Runs the vCPU until a host-visible exit occurs.
     pub fn run(&mut self) -> RiscvVcpuResult<RiscvVmExit> {
+        let host_interrupts_enabled = sstatus::read().sie();
         unsafe {
+            // Match Linux KVM's entry contract: only the global interrupt bit
+            // belongs to the world-switch boundary. The physical SIE source
+            // mask remains owned by the host IRQ runtime across guest runs.
             sstatus::clear_sie();
-            sie::set_sext();
-            sie::set_ssoft();
-            // Keep the current HS timer enable state instead of forcing it on
-            // for every VM entry. Guest timer re-arming and host timer users
-            // must manage `stimer` explicitly, otherwise a pending HS timer can
-            // preempt the guest on every re-entry and starve VS interrupt work.
-        }
-        unsafe {
             // Safe to run the guest as it only touches memory assigned to it by being owned
             // by its page table
             _run_guest(&mut self.regs);
-        }
-        unsafe {
-            sie::clear_sext();
-            sie::clear_ssoft();
-            sstatus::set_sie();
+            if host_interrupts_enabled {
+                sstatus::set_sie();
+            }
         }
         self.vmexit_handler()
     }
@@ -472,13 +495,15 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     #[cfg(feature = "sstc")]
     #[inline]
     fn program_guest_timer(&mut self, deadline: usize) -> RiscvVcpuResult {
-        self.regs.vs_csrs.vstimecmp = deadline;
+        let program = guest_timer_program(deadline);
+        self.regs.vs_csrs.vstimecmp = program.deadline;
+        debug_assert!(!program.claims_host_clockevent);
         self.set_virtual_interrupt_pending(S_TIMER, false)?;
         unsafe {
             // The guest has consumed the current VS timer event and programmed
             // a new deadline. Sstc uses the vCPU-owned compare register and
             // never reprograms the host clockevent.
-            vstimecmp::write(deadline);
+            vstimecmp::write(program.deadline);
         }
         Ok(())
     }
@@ -853,9 +878,14 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 Ok(RiscvVmExit::Nothing)
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
-            Trap::Interrupt(Interrupt::SupervisorTimer) => Ok(RiscvVmExit::ExternalInterrupt {
-                vector: S_TIMER as _,
-            }),
+            Trap::Interrupt(Interrupt::SupervisorTimer) => match supervisor_timer_trap_owner() {
+                SupervisorTimerTrapOwner::HostClockevent => Ok(RiscvVmExit::ExternalInterrupt {
+                    vector: S_TIMER as _,
+                }),
+                SupervisorTimerTrapOwner::GuestTimerEmulation => unreachable!(
+                    "guest timer emulation must not claim the host supervisor timer interrupt"
+                ),
+            },
             Trap::Interrupt(Interrupt::SupervisorSoft) => {
                 // Host IPIs and scheduler wakeups use SSIP. Route them through
                 // the host IRQ path so it can acknowledge SSIP before the vCPU
@@ -1344,5 +1374,30 @@ mod tests {
 
         vcpu.set_vseip_level(false);
         assert!(!hvip::Hvip::from_bits(vcpu.regs.virtual_hs_csrs.hvip).vseip());
+    }
+
+    #[test]
+    fn unbound_vcpu_rejects_unbind_before_touching_host_csrs() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+
+        assert_eq!(vcpu.unbind(), Err(RiscvVcpuError::BadState));
+    }
+
+    #[cfg(feature = "sstc")]
+    #[test]
+    fn guest_deadline_does_not_claim_host_clockevent() {
+        let program = guest_timer_program(0x1234_5678);
+
+        assert_eq!(program.deadline, 0x1234_5678);
+        assert!(!program.claims_host_clockevent);
+    }
+
+    #[cfg(feature = "sstc")]
+    #[test]
+    fn supervisor_timer_trap_belongs_to_host_clockevent() {
+        assert_eq!(
+            supervisor_timer_trap_owner(),
+            SupervisorTimerTrapOwner::HostClockevent
+        );
     }
 }

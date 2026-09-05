@@ -9,7 +9,6 @@
 //! - Supporting configuration and utilities (`config`, `endian`, `tool`)
 
 #![no_std]
-
 extern crate alloc;
 
 #[cfg(test)]

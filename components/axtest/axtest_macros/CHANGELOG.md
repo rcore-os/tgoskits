@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a target-owned setup hook to the generated kernel test entry point.
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/axtest-macros-v0.5.14...axtest-macros-v0.5.15) - 2026-08-20
 
 ### Fixed

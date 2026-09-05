@@ -4,7 +4,9 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::{cell::Cell, slice};
+use core::slice;
+#[cfg(all(test, axtest))]
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_fs_ng::vfs::FileBackend;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
@@ -13,14 +15,17 @@ use ax_runtime::hal::{
     paging::{MappingFlags, PageTable, PagingError},
 };
 
+#[cfg(all(test, axtest))]
+use super::{AddrSpace, CloneMapAccounting};
 use super::{
-    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
-    PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
+    Backend, BackendFileInfo, BackendOps, CloneMapContext, MemoryAccounting, PopulateCallback,
+    RssKind, TlbGather, alloc_frame, dealloc_frame, pages_in,
 };
-use crate::{
-    StarryError, StarryResult,
-    sync::{IrqMutex, Mutex},
-};
+#[cfg(all(test, axtest))]
+use crate::mm::aspace::tlb::TlbQuarantine;
+#[cfg(all(test, axtest))]
+use crate::sync::PiMutex;
+use crate::{StarryError, StarryResult, sync::IrqMutex};
 
 struct FrameRefCnt {
     /// Number of address spaces sharing this frame COW. A `u8` overflowed at 255
@@ -29,6 +34,26 @@ struct FrameRefCnt {
     /// uses a 32-bit refcount; `u32` (4 billion sharers) is effectively unbounded
     /// here, and the overflow path now returns `NoMemory` (ENOMEM), not EFAULT.
     count: u32,
+}
+
+pub(crate) struct DeferredFrameRelease {
+    paddr: PhysAddr,
+    page_size: usize,
+    frame_ref: Arc<IrqMutex<FrameRefCnt>>,
+}
+
+impl DeferredFrameRelease {
+    fn new(paddr: PhysAddr, page_size: usize, frame_ref: Arc<IrqMutex<FrameRefCnt>>) -> Self {
+        Self {
+            paddr,
+            page_size,
+            frame_ref,
+        }
+    }
+
+    pub(crate) fn release(self) {
+        self.frame_ref.lock().drop_frame(self.paddr, self.page_size);
+    }
 }
 
 impl FrameRefCnt {
@@ -83,6 +108,24 @@ impl FrameTableRefCount {
 
 static FRAME_TABLE: IrqMutex<FrameTableRefCount> = IrqMutex::new(FrameTableRefCount::new());
 
+#[cfg(all(test, axtest))]
+static COW_ALLOCATIONS_BEFORE_FAILURE: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+#[cfg(all(test, axtest))]
+fn cow_frame_allocation_should_fail() -> bool {
+    match COW_ALLOCATIONS_BEFORE_FAILURE.try_update(
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |remaining| (remaining != usize::MAX).then_some(remaining.saturating_sub(1)),
+    ) {
+        Ok(0) => {
+            COW_ALLOCATIONS_BEFORE_FAILURE.store(usize::MAX, Ordering::Relaxed);
+            true
+        }
+        Ok(_) | Err(_) => false,
+    }
+}
+
 fn cow_file_max_read_len(
     file_len: u64,
     file_end: Option<u64>,
@@ -134,10 +177,11 @@ pub struct CowBackend {
     file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
     name: Option<String>,
     shared: bool,
-    /// True after this address space upgrades the mapping to writable via
-    /// `mprotect(+W)` or a writable `mmap` (per-aspace; fork inherits via
-    /// [`Clone`]).
-    write_upgraded: Cell<bool>,
+}
+
+struct CowFaultPermissions {
+    vma: MappingFlags,
+    pte: MappingFlags,
 }
 
 impl Clone for CowBackend {
@@ -148,7 +192,6 @@ impl Clone for CowBackend {
             file: self.file.clone(),
             name: self.name.clone(),
             shared: self.shared,
-            write_upgraded: Cell::new(self.write_upgraded.get()),
         }
     }
 }
@@ -165,7 +208,6 @@ impl CowBackend {
             file: self.file.clone(),
             name: self.name.clone(),
             shared: self.shared,
-            write_upgraded: Cell::new(self.write_upgraded.get()),
         }
     }
 
@@ -243,6 +285,10 @@ impl CowBackend {
     }
 
     fn alloc_new_frame(&self, zeroed: bool) -> StarryResult<PhysAddr> {
+        #[cfg(all(test, axtest))]
+        if cow_frame_allocation_should_fail() {
+            return Err(StarryError::NoMemory);
+        }
         let frame = alloc_frame(zeroed, self.size)?;
         FRAME_TABLE.lock().init_frame(frame);
         Ok(frame)
@@ -255,7 +301,7 @@ impl CowBackend {
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> StarryResult {
+    ) -> StarryResult<PhysAddr> {
         let kind = self.rss_kind_for_fault(access_flags);
         let frame = self.alloc_new_frame(true)?;
 
@@ -296,96 +342,177 @@ impl CowBackend {
             }
         }
         let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+        let prepared_charge = match acct {
+            Some(acct) => match acct.prepare_new_charge(vaddr, kind) {
+                Ok(charge) => Some(charge),
+                Err(error) => {
+                    self.deinit_frame(frame);
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
         if let Err(err) = pt.map_page(vaddr, frame, self.size, pte_flags) {
             self.deinit_frame(frame);
             return Err(err.into());
         }
-        if let Some(acct) = acct {
-            acct.record_charge(vaddr, kind)?;
+        if let Some(charge) = prepared_charge {
+            charge.commit();
         }
-        Ok(())
+        Ok(frame)
     }
 
-    /// Fill a run of consecutive not-mapped FILE-backed pages with a single
-    /// `read_at` (readahead), then allocate + map each page.
-    fn alloc_file_run(
+    fn rollback_populated_prefix(
+        &self,
+        mapped: &[(VirtAddr, PhysAddr)],
+        acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
+        pt: &mut PageTable,
+    ) {
+        if mapped.is_empty() {
+            return;
+        }
+
+        for &(addr, frame) in mapped.iter().rev() {
+            let (_, _, _, deferred_page_tables) = pt
+                .unmap_page_deferred(addr)
+                .expect("a COW page installed by this transaction must remain occupied");
+            gather.defer_page_tables(deferred_page_tables);
+            if let Some(acct) = acct {
+                let removed = acct.remove_charge(addr);
+                debug_assert!(removed.is_some());
+            }
+            let frame_ref = FRAME_TABLE
+                .lock()
+                .get_frame_ref(frame)
+                .expect("a COW page installed by this transaction must retain its frame owner");
+            gather.defer_frame(DeferredFrameRelease::new(frame, self.size, frame_ref));
+        }
+        let start = mapped.first().expect("checked non-empty prefix").0;
+        let end = mapped.last().expect("checked non-empty prefix").0 + self.size;
+        gather.record_range(VirtAddrRange::new(start, end));
+    }
+
+    /// Populates a consecutive run of absent pages transactionally. File-backed
+    /// runs share one readahead; anonymous runs allocate zeroed pages.
+    fn populate_new_run(
         &self,
         run: &[VirtAddr],
         flags: MappingFlags,
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult<usize> {
-        let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
-            for &addr in run {
-                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-            }
-            return Ok(run.len());
-        };
-        let ps = self.size;
-        let v0 = run[0];
-        if v0.as_usize() < file_vaddr_base.as_usize() {
-            for &addr in run {
-                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-            }
-            return Ok(run.len());
+        if run.is_empty() {
+            return Ok(0);
         }
-        let n = run.len();
-        let total = n * ps;
-        let file_read_offset = file_start + (v0.as_usize() - file_vaddr_base.as_usize()) as u64;
-        let max_read = cow_file_max_read(file, *file_end, file_read_offset, total)?;
-        let mut buf = alloc::vec![0u8; total];
-        if max_read > 0 {
-            file.read_at(&mut &mut buf[..max_read], file_read_offset)?;
-        }
-        let kind = self.rss_kind_for_fault(access_flags);
-        for (k, &addr) in run.iter().enumerate() {
-            let frame = self.alloc_new_frame(false)?;
-            let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
-            dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
-            let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
-            if let Err(err) = pt.map_page(addr, frame, self.size, pte_flags) {
-                self.deinit_frame(frame);
-                return Err(err.into());
+        let mut mapped = Vec::new();
+        mapped
+            .try_reserve(run.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        gather
+            .prepare_deferred_frames(run.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        gather
+            .prepare_page_table_reclaims(run.len())
+            .map_err(|_| StarryError::NoMemory)?;
+
+        let result = (|| -> StarryResult {
+            let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
+                for &addr in run {
+                    let frame = self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
+                    mapped.push((addr, frame));
+                }
+                return Ok(());
+            };
+            let ps = self.size;
+            let v0 = run[0];
+            if v0.as_usize() < file_vaddr_base.as_usize() {
+                for &addr in run {
+                    let frame = self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
+                    mapped.push((addr, frame));
+                }
+                return Ok(());
             }
-            if let Some(acct) = acct {
-                acct.record_charge(addr, kind)?;
+            let n = run.len();
+            let total = n * ps;
+            let file_read_offset = file_start + (v0.as_usize() - file_vaddr_base.as_usize()) as u64;
+            let max_read = cow_file_max_read(file, *file_end, file_read_offset, total)?;
+            let mut buf = alloc::vec![0u8; total];
+            if max_read > 0 {
+                file.read_at(&mut &mut buf[..max_read], file_read_offset)?;
             }
+            let kind = self.rss_kind_for_fault(access_flags);
+            for (k, &addr) in run.iter().enumerate() {
+                let frame = self.alloc_new_frame(false)?;
+                let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
+                dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
+                let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+                let prepared_charge = match acct {
+                    Some(acct) => match acct.prepare_new_charge(addr, kind) {
+                        Ok(charge) => Some(charge),
+                        Err(error) => {
+                            self.deinit_frame(frame);
+                            return Err(error);
+                        }
+                    },
+                    None => None,
+                };
+                if let Err(err) = pt.map_page(addr, frame, self.size, pte_flags) {
+                    self.deinit_frame(frame);
+                    return Err(err.into());
+                }
+                if let Some(charge) = prepared_charge {
+                    charge.commit();
+                }
+                mapped.push((addr, frame));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.rollback_populated_prefix(&mapped, acct, gather, pt);
+            return Err(error);
         }
-        Ok(n)
+        Ok(mapped.len())
     }
 
     fn handle_cow_fault(
         &self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
-        vma_flags: MappingFlags,
-        pte_flags: MappingFlags,
+        permissions: CowFaultPermissions,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
-    ) -> StarryResult {
+    ) -> crate::StarryResult {
+        let shootdown_range = super::super::tlb::checked_range(vaddr, self.size)?;
         let mut frame_table = FRAME_TABLE.lock();
-        let frame = frame_table
+        let frame_ref = frame_table
             .get_frame_ref(paddr)
             .ok_or(StarryError::BadAddress)?;
         drop(frame_table);
-        let mut frame = frame.lock();
-        assert!(frame.count > 0, "invalid frame reference count");
+        let frame_count = frame_ref.lock();
+        assert!(frame_count.count > 0, "invalid frame reference count");
         debug_assert!(
-            frame.count < u32::MAX,
+            frame_count.count < u32::MAX,
             "frame reference count near overflow"
         );
-        match frame.count {
+        match frame_count.count {
             1 => {
-                pt.protect_page(vaddr, vma_flags)?;
+                pt.protect_page(vaddr, permissions.vma)?;
+                gather.record_range(shootdown_range);
                 let defer_write =
-                    self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
+                    self.cow_deferred_file_write(permissions.vma, permissions.pte);
                 if defer_write && let Some(acct) = acct {
                     self.reclassify_or_adopt_cow_write(acct, vaddr);
                 }
                 return Ok(());
             }
             _ => {
+                gather
+                    .prepare_deferred_frames(1)
+                    .map_err(|_| StarryError::NoMemory)?;
                 let new_frame = self.alloc_new_frame(false)?;
                 unsafe {
                     core::ptr::copy_nonoverlapping(
@@ -394,44 +521,21 @@ impl CowBackend {
                         self.size as _,
                     );
                 }
-                if let Err(err) = pt.remap_page(vaddr, new_frame, vma_flags) {
+                if let Err(err) = pt.remap_page(vaddr, new_frame, permissions.vma) {
                     self.deinit_frame(new_frame);
                     return Err(err.into());
                 }
+                gather.record_range(shootdown_range);
                 if self.file.is_some()
                     && let Some(acct) = acct
                 {
                     self.reclassify_or_adopt_cow_write(acct, vaddr);
                 }
-                frame.drop_frame(paddr, self.size);
+                drop(frame_count);
+                gather.defer_frame(DeferredFrameRelease::new(paddr, self.size, frame_ref));
             }
         }
 
-        Ok(())
-    }
-
-    /// Unmap one resident page and drop its per-VA RSS charge.
-    ///
-    /// Regular munmap / MAP_FIXED / shrink paths only; [`super::AddrSpace::move_pages`]
-    /// migrates PTEs directly and uses [`MemoryAccounting::move_charge`] instead.
-    fn unmap_page(
-        &self,
-        addr: VirtAddr,
-        acct: Option<&MemoryAccounting>,
-        pt: &mut PageTable,
-    ) -> StarryResult {
-        if let Ok((frame, _flags, page_size)) = pt.unmap_page(addr) {
-            assert_eq!(page_size, self.size);
-            if let Some(acct) = acct {
-                acct.remove_charge(addr);
-            }
-            let frame_ref = FRAME_TABLE
-                .lock()
-                .get_frame_ref(frame)
-                .ok_or(StarryError::BadAddress)?;
-            let mut frame_ref = frame_ref.lock();
-            frame_ref.drop_frame(frame, self.size);
-        }
         Ok(())
     }
 
@@ -478,6 +582,7 @@ impl CowBackend {
 
 struct CowCloneTransaction<'a> {
     parent_page_table: &'a mut PageTable,
+    gather: &'a mut TlbGather,
     parent_original_flags: Vec<(VirtAddr, MappingFlags)>,
     rollback: PageTableCowCloneRollback<'a>,
     start: VirtAddr,
@@ -489,6 +594,7 @@ struct CowCloneTransaction<'a> {
 impl<'a> CowCloneTransaction<'a> {
     fn new(
         parent_page_table: &'a mut PageTable,
+        gather: &'a mut TlbGather,
         child_page_table: &'a mut PageTable,
         child_acct: Option<&'a MemoryAccounting>,
         start: VirtAddr,
@@ -496,6 +602,7 @@ impl<'a> CowCloneTransaction<'a> {
     ) -> Self {
         Self {
             parent_page_table,
+            gather,
             parent_original_flags: Vec::new(),
             rollback: PageTableCowCloneRollback {
                 page_table: child_page_table,
@@ -530,8 +637,14 @@ impl<'a> CowCloneTransaction<'a> {
         self.parent_original_flags.push((vaddr, original_flags));
         self.parent_page_table
             .protect_page(vaddr, cow_flags)
-            .map(|_| ())
-            .map_err(Into::into)
+            .map_err(StarryError::from)?;
+        // The parent PTE just lost write permission over a frame that is now
+        // shared with the unpublished child. Other CPUs may still hold a stale
+        // writable translation, so the range must join the active shootdown
+        // gather before the cloned address space is published.
+        self.gather
+            .record_range(super::super::tlb::checked_range(vaddr, self.page_size)?);
+        Ok(())
     }
 
     fn record_cloned_page(&mut self, vaddr: VirtAddr) {
@@ -549,8 +662,21 @@ impl Drop for CowCloneTransaction<'_> {
             return;
         }
         while let Some((vaddr, original_flags)) = self.parent_original_flags.pop() {
-            if let Err(err) = self.parent_page_table.protect_page(vaddr, original_flags) {
-                warn!("failed to restore parent COW page {vaddr:?} during rollback: {err}");
+            match self.parent_page_table.protect_page(vaddr, original_flags) {
+                Err(err) => {
+                    warn!("failed to restore parent COW page {vaddr:?} during rollback: {err}");
+                }
+                Ok(_) => {
+                    // The restore re-publishes write permission on a page that
+                    // briefly appeared read-only; flush CPUs that may have
+                    // filled a stale read-only translation of it.
+                    match super::super::tlb::checked_range(vaddr, self.page_size) {
+                        Ok(range) => self.gather.record_range(range),
+                        Err(_) => {
+                            warn!("failed to record rollback shootdown for {vaddr:?}");
+                        }
+                    }
+                }
             }
         }
         while self.cloned_end > self.start {
@@ -574,7 +700,7 @@ impl PageTableCowCloneRollback<'_> {
             child.remove_charge(vaddr);
         }
 
-        let (paddr, _, page_size) = match self.page_table.query(vaddr) {
+        let (paddr, _, page_size) = match self.page_table.query_occupied(vaddr) {
             Ok(mapping) => mapping,
             Err(PagingError::NotMapped) => return,
             Err(err) => {
@@ -609,11 +735,25 @@ impl BackendOps for CowBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Cow::map: {range:?} {flags:?}",);
-        if self.file.is_some() && flags.contains(MappingFlags::WRITE) {
-            self.write_upgraded.set(true);
+        Ok(())
+    }
+
+    fn validate_unmap(&self, range: VirtAddrRange, pt: &PageTable) -> StarryResult {
+        for addr in pages_in(range, self.size)? {
+            match pt.query_occupied(addr) {
+                Ok((frame, _, page_size)) if page_size == self.size => {
+                    if FRAME_TABLE.lock().get_frame_ref(frame).is_none() {
+                        return Err(crate::StarryError::BadAddress);
+                    }
+                }
+                Ok(_) => return Err(crate::StarryError::BadState),
+                Err(PagingError::NotMapped) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(())
     }
@@ -622,11 +762,10 @@ impl BackendOps for CowBackend {
         &self,
         _range: VirtAddrRange,
         new_flags: MappingFlags,
+        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
-        if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
-            self.write_upgraded.set(true);
-        }
+        let _ = new_flags;
         Ok(())
     }
 
@@ -634,11 +773,40 @@ impl BackendOps for CowBackend {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Cow::unmap: {range:?}");
+        let mut mapped = Vec::new();
         for addr in pages_in(range, self.size)? {
-            self.unmap_page(addr, acct, pt)?;
+            match pt.query_occupied(addr) {
+                Ok((frame, _, page_size)) if page_size == self.size => {
+                    let frame_ref = FRAME_TABLE
+                        .lock()
+                        .get_frame_ref(frame)
+                        .ok_or(crate::StarryError::BadAddress)?;
+                    mapped.push((addr, frame, frame_ref));
+                }
+                Ok(_) => return Err(crate::StarryError::BadState),
+                Err(PagingError::NotMapped) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        gather
+            .prepare_deferred_frames(mapped.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        gather
+            .prepare_page_table_reclaims(mapped.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        for (addr, frame, frame_ref) in mapped {
+            let (_, _, _, deferred_page_tables) = pt
+                .unmap_page_deferred(addr)
+                .expect("a preflighted COW page must remain mapped under the address-space lock");
+            gather.defer_page_tables(deferred_page_tables);
+            if let Some(acct) = acct {
+                acct.remove_charge(addr);
+            }
+            gather.defer_frame(DeferredFrameRelease::new(frame, self.size, frame_ref));
         }
         Ok(())
     }
@@ -649,6 +817,7 @@ impl BackendOps for CowBackend {
         flags: MappingFlags,
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
@@ -663,7 +832,17 @@ impl BackendOps for CowBackend {
                     if access_flags.contains(MappingFlags::WRITE)
                         && !page_flags.contains(MappingFlags::WRITE)
                     {
-                        self.handle_cow_fault(addr, paddr, flags, page_flags, acct, pt)?;
+                        self.handle_cow_fault(
+                            addr,
+                            paddr,
+                            CowFaultPermissions {
+                                vma: flags,
+                                pte: page_flags,
+                            },
+                            acct,
+                            gather,
+                            pt,
+                        )?;
                         pages += 1;
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
@@ -671,25 +850,20 @@ impl BackendOps for CowBackend {
                     i += 1;
                 }
                 Err(PagingError::NotMapped) => {
-                    if self.file.is_some() {
-                        let run_start = i;
-                        while i < addrs.len()
-                            && matches!(pt.query(addrs[i]), Err(PagingError::NotMapped))
-                        {
-                            i += 1;
-                        }
-                        pages += self.alloc_file_run(
-                            &addrs[run_start..i],
-                            flags,
-                            access_flags,
-                            acct,
-                            pt,
-                        )?;
-                    } else {
-                        self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-                        pages += 1;
+                    let run_start = i;
+                    while i < addrs.len()
+                        && matches!(pt.query(addrs[i]), Err(PagingError::NotMapped))
+                    {
                         i += 1;
                     }
+                    pages += self.populate_new_run(
+                        &addrs[run_start..i],
+                        flags,
+                        access_flags,
+                        acct,
+                        gather,
+                        pt,
+                    )?;
                 }
                 Err(_) => return Err(StarryError::BadAddress),
             }
@@ -701,19 +875,29 @@ impl BackendOps for CowBackend {
         &self,
         range: VirtAddrRange,
         flags: MappingFlags,
-        old_pt: &mut PageTable,
-        new_pt: &mut PageTable,
-        _new_aspace: &Arc<Mutex<AddrSpace>>,
-        acct: CloneMapAccounting<'_>,
+        context: CloneMapContext<'_>,
     ) -> StarryResult<Backend> {
+        let CloneMapContext {
+            gather,
+            parent_page_table,
+            child_page_table,
+            accounting,
+            ..
+        } = context;
         let cow_flags = flags - MappingFlags::WRITE;
-        let parent_acct = acct.parent;
-        let child_acct = acct.child;
-        let mut transaction =
-            CowCloneTransaction::new(old_pt, new_pt, child_acct, range.start, self.size);
+        let parent_acct = accounting.parent;
+        let child_acct = accounting.child;
+        let mut transaction = CowCloneTransaction::new(
+            parent_page_table,
+            gather,
+            child_page_table,
+            child_acct,
+            range.start,
+            self.size,
+        );
 
         for vaddr in pages_in(range, self.size)? {
-            match transaction.parent_page_table.query(vaddr) {
+            match transaction.parent_page_table.query_occupied(vaddr) {
                 Ok((paddr, pte_flags, page_size)) => {
                     assert_eq!(page_size, self.size);
                     let frame = FRAME_TABLE
@@ -797,7 +981,6 @@ impl Backend {
             file: Some((file, start, file_start, file_end)),
             name: None,
             shared,
-            write_upgraded: Cell::new(false),
         })
     }
 
@@ -808,7 +991,6 @@ impl Backend {
             file: None,
             name: Some(name.to_string()),
             shared: false,
-            write_upgraded: Cell::new(false),
         })
     }
 }
@@ -850,7 +1032,6 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         file: None,
         name: Some("[cow-clone-rollback-test]".to_string()),
         shared: false,
-        write_upgraded: Cell::new(false),
     };
 
     let Ok(mut parent) = AddrSpace::new_empty(start, mapping_size) else {
@@ -878,7 +1059,7 @@ fn cow_clone_map_failure_restores_resources() -> bool {
     let Ok(child) = AddrSpace::new_empty(start, mapping_size) else {
         return false;
     };
-    let child_aspace = Arc::new(Mutex::new(child));
+    let child_aspace = Arc::new(PiMutex::new(child));
     let mut child = child_aspace.lock();
     if child
         .pt
@@ -898,17 +1079,29 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         ..
     } = &mut *child;
 
-    let result = backend.clone_map(
-        VirtAddrRange::from_start_size(start, mapping_size),
-        flags,
+    // The clone transaction can temporarily write-protect parent PTEs and its
+    // failure path restores them. Keep both mutations in one explicit gather,
+    // just like the production `AddrSpace::try_clone` transaction.
+    let mut gather = TlbGather::new();
+    let context = CloneMapContext::new(
+        &mut gather,
         parent_pt,
         child_pt,
         &child_aspace,
         CloneMapAccounting {
-            parent: Some(parent_rss),
-            child: Some(child_rss),
+            parent: Some(&*parent_rss),
+            child: Some(&*child_rss),
         },
     );
+    let result = backend.clone_map(
+        VirtAddrRange::from_start_size(start, mapping_size),
+        flags,
+        context,
+    );
+    let mut quarantine = TlbQuarantine::new();
+    if quarantine.commit(gather, 0).is_err() {
+        return false;
+    }
 
     fn frame_ref_count(paddr: PhysAddr) -> Option<u32> {
         let frame = FRAME_TABLE.lock().get_frame_ref(paddr)?;
@@ -956,6 +1149,53 @@ fn cow_clone_failure_rollback_rules_hold_for_test() -> bool {
     cow_clone_map_failure_restores_resources()
 }
 
+#[cfg(all(test, axtest))]
+fn cow_populate_failure_rolls_back_published_prefix_for_test() -> bool {
+    let start = VirtAddr::from(0x5000_0000);
+    let second_page = start + PAGE_SIZE_4K;
+    let mapping_size = 2 * PAGE_SIZE_4K;
+    let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+    let backend = CowBackend {
+        start,
+        size: PAGE_SIZE_4K,
+        file: None,
+        name: Some("[cow-populate-rollback-test]".to_string()),
+        shared: false,
+    };
+
+    let Ok(mut aspace) = AddrSpace::new_empty(start, mapping_size) else {
+        return false;
+    };
+    if aspace
+        .map(
+            start,
+            mapping_size,
+            flags,
+            false,
+            Backend::Cow(backend),
+        )
+        .is_err()
+    {
+        return false;
+    }
+    let frames_before = FRAME_TABLE.lock().table.len();
+    COW_ALLOCATIONS_BEFORE_FAILURE.store(1, Ordering::Relaxed);
+    let result = aspace.populate_area(start, mapping_size, MappingFlags::READ);
+    COW_ALLOCATIONS_BEFORE_FAILURE.store(usize::MAX, Ordering::Relaxed);
+    let frames_after = FRAME_TABLE.lock().table.len();
+
+    matches!(result, Err(StarryError::NoMemory))
+        && matches!(aspace.pt.query_occupied(start), Err(PagingError::NotMapped))
+        && matches!(
+            aspace.pt.query_occupied(second_page),
+            Err(PagingError::NotMapped)
+        )
+        && aspace.rss.charge_kind(start).is_none()
+        && aspace.rss.charge_kind(second_page).is_none()
+        && aspace.rss.rss_total_pages() == 0
+        && frames_after == frames_before
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(all(test, not(axtest)))]
@@ -974,5 +1214,11 @@ mod tests {
     #[axtest::axtest]
     fn cow_clone_failure_rollback_rules_hold() {
         assert!(super::cow_clone_failure_rollback_rules_hold_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn cow_populate_failure_rolls_back_published_prefix() {
+        assert!(super::cow_populate_failure_rolls_back_published_prefix_for_test());
     }
 }

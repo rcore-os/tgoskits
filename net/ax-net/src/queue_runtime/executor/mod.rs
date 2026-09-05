@@ -12,8 +12,8 @@ use rd_net::{
 
 use super::{
     COMMAND_QUARANTINE, COMMAND_STOP, COMMAND_WAIT, CPU_ROUND_BUDGET, PollGroupState, QUEUE_BUDGET,
-    STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED, STATUS_FAILED, STATUS_READY,
-    SpscConsumer, SpscProducer, TxQueueDiscipline,
+    QueueNotification, STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED, STATUS_FAILED,
+    STATUS_READY, SpscConsumer, SpscProducer, TxQueueDiscipline,
 };
 use crate::device::{EthernetFramePort, NetDeviceError, NetDeviceResult, ProtocolEthernetFrame};
 
@@ -255,22 +255,22 @@ pub(super) struct QueueGroupExecutor {
 }
 
 impl QueueGroupExecutor {
-    fn initialize(&mut self) -> Result<(), NetError> {
+    fn initialize(&mut self, waiter: &ax_task::IrqWorkerWaiter) -> Result<(), NetError> {
         if let Some(mut startup) = self.group.owner_startup.take() {
             let mut progress = startup.start(ax_hal::time::monotonic_time_nanos());
             loop {
                 progress = match progress {
                     Ok(NetOwnerStartupProgress::Ready) => break,
                     Ok(NetOwnerStartupProgress::WaitForInterrupt) => {
-                        self.shared.wait_startup_irq();
+                        self.shared.wait_startup_irq(waiter);
                         startup.advance(ax_hal::time::monotonic_time_nanos())
                     }
                     Ok(NetOwnerStartupProgress::WaitForInterruptUntil { deadline_nanos }) => {
-                        self.shared.wait_startup_deadline(deadline_nanos);
+                        self.shared.wait_startup_deadline(waiter, deadline_nanos);
                         startup.advance(ax_hal::time::monotonic_time_nanos())
                     }
                     Ok(NetOwnerStartupProgress::RetryAt { deadline_nanos }) => {
-                        self.shared.wait_startup_deadline(deadline_nanos);
+                        self.shared.wait_startup_deadline(waiter, deadline_nanos);
                         startup.advance(ax_hal::time::monotonic_time_nanos())
                     }
                     Err(error) => {
@@ -487,12 +487,12 @@ pub(super) struct ExecutorControl {
     pub(super) affinity_status: AtomicU8,
     pub(super) startup_status: AtomicU8,
     pub(super) startup_error: SpinLock<Option<NetError>>,
-    pub(super) notify: Arc<ax_task::IrqNotify>,
+    pub(super) notify: Arc<QueueNotification>,
 }
 
 pub(super) struct ExecutorLease {
     pub(super) control: Arc<ExecutorControl>,
-    pub(super) task: ax_task::AxTaskRef,
+    pub(super) task: ax_task::KernelThreadHandle,
 }
 
 impl ExecutorLease {
@@ -514,16 +514,9 @@ pub(super) fn queue_executor_main(
     mut wifi: Vec<WifiExecutorSlot>,
     control: Arc<ExecutorControl>,
 ) {
-    let affinity = ax_task::AxCpuMask::one_shot(control.owner_cpu);
-    if !ax_task::set_current_affinity(affinity) {
-        control
-            .affinity_status
-            .store(STATUS_FAILED, Ordering::Release);
-        control.notify.notify();
-        quarantine_executor_resources(groups, wifi);
-        return;
-    }
-    ax_task::yield_now();
+    let current = ax_task::current_thread_handle()
+        .unwrap_or_else(|error| panic!("network queue executor has no scheduler thread: {error}"));
+    let waiter = ax_task::IrqWorkerWaiter::new(current.wake_handle());
     if ax_hal::percpu::this_cpu_id() != control.owner_cpu {
         control
             .affinity_status
@@ -538,7 +531,7 @@ pub(super) fn queue_executor_main(
     control.notify.notify();
 
     while control.command.load(Ordering::Acquire) == COMMAND_WAIT {
-        control.notify.wait();
+        control.notify.wait(&waiter);
     }
     if let Some(irq_synchronized) =
         requested_irq_synchronization(control.command.load(Ordering::Acquire))
@@ -549,7 +542,7 @@ pub(super) fn queue_executor_main(
 
     let initialization = groups
         .iter_mut()
-        .try_for_each(QueueGroupExecutor::initialize);
+        .try_for_each(|group| group.initialize(&waiter));
     if let Err(error) = initialization {
         *control.startup_error.lock_irqsave() = Some(error);
     }
@@ -563,7 +556,7 @@ pub(super) fn queue_executor_main(
     );
     control.notify.notify();
     if control.startup_error.lock_irqsave().is_some() {
-        let irq_synchronized = wait_for_cleanup_command(&control);
+        let irq_synchronized = wait_for_cleanup_command(&control, &waiter);
         release_executor_resources(groups, wifi, irq_synchronized);
         return;
     }
@@ -603,7 +596,7 @@ pub(super) fn queue_executor_main(
             }
         }
         if runnable && cpu_work >= CPU_ROUND_BUDGET {
-            ax_task::yield_now();
+            crate::yield_network_thread();
             continue;
         }
         let now_nanos = ax_hal::time::monotonic_time_nanos();
@@ -622,9 +615,9 @@ pub(super) fn queue_executor_main(
                 .chain(groups.iter().filter_map(|group| group.retry_at))
                 .min();
             match executor_wait(ax_hal::time::monotonic_time_nanos(), deadline_nanos) {
-                ExecutorWait::Notification => control.notify.wait(),
+                ExecutorWait::Notification => control.notify.wait(&waiter),
                 ExecutorWait::Deadline(duration) => {
-                    let _ = control.notify.wait_timeout(duration);
+                    control.notify.wait_timeout(&waiter, duration);
                 }
                 ExecutorWait::Ready => {}
             }
@@ -632,14 +625,14 @@ pub(super) fn queue_executor_main(
     }
 }
 
-fn wait_for_cleanup_command(control: &ExecutorControl) -> bool {
+fn wait_for_cleanup_command(control: &ExecutorControl, waiter: &ax_task::IrqWorkerWaiter) -> bool {
     loop {
         if let Some(irq_synchronized) =
             requested_irq_synchronization(control.command.load(Ordering::Acquire))
         {
             return irq_synchronized;
         }
-        control.notify.wait();
+        control.notify.wait(waiter);
     }
 }
 

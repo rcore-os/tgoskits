@@ -20,6 +20,59 @@ use axklib::{
 
 struct KlibImpl;
 
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+type HostIomapHook = fn(PhysAddr, usize) -> KlibResult<VirtAddr>;
+
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+static HOST_IOMAP_HOOK: std::sync::Mutex<Option<HostIomapHook>> = std::sync::Mutex::new(None);
+
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+fn host_iomap_hook() -> std::sync::MutexGuard<'static, Option<HostIomapHook>> {
+    HOST_IOMAP_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Exclusive ownership of a host-test physical-I/O mapping override.
+///
+/// Dropping the token restores the normal runtime mapping path. The token is
+/// deliberately neither `Clone` nor `Copy`, so one test binary cannot publish
+/// two competing mapping providers.
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+pub struct HostIomapOverride {
+    _private: (),
+}
+
+/// Installs one host-test physical-I/O mapping override.
+///
+/// Returns `None` while another live [`HostIomapOverride`] owns the boundary.
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+pub fn try_install_iomap_override(hook: HostIomapHook) -> Option<HostIomapOverride> {
+    let mut slot = host_iomap_hook();
+    if slot.is_some() {
+        return None;
+    }
+    *slot = Some(hook);
+    Some(HostIomapOverride { _private: () })
+}
+
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+impl Drop for HostIomapOverride {
+    fn drop(&mut self) {
+        let removed = host_iomap_hook().take();
+        assert!(
+            removed.is_some(),
+            "a live host iomap override must own the installed hook"
+        );
+    }
+}
+
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+fn try_host_iomap(addr: PhysAddr, size: usize) -> Option<KlibResult<VirtAddr>> {
+    let hook = *host_iomap_hook();
+    hook.map(|hook| hook(addr, size))
+}
+
 #[cfg(feature = "paging")]
 pub(crate) fn map_mm_error(err: ax_mm::MmError) -> KlibError {
     match err {
@@ -29,6 +82,12 @@ pub(crate) fn map_mm_error(err: ax_mm::MmError) -> KlibError {
         ax_mm::MmError::BadAddress => KlibError::BadAddress,
         ax_mm::MmError::BadState(_) => KlibError::BadState,
         ax_mm::MmError::Unsupported => KlibError::Unsupported,
+        ax_mm::MmError::TlbShootdown(error) => match error {
+            ax_hal::cache::TlbShootdownError::CpuOffline
+            | ax_hal::cache::TlbShootdownError::Unsupported => KlibError::Unsupported,
+            ax_hal::cache::TlbShootdownError::Timeout => KlibError::TimedOut,
+            ax_hal::cache::TlbShootdownError::Platform => KlibError::Io,
+        },
     }
 }
 
@@ -83,6 +142,10 @@ impl_trait! {
         /// This function forwards the request to `ax_mm::iomap` and returns the
         /// resulting virtual address wrapped in a `KlibResult`.
         fn mem_iomap(addr: PhysAddr, size: usize) -> KlibResult<VirtAddr> {
+            #[cfg(all(feature = "host-test", not(target_os = "none")))]
+            if let Some(result) = try_host_iomap(addr, size) {
+                return result;
+            }
             #[cfg(feature = "paging")]
             {
                 ax_mm::iomap(addr, size).map_err(map_mm_error)
@@ -126,11 +189,6 @@ impl_trait! {
                     Ok(alias) => alias,
                     Err(crate::kernel_mapping::MappingTransactionError::NotStarted(err)) => {
                         return DmaCoherentMappingOutcome::NotStarted(
-                            crate::error::runtime_error_to_klib_error(err),
-                        );
-                    }
-                    Err(crate::kernel_mapping::MappingTransactionError::StateUncertain(err)) => {
-                        return DmaCoherentMappingOutcome::StateUncertain(
                             crate::error::runtime_error_to_klib_error(err),
                         );
                     }

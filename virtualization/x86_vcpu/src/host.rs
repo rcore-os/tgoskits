@@ -32,8 +32,21 @@ pub trait X86HostOps: X86VlapicHostOps {
     /// Convert nanoseconds to host ticks.
     fn nanos_to_ticks(nanos: u64) -> u64;
 
-    /// Poll the host interrupt controller for a pending vector.
-    fn poll_host_interrupt() -> Option<u8>;
+    /// Services an interrupt that remains pending after an SVM exit.
+    ///
+    /// SVM does not acknowledge the interrupt during VM exit. The caller keeps
+    /// the vCPU pinned and enters with local IRQs disabled; the implementation
+    /// may briefly enable IRQs, but must restore the disabled state before it
+    /// returns.
+    fn service_pending_host_interrupt();
+
+    /// Dispatches and completes a host interrupt acknowledged by VMX.
+    ///
+    /// VMX has already transferred the vector into VM-exit state, so the host
+    /// must synchronously run the matching IRQ action and controller EOI before
+    /// this call returns. The caller keeps local IRQs disabled and the vCPU
+    /// pinned for the complete operation.
+    fn dispatch_acknowledged_host_interrupt(vector: u8);
 }
 
 /// RAII host frame used by x86 VMX/SVM structures.

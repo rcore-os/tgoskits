@@ -183,6 +183,18 @@ impl ActiveIrq {
             Self::V3(active) => active.id(),
         }
     }
+
+    pub fn acknowledge_ipi(&mut self) {
+        match self {
+            Self::V2(active) => active.acknowledge_ipi(),
+            Self::V3(active) => active.acknowledge_ipi(),
+        }
+        // Linux completes the GIC priority drop before entering the logical
+        // IPI handler so a new SGI can become observable immediately.
+        unsafe {
+            core::arch::asm!("isb", options(nostack, preserves_flags));
+        }
+    }
 }
 
 pub fn begin_irq() -> Option<ActiveIrq> {

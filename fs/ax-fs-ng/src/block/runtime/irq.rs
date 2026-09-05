@@ -194,7 +194,7 @@ fn publish_controller_event(target: Option<&ControllerIrqTarget>, event: GroupIr
         return false;
     }
     target.latch.publish(needs_rearm, control.bits());
-    target.notification.notify_from_irq();
+    target.notification.notify();
     true
 }
 
@@ -216,7 +216,7 @@ fn publish_device_event(
         // drains the completion source before the controller observes it.
         let control_bits = if control_deferred { 0 } else { control.bits() };
         target.latch.publish(true, needs_rearm, control_bits);
-        target.notification.notify_from_irq();
+        target.notification.notify();
         activated = true;
         control_deferred |= control_bits != 0;
     }
@@ -229,7 +229,7 @@ fn publish_device_event(
         && let Some(target) = controller_target
     {
         target.latch.publish(needs_rearm, control.bits());
-        target.notification.notify_from_irq();
+        target.notification.notify();
         activated = true;
     }
     activated
@@ -343,9 +343,7 @@ mod tests {
     }
 
     impl BlockNotification for TestNotification {
-        fn notify(&self) {}
-
-        fn notify_from_irq(&self) {
+        fn notify(&self) {
             self.irq_notifications.fetch_add(1, Ordering::AcqRel);
         }
 

@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
+#![cfg_attr(axtest_coverage, feature(coverage_attribute))]
 #![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 #[allow(unused_imports)]
@@ -180,8 +181,22 @@ pub trait SystimerArch: ArchTrait {
     fn systimer_irq_enable();
     fn systimer_irq_disable();
     fn systimer_irq_is_enabled() -> bool;
-    /// Set the timer interval in ticks.
-    fn systimer_set_interval(ticks: usize);
+    /// Programs one absolute deadline in the system-counter domain.
+    fn systimer_set_deadline(deadline_ticks: u64);
+    /// Returns whether IRQ claim must mask this source before controller EOI.
+    fn systimer_requires_irq_quiesce() -> bool;
+    /// Masks the source and discards its programmed one-shot event.
+    fn systimer_cancel_oneshot();
+
+    /// Restores a cancelled one-shot source and installs its next event.
+    ///
+    /// The default ordering matches edge-triggered sources. Level-triggered
+    /// timers whose expired comparator can repend while unmasked must override
+    /// this and install the new comparator first.
+    fn systimer_resume_oneshot(deadline_ticks: u64) {
+        Self::systimer_irq_enable();
+        Self::systimer_set_deadline(deadline_ticks);
+    }
 
     /// Acknowledge and clear the timer interrupt. Timers whose pending state
     /// clears on re-arming keep this default.
@@ -205,16 +220,17 @@ pub trait SystimerArch: ArchTrait {
         }
     }
 
-    /// Arms a one-shot deadline `ticks` from now.
-    fn set_next_event_in_ticks(ticks: usize) {
-        Self::systimer_set_interval(ticks);
+    /// Arms a one-shot at an absolute system-counter deadline.
+    fn set_next_event_at_ticks(deadline_ticks: u64) {
+        Self::systimer_set_deadline(deadline_ticks);
     }
 
     /// Configure the system timer with the desired interval.
     fn set_next_event(interval: core::time::Duration) {
         const NANOS_PER_SEC: u128 = 1_000_000_000;
-        let ticks = (interval.as_nanos() * Self::systimer_freq() as u128 / NANOS_PER_SEC) as usize;
-        Self::systimer_set_interval(ticks);
+        let ticks = (interval.as_nanos() * Self::systimer_freq() as u128 / NANOS_PER_SEC) as u64;
+        let deadline = (Self::systimer_tick() as u64).saturating_add(ticks.max(1));
+        Self::systimer_set_deadline(deadline);
     }
 }
 

@@ -41,7 +41,12 @@
 - `kvm_timer_blocking` 调度最早能够唤醒阻塞 vCPU 的定时器。
 - `kvm_timer_vcpu_load_gic` 根据虚拟 GIC 的 active 状态协调定时器输出，而不是把 host PPI 当成独立的软件中断。
 
-Axvisor 不引入 Linux hrtimer、nested virtualization、VHE 专用切换或 userspace irqchip fallback。客户机架构状态仍由 vCPU/VGIC 持有；host deadline 则映射到 `ax-task` 的统一 per-CPU timer base，并由 `ax-runtime::LocalClockEvent` 独占物理 comparator，以保持相同的所有权与顺序。
+Axvisor 不引入 Linux hrtimer 实现、nested virtualization、VHE 专用切换或 userspace
+irqchip fallback。客户机架构状态仍由 vCPU/VGIC 持有；blocked-vCPU deadline 通过
+`HostTimer` 注册到 `components/ax-task` 的 owner-CPU `CpuDeadlineState`，再由
+`axruntime::LocalClockEvent` 独占物理 comparator。显式 hard restartable callback 对应 Linux
+`HRTIMER_MODE_ABS_HARD` background hrtimer：到期路径只发布完成代次并调用预绑定的
+`ThreadWakeHandle`；`ktimers/%u` 只回收完成后的 callback payload。
 
 ## 状态所有权
 
@@ -55,10 +60,14 @@ Axvisor 不引入 Linux hrtimer、nested virtualization、VHE 专用切换或 us
 | PPI pending/active/enable/EOI | `arm_vgic` | 权威中断状态 |
 | 已 acknowledge 的 host CNTV token | host timer-PPI binding | 排他资源，保留至 VGIC 退休 |
 | assigned-SPI pending/active 状态 | 物理 GIC 与 HW-backed LR | LR 携带经过所有权校验的物理 INTID |
-| WFI 唤醒事件 | `ax-task` hard kernel timer | 仅发布完成代次并唤醒；callback 不 assert PPI |
+| WFI 唤醒事件 | `components/ax-task` owner-CPU hard restartable kernel timer | 仅为 hint；callback 只借用预绑定 `ThreadWakeHandle`，不访问 VGIC |
 | FDT 中断身份 | `GuestTimerProfile` | runtime 绑定与 FDT 生成共同使用 |
 
-通用 channel 不承载定时器 IRQ 状态。`IrqNotify` 与统一 timer base 只传递延迟工作或类型化唤醒能力。Hard IRQ 可以 acknowledge 并 priority-drop 中断源，再发布预分配的通知状态；不得查找 VM、分配内存、获取 `rdrive` 锁或调用 subscriber。
+通用 channel 不承载定时器 IRQ 状态。`CpuDeadlineState` 决定 hard/soft logical deadline 的
+到期，`LocalClockEvent` 是唯一物理 clockevent owner；`ktimers/%u` 执行 soft callback 并回收
+hard callback payload。Hard expiry 只能读取 immutable 或原子发布的状态、执行 bounded atomic
+并调用预绑定的 `ThreadWakeHandle`；不得调用 task-context-only 的 `WaitQueue::notify_*`，也不得
+查找 VM、分配/释放内存、获取 `rdrive`/VGIC/runtime 锁、记录日志或调用 subscriber。
 
 AArch64 hypervisor host 会在每个 GICv2 或 GICv3 CPU interface 上启用 split EOI 模式。因此 `EOIR` 只执行 priority drop，`DIR` 才是显式完成边界。普通 host IRQ dispatch 通过 `ActiveIrq::drop` 同时完成这两个操作，从而保持原有单阶段行为。AxVM 所有的 PPI 和 SPI 使用同一 host 模式，但会把已 acknowledge 的 activation 保留至虚拟中断退休。Timer PPI 把 opaque token 保存在 timer binding 中；assigned SPI 则通过 HW-backed LR 指明物理中断源，不再维护第二份软件 pending 状态。只在 AxVM fast path 启用 split EOI 是错误的，因为该模式属于 CPU interface 状态，并与普通 host IRQ dispatch 共享。
 
@@ -165,17 +174,30 @@ Assigned physical SPI 使用经过所有权校验的 HW-backed LR：
 
 每个已调度 callback 携带：
 
-- 一个由 `Aarch64TimerBinding` 分配的 WFI 等待代次；
+- 一个由通用 `VcpuTimerWaitGeneration` 分配且不回绕的 WFI 等待代次；
 - 一个包含 owner CPU 和不可复用 identity 的 `KernelTimerHandle`；
-- 一个预绑定到当前 vCPU wait queue 节点的 IRQ-safe wake capability。
+- 一个在任务上下文预绑定到当前 vCPU 线程的 IRQ-safe `ThreadWakeHandle`；
+- 一个把 wait arm 绑定到 stable timer registration 的迁移 epoch。
 
-Callback 只校验等待代次：先以 Release 发布完成状态，再使用预绑定的 task ID 从 wait queue 精确摘除并唤醒 vCPU。waiter 在提交阻塞状态后以 Acquire 重查完成代次，因此 wake-before-park 不会丢失。Callback 不获取 VGIC 锁；vCPU 醒来后在重新进入客户机前读取 physical counter 并发布 timer level。事件过早到达时，hard callback 只重新 arm 同一稳定 registration。它绝不只根据 host callback assert PPI。
+vCPU 线程首次 arm 时绑定 `ThreadWakeHandle`。Callback 同时校验 registration epoch 与等待
+代次，先以 Release 发布完成状态，再借用该 handle 唤醒线程；waiter 在提交阻塞状态后以
+Acquire 重查完成代次，因此 wake-before-park 不会丢失。Callback 不调用 `WaitQueue`、不查找
+runtime/VM registry，也不 clone/drop owning reference或获取 VGIC 锁。vCPU 醒来后在重新进入
+客户机前读取 physical counter 并发布 timer level。事件过早到达时，hard callback 只重新 arm
+同一 stable registration；它绝不只根据 host callback assert PPI。
 
 取消操作使用 handle 中记录的 owner CPU。远程 cancel/disarm 只修改该 owner 的逻辑 base，不跨 CPU 重写物理 comparator；允许旧 comparator 产生一次保守 stale IRQ。迁移时先推进 timer epoch、销毁旧 owner 注册，再在当前 CPU 建立稳定 registration，因此旧 callback 无法完成新等待代次。
 
-物理 comparator 由 `ax-runtime::LocalClockEvent` 独占。其 `Offline / Idle / Armed / Firing` 状态机携带 CPU epoch 与 arm generation：timer IRQ 先 claim 当前 arm，再推进 `ax-task` 的有界到期批次，最后把 scheduler tick 和最早逻辑期限合并并只编程一次。逻辑 timer base 只在锁外发布“更早期限”，不推断硬件 pending/active 状态。
+物理 comparator 由 `axruntime::LocalClockEvent` 独占。其
+`Offline / Idle / Armed / Firing / Deferred` 状态机携带 CPU epoch 与 scheduler publication
+generation：timer IRQ 先 claim 当前 arm，再推进 `components/ax-task` 的有界到期批次，最后把
+scheduler tick 和最早逻辑期限合并并只编程一次。逻辑 deadline owner 不推断硬件
+pending/active 状态，也不跨 CPU 编程 comparator。
 
-Reset、stop 和 drop 通过 `Aarch64TimerBinding::invalidate_wait` 推进等待代次。`ArmTimerContext` 只保存架构寄存器状态和 loaded 标志，不拥有调度代次；因此清空 timer context 不会让旧 callback 再次有效。
+Reset、stop 和 drop 通过 `Aarch64TimerBinding::invalidate_wait` 清除 armed generation，并在
+teardown 中取消当前 handle。下一次 arm 取得新的 generation；`ArmTimerContext` 只保存架构
+寄存器状态和 loaded 标志，不拥有调度代次，因此清空 timer context 不会让旧 callback 再次
+有效。
 
 ## 固件契约
 
@@ -230,7 +252,7 @@ Runtime vCPU 绑定和 FDT 安装校验并消费同一份 `GuestTimerProfile`；
 
 合入前，验证矩阵还必须完成：
 
-- QEMU AArch64 GICv2 与 GICv3 timer stress，覆盖 SMP、WFI 和重复 sleep；
+- QEMU AArch64 GICv2 与 GICv3 timer stress，覆盖 SMP、WFI 和重复 sleep；GICv3 还须在 `taskset -c 0` 限制为单 host CPU 的同一测试下通过，用于确定性覆盖 background timer 早到、restart 与 vCPU wake 的争用路径；
 - 现有 x86 VMX/SVM、RISC-V 与 Phytium smoke；
 - RK3568 连续三次启动到达客户机 marker，且不发生 epoch jump；
 - RK3588/OrangePi-5-Plus 重复通过，防止破坏既有路径；

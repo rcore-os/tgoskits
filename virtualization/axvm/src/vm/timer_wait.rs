@@ -37,6 +37,14 @@ impl VcpuTimerWaitGeneration {
         VcpuTimerWaitToken { generation }
     }
 
+    /// Returns the currently armed generation after observing its published
+    /// arm-side state.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn armed_token(&self) -> Option<VcpuTimerWaitToken> {
+        let generation = self.armed.load(Ordering::Acquire);
+        (generation != 0).then_some(VcpuTimerWaitToken { generation })
+    }
+
     /// Claims one generation and publishes completion before its wake.
     pub(crate) fn complete(&self, token: VcpuTimerWaitToken) -> bool {
         if self

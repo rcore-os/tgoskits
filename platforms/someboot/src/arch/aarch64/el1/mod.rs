@@ -237,6 +237,11 @@ pub fn systick_irq_disable() {
     }
 }
 
+pub fn systick_stop_oneshot() {
+    systick_irq_disable();
+    timer::aarch64_deadline::el1::disarm(&El1TimerRegisters, timer::aarch64_timer_mode());
+}
+
 pub fn systick_irq_enable() {
     match timer::aarch64_timer_mode() {
         ArchTimerMode::El1Virt => CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::CLEAR),
@@ -275,10 +280,10 @@ impl timer::aarch64_deadline::el1::TimerRegisters for El1TimerRegisters {
     }
 }
 
-pub fn systick_set_interval(ticks: usize) {
-    timer::aarch64_deadline::el1::program(
+pub fn systick_set_deadline(deadline_ticks: u64) {
+    timer::aarch64_deadline::el1::program_deadline(
         &El1TimerRegisters,
         timer::aarch64_timer_mode(),
-        ticks as u64,
+        deadline_ticks,
     );
 }

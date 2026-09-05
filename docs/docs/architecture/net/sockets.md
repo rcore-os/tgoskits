@@ -137,7 +137,8 @@ backend 对照表说明“共享”只发生在外观和若干辅助能力层，
 
 ### 3.1 通用选项状态
 
-`GeneralOptions` 被 TCP、UDP、raw、Unix、vsock transport 复用，用来维护通用 socket option 和阻塞等待入口：
+`GeneralOptions` 被 TCP、UDP、raw、Unix、vsock transport 复用，用来维护通用 socket
+option 和生成 OS 可执行的非阻塞/超时等待策略。它不 park 当前任务，也不解释用户信号：
 
 ```rust
 // general.rs
@@ -566,11 +567,14 @@ pub struct BindSlot {
 Unix socket 的 accept 使用 transport 自己的 `Pollable`，不涉及 `request_poll()` 或 smoltcp：
 
 ```rust
-let (transport, peer_addr) =
-    block_on(poll_io(&self.transport, IoEvents::IN, nonblocking, || {
-        self.transport.try_accept()
-    }))?;
+let future = poll_socket_io(&self.transport, IoEvents::IN, nonblocking, || {
+    self.transport.try_accept()
+});
+let (transport, peer_addr) = os_wait(future, timeout, signal_policy)?;
 ```
+
+这里的 `os_wait` 表示 consuming OS 的执行边界，不是 `ax-net` public API；ArceOS 和
+StarryOS 分别用自己的 scheduler/user-wait 语义驱动同一个 task-neutral future。
 
 namespace 绑定代码只建立地址到 socket 的可见关联，实际 payload 传输仍由具体 `Transport` 拥有。Unix Stream 使用成对 ring buffer，和路径解析或文件系统节点生命周期分离。
 
@@ -651,7 +655,9 @@ pub struct VsockSocket {
 
 #### 6.2.1 Vsock 连接管理
 
-`vsock::connection_manager` 是 AF_VSOCK stream 的全局状态表，维护监听、连接中、已连接和关闭对象以及对应 waiters。设备事件通过独立 poll Worker 写入这一管理器，无法立即交付的事件保留在 pending queue，而不会进入 IP `SocketSet`。
+`vsock::connection_manager` 是 AF_VSOCK stream 的全局状态表，维护监听、连接中、已连接
+和关闭对象以及对应 waiters。设备事件由固定 CPU 的 IRQ worker 写入这一管理器，无法立即
+交付的事件保留在 worker-owned pending queue，而不会进入 IP `SocketSet`。
 
 ```rust
 pub enum ConnectionState {
@@ -679,28 +685,30 @@ pub struct VsockConnectionManager {
 
 每条连接拥有 `VSOCK_RX_BUFFER_SIZE = 64 KiB` 的 RX ring。设备收到数据后写入对应 connection 的 RX ring 并唤醒 `rx_wakers`；socket `recv()` 从 ring 消费。发送路径调用 `device::vsock_send()`，当 peer credit 或设备侧压力不足时通过 `tx_wait_queue` 短暂等待。
 
-vsock 设备层还有一个临时 RX buffer 和 pending event queue：
+vsock IRQ worker 还有一个临时 RX buffer 和有界 pending event queue：
 
-- `VSOCK_RX_TMPBUF_SIZE = 4 KiB`：poll task 从 `rdif_vsock::Interface` 拉取事件时使用的临时接收缓冲。
-- `PENDING_EVENTS`：当事件暂时无法完整交付给 manager（例如目标连接 RX ring 空间不足）时保存事件，后续 poll 周期继续处理，避免直接丢弃设备事件。
+- `VSOCK_RX_TMPBUF_SIZE = 4 KiB`：worker 从 `rdif_vsock::Interface` 拉取 event payload 时使用的临时接收缓冲。
+- pending event queue：当目标 connection RX ring 空间不足时保存 event；socket 消费 RX ring 后精准请求 worker 重试，不依赖 timer。
 
-连接管理器列表定义 vsock 全局状态与事件所有者，但这些状态需要设备事件持续推进。独立轮询 Worker 负责完成这一工作，并通过引用计数避免为每个 socket 重复创建后台任务。
+connection manager 定义 vsock 全局 socket 状态，设备 runtime 则拥有唯一 worker、IRQ
+registration、transport endpoint 和 pending event。worker 生命周期绑定设备初始化/销毁，
+不由 socket 数量或连接 lease 控制。
 
-#### 6.2.2 Vsock 轮询 Worker
+#### 6.2.2 Vsock IRQ Worker
 
-vsock 设备不进入 smoltcp poll。`start_vsock_poll()` / `stop_vsock_poll()` 使用引用计数控制一个独立 poll task：
+vsock 设备不进入 smoltcp poll。driver 必须一次性转移三个相互配对的 capability：
 
 ```text
-first active vsock socket
-  -> start_vsock_poll()
-  -> spawn vsock-poll task
-
-last active vsock socket dropped
-  -> stop_vsock_poll()
-  -> poll task observes refcount=0 and exits
+rdif-vsock Interface       -> task-context event/data operations
+VsockHardIrqEndpoint       -> hard IRQ ACK/coalesce only
+VsockPollIrqControl        -> task-context quiesce/rearm/shutdown
 ```
 
-poll task 从 `rdif_vsock::Interface` 拉取事件，并分发到 `VSOCK_CONN_MANAGER`：
+runtime 把 worker 固定到 Ethernet queue runtime 选出的 protocol owner CPU。初始化顺序为
+spawn/pin worker、register disabled IRQ、worker 初始 quiesce+drain+rearm、enable IRQ；失败时
+按相反顺序同步回收。hard IRQ 不解析 event 或唤醒 socket，只 ACK/coalesce 并向
+`IrqWaitCell` 发布 sticky notification。worker 醒来后按预算从 `rdif_vsock::Interface`
+拉取事件，并分发到 `VSOCK_CONN_MANAGER`：
 
 | 事件 | manager 动作 |
 | --- | --- |
@@ -710,44 +718,48 @@ poll task 从 `rdif_vsock::Interface` 拉取事件，并分发到 `VSOCK_CONN_MA
 | credit update | 唤醒 TX wait queue |
 | disconnect | 标记 close，唤醒 RX/connect waiters |
 
-poll 频率自适应：有事件时降低 sleep interval，长时间 idle 时逐步退回较长 interval，避免空轮询占用 CPU。
+worker 完成一轮 drain 后调用 `rearm_and_check()`；若 ACK、deferred probe 或 late event
+落在 rearm 窗口内，立即继续 drain，否则无限期 park。该闭环与 Linux virtio-vsock 的
+callback disable/drain/re-enable race check 语义一致，不存在自适应 sleep、周期轮询或
+“最迟一次”兜底。
 
 ## 7. 轮询唤醒
 
-socket 阻塞语义基于 `Pollable` + `poll_io()`。应用线程通常只注册 waker 并等待 readiness；IP 协议栈由唯一 protocol executor 推进，本地 transport 使用自己的 poll set。UDP drop 的同步 egress flush 只发布 generation 并等待该 generation 完成，调用线程不会取得 smoltcp ownership。
+socket 等待语义基于 `Pollable` + task-neutral `poll_socket_io()`。future 只负责
+check/register/recheck，应用线程如何 park、timeout、取消或响应 signal 由 consuming OS
+决定；IP 协议栈由唯一 protocol executor 推进，本地 transport 使用自己的 poll set。
+UDP drop 的同步 egress flush 只发布 generation 并等待该 generation 完成，调用线程不会
+取得 smoltcp ownership。
 
 ### 7.1 通用轮询辅助
 
-`GeneralOptions` 提供 send/recv 两类阻塞辅助，把 nonblocking、timeout、信号中断和 `PollSet` 注册收敛为各 backend 可复用的等待规则。helper 只协调用户线程何时重试操作，不负责推进 smoltcp；IP socket 仍需通过 `request_poll()` 激活唯一 protocol executor。
+`SocketOps` 的 `try_send()`、`try_recv()`、`try_accept()`、`start_connect()` 与
+`connect_status()` 都只执行一次非阻塞状态转换。`send_wait_policy()` /
+`recv_wait_policy()` 从 `GeneralOptions` 返回 `SocketWaitPolicy`，但不会取得调度器所有权。
 
 ```rust
-pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
-    &self,
+pub async fn poll_socket_io<P, F, T>(
     pollable: &P,
-    extra_nonblocking: bool,
-    f: F,
-) -> NetResult<T> {
-    block_on(timeout(
-        self.send_timeout(),
-        poll_io(
-            pollable,
-            IoEvents::OUT,
-            self.nonblocking() || extra_nonblocking,
-            f,
-        ),
-    ))?
-}
+    events: IoEvents,
+    nonblocking: bool,
+    operation: F,
+) -> NetResult<T>;
 ```
 
-`poll_io()` 的流程：
+`poll_socket_io()` 的流程：
 
 1. 先执行一次 socket 操作闭包。
 2. 如果成功，直接返回。
 3. 如果返回 `WouldBlock` 且是 nonblocking 或 `MSG_DONTWAIT`，立即返回错误。
-4. 否则调用 `Pollable::register()` 注册 waker，挂起当前任务。
-5. 被唤醒或 timeout 后重试闭包。
+4. 否则注册 exclusive waker，再执行一次操作以闭合 readiness-versus-registration 窗口。
+5. 仍不可用时返回 `Pending`；future 被 drop 时清理 registrar，防止 timeout/signal 后留下 stale waiter。
 
-通用 helper 列表只规定等待和重试机制，不定义某个 transport 何时可读写。IP Socket readiness 由 smoltcp buffer 与连接状态产生，并额外通过设备事件推动下一轮协议处理。
+ArceOS 用自己的 executor 和相对 timeout 驱动该 future；StarryOS 用
+`block_on_user_timeout()` 同时观察用户 signal。按 Linux socket 语义，已完成或部分完成的
+I/O 优先返回；无限等待被 signal 打断时可进入 syscall restart policy，有限
+`SO_SNDTIMEO`/`SO_RCVTIMEO` 等待被 signal 打断时返回不可自动 restart 的 `EINTR`。
+这些策略不进入 `ax-net`。IP Socket readiness 由 smoltcp buffer 与连接状态产生，并额外
+通过设备事件推动下一轮协议处理。
 
 ### 7.2 IP Socket 就绪状态
 
@@ -773,15 +785,9 @@ impl Pollable for UdpSocket {
 注册 readiness 时分两层：
 
 - 向 smoltcp socket 注册 recv/send waker，等待协议 socket buffer 状态变化。
-- `GeneralOptions::register_waker()` 注册协议 deadline 并发布 generation；真实设备 IRQ 直接精准调度对应 poll group，queue executor 在发布 RX ring 后再请求协议推进。
+- `poll_socket_io()` 通过 socket 的 `Pollable` 注册 exclusive waker；真实设备 IRQ 直接精准调度对应 poll group，queue executor 在发布 RX ring 后再请求协议推进。
 
 socket waker 观察协议 buffer，queue IRQ 路径观察硬件 work，两者通过 SPSC ring 和 generation 汇合。`DeviceBinding` 只参与路由选择；无关网卡 IRQ 不会唤醒该 socket 对应的硬件 group。
-
-```rust
-pub fn register_waker(&self, waker: &Waker) {
-    get_service().register_waker(self.device_binding(), waker);
-}
-```
 
 TCP listener 还有额外 accept waker：`ListenTable::register_accept_waker()` 会把 userspace waker 放到 listener 的 `accept_poll`，并把 `accept_poll` 转成 waker 注册到 pending child 的 recv/send readiness 上。
 

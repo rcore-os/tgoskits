@@ -46,7 +46,10 @@ pub mod io_mpx;
     any(feature = "lockdep-baseline", feature = "lockdep-detect",)
 ))]
 pub mod lockdep;
-#[cfg(all(feature = "memtest", feature = "ax-std"))]
+#[cfg(all(
+    feature = "ax-std",
+    any(feature = "mem-stage1-transition", feature = "memtest")
+))]
 pub mod mem;
 #[cfg(all(feature = "net-loopback", feature = "ax-std"))]
 pub mod net;
@@ -56,11 +59,19 @@ pub mod net;
         feature = "sched-cfs",
         feature = "sched-rr",
         feature = "task-affinity",
+        feature = "task-fair-idle-pull",
+        feature = "task-fair-wake-idle-sibling",
         feature = "task-ipi",
         feature = "task-irq",
+        feature = "task-kernel-timer",
         feature = "task-mutex",
         feature = "task-parallel",
+        feature = "task-pi-mutex",
+        feature = "task-preempt-guard",
         feature = "task-priority",
+        feature = "task-rt-policy",
+        feature = "task-scheduler-irq-window",
+        feature = "task-scheduler-owner-claim",
         feature = "task-sleep",
         feature = "task-smp-online",
         feature = "task-stack-guard-page",
@@ -117,15 +128,56 @@ test_runner!(
 );
 test_runner!("lockdep-detect", run_lockdep_detect, lockdep::detect::run);
 test_runner!("memtest", run_memtest, mem::test::run);
+test_runner!(
+    "mem-stage1-transition",
+    run_mem_stage1_transition,
+    mem::stage1_transition::run
+);
 test_runner!("net-loopback", run_net_loopback, net::loopback::run);
-test_runner!("sched-cfs", run_sched_cfs, task::priority::run);
-test_runner!("sched-rr", run_sched_rr, task::priority::run);
+test_runner!("sched-cfs", run_sched_cfs, task::priority::run_cfs);
+test_runner!("sched-rr", run_sched_rr, task::priority::run_rr);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
+test_runner!(
+    "task-fair-idle-pull",
+    run_task_fair_idle_pull,
+    task::fair_idle_pull::run
+);
+test_runner!(
+    "task-fair-wake-idle-sibling",
+    run_task_fair_wake_idle_sibling,
+    task::fair_wake_idle_sibling::run
+);
 test_runner!("task-ipi", run_task_ipi, task::ipi::run);
 test_runner!("task-irq", run_task_irq, task::irq::run);
+test_runner!(
+    "task-kernel-timer",
+    run_task_kernel_timer,
+    task::kernel_timer::run
+);
 test_runner!("task-mutex", run_task_mutex, task::mutex::run);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
-test_runner!("task-priority", run_task_priority, task::priority::run);
+test_runner!("task-pi-mutex", run_task_pi_mutex, task::pi_mutex::run);
+test_runner!(
+    "task-preempt-guard",
+    run_task_preempt_guard,
+    task::preempt_guard::run
+);
+test_runner!(
+    "task-priority",
+    run_task_priority,
+    task::priority::run_priority
+);
+test_runner!("task-rt-policy", run_task_rt_policy, task::rt_policy::run);
+test_runner!(
+    "task-scheduler-irq-window",
+    run_task_scheduler_irq_window,
+    task::scheduler_irq_window::run
+);
+test_runner!(
+    "task-scheduler-owner-claim",
+    run_task_scheduler_owner_claim,
+    task::scheduler_owner_claim::run
+);
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
 test_runner!(
     "task-smp-online",
@@ -205,6 +257,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "memtest")]
     TestCase::new("memtest", "memory allocator and collections", run_memtest),
+    #[cfg(feature = "mem-stage1-transition")]
+    TestCase::new(
+        "mem-stage1-transition",
+        "SMP kernel stage-1 mapping transition",
+        run_mem_stage1_transition,
+    ),
     #[cfg(feature = "net-loopback")]
     TestCase::new(
         "net-loopback",
@@ -221,14 +279,44 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "task-affinity")]
     TestCase::new("task-affinity", "task CPU affinity", run_task_affinity),
+    #[cfg(feature = "task-fair-idle-pull")]
+    TestCase::new(
+        "task-fair-idle-pull",
+        "late Fair backlog kicks an idle CPU",
+        run_task_fair_idle_pull,
+    ),
+    #[cfg(feature = "task-fair-wake-idle-sibling")]
+    TestCase::new(
+        "task-fair-wake-idle-sibling",
+        "Fair wake selects an idle sibling",
+        run_task_fair_wake_idle_sibling,
+    ),
     #[cfg(feature = "task-ipi")]
-    TestCase::new("task-ipi", "IPI callback delivery", run_task_ipi),
+    TestCase::new("task-ipi", "IPI wake and hard-call delivery", run_task_ipi),
     #[cfg(feature = "task-irq")]
     TestCase::new("task-irq", "task IRQ state", run_task_irq),
+    #[cfg(feature = "task-kernel-timer")]
+    TestCase::new(
+        "task-kernel-timer",
+        "shared kernel timer callbacks",
+        run_task_kernel_timer,
+    ),
     #[cfg(feature = "task-mutex")]
     TestCase::new("task-mutex", "mutex contention and wakeup", run_task_mutex),
     #[cfg(feature = "task-parallel")]
     TestCase::new("task-parallel", "parallel computation", run_task_parallel),
+    #[cfg(feature = "task-pi-mutex")]
+    TestCase::new(
+        "task-pi-mutex",
+        "PI mutex late wake after waiter exit",
+        run_task_pi_mutex,
+    ),
+    #[cfg(feature = "task-preempt-guard")]
+    TestCase::new(
+        "task-preempt-guard",
+        "nested preemption exit stays on the decrement-only path",
+        run_task_preempt_guard,
+    ),
     #[cfg(all(
         feature = "task-priority",
         not(any(feature = "sched-cfs", feature = "sched-rr"))
@@ -237,6 +325,24 @@ const SELECTED_TESTS: &[TestCase] = &[
         "task-priority",
         "task priority scheduling smoke",
         run_task_priority,
+    ),
+    #[cfg(feature = "task-rt-policy")]
+    TestCase::new(
+        "task-rt-policy",
+        "default FIFO bypasses disabled RT bandwidth",
+        run_task_rt_policy,
+    ),
+    #[cfg(feature = "task-scheduler-irq-window")]
+    TestCase::new(
+        "task-scheduler-irq-window",
+        "IRQ-return scheduler passes reopen local interrupts",
+        run_task_scheduler_irq_window,
+    ),
+    #[cfg(feature = "task-scheduler-owner-claim")]
+    TestCase::new(
+        "task-scheduler-owner-claim",
+        "no-switch scheduler frame avoids redundant CPU owner claims",
+        run_task_scheduler_owner_claim,
     ),
     #[cfg(feature = "task-sleep")]
     TestCase::new("task-sleep", "bounded task sleeps", run_task_sleep),

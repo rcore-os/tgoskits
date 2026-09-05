@@ -1,7 +1,10 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-use super::{STATE_DISABLED, STATE_IDLE, STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED};
+use super::{
+    QueueNotification, STATE_DISABLED, STATE_IDLE, STATE_MASK, STATE_MISSED, STATE_POLLING,
+    STATE_SCHEDULED,
+};
 
 /// Observable queue statistics used by SMP contract tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,12 +77,12 @@ impl QueueStatsAtomic {
 pub(super) struct PollGroupState {
     pub(super) state: AtomicU8,
     pub(super) owner_cpu: usize,
-    notify: Arc<ax_task::IrqNotify>,
+    notify: Arc<QueueNotification>,
     pub(super) stats: QueueStatsAtomic,
 }
 
 impl PollGroupState {
-    pub(super) fn new(owner_cpu: usize, notify: Arc<ax_task::IrqNotify>) -> Self {
+    pub(super) fn new(owner_cpu: usize, notify: Arc<QueueNotification>) -> Self {
         Self {
             state: AtomicU8::new(STATE_DISABLED),
             owner_cpu,
@@ -109,21 +112,25 @@ impl PollGroupState {
         if self.is_disabled() {
             // During owner startup queues stay disabled, but the startup
             // state machine still needs the IRQ notification to advance.
-            self.notify.notify_irq();
+            self.notify.notify();
         } else if self.publish_schedule() {
-            self.notify.notify_irq();
+            self.notify.notify();
         }
     }
 
-    pub(super) fn wait_startup_irq(&self) {
-        self.notify.wait();
+    pub(super) fn wait_startup_irq(&self, waiter: &ax_task::IrqWorkerWaiter) {
+        self.notify.wait(waiter);
     }
 
-    pub(super) fn wait_startup_deadline(&self, deadline_nanos: u64) {
+    pub(super) fn wait_startup_deadline(
+        &self,
+        waiter: &ax_task::IrqWorkerWaiter,
+        deadline_nanos: u64,
+    ) {
         let now = ax_hal::time::monotonic_time_nanos();
         if deadline_nanos > now {
             let duration = core::time::Duration::from_nanos(deadline_nanos - now);
-            self.notify.wait_timeout(duration);
+            self.notify.wait_timeout(waiter, duration);
         }
     }
 

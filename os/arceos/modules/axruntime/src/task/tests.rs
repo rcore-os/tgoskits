@@ -1,0 +1,550 @@
+use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use super::*;
+
+static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
+    on_switch_in: ignore_extension_switch_in,
+    on_switch_out: ignore_extension_switch_out,
+    on_exit: ignore_extension_thread_event,
+    on_deadline_overrun: ignore_extension_thread_event,
+    drop: count_extension_drop,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InjectedResourceFailure {
+    Stack,
+    MissingStackHandle,
+    Tls,
+    MissingTlsHandle,
+    Context,
+    MissingContextHandle,
+    StackRollback,
+    TlsRollback,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceEvent {
+    AllocateStack,
+    AllocateTls,
+    CreateKernelContext,
+    CreateUserContext,
+    DeallocateTls,
+    DeallocateStack,
+}
+
+struct InjectedResourceBackend {
+    failure: InjectedResourceFailure,
+    events: Vec<ResourceEvent>,
+}
+
+impl InjectedResourceBackend {
+    fn new(failure: InjectedResourceFailure) -> Self {
+        Self {
+            failure,
+            events: Vec::new(),
+        }
+    }
+}
+
+impl ThreadResourceBackend for InjectedResourceBackend {
+    fn allocate_stack(&mut self, _request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
+        self.events.push(ResourceEvent::AllocateStack);
+        match self.failure {
+            InjectedResourceFailure::Stack => Err(RuntimeStatus::NoMemory),
+            InjectedResourceFailure::MissingStackHandle => Ok(StackHandle::NONE),
+            _ => {
+                // SAFETY: the injected backend owns this inert identity and
+                // intercepts every matching deallocation in the same test.
+                Ok(unsafe { StackHandle::from_raw(0x1000) })
+            }
+        }
+    }
+
+    fn deallocate_stack(&mut self, _stack: StackHandle) -> RuntimeStatus {
+        self.events.push(ResourceEvent::DeallocateStack);
+        if self.failure == InjectedResourceFailure::StackRollback {
+            RuntimeStatus::Busy
+        } else {
+            RuntimeStatus::Success
+        }
+    }
+
+    fn allocate_tls(&mut self, _request: TlsRequest) -> RuntimeHandleResult {
+        self.events.push(ResourceEvent::AllocateTls);
+        match self.failure {
+            InjectedResourceFailure::Tls | InjectedResourceFailure::StackRollback => {
+                RuntimeHandleResult::failure(RuntimeStatus::NoMemory)
+            }
+            InjectedResourceFailure::MissingTlsHandle => {
+                RuntimeHandleResult::success(TlsHandle::NONE.into_raw())
+            }
+            _ => RuntimeHandleResult::success(0x2000),
+        }
+    }
+
+    fn deallocate_tls(&mut self, _tls: TlsHandle) -> RuntimeStatus {
+        self.events.push(ResourceEvent::DeallocateTls);
+        if self.failure == InjectedResourceFailure::TlsRollback {
+            RuntimeStatus::Busy
+        } else {
+            RuntimeStatus::Success
+        }
+    }
+
+    fn create_kernel_context(&mut self, _request: KernelContextRequest) -> RuntimeHandleResult {
+        self.events.push(ResourceEvent::CreateKernelContext);
+        match self.failure {
+            InjectedResourceFailure::Context | InjectedResourceFailure::TlsRollback => {
+                RuntimeHandleResult::failure(RuntimeStatus::NoMemory)
+            }
+            InjectedResourceFailure::MissingContextHandle => RuntimeHandleResult::success(0),
+            _ => RuntimeHandleResult::success(0x3000),
+        }
+    }
+
+    fn create_user_context(&mut self, _request: UserContextRequest) -> RuntimeHandleResult {
+        self.events.push(ResourceEvent::CreateUserContext);
+        match self.failure {
+            InjectedResourceFailure::Context | InjectedResourceFailure::TlsRollback => {
+                RuntimeHandleResult::failure(RuntimeStatus::NoMemory)
+            }
+            InjectedResourceFailure::MissingContextHandle => RuntimeHandleResult::success(0),
+            _ => RuntimeHandleResult::success(0x3000),
+        }
+    }
+}
+
+#[test]
+fn missing_outer_runtime_extension_is_not_an_error() {
+    assert_eq!(
+        classify_runtime_extension(None, 0),
+        Ok(RuntimeExtensionKind::Missing)
+    );
+}
+
+#[test]
+fn foreign_outer_runtime_extension_remains_an_error() {
+    assert_eq!(
+        classify_runtime_extension(Some(&TEST_EXTENSION_OPS), usize::MAX),
+        Err(TaskError::InvalidConfiguration)
+    );
+}
+
+#[test]
+fn matching_runtime_ops_reject_malformed_extension_data() {
+    assert_eq!(
+        classify_runtime_extension(Some(&RUNTIME_THREAD_EXTENSION_OPS), 0),
+        Err(TaskError::InvalidRuntimeHandle)
+    );
+    assert_eq!(
+        classify_runtime_extension(Some(&RUNTIME_THREAD_EXTENSION_OPS), 1),
+        Err(TaskError::InvalidRuntimeHandle)
+    );
+
+    let data = RuntimeThreadData {
+        entry: crate::sync::SpinLock::new(None),
+        exit_code: AtomicI32::new(0),
+        exit_completed: AtomicBool::new(false),
+        join_wait: WaitQueue::new(),
+        os_extension: None,
+        start: Arc::new(RuntimeThreadStart::new()),
+        _name: String::new(),
+    };
+    assert_eq!(
+        classify_runtime_extension(
+            Some(&RUNTIME_THREAD_EXTENSION_OPS),
+            core::ptr::from_ref(&data).expose_provenance(),
+        ),
+        Ok(RuntimeExtensionKind::Runtime)
+    );
+}
+
+#[test]
+fn runtime_outer_extension_forwards_os_scheduler_tick_work() {
+    let callbacks = AtomicUsize::new(0);
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let callback_data = (&callbacks as *const AtomicUsize).expose_provenance();
+    let os_extension = unsafe {
+        ThreadExtension::new(callback_data, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(gate, count_scheduler_tick_work)
+    };
+    let data = Box::into_raw(Box::new(RuntimeThreadData::new(
+        Box::new(|| {}),
+        String::from("tick-forwarding"),
+        Some(os_extension),
+        Arc::new(RuntimeThreadStart::new()),
+    )))
+    .expose_provenance();
+    let outer = unsafe { runtime_thread_extension(data) };
+
+    assert!(
+        outer.scheduler_tick_work_gate().is_some(),
+        "the scheduler-owned outer extension must retain OS tick interest"
+    );
+    assert_eq!(
+        unsafe { outer.forward_scheduler_tick_work(ThreadId::from_parts(1, 1), 42) },
+        Some(SchedulerTickWorkDisposition::Complete)
+    );
+    assert_eq!(callbacks.load(Ordering::Acquire), 1);
+    drop(outer);
+}
+
+#[test]
+fn runtime_outer_extension_forwards_running_policy_observations() {
+    let callbacks = AtomicUsize::new(0);
+    let callback_data = (&callbacks as *const AtomicUsize).expose_provenance();
+    let os_extension = unsafe {
+        ThreadExtension::new(callback_data, &TEST_EXTENSION_OPS)
+            .with_running_policy_applied_hook(count_policy_applied)
+    };
+    let data = Box::into_raw(Box::new(RuntimeThreadData::new(
+        Box::new(|| {}),
+        String::from("policy-forwarding"),
+        Some(os_extension),
+        Arc::new(RuntimeThreadStart::new()),
+    )))
+    .expose_provenance();
+    let outer = unsafe { runtime_thread_extension(data) };
+
+    assert!(outer.running_policy_applied_hook().is_some());
+    assert!(unsafe {
+        outer.forward_running_policy_applied(
+            ThreadId::from_parts(1, 1),
+            SchedulePolicy::default(),
+            42,
+        )
+    });
+    assert_eq!(callbacks.load(Ordering::Acquire), 1);
+    drop(outer);
+}
+
+#[test]
+fn invalid_spawn_releases_transferred_extension() {
+    let extension_drops = AtomicUsize::new(0);
+    // SAFETY: the call fails synchronously and drops the extension before
+    // this stack-owned counter leaves scope.
+    let extension = unsafe {
+        ThreadExtension::new(
+            (&extension_drops as *const AtomicUsize).expose_provenance(),
+            &TEST_EXTENSION_OPS,
+        )
+    };
+
+    // SAFETY: this call transfers the test extension's unique logical ownership.
+    let result = unsafe {
+        spawn_raw_with_extension_and_affinity(
+            || {},
+            String::from("invalid-stack"),
+            0,
+            Some(extension),
+            None,
+        )
+    };
+
+    assert!(matches!(result, Err(TaskError::InvalidConfiguration)));
+    assert_eq!(extension_drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn thread_resource_creation_rolls_back_every_failed_stage() {
+    let cases: &[(InjectedResourceFailure, &[ResourceEvent])] = &[
+        (
+            InjectedResourceFailure::Stack,
+            &[ResourceEvent::AllocateStack],
+        ),
+        (
+            InjectedResourceFailure::MissingStackHandle,
+            &[ResourceEvent::AllocateStack],
+        ),
+        (
+            InjectedResourceFailure::Tls,
+            &[
+                ResourceEvent::AllocateStack,
+                ResourceEvent::AllocateTls,
+                ResourceEvent::DeallocateStack,
+            ],
+        ),
+        (
+            InjectedResourceFailure::MissingTlsHandle,
+            &[
+                ResourceEvent::AllocateStack,
+                ResourceEvent::AllocateTls,
+                ResourceEvent::DeallocateStack,
+            ],
+        ),
+        (
+            InjectedResourceFailure::Context,
+            &[
+                ResourceEvent::AllocateStack,
+                ResourceEvent::AllocateTls,
+                ResourceEvent::CreateKernelContext,
+                ResourceEvent::DeallocateTls,
+                ResourceEvent::DeallocateStack,
+            ],
+        ),
+        (
+            InjectedResourceFailure::MissingContextHandle,
+            &[
+                ResourceEvent::AllocateStack,
+                ResourceEvent::AllocateTls,
+                ResourceEvent::CreateKernelContext,
+                ResourceEvent::DeallocateTls,
+                ResourceEvent::DeallocateStack,
+            ],
+        ),
+    ];
+
+    for &(injected, expected_events) in cases {
+        let mut backend = InjectedResourceBackend::new(injected);
+        let result = create_thread_resources_with(
+            &mut backend,
+            4096,
+            unreachable_test_entry,
+            InitialContextState::kernel(),
+        );
+
+        match (injected, result) {
+            (
+                InjectedResourceFailure::MissingTlsHandle
+                | InjectedResourceFailure::MissingStackHandle
+                | InjectedResourceFailure::MissingContextHandle,
+                Err(failure),
+            ) => {
+                let (error, unreleased) = failure.into_parts();
+                assert_eq!(error, TaskError::InvalidRuntimeHandle);
+                assert_eq!(unreleased, None);
+            }
+            (_, Err(failure)) => {
+                let (error, unreleased) = failure.into_parts();
+                assert_eq!(
+                    error,
+                    TaskError::RuntimeFailure(RuntimeStatus::NoMemory as u32)
+                );
+                assert_eq!(unreleased, None);
+            }
+            (_, Ok(_)) => panic!("injected resource failure unexpectedly succeeded"),
+        }
+        assert_eq!(backend.events, expected_events);
+    }
+}
+
+#[test]
+fn failed_resource_rollback_returns_every_live_handle() {
+    let cases = [
+        (
+            InjectedResourceFailure::StackRollback,
+            UnreleasedThreadResources {
+                stack: unsafe {
+                    // SAFETY: the injected backend treats this as an inert
+                    // identity and deliberately rejects its first release.
+                    StackHandle::from_raw(0x1000)
+                },
+                tls: TlsHandle::NONE,
+            },
+            alloc::vec![
+                ResourceEvent::AllocateStack,
+                ResourceEvent::AllocateTls,
+                ResourceEvent::DeallocateStack,
+            ],
+        ),
+        (
+            InjectedResourceFailure::TlsRollback,
+            UnreleasedThreadResources {
+                stack: StackHandle::NONE,
+                tls: unsafe {
+                    // SAFETY: the injected backend treats this as an inert
+                    // identity and deliberately rejects its first release.
+                    TlsHandle::from_raw(0x2000)
+                },
+            },
+            alloc::vec![
+                ResourceEvent::AllocateStack,
+                ResourceEvent::AllocateTls,
+                ResourceEvent::CreateKernelContext,
+                ResourceEvent::DeallocateTls,
+                ResourceEvent::DeallocateStack,
+            ],
+        ),
+    ];
+
+    for (injected, expected_unreleased, expected_events) in cases {
+        let mut backend = InjectedResourceBackend::new(injected);
+        let failure = create_thread_resources_with(
+            &mut backend,
+            4096,
+            unreachable_test_entry,
+            InitialContextState::kernel(),
+        )
+        .unwrap_err();
+        let (error, unreleased) = failure.into_parts();
+
+        assert_eq!(
+            error,
+            TaskError::RuntimeFailure(RuntimeStatus::NoMemory as u32)
+        );
+        assert_eq!(unreleased, Some(expected_unreleased));
+        assert_eq!(backend.events, expected_events);
+    }
+}
+
+#[test]
+fn failed_user_context_creation_preserves_address_space_identity_during_rollback() {
+    let mut backend = InjectedResourceBackend::new(InjectedResourceFailure::Context);
+    let address_space = TaskAddressSpace::new(ax_memory_addr::PhysAddr::from(0x4000), ()).unwrap();
+
+    let result = create_thread_resources_with(
+        &mut backend,
+        4096,
+        unreachable_test_entry,
+        InitialContextState::user(address_space),
+    );
+
+    let (error, unreleased) = result.unwrap_err().into_parts();
+    assert_eq!(
+        error,
+        TaskError::RuntimeFailure(RuntimeStatus::NoMemory as u32)
+    );
+    assert_eq!(unreleased, None);
+    assert_eq!(
+        backend.events,
+        [
+            ResourceEvent::AllocateStack,
+            ResourceEvent::AllocateTls,
+            ResourceEvent::CreateUserContext,
+            ResourceEvent::DeallocateTls,
+            ResourceEvent::DeallocateStack,
+        ]
+    );
+}
+
+#[test]
+fn secondary_bootstrap_retires_before_entering_idle_loop() {
+    let bootstrap = ThreadId::from_parts(1, 1);
+    let idle = ThreadId::from_parts(2, 1);
+
+    assert_eq!(
+        idle_entry_action(Some(bootstrap), Some(idle)).unwrap(),
+        IdleEntryAction::RetireBootstrap,
+    );
+    assert_eq!(
+        idle_entry_action(Some(idle), Some(idle)).unwrap(),
+        IdleEntryAction::RunIdle,
+    );
+}
+
+#[test]
+fn entry_extension_lookup_does_not_pin_exited_thread() {
+    std::thread::spawn(|| {
+        use core::mem::MaybeUninit;
+
+        use cpu_local::{CpuAreaPrefix, CpuAreaRef, CpuIndex, ExecutionContextHeader};
+
+        let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
+        let base = storage.as_mut_ptr() as usize;
+        storage.write(CpuAreaPrefix::initialize(CpuIndex::try_from(0).unwrap(), base).unwrap());
+        // SAFETY: the leaked prefix is initialized and remains mapped for the
+        // modeled CPU's complete process lifetime.
+        let area = unsafe { CpuAreaRef::from_initialized_base(base) }.unwrap();
+        // SAFETY: this fresh host thread owns its CPU-local register model.
+        unsafe { cpu_local::install_cpu_area(area) }.unwrap();
+        let current = Box::pin(ExecutionContextHeader::new());
+        // SAFETY: the modeled CPU is offline and the pinned header outlives
+        // every scheduler/runtime operation in this thread.
+        unsafe {
+            cpu_local::with_cpu_pin(|pin| {
+                cpu_local::install_bootstrap_context(pin, current.as_ref()).unwrap();
+            })
+        }
+        .unwrap();
+
+        let extension_drops = AtomicUsize::new(0);
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let extension_data = (&extension_drops as *const AtomicUsize).expose_provenance();
+        // SAFETY: this test reaps the thread and runs the matching drop
+        // callback before the stack-owned counter leaves scope.
+        let extension = unsafe { ThreadExtension::new(extension_data, &TEST_EXTENSION_OPS) };
+        let spec = ThreadSpec::new(SchedulePolicy::default()).with_extension(extension);
+        let handle = system.create_thread(spec).unwrap();
+        let lease = system
+            .thread_extension_lease(handle.clone())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            extension_data_after_releasing_lease(lease, &TEST_EXTENSION_OPS).unwrap(),
+            extension_data
+        );
+        system.mark_exited(handle.id()).unwrap();
+        assert!(
+            system
+                .service_deferred_task_work(1)
+                .unwrap()
+                .made_progress(),
+            "the exit callback must finish before the test isolates extension-lease ownership"
+        );
+        system.reap_thread_handle(handle).unwrap();
+        assert_eq!(extension_drops.load(Ordering::Acquire), 1);
+    })
+    .join()
+    .expect("modeled CPU fixture must finish without a current-register mismatch");
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn bootstrap_thread_rejects_a_missing_tls_resource() {
+    // SAFETY: this inert non-zero identity is never dereferenced because
+    // validation rejects the missing TLS resource first.
+    let context = unsafe { ExecutionContextHandle::from_raw(1) };
+    let result = assemble_bootstrap_resources(context, TlsHandle::NONE);
+
+    assert!(matches!(result, Err(TaskError::InvalidRuntimeHandle)));
+}
+
+unsafe extern "Rust" fn ignore_extension_thread_event(_data: usize, _thread: ThreadId) {}
+
+unsafe extern "Rust" fn ignore_extension_switch_in(
+    _data: usize,
+    _thread: ThreadId,
+    _policy: SchedulePolicy,
+) {
+}
+
+unsafe extern "Rust" fn ignore_extension_switch_out(
+    _data: usize,
+    _thread: ThreadId,
+    _reason: SwitchReason,
+) {
+}
+
+unsafe extern "C" fn unreachable_test_entry() -> ! {
+    panic!("invalid user context must not invoke its entry")
+}
+
+unsafe extern "Rust" fn count_extension_drop(data: usize) {
+    // SAFETY: each test keeps its stack-owned counter live until it
+    // synchronously observes the extension's matching drop callback.
+    let drops = unsafe { &*ptr::with_exposed_provenance::<AtomicUsize>(data) };
+    drops.fetch_add(1, Ordering::Release);
+}
+
+unsafe extern "Rust" fn count_scheduler_tick_work(
+    data: usize,
+    _thread: ThreadId,
+    _observed_ns: u64,
+) -> SchedulerTickWorkDisposition {
+    let callbacks = unsafe { &*ptr::with_exposed_provenance::<AtomicUsize>(data) };
+    callbacks.fetch_add(1, Ordering::Release);
+    SchedulerTickWorkDisposition::Complete
+}
+
+unsafe extern "Rust" fn count_policy_applied(
+    data: usize,
+    _thread: ThreadId,
+    _policy: SchedulePolicy,
+    _observed_ns: u64,
+) {
+    let callbacks = unsafe { &*ptr::with_exposed_provenance::<AtomicUsize>(data) };
+    callbacks.fetch_add(1, Ordering::Release);
+}

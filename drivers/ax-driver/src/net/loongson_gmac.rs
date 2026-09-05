@@ -1177,15 +1177,15 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         OnProbeError::other(format!("failed to init {DEVICE_NAME} from FDT: {err}"))
     })?;
     let binding_info = gmac_binding_info(&info)?;
-    let irq = binding_info.irq_num();
+    let irq_source_count = binding_info.irq_sources().len();
     let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
         dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(&info),
         dma_api::DmaConstraints::new(u64::MAX),
     ));
-    plat_dev.register_net_with_info(DEVICE_NAME, dev, dma, binding_info);
+    plat_dev.register_net_with_info(DEVICE_NAME, dev, dma, binding_info)?;
     info!(
-        "registered {DEVICE_NAME} network device: irq={irq:?}, \
+        "registered {DEVICE_NAME} network device: irq_sources={irq_source_count}, \
          mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         mac_address[0],
         mac_address[1],

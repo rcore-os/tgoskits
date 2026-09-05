@@ -38,9 +38,9 @@ OPP。A55 是 ring-only：其 RK806 轨电压读路径存在硬件限制（MISO 
 
 ## 2. 负载归因契约
 
-governor 收到的 `busy[i]` 是**逻辑 CPU i** 的累计忙计数（内核调度 tick 维护，见
-`ax_task::cpu_busy_ticks` 与 entry.rs 的采样循环），而调频域是物理集群。归因要回答的问
-题是：逻辑 CPU i 实际运行在哪个物理集群上。
+governor 收到的 `busy_runtime_ns[i]` 是**逻辑 CPU i** 的累计非 idle 运行时间（ns；由
+ax-task 在调度事务结算当前非 idle task 时累计，经 axruntime 公共 runtime facade 读取），
+而调频域是物理集群。归因要回答的问题是：逻辑 CPU i 实际运行在哪个物理集群上。
 
 ### 2.1 逻辑编号的拥有者
 

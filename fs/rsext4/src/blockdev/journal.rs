@@ -166,9 +166,6 @@ impl<B: BlockIo> Jbd2Dev<B> {
             return Err(Ext4Error::corrupted().with_operation("jbd2:ring_geometry"));
         }
         if super_block.is_v1() {
-            if super_block.s_errno != 0 {
-                return Err(Ext4Error::journal_aborted().with_operation("jbd2:recorded_error"));
-            }
             Self::transaction_capacity(
                 super_block,
                 self.inner.block_size() as usize,
@@ -195,9 +192,6 @@ impl<B: BlockIo> Jbd2Dev<B> {
                 }
             }
             Jbd2ChecksumMode::None | Jbd2ChecksumMode::CompatChecksum => {}
-        }
-        if super_block.s_errno != 0 {
-            return Err(Ext4Error::journal_aborted().with_operation("jbd2:recorded_error"));
         }
         Self::transaction_capacity(super_block, self.inner.block_size() as usize, mapped_blocks)?;
         Ok(())
@@ -931,6 +925,26 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.journal_blocks = journal_blocks;
         self.system = Some(Self::make_system(super_block, journal_start_block));
         Ok(())
+    }
+
+    /// Returns whether this journal records an error from a previous mount.
+    pub(crate) fn has_recorded_journal_error(&self) -> bool {
+        self.system
+            .as_ref()
+            .is_some_and(|system| system.jbd2_super_block.s_errno != 0)
+    }
+
+    /// Clears a previous mount's durable journal error after ext4 has recorded it.
+    pub(crate) fn clear_recorded_journal_error(&mut self) -> Ext4Result<()> {
+        self.ensure_not_aborted("jbd2:clear_error_after_abort")?;
+        self.ensure_journal_state_reinstallable()?;
+        let Some(system) = self.system.as_mut() else {
+            return Err(Ext4Error::corrupted().with_operation("jbd2:clear_error_without_state"));
+        };
+        if system.jbd2_super_block.s_errno == 0 {
+            return Ok(());
+        }
+        system.clear_recorded_error_with_mapping(&mut self.inner, &self.journal_blocks)
     }
 
     /// Forces the running transaction's commit record without checkpointing it.
@@ -4363,10 +4377,28 @@ mod tests {
         assert_eq!(recorded.s_start, superblock.s_first);
 
         let mut remount = Jbd2Dev::initial_jbd2dev(0, inner, true);
-        let error = remount
+        remount
             .set_journal_superblock(recorded, AbsoluteBN::new(128))
-            .expect_err("a later mount must reject the recorded journal error");
-        assert_eq!(error.kind(), crate::Ext4ErrorKind::JournalAborted);
+            .expect("a later mount must load a journal error from the previous lifetime");
+        assert!(remount.has_recorded_journal_error());
+
+        remount.inner._device_mut().fail_fua = true;
+        let clear_error = remount
+            .clear_recorded_journal_error()
+            .expect_err("a failed FUA must not clear the in-memory journal error");
+        assert_eq!(clear_error.kind(), crate::Ext4ErrorKind::Io);
+        assert!(remount.has_recorded_journal_error());
+
+        remount.inner._device_mut().fail_fua = false;
+        remount
+            .clear_recorded_journal_error()
+            .expect("the recorded error must clear durably after ext4 records it");
+        assert!(!remount.has_recorded_journal_error());
+        let inner = remount.into_inner();
+        assert_eq!(inner.fua_writes, 3);
+        let cleared =
+            JournalSuperBlock::from_disk_bytes(&inner.data[journal_offset..journal_offset + 1024]);
+        assert_eq!(cleared.s_errno, 0);
     }
 
     #[test]

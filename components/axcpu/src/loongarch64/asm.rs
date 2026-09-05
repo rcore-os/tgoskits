@@ -2,15 +2,36 @@
 
 use core::arch::asm;
 
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use loongArch64::register::{
-    crmd,
+    asid, crmd,
     ecfg::{self, LineBasedInterrupt},
     eentry, pgdh, pgdl,
 };
 
+const INVTLB_ADDR_GTRUE_OR_ASID: usize = 0x06;
+const TLB_PAIR_SIZE: usize = PAGE_SIZE_4K * 2;
+
 #[cfg(feature = "tls")]
 use crate::KernelTlsBase;
+
+core::arch::global_asm!(
+    ".balign 16",
+    ".global __axcpu_wait_for_irqs_disabled",
+    ".global __axcpu_loongarch_idle_start",
+    ".global __axcpu_loongarch_idle_exit",
+    "__axcpu_wait_for_irqs_disabled:",
+    "__axcpu_loongarch_idle_start:",
+    "ori $t0, $zero, 4",
+    "csrxchg $t0, $t0, 0x0",
+    "idle 0",
+    "__axcpu_loongarch_idle_exit:",
+    "ret",
+);
+
+unsafe extern "C" {
+    fn __axcpu_wait_for_irqs_disabled();
+}
 
 /// Allows the current CPU to respond to interrupts.
 #[inline]
@@ -54,6 +75,21 @@ fn set_local_irq_line_enabled(line: LineBasedInterrupt, enabled: bool) {
 #[inline]
 pub fn wait_for_irqs() {
     unsafe { asm!("idle 0", options(nomem, nostack)) }
+}
+
+/// Waits for an interrupt after the caller masks local IRQ delivery.
+///
+/// LoongArch requires `CRMD.IE` to be set when `IDLE` executes. The assembly
+/// window updates `CRMD.IE` immediately before `IDLE`; the trap path
+/// fast-forwards an interrupt inside that window to its exit label. The
+/// function returns with local IRQs enabled.
+#[inline]
+pub fn wait_for_irqs_disabled() {
+    debug_assert!(!irqs_enabled());
+    // SAFETY: the caller has masked local IRQ delivery. The assembly routine
+    // only updates CRMD.IE, executes IDLE, and returns after the trap path has
+    // preserved or fast-forwarded its continuation.
+    unsafe { __axcpu_wait_for_irqs_disabled() }
 }
 
 /// Halt the current CPU.
@@ -129,12 +165,19 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
             //
             // formats: invtlb op, asid, addr
             //
-            // op 0x5: Clear all page table entries with G=0 and ASID equal to the
-            // register specified ASID, and VA equal to the register specified VA.
-            //
-            // When the operation indicated by op does not require an ASID, the
-            // general register rj should be set to r0.
-            asm!("dbar 0; invtlb 0x05, $r0, {reg}", reg = in(reg) vaddr.as_usize());
+            // LoongArch TLB entries map an even/odd page pair. Match Linux's
+            // local_flush_tlb_one() by invalidating from the pair base and by
+            // including global entries; op 0x5 would leave a stale kernel
+            // translation installed. Supplying the live ASID also makes the
+            // same operation valid for current user-space mappings.
+            let pair_base = vaddr.as_usize() & !(TLB_PAIR_SIZE - 1);
+            let current_asid = asid::read().asid();
+            asm!(
+                "dbar 0; invtlb {op}, {asid}, {addr}",
+                op = const INVTLB_ADDR_GTRUE_OR_ASID,
+                asid = in(reg) current_asid,
+                addr = in(reg) pair_base,
+            );
         } else {
             // op 0x0: Clear all page table entries
             asm!("dbar 0; invtlb 0x00, $r0, $r0");

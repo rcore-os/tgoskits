@@ -1,14 +1,10 @@
 //! Per-CPU local APIC (xAPIC MMIO / x2APIC MSR) driver core.
 //!
-//! All register operations go through `x2apic::lapic::LocalApic`. Because the
-//! `x2apic` API is `!Send`/`!Sync` and takes `&mut self`, this wrapper holds
-//! only immutable configuration and builds a short-lived `LocalApic` per
-//! operation on the caller's stack: every access then targets the *current*
-//! CPU's local APIC (MSRs are per-CPU by definition and the xAPIC MMIO page is
-//! identical on all CPUs), so the wrapper stays `Sync` with no interior
-//! mutability and no lock in the EOI path. The per-operation cost is one
-//! CPUID read, comparable to the per-operation `IA32_APIC_BASE` MSR read the
-//! previous in-glue implementations paid for mode detection.
+//! Bring-up uses `x2apic::lapic::LocalApic` to program the complete device.
+//! Once bring-up selects the current CPU's register space, runtime EOI and
+//! clockevent operations use that cached mode directly. This mirrors Linux's
+//! per-CPU LAPIC clockevent device: capability discovery and handle building
+//! stay out of `set_next_event` and IRQ completion.
 //!
 //! A few operations the `x2apic` 0.5 public API cannot express are kept as a
 //! private raw-access supplement at the bottom of this file. Each documents
@@ -26,6 +22,16 @@ pub enum ApicMode {
     XApic,
     /// MSR-mapped x2APIC.
     X2Apic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalApicAccess {
+    BringUp,
+    Runtime(ApicMode),
+}
+
+const fn runtime_access(mode: ApicMode) -> LocalApicAccess {
+    LocalApicAccess::Runtime(mode)
 }
 
 /// Static per-system local APIC configuration.
@@ -64,13 +70,13 @@ const LVT_MASKED: u32 = 1 << 16;
 
 /// OS-facing local APIC driver.
 ///
-/// The instance is plain configuration plus the mapped xAPIC MMIO page, so it
-/// can live in a global static and be shared across CPUs. Hardware state is
-/// only touched through per-operation [`x2apic::lapic::LocalApic`]
-/// instances.
+/// The instance is installed in the owning CPU's runtime area after bring-up.
+/// Runtime register operations use the mode selected by that bring-up and do
+/// not repeat capability discovery.
 pub struct X86LocalApic {
     config: LocalApicConfig,
     xapic_mmio_base: VirtAddr,
+    access: LocalApicAccess,
 }
 
 impl X86LocalApic {
@@ -95,6 +101,7 @@ impl X86LocalApic {
         Self {
             config,
             xapic_mmio_base,
+            access: LocalApicAccess::BringUp,
         }
     }
 
@@ -111,7 +118,7 @@ impl X86LocalApic {
     /// The caller must ensure the current CPU's APIC may safely be reprogrammed
     /// (early boot, interrupts disabled, no interrupt sources routed to the
     /// vectors in `config` yet).
-    pub unsafe fn bring_up(&self) -> Result<(), ApicError> {
+    pub unsafe fn bring_up(&mut self) -> Result<(), ApicError> {
         // `x2apic::LocalApic::enable` only manages the x2APIC bit; the global
         // APIC-enable bit must be set before any register access.
         unsafe {
@@ -138,14 +145,20 @@ impl X86LocalApic {
                 });
             }
         }
+        self.access = runtime_access(current_apic_mode());
         Ok(())
     }
 
     /// Signals end-of-interrupt for the current CPU's most recent interrupt.
     pub fn eoi(&self) {
-        let mut lapic = self.instance();
         unsafe {
-            lapic.end_of_interrupt();
+            write_apic_register(
+                self.xapic_mmio_base,
+                self.runtime_mode(),
+                XAPIC_REG_EOI,
+                X2APIC_EOI,
+                0,
+            );
         }
     }
 
@@ -161,7 +174,7 @@ impl X86LocalApic {
     /// Fails with [`ApicError::XapicDestinationOverflow`] on xAPIC systems
     /// whose destination id does not fit the 8-bit ICR-high field.
     pub fn send_fixed_ipi(&self, dest_apic_id: u32, vector: u8) -> Result<(), ApicError> {
-        match current_apic_mode() {
+        match self.runtime_mode() {
             // x2apic encodes the destination in ICR bits 63:32, which is the
             // architectural x2APIC layout.
             ApicMode::X2Apic => {
@@ -190,7 +203,7 @@ impl X86LocalApic {
     /// immediate by definition, so no delivery wait applies) and the xAPIC
     /// self-shorthand ICR otherwise, followed by a delivery wait.
     pub fn send_self_ipi(&self, vector: u8) -> Result<(), ApicError> {
-        if current_apic_mode() == ApicMode::X2Apic {
+        if self.runtime_mode() == ApicMode::X2Apic {
             let mut lapic = self.instance();
             unsafe {
                 lapic.send_ipi_self(vector);
@@ -207,27 +220,64 @@ impl X86LocalApic {
 
     /// Masks or unmasks the LVT timer entry on the current CPU.
     pub fn timer_set_masked(&self, masked: bool) {
-        let mut lapic = self.instance();
+        let mode = self.runtime_mode();
         unsafe {
-            if masked {
-                lapic.disable_timer();
-            } else {
-                lapic.enable_timer();
+            let current = read_apic_register(
+                self.xapic_mmio_base,
+                mode,
+                XAPIC_REG_LVT_TIMER,
+                X2APIC_LVT_TIMER,
+            );
+            let next = timer_lvt_with_mask(current, masked);
+            write_apic_register(
+                self.xapic_mmio_base,
+                mode,
+                XAPIC_REG_LVT_TIMER,
+                X2APIC_LVT_TIMER,
+                next,
+            );
+        }
+    }
+
+    /// Completes a posted xAPIC timer-mask update before programming a TSC
+    /// deadline through its MSR comparator.
+    ///
+    /// Legacy initial-count programming remains in the same MMIO ordering
+    /// domain, while x2APIC LVT writes are already serializing MSR accesses.
+    pub fn timer_serialize_mask_update(&self) {
+        if requires_timer_mask_fence(
+            self.runtime_mode(),
+            matches!(self.config.timer_mode, TimerMode::TscDeadline),
+        ) {
+            unsafe {
+                core::arch::asm!("mfence", options(nostack, preserves_flags));
             }
         }
     }
 
     /// Returns whether the LVT timer entry is currently unmasked.
     pub fn timer_is_unmasked(&self) -> bool {
-        let lvt = unsafe { read_lvt_timer(self.xapic_mmio_base) };
+        let lvt = unsafe {
+            read_apic_register(
+                self.xapic_mmio_base,
+                self.runtime_mode(),
+                XAPIC_REG_LVT_TIMER,
+                X2APIC_LVT_TIMER,
+            )
+        };
         lvt & LVT_MASKED == 0
     }
 
     /// Sets the timer initial count (one-shot and periodic modes).
     pub fn timer_set_initial_count(&self, initial: u32) {
-        let mut lapic = self.instance();
         unsafe {
-            lapic.set_timer_initial(initial);
+            write_apic_register(
+                self.xapic_mmio_base,
+                self.runtime_mode(),
+                XAPIC_REG_TIMER_INITIAL_COUNT,
+                X2APIC_TIMER_INITIAL_COUNT,
+                initial,
+            );
         }
     }
 
@@ -242,8 +292,14 @@ impl X86LocalApic {
 
     /// Reads the timer current count.
     pub fn timer_current_count(&self) -> u32 {
-        let lapic = self.instance();
-        unsafe { lapic.timer_current() }
+        unsafe {
+            read_apic_register(
+                self.xapic_mmio_base,
+                self.runtime_mode(),
+                XAPIC_REG_TIMER_CURRENT_COUNT,
+                X2APIC_TIMER_CURRENT_COUNT,
+            )
+        }
     }
 
     /// Spins until the last IPI has been accepted by the local APIC, matching
@@ -260,7 +316,17 @@ impl X86LocalApic {
         Err(ApicError::IpiDeliveryTimeout)
     }
 
-    /// Builds a fresh `x2apic` handle for one register operation.
+    fn runtime_mode(&self) -> ApicMode {
+        match self.access {
+            LocalApicAccess::Runtime(mode) => mode,
+            // Preserve the pre-bring-up behavior for callers that only need
+            // the firmware-selected register space. Runtime owners replace
+            // this fallback with the stable mode recorded by `bring_up`.
+            LocalApicAccess::BringUp => current_apic_mode(),
+        }
+    }
+
+    /// Builds a fresh `x2apic` handle for bring-up or an uncommon operation.
     ///
     /// Building reads CPUID and initializes plain struct fields only; it
     /// performs no register writes, so per-operation construction is safe in
@@ -316,11 +382,23 @@ fn current_apic_mode() -> ApicMode {
     }
 }
 
+const fn requires_timer_mask_fence(mode: ApicMode, tsc_deadline: bool) -> bool {
+    matches!(mode, ApicMode::XApic) && tsc_deadline
+}
+
+const fn timer_lvt_with_mask(lvt: u32, masked: bool) -> u32 {
+    if masked {
+        lvt | LVT_MASKED
+    } else {
+        lvt & !LVT_MASKED
+    }
+}
+
 // --- raw-access supplement ---------------------------------------------------
 //
-// `x2apic` 0.5 has no public API for the operations below. Each helper is the
-// minimum volatile/MSR access for it, kept private; replace the call sites
-// with `x2apic` calls once upstream grows the API:
+// These helpers are the minimum volatile/MSR accesses needed either because
+// `x2apic` 0.5 lacks the operation or because a runtime clockevent operation
+// must not rebuild a complete handle and probe CPUID:
 // - ESR write (clearing): only `error_flags()` (a read) is public.
 // - Raw ICR values: `IpiAllShorthand` has no self-only shorthand, and the
 //   xAPIC write path drops the destination shift into ICR_HIGH bits 31:24,
@@ -328,6 +406,8 @@ fn current_apic_mode() -> ApicMode {
 //   `hw/intc/apic.c` reads the destination from `icr[1] >> 24`, matching
 //   Intel SDM Vol. 3).
 // - LVT timer read: needed to observe the timer mask bit.
+// - EOI and timer runtime registers: Linux-style per-CPU fast paths after
+//   bring-up has cached the active APIC mode.
 // - LVT LINT0/LINT1 read/write: `enable()` claims to mask both pins but
 //   x2apic 0.5 writes zero and therefore clears the architectural mask bit.
 // - `IA32_APIC_BASE` bit 11: `enable()` only manages the x2APIC bit.
@@ -339,17 +419,23 @@ const IA32_APIC_BASE_PAGE_MASK: u64 = 0xffff_f000;
 
 // xAPIC MMIO register offsets (bytes) within the local APIC page.
 const XAPIC_REG_ESR: u32 = 0x280;
+const XAPIC_REG_EOI: u32 = 0x0b0;
 const XAPIC_REG_ICR_LOW: u32 = 0x300;
 const XAPIC_REG_ICR_HIGH: u32 = 0x310;
 const XAPIC_REG_LVT_TIMER: u32 = 0x320;
 const XAPIC_REG_LVT_LINT0: u32 = 0x350;
 const XAPIC_REG_LVT_LINT1: u32 = 0x360;
+const XAPIC_REG_TIMER_INITIAL_COUNT: u32 = 0x380;
+const XAPIC_REG_TIMER_CURRENT_COUNT: u32 = 0x390;
 
 // x2APIC MSR addresses.
 const X2APIC_ESR: u32 = 0x828;
+const X2APIC_EOI: u32 = 0x80b;
 const X2APIC_LVT_TIMER: u32 = 0x832;
 const X2APIC_LVT_LINT0: u32 = 0x835;
 const X2APIC_LVT_LINT1: u32 = 0x836;
+const X2APIC_TIMER_INITIAL_COUNT: u32 = 0x838;
+const X2APIC_TIMER_CURRENT_COUNT: u32 = 0x839;
 
 /// Sets the global APIC-enable bit in `IA32_APIC_BASE`.
 unsafe fn set_apic_base_enable_bit() {
@@ -380,14 +466,6 @@ unsafe fn write_xapic_icr(base: VirtAddr, destination: u32, icr_low: u32) {
     }
 }
 
-/// Reads the LVT timer entry through whichever register space is active.
-unsafe fn read_lvt_timer(base: VirtAddr) -> u32 {
-    match current_apic_mode() {
-        ApicMode::X2Apic => unsafe { x86::msr::rdmsr(X2APIC_LVT_TIMER) as u32 },
-        ApicMode::XApic => unsafe { mmio_read(base, XAPIC_REG_LVT_TIMER) },
-    }
-}
-
 /// Masks both local interrupt pins while preserving their vector and delivery
 /// configuration.
 unsafe fn mask_local_interrupt_pins(base: VirtAddr, lint0: u32, lint1: u32) -> (u32, u32) {
@@ -414,15 +492,34 @@ fn local_interrupt_pins_are_masked(lint0: u32, lint1: u32) -> bool {
 }
 
 unsafe fn read_lvt(base: VirtAddr, xapic_offset: u32, x2apic_msr: u32) -> u32 {
-    match current_apic_mode() {
+    unsafe { read_apic_register(base, current_apic_mode(), xapic_offset, x2apic_msr) }
+}
+
+unsafe fn write_lvt(base: VirtAddr, xapic_offset: u32, x2apic_msr: u32, value: u32) {
+    unsafe { write_apic_register(base, current_apic_mode(), xapic_offset, x2apic_msr, value) }
+}
+
+unsafe fn read_apic_register(
+    base: VirtAddr,
+    mode: ApicMode,
+    xapic_offset: u32,
+    x2apic_msr: u32,
+) -> u32 {
+    match mode {
         ApicMode::X2Apic => unsafe { x86::msr::rdmsr(x2apic_msr) as u32 },
         ApicMode::XApic => unsafe { mmio_read(base, xapic_offset) },
     }
 }
 
-unsafe fn write_lvt(base: VirtAddr, xapic_offset: u32, x2apic_msr: u32, value: u32) {
+unsafe fn write_apic_register(
+    base: VirtAddr,
+    mode: ApicMode,
+    xapic_offset: u32,
+    x2apic_msr: u32,
+    value: u32,
+) {
     unsafe {
-        match current_apic_mode() {
+        match mode {
             ApicMode::X2Apic => x86::msr::wrmsr(x2apic_msr, u64::from(value)),
             ApicMode::XApic => mmio_write(base, xapic_offset, value),
         }
@@ -464,6 +561,32 @@ mod tests {
     }
 
     #[test]
+    fn runtime_operations_use_the_cached_apic_mode() {
+        assert_eq!(
+            runtime_access(ApicMode::XApic),
+            LocalApicAccess::Runtime(ApicMode::XApic)
+        );
+        assert_eq!(
+            runtime_access(ApicMode::X2Apic),
+            LocalApicAccess::Runtime(ApicMode::X2Apic)
+        );
+    }
+
+    #[test]
+    fn runtime_timer_masking_preserves_the_programmed_lvt_fields() {
+        let programmed = 0x0004_00ef;
+
+        assert_eq!(
+            timer_lvt_with_mask(programmed, true),
+            programmed | LVT_MASKED
+        );
+        assert_eq!(
+            timer_lvt_with_mask(programmed | LVT_MASKED, false),
+            programmed & !LVT_MASKED
+        );
+    }
+
+    #[test]
     fn local_interrupt_pin_masking_sets_both_masks_without_clobbering_configuration() {
         // Typical firmware delivery modes: ExtINT on LINT0 and NMI on LINT1.
         let lint0 = 0x700;
@@ -478,5 +601,12 @@ mod tests {
             masked_lint0 & !LVT_MASKED,
             masked_lint1
         ));
+    }
+
+    #[test]
+    fn only_xapic_tsc_deadline_needs_a_posted_lvt_fence() {
+        assert!(requires_timer_mask_fence(ApicMode::XApic, true));
+        assert!(!requires_timer_mask_fence(ApicMode::XApic, false));
+        assert!(!requires_timer_mask_fence(ApicMode::X2Apic, true));
     }
 }

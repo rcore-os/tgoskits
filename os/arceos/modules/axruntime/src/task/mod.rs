@@ -1,0 +1,278 @@
+//! ArceOS ownership and trait-FFI glue for the OS-independent task system.
+
+use alloc::{boxed::Box, string::String};
+use core::{
+    pin::Pin,
+    ptr,
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
+};
+
+use ax_hal::percpu::CpuPin;
+use ax_lazyinit::LazyInit;
+pub use ax_task::{
+    CpuId, CpuSet, CurrentParkDisposition, CurrentParkResume, CurrentParkStart, CurrentThreadToken,
+    DeadlineFlags, DeadlinePolicy, FairMode, HardKernelTimerAction, HardKernelTimerCallback,
+    IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWaitToken, IrqWorkerWaiter,
+    KernelTimerAction, KernelTimerCancelOutcome, KernelTimerHandle, MembarrierCommand,
+    MembarrierError, Nice, PreparedCurrentPark, RtPriority, SchedulePolicy, SchedulerTickCpuTime,
+    SchedulerTickCpuTimeSnapshot, SchedulerTickGate, SchedulerTickMode, SchedulerTickTaskWork,
+    SchedulerTickWorkDisposition, SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps,
+    ThreadHandle, ThreadId, ThreadState, ThreadWakeBatch, ThreadWakeHandle, WaitQueue,
+    WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken, WakeResult, active_cpu_set,
+    arm_hard_kernel_timer, begin_current_park, cancel_kernel_timer, cpu_busy_runtime_ns,
+    cpu_topology_len, current_cpu_needs_resched, current_thread_extension, current_thread_handle,
+    current_thread_id, current_thread_token, disarm_hard_kernel_timer,
+    executor::{LocalExecutor, wake_waker_sync},
+    exit_current_thread, membarrier, quiesce_irq_wait, register_current_membarrier,
+    register_hard_restartable_kernel_timer, register_kernel_timer,
+    register_restartable_kernel_timer,
+    runtime::{MembarrierRegistration, MonotonicDeadline, MonotonicInstant, SchedSwitchRecord},
+    schedule_current_cpu, set_current_thread_affinity, set_thread_affinity,
+    set_thread_affinity_and_wait, set_thread_policy, sleep, sleep_until, thread_affinity,
+    thread_handle, thread_policy, thread_runtime, validate_blocking_context, wait_until_registered,
+    yield_current_cpu,
+};
+#[cfg(axtest)]
+pub use ax_task::{
+    PiScheduleTestProbeSnapshot, begin_pi_schedule_test_probe, end_pi_schedule_test_probe,
+    pi_schedule_test_probe_snapshot,
+};
+
+/// Arms the shared physical IPI delivery edge for one CPU.
+///
+/// Callers must publish their logical pending state before this doorbell. The
+/// shared edge coalesces repeated notifications until the target CPU claims
+/// the physical interrupt; logical owners remain responsible for draining
+/// their own state.
+pub fn notify_cpu(cpu_id: usize) -> Result<(), ax_hal::irq::IrqError> {
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+    {
+        if cpu_id >= ax_hal::cpu_num() {
+            return Err(ax_hal::irq::IrqError::InvalidCpu);
+        }
+        ax_ipi::notify_cpu(ax_hal::irq::CpuId(cpu_id)).map(|_| ())
+    }
+    #[cfg(not(any(feature = "ipi", feature = "wake-ipi")))]
+    {
+        let _ = cpu_id;
+        Err(ax_hal::irq::IrqError::Unsupported)
+    }
+}
+
+use ax_task::{
+    CpuLocal, CpuRemote, TaskSystem, TaskSystemConfig, ThreadResources, ThreadSpec,
+    impl_trait as impl_task_runtime,
+    runtime::{
+        AddressSpaceDestroyOutcome, AddressSpaceHandle, AddressSpaceMembarrierState,
+        AddressSpaceReclaimArmOutcome, ContextThreadBinding, CpuRemoteHandle,
+        CurrentCpuLocalHandle, CurrentCpuOwnerHandles, CurrentThreadPublication,
+        ExecutionContextHandle, IrqGuardToken, KernelContextRequest, MembarrierRegistrationPhase,
+        RuntimeCpuId, RuntimeHandleResult, RuntimeMembarrierAction,
+        RuntimeSchedulerFrameEnterResult, RuntimeStatus, RuntimeSwitchPlan, StackHandle,
+        StackRequest, TaskRuntime, TaskSystemHandle, ThreadIdentityV1, TlsHandle, TlsRequest,
+        UserContextRequest,
+    },
+};
+
+mod address_space;
+mod bootstrap;
+mod context;
+mod executor;
+mod irq_worker;
+mod resources;
+mod runtime_impl;
+mod scheduler_events;
+mod spawn;
+mod thread;
+mod thread_resources;
+#[cfg(feature = "uspace")]
+mod user_entry;
+
+pub use address_space::{
+    AddressSpaceCpuState, TaskAddressSpace, detach_current_address_space,
+    switch_current_address_space,
+};
+use address_space::{
+    arm_runtime_address_space_reclaim, destroy_runtime_address_space,
+    release_current_active_address_space, runtime_address_space_membarrier_state,
+    update_runtime_address_space_membarrier_state,
+};
+#[cfg(feature = "qperf-metrics")]
+pub use ax_task::{DEFAULT_BATCH_LIMIT, qperf_cpu_owner_claims};
+#[cfg(feature = "uspace")]
+use bootstrap::current_cpu_remote;
+#[cfg(feature = "tls")]
+pub(crate) use bootstrap::initialize_early_bootstrap_tls;
+#[cfg(test)]
+use bootstrap::{IdleEntryAction, idle_entry_action};
+pub(crate) use bootstrap::{
+    PublishedCpuOnline, initialize_primary, publish_current_cpu_online,
+    start_current_ktimer_service, start_deferred_task_work_service,
+};
+use bootstrap::{
+    cpu_remote, current_cpu_owner_handles, idle_context_entry, primary_bootstrap_thread,
+    scheduler_current_cpu_remote_handle, task_system, with_current_cpu_local_mut_owner,
+    with_current_cpu_pin,
+};
+#[cfg(feature = "smp")]
+pub(crate) use bootstrap::{initialize_secondary, run_idle};
+pub use context::diagnose_current_stack_guard_page_fault;
+use context::{
+    bind_bootstrap_runtime_context, bind_runtime_context_thread, create_bootstrap_context,
+    create_runtime_context, create_user_runtime_context, destroy_runtime_context,
+    finish_runtime_context_switch_tail, scheduler_current_thread_identity,
+    scheduler_current_thread_publication, switch_runtime_context,
+};
+
+pub(crate) fn runtime_task_system_handle() -> TaskSystemHandle {
+    task_system().map_or(TaskSystemHandle::NONE, |system| {
+        // SAFETY: TASK_SYSTEM owns this pinned allocation through shutdown and
+        // exposes it only through shared scheduler APIs.
+        unsafe { TaskSystemHandle::from_raw((system as *const TaskSystem).expose_provenance()) }
+    })
+}
+
+pub(crate) fn scheduler_frame_capabilities(cpu_pin: &CpuPin) -> RuntimeSchedulerFrameEnterResult {
+    // SAFETY: the caller claimed the scheduler baton under this same CPU pin;
+    // TASK_SYSTEM is initialized before any task may enter the scheduler, and
+    // every returned capability is immutable or shutdown-lifetime state tied
+    // to that owner CPU and architecture-selected context.
+    unsafe {
+        RuntimeSchedulerFrameEnterResult::success(
+            runtime_task_system_handle(),
+            current_cpu_owner_handles(cpu_pin),
+        )
+    }
+}
+
+#[cfg(feature = "uspace")]
+pub(crate) fn current_cpu_needs_reschedule_pinned(cpu_pin: &CpuPin) -> Result<bool, TaskError> {
+    Ok(current_cpu_remote(cpu_pin)
+        .ok_or(TaskError::NotInitialized)?
+        .needs_reschedule())
+}
+pub use executor::{BlockOnError, block_on, block_on_timeout};
+pub use irq_worker::FixedIrqWorkerSignal;
+#[cfg(feature = "tls")]
+use resources::runtime_tls_pointer;
+use resources::{
+    allocate_runtime_stack, allocate_runtime_tls, deallocate_runtime_stack, deallocate_runtime_tls,
+};
+pub use runtime_impl::{
+    SchedSwitchTraceHook, install_sched_switch_trace_hook, publish_sched_switch_trace_gate,
+};
+pub use scheduler_events::timer_irq_count;
+#[cfg(feature = "qperf-metrics")]
+pub use scheduler_events::{
+    QperfRuntimeSchedulerMetricsSnapshot, qperf_current_cpu_pin_entries,
+    qperf_runtime_scheduler_metrics_snapshot,
+};
+pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use scheduler_events::{
+    record_irq_return_scheduler_continuation, record_irq_return_scheduler_window,
+};
+
+/// Checks the kernel-thread active-mm membarrier transition in real runtime builds.
+#[cfg(axtest)]
+pub fn kernel_thread_retains_active_mm_membarrier_state_for_test() -> bool {
+    static IDENTITY_ANCHOR: u8 = 0;
+
+    let identity_raw = (&IDENTITY_ANCHOR as *const u8).expose_provenance();
+    // SAFETY: the static address is non-zero, unique, and remains live for the
+    // complete duration in which this test state can be observed.
+    let identity = unsafe { ax_task::runtime::AddressSpaceMembarrierId::from_raw(identity_raw) };
+    // SAFETY: the identity satisfies the contract above and zero contains no
+    // undeclared registration bits.
+    let active_mm_state =
+        unsafe { ax_task::runtime::AddressSpaceMembarrierState::new(identity, 0) };
+
+    ax_task::runtime::scheduled_membarrier_state_for_test(
+        active_mm_state,
+        ax_task::runtime::AddressSpaceMembarrierState::NONE,
+    ) == active_mm_state
+}
+/// Resets the current task's user FPU image during a successful executable replacement.
+pub fn reset_current_user_fp_state() -> Result<(), TaskError> {
+    context::reset_current_user_fp_state()
+}
+
+/// Captures the current x86 task's complete standard user xstate image.
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub fn capture_current_user_fp_state() -> Result<ax_hal::cpu::UserXstate, TaskError> {
+    context::capture_current_user_fp_state()
+}
+
+/// Replaces the current x86 task's user xstate and physical FPU owner image.
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub fn replace_current_user_fp_state(state: ax_hal::cpu::UserXstate) -> Result<(), TaskError> {
+    context::replace_current_user_fp_state(state)
+}
+#[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
+pub(crate) use scheduler_events::{record_scheduler_ipi_consume, record_scheduler_ipi_send};
+#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+pub use spawn::prepare_raw_with_extension_in_address_space_and_inherited_fp_scheduler_state;
+pub use spawn::{
+    prepare_raw, prepare_raw_with_extension_in_address_space_and_scheduler_state, spawn_raw,
+    spawn_raw_with_affinity, spawn_raw_with_extension, spawn_raw_with_extension_and_affinity,
+    spawn_raw_with_extension_in_address_space,
+    spawn_raw_with_extension_in_address_space_and_policy, spawn_raw_with_policy_and_affinity,
+};
+#[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
+pub use spawn::{
+    prepare_raw_with_extension_in_address_space_and_fp_scheduler_state,
+    spawn_raw_with_extension_in_address_space_and_fp_state,
+    spawn_raw_with_extension_in_address_space_and_fp_state_and_policy,
+};
+pub use thread::{
+    PreparedThread, StagedThread, ThreadOsExtensionBorrow, ThreadOsExtensionLease,
+    current_os_extension, exit_current, join_thread, thread_os_extension, wait_thread,
+};
+#[cfg(test)]
+use thread::{
+    RUNTIME_THREAD_EXTENSION_OPS, RuntimeExtensionKind, classify_runtime_extension,
+    extension_data_after_releasing_lease,
+};
+use thread::{
+    RuntimeThreadData, RuntimeThreadStart, finish_initial_scheduler_switch,
+    release_transferred_extension, runtime_thread_entry, runtime_thread_extension,
+};
+#[cfg(all(test, feature = "tls"))]
+use thread_resources::assemble_bootstrap_resources;
+use thread_resources::{
+    InitialContextState, create_bootstrap_resources, create_idle_resources, create_thread_resources,
+};
+#[cfg(test)]
+use thread_resources::{
+    ThreadResourceBackend, UnreleasedThreadResources, create_thread_resources_with,
+};
+#[cfg(feature = "uspace")]
+pub use user_entry::UserExecutionContext;
+
+const PAGE_SIZE: usize = 4096;
+
+#[cfg(not(feature = "fs"))]
+const DEFAULT_TASK_STACK_SIZE: usize = 256 * 1024;
+
+const fn runtime_status_error(status: RuntimeStatus) -> TaskError {
+    TaskError::RuntimeFailure(status as u32)
+}
+
+const fn runtime_task_stack_size() -> usize {
+    #[cfg(feature = "fs")]
+    {
+        crate::build_info::TASK_STACK_SIZE
+    }
+    #[cfg(not(feature = "fs"))]
+    {
+        DEFAULT_TASK_STACK_SIZE
+    }
+}
+
+/// Returns the kernel stack size used by ordinary runtime threads.
+pub const fn default_task_stack_size() -> usize {
+    runtime_task_stack_size()
+}
+
+#[cfg(test)]
+mod tests;

@@ -25,10 +25,9 @@ paging = [
 tls = ["ax-cpu/tls", "cpu-local/tls", "axplat-dyn/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn/uspace"]
 hv = [
-    "paging",
-    "ax-cpu/arm-el2",
-    "ax-cpu/exception-table",
-    "axplat-dyn/hv",
+  "paging",
+  "ax-cpu/exception-table",
+  "axplat-dyn/hv",
 ]
 host-test = [
     "cpu-local/host-test",
@@ -36,7 +35,6 @@ host-test = [
     "ax-percpu/host-test",
     "ax-sync/host-test",
 ]
-
 default = []
 ipi = []
 

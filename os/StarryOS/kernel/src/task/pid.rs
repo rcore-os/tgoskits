@@ -10,22 +10,25 @@ use alloc::{
 };
 use core::{
     fmt,
-    future::poll_fn,
     marker::PhantomData,
     num::{NonZeroU32, NonZeroU64},
-    sync::atomic::{AtomicU64, Ordering},
-    task::Poll,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_lazyinit::LazyLock;
-use ax_task::{AxTaskRef, WeakAxTaskRef, future::block_on};
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 
-use super::{Cred, Process, ProcessCpuTime, ProcessData, ProcessGroup, Session};
+use super::{
+    Cred, Process, ProcessCpuTime, ProcessData, ProcessGroup, Session, UserTaskRef, WeakUserTaskRef,
+};
 use crate::{StarryError, StarryResult, sync::IrqMutex};
 
 static NEXT_IDENTITY_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(axtest)]
+static PUBLISHED_MEMBERS_SNAPSHOT_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Serializes reservation publication, identity removal, and shutdown.
 static PUBLICATION_GATE: IrqMutex<()> = IrqMutex::new(());
@@ -180,16 +183,6 @@ pub struct PidBinding {
     number: PidNumber,
 }
 
-impl PidBinding {
-    pub fn namespace(&self) -> &PidNamespaceRef {
-        &self.namespace
-    }
-
-    pub const fn number(&self) -> PidNumber {
-        self.number
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PidNamespaceLifecycle {
     AwaitingInit,
@@ -273,10 +266,6 @@ impl PidNamespace {
         self.id
     }
 
-    pub const fn level(&self) -> u32 {
-        self.level
-    }
-
     pub fn parent(&self) -> Option<PidNamespaceRef> {
         self.parent.clone()
     }
@@ -287,6 +276,16 @@ impl PidNamespace {
 
     pub fn init_identity(&self) -> Option<PidIdentityId> {
         self.state.lock().init_identity
+    }
+
+    /// Reports whether the namespace still holds the identity's number slot,
+    /// regardless of lookup visibility. Test-only probe for the exit-path
+    /// slot-retention invariant (a member must stay in the namespace until
+    /// its exit path completes, as Linux keeps `pid_allocated` until
+    /// `free_pid()`).
+    #[cfg(any(test, axtest))]
+    pub(crate) fn retains_identity_slot_for_test(&self, identity_id: PidIdentityId) -> bool {
+        self.state.lock().by_identity.contains_key(&identity_id)
     }
 
     pub fn lookup(&self, number: PidNumber) -> Option<Arc<PidIdentity>> {
@@ -429,12 +428,24 @@ impl PidNamespace {
         }
     }
 
-    pub fn begin_shutdown(&self, init: PidIdentityId) -> Option<PidNamespaceShutdown<'_>> {
+    /// Starts the namespace-init exit transaction from its last live thread.
+    ///
+    /// `executor` is the TID identity that must finish the transaction before
+    /// its normal task-exit path can retire that identity. Linux keeps the
+    /// global init alive forever, while Starry joins PID 1 and tears the whole
+    /// system down when its userspace command completes. The root namespace
+    /// therefore uses this same exclusive shutdown transaction instead of
+    /// attempting an impossible ordinary reparent-to-self transition.
+    pub fn begin_shutdown(
+        &self,
+        init: PidIdentityId,
+        executor: PidIdentityId,
+    ) -> Option<PidNamespaceShutdown<'_>> {
         let _publication = PUBLICATION_GATE.lock();
         let mut state = self.state.lock();
-        if self.level == 0
-            || state.lifecycle != PidNamespaceLifecycle::Active
+        if state.lifecycle != PidNamespaceLifecycle::Active
             || state.init_identity != Some(init)
+            || !state.by_identity.contains_key(&executor)
         {
             return None;
         }
@@ -442,10 +453,13 @@ impl PidNamespace {
         Some(PidNamespaceShutdown {
             namespace: self,
             init,
+            executor,
         })
     }
 
     pub fn published_members(&self) -> Vec<Arc<PidIdentity>> {
+        #[cfg(axtest)]
+        PUBLISHED_MEMBERS_SNAPSHOT_CALLS.fetch_add(1, Ordering::Relaxed);
         let _publication = PUBLICATION_GATE.lock();
         self.state
             .lock()
@@ -454,6 +468,16 @@ impl PidNamespace {
             .filter(|slot| slot.state == PidSlotState::Published)
             .filter_map(|slot| slot.identity.clone())
             .collect()
+    }
+
+    #[cfg(axtest)]
+    pub(crate) fn reset_published_members_snapshot_calls_for_test(&self) {
+        PUBLISHED_MEMBERS_SNAPSHOT_CALLS.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg(axtest)]
+    pub(crate) fn published_members_snapshot_calls_for_test(&self) -> u64 {
+        PUBLISHED_MEMBERS_SNAPSHOT_CALLS.load(Ordering::Relaxed)
     }
 
     fn finish_shutdown(&self, init: PidIdentityId) {
@@ -472,33 +496,33 @@ impl PidNamespace {
 pub struct PidNamespaceShutdown<'a> {
     namespace: &'a PidNamespace,
     init: PidIdentityId,
+    executor: PidIdentityId,
 }
 
 impl PidNamespaceShutdown<'_> {
-    pub fn wait_for_live_descendants(&self) {
-        let has_live_descendants = || {
-            self.namespace
-                .published_members()
-                .into_iter()
-                .any(|identity| identity.id() != self.init && identity.live_task().is_some())
-        };
-        if has_live_descendants() {
-            block_on(poll_fn(|cx| {
-                if !has_live_descendants() {
-                    return Poll::Ready(());
-                }
-                unsafe {
+    pub fn wait_for_descendants_exit(&self) {
+        super::future::block_on(super::process_wait::wait_on_pollset(
+            &self.namespace.task_exit_event,
+            || {
+                let has_unexited_descendants = {
                     self.namespace
-                        .task_exit_event
-                        .register(cx.waker(), IoEvents::IN)
+                        .published_members()
+                        .into_iter()
+                        .any(|identity| {
+                            // Linux's zap_pid_ns_processes waits for one retained
+                            // PID when the leader executes teardown and two when a
+                            // non-leader does: the namespace init identity plus
+                            // the current teardown task. The executor has already
+                            // retired its runtime link, but excluding its stable
+                            // identity keeps the count aligned with Linux.
+                            identity.id() != self.init
+                                && identity.id() != self.executor
+                                && identity.has_unexited_task()
+                        })
                 };
-                if has_live_descendants() {
-                    Poll::Pending
-                } else {
-                    Poll::Ready(())
-                }
-            }));
-        }
+                (!has_unexited_descendants).then_some(())
+            },
+        ));
         self.namespace.finish_shutdown(self.init);
     }
 }
@@ -588,9 +612,13 @@ impl PidReservation {
         let identity = Arc::new(PidIdentity {
             id: identity_id,
             bindings: identity_bindings,
+            thread_pidfd_event: Arc::new(PollSet::new()),
+            ptrace_tracees_registered: AtomicBool::new(false),
             state: IrqMutex::new(PidIdentityState {
                 publication: PidIdentityPublication::Reserved,
                 runtime: RuntimeTaskLink::Reserved,
+                exit_path_pending: false,
+                thread_pidfd: None,
                 roles: 0,
                 process: None,
                 process_group: Weak::new(),
@@ -658,13 +686,32 @@ enum PidIdentityPublication {
 
 enum RuntimeTaskLink {
     Reserved,
-    Live(WeakAxTaskRef),
+    Live(WeakUserTaskRef),
     Exited,
+}
+
+/// Per-task data addressed through the stable PID identity.
+///
+/// The exit flag follows the task currently attached as `PIDTYPE_PID`; it is
+/// replaced together with the runtime link during `de_thread`. The wait set is
+/// intentionally stored on [`PidIdentity`] itself, like Linux's
+/// `struct pid::wait_pidfd`, so registrations survive that transfer.
+struct ThreadPidfdBinding {
+    process_identity: Weak<PidIdentity>,
+    exit: Arc<AtomicBool>,
 }
 
 struct PidIdentityState {
     publication: PidIdentityPublication,
     runtime: RuntimeTaskLink,
+    /// The task detached its runtime link (early in `do_exit`) but its exit
+    /// path has not finished the namespace-visible phases yet (zombie
+    /// publication, parent notification, relation close). Modeled after
+    /// Linux's `pid_allocated`, which only drops in `free_pid()` after
+    /// `do_notify_parent()`, so a PID-namespace shutdown wait cannot complete
+    /// and mark the namespace dead while a member still dereferences it.
+    exit_path_pending: bool,
+    thread_pidfd: Option<ThreadPidfdBinding>,
     roles: u8,
     process: Option<Arc<Process>>,
     process_group: Weak<ProcessGroup>,
@@ -690,10 +737,12 @@ impl ProcessLifecycle {
 /// Immutable process-exit data retained until one consuming wait reaps it.
 pub(crate) struct ZombieSnapshot {
     pub(crate) cred: Arc<Cred>,
+    pub(crate) nice: i32,
     pub(crate) ptrace_tracer: Option<PidSnapshot>,
     pub(crate) is_clone_child: bool,
     pub(crate) wait_parent_tid: TidNumber,
     pub(crate) cpu_time: ProcessCpuTime,
+    pub(crate) tid_lease: PidRoleLease<Tid>,
     pub(crate) tgid_lease: PidRoleLease<Tgid>,
 }
 
@@ -701,6 +750,16 @@ pub(crate) struct ZombieSnapshot {
 pub struct PidIdentity {
     id: PidIdentityId,
     bindings: Arc<[PidBinding]>,
+    thread_pidfd_event: Arc<PollSet>,
+    /// Sticky publication that this process generation has owned a tracee.
+    ///
+    /// Linux keeps a per-tracer `ptraced` list. Starry has not yet moved the
+    /// relationship into that identity-owned reverse index, so traced waits
+    /// still use the root PID table as their authoritative slow path. A false
+    /// value is nevertheless authoritative: no tracee relation could have
+    /// been published before this release store, allowing ordinary wait and
+    /// exit paths to avoid a global PID snapshot entirely.
+    ptrace_tracees_registered: AtomicBool,
     state: IrqMutex<PidIdentityState>,
 }
 
@@ -709,6 +768,7 @@ impl PidIdentity {
         let state = self.state.lock();
         state.publication == PidIdentityPublication::Published
             && (matches!(state.runtime, RuntimeTaskLink::Live(_))
+                || state.exit_path_pending
                 || matches!(
                     state.process_lifecycle,
                     ProcessLifecycle::Live(_) | ProcessLifecycle::Zombie(_)
@@ -720,8 +780,13 @@ impl PidIdentity {
         self.id
     }
 
-    pub fn bindings(&self) -> &[PidBinding] {
-        &self.bindings
+    pub(crate) fn mark_ptrace_tracee_registered(&self) {
+        self.ptrace_tracees_registered
+            .store(true, Ordering::Release);
+    }
+
+    pub(crate) fn may_have_ptrace_tracees(&self) -> bool {
+        self.ptrace_tracees_registered.load(Ordering::Acquire)
     }
 
     pub fn active_namespace(&self) -> PidNamespaceRef {
@@ -730,6 +795,14 @@ impl PidIdentity {
             .expect("published identity has no PID binding")
             .namespace
             .clone()
+    }
+
+    /// Returns this identity's number in its immutable active namespace.
+    pub(crate) fn active_number(&self) -> PidNumber {
+        self.bindings
+            .last()
+            .expect("published identity has no PID binding")
+            .number
     }
 
     pub fn visible_number(&self, observer: &PidNamespaceRef) -> Option<PidNumber> {
@@ -769,44 +842,201 @@ impl PidIdentity {
         )
     }
 
-    pub fn attach_task(&self, task: &AxTaskRef) {
+    pub fn attach_task(&self, task: &UserTaskRef) {
         let mut state = self.state.lock();
         assert_eq!(state.publication, PidIdentityPublication::Published);
         assert!(matches!(state.runtime, RuntimeTaskLink::Reserved));
-        state.runtime = RuntimeTaskLink::Live(Arc::downgrade(task));
+        assert!(state.thread_pidfd.is_some());
+        state.runtime = RuntimeTaskLink::Live(task.downgrade());
     }
 
-    pub fn live_task(&self) -> Option<AxTaskRef> {
+    /// Binds the per-task pidfd state before the task becomes visible.
+    pub(super) fn bind_thread_pidfd(
+        &self,
+        process_identity: &Arc<PidIdentity>,
+        exit: Arc<AtomicBool>,
+    ) {
+        let mut state = self.state.lock();
+        assert!(state.thread_pidfd.is_none());
+        state.thread_pidfd = Some(ThreadPidfdBinding {
+            process_identity: Arc::downgrade(process_identity),
+            exit,
+        });
+    }
+
+    pub(crate) fn thread_pidfd_process_identity(&self) -> StarryResult<Arc<PidIdentity>> {
+        self.state
+            .lock()
+            .thread_pidfd
+            .as_ref()
+            .and_then(|binding| binding.process_identity.upgrade())
+            .ok_or(StarryError::NoSuchProcess)
+    }
+
+    pub(crate) fn thread_pidfd_exited(&self) -> bool {
+        self.state
+            .lock()
+            .thread_pidfd
+            .as_ref()
+            .is_none_or(|binding| binding.exit.load(Ordering::Acquire))
+    }
+
+    /// Reports pidfd readiness from the task currently attached as
+    /// `PIDTYPE_PID`.
+    ///
+    /// A prematurely exiting group leader is deliberately not readable while
+    /// the process is still live: a remaining sibling may `exec` and inherit
+    /// this identity. This is Linux's `delay_group_leader()` rule.
+    pub(crate) fn thread_pidfd_poll_events(&self) -> IoEvents {
+        let state = self.state.lock();
+        let exited = state
+            .thread_pidfd
+            .as_ref()
+            .is_none_or(|binding| binding.exit.load(Ordering::Acquire));
+        let delayed_group_leader = self.has_role_locked::<Tgid>(&state)
+            && matches!(state.process_lifecycle, ProcessLifecycle::Live(_));
+        if !exited || delayed_group_leader {
+            return IoEvents::empty();
+        }
+
+        let mut events = IoEvents::IN | IoEvents::RDNORM;
+        events.set(
+            IoEvents::HUP,
+            state.publication == PidIdentityPublication::Detached
+                || matches!(state.process_lifecycle, ProcessLifecycle::Reaped),
+        );
+        events
+    }
+
+    pub(crate) fn thread_pidfd_exit_event(&self) -> Arc<PollSet> {
+        self.thread_pidfd_event.clone()
+    }
+
+    /// Wakes waiters after the attached task published its exit flag.
+    pub(crate) fn notify_thread_pidfd_exit(&self) {
+        unsafe {
+            self.thread_pidfd_event
+                .wake(IoEvents::IN | IoEvents::RDNORM)
+        };
+    }
+
+    /// Wakes pidfd waiters after the `PIDTYPE_PID` link is released.
+    fn notify_thread_pidfd_release(&self) {
+        unsafe {
+            self.thread_pidfd_event
+                .wake(IoEvents::IN | IoEvents::RDNORM | IoEvents::HUP)
+        };
+    }
+
+    pub fn live_task(&self) -> Option<UserTaskRef> {
         let state = self.state.lock();
         let RuntimeTaskLink::Live(task) = &state.runtime else {
             return None;
         };
-        task.upgrade()
+        task.upgrade().ok().flatten()
     }
 
-    pub fn mark_task_exited(&self) {
-        let should_detach = {
+    /// Reports whether a published PID still owns a runtime task transition
+    /// or an exit path that has not finished its namespace-visible phases.
+    ///
+    /// PID namespace shutdown must include the short publication window before
+    /// a staged scheduler task is attached. Linux likewise waits for every PID
+    /// task left after PID allocation is disabled, not only currently runnable
+    /// tasks; and its `pid_allocated` count only drops in `free_pid()` — after
+    /// `do_notify_parent()` — so the wait also covers members that detached
+    /// their runtime link but still have zombie publication, parent
+    /// notification, and relation close ahead of them.
+    pub(crate) fn has_unexited_task(&self) -> bool {
+        let state = self.state.lock();
+        !matches!(state.runtime, RuntimeTaskLink::Exited) || state.exit_path_pending
+    }
+
+    pub fn mark_task_exited(self: &Arc<Self>) -> ExitPathLease {
+        {
             let mut state = self.state.lock();
             state.runtime = RuntimeTaskLink::Exited;
-            state.roles == 0
+            // The runtime link detaches here, but the PID slot stays published
+            // until the exit path completes: Linux frees a task's PID only in
+            // free_pid(), after its exit path finished, so namespace membership
+            // (and shutdown-wait membership) outlives this transition. The
+            // returned lease owns that deferred detach.
+            state.exit_path_pending = true;
+        }
+        ExitPathLease {
+            identity: Some(self.clone()),
+            tid_lease: None,
+        }
+    }
+
+    /// Completes the exit path of the task that detached its runtime link.
+    ///
+    /// Reached only through [`ExitPathLease::complete`] at the end of
+    /// `do_exit`, after zombie publication, parent notification, and relation
+    /// close, so PID namespace shutdown only observes the member as exited
+    /// once it no longer dereferences the dying namespace. The wake mirrors
+    /// the one Linux delivers by dropping `pid_allocated` in `free_pid()`,
+    /// and the deferred detach frees the member's namespace slots at the
+    /// same point Linux frees the PID.
+    fn complete_exit_path(&self) {
+        let (pending, should_detach) = {
+            let mut state = self.state.lock();
+            let pending = core::mem::replace(&mut state.exit_path_pending, false);
+            (
+                pending,
+                pending && state.roles == 0 && matches!(state.runtime, RuntimeTaskLink::Exited),
+            )
         };
         if should_detach {
             self.detach();
+            self.notify_thread_pidfd_release();
         }
-        for binding in self.bindings.iter().rev() {
-            unsafe { binding.namespace.task_exit_event.wake(IoEvents::IN) };
+        if pending {
+            for binding in self.bindings.iter().rev() {
+                unsafe { binding.namespace.task_exit_event.wake(IoEvents::IN) };
+            }
         }
     }
 
     /// Transfers this identity's live runtime link during `de_thread`.
-    pub fn transfer_task(&self, task: &AxTaskRef) {
+    pub fn transfer_task(
+        &self,
+        task: &UserTaskRef,
+        process_identity: &Arc<PidIdentity>,
+        exit: Arc<AtomicBool>,
+    ) {
+        let thread_pidfd = ThreadPidfdBinding {
+            process_identity: Arc::downgrade(process_identity),
+            exit,
+        };
+        assert!(
+            self.try_transfer_task_with(|| task.downgrade(), Some(thread_pidfd)),
+            "PID identity transferred before its exit path completed"
+        );
+    }
+
+    fn try_transfer_task_with(
+        &self,
+        task: impl FnOnce() -> WeakUserTaskRef,
+        thread_pidfd: Option<ThreadPidfdBinding>,
+    ) -> bool {
         let mut state = self.state.lock();
         assert_eq!(state.publication, PidIdentityPublication::Published);
-        assert!(matches!(
-            state.runtime,
-            RuntimeTaskLink::Live(_) | RuntimeTaskLink::Exited
-        ));
-        state.runtime = RuntimeTaskLink::Live(Arc::downgrade(task));
+        if !Self::task_transfer_ready(&state) {
+            return false;
+        }
+        state.runtime = RuntimeTaskLink::Live(task());
+        if let Some(thread_pidfd) = thread_pidfd {
+            state.thread_pidfd = Some(thread_pidfd);
+        }
+        true
+    }
+
+    fn task_transfer_ready(state: &PidIdentityState) -> bool {
+        matches!(state.runtime, RuntimeTaskLink::Exited) && !state.exit_path_pending
+    }
+
+    fn is_task_transfer_ready(&self) -> bool {
+        Self::task_transfer_ready(&self.state.lock())
     }
 
     /// Attaches the process lifecycle to the leader identity exactly once.
@@ -936,18 +1166,24 @@ impl PidIdentity {
         expected: &Arc<ProcessData>,
         zombie: ZombieSnapshot,
     ) -> Result<(), ZombieSnapshot> {
-        let mut state = self.state.lock();
-        let matches = matches!(
-            &state.process_lifecycle,
-            ProcessLifecycle::Live(process_data)
-                if process_data
-                    .upgrade()
-                    .is_some_and(|registered| Arc::ptr_eq(&registered, expected))
-        );
-        if !matches {
-            return Err(zombie);
+        {
+            let mut state = self.state.lock();
+            let matches = matches!(
+                &state.process_lifecycle,
+                ProcessLifecycle::Live(process_data)
+                    if process_data
+                        .upgrade()
+                        .is_some_and(|registered| Arc::ptr_eq(&registered, expected))
+            );
+            if !matches {
+                return Err(zombie);
+            }
+            state.process_lifecycle = ProcessLifecycle::Zombie(zombie);
         }
-        state.process_lifecycle = ProcessLifecycle::Zombie(zombie);
+        // A leader that exited before its siblings was deliberately suppressed
+        // by delay_group_leader(). Zombie publication means the last sibling
+        // is gone, so wake the stable leader-pid wait set again.
+        self.notify_thread_pidfd_exit();
         Ok(())
     }
 
@@ -975,6 +1211,7 @@ impl PidIdentity {
         // identity lock: the final Process may release PGID/SID role leases,
         // whose destructors re-enter this identity to detach its PID slots.
         drop(process);
+        self.notify_thread_pidfd_release();
     }
 
     pub(crate) fn zombie_snapshot<R>(&self, f: impl FnOnce(&ZombieSnapshot) -> R) -> Option<R> {
@@ -985,8 +1222,8 @@ impl PidIdentity {
         Some(f(zombie))
     }
 
-    #[cfg(all(test, not(axtest)))]
-    pub(super) fn bind_zombie_for_test(
+    #[cfg(axtest)]
+    pub(super) fn bind_zombie_for_axtest(
         &self,
         process: Arc<Process>,
         exit_event: Arc<PollSet>,
@@ -1039,7 +1276,12 @@ impl PidIdentity {
             let mut state = self.state.lock();
             assert_ne!(state.roles & R::BIT, 0, "PID role released twice");
             state.roles &= !R::BIT;
-            state.roles == 0 && matches!(state.runtime, RuntimeTaskLink::Exited)
+            // While an exit path is still pending, the PID slot stays
+            // published (Linux frees the PID in free_pid(), after the exit
+            // path); `ExitPathLease::complete` performs the deferred detach.
+            state.roles == 0
+                && !state.exit_path_pending
+                && matches!(state.runtime, RuntimeTaskLink::Exited)
         };
         if should_detach {
             self.detach();
@@ -1069,31 +1311,104 @@ impl PidIdentity {
     /// already scheduler-owned, the fallback deliberately leaves it alone;
     /// scheduler/task exit then performs the ordinary ordered release.
     pub(crate) fn abort_failed_task_publication(&self) {
-        let _publication = PUBLICATION_GATE.lock();
-        {
-            let mut state = self.state.lock();
-            if state.publication != PidIdentityPublication::Published {
-                return;
-            }
-            let scheduler_owns_task = match &state.runtime {
-                RuntimeTaskLink::Reserved | RuntimeTaskLink::Exited => false,
-                RuntimeTaskLink::Live(task) => task.upgrade().is_some(),
+        let process = {
+            let _publication = PUBLICATION_GATE.lock();
+            let process = {
+                let mut state = self.state.lock();
+                if state.publication != PidIdentityPublication::Published {
+                    return;
+                }
+                let scheduler_owns_task = match &state.runtime {
+                    RuntimeTaskLink::Reserved | RuntimeTaskLink::Exited => false,
+                    RuntimeTaskLink::Live(task) => task.upgrade().is_ok_and(|task| task.is_some()),
+                };
+                if scheduler_owns_task {
+                    return;
+                }
+                if !matches!(
+                    &state.process_lifecycle,
+                    ProcessLifecycle::None | ProcessLifecycle::Live(_)
+                ) {
+                    return;
+                }
+                state.runtime = RuntimeTaskLink::Exited;
+                state.publication = PidIdentityPublication::Detached;
+                state.process_lifecycle = ProcessLifecycle::Reaped;
+                state.process.take()
             };
-            if scheduler_owns_task {
-                return;
+            for binding in self.bindings.iter().rev() {
+                binding.namespace.remove(self.id, binding.number);
             }
-            if !matches!(
-                &state.process_lifecycle,
-                ProcessLifecycle::None | ProcessLifecycle::Live(_)
-            ) {
-                return;
-            }
-            state.runtime = RuntimeTaskLink::Exited;
-            state.publication = PidIdentityPublication::Detached;
-            state.process_lifecycle = ProcessLifecycle::Reaped;
+            process
+        };
+        // Break the Process <-> PidIdentity lifecycle ownership only after
+        // publication removal, and outside both the publication and identity
+        // locks because dropping topology may release PID role leases.
+        drop(process);
+    }
+}
+
+/// Unique linear ownership of one identity's remaining namespace-visible exit
+/// work, handed out by [`PidIdentity::mark_task_exited`].
+///
+/// The retiring task detached its runtime link, but zombie publication,
+/// parent notification, and relation close are still ahead — the window
+/// Linux covers by dropping `pid_allocated` only in `free_pid()`. The
+/// holder must call [`Self::complete`] once that work finished: it clears
+/// the pending exit path, wakes PID-namespace shutdown waiters, and detaches
+/// the namespace numbers once the last role is gone.
+///
+/// Dropping the lease without completing it is an invariant violation. `Drop`
+/// reports the violation but deliberately leaves the exit path pending: an
+/// automatic completion would publish that zombie publication and parent
+/// notification finished when they did not. This matches Linux, where only
+/// the explicit `release_task` / `free_pid` path releases PID namespace debt.
+#[must_use = "an uncompleted exit path keeps PID namespace shutdown waiting; call complete() when \
+              the exit path finishes"]
+pub struct ExitPathLease {
+    identity: Option<Arc<PidIdentity>>,
+    tid_lease: Option<PidRoleLease<Tid>>,
+}
+
+impl ExitPathLease {
+    /// Retains `PIDTYPE_PID` ownership until the exit path reaches its explicit
+    /// completion point, matching Linux's detach in `release_task()`.
+    pub(crate) fn retain_tid(mut self, tid_lease: PidRoleLease<Tid>) -> Self {
+        let identity = self
+            .identity
+            .as_ref()
+            .expect("completed exit path cannot retain a TID role");
+        assert!(tid_lease.belongs_to(identity));
+        assert!(self.tid_lease.is_none());
+        self.tid_lease = Some(tid_lease);
+        self
+    }
+
+    /// Completes the exit path at a defined point: the end of `do_exit`,
+    /// after zombie publication, parent notification, and relation close.
+    pub fn complete(mut self) {
+        if let Some(identity) = self.take_identity() {
+            // Linux detaches PIDTYPE_PID in release_task() before free_pid()
+            // releases the namespace slot. Releasing the role while the exit
+            // path is pending preserves the same order here.
+            drop(self.tid_lease.take());
+            identity.complete_exit_path();
         }
-        for binding in self.bindings.iter().rev() {
-            binding.namespace.remove(self.id, binding.number);
+    }
+
+    fn take_identity(&mut self) -> Option<Arc<PidIdentity>> {
+        self.identity.take()
+    }
+}
+
+impl Drop for ExitPathLease {
+    fn drop(&mut self) {
+        if let Some(identity) = self.identity.as_ref() {
+            warn!(
+                "PID identity {:?} exit path lease dropped before complete(); exit work remains \
+                 pending",
+                identity.id()
+            );
         }
     }
 }
@@ -1124,12 +1439,11 @@ pub struct PidRoleLease<R: PidRole> {
 }
 
 impl<R: PidRole> PidRoleLease<R> {
-    pub fn identity(&self) -> Arc<PidIdentity> {
+    fn belongs_to(&self, identity: &Arc<PidIdentity>) -> bool {
         self.identity
             .as_ref()
-            .expect("inactive PID role lease")
-            .upgrade()
-            .expect("PID role outlived its published identity")
+            .and_then(Weak::upgrade)
+            .is_some_and(|owner| Arc::ptr_eq(&owner, identity))
     }
 
     pub fn release(mut self) {
@@ -1139,6 +1453,17 @@ impl<R: PidRole> PidRoleLease<R> {
             .upgrade()
             .expect("PID role outlived its published identity")
             .release_role::<R>();
+    }
+}
+
+impl PidRoleLease<Tid> {
+    /// Reports transfer readiness from this lease's exact PID generation.
+    pub(crate) fn task_transfer_ready(&self) -> bool {
+        self.identity
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .expect("retained TID lease outlived its published identity")
+            .is_task_transfer_ready()
     }
 }
 
@@ -1170,6 +1495,13 @@ impl PidSnapshot {
             .iter()
             .find(|(namespace, _)| *namespace == observer)
             .map(|(_, number)| *number)
+    }
+
+    pub(crate) fn root_number(&self) -> PidNumber {
+        self.bindings
+            .first()
+            .expect("PID snapshot has no root binding")
+            .1
     }
 }
 
@@ -1270,7 +1602,7 @@ impl PidView {
     }
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(axtest)]
 fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     let root = Arc::new(PidNamespace::new_root());
     let root_init = PidReservation::reserve(&root, PidReservationKind::ProcessLeader)
@@ -1343,14 +1675,59 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     {
         return false;
     }
-    group_only.mark_task_exited();
+    group_only.mark_task_exited().complete();
     group_only_pgid.release();
 
-    child_init.mark_task_exited();
+    let shutdown_executor = PidReservation::reserve(&child, PidReservationKind::Thread)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let shutdown_executor_tid = shutdown_executor.acquire_role::<Tid>().unwrap();
+    let descendant = PidReservation::reserve(&child, PidReservationKind::Thread)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let descendant_tid = descendant.acquire_role::<Tid>().unwrap();
+    let release_descendant = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let descendant_body = descendant.clone();
+    let release_descendant_body = release_descendant.clone();
+    let descendant_task = crate::task::spawn_kernel_thread(
+        move || {
+            while !release_descendant_body.load(Ordering::Acquire) {
+                crate::task::yield_now();
+            }
+            descendant_body.mark_task_exited().complete();
+            descendant_tid.release();
+        },
+        "pid-namespace-descendant".into(),
+    );
+
+    let shutdown = child
+        .begin_shutdown(child_init.id(), shutdown_executor.id())
+        .unwrap();
+    if !matches!(
+        PidReservation::reserve(&child, PidReservationKind::Thread),
+        Err(StarryError::NoMemory)
+    ) {
+        return false;
+    }
+    release_descendant.store(true, Ordering::Release);
+    shutdown.wait_for_descendants_exit();
+    crate::task::join_kernel_thread(descendant_task);
+    shutdown_executor.mark_task_exited().complete();
+    shutdown_executor_tid.release();
+    if view.visible_number(&child_init).is_some() || view.nspid_chain(&child_init).is_some() {
+        return false;
+    }
+    child_init.mark_task_exited().complete();
     drop(group);
     drop(session);
     child_tid.release();
     child_tgid.release();
+    drop(shutdown);
+    if child.lifecycle() != PidNamespaceLifecycle::Dead {
+        return false;
+    }
 
     let old = PidReservation::reserve(&root, PidReservationKind::Thread)
         .unwrap()
@@ -1359,7 +1736,7 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     let old_number = old.root_number();
     let old_generation = old.id();
     let old_role = old.acquire_role::<Pgid>().unwrap();
-    old.mark_task_exited();
+    old.mark_task_exited().complete();
     old_role.release();
     if root.lookup_identity(old_generation).is_some() {
         return false;
@@ -1376,7 +1753,7 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
         && root
             .lookup_identity(replacement.id())
             .is_some_and(|registered| Arc::ptr_eq(&registered, &replacement));
-    replacement.mark_task_exited();
+    replacement.mark_task_exited().complete();
     replacement_role.release();
 
     let failed_reservation = PidReservation::reserve(&root, PidReservationKind::Thread).unwrap();
@@ -1391,77 +1768,93 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     let failed_publication_was_removed = root.lookup(failed_number).is_none();
     failed_role.release();
 
-    root_init.mark_task_exited();
+    root_init.mark_task_exited().complete();
     root_init_tid.release();
     root_init_tgid.release();
     generation_is_stable && failed_publication_was_removed
 }
 
-#[cfg(all(test, axtest))]
-fn pid_namespace_descendant_shutdown_waits_for_runtime_exit_for_test() -> bool {
-    let root = Arc::new(PidNamespace::new_root());
-    let root_init = PidReservation::reserve(&root, PidReservationKind::ProcessLeader)
+#[cfg(axtest)]
+fn dropped_exit_path_lease_keeps_unfinished_work_pending_for_test() -> bool {
+    let namespace = Arc::new(PidNamespace::new_root());
+    let identity = PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader)
         .unwrap()
         .publish()
         .unwrap();
-    let root_tid = root_init.acquire_role::<Tid>().unwrap();
-    let root_tgid = root_init.acquire_role::<Tgid>().unwrap();
-    let child = PidNamespace::new_child(root);
-    let child_init = PidReservation::reserve(&child, PidReservationKind::ProcessLeader)
-        .unwrap()
-        .publish()
-        .unwrap();
-    let child_tid = child_init.acquire_role::<Tid>().unwrap();
-    let child_tgid = child_init.acquire_role::<Tgid>().unwrap();
-    let view = PidView::new(child.clone());
+    let tid = identity.acquire_role::<Tid>().unwrap();
+    let tgid = identity.acquire_role::<Tgid>().unwrap();
+    let exit_path = identity.mark_task_exited();
+    tid.release();
+    tgid.release();
+    drop(exit_path);
 
-    let descendant = PidReservation::reserve(&child, PidReservationKind::Thread)
-        .unwrap()
-        .publish()
-        .unwrap();
-    let descendant_tid = descendant.acquire_role::<Tid>().unwrap();
-    let release_descendant = Arc::new(core::sync::atomic::AtomicBool::new(false));
-    let descendant_body = descendant.clone();
-    let release_descendant_body = release_descendant.clone();
-    let descendant_task = ax_task::spawn(move || {
-        while !release_descendant_body.load(Ordering::Acquire) {
-            ax_task::yield_now();
-        }
-        descendant_body.mark_task_exited();
-        descendant_tid.release();
-    });
-    descendant.attach_task(&descendant_task);
-
-    let shutdown = child.begin_shutdown(child_init.id()).unwrap();
-    let rejects_new_descendants = matches!(
-        PidReservation::reserve(&child, PidReservationKind::Thread),
-        Err(StarryError::NoMemory)
-    );
-    release_descendant.store(true, Ordering::Release);
-    shutdown.wait_for_live_descendants();
-    let descendant_exit = descendant_task.join() == 0;
-    let init_hidden = view.visible_number(&child_init).is_none()
-        && view.nspid_chain(&child_init).is_none();
-
-    child_init.mark_task_exited();
-    child_tid.release();
-    child_tgid.release();
-    drop(shutdown);
-    let namespace_dead = child.lifecycle() == PidNamespaceLifecycle::Dead;
-    root_init.mark_task_exited();
-    root_tid.release();
-    root_tgid.release();
-
-    rejects_new_descendants && descendant_exit && init_hidden && namespace_dead
+    let pending = identity.has_unexited_task();
+    let slot_retained = namespace.retains_identity_slot_for_test(identity.id());
+    identity.complete_exit_path();
+    pending && slot_retained && !namespace.retains_identity_slot_for_test(identity.id())
 }
 
-#[cfg(all(test, not(axtest)))]
-pub(super) fn new_test_pid_namespace() -> PidNamespaceRef {
+#[cfg(axtest)]
+fn root_namespace_init_owns_shutdown_for_test() -> bool {
+    let root = Arc::new(PidNamespace::new_root());
+    let init = PidReservation::reserve(&root, PidReservationKind::ProcessLeader)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let tid = init.acquire_role::<Tid>().unwrap();
+    let tgid = init.acquire_role::<Tgid>().unwrap();
+
+    let Some(shutdown) = root.begin_shutdown(init.id(), init.id()) else {
+        return false;
+    };
+    if root.lifecycle() != PidNamespaceLifecycle::ShuttingDown
+        || !matches!(
+            PidReservation::reserve(&root, PidReservationKind::Thread),
+            Err(StarryError::NoMemory)
+        )
+    {
+        return false;
+    }
+
+    shutdown.wait_for_descendants_exit();
+    let shutdown_completed = root.lifecycle() == PidNamespaceLifecycle::Dead
+        && root.lookup_identity(init.id()).is_none();
+    init.mark_task_exited().complete();
+    tid.release();
+    tgid.release();
+    drop(shutdown);
+    shutdown_completed
+}
+
+#[cfg(axtest)]
+fn exit_path_completion_precedes_task_transfer_for_test() -> bool {
+    let namespace = Arc::new(PidNamespace::new_root());
+    let identity = PidReservation::reserve(&namespace, PidReservationKind::Thread)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let tid = identity.acquire_role::<Tid>().unwrap();
+
+    let exit_path = identity.mark_task_exited();
+    let transfer_rejected_while_pending = !identity.try_transfer_task_with(
+        || panic!("pending exit path unexpectedly reached task transfer"),
+        None,
+    );
+    exit_path.complete();
+    let transfer_allowed_after_completion =
+        PidIdentity::task_transfer_ready(&identity.state.lock());
+    tid.release();
+
+    transfer_rejected_while_pending && transfer_allowed_after_completion
+}
+
+#[cfg(axtest)]
+pub(crate) fn new_test_pid_namespace() -> PidNamespaceRef {
     Arc::new(PidNamespace::new_root())
 }
 
-#[cfg(all(test, not(axtest)))]
-pub(super) fn new_test_process_identity(
+#[cfg(axtest)]
+pub(crate) fn new_test_process_identity(
     namespace: &PidNamespaceRef,
 ) -> (Arc<PidIdentity>, PidRoleLease<Tgid>) {
     let identity = PidReservation::reserve(namespace, PidReservationKind::ProcessLeader)
@@ -1472,18 +1865,25 @@ pub(super) fn new_test_process_identity(
     (identity, tgid)
 }
 
-#[cfg(test)]
+#[cfg(axtest)]
+pub(crate) fn new_test_thread_identity(
+    namespace: &PidNamespaceRef,
+    process_identity: &Arc<PidIdentity>,
+    exit: Arc<AtomicBool>,
+) -> (Arc<PidIdentity>, PidRoleLease<Tid>) {
+    let identity = PidReservation::reserve(namespace, PidReservationKind::Thread)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let tid = identity.acquire_role::<Tid>().unwrap();
+    identity.bind_thread_pidfd(process_identity, exit);
+    (identity, tid)
+}
+
+#[cfg(all(test, not(axtest)))]
 mod tests {
-    #[cfg(all(test, not(axtest)))]
-    extern crate std;
-
-    #[cfg(all(test, not(axtest)))]
-    use alloc::vec;
-
-    #[cfg(all(test, not(axtest)))]
     use super::*;
 
-    #[cfg(all(test, not(axtest)))]
     fn root_process() -> (
         PidNamespaceRef,
         Arc<PidIdentity>,
@@ -1500,7 +1900,6 @@ mod tests {
         (root, identity, tid, tgid)
     }
 
-    #[cfg(all(test, not(axtest)))]
     #[test]
     fn multi_namespace_reservation_drop_rolls_back_every_slot() {
         let (root, _root_init, _root_tid, _root_tgid) = root_process();
@@ -1517,7 +1916,6 @@ mod tests {
         assert!(child.lookup(child_number).is_none());
     }
 
-    #[cfg(all(test, not(axtest)))]
     #[test]
     fn reservation_is_invisible_until_publication() {
         let (root, _root_init, _root_tid, _root_tgid) = root_process();
@@ -1529,25 +1927,58 @@ mod tests {
         let identity = reservation.publish().unwrap();
         assert!(Arc::ptr_eq(&prepared, &identity));
         assert_eq!(root.lookup(number).unwrap().id(), identity.id());
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         pgid.release();
     }
 
-    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn dropped_exit_path_lease_keeps_unfinished_exit_work_pending() {
+        let (root, identity, tid, tgid) = root_process();
+        let exit_path = identity.mark_task_exited();
+        tid.release();
+        tgid.release();
+
+        // Losing the linear completion owner must not publish a false
+        // completion before zombie publication and parent notification.
+        // Linux leaves the PID allocated until the explicit free_pid path.
+        drop(exit_path);
+        assert!(identity.has_unexited_task());
+        assert!(root.retains_identity_slot_for_test(identity.id()));
+
+        // Test-only cleanup of the intentionally abandoned path.
+        identity.complete_exit_path();
+        assert!(!identity.has_unexited_task());
+        assert!(!root.retains_identity_slot_for_test(identity.id()));
+    }
+
+    #[test]
+    fn retained_tid_lease_observes_its_exact_exit_path_completion() {
+        let (_root, identity, tid, tgid) = root_process();
+        let exit_path = identity.mark_task_exited();
+
+        assert!(
+            !tid.task_transfer_ready(),
+            "a retained TID must reject transfer while its exit path is pending"
+        );
+        exit_path.complete();
+        assert!(
+            tid.task_transfer_ready(),
+            "a retained TID must observe completion from its owning identity"
+        );
+
+        tid.release();
+        tgid.release();
+    }
+
     #[test]
     fn pidfd_arc_resists_reused_number_aba() {
-        let (root, _root_init, _root_tid, _root_tgid) = root_process();
-        let identity = PidReservation::reserve(&root, PidReservationKind::Thread)
-            .unwrap()
-            .publish()
-            .unwrap();
-        let tid = identity.acquire_role::<Tid>().unwrap();
-        identity.state.lock().runtime = RuntimeTaskLink::Live(WeakAxTaskRef::new());
+        let (root, identity, tid, tgid) = root_process();
         let number = identity.visible_number(&root).unwrap();
         let old_identity_id = identity.id();
         let pidfd_identity = identity.clone();
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         tid.release();
+        tgid.release();
         assert!(root.lookup(number).is_none());
         assert!(root.lookup_identity(old_identity_id).is_none());
 
@@ -1555,8 +1986,7 @@ mod tests {
             .unwrap()
             .publish()
             .unwrap();
-        let replacement_tid = replacement.acquire_role::<Tid>().unwrap();
-        replacement.state.lock().runtime = RuntimeTaskLink::Live(WeakAxTaskRef::new());
+        let replacement_pgid = replacement.acquire_role::<Pgid>().unwrap();
         assert_eq!(replacement.visible_number(&root), Some(number));
         assert_ne!(replacement.id(), pidfd_identity.id());
         assert!(Arc::ptr_eq(
@@ -1564,20 +1994,13 @@ mod tests {
             &replacement
         ));
         assert!(root.lookup_identity(old_identity_id).is_none());
-        replacement.mark_task_exited();
-        replacement_tid.release();
+        replacement.mark_task_exited().complete();
+        replacement_pgid.release();
     }
 
-    #[cfg(all(test, not(axtest)))]
     #[test]
     fn live_process_stays_visible_after_its_leader_runtime_exits() {
-        let (root, _root_init, _root_tid, _root_tgid) = root_process();
-        let identity = PidReservation::reserve(&root, PidReservationKind::ProcessLeader)
-            .unwrap()
-            .publish()
-            .unwrap();
-        let tid = identity.acquire_role::<Tid>().unwrap();
-        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let (root, identity, tid, tgid) = root_process();
         let number = identity.root_number();
         {
             let mut state = identity.state.lock();
@@ -1595,7 +2018,6 @@ mod tests {
         tgid.release();
     }
 
-    #[cfg(all(test, not(axtest)))]
     #[test]
     fn role_typed_views_reject_a_number_with_the_wrong_role() {
         let (root, root_identity, root_tid, root_tgid) = root_process();
@@ -1628,62 +2050,20 @@ mod tests {
         );
         assert_eq!(view.visible_session_number(&identity), None);
 
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         pgid.release();
-        root_identity.mark_task_exited();
+        root_identity.mark_task_exited().complete();
         root_tid.release();
         root_tgid.release();
     }
 
-    #[cfg(all(test, not(axtest)))]
-    #[test]
-    fn observer_view_projects_each_namespace_number_and_hides_dead_namespace() {
-        let (root, _root_init, _root_tid, _root_tgid) = root_process();
-        let child = PidNamespace::new_child(root.clone());
-        let identity = PidReservation::reserve(&child, PidReservationKind::ProcessLeader)
-            .unwrap()
-            .publish()
-            .unwrap();
-        let tid = identity.acquire_role::<Tid>().unwrap();
-        let tgid = identity.acquire_role::<Tgid>().unwrap();
-        let root_number = identity.visible_number(&root).unwrap();
-        let child_number = identity.visible_number(&child).unwrap();
-        let root_view = PidView::new(root);
-        let child_view = PidView::new(child.clone());
-
-        assert_eq!(
-            root_view.visible_process_number(&identity),
-            Some(TgidNumber::from(root_number))
-        );
-        assert_eq!(
-            child_view.visible_process_number(&identity),
-            Some(TgidNumber::from(child_number))
-        );
-        assert_eq!(
-            root_view.nspid_chain(&identity),
-            Some(vec![root_number, child_number])
-        );
-        assert_eq!(child_view.nspid_chain(&identity), Some(vec![child_number]));
-
-        let shutdown = child.begin_shutdown(identity.id()).unwrap();
-        child.finish_shutdown(identity.id());
-        assert_eq!(child.lifecycle(), PidNamespaceLifecycle::Dead);
-        assert_eq!(child_view.visible_number(&identity), None);
-        assert_eq!(child_view.nspid_chain(&identity), None);
-        identity.mark_task_exited();
-        tid.release();
-        tgid.release();
-        drop(shutdown);
-    }
-
-    #[cfg(all(test, not(axtest)))]
     #[test]
     fn pgid_and_sid_roles_keep_a_reaped_number_published() {
         let (root, identity, tid, tgid) = root_process();
         let number = identity.visible_number(&root).unwrap();
         let pgid = identity.acquire_role::<Pgid>().unwrap();
         let sid = identity.acquire_role::<Sid>().unwrap();
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         tid.release();
         tgid.release();
         assert!(root.lookup(number).is_some());
@@ -1693,39 +2073,27 @@ mod tests {
         assert!(root.lookup(number).is_none());
     }
 
-    #[cfg(all(test, not(axtest)))]
-    #[test]
-    fn namespace_shutdown_rejects_new_reservations() {
-        let (root, _root_init, _root_tid, _root_tgid) = root_process();
-        let child = PidNamespace::new_child(root);
-        let init = PidReservation::reserve(&child, PidReservationKind::ProcessLeader)
-            .unwrap()
-            .publish()
-            .unwrap();
-        let tid = init.acquire_role::<Tid>().unwrap();
-        let tgid = init.acquire_role::<Tgid>().unwrap();
-        let shutdown = child.begin_shutdown(init.id()).unwrap();
-        assert!(matches!(
-            PidReservation::reserve(&child, PidReservationKind::ProcessLeader),
-            Err(StarryError::NoMemory)
-        ));
-        child.finish_shutdown(init.id());
-        init.mark_task_exited();
-        tid.release();
-        tgid.release();
-        drop(shutdown);
-        assert_eq!(child.lifecycle(), PidNamespaceLifecycle::Dead);
-    }
+}
 
-    #[cfg(all(test, not(axtest)))]
-    #[test]
+#[cfg(all(test, axtest))]
+mod axtests {
+    #[axtest::axtest]
     fn pid_identity_state_machine_rules_hold() {
         assert!(super::pid_identity_state_machine_rules_hold_for_test());
     }
 
-    #[cfg(all(test, axtest))]
     #[axtest::axtest]
-    fn pid_namespace_descendant_shutdown_waits_for_runtime_exit() {
-        assert!(super::pid_namespace_descendant_shutdown_waits_for_runtime_exit_for_test());
+    fn dropped_exit_path_lease_keeps_unfinished_work_pending() {
+        assert!(super::dropped_exit_path_lease_keeps_unfinished_work_pending_for_test());
+    }
+
+    #[axtest::axtest]
+    fn root_namespace_init_owns_shutdown() {
+        assert!(super::root_namespace_init_owns_shutdown_for_test());
+    }
+
+    #[axtest::axtest]
+    fn exit_path_completion_precedes_task_transfer() {
+        assert!(super::exit_path_completion_precedes_task_transfer_for_test());
     }
 }

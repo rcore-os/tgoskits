@@ -2,14 +2,14 @@
 
 use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicBool};
 
-use crate::interface::{CONTEXT_PREEMPT_IRQSAVE, LockMetadata};
+use crate::interface::{CONTEXT_PREEMPT_IRQSAVE, ContextState, LockMetadata};
 
 /// A raw mutex whose acquisition disables preemption and saves local IRQs.
 #[repr(C)]
 pub struct RawIrqSaveMutex {
     locked: AtomicBool,
     metadata: LockMetadata,
-    context_state: UnsafeCell<Option<usize>>,
+    context_state: UnsafeCell<Option<ContextState>>,
 }
 
 unsafe impl Sync for RawIrqSaveMutex {}
@@ -42,29 +42,26 @@ unsafe impl lock_api::RawMutex for RawIrqSaveMutex {
     type GuardMarker = lock_api::GuardNoSend;
 
     fn lock(&self) {
-        let result = crate::interface::spin_acquire(
+        let context_state = crate::interface::spin_acquire(
             &self.locked,
             &self.metadata,
             self.addr(),
             CONTEXT_PREEMPT_IRQSAVE,
             0,
-            false,
             Location::caller(),
         );
-        assert!(result.acquired(), "blocking raw mutex acquisition failed");
         // SAFETY: only the thread that acquired the raw mutex writes this
         // slot, and no other owner can exist until `unlock`.
-        unsafe { *self.context_state.get() = Some(result.context_state()) };
+        unsafe { *self.context_state.get() = Some(context_state) };
     }
 
     fn try_lock(&self) -> bool {
-        let result = crate::interface::spin_acquire(
+        let result = crate::interface::spin_try_acquire(
             &self.locked,
             &self.metadata,
             self.addr(),
             CONTEXT_PREEMPT_IRQSAVE,
             0,
-            true,
             Location::caller(),
         );
         if result.acquired() {

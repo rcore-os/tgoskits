@@ -1,4 +1,9 @@
-#[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
+#[cfg(feature = "qperf-metrics")]
+use core::sync::atomic::AtomicU64;
+#[cfg(any(
+    feature = "qperf-metrics",
+    not(all(target_arch = "aarch64", not(feature = "host-test")))
+))]
 use core::sync::atomic::Ordering;
 use core::{
     mem::{MaybeUninit, align_of, offset_of, size_of},
@@ -8,16 +13,26 @@ use core::{
 
 use crate::{CpuIndex, CpuLocalError, ExecutionContextHeader, preempt::PreemptionState};
 
+#[cfg(feature = "qperf-metrics")]
 const fn runtime_anchor_reserved_size() -> usize {
-    64 - 5 * size_of::<usize>() - size_of::<PreemptionState>()
+    let state_end = 6 * size_of::<usize>() + size_of::<PreemptionState>();
+    let counter_offset = (state_end + align_of::<AtomicU64>() - 1) & !(align_of::<AtomicU64>() - 1);
+    64 - counter_offset - size_of::<AtomicU64>()
+}
+
+#[cfg(not(feature = "qperf-metrics"))]
+const fn runtime_anchor_reserved_size() -> usize {
+    64 - 6 * size_of::<usize>() - size_of::<PreemptionState>()
 }
 
 /// CPU-local scalar state shared by trap entry and context publication.
 #[repr(C, align(64))]
 pub struct CpuRuntimeAnchor {
     current_context: AtomicUsize,
-    architecture_state: [AtomicUsize; 4],
+    architecture_state: [AtomicUsize; 5],
     preemption_state: PreemptionState,
+    #[cfg(feature = "qperf-metrics")]
+    cpu_pin_entries: AtomicU64,
     reserved: [u8; runtime_anchor_reserved_size()],
 }
 
@@ -34,8 +49,10 @@ impl CpuRuntimeAnchor {
         };
         Self {
             current_context: AtomicUsize::new(current_context),
-            architecture_state: [const { AtomicUsize::new(0) }; 4],
+            architecture_state: [const { AtomicUsize::new(0) }; 5],
             preemption_state: PreemptionState::bootstrap_disabled(),
+            #[cfg(feature = "qperf-metrics")]
+            cpu_pin_entries: AtomicU64::new(0),
             reserved: [0; runtime_anchor_reserved_size()],
         }
     }
@@ -54,6 +71,16 @@ impl CpuRuntimeAnchor {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     pub(crate) const fn preemption_state(&self) -> &PreemptionState {
         &self.preemption_state
+    }
+
+    #[cfg(feature = "qperf-metrics")]
+    pub(crate) fn record_cpu_pin_entry(&self) {
+        self.cpu_pin_entries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "qperf-metrics")]
+    pub(crate) fn qperf_cpu_pin_entries(&self) -> u64 {
+        self.cpu_pin_entries.load(Ordering::Relaxed)
     }
 }
 
@@ -96,6 +123,7 @@ impl CpuAreaHeader {
     }
 
     /// Returns the logical CPU index assigned to this area.
+    #[inline(always)]
     pub const fn cpu_index(&self) -> CpuIndex {
         match CpuIndex::from_u32(self.cpu_index) {
             Some(index) => index,
@@ -156,7 +184,6 @@ impl CpuAreaPrefix {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CpuAreaRef {
     prefix: NonNull<CpuAreaPrefix>,
-    cpu_index: CpuIndex,
 }
 
 // SAFETY: the initialization contract keeps the immutable prefix and runtime
@@ -183,8 +210,7 @@ impl CpuAreaRef {
             .ok_or(CpuLocalError::InvalidAreaBase { base: area_base })?;
         // SAFETY: forwarded caller contract provides a live initialized prefix.
         let header = unsafe { prefix.as_ref() }.header();
-        let cpu_index =
-            CpuIndex::from_u32(header.cpu_index).ok_or(CpuLocalError::AreaIdentityMismatch)?;
+        CpuIndex::from_u32(header.cpu_index).ok_or(CpuLocalError::AreaIdentityMismatch)?;
         if header.self_base != area_base {
             return Err(CpuLocalError::AreaIdentityMismatch);
         }
@@ -202,26 +228,47 @@ impl CpuAreaRef {
         {
             return Err(CpuLocalError::AreaIdentityMismatch);
         }
-        Ok(Self { prefix, cpu_index })
+        Ok(Self { prefix })
+    }
+
+    /// Reconstructs the area selected by an already validated installed base.
+    ///
+    /// # Safety
+    ///
+    /// `area_base` must be the exact base of a [`CpuAreaRef`] previously
+    /// validated and installed through the architecture register boundary.
+    /// That area must retain its immutable identity and remain mapped until
+    /// shutdown.
+    pub(crate) unsafe fn from_installed_base(area_base: usize) -> Self {
+        debug_assert!(area_base != 0);
+        debug_assert!(area_base.is_multiple_of(align_of::<CpuAreaPrefix>()));
+        // SAFETY: the caller guarantees that the installed base is non-null
+        // and still names the previously validated shutdown-lifetime prefix.
+        let prefix = unsafe { NonNull::new_unchecked(area_base as *mut CpuAreaPrefix) };
+        Self { prefix }
     }
 
     /// Returns this area's logical CPU index.
+    #[inline(always)]
     pub const fn cpu_index(self) -> CpuIndex {
-        self.cpu_index
+        self.prefix().header().cpu_index()
     }
 
     /// Returns the exact runtime prefix address used as area identity.
+    #[inline(always)]
     pub fn base(self) -> usize {
         self.prefix.as_ptr() as usize
     }
 
     /// Returns the initialized fixed prefix.
-    pub fn prefix(self) -> &'static CpuAreaPrefix {
+    #[inline(always)]
+    pub const fn prefix(self) -> &'static CpuAreaPrefix {
         // SAFETY: construction requires a shutdown-lifetime mapping.
         unsafe { self.prefix.as_ref() }
     }
 
     /// Returns this area's runtime/trap anchor.
+    #[inline(always)]
     pub fn runtime_anchor(self) -> &'static CpuRuntimeAnchor {
         self.prefix().runtime_anchor()
     }
@@ -252,7 +299,7 @@ pub const CPU_AREA_CURRENT_CONTEXT_OFFSET: usize =
 pub const CPU_AREA_ARCH_STATE_OFFSET: usize =
     CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, architecture_state);
 /// Reserved bytes available to the architecture-owned CPU trap state.
-pub const CPU_AREA_ARCH_STATE_SIZE: usize = 4 * size_of::<usize>();
+pub const CPU_AREA_ARCH_STATE_SIZE: usize = 5 * size_of::<usize>();
 /// Byte offset of the x86_64 CPU-owned preemption word.
 pub const CPU_AREA_PREEMPTION_STATE_OFFSET: usize =
     CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, preemption_state);
@@ -281,3 +328,14 @@ pub static mut __CPU_LOCAL_AREA_PREFIX: MaybeUninit<CpuAreaPrefix> = MaybeUninit
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".percpu.template.end")]
 pub static __CPU_LOCAL_TEMPLATE_END: u8 = 0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_area_ref_keeps_one_area_identity() {
+        assert_eq!(size_of::<CpuAreaRef>(), size_of::<usize>());
+        assert_eq!(size_of::<Option<CpuAreaRef>>(), size_of::<usize>());
+    }
+}

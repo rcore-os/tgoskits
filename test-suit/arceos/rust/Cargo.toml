@@ -11,25 +11,31 @@ std = []
 # baseline instead of relying on axbuild to add it for the selected test case.
 ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
 memtest = ["ax-std", "dep:rand", "ax-std/alloc"]
-task-yield = ["ax-std"]
-sched-rr = ["ax-std", "ax-std/alloc", "ax-std/sched-rr"]
-sched-cfs = ["ax-std", "ax-std/alloc", "ax-std/sched-cfs"]
-task-affinity = ["ax-std"]
-task-wait-queue = ["ax-std"]
-task-wait-queue-remote-wake = ["ax-std", "ax-std/ipi"]
-task-ipi = ["ax-std", "ax-std/alloc", "ax-std/ipi"]
-task-mutex = ["ax-std", "ax-std/alloc"]
-task-irq = [
-    "ax-std",
-    "ax-std/sched-rr",
-    "dep:axpoll",
-]
-task-tls = ["ax-std", "ax-std/tls", "ax-std/alloc"]
-task-parallel = ["ax-std", "dep:rand", "ax-std/alloc"]
-task-priority = ["ax-std", "ax-std/alloc"]
-task-sleep = ["ax-std"]
-task-smp-online = ["ax-std", "ax-std/ipi"]
-task-stack-guard-page = ["ax-std", "ax-std/paging", "ax-std/stack-guard-page"]
+mem-stage1-transition = ["task-runtime", "ax-std/alloc", "ax-std/ipi", "ax-std/paging"]
+task-runtime = ["ax-std"]
+task-yield = ["task-runtime"]
+sched-rr = ["task-runtime", "ax-std/alloc"]
+sched-cfs = ["task-runtime", "ax-std/alloc"]
+task-affinity = ["task-runtime"]
+task-fair-idle-pull = ["task-runtime", "ax-std/alloc"]
+task-fair-wake-idle-sibling = ["task-runtime"]
+task-wait-queue = ["task-runtime"]
+task-wait-queue-remote-wake = ["task-runtime", "ax-std/ipi"]
+task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/ipi"]
+task-irq = ["task-runtime"]
+task-kernel-timer = ["task-runtime"]
+task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
+task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc"]
+task-pi-mutex = ["task-runtime"]
+task-preempt-guard = ["task-runtime"]
+task-priority = ["task-runtime", "ax-std/alloc"]
+task-rt-policy = ["task-runtime", "ax-std/alloc"]
+task-scheduler-irq-window = ["task-runtime", "ax-std/ipi", "ax-std/qperf-metrics"]
+task-scheduler-owner-claim = ["task-runtime", "ax-std/qperf-metrics"]
+task-sleep = ["task-runtime"]
+task-smp-online = ["task-runtime", "ax-std/ipi"]
+task-stack-guard-page = ["task-runtime", "ax-std/paging", "ax-std/stack-guard-page"]
+task-mutex = ["task-runtime", "ax-std/alloc"]
 net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
 debug-backtrace = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
@@ -53,15 +59,22 @@ lockdep-detect = [
 # as a separate kernel after the `all` kernel.
 all = [
     "memtest",
+    "mem-stage1-transition",
     "task-yield",
     "task-affinity",
+    "task-fair-idle-pull",
+    "task-fair-wake-idle-sibling",
     "task-wait-queue",
     "task-wait-queue-remote-wake",
     "task-ipi",
+    "task-kernel-timer",
     "task-mutex",
     "task-tls",
     "task-parallel",
+    "task-pi-mutex",
+    "task-preempt-guard",
     "task-priority",
+    "task-rt-policy",
     "task-sleep",
     "net-loopback",
     "fs-basic",
@@ -76,10 +89,10 @@ all = [
 [dependencies]
 ax-driver = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }
+ax-memory-addr.workspace = true
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
-axpoll = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 libc = { workspace = true, optional = true }
 rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }

@@ -10,11 +10,13 @@ use super::{CachedFileShared, PageCache};
 
 const MAX_RECLAIM_BATCH: usize = 256;
 
-struct ReclaimGuard;
+struct ReclaimGuard<'a> {
+    reclaim_in_progress: &'a AtomicBool,
+}
 
-impl Drop for ReclaimGuard {
+impl Drop for ReclaimGuard<'_> {
     fn drop(&mut self) {
-        RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
+        self.reclaim_in_progress.store(false, Ordering::Release);
     }
 }
 
@@ -25,18 +27,54 @@ static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Reclaims clean disk-backed cache pages without holding listener callbacks
 /// under the page-cache lock.
 pub fn page_cache_reclaim(num_pages: usize) -> usize {
-    if RECLAIM_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+    let Some((reclaimed, visited_files)) =
+        reclaim_cached_files(&GLOBAL_CACHED_FILES, &RECLAIM_IN_PROGRESS, num_pages)
+    else {
         return 0;
+    };
+
+    // The remaining quota goes to the block-layer cache trees; like the
+    // page cache above, only clean folios are reclaimable here.
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    let reclaimed = {
+        let mut reclaimed = reclaimed;
+        let target = num_pages.max(16) * 2;
+        if reclaimed < target {
+            let freed = crate::block::cache::reclaim_clean_folios(target - reclaimed);
+            if freed > 0 {
+                debug!("page_cache_reclaim: evicted {freed} clean block-cache folios");
+            }
+            reclaimed += freed;
+        }
+        reclaimed
+    };
+
+    if reclaimed > 0 {
+        debug!(
+            "page_cache_reclaim: evicted {} clean pages across {} files",
+            reclaimed, visited_files
+        );
     }
-    let guard = ReclaimGuard;
+    reclaimed
+}
+
+fn reclaim_cached_files(
+    cached_files: &ax_sync::SpinRwLock<Vec<Arc<CachedFileShared>>>,
+    reclaim_in_progress: &AtomicBool,
+    num_pages: usize,
+) -> Option<(usize, usize)> {
+    if reclaim_in_progress.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    let guard = ReclaimGuard {
+        reclaim_in_progress,
+    };
 
     let mut reclaimed = 0;
     let target = num_pages.max(16) * 2;
     let mut visited_files = 0;
     let scan_len = {
-        let Some(registry) = GLOBAL_CACHED_FILES.try_read() else {
-            return 0;
-        };
+        let registry = cached_files.try_read()?;
         registry.len()
     };
 
@@ -46,7 +84,7 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
     // best-effort scan, so a later allocator retry can revisit a skipped entry.
     for index in 0..scan_len {
         let file = {
-            let Some(registry) = GLOBAL_CACHED_FILES.try_read() else {
+            let Some(registry) = cached_files.try_read() else {
                 break;
             };
             registry.get(index).cloned()
@@ -63,30 +101,24 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
         }
     }
     drop(guard);
-
-    // The remaining quota goes to the block-layer cache trees; like the
-    // page cache above, only clean folios are reclaimable here.
-    #[cfg(any(feature = "ext4", feature = "fat"))]
-    if reclaimed < target {
-        let freed = crate::block::cache::reclaim_clean_folios(target - reclaimed);
-        if freed > 0 {
-            debug!("page_cache_reclaim: evicted {freed} clean block-cache folios");
-        }
-        reclaimed += freed;
-    }
-
-    if reclaimed > 0 {
-        debug!(
-            "page_cache_reclaim: evicted {} clean pages across {} files",
-            reclaimed, visited_files
-        );
-    }
-    reclaimed
+    Some((reclaimed, visited_files))
 }
 
 pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
-    prune_cached_files();
-    GLOBAL_CACHED_FILES.write().push(file.clone());
+    let mut guard = GLOBAL_CACHED_FILES.write();
+    register_cached_file_in(&mut guard, file);
+}
+
+fn register_cached_file_in(
+    cached_files: &mut Vec<Arc<CachedFileShared>>,
+    file: &Arc<CachedFileShared>,
+) {
+    // Linux publishes a new address_space without walking unrelated inode
+    // mappings. Global cache collection belongs to reclaim and sync passes;
+    // doing it here makes N live mappings cost O(N²) registration work and
+    // nests each mapping's sleepable page-cache lock under the registry spin
+    // lock.
+    cached_files.push(Arc::clone(file));
 }
 
 /// Drops the reclaim registry's ownership after the backing inode is reaped.
@@ -161,13 +193,19 @@ impl CachedFileShared {
             }
         }
 
+        let listeners = match self.snapshot_evict_listeners(None) {
+            Ok(listeners) => listeners,
+            Err(_) => {
+                let mut cache = self.page_cache.lock();
+                for (pn, page) in pending {
+                    cache.put(pn, page);
+                }
+                return 0;
+            }
+        };
         let mut evicted = 0;
         for (pn, page) in pending {
-            let invalidated = self
-                .evict_listeners
-                .lock()
-                .iter()
-                .all(|listener| (listener.listener)(pn, &page));
+            let invalidated = listeners.iter().all(|listener| listener(pn, &page));
             if invalidated {
                 evicted += 1;
             } else {
@@ -182,6 +220,8 @@ impl CachedFileShared {
 fn reclaim_releases_registry_spin_lock_for_test() -> bool {
     const RECLAIM_PAGES: usize = 32;
 
+    let cached_files = Arc::new(ax_sync::SpinRwLock::new(Vec::new()));
+    let reclaim_in_progress = AtomicBool::new(false);
     let file = Arc::new(CachedFileShared::new_unbounded(
         (RECLAIM_PAGES * crate::os::memory::PAGE_SIZE) as u64,
     ));
@@ -194,11 +234,16 @@ fn reclaim_releases_registry_spin_lock_for_test() -> bool {
 
     let registry_was_unlocked = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&registry_was_unlocked);
+    let observed_cached_files = Arc::clone(&cached_files);
     file.evict_listeners
         .lock()
         .push_back(alloc::boxed::Box::new(super::EvictListener {
+            owner: None,
             listener: Arc::new(move |_, _| {
-                observed.store(GLOBAL_CACHED_FILES.try_write().is_some(), Ordering::Release);
+                observed.store(
+                    observed_cached_files.try_write().is_some(),
+                    Ordering::Release,
+                );
                 true
             }),
             writeback_protect: Arc::new(|_| true),
@@ -206,11 +251,12 @@ fn reclaim_releases_registry_spin_lock_for_test() -> bool {
         }));
 
     let registered = Arc::clone(&file);
-    GLOBAL_CACHED_FILES.write().insert(0, registered);
+    cached_files.write().push(registered);
 
-    let reclaimed = page_cache_reclaim(1);
+    let reclaimed = reclaim_cached_files(&cached_files, &reclaim_in_progress, 1)
+        .map_or(0, |(reclaimed, _)| reclaimed);
     let registered = {
-        let mut registry = GLOBAL_CACHED_FILES.write();
+        let mut registry = cached_files.write();
         let index = registry
             .iter()
             .position(|cached| Arc::ptr_eq(cached, &file))
@@ -232,6 +278,21 @@ mod tests {
         with_test_page_provider(true, |_| {
             assert!(reclaim_releases_registry_spin_lock_for_test());
         });
+    }
+
+    #[test]
+    fn registration_does_not_collect_an_unrelated_cached_mapping() {
+        let existing = Arc::new(CachedFileShared::new_unbounded(0));
+        let mut cached_files = alloc::vec![existing];
+        let registered = Arc::new(CachedFileShared::new_unbounded(0));
+
+        register_cached_file_in(&mut cached_files, &registered);
+
+        assert_eq!(
+            cached_files.len(),
+            2,
+            "publishing one mapping must not scan or collect unrelated cached files"
+        );
     }
 
     #[cfg(feature = "ext4")]

@@ -28,7 +28,7 @@ use alloc::{
 #[cfg(target_arch = "loongarch64")]
 use ax_alloc::{UsageKind, global_allocator};
 #[cfg(not(target_arch = "loongarch64"))]
-use ax_memory_addr::{MemoryAddr, VirtAddrRange};
+use ax_memory_addr::MemoryAddr;
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 #[cfg(not(target_arch = "loongarch64"))]
 use ax_runtime::hal::paging::MappingFlags;
@@ -85,10 +85,11 @@ impl SectionMemOps for KmodMemSection {
             #[cfg(not(target_arch = "loongarch64"))]
             KmodMemBackend::KernelAspace => {
                 let mapping_flags = section_perms_to_mapping_flags(perms);
-                let kspace = ax_mm::kernel_aspace();
-                let mut guard = kspace.lock();
-                guard
-                    .protect(self.vaddr, PAGE_SIZE_4K * self.num_pages, mapping_flags)
+                ax_runtime::kernel_mapping::protect_kernel_range(
+                    self.vaddr,
+                    PAGE_SIZE_4K * self.num_pages,
+                    mapping_flags,
+                )
                     .is_ok()
             }
             #[cfg(target_arch = "loongarch64")]
@@ -112,17 +113,15 @@ impl Drop for KmodMemSection {
             #[cfg(not(target_arch = "loongarch64"))]
             KmodMemBackend::KernelAspace => {
                 let total = PAGE_SIZE_4K * self.num_pages;
-                ax_mm::kernel_aspace()
-                    .lock()
-                    .unmap(self.vaddr, total)
-                    .unwrap_or_else(|_| {
+                ax_runtime::kernel_mapping::unmap_kernel_range(self.vaddr, total).unwrap_or_else(
+                    |_| {
                         error!(
                             "kmod: failed to unmap module section at {:#x} ({} pages)",
                             self.vaddr.as_usize(),
                             self.num_pages
                         );
-                    });
-                crate::mm::flush_tlb_range(self.vaddr, total);
+                    },
+                );
             }
             #[cfg(target_arch = "loongarch64")]
             KmodMemBackend::DirectMap => {
@@ -153,19 +152,12 @@ fn alloc_kmod_frames(num_pages: usize) -> StarryResult<VirtAddr> {
     // │       Kernel text/data       │ high addresses
     // ├──────────────────────────────┤
     let kmod_alloc_start = VirtAddr::from_usize(kernel_end);
-    let vaddr = {
-        let kspace = ax_mm::kernel_aspace();
-        let mut guard = kspace.lock();
-        let vaddr = guard
-            .find_free_area(
-                kmod_alloc_start,
-                total,
-                VirtAddrRange::new(guard.base(), guard.end()),
-            )
-            .ok_or(StarryError::NoMemory)?;
-        guard.map_alloc(vaddr, total, MappingFlags::READ | MappingFlags::WRITE, true)?;
-        vaddr
-    };
+    let vaddr = ax_runtime::kernel_mapping::allocate_kernel_range(
+        kmod_alloc_start,
+        total,
+        MappingFlags::READ | MappingFlags::WRITE,
+        true,
+    )?;
     unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, total) };
     Ok(vaddr)
 }

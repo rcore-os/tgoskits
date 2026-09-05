@@ -27,15 +27,15 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use ax_lazyinit::LazyLock;
 
 use super::{address_space::FolioGeometry, device::BlockCacheShared};
-use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex as Mutex};
+use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex};
 
 struct DeviceCacheEntry {
     device_key: usize,
     cache: Weak<BlockCacheShared>,
 }
 
-static BLOCK_CACHE_REGISTRY: LazyLock<Mutex<Vec<DeviceCacheEntry>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static BLOCK_CACHE_REGISTRY: LazyLock<SleepMutex<Vec<DeviceCacheEntry>>> =
+    LazyLock::new(|| SleepMutex::new(Vec::new()));
 
 #[cfg(test)]
 static FAIL_REGISTRY_RESERVE_FOR_KEY: AtomicUsize = AtomicUsize::new(0);

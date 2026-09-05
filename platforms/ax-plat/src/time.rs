@@ -60,6 +60,13 @@ pub trait TimeIf {
     /// Converts hardware ticks to nanoseconds.
     fn ticks_to_nanos(ticks: u64) -> u64;
 
+    /// Samples the raw scheduler clock directly in nanoseconds.
+    ///
+    /// The platform must read and convert one counter sample within this
+    /// operation. Scheduler clock correction is applied by `ax-plat` after
+    /// this raw sample crosses the platform boundary.
+    fn scheduler_clock_raw_nanos() -> u64;
+
     /// Converts nanoseconds to hardware ticks.
     fn nanos_to_ticks(nanos: u64) -> u64;
 
@@ -77,8 +84,32 @@ pub trait TimeIf {
     /// Set a one-shot timer.
     ///
     /// A timer interrupt will be triggered at the specified monotonic time
-    /// deadline (in nanoseconds).
+    /// deadline (in nanoseconds). This capability is infallible: an already
+    /// elapsed or sub-resolution deadline must be clamped to the device's
+    /// minimum non-zero delta before the method returns. Implementations must
+    /// not silently leave the previous event armed.
     fn set_oneshot_timer(deadline_ns: u64);
+
+    /// Returns whether a claimed timer IRQ must physically quiesce the
+    /// one-shot source before the interrupt controller completes the edge.
+    ///
+    /// Edge-triggered or rearm-cleared devices return `false`; level-triggered
+    /// devices whose expired comparator remains observable return `true`.
+    fn oneshot_timer_requires_irq_quiesce() -> bool;
+
+    /// Returns a stopped one-shot timer to its active state and programs it.
+    ///
+    /// The implementation owns the architecture-specific activation order.
+    /// Edge devices may need to unmask before programming a minimum delta;
+    /// level devices may need to replace an expired comparator before unmask
+    /// so controller EOI cannot latch the old level again.
+    fn resume_oneshot_timer(deadline_ns: u64);
+
+    /// Stops the current CPU's one-shot timer until it is programmed again.
+    ///
+    /// The interrupt source must become unobservable and its comparator must
+    /// be discarded so a later resume cannot inherit a stale event.
+    fn cancel_oneshot_timer();
 }
 
 /// Initializes the current CPU's scheduler-clock anchor before scheduler use.
@@ -94,7 +125,7 @@ pub trait TimeIf {
 /// interrupt that can access scheduler-clock state.
 pub unsafe fn init_scheduler_clock(cpu_id: usize) -> Result<(), SchedulerClockError> {
     let stability = scheduler_clock_stability();
-    let raw_clock = ticks_to_nanos(current_ticks());
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's offline-CPU contract.
     unsafe { crate::scheduler_clock::online_current_cpu(cpu_id, raw_clock, stability) }
 }
@@ -114,34 +145,55 @@ pub unsafe fn shutdown_scheduler_clock(cpu_id: usize) -> Result<(), SchedulerClo
     unsafe { crate::scheduler_clock::offline_current_cpu(cpu_id) }
 }
 
-/// Samples `cpu_id`'s comparable wrapping scheduler clock in nanoseconds.
+/// Samples the current CPU's comparable wrapping scheduler clock in nanoseconds.
 ///
-/// Stable platforms use the calling CPU's synchronized system counter.
-/// Unstable platforms update the calling CPU's local publication, then couple
-/// it atomically with the target publication without reading the target raw
-/// counter.
+/// Stable platforms use the synchronized system counter. Unstable platforms
+/// update the current CPU's corrected local publication.
 ///
 /// # Errors
 ///
-/// Returns an error when the target or calling CPU clock is offline, or when
-/// `cpu_id` is outside the installed CPU-local layout.
+/// Returns an error when an unstable current CPU clock has no available
+/// CPU-local state.
 ///
 /// # Safety
 ///
-/// The caller must prevent migration for the complete operation. Scheduler
-/// callers normally satisfy this through the target runqueue IRQ-save lock.
+/// The caller must own an initialized scheduler CPU and prevent migration for
+/// the complete operation. Scheduler callers satisfy this through the owner
+/// runqueue IRQ-save lock.
 #[inline]
-pub unsafe fn scheduler_clock_source(cpu_id: usize) -> Result<u64, SchedulerClockError> {
-    let raw_clock = ticks_to_nanos(current_ticks());
+pub unsafe fn scheduler_clock_source() -> Result<u64, SchedulerClockError> {
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's migration-exclusion contract.
-    unsafe { crate::scheduler_clock::source(cpu_id, raw_clock) }
+    unsafe { crate::scheduler_clock::source_current(raw_clock) }
+}
+
+/// Samples the current CPU's scheduler clock before an outer hard interrupt.
+///
+/// This is the only runtime boundary allowed to move a scheduler clock from
+/// the stable fast path to corrected per-CPU clocks. The transition therefore
+/// cannot split one hard-interrupt accounting interval across two clock
+/// epochs.
+///
+/// # Errors
+///
+/// Returns an error if the current CPU clock has not been initialized.
+///
+/// # Safety
+///
+/// The caller must exclude migration and local IRQ re-entry, and must invoke
+/// this function before starting the outer hard-interrupt time interval.
+#[inline]
+pub unsafe fn scheduler_clock_hardirq_sample() -> Result<u64, SchedulerClockError> {
+    let stability = scheduler_clock_stability();
+    let raw_clock = scheduler_clock_raw_nanos();
+    // SAFETY: forwarded from this function's outer hard-IRQ entry contract.
+    unsafe { crate::scheduler_clock::hardirq_sample(raw_clock, stability) }
 }
 
 /// Stamps the current CPU's scheduler clock from a local timer interrupt.
 ///
-/// The stability assessment is refreshed here so a late x86 TSC adjustment
-/// can move the owner from the direct fast path to corrected per-CPU clocks
-/// without a discontinuity.
+/// Clock stability transitions are deliberately excluded from this API. They
+/// are committed before outer hard-interrupt accounting begins.
 ///
 /// # Errors
 ///
@@ -153,10 +205,9 @@ pub unsafe fn scheduler_clock_source(cpu_id: usize) -> Result<u64, SchedulerCloc
 /// local timer interrupt path naturally satisfies both conditions.
 #[inline]
 pub unsafe fn scheduler_clock_tick() -> Result<u64, SchedulerClockError> {
-    let stability = scheduler_clock_stability();
-    let raw_clock = ticks_to_nanos(current_ticks());
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's local tick contract.
-    unsafe { crate::scheduler_clock::tick(raw_clock, stability) }
+    unsafe { crate::scheduler_clock::tick(raw_clock) }
 }
 
 /// Returns nanoseconds elapsed since system boot.

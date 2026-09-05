@@ -58,14 +58,14 @@ additionally requires `ExclusiveCpu`; only the unsafe guard integration can
 create that stronger capability after excluding IRQ/re-entry and conflicting
 remote access.
 
-Low-level execution-context owners and offline-bootstrap code can use the hidden
+Low-level execution-context owners and offline-bootstrap code use the hidden
 `with_current_cpu_area` and `with_current_cpu_area_mut` callbacks before a
 `CpuPin` exists. These callbacks select the architecture-owned CPU area directly
 instead of routing CPU-owned state through current execution-context
 publication. The caller retains the complete migration, context-switch,
-IRQ/re-entry, and remote aliasing contract. No runtime path uses these callbacks
-yet; they are reserved for future owner-guard and offline CPU bootstrap
-integration.
+IRQ/re-entry, and remote aliasing contract. Runtime owner-guard reads and
+offline CPU bootstrap use this boundary only while their stronger exclusion
+already satisfies that contract.
 
 | Operation | Required protection |
 | --- | --- |

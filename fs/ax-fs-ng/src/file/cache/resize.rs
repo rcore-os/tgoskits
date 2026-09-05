@@ -123,6 +123,9 @@ impl CachedFile {
         operation: FileRangeOperation,
     ) -> VfsResult<()> {
         let file = self.inner.entry().as_file()?;
+        let _discard = super::DiscardTransitionGuard::try_enter(&self.shared.discard_transition)
+            .ok_or(VfsError::ResourceBusy)?;
+        self.retry_discarded_pages(file)?;
         let start_page = offset / PAGE_SIZE as u64;
         loop {
             let observed_len = self.shared.len();
@@ -176,7 +179,12 @@ impl CachedFile {
                     .collect::<Vec<_>>()
             };
             drop(io);
-            self.notify_discarded_pages(file, discarded)?;
+            if let Err((error, discarded)) = self.notify_discarded_pages(file, discarded) {
+                // The backing range and logical length are already committed.
+                // Keep the removed frames owned until every stale mapping is
+                // invalidated instead of reporting a rollback that did not occur.
+                self.retain_discarded_pages(error, discarded);
+            }
             return Ok(());
         }
     }
@@ -201,7 +209,9 @@ impl CachedFile {
         zero_end: usize,
     ) -> VfsResult<()> {
         let mut guard = self.shared.page_cache.lock();
-        let page = self.page_or_insert(file, &mut guard, page_number, true)?.0;
+        let page = self
+            .page_or_insert(file, &mut guard, page_number, true, None)?
+            .0;
         page.data()[zero_start..zero_end].fill(0);
         if !self.in_memory {
             page.mark_dirty();
@@ -218,7 +228,9 @@ impl CachedFile {
         persist_end: usize,
     ) -> VfsResult<PreparedPageWrite> {
         let mut guard = self.shared.page_cache.lock();
-        let page = self.page_or_insert(file, &mut guard, page_number, true)?.0;
+        let page = self
+            .page_or_insert(file, &mut guard, page_number, true, None)?
+            .0;
         let was_dirty = page.dirty;
         let original_data = page.data()[zero_start..zero_end].to_vec();
         page.data()[zero_start..zero_end].fill(0);
@@ -345,17 +357,51 @@ impl CachedFile {
     fn notify_discarded_pages(
         &self,
         file: &FileNode,
-        pages: Vec<(u32, PageCache)>,
-    ) -> VfsResult<()> {
-        for (page_number, mut page) in pages {
-            self.evict_cache(file, page_number, &mut page)?;
+        mut pages: Vec<(u32, PageCache)>,
+    ) -> Result<(), (VfsError, Vec<(u32, PageCache)>)> {
+        while let Some((page_number, mut page)) = pages.pop() {
+            if let Err(error) = self.evict_cache(file, page_number, &mut page, None) {
+                // `pop` left one spare slot, so restoring this owner cannot
+                // allocate in the failure path.
+                pages.push((page_number, page));
+                return Err((error, pages));
+            }
         }
         Ok(())
+    }
+
+    fn retry_discarded_pages(&self, file: &FileNode) -> VfsResult<()> {
+        let Some(pages) = self.shared.discarded_pages.lock().take() else {
+            return Ok(());
+        };
+        match self.notify_discarded_pages(file, pages) {
+            Ok(()) => Ok(()),
+            Err((error, pages)) => {
+                let mut pending = self.shared.discarded_pages.lock();
+                assert!(pending.is_none());
+                *pending = Some(pages);
+                Err(error)
+            }
+        }
+    }
+
+    fn retain_discarded_pages(&self, error: VfsError, pages: Vec<(u32, PageCache)>) {
+        let retained = pages.len();
+        let mut pending = self.shared.discarded_pages.lock();
+        assert!(pending.is_none());
+        *pending = Some(pages);
+        warn!(
+            "retained {retained} truncated page-cache frames awaiting mapping invalidation: \
+             {error:?}"
+        );
     }
 
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
         let file = self.inner.entry().as_file()?;
+        let _discard = super::DiscardTransitionGuard::try_enter(&self.shared.discard_transition)
+            .ok_or(VfsError::ResourceBusy)?;
+        self.retry_discarded_pages(file)?;
         loop {
             let observed_len = self.shared.len();
             let affected_page =
@@ -459,7 +505,13 @@ impl CachedFile {
                 }
                 let discarded = self.take_discarded_pages_locked(len);
                 drop(io);
-                self.notify_discarded_pages(file, discarded)?;
+                if let Err((error, discarded)) = self.notify_discarded_pages(file, discarded) {
+                    // The backing length and logical cache length are already
+                    // committed. Preserve that published result and retain the
+                    // old frames until a later task-context retry confirms all
+                    // stale mappings.
+                    self.retain_discarded_pages(error, discarded);
+                }
                 return Ok(());
             }
 

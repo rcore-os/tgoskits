@@ -232,6 +232,10 @@ input = ["dep:ax-input", "ax-runtime/input"]
 ipi = ["ax-runtime/ipi"]
 loongarch64-low-va = []
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
+qperf-metrics = ["ax-runtime/qperf-metrics"]
+# Exposes a debugfs-only synchronization hook used by the real userspace QEMU
+# regression for faultable user copies. Production builds must not enable it.
+uaccess-lock-regression = []
 rknpu = ["ax-driver/rknpu"]
 jpeg = ["ax-driver/jpeg"]
 rga = ["ax-driver/rga", "dep:rockchip-rga"]
@@ -265,7 +269,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, va
 
 [dependencies]
 ax-alloc = { workspace = true }
-ax-crate-interface.workspace = true
 ax-display.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
 ax-cpu = { workspace = true, features = ["fp-simd"] }
@@ -280,14 +283,16 @@ axklib.workspace = true
 axplat-dyn.workspace = true
 ax-runtime = { workspace = true, features = [
     "uspace",
+    "fp-simd",
     "rtc",
     "ext4fs",
     "net",
 ] }
-ax-task = { workspace = true, features = [
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
     "task-ext",
     "tracepoint-hooks",
-    "sched-rr",
 ] }
 rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
@@ -306,6 +311,7 @@ ax-io = { workspace = true }
 axhvc = { workspace = true }
 axivc = { workspace = true }
 axpoll = { workspace = true }
+axpoll-set.workspace = true
 bitflags = "2.10"
 bitmaps = { version = "3.2", default-features = false }
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl", "derive"] }
@@ -314,9 +320,9 @@ chrono = { version = "0.4", default-features = false }
 downcast-rs = { version = "2.0", default-features = false, features = ["sync"] }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
-extern-trait = { workspace = true }
 flatten_objects = "0.2.4"
 hashbrown = "0.16"
+heapless.workspace = true
 indoc = "2"
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = "0.3.4"
@@ -350,7 +356,6 @@ uluru = "3.1.0"
 weak-map = "0.1.1"
 xmas-elf = "0.9"
 zerocopy = { version = "0.8", features = ["derive"] }
-ax-ipi = { workspace = true }
 static-keys = "0.8"
 ddebug = "0.5"
 kprobe = { workspace = true }
@@ -380,6 +385,7 @@ ax-std = { path = "../../arceos/ulib/axstd", default-features = false, features 
 ] }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
+loom.workspace = true
 ax-runtime = { workspace = true, features = ["host-test", "smp"] }
 
 [[test]]

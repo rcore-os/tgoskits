@@ -15,9 +15,11 @@ __axcpu_user_read_u32:
     str w2, [x1]
     mov w0, #0
     ret
+
 .Luser_read_fault:
     mov w0, #1
     ret
+
     _asm_nofault_extable 1b, .Luser_read_fault
 .size __axcpu_user_read_u32, . - __axcpu_user_read_u32
 
@@ -56,14 +58,17 @@ __axcpu_user_atomic_u32:
     mov w0, #2
     dmb ish
     ret
+
 .Luser_atomic_success:
     dmb ish
     str w4, [x3]
     mov w0, #0
     ret
+
 .Luser_atomic_fault:
     mov w0, #1
     ret
+
     _asm_nofault_extable 1b, .Luser_atomic_fault
     _asm_nofault_extable 2b, .Luser_atomic_fault
 .size __axcpu_user_atomic_u32, . - __axcpu_user_atomic_u32

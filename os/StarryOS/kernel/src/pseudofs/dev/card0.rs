@@ -38,17 +38,16 @@ use alloc::{
 use core::{
     any::Any,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
-    task::Context,
 };
 
 use ax_alloc::GlobalPage;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use bytemuck::bytes_of;
 use linux_raw_sys::general::O_CLOEXEC;
-use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use super::drm::{
     DRM_CAP_ADDFB2_MODIFIERS, DRM_CAP_CRTC_IN_VBLANK_EVENT, DRM_CAP_DUMB_BUFFER, DRM_CAP_PRIME,
@@ -80,8 +79,9 @@ use super::drm::{
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, add_file_like},
+    mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     pseudofs::{DeviceMmap, DeviceOps},
-    sync::Mutex,
+    sync::PiMutex,
 };
 
 pub const DRIVER_NAME: &str = "starry-simpledrm";
@@ -277,7 +277,12 @@ impl Pollable for DmaBufGem {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 /// Last legacy `SETCRTC` binding so `GETCRTC` can report what the
@@ -319,23 +324,23 @@ struct ModesetState {
 
 pub struct Card0 {
     /// Queue of pending DRM events waiting to be delivered via `read()`.
-    events: Mutex<VecDeque<DrmEventVblank>>,
+    events: PiMutex<VecDeque<DrmEventVblank>>,
     /// Wakes up `poll`-waiters blocked on `read()` when a new event
     /// arrives.
     poll_rx: PollSet,
     /// Monotonically-increasing vblank sequence.
     sequence: AtomicU32,
     /// Current values of all atomic-tunable properties.
-    state: Mutex<ModesetState>,
+    state: PiMutex<ModesetState>,
     /// Legacy `SETCRTC` binding readable via `GETCRTC`. Atomic commits
     /// don't update this — userspace that mixes legacy and atomic gets
     /// the well-defined "legacy state reflects the last SETCRTC"
     /// behavior libdrm expects.
-    legacy_crtc: Mutex<LegacyCrtcState>,
+    legacy_crtc: PiMutex<LegacyCrtcState>,
     /// `CREATE_DUMB`-allocated buffers keyed by handle. Dropping an
     /// entry releases Card0's strong ref on the backing pages; user
     /// mappings hold their own refs via `LinearBackend::retain`.
-    dumbs: Mutex<BTreeMap<u32, DumbBuffer>>,
+    dumbs: PiMutex<BTreeMap<u32, DumbBuffer>>,
     /// Next dumb handle to hand out.
     next_dumb_handle: AtomicU32,
     /// Monotonic counter for the mmap-offset key each `MAP_DUMB`
@@ -344,7 +349,7 @@ pub struct Card0 {
     next_offset: AtomicU64,
     /// `ADDFB2`-registered framebuffer ids, mapped to the dumb handle
     /// they were built over. Cleared on `RMFB`.
-    fbs: Mutex<BTreeMap<u32, Framebuffer>>,
+    fbs: PiMutex<BTreeMap<u32, Framebuffer>>,
     /// Next fb id to hand out.
     next_fb_id: AtomicU32,
     /// User-created `CREATEPROPBLOB` blobs keyed by their blob_id.
@@ -352,27 +357,27 @@ pub struct Card0 {
     /// kernel-owned blobs (e.g. `IN_FORMATS`). Stored behind `Arc`
     /// so committed modeset state (see [`Self::mode_id_blob_ref`]) can
     /// hold its own backing reference past a user `DESTROYPROPBLOB`.
-    blobs: Mutex<BTreeMap<u32, Arc<Vec<u8>>>>,
+    blobs: PiMutex<BTreeMap<u32, Arc<Vec<u8>>>>,
     /// Strong reference to the blob backing the currently-committed
     /// `MODE_ID` property. Linux DRM pins the mode blob from the CRTC
     /// state, so a user `DESTROYPROPBLOB` on the publish handle only
     /// drops the user's reference — `GETPROPBLOB` on the same id keeps
     /// working until a later atomic commit replaces or clears
     /// `MODE_ID`. Cleared/replaced atomically with `state.crtc_mode_id`.
-    mode_id_blob_ref: Mutex<Option<Arc<Vec<u8>>>>,
+    mode_id_blob_ref: PiMutex<Option<Arc<Vec<u8>>>>,
     /// Next blob id to hand out.
     next_blob_id: AtomicU32,
     /// Kernel-owned immutable blobs (e.g. plane `IN_FORMATS`) keyed by
     /// blob_id. Read-only after publish; never freed; DESTROY_BLOB
     /// refuses to remove ids in this table.
-    system_blobs: Mutex<BTreeMap<u32, Arc<Vec<u8>>>>,
+    system_blobs: PiMutex<BTreeMap<u32, Arc<Vec<u8>>>>,
     /// Cached blob_id for the `IN_FORMATS` property. Allocated once
     /// under `system_blobs_init` so concurrent first-callers cannot
     /// each leak their own copy into `system_blobs`.
     in_formats_blob: AtomicU32,
     /// Serializes the lazy initialization of `in_formats_blob` so
     /// only one allocation lands in `system_blobs`.
-    system_blobs_init: Mutex<()>,
+    system_blobs_init: PiMutex<()>,
     /// Registered virtio-gpu IRQ action, when the display backend advertises one.
     irq_handle: ax_lazyinit::OnceLock<ax_runtime::hal::irq::IrqHandle>,
 }
@@ -380,25 +385,25 @@ pub struct Card0 {
 impl Card0 {
     pub fn new() -> Arc<Self> {
         let card = Arc::new(Self {
-            events: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
+            events: PiMutex::new(VecDeque::with_capacity(MAX_EVENTS)),
             poll_rx: PollSet::new(),
             sequence: AtomicU32::new(0),
-            state: Mutex::new(ModesetState::default()),
-            legacy_crtc: Mutex::new(LegacyCrtcState::default()),
-            dumbs: Mutex::new(BTreeMap::new()),
+            state: PiMutex::new(ModesetState::default()),
+            legacy_crtc: PiMutex::new(LegacyCrtcState::default()),
+            dumbs: PiMutex::new(BTreeMap::new()),
             next_dumb_handle: AtomicU32::new(FIRST_DUMB_HANDLE),
             // Start at STRIDE rather than 0 so a zero `offset` argument
             // on `mmap` is unambiguous (it means "hasn't called
             // MAP_DUMB yet").
             next_offset: AtomicU64::new(DUMB_BUFFER_OFFSET_STRIDE),
-            fbs: Mutex::new(BTreeMap::new()),
+            fbs: PiMutex::new(BTreeMap::new()),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
-            blobs: Mutex::new(BTreeMap::new()),
-            mode_id_blob_ref: Mutex::new(None),
+            blobs: PiMutex::new(BTreeMap::new()),
+            mode_id_blob_ref: PiMutex::new(None),
             next_blob_id: AtomicU32::new(FIRST_BLOB_ID),
-            system_blobs: Mutex::new(BTreeMap::new()),
+            system_blobs: PiMutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
-            system_blobs_init: Mutex::new(()),
+            system_blobs_init: PiMutex::new(()),
             irq_handle: ax_lazyinit::OnceLock::new(),
         });
         card.register_irq();
@@ -466,10 +471,15 @@ impl Card0 {
 /// Write a kernel-owned `src` into a user buffer. Returns the number of
 /// bytes the kernel tried to write (for the truncated-write `*_len =
 /// len(src)` convention DRM's VERSION ioctl uses).
-fn write_user_string(user_ptr: u64, user_cap: usize, src: &str) -> VfsResult<usize> {
+fn write_user_string(
+    current: &crate::task::UserTaskRef,
+    user_ptr: u64,
+    user_cap: usize,
+    src: &str,
+) -> VfsResult<usize> {
     let n = user_cap.min(src.len());
     if n > 0 {
-        vm_write_slice(user_ptr as *mut u8, &src.as_bytes()[..n])
+        vm_write_slice(current, user_ptr as *mut u8, &src.as_bytes()[..n])
             .map_err(|_| VfsError::BadAddress)?;
     }
     Ok(src.len())
@@ -477,10 +487,16 @@ fn write_user_string(user_ptr: u64, user_cap: usize, src: &str) -> VfsResult<usi
 
 /// Write up to `cap` `T`s from `src` into `user_ptr`; returns the total
 /// source length.
-fn report_user_array<T: Copy>(user_ptr: u64, cap: u32, src: &[T]) -> VfsResult<u32> {
+fn report_user_array<T: bytemuck::NoUninit>(
+    current: &crate::task::UserTaskRef,
+    user_ptr: u64,
+    cap: u32,
+    src: &[T],
+) -> VfsResult<u32> {
     if user_ptr != 0 {
         let to_write = (cap as usize).min(src.len());
-        vm_write_slice(user_ptr as *mut T, &src[..to_write]).map_err(|_| VfsError::BadAddress)?;
+        vm_write_slice(current, user_ptr as *mut T, &src[..to_write])
+            .map_err(|_| VfsError::BadAddress)?;
     }
     Ok(src.len() as u32)
 }
@@ -579,43 +595,43 @@ impl DeviceOps for Card0 {
         Err(VfsError::BadFileDescriptor)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
-            DRM_IOCTL_VERSION => handle_version(arg),
-            DRM_IOCTL_GET_UNIQUE => handle_get_unique(arg),
-            DRM_IOCTL_SET_VERSION => handle_set_version(arg),
-            DRM_IOCTL_GET_CAP => handle_get_cap(arg),
-            DRM_IOCTL_SET_CLIENT_CAP => handle_set_client_cap(arg),
+            DRM_IOCTL_VERSION => handle_version(current, arg),
+            DRM_IOCTL_GET_UNIQUE => handle_get_unique(current, arg),
+            DRM_IOCTL_SET_VERSION => handle_set_version(current, arg),
+            DRM_IOCTL_GET_CAP => handle_get_cap(current, arg),
+            DRM_IOCTL_SET_CLIENT_CAP => handle_set_client_cap(current, arg),
             DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER => Ok(0),
 
-            DRM_IOCTL_MODE_GETRESOURCES => handle_get_resources(arg),
-            DRM_IOCTL_MODE_GETCRTC => self.handle_get_crtc(arg),
-            DRM_IOCTL_MODE_SETCRTC => self.handle_set_crtc(arg),
-            DRM_IOCTL_MODE_GETENCODER => handle_get_encoder(arg),
-            DRM_IOCTL_MODE_GETCONNECTOR => handle_get_connector(arg),
-            DRM_IOCTL_MODE_ADDFB2 => self.handle_addfb2(arg),
-            DRM_IOCTL_MODE_RMFB => self.handle_rmfb(arg),
-            DRM_IOCTL_MODE_CREATE_DUMB => self.handle_create_dumb(arg),
-            DRM_IOCTL_MODE_MAP_DUMB => self.handle_map_dumb(arg),
-            DRM_IOCTL_MODE_DESTROY_DUMB => self.handle_destroy_dumb(arg),
+            DRM_IOCTL_MODE_GETRESOURCES => handle_get_resources(current, arg),
+            DRM_IOCTL_MODE_GETCRTC => self.handle_get_crtc(current, arg),
+            DRM_IOCTL_MODE_SETCRTC => self.handle_set_crtc(current, arg),
+            DRM_IOCTL_MODE_GETENCODER => handle_get_encoder(current, arg),
+            DRM_IOCTL_MODE_GETCONNECTOR => handle_get_connector(current, arg),
+            DRM_IOCTL_MODE_ADDFB2 => self.handle_addfb2(current, arg),
+            DRM_IOCTL_MODE_RMFB => self.handle_rmfb(current, arg),
+            DRM_IOCTL_MODE_CREATE_DUMB => self.handle_create_dumb(current, arg),
+            DRM_IOCTL_MODE_MAP_DUMB => self.handle_map_dumb(current, arg),
+            DRM_IOCTL_MODE_DESTROY_DUMB => self.handle_destroy_dumb(current, arg),
 
-            DRM_IOCTL_MODE_GETPLANERESOURCES => handle_get_plane_resources(arg),
-            DRM_IOCTL_MODE_GETPLANE => handle_get_plane(arg),
-            DRM_IOCTL_MODE_OBJ_GETPROPERTIES => self.handle_obj_get_properties(arg),
-            DRM_IOCTL_MODE_GETPROPERTY => handle_get_property(arg),
-            DRM_IOCTL_MODE_PAGE_FLIP => self.handle_page_flip(arg),
-            DRM_IOCTL_WAIT_VBLANK => self.handle_wait_vblank(arg),
+            DRM_IOCTL_MODE_GETPLANERESOURCES => handle_get_plane_resources(current, arg),
+            DRM_IOCTL_MODE_GETPLANE => handle_get_plane(current, arg),
+            DRM_IOCTL_MODE_OBJ_GETPROPERTIES => self.handle_obj_get_properties(current, arg),
+            DRM_IOCTL_MODE_GETPROPERTY => handle_get_property(current, arg),
+            DRM_IOCTL_MODE_PAGE_FLIP => self.handle_page_flip(current, arg),
+            DRM_IOCTL_WAIT_VBLANK => self.handle_wait_vblank(current, arg),
 
-            DRM_IOCTL_MODE_ATOMIC => self.handle_atomic(arg),
-            DRM_IOCTL_MODE_CREATEPROPBLOB => self.handle_create_blob(arg),
-            DRM_IOCTL_MODE_DESTROYPROPBLOB => self.handle_destroy_blob(arg),
-            DRM_IOCTL_MODE_GETPROPBLOB => self.handle_get_blob(arg),
+            DRM_IOCTL_MODE_ATOMIC => self.handle_atomic(current, arg),
+            DRM_IOCTL_MODE_CREATEPROPBLOB => self.handle_create_blob(current, arg),
+            DRM_IOCTL_MODE_DESTROYPROPBLOB => self.handle_destroy_blob(current, arg),
+            DRM_IOCTL_MODE_GETPROPBLOB => self.handle_get_blob(current, arg),
 
-            DRM_IOCTL_GET_MAGIC => handle_get_magic(arg),
-            DRM_IOCTL_AUTH_MAGIC => handle_auth_magic(arg),
-            DRM_IOCTL_MODE_DIRTYFB => self.handle_dirty_fb(arg),
-            DRM_IOCTL_PRIME_HANDLE_TO_FD => self.handle_prime_handle_to_fd(arg),
-            DRM_IOCTL_PRIME_FD_TO_HANDLE => self.handle_prime_fd_to_handle(arg),
+            DRM_IOCTL_GET_MAGIC => handle_get_magic(current, arg),
+            DRM_IOCTL_AUTH_MAGIC => handle_auth_magic(current, arg),
+            DRM_IOCTL_MODE_DIRTYFB => self.handle_dirty_fb(current, arg),
+            DRM_IOCTL_PRIME_HANDLE_TO_FD => self.handle_prime_handle_to_fd(current, arg),
+            DRM_IOCTL_PRIME_FD_TO_HANDLE => self.handle_prime_fd_to_handle(current, arg),
 
             _ => Err(VfsError::OperationNotSupported),
         }
@@ -660,10 +676,23 @@ impl Pollable for Card0 {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from DRM file poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
         }
     }
 }
@@ -715,9 +744,13 @@ impl Card0 {
         let _ = ax_display::framebuffer_flush();
     }
 
-    fn handle_create_dumb(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_create_dumb(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCreateDumb;
-        let mut c: DrmModeCreateDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut c: DrmModeCreateDumb = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         if c.width == 0
             || c.height == 0
             || c.bpp == 0
@@ -774,13 +807,17 @@ impl Card0 {
             },
         );
         c.handle = handle;
-        ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, c).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 
-    fn handle_destroy_dumb(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_destroy_dumb(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeDestroyDumb;
-        let d: DrmModeDestroyDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let d: DrmModeDestroyDumb = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         // Silently accept unknown handles — userspace sometimes
         // destroys the same handle twice on cleanup. The `Arc` on
         // `pages` means the backing memory only goes away after both
@@ -790,9 +827,9 @@ impl Card0 {
         Ok(0)
     }
 
-    fn handle_map_dumb(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_map_dumb(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeMapDumb;
-        let mut m: DrmModeMapDumb = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut m: DrmModeMapDumb = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         let offset = self
             .dumbs
             .lock()
@@ -800,36 +837,36 @@ impl Card0 {
             .map(|b| b.offset)
             .ok_or(VfsError::InvalidInput)?;
         m.offset = offset;
-        ptr.vm_write(m).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, m).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 }
 
-fn handle_version(arg: usize) -> VfsResult<usize> {
+fn handle_version(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmVersion;
-    let mut v: DrmVersion = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut v: DrmVersion = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     v.version_major = DRIVER_VERSION_MAJOR;
     v.version_minor = DRIVER_VERSION_MINOR;
     v.version_patchlevel = DRIVER_VERSION_PATCHLEVEL;
-    v.name_len = write_user_string(v.name, v.name_len, DRIVER_NAME)?;
-    v.date_len = write_user_string(v.date, v.date_len, DRIVER_DATE)?;
-    v.desc_len = write_user_string(v.desc, v.desc_len, DRIVER_DESC)?;
-    ptr.vm_write(v).map_err(|_| VfsError::BadAddress)?;
+    v.name_len = write_user_string(current, v.name, v.name_len, DRIVER_NAME)?;
+    v.date_len = write_user_string(current, v.date, v.date_len, DRIVER_DATE)?;
+    v.desc_len = write_user_string(current, v.desc, v.desc_len, DRIVER_DESC)?;
+    ptr.vm_write(current, v).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
-fn handle_get_unique(arg: usize) -> VfsResult<usize> {
+fn handle_get_unique(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmUnique;
-    let mut u: DrmUnique = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut u: DrmUnique = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     let unique: String = format!("{}:0", DRIVER_NAME);
-    u.unique_len = write_user_string(u.unique, u.unique_len, &unique)?;
-    ptr.vm_write(u).map_err(|_| VfsError::BadAddress)?;
+    u.unique_len = write_user_string(current, u.unique, u.unique_len, &unique)?;
+    ptr.vm_write(current, u).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
-fn handle_set_version(arg: usize) -> VfsResult<usize> {
+fn handle_set_version(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmSetVersion;
-    let mut sv: DrmSetVersion = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut sv: DrmSetVersion = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     if sv.drm_di_major < 0 {
         sv.drm_di_major = 1;
     }
@@ -838,13 +875,14 @@ fn handle_set_version(arg: usize) -> VfsResult<usize> {
     }
     sv.drm_dd_major = DRIVER_VERSION_MAJOR;
     sv.drm_dd_minor = DRIVER_VERSION_MINOR;
-    ptr.vm_write(sv).map_err(|_| VfsError::BadAddress)?;
+    ptr.vm_write(current, sv)
+        .map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
-fn handle_get_cap(arg: usize) -> VfsResult<usize> {
+fn handle_get_cap(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmGetCap;
-    let mut cap: DrmGetCap = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut cap: DrmGetCap = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     // Unknown caps return value=0 rather than EINVAL.
     cap.value = match cap.capability {
         DRM_CAP_DUMB_BUFFER => 1,
@@ -854,24 +892,26 @@ fn handle_get_cap(arg: usize) -> VfsResult<usize> {
         DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
         _ => 0,
     };
-    ptr.vm_write(cap).map_err(|_| VfsError::BadAddress)?;
+    ptr.vm_write(current, cap)
+        .map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
-fn handle_set_client_cap(arg: usize) -> VfsResult<usize> {
+fn handle_set_client_cap(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *const DrmSetClientCap;
-    let _scc: DrmSetClientCap = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let _scc: DrmSetClientCap = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
-fn handle_get_magic(arg: usize) -> VfsResult<usize> {
+fn handle_get_magic(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmAuth;
     let magic = DrmAuth { magic: 1 };
-    ptr.vm_write(magic).map_err(|_| VfsError::BadAddress)?;
+    ptr.vm_write(current, magic)
+        .map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
-fn handle_auth_magic(_arg: usize) -> VfsResult<usize> {
+fn handle_auth_magic(_current: &crate::task::UserTaskRef, _arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
@@ -882,9 +922,13 @@ impl Card0 {
     /// pages in a [`DmaBufGem`], and registers it in the calling process's
     /// fd table.  The returned fd can be passed across processes via
     /// `SCM_RIGHTS` or used directly with `mmap`/`read`.
-    fn handle_prime_handle_to_fd(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_prime_handle_to_fd(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmPrimeHandle;
-        let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut req: DrmPrimeHandle = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
         let dumbs = self.dumbs.lock();
         let buf = dumbs.get(&req.handle).ok_or(VfsError::InvalidInput)?;
@@ -908,7 +952,8 @@ impl Card0 {
         let fd = add_file_like(dma_buf, cloexec).map_err(|_| VfsError::NoMemory)?;
         req.fd = fd;
 
-        ptr.vm_write(req).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, req)
+            .map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 
@@ -937,9 +982,13 @@ impl Card0 {
     /// The current implementation uses `downcast_ref::<DmaBufGem>` to
     /// reject non-dma-buf fds and `Arc::clone` to participate in the GEM
     /// refcount contract, matching Linux's behaviour.
-    fn handle_prime_fd_to_handle(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_prime_fd_to_handle(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmPrimeHandle;
-        let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut req: DrmPrimeHandle = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
         let file = crate::file::get_file_like(req.fd).map_err(|_| VfsError::BadFileDescriptor)?;
         let dma_buf: &DmaBufGem = file
@@ -974,14 +1023,15 @@ impl Card0 {
         );
         req.handle = handle;
 
-        ptr.vm_write(req).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, req)
+            .map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 }
 
-fn handle_get_resources(arg: usize) -> VfsResult<usize> {
+fn handle_get_resources(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmModeCardRes;
-    let mut r: DrmModeCardRes = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut r: DrmModeCardRes = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
     let (w, h) = display_resolution();
     r.min_width = w;
@@ -990,19 +1040,24 @@ fn handle_get_resources(arg: usize) -> VfsResult<usize> {
     r.max_height = h;
 
     r.count_fbs = 0;
-    r.count_crtcs = report_user_array(r.crtc_id_ptr, r.count_crtcs, &[CRTC_ID])?;
-    r.count_encoders = report_user_array(r.encoder_id_ptr, r.count_encoders, &[ENCODER_ID])?;
-    r.count_connectors =
-        report_user_array(r.connector_id_ptr, r.count_connectors, &[CONNECTOR_ID])?;
+    r.count_crtcs = report_user_array(current, r.crtc_id_ptr, r.count_crtcs, &[CRTC_ID])?;
+    r.count_encoders =
+        report_user_array(current, r.encoder_id_ptr, r.count_encoders, &[ENCODER_ID])?;
+    r.count_connectors = report_user_array(
+        current,
+        r.connector_id_ptr,
+        r.count_connectors,
+        &[CONNECTOR_ID],
+    )?;
 
-    ptr.vm_write(r).map_err(|_| VfsError::BadAddress)?;
+    ptr.vm_write(current, r).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
 impl Card0 {
-    fn handle_get_crtc(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_get_crtc(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCrtc;
-        let mut c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut c: DrmModeCrtc = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         if c.crtc_id != CRTC_ID {
             return Err(VfsError::InvalidInput);
         }
@@ -1019,8 +1074,12 @@ impl Card0 {
             } else {
                 DrmModeModeInfo::default()
             };
-            c.count_connectors =
-                report_user_array(c.set_connectors_ptr, c.count_connectors, &legacy.connectors)?;
+            c.count_connectors = report_user_array(
+                current,
+                c.set_connectors_ptr,
+                c.count_connectors,
+                &legacy.connectors,
+            )?;
         } else {
             // Unbound CRTC: no fb, no connectors, advertise the current
             // synthetic mode so probes still see a coherent mode.
@@ -1031,15 +1090,15 @@ impl Card0 {
             c.mode = current_mode();
             let empty: &[u32] = &[];
             c.count_connectors =
-                report_user_array(c.set_connectors_ptr, c.count_connectors, empty)?;
+                report_user_array(current, c.set_connectors_ptr, c.count_connectors, empty)?;
         }
-        ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, c).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 
-    fn handle_set_crtc(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_set_crtc(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCrtc;
-        let c: DrmModeCrtc = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let c: DrmModeCrtc = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         if c.crtc_id != CRTC_ID {
             return Err(VfsError::InvalidInput);
         }
@@ -1068,6 +1127,7 @@ impl Card0 {
             return Err(VfsError::InvalidInput);
         }
         let connectors: Vec<u32> = vm_load(
+            current,
             c.set_connectors_ptr as *const u32,
             c.count_connectors as usize,
         )
@@ -1092,9 +1152,9 @@ impl Card0 {
     }
 }
 
-fn handle_get_encoder(arg: usize) -> VfsResult<usize> {
+fn handle_get_encoder(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmModeGetEncoder;
-    let mut e: DrmModeGetEncoder = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut e: DrmModeGetEncoder = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     if e.encoder_id != ENCODER_ID {
         return Err(VfsError::InvalidInput);
     }
@@ -1102,13 +1162,13 @@ fn handle_get_encoder(arg: usize) -> VfsResult<usize> {
     e.crtc_id = CRTC_ID;
     e.possible_crtcs = 1;
     e.possible_clones = 0;
-    ptr.vm_write(e).map_err(|_| VfsError::BadAddress)?;
+    ptr.vm_write(current, e).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
-fn handle_get_connector(arg: usize) -> VfsResult<usize> {
+fn handle_get_connector(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmModeGetConnector;
-    let mut c: DrmModeGetConnector = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut c: DrmModeGetConnector = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     if c.connector_id != CONNECTOR_ID {
         return Err(VfsError::InvalidInput);
     }
@@ -1121,24 +1181,24 @@ fn handle_get_connector(arg: usize) -> VfsResult<usize> {
     c.mm_height = h;
     c.subpixel = 0;
 
-    c.count_encoders = report_user_array(c.encoders_ptr, c.count_encoders, &[ENCODER_ID])?;
+    c.count_encoders = report_user_array(current, c.encoders_ptr, c.count_encoders, &[ENCODER_ID])?;
 
     if c.modes_ptr != 0 && c.count_modes > 0 {
         let p = c.modes_ptr as *mut DrmModeModeInfo;
-        p.vm_write(current_mode())
+        p.vm_write(current, current_mode())
             .map_err(|_| VfsError::BadAddress)?;
     }
     c.count_modes = 1;
     c.count_props = 0;
 
-    ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
+    ptr.vm_write(current, c).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
 impl Card0 {
-    fn handle_addfb2(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_addfb2(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeFbCmd2;
-        let mut f: DrmModeFbCmd2 = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut f: DrmModeFbCmd2 = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         let handle = f.handles[0];
         // Resolve and clone-retain the dumb's backing under the dumbs
         // lock so a concurrent DESTROY_DUMB can't race the fb's
@@ -1204,13 +1264,13 @@ impl Card0 {
             },
         );
         f.fb_id = fb_id;
-        ptr.vm_write(f).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, f).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 
-    fn handle_rmfb(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_rmfb(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const u32;
-        let fb_id: u32 = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let fb_id: u32 = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         self.fbs.lock().remove(&fb_id);
         // If the removed fb was the one bound by legacy SETCRTC, clear
         // the binding so GETCRTC stops reporting a stale fb_id.
@@ -1226,18 +1286,18 @@ impl Card0 {
 
 // ======== M4b: planes, properties, page flip, vblank ========
 
-fn handle_get_plane_resources(arg: usize) -> VfsResult<usize> {
+fn handle_get_plane_resources(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmModeGetPlaneRes;
-    let mut r: DrmModeGetPlaneRes = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut r: DrmModeGetPlaneRes = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     let planes: &[u32] = &[PLANE_ID];
-    r.count_planes = report_user_array(r.plane_id_ptr, r.count_planes, planes)?;
-    ptr.vm_write(r).map_err(|_| VfsError::BadAddress)?;
+    r.count_planes = report_user_array(current, r.plane_id_ptr, r.count_planes, planes)?;
+    ptr.vm_write(current, r).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
-fn handle_get_plane(arg: usize) -> VfsResult<usize> {
+fn handle_get_plane(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmModeGetPlane;
-    let mut p: DrmModeGetPlane = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut p: DrmModeGetPlane = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     if p.plane_id != PLANE_ID {
         return Err(VfsError::InvalidInput);
     }
@@ -1245,16 +1305,25 @@ fn handle_get_plane(arg: usize) -> VfsResult<usize> {
     p.fb_id = 0;
     p.possible_crtcs = 1;
     p.gamma_size = 0;
-    p.count_format_types =
-        report_user_array(p.format_type_ptr, p.count_format_types, SUPPORTED_FORMATS)?;
-    ptr.vm_write(p).map_err(|_| VfsError::BadAddress)?;
+    p.count_format_types = report_user_array(
+        current,
+        p.format_type_ptr,
+        p.count_format_types,
+        SUPPORTED_FORMATS,
+    )?;
+    ptr.vm_write(current, p).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
 impl Card0 {
-    fn handle_obj_get_properties(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_obj_get_properties(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeObjGetProperties;
-        let mut q: DrmModeObjGetProperties = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut q: DrmModeObjGetProperties =
+            ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
         let state = *self.state.lock();
         let (prop_ids, prop_vals): (&[u32], Vec<u64>) = match (q.obj_type, q.obj_id) {
@@ -1266,10 +1335,10 @@ impl Card0 {
             (DRM_MODE_OBJECT_CONNECTOR, CONNECTOR_ID) => (CONN_PROPS, conn_prop_values(&state)),
             _ => return Err(VfsError::NotFound),
         };
-        report_user_array(q.props_ptr, q.count_props, prop_ids)?;
-        report_user_array(q.prop_values_ptr, q.count_props, &prop_vals)?;
+        report_user_array(current, q.props_ptr, q.count_props, prop_ids)?;
+        report_user_array(current, q.prop_values_ptr, q.count_props, &prop_vals)?;
         q.count_props = prop_ids.len() as u32;
-        ptr.vm_write(q).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, q).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 }
@@ -1350,9 +1419,9 @@ fn conn_prop_values(s: &ModesetState) -> Vec<u64> {
 }
 
 /// `GETPROPERTY` — describe a single property by id.
-fn handle_get_property(arg: usize) -> VfsResult<usize> {
+fn handle_get_property(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmModeGetProperty;
-    let mut g: DrmModeGetProperty = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+    let mut g: DrmModeGetProperty = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     let meta = property_meta(g.prop_id).ok_or(VfsError::NotFound)?;
 
     g.flags = meta.flags;
@@ -1364,11 +1433,12 @@ fn handle_get_property(arg: usize) -> VfsResult<usize> {
     match meta.kind {
         PropKind::Enum(enums) => {
             g.count_values = enums.len() as u32;
-            g.count_enum_blobs = report_user_array(g.enum_blob_ptr, g.count_enum_blobs, enums)?;
+            g.count_enum_blobs =
+                report_user_array(current, g.enum_blob_ptr, g.count_enum_blobs, enums)?;
         }
         PropKind::RangeU64 { min, max } => {
             let limits = [min, max];
-            g.count_values = report_user_array(g.values_ptr, g.count_values, &limits)?;
+            g.count_values = report_user_array(current, g.values_ptr, g.count_values, &limits)?;
             g.count_enum_blobs = 0;
         }
         PropKind::Object | PropKind::Blob => {
@@ -1376,7 +1446,7 @@ fn handle_get_property(arg: usize) -> VfsResult<usize> {
             g.count_enum_blobs = 0;
         }
     }
-    ptr.vm_write(g).map_err(|_| VfsError::BadAddress)?;
+    ptr.vm_write(current, g).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
 
@@ -1481,9 +1551,9 @@ fn range_u32(name: &'static str, atomic: u32) -> PropMeta {
 }
 
 impl Card0 {
-    fn handle_dirty_fb(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_dirty_fb(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeDirtyFB;
-        let dirty: DrmModeDirtyFB = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let dirty: DrmModeDirtyFB = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         if !self.fbs.lock().contains_key(&dirty.fb_id) {
             return Err(VfsError::InvalidInput);
         }
@@ -1491,9 +1561,9 @@ impl Card0 {
         Ok(0)
     }
 
-    fn handle_page_flip(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_page_flip(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeCrtcPageFlip;
-        let f: DrmModeCrtcPageFlip = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let f: DrmModeCrtcPageFlip = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         if f.crtc_id != CRTC_ID || !self.fbs.lock().contains_key(&f.fb_id) {
             return Err(VfsError::InvalidInput);
         }
@@ -1541,18 +1611,22 @@ impl Card0 {
     /// `WAIT_VBLANK` — user asks to block until a given vblank sequence.
     /// We don't have a real vblank source, so just bump the sequence and
     /// return immediately with the current timestamp.
-    fn handle_wait_vblank(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_wait_vblank(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmWaitVblank;
-        let request: DrmWaitVblank = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let request: DrmWaitVblank = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
         let is_relative = request.rep_type & crate::pseudofs::dev::drm::DRM_VBLANK_RELATIVE != 0;
-        let current = self.sequence.load(Ordering::Acquire);
+        let current_sequence = self.sequence.load(Ordering::Acquire);
         let target = if is_relative {
-            current.wrapping_add(request.sequence)
+            current_sequence.wrapping_add(request.sequence)
         } else {
             request.sequence
         };
-        let raw_wait = target.wrapping_sub(current);
+        let raw_wait = target.wrapping_sub(current_sequence);
         let wait_count = if raw_wait == 0 || raw_wait >= i32::MAX as u32 {
             1
         } else {
@@ -1562,7 +1636,7 @@ impl Card0 {
         const FRAME_PERIOD_NS: u64 = 1_000_000_000 / 60;
         let delay =
             core::time::Duration::from_nanos(FRAME_PERIOD_NS.saturating_mul(wait_count as u64));
-        ax_task::sleep(delay);
+        crate::task::sleep(delay);
         self.sequence.fetch_add(wait_count, Ordering::AcqRel);
 
         let now = monotonic_time();
@@ -1572,15 +1646,16 @@ impl Card0 {
             tv_sec: now.as_secs() as i64,
             tv_usec: now.subsec_micros() as i64,
         };
-        ptr.vm_write(reply).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, reply)
+            .map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 
     // ======== M4c: atomic commit + blob properties ========
 
-    fn handle_atomic(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_atomic(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeAtomic;
-        let a: DrmModeAtomic = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let a: DrmModeAtomic = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
         let known = DRM_MODE_ATOMIC_TEST_ONLY
             | DRM_MODE_ATOMIC_NONBLOCK
@@ -1592,13 +1667,13 @@ impl Card0 {
 
         let n = a.count_objs as usize;
         let objs: Vec<u32> =
-            vm_load(a.objs_ptr as *const u32, n).map_err(|_| VfsError::BadAddress)?;
-        let counts: Vec<u32> =
-            vm_load(a.count_props_ptr as *const u32, n).map_err(|_| VfsError::BadAddress)?;
+            vm_load(current, a.objs_ptr as *const u32, n).map_err(|_| VfsError::BadAddress)?;
+        let counts: Vec<u32> = vm_load(current, a.count_props_ptr as *const u32, n)
+            .map_err(|_| VfsError::BadAddress)?;
         let total_props: usize = counts.iter().map(|c| *c as usize).sum();
-        let props: Vec<u32> =
-            vm_load(a.props_ptr as *const u32, total_props).map_err(|_| VfsError::BadAddress)?;
-        let values: Vec<u64> = vm_load(a.prop_values_ptr as *const u64, total_props)
+        let props: Vec<u32> = vm_load(current, a.props_ptr as *const u32, total_props)
+            .map_err(|_| VfsError::BadAddress)?;
+        let values: Vec<u64> = vm_load(current, a.prop_values_ptr as *const u64, total_props)
             .map_err(|_| VfsError::BadAddress)?;
 
         let mut state = self.state.lock();
@@ -1735,24 +1810,32 @@ impl Card0 {
         Ok(true)
     }
 
-    fn handle_create_blob(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_create_blob(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeCreateBlob;
-        let mut c: DrmModeCreateBlob = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut c: DrmModeCreateBlob = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         if c.length == 0 || c.length as usize > MAX_BLOB_BYTES {
             return Err(VfsError::InvalidInput);
         }
-        let bytes: Vec<u8> =
-            vm_load(c.data as *const u8, c.length as usize).map_err(|_| VfsError::BadAddress)?;
+        let bytes: Vec<u8> = vm_load(current, c.data as *const u8, c.length as usize)
+            .map_err(|_| VfsError::BadAddress)?;
         let id = self.next_blob_id.fetch_add(1, Ordering::Relaxed);
         self.blobs.lock().insert(id, Arc::new(bytes));
         c.blob_id = id;
-        ptr.vm_write(c).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, c).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 
-    fn handle_destroy_blob(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_destroy_blob(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeDestroyBlob;
-        let d: DrmModeDestroyBlob = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let d: DrmModeDestroyBlob = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         // System (kernel-owned) blobs are not user-destroyable. Linux's
         // DRM rejects ENOTSUPP for this; we map it to PermissionDenied
         // (EPERM) since VfsError lacks a finer-grained variant.
@@ -1771,9 +1854,9 @@ impl Card0 {
         Ok(0)
     }
 
-    fn handle_get_blob(&self, arg: usize) -> VfsResult<usize> {
+    fn handle_get_blob(&self, current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeGetBlob;
-        let mut g: DrmModeGetBlob = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        let mut g: DrmModeGetBlob = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         // Clone the Arc backing out of the lock — `vm_write_slice` can
         // page-fault and sleep, and we don't want to hold the blob
         // map locked across that. Lookup order:
@@ -1796,10 +1879,11 @@ impl Card0 {
         };
         if g.data != 0 && g.length > 0 {
             let n = (g.length as usize).min(bytes.len());
-            vm_write_slice(g.data as *mut u8, &bytes[..n]).map_err(|_| VfsError::BadAddress)?;
+            vm_write_slice(current, g.data as *mut u8, &bytes[..n])
+                .map_err(|_| VfsError::BadAddress)?;
         }
         g.length = bytes.len() as u32;
-        ptr.vm_write(g).map_err(|_| VfsError::BadAddress)?;
+        ptr.vm_write(current, g).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 }

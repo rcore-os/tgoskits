@@ -1,13 +1,14 @@
 use alloc::sync::Arc;
 use core::{
     alloc::Layout,
-    mem::offset_of,
+    mem::{offset_of, size_of},
     sync::atomic::{AtomicBool, Ordering},
+    task::Waker,
 };
 
 use ax_cpu::uspace::UserContext;
 use ax_runtime::sync::SpinLock;
-use starry_vm::{VmMutPtr, VmPtr};
+use starry_vm::{VmIo, VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;
 use crate::{
@@ -15,17 +16,42 @@ use crate::{
     SignalInfo, SignalOSAction, SignalResult, SignalSet, SignalStack, Signo, arch::UContext,
 };
 
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
 struct SignalFrame {
     ucontext: UContext,
     siginfo: SignalInfo,
     uctx: UserContext,
-    used_sigaltstack: bool,
+    used_sigaltstack: u8,
+    _padding: [u8; 15],
 }
+
+// SAFETY: every nested context type implements `NoUninit`, the alternate-stack
+// flag uses a byte rather than `bool`, and the explicit tail array consumes the
+// frame's 16-byte alignment padding.
+unsafe impl bytemuck::NoUninit for SignalFrame {}
+
+const _: () = {
+    assert!(offset_of!(SignalFrame, ucontext) == 0);
+    assert!(offset_of!(SignalFrame, siginfo) == size_of::<UContext>());
+    assert!(offset_of!(SignalFrame, uctx) == size_of::<UContext>() + size_of::<SignalInfo>());
+    assert!(
+        offset_of!(SignalFrame, used_sigaltstack)
+            == size_of::<UContext>() + size_of::<SignalInfo>() + size_of::<UserContext>()
+    );
+    assert!(size_of::<SignalFrame>() == offset_of!(SignalFrame, used_sigaltstack) + 16);
+};
 
 enum PreparedSignal {
     Ignore,
     Action(SignalOSAction),
     Handler(PreparedSignalHandler),
+}
+
+#[derive(Default)]
+struct SigwaitState {
+    set: Option<SignalSet>,
+    waker: Option<Waker>,
 }
 
 struct PreparedSignalHandler {
@@ -54,14 +80,13 @@ pub struct ThreadSignalManager {
 
     possibly_has_signal: AtomicBool,
 
-    /// The set of signals this thread is currently waiting for via
-    /// `rt_sigtimedwait`/`sigwaitinfo`, or `None` if not in a sigwait call.
+    /// The synchronous signal-wait state published by `rt_sigtimedwait`.
     ///
-    /// `ProcessSignalManager::send_signal` checks this to avoid dropping
-    /// a signal via `is_ignore()` when a thread is specifically waiting for it.
-    /// Using the actual wait set (instead of a bare boolean) avoids queuing
-    /// unrelated signals that happen to be default-ignore.
-    pub sigwait_set: SpinLock<Option<SignalSet>>,
+    /// The wait set and future waker share one lock so signal delivery observes
+    /// a coherent registration. The syscall still rechecks pending signals
+    /// after installing the waker, matching Linux's state-publication then
+    /// dequeue-again protocol without coupling this component to a scheduler.
+    sigwait: SpinLock<SigwaitState>,
 }
 
 impl ThreadSignalManager {
@@ -83,11 +108,9 @@ impl ThreadSignalManager {
             stack_active_depth: SpinLock::new(0),
 
             possibly_has_signal: AtomicBool::new(false),
-            sigwait_set: SpinLock::new(None),
+            sigwait: SpinLock::new(SigwaitState::default()),
         });
-        proc.children
-            .lock_irqsave()
-            .push((tid, Arc::downgrade(&this)));
+        proc.register_child(tid, Arc::downgrade(&this));
         this
     }
 
@@ -130,6 +153,79 @@ impl ThreadSignalManager {
 
     pub fn process(&self) -> &Arc<ProcessSignalManager> {
         &self.proc
+    }
+
+    /// Publishes the signal set consumed by one synchronous signal wait.
+    pub fn begin_sigwait(&self, set: SignalSet) {
+        let old_waker = {
+            let mut state = self.sigwait.lock();
+            debug_assert!(
+                state.set.is_none(),
+                "one thread cannot own nested synchronous signal waits"
+            );
+            state.set = Some(set);
+            state.waker.take()
+        };
+        // A RawWaker drop is an external callback. Keep it outside the
+        // non-sleeping component lock.
+        drop(old_waker);
+    }
+
+    /// Registers the executor waker for the active synchronous signal wait.
+    pub fn register_sigwait_waker(&self, waker: &Waker) {
+        // RawWaker::clone may invoke an executor callback, so perform it before
+        // entering the non-sleeping component lock.
+        let mut replacement = Some(waker.clone());
+        let previous = {
+            let mut state = self.sigwait.lock();
+            if state.set.is_some()
+                && state
+                    .waker
+                    .as_ref()
+                    .is_none_or(|current| !current.will_wake(waker))
+            {
+                replacement
+                    .take()
+                    .and_then(|replacement| state.waker.replace(replacement))
+            } else {
+                None
+            }
+        };
+        drop(previous);
+        drop(replacement);
+    }
+
+    /// Clears the wait set and executor waker after a synchronous wait.
+    pub fn finish_sigwait(&self) {
+        let previous = {
+            let mut state = self.sigwait.lock();
+            core::mem::take(&mut *state)
+        };
+        drop(previous);
+    }
+
+    /// Returns whether this thread synchronously waits for `signo`.
+    pub fn is_sigwait_for(&self, signo: Signo) -> bool {
+        self.sigwait.lock().set.is_some_and(|set| set.has(signo))
+    }
+
+    /// Publishes readiness through the registered future waker.
+    ///
+    /// A direct scheduler wake is insufficient here: if the owner thread is
+    /// still running, that wake may be consumed before its local executor
+    /// commits to sleep. The future waker carries the executor's sticky
+    /// notification bit across that window.
+    pub fn wake_sigwait(&self, signo: Signo) {
+        let waker = {
+            let mut state = self.sigwait.lock();
+            if !state.set.is_some_and(|set| set.has(signo)) {
+                return;
+            }
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
     }
 
     fn prepare_signal(
@@ -181,7 +277,7 @@ impl ThreadSignalManager {
                     restartable,
                     PreparedSignal::Handler(PreparedSignalHandler {
                         signo,
-                        siginfo: sig.clone(),
+                        siginfo: *sig,
                         restore_blocked,
                         handler: handler as usize,
                         restorer,
@@ -193,10 +289,12 @@ impl ThreadSignalManager {
         }
     }
 
-    fn install_signal_handler(
+    fn install_signal_handler<I: VmIo>(
         &self,
+        vm: &mut I,
         uctx: &mut UserContext,
         prepared: PreparedSignalHandler,
+        fpstate: crate::arch::SignalFpState,
     ) -> SignalOSAction {
         let layout = Layout::new::<SignalFrame>();
         let mut uses_sigaltstack = false;
@@ -214,15 +312,60 @@ impl ThreadSignalManager {
         } else {
             uctx.sp()
         };
-        let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
+
+        #[cfg(target_arch = "x86_64")]
+        let (aligned_sp, fpstate_address, fpstate) = {
+            // Linux preserves the interrupted x86-64 red zone before placing
+            // the 64-byte-aligned variable-sized FPU frame and rt_sigframe.
+            let Some(fpstate_address) = sp
+                .checked_sub(128)
+                .and_then(|sp| sp.checked_sub(fpstate.frame_size()))
+                .map(|sp| sp & !(64 - 1))
+            else {
+                return SignalOSAction::CoreDump;
+            };
+            let Some(frame_address) = fpstate_address.checked_sub(layout.size()) else {
+                return SignalOSAction::CoreDump;
+            };
+            (
+                frame_address & !(layout.align() - 1),
+                fpstate_address,
+                fpstate,
+            )
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = fpstate;
+        #[cfg(not(target_arch = "x86_64"))]
+        let aligned_sp = {
+            let Some(frame_address) = sp.checked_sub(layout.size()) else {
+                return SignalOSAction::CoreDump;
+            };
+            frame_address & !(layout.align() - 1)
+        };
+
+        #[cfg(target_arch = "x86_64")]
+        let mut ucontext = UContext::new(uctx, prepared.restore_blocked);
+        #[cfg(not(target_arch = "x86_64"))]
+        let ucontext = UContext::new(uctx, prepared.restore_blocked);
+        #[cfg(target_arch = "x86_64")]
+        {
+            ucontext.set_fpstate(fpstate_address, fpstate.has_xstate());
+            if fpstate.write(vm, fpstate_address).is_err() {
+                return SignalOSAction::CoreDump;
+            }
+        }
         let frame_ptr = aligned_sp as *mut SignalFrame;
         if frame_ptr
-            .vm_write(SignalFrame {
-                ucontext: UContext::new(uctx, prepared.restore_blocked),
-                siginfo: prepared.siginfo,
-                uctx: *uctx,
-                used_sigaltstack: uses_sigaltstack,
-            })
+            .vm_write(
+                vm,
+                SignalFrame {
+                    ucontext,
+                    siginfo: prepared.siginfo,
+                    uctx: *uctx,
+                    used_sigaltstack: u8::from(uses_sigaltstack),
+                    _padding: [0; 15],
+                },
+            )
             .is_err()
         {
             return SignalOSAction::CoreDump;
@@ -237,7 +380,10 @@ impl ThreadSignalManager {
         #[cfg(target_arch = "x86_64")]
         {
             let new_sp = uctx.sp() - 8;
-            if (new_sp as *mut usize).vm_write(prepared.restorer).is_err() {
+            if (new_sp as *mut usize)
+                .vm_write(vm, prepared.restorer)
+                .is_err()
+            {
                 return SignalOSAction::CoreDump;
             }
             uctx.set_sp(new_sp);
@@ -253,14 +399,17 @@ impl ThreadSignalManager {
     }
 
     #[cold]
-    fn check_signals_slow_with<F>(
+    fn check_signals_slow_with<I: VmIo, F, C>(
         &self,
+        vm: &mut I,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
         before_deliver: &mut F,
+        capture_fpstate: &mut C,
     ) -> Option<(SignalInfo, SignalOSAction)>
     where
         F: FnMut(&mut UserContext, &SignalInfo, bool),
+        C: FnMut() -> crate::arch::SignalFpState,
     {
         let blocked = self.blocked.lock_irqsave();
         let mask = !*blocked;
@@ -278,7 +427,8 @@ impl ThreadSignalManager {
                 }
                 PreparedSignal::Handler(prepared) => {
                     before_deliver(uctx, &sig, restartable);
-                    let os_action = self.install_signal_handler(uctx, prepared);
+                    let os_action =
+                        self.install_signal_handler(vm, uctx, prepared, capture_fpstate());
                     break Some((sig, os_action));
                 }
             }
@@ -290,14 +440,17 @@ impl ThreadSignalManager {
     /// Calls `before_deliver` immediately before the selected signal is
     /// delivered. The callback receives the user context, the delivered signal,
     /// and whether its disposition is restartable.
-    pub fn check_signals_with<F>(
+    pub fn check_signals_with<I: VmIo, F, C>(
         &self,
+        vm: &mut I,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
         mut before_deliver: F,
+        mut capture_fpstate: C,
     ) -> Option<(SignalInfo, SignalOSAction)>
     where
         F: FnMut(&mut UserContext, &SignalInfo, bool),
+        C: FnMut() -> crate::arch::SignalFpState,
     {
         // Fast path
         if !self.possibly_has_signal.load(Ordering::Acquire)
@@ -305,35 +458,64 @@ impl ThreadSignalManager {
         {
             return None;
         }
-        self.check_signals_slow_with(uctx, restore_blocked, &mut before_deliver)
+        self.check_signals_slow_with(
+            vm,
+            uctx,
+            restore_blocked,
+            &mut before_deliver,
+            &mut capture_fpstate,
+        )
+    }
+
+    /// Tests the signal work flags consumed at return to userspace.
+    pub fn has_pending_signal_work(&self) -> bool {
+        self.possibly_has_signal.load(Ordering::Acquire)
+            || self.proc.possibly_has_signal.load(Ordering::Acquire)
     }
 
     /// Checks pending signals and delivers one if possible.
     ///
-    /// Returns the delivered signal and its delivery result, if any.
-    pub fn check_signals(
+    /// The caller supplies the architecture state captured at the current-task
+    /// runtime boundary. Returns the delivered signal and its delivery result,
+    /// if any.
+    pub fn check_signals<I: VmIo, C>(
         &self,
+        vm: &mut I,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
-    ) -> Option<(SignalInfo, SignalOSAction)> {
-        self.check_signals_with(uctx, restore_blocked, |_, _, _| {})
+        capture_fpstate: C,
+    ) -> Option<(SignalInfo, SignalOSAction)>
+    where
+        C: FnMut() -> crate::arch::SignalFpState,
+    {
+        self.check_signals_with(vm, uctx, restore_blocked, |_, _, _| {}, capture_fpstate)
     }
 
     /// Restores the signal frame. Called by `sigreturn`.
-    pub fn restore(&self, uctx: &mut UserContext) -> SignalResult<isize> {
+    pub fn restore<I: VmIo>(
+        &self,
+        vm: &mut I,
+        uctx: &mut UserContext,
+    ) -> SignalResult<crate::arch::SignalFpRestore> {
         let frame_ptr = uctx.sp() as *const SignalFrame;
         // copy the saved frame back from uspace
-        let frame: SignalFrame = unsafe { frame_ptr.vm_read_uninit()?.assume_init() };
+        let frame: SignalFrame = unsafe { frame_ptr.vm_read_uninit(vm)?.assume_init() };
+
+        #[cfg(target_arch = "x86_64")]
+        let restored_fpstate = crate::arch::SignalFpState::restore(vm, frame.ucontext.fpstate())?;
 
         *uctx = frame.uctx;
         frame.ucontext.mcontext.restore(uctx);
 
         *self.blocked.lock_irqsave() = frame.ucontext.sigmask;
-        if frame.used_sigaltstack {
+        if frame.used_sigaltstack != 0 {
             self.leave_stack();
         }
         self.possibly_has_signal.store(true, Ordering::Release);
-        Ok(0)
+        #[cfg(target_arch = "x86_64")]
+        return Ok(restored_fpstate);
+        #[cfg(not(target_arch = "x86_64"))]
+        Ok(())
     }
 
     /// Sends a signal to the thread.
@@ -359,10 +541,7 @@ impl ThreadSignalManager {
         // we must apply the same exemption here as ProcessSignalManager does
         // for the process-level path.
         let blocked = self.signal_blocked(signo);
-        let in_sigwait = self
-            .sigwait_set
-            .lock_irqsave()
-            .is_some_and(|s| s.has(signo));
+        let in_sigwait = self.is_sigwait_for(signo);
         if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
             return false;
         }
@@ -370,7 +549,13 @@ impl ThreadSignalManager {
         if self.pending.lock_irqsave().put_signal(sig) {
             self.possibly_has_signal.store(true, Ordering::Release);
         }
-        !self.signal_blocked(signo)
+        let deliverable = !self.signal_blocked(signo);
+        drop(actions);
+        // The sigwait future is owned by this signal manager. Publish pending
+        // state before invoking the task-context waker and never wake while an
+        // action or pending-signal lock remains held.
+        self.wake_sigwait(signo);
+        deliverable
     }
 
     /// Gets the blocked signals.
@@ -400,7 +585,7 @@ impl ThreadSignalManager {
 
     /// Gets the signal stack.
     pub fn stack(&self) -> SignalStack {
-        let stack = self.stack.lock_irqsave().clone();
+        let stack = *self.stack.lock_irqsave();
         if self.stack_active() {
             stack.on_stack()
         } else {
@@ -436,5 +621,45 @@ impl ThreadSignalManager {
     /// memory that no longer exists once the new aspace replaces the old.
     pub fn reset_stack(&self) {
         *self.stack.lock_irqsave() = SignalStack::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, task::Wake};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::api::SignalActions;
+
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn sigwait_waker_only_fires_for_the_published_set() {
+        let actions = Arc::new(SpinLock::new(SignalActions::default()));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let thread = ThreadSignalManager::new(1, process);
+        let counter = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        let mut set = SignalSet::default();
+        set.add(Signo::SIGCHLD);
+
+        thread.begin_sigwait(set);
+        thread.register_sigwait_waker(&waker);
+        thread.wake_sigwait(Signo::SIGURG);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 0);
+
+        let _deliverable = thread.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD));
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+
+        thread.finish_sigwait();
+        thread.wake_sigwait(Signo::SIGCHLD);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
     }
 }

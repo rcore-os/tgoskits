@@ -2,27 +2,179 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use ax_lazyinit::OnceLock;
+
 const UNINIT_EPOCH_OFFSET_NANOS: u64 = u64::MAX;
 static EPOCH_OFFSET_NANOS: AtomicU64 = AtomicU64::new(UNINIT_EPOCH_OFFSET_NANOS);
+// The platform timer frequency is fixed for the lifetime of a boot. Cache it
+// after the first conversion so every clock read does not repeat the provider
+// lookup; the arithmetic and saturation semantics remain unchanged.
+const UNINIT_FREQUENCY_HZ: u64 = u64::MAX;
+static TIMER_FREQUENCY_HZ: AtomicU64 = AtomicU64::new(UNINIT_FREQUENCY_HZ);
+static TICKS_TO_NANOS_SCALE: OnceLock<ClockScale> = OnceLock::new();
 
+/// Fixed-point conversion prepared once from the boot-lifetime timer rate.
+///
+/// This is the same hot-path model as Linux clocksource and sched_clock:
+/// frequency division chooses a multiplier and shift during initialization,
+/// while every sample performs only a widened multiply and shift. Widening
+/// preserves the old full-range saturation contract without constraining the
+/// conversion to an epoch-sized delta.
+#[derive(Clone, Copy)]
+struct ClockScale {
+    multiplier: u64,
+    shift: u32,
+}
+
+impl ClockScale {
+    fn from_frequency(frequency_hz: u64) -> Self {
+        if frequency_hz == 0 {
+            return Self {
+                multiplier: 0,
+                shift: 0,
+            };
+        }
+
+        for shift in (0..=64).rev() {
+            let numerator = (ax_plat::time::NANOS_PER_SEC as u128) << shift;
+            let multiplier = (numerator + u128::from(frequency_hz / 2)) / u128::from(frequency_hz);
+            if multiplier <= u64::MAX as u128 {
+                return Self {
+                    multiplier: multiplier as u64,
+                    shift,
+                };
+            }
+        }
+        unreachable!("zero shift always fits the timer conversion multiplier")
+    }
+
+    #[inline(always)]
+    fn ticks_to_nanos(self, ticks: u64) -> u64 {
+        let nanos = (u128::from(ticks) * u128::from(self.multiplier)) >> self.shift;
+        nanos.min(u64::MAX as u128) as u64
+    }
+}
+
+#[inline(always)]
 pub(crate) fn current_ticks() -> u64 {
     somehal::timer::ticks() as _
 }
 
-pub(crate) fn ticks_to_nanos(ticks: u64) -> u64 {
-    let freq = somehal::timer::freq() as u64;
-    if freq == 0 {
-        return 0;
+#[inline(always)]
+fn timer_frequency_hz() -> u64 {
+    let cached = TIMER_FREQUENCY_HZ.load(Ordering::Acquire);
+    if cached != UNINIT_FREQUENCY_HZ {
+        return cached;
     }
-    ((ticks as u128 * ax_plat::time::NANOS_PER_SEC as u128) / freq as u128) as u64
+    let frequency = somehal::timer::freq() as u64;
+    let _ = TIMER_FREQUENCY_HZ.compare_exchange(
+        UNINIT_FREQUENCY_HZ,
+        frequency,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+    frequency
 }
 
+#[inline(always)]
+pub(crate) fn ticks_to_nanos(ticks: u64) -> u64 {
+    let scale = TICKS_TO_NANOS_SCALE.get().unwrap_or_else(|| {
+        TICKS_TO_NANOS_SCALE.call_once(|| ClockScale::from_frequency(timer_frequency_hz()))
+    });
+    scale.ticks_to_nanos(ticks)
+}
+
+#[inline(always)]
 pub(crate) fn nanos_to_ticks(nanos: u64) -> u64 {
-    let freq = somehal::timer::freq() as u64;
-    if freq == 0 {
+    let freq = timer_frequency_hz();
+    nanos_to_ticks_at_frequency(nanos, freq)
+}
+
+fn deadline_nanos_to_ticks(nanos: u64) -> u64 {
+    let freq = timer_frequency_hz();
+    deadline_nanos_to_ticks_at_frequency(nanos, freq)
+}
+
+#[cfg(test)]
+fn ticks_to_nanos_at_frequency(ticks: u64, frequency_hz: u64) -> u64 {
+    ClockScale::from_frequency(frequency_hz).ticks_to_nanos(ticks)
+}
+
+const fn nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> u64 {
+    if frequency_hz == 0 {
         return 0;
     }
-    ((nanos as u128 * freq as u128) / ax_plat::time::NANOS_PER_SEC as u128) as u64
+    let nanos_per_second = ax_plat::time::NANOS_PER_SEC;
+    if frequency_hz <= u64::MAX / nanos_per_second {
+        let seconds = nanos / nanos_per_second;
+        let remainder = nanos % nanos_per_second;
+        return seconds
+            .saturating_mul(frequency_hz)
+            .saturating_add(remainder * frequency_hz / nanos_per_second);
+    }
+    let ticks = (nanos as u128 * frequency_hz as u128) / ax_plat::time::NANOS_PER_SEC as u128;
+    if ticks > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        ticks as u64
+    }
+}
+const fn deadline_nanos_to_ticks_at_frequency(nanos: u64, frequency_hz: u64) -> u64 {
+    if frequency_hz == 0 {
+        return 0;
+    }
+    let nanos_per_second = ax_plat::time::NANOS_PER_SEC;
+    if frequency_hz <= u64::MAX / nanos_per_second {
+        let seconds = nanos / nanos_per_second;
+        let remainder = nanos % nanos_per_second;
+        let base = seconds.saturating_mul(frequency_hz);
+        let scaled = remainder * frequency_hz;
+        let fraction = scaled / nanos_per_second
+            + if scaled.is_multiple_of(nanos_per_second) {
+                0
+            } else {
+                1
+            };
+        return base.saturating_add(fraction);
+    }
+    let scaled = nanos as u128 * frequency_hz as u128;
+    let divisor = ax_plat::time::NANOS_PER_SEC as u128;
+    let ticks = scaled / divisor + if scaled.is_multiple_of(divisor) { 0 } else { 1 };
+    if ticks > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        ticks as u64
+    }
+}
+#[cfg(test)]
+fn oneshot_interval_ticks(deadline_ns: u64, current_ticks: u64, frequency_hz: u64) -> usize {
+    let deadline_ticks = deadline_nanos_to_ticks_at_frequency(deadline_ns, frequency_hz);
+    let delta = deadline_ticks.saturating_sub(current_ticks).max(1);
+    if delta > usize::MAX as u64 {
+        usize::MAX
+    } else {
+        delta as usize
+    }
+}
+#[cfg(test)]
+fn program_oneshot(
+    deadline_ns: u64,
+    current_ticks: u64,
+    frequency_hz: u64,
+    program_interval: impl FnOnce(usize),
+) {
+    let interval = oneshot_interval_ticks(deadline_ns, current_ticks, frequency_hz);
+    program_interval(interval);
+}
+#[cfg(test)]
+fn resume_oneshot(
+    deadline_ns: u64,
+    current_ticks: u64,
+    frequency_hz: u64,
+    resume_interval: impl FnOnce(usize),
+) {
+    let interval = oneshot_interval_ticks(deadline_ns, current_ticks, frequency_hz);
+    resume_interval(interval);
 }
 
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
@@ -67,6 +219,10 @@ impl ax_plat::time::TimeIf for GenericTimer {
         ticks_to_nanos(ticks)
     }
 
+    fn scheduler_clock_raw_nanos() -> u64 {
+        ticks_to_nanos(current_ticks())
+    }
+
     /// Converts nanoseconds to hardware ticks.
     fn nanos_to_ticks(nanos: u64) -> u64 {
         nanos_to_ticks(nanos)
@@ -100,16 +256,72 @@ impl ax_plat::time::TimeIf for GenericTimer {
     /// A timer interrupt will be triggered at the specified monotonic time
     /// deadline (in nanoseconds).
     fn set_oneshot_timer(deadline_ns: u64) {
-        let cnptct = somehal::timer::ticks() as u64;
-        let deadline = GenericTimer::nanos_to_ticks(deadline_ns);
-        let interval = if cnptct < deadline {
-            let interval = deadline - cnptct;
-            debug_assert!(interval <= u32::MAX as u64);
-            interval
-        } else {
-            0
-        };
+        let deadline_ticks = deadline_nanos_to_ticks(deadline_ns);
+        somehal::timer::set_next_event_at_ticks(deadline_ticks);
+    }
+    fn oneshot_timer_requires_irq_quiesce() -> bool {
+        somehal::timer::requires_irq_quiesce()
+    }
+    fn resume_oneshot_timer(deadline_ns: u64) {
+        let deadline_ticks = deadline_nanos_to_ticks(deadline_ns);
+        somehal::timer::resume_oneshot_at_ticks(deadline_ticks);
+    }
+    fn cancel_oneshot_timer() {
+        somehal::timer::cancel_oneshot();
+    }
+}
 
-        somehal::timer::set_next_event_in_ticks(interval as _);
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use super::{
+        deadline_nanos_to_ticks_at_frequency, nanos_to_ticks_at_frequency, oneshot_interval_ticks,
+        program_oneshot, resume_oneshot, ticks_to_nanos_at_frequency,
+    };
+
+    #[test]
+    fn nanosecond_conversion_saturates_instead_of_wrapping() {
+        assert_eq!(nanos_to_ticks_at_frequency(u64::MAX, u64::MAX), u64::MAX);
+        assert_eq!(ticks_to_nanos_at_frequency(u64::MAX, 1), u64::MAX);
+    }
+
+    #[test]
+    fn physical_deadline_conversion_rounds_up_to_the_next_tick() {
+        assert_eq!(deadline_nanos_to_ticks_at_frequency(3, 500_000_000), 2);
+        assert_eq!(nanos_to_ticks_at_frequency(3, 500_000_000), 1);
+    }
+
+    #[test]
+    fn past_and_subtick_deadlines_use_the_minimum_interval() {
+        assert_eq!(oneshot_interval_ticks(99, 100, 1_000_000_000), 1);
+        assert_eq!(oneshot_interval_ticks(100, 100, 1_000_000_000), 1);
+    }
+
+    #[test]
+    fn unrepresentable_tick_delta_clamps_to_the_device_argument() {
+        assert_eq!(oneshot_interval_ticks(u64::MAX, 0, u64::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn resume_converts_the_absolute_deadline_once() {
+        let resumed_interval = Cell::new(0);
+        resume_oneshot(100, 0, 1_000_000_000, |interval| {
+            resumed_interval.set(interval)
+        });
+        assert_eq!(resumed_interval.get(), 100);
+    }
+
+    #[test]
+    fn resume_and_reprogram_each_install_one_comparator() {
+        let program_count = Cell::new(0);
+        resume_oneshot(100, 0, 1_000_000_000, |_| {
+            program_count.set(program_count.get() + 1)
+        });
+        program_oneshot(200, 0, 1_000_000_000, |_| {
+            program_count.set(program_count.get() + 1);
+        });
+
+        assert_eq!(program_count.get(), 2);
     }
 }

@@ -2,32 +2,28 @@ use alloc::{sync::Arc, vec::Vec};
 use core::ffi::c_long;
 
 use ax_runtime::hal::time::TimeValue;
-use ax_task::{AxTaskRef, TaskInner, current};
 use axpoll::IoEvents;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use starry_signal::{SignalInfo, Signo};
-use starry_vm::{VmMutPtr, VmPtr};
 
 use super::{
-    AsThread, FutexKey, ProcessData, Thread, TimerState, ZombieSnapshot, futex_table_for_process,
-    get_process_data_by_number, orphan_reaper_for, processes, publish_zombie,
-    register_process_identity, send_signal_thread_inner, send_signal_to_process,
-    send_signal_to_thread,
+    AlarmTarget, AlarmToken, PendingTimerActions, ProcessData, Thread, UserTaskRef,
+    ZombieSnapshot, current_user_task, processes, publish_zombie,
+    resolve_futex_for_process_teardown, send_signal_to_process, send_signal_to_process_data,
+    send_signal_to_thread, yield_now,
 };
 use crate::{
     StarryError, StarryResult,
-    mm::atomic_update_user_u32,
+    mm::{VmMutPtr, VmPtr},
     task::{
-        PgidNumber, PidIdentity, PidView, ProcessCpuTime, ProcessGroup, ROOT_PID_NS, Tgid,
-        ThreadExit, Tid, TidNumber,
+        PgidNumber, PidIdentity, PidNamespaceLifecycle, PidNamespaceRef, PidView, Process,
+        ProcessCpuTime, ProcessGroup, ROOT_PID_NS, Tgid, ThreadExit, Tid, TidNumber,
     },
 };
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
-
 const FUTEX_TID_MASK: u32 = 0x3fffffff;
-
 const FUTEX_WAITERS: u32 = 0x80000000;
 
 /// Decode the Linux wait-status encoding into (si_code, si_status).
@@ -52,17 +48,8 @@ pub fn decode_wait_status(raw: i32) -> (i32, i32) {
 #[cfg(feature = "memtrack")]
 pub fn cleanup_task_tables() {}
 
-/// Add the task, the thread and possibly its process, process group and session
-/// to the corresponding tables.
-pub fn add_task_to_table(task: &AxTaskRef) {
-    task.as_thread().attach_pid_task(task);
-    let proc_data = &task.as_thread().proc_data;
-
-    register_process_identity(proc_data);
-}
-
 /// Lists all tasks.
-pub fn tasks() -> Vec<AxTaskRef> {
+pub fn tasks() -> Vec<UserTaskRef> {
     ROOT_PID_NS
         .published_members()
         .into_iter()
@@ -72,7 +59,7 @@ pub fn tasks() -> Vec<AxTaskRef> {
 }
 
 /// Finds the task with the given typed root-namespace TID.
-pub(crate) fn get_task_by_number(tid: TidNumber) -> StarryResult<AxTaskRef> {
+pub(crate) fn get_task_by_number(tid: TidNumber) -> StarryResult<UserTaskRef> {
     PidView::new(ROOT_PID_NS.clone())
         .resolve_thread(tid)?
         .live_task()
@@ -80,7 +67,7 @@ pub(crate) fn get_task_by_number(tid: TidNumber) -> StarryResult<AxTaskRef> {
 }
 
 /// Finds a task using a typed TID in the calling thread's active PID namespace.
-pub(crate) fn get_user_task_by_number(tid: TidNumber) -> StarryResult<AxTaskRef> {
+pub(crate) fn get_user_task_by_number(tid: TidNumber) -> StarryResult<UserTaskRef> {
     super::current_pid_view()
         .resolve_thread(tid)?
         .live_task()
@@ -96,6 +83,9 @@ pub(crate) fn get_user_task_by_number(tid: TidNumber) -> StarryResult<AxTaskRef>
 /// `ptrace_stop_current()` so it can continue without consulting the dead
 /// tracer again.
 pub fn detach_live_tracees_of(tracer: &Arc<PidIdentity>) {
+    if !tracer.may_have_ptrace_tracees() {
+        return;
+    }
     for tracee in processes() {
         if !tracee
             .ptrace_tracer_identity()
@@ -116,76 +106,204 @@ pub(crate) fn get_process_group_by_number(pgid: PgidNumber) -> StarryResult<Arc<
     PidView::new(ROOT_PID_NS.clone()).resolve_group(pgid)
 }
 
-/// Accumulates CPU time for `task` from a timer-tick IRQ context.
-///
-/// Unlike `poll_timer`, this never emits signals, making it safe to call
-/// from interrupt handlers.
-pub fn tick_cpu_time(task: &TaskInner) {
-    let Some(thr) = task.try_as_thread() else {
-        return;
-    };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // Reentrant borrow means the task is mid-state-transition; skip.
-        return;
-    };
-    time.tick();
-}
-
 /// Returns the accumulated `(utime, stime)` for a task without side effects.
-pub fn task_cpu_time(task: &TaskInner) -> (TimeValue, TimeValue) {
-    let Some(thr) = task.try_as_thread() else {
-        return (TimeValue::ZERO, TimeValue::ZERO);
-    };
-    let Ok(time) = thr.time.try_borrow() else {
-        return (TimeValue::ZERO, TimeValue::ZERO);
-    };
-    time.output()
+pub fn task_cpu_time(task: &UserTaskRef) -> (TimeValue, TimeValue) {
+    task.as_thread().cpu_time_output()
 }
 
-/// Poll the timer
-pub fn poll_timer(task: &TaskInner) {
-    let Some(thr) = task.try_as_thread() else {
-        return;
-    };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
-    };
-    let emitter = |signo| {
-        send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
+fn apply_process_timer_actions(proc_data: &ProcessData, pending: PendingTimerActions) {
+    let pid = proc_data.proc.pid_number();
+    for signo in pending.signals() {
+        let _ = send_signal_to_process(pid, Some(SignalInfo::new_kernel(signo)));
+    }
+    pending.apply_alarms(AlarmTarget::Process(Arc::downgrade(&proc_data.identity())));
 }
 
-/// Poll the process-level POSIX timers.
-pub fn poll_process_timer(identity: &Arc<crate::task::PidIdentity>) {
-    if let Some(proc_data) = identity.live_data() {
-        if proc_data.poll_real_timer() {
-            let _ = super::send_signal_to_process_data(
-                &proc_data,
-                Some(SignalInfo::new_kernel(Signo::SIGALRM)),
-            );
+fn sample_interval_timer_cpu_time_if_active<T>(
+    active: bool,
+    sample: impl FnOnce() -> T,
+) -> Option<T> {
+    active.then(sample)
+}
+
+#[cfg(axtest)]
+fn inactive_interval_timer_poll_skips_cpu_time_sample_for_test() -> bool {
+    let samples = core::cell::Cell::new(0);
+    let snapshot = sample_interval_timer_cpu_time_if_active(false, || {
+        samples.set(samples.get() + 1);
+        ()
+    });
+    snapshot.is_none() && samples.get() == 0
+}
+
+#[cfg(all(test, axtest))]
+mod axtests {
+    use alloc::{string::ToString, sync::Arc};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use ax_runtime::task::{
+        WaitQueue, begin_pi_schedule_test_probe, current_thread_id, end_pi_schedule_test_probe,
+        join_thread, pi_schedule_test_probe_snapshot, spawn_raw,
+    };
+
+    use crate::sync::PiMutex;
+
+    fn wait_for(mut condition: impl FnMut() -> bool, message: &str) {
+        for _ in 0..1_000_000 {
+            if condition() {
+                return;
+            }
+            ax_std::thread::yield_now();
         }
-        proc_data.posix_timers.poll_expired(identity, |sig| {
-            let _ = super::send_signal_to_process_data(&proc_data, Some(sig));
-        });
+        panic!("{message}");
+    }
+
+    #[axtest::axtest]
+    fn kernel_thread_retains_active_mm_membarrier_state() {
+        assert!(
+            ax_runtime::task::kernel_thread_retains_active_mm_membarrier_state_for_test(),
+            "a kernel thread borrows the CPU's active mm and must retain its rq membarrier state",
+        );
+    }
+
+    #[axtest::axtest]
+    fn inactive_interval_timer_poll_skips_cpu_time_sample() {
+        assert!(super::inactive_interval_timer_poll_skips_cpu_time_sample_for_test());
+    }
+
+    #[axtest::axtest]
+    fn unchanged_pi_schedule_returns_before_the_owner_rq_transaction() {
+        let mutex = Arc::new(PiMutex::new(()));
+        let owner_wait = Arc::new(WaitQueue::new());
+        let owner_locked = Arc::new(AtomicBool::new(false));
+        let release_owner = Arc::new(AtomicBool::new(false));
+        let waiter_done = Arc::new(AtomicBool::new(false));
+
+        let owner = {
+            let mutex = Arc::clone(&mutex);
+            let owner_wait = Arc::clone(&owner_wait);
+            let owner_locked = Arc::clone(&owner_locked);
+            let release_owner = Arc::clone(&release_owner);
+            spawn_raw(
+                move || {
+                    begin_pi_schedule_test_probe(
+                        current_thread_id().expect("PI owner must have a thread identity"),
+                    );
+                    let _guard = mutex.lock();
+                    owner_locked.store(true, Ordering::Release);
+                    owner_wait.wait_until(|| release_owner.load(Ordering::Acquire));
+                },
+                "pi-no-rq-owner".to_string(),
+                256 * 1024,
+            )
+            .expect("failed to spawn PI owner")
+        };
+        wait_for(
+            || owner_locked.load(Ordering::Acquire),
+            "PI owner did not acquire the mutex",
+        );
+
+        let waiter = {
+            let mutex = Arc::clone(&mutex);
+            let waiter_done = Arc::clone(&waiter_done);
+            spawn_raw(
+                move || {
+                    drop(mutex.lock());
+                    waiter_done.store(true, Ordering::Release);
+                },
+                "pi-no-rq-waiter".to_string(),
+                256 * 1024,
+            )
+            .expect("failed to spawn PI waiter")
+        };
+
+        wait_for(
+            || {
+                let snapshot = pi_schedule_test_probe_snapshot();
+                snapshot.recompute_attempts > 0
+                    && snapshot.no_rq_fast_returns + snapshot.owner_rq_transactions
+                        >= snapshot.recompute_attempts
+            },
+            "equal-policy PI contention did not reach owner recompute",
+        );
+        let registered = pi_schedule_test_probe_snapshot();
+        assert_eq!(
+            registered.owner_rq_transactions, 0,
+            "unchanged PI state must return before the owner-rq transaction"
+        );
+        assert_eq!(
+            registered.no_rq_fast_returns, registered.recompute_attempts,
+            "every equal-policy PI recompute must resolve from task-owned state"
+        );
+
+        release_owner.store(true, Ordering::Release);
+        owner_wait.notify_all();
+        join_thread(owner).expect("PI owner must exit cleanly");
+        join_thread(waiter).expect("PI waiter must exit cleanly");
+        assert!(
+            waiter_done.load(Ordering::Acquire),
+            "PI waiter must acquire the mutex after owner release"
+        );
+
+        let completed = pi_schedule_test_probe_snapshot();
+        end_pi_schedule_test_probe();
+        assert!(
+            completed.recompute_attempts >= 2,
+            "PI registration and release must both recompute the owner schedule"
+        );
+        assert_eq!(
+            completed.no_rq_fast_returns, completed.recompute_attempts,
+            "unchanged registration and deboost must both avoid the owner rq"
+        );
+        assert_eq!(
+            completed.owner_rq_transactions, 0,
+            "unchanged registration and deboost must not enter the owner rq"
+        );
+        assert_eq!(
+            completed.waiter_registrations, 1,
+            "the probe must observe the PI waiter registration"
+        );
+        assert_eq!(
+            completed.parking_waiter_registrations, completed.waiter_registrations,
+            "Linux publishes the rtmutex wait state before linking the waiter"
+        );
     }
 }
 
-/// Sets the timer state.
-pub fn set_timer_state(task: &TaskInner, state: TimerState) {
-    let Some(thr) = task.try_as_thread() else {
+fn poll_interval_timers(proc_data: &ProcessData, token: Option<&AlarmToken>) {
+    let Some(snapshot) =
+        sample_interval_timer_cpu_time_if_active(proc_data.has_active_interval_timers(), || {
+            proc_data.cpu_time_snapshot()
+        })
+    else {
         return;
     };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
+    if let Some(pending) = proc_data.poll_interval_timers(snapshot, token) {
+        apply_process_timer_actions(proc_data, pending);
+    }
+}
+
+pub(crate) fn poll_process_cpu_timers_from_scheduler_tick(proc_data: &ProcessData) {
+    if !proc_data.has_active_cpu_interval_timers() {
         return;
-    };
-    let emitter = |signo| {
-        send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
-    time.set_state(state);
+    }
+    let snapshot = proc_data.scheduler_tick_cpu_time_snapshot();
+    if let Some(pending) = proc_data.poll_cpu_interval_timers(snapshot) {
+        apply_process_timer_actions(proc_data, pending);
+    }
+}
+
+pub(crate) fn poll_process_timer_for_alarm(identity: &Arc<PidIdentity>, token: &AlarmToken) {
+    if let Some(proc_data) = identity.live_data() {
+        poll_interval_timers(&proc_data, Some(token));
+        proc_data.posix_timers().poll_expired_for(
+            AlarmTarget::Process(Arc::downgrade(identity)),
+            token,
+            |sig| {
+                let _ = send_signal_to_process(proc_data.proc.pid_number(), Some(sig));
+            },
+        );
+    }
 }
 
 #[repr(C)]
@@ -214,17 +332,11 @@ fn robust_futex_address(entry: *mut RobustList, offset: i64) -> StarryResult<usi
 }
 
 fn wake_robust_futex(proc_data: &ProcessData, address: usize) {
-    let key = FutexKey::new_for_process_teardown(proc_data, address);
-
-    let futex_table = futex_table_for_process(proc_data, &key);
-
-    let Some(futex) = futex_table.get(&key) else {
-        return;
-    };
-    futex.wq.wake(1, u32::MAX);
+    resolve_futex_for_process_teardown(proc_data, address).wake(1, u32::MAX);
 }
 
 fn handle_futex_death(
+    current: &UserTaskRef,
     thr: &Thread,
     entry: *mut RobustList,
     offset: i64,
@@ -237,13 +349,7 @@ fn handle_futex_death(
     // After non-leader execve, that value is the thread's active-namespace TID,
     // not its root-namespace TID or scheduler task id.
     let owner_tid = thr.user_tid().get() & FUTEX_TID_MASK;
-    let value = atomic_update_user_u32(futex_word, |value| {
-        let owner = value & FUTEX_TID_MASK;
-        if (pending && owner == 0) || owner != owner_tid {
-            return Ok(value);
-        }
-        Ok((value & FUTEX_WAITERS) | FUTEX_OWNER_DIED)
-    })?;
+    let value = futex_word.vm_read(current)?;
     let owner = value & FUTEX_TID_MASK;
 
     if pending && owner == 0 {
@@ -254,19 +360,24 @@ fn handle_futex_death(
     if owner != owner_tid {
         return Ok(());
     }
+    futex_word.vm_write(current, (value & FUTEX_WAITERS) | FUTEX_OWNER_DIED)?;
     if value & FUTEX_WAITERS != 0 {
         wake_robust_futex(&thr.proc_data, address);
     }
     Ok(())
 }
 
-pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> StarryResult<()> {
+pub fn exit_robust_list(
+    current: &UserTaskRef,
+    thr: &Thread,
+    head: *const RobustListHead,
+) -> crate::StarryResult<()> {
     // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
 
     let mut limit = ROBUST_LIST_LIMIT;
 
     let end_ptr = head.cast::<RobustList>() as *mut RobustList;
-    let head = head.vm_read()?;
+    let head = head.vm_read(current)?;
     let mut entry = head.list.next;
     let offset = head.futex_offset;
     // Bit 0 marks PI futexes in Linux's robust-list ABI.  Starry handles only
@@ -277,13 +388,13 @@ pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> StarryResu
         if entry.is_null() {
             break;
         }
-        let Ok(node) = entry.vm_read() else {
+        let Ok(node) = entry.vm_read(current) else {
             debug!("robust list: failed to read entry {entry:?}");
             break;
         };
         let next_entry = node.next;
         if entry != pending {
-            handle_futex_death(thr, entry, offset, false).unwrap_or_else(|err| {
+            handle_futex_death(current, thr, entry, offset, false).unwrap_or_else(|err| {
                 debug!("robust list: failed to clean entry {entry:?}: {err:?}");
             });
         }
@@ -294,12 +405,12 @@ pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> StarryResu
             debug!("robust list: entry limit reached");
             break;
         }
-        ax_task::yield_now();
+        yield_now();
     }
 
     // Process the pending entry that was skipped in the loop
     if !pending.is_null() && !core::ptr::eq(pending, end_ptr) {
-        handle_futex_death(thr, pending, offset, true).unwrap_or_else(|err| {
+        handle_futex_death(current, thr, pending, offset, true).unwrap_or_else(|err| {
             debug!("robust list: failed to clean pending entry {pending:?}: {err:?}");
         });
     }
@@ -338,8 +449,26 @@ fn emit_sched_process_exit(tid: TidNumber, exit_code: i32) {
     trace_sched_process_exit(tid.get() as u64, exit_code);
 }
 
+fn close_process_relations_for_exit(
+    process: &Arc<Process>,
+    pid_namespace: &PidNamespaceRef,
+) -> Vec<Arc<Process>> {
+    loop {
+        if pid_namespace.lifecycle() == PidNamespaceLifecycle::ShuttingDown {
+            return process
+                .begin_namespace_shutdown_relations()
+                .into_retained_children();
+        }
+
+        let orphan_reaper = super::orphan_reaper_for(process);
+        if let Some(relations) = process.try_begin_exit_relations(&orphan_reaper) {
+            return relations.into_reparented_children();
+        }
+    }
+}
+
 pub fn do_exit(exit_code: i32, group_exit: bool) {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     if !thr.begin_exit() {
         return;
@@ -355,7 +484,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             if tid == thr.tid_number() {
                 continue;
             }
-            let _ = send_signal_to_thread(None, tid, Some(sig.clone()));
+            let _ = send_signal_to_thread(None, tid, Some(sig));
             let _ = zap_thread(tid);
         }
     }
@@ -372,20 +501,16 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // OWNER_DIED handoff has been written.
     let head = thr.robust_list_head() as *const RobustListHead;
     if !head.is_null()
-        && let Err(err) = exit_robust_list(thr, head)
+        && let Err(err) = exit_robust_list(&curr, thr, head)
     {
         warn!("exit robust list failed: {err:?}");
     }
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
-    if clear_child_tid.vm_write(0).is_ok() {
-        let key = FutexKey::new_for_process_teardown(&thr.proc_data, clear_child_tid as usize);
-        let table = futex_table_for_process(&thr.proc_data, &key);
-        let guard = table.get(&key);
-        if let Some(futex) = guard {
-            futex.wq.wake(1, u32::MAX);
-        }
-        ax_task::yield_now();
+    if clear_child_tid.vm_write(&curr, 0).is_ok() {
+        resolve_futex_for_process_teardown(&thr.proc_data, clear_child_tid as usize)
+            .wake(1, u32::MAX);
+        yield_now();
     }
 
     let process = &thr.proc_data.proc;
@@ -395,29 +520,50 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // shared tables remain alive until their final sharer exits.
     crate::file::close_all_fds();
 
+    // Match Linux exit_mm(): every thread leaves its user mm in task context
+    // before it retires from the thread group. Consequently ThreadExit::Last
+    // proves that all scheduler address-space slots are detached before the
+    // process slot is released and the zombie becomes waitable.
+    ax_runtime::task::detach_current_address_space()
+        .unwrap_or_else(|error| panic!("failed to detach exiting task address space: {error}"));
+
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
+    let is_process_leader = thr.tid().pid_number() == process.pid().pid_number();
+    thr.commit_cpu_time_now();
     let (utime, stime) = task_cpu_time(&curr);
-    let process_identity = thr.proc_data.identity();
     let task_identity = thr.pid_identity();
-    let thread_exit = process.exit_thread(
-        thr.tid_number(),
-        exit_code,
-        ProcessCpuTime::new(utime, stime),
-    );
-    let cgroup_exit = match thread_exit {
-        ThreadExit::AlreadyExited => None,
-        ThreadExit::Remaining => Some(ax_cgroup::CgroupTaskExit::Thread),
-        ThreadExit::Last(_) => Some(ax_cgroup::CgroupTaskExit::LastProcessTask),
+    // The lease keeps this identity's exit path pending until the tail of
+    // `do_exit`, covering zombie publication, parent notification, and
+    // relation close the way Linux holds `pid_allocated` until `free_pid()`.
+    let exit_path = if is_process_leader {
+        // Publish the complete leader snapshot before dropping the thread-group
+        // lock below. A peer may become the final exiting thread immediately
+        // after the leader is removed from the group.
+        let (tid_lease, exit_path) = thr.retire_pid_retaining_tid();
+        thr.proc_data.retire_leader(thr.nice(), tid_lease);
+        exit_path
+    } else {
+        thr.retire_pid()
     };
-    if let Some(exit_kind) = cgroup_exit
-        && let Err(error) = crate::cgroup::exit_task(&process_identity, &task_identity, exit_kind)
-    {
-        warn!("failed to release cgroup task charge: {error}");
-    }
-    if let ThreadExit::Last(process_cpu_time) = thread_exit {
-        thr.proc_data.nsproxy.lock().release_cgroup_namespace();
+    let task_generation = ax_cgroup::ProcessId::new(task_identity.id().get())
+        .expect("PID identity generation must be non-zero");
+    let (thread_exit, cgroup_exit) = thr.proc_data.finish_thread_exit(task_generation, || {
+        process.exit_thread(
+            thr.tid_number(),
+            exit_code,
+            ProcessCpuTime::new(utime, stime),
+        )
+    });
+    super::cgroup_exit_invariant::enforce(cgroup_exit);
+    if let ThreadExit::Last(exit_owner) = thread_exit {
+        debug_assert!(Arc::ptr_eq(exit_owner.process(), process));
+        thr.proc_data.release_cgroup_namespace();
+        thr.proc_data
+            .cancel_interval_timer_alarm()
+            .apply_cancellation();
+        thr.proc_data.posix_timers().clear();
 
         // AIO contexts pin the process address space and may have worker tasks
         // waiting on outstanding requests. Tear them down before releasing the
@@ -439,19 +585,59 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::syscall::release_pid_locks(process_identity_id);
         crate::syscall::release_pid_flock_locks(process_identity_id);
 
-        // Snapshot children before reparenting them. Otherwise
-        // process.children() returns an empty
-        // list and pdeathsig never reaches the real children.
-        let children_snapshot = process.children();
-        let orphan_reaper = orphan_reaper_for(process);
-        process.reparent_children_to(&orphan_reaper);
+        // PID namespace init owns the only namespace-shutdown transaction.
+        // This includes root PID 1: unlike Linux's immortal global init,
+        // Starry joins PID 1 and shuts the system down when its userspace
+        // command completes. Close child publication before SIGKILL is
+        // delivered so no fork can escape the victim snapshot. Normal exits
+        // atomically reparent through the process topology transaction instead.
+        let pid_ns = thr.active_pid_namespace();
+        let identity = thr.proc_data.identity();
+        let shutdown_executor = thr.pid_identity();
+        let namespace_shutdown = if pid_ns.init_identity() == Some(identity.id()) {
+            Some(
+                pid_ns
+                    .begin_shutdown(identity.id(), shutdown_executor.id())
+                    .expect("PID namespace init failed to enter shutdown"),
+            )
+        } else {
+            None
+        };
+        let children_snapshot = if namespace_shutdown.is_some() {
+            process
+                .begin_namespace_shutdown_relations()
+                .into_retained_children()
+        } else {
+            close_process_relations_for_exit(process, &pid_ns)
+        };
+
+        if let Some(shutdown) = namespace_shutdown.as_ref() {
+            let sig = SignalInfo::new_kernel(Signo::SIGKILL);
+            for victim in pid_ns.published_members() {
+                if victim.id() != identity.id()
+                    && victim.has_role::<Tgid>()
+                    && let Ok(victim_process) = victim.public_process()
+                {
+                    let _ = send_signal_to_process(victim_process.pid_number(), Some(sig));
+                    // The fatal signal is published before interrupting every
+                    // runtime thread, matching Linux's signal/wakeup ordering.
+                    for tid in victim_process.threads() {
+                        if let Ok(task) = get_task_by_number(tid) {
+                            task.interrupt();
+                        }
+                    }
+                }
+            }
+            shutdown.wait_for_descendants_exit();
+        }
 
         // Freeze all Linux-visible exit data in the generation-specific PID
         // identity. This is the sole Live -> Zombie state transition.
         let zombie_cred = thr.cred();
         let ptrace_tracer = thr.proc_data.ptrace_tracer_identity();
         let is_clone_child = thr.proc_data.is_clone_child();
-        let wait_parent_tid = thr.proc_data.wait_parent_tid;
+        let wait_parent_tid = thr.proc_data.wait_parent_tid();
+        let (zombie_nice, leader_tid_lease) = thr.proc_data.take_retired_leader_for_zombie();
 
         // A parent that observes this child as a zombie must not see IPC
         // resources that still belong to the exiting process. In particular,
@@ -470,37 +656,51 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             &thr.proc_data,
             ZombieSnapshot {
                 cred: zombie_cred,
+                nice: zombie_nice,
                 ptrace_tracer: ptrace_tracer.as_ref().map(|identity| identity.snapshot()),
                 is_clone_child,
                 wait_parent_tid,
-                cpu_time: process_cpu_time,
+                cpu_time: exit_owner.cpu_time(),
+                tid_lease: leader_tid_lease,
                 tgid_lease: thr.proc_data.take_tgid_lease(),
             },
         )
         .expect("last process thread must own one live PID identity");
-        if let Some(parent) = process.parent() {
-            if let Some(signo) = thr.proc_data.exit_signal {
+        if let Some(parent) = process.parent()
+            && let Some(parent_data) = parent.identity().live_data()
+        {
+            if let Some(signo) = thr.proc_data.exit_signal() {
                 use starry_signal::Signo;
 
                 let child_uid = thr.cred().uid;
-                let (code, status) = decode_wait_status(process.exit_code());
+                let (code, status) = decode_wait_status(exit_owner.exit_code());
 
                 let sig = if signo == Signo::SIGCHLD {
                     let child_pid = process
                         .identity()
                         .visible_number(&parent.identity().active_namespace())
-                        .expect("child process must be visible to its parent")
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "child process must be visible to its parent: child id={:?} \
+                                 snapshot={:?}, parent id={:?} snapshot={:?} parent active \
+                                 ns={:?} lifecycle={:?}",
+                                process.identity().id(),
+                                process.identity().snapshot(),
+                                parent.identity().id(),
+                                parent.identity().snapshot(),
+                                parent.identity().active_namespace().id(),
+                                parent.identity().active_namespace().lifecycle(),
+                            )
+                        })
                         .get();
                     SignalInfo::new_sigchld(child_pid, child_uid, code, status)
                 } else {
                     SignalInfo::new_kernel(signo)
                 };
-                let _ = send_signal_to_process(parent.pid_number(), Some(sig));
+                let _ = send_signal_to_process_data(&parent_data, Some(sig));
             }
-            if let Ok(data) = get_process_data_by_number(parent.pid_number()) {
-                // Child exit state is published before waking waiters.
-                unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
-            }
+            // Child exit state is published before waking waiters.
+            unsafe { parent_data.child_exit_event().wake(axpoll::IoEvents::IN) };
         }
         if let Some(tracer) = ptrace_tracer
             && process
@@ -509,14 +709,13 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             && let Some(data) = tracer.live_data()
         {
             // Child exit state is published before waking waiters.
-            unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
+            unsafe { data.child_exit_event().wake(axpoll::IoEvents::IN) };
         }
         // Send pdeathsig to child processes
         for child in children_snapshot {
             let child_tid = TidNumber::from(child.pid_number().pid_number());
-            if let Ok(child_task) = get_task_by_number(child_tid)
-                && let Some(child_thr) = child_task.try_as_thread()
-            {
+            if let Ok(child_task) = get_task_by_number(child_tid) {
+                let child_thr = child_task.as_thread();
                 let sig = child_thr.pdeathsig();
                 if sig > 0
                     && let Some(signo) = Signo::from_repr(sig as u8)
@@ -529,56 +728,29 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             }
         }
 
-        // If this process was the init of a non-root PID namespace,
-        // send SIGKILL to all remaining processes in that namespace
-        // (Linux: zap_pid_ns_processes).
-        {
-            let pid_ns = thr.active_pid_namespace();
-            let identity = thr.proc_data.identity();
-            if pid_ns.level() > 0 && pid_ns.init_identity() == Some(identity.id()) {
-                let shutdown = pid_ns
-                    .begin_shutdown(identity.id())
-                    .expect("PID namespace init failed to enter shutdown");
-                let sig = SignalInfo::new_kernel(Signo::SIGKILL);
-                for victim in pid_ns.published_members() {
-                    if victim.id() != identity.id()
-                        && victim.has_role::<Tgid>()
-                        && let Ok(process) = victim.public_process()
-                    {
-                        let _ = send_signal_to_process(process.pid_number(), Some(sig.clone()));
-                        // A descendant may be parked on a raw `WaitQueue`
-                        // (pipe/futex/filesystem wait) where `interrupt()` does
-                        // not schedule it. The fatal signal is published first;
-                        // force-wake every runtime thread so one observes
-                        // SIGKILL, starts group exit, and retires the stable PID
-                        // identity instead of pinning namespace shutdown.
-                        for tid in process.threads() {
-                            if let Ok(task) = get_task_by_number(tid) {
-                                ax_task::wake_task(&task);
-                            }
-                        }
-                    }
-                }
-                shutdown.wait_for_live_descendants();
-            }
-        }
-
         // Process exit state is published before waking pidfd/wait waiters.
         unsafe {
             thr.proc_data
-                .exit_event
+                .exit_event()
                 .wake(IoEvents::IN | IoEvents::RDNORM);
         };
 
         // Unblock a vfork parent waiting for this child to exit.
         thr.proc_data.notify_vfork_done();
     }
-    // Thread exit state is published before waking waiters.
-    unsafe { thr.exit_event.wake(axpoll::IoEvents::IN) };
-    unsafe { thr.proc_data.thread_exit_event.wake(axpoll::IoEvents::IN) };
 
-    thr.retire_pid();
     thr.set_exit();
+    task_identity.notify_thread_pidfd_exit();
+    unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
+
+    // The exit path is complete only after zombie publication, parent
+    // notification, and relation close. PID namespace shutdown waits on this
+    // completion instead of the early runtime-link detach, mirroring Linux's
+    // `pid_allocated` drop in `free_pid()` — never before `do_notify_parent()`.
+    exit_path.complete();
+    // Exec observes transfer readiness from the exact retained PID identity.
+    // Wake after completing that identity-owned exit path.
+    unsafe { thr.proc_data.thread_exit_event().wake(axpoll::IoEvents::IN) };
 }
 
 /// Request a sibling thread to exit with thread-only semantics.
@@ -593,16 +765,14 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 /// longer a user thread; callers should treat that as "already reaped".
 pub fn zap_thread(tid: TidNumber) -> StarryResult<()> {
     let task = get_task_by_number(tid)?;
-    let thr = task
-        .try_as_thread()
-        .ok_or(StarryError::OperationNotPermitted)?;
+    let thr = task.as_thread();
     thr.set_exit_request();
-    // `interrupt()` alone is a no-op for a thread parked on a raw `WaitQueue`
-    // (pipe read, futex wait) — no interrupt waker is registered there — so a
-    // SIGKILLed sibling would linger until async GC, deferring `clear()` and
-    // its frame reclaim. `wake_task` force-unblocks the parked thread so it
-    // returns, observes the pending pending exit, and runs `do_exit` synchronously.
-    ax_task::wake_task(&task);
+    // Match Linux's pending-SIGKILL plus signal_wake_up pairing: the
+    // interruption bit is the persistent reason that aborts a future wait,
+    // while interrupt() also publishes the direct scheduler wake needed for
+    // raw WaitQueue sleepers. A bare wake can be consumed before a
+    // LocalExecutor commits to park.
+    task.interrupt();
     Ok(())
 }
 

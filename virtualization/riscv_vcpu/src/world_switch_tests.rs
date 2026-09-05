@@ -70,3 +70,28 @@ fn mmio_decode_uses_the_trap_snapshot() {
     assert!(decode.contains("self.regs.trap_csrs.htinst"));
     assert!(!decode.contains("riscv_h::register::htinst::read()"));
 }
+
+#[test]
+fn vcpu_run_does_not_overwrite_host_interrupt_source_mask() {
+    let run = section(
+        VCPU,
+        "    pub fn run(&mut self) -> RiscvVcpuResult<RiscvVmExit> {",
+        "    /// Binds the vCPU to the current physical CPU.",
+    );
+
+    assert_in_order(
+        run,
+        &[
+            "let host_interrupts_enabled = sstatus::read().sie()",
+            "sstatus::clear_sie()",
+            "_run_guest(&mut self.regs)",
+            "if host_interrupts_enabled",
+            "sstatus::set_sie()",
+        ],
+    );
+    assert!(run.contains("sstatus::clear_sie()"));
+    assert!(
+        !run.contains("sie::"),
+        "guest entry must not modify the host-owned interrupt source mask"
+    );
+}

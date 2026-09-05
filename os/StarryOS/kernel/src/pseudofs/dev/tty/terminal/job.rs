@@ -1,17 +1,16 @@
 use alloc::sync::{Arc, Weak};
-use core::task::Context;
 
-use ax_task::current;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 
+use super::TerminalStateLock;
 use crate::{
     StarryError, StarryResult,
-    sync::IrqMutex,
-    task::{AsThread, ProcessGroup, Session},
+    task::{ProcessGroup, Session, current_user_task},
 };
 
 pub struct JobControl {
-    state: IrqMutex<JobControlState>,
+    state: TerminalStateLock<JobControlState>,
     poll_fg: PollSet,
 }
 
@@ -29,7 +28,7 @@ impl Default for JobControl {
 impl JobControl {
     pub fn new() -> Self {
         Self {
-            state: IrqMutex::new(JobControlState {
+            state: TerminalStateLock::new(JobControlState {
                 foreground: Weak::new(),
                 session: Weak::new(),
             }),
@@ -38,11 +37,9 @@ impl JobControl {
     }
 
     pub fn current_in_foreground(&self) -> bool {
-        self.state
-            .lock()
-            .foreground
-            .upgrade()
-            .is_none_or(|pg| Arc::ptr_eq(&current().as_thread().proc_data.proc.group(), &pg))
+        self.state.lock().foreground.upgrade().is_none_or(|pg| {
+            Arc::ptr_eq(&current_user_task().as_thread().proc_data.proc.group(), &pg)
+        })
     }
 
     pub fn foreground(&self) -> Option<Arc<ProcessGroup>> {
@@ -115,10 +112,13 @@ impl Pollable for JobControl {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from tty job-control poll task context.
-            unsafe { self.poll_fg.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_fg, IoEvents::IN) };
         }
     }
 }

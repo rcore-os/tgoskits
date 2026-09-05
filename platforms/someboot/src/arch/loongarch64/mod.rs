@@ -19,6 +19,7 @@ use core::{hint::spin_loop, ptr::null};
 
 pub(crate) use entry::_secondary_entry;
 use loongArch64::{
+    cpu::get_valen,
     register::*,
     time::{Time, get_timer_freq},
 };
@@ -237,7 +238,9 @@ impl ArchTrait for Arch {
     }
 
     fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::PAGE_OFFSET..usize::MAX
+        let base = addrspace::vm_map_base(get_valen())
+            .expect("LoongArch CPU reported an invalid virtual-address length");
+        base..usize::MAX
     }
 
     fn is_mmu_enabled() -> bool {
@@ -268,7 +271,7 @@ impl SystimerArch for Arch {
     }
 
     fn systimer_enable() {
-        tcfg::set_en(true);
+        Self::systimer_cancel_oneshot();
     }
 
     fn systimer_irq_enable() {
@@ -283,8 +286,12 @@ impl SystimerArch for Arch {
         tcfg::read().en()
     }
 
-    fn systimer_set_interval(ticks: usize) {
-        let ticks = crate::timer::loongarch64_interval::aligned_ticks(ticks);
+    fn systimer_set_deadline(deadline_ticks: u64) {
+        let current_ticks = Self::systimer_tick() as u64;
+        let interval_ticks = deadline_ticks.saturating_sub(current_ticks).max(1);
+        let ticks = crate::timer::loongarch64_interval::aligned_ticks(
+            usize::try_from(interval_ticks).unwrap_or(usize::MAX),
+        );
 
         // 先禁用定时器
         tcfg::set_en(false);
@@ -298,6 +305,22 @@ impl SystimerArch for Arch {
         // program the next event with TCFG.EN set; leaving it disabled stalls
         // timer-based sleeps after the first reprogram.
         tcfg::set_en(true);
+    }
+
+    fn systimer_requires_irq_quiesce() -> bool {
+        false
+    }
+
+    fn systimer_cancel_oneshot() {
+        tcfg::set_en(false);
+        tcfg::set_periodic(false);
+        tcfg::set_init_val(crate::timer::loongarch64_interval::stopped_ticks());
+        ticlr::clear_timer_interrupt();
+    }
+
+    fn systimer_resume_oneshot(deadline_ticks: u64) {
+        // Programming TCFG also enables the one-shot after clearing stale TI.
+        Self::systimer_set_deadline(deadline_ticks);
     }
 
     /// The pending timer interrupt latches in TICLR and must be cleared

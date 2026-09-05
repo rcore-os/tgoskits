@@ -30,3 +30,6 @@ pub use irq::Pl011Irq;
 pub use registers::Pl011Registers;
 use registers::*;
 use rx::*;
+
+#[cfg(test)]
+mod tests;

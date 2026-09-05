@@ -52,11 +52,11 @@ fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
 vpci-test-device = ["axvm/vpci-test-device"]
 sstc = ["axvm/sstc"]
 stack-protector = ["ax-std/stack-protector"]
-backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
+backtrace = ["ax-std/backtrace"]
 test-backtrace-panic = ["backtrace"]
-test-panic-no-backtrace = ["dep:axbacktrace"]
+test-panic-no-backtrace = []
 test-console-interleave = ["dep:ax-log"]
-test-console-atomic-output = ["ax-std/sched-rr"]
+test-console-atomic-output = []
 # axum-based management HTTP server. Pulls `ax-std/net` explicitly so the
 # ArceOS network stack (which probes the QEMU virtio-net NIC and backs the
 # tokio `TcpListener`) is enabled only when the control plane is built; a
@@ -116,7 +116,6 @@ axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
 axvm-types.workspace = true
 ax-driver = { workspace = true, optional = true }
-axbacktrace = { workspace = true, optional = true }
 
 [dev-dependencies]
 axtest = { path = "../../components/axtest/axtest" }

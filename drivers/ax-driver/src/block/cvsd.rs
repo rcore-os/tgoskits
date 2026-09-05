@@ -25,6 +25,7 @@ use crate::{
         SDHCI_MIN_MMIO_SIZE, SYSCON_MIN_MMIO_SIZE, controller_region, has_property, host_config,
         required_region,
     },
+    sdhci_runtime::install_host_timer,
 };
 
 #[cfg(not(test))]
@@ -79,6 +80,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     let mut host =
         unsafe { Cv181xSdhci::new(Cv181xMmio::new(controller.map()?, syscon.map()?), config) };
+    install_host_timer(host.inner_mut());
     let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
         dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(info),

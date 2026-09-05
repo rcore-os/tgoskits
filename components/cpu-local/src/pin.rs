@@ -17,6 +17,7 @@ pub struct CpuPin<'scope> {
 
 impl CpuPin<'_> {
     /// Returns the initialized CPU area validated when this pin was created.
+    #[inline(always)]
     pub const fn area(&self) -> CpuAreaRef {
         self.area
     }
@@ -63,6 +64,7 @@ impl CurrentCpuArea<'_> {
     /// CPU area. The returned pointer may only be dereferenced while the outer
     /// owner transaction retains the synchronization required by `T`.
     #[doc(hidden)]
+    #[inline(always)]
     pub unsafe fn symbol_ptr<T>(&self, offset: usize) -> Result<NonNull<T>, CpuLocalError> {
         let address = self
             .area_base
@@ -102,14 +104,14 @@ impl ExclusiveCpu<'_> {
 /// # Errors
 ///
 /// Returns [`CpuLocalError::AreaNotInstalled`] before this CPU has installed
-/// its runtime area, or an identity error if the live register and area header
-/// disagree.
+/// its runtime area.
 ///
 /// # Safety
 ///
 /// The caller must prevent migration for the complete callback. Offline boot
 /// code may call this while the CPU cannot be scheduled; runtime code must
 /// hold an appropriate preemption or IRQ guard.
+#[inline(always)]
 pub unsafe fn with_cpu_pin<R>(
     operation: impl for<'scope> FnOnce(&CpuPin<'scope>) -> R,
 ) -> Result<R, CpuLocalError> {
@@ -119,10 +121,24 @@ pub unsafe fn with_cpu_pin<R>(
         _scope: PhantomData,
         _not_send_or_sync: PhantomData,
     };
-    // Validate the image's selected current-context source before exposing
-    // typed access. Each image mode has exactly one authoritative source.
-    register::current_context(&pin)?;
+    // Installation validates the area, while initial binding and every switch
+    // validate current before publication. Like Linux per-CPU access, this hot
+    // path trusts those owner boundaries instead of re-reading current.
+    #[cfg(feature = "qperf-metrics")]
+    pin.area.runtime_anchor().record_cpu_pin_entry();
     Ok(operation(&pin))
+}
+
+/// Returns the successful CPU-pin entries observed on the selected CPU.
+///
+/// # Safety
+///
+/// The caller must prevent migration until this scalar snapshot completes.
+#[cfg(feature = "qperf-metrics")]
+#[doc(hidden)]
+pub unsafe fn qperf_current_cpu_pin_entries() -> Result<u64, CpuLocalError> {
+    let area = register::current_area()?;
+    Ok(area.runtime_anchor().qperf_cpu_pin_entries())
 }
 
 /// Runs `operation` with exclusive access to mutable state on the pinned CPU.
@@ -164,6 +180,7 @@ pub unsafe fn with_exclusive_cpu<R>(
 /// and every conflicting remote access to be excluded. Offline CPU bootstrap
 /// satisfies these conditions before interrupt publication.
 #[doc(hidden)]
+#[inline(always)]
 pub unsafe fn with_current_cpu_area<R>(
     operation: impl for<'scope> FnOnce(&CurrentCpuArea<'scope>) -> R,
 ) -> Result<R, CpuLocalError> {

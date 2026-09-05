@@ -98,7 +98,11 @@ impl Pollable for ProbePerfEvent {
         axpoll::IoEvents::empty()
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: axpoll::IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: axpoll::IoEvents,
+    ) {
         // No-op: kprobe perf events do not deliver poll readiness; reads
         // happen through the attached BPF program / ringbuf, not the event
         // fd itself.

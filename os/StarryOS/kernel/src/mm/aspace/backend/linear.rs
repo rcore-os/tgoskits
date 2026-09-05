@@ -3,8 +3,8 @@ use alloc::sync::Arc;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
-use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
-use crate::{StarryResult, sync::Mutex};
+use super::{Backend, BackendOps, CloneMapContext, MemoryAccounting, TlbGather, pages_in};
+use crate::{StarryError, StarryResult};
 
 /// Linear mapping backend.
 ///
@@ -16,7 +16,6 @@ use crate::{StarryResult, sync::Mutex};
 /// counted in process RSS (Linux `VM_PFNMAP|VM_IO` analogue).
 #[derive(Clone)]
 pub struct LinearBackend {
-    start: VirtAddr,
     offset: isize,
     shared: bool,
     /// Optional lifetime anchor. Keeps an arbitrary object alive as long as
@@ -24,19 +23,10 @@ pub struct LinearBackend {
     /// `Arc<IonBuffer>` alive while its physical DMA pages are mapped into a
     /// process address space, preventing use-after-free when the fd is closed
     /// before `munmap`.
-    anchor: Option<Arc<dyn core::any::Any + Send + Sync>>,
+    _anchor: Option<Arc<dyn core::any::Any + Send + Sync>>,
 }
 
 impl LinearBackend {
-    pub fn with_start(&self, new_start: VirtAddr) -> Self {
-        Self {
-            start: new_start,
-            offset: self.offset + (new_start.as_usize() as isize - self.start.as_usize() as isize),
-            shared: self.shared,
-            anchor: self.anchor.clone(),
-        }
-    }
-
     fn pa(&self, va: VirtAddr) -> PhysAddr {
         PhysAddr::from((va.as_usize() as isize - self.offset) as usize)
     }
@@ -56,6 +46,7 @@ impl BackendOps for LinearBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         let pa_range =
@@ -69,14 +60,24 @@ impl BackendOps for LinearBackend {
         &self,
         range: VirtAddrRange,
         _acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         let pa_range =
             ax_memory_addr::PhysAddrRange::from_start_size(self.pa(range.start), range.size());
         debug!("Linear::unmap: {range:?} -> {pa_range:?}");
-        for vaddr in pages_in(range, PAGE_SIZE_4K)? {
-            match pt.unmap_page(vaddr) {
-                Ok((_, _, page_size)) => debug_assert_eq!(page_size, PAGE_SIZE_4K),
+        let mapped = pages_in(range, PAGE_SIZE_4K)?
+            .filter(|vaddr| pt.query_occupied(*vaddr).is_ok())
+            .collect::<alloc::vec::Vec<_>>();
+        gather
+            .prepare_page_table_reclaims(mapped.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        for vaddr in mapped {
+            match pt.unmap_page_deferred(vaddr) {
+                Ok((_, _, page_size, deferred_page_tables)) => {
+                    debug_assert_eq!(page_size, PAGE_SIZE_4K);
+                    gather.defer_page_tables(deferred_page_tables);
+                }
                 Err(PagingError::NotMapped) => {}
                 Err(err) => return Err(err.into()),
             }
@@ -88,10 +89,7 @@ impl BackendOps for LinearBackend {
         &self,
         _range: VirtAddrRange,
         _flags: MappingFlags,
-        _old_pt: &mut PageTable,
-        _new_pt: &mut PageTable,
-        _new_aspace: &Arc<Mutex<AddrSpace>>,
-        _acct: CloneMapAccounting<'_>,
+        _context: CloneMapContext<'_>,
     ) -> StarryResult<Backend> {
         Ok(Backend::Linear(self.clone()))
     }
@@ -106,26 +104,24 @@ impl BackendOps for LinearBackend {
 }
 
 impl Backend {
-    pub fn new_linear(start: VirtAddr, offset: isize, shared: bool) -> Self {
+    pub fn new_linear(_start: VirtAddr, offset: isize, shared: bool) -> Self {
         Self::Linear(LinearBackend {
-            start,
             offset,
             shared,
-            anchor: None,
+            _anchor: None,
         })
     }
 
     pub fn new_linear_anchored(
-        start: VirtAddr,
+        _start: VirtAddr,
         offset: isize,
         shared: bool,
         anchor: Arc<dyn core::any::Any + Send + Sync>,
     ) -> Self {
         Self::Linear(LinearBackend {
-            start,
             offset,
             shared,
-            anchor: Some(anchor),
+            _anchor: Some(anchor),
         })
     }
 }

@@ -92,7 +92,7 @@ pub struct PteConfig {
 
 | 架构（axcpu 源文件） | 层数/地址形态 | 本地失效指令 |
 | --- | --- | --- |
-| AArch64（`src/aarch64/paging.rs`） | 4 层、48-bit 虚拟地址/物理地址，支持 1 GiB block | `tlbi vaae1is`（inner-shareable）/全量 `tlbi vmalle1`，配 DSB/ISB |
+| AArch64（`src/aarch64/paging.rs`） | 4 层、48-bit 虚拟地址/物理地址，支持 1 GiB block | 本地 `tlbi vaae1` / `tlbi vmalle1`，配 DSB/ISB |
 | RISC-V 64（`src/riscv/paging.rs`） | 3 层 Sv39、39-bit 虚拟地址，支持 2 MiB megapage | `sfence.vma` |
 | x86_64（`src/x86_64/paging.rs`） | 4 层、48-bit 虚拟地址、最多 52-bit 物理地址 | `invlpg` / 重写 CR3 |
 | LoongArch64（`src/loongarch64/paging.rs`） | 4 层、48-bit 虚拟地址（PWCL/PWCH 配置） | `invtlb` |
@@ -138,12 +138,12 @@ pub struct PteConfig {
 
 | 架构 | 单地址失效 | 全量失效 | 覆盖范围 |
 | --- | --- | --- | --- |
-| AArch64 | `tlbi vaae1is` + DSB/ISB | `tlbi vmalle1` + DSB/ISB | 单地址指令 inner-shareable 硬件广播；全量指令仅本核 |
+| AArch64 | `tlbi vaae1` + DSB/ISB | `tlbi vmalle1` + DSB/ISB | 本 PE |
 | RISC-V 64 | `sfence.vma(vaddr)` | `sfence.vma zero, zero` | 本 hart |
 | x86_64 | `invlpg` | 重写 CR3 | 本 CPU |
 | LoongArch64 | `invtlb 0x05` | `invtlb 0x00` | 本核 |
 
-AArch64 的地址级 TLBI 带 inner-shareable 广播，但全量失效是本核操作。其余三个架构默认只处理本 CPU；共享内核映射的跨核失效必须走 4.2 节的 shootdown 基础设施，不能把本地失效当作系统完成。
+四个架构的 `TableMeta::flush()` 都只处理当前 CPU/PE。共享内核映射或已发布用户地址空间的跨核失效必须走 4.2 节的 shootdown 基础设施，不能把本地失效当作系统完成。AArch64 发起 CPU 还必须在任何本地 TLBI 或远端 IPI 之前执行 `dsb ishst`，使此前 PTE 写入先对 inner-shareable domain 可见；远端 CPU 自己执行的屏障不能替发起 CPU排序这些写入。
 
 ### 4.2 多核远端失效
 
@@ -151,22 +151,21 @@ AArch64 的地址级 TLBI 带 inner-shareable 广播，但全量失效是本核�
 
 | 运行配置 | 远端失效方式 |
 | --- | --- |
-| AArch64 地址级失效 | 硬件 inner-shareable 广播，无需软件 处理器间中断 |
-| 其他架构 + `ax-hal/ipi` | `flush_tlb_range_all_cpus()` 软件 shootdown |
-| 其他架构、无 处理器间中断、CPU 数大于 1 | 无系统级保证，调用方必须避免跨核共享映射失效 |
+| 四架构 + `ax-hal/ipi` | `flush_tlb_range_all_cpus()` / `flush_tlb_range_on_cpus()` 软件 shootdown，每个目标 CPU 执行本地失效 |
+| 无处理器间中断、CPU 数大于 1 | 无系统级保证，调用方必须避免跨核共享映射失效 |
 
 该基础设施保证 flush 请求送达已 ready 的 CPU，但每个共享地址空间的具体 shootdown 时序仍由调用方负责。
 
 ### 4.3 启动阶段切换
 
-非 AArch64 多核系统在引导处理器初始化 runtime 页表时，处理器间中断 callback 尚未发布可用。`axipi` 用显式 ready 状态机区分两个阶段：
+多核系统在引导处理器初始化 runtime 页表时，处理器间中断 callback 尚未发布可用。`axipi` 用显式 ready 状态机区分两个阶段：
 
 | 阶段 | 行为 | 安全依据 |
 | --- | --- | --- |
 | secondary 尚未 ready | shootdown 只作用于已 ready CPU，未 ready CPU 被跳过 | secondary 在装载 kernel root 前不运行 runtime address space |
 | secondary 调用 `mark_current_cpu_ready()` 之后 | Release 发布 ready，后续 shootdown 同步通知该 CPU | secondary 在发布 ready 前先装载 kernel root 并执行全量本地失效 |
 
-ready 状态用 Release 发布、Acquire 读取。已 ready CPU 的处理器间中断错误是不可恢复的一致性故障；尚未 ready 或已下线 CPU 返回 `CpuOffline` 时可以跳过。内核任务栈 guard 页的 shootdown（`stack-guard-page + smp + ipi`）使用同一套机制并带确认计数与超时 panic，见[栈管理](./stacks.md)。AArch64 的地址级 inner-shareable 广播不进入该软件开关。
+ready 状态用 Release 发布、Acquire 读取。已 ready CPU 的处理器间中断错误是不可恢复的一致性故障；尚未 ready 或已下线 CPU 返回 `CpuOffline` 时可以跳过。内核任务栈 guard 页的 shootdown（`stack-guard-page + smp + ipi`）使用同一套机制并带确认计数与超时 panic，见[栈管理](./stacks.md)。AArch64 与其他架构一样通过该软件边界选择目标 CPU；`axcpu` 不再用 `*is` TLBI 绕过 active mask。
 
 ## 5. AArch64 内存属性
 
@@ -232,7 +231,7 @@ pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
 | `canonicalize_vaddr(vaddr)` | 地址 canonical 化（默认恒等） | AArch64 等架构的高地址 sign-extension |
 | `flush(vaddr)` | flush callback（必需方法） | 由架构 adapter 实现本 CPU 失效指令 |
 
-`TableMeta::flush()` 是必需方法，没有默认实现；测试 mock 或不需要失效的 adapter 必须显式提供空实现。AArch64 hardware-broadcast 与 x86/RISC-V/LoongArch local-only 的差异由具体 adapter 注入，flexible engine 本身不区分架构。
+`TableMeta::flush()` 是必需方法，没有默认实现；测试 mock 或不需要失效的 adapter 必须显式提供空实现。四架构 adapter 都只提供当前 CPU 的失效，flexible engine 本身不区分架构，也不持有跨 CPU footprint。
 
 ### 6.2 所有权差异
 
@@ -331,7 +330,7 @@ PageTable::drop    不 flush，只递归释放页表 frame
 
 固定阈值避免页表修改为了记录 flush 又申请 heap。批量记录只存在于 `map_region()` 内部；调用方不能依赖 protect 或 unmap 的批量行为。
 
-在 RISC-V、x86_64 或 LoongArch64 等 local-only 实现中，shared kernel mapping 的 unmap 还需要 `ax_hal::cache::flush_tlb_range_all_cpus()` 等待远端 CPU 完成失效。AArch64 地址级 inner-shareable TLBI 由硬件覆盖 shareable domain，但仍必须保留架构要求的 DSB/ISB 顺序。
+四架构都是 local-only 实现，shared kernel mapping 的 unmap 还需要 `ax_hal::cache::flush_tlb_range_all_cpus()` 等待远端 CPU 完成失效。AArch64 门面先用 `dsb ishst` 发布发起 CPU 的页表写入，再向 active mask 中每个目标 CPU 发出同步软件 shootdown；目标 CPU 以 `dsb nshst → TLBI → dsb nsh → isb` 完成本地失效。
 
 ### 8.4 客户机映射实例
 

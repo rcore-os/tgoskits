@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     CPU_AREA_CURRENT_CONTEXT_OFFSET, CPU_AREA_PREEMPTION_STATE_OFFSET, CPU_AREA_SELF_BASE_OFFSET,
+    CpuIndex, CpuLocalError, preempt::PreemptionState,
 };
 
 const IA32_GS_BASE: u32 = 0xc000_0101;
@@ -11,6 +12,44 @@ pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentMo
     linux_current: CurrentContextSource::RuntimeAnchor,
     unikernel_tls: CurrentContextSource::RuntimeAnchor,
 };
+
+pub(super) struct Backend;
+
+impl ArchitectureRegisterBackend for Backend {
+    #[inline(always)]
+    fn current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
+        let index: u32;
+        // SAFETY: the installed GS base points at the immutable CPU-area
+        // header for the current CPU and the caller's preemption/IRQ pin keeps
+        // that area selected until this scalar is consumed.
+        unsafe {
+            core::arch::asm!(
+                "mov {index:e}, dword ptr gs:[{offset}]",
+                index = out(reg) index,
+                offset = const crate::CPU_AREA_CPU_INDEX_OFFSET,
+                options(nostack, preserves_flags, readonly),
+            );
+        }
+        CpuIndex::from_u32(index).ok_or(CpuLocalError::AreaIdentityMismatch)
+    }
+
+    #[inline(always)]
+    fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
+        let state: u32;
+        // SAFETY: x86 owns the selected preemption word in the installed CPU
+        // runtime anchor. The fixed GS offset is the architecture-native
+        // override of the execution-context default implementation.
+        unsafe {
+            core::arch::asm!(
+                "mov {state:e}, dword ptr gs:[{offset}]",
+                state = out(reg) state,
+                offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+                options(nostack, preserves_flags, readonly),
+            );
+        }
+        Ok(PreemptionSnapshot::from_raw(state))
+    }
+}
 
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
@@ -64,6 +103,114 @@ pub(super) unsafe fn enter_preemption() {
             options(nostack),
         );
     }
+}
+
+#[inline(always)]
+pub(super) unsafe fn read_preemption_state() -> u32 {
+    let state: u32;
+    // SAFETY: a live preemption token pins the GS-selected CPU area until the
+    // matching finish consumes its depth.
+    unsafe {
+        core::arch::asm!(
+            "mov {state:e}, dword ptr gs:[{offset}]",
+            state = out(reg) state,
+            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    state
+}
+
+#[inline(always)]
+pub(super) unsafe fn compare_exchange_current_preemption_state(current: u32, next: u32) -> bool {
+    let mut observed = current;
+    // SAFETY: the positive depth excludes remote writers. A local interrupt
+    // can update the pending bit only before or after this instruction.
+    unsafe {
+        core::arch::asm!(
+            "cmpxchg dword ptr gs:[{offset}], {next:e}",
+            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+            next = in(reg) next,
+            inout("eax") observed,
+            options(nostack),
+        );
+    }
+    observed == current
+}
+
+#[inline(always)]
+pub(super) unsafe fn decrement_current_preemption_state() {
+    // SAFETY: the caller retains a nested depth, and integer subtraction
+    // preserves the pending high bit regardless of an interrupt publication.
+    unsafe {
+        core::arch::asm!(
+            "dec dword ptr gs:[{offset}]",
+            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+            options(nostack),
+        );
+    }
+}
+
+/// Returns the current CPU's preemption word after a caller has raised its
+/// depth through [`enter_preemption`].
+///
+/// # Safety
+///
+/// The caller must have completed the matching increment before invoking this
+/// function and must keep the returned reference within that preemption
+/// exclusion. The installed GS area and its preemption word remain mapped for
+/// the runtime lifetime.
+#[inline(always)]
+pub(super) unsafe fn current_preemption_state() -> &'static PreemptionState {
+    let area_base: usize;
+    // SAFETY: the preceding GS increment pins this instruction stream to the
+    // selected CPU area until the matching preemption exit. `mov` is used
+    // instead of `lea`: x86 effective-address calculation does not include a
+    // GS base, while this load reads the installed per-CPU self pointer.
+    unsafe {
+        core::arch::asm!(
+            "mov {base}, gs:[{offset}]",
+            base = out(reg) area_base,
+            offset = const CPU_AREA_SELF_BASE_OFFSET,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    let state = area_base
+        .checked_add(CPU_AREA_PREEMPTION_STATE_OFFSET)
+        .unwrap_or_else(|| crate::register::fatal_register_invariant());
+    // SAFETY: the installed CPU area is retained for the runtime lifetime and
+    // the checked preemption depth pins this access to that area.
+    unsafe { &*core::ptr::with_exposed_provenance::<PreemptionState>(state) }
+}
+
+/// Compares one transition of the current CPU-owned preemption word.
+///
+/// # Safety
+///
+/// `state` must be the owner retained by the caller's positive preemption
+/// depth, and no remote CPU may access that owner. A local interrupt may
+/// update the word only at an instruction boundary.
+#[inline(always)]
+#[cfg(test)]
+pub(super) unsafe fn compare_exchange_preemption_state(
+    state: &PreemptionState,
+    current: u32,
+    next: u32,
+) -> bool {
+    let mut observed = current;
+    // SAFETY: x86 completes CMPXCHG before recognizing a local interrupt. The
+    // absence of a LOCK prefix is valid because the owner contract excludes
+    // remote access, matching Linux raw_cpu_try_cmpxchg_4().
+    unsafe {
+        core::arch::asm!(
+            "cmpxchg dword ptr [{state}], {next:e}",
+            state = in(reg) state.as_mut_ptr(),
+            next = in(reg) next,
+            inout("eax") observed,
+            options(nostack),
+        );
+    }
+    observed == current
 }
 
 #[cfg(feature = "tls")]

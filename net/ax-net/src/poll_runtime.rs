@@ -41,7 +41,7 @@ impl ProtocolPollRuntime {
 
     pub(crate) fn schedule(&self) {
         if !self.scheduled.swap(true, Ordering::AcqRel) {
-            self.executor_wake.notify_one(true);
+            self.executor_wake.notify_one();
         }
     }
 
@@ -61,7 +61,7 @@ impl ProtocolPollRuntime {
 
     pub(crate) fn complete(&self, generation: PollGeneration) {
         self.completed.store(generation.0, Ordering::Release);
-        self.completion.notify_all(true);
+        self.completion.notify_all();
     }
 
     pub(crate) fn wait_for_completion(&self, generation: PollGeneration) {

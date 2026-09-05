@@ -55,17 +55,19 @@ register_unix_namespace();
 
 let config = parse_network_config();
 let devices = collect_net_devices();
+let active_cpus = crate::task::active_cpu_set()?;
 let (runtime, ports) = ax_net::NetworkRuntimeBuilder::new(
     devices,
     &crate::irq::NET_IRQ_REGISTRAR,
-    ax_hal::cpu_num(),
+    active_cpus,
 ).build()?;
-ax_net::init_network(Some(runtime), ports, config);
+ax_net::init_network(runtime, ports, config);
 ```
 
 这条路径完成三件事：
 
 - 将 runtime 发现的设备消费为 `PreparedNetDevice`，并把 source ID 精确解析为物理 `IrqId`。
+- 只从 scheduler active CPU mask 选择立即可运行的 queue/protocol owner；固定拓扑中尚未 online 的 CPU 不参与启动期放置。
 - 将结构化 `NetworkConfig` 交给 `ax-net`，由 `ax-net` 创建 `lo`、Ethernet 接口、路由、DHCP 状态和 DNS registry。
 - 在 worker pin、disabled IRQ registration、owner startup、initial refill/rearm 和 startup Wi-Fi transaction 全部成功后发布 service。
 
@@ -105,13 +107,27 @@ quiesce group，在同 CPU 执行 SDIO/MMIO 控制，再 rearm，最后由 proto
 
 ### 2.5 Vsock
 
-启用 `vsock` feature 后，runtime 收集 virtio-vsock 等设备并把列表交给 `init_vsock()`，由独立连接管理器与 poll task 负责后续事件。该路径不创建 smoltcp socket，也不经过 Ethernet `Router`；当前只消费列表末尾设备的选择规则需要由调用方明确接受。
+启用 `vsock` feature 后，runtime 收集 virtio-vsock 设备，同时一次性取得 typed IRQ
+binding、hard-IRQ endpoint 和 task-side rearm control。runtime 将 binding 解析成
+`IrqId`，再把完整的 `VsockDeviceInput` 交给 `init_vsock()`。该路径不创建 smoltcp
+socket，也不经过 Ethernet `Router`；它使用独立 connection manager 和固定 CPU IRQ
+worker 推进事件。
 
 ```rust
-ax_net::init_vsock(vsock_devs);
+ax_net::init_vsock(
+    vsock_inputs,
+    &crate::irq::NET_IRQ_REGISTRAR,
+    active_cpus,
+)?;
 ```
 
-`init_vsock()` 使用 `pop()` 注册传入列表的**最后一个**设备，其余设备忽略；空列表只会记录 warning，不建立额外的“无设备但已初始化”状态。没有注册设备时，AF_VSOCK 的 listen/connect/send 路径会在 `device::vsock_*()` 返回 `NotFound`。vsock 不参与 IP 路由、ARP、DNS 或 Ethernet dataplane；它只复用 `ax-net` 的 socket facade 和 poll 语义。
+当前 vsock runtime 只接受零个或恰好一个设备。空列表只记录 warning，不建立额外的
+“无设备但已初始化”状态；多设备、缺 IRQ、endpoint 已被转移、owner CPU 未 active 或
+IRQ registration 失败都会终止初始化。worker 固定在网络 protocol owner CPU：hard IRQ
+只 ACK/coalesce 并发布 sticky notification，worker 预算 drain event、更新
+`VSOCK_CONN_MANAGER`，再用 rearm/recheck 闭合 IRQ-versus-sleep 窗口。RX ring 释放空间时
+会精准重新调度 pending event；不存在周期 poll 或 sleep fallback。vsock 不参与 IP
+路由、ARP、DNS 或 Ethernet dataplane，只复用 `ax-net` 的 socket facade/readiness 形状。
 
 ## 3. ArceOS API 层
 

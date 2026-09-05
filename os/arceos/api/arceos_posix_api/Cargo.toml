@@ -18,7 +18,7 @@ license.workspace = true
 [features]
 default = []
 
-smp = []
+smp = ["ax-runtime/smp"]
 alloc = ["dep:ax-alloc"]
 lockdep = ["ax-runtime/lockdep"]
 fd = ["alloc", "dep:scope-local"]

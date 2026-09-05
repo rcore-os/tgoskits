@@ -8,7 +8,6 @@ use core::{
     any::Any,
     cell::UnsafeCell,
     sync::atomic::{AtomicU64, Ordering},
-    task::Context,
     time::Duration,
 };
 
@@ -18,18 +17,18 @@ use ax_memory_addr::PhysAddrRange;
 use ax_runtime::hal::irq::{
     AutoEnable, IrqError, IrqHandle, IrqId, IrqRequest, IrqReturn, ShareMode,
 };
-use ax_task::current;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
 use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion};
-use axpoll::{IoEvents, PollSet, Pollable};
-use bytemuck::AnyBitPattern;
-use starry_vm::{VmMutPtr, VmPtr};
+use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
+use bytemuck::{AnyBitPattern, NoUninit};
 
 use crate::{
+    mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceMmap, DeviceOps, DirMapping, SimpleFs},
     sync::Mutex,
-    task::AsThread,
+    task::future::IrqNotify,
 };
 
 const MAX_CHANNELS: usize = 16;
@@ -48,7 +47,7 @@ const IVC_CACHE_FLUSH: u32 = 0x4010_0004;
 const IVC_CACHE_INVALIDATE: u32 = 0x4010_0005;
 
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, NoUninit)]
 struct IvcPublishArg {
     channel_key: u64,
     channel_size: u64,
@@ -56,7 +55,7 @@ struct IvcPublishArg {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, NoUninit)]
 struct IvcSubscribeArg {
     target_publisher_id: u64,
     channel_key: u64,
@@ -64,7 +63,7 @@ struct IvcSubscribeArg {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, NoUninit)]
 struct IvcCacheOpArg {
     addr: u64,
     size: u64,
@@ -76,6 +75,7 @@ struct AxivcRegistry {
     subscriber_poll_sets: Vec<Arc<PollSet>>,
     notify_irq: Option<IrqId>,
     irq_handle: OnceLock<IrqHandle>,
+    deferred_notify: Arc<IrqNotify>,
 }
 
 impl AxivcRegistry {
@@ -90,6 +90,7 @@ impl AxivcRegistry {
             subscriber_poll_sets: new_poll_sets(channel_count),
             notify_irq,
             irq_handle: OnceLock::new(),
+            deferred_notify: Arc::new(IrqNotify::new()),
         }
     }
 
@@ -107,6 +108,10 @@ impl AxivcRegistry {
             .auto_enable(AutoEnable::No);
         match ax_runtime::hal::irq::request_irq(irq, request) {
             Ok(handle) => {
+                if !self.start_notify_service() {
+                    let _ = ax_runtime::hal::irq::free_irq(handle);
+                    return;
+                }
                 self.irq_handle.call_once(|| handle);
                 if let Some(handle) = self.irq_handle.get().copied()
                     && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
@@ -120,20 +125,43 @@ impl AxivcRegistry {
         }
     }
 
+    fn start_notify_service(self: &Arc<Self>) -> bool {
+        let registry = Arc::downgrade(self);
+        let notify = Arc::clone(&self.deferred_notify);
+        match crate::task::try_spawn_kernel_thread_with_stack(
+            move || loop {
+                notify.wait();
+                let Some(registry) = registry.upgrade() else {
+                    break;
+                };
+                registry.wake_channel_pollers();
+            },
+            "axivc-notify-service".into(),
+            crate::task::default_task_stack_size(),
+        ) {
+            Ok(_service) => true,
+            Err(error) => {
+                warn!("axivc: failed to start notify service: {error}");
+                false
+            }
+        }
+    }
+
     fn handle_notify_irq(&self) -> IrqReturn {
         // The notify IRQ reports peer progress but does not carry a channel id.
-        // Wake every slot poll set and let `poll()` re-check exact ring state.
-        let woke = self
+        // Hard IRQ only publishes a coalesced event. The fixed service thread
+        // performs PollSet fan-out in task context, where wakers may run.
+        self.deferred_notify.notify_irq();
+        IrqReturn::Wake
+    }
+
+    fn wake_channel_pollers(&self) -> usize {
+        self
             .publisher_poll_sets
             .iter()
             .chain(self.subscriber_poll_sets.iter())
-            .map(|poll_set| poll_set.wake_from_irq(IoEvents::IN | IoEvents::OUT))
-            .sum::<usize>();
-        if woke == 0 {
-            IrqReturn::Handled
-        } else {
-            IrqReturn::Wake
-        }
+            .map(|poll_set| wake_pollers(poll_set, IoEvents::IN | IoEvents::OUT))
+            .sum()
     }
 
     fn poll_set(&self, role: ChannelRole, index: usize) -> Option<Arc<PollSet>> {
@@ -369,6 +397,9 @@ impl Drop for AxivcRegistry {
             let _ = ax_runtime::hal::irq::disable_irq(handle);
             let _ = ax_runtime::hal::irq::free_irq(handle);
         }
+        // The service owns only a Weak registry reference. Wake it once so it
+        // can observe that the final registry owner is gone and exit.
+        self.deferred_notify.notify();
     }
 }
 
@@ -626,13 +657,18 @@ impl DeviceOps for AxivcManager {
         Err(VfsError::InvalidInput)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> VfsResult<usize> {
         match cmd {
             IVC_PUBLISH_CHANNEL => {
                 let user_arg = arg as *mut IvcPublishArg;
-                let mut publish_arg = user_arg.vm_read().map_err(vm_error)?;
+                let mut publish_arg = user_arg.vm_read(current).map_err(vm_error)?;
                 self.registry.publish(&mut publish_arg)?;
-                if let Err(err) = user_arg.vm_write(publish_arg) {
+                if let Err(err) = user_arg.vm_write(current, publish_arg) {
                     warn!(
                         "axivc: publish ioctl writeback failed key={:#x}",
                         publish_arg.channel_key
@@ -648,15 +684,17 @@ impl DeviceOps for AxivcManager {
                 Ok(0)
             }
             IVC_UNPUBLISH_CHANNEL => {
-                let user_arg = (arg as *const IvcPublishArg).vm_read().map_err(vm_error)?;
+                let user_arg = (arg as *const IvcPublishArg)
+                    .vm_read(current)
+                    .map_err(vm_error)?;
                 self.registry.unpublish(&user_arg)?;
                 Ok(0)
             }
             IVC_SUBSCRIBE_CHANNEL => {
                 let user_arg = arg as *mut IvcSubscribeArg;
-                let mut subscribe_arg = user_arg.vm_read().map_err(vm_error)?;
+                let mut subscribe_arg = user_arg.vm_read(current).map_err(vm_error)?;
                 self.registry.subscribe(&mut subscribe_arg)?;
-                if let Err(err) = user_arg.vm_write(subscribe_arg) {
+                if let Err(err) = user_arg.vm_write(current, subscribe_arg) {
                     warn!(
                         "axivc: subscribe ioctl writeback failed publisher={} key={:#x}",
                         subscribe_arg.target_publisher_id, subscribe_arg.channel_key
@@ -674,7 +712,7 @@ impl DeviceOps for AxivcManager {
             }
             IVC_UNSUBSCRIBE_CHANNEL => {
                 let user_arg = (arg as *const IvcSubscribeArg)
-                    .vm_read()
+                    .vm_read(current)
                     .map_err(vm_error)?;
                 self.registry.unsubscribe(&user_arg)?;
                 Ok(0)
@@ -771,13 +809,20 @@ impl DeviceOps for AxivcChannel {
         Ok(buf.len())
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let op = match cmd {
             IVC_CACHE_FLUSH => DCacheOp::Clean,
             IVC_CACHE_INVALIDATE => DCacheOp::Invalidate,
             _ => return Err(VfsError::NotATty),
         };
-        let cache_arg = (arg as *const IvcCacheOpArg).vm_read().map_err(vm_error)?;
+        let cache_arg = (arg as *const IvcCacheOpArg)
+            .vm_read(current)
+            .map_err(vm_error)?;
         let (shm_base_gpa, shm_size) = {
             let inner = self.registry.inner.lock();
             let state = inner
@@ -791,7 +836,14 @@ impl DeviceOps for AxivcChannel {
         if cache_arg.size == 0 {
             return Ok(0);
         }
-        cache_op_user_range(op, shm_base_gpa, shm_size, cache_arg.addr, cache_arg.size)?;
+        cache_op_user_range(
+            current,
+            op,
+            shm_base_gpa,
+            shm_size,
+            cache_arg.addr,
+            cache_arg.size,
+        )?;
         Ok(0)
     }
 
@@ -893,18 +945,18 @@ impl Pollable for AxivcChannel {
         self.ready_events()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         if self.ready_events().intersects(events | IoEvents::ALWAYS_POLL) {
-            context.waker().wake_by_ref();
+            sink.waker().wake_by_ref();
             return;
         }
         if let Some(poll_set) = self.poll_set() {
-            unsafe { poll_set.register(context.waker(), events) };
+            unsafe { sink.register_shared(poll_set.as_ref(), events) };
             if self.ready_events().intersects(events | IoEvents::ALWAYS_POLL) {
-                context.waker().wake_by_ref();
+                sink.waker().wake_by_ref();
             }
         } else {
-            context.waker().wake_by_ref();
+            sink.waker().wake_by_ref();
         }
     }
 }
@@ -960,7 +1012,7 @@ fn wait_for_region_ready(region: &IvcRegion, publisher_id: usize, key: usize) ->
         if region.channel_header_matches(publisher_id, key) && region.protocol_header_matches() {
             return Ok(());
         }
-        ax_task::sleep(Duration::from_millis(REGION_READY_DELAY_MS));
+        crate::task::sleep(Duration::from_millis(REGION_READY_DELAY_MS));
     }
     Err(VfsError::WouldBlock)
 }
@@ -1000,13 +1052,12 @@ fn notify_peer(state: &ChannelState, role_name: &str) {
     }
 }
 
-fn wake_pollers(poll_set: &PollSet, events: IoEvents) {
-    unsafe {
-        let _ = poll_set.wake(events);
-    }
+fn wake_pollers(poll_set: &PollSet, events: IoEvents) -> usize {
+    unsafe { poll_set.wake(events) }
 }
 
 fn cache_op_user_range(
+    current: &crate::task::UserTaskRef,
     op: DCacheOp,
     shm_base_gpa: usize,
     shm_size: usize,
@@ -1023,7 +1074,7 @@ fn cache_op_user_range(
         .checked_add(shm_size)
         .ok_or(VfsError::InvalidInput)?;
 
-    let aspace = current().as_thread().proc_data.aspace();
+    let aspace = current.as_thread().proc_data.aspace();
     let aspace = aspace.lock();
     let mut cursor = addr;
     while cursor < end {
@@ -1072,6 +1123,7 @@ mod tests {
     extern crate std;
 
     use super::*;
+    use axpoll::{PollRegistrar, SharedObserver};
     use std::{
         sync::{
             Arc as StdArc,
@@ -1102,31 +1154,36 @@ mod tests {
         }
     }
 
-    fn register_waiter(poll_set: &PollSet, interests: IoEvents) -> StdArc<Counter> {
+    fn register_waiter(
+        poll_set: &PollSet,
+        interests: IoEvents,
+    ) -> (StdArc<Counter>, PollRegistrar<SharedObserver>) {
         let counter = Counter::new();
         let waker = Waker::from(counter.clone());
-        unsafe { poll_set.register(&waker, interests) };
-        counter
+        let mut registrar = PollRegistrar::new(&waker);
+        unsafe { registrar.register(poll_set, interests) };
+        (counter, registrar)
     }
 
     #[test]
-    fn notify_irq_bridge_wakes_registered_channel_pollers() {
+    fn deferred_notify_service_wakes_registered_channel_pollers() {
         let registry = AxivcRegistry::new_with_notify_irq(2, None);
         let publisher_poll_set = registry.poll_set(ChannelRole::Publisher, 0).unwrap();
         let subscriber_poll_set = registry.poll_set(ChannelRole::Subscriber, 1).unwrap();
 
-        let writer = register_waiter(&publisher_poll_set, IoEvents::OUT);
-        let reader = register_waiter(&subscriber_poll_set, IoEvents::IN);
+        let (writer, _writer_registration) = register_waiter(&publisher_poll_set, IoEvents::OUT);
+        let (reader, _reader_registration) = register_waiter(&subscriber_poll_set, IoEvents::IN);
 
         assert_eq!(registry.handle_notify_irq(), IrqReturn::Wake);
+        assert_eq!(registry.wake_channel_pollers(), 2);
         assert_eq!(writer.count(), 1);
         assert_eq!(reader.count(), 1);
     }
 
     #[test]
-    fn notify_irq_bridge_reports_handled_without_waiters() {
+    fn notify_irq_bridge_always_requests_deferred_service() {
         let registry = AxivcRegistry::new_with_notify_irq(2, None);
 
-        assert_eq!(registry.handle_notify_irq(), IrqReturn::Handled);
+        assert_eq!(registry.handle_notify_irq(), IrqReturn::Wake);
     }
 }

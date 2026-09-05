@@ -23,6 +23,8 @@ pub trait PlatOp {
 
     fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;
 
+    fn acknowledge_ipi(active: &mut Self::ActiveIrq);
+
     fn systick_irq() -> IrqId;
 
     fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {

@@ -1,5 +1,4 @@
 use ax_io::IoError;
-use ax_task::future::{Elapsed, Interrupted, PollIoError};
 
 /// Errors owned by the network and socket domain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -49,6 +48,9 @@ pub enum NetError {
     /// A nonblocking connection attempt is still in progress.
     #[error("connection is in progress")]
     InProgress,
+    /// The network operation was interrupted before completion.
+    #[error("network operation was interrupted")]
+    Interrupted,
     /// A socket address, option, or operation argument is invalid.
     #[error("invalid network input")]
     InvalidInput,
@@ -130,26 +132,10 @@ pub enum NetError {
     /// A network backend or path-backed namespace reported an I/O failure.
     #[error("network backend I/O failed")]
     BackendIo,
-    /// A blocking network wait was interrupted by the current task.
-    #[error(transparent)]
-    Interrupted(#[from] Interrupted),
-    /// A blocking network operation exceeded its task deadline.
-    #[error(transparent)]
-    Elapsed(#[from] Elapsed),
 }
 
 /// A result returned by the network and socket domain.
 pub type NetResult<T = ()> = Result<T, NetError>;
-
-impl PollIoError for NetError {
-    fn is_would_block(&self) -> bool {
-        matches!(self, Self::WouldBlock)
-    }
-
-    fn interrupted(error: Interrupted) -> Self {
-        error.into()
-    }
-}
 
 impl From<NetError> for IoError {
     fn from(error: NetError) -> Self {
@@ -169,6 +155,7 @@ impl From<NetError> for IoError {
             NetError::FilesystemLoop => Self::FilesystemLoop,
             NetError::FileTooLarge => Self::FileTooLarge,
             NetError::InProgress => Self::InProgress,
+            NetError::Interrupted => Self::Interrupted,
             NetError::InvalidInput => Self::InvalidInput,
             NetError::InvalidData => Self::InvalidData,
             NetError::IsADirectory => Self::IsADirectory,
@@ -190,13 +177,12 @@ impl From<NetError> for IoError {
             NetError::ReadOnlyFilesystem => Self::ReadOnlyFilesystem,
             NetError::ResourceBusy => Self::ResourceBusy,
             NetError::StorageFull => Self::StorageFull,
-            NetError::TimedOut | NetError::Elapsed(_) => Self::TimedOut,
+            NetError::TimedOut => Self::TimedOut,
             NetError::Unsupported => Self::Unsupported,
             NetError::EntropyUnavailable => Self::OperationNotSupported,
             NetError::WouldBlock => Self::WouldBlock,
             NetError::Io(error) => error,
             NetError::BackendIo => Self::Io,
-            NetError::Interrupted(_) => Self::Interrupted,
         }
     }
 }

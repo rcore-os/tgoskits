@@ -150,19 +150,40 @@ where
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HyperCallOutcome {
     Return(usize),
+    Deferred(DeferredHyperCall),
     CpuSuspendStandby { return_value: usize },
     CpuOff,
     SystemOff,
     SystemReset,
 }
 
-#[allow(dead_code)]
 fn psci_cpu_on_result(result: Result<(), vcpus::VcpuOnError>) -> usize {
     match result {
         Ok(()) => PSCI_RET_SUCCESS,
         Err(vcpus::VcpuOnError::AlreadyOn) => PSCI_RET_ALREADY_ON,
         Err(vcpus::VcpuOnError::OnPending) => PSCI_RET_ON_PENDING,
         Err(vcpus::VcpuOnError::StartFailed) => PSCI_RET_INTERNAL_FAILURE,
+    }
+}
+
+/// Hypercall work that may block and therefore must run after the vCPU has
+/// released its host-CPU publication and architecture binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeferredHyperCall {
+    PsciCpuOn {
+        target_vcpu_id: usize,
+        entry_point: GuestPhysAddr,
+        context_id: usize,
+    },
+}
+
+pub(crate) fn finish_deferred_hypercall(vm: VMRef, work: DeferredHyperCall) -> usize {
+    match work {
+        DeferredHyperCall::PsciCpuOn {
+            target_vcpu_id,
+            entry_point,
+            context_id,
+        } => psci_cpu_on_result(vcpus::vcpu_on(vm, target_vcpu_id, entry_point, context_id)),
     }
 }
 
@@ -285,9 +306,11 @@ impl HyperCall {
                     return Ok(HyperCallOutcome::Return(PSCI_RET_INVALID_PARAMETERS));
                 };
 
-                let result =
-                    vcpus::vcpu_on(self.vm.clone(), target_vcpu_id, entry_point, context_id);
-                Ok(HyperCallOutcome::Return(psci_cpu_on_result(result)))
+                Ok(HyperCallOutcome::Deferred(DeferredHyperCall::PsciCpuOn {
+                    target_vcpu_id,
+                    entry_point,
+                    context_id,
+                }))
             }
             HyperCallCode::PSCICpuSuspend | HyperCallCode::PSCICpuSuspend64 => {
                 let power_state = self.args[0];
@@ -313,7 +336,7 @@ impl HyperCall {
             }
             HyperCallCode::PSCICpuOff => {
                 info!("VM[{}] PSCI_CPU_OFF", self.vm.id());
-                let current = crate::host::task::current_task();
+                let current = crate::host::task::current_thread();
                 let cpu_off_reserved = current
                     .try_as_vcpu_task()
                     .map(|task| task.vcpu.id())
@@ -659,16 +682,16 @@ impl HyperCall {
                         detail: "IVC notify target VM does not exist".into(),
                     }
                 })?;
-                let target_runtime = target_vm
-                    .runtime_handle()
-                    .map_err(|error| self.operation_error("wake IVC notify target VM", error))?;
-                target_runtime.notify_all();
                 let target_devices = target_vm.get_devices().map_err(|error| {
                     self.operation_error("get IVC notify target devices", error)
                 })?;
                 let notify_irq = ivc::notify_peer(&target_devices).map_err(|error| {
                     self.operation_error("notify IVC peer interrupt", error.into())
                 })?;
+                let target_runtime = target_vm
+                    .runtime_handle()
+                    .map_err(|error| self.operation_error("kick IVC notify target VM", error))?;
+                target_runtime.kick_all_vcpus();
                 info!(
                     "IVC notify source VM[{}] target VM[{}] publisher VM[{}] key {:#x} irq={:?}",
                     route.source_vm_id,

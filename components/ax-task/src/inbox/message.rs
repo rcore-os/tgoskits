@@ -1,0 +1,292 @@
+//! Copy-only scheduler messages crossing CPU ownership boundaries.
+
+use crate::{CpuId, SchedulingClass, ThreadId};
+
+/// Class of owner-CPU work carried by one intrusive inbox.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum InboxKind {
+    /// Reconcile placement, policy, deadlines, or balancing on the owner CPU.
+    OwnerControl,
+    /// Reap a thread, coroutine, context, or other deferred resource.
+    Reclaim,
+    /// Run one typed extension callback in ordinary task context.
+    TaskWork,
+}
+
+/// Operation carried by one scheduler inbox message.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum InboxOperation {
+    /// Transfer physical runqueue ownership between CPUs.
+    Migration,
+    /// Reconcile a thread's latest affinity with physical placement.
+    AffinityUpdate,
+    /// Refresh one Deadline donor after its remote CBS baton returns.
+    DeadlineRefresh,
+    /// Ask a remote owner to donate one queued thread.
+    BalanceRequest,
+    /// Release one deferred task-context resource.
+    Reclaim,
+    /// Account one coalesced scheduler tick outside hard IRQ context.
+    SchedulerTick,
+    /// Deliver one coalesced Deadline overrun in ordinary task context.
+    DeadlineOverrun,
+}
+
+/// Allocation-free scheduler request copied into owner CPU storage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InboxMessage {
+    kind: InboxKind,
+    operation: InboxOperation,
+    thread_id: ThreadId,
+    source_cpu: u32,
+    target_cpu: u32,
+    generation: u64,
+    placement_demand: u64,
+    balance_class: Option<SchedulingClass>,
+    payload: usize,
+}
+
+impl InboxMessage {
+    const NO_CPU: u32 = u32::MAX;
+
+    /// Empty value used to initialize fixed drain buffers.
+    pub const EMPTY: Self = Self {
+        kind: InboxKind::Reclaim,
+        operation: InboxOperation::Reclaim,
+        thread_id: ThreadId::from_parts(0, 0),
+        source_cpu: Self::NO_CPU,
+        target_cpu: Self::NO_CPU,
+        generation: 0,
+        placement_demand: 0,
+        balance_class: None,
+        payload: 0,
+    };
+
+    /// Creates a migration transfer with retained payload data.
+    pub const fn migration_with_payload(
+        thread_id: ThreadId,
+        source_cpu: CpuId,
+        target_cpu: CpuId,
+        generation: u64,
+        placement_demand: u64,
+        payload: usize,
+    ) -> Self {
+        Self {
+            kind: InboxKind::OwnerControl,
+            operation: InboxOperation::Migration,
+            thread_id,
+            source_cpu: source_cpu.as_u32(),
+            target_cpu: target_cpu.as_u32(),
+            generation,
+            placement_demand,
+            balance_class: None,
+            payload,
+        }
+    }
+
+    /// Creates an owner-local affinity reconciliation request.
+    pub const fn affinity_update_with_payload(
+        thread_id: ThreadId,
+        owner: CpuId,
+        target_cpu: CpuId,
+        payload: usize,
+    ) -> Self {
+        Self {
+            kind: InboxKind::OwnerControl,
+            operation: InboxOperation::AffinityUpdate,
+            thread_id,
+            source_cpu: owner.as_u32(),
+            target_cpu: target_cpu.as_u32(),
+            generation: thread_id.generation() as u64,
+            placement_demand: 0,
+            balance_class: None,
+            payload,
+        }
+    }
+
+    /// Creates an owner-local Deadline timer refresh request.
+    ///
+    /// `payload` transfers one retained scheduler-thread reference to the
+    /// owner inbox. The owner validates `generation` against the thread's
+    /// current CBS baton generation before recomputing its typed timer.
+    pub const fn deadline_refresh_with_payload(
+        thread_id: ThreadId,
+        owner: CpuId,
+        generation: u64,
+        payload: usize,
+    ) -> Self {
+        Self {
+            kind: InboxKind::OwnerControl,
+            operation: InboxOperation::DeadlineRefresh,
+            thread_id,
+            source_cpu: owner.as_u32(),
+            target_cpu: owner.as_u32(),
+            generation,
+            placement_demand: 0,
+            balance_class: None,
+            payload,
+        }
+    }
+
+    /// Creates an idle-pull request sent to a remote runqueue owner.
+    pub const fn balance_request(
+        source_cpu: CpuId,
+        target_cpu: CpuId,
+        reservation: u64,
+        class: SchedulingClass,
+    ) -> Self {
+        Self {
+            kind: InboxKind::OwnerControl,
+            operation: InboxOperation::BalanceRequest,
+            thread_id: ThreadId::from_parts(0, 0),
+            source_cpu: source_cpu.as_u32(),
+            target_cpu: target_cpu.as_u32(),
+            generation: reservation,
+            placement_demand: 0,
+            balance_class: Some(class),
+            payload: 0,
+        }
+    }
+
+    /// Reports whether this migration message asks the source owner to pull work.
+    pub const fn is_balance_request(self) -> bool {
+        self.operation as u8 == InboxOperation::BalanceRequest as u8 && self.payload == 0
+    }
+
+    /// Returns the target-owned reservation carried by an idle-pull request.
+    pub const fn balance_reservation(self) -> Option<u64> {
+        if self.is_balance_request() {
+            Some(self.generation)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the scheduler class whose overload mask selected the source.
+    pub const fn balance_class(self) -> Option<SchedulingClass> {
+        if self.is_balance_request() {
+            self.balance_class
+        } else {
+            None
+        }
+    }
+
+    /// Creates a deferred resource-reclaim request.
+    pub const fn reclaim(thread_id: ThreadId, generation: u64, payload: usize) -> Self {
+        Self {
+            kind: InboxKind::Reclaim,
+            operation: InboxOperation::Reclaim,
+            thread_id,
+            source_cpu: Self::NO_CPU,
+            target_cpu: Self::NO_CPU,
+            generation,
+            placement_demand: 0,
+            balance_class: None,
+            payload,
+        }
+    }
+
+    /// Creates one retained scheduler-tick task-work request.
+    pub const fn scheduler_tick(thread_id: ThreadId, payload: usize) -> Self {
+        Self {
+            kind: InboxKind::TaskWork,
+            operation: InboxOperation::SchedulerTick,
+            thread_id,
+            source_cpu: Self::NO_CPU,
+            target_cpu: Self::NO_CPU,
+            generation: thread_id.generation() as u64,
+            placement_demand: 0,
+            balance_class: None,
+            payload,
+        }
+    }
+
+    /// Creates one retained Deadline-overrun task-work request.
+    pub const fn deadline_overrun(thread_id: ThreadId, payload: usize) -> Self {
+        Self {
+            kind: InboxKind::TaskWork,
+            operation: InboxOperation::DeadlineOverrun,
+            thread_id,
+            source_cpu: Self::NO_CPU,
+            target_cpu: Self::NO_CPU,
+            generation: thread_id.generation() as u64,
+            placement_demand: 0,
+            balance_class: None,
+            payload,
+        }
+    }
+
+    /// Returns the inbox class required by this request.
+    pub const fn kind(self) -> InboxKind {
+        self.kind
+    }
+
+    /// Returns the typed scheduler operation carried by this message.
+    pub const fn operation(self) -> InboxOperation {
+        self.operation
+    }
+
+    /// Returns the generation-checked destination thread.
+    pub const fn thread_id(self) -> ThreadId {
+        self.thread_id
+    }
+
+    /// Returns the source or serializing owner CPU for owner-control requests.
+    pub const fn source_cpu(self) -> Option<CpuId> {
+        if self.source_cpu == Self::NO_CPU {
+            None
+        } else {
+            Some(CpuId::new(self.source_cpu))
+        }
+    }
+
+    /// Returns the target CPU for owner-control requests.
+    pub const fn target_cpu(self) -> Option<CpuId> {
+        if self.target_cpu == Self::NO_CPU {
+            None
+        } else {
+            Some(CpuId::new(self.target_cpu))
+        }
+    }
+
+    /// Returns the scheduling demand reserved by a migration carrier.
+    pub const fn placement_demand(self) -> u64 {
+        self.placement_demand
+    }
+
+    /// Returns the retained resource payload transferred with this message.
+    pub const fn payload(self) -> usize {
+        self.payload
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InboxKind, InboxOperation};
+
+    fn operation_kind(operation: InboxOperation) -> InboxKind {
+        match operation {
+            InboxOperation::Migration
+            | InboxOperation::AffinityUpdate
+            | InboxOperation::DeadlineRefresh
+            | InboxOperation::BalanceRequest => InboxKind::OwnerControl,
+            InboxOperation::Reclaim => InboxKind::Reclaim,
+            InboxOperation::SchedulerTick | InboxOperation::DeadlineOverrun => InboxKind::TaskWork,
+        }
+    }
+
+    #[test]
+    fn owner_control_inbox_carries_owner_serialized_work() {
+        for operation in [
+            InboxOperation::Migration,
+            InboxOperation::AffinityUpdate,
+            InboxOperation::DeadlineRefresh,
+            InboxOperation::BalanceRequest,
+        ] {
+            assert_eq!(operation_kind(operation), InboxKind::OwnerControl);
+        }
+    }
+}

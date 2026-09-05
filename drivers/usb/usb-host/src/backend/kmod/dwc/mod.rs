@@ -6,7 +6,7 @@
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec, vec::Vec};
 use core::ops::{Deref, DerefMut};
 
-use dma_api::{ContiguousArray, DmaCoherency, DmaDirection};
+use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 use event::EventBuffer;
 use futures::{FutureExt, future::BoxFuture};
 use reg::{GCTL, GEVNTSIZ, GHWPARAMS0, GHWPARAMS1, GHWPARAMS3, GHWPARAMS4, GUCTL1, GUSB2PHYCFG};
@@ -92,6 +92,7 @@ pub struct DwcNewParams<'a> {
     pub usb2_phy_param: Usb2PhyParam<'a>,
     pub rst_list: &'a [NamedResetLine],
     pub params: DwcParams,
+    pub dma: DeviceDma,
     pub kernel: &'static dyn KernelOp,
 }
 
@@ -154,7 +155,7 @@ impl Dwc {
     pub fn new(mut params: DwcNewParams<'_>) -> Result<Self> {
         let mmio_base = params.ctrl.as_ptr() as usize;
         params.params.max_speed = Speed::Full;
-        let xhci = Xhci::new(params.ctrl, DmaCoherency::NonCoherent, params.kernel)?;
+        let xhci = Xhci::new(params.ctrl, params.dma, params.kernel)?;
 
         let phy = Udphy::new(params.phy, params.phy_param);
         let usb2_phy = Usb2Phy::new(params.usb2_phy_param, xhci.kernel().clone());
@@ -669,7 +670,7 @@ impl Dwc {
 
         self.dwc3_init().await?;
 
-        self.xhci.init().await?;
+        self.xhci.prepare_controller().await?;
 
         // 输出关键寄存器状态用于调试
         self.dump_registers();
@@ -705,7 +706,7 @@ impl Dwc {
 // }
 
 impl CoreOp for Dwc {
-    fn init(&mut self) -> BoxFuture<'_, Result<()>> {
+    fn prepare_controller(&mut self) -> BoxFuture<'_, Result<()>> {
         self._init().boxed()
     }
 
@@ -761,11 +762,15 @@ pub struct DwcEventHandler {
     _dwc: Dwc3Regs,
 }
 impl EventHandlerOp for DwcEventHandler {
-    fn handle_event(&self) -> Event {
-        // let cnt = self.dwc.globals().gevnt[0].count.get();
-        // debug!("DWC3 Event Handler: GEVNT[0] COUNT = {}", cnt);
-        // self.dwc.globals().gevnt[0].count.set(0);
+    fn acknowledge_irq(&self) -> bool {
+        self.xhci.acknowledge_irq()
+    }
 
-        self.xhci.handle_event()
+    fn drain_event(&self) -> Event {
+        self.xhci.drain_event()
+    }
+
+    fn rearm_irq(&self) {
+        self.xhci.rearm_irq()
     }
 }

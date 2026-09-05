@@ -9,6 +9,7 @@ extern crate alloc;
 mod aspace;
 mod backend;
 mod error;
+mod tlb;
 
 use ax_hal::{
     mem::{IomapAttrs, IomapDecision, IomapError, MemRegionFlags, phys_to_virt},
@@ -20,7 +21,6 @@ use ax_sync::SpinLock;
 
 pub use self::{
     aspace::AddrSpace,
-    backend::Backend,
     error::{MmError, MmResult},
 };
 

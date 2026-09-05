@@ -125,8 +125,11 @@ fn signal_interrupt_eintr_subcase_bounds_child_wait() {
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
 
     assert!(
-        source.contains("poll(&pfd, 1, -1)") && source.contains("kill(child, SIGUSR1)"),
-        "{} must preserve the poll EINTR check and retry SIGUSR1 while the child is still running",
+        source.contains("sigprocmask(SIG_BLOCK, &blocked, NULL)")
+            && source.contains("kill(child, SIGUSR1)")
+            && source.contains("write(release_pipe[1], &release, 1)")
+            && source.contains("ppoll(&pfd, 1, NULL, &wait_mask)"),
+        "{} must publish SIGUSR1 as pending before ppoll atomically installs its wait mask",
         source_path.display()
     );
     assert!(

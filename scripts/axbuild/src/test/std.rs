@@ -97,8 +97,7 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
         "cache::tests::large_tlb_ranges_switch_to_one_full_invalidation",
         "cache::tests::local_mmu_cache_update_aligns_the_fault_address_once",
         "cache::tests::targeted_tlb_shootdown_skips_unselected_remote_and_local_cpus",
-        "irq::tests::irq_entry_preserves_disabled_caller_state",
-        "irq::tests::irq_entry_preserves_enabled_caller_state",
+        "irq::tests::acknowledged_irq_completion_precedes_preempt_release",
         "topology::tests::dummy_topology_only_maps_the_boot_cpu",
     ],
 }];
@@ -557,7 +556,6 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-runtime"
         | "ax-api"
         | "rdrive"
-        | "axpoll"
         | "ax-net"
         | "dma-api"
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),

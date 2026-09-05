@@ -3,6 +3,9 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+extern crate std;
+
 #[cfg(all(feature = "uspace", feature = "tls"))]
 compile_error!("ax-cpu userspace requires LinuxCurrent and cannot enable kernel TLS mode");
 

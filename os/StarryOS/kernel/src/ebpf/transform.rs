@@ -18,7 +18,7 @@ use core::{
 };
 
 use ax_io::{Read, Write};
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_runtime::hal::{paging::MappingFlags, percpu::this_cpu_id, time::monotonic_time_nanos};
 use kbpf_basic::{
     BpfError, KernelAuxiliaryOps,
@@ -172,7 +172,8 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn copy_from_user(src: *const u8, size: usize, dst: &mut [u8]) -> kbpf_basic::BpfResult<()> {
-        let n = VmBytes::new(src, size)
+        let current = crate::task::current_user_task();
+        let n = VmBytes::new(&current, src, size)
             .read(dst)
             .map_err(|_| BpfError::EFAULT)?;
         if n == size {
@@ -183,7 +184,8 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn copy_to_user(dest: *mut u8, size: usize, src: &[u8]) -> kbpf_basic::BpfResult<()> {
-        let n = VmBytesMut::new(dest, size)
+        let current = crate::task::current_user_task();
+        let n = VmBytesMut::new(&current, dest, size)
             .write(src)
             .map_err(|_| BpfError::EFAULT)?;
         if n == size {
@@ -207,7 +209,8 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn string_from_user_cstr(ptr: *const u8) -> kbpf_basic::BpfResult<String> {
-        vm_load_string(ptr as *const _).map_err(|_| BpfError::EFAULT)
+        let current = crate::task::current_user_task();
+        vm_load_string(&current, ptr as *const _).map_err(|_| BpfError::EFAULT)
     }
 
     fn ebpf_write_str(s: &str) -> kbpf_basic::BpfResult<()> {
@@ -233,37 +236,26 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn vmap(phys_addrs: &[usize]) -> kbpf_basic::BpfResult<usize> {
-        let len = phys_addrs.len() * PAGE_SIZE_4K;
-        let kspace = ax_mm::kernel_aspace();
-        let mut guard = kspace.lock();
-        let mut virt_start = guard
-            .find_free_area(
-                guard.base(),
-                len,
-                VirtAddrRange::new(guard.base(), guard.end()),
-            )
-            .ok_or(BpfError::ENOMEM)?;
-        let res_virt = virt_start.as_usize();
-        for phys in phys_addrs {
-            let start_paddr = PhysAddr::from_usize(*phys);
-            guard
-                .map_linear(
-                    virt_start,
-                    start_paddr,
-                    PAGE_SIZE_4K,
-                    MappingFlags::READ | MappingFlags::WRITE,
-                )
-                .map_err(|_| BpfError::EINVAL)?;
-            virt_start += PAGE_SIZE_4K;
-        }
-        Ok(res_virt)
+        let pages: Vec<_> = phys_addrs
+            .iter()
+            .copied()
+            .map(PhysAddr::from_usize)
+            .collect();
+        let (hint, _) = ax_runtime::hal::mem::kernel_aspace();
+        ax_runtime::kernel_mapping::map_kernel_pages(
+            hint,
+            &pages,
+            MappingFlags::READ | MappingFlags::WRITE,
+        )
+        .map(VirtAddr::as_usize)
+        .map_err(|_| BpfError::EINVAL)
     }
 
     fn vunmap(vaddr: usize, num_pages: usize) {
-        let kspace = ax_mm::kernel_aspace();
-        let mut guard = kspace.lock();
-        guard
-            .unmap(VirtAddr::from_usize(vaddr), PAGE_SIZE_4K * num_pages)
+        ax_runtime::kernel_mapping::unmap_kernel_range(
+            VirtAddr::from_usize(vaddr),
+            PAGE_SIZE_4K * num_pages,
+        )
             .expect("vmunmap failed");
     }
 }

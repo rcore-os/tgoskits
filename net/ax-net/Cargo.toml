@@ -10,7 +10,7 @@ license.workspace = true
 [features]
 host-test = [
     "ax-hal/host-test",
-    "axpoll/host-test",
+    "axpoll-set/host-test",
     "ax-sync/host-test",
     "ax-task/host-test",
 ]
@@ -23,6 +23,7 @@ ax-hal = { workspace = true }
 ax-io = { workspace = true }
 ax-lazyinit.workspace = true
 axpoll = { workspace = true }
+axpoll-set.workspace = true
 ax-sync = { workspace = true, features = ["sleep"] }
 ax-task.workspace = true
 bitflags = "2.9"
@@ -30,6 +31,7 @@ cfg-if = { workspace = true }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 hashbrown = "0.16"
+heapless.workspace = true
 irq-framework = { workspace = true }
 log = { workspace = true }
 rd-net = { workspace = true }
@@ -65,11 +67,18 @@ features = [
 ]
 
 [dev-dependencies]
-ax-hal = { path = "../../os/arceos/modules/axhal", features = ["host-test"] }
-ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
-ax-task = { path = "../../os/arceos/modules/axtask", features = ["host-test"] }
+ax-hal = { path = "../../os/arceos/modules/axhal" }
+ax-sync = { path = "../../os/arceos/modules/axsync" }
 
 [[test]]
 name = "std"
 path = "tests/std.rs"
 required-features = ["host-test"]
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "riscv64gc-unknown-none-elf",
+    "loongarch64-unknown-none-softfloat",
+]

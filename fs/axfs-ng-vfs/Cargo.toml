@@ -15,6 +15,7 @@ lockdep = []
 
 [dependencies]
 ax-sync = { workspace = true, features = ["sleep"] }
+axpoll.workspace = true
 bitflags = "2.10"
 cfg-if = "1"
 hashbrown = "0.16"

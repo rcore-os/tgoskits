@@ -176,6 +176,11 @@ pub fn systick_irq_disable() {
     CNTHP_CTL_EL2.modify(CNTHP_CTL_EL2::IMASK::SET);
 }
 
+pub fn systick_stop_oneshot() {
+    systick_irq_disable();
+    timer::aarch64_deadline::el2::disarm(&El2TimerRegisters);
+}
+
 pub fn systick_irq_enable() {
     CNTHP_CTL_EL2.modify(CNTHP_CTL_EL2::IMASK::CLEAR);
 }
@@ -202,6 +207,6 @@ impl timer::aarch64_deadline::el2::TimerRegisters for El2TimerRegisters {
     }
 }
 
-pub fn systick_set_interval(ticks: usize) {
-    timer::aarch64_deadline::el2::program(&El2TimerRegisters, ticks as u64);
+pub fn systick_set_deadline(deadline_ticks: u64) {
+    timer::aarch64_deadline::el2::program_deadline(&El2TimerRegisters, deadline_ticks);
 }

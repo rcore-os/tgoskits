@@ -331,6 +331,7 @@ mod tests {
                     case_dir: PathBuf::from(format!("/tmp/{name}")),
                     qemu_config_path: PathBuf::from(format!("/tmp/{name}/qemu-x86_64.toml")),
                     test_commands: Vec::new(),
+                    grouped_command_selection: Default::default(),
                     host_symbolize_success_regex: Vec::new(),
                     host_http_server: None,
                     subcases: Vec::new(),

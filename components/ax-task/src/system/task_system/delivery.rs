@@ -1,0 +1,814 @@
+use super::{
+    dispatch::{PolicyApplication, PolicyGenerationCommit},
+    *,
+};
+use crate::system::OwnerRqTaskState;
+
+struct IncomingMigrationBatch {
+    remote: Arc<CpuRemote>,
+    demand: u64,
+}
+
+impl IncomingMigrationBatch {
+    fn new(remote: Arc<CpuRemote>, demand: u64) -> Self {
+        Self { remote, demand }
+    }
+}
+
+impl Drop for IncomingMigrationBatch {
+    fn drop(&mut self) {
+        self.remote.release_incoming_migration_demand(self.demand);
+    }
+}
+
+pub(super) struct OwnerPolicyApply {
+    pub(super) commit: PolicyGenerationCommit,
+    pub(super) reschedule: Option<RescheduleKind>,
+    pub(super) scheduler_deadline_refresh_required: bool,
+    pub(super) rt_period_started: bool,
+    pub(super) effective_policy: SchedulePolicy,
+    pub(super) effective_entity: SchedulingEntity,
+}
+
+impl TaskSystem {
+    pub(super) fn apply_owner_policy_update_locked(
+        &self,
+        remote: &CpuRemote,
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        generation: u64,
+    ) -> Result<OwnerPolicyApply, TaskError> {
+        let owner = remote.owner();
+        let donor = sched.pi.donors.first_entry();
+        Self::validate_owner_policy_generation(sched, generation)?;
+
+        let mut transaction = OwnerRqTxn::begin(self, remote);
+        let owner_now_ns = transaction.clock().wall().as_nanos();
+        if transaction.current().is_some() {
+            let _settled = transaction.settle_current(0);
+        }
+        let rq_state = transaction.task_state(core.id(), &sched.placement);
+        let fair_placement = match sched.policy.requested_policy() {
+            SchedulePolicy::Fair { .. } => {
+                let _source_entity = core
+                    .sched()
+                    .active_option(sched)
+                    .map(|active| active.base_entity().clone())
+                    .or_else(|| transaction.base_scheduling_entity(core.id()))
+                    .unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x5251_1202, core.id().as_u64() as usize)
+                    });
+                Some(FairPolicyPlacement {
+                    source_virtual_time: transaction.virtual_time(),
+                    destination_virtual_time: transaction.virtual_time(),
+                })
+            }
+            _ => None,
+        };
+        let mut active = match rq_state {
+            OwnerRqTaskState::Current => transaction.detach_current_schedule(core.id()),
+            OwnerRqTaskState::Queued { outgoing } => {
+                let detached = transaction.reclassify_task(core.id());
+                if !outgoing {
+                    sched.placement.deactivate(owner);
+                }
+                detached.into_active()
+            }
+            OwnerRqTaskState::DelayedFair { .. } => transaction
+                .take_delayed_fair_for_update(core.id())
+                .into_active(),
+            OwnerRqTaskState::Inactive => core.sched().take_active(sched),
+        };
+        Self::detach_owner_deadline_bandwidth_in_rq(core, sched, remote, &mut transaction);
+        let commit = self
+            .apply_policy_generation_locked(
+                sched,
+                &mut active,
+                generation,
+                owner_now_ns,
+                fair_placement,
+                PolicyApplication::from_rq_state(rq_state, owner_now_ns),
+            )
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5251_1203, core.id().as_u64() as usize)
+            })
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5251_1204, core.id().as_u64() as usize)
+            });
+        let base_entity = active.base_entity().clone();
+        let pi_update = self
+            .resolved_pi_schedule_update(
+                sched.policy.base,
+                base_entity,
+                donor,
+                sched.policy.dispatch_generation,
+            )
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5251_1206, core.id().as_u64() as usize)
+            });
+        active = apply_pi_schedule_update(sched, active, pi_update, owner_now_ns, fair_placement)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5251_1207, core.id().as_u64() as usize)
+            });
+        let effective_policy = active.policy();
+        let effective_entity = active.entity().clone();
+        let enqueue = match rq_state {
+            OwnerRqTaskState::Current => {
+                Self::activate_deadline_bandwidth_locked(core, sched, &mut transaction, owner);
+                let rt_quota_exempt = sched.is_pi_boosted_rt_owner_for(active.policy());
+                let migration_capable = sched.affinity.affinity.is_migration_capable();
+                let metadata = sched.rq_task_metadata().unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x5251_1205, core.id().as_u64() as usize)
+                });
+                transaction.install_current_schedule(
+                    core.id(),
+                    active,
+                    Arc::clone(core),
+                    rt_quota_exempt,
+                    migration_capable,
+                    metadata,
+                );
+                dispatch::OwnerReadyEnqueue {
+                    reschedule: Some(RescheduleKind::Immediate),
+                    scheduler_deadline_refresh_required: false,
+                }
+            }
+            OwnerRqTaskState::Queued { .. } => {
+                core.sched().install_active(sched, active);
+                self.link_owner_ready_thread_locked(
+                    owner,
+                    &mut transaction,
+                    core,
+                    sched,
+                    EnqueueReason::PolicyChanged,
+                )
+            }
+            OwnerRqTaskState::DelayedFair { .. } => {
+                if active.entity().fair().is_some_and(|fair| fair.is_delayed()) {
+                    let metadata = sched.rq_task_metadata().unwrap_or_else(|_| {
+                        task_runtime::fatal_invariant(0x5251_1209, core.id().as_u64() as usize)
+                    });
+                    let queued = QueuedThread::new(
+                        core.id(),
+                        active,
+                        Arc::clone(core),
+                        false,
+                        sched.affinity.affinity.is_migration_capable(),
+                        metadata,
+                    );
+                    let _entity = transaction.restore_delayed_fair_after_update(queued);
+                } else {
+                    transaction.finish_detached_delayed_fair(
+                        &mut active,
+                        self.config.timing_granularity_ns(),
+                    );
+                    core.sched().install_active(sched, active);
+                    sched.placement.finish_delayed_dequeue(owner);
+                }
+                dispatch::OwnerReadyEnqueue {
+                    reschedule: None,
+                    // Removing/reinserting a delayed node can move a Fair
+                    // runtime boundary in either direction or remove it.
+                    scheduler_deadline_refresh_required: true,
+                }
+            }
+            OwnerRqTaskState::Inactive => {
+                core.sched().install_active(sched, active);
+                dispatch::OwnerReadyEnqueue {
+                    reschedule: None,
+                    scheduler_deadline_refresh_required: false,
+                }
+            }
+        };
+        transaction.commit();
+        // Linux starts rt_bandwidth when sched_setscheduler() re-enqueues an
+        // RT entity. Current tasks are detached and reinstalled rather than
+        // passing through the ordinary wake/enqueue completion path, so the
+        // policy transaction owns the equivalent activation edge.
+        let rt_period_started = rq_state.is_runnable()
+            && self.activate_owner_rt_period_for_policy(owner, effective_policy);
+        Ok(OwnerPolicyApply {
+            commit,
+            reschedule: enqueue.reschedule,
+            scheduler_deadline_refresh_required: enqueue.scheduler_deadline_refresh_required,
+            rt_period_started,
+            effective_policy,
+            effective_entity,
+        })
+    }
+
+    /// Enqueues a ready thread on an affinity-compatible owner CPU.
+    pub fn enqueue(&self, mut cpu: Pin<&mut CpuLocal>, thread: ThreadId) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
+        let core = {
+            let state = self.state.lock();
+            state.ensure_cpu_online(&cpu)?;
+            Arc::clone(&state.thread_record(thread)?.core)
+        };
+        self.enqueue_owner_thread(cpu.as_mut(), core, EnqueueReason::Wake)?;
+        self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::Enqueue)
+    }
+
+    /// Places a newly ready thread on an allowed active CPU.
+    ///
+    /// Ordinary fair work is placed on the least-loaded allowed CPU, including
+    /// its current non-idle dispatch and migrations not yet consumed by the
+    /// destination owner. Other classes preserve owner-local placement unless
+    /// affinity requires a transfer. Remote placement uses the owner-only
+    /// owner-control inbox and never mutates another CPU's runqueue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source CPU is offline, the thread is not a
+    /// unique unqueued runnable thread, no allowed CPU is online, or local timer
+    /// programming fails.
+    pub fn place_ready(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        thread: ThreadId,
+    ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
+        let owner = cpu.owner();
+        let migration = {
+            let state = self.state.lock();
+            state.ensure_cpu_online(&cpu)?;
+            let record = state.thread_record(thread)?;
+            let sched = record.sched.lock();
+            if sched.lifecycle.state() != ThreadState::Running {
+                return Err(TaskError::NotReady);
+            }
+            if sched.placement.queued_cpu().is_some()
+                || sched.placement.on_cpu().is_some()
+                || sched.placement.has_pending_migration()
+            {
+                return Err(TaskError::AlreadyQueued);
+            }
+            let affinity = &sched.affinity.affinity;
+            let active = record.core.sched().active(&sched);
+            let policy = active.policy();
+            let load_aware = matches!(policy, SchedulePolicy::Fair { .. });
+            let target = if load_aware {
+                state.select_initial_fair_cpu(affinity, Some(owner))
+            } else if matches!(
+                policy,
+                SchedulePolicy::Fifo { .. }
+                    | SchedulePolicy::RoundRobin { .. }
+                    | SchedulePolicy::Deadline(_)
+            ) {
+                self.select_priority_cpu(policy, Some(active.entity()), affinity, Some(owner), None)
+            } else if affinity.contains(owner) {
+                Some(owner)
+            } else {
+                self.select_fallback_active_cpu(affinity, None)
+            }
+            .ok_or(TaskError::InvalidConfiguration)?;
+            drop(active);
+            let core = Arc::clone(&record.core);
+            if target == owner {
+                drop(sched);
+                drop(state);
+                self.enqueue_owner_thread(cpu.as_mut(), core, EnqueueReason::Wake)?;
+                None
+            } else {
+                let carrier = self.prepare_owner_migration(&core, owner, target)?;
+                sched.placement.begin_remote_wakeup(target);
+                record.core.set_wake_cpu_hint(target);
+                drop(sched);
+                Some((carrier, target))
+            }
+        };
+        if let Some((carrier, _target)) = migration {
+            carrier.commit();
+            return Ok(());
+        }
+        self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::Placement)
+    }
+
+    /// Removes a ready thread from its owner run queue for migration or update.
+    pub fn dequeue(&self, cpu: Pin<&mut CpuLocal>, thread: ThreadId) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
+        let state = self.state.lock();
+        state.ensure_cpu_online(&cpu)?;
+        let record = state.thread_record(thread)?;
+        let mut sched = record.sched.lock();
+        let remote = Arc::clone(cpu.remote());
+        let mut transaction = OwnerRqTxn::begin(self, &remote);
+        if transaction.current_thread() == Some(thread)
+            || transaction.scheduling_entity(thread).is_none()
+        {
+            transaction.commit();
+            return Err(TaskError::NotReady);
+        }
+        let queued = transaction.deactivate_task(thread);
+        record
+            .core
+            .sched()
+            .install_active(&mut sched, queued.into_active());
+        sched.placement.deactivate(cpu.owner());
+        transaction.commit();
+        drop(sched);
+        drop(state);
+        Ok(())
+    }
+
+    /// Reconciles task metadata written by a remote affinity setter with the
+    /// physical placement owned by this CPU.
+    ///
+    /// The affinity mask may be updated under the stable thread lock from any
+    /// CPU. Runqueue membership and switch-tail state are different: only the
+    /// CPU named by the placement state may mutate them. This is the local
+    /// equivalent of Linux taking a task's `pi_lock` together with its owning
+    /// runqueue lock before moving a queued task.
+    pub(in crate::system::task_system) fn reconcile_owner_affinity_update(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        core: &Arc<ThreadCore>,
+    ) -> Result<(), TaskError> {
+        let owner = cpu.owner();
+        let mut sched = core.sched().lock();
+        let queued_cpu = sched.placement.queued_cpu();
+        let on_cpu = sched.placement.on_cpu();
+        let migration_target = sched.placement.committed_migration_target();
+        let physical_owner = sched.placement.control_owner();
+        let target = if sched.affinity.affinity.contains(owner) {
+            owner
+        } else {
+            let (policy, entity) = self.affinity_schedule_state_locked(core, &sched)?;
+            self.select_priority_cpu(
+                policy,
+                Some(&entity),
+                &sched.affinity.affinity,
+                None,
+                Some(owner),
+            )
+            .ok_or(TaskError::InvalidConfiguration)?
+        };
+        core.set_wake_cpu_hint(target);
+
+        if let Some(physical_owner) = physical_owner
+            && physical_owner != owner
+        {
+            drop(sched);
+            return self.publish_owner_affinity_retry(core, physical_owner, target);
+        }
+
+        // Owner-control draining is forbidden while a switch handoff exists,
+        // so an outgoing-only `on_cpu` owner here indicates corrupt placement
+        // state rather than work that can be made safe by self-republication.
+        if on_cpu == Some(owner) && cpu.current() != Some(core.id()) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+
+        if queued_cpu == Some(owner) && on_cpu.is_none() {
+            let remote = Arc::clone(cpu.remote());
+            let carrier = (target != owner)
+                .then(|| self.prepare_owner_migration(core, owner, target))
+                .transpose()?;
+            let mut transaction = OwnerRqTxn::begin(self, &remote);
+            transaction.update_thread_affinity(core.id(), Arc::clone(&sched.affinity.affinity));
+            if target == owner {
+                sched.placement.request_migration(None);
+                let completed = Self::complete_affinity_if_satisfied_locked(core, &sched);
+                transaction.commit();
+                drop(sched);
+                if completed {
+                    core.notify_affinity_waiters();
+                }
+                return Ok(());
+            }
+            let detached = {
+                let current_fair = transaction.current_fair_contender();
+                let detached = transaction.detach_for_transfer(
+                    core.id(),
+                    current_fair,
+                    self.config.timing_granularity_ns(),
+                );
+                let Some(detached) = detached else {
+                    transaction.commit();
+                    return Err(TaskError::NotReady);
+                };
+                detached
+            };
+            Self::detach_owner_deadline_bandwidth_in_rq(
+                core,
+                &mut sched,
+                cpu.remote(),
+                &mut transaction,
+            );
+            core.sched()
+                .install_active(&mut sched, detached.into_active());
+            sched.placement.begin_migration(owner, target);
+            core.set_wake_cpu_hint(target);
+            transaction.commit();
+            carrier
+                .expect("a remote affinity target must reserve one migration carrier")
+                .commit();
+            // Publish the immutable carrier before releasing the task lock.
+            // A racing wake then either observes the source rq state before
+            // migration or the committed target plus its pending inbox, like
+            // Linux's `p->pi_lock`/`TASK_ON_RQ_MIGRATING` serialization.
+            drop(sched);
+            return Ok(());
+        }
+
+        if on_cpu == Some(owner) {
+            let remote = Arc::clone(cpu.remote());
+            let mut transaction = OwnerRqTxn::begin(self, &remote);
+            transaction.update_thread_affinity(core.id(), Arc::clone(&sched.affinity.affinity));
+            transaction.commit();
+            sched
+                .placement
+                .request_migration((target != owner).then_some(target));
+            let completed = Self::complete_affinity_if_satisfied_locked(core, &sched);
+            drop(sched);
+            if completed {
+                core.notify_affinity_waiters();
+            }
+            if target != owner {
+                cpu.request_reschedule(RescheduleKind::Immediate);
+            }
+            return Ok(());
+        }
+
+        if migration_target == Some(owner) {
+            sched
+                .placement
+                .request_migration((target != owner).then_some(target));
+            return Ok(());
+        }
+
+        let completed = Self::complete_affinity_if_satisfied_locked(core, &sched);
+        drop(sched);
+        if completed {
+            core.notify_affinity_waiters();
+        }
+        Ok(())
+    }
+
+    /// Applies a bounded batch of owner-CPU effective-policy updates.
+    pub fn drain_owner_control(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+    ) -> Result<OwnerControlDrain, TaskError> {
+        let drained = self.drain_owner_control_inner(cpu.as_mut())?;
+        if drained.pending {
+            // This standalone PI safe point has no scheduler transaction whose
+            // final recheck can rearm the detached bounded remainder.
+            cpu.defer_scheduler_work();
+        }
+        Ok(drained)
+    }
+
+    fn drain_owner_control_inner(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+    ) -> Result<OwnerControlDrain, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
+        self.ensure_owner_cpu_online(&cpu)?;
+        // Owner-control work is ordered after the architecture switch tail.
+        // Until then `on_cpu` is a lifetime pin for the outgoing stack, not a
+        // runnable-placement owner. Consuming an affinity update in this
+        // window either has to republish itself indefinitely or can lose the
+        // completion when the tail detaches a blocked task. Linux closes the
+        // same interval in `finish_task_switch()` before the rq owner handles
+        // migration work. Keep the original intrusive publication pending and
+        // make the scheduler revisit it after tail instead.
+        if cpu.as_ref().get_ref().switch_handoff().is_some()
+            && cpu.remote().owner_control_inbox().has_pending()
+        {
+            return Ok(OwnerControlDrain {
+                drained: 0,
+                pending: true,
+            });
+        }
+        let (drained, pending) = {
+            let remote = Arc::clone(cpu.remote());
+            let scratch = cpu.as_mut().drain_state_mut();
+            let limit = scratch.batch_limit();
+            let batch = remote
+                .owner_control_inbox()
+                .drain(limit, &mut scratch.owner_control_buffer);
+            (batch.drained(), batch.pending())
+        };
+        let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
+        detached[..drained].copy_from_slice(&cpu.drain_state().owner_control_buffer[..drained]);
+        // An incoming migration remains visible to placement readers until the
+        // owner has processed the complete detached batch. Releasing before
+        // enqueue creates a false-idle window in which another waker can stack
+        // work on this CPU.
+        let completed_incoming_migration_demand = detached[..drained]
+            .iter()
+            .filter(|message| message.operation() == InboxOperation::Migration)
+            .try_fold(0_u64, |demand, message| {
+                demand.checked_add(message.placement_demand())
+            })
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x4d49_4744, cpu.owner().as_u32() as usize)
+            });
+        let _incoming_migration = IncomingMigrationBatch::new(
+            Arc::clone(cpu.remote()),
+            completed_incoming_migration_demand,
+        );
+        let mut messages = DetachedOwnerMessageBatch::new(&detached[..drained]);
+        while let Some(message) = messages.next() {
+            let operation = message.operation();
+            if operation == InboxOperation::BalanceRequest {
+                let source = message
+                    .source_cpu()
+                    .ok_or(TaskError::InvalidConfiguration)?;
+                let target = message
+                    .target_cpu()
+                    .ok_or(TaskError::InvalidConfiguration)?;
+                if source != cpu.owner() {
+                    return Err(TaskError::CpuOwnerMismatch {
+                        expected: source.as_u32(),
+                        actual: cpu.owner().as_u32(),
+                    });
+                }
+                let reservation = message
+                    .balance_reservation()
+                    .ok_or(TaskError::InvalidConfiguration)?;
+                let balance_class = message
+                    .balance_class()
+                    .ok_or(TaskError::InvalidConfiguration)?;
+                let target_remote = self
+                    .cpu_remotes
+                    .get(target.as_usize())
+                    .ok_or(TaskError::InvalidCpu(target.as_u32()))?;
+                let Some(mut claim) = target_remote.claim_idle_pull(reservation) else {
+                    continue;
+                };
+                let source_has_candidate = match balance_class {
+                    SchedulingClass::Deadline | SchedulingClass::Realtime => self
+                        .root_domain
+                        .cpu_has_overload(cpu.owner(), balance_class),
+                    SchedulingClass::Fair => cpu.load_summary().has_pushable_fair(),
+                    SchedulingClass::Stop => false,
+                };
+                if !source_has_candidate {
+                    drop(claim);
+                    continue;
+                }
+                if !claim.commit() {
+                    continue;
+                }
+                let migrated = self.transfer_owner_balance_candidate(
+                    cpu.as_mut(),
+                    target,
+                    BalanceReason::IdlePull,
+                    Some(balance_class),
+                );
+                drop(claim);
+                match migrated {
+                    Ok(BalanceTransferOutcome::Migrated(_)) => {}
+                    // Linux `sched_balance_newidle()` ends this newly-idle
+                    // pass when the selected source cannot detach a task. A
+                    // later idle entry or periodic balance supplies the next
+                    // independent attempt; the target does not kick itself.
+                    Ok(BalanceTransferOutcome::NoCandidate) => {}
+                    Ok(BalanceTransferOutcome::Retry) => {}
+                    Err(error) => {
+                        return Err(error);
+                    }
+                }
+                continue;
+            }
+            if matches!(
+                operation,
+                InboxOperation::BalanceRequest | InboxOperation::Reclaim
+            ) {
+                return Err(TaskError::InvalidConfiguration);
+            }
+            if message.payload() == 0 {
+                continue;
+            }
+            // SAFETY: publication transfers one Arc count in the payload and
+            // this detached owner message consumes that count exactly once.
+            let core = unsafe {
+                Arc::from_raw(ptr::with_exposed_provenance::<ThreadCore>(
+                    message.payload(),
+                ))
+            };
+            let _delivery = core.accept_scheduler_inbox_delivery();
+            if core.id() != message.thread_id() {
+                continue;
+            }
+            let Some(_activity) = core.try_scheduler_activity() else {
+                // Exit owns the transition gate and will clear any pending
+                // migration target before publishing the reaper retry.
+                continue;
+            };
+            if core.state() == ThreadState::Exited {
+                continue;
+            }
+            let owner = cpu.owner();
+            let source = message
+                .source_cpu()
+                .ok_or(TaskError::InvalidConfiguration)?;
+            let target = message
+                .target_cpu()
+                .ok_or(TaskError::InvalidConfiguration)?;
+            if operation == InboxOperation::DeadlineRefresh {
+                if source != owner || target != owner {
+                    return Err(TaskError::CpuOwnerMismatch {
+                        expected: source.as_u32(),
+                        actual: owner.as_u32(),
+                    });
+                }
+                let mut sched = core.sched().lock();
+                if sched.placement.queued_cpu() == Some(owner) {
+                    self.activate_owner_deadline_bandwidth(&core, &mut sched, cpu.as_mut(), owner);
+                }
+                self.refresh_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut());
+                continue;
+            }
+            if operation == InboxOperation::AffinityUpdate {
+                if source != owner {
+                    return Err(TaskError::CpuOwnerMismatch {
+                        expected: source.as_u32(),
+                        actual: owner.as_u32(),
+                    });
+                }
+                self.reconcile_owner_affinity_update(cpu.as_mut(), &core)?;
+                continue;
+            }
+            if operation == InboxOperation::Migration {
+                if target != owner {
+                    return Err(TaskError::CpuOwnerMismatch {
+                        expected: target.as_u32(),
+                        actual: owner.as_u32(),
+                    });
+                }
+                let mut sched = core.sched().lock();
+                let committed_here = sched.placement.committed_migration_target() == Some(owner)
+                    && sched.placement.queued_cpu().is_none()
+                    && sched.placement.on_cpu().is_none();
+                let delayed_migration = sched.lifecycle.state() == ThreadState::Blocked
+                    && committed_here
+                    && core
+                        .sched()
+                        .active_option(&sched)
+                        .and_then(|active| active.entity().fair())
+                        .is_some_and(|fair| fair.is_delayed_migrating());
+                if delayed_migration {
+                    let needs_affinity_move = !sched.affinity.affinity.contains(owner)
+                        || sched.placement.requested_migration().is_some();
+                    cpu.remote().cancel_idle_pull_if_uncommitted();
+                    let remote = Arc::clone(cpu.remote());
+                    let mut transaction = OwnerRqTxn::begin(self, &remote);
+                    let current_fair = transaction.current_fair_contender();
+                    transaction.update_fair_virtual_time(current_fair);
+                    let policy = core.sched().active(&sched).policy();
+                    let metadata = sched.rq_task_metadata()?;
+                    let rt_quota_exempt = sched.is_pi_boosted_rt_owner_for(policy);
+                    let active = core.sched().take_active(&mut sched);
+                    let enqueue = transaction.enqueue_delayed_fair_transfer(
+                        QueuedThread::new(
+                            core.id(),
+                            active,
+                            Arc::clone(&core),
+                            rt_quota_exempt,
+                            sched.affinity.affinity.is_migration_capable(),
+                            metadata,
+                        ),
+                        current_fair,
+                    );
+                    transaction.update_fair_virtual_time(current_fair);
+                    sched.placement.activate(owner);
+                    core.publish_effective_schedule(policy, enqueue.entity());
+                    core.set_wake_cpu_hint(owner);
+                    let affinity_completed =
+                        Self::complete_affinity_if_satisfied_locked(&core, &sched);
+                    let scheduler_deadline_refresh_required =
+                        enqueue.scheduler_deadline_refresh_required();
+                    transaction.commit();
+                    drop(sched);
+                    if affinity_completed {
+                        core.notify_affinity_waiters();
+                    }
+                    if needs_affinity_move {
+                        self.reconcile_owner_affinity_update(cpu.as_mut(), &core)?;
+                    } else if scheduler_deadline_refresh_required {
+                        remote.kick_scheduler_work();
+                    }
+                    continue;
+                }
+
+                // A direct wake may win the task lock after the source commits
+                // its carrier but before this owner consumes it. In that case
+                // wake has already activated the exact committed destination;
+                // consume this now-stale transport and finish affinity work.
+                if sched.lifecycle.state() == ThreadState::Running
+                    && !committed_here
+                    && sched.placement.committed_migration_target().is_none()
+                    && (sched.placement.queued_cpu() == Some(owner)
+                        || sched.placement.on_cpu() == Some(owner))
+                {
+                    let needs_affinity_move = !sched.affinity.affinity.contains(owner)
+                        || sched.placement.requested_migration().is_some();
+                    let affinity_completed =
+                        Self::complete_affinity_if_satisfied_locked(&core, &sched);
+                    drop(sched);
+                    if affinity_completed {
+                        core.notify_affinity_waiters();
+                    }
+                    if needs_affinity_move {
+                        self.reconcile_owner_affinity_update(cpu.as_mut(), &core)?;
+                    }
+                    continue;
+                }
+
+                if sched.lifecycle.state() != ThreadState::Running || !committed_here {
+                    return Err(TaskError::InvalidConfiguration);
+                }
+                let needs_affinity_move = !sched.affinity.affinity.contains(owner)
+                    || sched.placement.requested_migration().is_some();
+                drop(sched);
+                self.enqueue_owner_thread(
+                    cpu.as_mut(),
+                    Arc::clone(&core),
+                    EnqueueReason::Migrated,
+                )?;
+                if needs_affinity_move {
+                    self.reconcile_owner_affinity_update(cpu.as_mut(), &core)?;
+                }
+                continue;
+            }
+            return Err(TaskError::InvalidConfiguration);
+        }
+        Ok(OwnerControlDrain { drained, pending })
+    }
+
+    /// Drains one bounded batch from every inbox owned by `cpu`.
+    ///
+    /// Owner-control inboxes, rather than `need_resched`, are the source of
+    /// truth for migration, policy, and deferred owner work. A bounded
+    /// owner-work remainder is rearmed by the scheduler transaction's final
+    /// recheck. Like Linux `irq_work_single()`, the drain itself only consumes
+    /// the claimed batch.
+    pub(super) fn drain_owner_work(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
+        let policy_pending = cpu.remote().owner_control_inbox().has_pending();
+        let _drain = policy_pending
+            .then(|| self.drain_owner_control_inner(cpu.as_mut()))
+            .transpose()?;
+
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(miri)))]
+mod loom_tests {
+    use loom::{
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
+        thread,
+    };
+
+    const ON_RQ_MASK: u64 = 0b11;
+    const ON_RQ_NONE: u64 = 0;
+    const ON_RQ_QUEUED: u64 = 1;
+    const ON_CPU_FLAG: u64 = 1 << 8;
+
+    fn finish_switch_tail(placement: &AtomicU64, rq_lock: &Mutex<()>) {
+        let _rq = rq_lock.lock().unwrap();
+        let observed = placement.load(Ordering::Acquire);
+        placement.store(observed & !ON_CPU_FLAG, Ordering::Release);
+    }
+
+    fn update_policy(placement: &AtomicU64, rq_lock: &Mutex<()>) {
+        let _rq = rq_lock.lock().unwrap();
+        let classified = placement.load(Ordering::Acquire);
+        let outgoing = classified & ON_RQ_MASK == ON_RQ_QUEUED && classified & ON_CPU_FLAG != 0;
+        let relink = placement.load(Ordering::Acquire);
+        if outgoing && relink & ON_CPU_FLAG == 0 {
+            assert_eq!(
+                relink & ON_RQ_MASK,
+                ON_RQ_NONE,
+                "switch tail released on_cpu between policy classification and relink"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_relink_cannot_observe_switch_tail_mid_transaction() {
+        loom::model(|| {
+            let placement = Arc::new(AtomicU64::new(ON_RQ_QUEUED | ON_CPU_FLAG));
+            let rq_lock = Arc::new(Mutex::new(()));
+            let tail = {
+                let placement = Arc::clone(&placement);
+                let rq_lock = Arc::clone(&rq_lock);
+                thread::spawn(move || finish_switch_tail(&placement, &rq_lock))
+            };
+            let policy = {
+                let placement = Arc::clone(&placement);
+                let rq_lock = Arc::clone(&rq_lock);
+                thread::spawn(move || update_policy(&placement, &rq_lock))
+            };
+
+            tail.join().unwrap();
+            policy.join().unwrap();
+        });
+    }
+}

@@ -188,6 +188,29 @@ impl Ext4FileSystem {
         self.mark_superblock_dirty();
     }
 
+    fn transfer_recorded_journal_error<B: BlockIo, O: crate::runtime::Observer>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+        observer: &mut O,
+    ) -> Ext4Result<()> {
+        use crate::runtime::{Event, IntegrityEvent};
+
+        if !block_dev.has_recorded_journal_error() {
+            return Ok(());
+        }
+
+        observer.event(Event::Integrity(IntegrityEvent::CorruptionDetected));
+        self.superblock.s_state |= Ext4Superblock::EXT4_ERROR_FS;
+        self.mark_superblock_dirty();
+
+        // Linux first preserves the historical error in the main ext4
+        // superblock. Only after that home block is durable may JBD2 clear its
+        // errno with FUA, so a failure at either boundary still requests fsck.
+        self.sync_superblock(block_dev)?;
+        block_dev.flush()?;
+        block_dev.clear_recorded_journal_error()
+    }
+
     fn valid_lost_found_hint<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -660,6 +683,10 @@ impl Ext4FileSystem {
                 if !fs.superblock.has_journal() {
                     block_dev.set_journal_use(false)?;
                 }
+            }
+
+            if fs.superblock.has_journal() {
+                fs.transfer_recorded_journal_error(block_dev, observer)?;
             }
 
             // Classic orphan-list recovery must observe metadata after JBD2 replay

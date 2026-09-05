@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use bytemuck::{AnyBitPattern, Pod, bytes_of, zeroed};
 
-use crate::{VmError, VmImpl, VmIo, VmResult, vm_read_slice};
+use crate::{VmError, VmIo, VmResult, vm_read_slice};
 
 /// Loads a vector of elements from the virtual memory.
 ///
@@ -12,9 +12,9 @@ use crate::{VmError, VmImpl, VmIo, VmResult, vm_read_slice};
 ///
 /// The caller must ensure the memory pointed to by `ptr` is valid and
 /// initialized.
-pub unsafe fn vm_load_any<T>(ptr: *const T, len: usize) -> VmResult<Vec<T>> {
+pub unsafe fn vm_load_any<I: VmIo, T>(vm: &mut I, ptr: *const T, len: usize) -> VmResult<Vec<T>> {
     let mut buf = Vec::with_capacity(len);
-    vm_read_slice(ptr, &mut buf.spare_capacity_mut()[..len])?;
+    vm_read_slice(vm, ptr, &mut buf.spare_capacity_mut()[..len])?;
     // SAFETY: The caller guarantees that the memory is valid and initialized.
     unsafe { buf.set_len(len) }
     Ok(buf)
@@ -22,9 +22,13 @@ pub unsafe fn vm_load_any<T>(ptr: *const T, len: usize) -> VmResult<Vec<T>> {
 
 /// Loads a vector of elements from the virtual memory.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn vm_load<T: AnyBitPattern>(ptr: *const T, len: usize) -> VmResult<Vec<T>> {
+pub fn vm_load<I: VmIo, T: AnyBitPattern>(
+    vm: &mut I,
+    ptr: *const T,
+    len: usize,
+) -> VmResult<Vec<T>> {
     // SAFETY: `AnyBitPattern`
-    unsafe { vm_load_any(ptr, len) }
+    unsafe { vm_load_any(vm, ptr, len) }
 }
 
 #[inline]
@@ -35,21 +39,19 @@ fn is_zero<T: Pod>(value: &T) -> bool {
 const MAX_BYTES: usize = 131072;
 
 /// Loads elements from the given pointer until a zero element is found.
-pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
+pub fn vm_load_until_nul<I: VmIo, T: Pod>(vm: &mut I, ptr: *const T) -> VmResult<Vec<T>> {
     if !ptr.is_aligned() {
         return Err(VmError::BadAddress);
     }
 
     let size = size_of::<T>();
     let mut result = Vec::new();
-    let mut vm = VmImpl::new();
-
     loop {
         const CHUNK_SIZE: usize = 32;
 
         let start = ptr.addr() + result.len() * size;
         let end = (start + 1).next_multiple_of(CHUNK_SIZE);
-        let len = (end - start) / size;
+        let len = ((end - start) / size).max(1);
 
         result.reserve(len);
         let buf = &mut result.spare_capacity_mut()[..len];

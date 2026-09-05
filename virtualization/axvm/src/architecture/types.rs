@@ -13,15 +13,29 @@ pub(crate) struct VcpuRunAction {
     pub(crate) exits_vcpu: bool,
 }
 
+/// Outcome of one architecture-neutral vCPU run attempt.
+pub(crate) enum VcpuRunOutcome {
+    /// Hardware guest entry completed and produced a scheduler action.
+    Entered(VcpuRunAction),
+    /// A concurrent request canceled entry after architecture state was
+    /// loaded. The outer task loop must observe device and lifecycle state
+    /// before trying again.
+    EntryCanceled,
+}
+
 /// Result of handling one exit while the vCPU is still bound to the host CPU.
 #[derive(Debug)]
 pub(crate) enum BoundVcpuExit<D> {
+    /// A request canceled hardware entry after architecture state was loaded.
+    EntryCanceled,
     /// The exit was handled completely; re-enter the guest in the current run slice.
     Continue,
     /// The run slice is complete and can return this scheduler action after unbind.
     Complete(VcpuRunAction),
     /// Finish architecture-local work after unbinding the vCPU.
     Defer(D),
+    /// Finish a potentially blocking hypercall after unbinding the vCPU.
+    DeferHypercall(crate::runtime::hvc::DeferredHyperCall),
 }
 
 #[derive(Clone, Copy, Debug)]

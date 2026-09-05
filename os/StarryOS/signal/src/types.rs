@@ -151,6 +151,9 @@ impl Signo {
 #[repr(transparent)]
 pub struct SignalSet(u64);
 
+// SAFETY: this transparent wrapper contains exactly one initialized `u64`.
+unsafe impl bytemuck::NoUninit for SignalSet {}
+
 impl SignalSet {
     fn signo_bit(signo: Signo) -> u64 {
         1 << (signo as u8 - 1)
@@ -241,22 +244,32 @@ impl fmt::Debug for SignalSet {
 }
 
 /// Signal information. Compatible with `struct siginfo` in libc.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct SignalInfo(pub siginfo_t);
+pub struct SignalInfo(siginfo_t);
+
+// SAFETY: Linux `siginfo_t` is a 128-byte C union whose `_si_pad: [c_int; 32]`
+// member covers every byte. The private field keeps safe callers on constructors
+// that zero the complete union storage before setting a selected variant.
+unsafe impl bytemuck::NoUninit for SignalInfo {}
 
 impl SignalInfo {
+    /// Creates an all-zero signal information record.
+    pub fn zeroed() -> Self {
+        // SAFETY: every bit pattern is valid for the integer and raw-pointer
+        // fields in Linux's `siginfo_t` union.
+        unsafe { mem::zeroed() }
+    }
+
     pub fn new_kernel(signo: Signo) -> Self {
-        // FIXME: Zeroable
-        let mut result: Self = unsafe { mem::zeroed() };
+        let mut result = Self::zeroed();
         result.set_signo(signo);
         result.set_code(SI_KERNEL as _);
         result
     }
 
     pub fn new_user(signo: Signo, code: i32, pid: u32, uid: u32) -> Self {
-        // FIXME: Zeroable
-        let mut result: Self = unsafe { mem::zeroed() };
+        let mut result = Self::zeroed();
         result.set_signo(signo);
         result.set_code(code);
         result
@@ -310,7 +323,7 @@ impl SignalInfo {
     /// - `status`: for `CLD_EXITED` the raw exit value (0–255); for
     ///   `CLD_KILLED`/`CLD_DUMPED` the signal number that killed the process.
     pub fn new_sigchld(child_pid: u32, child_uid: u32, code: i32, status: i32) -> Self {
-        let mut result: Self = unsafe { mem::zeroed() };
+        let mut result = Self::zeroed();
         result.set_signo(Signo::SIGCHLD);
         result.set_code(code);
         // SAFETY: The siginfo union is zeroed above. We access the _sigchld
@@ -335,8 +348,7 @@ impl SignalInfo {
     /// passed to timer_create). The si_value is stored in the _timer._sigval
     /// field of the siginfo_t union.
     pub fn new_timer(signo: Signo, sigev_value: i64) -> Self {
-        // FIXME: Zeroable
-        let mut result: Self = unsafe { mem::zeroed() };
+        let mut result = Self::zeroed();
         result.set_signo(signo);
         result.set_code(SI_TIMER);
         // SAFETY: _sifields._timer._sigval is the sigev_value union in the
@@ -362,8 +374,7 @@ impl SignalInfo {
     /// `_rt._sigval` union (the SI_QUEUE/SI_MESGQ siginfo variant). The value is
     /// stored as `sival_ptr` to preserve all 64 bits, matching `new_timer`.
     pub fn new_mqueue(signo: Signo, pid: u32, uid: u32, sigev_value: i64) -> Self {
-        // FIXME: Zeroable
-        let mut result: Self = unsafe { mem::zeroed() };
+        let mut result = Self::zeroed();
         result.set_signo(signo);
         result.set_code(SI_MESGQ);
         // SAFETY: The siginfo union is zeroed above. The `_rt` variant (pid,
@@ -383,8 +394,7 @@ impl SignalInfo {
     /// from guard-page / implicit-null-check faults. `code` is e.g.
     /// `SEGV_MAPERR` (no mapping) or `SEGV_ACCERR` (permission violation).
     pub fn new_fault(signo: Signo, code: i32, fault_addr: usize) -> Self {
-        // FIXME: Zeroable
-        let mut result: Self = unsafe { mem::zeroed() };
+        let mut result = Self::zeroed();
         result.set_signo(signo);
         result.set_code(code);
         // The siginfo union is zeroed above; `_sifields._sigfault._addr` is
@@ -400,7 +410,12 @@ impl SignalInfo {
     }
 
     pub fn signo(&self) -> Signo {
-        unsafe { Signo::from_repr(self.0.__bindgen_anon_1.__bindgen_anon_1.si_signo as _).unwrap() }
+        Signo::from_repr(self.raw_signo() as u8).unwrap()
+    }
+
+    /// Returns the unvalidated signal number stored in this record.
+    pub fn raw_signo(&self) -> i32 {
+        unsafe { self.0.__bindgen_anon_1.__bindgen_anon_1.si_signo }
     }
 
     pub fn set_signo(&mut self, signo: Signo) {
@@ -437,18 +452,34 @@ impl fmt::Debug for SignalInfo {
 
 /// Signal stack. Compatible with `struct sigaltstack` in libc.
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct SignalStack {
     pub sp: usize,
     pub flags: u32,
+    /// Explicit C ABI padding between `ss_flags` and `ss_size`.
+    #[doc(hidden)]
+    pub __padding: u32,
     pub size: usize,
 }
+
+// SAFETY: the explicit padding field makes every byte of this C-layout object
+// part of an initialized integer field.
+unsafe impl bytemuck::NoUninit for SignalStack {}
+
+const _: () = {
+    assert!(mem::offset_of!(SignalStack, sp) == 0);
+    assert!(mem::offset_of!(SignalStack, flags) == 8);
+    assert!(mem::offset_of!(SignalStack, __padding) == 12);
+    assert!(mem::offset_of!(SignalStack, size) == 16);
+    assert!(mem::size_of::<SignalStack>() == 24);
+};
 
 impl Default for SignalStack {
     fn default() -> Self {
         Self {
             sp: 0,
             flags: SS_DISABLE,
+            __padding: 0,
             size: 0,
         }
     }

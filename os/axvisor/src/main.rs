@@ -46,29 +46,6 @@ mod network_console;
 mod network_status;
 mod shell;
 
-#[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
-fn init_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
-        // When the `backtrace` feature is NOT enabled, axbacktrace is compiled
-        // without `alloc` → Inner::Disabled → BT_ERROR requires_alloc.
-        // When the `backtrace` feature IS enabled, axbacktrace captures real
-        // frames (alloc=true, frames enumerated).
-        let backtrace = axbacktrace::Backtrace::capture().kind("panic");
-        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
-            format_args!("{info}\n{backtrace}\n"),
-        );
-    }));
-}
-
-#[cfg(feature = "test-console-atomic-output")]
-fn init_atomic_output_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
-        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
-            format_args!("{info}\n"),
-        );
-    }));
-}
-
 /// Axvisor kernel entry point.
 ///
 /// The startup sequence is:
@@ -82,11 +59,6 @@ fn init_atomic_output_panic_hook() {
 ///    lifecycle waiter and the physical-console shell.
 ///
 fn main() {
-    #[cfg(feature = "test-console-atomic-output")]
-    init_atomic_output_panic_hook();
-    #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
-    init_panic_hook();
-
     // Test-only panic paths — gated behind dedicated features so they never
     // activate in normal builds.  These are consumed by test-suit cases that
     // verify the backtrace markers (or their absence) via QEMU regex matching.

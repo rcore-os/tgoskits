@@ -274,16 +274,17 @@ impl DeviceInner {
         hctxs: &[Arc<Hctx>],
     ) -> Result<InstalledIrqRegistration, BlkError> {
         let source_id = endpoint.source_id();
-        let queue_bits = endpoint.queue_bits();
+        let queue_mask = endpoint.queue_mask();
         let valid_queue_bits = hctxs
             .iter()
+            .filter(|hctx| hctx.id() < u64::BITS as usize)
             .fold(0u64, |bits, hctx| bits | (1u64 << hctx.id()));
-        if queue_bits & !valid_queue_bits != 0 {
+        if queue_mask.bits() & !valid_queue_bits != 0 {
             return Err(BlkError::InvalidRequest);
         }
         let target_count = hctxs
             .iter()
-            .filter(|hctx| queue_bits & (1u64 << hctx.id()) != 0)
+            .filter(|hctx| queue_mask.contains(hctx.id()))
             .count();
         let mut targets = Vec::new();
         let mut hctx_tokens = Vec::new();
@@ -294,18 +295,18 @@ impl DeviceInner {
             .try_reserve(target_count)
             .map_err(|_| BlkError::NoMemory)?;
         for hctx in hctxs {
-            if queue_bits & (1u64 << hctx.id()) != 0 {
+            if queue_mask.contains(hctx.id()) {
                 let (target, token) = hctx.prepare_irq_target(source_id);
                 targets.push(target);
                 hctx_tokens.push(token);
             }
         }
-        if queue_bits != 0 && targets.is_empty() {
+        if !queue_mask.is_empty() && targets.is_empty() {
             return Err(BlkError::NotSupported);
         }
         let cpu = hctxs
             .iter()
-            .find(|hctx| queue_bits & (1u64 << hctx.id()) != 0)
+            .find(|hctx| queue_mask.contains(hctx.id()))
             .map_or(0, |hctx| hctx.cpu());
         let irq = self
             .irq_sources
@@ -323,9 +324,11 @@ impl DeviceInner {
         )
         .map_err(|_| BlkError::Io)?;
         info!(
-            "block device {} IRQ source {} ({irq:?}) fixed to CPU {} for queue mask \
-             {queue_bits:#x}",
-            self.name, source_id, cpu
+            "block device {} IRQ source {} ({irq:?}) fixed to CPU {} for queue mask {:#x}",
+            self.name,
+            source_id,
+            cpu,
+            queue_mask.bits()
         );
         Ok(InstalledIrqRegistration {
             registration,
@@ -909,7 +912,7 @@ impl InstallUpdateTransaction {
             let additional = self
                 .endpoints
                 .iter()
-                .filter(|endpoint| endpoint.queue_bits() & (1u64 << hctx.id()) != 0)
+                .filter(|endpoint| endpoint.queue_mask().contains(hctx.id()))
                 .count();
             hctx.reserve_irq_targets(additional)
         });

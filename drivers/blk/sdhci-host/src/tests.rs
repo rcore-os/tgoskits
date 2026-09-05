@@ -4,6 +4,16 @@ use sdmmc_host::{ProgressCause, RequestProgress, ResponseType};
 
 use super::*;
 
+struct StaticTimer;
+
+impl HostTimer for StaticTimer {
+    fn now_ms(&self) -> u64 {
+        0
+    }
+}
+
+static STATIC_TIMER: StaticTimer = StaticTimer;
+
 #[test]
 fn protocol_progress_contracts_are_closed_and_exhaustive() {
     fn command_state(progress: sdmmc_protocol::CommandProgress) -> bool {
@@ -466,21 +476,11 @@ fn host2_v180_rejects_partial_high_dat_lines_before_switch() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
 
-    struct StaticTimer;
-
-    impl HostTimer for StaticTimer {
-        fn now_ms(&self) -> u64 {
-            0
-        }
-    }
-
-    static TIMER: StaticTimer = StaticTimer;
-
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
     host.enable_1v8_signaling();
-    host.set_timer(&TIMER);
+    host.set_timer(&STATIC_TIMER);
     host.write_u32(REG_PRESENT_STATE, 1 << 20);
     let mut request = unsafe {
         <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(
@@ -521,6 +521,69 @@ fn clock_div_zero_quirk_uses_nonzero_divider_for_low_external_clock() {
 }
 
 #[test]
+fn host2_clock_stable_timeout_uses_elapsed_wall_time() {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    struct TestTimer {
+        now_ns: AtomicU64,
+    }
+
+    impl HostTimer for TestTimer {
+        fn now_ms(&self) -> u64 {
+            self.now_ns() / 1_000_000
+        }
+
+        fn now_ns(&self) -> u64 {
+            self.now_ns.load(Ordering::Relaxed)
+        }
+    }
+
+    static TIMER: TestTimer = TestTimer {
+        now_ns: AtomicU64::new(0),
+    };
+
+    TIMER.now_ns.store(0, Ordering::Relaxed);
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.set_timer(&TIMER);
+    host.set_fixed_base_clock_hz(NonZeroU32::new(50_000_000).unwrap())
+        .unwrap();
+    let mut request = unsafe {
+        <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(
+            &mut host,
+            sdmmc_host::BusOp::SetClock(ClockSpeed::Default),
+        )
+    }
+    .unwrap();
+
+    assert_eq!(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::Submitted,
+        ),
+        Ok(RequestProgress::RegisterPending {
+            retry_after: SDHCI_REGISTER_RETRY_DELAY,
+        })
+    );
+
+    TIMER.now_ns.store(150_000_001, Ordering::Relaxed);
+    assert_eq!(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::Complete(Err(sdmmc_host::Error::Timeout))),
+        "Linux bounds the internal-clock stable wait by 150 ms of monotonic time",
+    );
+}
+
+#[test]
 fn host2_external_clock_runs_host_stage_before_enable() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
@@ -552,6 +615,7 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         CLOCK_INTERNAL_ENABLE | CLOCK_INTERNAL_STABLE | CLOCK_SD_ENABLE,
     );
     host.set_external_clock(Clock);
+    host.set_timer(&STATIC_TIMER);
     let mut request = unsafe {
         <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(
             &mut host,

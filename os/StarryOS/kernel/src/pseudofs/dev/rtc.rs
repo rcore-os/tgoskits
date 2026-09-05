@@ -3,14 +3,14 @@ use core::{any::Any, ffi::c_int};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use chrono::{Datelike, Timelike};
 use linux_raw_sys::ioctl::RTC_RD_TIME;
-use starry_vm::VmMutPtr;
 
-use crate::{StarryError, pseudofs::DeviceOps};
+use crate::{mm::VmMutPtr, pseudofs::DeviceOps};
 
 /// The device ID for /dev/rtc0
 pub const RTC0_DEVICE_ID: DeviceId = DeviceId::new(250, 0);
 
 #[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 #[allow(non_camel_case_types, dead_code)]
 struct rtc_time {
     tm_sec: c_int,
@@ -36,25 +36,28 @@ impl DeviceOps for Rtc {
         Ok(0)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             RTC_RD_TIME => {
                 let wall = chrono::DateTime::from_timestamp_nanos(
                     ax_runtime::hal::time::wall_time_nanos() as _,
                 );
                 (arg as *mut rtc_time)
-                    .vm_write(rtc_time {
-                        tm_sec: wall.second() as _,
-                        tm_min: wall.minute() as _,
-                        tm_hour: wall.hour() as _,
-                        tm_mday: wall.day() as _,
-                        tm_mon: wall.month0() as _,
-                        tm_year: (wall.year() - 1900) as _,
-                        tm_wday: 0,
-                        tm_yday: 0,
-                        tm_isdst: 0,
-                    })
-                    .map_err(|error| VfsError::from(StarryError::from(error)))?;
+                    .vm_write(
+                        current,
+                        rtc_time {
+                            tm_sec: wall.second() as _,
+                            tm_min: wall.minute() as _,
+                            tm_hour: wall.hour() as _,
+                            tm_mday: wall.day() as _,
+                            tm_mon: wall.month0() as _,
+                            tm_year: (wall.year() - 1900) as _,
+                            tm_wday: 0,
+                            tm_yday: 0,
+                            tm_isdst: 0,
+                        },
+                    )
+                    .map_err(|error| VfsError::from(crate::StarryError::from(error)))?;
             }
             _ => return Err(VfsError::NotATty),
         }

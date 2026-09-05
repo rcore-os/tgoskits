@@ -258,7 +258,7 @@ pub struct RgaFeature {
 
 /// Kernel `struct rga_memory_parm` (rga.h). sizeof == 16.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct RgaMemoryParm {
     pub width: u32,
     pub height: u32,
@@ -269,19 +269,26 @@ pub struct RgaMemoryParm {
 /// Kernel `struct rga_external_buffer` (rga.h). sizeof == 288 on LP64.
 /// Userspace fills memory + type + memory_parm; kernel fills handle.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct RgaExternalBuffer {
     pub memory: u64,                // offset 0: dma-buf fd or phys addr
     pub r#type: u32,                // offset 8: RGA_DMA_BUFFER / RGA_DMA_BUFFER_PTR
     pub handle: u32,                // offset 12: output handle (filled by kernel)
     pub memory_parm: RgaMemoryParm, // offset 16
     pub _reserve: [u8; 252],        // offset 32  (kernel: uint8_t reserve[252])
+    pub _padding: [u8; 4],          // offset 284: explicit LP64 tail padding
 }
 
-// Default manually; [u8; 252] > 32
 impl Default for RgaExternalBuffer {
     fn default() -> Self {
-        unsafe { core::mem::zeroed() }
+        Self {
+            memory: 0,
+            r#type: 0,
+            handle: 0,
+            memory_parm: RgaMemoryParm::default(),
+            _reserve: [0; 252],
+            _padding: [0; 4],
+        }
     }
 }
 
@@ -298,7 +305,7 @@ pub struct RgaBufferPool {
 
 /// Kernel `struct rga_version_t` (rga.h). sizeof == 28.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct RgaVersionT {
     pub major: u32,
     pub minor: u32,
@@ -308,7 +315,7 @@ pub struct RgaVersionT {
 
 /// Kernel `struct rga_hw_versions_t` (rga.h). sizeof == 144. `size` = number of cores.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct RgaHwVersions {
     pub version: [RgaVersionT; 5],
     pub size: u32,
@@ -338,9 +345,26 @@ impl Default for RgaUserRequest {
 }
 
 const _: () = assert!(core::mem::size_of::<RgaVersionT>() == 28);
+const _: () = assert!(core::mem::offset_of!(RgaVersionT, major) == 0);
+const _: () = assert!(core::mem::offset_of!(RgaVersionT, minor) == 4);
+const _: () = assert!(core::mem::offset_of!(RgaVersionT, revision) == 8);
+const _: () = assert!(core::mem::offset_of!(RgaVersionT, string) == 12);
 const _: () = assert!(core::mem::size_of::<RgaHwVersions>() == 144);
+const _: () = assert!(core::mem::offset_of!(RgaHwVersions, version) == 0);
+const _: () = assert!(core::mem::offset_of!(RgaHwVersions, size) == 140);
 const _: () = assert!(core::mem::size_of::<RgaUserRequest>() == 152);
 const _: () = assert!(core::mem::size_of::<RgaExternalBuffer>() == 288);
+const _: () = assert!(core::mem::offset_of!(RgaExternalBuffer, memory) == 0);
+const _: () = assert!(core::mem::offset_of!(RgaExternalBuffer, r#type) == 8);
+const _: () = assert!(core::mem::offset_of!(RgaExternalBuffer, handle) == 12);
+const _: () = assert!(core::mem::offset_of!(RgaExternalBuffer, memory_parm) == 16);
+const _: () = assert!(core::mem::offset_of!(RgaExternalBuffer, _reserve) == 32);
+const _: () = assert!(core::mem::offset_of!(RgaExternalBuffer, _padding) == 284);
+const _: () = assert!(core::mem::size_of::<RgaMemoryParm>() == 16);
+const _: () = assert!(core::mem::offset_of!(RgaMemoryParm, width) == 0);
+const _: () = assert!(core::mem::offset_of!(RgaMemoryParm, height) == 4);
+const _: () = assert!(core::mem::offset_of!(RgaMemoryParm, format) == 8);
+const _: () = assert!(core::mem::offset_of!(RgaMemoryParm, size) == 12);
 const _: () = assert!(core::mem::size_of::<RgaBufferPool>() == 16);
 
 // ---------------------------------------------------------------------------

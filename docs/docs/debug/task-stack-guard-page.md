@@ -133,31 +133,32 @@ borrowed stack，仍需要 canary 兜底。因此第一阶段不应移除 `stack
 
 ## 当前覆盖边界
 
-当前 guard page 机制覆盖的是 `TaskStack::alloc()` 创建并由 `ax-task`
-拥有生命周期的动态任务栈。典型路径是：
+当前 guard page 机制覆盖的是 `ax-runtime::task` 按核心 `StackRequest`
+分配并拥有生命周期的动态任务栈。典型路径是：
 
 ```text
-TaskInner::new()
-  -> TaskStack::alloc()
-  -> TaskStack::alloc_guarded()
-  -> unmap_guard_page()
+ThreadSpec creation
+  -> TaskRuntime::allocate_stack()
+  -> allocate_runtime_stack()
+  -> guarded page allocation
 ```
 
-因此，普通 `spawn` / thread 创建的任务栈、运行时创建的 gc task，以及主
-CPU 上通过 `TaskInner::new()` 创建的独立 idle task，都会在启用
+因此，普通 `spawn` / thread 创建的任务栈、runtime-backed service thread，
+以及各 CPU 的 idle thread，都会在启用
 `stack-guard-page` 后获得 guard page。
 
-这个覆盖边界与动态平台无直接绑定。只要栈来自 `TaskStack::alloc()`，
-就会走 guarded allocation；只要栈来自
-`TaskStack::borrowed()`，当前就不会做 guard page。
+这个覆盖边界与动态平台无直接绑定。只要栈来自
+`TaskRuntime::allocate_stack()`，就会走 guarded allocation；平台提供并由
+bootstrap context 借用的现有栈不由 runtime 重新分配，因此当前不会增加
+guard page。
 
 当前未覆盖的栈主要分为两类。
 
 ### 1. Borrowed boot/current stack
 
 这类栈由平台、linker script、somehal metadata 或 runtime bring-up 流程
-提供，`ax-task` 只通过 `TaskStack::borrowed()` 记录它的范围，不拥有它的
-分配和释放生命周期。
+提供，`ax-runtime` 只把现有上下文接入 bootstrap 线程，不拥有它的分配和
+释放生命周期。
 
 包括：
 
@@ -210,7 +211,7 @@ feature 正常启用时会同时启用 IPI 支持，在 SMP 场景下对已经�
 并打开本地 IRQ 的 CPU 发送同步 TLB shootdown。
 
 启动早期需要特别处理：主核在 `ax_task::init_scheduler()` 阶段可能已经创建
-动态任务栈，但此时其他 CPU 还没有初始化 IPI 队列，也不一定已经打开本地 IRQ。
+动态任务栈，但此时其他 CPU 的固定 hard-call endpoint 还没有发布 ready，也不一定已经打开本地 IRQ。
 因此 shootdown 不应盲目发送给所有配置 CPU，而是只发送给 runtime 标记为
 `IPI ready` 的 CPU。CPU 发布 ready 时会先进入 `becoming ready` 状态，做一次
 全局本地 TLB flush，再切换为 `ready`；shootdown 如果看到某个 CPU 正在发布

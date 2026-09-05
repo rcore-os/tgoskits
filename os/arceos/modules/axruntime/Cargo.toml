@@ -15,23 +15,26 @@ std-compat = []
 host-test = [
   "ax-hal/host-test",
   "ax-ipi?/host-test",
-  "ax-percpu/host-test",
+  "ax-sync/host-test",
   "ax-task/host-test",
+  "ax-percpu/host-test",
   "cpu-local/host-test",
 ]
-ipi = ["dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
-# Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
-# CPUs can wake and re-enter the scheduler. This intentionally does not enable
-# the ax-ipi callback queue.
-wake-ipi = ["ax-hal/ipi"]
+irq-time-accounting = []
+ipi = ["dep:ax-ipi", "ax-hal/ipi"]
+# Scheduler-only users still share ax-ipi's typed, coalescible physical edge;
+# logical pending state remains in ax-task.
+wake-ipi = ["dep:ax-ipi", "ax-hal/ipi"]
+qperf-metrics = ["ax-task/qperf-metrics", "cpu-local/qperf-metrics"]
+fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
-smp = ["ax-hal/smp", "ax-task/smp"]
-uspace = ["ax-hal/uspace", "ax-task/uspace"]
+smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
+uspace = ["ax-hal/uspace"]
 lockdep = ["ax-task/lockdep", "ax-fs-ng?/lockdep"]
-stack-guard-page = ["ipi", "paging", "ax-task/stack-guard-page"]
+stack-guard-page = ["ipi", "paging"]
 stack-protector = []
-tls = ["ax-hal/tls", "ax-task/tls"]
+tls = ["ax-hal/tls"]
 
 display = ["paging", "dep:ax-display", "ax-driver/display"]
 fs = [
@@ -72,10 +75,11 @@ ax-net = {workspace = true, optional = true}
 ax-percpu.workspace = true
 ax-plat = {workspace = true}
 ax-sync = { workspace = true, features = ["sleep"] }
-ax-task = {workspace = true, features = ["lock-api"]}
+ax-task.workspace = true
 cpu-local.workspace = true
 axbacktrace = {workspace = true}
 axpoll.workspace = true
+axpoll-set.workspace = true
 axklib.workspace = true
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
@@ -92,3 +96,6 @@ thiserror.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

@@ -1,3 +1,4 @@
+use alloc::vec;
 use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull, sync::atomic::AtomicUsize};
 use std::{
     alloc::{alloc_zeroed, dealloc},
@@ -413,7 +414,8 @@ fn zero_cpu_topology_quarantines_prepared_device_ownership() {
         tx_queue_discipline: TxQueueDiscipline::NoQueue,
     };
 
-    let result = NetworkRuntimeBuilder::new(vec![input], &UnexpectedRegistrar, 0).build();
+    let result =
+        NetworkRuntimeBuilder::new(vec![input], &UnexpectedRegistrar, CpuSet::empty(0)).build();
 
     assert!(matches!(result, Err(NetworkRuntimeError::InvalidTopology)));
     assert_eq!(drops.load(Ordering::Relaxed), 0);
@@ -487,7 +489,7 @@ fn oversized_rx_frame_recycles_token_and_next_frame_remains_receivable() {
 }
 
 fn group_state(initial: u8) -> PollGroupState {
-    let state = PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new()));
+    let state = PollGroupState::new(0, Arc::new(QueueNotification::new()));
     state.state.store(initial, Ordering::Release);
     state
 }
@@ -505,7 +507,8 @@ fn apply_model_operation(state: &PollGroupState, operation: ModelOperation) {
 
 #[test]
 fn shared_irq_groups_are_assigned_to_the_same_cpu() {
-    let owners = assign_affinity_domains(&[vec![irq(4)], vec![irq(4)], vec![irq(5)]], 4);
+    let owners =
+        assign_affinity_domains(&[vec![irq(4)], vec![irq(4)], vec![irq(5)]], &[0, 1, 2, 3]);
     assert_eq!(owners[0], owners[1]);
     assert_ne!(owners[0], owners[2]);
 }
@@ -519,7 +522,7 @@ fn affinity_domains_merge_transitively_through_shared_sources() {
             vec![irq(2)],
             vec![irq(3)],
         ],
-        4,
+        &[0, 1, 2, 3],
     );
     assert_eq!(owners[0], owners[1]);
     assert_eq!(owners[1], owners[2]);
@@ -528,13 +531,13 @@ fn affinity_domains_merge_transitively_through_shared_sources() {
 
 #[test]
 fn independent_sources_can_use_different_cpus() {
-    let owners = assign_affinity_domains(&[vec![irq(1)], vec![irq(2)]], 4);
+    let owners = assign_affinity_domains(&[vec![irq(1)], vec![irq(2)]], &[0, 1, 2, 3]);
     assert_eq!(owners, vec![0, 1]);
 }
 
 #[test]
 fn missed_event_survives_poll_completion() {
-    let notify = Arc::new(ax_task::IrqNotify::new());
+    let notify = Arc::new(QueueNotification::new());
     let state = PollGroupState::new(0, notify);
     state.activate(false);
     state.schedule_task();
@@ -639,8 +642,15 @@ fn hardware_retry_rearms_instead_of_immediately_rescheduling() {
 
 #[test]
 fn protocol_owner_uses_the_least_loaded_cpu() {
-    assert_eq!(select_protocol_owner(&[0, 0, 1], 4), 2);
-    assert_eq!(select_protocol_owner(&[0, 1, 2, 3], 4), 0);
+    assert_eq!(select_protocol_owner(&[0, 0, 1], &[0, 1, 2, 3]), 2);
+    assert_eq!(select_protocol_owner(&[0, 1, 2, 3], &[0, 1, 2, 3]), 0);
+}
+
+#[test]
+fn protocol_owner_stays_on_the_boot_cpu_until_secondary_cpus_are_online() {
+    // The scheduler topology already contains four CPUs during early device
+    // initialization, but only CPU 0 is active for runnable placement.
+    assert_eq!(select_protocol_owner(&[0], &[0]), 0);
 }
 
 #[test]

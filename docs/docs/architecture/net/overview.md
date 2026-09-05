@@ -23,7 +23,8 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 | `ip_tos.rs` | per-socket egress IP_TOS/traffic-class：smoltcp 不暴露 TOS 设置，在 Router 边界改写发出的 IP 包头 | `EgressIpTosKey` |
 | `rx_meta.rs` | 利用 smoltcp `PacketMeta` id 携带接收侧 QoS 元数据，供 recvmsg cmsg 上报 | `ReceivedTrafficClass` |
 | `options.rs` | socket 选项与 `Configurable` trait | `GetSocketOption`, `SetSocketOption`, `TcpInfo` |
-| `general.rs` | 通用 socket 选项、非阻塞/超时/poll helper | `GeneralOptions` |
+| `general.rs` | 通用 socket 选项、非阻塞/超时等待策略 | `GeneralOptions` |
+| `readiness.rs` | task-neutral check/register/recheck future | `poll_socket_io` |
 | `state.rs` | socket 状态机锁 | `StateLock`, `StateGuard` |
 | `listen_table.rs` | TCP listen/accept 表与 SYN 预创建 | `ListenTable` |
 | `tcp.rs` / `udp.rs` / `raw.rs` | IP socket 实现 | `TcpSocket`, `UdpSocket`, `RawSocket` |
@@ -86,8 +87,8 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 | --- | --- | --- |
 | `net-protocol` | 固定 CPU 的唯一 smoltcp owner，处理 DHCP、DNS、socket、ARP/TX dispatch | generation notify 或协议 timer deadline |
 | `net-queue-cpuN` | 固定 CPU，服务该 CPU 的 poll groups；预算 drain、DMA、backpressure、rearm | 本 CPU IRQ notify 或精准 task-side ring-space notify；无周期 timeout |
-| 调用者线程 | 应用/内核线程调用 socket API | `StateLock::lock()`、`block_on(poll_io())` |
-| `vsock-poll` worker | vsock 设备轮询，事件分发到 `VSOCK_CONN_MANAGER` | 自适应频率 sleep（100μs→10ms） |
+| 调用者线程 | 应用/内核线程调用 socket API；OS 层驱动 task-neutral future 并负责 timeout/signal | `StateLock::lock()`、`poll_socket_io()` |
+| `vsock-irq-cpuN` | 固定在 protocol owner CPU，预算 drain vsock event 并更新 `VSOCK_CONN_MANAGER` | typed hard IRQ sticky notify、task-side rearm/recheck 或 RX ring 释放空间后的精准 notify；无周期 timeout |
 
 物理 IRQ 只激活其 `NetPollGroup`；无关 group 和空闲 queue executor 不被唤醒。queue/protocol 之间仅通过预分配 SPSC move frame/token，queue executor 不直接进入 smoltcp。
 完整锁类型、锁顺序和禁止模式见[锁与并发](locks.md)。

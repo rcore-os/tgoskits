@@ -77,6 +77,10 @@ impl PlatOp for Plat {
         }
     }
 
+    fn acknowledge_ipi(_active: &mut Self::ActiveIrq) {
+        // `begin_irq` clears SSIP before constructing the active token.
+    }
+
     fn systick_irq() -> IrqId {
         riscv_cpu_local_irq_from_raw(plic::systick_irq().into())
             .expect("RISC-V systick IRQ must be a CPU-local timer cause")

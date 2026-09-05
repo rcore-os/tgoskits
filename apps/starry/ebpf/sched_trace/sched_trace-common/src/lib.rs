@@ -12,8 +12,9 @@ pub struct SchedSwitchEvent {
     pub prev_tid: u64,
     /// Scheduler task id of the task switched in.
     pub next_tid: u64,
-    /// `axtask::TaskState` discriminant of `prev` sampled before the
-    /// architectural switch: 1=Running, 2=Ready, 3=Blocked, 4=Exited.
+    /// `ax_task::ThreadState` discriminant of `prev` sampled before the
+    /// architectural switch: 0=New, 1=Ready, 2=Running, 3=Parking,
+    /// 4=Blocked, 5=Waking, 6=Exited.
     pub prev_state: u32,
     pub _pad: u32,
     /// `bpf_ktime_get_ns()` sampled inside the probe.

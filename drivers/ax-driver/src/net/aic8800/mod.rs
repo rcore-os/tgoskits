@@ -32,7 +32,7 @@ use rdrive::{
     register::ProbeFdt,
 };
 
-use crate::{binding_info_from_fdt, net::PlatformDeviceNet};
+use crate::{binding_info_from_fdt, net::PlatformDeviceNet, sdhci_runtime::install_host_timer};
 
 mod fdt;
 mod startup_config;
@@ -84,6 +84,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // SAFETY: every mapping above is exclusive to this controller instance and
     // covers the register windows required by `Cv181xSdio1Mmio`.
     let mut sdio = unsafe { Cv181xSdhci::new_sdio1(sdio1_mmio, profile.host_config) };
+    install_host_timer(sdio.inner_mut());
     sdio.configure_dma(dma.clone()).map_err(|error| {
         OnProbeError::other(alloc::format!("[wifi] configure SDIO DMA failed: {error}"))
     })?;
@@ -94,7 +95,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         ))
     })?;
 
-    plat_dev.register_net_with_info("wlan0", wifi, dma, binding);
+    plat_dev.register_net_with_info("wlan0", wifi, dma, binding)?;
     info!("[wifi] wlan0 device registered (probe stage done)");
     Ok(())
 }

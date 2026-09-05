@@ -156,7 +156,7 @@ mod tests {
                 stats::Dwc2Stats,
                 testutil as tu,
             },
-            ty::{Event, EventHandlerOp, ep::EndpointOp},
+            ty::{ControllerIrqState, Event, EventHandlerOp, ep::EndpointOp},
         },
         osal::Kernel,
     };
@@ -251,7 +251,12 @@ mod tests {
         let completions = Dwc2ChannelCompletions::new();
         let channel_pool = channel_pool(2, &kernel, &completions);
         let mut endpoint = bulk_endpoint(regs, kernel, channel_pool);
-        let handler = Dwc2EventHandler::new(regs, completions.clone(), Dwc2Stats::new());
+        let handler = Dwc2EventHandler::new(
+            regs,
+            completions.clone(),
+            Dwc2Stats::new(),
+            ControllerIrqState::new(true),
+        );
         let mut data = [0u8; 512];
         let id = endpoint
             .submit_request(TransferRequest::bulk_in(&mut data))

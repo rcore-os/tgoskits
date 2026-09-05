@@ -43,12 +43,12 @@ const EPOLL_CTL_ADD: c_int = 1;
 
 fn test_create_and_flag_validation() {
     let fd = syscalls::eventfd(0, 0).expect("eventfd(0, 0) failed");
-    assert!(fd >= 0, "eventfd(0, 0) returned an invalid fd");
+    assert!(fd.as_raw() >= 0, "eventfd(0, 0) returned an invalid fd");
 
     let fd = syscalls::eventfd(0, EFD_SEMAPHORE | EFD_CLOEXEC | EFD_NONBLOCK)
         .expect("eventfd with all supported flags failed");
     assert!(
-        fd >= 0,
+        fd.as_raw() >= 0,
         "eventfd with all supported flags returned an invalid fd"
     );
 
@@ -62,7 +62,7 @@ fn test_create_and_flag_validation() {
 fn test_read_empty_nonblocking_eagain() {
     let fd = syscalls::eventfd(0, EFD_NONBLOCK).expect("create nonblocking eventfd failed");
     assert_errno(
-        syscalls::read_u64(fd),
+        syscalls::read_u64(&fd),
         EAGAIN,
         "read of an empty nonblocking eventfd",
     );
@@ -71,12 +71,12 @@ fn test_read_empty_nonblocking_eagain() {
 fn test_initval_is_readable_and_drains() {
     let fd = syscalls::eventfd(5, EFD_NONBLOCK).expect("create eventfd(5) failed");
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         5,
         "initval must be readable"
     );
     assert_errno(
-        syscalls::read_u64(fd),
+        syscalls::read_u64(&fd),
         EAGAIN,
         "second read after initval was drained",
     );
@@ -85,22 +85,22 @@ fn test_initval_is_readable_and_drains() {
 fn test_write_read_accumulate_and_reset() {
     let fd = syscalls::eventfd(0, EFD_NONBLOCK).expect("create eventfd failed");
     assert_eq!(
-        syscalls::write_u64(fd, 3).unwrap(),
+        syscalls::write_u64(&fd, 3).unwrap(),
         8,
         "write must return 8"
     );
     assert_eq!(
-        syscalls::write_u64(fd, 4).unwrap(),
+        syscalls::write_u64(&fd, 4).unwrap(),
         8,
         "write must return 8"
     );
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         7,
         "writes must accumulate in the counter"
     );
     assert_errno(
-        syscalls::read_u64(fd),
+        syscalls::read_u64(&fd),
         EAGAIN,
         "read after the counter was reset to zero",
     );
@@ -110,12 +110,12 @@ fn test_buffer_length_validation() {
     let fd = syscalls::eventfd(0, EFD_NONBLOCK).expect("create eventfd failed");
     let mut small = [0u8; 4];
     assert_errno(
-        syscalls::read(fd, &mut small),
+        syscalls::read(&fd, &mut small),
         EINVAL,
         "read into a buffer smaller than 8 bytes",
     );
     assert_errno(
-        syscalls::write(fd, &small),
+        syscalls::write(&fd, &small),
         EINVAL,
         "write of a buffer smaller than 8 bytes",
     );
@@ -125,12 +125,12 @@ fn test_buffer_length_validation() {
     // `count == sizeof(ucnt)`.
     let mut long = [0u8; 16];
     assert_errno(
-        syscalls::read(fd, &mut long),
+        syscalls::read(&fd, &mut long),
         EAGAIN,
         "read of a buffer larger than 8 bytes must not be EINVAL",
     );
     assert_errno(
-        syscalls::write(fd, &long),
+        syscalls::write(&fd, &long),
         EINVAL,
         "write of a buffer larger than 8 bytes",
     );
@@ -140,17 +140,17 @@ fn test_semaphore_decrements_one_at_a_time() {
     let fd = syscalls::eventfd(2, EFD_SEMAPHORE | EFD_NONBLOCK)
         .expect("create semaphore eventfd failed");
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         1,
         "semaphore read must return 1"
     );
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         1,
         "semaphore read must return 1"
     );
     assert_errno(
-        syscalls::read_u64(fd),
+        syscalls::read_u64(&fd),
         EAGAIN,
         "read of a drained semaphore eventfd",
     );
@@ -159,7 +159,7 @@ fn test_semaphore_decrements_one_at_a_time() {
 fn test_write_u64_max_einval() {
     let fd = syscalls::eventfd(0, EFD_NONBLOCK).expect("create eventfd failed");
     assert_errno(
-        syscalls::write_u64(fd, u64::MAX),
+        syscalls::write_u64(&fd, u64::MAX),
         EINVAL,
         "write of UINT64_MAX",
     );
@@ -170,17 +170,17 @@ fn test_counter_overflow_eagain() {
     // The counter saturates at UINT64_MAX - 1, so a write of UINT64_MAX - 1
     // is the largest accepted value.
     assert_eq!(
-        syscalls::write_u64(fd, u64::MAX - 1).unwrap(),
+        syscalls::write_u64(&fd, u64::MAX - 1).unwrap(),
         8,
         "write of UINT64_MAX - 1 must succeed"
     );
     assert_errno(
-        syscalls::write_u64(fd, 1),
+        syscalls::write_u64(&fd, 1),
         EAGAIN,
         "write that would overflow the counter",
     );
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         u64::MAX - 1,
         "saturated counter must read back"
     );
@@ -208,7 +208,7 @@ fn test_every_write_is_a_readiness_edge() {
         events: EPOLLIN | EPOLLET,
         data: 0,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     let mut ready = [EpollEvent::default(); 4];
@@ -216,12 +216,12 @@ fn test_every_write_is_a_readiness_edge() {
     // First write: the counter goes 0 -> 1, so the fd becomes readable. This
     // edge is reported whether or not readiness tracks the readability flip.
     assert_eq!(
-        syscalls::write_u64(fd, 1).unwrap(),
+        syscalls::write_u64(&fd, 1).unwrap(),
         8,
         "write must return 8"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
         "the first write must surface EPOLLIN"
     );
@@ -235,12 +235,12 @@ fn test_every_write_is_a_readiness_edge() {
     // readability never flips. Linux still wakes the poller, so the event has
     // to be reported again.
     assert_eq!(
-        syscalls::write_u64(fd, 1).unwrap(),
+        syscalls::write_u64(&fd, 1).unwrap(),
         8,
         "write must return 8"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
         "every write must be a readiness edge, not only the one that flips readability"
     );
@@ -270,19 +270,19 @@ fn test_saturated_read_is_a_writable_edge() {
         events: EPOLLOUT | EPOLLET,
         data: 0,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     // Saturate the counter at u64::MAX - 1: writability flips false, and the
     // accepted write itself is a readiness edge consumed by the first wait.
     assert_eq!(
-        syscalls::write_u64(fd, u64::MAX - 1).unwrap(),
+        syscalls::write_u64(&fd, u64::MAX - 1).unwrap(),
         8,
         "write must return 8"
     );
     let mut ready = [EpollEvent::default(); 4];
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "a saturated counter is not writable"
     );
@@ -291,12 +291,12 @@ fn test_saturated_read_is_a_writable_edge() {
     // flips writability back to true. The EPOLLOUT edge must be reported even
     // though no write bumps the version in between.
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         1,
         "semaphore read must return 1"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
         "draining a saturated counter must surface EPOLLOUT"
     );
@@ -325,14 +325,14 @@ fn test_write_does_not_spoof_writable_edge() {
         events: EPOLLOUT | EPOLLET,
         data: 0,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     // The freshly created counter is writable (0 < u64::MAX - 1), so the
     // initial writable edge is reported and consumed.
     let mut ready = [EpollEvent::default(); 4];
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
         "the initial writable edge must be reported"
     );
@@ -346,12 +346,12 @@ fn test_write_does_not_spoof_writable_edge() {
     // so no new EPOLLOUT edge. A version-only design would wrongly re-deliver
     // EPOLLOUT here because the write bumps the shared readiness version.
     assert_eq!(
-        syscalls::write_u64(fd, 1).unwrap(),
+        syscalls::write_u64(&fd, 1).unwrap(),
         8,
         "write must return 8"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "a write must not spoof a writable edge for an EPOLLOUT watch"
     );
@@ -376,18 +376,18 @@ fn test_writable_edge_between_waits_is_reported() {
         events: EPOLLOUT | EPOLLET,
         data: 0,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     // The counter starts writable, so the initial edge is reported and consumed.
     let mut ready = [EpollEvent::default(); 4];
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
         "the initial writable edge must be reported"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "the initial writable edge must be reported once"
     );
@@ -395,17 +395,17 @@ fn test_writable_edge_between_waits_is_reported() {
     // Saturate the counter, then drain one unit: writability goes
     // true -> false -> true with no wait observing the false sample.
     assert_eq!(
-        syscalls::write_u64(fd, u64::MAX - 1).unwrap(),
+        syscalls::write_u64(&fd, u64::MAX - 1).unwrap(),
         8,
         "write must return 8"
     );
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         1,
         "semaphore read must return 1"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
         "a writable edge between two waits must not be dropped"
     );
@@ -415,7 +415,7 @@ fn test_writable_edge_between_waits_is_reported() {
         "the event must carry EPOLLOUT"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "the writable edge must be reported once"
     );
@@ -436,18 +436,18 @@ fn test_write_stream_delivers_every_wake() {
         events: EPOLLIN | EPOLLET,
         data: 0,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     let mut ready = [EpollEvent::default(); 4];
     for i in 0..WAKES {
         assert_eq!(
-            syscalls::write_u64(fd, 1).unwrap(),
+            syscalls::write_u64(&fd, 1).unwrap(),
             8,
             "write {i} must return 8"
         );
         assert_eq!(
-            syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+            syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
             1,
             "write {i} must surface an edge"
         );

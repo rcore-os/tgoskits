@@ -14,8 +14,8 @@ fn manifests_expose_only_the_supported_dynamic_features() {
         feature_names(&read(
             &workspace_dir.join("components/cpu-local/Cargo.toml")
         )),
-        ["host-test", "tls"],
-        "cpu-local must expose only register-mode and host-test capabilities"
+        ["host-test", "qperf-metrics", "tls"],
+        "cpu-local must expose only register-mode, qperf, and host-test capabilities"
     );
     assert!(
         !read(&workspace_dir.join("components/percpu/percpu_macros/Cargo.toml"))
@@ -50,7 +50,7 @@ fn runtime_cpu_areas_have_one_template_and_no_legacy_linker_abi() {
     for required in [
         "components/percpu/percpu/host-test.ld",
         "components/scope-local/host-test.ld",
-        "os/arceos/modules/axtask/host-test.ld",
+        "os/arceos/modules/axruntime/host-test.ld",
         "platforms/someboot/src/smp/layout.rs",
     ] {
         assert!(
@@ -62,7 +62,7 @@ fn runtime_cpu_areas_have_one_template_and_no_legacy_linker_abi() {
     for linker in [
         "components/percpu/percpu/host-test.ld",
         "components/scope-local/host-test.ld",
-        "os/arceos/modules/axtask/host-test.ld",
+        "os/arceos/modules/axruntime/host-test.ld",
         "platforms/someboot/src/ld/data.ld",
         "platforms/axplat-dyn/link.ld",
         "os/arceos/modules/axruntime/runtime.ld",

@@ -39,8 +39,7 @@ pub(crate) fn with_runtime_log_context<R>(
             record_full_guard_entry();
             let _guard = ax_task::sync::PreemptIrqSaveGuard::new();
             let cpu_id = ax_hal::percpu::this_cpu_id_pinned(pin);
-            let current = ax_task::current_may_uninit();
-            let task_id = current.as_ref().map(|task| task.id().as_u64());
+            let task_id = ax_task::current_thread_id().ok().map(|id| id.as_u64());
             let timestamp = ax_hal::time::monotonic_time();
             consume(RuntimeLogContext::new(timestamp, Some(cpu_id), task_id))
         })

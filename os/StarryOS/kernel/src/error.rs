@@ -6,8 +6,7 @@ use ax_io::IoError;
 use ax_memory_set::MappingError;
 use ax_mm::MmError;
 use ax_net::NetError;
-use ax_runtime::{RuntimeError, serial::ConfigError};
-use ax_task::future::{Elapsed, Interrupted, PollIoError, TaskError};
+use ax_runtime::{RuntimeError, serial::ConfigError, task::TaskError};
 use axfs_ng_vfs::VfsError;
 use dma_api::DmaError;
 #[cfg(all(test, not(axtest)))]
@@ -44,7 +43,9 @@ pub enum StarryError {
     Mapping(#[from] MappingError),
     #[error(transparent)]
     Paging(#[from] PagingError),
-    #[error(transparent)]
+    /// A pending address-space TLB quarantine could not be confirmed before
+    /// the requested operation began.
+    #[error("pending address-space TLB quarantine blocked the operation: {0}")]
     TlbShootdown(#[from] TlbShootdownError),
     #[error(transparent)]
     Alloc(#[from] AllocError),
@@ -70,10 +71,6 @@ pub enum StarryError {
     Tpu(#[from] TpuError),
     #[error(transparent)]
     Format(#[from] core::fmt::Error),
-    #[error(transparent)]
-    TaskInterrupted(#[from] Interrupted),
-    #[error(transparent)]
-    TaskElapsed(#[from] Elapsed),
     #[error("DMA {operation:?} failed: {source}")]
     Dma {
         operation: DmaOperation,
@@ -102,6 +99,10 @@ pub enum StarryError {
     InProgress,
     #[error("operation was interrupted")]
     Interrupted,
+    /// An interrupted operation that Linux exposes as EINTR even when the
+    /// delivered handler uses SA_RESTART, such as socket I/O with SO_*TIMEO.
+    #[error("operation was interrupted without restart")]
+    InterruptedNoRestart,
     #[error("invalid kernel data")]
     InvalidData,
     #[error("invalid executable image")]
@@ -178,6 +179,21 @@ impl From<StarryError> for VfsError {
 }
 
 impl StarryError {
+    /// Reports whether a readiness-driven operation must register and retry.
+    ///
+    /// Filesystem handles adapt VFS failures to `IoError` before returning,
+    /// while direct VFS operations retain `VfsError`. Readiness polling must
+    /// recognize both wrapped states without flattening unrelated failures
+    /// into kernel-owned leaf errors.
+    pub(crate) const fn is_would_block(&self) -> bool {
+        matches!(
+            self,
+            Self::WouldBlock
+                | Self::Vfs(VfsError::WouldBlock)
+                | Self::IoDomain(IoError::WouldBlock)
+        )
+    }
+
     /// Convert an internal domain failure to its Linux syscall ABI errno.
     pub fn linux_errno(&self) -> Errno {
         match self {
@@ -205,8 +221,6 @@ impl StarryError {
             #[cfg(feature = "sg2002")]
             Self::Tpu(error) => tpu_errno(*error),
             Self::Format(_) => Errno::EINVAL,
-            Self::TaskInterrupted(_) => Errno::EINTR,
-            Self::TaskElapsed(_) => Errno::ETIMEDOUT,
             Self::Dma { operation, source } => dma_errno(*operation, source),
             Self::AlreadyExists => Errno::EEXIST,
             Self::ArgumentListTooLong => Errno::E2BIG,
@@ -217,7 +231,7 @@ impl StarryError {
             Self::FilesystemLoop => Errno::ELOOP,
             Self::IllegalBytes => Errno::EILSEQ,
             Self::InProgress => Errno::EINPROGRESS,
-            Self::Interrupted => Errno::EINTR,
+            Self::Interrupted | Self::InterruptedNoRestart => Errno::EINTR,
             Self::InvalidData | Self::InvalidInput => Errno::EINVAL,
             Self::InvalidExecutable | Self::MalformedExecutable => Errno::ENOEXEC,
             Self::Io | Self::UnexpectedEof | Self::WriteZero => Errno::EIO,
@@ -246,16 +260,6 @@ impl StarryError {
     }
 }
 
-impl PollIoError for StarryError {
-    fn is_would_block(&self) -> bool {
-        self.linux_errno() == Errno::EAGAIN
-    }
-
-    fn interrupted(error: Interrupted) -> Self {
-        error.into()
-    }
-}
-
 fn vm_errno(error: VmError) -> Errno {
     match error {
         VmError::BadAddress | VmError::AccessDenied => Errno::EFAULT,
@@ -270,6 +274,7 @@ fn mm_errno(error: MmError) -> Errno {
         MmError::AlreadyExists => Errno::EEXIST,
         MmError::BadAddress | MmError::BadState(_) => Errno::EFAULT,
         MmError::Unsupported => Errno::ENOSYS,
+        MmError::TlbShootdown(error) => tlb_errno(error),
     }
 }
 
@@ -313,10 +318,41 @@ fn cgroup_errno(error: CgroupError) -> Errno {
 
 fn task_errno(error: TaskError) -> Errno {
     match error {
-        TaskError::Interrupted(_) => Errno::EINTR,
-        TaskError::Elapsed(_) => Errno::ETIMEDOUT,
-        TaskError::WouldBlock => Errno::EAGAIN,
-        TaskError::Irq(_) => Errno::EIO,
+        TaskError::InvalidConfiguration
+        | TaskError::InvalidCpuCount(_)
+        | TaskError::InvalidCpu(_)
+        | TaskError::InvalidNice(_)
+        | TaskError::InvalidRtPriority(_)
+        | TaskError::InvalidRoundRobinQuantum
+        | TaskError::InvalidDeadline { .. }
+        | TaskError::UnsupportedDeadlineFlags(_) => Errno::EINVAL,
+        TaskError::DeadlineAdmission
+        | TaskError::DeadlineAffinity
+        | TaskError::ActiveTimerAffinity
+        | TaskError::ThreadBusy => Errno::EBUSY,
+        TaskError::StaleThreadId => Errno::ESRCH,
+        TaskError::TimerCapacity => Errno::ENOMEM,
+        TaskError::UnsafeContext => Errno::EPERM,
+        TaskError::CpuOwnerMismatch { .. }
+        | TaskError::CpuOwnerBorrowed
+        | TaskError::CpuAlreadyOnline(_)
+        | TaskError::CpuOffline(_)
+        | TaskError::CpuNotQuiescent(_)
+        | TaskError::LastOnlineCpu(_)
+        | TaskError::ExecutorOwnerMismatch { .. }
+        | TaskError::InvalidTransition { .. }
+        | TaskError::AlreadyQueued
+        | TaskError::NotReady
+        | TaskError::NotExited
+        | TaskError::NoRunnableThread
+        | TaskError::ThreadCapacity
+        | TaskError::NotInitialized
+        | TaskError::InvalidRuntimeHandle
+        | TaskError::InvalidPiState
+        | TaskError::InvalidPiWaitState(_)
+        | TaskError::PiCycle
+        | TaskError::PiChainLimit { .. }
+        | TaskError::RuntimeFailure(_) => Errno::EFAULT,
     }
 }
 
@@ -370,6 +406,7 @@ fn runtime_errno(error: &RuntimeError) -> Errno {
         },
         RuntimeError::SerialNotStarted => Errno::EFAULT,
         RuntimeError::SerialControlBusy => Errno::EBUSY,
+        RuntimeError::Task(error) => task_errno(*error),
         RuntimeError::WouldBlock => Errno::EAGAIN,
         RuntimeError::OperationNotSupported => Errno::EOPNOTSUPP,
         RuntimeError::InvalidCpu { .. } => Errno::EINVAL,
@@ -544,6 +581,10 @@ fn memory_errno_mappings_hold() -> bool {
         (MmError::BadAddress.into(), Errno::EFAULT),
         (MmError::BadState("test").into(), Errno::EFAULT),
         (MmError::Unsupported.into(), Errno::ENOSYS),
+        (
+            MmError::TlbShootdown(TlbShootdownError::Timeout).into(),
+            Errno::ETIMEDOUT,
+        ),
         (MappingError::InvalidParam.into(), Errno::EINVAL),
         (MappingError::AlreadyExists.into(), Errno::EEXIST),
         (MappingError::BadState.into(), Errno::EFAULT),
@@ -719,6 +760,7 @@ fn leaf_errno_mappings_hold() -> bool {
         (StarryError::IllegalBytes, Errno::EILSEQ),
         (StarryError::InProgress, Errno::EINPROGRESS),
         (StarryError::Interrupted, Errno::EINTR),
+        (StarryError::InterruptedNoRestart, Errno::EINTR),
         (StarryError::InvalidData, Errno::EINVAL),
         (StarryError::InvalidExecutable, Errno::ENOEXEC),
         (StarryError::MalformedExecutable, Errno::ENOEXEC),
@@ -748,8 +790,7 @@ fn leaf_errno_mappings_hold() -> bool {
         (StarryError::WouldBlock, Errno::EAGAIN),
         (StarryError::WriteZero, Errno::EIO),
         (StarryError::Format(core::fmt::Error), Errno::EINVAL),
-        (StarryError::TaskInterrupted(Interrupted), Errno::EINTR),
-        (StarryError::Task(TaskError::WouldBlock), Errno::EAGAIN),
+        (StarryError::Task(TaskError::TimerCapacity), Errno::ENOMEM),
         (
             StarryError::Runtime(RuntimeError::SerialNotStarted),
             Errno::EFAULT,
@@ -757,6 +798,10 @@ fn leaf_errno_mappings_hold() -> bool {
         (
             StarryError::Runtime(RuntimeError::SerialControlBusy),
             Errno::EBUSY,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::Task(TaskError::UnsafeContext)),
+            Errno::EPERM,
         ),
         (
             StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::InvalidBaudrate)),
@@ -832,6 +877,15 @@ mod tests {
     #[test]
     fn domain_errors_map_to_stable_linux_errno() {
         assert!(domain_errno_mappings_hold());
+    }
+
+    #[test]
+    fn readiness_retry_recognizes_filesystem_would_block_without_flattening() {
+        assert!(StarryError::WouldBlock.is_would_block());
+        assert!(StarryError::from(VfsError::WouldBlock).is_would_block());
+        assert!(StarryError::from(IoError::WouldBlock).is_would_block());
+        assert!(!StarryError::from(VfsError::Io).is_would_block());
+        assert!(!StarryError::from(IoError::Io).is_would_block());
     }
 
     #[test]

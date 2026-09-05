@@ -450,6 +450,7 @@ fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
         rootfs_path: PathBuf::from("/tmp/rootfs.img"),
         rootfs_write_policy: RootfsWritePolicy::Discard,
         test_commands: Vec::new(),
+        grouped_command_selection: Default::default(),
         host_symbolize_success_regex: vec!["symbolized".to_string()],
         host_http_server: Some(HostHttpServerConfig {
             bind: "127.0.0.1".to_string(),

@@ -15,9 +15,11 @@ __axcpu_user_read_u32:
     mov dword ptr [rsi], eax
     xor eax, eax
     ret
+
 .Luser_read_fault:
     mov eax, 1
     ret
+
     _asm_nofault_extable .Luser_read, .Luser_read_fault
 .size __axcpu_user_read_u32, . - __axcpu_user_read_u32
 
@@ -33,6 +35,8 @@ __axcpu_user_atomic_u32:
     je .Luser_atomic_or
     cmp esi, 3
     je .Luser_atomic_and_not
+
+    // The typed Rust API guarantees that the remaining operation is XOR.
     mov r10d, 128
 .Luser_atomic_xor_load:
     mov eax, dword ptr [rdi]
@@ -45,16 +49,19 @@ __axcpu_user_atomic_u32:
     dec r10d
     jnz .Luser_atomic_xor_retry
     jmp .Luser_atomic_retry
+
 .Luser_atomic_set:
     mov eax, edx
 .Luser_atomic_set_xchg:
     xchg dword ptr [rdi], eax
     jmp .Luser_atomic_success
+
 .Luser_atomic_add:
     mov eax, edx
 .Luser_atomic_add_xadd:
     lock xadd dword ptr [rdi], eax
     jmp .Luser_atomic_success
+
 .Luser_atomic_or:
     mov r10d, 128
 .Luser_atomic_or_load:
@@ -68,6 +75,7 @@ __axcpu_user_atomic_u32:
     dec r10d
     jnz .Luser_atomic_or_retry
     jmp .Luser_atomic_retry
+
 .Luser_atomic_and_not:
     not edx
     mov r10d, 128
@@ -82,16 +90,20 @@ __axcpu_user_atomic_u32:
     dec r10d
     jnz .Luser_atomic_and_not_retry
     jmp .Luser_atomic_retry
+
 .Luser_atomic_success:
     mov dword ptr [r8], eax
     xor eax, eax
     ret
+
 .Luser_atomic_fault:
     mov eax, 1
     ret
+
 .Luser_atomic_retry:
     mov eax, 2
     ret
+
     _asm_nofault_extable .Luser_atomic_xor_load, .Luser_atomic_fault
     _asm_nofault_extable .Luser_atomic_xor_cmpxchg, .Luser_atomic_fault
     _asm_nofault_extable .Luser_atomic_set_xchg, .Luser_atomic_fault

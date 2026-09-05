@@ -6,9 +6,8 @@ use sg200x_bsp::soc::TOP_BASE;
 use sg200x_jpu::{
     FrameLayout, FrameLayoutError, JpuCreateError, JpuDecodeError, JpuDecoder, JpuMmio, JpuScale,
 };
-use starry_vm::vm_write_slice;
 
-use crate::{StarryError, StarryResult, sync::Mutex};
+use crate::{StarryError, StarryResult, mm::vm_write_slice, sync::PiMutex, task::UserTaskRef};
 
 const JPU_REG_BASE: usize = 0x0b00_0000;
 const VC_REG_BASE: usize = 0x0b03_0000;
@@ -38,13 +37,13 @@ impl JpuState {
 
 /// Serializes the one SG2002 JPU between the legacy camera ioctl and VDEC.
 pub(super) struct CviJpu {
-    state: Mutex<JpuState>,
+    state: PiMutex<JpuState>,
 }
 
 impl CviJpu {
     pub const fn new() -> Self {
         Self {
-            state: Mutex::new(JpuState {
+            state: PiMutex::new(JpuState {
                 decoder: None,
                 vdec_owned: false,
             }),
@@ -65,21 +64,22 @@ impl CviJpu {
         self.state.lock().vdec_owned = false;
     }
 
-    pub fn decode_camera_to_user(&self, jpeg: &[u8], destination: *mut u8) -> StarryResult<usize> {
-        let yuv_data = {
-            let mut state = self.state.lock();
-            if state.vdec_owned {
-                return Err(StarryError::ResourceBusy);
-            }
-            state
-                .decoder()?
-                .decode(jpeg)
-                .map_err(|error| map_decode_error(&error))?
-                .yuv_data
-                .to_vec()
-        };
-        vm_write_slice(destination, &yuv_data)?;
-        Ok(yuv_data.len())
+    pub fn decode_camera_to_user(
+        &self,
+        current: &UserTaskRef,
+        jpeg: &[u8],
+        destination: *mut u8,
+    ) -> StarryResult<usize> {
+        let mut state = self.state.lock();
+        if state.vdec_owned {
+            return Err(crate::StarryError::ResourceBusy);
+        }
+        let result = state
+            .decoder()?
+            .decode(jpeg)
+            .map_err(|error| map_decode_error(&error))?;
+        vm_write_slice(current, destination, result.yuv_data)?;
+        Ok(result.yuv_data.len())
     }
 
     pub fn decode_vdec(&self, jpeg: &[u8], scale: JpuScale) -> StarryResult<DecodedJpuFrame> {

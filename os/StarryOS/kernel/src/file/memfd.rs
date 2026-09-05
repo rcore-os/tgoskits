@@ -23,14 +23,11 @@
 //! `F_SEAL_FUTURE_WRITE` after populating them.
 
 use alloc::{borrow::Cow, format, string::String, sync::Arc, vec::Vec};
-use core::{
-    sync::atomic::{AtomicU32, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use ax_fs_ng::vfs::FileFlags;
 use ax_io::{IoBuf, SeekFrom, prelude::*};
-use ax_memory_addr::VirtAddr;
+use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_memory_set::MemoryArea;
 use ax_runtime::hal::paging::MappingFlags;
 use axpoll::{IoEvents, Pollable};
@@ -39,7 +36,7 @@ use super::{File, FileLike, IoDst, IoSrc, Kstat, get_file_like};
 use crate::{
     StarryError, StarryResult,
     mm::{AddrSpace, Backend},
-    sync::Mutex,
+    sync::PiMutex,
 };
 
 pub const F_SEAL_SEAL: u32 = 0x0001;
@@ -73,7 +70,7 @@ pub struct Memfd {
     name: String,
     /// Serializes seal-check-and-truncate to close the TOCTOU window
     /// between `check_truncate` and the underlying `set_len`.
-    truncate_mtx: Mutex<()>,
+    truncate_mtx: PiMutex<()>,
 }
 
 impl Memfd {
@@ -89,7 +86,7 @@ impl Memfd {
             seals: AtomicU32::new(initial),
             shared_writable_mmap_count: AtomicU32::new(0),
             name,
-            truncate_mtx: Mutex::new(()),
+            truncate_mtx: PiMutex::new(()),
         })
     }
 
@@ -250,6 +247,88 @@ fn memfd_from_shared_writable_area(area: &MemoryArea<Backend>) -> Option<Arc<Mem
     memfd_from_file_backend(area.backend())
 }
 
+/// A move-only release of inode-scoped writable-shared VMA accounting.
+///
+/// Preparing the release may allocate, so it must happen before page-table
+/// mutation. Consuming it is allocation-free and only happens after the VMA
+/// set has been cleared successfully. Dropping an uncommitted plan has no
+/// effect, which keeps a failed teardown retry from decrementing the same
+/// counters twice.
+pub(crate) struct SharedWritableRelease {
+    memfds: Vec<Arc<Memfd>>,
+}
+
+impl SharedWritableRelease {
+    pub(crate) fn commit(self) {
+        for memfd in self.memfds {
+            apply_shared_writable_count_delta(memfd.as_ref(), -1);
+        }
+    }
+}
+
+pub(crate) fn prepare_shared_writable_release(
+    aspace: &AddrSpace,
+) -> StarryResult<SharedWritableRelease> {
+    let mut memfds = Vec::new();
+    for area in aspace.areas() {
+        let Some(memfd) = memfd_from_shared_writable_area(area) else {
+            continue;
+        };
+        memfds.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
+        memfds.push(memfd);
+    }
+    Ok(SharedWritableRelease { memfds })
+}
+
+/// A prepared update to inode-scoped writable-shared VMA accounting.
+///
+/// Range classification and ownership cloning may allocate, so preparation
+/// precedes the VMA/page-table transaction. Commit is allocation-free and
+/// consumes the plan only after all VMA metadata changes have succeeded.
+pub(crate) struct SharedWritableUnmap {
+    deltas: Vec<(Arc<Memfd>, i32)>,
+}
+
+impl SharedWritableUnmap {
+    pub(crate) fn commit(self) {
+        for (memfd, delta) in self.deltas {
+            apply_shared_writable_count_delta(memfd.as_ref(), delta);
+        }
+    }
+}
+
+pub(crate) fn prepare_shared_writable_unmap(
+    aspace: &AddrSpace,
+    ustart: VirtAddr,
+    ulen: usize,
+) -> StarryResult<SharedWritableUnmap> {
+    let uend = ustart.checked_add(ulen).ok_or(StarryError::InvalidInput)?;
+    let mut deltas = Vec::new();
+    for area in aspace.areas() {
+        let a0 = area.start();
+        let a1 = area.end();
+        if a1 <= ustart || a0 >= uend {
+            continue;
+        }
+        let Some(memfd) = memfd_from_shared_writable_area(area) else {
+            continue;
+        };
+        let delta = if ustart <= a0 && uend >= a1 {
+            -1
+        } else if ustart > a0 && uend < a1 {
+            // Strict interior unmap splits one writable shared VMA into two.
+            1
+        } else {
+            0
+        };
+        if delta != 0 {
+            deltas.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
+            deltas.push((memfd, delta));
+        }
+    }
+    Ok(SharedWritableUnmap { deltas })
+}
+
 fn apply_shared_writable_count_delta(memfd: &Memfd, delta: i32) {
     if delta > 0 {
         memfd
@@ -346,26 +425,6 @@ pub(crate) fn on_after_map(aspace: &AddrSpace, start: VirtAddr) {
     apply_shared_writable_count_delta(memfd.as_ref(), 1);
 }
 
-pub(crate) fn on_aspace_unmap_range(aspace: &AddrSpace, ustart: VirtAddr, ulen: usize) {
-    let uend = ustart + ulen;
-    for area in aspace.areas() {
-        let a0 = area.start();
-        let a1 = area.end();
-        if a1 <= ustart || a0 >= uend {
-            continue;
-        }
-        let Some(memfd) = memfd_from_shared_writable_area(area) else {
-            continue;
-        };
-        if ustart <= a0 && uend >= a1 {
-            apply_shared_writable_count_delta(memfd.as_ref(), -1);
-        } else if ustart > a0 && uend < a1 {
-            // Strict interior unmap splits one writable shared VMA into two.
-            apply_shared_writable_count_delta(memfd.as_ref(), 1);
-        }
-    }
-}
-
 pub(crate) fn collect_metas_touching_mprotect_range(
     aspace: &AddrSpace,
     ustart: VirtAddr,
@@ -404,15 +463,6 @@ pub(crate) fn resync_shared_writable_counts_after_mprotect(
         memfd
             .shared_writable_mmap_count
             .store(count, Ordering::SeqCst);
-    }
-}
-
-pub(crate) fn release_all_shared_writable_counts_for_aspace(aspace: &AddrSpace) {
-    for area in aspace.areas() {
-        let Some(memfd) = memfd_from_shared_writable_area(area) else {
-            continue;
-        };
-        apply_shared_writable_count_delta(memfd.as_ref(), -1);
     }
 }
 
@@ -517,8 +567,13 @@ impl FileLike for Memfd {
         self.inner.file_mmap()
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
-        self.inner.ioctl(cmd, arg)
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
+        self.inner.ioctl(current, cmd, arg)
     }
 
     fn open_flags(&self) -> u32 {
@@ -559,7 +614,19 @@ impl Pollable for Memfd {
         self.inner.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner.register(context, events);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_exclusive(sink, events) };
     }
 }
