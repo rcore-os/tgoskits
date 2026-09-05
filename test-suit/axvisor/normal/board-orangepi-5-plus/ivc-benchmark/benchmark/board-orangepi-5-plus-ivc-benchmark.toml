@@ -1,0 +1,18 @@
+board_type = "OrangePi-5-Plus"
+# The board Linux rootfs must contain the IVC payload from tgosimages
+# IMAGES/orangepi/ivc: /guest/starry, /guest/zephyr and /usr/bin/ivc-starry-bench.
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "Failed to initialize guest VM",
+  "AXIVC Starry benchmark peer ready failed",
+  "AXIVC Starry benchmark send failed",
+  "AXIVC Starry benchmark recv failed",
+  "AXIVC Zephyr-Starry benchmark publish failed",
+  "AXIVC Zephyr-Starry benchmark ready send failed",
+  "AXIVC Zephyr-Starry benchmark failed",
+]
+success_regex = [
+  "(?m)^(?:\\[VM 1\\] )?AXVISOR_IVC_BENCH_RESULT=PASS cases=4 testTime=100 bytes=1232076800 chunks=400\\s*$",
+]
+timeout = 300

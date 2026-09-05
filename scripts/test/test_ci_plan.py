@@ -57,7 +57,7 @@ class CiPlanTests(unittest.TestCase):
             "run-clippy": ["self-hosted", "linux", "qcs"],
             "test-with-std": ["self-hosted", "linux", "qcs"],
             "test-arceos-x86-64-qemu": ["self-hosted", "linux", "qcs"],
-            "test-axvisor-aarch64-qemu-http-control-plane": [
+            "test-axvisor-aarch64-qemu-panic-http-control-plane-ivc": [
                 "self-hosted",
                 "linux",
                 "qcs",
@@ -555,7 +555,7 @@ command = "true"
                 "run-clippy",
                 "test-with-std",
                 "test-arceos-aarch64-qemu-app-suites",
-                "test-axvisor-aarch64-qemu-http-control-plane",
+                "test-axvisor-aarch64-qemu-panic-http-control-plane-ivc",
                 "test-starry-aarch64-qemu",
             }.issubset(test_rows)
         )

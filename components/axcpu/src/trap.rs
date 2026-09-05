@@ -36,6 +36,12 @@ pub type IrqHandler = fn(usize) -> bool;
 /// Page-fault trap hook type.
 pub type PageFaultHandler = fn(VirtAddr, PageFaultFlags) -> bool;
 
+/// Breakpoint trap hook type.
+pub type BreakpointHandler = fn(&mut KernelTrapFrame<'_>) -> bool;
+
+/// Debug trap hook type.
+pub type DebugHandler = fn(&mut KernelTrapFrame<'_>) -> bool;
+
 fn default_irq_handler(irq: usize) -> bool {
     trace!("IRQ {} triggered", irq);
     false
@@ -46,8 +52,18 @@ fn default_page_fault_handler(addr: VirtAddr, flags: PageFaultFlags) -> bool {
     false
 }
 
+fn default_breakpoint_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
+    false
+}
+
+fn default_debug_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
+    false
+}
+
 static IRQ_HANDLER: AtomicUsize = AtomicUsize::new(0);
 static PAGE_FAULT_HANDLER: AtomicUsize = AtomicUsize::new(0);
+static BREAKPOINT_HANDLER: AtomicUsize = AtomicUsize::new(0);
+static DEBUG_HANDLER: AtomicUsize = AtomicUsize::new(0);
 
 /// Installs the global IRQ trap hook and returns the previous one.
 pub fn set_irq_handler(handler: IrqHandler) -> IrqHandler {
@@ -68,6 +84,28 @@ pub fn set_page_fault_handler(handler: PageFaultHandler) -> PageFaultHandler {
     } else {
         // SAFETY: the atomic only stores function pointers of type `PageFaultHandler`.
         unsafe { core::mem::transmute::<usize, PageFaultHandler>(old) }
+    }
+}
+
+/// Installs the global breakpoint trap hook and returns the previous one.
+pub fn set_breakpoint_handler(handler: BreakpointHandler) -> BreakpointHandler {
+    let old = BREAKPOINT_HANDLER.swap(handler as usize, Ordering::AcqRel);
+    if old == 0 {
+        default_breakpoint_handler
+    } else {
+        // SAFETY: the atomic only stores function pointers of type `BreakpointHandler`.
+        unsafe { core::mem::transmute::<usize, BreakpointHandler>(old) }
+    }
+}
+
+/// Installs the global debug trap hook and returns the previous one.
+pub fn set_debug_handler(handler: DebugHandler) -> DebugHandler {
+    let old = DEBUG_HANDLER.swap(handler as usize, Ordering::AcqRel);
+    if old == 0 {
+        default_debug_handler
+    } else {
+        // SAFETY: the atomic only stores function pointers of type `DebugHandler`.
+        unsafe { core::mem::transmute::<usize, DebugHandler>(old) }
     }
 }
 
@@ -95,14 +133,12 @@ pub fn dispatch_page_fault(addr: VirtAddr, flags: PageFaultFlags) -> bool {
     handler(addr, flags)
 }
 
-/// IRQ handler.
-#[eii]
+/// Dispatches an IRQ to the installed trap hook.
 pub fn irq_handler(irq: usize) -> bool {
     dispatch_irq(irq)
 }
 
-/// Page fault handler.
-#[eii]
+/// Dispatches a page fault to the installed trap hook.
 pub fn page_fault_handler(addr: VirtAddr, flags: PageFaultFlags) -> bool {
     dispatch_page_fault(addr, flags)
 }
@@ -143,9 +179,15 @@ pub(crate) fn call_page_fault_handler_with_parent_irqs(
 /// infinite trap loop. Register changes must go through
 /// [`KernelTrapFrame::apply_registers`], which preserves CPU-owned and
 /// privilege-origin state.
-#[eii]
-pub fn breakpoint_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
-    false
+pub fn breakpoint_handler(tf: &mut KernelTrapFrame<'_>) -> bool {
+    let handler = BREAKPOINT_HANDLER.load(Ordering::Acquire);
+    let handler = if handler == 0 {
+        default_breakpoint_handler
+    } else {
+        // SAFETY: the atomic only stores function pointers of type `BreakpointHandler`.
+        unsafe { core::mem::transmute::<usize, BreakpointHandler>(handler) }
+    };
+    handler(tf)
 }
 
 /// Debug handler.
@@ -168,7 +210,13 @@ pub fn breakpoint_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
 /// the PC. Register changes must go through
 /// [`KernelTrapFrame::apply_registers`], which preserves CPU-owned and
 /// privilege-origin state.
-#[eii]
-pub fn debug_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
-    false
+pub fn debug_handler(tf: &mut KernelTrapFrame<'_>) -> bool {
+    let handler = DEBUG_HANDLER.load(Ordering::Acquire);
+    let handler = if handler == 0 {
+        default_debug_handler
+    } else {
+        // SAFETY: the atomic only stores function pointers of type `DebugHandler`.
+        unsafe { core::mem::transmute::<usize, DebugHandler>(handler) }
+    };
+    handler(tf)
 }

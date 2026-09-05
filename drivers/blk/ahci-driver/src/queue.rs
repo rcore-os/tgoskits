@@ -661,10 +661,7 @@ impl HardwareQueue for AhciQueue {
             self.forget_hardware_memory();
             return Err(BlkError::Io);
         }
-        for slot in 0..MAX_COMMAND_SLOTS {
-            let Some(active) = self.active[slot].take() else {
-                continue;
-            };
+        for active in self.active.iter_mut().filter_map(Option::take) {
             match active {
                 ActiveCommand::Identify { data } => {
                     // SAFETY: Both command and FIS engines are stopped.

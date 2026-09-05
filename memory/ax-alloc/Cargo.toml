@@ -11,7 +11,12 @@ license.workspace = true
 default = []
 global-allocator = []
 tlsf = []
-buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu", "dep:ax-plat"]
+buddy-slab = [
+  "dep:ax-crate-interface",
+  "dep:buddy-slab-allocator",
+  "dep:ax-percpu",
+  "dep:ax-plat",
+]
 tracking = ["dep:ax-percpu", "dep:axbacktrace"]
 
 [package.metadata.docs.rs]
@@ -20,6 +25,7 @@ rustdoc-args = ["--cfg", "doc_cfg"]
 
 [dependencies]
 rlsf = "0.2"
+ax-crate-interface = { workspace = true, optional = true }
 ax-sync.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, optional = true }

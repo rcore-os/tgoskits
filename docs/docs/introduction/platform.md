@@ -24,7 +24,7 @@ sidebar_label: "架构与平台"
 
 | 属性 | 值 |
 |------|-----|
-| 频道 | `nightly-2026-07-15` |
+| 频道 | `nightly-2026-09-04` |
 | Profile | `minimal` |
 | 组件 | `rust-src`, `llvm-tools`, `rustfmt`, `clippy` |
 

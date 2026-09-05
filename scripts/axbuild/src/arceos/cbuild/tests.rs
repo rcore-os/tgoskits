@@ -210,6 +210,35 @@ fn final_linker_script_comes_from_axruntime_build_out_dir() {
 }
 
 #[test]
+fn linker_scripts_support_split_build_directory_layout() {
+    let root = tempfile::tempdir().unwrap();
+    let target_dir = root.path().join("target");
+    let target = "loongarch64-unknown-none-softfloat";
+    let mode = "release";
+    let build_dir = target_dir.join(target).join(mode).join("build");
+    let runtime_out = build_dir.join("ax-runtime/runtime-hash/out");
+    let axplat_out = build_dir.join("axplat-dyn/axplat-hash/out");
+    let somehal_out = build_dir.join("somehal/somehal-hash/out");
+    let someboot_out = build_dir.join("someboot/someboot-hash/out");
+    fs::create_dir_all(&runtime_out).unwrap();
+    fs::create_dir_all(&axplat_out).unwrap();
+    fs::create_dir_all(&somehal_out).unwrap();
+    fs::create_dir_all(&someboot_out).unwrap();
+    fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
+    fs::write(axplat_out.join("axplat.x"), "").unwrap();
+    fs::write(somehal_out.join("link.x"), "").unwrap();
+    fs::write(someboot_out.join("someboot.x"), "").unwrap();
+
+    let link_scripts = find_link_scripts(&target_dir, target, mode, "loongarch64", &[]).unwrap();
+
+    assert_eq!(link_scripts.script, runtime_out.join(ARCEOS_LINKER_SCRIPT));
+    assert!(link_scripts.search_dirs.contains(&runtime_out));
+    assert!(link_scripts.search_dirs.contains(&axplat_out));
+    assert!(link_scripts.search_dirs.contains(&somehal_out));
+    assert!(link_scripts.search_dirs.contains(&someboot_out));
+}
+
+#[test]
 fn linker_search_dirs_use_current_platform_script_owner() {
     let root = tempfile::tempdir().unwrap();
     let target_dir = root.path().join("target");

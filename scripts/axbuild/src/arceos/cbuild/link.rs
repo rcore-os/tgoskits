@@ -41,45 +41,7 @@ pub(super) fn find_final_linker_script(
     mode: &str,
 ) -> anyhow::Result<PathBuf> {
     let build_dir = target_dir.join(target).join(mode).join("build");
-    let mut candidates = Vec::new();
-    if build_dir.is_dir() {
-        for entry in fs::read_dir(&build_dir)
-            .with_context(|| format!("failed to read {}", build_dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("ax-runtime-"))
-            {
-                let linker_script = path.join("out").join(ARCEOS_LINKER_SCRIPT);
-                if linker_script.is_file() {
-                    let modified = linker_script
-                        .metadata()
-                        .and_then(|metadata| metadata.modified())
-                        .unwrap_or(UNIX_EPOCH);
-                    candidates.push((modified, linker_script));
-                }
-            }
-        }
-    }
-
-    candidates.sort_by(|(left_time, left_path), (right_time, right_path)| {
-        right_time
-            .cmp(left_time)
-            .then_with(|| left_path.cmp(right_path))
-    });
-    candidates
-        .into_iter()
-        .map(|(_, path)| path)
-        .next()
-        .with_context(|| {
-            format!(
-                "expected final linker script under {} after ax-libc cargo build",
-                build_dir.join("ax-runtime-*/out").display()
-            )
-        })
+    latest_script_with_package_prefix(&build_dir, "ax-runtime-", ARCEOS_LINKER_SCRIPT)
 }
 
 #[cfg(test)]
@@ -134,29 +96,27 @@ fn latest_out_dir_with_script(
     package_prefix: &str,
     script_name: &str,
 ) -> anyhow::Result<PathBuf> {
+    let script = latest_script_with_package_prefix(build_dir, package_prefix, script_name)?;
+    Ok(script
+        .parent()
+        .expect("a build script output always has an out directory")
+        .to_path_buf())
+}
+
+fn latest_script_with_package_prefix(
+    build_dir: &Path,
+    package_prefix: &str,
+    script_name: &str,
+) -> anyhow::Result<PathBuf> {
     let mut candidates = Vec::new();
-    if build_dir.is_dir() {
-        for entry in fs::read_dir(build_dir)
-            .with_context(|| format!("failed to read {}", build_dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(package_prefix))
-            {
-                continue;
-            }
-            let out_dir = path.join("out");
-            let script = out_dir.join(script_name);
-            if script.is_file() {
-                let modified = script
-                    .metadata()
-                    .and_then(|metadata| metadata.modified())
-                    .unwrap_or(UNIX_EPOCH);
-                candidates.push((modified, out_dir));
-            }
+    for out_dir in package_out_dirs(build_dir, package_prefix)? {
+        let script = out_dir.join(script_name);
+        if script.is_file() {
+            let modified = script
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(UNIX_EPOCH);
+            candidates.push((modified, script));
         }
     }
 
@@ -170,12 +130,47 @@ fn latest_out_dir_with_script(
         .map(|(_, path)| path)
         .next()
         .with_context(|| {
+            let package = package_prefix.trim_end_matches('-');
             format!(
-                "expected linker script `{script_name}` under {}/{}*/out after ax-libc cargo build",
+                "expected linker script `{script_name}` under {}/{}*/out or {}/{package}/*/out \
+                 after ax-libc cargo build",
                 build_dir.display(),
-                package_prefix
+                package_prefix,
+                build_dir.display(),
             )
         })
+}
+
+fn package_out_dirs(build_dir: &Path, package_prefix: &str) -> anyhow::Result<Vec<PathBuf>> {
+    if !build_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let package = package_prefix.trim_end_matches('-');
+    let mut out_dirs = Vec::new();
+    for entry in fs::read_dir(build_dir)
+        .with_context(|| format!("failed to read {}", build_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(package_prefix) {
+            out_dirs.push(path.join("out"));
+        } else if name == package && path.is_dir() {
+            for unit in
+                fs::read_dir(&path).with_context(|| format!("failed to read {}", path.display()))?
+            {
+                let unit = unit?;
+                if unit.path().is_dir() {
+                    out_dirs.push(unit.path().join("out"));
+                }
+            }
+        }
+    }
+    Ok(out_dirs)
 }
 
 pub(super) fn link_c_app(

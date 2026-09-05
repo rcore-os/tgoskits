@@ -36,6 +36,7 @@ harness = false
 name = "global_allocator"
 
 [dependencies]
+ax-crate-interface = { workspace = true }
 ax-sync = { workspace = true }
 log = "0.4"
 

@@ -9,8 +9,7 @@ use core::{
 use ax_sync::SpinLock;
 use buddy_slab_allocator::{
     GlobalAllocator as InnerAllocator, SizeClass, SlabAllocResult, SlabAllocator,
-    SlabDeallocResult, SlabPoolTrait, SlabTrait,
-    eii::{slab_pool_impl, virt_to_phys_impl},
+    SlabDeallocResult, SlabPoolTrait, SlabTrait, interface::BuddySlabIf,
 };
 
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
@@ -117,14 +116,17 @@ impl SlabPoolTrait for SlabPool {
     }
 }
 
-#[slab_pool_impl]
-fn slab_pool() -> &'static dyn SlabPoolTrait {
-    &SLAB_POOL
-}
+struct BuddySlabIfImpl;
 
-#[virt_to_phys_impl]
-fn virt_to_phys(vaddr: usize) -> usize {
-    ax_plat::mem::virt_to_phys(vaddr.into()).as_usize()
+#[ax_crate_interface::impl_interface]
+impl BuddySlabIf for BuddySlabIfImpl {
+    fn virt_to_phys(vaddr: usize) -> usize {
+        ax_plat::mem::virt_to_phys(vaddr.into()).as_usize()
+    }
+
+    fn slab_pool() -> &'static dyn SlabPoolTrait {
+        &SLAB_POOL
+    }
 }
 
 /// The global allocator used by ArceOS when `buddy-slab` is enabled.

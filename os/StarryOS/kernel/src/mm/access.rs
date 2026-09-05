@@ -11,12 +11,11 @@ use core::{
 use ax_io::{IoError, prelude::*};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
-#[cfg(any(not(feature = "axtest"), test))]
-use ax_runtime::hal::cpu::trap::{PageFaultFlags, page_fault_handler};
 use ax_runtime::hal::{
     cpu::{
         UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op,
         asm::user_copy,
+        trap::PageFaultFlags,
         user_atomic_u32, user_read_u32,
     },
     paging::MappingFlags,
@@ -436,12 +435,7 @@ fn fault_in_user_u32(address: usize, intent: UserAccessIntent) -> StarryResult<(
 /// `node_vmstat_pgfault`.
 pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
-// The no-std axtest integration target includes `root.rs` directly while Cargo
-// also builds the package library as a dependency. Keep the runtime hook in
-// the test root and omit the duplicate library-side implementation.
-#[cfg(any(not(feature = "axtest"), test))]
-#[page_fault_handler]
-fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
+pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
 
     #[cfg(feature = "stack-guard-page")]

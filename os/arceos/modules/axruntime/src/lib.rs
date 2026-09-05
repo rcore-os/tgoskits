@@ -28,7 +28,6 @@
 //! Interrupt handling and multi-task scheduling are mandatory runtime
 //! capabilities. The listed features are optional and disabled by default.
 
-#![feature(extern_item_impls)]
 #![cfg_attr(not(test), no_std)]
 #![allow(missing_abi)]
 
@@ -113,16 +112,23 @@ const LOGO: &str = r#"
 d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
 "#;
 
-#[eii]
 fn ax_app_entry() {
-    #[cfg(not(test))]
-    unsafe extern "C" {
-        /// Legacy application's entry point.
-        safe fn main();
+    #[cfg(all(feature = "std-compat", not(test)))]
+    {
+        unsafe extern "C" {
+            safe fn __axstd_std_check_entry();
+        }
+        __axstd_std_check_entry();
     }
-    // Default implementation
-    #[cfg(not(test))]
-    main();
+
+    #[cfg(all(not(feature = "std-compat"), not(test)))]
+    {
+        unsafe extern "C" {
+            /// Legacy application's entry point.
+            safe fn main();
+        }
+        main();
+    }
 }
 
 struct LogIfImpl;

@@ -104,11 +104,10 @@ pub mod topology {
 
 /// Trap handling.
 pub mod trap {
-    #[cfg(target_arch = "x86_64")]
-    pub use ax_cpu::trap::debug_handler;
     pub use ax_cpu::trap::{
-        PageFaultFlags, breakpoint_handler, dispatch_irq, dispatch_page_fault, irq_handler,
-        page_fault_handler, set_irq_handler, set_page_fault_handler,
+        BreakpointHandler, DebugHandler, PageFaultFlags, breakpoint_handler, debug_handler,
+        dispatch_irq, dispatch_page_fault, irq_handler, page_fault_handler, set_breakpoint_handler,
+        set_debug_handler, set_irq_handler, set_page_fault_handler,
     };
 }
 

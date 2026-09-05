@@ -895,7 +895,17 @@ pub unsafe extern "C" fn isatty(_fd: c_int) -> c_int {
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: ModeT) -> c_int {
+pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mut args: ...) -> c_int {
+    let mode = if flags & libc::O_CREAT != 0 {
+        unsafe { args.next_arg::<ModeT>() }
+    } else {
+        0
+    };
+    open_with_mode(path, flags, mode)
+}
+
+#[cfg(feature = "fs")]
+fn open_with_mode(path: *const c_char, flags: c_int, mode: ModeT) -> c_int {
     let path_string = ax_posix_api::utils::char_ptr_to_str(path)
         .ok()
         .map(ToString::to_string);
@@ -913,8 +923,13 @@ pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: ModeT) ->
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn open64(path: *const c_char, flags: c_int, mode: ModeT) -> c_int {
-    unsafe { open(path, flags, mode) }
+pub unsafe extern "C" fn open64(path: *const c_char, flags: c_int, mut args: ...) -> c_int {
+    let mode = if flags & libc::O_CREAT != 0 {
+        unsafe { args.next_arg::<ModeT>() }
+    } else {
+        0
+    };
+    open_with_mode(path, flags, mode)
 }
 
 /// # Safety
@@ -1111,14 +1126,19 @@ pub unsafe extern "C" fn openat(
     dirfd: c_int,
     path: *const c_char,
     flags: c_int,
-    mode: ModeT,
+    mut args: ...
 ) -> c_int {
+    let mode = if flags & libc::O_CREAT != 0 {
+        unsafe { args.next_arg::<ModeT>() }
+    } else {
+        0
+    };
     let path = match resolve_at_path(dirfd, path) {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
     let path = c_string_from_string(path);
-    unsafe { open(path.as_ptr(), flags, mode) }
+    open_with_mode(path.as_ptr(), flags, mode)
 }
 
 /// # Safety
@@ -1130,9 +1150,19 @@ pub unsafe extern "C" fn openat64(
     dirfd: c_int,
     path: *const c_char,
     flags: c_int,
-    mode: ModeT,
+    mut args: ...
 ) -> c_int {
-    unsafe { openat(dirfd, path, flags, mode) }
+    let mode = if flags & libc::O_CREAT != 0 {
+        unsafe { args.next_arg::<ModeT>() }
+    } else {
+        0
+    };
+    let path = match resolve_at_path(dirfd, path) {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let path = c_string_from_string(path);
+    open_with_mode(path.as_ptr(), flags, mode)
 }
 
 /// # Safety
@@ -1492,9 +1522,49 @@ mod fs_stubs {
         };
     }
 
+    /// # Safety
+    ///
+    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn open(_path: *const c_char, _flags: c_int, _args: ...) -> c_int {
+        fail(Errno::ENOSYS)
+    }
+
+    /// # Safety
+    ///
+    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn open64(_path: *const c_char, _flags: c_int, _args: ...) -> c_int {
+        fail(Errno::ENOSYS)
+    }
+
+    /// # Safety
+    ///
+    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn openat(
+        _dirfd: c_int,
+        _path: *const c_char,
+        _flags: c_int,
+        _args: ...
+    ) -> c_int {
+        fail(Errno::ENOSYS)
+    }
+
+    /// # Safety
+    ///
+    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn openat64(
+        _dirfd: c_int,
+        _path: *const c_char,
+        _flags: c_int,
+        _args: ...
+    ) -> c_int {
+        fail(Errno::ENOSYS)
+    }
+
     fs_stub! {
-        fn open(path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
-        fn open64(path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
         fn lseek(fd: c_int, offset: OffT, whence: c_int) -> OffT => { fail(Errno::ENOSYS) as OffT }
         fn lseek64(fd: c_int, offset: OffT, whence: c_int) -> OffT => { fail(Errno::ENOSYS) as OffT }
         fn stat(path: *const c_char, buf: *mut libc::stat) -> c_int => { fail(Errno::ENOSYS) }
@@ -1506,8 +1576,6 @@ mod fs_stubs {
         fn rename(old: *const c_char, new: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
         fn unlink(path: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
         fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int => { fail(Errno::ENOSYS) }
-        fn openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
-        fn openat64(dirfd: c_int, path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
         fn mkdir(path: *const c_char, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
         fn mkdirat(dirfd: c_int, path: *const c_char, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
         fn rmdir(path: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
@@ -3055,8 +3123,8 @@ mod net_stubs {
 #[cfg(not(feature = "net"))]
 pub use net_stubs::*;
 
-#[cfg_attr(not(doc), ax_runtime::ax_app_entry)]
-fn axstd_std_check_entry() {
+#[unsafe(no_mangle)]
+extern "C" fn __axstd_std_check_entry() {
     unsafe extern "C" {
         safe fn main(argc: c_int, argv: *const *const c_char) -> c_int;
     }

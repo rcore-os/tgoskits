@@ -29,40 +29,29 @@ arch = "aarch64"
 cases = ["smoke", "gicv2-timer-stress", "gicv3-timer-stress"]
 
 [[check]]
-id = "test-axvisor-aarch64-qemu-panic-modes"
+id = "test-axvisor-aarch64-qemu-panic-http-control-plane-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · Panic modes"
+name = "QEMU aarch64 · Panic modes + HTTP control-plane + browser console + IVC"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
 echo "==> axvisor aarch64 no-backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
-'''
-
-[[check.suite]]
-kind = "axvisor-qemu"
-arch = "aarch64"
-cases = ["backtrace-panic", "no-backtrace"]
-
-[[check]]
-id = "test-axvisor-aarch64-qemu-http-control-plane"
-impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · HTTP control-plane"
-timeout_minutes = 30
-command = '''
 echo "==> pull qemu-aarch64 image"
 cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
 echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 echo "==> axvisor aarch64 browser console"
 cargo xtask axvisor test qemu --arch aarch64 --test-case browser-console
+echo "==> axvisor aarch64 IVC"
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["http-control-plane", "browser-console"]
+cases = ["backtrace-panic", "no-backtrace", "http-control-plane", "browser-console", "qemu-ivc"]
 
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
@@ -107,19 +96,6 @@ arch = "loongarch64"
 cases = ["smoke"]
 
 [[check]]
-id = "test-axvisor-qemu-ivc"
-impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · IVC"
-command = '''
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
-'''
-
-[[check.suite]]
-kind = "axvisor-qemu"
-arch = "aarch64"
-cases = ["qemu-ivc"]
-
-[[check]]
 id = "test-axvisor-self-hosted-x86-64-svm-smoke-acpi"
 impact_targets = ["axvisor:x86_64"]
 name = "SVM x86_64 · Smoke + direct/OVMF ACPI"
@@ -142,18 +118,24 @@ arch = "x86_64"
 cases = ["smoke-svm", "direct-acpi-svm", "ovmf-acpi-svm"]
 
 [[check]]
-id = "test-axvisor-self-hosted-x86-64-vmx"
+id = "test-axvisor-self-hosted-x86-64-vmx-smoke-pci-enumeration"
 impact_targets = ["axvisor:x86_64"]
-name = "VMX x86_64 · Smoke"
+name = "VMX x86_64 · Smoke + Generic PCI enumeration"
 runner = "kvm-intel"
+timeout_minutes = 90
 command = '''
+echo "==> axvisor x86_64 VMX smoke"
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
+echo "==> pull qemu-x86_64 image"
+cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
+echo "==> axvisor x86_64 VMX generic PCI enumeration"
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-enumeration-vmx
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["smoke-vmx"]
+cases = ["smoke-vmx", "pci-enumeration-vmx"]
 
 [[check]]
 id = "test-axloader-http-smoke"
@@ -174,9 +156,13 @@ name = "VMX x86_64 · Direct + MP fallback + OVMF ACPI"
 runner = "kvm-intel"
 timeout_minutes = 90
 command = '''
+echo "==> pull qemu-x86_64 image"
 cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
+echo "==> axvisor x86_64 VMX direct ACPI boot"
 target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+echo "==> axvisor x86_64 VMX MP fallback boot"
 target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
+echo "==> axvisor x86_64 VMX OVMF ACPI boot"
 target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 '''
 
@@ -184,22 +170,6 @@ target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 kind = "axvisor-qemu"
 arch = "x86_64"
 cases = ["direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx"]
-
-[[check]]
-id = "test-axvisor-x86-64-pci-enumeration-vmx"
-impact_targets = ["axvisor:x86_64"]
-name = "VMX x86_64 · Generic PCI enumeration"
-runner = "kvm-intel"
-timeout_minutes = 45
-command = '''
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
-cargo xtask axvisor test qemu --arch x86_64 --test-case pci-enumeration-vmx
-'''
-
-[[check.suite]]
-kind = "axvisor-qemu"
-arch = "x86_64"
-cases = ["pci-enumeration-vmx"]
 
 [[check]]
 id = "test-axvisor-x86-64-pci-enumeration-svm"
@@ -218,26 +188,27 @@ arch = "x86_64"
 cases = ["pci-enumeration-svm"]
 
 [[check]]
-id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · Linux guest"
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-starry-ivc-benchmark"
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+name = "Board OrangePi 5 Plus · Linux + StarryOS + AXIVC Zephyr-Starry benchmark"
 runner = "board"
+timeout_minutes = 90
 command = '''
+echo "==> axvisor OrangePi 5 Plus Linux guest"
 cargo xtask axvisor test board --board orangepi-5-plus-linux
+echo "==> axvisor OrangePi 5 Plus StarryOS guest"
+cargo xtask axvisor test board --board orangepi-5-plus-starry
+echo "==> axvisor OrangePi 5 Plus AXIVC Zephyr-Starry benchmark"
+cargo xtask axvisor test board --board orangepi-5-plus-ivc-benchmark
 '''
 
 [[check.suite]]
 kind = "axvisor-board"
-board = "orangepi-5-plus-linux"
+board = "orangepi-5-plus-ivc-benchmark"
 
-[[check]]
-id = "test-axvisor-self-hosted-board-orangepi-5-plus-starry"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · StarryOS guest"
-runner = "board"
-command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-starry
-'''
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-linux"
 
 [[check.suite]]
 kind = "axvisor-board"

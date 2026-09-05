@@ -858,12 +858,12 @@ where
                 };
                 let hpm_start = Self::FIXED_COUNTERS + Self::FIRMWARE_COUNTERS;
                 let mut found = None;
-                for idx in hpm_start..self.counters.len() {
+                for (idx, counter) in self.counters.iter().enumerate().skip(hpm_start) {
                     if !Self::counter_in_set(idx, counter_idx_base, counter_idx_mask) {
                         continue;
                     }
-                    if !self.counters[idx].configured.load(Ordering::Relaxed) {
-                        self.counters[idx].hw_slot.store(hw_slot, Ordering::Relaxed);
+                    if !counter.configured.load(Ordering::Relaxed) {
+                        counter.hw_slot.store(hw_slot, Ordering::Relaxed);
                         found = Some(idx);
                         break;
                     }
@@ -922,12 +922,11 @@ where
         if ret.is_err() {
             return ret;
         }
-        for counter_idx in 0..self.counters.len() {
+        for (counter_idx, counter) in self.counters.iter().enumerate() {
             if !Self::counter_in_set(counter_idx, counter_idx_base, counter_idx_mask) {
                 continue;
             }
 
-            let counter = &self.counters[counter_idx];
             if !counter.configured.load(Ordering::Relaxed) {
                 return SbiRet::invalid_param();
             }
@@ -983,12 +982,11 @@ where
             return ret;
         }
 
-        for counter_idx in 0..self.counters.len() {
+        for (counter_idx, counter) in self.counters.iter().enumerate() {
             if !Self::counter_in_set(counter_idx, counter_idx_base, counter_idx_mask) {
                 continue;
             }
 
-            let counter = &self.counters[counter_idx];
             if !counter.configured.load(Ordering::Relaxed) {
                 return SbiRet::invalid_param();
             }

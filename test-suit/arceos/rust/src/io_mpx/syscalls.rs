@@ -37,7 +37,7 @@ impl EpollEvent {
 
 /// The `#[no_mangle]` symbols provided by `ax_std::os::libc_compat`.
 mod raw {
-    use core::ffi::c_int;
+    use core::ffi::{c_int, c_void};
 
     use super::EpollEvent;
 
@@ -53,8 +53,8 @@ mod raw {
             maxevents: c_int,
             timeout: c_int,
         ) -> c_int;
-        pub(super) fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
-        pub(super) fn write(fd: c_int, buf: *const u8, count: usize) -> isize;
+        pub(super) fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+        pub(super) fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
         pub(super) fn __errno_location() -> *mut c_int;
     }
 }
@@ -112,11 +112,11 @@ pub fn epoll_wait(epfd: c_int, events: &mut [EpollEvent], timeout: c_int) -> Res
 }
 
 pub fn read(fd: c_int, buf: &mut [u8]) -> Result<usize, c_int> {
-    io_syscall(unsafe { raw::read(fd, buf.as_mut_ptr(), buf.len()) })
+    io_syscall(unsafe { raw::read(fd, buf.as_mut_ptr().cast(), buf.len()) })
 }
 
 pub fn write(fd: c_int, buf: &[u8]) -> Result<usize, c_int> {
-    io_syscall(unsafe { raw::write(fd, buf.as_ptr(), buf.len()) })
+    io_syscall(unsafe { raw::write(fd, buf.as_ptr().cast(), buf.len()) })
 }
 
 pub fn read_u64(fd: c_int) -> Result<u64, c_int> {
