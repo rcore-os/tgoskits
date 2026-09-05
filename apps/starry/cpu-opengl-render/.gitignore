@@ -1,0 +1,4 @@
+target/
+*_full_api
+*.o
+*.rlib
