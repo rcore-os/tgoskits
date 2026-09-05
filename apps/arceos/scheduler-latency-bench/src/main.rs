@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-#[cfg(feature = "arceos")]
+#[cfg(any(feature = "arceos", feature = "qperf-metrics"))]
 use ax_std as _;
 
 const THREADS: usize = 2;
@@ -17,7 +17,7 @@ const FIFO_PRIORITY: u8 = 80;
 
 #[cfg(feature = "qperf-metrics")]
 fn metric_average(total: u64, count: u64) -> u64 {
-    if count == 0 { 0 } else { total / count }
+    total.checked_div(count).unwrap_or(0)
 }
 
 fn fifo_policy() -> ax_task::SchedulePolicy {

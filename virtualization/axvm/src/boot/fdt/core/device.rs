@@ -124,7 +124,7 @@ pub(crate) fn find_all_passthrough_devices_from_paths(
         all_device_names.retain(|device_name| {
             let directly_excluded = excluded_set.contains(device_name);
             let covers_excluded_subtree = !directly_excluded
-                && excluded_device_path.iter().any(|excluded_path| {
+                && excluded_device_paths.iter().any(|excluded_path| {
                     node_cache.contains_key(excluded_path)
                         && is_path_or_ancestor(device_name, excluded_path)
                 });
