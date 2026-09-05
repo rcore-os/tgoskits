@@ -17,7 +17,7 @@ use crate::{
     StarryError, StarryResult,
     file::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, NsFd, Pipe,
-        add_file_like, close_file_like, get_file_like, memfd::Memfd, with_fs,
+        add_file_like, close_file_like, get_file_like, memfd::Memfd, resolve_at, with_fs,
     },
     mm::vm_load_path_string,
     pseudofs::{Device, dev::tty},
@@ -26,6 +26,23 @@ use crate::{
         get_user_task_by_number,
     },
 };
+
+/// Access bits (`R_OK`/`W_OK`) that opening an existing file with these
+/// flags requires: the access mode, plus write for `O_TRUNC`/`O_APPEND`.
+fn open_access_mask(flags: u32) -> u32 {
+    let acc = flags & O_ACCMODE;
+    let mut want = 0;
+    if acc == O_RDONLY || acc == O_RDWR {
+        want |= R_OK;
+    }
+    if acc == O_WRONLY || acc == O_RDWR {
+        want |= W_OK;
+    }
+    if flags & (O_TRUNC | O_APPEND) != 0 {
+        want |= W_OK;
+    }
+    want
+}
 
 /// Convert open flags to [`OpenOptions`].
 fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32)) -> OpenOptions {
@@ -531,6 +548,41 @@ pub fn sys_openat(
 
     let cred = thread.cred();
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
+
+    // DAC: opening an existing inode must satisfy owner/group/other
+    // permission for the requested access; O_TRUNC/O_APPEND imply write.
+    // Linux enforces this at open time (see faccessat2 / dac_access_check).
+    // O_PATH only takes a path handle and O_TMPFILE / exclusive create make
+    // a new file, so none need an access check here; a not-yet-existing file
+    // is created and its permission comes from the parent directory.
+    if uflags & O_PATH == 0
+        && uflags & O_TMPFILE != O_TMPFILE
+        && !(uflags & O_CREAT != 0 && uflags & O_EXCL != 0)
+    {
+        let want = open_access_mask(uflags);
+        if want != 0 {
+            let resolve_flags = if uflags & O_NOFOLLOW != 0 {
+                AT_SYMLINK_NOFOLLOW
+            } else {
+                0
+            };
+            // Only an existing, resolvable target is checked; if it cannot be
+            // resolved (it will be created, or a lookup error the open itself
+            // surfaces), leave the authoritative result to options.open below.
+            if let Ok(target) = resolve_at(dirfd, Some(path.as_str()), resolve_flags) {
+                let kstat = target.stat()?;
+                super::stat::dac_access_check(
+                    cred.fsuid,
+                    cred.fsgid,
+                    &cred.groups,
+                    kstat.uid,
+                    kstat.gid,
+                    kstat.mode,
+                    want,
+                )?;
+            }
+        }
+    }
     let should_notify_create = uflags & O_CREAT != 0
         && uflags & O_PATH == 0
         && with_fs(dirfd, |fs| match fs.resolve_no_follow(&path) {

@@ -193,47 +193,67 @@ pub fn sys_faccessat2(
     }
 
     let cred = current().as_thread().cred();
+    let kstat = file.stat()?;
+    dac_access_check(
+        cred.fsuid,
+        cred.fsgid,
+        &cred.groups,
+        kstat.uid,
+        kstat.gid,
+        kstat.mode,
+        mode,
+    )?;
 
-    // Root (fsuid == 0) bypasses R_OK and W_OK checks.
-    // For X_OK, at least one execute bit must be set (owner, group, or other).
-    if cred.fsuid == 0 {
-        if mode & X_OK != 0 {
-            let perm_bits = file.stat()?.mode as u16;
+    Ok(0)
+}
+
+/// POSIX discretionary access check shared by faccessat2 and openat.
+///
+/// Does a caller with `fsuid`/`fsgid` and supplementary `groups` hold the
+/// `want` access (a mask of `R_OK`/`W_OK`/`X_OK`) on a node owned by
+/// `file_uid`:`file_gid` with permission bits `file_mode`? Root (fsuid == 0)
+/// bypasses read/write; execute still requires at least one execute bit.
+/// Denials return `PermissionDenied` (EACCES), matching Linux.
+pub(crate) fn dac_access_check(
+    fsuid: u32,
+    fsgid: u32,
+    groups: &[u32],
+    file_uid: u32,
+    file_gid: u32,
+    file_mode: u32,
+    want: u32,
+) -> StarryResult<()> {
+    if want == 0 {
+        return Ok(());
+    }
+    if fsuid == 0 {
+        if want & X_OK != 0 {
             let any_exec = NodePermission::OWNER_EXEC.bits()
                 | NodePermission::GROUP_EXEC.bits()
                 | NodePermission::OTHER_EXEC.bits();
-            if perm_bits & any_exec == 0 {
+            if file_mode as u16 & any_exec == 0 {
                 return Err(StarryError::PermissionDenied);
             }
         }
-        return Ok(0);
+        return Ok(());
     }
-
-    let kstat = file.stat()?;
-    let file_uid = kstat.uid;
-    let file_gid = kstat.gid;
-    let file_mode = kstat.mode;
-
-    // Select effective permission bits based on owner/group/other matching.
-    let effective_bits = if cred.fsuid == file_uid {
+    let effective_bits = if fsuid == file_uid {
         (file_mode >> 6) & 0o7
-    } else if cred.fsgid == file_gid || cred.groups.contains(&file_gid) {
+    } else if fsgid == file_gid || groups.contains(&file_gid) {
         (file_mode >> 3) & 0o7
     } else {
         file_mode & 0o7
     };
-
-    if (mode & R_OK != 0) && (effective_bits & 4 == 0) {
+    if (want & R_OK != 0) && (effective_bits & 4 == 0) {
         return Err(StarryError::PermissionDenied);
     }
-    if (mode & W_OK != 0) && (effective_bits & 2 == 0) {
+    if (want & W_OK != 0) && (effective_bits & 2 == 0) {
         return Err(StarryError::PermissionDenied);
     }
-    if (mode & X_OK != 0) && (effective_bits & 1 == 0) {
+    if (want & X_OK != 0) && (effective_bits & 1 == 0) {
         return Err(StarryError::PermissionDenied);
     }
-
-    Ok(0)
+    Ok(())
 }
 
 fn statfs(loc: &Location) -> StarryResult<statfs> {
