@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# bin/setup - 配置 net-bench 主机测试环境（br0/tap0/dnsmasq DHCP、设备权限）。
+#
+# 直连 env/setup-common.sh，不经实验性自动检测壳 bin/bench，因此在裸机上也能
+# 一步到位：setup-common.sh 会自动补齐依赖（iperf3/ip/brctl/jq/dnsmasq）、
+# 加载 vhost_net 模块、放开 /dev/kvm 与 /dev/vhost-net 权限、建桥接与 TAP、
+# 启动 DHCP。iperf3 服务端由测试入口（run.sh）自管，这里不启动。
+#
+# 用法:
+#   sudo bash apps/starry/net-bench/bin/setup
+#
+# 清理:
+#   sudo bash apps/starry/net-bench/bin/teardown
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BENCH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [[ $EUID -ne 0 ]]; then
+    echo "需要 root 权限，请用: sudo bash $0" >&2
+    exit 1
+fi
+
+exec bash "$BENCH_ROOT/env/setup-common.sh" "$@"

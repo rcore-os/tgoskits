@@ -1,0 +1,67 @@
+# StarryOS + Linux 网络性能基线汇总 — 2026-06-17
+# 环境：WSL2 (Linux 5.15.167.4-microsoft-standard-WSL2), QEMU aarch64 (cortex-a53)
+# iperf3 3.19.1 (Alpine apk), 测试方向：Starry guest client → host server
+
+## 1. Starry smp=1, usermode 网络 (SLIRP, 10.0.2.2)
+
+| 指标 | 结果 |
+|------|------|
+| TCP 1-stream | 93.1 Mbit/s |
+| TCP 4-stream | 93.9 Mbit/s |
+| UDP (target 1G) | 70.9 Mbit/s, 60867 pkts, lost=0% |
+| host CPU | ~100% (system 199%) |
+| guest CPU | 4.0% |
+
+## 2. Starry smp=4, usermode 网络 (SLIRP)
+
+| 指标 | 结果 |
+|------|------|
+| TCP 1-stream | 70.1 Mbit/s (-25% vs smp=1) |
+| TCP 4-stream | 80.1 Mbit/s |
+| UDP (target 1G) | 62.9 Mbit/s, 54382 pkts, lost=0% |
+| host CPU | ~100% |
+| guest CPU | 3.2% / 2.0% |
+
+注：smp=4 TCP 吞吐比 smp=1 下降，说明多核调度开销 > 并发收益；锁竞争更严重。
+
+## 3. Starry smp=1, TAP 网络 (192.168.100.x)
+
+| 指标 | 结果 |
+|------|------|
+| TCP 1-stream | 96.3 Mbit/s (+3% vs usermode) |
+| TCP 4-stream | 91.0 Mbit/s |
+| UDP (target 1G) | 62.7 Mbit/s, 54291 pkts, lost=0% |
+| host CPU | ~100% |
+| guest CPU | 3.3% / 2.2% |
+
+注：TAP 去掉 SLIRP 后 TCP 单流略有提升，但该场景尚未开启 vhost，
+    也没有同拓扑 Linux guest 基线；当前只能作为 smoke baseline 和初步趋势观察。
+
+## 4. Linux WSL2 loopback 基线（无 QEMU，参考上限）
+
+| 指标 | 结果 |
+|------|------|
+| TCP 1-stream | 174,837 Mbit/s (~174 Gbit/s) |
+| TCP 4-stream | 506,842 Mbit/s (~507 Gbit/s) |
+| UDP (target 1G) | 1,000 Mbit/s (达到目标上限) |
+
+注：loopback 走内核零拷贝，不代表真实网络，仅作 host 能力参考。
+
+## 初步观察
+
+1. **SLIRP smoke 数据约 70-93 Mbit/s**，只能用于确认 workflow，不用于正式性能结论
+2. **TAP(no vhost) TCP 单流约 96 Mbit/s**，可作为下一步 vhost/TAP baseline 的对照起点
+3. **smp=4 没有带来吞吐提升**，和全局 SERVICE/SOCKET_SET 锁、多核串行化的已知风险一致
+4. **host CPU 跑满（~100%）而 guest 只用 3-4%**，说明当前测量路径仍需进一步拆分 QEMU/host/guest 开销
+5. **UDP 实际吞吐约 63-71 Mbit/s**（目标 1G），提示需要补充小包 PPS、drop/retrans 和 cycles/packet 观测
+
+这些数字尚未满足完整 benchmark 方法论要求：缺少 QEMU+TAP+vhost、同拓扑 Linux 基线、
+多次重复统计、环境指纹和 CPU/packet 归因数据。因此本文件记录的是 smoke baseline，
+不是最终性能归因报告。
+
+## 优化方向（按优先级）
+
+1. 消除 ax-net 全局大锁（SERVICE/SOCKET_SET）→ 预期多核扩展 + 单核吞吐提升
+2. RX 路径减少内存拷贝（smoltcp buffer → 用户缓冲区目前 4+ 次拷贝）
+3. 增大 smoltcp 接收环（当前 64 包即满即丢）
+4. 实现 virtio-net vhost-net + 多队列（绕过 QEMU 数据面）

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# bin/teardown - 清理 net-bench 测试环境
+#
+# 用法:
+#   teardown         清理环境
+#   teardown status  显示当前状态
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BENCH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENV_DIR="$BENCH_ROOT/env"
+
+exec sudo bash "$ENV_DIR/teardown.sh" "$@"

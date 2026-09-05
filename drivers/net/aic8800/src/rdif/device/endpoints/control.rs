@@ -58,6 +58,9 @@ impl AicWifiControl {
 }
 
 impl WifiControl for AicWifiControl {
+    // Kept out-of-line so eBPF kprobe observers (apps/starry/ebpf/netmon) can
+    // attach at a stable symbol; the call boundary cost is negligible here.
+    #[inline(never)]
     fn start(
         &mut self,
         operation: &WifiOperation,

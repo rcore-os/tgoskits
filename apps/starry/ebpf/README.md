@@ -17,6 +17,8 @@
 4. rawtp: 通过raw tracepoint hook内核的sys_clone函数，打印调用参数。程序会在后台运行，因此你可以使用 `ls` / `uname` 等命令来触发sys_clone系统调用。
 5. upb: 通过uprobe hook用户态的函数，打印调用参数。
 6. upb2: 通过uprobe hook用户态的libc库函数(mkdir)，打印调用参数。
+7. net_stats: 通过kprobe hook `DeviceHandle::count_tx/count_rx`，统计L2帧收发计数（与 `/proc/net/dev` 同源）。
+8. netmon: 通过kprobe/kretprobe 覆盖队列runtime全栈（SDIO CMD53 → 中断调度 → 协议侧端口 → L2计数），统计各层延迟直方图与计数器，详见 `netmon/README.md`。
 
 ## 支持状态
 
@@ -30,6 +32,8 @@
 | upb2          | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | profile       | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | sched_trace   | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| net_stats     | :white_check_mark: |                    |                    |                    |
+| netmon        | :white_check_mark: |                    |                    |                    |
 
 ## Build & Run
 

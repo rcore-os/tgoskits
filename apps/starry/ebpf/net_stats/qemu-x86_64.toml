@@ -1,0 +1,26 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-smp",
+    "2",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+# UEFI boot is required for x86_64 PVH entry on QEMU ≥ 6.0 (the kernel
+# binary is loaded as a PVH-compatible ELF via the firmware hand-off,
+# avoiding the "Error loading uncompressed kernel without PVH ELF Note"
+# error seen with direct -kernel boot).
+uefi = true
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/net_stats --test"
+success_regex = ["TEST PASSED"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', 'TEST FAILED']
+timeout = 120

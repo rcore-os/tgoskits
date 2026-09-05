@@ -1,0 +1,16 @@
+[package]
+name = "net_stats-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+net_stats-common = { path = "../net_stats-common" }
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "net_stats"
+path = "src/main.rs"

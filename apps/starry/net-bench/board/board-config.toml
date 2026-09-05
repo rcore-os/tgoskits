@@ -1,0 +1,66 @@
+# board-config.toml — SG2002 board net-bench configuration.
+#
+# Copy or symlink this file to customise per-board settings without editing the
+# controller.  All values have defaults; only [board].ip is likely to need
+# changing.
+
+[board]
+# Board IP address (WiFi AP mode default: 192.168.50.1).
+ip = "192.168.50.1"
+# SSH port.
+ssh_port = 22
+# SSH login user.
+ssh_user = "root"
+# Authentication — set ONE of:
+#   ssh_password = "your-password"
+#   ssh_key_path = "~/.ssh/id_rsa"
+# If neither is set, paramiko will attempt default key-agent authentication.
+ssh_password = "root"
+ssh_key_path = ""
+# Connection timeout in seconds.
+connect_timeout = 15
+
+# ---------------------------------------------------------------------------
+# Test parameters
+# ---------------------------------------------------------------------------
+
+[test]
+# iperf3 listen port (must match on board and PC).
+iperf3_port = 5201
+# Per-iteration test duration (seconds).
+duration = 5
+# Number of warmup iterations (excluded from statistics).
+warmup = 1
+# Number of measured iterations (used for mean/stddev).
+iters = 5
+# TCP socket buffer window size.
+# SG2002 has 256 MB RAM — keep this conservative.  WiFi BDP is well under 256 KB
+# (tens of Mbps × tens of ms).
+window = ""
+# Remote path of board-server.sh on the board.
+server_script = "/tmp/board-server.sh"
+# Remote path of a riscv64-static iperf3 binary on the board.
+iperf3_binary = "/tmp/iperf3"
+
+# ---------------------------------------------------------------------------
+# Test matrix — test_id → extra iperf3 client arguments.
+# These mirror core/constants.py TEST_ORDER; keep them aligned.
+# ---------------------------------------------------------------------------
+
+[test.matrix]
+# TCP uplink — PC→board (station→AP), works normally.
+tcp1   = ""
+tcp4   = "-P 4"
+# TCP reverse — board→PC (AP→station), works but throughput is very low
+# (~0.1 Mbps) due to aic8800 WiFi AP TX path bottleneck.
+# Enabled for completeness; expect single-digit Mbps throughput.
+tcp1r  = "-R"
+# UDP tests are excluded because StarryOS does not yet support binding
+# both TCP and UDP listeners to the same port (iperf3 UDP requires this
+# for its control+data channel model).  The iperf3 server reports:
+#   "unable to start stream listener: Address in use"
+# when the UDP stream listener tries to bind the same port as the TCP
+# control listener.  Re-enable once the network stack supports SO_REUSEADDR
+# cross-protocol.
+# udp1g  = "-u -b 1G"
+# udp64  = "-u -l 64 -b 100M"

@@ -1,0 +1,10 @@
+target = "riscv64gc-unknown-none-elf"
+log = "Info"
+max_cpu_num = 1
+features = [
+  "starry-kernel/sg2002",
+  "ax-driver/aic8800-wifi",
+  "axplat-dyn/thead-mae",
+  "ax-driver/cv181x-sdhci",
+  "ax-driver/serial",
+]

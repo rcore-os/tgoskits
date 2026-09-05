@@ -95,6 +95,9 @@ impl PollGroupState {
         }
     }
 
+    // Kept out-of-line so eBPF kprobe observers (apps/starry/ebpf/netmon) can
+    // attach at a stable symbol; the call boundary cost is negligible here.
+    #[inline(never)]
     pub(super) fn schedule_irq(&self) {
         let cpu = ax_hal::percpu::this_cpu_id();
         self.stats.irq.fetch_add(1, Ordering::Relaxed);
