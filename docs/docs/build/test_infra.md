@@ -169,11 +169,22 @@ Rust pipeline（`test/build/rust.rs`）交叉编译用例 `rust/` 目录下的 C
 1. `rust_musl_target(arch)` 把架构名映射到 musl target triple（如 `aarch64` → `aarch64-unknown-linux-musl`）；
 2. `rustup target add <triple>` 确保目标已安装；
 3. 解压 rootfs 获取 Alpine 交叉 linker（部分架构如 loongarch64 的 ELF 格式 host linker 无法处理）；
-4. 可选执行 `prebuild.sh`（在 Alpine staging root 内通过 qemu-user 运行，用于 `apk add` 原生依赖）；
+4. 可选执行 `prebuild.sh`（在 Alpine staging root 内通过 qemu-user 运行，用于 `apk add` 原生依赖）；宿主没有 qemu-user 时无法执行，axbuild 会响亮跳过并说明依赖 prebuild 产物的子用例将在运行期失败；
 5. 设置 `CARGO_TARGET_<TRIPLE>_LINKER` 指向 staging root 中的 `ld`，执行 `cargo build --release`；
 6. 产物复制到 overlay 的 `/usr/bin/`。
 
 二进制名取自 `Cargo.toml` 的 `[[bin]]` name，缺失时回退到 package 名。
+
+### 6.3 Guest 工具执行模式与 prebuild 跳过
+
+C/Grouped/Rust pipeline 的交叉构建需要执行 Alpine guest 二进制（binutils 与 `prebuild.sh`）。axbuild 按宿主能力选择 `GuestToolExecution` 模式：
+
+| 模式 | 触发条件 | 行为 |
+|------|----------|------|
+| `Emulated` | PATH 中存在 qemu-user 二进制（`qemu-<arch>-static` / `qemu-<arch>`） | 客户机 binutils 通过 qemu-user 执行，`prebuild.sh` 以客户机进程运行在 qemu-user 内（Linux CI 路径，行为不变） |
+| `Native` | 无 qemu-user，且宿主存在全部 `{gnu_tool_prefix}-{tool}` 交叉工具（如 `aarch64-linux-musl-ld`） | 包装器直接 exec 宿主原生交叉工具，`clang -B` 与 CMake 透明使用；`prebuild.sh` 无法执行，响亮跳过 |
+
+两者都不满足时在资产准备期失败并给出安装提示。运行库同步使用的 `readelf` 按候选 `readelf` → `llvm-readelf` → `{gnu_tool_prefix}-readelf` 解析（readelf 与架构无关）。
 
 ## 7. 资产准备与 rootfs 缓存
 

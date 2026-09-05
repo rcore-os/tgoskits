@@ -126,7 +126,12 @@ pub(crate) fn prepare_grouped_case_assets_sync(
             ("phase", "sync-runtime-deps".to_string()),
         ],
     );
-    crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
+    let readelf = crate::rootfs::runtime::find_readelf(arch)?;
+    crate::rootfs::runtime::sync_runtime_dependencies(
+        &layout.staging_root,
+        &layout.overlay_dir,
+        &readelf,
+    )?;
     timing_stage.finish();
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-grouped",
@@ -334,38 +339,48 @@ pub(super) fn prepare_grouped_c_subcases_sync(
         "grouped-c",
         [
             ("case", case.display_name.clone()),
-            ("phase", "find-qemu-user".to_string()),
+            ("phase", "resolve-guest-tools".to_string()),
         ],
     );
-    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
+    let execution = resolve_guest_tool_execution(arch)?;
     timing_stage.finish();
 
     let root_prebuild_script = case.case_dir.join(CASE_PREBUILD_SCRIPT_NAME);
     if root_prebuild_script.is_file() {
-        let timing_stage = timing::TimingStage::new(
-            "grouped-c",
-            [
-                ("case", case.display_name.clone()),
-                ("phase", "prebuild".to_string()),
-            ],
-        );
-        let extra_script_envs = grouped_c_root_prebuild_env(
-            prepare_guest_package_env(config, &layout.staging_root)?,
-            subcases,
-        );
-        let prebuild_env =
-            prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
-        let mut command = build_prebuild_command_with_work_dir(
-            &root_prebuild_script,
-            &case.case_dir,
-            layout,
-            &prebuild_env,
-        )?;
-        let result = command
-            .exec()
-            .context("failed to run grouped C root prebuild.sh");
-        timing_stage.finish();
-        result?;
+        match &execution {
+            GuestToolExecution::Emulated { qemu_runner } => {
+                let timing_stage = timing::TimingStage::new(
+                    "grouped-c",
+                    [
+                        ("case", case.display_name.clone()),
+                        ("phase", "prebuild".to_string()),
+                    ],
+                );
+                let extra_script_envs = grouped_c_root_prebuild_env(
+                    prepare_guest_package_env(config, &layout.staging_root)?,
+                    subcases,
+                );
+                let prebuild_env = prepare_guest_prebuild_env(
+                    case,
+                    layout,
+                    qemu_runner,
+                    extra_script_envs,
+                    config,
+                )?;
+                let mut command = build_prebuild_command_with_work_dir(
+                    &root_prebuild_script,
+                    &case.case_dir,
+                    layout,
+                    &prebuild_env,
+                )?;
+                let result = command
+                    .exec()
+                    .context("failed to run grouped C root prebuild.sh");
+                timing_stage.finish();
+                result?;
+            }
+            GuestToolExecution::Native => prebuild_skipped_notice(&case.display_name),
+        }
     }
 
     if subcases
@@ -388,41 +403,46 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             let subcase_layout = subcase_layout(layout, subcase.name.as_str());
             let prebuild_script = grouped_c_subcase_prebuild_script_path(subcase);
             if prebuild_script.is_file() {
-                let timing_stage = timing::TimingStage::new(
-                    "grouped-c",
-                    [
-                        ("case", case.display_name.clone()),
-                        ("subcase", subcase.name.clone()),
-                        ("phase", "prebuild".to_string()),
-                    ],
-                );
-                let prebuild_env = prepare_guest_prebuild_env(
-                    arch,
-                    &subcase_case,
-                    &subcase_layout,
-                    extra_script_envs.clone(),
-                    config,
-                )?;
-                let mut command = build_prebuild_command(
-                    &subcase_case,
-                    &prebuild_script,
-                    &subcase_layout,
-                    &prebuild_env,
-                )?;
-                let result = command.exec().with_context(|| {
-                    format!("failed to run {} prebuild.sh", subcase.name.as_str())
-                });
-                timing_stage.finish();
-                result?;
-                timing::print_timing_line(
-                    "grouped-c",
-                    &[
-                        ("case", case.display_name.clone()),
-                        ("subcase", subcase.name.clone()),
-                        ("phase", "prebuild-total".to_string()),
-                    ],
-                    subcase_started.elapsed(),
-                );
+                match &execution {
+                    GuestToolExecution::Emulated { qemu_runner } => {
+                        let timing_stage = timing::TimingStage::new(
+                            "grouped-c",
+                            [
+                                ("case", case.display_name.clone()),
+                                ("subcase", subcase.name.clone()),
+                                ("phase", "prebuild".to_string()),
+                            ],
+                        );
+                        let prebuild_env = prepare_guest_prebuild_env(
+                            &subcase_case,
+                            &subcase_layout,
+                            qemu_runner,
+                            extra_script_envs.clone(),
+                            config,
+                        )?;
+                        let mut command = build_prebuild_command(
+                            &subcase_case,
+                            &prebuild_script,
+                            &subcase_layout,
+                            &prebuild_env,
+                        )?;
+                        let result = command.exec().with_context(|| {
+                            format!("failed to run {} prebuild.sh", subcase.name.as_str())
+                        });
+                        timing_stage.finish();
+                        result?;
+                        timing::print_timing_line(
+                            "grouped-c",
+                            &[
+                                ("case", case.display_name.clone()),
+                                ("subcase", subcase.name.clone()),
+                                ("phase", "prebuild-total".to_string()),
+                            ],
+                            subcase_started.elapsed(),
+                        );
+                    }
+                    GuestToolExecution::Native => prebuild_skipped_notice(&subcase.name),
+                }
             }
         }
     }
@@ -434,7 +454,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             ("phase", "prepare-cross-env".to_string()),
         ],
     );
-    let build_env = prepare_host_cross_build_env(arch, layout, &qemu_runner)?;
+    let build_env = prepare_host_cross_build_env(arch, layout, &execution)?;
     timing_stage.finish();
 
     if grouped_c_root_project_path(case).is_file() {

@@ -113,32 +113,43 @@ pub(crate) fn prepare_c_case_overlay_sync(
     );
     write_musl_loader_search_path(arch, &layout.staging_root)?;
     timing_stage.finish();
-    let prebuild_script = case_prebuild_script_path(case);
-    if prebuild_script.is_file() {
-        let timing_stage = timing::TimingStage::new(
-            "qemu-asset-c",
-            [
-                ("case", case.display_name.clone()),
-                ("phase", "prebuild".to_string()),
-            ],
-        );
-        let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
-        let prebuild_env =
-            prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
-        let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
-        let result = command.exec().context("failed to run case prebuild.sh");
-        timing_stage.finish();
-        result?;
-    }
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-c",
         [
             ("case", case.display_name.clone()),
-            ("phase", "find-qemu-user".to_string()),
+            ("phase", "resolve-guest-tools".to_string()),
         ],
     );
-    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
+    let execution = resolve_guest_tool_execution(arch)?;
     timing_stage.finish();
+    let prebuild_script = case_prebuild_script_path(case);
+    if prebuild_script.is_file() {
+        match &execution {
+            GuestToolExecution::Emulated { qemu_runner } => {
+                let timing_stage = timing::TimingStage::new(
+                    "qemu-asset-c",
+                    [
+                        ("case", case.display_name.clone()),
+                        ("phase", "prebuild".to_string()),
+                    ],
+                );
+                let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
+                let prebuild_env = prepare_guest_prebuild_env(
+                    case,
+                    layout,
+                    qemu_runner,
+                    extra_script_envs,
+                    config,
+                )?;
+                let mut command =
+                    build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
+                let result = command.exec().context("failed to run case prebuild.sh");
+                timing_stage.finish();
+                result?;
+            }
+            GuestToolExecution::Native => prebuild_skipped_notice(&case.display_name),
+        }
+    }
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-c",
         [
@@ -146,7 +157,7 @@ pub(crate) fn prepare_c_case_overlay_sync(
             ("phase", "prepare-cross-env".to_string()),
         ],
     );
-    let build_env = prepare_host_cross_build_env(arch, layout, &qemu_runner)?;
+    let build_env = prepare_host_cross_build_env(arch, layout, &execution)?;
     timing_stage.finish();
 
     let timing_stage = timing::TimingStage::new(
@@ -196,7 +207,12 @@ pub(crate) fn prepare_c_case_overlay_sync(
             ("phase", "sync-runtime-deps".to_string()),
         ],
     );
-    crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
+    let readelf = crate::rootfs::runtime::find_readelf(arch)?;
+    crate::rootfs::runtime::sync_runtime_dependencies(
+        &layout.staging_root,
+        &layout.overlay_dir,
+        &readelf,
+    )?;
     timing_stage.finish();
     Ok(())
 }

@@ -439,7 +439,9 @@ fn write_cross_bin_wrappers_generates_prefixed_and_plain_tools() {
     write_cross_bin_wrappers(
         &layout,
         cross_compile_spec("aarch64").unwrap(),
-        Path::new("/usr/bin/qemu-aarch64-static"),
+        &GuestToolExecution::Emulated {
+            qemu_runner: PathBuf::from("/usr/bin/qemu-aarch64-static"),
+        },
     )
     .unwrap();
 
@@ -450,6 +452,57 @@ fn write_cross_bin_wrappers_generates_prefixed_and_plain_tools() {
     assert!(plain.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
     assert!(prefixed.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
     assert!(prefixed.contains("-0"));
+}
+
+#[test]
+fn write_native_tool_wrapper_execs_host_tool_directly() {
+    let root = tempdir().unwrap();
+    let layout =
+        case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
+            .unwrap();
+    let native_tool = root.path().join("native-toolchain/aarch64-linux-musl-ld");
+    fs::create_dir_all(native_tool.parent().unwrap()).unwrap();
+    write_executable_helper(&native_tool);
+    fs::create_dir_all(&layout.cross_bin_dir).unwrap();
+
+    write_native_tool_wrapper(&layout.cross_bin_dir.join("ld"), &native_tool).unwrap();
+    write_native_tool_wrapper(
+        &layout.cross_bin_dir.join("aarch64-linux-musl-ld"),
+        &native_tool,
+    )
+    .unwrap();
+
+    let plain = fs::read_to_string(layout.cross_bin_dir.join("ld")).unwrap();
+    let prefixed = fs::read_to_string(layout.cross_bin_dir.join("aarch64-linux-musl-ld")).unwrap();
+    assert!(plain.contains(&native_tool.display().to_string()));
+    assert!(plain.starts_with("#!/bin/sh"));
+    assert!(plain.contains("exec"));
+    assert!(!plain.contains("qemu"));
+    assert!(prefixed.contains(&native_tool.display().to_string()));
+}
+
+fn write_executable_helper(path: &std::path::Path) {
+    fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn resolve_guest_tool_execution_falls_back_to_native_without_qemu() {
+    // Native fallback requires every cross binutils tool on the host PATH;
+    // this host either has qemu-user (emulated wins) or the `aarch64-linux-musl`
+    // cross tools — both are valid resolutions.
+    let execution = resolve_guest_tool_execution("aarch64").unwrap();
+    let has_qemu = ["qemu-aarch64-static", "qemu-aarch64"]
+        .iter()
+        .any(|name| find_optional_host_binary(name).is_some());
+    match execution {
+        GuestToolExecution::Emulated { .. } => assert!(has_qemu),
+        GuestToolExecution::Native => assert!(!has_qemu),
+    }
 }
 
 #[test]
