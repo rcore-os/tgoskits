@@ -1,0 +1,13 @@
+{
+  "service": {
+    "name": "web",
+    "port": 8500,
+    "tags": ["starry", "v1"],
+    "check": {
+      "name": "web-tcp",
+      "tcp": "127.0.0.1:8500",
+      "interval": "3s",
+      "timeout": "1s"
+    }
+  }
+}
