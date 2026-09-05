@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.11.0...crab-usb-v0.11.1) - 2026-09-05
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.11.0](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.5...crab-usb-v0.11.0) - 2026-08-20
 
 ### Added

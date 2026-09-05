@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.6.2...riscv_vcpu-v0.6.3) - 2026-09-05
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.6.1...riscv_vcpu-v0.6.2) - 2026-08-27
 
 ### Fixed

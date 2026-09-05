@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/axvm-v0.6.2...axvm-v0.6.3) - 2026-09-05
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+- feat(StarryOS)：Enhance axivc IVC char devices and improve ioctl handling ([#2214](https://github.com/rcore-os/tgoskits/pull/2214))
+- *(axvisor)* add generic vPCI foundation with x86 PCI enumeration ([#2197](https://github.com/rcore-os/tgoskits/pull/2197))
+
+### Fixed
+
+- *(axvm)* align implicit PCI ownership with guest FDT ([#2262](https://github.com/rcore-os/tgoskits/pull/2262))
+- *(ax-fs-ng)* linearize block runtime lifecycle ([#2256](https://github.com/rcore-os/tgoskits/pull/2256))
+- *(axvm)* exclude disabled devices from generated guest FDT ([#2207](https://github.com/rcore-os/tgoskits/pull/2207))
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axvm-v0.6.1...axvm-v0.6.2) - 2026-08-27
 
 ### Fixed

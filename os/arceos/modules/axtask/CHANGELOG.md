@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.12](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.11...ax-task-v0.6.12) - 2026-09-05
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
+### Fixed
+
+- *(test)* separate host and QEMU test layers ([#2240](https://github.com/rcore-os/tgoskits/pull/2240))
+
 ## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.10...ax-task-v0.6.11) - 2026-08-27
 
 ### Added

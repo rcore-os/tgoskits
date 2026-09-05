@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.8.9](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.8...ax-cpu-v0.8.9) - 2026-09-05
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
+### Fixed
+
+- *(ax-cpu)* preserve AArch64 PTE memory type ([#2238](https://github.com/rcore-os/tgoskits/pull/2238))
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.8.8](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.7...ax-cpu-v0.8.8) - 2026-08-27
 
 ### Added

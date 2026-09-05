@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.12.1...rdif-block-v0.13.0) - 2026-09-05
+
+### Fixed
+
+- *(ax-fs-ng)* linearize block runtime lifecycle ([#2256](https://github.com/rcore-os/tgoskits/pull/2256))
+
+### Other
+
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
 ## [0.12.1](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.12.0...rdif-block-v0.12.1) - 2026-08-25
 
 ### Fixed

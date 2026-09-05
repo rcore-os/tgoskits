@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/starry-vm-v0.5.14...starry-vm-v0.5.15) - 2026-09-05
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/starry-vm-v0.5.13...starry-vm-v0.5.14) - 2026-08-20
 
 ### Other
