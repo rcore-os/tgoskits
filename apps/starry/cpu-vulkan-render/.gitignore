@@ -1,0 +1,5 @@
+target/
+*_full_api
+*.o
+*.rlib
+node_modules/
