@@ -723,15 +723,14 @@ pub struct CurrentThreadPublication {
 /// Atomic runtime result of claiming one scheduler frame.
 ///
 /// A successful result carries every immutable capability selected under the
-/// same IRQ-off CPU pin: task system, owner CPU endpoints, and current thread.
-/// This is the runtime boundary equivalent of Linux deriving `rq` and
-/// `rq->curr` from one pinned scheduler entry.
+/// same IRQ-off CPU pin: task system and owner CPU endpoints. Current-thread
+/// identity is read only by operations that need it, while this frame keeps
+/// the execution context pinned; scheduler selection itself uses `rq->curr`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct RuntimeSchedulerFrameEnterResult {
     system: TaskSystemHandle,
     cpu: CurrentCpuOwnerHandles,
-    current: CurrentThreadPublication,
 }
 
 impl RuntimeSchedulerFrameEnterResult {
@@ -739,19 +738,10 @@ impl RuntimeSchedulerFrameEnterResult {
     ///
     /// # Safety
     ///
-    /// `system` must be non-empty. All handles and the current publication
-    /// must describe the execution context pinned by the scheduler baton that
-    /// was claimed in the same runtime transaction.
-    pub const unsafe fn success(
-        system: TaskSystemHandle,
-        cpu: CurrentCpuOwnerHandles,
-        current: CurrentThreadPublication,
-    ) -> Self {
-        Self {
-            system,
-            cpu,
-            current,
-        }
+    /// `system` must be non-empty. All handles must describe the CPU pinned by
+    /// the scheduler baton that was claimed in the same runtime transaction.
+    pub const unsafe fn success(system: TaskSystemHandle, cpu: CurrentCpuOwnerHandles) -> Self {
+        Self { system, cpu }
     }
 
     /// Creates an unsafe-context rejection without live capabilities.
@@ -759,7 +749,6 @@ impl RuntimeSchedulerFrameEnterResult {
         Self {
             system: TaskSystemHandle::NONE,
             cpu: CurrentCpuOwnerHandles::NONE,
-            current: CurrentThreadPublication::NONE,
         }
     }
 
@@ -780,11 +769,6 @@ impl RuntimeSchedulerFrameEnterResult {
     /// Returns the pinned owner-CPU capability.
     pub const fn cpu(self) -> CurrentCpuOwnerHandles {
         self.cpu
-    }
-
-    /// Returns the architecture-selected current-thread publication.
-    pub const fn current(self) -> CurrentThreadPublication {
-        self.current
     }
 }
 

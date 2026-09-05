@@ -423,24 +423,6 @@ pub(super) fn scheduler_current_thread_publication() -> CurrentThreadPublication
     unsafe { *(*context).publication.get() }
 }
 
-/// Captures the current publication under an existing scheduler CPU pin.
-pub(super) fn scheduler_current_thread_publication_pinned(
-    cpu_pin: &CpuPin,
-) -> CurrentThreadPublication {
-    let Ok(header) = ax_hal::percpu::current_context(cpu_pin) else {
-        return CurrentThreadPublication::NONE;
-    };
-    // SAFETY: the caller's CPU pin keeps this architecture-selected header
-    // current for the complete publication copy.
-    if unsafe { header.as_ref() }.is_permanent_boot_context() {
-        return CurrentThreadPublication::NONE;
-    }
-    let context = header.as_ptr().cast::<RuntimeContext>();
-    // SAFETY: RuntimeContext embeds the header at offset zero and the
-    // publication is immutable after the context becomes runnable.
-    unsafe { *(*context).publication.get() }
-}
-
 /// Reads only the immutable scheduler identity owned by the current task.
 pub(super) fn scheduler_current_thread_identity() -> ThreadIdentityV1 {
     scheduler_current_thread_publication().identity()

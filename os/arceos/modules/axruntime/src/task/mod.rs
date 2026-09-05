@@ -121,8 +121,7 @@ use context::{
     bind_bootstrap_runtime_context, bind_runtime_context_thread, create_bootstrap_context,
     create_runtime_context, create_user_runtime_context, destroy_runtime_context,
     finish_runtime_context_switch_tail, scheduler_current_thread_identity,
-    scheduler_current_thread_publication, scheduler_current_thread_publication_pinned,
-    switch_runtime_context,
+    scheduler_current_thread_publication, switch_runtime_context,
 };
 
 pub(crate) fn runtime_task_system_handle() -> TaskSystemHandle {
@@ -142,7 +141,6 @@ pub(crate) fn scheduler_frame_capabilities(cpu_pin: &CpuPin) -> RuntimeScheduler
         RuntimeSchedulerFrameEnterResult::success(
             runtime_task_system_handle(),
             current_cpu_owner_handles(cpu_pin),
-            scheduler_current_thread_publication_pinned(cpu_pin),
         )
     }
 }

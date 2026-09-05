@@ -35,14 +35,12 @@ fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
     !transaction.has_selectable_higher_class(SchedulerClass::Realtime, RtEligibility::Runnable)
 }
 
-fn owner_yield_keeps_current_dispatch(transaction: &mut OwnerRqTxn<'_>) -> bool {
-    let Some(policy) = transaction
+fn owner_yield_kept_class(transaction: &mut OwnerRqTxn<'_>) -> Option<SchedulerClass> {
+    let policy = transaction
         .current()
-        .map(|current| current.schedule_policy())
-    else {
-        return false;
-    };
-    match SchedulerClass::for_policy(policy) {
+        .map(|current| current.schedule_policy())?;
+    let class = SchedulerClass::for_policy(policy);
+    let keeps_current = match class {
         SchedulerClass::Fair => transaction.nr_queued() == 0,
         SchedulerClass::Realtime => {
             // Linux reads `rq->curr->sched_class` directly. The effective
@@ -52,7 +50,8 @@ fn owner_yield_keeps_current_dispatch(transaction: &mut OwnerRqTxn<'_>) -> bool 
             realtime_current_remains_selected(transaction)
         }
         SchedulerClass::Stop | SchedulerClass::Deadline => false,
-    }
+    };
+    if keeps_current { Some(class) } else { None }
 }
 
 struct RequestedPreemptionCommit {
@@ -964,19 +963,31 @@ impl TaskSystem {
             }
             previous_core.id()
         };
-        let keeps_current_dispatch = owner_yield_keeps_current_dispatch(&mut transaction);
-        let schedule_out = {
+        let requires_task_control = {
             let previous_core = transaction.current_core_ref().unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
             });
-            self.prepare_owner_rq_schedule_out(&transaction, previous_core)
+            let placement = previous_core.sched().placement();
+            placement.requested_migration().is_some()
+                || transaction
+                    .current()
+                    .is_some_and(|dispatch| dispatch.metadata().deadline_bandwidth_scaled != 0)
         };
-        if keeps_current_dispatch && schedule_out.is_some() {
-            // Linux `yield_task_fair()` returns before `update_curr()` when
-            // `rq->nr_running == 1`. A single-node RT queue is rotated onto
-            // itself and `put_prev_set_next_task()` returns for `next == prev`.
-            // In either case the rq-owned current dispatch stays installed;
-            // do not manufacture a put-prev/pick-next cycle or take p->pi_lock.
+        let kept_class = if requires_task_control {
+            None
+        } else {
+            owner_yield_kept_class(&mut transaction)
+        };
+        if let Some(kept_class) = kept_class {
+            // For a lone Fair task, Linux's yield hook returns early but
+            // `pick_task_fair()` still calls `update_curr()`. Settle the same
+            // running interval before retaining the dispatch; otherwise a
+            // yield loop keeps stale vruntime and can starve later wakeups.
+            // A single-node RT queue is merely rotated onto itself and the
+            // `next == prev` switch tail performs no RT accounting.
+            if kept_class == SchedulerClass::Fair {
+                let _settled = transaction.settle_current(0);
+            }
             transaction.merge_scheduler_request(SchedulerRequestScope::All);
             #[cfg(feature = "qperf-metrics")]
             {
@@ -1006,6 +1017,12 @@ impl TaskSystem {
             )?;
             return Ok(YieldOutcome::Unchanged);
         }
+        let schedule_out = {
+            let previous_core = transaction.current_core_ref().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize)
+            });
+            self.prepare_owner_rq_schedule_out(&transaction, previous_core)
+        };
         if let Some(schedule_out) = schedule_out {
             #[cfg(feature = "qperf-metrics")]
             {
@@ -1074,7 +1091,7 @@ impl TaskSystem {
         if let Some(core) = previous_core.as_ref() {
             let owner = cpu.owner();
             let continuing_dispatch = {
-                owner_yield_keeps_current_dispatch(&mut transaction)
+                owner_yield_kept_class(&mut transaction).is_some()
                     && transaction
                         .task_state(core.id(), core.sched().placement())
                         .is_current()

@@ -239,7 +239,6 @@ pub(super) struct RuntimeSchedulerFrameGuard {
     return_to: RuntimeSchedulerReturn,
     cpu: RuntimeCpuHandles,
     system: &'static TaskSystem,
-    current: crate::runtime::CurrentThreadPublication,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -279,7 +278,6 @@ impl RuntimeSchedulerFrameGuard {
             // complete current-CPU capability under the acquired baton.
             cpu: unsafe { RuntimeCpuHandles::from_snapshot(context.cpu()) },
             system,
-            current: context.current(),
             _not_send: PhantomData,
         })
     }
@@ -306,17 +304,15 @@ impl RuntimeSchedulerFrameGuard {
         self.system
     }
 
-    pub(super) const fn current_thread_publication(
-        &self,
-    ) -> crate::runtime::CurrentThreadPublication {
-        self.current
+    pub(super) fn current_thread_publication(&self) -> crate::runtime::CurrentThreadPublication {
+        task_runtime::current_thread_publication()
     }
 
     pub(super) fn current_thread_ref(&self) -> Result<CurrentThreadRef, TaskError> {
         // SAFETY: the runtime captured this publication while atomically
         // claiming the scheduler baton. The returned non-Send capability stays
         // within the synchronous lifetime of this frame.
-        unsafe { self.current.borrow_current() }
+        unsafe { self.current_thread_publication().borrow_current() }
     }
 
     /// Tests the scheduler request published for this frame's pinned CPU.
