@@ -87,8 +87,8 @@ pub fn mount_all() -> StarryResult<()> {
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let fs = fs_context.lock();
-    mount_at(&fs, "/dev", dev::new_devfs())?;
     let usbfs = usbfs::new_usbfs()?;
+    mount_at(&fs, "/dev", dev::new_devfs())?;
     if let Some(dev_usbfs) = usbfs {
         mount_at(&fs, "/dev/bus/usb", dev_usbfs)?;
     }
