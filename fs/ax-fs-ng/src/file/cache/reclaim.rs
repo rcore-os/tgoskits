@@ -27,11 +27,11 @@ fn visit_registered_cached_file<R>(
     index: usize,
     visit: impl FnOnce(&Arc<CachedFileShared>) -> R,
 ) -> Option<R> {
-    let file = {
-        let registry = GLOBAL_CACHED_FILES.try_read()?;
-        registry.get(index).cloned()
-    }?;
-    Some(visit(&file))
+    // Retain registry read ownership instead of cloning an Arc that could
+    // become the last file owner during concurrent pruning. The visitor only
+    // uses try-lock clean eviction and never allocates or invokes callbacks.
+    let registry = GLOBAL_CACHED_FILES.try_read()?;
+    registry.get(index).map(visit)
 }
 
 /// Reclaims clean disk-backed cache pages without holding listener callbacks
@@ -144,16 +144,27 @@ impl CachedFileShared {
     /// This allocator-pressure path is allocation-free and only detaches pages
     /// from files without a live mapping endpoint.
     fn try_evict_clean_pages(&self, max: usize) -> usize {
-        // The allocator-pressure hook cannot enter an address-space mutation:
-        // preparing an rmap/PTE receipt may itself allocate. A live endpoint
-        // therefore protects the file here; normal cache eviction retains the
-        // full typed endpoint path.
-        if self.mapping_endpoint_blocks_pressure_reclaim() {
+        self.try_evict_clean_pages_with(max, || {})
+    }
+
+    fn try_evict_clean_pages_with(&self, max: usize, before_detach: impl FnOnce()) -> usize {
+        // Hold endpoint exclusion until every victim has left the cache.
+        // A Weak with zero strong refs cannot be resurrected; inspecting it
+        // avoids acquiring an Arc whose last Drop might run arbitrary code in
+        // allocator-pressure context. Leave tombstone cleanup to normal I/O.
+        let Some(installed) = self.mapping_endpoint.try_lock() else {
+            return 0;
+        };
+        if installed
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.strong_count() != 0)
+        {
             return 0;
         }
+        before_detach();
 
         let limit = max.min(MAX_RECLAIM_BATCH);
-        let mut pending: InlineVec<(u32, PageCache), MAX_RECLAIM_BATCH> = InlineVec::new();
+        let mut pending: InlineVec<PageCache, MAX_RECLAIM_BATCH> = InlineVec::new();
         let Some(mut cache) = self.page_cache.try_lock() else {
             return 0;
         };
@@ -166,47 +177,19 @@ impl CachedFileShared {
             }
         }
         for &pn in &to_pop[..count] {
-            if let Some(page) = cache.pop(&pn)
-                && let Err((pn, page)) = pending.push((pn, page))
-            {
-                cache.put(pn, page);
-                break;
+            if let Some(page) = cache.pop(&pn) {
+                // There is one push per selected key and count <= capacity.
+                if pending.push(page).is_err() {
+                    unreachable!("reclaim batch exceeds its selected victim count");
+                }
             }
-        }
-
-        // Close the endpoint-install race while the cache index is still held.
-        // A contended endpoint lock is treated as protected, and every detached
-        // frame is restored without waiting for either lock.
-        if self.mapping_endpoint_blocks_pressure_reclaim() {
-            for (pn, page) in pending {
-                cache.put(pn, page);
-            }
-            return 0;
         }
 
         let evicted = pending.len();
         drop(cache);
+        drop(installed);
         drop(pending);
         evicted
-    }
-
-    fn mapping_endpoint_blocks_pressure_reclaim(&self) -> bool {
-        let Some(mut installed) = self.mapping_endpoint.try_lock() else {
-            return true;
-        };
-        let endpoint = installed.as_ref().and_then(alloc::sync::Weak::upgrade);
-        let stale = if endpoint.is_some() {
-            None
-        } else {
-            installed.take()
-        };
-        let blocked = endpoint.is_some();
-        drop(installed);
-        // Neither an endpoint destructor nor the final weak-control-block
-        // deallocation belongs in the allocator-pressure try-lock section.
-        drop(stale);
-        drop(endpoint);
-        blocked
     }
 }
 
@@ -254,7 +237,70 @@ fn pressure_reclaim_is_allocation_free_and_skips_live_mappings_for_test() -> boo
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        cell::Cell,
+    };
+
     use super::*;
+
+    std::thread_local! {
+        static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    struct ObservedAllocator;
+
+    // SAFETY: all allocation semantics are delegated unchanged to System.
+    // The const thread-local Cell cannot allocate or observe another thread.
+    unsafe impl GlobalAlloc for ObservedAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let _ = ALLOCATIONS.try_with(|count| {
+                if let Some(value) = count.get() {
+                    count.set(Some(value + 1));
+                }
+            });
+            // SAFETY: preserve the caller's GlobalAlloc layout contract.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: this allocation came from System with the same layout.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: ObservedAllocator = ObservedAllocator;
+
+    #[test]
+    fn pressure_reclaim_endpoint_race_never_reallocates_cache_nodes() {
+        let file = CachedFileShared::new_unbounded(4096);
+        file.page_cache
+            .lock()
+            .put(0, PageCache::detached_for_test());
+        let endpoint: Arc<dyn super::super::CacheMappingEndpoint> = Arc::new(ReclaimTestEndpoint {
+            invoked: Arc::new(AtomicBool::new(false)),
+        });
+        let mut installed_during_reclaim = false;
+        ALLOCATIONS.with(|count| count.set(Some(0)));
+        let reclaimed = file.try_evict_clean_pages_with(1, || {
+            if let Some(mut installed) = file.mapping_endpoint.try_lock() {
+                *installed = Some(Arc::downgrade(&endpoint));
+                installed_during_reclaim = true;
+            }
+        });
+        let allocations = ALLOCATIONS.with(|count| count.replace(None).unwrap());
+        assert_eq!(
+            allocations, 0,
+            "allocator-pressure rollback must not allocate new LRU nodes"
+        );
+        assert!(
+            !installed_during_reclaim,
+            "endpoint publication must be excluded until detachment is complete"
+        );
+        assert_eq!(reclaimed, 1);
+        assert!(file.page_cache.lock().is_empty());
+    }
 
     #[test]
     fn allocator_pressure_reclaim_skips_mapped_pages_without_callbacks() {

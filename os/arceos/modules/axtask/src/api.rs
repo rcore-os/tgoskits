@@ -13,14 +13,14 @@ use ax_memory_addr::VirtAddr;
 pub use crate::lockdep::{HeldLock, HeldLockStack};
 pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
 use crate::sync::PreemptIrqSaveState;
-#[cfg(feature = "task-ext")]
-pub use crate::task::SchedulerAddressSpaceActivation;
 #[cfg_attr(doc, doc(cfg(feature = "task-ext")))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{
     AddressSpaceSwitchProof, AxTaskExt, CpuOfflineRootSwitchProof, TaskAddressSpace,
     TaskAddressSpaceMode, TaskExt,
 };
+#[cfg(feature = "task-ext")]
+pub use crate::task::{SchedulerAddressSpaceActivation, SchedulerAddressSpaceOwner};
 pub use crate::{
     interrupt::InterruptSnapshot,
     task::{CurrentTask, TaskCreateError, TaskId, TaskInner, TaskState},

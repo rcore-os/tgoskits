@@ -28,7 +28,6 @@ use core::{
 
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_task::{
-    AddressSpaceSwitchProof, CpuOfflineRootSwitchProof, TaskAddressSpace, TaskAddressSpaceMode,
     SchedulerAddressSpaceActivation, TaskExt, TaskInner,
 };
 use axpoll::{IoEvents, PollSet};
@@ -48,7 +47,7 @@ pub(crate) use self::{pid::*, process_identity::*};
 use crate::{
     StarryError, StarryResult,
     mm::{
-        ActivationError, ActivationLease, InstalledAddressSpace, MmHandle, MmPin, TagMode,
+        ActivationError, ActivationLease, MmHandle, MmPin,
         TransparentHugePageMode,
     },
     sync::{ContextSwitchRwLock, IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock, SpinLock},
@@ -749,30 +748,6 @@ impl Thread {
     }
 }
 
-/// Type-erased scheduler token backed by Starry's exact MM activation lease.
-/// The scheduler owns this value per CPU, independently of any particular
-/// thread, so kernel tasks can retain a lazy address space without keeping an
-/// untracked page-table borrow.
-struct StarrySchedulerActivation(ActivationLease);
-
-impl SchedulerAddressSpaceActivation for StarrySchedulerActivation {
-    fn installed(&self) -> TaskAddressSpace {
-        task_address_space(self.0.installed())
-    }
-
-    fn release_after_root_switch(self: Box<Self>, proof: AddressSpaceSwitchProof) {
-        let Self(lease) = *self;
-        assert_eq!(lease.cpu(), proof.cpu());
-        lease.release_after_root_switch();
-    }
-
-    fn release_after_kernel_switch(self: Box<Self>, proof: CpuOfflineRootSwitchProof) {
-        let Self(lease) = *self;
-        assert_eq!(lease.cpu(), proof.cpu());
-        lease.release_after_kernel_switch();
-    }
-}
-
 #[extern_trait]
 impl TaskExt for Box<Thread> {
     fn on_enter(&self) {
@@ -802,7 +777,7 @@ impl TaskExt for Box<Thread> {
     fn acquire_address_space_activation(
         &self,
         cpu: usize,
-    ) -> Option<Box<dyn SchedulerAddressSpaceActivation>> {
+    ) -> Option<SchedulerAddressSpaceActivation> {
         let lease = self.activation_for_switch(cpu).unwrap_or_else(|error| {
             panic!(
                 "address-space activation invariant violated for tid {} on cpu {}: {:?}",
@@ -811,23 +786,8 @@ impl TaskExt for Box<Thread> {
                 error
             )
         });
-        Some(Box::new(StarrySchedulerActivation(lease)))
+        Some(lease.into_scheduler_activation())
     }
-}
-
-fn task_address_space(installed: InstalledAddressSpace) -> TaskAddressSpace {
-    TaskAddressSpace::user(
-        installed.space_id().get(),
-        installed.root(),
-        installed.tag().hardware_tag,
-        installed.tag().generation,
-        installed.epoch().get(),
-        match installed.tag().mode {
-            TagMode::Tagged => TaskAddressSpaceMode::Tagged,
-            TagMode::FullFlush => TaskAddressSpaceMode::FullFlush,
-        },
-    )
-    .expect("typed Starry address-space installation must remain valid")
 }
 
 /// Helper trait to access the thread from a task.
@@ -2282,9 +2242,7 @@ impl ProcessData {
         let new_activation = new_handle
             .activation_for_switch(ax_hal::percpu::this_cpu_id())
             .expect("exec replacement must activate a live address space");
-        current.replace_address_space_activation(Box::new(StarrySchedulerActivation(
-            new_activation,
-        )));
+        current.replace_address_space_activation(new_activation.into_scheduler_activation());
         // Every retired sibling has completed its user-memory exit work before
         // leaving the thread group. This may clear its user VMAs; the per-CPU
         // scheduler activation still keeps the installed root alive until the

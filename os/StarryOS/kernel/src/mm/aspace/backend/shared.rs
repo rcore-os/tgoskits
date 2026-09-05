@@ -177,7 +177,9 @@ impl SharedMemoryObject {
         let frame = alloc_frame(true, self.page_size)?;
         let candidate = PageObject::new_present_with_resident_kind(
             PageId::allocate(),
-            FrameLease::owned(frame, self.page_size),
+            // SAFETY: this is the unique allocation just returned above;
+            // ownership moves to the candidate, including race-loser cleanup.
+            unsafe { FrameLease::owned(frame, self.page_size) },
             Some(RssKind::Shmem),
         );
         self.publish_fault_candidate(index, candidate)

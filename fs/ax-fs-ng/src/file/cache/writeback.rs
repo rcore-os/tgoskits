@@ -22,11 +22,11 @@ struct DirtyPageSnapshot {
 
 impl CachedFileShared {
     pub(super) fn writeback(&self) -> VfsResult<Vec<u32>> {
-        let (file_len, dirty_keys) = self.begin_writeback_all_dirty()?;
+        let dirty_keys = self.begin_writeback_all_dirty()?;
         self.protect_dirty_pages_before_writeback(&dirty_keys)
             .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
         let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(file_len, &dirty_keys);
+        let result = self.writeback_page_runs(self.len(), &dirty_keys);
         self.finish_writeback_tracking(&dirty_keys);
         result?;
         self.backing()?.sync(false)?;
@@ -34,11 +34,11 @@ impl CachedFileShared {
     }
 
     pub(super) fn writeback_pages(&self, pns: &[u32]) -> VfsResult<()> {
-        let (file_len, dirty_keys) = self.begin_writeback_pages(pns)?;
+        let dirty_keys = self.begin_writeback_pages(pns)?;
         self.protect_dirty_pages_before_writeback(&dirty_keys)
             .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
         let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(file_len, &dirty_keys);
+        let result = self.writeback_page_runs(self.len(), &dirty_keys);
         self.finish_writeback_tracking(&dirty_keys);
         result?;
         self.backing()?.sync(false)?;
@@ -46,11 +46,11 @@ impl CachedFileShared {
     }
 
     pub(super) fn sync(&self, data_only: bool) -> VfsResult<()> {
-        let (file_len, dirty_keys) = self.begin_writeback_all_dirty()?;
+        let dirty_keys = self.begin_writeback_all_dirty()?;
         self.protect_dirty_pages_before_writeback(&dirty_keys)
             .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
         let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(file_len, &dirty_keys);
+        let result = self.writeback_page_runs(self.len(), &dirty_keys);
         self.finish_writeback_tracking(&dirty_keys);
         result?;
         self.backing()?.sync(data_only)?;
@@ -59,14 +59,14 @@ impl CachedFileShared {
 
     #[cfg(feature = "vfs")]
     pub(super) fn writeback_dirty_for_global_sync(&self) -> VfsResult<()> {
-        let (file_len, dirty_keys) = self.begin_writeback_all_dirty()?;
+        let dirty_keys = self.begin_writeback_all_dirty()?;
         if dirty_keys.is_empty() {
             return Ok(());
         }
         self.protect_dirty_pages_before_writeback(&dirty_keys)
             .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
         let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(file_len, &dirty_keys);
+        let result = self.writeback_page_runs(self.len(), &dirty_keys);
         self.finish_writeback_tracking(&dirty_keys);
         result
     }
@@ -98,15 +98,15 @@ impl CachedFileShared {
         Ok(())
     }
 
-    fn begin_writeback_all_dirty(&self) -> VfsResult<(u64, Vec<u32>)> {
+    fn begin_writeback_all_dirty(&self) -> VfsResult<Vec<u32>> {
         self.begin_writeback(None)
     }
 
-    fn begin_writeback_pages(&self, pns: &[u32]) -> VfsResult<(u64, Vec<u32>)> {
+    fn begin_writeback_pages(&self, pns: &[u32]) -> VfsResult<Vec<u32>> {
         self.begin_writeback(Some(pns))
     }
 
-    fn begin_writeback(&self, requested: Option<&[u32]>) -> VfsResult<(u64, Vec<u32>)> {
+    fn begin_writeback(&self, requested: Option<&[u32]>) -> VfsResult<Vec<u32>> {
         let _io = self.io_lock.lock();
         let file_len = self.len();
         let mut requested_pns = if let Some(requested) = requested {
@@ -157,9 +157,11 @@ impl CachedFileShared {
             break;
         }
         dirty_keys.sort_unstable();
-        Ok((file_len, dirty_keys))
+        Ok(dirty_keys)
     }
 
+    // The caller samples EOF only after reacquiring io_lock: mapping
+    // protection runs lock-external and may race a committed truncate/write.
     fn writeback_page_runs(&self, file_len: u64, pns: &[u32]) -> VfsResult<()> {
         for batch in pns.chunks(MAX_WRITEBACK_SNAPSHOT_PAGES) {
             let snapshots = self.snapshot_dirty_pages(file_len, batch)?;

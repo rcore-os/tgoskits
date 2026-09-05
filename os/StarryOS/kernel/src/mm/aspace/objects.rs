@@ -131,7 +131,20 @@ impl FrameLease {
 
     /// Creates an owning lease for a frame allocated by the Starry MM backend.
     /// The alignment is the same order/size passed to `alloc_frame`.
-    pub fn owned(paddr: PhysAddr, align: usize) -> Self {
+    ///
+    /// Ownership cannot be fabricated from an arbitrary physical address:
+    /// ```compile_fail
+    /// fn fabricate_owner() -> starry_kernel::FrameLease {
+    ///     starry_kernel::FrameLease::owned(ax_memory_addr::PhysAddr::from(0x1000usize), 4096)
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `paddr` must be the unique, still-owned result of the Starry MM frame
+    /// allocator for exactly `align` bytes/alignment. The caller transfers
+    /// that ownership and must neither free it nor construct another owner.
+    pub unsafe fn owned(paddr: PhysAddr, align: usize) -> Self {
         Self {
             paddr,
             bytes: align,

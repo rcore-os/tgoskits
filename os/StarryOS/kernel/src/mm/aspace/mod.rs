@@ -707,6 +707,12 @@ enum PageFaultApplyOutcome {
     Complete(FaultResult),
     Cancel(FaultResult),
     NeedsRepair(FaultResult),
+    /// No PTE or owner was published. Cancel the prepared candidate before
+    /// servicing this older obligation, then plan the fault again.
+    CancelPendingTlb {
+        request: TlbRequest,
+        targets: Arc<AtomicUsize>,
+    },
     PendingTlb {
         request: TlbRequest,
         targets: Arc<AtomicUsize>,
@@ -1798,11 +1804,9 @@ impl AddrSpace {
     /// only permission changes and page replacement require an active-CPU TLB
     /// obligation. The range remains in the receipt for auditability.
     fn prepare_fresh_pte_mutation_range(&self, start: VirtAddr, size: usize) -> PreparedMutation {
-        let mut mutation = self.mutation_gate.begin(self.id, 0);
-        if let Some(range) = TlbRange::new(start, size) {
-            mutation.add_tlb_range(range);
-        }
-        mutation
+        prepare_mapping_publication_mutation(
+            &self.mutation_gate, self.id, &self.tlb_targets, start, size, false,
+        )
     }
 
     /// Reserves and captures every owner that may become unreachable when a
@@ -6192,6 +6196,16 @@ impl AddrSpace {
         } else {
             self.prepare_mutation_range(range.start, range.size())
         };
+        // A software-empty PTE can still have an older cached translation
+        // after a failed discard shootdown. Check before touching the PTE or
+        // publishing its new owner; commit repeats the non-cancellable check.
+        // The outer MM mutex excludes new publishers until this apply ends.
+        if let Some(request) = self.mutation_gate.pending_overlap_request(&mutation) {
+            return PageFaultApplyOutcome::CancelPendingTlb {
+                request,
+                targets: self.tlb_targets(),
+            };
+        }
         let Some(retire_epoch) = mutation.receipt().base_epoch.checked_next() else {
             return PageFaultApplyOutcome::Cancel(FaultResult::Retry);
         };
@@ -6377,6 +6391,14 @@ impl AddrSpace {
             PageFaultApplyOutcome::NeedsRepair(result) => {
                 attempt.release_to_repair_state();
                 result
+            }
+            PageFaultApplyOutcome::CancelPendingTlb { request, targets } => {
+                if attempt.cancel().is_ok()
+                    && Self::flush_tlb_requests(core::slice::from_ref(&request), &targets).is_ok()
+                {
+                    let _ = self.acknowledge_tlb_requests(core::slice::from_ref(&request));
+                }
+                FaultResult::Retry
             }
             PageFaultApplyOutcome::PendingTlb { request, targets } => {
                 if Self::flush_tlb_requests(core::slice::from_ref(&request), &targets).is_ok()
@@ -6910,5 +6932,63 @@ mod tests {
             MutationError::PendingTlbOverlap
         );
         assert_eq!(gate.current_epoch(), VmEpoch::new(1));
+    }
+
+    #[cfg(axtest)]
+    fn refault_waits_for_discard_shootdown(full_flush: bool) {
+        use super::{AddrSpace, FaultResult, MappingFlags, MappingOperation, PagingError};
+        use ax_runtime::hal::trap::PageFaultFlags;
+
+        let start = VirtAddr::from(0x7200_0000);
+        let mut aspace = AddrSpace::new_empty(start, PAGE_SIZE_4K).unwrap();
+        let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+        aspace.map(
+            start, PAGE_SIZE_4K, flags, true,
+            MappingOperation::new_alloc(start, PAGE_SIZE_4K, "[discard-refault]"),
+        ).unwrap();
+        aspace.discard_range(start, PAGE_SIZE_4K).unwrap();
+        // Deterministically retain an unacknowledged discard obligation. The
+        // page table is real, but no hardware CPU uses this test-only MM.
+        let mut discard = aspace.mutation_gate.begin(aspace.id, 1);
+        if !full_flush {
+            discard.add_tlb_range(TlbRange::new(start, PAGE_SIZE_4K).unwrap());
+        }
+        assert_eq!(aspace.mutation_gate.commit(discard).unwrap_err(), MutationError::TlbPending);
+        let epoch = aspace.vm_epoch();
+        let plan = aspace.plan_page_fault(
+            start, PageFaultFlags::READ | PageFaultFlags::USER, Default::default(),
+        ).ok().unwrap();
+        let prepared = AddrSpace::prepare_page_fault(plan).ok().unwrap();
+        let mut attempt = prepared.into_apply_attempt();
+        let outcome = aspace.apply_prepared_page_fault(&mut attempt);
+        let unpublished = matches!(aspace.pt.query(start), Err(PagingError::NotMapped))
+            && aspace.vm_epoch() == epoch
+            && aspace.mapping_slots.is_empty()
+            && attempt.prepared.is_some()
+            && !aspace.mutation_gate.needs_repair();
+        drop(outcome);
+        if attempt.prepared.is_some() {
+            attempt.cancel().unwrap();
+        }
+        aspace.mutation_gate.acknowledge(aspace.id, epoch, 0).unwrap().unwrap();
+        let retry = aspace.handle_page_fault_result(
+            start, PageFaultFlags::READ | PageFaultFlags::USER,
+        );
+        let recovered = matches!(retry, FaultResult::Handled) && aspace.pt.query(start).is_ok();
+        aspace.reset_uninstalled_for_loader().unwrap();
+        assert!(unpublished, "refault must leave the PTE, epoch and owner graph untouched until discard is acknowledged");
+        assert!(recovered, "acknowledged discard must allow refault to make progress");
+    }
+
+    #[cfg(axtest)]
+    #[axtest::axtest]
+    fn refault_waits_for_pending_discard_range() {
+        refault_waits_for_discard_shootdown(false);
+    }
+
+    #[cfg(axtest)]
+    #[axtest::axtest]
+    fn refault_waits_for_pending_discard_full_flush() {
+        refault_waits_for_discard_shootdown(true);
     }
 }

@@ -213,24 +213,75 @@ impl CpuOfflineRootSwitchProof {
     }
 }
 
-/// Scheduler-owned proof that one userspace address space may still be
-/// installed on a CPU.
-///
-/// The concrete operating system owns the page-table lifetime accounting;
-/// `ax-task` owns only this type-erased, non-cloneable token. Kernel tasks keep
-/// the token in the per-CPU scheduler state without changing the hardware
-/// root, matching Linux `active_mm`/lazy-TLB semantics.
+/// OS-owned, already allocated lifetime anchor for CPU activations.
+/// Callbacks run with IRQs disabled and must neither allocate nor sleep.
 #[cfg(feature = "task-ext")]
-pub trait SchedulerAddressSpaceActivation: Send + Sync {
-    /// Returns the complete root/tag/epoch identity protected by this token.
-    fn installed(&self) -> TaskAddressSpace;
+pub trait SchedulerAddressSpaceOwner: Send + Sync {
+    /// Releases one activation after a verified root switch.
+    fn release_after_root_switch(self: Arc<Self>, proof: AddressSpaceSwitchProof);
+    /// Releases one activation after the offline kernel-root switch.
+    fn release_after_kernel_switch(self: Arc<Self>, proof: CpuOfflineRootSwitchProof);
+    /// Retains an activation whose hardware root was not proved inactive.
+    fn abandon(self: Arc<Self>, cpu: usize);
+}
 
-    /// Consumes the token after another address-space root was installed.
-    fn release_after_root_switch(self: Box<Self>, proof: AddressSpaceSwitchProof);
+/// Move-only scheduler activation with inline identity and an existing owner.
+/// Constructing or releasing it requires no Box or new Arc allocation. Kernel
+/// tasks retain this value per CPU for Linux-style active_mm/lazy-TLB use.
+#[cfg(feature = "task-ext")]
+pub struct SchedulerAddressSpaceActivation {
+    installed: TaskAddressSpace,
+    cpu: usize,
+    owner: Option<Arc<dyn SchedulerAddressSpaceOwner>>,
+}
 
-    /// Consumes the token after CPU offline installed the stable kernel
-    /// context and completed a local full TLB flush.
-    fn release_after_kernel_switch(self: Box<Self>, proof: CpuOfflineRootSwitchProof);
+#[cfg(feature = "task-ext")]
+impl SchedulerAddressSpaceActivation {
+    /// Transfers one activation already acquired from `owner` into the
+    /// scheduler. `owner` must retain the root throughout this token's life.
+    pub fn new(
+        installed: TaskAddressSpace,
+        cpu: usize,
+        owner: Arc<dyn SchedulerAddressSpaceOwner>,
+    ) -> Self {
+        Self {
+            installed,
+            cpu,
+            owner: Some(owner),
+        }
+    }
+
+    /// Returns the complete root/tag/epoch identity held by this activation.
+    pub const fn installed(&self) -> TaskAddressSpace {
+        self.installed
+    }
+
+    /// Releases this activation only after the matching CPU switched roots.
+    pub fn release_after_root_switch(mut self, proof: AddressSpaceSwitchProof) {
+        assert_eq!(self.cpu, proof.cpu());
+        self.owner
+            .take()
+            .expect("activation is consumed once")
+            .release_after_root_switch(proof);
+    }
+
+    /// Releases this activation after CPU offline completed the kernel switch.
+    pub fn release_after_kernel_switch(mut self, proof: CpuOfflineRootSwitchProof) {
+        assert_eq!(self.cpu, proof.cpu());
+        self.owner
+            .take()
+            .expect("activation is consumed once")
+            .release_after_kernel_switch(proof);
+    }
+}
+
+#[cfg(feature = "task-ext")]
+impl Drop for SchedulerAddressSpaceActivation {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.take() {
+            owner.abandon(self.cpu);
+        }
+    }
 }
 
 /// User-defined task extended data.
@@ -258,7 +309,7 @@ pub trait TaskExt {
     fn acquire_address_space_activation(
         &self,
         _cpu: usize,
-    ) -> Option<Box<dyn SchedulerAddressSpaceActivation>> {
+    ) -> Option<SchedulerAddressSpaceActivation> {
         None
     }
 }
@@ -453,7 +504,7 @@ impl TaskInner {
     #[cfg(all(feature = "uspace", feature = "task-ext"))]
     pub fn replace_address_space_activation(
         &self,
-        activation: Box<dyn SchedulerAddressSpaceActivation>,
+        activation: SchedulerAddressSpaceActivation,
     ) -> AddressSpaceSwitchProof {
         let installed = activation.installed();
         assert!(

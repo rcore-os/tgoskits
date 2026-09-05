@@ -1,5 +1,3 @@
-#[cfg(all(feature = "task-ext", feature = "uspace"))]
-use alloc::boxed::Box;
 use alloc::{collections::VecDeque, sync::Arc};
 #[cfg(all(feature = "smp", feature = "ipi"))]
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -60,7 +58,7 @@ percpu_static! {
     /// CPU's TLB. Kernel tasks retain this token and borrow its root exactly as
     /// Linux kernel threads retain `active_mm` in lazy-TLB mode.
     #[cfg(all(feature = "task-ext", feature = "uspace"))]
-    ACTIVE_ADDRESS_SPACE: Option<Box<dyn SchedulerAddressSpaceActivation>> = None,
+    ACTIVE_ADDRESS_SPACE: Option<SchedulerAddressSpaceActivation> = None,
 }
 
 /// An array of references to run queues, one for each CPU, indexed by cpu_id.
@@ -115,7 +113,7 @@ pub(crate) fn current_run_queue<G: GuardState>() -> CurrentRunQueueRef<G> {
 /// scheduler owner, then retires the previously installed activation.
 #[cfg(all(feature = "task-ext", feature = "uspace"))]
 pub(crate) fn replace_current_address_space_activation(
-    activation: Box<dyn SchedulerAddressSpaceActivation>,
+    activation: SchedulerAddressSpaceActivation,
     proof: crate::AddressSpaceSwitchProof,
 ) {
     assert_eq!(proof.cpu(), this_cpu_id());

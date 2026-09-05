@@ -391,6 +391,49 @@ fn writeback_protect_endpoint_runs_without_cached_io_lock() {
 }
 
 #[test]
+fn writeback_rechecks_eof_after_truncate_during_mapping_protection() {
+    let flushes: &[fn(&CachedFile) -> VfsResult<()>] = &[
+        |cached| cached.writeback().map(|_| ()),
+        |cached| cached.writeback_pages(&[0]),
+        |cached| cached.sync(false),
+        #[cfg(feature = "vfs")]
+        |cached| cached.shared.writeback_dirty_for_global_sync(),
+    ];
+    for flush in flushes {
+        with_test_page_provider(true, |_| {
+            let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE]));
+            let cached = reopen_cached_file(backing.clone());
+            cached.write_at(&b"before"[..], 0).unwrap();
+            let changed = Arc::new(AtomicBool::new(false));
+            let observed = changed.clone();
+            let concurrent = cached.clone();
+            let endpoint = test_mapping_endpoint(move |event| match event {
+                CacheMappingEvent::WritebackProtect(_) => {
+                    if !observed.swap(true, Ordering::AcqRel) {
+                        concurrent.set_len(64).unwrap();
+                        concurrent.write_at(&b"after"[..], 0).unwrap();
+                    }
+                    CacheMappingResult::Protected
+                }
+                CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+            });
+            cached.install_mapping_endpoint(&endpoint).unwrap();
+            flush(&cached).unwrap();
+            assert!(changed.load(Ordering::Acquire));
+            assert_eq!(
+                backing.metadata().unwrap().size,
+                64,
+                "writeback must not undo a committed truncate using its old EOF snapshot"
+            );
+            assert_eq!(cached.len(), 64);
+            let mut contents = [0; 5];
+            backing.read_at(&mut contents, 0).unwrap();
+            assert_eq!(&contents, b"after");
+        });
+    }
+}
+
+#[test]
 fn writeback_protect_endpoint_runs_without_endpoint_lock() {
     with_test_page_provider(true, |_| {
         let shared = Arc::new(CachedFileShared::new_unbounded(PAGE_SIZE as u64));

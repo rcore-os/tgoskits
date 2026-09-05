@@ -19,9 +19,12 @@ use core::{
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::trap::PageFaultFlags;
 
-use crate::sync::{IrqMutex, Mutex, try_push_irq_vec, try_reserve_irq_vec};
+use crate::sync::{IrqMutex, Mutex};
 
 use super::{AddrSpace, FaultResult, PageFaultApplyOutcome, TransparentHugePageMode};
+
+mod work_queue;
+use work_queue::{MmWorkLink, MmWorkQueue};
 
 /// Monotonic identity independent from a page-table root physical address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -342,6 +345,9 @@ struct MmInner {
     /// state without leaving stale active bits behind.
     active_per_cpu: [AtomicUsize; usize::BITS as usize],
     retire_queued: AtomicBool,
+    /// Allocated with the MM, like Linux's mm_struct::async_put_work. Token
+    /// destruction never needs to allocate a separate deferred-work node.
+    work_link: IrqMutex<MmWorkLink>,
 }
 
 #[derive(Clone, Copy)]
@@ -411,7 +417,7 @@ impl MmInner {
         {
             return None;
         }
-        Some(RetirePermit(inner.clone()))
+        Some(RetirePermit(Some(inner.clone())))
     }
 
     fn try_pin(inner: &Arc<Self>) -> Result<MmPin, PinError> {
@@ -710,6 +716,7 @@ impl MmHandle {
                 active_mask,
                 active_per_cpu: core::array::from_fn(|_| AtomicUsize::new(0)),
                 retire_queued: AtomicBool::new(false),
+                work_link: IrqMutex::new(MmWorkLink::default()),
             }),
             owner: AtomicBool::new(true),
         };
@@ -888,7 +895,8 @@ impl Drop for MmHandle {
 }
 
 /// Short-lived kernel ownership.  It is safe to drop in IRQ context because
-/// only atomics are touched; actual page-table destruction belongs to reclaim.
+/// only counters and preallocated queue links are touched; actual page-table
+/// destruction belongs to the sleepable reclaimer.
 pub struct MmPin(Arc<MmInner>);
 
 impl MmPin {
@@ -947,6 +955,19 @@ impl MmPin {
             PageFaultApplyOutcome::NeedsRepair(result) => {
                 attempt.release_to_repair_state();
                 result
+            }
+            PageFaultApplyOutcome::CancelPendingTlb { request, targets } => {
+                // Cancellation releases candidate frames and page-table
+                // deposits outside the MM lock. Servicing the old receipt is
+                // also lock-external; merely returning Retry would strand it
+                // and make every subsequent refault hit the same blocker.
+                if attempt.cancel().is_ok()
+                    && AddrSpace::flush_tlb_requests(core::slice::from_ref(&request), &targets).is_ok()
+                {
+                    let aspace = self.0.aspace.lock();
+                    let _ = aspace.acknowledge_tlb_requests(core::slice::from_ref(&request));
+                }
+                FaultResult::Retry
             }
             PageFaultApplyOutcome::PendingTlb { request, targets } => {
                 if AddrSpace::flush_tlb_requests(core::slice::from_ref(&request), &targets).is_err()
@@ -1034,28 +1055,14 @@ impl ActivationLease {
         self.cpu
     }
 
-    fn release_accounting(&mut self) {
-        {
-            let _gate = self.inner.lifecycle_gate.lock();
-            let previous = self.inner.active_count.load(Ordering::Relaxed);
-            debug_assert!(previous > 0, "ActivationLease reference underflow");
-            self.inner
-                .active_count
-                .store(previous - 1, Ordering::Release);
-            if self.cpu < usize::BITS as usize {
-                let cpu_refs = &self.inner.active_per_cpu[self.cpu];
-                let previous_cpu = cpu_refs.load(Ordering::Relaxed);
-                debug_assert!(previous_cpu > 0, "per-CPU activation reference underflow");
-                cpu_refs.store(previous_cpu - 1, Ordering::Release);
-                if previous_cpu == 1 {
-                    self.inner
-                        .active_mask
-                        .fetch_and(!(1usize << self.cpu), Ordering::Release);
-                }
-            }
-            self.inner.maybe_retire_locked();
-        }
-        queue_if_retired(&self.inner);
+    /// Moves the acquired activation into inline scheduler storage. Unsizing
+    /// this existing Arc changes only its pointer metadata, not its allocation.
+    pub(crate) fn into_scheduler_activation(mut self) -> ax_task::SchedulerAddressSpaceActivation {
+        let activation = ax_task::SchedulerAddressSpaceActivation::new(
+            task_address_space(self.installed), self.cpu, self.inner.clone(),
+        );
+        self.released = true;
+        activation
     }
 
     /// Consumes the lease after the architecture has installed a different
@@ -1065,7 +1072,7 @@ impl ActivationLease {
     /// lease before the root write must leak retirement progress rather than
     /// permit a stale hardware root to be reclaimed.
     pub(crate) fn release_after_root_switch(mut self) {
-        self.release_accounting();
+        release_activation_accounting(&self.inner, self.cpu);
         self.released = true;
     }
 
@@ -1079,23 +1086,73 @@ impl ActivationLease {
 impl Drop for ActivationLease {
     fn drop(&mut self) {
         if !self.released {
-            // Conservatively retain the active reference.  This is a protocol
-            // violation, so the MM is quarantined in NeedsRepair instead of
-            // fabricating proof that the CPU no longer uses its root.
-            {
-                let _gate = self.inner.lifecycle_gate.lock();
-                self.inner
-                    .state
-                    .store(MmState::NeedsRepair as u8, Ordering::Release);
-            }
-            warn!(
-                "address-space activation for mm {} cpu {} dropped before root-switch proof",
-                self.inner.id.get(),
-                self.cpu
-            );
+            abandon_activation(self.inner.clone(), self.cpu);
         }
     }
 }
+
+fn abandon_activation(inner: Arc<MmInner>, cpu: usize) {
+    {
+        let _gate = inner.lifecycle_gate.lock();
+        inner.state.store(MmState::NeedsRepair as u8, Ordering::Release);
+    }
+    warn!("address-space activation for mm {} cpu {} dropped before root-switch proof", inner.id.get(), cpu);
+    enqueue_repair_candidate(inner);
+}
+
+fn release_activation_accounting(inner: &Arc<MmInner>, cpu: usize) {
+    {
+        let _gate = inner.lifecycle_gate.lock();
+        let previous = inner.active_count.load(Ordering::Relaxed);
+        debug_assert!(previous > 0, "ActivationLease reference underflow");
+        inner
+            .active_count
+            .store(previous - 1, Ordering::Release);
+        if cpu < usize::BITS as usize {
+            let cpu_refs = &inner.active_per_cpu[cpu];
+            let previous_cpu = cpu_refs.load(Ordering::Relaxed);
+            debug_assert!(previous_cpu > 0, "per-CPU activation reference underflow");
+            cpu_refs.store(previous_cpu - 1, Ordering::Release);
+            if previous_cpu == 1 {
+                inner
+                    .active_mask
+                    .fetch_and(!(1usize << cpu), Ordering::Release);
+            }
+        }
+        inner.maybe_retire_locked();
+    }
+    queue_if_retired(inner);
+}
+
+impl ax_task::SchedulerAddressSpaceOwner for MmInner {
+    fn release_after_root_switch(self: Arc<Self>, proof: ax_task::AddressSpaceSwitchProof) {
+        release_activation_accounting(&self, proof.cpu());
+    }
+
+    fn release_after_kernel_switch(self: Arc<Self>, proof: ax_task::CpuOfflineRootSwitchProof) {
+        release_activation_accounting(&self, proof.cpu());
+    }
+
+    fn abandon(self: Arc<Self>, cpu: usize) {
+        abandon_activation(self, cpu);
+    }
+}
+
+fn task_address_space(installed: InstalledAddressSpace) -> ax_task::TaskAddressSpace {
+    ax_task::TaskAddressSpace::user(
+        installed.space_id().get(),
+        installed.root(),
+        installed.tag().hardware_tag,
+        installed.tag().generation,
+        installed.epoch().get(),
+        match installed.tag().mode {
+            TagMode::Tagged => ax_task::TaskAddressSpaceMode::Tagged,
+            TagMode::FullFlush => ax_task::TaskAddressSpaceMode::FullFlush,
+        },
+    )
+    .expect("typed Starry address-space installation must remain valid")
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationError {
@@ -1123,13 +1180,13 @@ pub enum MmCreateError {
 }
 
 /// Permission to perform potentially sleeping destruction after quiescence.
-pub struct RetirePermit(Arc<MmInner>);
+pub struct RetirePermit(Option<Arc<MmInner>>);
 
 /// Retired MMs are queued as inert permits; a sleepable reaper must call
 /// [`reap_retired`] from process context.  No page-table or backend cleanup is
 /// performed by `Drop` of a handle/pin/activation token.
-static RETIRE_QUEUE: IrqMutex<Vec<RetirePermit>> = IrqMutex::new(Vec::new());
-static REPAIR_QUEUE: IrqMutex<Vec<Arc<MmInner>>> = IrqMutex::new(Vec::new());
+static RETIRE_QUEUE: IrqMutex<MmWorkQueue> = IrqMutex::new(MmWorkQueue::new());
+static REPAIR_QUEUE: IrqMutex<MmWorkQueue> = IrqMutex::new(MmWorkQueue::new());
 static RECLAIMER_STARTED: AtomicBool = AtomicBool::new(false);
 static REPAIR_RETRY_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -1184,68 +1241,25 @@ pub(super) fn lazy_free_reclaim_request_count_for_test() -> usize {
 }
 
 fn queue_if_retired(inner: &Arc<MmInner>) {
-    if let Some(permit) = MmInner::take_retire_permit(inner)
-        && let Err(error) = try_enqueue_retire(permit)
-    {
-        // A queue allocation failure must remain observable.  The MM is
-        // deliberately left in NeedsRepair rather than dropping a permit
-        // and pretending that its page table was reclaimed.
-        warn!("unable to enqueue retired address space: {error:?}");
+    if let Some(permit) = MmInner::take_retire_permit(inner) {
+        enqueue_retire(permit);
     }
 }
 
-/// Queues a permit returned by an explicit owner release.
+/// Queues a permit returned by an explicit owner release, without allocation.
 pub fn enqueue_retire(permit: RetirePermit) {
-    if let Err(error) = try_enqueue_retire(permit) {
-        warn!("unable to enqueue retired address space: {error:?}");
-    }
+    drop(permit);
 }
 
-/// Fallible queue insertion used by callers that need to preserve an OOM
-/// result instead of logging it.  The permit's MM enters `NeedsRepair` when
-/// the queue cannot reserve storage, so no lifecycle transition is lost.
-pub fn try_enqueue_retire(permit: RetirePermit) -> Result<(), RetireQueueError> {
-    let inner = permit.0.clone();
-    if try_push_irq_vec(&RETIRE_QUEUE, permit).is_err() {
-        {
-            let _gate = inner.lifecycle_gate.lock();
-            inner.state.store(MmState::NeedsRepair as u8, Ordering::Release);
-            inner.retire_queued.store(false, Ordering::Release);
-        }
-        enqueue_repair_candidate(inner);
-        return Err(RetireQueueError::ResourceExhausted);
-    }
-    Ok(())
+fn enqueue_mm_work(queue: &IrqMutex<MmWorkQueue>, inner: Arc<MmInner>) {
+    let duplicate = queue.lock().push(inner);
+    // The existing queue entry owns the MM on this path; release the extra
+    // reference only after dropping the IRQ-safe queue guard.
+    drop(duplicate);
 }
 
 fn enqueue_repair_candidate(inner: Arc<MmInner>) {
-    loop {
-        if try_reserve_irq_vec(&REPAIR_QUEUE, 1).is_err() {
-            // Keep the MM in `NeedsRepair` and emit a diagnostic.  Dropping
-            // this temporary Arc is safe because the address-space contents
-            // remain owned by their lifecycle graph, and the state cannot be
-            // mistaken for reclaimed.
-            warn!("repair queue exhausted while retaining a NeedsRepair address space");
-            return;
-        }
-        let mut repairs = REPAIR_QUEUE.lock();
-        if repairs
-            .iter()
-            .any(|candidate| Arc::ptr_eq(candidate, &inner))
-        {
-            return;
-        }
-        if repairs.len() == repairs.capacity() {
-            continue;
-        }
-        repairs.push(inner);
-        return;
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetireQueueError {
-    ResourceExhausted,
+    enqueue_mm_work(&REPAIR_QUEUE, inner);
 }
 
 /// Reclaims up to `limit` retired address spaces.  This function is deliberately
@@ -1259,25 +1273,22 @@ pub fn reap_retired(limit: usize) -> (usize, usize) {
         let queue = RETIRE_QUEUE.lock();
         limit.min(queue.len())
     };
-    let mut work = Vec::new();
-    if work.try_reserve_exact(count).is_err() {
-        return (0, 0);
-    }
-    {
-        let mut queue = RETIRE_QUEUE.lock();
-        let count = limit.min(queue.len()).min(work.capacity());
-        work.extend(queue.drain(..count));
-    }
     let mut reclaimed = 0;
     let mut failed = 0;
-    for permit in work {
-        let inner = permit.0.clone();
-        match permit.reclaim() {
+    for _ in 0..count {
+        let Some(inner) = RETIRE_QUEUE.lock().pop() else {
+            break;
+        };
+        if inner.state() == MmState::Freed {
+            // The producer may still be dropping its handle after enqueue.
+            // Atomically take the final owner here, rather than letting its
+            // eventual IRQ-context Arc drop destroy the root and metadata.
+            release_mm_shell(inner);
+            continue;
+        }
+        match RetirePermit(Some(inner)).reclaim() {
             Ok(()) => reclaimed += 1,
-            Err(_) => {
-                failed += 1;
-                enqueue_repair_candidate(inner);
-            }
+            Err(_) => failed += 1,
         }
     }
     (reclaimed, failed)
@@ -1333,10 +1344,11 @@ pub fn take_repair_candidates(limit: usize) -> Vec<RepairPermit> {
     if candidates.try_reserve_exact(count).is_err() {
         return candidates;
     }
-    {
-        let mut queue = REPAIR_QUEUE.lock();
-        let count = limit.min(queue.len()).min(candidates.capacity());
-        candidates.extend(queue.drain(..count).map(RepairPermit));
+    for _ in 0..count {
+        let Some(inner) = REPAIR_QUEUE.lock().pop() else {
+            break;
+        };
+        candidates.push(RepairPermit(inner));
     }
     candidates
 }
@@ -1409,12 +1421,26 @@ pub fn spawn_reclaimer_task() {
 }
 
 impl RetirePermit {
+    fn into_inner(mut self) -> Arc<MmInner> {
+        self.0.take().expect("retire permit is consumed once")
+    }
+
     pub fn reclaim(self) -> Result<(), ReclaimError> {
+        let inner = self.into_inner();
+        let result = Self::reclaim_inner(&inner);
+        if result.is_ok() {
+            release_mm_shell(inner);
+        } else {
+            enqueue_repair_candidate(inner);
+        }
+        result
+    }
+
+    fn reclaim_inner(inner: &Arc<MmInner>) -> Result<(), ReclaimError> {
         {
-            let _gate = self.0.lifecycle_gate.lock();
-            if !self.0.is_quiescent_locked()
-                || self
-                    .0
+            let _gate = inner.lifecycle_gate.lock();
+            if !inner.is_quiescent_locked()
+                || inner
                     .state
                     .compare_exchange(
                         MmState::Retired as u8,
@@ -1427,57 +1453,59 @@ impl RetirePermit {
                 return Err(ReclaimError::NotRetired);
             }
         }
-        let result = self.0.aspace.lock().try_reclaim_contents();
+        let result = inner.aspace.lock().try_reclaim_contents();
         match result {
             Ok(()) => {
                 {
-                    let _gate = self.0.lifecycle_gate.lock();
-                    self.0.state.store(MmState::Freed as u8, Ordering::Release);
+                    let _gate = inner.lifecycle_gate.lock();
+                    inner.state.store(MmState::Freed as u8, Ordering::Release);
                 }
-                unregister_mm(&self.0);
+                unregister_mm(inner);
                 Ok(())
             }
             Err(_) => {
                 {
-                    let _gate = self.0.lifecycle_gate.lock();
-                    self.0
+                    let _gate = inner.lifecycle_gate.lock();
+                    inner
                         .state
                         .store(MmState::NeedsRepair as u8, Ordering::Release);
-                    self.0.retire_queued.store(false, Ordering::Release);
+                    inner.retire_queued.store(false, Ordering::Release);
                 }
                 Err(ReclaimError::Backend)
             }
         }
     }
 
-    /// Reopens a failed reclaim only after an explicit repair decision.  This
-    /// prevents a worker from silently treating a partial teardown as success,
-    /// while still providing a deterministic retry hook for transient backend
-    /// failures.
+    /// Requests an explicit retry for a failed, quiescent MM.
     pub fn retry(self) -> Result<(), ReclaimError> {
-        {
-            let _gate = self.0.lifecycle_gate.lock();
-            if !self.0.is_quiescent_locked()
-                || self
-                    .0
-                    .state
-                    .compare_exchange(
-                        MmState::NeedsRepair as u8,
-                        MmState::Retired as u8,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
-                    .is_err()
-            {
-                return Err(ReclaimError::NotRetired);
-            }
-            self.0.retire_queued.store(false, Ordering::Release);
+        RepairPermit(self.into_inner()).retry()
+    }
+}
+
+/// Called only from sleepable reclamation. Keep an extra owner queued until
+/// every producer has completed its token destructor; strong-count sampling
+/// alone would race the final drop and a registry Weak upgrade.
+fn release_mm_shell(inner: Arc<MmInner>) {
+    match Arc::try_unwrap(inner) {
+        Ok(inner) => drop(inner),
+        Err(inner) => enqueue_mm_work(&RETIRE_QUEUE, inner),
+    }
+}
+
+impl Drop for RetirePermit {
+    fn drop(&mut self) {
+        if let Some(inner) = self.0.take() {
+            enqueue_mm_work(&RETIRE_QUEUE, inner);
         }
-        if let Some(permit) = MmInner::take_retire_permit(&self.0) {
-            enqueue_retire(permit);
-            Ok(())
+    }
+}
+
+impl Drop for RepairPermit {
+    fn drop(&mut self) {
+        if self.0.state() == MmState::NeedsRepair {
+            enqueue_repair_candidate(self.0.clone());
         } else {
-            Err(ReclaimError::NotRetired)
+            enqueue_mm_work(&RETIRE_QUEUE, self.0.clone());
         }
     }
 }
@@ -1492,6 +1520,100 @@ pub enum ReclaimError {
 mod tests {
     use super::*;
     use crate::mm::MappingOperation;
+
+    #[axtest::axtest]
+    fn failed_direct_reclaim_preserves_repair_ownership() {
+        let aspace = Arc::new(Mutex::new(
+            AddrSpace::new_empty(VirtAddr::from(0x7400_0000), 0x1000).unwrap(),
+        ));
+        let handle = MmHandle::from_arc(aspace).unwrap();
+        let weak = Arc::downgrade(&handle.inner);
+        handle.inner.aspace.lock().mutation_gate.fail_next_commit_before_publish();
+        let permit = handle.release_user_ref().unwrap();
+        drop(handle);
+        assert_eq!(permit.reclaim(), Err(ReclaimError::Backend));
+        let inner = weak.upgrade().expect("failed reclaim must retain its MM for repair");
+        assert_eq!(inner.state(), MmState::NeedsRepair);
+        // Taking and abandoning a repair token must not silently discard it.
+        drop(take_repair_candidates(usize::MAX));
+        drop(inner);
+        assert!(weak.upgrade().is_some());
+        for candidate in take_repair_candidates(usize::MAX) {
+            if candidate.0.id == weak.upgrade().unwrap().id {
+                candidate.retry().unwrap();
+            }
+        }
+        let _ = reap_retired(usize::MAX);
+        let _ = reap_retired(usize::MAX);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[axtest::axtest]
+    fn mm_pin_services_blocking_discard_before_refault_retry() {
+        use super::super::{MutationError, TlbRange};
+        use ax_runtime::hal::paging::MappingFlags;
+
+        let start = VirtAddr::from(0x7500_0000);
+        let aspace = Arc::new(Mutex::new(AddrSpace::new_empty(start, 0x1000).unwrap()));
+        let handle = MmHandle::from_arc(aspace).unwrap();
+        let pin = handle.pin().unwrap();
+        {
+            let mut aspace = pin.lock();
+            aspace.map(
+                start, 0x1000, MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+                true, MappingOperation::new_alloc(start, 0x1000, "[pin-refault]"),
+            ).unwrap();
+            aspace.discard_range(start, 0x1000).unwrap();
+            let mut discard = aspace.mutation_gate.begin(aspace.id, 1);
+            discard.add_tlb_range(TlbRange::new(start, 0x1000).unwrap());
+            assert_eq!(aspace.mutation_gate.commit(discard).unwrap_err(), MutationError::TlbPending);
+        }
+        let access = PageFaultFlags::READ | PageFaultFlags::USER;
+        assert!(matches!(pin.handle_page_fault_result(start, access), FaultResult::Retry));
+        assert_eq!(pin.lock().pending_tlb_obligations(), 0);
+        assert!(matches!(pin.handle_page_fault_result(start, access), FaultResult::Handled));
+        drop(pin);
+        let permit = handle.release_user_ref().unwrap();
+        drop(handle);
+        permit.reclaim().unwrap();
+    }
+
+    #[axtest::axtest]
+    fn abandoned_activation_retains_the_unproved_hardware_root() {
+        let aspace = Arc::new(Mutex::new(
+            AddrSpace::new_empty(VirtAddr::from(0x7300_0000), 0x1000).unwrap(),
+        ));
+        let handle = MmHandle::from_arc(aspace).unwrap();
+        let weak = Arc::downgrade(&handle.inner);
+        // No hardware root is installed by this synthetic activation. The
+        // missing proof still must retain the same ownership as a real CPU.
+        let activation = handle.activation(0).unwrap();
+        drop(handle);
+        drop(activation);
+        let retained = weak.upgrade();
+        assert!(retained.is_some(), "an unproved active root must stay owned by repair quarantine");
+        let inner = retained.unwrap();
+        assert_eq!(inner.state(), MmState::NeedsRepair);
+        assert_eq!(inner.active_count.load(Ordering::Acquire), 1);
+        // Only the test can supply this proof: no CPU ever installed the MM.
+        {
+            let _gate = inner.lifecycle_gate.lock();
+            inner.active_count.store(0, Ordering::Release);
+            inner.active_mask.store(0, Ordering::Release);
+            inner.active_per_cpu[0].store(0, Ordering::Release);
+        }
+        for candidate in take_repair_candidates(usize::MAX) {
+            if Arc::ptr_eq(&candidate.0, &inner) {
+                candidate.retry().unwrap();
+            } else {
+                drop(candidate);
+            }
+        }
+        drop(inner);
+        let _ = reap_retired(usize::MAX);
+        let _ = reap_retired(usize::MAX);
+        assert!(weak.upgrade().is_none());
+    }
 
     #[axtest::axtest]
     fn lazy_free_reclaim_only_scans_after_a_publication_edge() {

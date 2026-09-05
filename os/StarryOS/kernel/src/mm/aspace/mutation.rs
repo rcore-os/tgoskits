@@ -473,7 +473,7 @@ impl MutationGate {
         mutation: &PreparedMutation,
     ) -> Result<(), MutationError> {
         let commit_guard = self.commit_lock.lock();
-        let pending_overlap = self.has_pending_tlb_overlap(mutation);
+        let pending_overlap = self.pending_overlap_request(mutation).is_some();
         drop(commit_guard);
         if pending_overlap {
             Err(MutationError::PendingTlbOverlap)
@@ -482,13 +482,18 @@ impl MutationGate {
         }
     }
 
-    fn has_pending_tlb_overlap(&self, mutation: &PreparedMutation) -> bool {
-        mutation.precondition == MutationPrecondition::NoPendingTlbOverlap
-            && self.pending.lock().iter().any(|pending| {
+    /// Copies one blocking request into inline storage. The fault owner can
+    /// cancel its unpublished candidate, leave all MM locks, and service this
+    /// older obligation before retrying; no heap snapshot is required.
+    pub(super) fn pending_overlap_request(&self, mutation: &PreparedMutation) -> Option<TlbRequest> {
+        if mutation.precondition != MutationPrecondition::NoPendingTlbOverlap {
+            return None;
+        }
+        self.pending.lock().iter().find(|pending| {
                 pending
                     .tlb_obligation
                     .overlaps(&mutation.receipt.tlb_obligation)
-            })
+            }).map(|pending| pending.tlb_obligation.clone())
     }
 
     /// Begins a mutation whose final shootdown targets are frozen at commit.
@@ -551,7 +556,7 @@ impl MutationGate {
             }
             drop(guard);
         };
-        let pending_overlap = self.has_pending_tlb_overlap(&mutation);
+        let pending_overlap = self.pending_overlap_request(&mutation).is_some();
         if pending_overlap {
             // Drop the IRQ-saving publication gate before dropping the
             // prepared transaction. The latter may gain owned resources in

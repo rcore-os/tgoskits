@@ -61,7 +61,7 @@ Starry 使用 Rust ownership 和显式状态机表达 Linux 已有的 MM 生命�
 | `ActivationLease` | scheduler 为当前 CPU 安装用户 root 时取得 | 必须在 root 已切走后调用 `release_after_root_switch()` |
 | `RetirePermit` | user、pin、activation 与 active mask 全部清零后产生 | 在可睡眠 reclaimer 中执行 backend/page-table 清理 |
 
-普通 `ActivationLease::drop()` 不假定硬件 root 已经切换。若调用方没有提交 root-switch proof，它把 MM 置为 `NeedsRepair`，从而禁止 stale translation 指向的 frame 被静默复用。
+普通 `ActivationLease::drop()` 不假定硬件 root 已经切换。若调用方没有提交 root-switch proof，它把 MM 置为 `NeedsRepair`，并把实际 MM 所有者移入修复队列。只有保留引用计数而没有强引用并不能保持页表存活。`RepairPermit` 被丢弃时也会重新排队，失败状态不会丢失最后一个所有者。
 
 ### 2.2 生命周期状态
 
@@ -80,11 +80,11 @@ stateDiagram-v2
     NeedsRepair --> Retired: explicit repair and quiescence proof
 ```
 
-`Drop` 不执行可能失败或可能睡眠的 backend 清理。`MmHandle::release_user_ref()`、`MmPin::drop()` 和 activation release 只更新状态并排队；`run_mm_reclaimer()` 消费 `RetirePermit`，失败时保留 repair candidate。
+`Drop` 不执行可能失败或可能睡眠的 backend 清理。`MmHandle::release_user_ref()`、`MmPin::drop()` 和 activation release 只更新状态并排队；`reap_retired()` 消费 `RetirePermit`，失败时保留 repair candidate。退休与修复队列使用在 `MmInner` 创建时一并准备的 `MmWorkLink`，排队只转移已有 `Arc`，不扩容 `Vec` 或分配节点，类似 Linux `mm_struct::async_put_work`。清理成功后，通过 `Arc::try_unwrap` 取得最后所有者；若生产者仍在执行 token 析构，就把空壳重新排队，避免最终析构落到 IRQ 上下文。
 
 ### 2.3 调度与进程操作
 
-`ProcessData` 只保存进程级 `MmHandle`，每个 Starry `Thread` 保存一份运行期 `MmPin` 和最多一个 `ActivationLease`。scheduler context 保存 `InstalledAddressSpace`，其中同时包含 `AddressSpaceId`、root、tag generation 与 `VmEpoch`，不再仅保存裸 `PhysAddr`。
+`ProcessData` 只保存进程级 `MmHandle`，每个 Starry `Thread` 保存一份运行期 `MmPin`。调度器每 CPU 保存值类型 `SchedulerAddressSpaceActivation`，其中包含完整安装身份和指向既有 `MmInner` 的 `Arc<dyn SchedulerAddressSpaceOwner>`；转换只改变指针元数据，不为每次切换新建 `Box` 或 `Arc` 分配。scheduler context 保存 `InstalledAddressSpace`，其中同时包含 `AddressSpaceId`、root、tag generation 与 `VmEpoch`，不再仅保存裸 `PhysAddr`。
 
 普通 owner activation 只接受 `Live` MM；线程已经持有的 `MmPin` 则可在 `Live` 或 `Retiring` 状态授权调度 activation。后者只允许已经被内核 pin 证明仍存活的退出 continuation 运行到 `Exited`，不能增加 user owner，也不能越过 `Retired`。因此 group-exit 可以先释放最后一个进程 owner，再唤醒被阻塞的 sibling 完成信号退出，而 retire permit 仍被该线程 pin 和 activation 阻止。
 
@@ -153,6 +153,8 @@ stateDiagram-v2
 ```
 
 `MutationReceipt` 记录 `base_epoch/new_epoch`、VMA/PTE/mapping/resident delta、`TlbRequest` 与 `PublishEvent`。`TlbPending` 表示修改已经发布但旧资源仍在 quarantine，不是“操作未发生”的普通失败；调用方不得恢复旧 ABI 结果或复用相关 frame。
+
+软件页表为空不代表旧硬件翻译已经失效。fresh `mmap` 和缺页安装共用 `NoPendingTlbOverlap` 前提：apply 前检查，epoch 发布时再次检查。`MADV_DONTNEED` 等操作留下重叠的 pending request 时，缺页返回 `CancelPendingTlb`；`MmPin` 在锁外撤销候选、完成旧 shootdown，再让后续缺页重新规划。请求使用内联范围存储，不为这条重试路径分配全量快照。
 
 ### 3.3 锁与睡眠边界
 
@@ -225,6 +227,10 @@ shared file mapping 使用 file page domain 与 page cache identity。fault 在 
 clean file eviction 先取得 `EvictionLease`，再从 `RmapSet` 撤销所有 PTE。未完成的远端 TLB receipt 使页面保持 `Evicting`/quarantined；dirty page 使用 writeback lease 和 generation，失败时数据与 dirty state 仍保留，不能靠 Drop 假装写回成功。
 
 该行为对照 Linux v7.1 `mm/filemap.c` 的 EOF 前后复检与 `VM_FAULT_SIGBUS/RETRY`、`mm/truncate.c` 的两阶段 truncate/invalidate，以及 `mm/rmap.c` 的 folio reverse mapping。Starry 不复用 folio 实现，但保持“truncate race 不安装过期页”和“mapped/dirty/busy page 不能直接释放”的语义。
+
+分配器压力回收在同一 endpoint 排他范围内检查并摘除 clean page，避免竞态失败后重新分配 LRU 节点。它只检查 `Weak` 的强引用数，不升级再丢弃可能成为最后所有者的 endpoint；缓存文件由 registry 读侧保活，回收不会触发缓存文件的最终析构。普通任务上下文的缓存索引仍可管理 LRU 元数据分配，这一限制与 allocator-pressure 路径区分。
+
+写回的 mapping-protect 回调在 `io_lock` 外执行；回调窗口允许 truncate 和后续写入提交。`writeback_page_runs` 使用重新取得 `io_lock` 后读取的当前文件长度，避免按旧 EOF 写回而重新扩展已截短文件。
 
 ## 5. 页表、TLB 与大页
 

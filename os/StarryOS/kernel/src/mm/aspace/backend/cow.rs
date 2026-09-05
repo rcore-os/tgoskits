@@ -758,7 +758,9 @@ impl CowBackend {
         let frame = alloc_frame(zeroed, size)?;
         let page = PageObject::new_present_with_resident_kind(
             PageId::allocate(),
-            FrameLease::owned(frame, size),
+            // SAFETY: alloc_frame just returned this unique allocation with
+            // the same size, and the lease takes over its only release duty.
+            unsafe { FrameLease::owned(frame, size) },
             Some(resident_kind),
         );
         // The source-local index owns this page only while the PTE/slot pair
