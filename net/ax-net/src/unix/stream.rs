@@ -73,7 +73,14 @@ fn new_channels(
 ) -> (Channel, Channel) {
     let (client_tx, server_rx) = new_uni_channel();
     let (server_tx, client_rx) = new_uni_channel();
-    let poll_update = Arc::new(PollSet::new());
+    // Per-endpoint readiness sets, mirroring Linux's per-socket `sk_wq`: each
+    // endpoint parks its own pollers on `wait`, and an I/O op wakes only the
+    // *peer's* set through `notify`. A single shared set used to re-arm a
+    // reader's own POLLIN edge after every recv and manufacture spurious POLLOUT
+    // edges on every I/O (OUT is level-true), which wedged an edge-triggered
+    // reactor (tokio/uv) into a 100% busy-loop on single-core loongarch.
+    let client_wait = Arc::new(PollSet::new());
+    let server_wait = Arc::new(PollSet::new());
     let c2s_cmsg = CmsgQueue::default();
     let s2c_cmsg = CmsgQueue::default();
     // Cross-wired close flags: each side's my_tx_closed is the other's peer_tx_closed.
@@ -89,7 +96,8 @@ fn new_channels(
             rx_bytes_total: 0,
             my_tx_closed: client_tx_closed.clone(),
             peer_tx_closed: server_tx_closed.clone(),
-            poll_update: poll_update.clone(),
+            wait: client_wait.clone(),
+            notify: server_wait.clone(),
             peer_credentials: credentials.clone(),
             peer_receive_credentials: second_receive_credentials,
         },
@@ -102,7 +110,8 @@ fn new_channels(
             rx_bytes_total: 0,
             my_tx_closed: server_tx_closed,
             peer_tx_closed: client_tx_closed,
-            poll_update,
+            wait: server_wait,
+            notify: client_wait,
             peer_credentials: credentials,
             peer_receive_credentials: first_receive_credentials,
         },
@@ -127,7 +136,11 @@ struct Channel {
     my_tx_closed: Arc<AtomicBool>,
     /// Set to true by the peer's Drop before it wakes us.
     peer_tx_closed: Arc<AtomicBool>,
-    poll_update: Arc<PollSet>,
+    /// This endpoint's own readiness set; its pollers (epoll wakers) park here.
+    wait: Arc<PollSet>,
+    /// The peer endpoint's `wait` set. This endpoint's I/O wakes only this set,
+    /// so a send/recv never re-arms this endpoint's own edge-triggered poll.
+    notify: Arc<PollSet>,
     peer_credentials: UnixCredentials,
     /// Peer receiver's `SO_PASSCRED` state.
     peer_receive_credentials: Arc<AtomicBool>,
@@ -484,7 +497,7 @@ impl TransportOps for StreamTransport {
                         last.end_byte = last.end_byte.saturating_add(count as u64);
                     }
                     chan.tx_bytes_total = chan.tx_bytes_total.saturating_add(count as u64);
-                    wake_poll = Some(chan.poll_update.clone());
+                    wake_poll = Some(chan.notify.clone());
                 }
 
                 if count == size || non_blocking {
@@ -496,7 +509,9 @@ impl TransportOps for StreamTransport {
             drop(guard);
             if let Some(poll) = wake_poll {
                 // Peer-visible bytes and cmsg state are published before wake.
-                unsafe { poll.wake(IoEvents::IN | IoEvents::OUT) };
+                // Only the peer's readability changed; waking OUT here would be a
+                // spurious level-true edge (our send did not free the peer's tx).
+                unsafe { poll.wake(IoEvents::IN) };
             }
             result
         })
@@ -544,7 +559,7 @@ impl TransportOps for StreamTransport {
                 if count > 0 {
                     if !peek {
                         chan.rx_bytes_total = chan.rx_bytes_total.saturating_add(count as u64);
-                        wake_poll = Some(chan.poll_update.clone());
+                        wake_poll = Some(chan.notify.clone());
                     }
                     Ok(count)
                 } else if !chan.rx.write_is_held() || chan.peer_tx_closed.load(Ordering::Acquire) {
@@ -621,14 +636,14 @@ impl TransportOps for StreamTransport {
             self.tx_closed.store(true, Ordering::Release);
             if let Some(chan) = self.channel.lock().as_ref() {
                 chan.my_tx_closed.store(true, Ordering::Release);
-                peer_poll = Some(chan.poll_update.clone());
+                peer_poll = Some(chan.notify.clone());
             }
         }
         if self.rx_closed.load(Ordering::Acquire)
             && self.tx_closed.load(Ordering::Acquire)
             && let Some(chan) = self.channel.lock().take()
         {
-            peer_poll.get_or_insert(chan.poll_update);
+            peer_poll.get_or_insert(chan.notify);
         }
         if let Some(poll) = peer_poll {
             // The peer-visible write closure is published before waking readers.
@@ -670,10 +685,7 @@ impl Pollable for StreamTransport {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         let chan_poll = if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
-            self.channel
-                .lock()
-                .as_ref()
-                .map(|chan| chan.poll_update.clone())
+            self.channel.lock().as_ref().map(|chan| chan.wait.clone())
         } else {
             None
         };
@@ -700,7 +712,7 @@ impl Drop for StreamTransport {
             // and no data, reports no events, and parks forever waiting for data
             // that will never arrive.
             chan.my_tx_closed.store(true, Ordering::Release);
-            Some(chan.poll_update.clone())
+            Some(chan.notify.clone())
         } else {
             None
         };
@@ -713,5 +725,89 @@ impl Drop for StreamTransport {
             self.poll_state
                 .wake(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP)
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, task::Wake};
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Context, Waker},
+    };
+
+    use super::*;
+
+    #[derive(Default)]
+    struct FlagWaker(AtomicBool);
+    impl FlagWaker {
+        fn woken(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    impl Wake for FlagWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    // Regression: an endpoint's I/O must wake only the *peer's* readiness set
+    // (Linux `sk_wq`), never its own. The prior single shared `PollSet` re-armed
+    // the sender's own POLLIN edge and manufactured spurious POLLOUT edges on
+    // every I/O (OUT is level-true), wedging an edge-triggered reactor into a
+    // 100% busy-loop on single-core loongarch. Fails on the shared-set impl,
+    // which would wake the sender's poller too.
+    #[test]
+    fn io_wakes_peer_not_self() {
+        let (client, server) = StreamTransport::new_pair(UnixCredentials::new(0));
+
+        let cflag = Arc::new(FlagWaker::default());
+        let sflag = Arc::new(FlagWaker::default());
+        client.register(
+            &mut Context::from_waker(&Waker::from(cflag.clone())),
+            IoEvents::IN | IoEvents::OUT,
+        );
+        server.register(
+            &mut Context::from_waker(&Waker::from(sflag.clone())),
+            IoEvents::IN | IoEvents::OUT,
+        );
+
+        // The wake a send performs: notify the peer's set that data is readable.
+        let woken = {
+            let guard = client.channel.lock();
+            let chan = guard.as_ref().expect("pair is connected");
+            // SAFETY: the set outlives this call; host-test is single-threaded.
+            unsafe { chan.notify.wake(IoEvents::IN) }
+        };
+
+        assert_eq!(woken, 1, "exactly the peer poller is woken");
+        assert!(sflag.woken(), "peer (server) must be woken readable");
+        assert!(!cflag.woken(), "sender must NOT self-wake");
+    }
+
+    // The two endpoints own distinct wait sets, cross-wired so each side's
+    // `notify` is the peer's `wait`. A shared set is the busy-loop regression.
+    #[test]
+    fn endpoints_own_distinct_cross_wired_poll_sets() {
+        let (client, server) = StreamTransport::new_pair(UnixCredentials::new(0));
+        let cg = client.channel.lock();
+        let sg = server.channel.lock();
+        let c = cg.as_ref().expect("connected");
+        let s = sg.as_ref().expect("connected");
+        assert!(
+            !Arc::ptr_eq(&c.wait, &s.wait),
+            "endpoints must not share a wait set"
+        );
+        assert!(
+            Arc::ptr_eq(&c.notify, &s.wait),
+            "client.notify must be server.wait"
+        );
+        assert!(
+            Arc::ptr_eq(&s.notify, &c.wait),
+            "server.notify must be client.wait"
+        );
     }
 }
