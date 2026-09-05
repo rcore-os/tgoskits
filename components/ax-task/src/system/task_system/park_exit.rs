@@ -1,7 +1,10 @@
 //! Park, current-thread exit, and physical switch-tail completion.
 
 use super::*;
-use crate::{ParkPublication, system::cpu::PreviousSwitchDisposition};
+use crate::{
+    ParkPublication,
+    system::cpu::{PreviousSwitchDisposition, PreviousSwitchOwnership},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RqOnlyParkClass {
@@ -332,7 +335,7 @@ impl TaskSystem {
         });
         let handoff = Self::prepare_switch_handoff(
             Some(token.thread()),
-            Some(previous_core),
+            Some(PreviousSwitchOwnership::retained(previous_core)),
             next_core,
             next_policy,
             PreviousSwitchDisposition::Live,
@@ -568,7 +571,7 @@ impl TaskSystem {
         });
         let handoff = Self::prepare_switch_handoff(
             Some(token.thread()),
-            Some(Arc::clone(previous_core)),
+            Some(PreviousSwitchOwnership::retained(Arc::clone(previous_core))),
             next_core,
             next_policy,
             PreviousSwitchDisposition::Live,
@@ -853,7 +856,7 @@ impl TaskSystem {
         });
         let handoff = Self::prepare_switch_handoff(
             Some(exiting),
-            Some(Arc::clone(&exited_core)),
+            Some(PreviousSwitchOwnership::retained(Arc::clone(&exited_core))),
             next_core,
             next_policy,
             PreviousSwitchDisposition::Exited,
@@ -951,7 +954,10 @@ impl TaskSystem {
         // complete, the same checks are commit invariants rather than a
         // recoverable retry boundary.
         if migration_target.is_some() {
-            let previous_core = Arc::clone(initial_handoff.previous());
+            let previous_core =
+                Arc::clone(initial_handoff.retained_previous().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x5357_0007, previous_id.as_u64() as usize)
+                }));
             let placement = previous_core.sched().placement();
             // SAFETY: propagated from this method's selected entry contract.
             let sched = unsafe { rq_entry.lock_thread_sched(initial_handoff.previous().sched()) };
@@ -1037,7 +1043,9 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x5357_0003, previous_id.as_u64() as usize)
         });
         let affinity_completed = {
-            let previous_core = Arc::clone(handoff.previous());
+            let previous_core = Arc::clone(handoff.retained_previous().unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5357_0007, previous_id.as_u64() as usize)
+            }));
             let placement = previous_core.sched().placement();
 
             // SAFETY: propagated from this method's selected entry contract.

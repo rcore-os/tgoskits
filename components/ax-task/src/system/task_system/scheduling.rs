@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     RtEligibility, SchedulerClass,
-    system::cpu::{PreviousSwitchDisposition, SchedulerRequestClaim},
+    system::cpu::{PreviousSwitchDisposition, PreviousSwitchOwnership, SchedulerRequestClaim},
 };
 
 fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
@@ -65,7 +65,7 @@ struct RequestedPreemptionCommit {
 
 struct RequestedPreemptionState {
     previous: Option<ThreadId>,
-    previous_core: Option<Arc<ThreadCore>>,
+    previous_core: Option<PreviousSwitchOwnership>,
     previous_endpoint: Option<SwitchEndpoint>,
     previous_urgency: Option<SchedulingUrgency>,
     dispatch: OwnerDispatchCommit,
@@ -664,7 +664,7 @@ impl TaskSystem {
         let migrated = migration.is_some();
         let handoff = Self::prepare_switch_handoff(
             previous,
-            previous_core,
+            previous_core.map(PreviousSwitchOwnership::retained),
             next_core,
             next_policy,
             PreviousSwitchDisposition::Live,
@@ -881,7 +881,7 @@ impl TaskSystem {
             transaction,
             RequestedPreemptionState {
                 previous,
-                previous_core,
+                previous_core: previous_core.map(PreviousSwitchOwnership::retained),
                 previous_endpoint,
                 previous_urgency,
                 dispatch: dispatch_commit,
@@ -1139,7 +1139,7 @@ impl TaskSystem {
         let migrated = migration.is_some();
         let handoff = Self::prepare_switch_handoff(
             previous,
-            previous_core,
+            previous_core.map(PreviousSwitchOwnership::retained),
             next_core,
             next_policy,
             PreviousSwitchDisposition::Live,

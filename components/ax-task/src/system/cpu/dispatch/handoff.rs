@@ -5,11 +5,48 @@ use super::super::*;
 /// State committed before an architecture switch and consumed by switch tail.
 #[derive(Debug)]
 pub(crate) struct SwitchHandoff {
-    previous: Arc<ThreadCore>,
+    previous: PreviousSwitchOwnership,
     incoming: SchedulerThreadRef,
     incoming_policy: SchedulePolicy,
     previous_disposition: PreviousSwitchDisposition,
     route: SwitchRoute,
+}
+
+/// Lifetime source for the outgoing task across the architecture switch.
+#[derive(Debug)]
+pub(crate) enum PreviousSwitchOwnership {
+    /// The owner rq and its transferred lock baton retain the linked task.
+    SchedulerOwned(SchedulerThreadRef),
+    /// Exit and migration paths retain an independent strong reference.
+    Retained(Arc<ThreadCore>),
+}
+
+impl PreviousSwitchOwnership {
+    pub(crate) fn retained(core: Arc<ThreadCore>) -> Self {
+        Self::Retained(core)
+    }
+
+    pub(crate) const fn scheduler_owned(core: SchedulerThreadRef) -> Self {
+        Self::SchedulerOwned(core)
+    }
+
+    pub(crate) fn as_ref(&self) -> &ThreadCore {
+        match self {
+            Self::SchedulerOwned(core) => core.as_ref(),
+            Self::Retained(core) => core.as_ref(),
+        }
+    }
+
+    fn retained_arc(&self) -> Option<&Arc<ThreadCore>> {
+        match self {
+            Self::SchedulerOwned(_) => None,
+            Self::Retained(core) => Some(core),
+        }
+    }
+
+    const fn requires_rq_baton(&self) -> bool {
+        matches!(self, Self::SchedulerOwned(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,7 +71,7 @@ pub(crate) struct CompletedMigrationSwitchHandoff {
 
 impl SwitchHandoff {
     pub(crate) fn prepared(
-        previous: Arc<ThreadCore>,
+        previous: PreviousSwitchOwnership,
         incoming: SchedulerThreadRef,
         incoming_policy: SchedulePolicy,
         previous_disposition: PreviousSwitchDisposition,
@@ -75,8 +112,16 @@ impl SwitchHandoff {
         }
     }
 
-    pub(crate) fn previous(&self) -> &Arc<ThreadCore> {
-        &self.previous
+    pub(crate) fn previous(&self) -> &ThreadCore {
+        self.previous.as_ref()
+    }
+
+    pub(crate) fn retained_previous(&self) -> Option<&Arc<ThreadCore>> {
+        self.previous.retained_arc()
+    }
+
+    pub(crate) const fn previous_requires_rq_baton(&self) -> bool {
+        self.previous.requires_rq_baton()
     }
 
     pub(crate) fn incoming(&self) -> &ThreadCore {

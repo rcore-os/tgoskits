@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     LinkedRqTaskRef,
     scheduler::{PickTaskResult, RtEligibility},
-    system::cpu::{PreviousSwitchDisposition, SwitchHandoff},
+    system::cpu::{PreviousSwitchDisposition, PreviousSwitchOwnership, SwitchHandoff},
 };
 
 pub(super) struct OwnerScheduleOut {
@@ -18,7 +18,7 @@ pub(super) enum OwnerRqScheduleOut {
 }
 
 pub(super) struct OwnerRqScheduledOut {
-    pub(super) core: Arc<ThreadCore>,
+    pub(super) core: PreviousSwitchOwnership,
     pub(super) endpoint: SwitchEndpoint,
     pub(super) policy: SchedulePolicy,
     pub(super) urgency: SchedulingUrgency,
@@ -38,6 +38,13 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x5343_1117, cpu.owner().as_u32() as usize);
         }
         let retain_rq_lock = retain_rq_lock && handoff.is_some();
+        if handoff
+            .as_ref()
+            .is_some_and(SwitchHandoff::previous_requires_rq_baton)
+            && !retain_rq_lock
+        {
+            task_runtime::fatal_invariant(0x5343_111c, cpu.owner().as_u32() as usize);
+        }
         if retain_rq_lock {
             let baton = transaction.commit_and_handoff_scheduler_work();
             handoff
@@ -151,7 +158,7 @@ impl TaskSystem {
             }
         };
         OwnerRqScheduledOut {
-            core,
+            core: PreviousSwitchOwnership::retained(core),
             endpoint,
             policy,
             urgency,
@@ -179,14 +186,16 @@ impl TaskSystem {
             SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
         ));
         let migration_capable = current.metadata().affinity.is_migration_capable();
+        // SAFETY: this linked current remains in its RT node, and the caller
+        // transfers the owner rq lock into the matching local switch handoff.
+        let core = PreviousSwitchOwnership::scheduler_owned(unsafe {
+            SchedulerThreadRef::from_scheduler_owned(current.runtime_core())
+        });
 
         // Pairs prior task accesses with publication of a different rq->curr.
         crate::lock::smp_mb_after_spinlock();
         transaction.yield_realtime_current(thread);
         transaction.put_prev_realtime_task(thread, migration_capable);
-        let core = transaction.current_core().unwrap_or_else(|| {
-            task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
-        });
         OwnerRqScheduledOut {
             core,
             endpoint,
@@ -967,7 +976,7 @@ impl TaskSystem {
 
     pub(super) fn prepare_switch_handoff(
         previous: Option<ThreadId>,
-        previous_core: Option<Arc<ThreadCore>>,
+        previous_core: Option<PreviousSwitchOwnership>,
         next: SchedulerThreadRef,
         next_policy: SchedulePolicy,
         previous_disposition: PreviousSwitchDisposition,
@@ -978,7 +987,7 @@ impl TaskSystem {
                 let previous_core = previous_core.unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1115, previous.as_u64() as usize)
                 });
-                if previous_core.id() != previous {
+                if previous_core.as_ref().id() != previous {
                     task_runtime::fatal_invariant(0x5343_1116, previous.as_u64() as usize);
                 }
                 Some(SwitchHandoff::prepared(

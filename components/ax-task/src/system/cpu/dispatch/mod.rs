@@ -8,4 +8,4 @@ pub(crate) use accounting::DispatchCharge;
 pub(crate) use current::{
     CurrentClassState, CurrentDispatch, CurrentRemotePublication, DispatchRole, SchedulerThreadRef,
 };
-pub(crate) use handoff::{PreviousSwitchDisposition, SwitchHandoff};
+pub(crate) use handoff::{PreviousSwitchDisposition, PreviousSwitchOwnership, SwitchHandoff};
