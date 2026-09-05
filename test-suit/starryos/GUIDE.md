@@ -302,6 +302,12 @@ apk add zlib-dev
 - `STARRY_CASE_BUILD_DIR`
 - `STARRY_CASE_OVERLAY_DIR`
 
+宿主没有 qemu-user 时（如 macOS），`prebuild.sh` 无法执行：axbuild 会响亮跳过并说明
+依赖 prebuild 产物的子用例将在运行期失败。因此依赖 prebuild 安装的 guest 工具的
+CMake 子测例必须在 configure 期对工具缺失做条件处理（`if(EXISTS ...)` + `message(STATUS ...)` +
+`return()`，参照 `qemu/system/apk-curl-equivalence`），显式跳过而不是 `FATAL_ERROR`
+阻断同组其他子测例，也不得静默装作测试已覆盖。
+
 xtask 对 CMake configure、build 和 install 的成功输出默认静默，只保留对应阶段耗时。
 任一阶段失败时会回放完整命令、stdout、stderr、退出状态和阶段上下文。`prebuild.sh`
 以及 QEMU/guest 输出仍然实时显示，不能依赖成功路径的 CMake 输出作为测试判定标记。

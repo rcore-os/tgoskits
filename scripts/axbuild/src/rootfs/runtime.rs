@@ -14,14 +14,38 @@ use std::{
 
 use anyhow::{Context, bail};
 
+use crate::context::cross_compile_spec_for_arch_checked;
+
 const RUNTIME_LIBRARY_DIRS: &[&str] = &["lib", "usr/lib", "usr/local/lib"];
+
+/// Locates a `readelf` able to inspect guest ELFs. readelf is
+/// architecture-agnostic, so plain and LLVM names come first and the
+/// cross-toolchain prefixed binary covers hosts that only carry the cross
+/// binutils (e.g. macOS without binutils installed).
+pub(crate) fn find_readelf(arch: &str) -> anyhow::Result<PathBuf> {
+    let spec = cross_compile_spec_for_arch_checked(arch)?;
+    let candidates = [
+        "readelf".to_string(),
+        "llvm-readelf".to_string(),
+        format!("{}-readelf", spec.gnu_tool_prefix),
+    ];
+    candidates
+        .iter()
+        .find_map(|name| find_optional_host_binary(name))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "required host binary was not found in PATH; tried: {}",
+                candidates.join(", ")
+            )
+        })
+}
 
 /// Copies any needed runtime shared libraries into an overlay tree.
 pub(crate) fn sync_runtime_dependencies(
     staging_root: &Path,
     overlay_dir: &Path,
+    readelf: &Path,
 ) -> anyhow::Result<()> {
-    let readelf = find_host_binary_candidates(&["readelf"])?;
     let mut pending = collect_regular_files(overlay_dir)?;
     let mut processed = std::collections::BTreeSet::new();
 
@@ -31,7 +55,7 @@ pub(crate) fn sync_runtime_dependencies(
         }
         processed.insert(path.clone());
 
-        let needed = read_needed_shared_libraries(&readelf, &path)?;
+        let needed = read_needed_shared_libraries(readelf, &path)?;
         for library in needed {
             let Some(source_path) = find_runtime_library_in_staging_root(staging_root, &library)?
             else {
@@ -151,18 +175,6 @@ fn find_runtime_library_in_staging_root(
         }
     }
     Ok(None)
-}
-
-fn find_host_binary_candidates(candidates: &[&str]) -> anyhow::Result<PathBuf> {
-    candidates
-        .iter()
-        .find_map(|candidate| find_optional_host_binary(candidate))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "required host binary was not found in PATH; tried: {}",
-                candidates.join(", ")
-            )
-        })
 }
 
 fn find_optional_host_binary(name: &str) -> Option<PathBuf> {

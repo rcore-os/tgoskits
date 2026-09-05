@@ -4,32 +4,96 @@ pub(crate) fn cross_compile_spec(arch: &str) -> anyhow::Result<CrossCompileSpec>
     crate::context::cross_compile_spec_for_arch_checked(arch)
 }
 
+/// How guest-architecture build tools are executed on the host.
+#[derive(Debug, Clone)]
+pub(crate) enum GuestToolExecution {
+    /// Guest tools run through qemu-user. The default whenever a qemu binary
+    /// is present, and the only mode that can also run guest `prebuild.sh`.
+    Emulated { qemu_runner: PathBuf },
+    /// Host-native cross tools (`<gnu_tool_prefix>-<tool>`) standing in for
+    /// the guest binutils. Used on hosts that cannot execute guest ELFs
+    /// because no qemu-user binary exists (e.g. macOS); `prebuild.sh` cannot
+    /// run in this mode.
+    Native,
+}
+
+/// Picks the guest tool execution mode. qemu-user wins when present so Linux
+/// hosts keep the exact emulated toolchain; otherwise every cross binutils
+/// tool must exist as a host-native `<gnu_tool_prefix>-<tool>` binary.
+pub(crate) fn resolve_guest_tool_execution(arch: &str) -> anyhow::Result<GuestToolExecution> {
+    let spec = cross_compile_spec(arch)?;
+    if let Some(qemu_runner) = spec
+        .qemu_user_binaries
+        .iter()
+        .find_map(|name| find_optional_host_binary(name))
+    {
+        return Ok(GuestToolExecution::Emulated { qemu_runner });
+    }
+
+    let missing: Vec<String> = CROSS_BINUTILS
+        .iter()
+        .filter(|tool| {
+            find_optional_host_binary(&format!("{}-{tool}", spec.gnu_tool_prefix)).is_none()
+        })
+        .map(|tool| format!("{}-{tool}", spec.gnu_tool_prefix))
+        .collect();
+    ensure!(
+        missing.is_empty(),
+        "guest tools for `{arch}` cannot execute on this host: no qemu-user ({}) and missing \
+         native cross tools ({}); install qemu-user-static or the cross binutils",
+        spec.qemu_user_binaries.join(", "),
+        missing.join(", ")
+    );
+    Ok(GuestToolExecution::Native)
+}
+
 pub(crate) fn write_cross_bin_wrappers(
     layout: &case_assets::CaseAssetLayout,
     spec: CrossCompileSpec,
-    qemu_runner: &Path,
+    execution: &GuestToolExecution,
 ) -> anyhow::Result<()> {
     fs::create_dir_all(&layout.cross_bin_dir)
         .with_context(|| format!("failed to create {}", layout.cross_bin_dir.display()))?;
     for tool in CROSS_BINUTILS {
         let guest_relative_path = format!("{}/{tool}", spec.guest_tool_dir);
         ensure_guest_tool_exists(&layout.staging_root, &guest_relative_path)?;
-        write_guest_exec_wrapper(
-            &layout.cross_bin_dir.join(tool),
-            qemu_runner,
-            &layout.staging_root,
-            &guest_relative_path,
-            None,
-        )?;
-        write_guest_exec_wrapper(
-            &layout
-                .cross_bin_dir
-                .join(format!("{}-{tool}", spec.gnu_tool_prefix)),
-            qemu_runner,
-            &layout.staging_root,
-            &guest_relative_path,
-            None,
-        )?;
+        match execution {
+            GuestToolExecution::Emulated { qemu_runner } => {
+                write_guest_exec_wrapper(
+                    &layout.cross_bin_dir.join(tool),
+                    qemu_runner,
+                    &layout.staging_root,
+                    &guest_relative_path,
+                    None,
+                )?;
+                write_guest_exec_wrapper(
+                    &layout
+                        .cross_bin_dir
+                        .join(format!("{}-{tool}", spec.gnu_tool_prefix)),
+                    qemu_runner,
+                    &layout.staging_root,
+                    &guest_relative_path,
+                    None,
+                )?;
+            }
+            GuestToolExecution::Native => {
+                let native_tool =
+                    find_optional_host_binary(&format!("{}-{tool}", spec.gnu_tool_prefix))
+                        .with_context(|| {
+                            format!(
+                                "native cross tool `{}-{tool}` disappeared from PATH",
+                                spec.gnu_tool_prefix
+                            )
+                        })?;
+                write_native_tool_wrapper(&layout.cross_bin_dir.join(tool), &native_tool)?;
+                write_native_tool_wrapper(
+                    &layout
+                        .cross_bin_dir
+                        .join(format!("{}-{tool}", spec.gnu_tool_prefix)),
+                    &native_tool,
+                )?;
+            }
+        }
     }
 
     Ok(())
@@ -120,6 +184,14 @@ pub(crate) fn write_cmake_toolchain_file(
 
 pub(super) fn cmake_value(value: impl AsRef<std::ffi::OsStr>) -> String {
     value.as_ref().to_string_lossy().replace('\\', "/")
+}
+
+/// Writes a cross-bin wrapper that execs a host-native cross tool directly.
+/// The wrapper keeps the guest-named lookup path (`clang -B`) working without
+/// qemu-user on hosts that cannot execute guest ELFs.
+pub(super) fn write_native_tool_wrapper(path: &Path, host_tool: &Path) -> anyhow::Result<()> {
+    let body = format!("exec {tool} \"$@\"\n", tool = shell_single_quote(host_tool),);
+    write_wrapper_script(path, &body)
 }
 
 pub(super) fn detect_gcc_runtime_dir(sysroot: &Path, guest_tool_dir: &str) -> Option<PathBuf> {

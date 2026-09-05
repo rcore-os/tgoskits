@@ -90,25 +90,38 @@ pub(crate) fn prepare_rust_case_overlay_sync(
     (config.prepare_staging_root)(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
 
-    // Build a qemu-user wrapper for the cross-linker from the Alpine sysroot.
+    // Build cross-bin wrappers for the linker from the Alpine sysroot: guest
+    // tools through qemu-user when available, host-native cross tools when the
+    // host cannot execute guest ELFs.
     let spec = cross_compile_spec(arch)?;
-    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
-    write_cross_bin_wrappers(layout, spec, &qemu_runner)?;
+    let execution = resolve_guest_tool_execution(arch)?;
+    write_cross_bin_wrappers(layout, spec, &execution)?;
 
     // Run prebuild.sh if present — runs inside the Alpine staging root via
     // qemu-user, same as C cases.  Use this to install native deps (e.g.
     // `apk add dbus-dev`) that the cargo build needs via pkg-config.
     let prebuild_script = case_rust_prebuild_script_path(case);
     if prebuild_script.is_file() {
-        let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
-        let prebuild_env =
-            prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
-        let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
-        // Override current_dir to rust/ — build_prebuild_command defaults to c/.
-        command.current_dir(&rust_dir);
-        command
-            .exec()
-            .with_context(|| format!("failed to run rust case prebuild.sh for `{}`", case.name))?;
+        match &execution {
+            GuestToolExecution::Emulated { qemu_runner } => {
+                let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
+                let prebuild_env = prepare_guest_prebuild_env(
+                    case,
+                    layout,
+                    qemu_runner,
+                    extra_script_envs,
+                    config,
+                )?;
+                let mut command =
+                    build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
+                // Override current_dir to rust/ — build_prebuild_command defaults to c/.
+                command.current_dir(&rust_dir);
+                command.exec().with_context(|| {
+                    format!("failed to run rust case prebuild.sh for `{}`", case.name)
+                })?;
+            }
+            GuestToolExecution::Native => prebuild_skipped_notice(&case.name),
+        }
     }
 
     // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
