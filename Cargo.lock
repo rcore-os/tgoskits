@@ -6718,6 +6718,7 @@ dependencies = [
  "ax-sync",
  "dma-api",
  "log",
+ "mbarrier",
  "mmio-api",
  "rdif-eth",
  "thiserror 2.0.20",

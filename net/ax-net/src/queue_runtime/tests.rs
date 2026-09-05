@@ -6,7 +6,8 @@ use std::{
 
 use irq_framework::{HwIrq, IrqDomainId};
 use rd_net::{
-    DmaBuffer, NetControlEndpoint, NetDeviceInfo, PreparedNetDevice, RxCompletion, WifiOperation,
+    DmaBuffer, NetControlEndpoint, NetDeviceInfo, PreparedNetDevice, RxCompletion,
+    TxNetworkProtocol, TxNotify, TxSubmitOptions, TxTransportProtocol, WifiOperation,
     WifiTransaction, Wpa2Pmk,
     dma_api::{
         DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
@@ -53,7 +54,7 @@ impl PinnedNetIrqRegistrar for UnexpectedRegistrar {
     }
 }
 
-struct TestDma;
+pub(super) struct TestDma;
 
 impl TestDma {
     unsafe fn allocate(layout: Layout) -> Option<DmaAllocHandle> {
@@ -112,7 +113,7 @@ impl DmaOp for TestDma {
     unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
 }
 
-static TEST_DMA: TestDma = TestDma;
+pub(super) static TEST_DMA: TestDma = TestDma;
 
 fn dma_buffer(capacity: usize, len: usize) -> DmaBuffer {
     let device = DeviceDma::new(
@@ -147,7 +148,7 @@ fn tx_test_port(
     initial_tx_tokens: usize,
 ) -> (
     QueueFramePort,
-    SpscConsumer<DmaBuffer>,
+    SpscConsumer<executor::TxRequest>,
     SpscProducer<DmaBuffer>,
 ) {
     let (_rx_ready_tx, rx_ready) = spsc_ring(1);
@@ -157,14 +158,18 @@ fn tx_test_port(
     for _ in 0..initial_tx_tokens {
         tx_free_tx.push(dma_buffer(2048, 0)).unwrap();
     }
+    let shared = Arc::new(group_state(STATE_IDLE));
     let group = ProtocolGroupPort {
         rx_ready,
-        rx_recycle,
+        rx_recycler: Arc::new(executor::RxRecycler::new(
+            rx_recycle,
+            Arc::clone(&shared),
+            1,
+        )),
         tx_ready,
         tx_free,
-        pending_recycle: Vec::new(),
         tx_spares: Vec::new(),
-        shared: Arc::new(group_state(STATE_IDLE)),
+        shared,
     };
     (
         QueueFramePort {
@@ -175,6 +180,7 @@ fn tx_test_port(
             pending_tx: VecDeque::new(),
             next_rx: 0,
             next_tx: 0,
+            checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
         },
         tx_ready_rx,
         tx_free_tx,
@@ -198,19 +204,64 @@ fn fifo_backlog_is_lazy_bounded_ordered_and_flushes_after_token_return() {
     assert_eq!(port.transmit(&tx_frame(4)), Err(NetDeviceError::Again));
 
     let first = tx_ready.pop().unwrap();
-    assert_eq!(tx_frame_marker(&first), 1);
-    tx_free.push(first).unwrap();
+    assert_eq!(tx_frame_marker(&first.buffer), 1);
+    tx_free.push(first.buffer).unwrap();
     assert!(matches!(port.receive(), Err(NetDeviceError::Again)));
     assert_eq!(port.pending_tx.len(), 1);
 
     let second = tx_ready.pop().unwrap();
-    assert_eq!(tx_frame_marker(&second), 2);
-    tx_free.push(second).unwrap();
+    assert_eq!(tx_frame_marker(&second.buffer), 2);
+    tx_free.push(second.buffer).unwrap();
     assert!(matches!(port.receive(), Err(NetDeviceError::Again)));
     assert!(port.pending_tx.is_empty());
 
     let third = tx_ready.pop().unwrap();
-    assert_eq!(tx_frame_marker(&third), 3);
+    assert_eq!(tx_frame_marker(&third.buffer), 3);
+}
+
+#[test]
+fn fifo_direct_fill_and_backlog_preserve_submit_options() {
+    let (mut port, mut tx_ready, mut tx_free) = tx_test_port(
+        TxQueueDiscipline::Fifo {
+            max_frames: NonZeroUsize::new(1).unwrap(),
+        },
+        1,
+    );
+    let options = TxSubmitOptions {
+        notify: TxNotify::Deferred,
+        ..Default::default()
+    };
+    let mut filled_address = 0;
+    port.transmit_frame_with_options(100, options, &mut |packet| {
+        filled_address = packet.as_ptr() as usize;
+        packet.fill(0x31);
+    })
+    .unwrap();
+    let first = tx_ready.pop().unwrap();
+    assert_eq!(first.options, options);
+    first.buffer.read_with_cpu(100, |packet| {
+        assert_eq!(packet.as_ptr() as usize, filled_address);
+        assert_eq!(packet, &[0x31; 100]);
+    });
+    assert_eq!(port.pending_tx.capacity(), 0);
+
+    let mut fills = 0;
+    port.transmit_frame_with_options(100, options, &mut |packet| {
+        fills += 1;
+        packet.fill(0x32);
+    })
+    .unwrap();
+    assert_eq!(fills, 1);
+    assert_eq!(port.pending_tx.len(), 1);
+    tx_free.push(first.buffer).unwrap();
+    // The production adapter uses receive_owned, which must also flush FIFO.
+    assert!(matches!(port.receive_owned(), Err(NetDeviceError::Again)));
+    let second = tx_ready.pop().unwrap();
+    assert_eq!(second.options, options);
+    second
+        .buffer
+        .read_with_cpu(100, |packet| assert_eq!(packet, &[0x32; 100]));
+    assert!(port.pending_tx.is_empty());
 }
 
 #[test]
@@ -447,29 +498,29 @@ fn oversized_rx_frame_recycles_token_and_next_frame_remains_receivable() {
     rx_recycle_tx.push(occupied).unwrap();
 
     let shared = Arc::new(group_state(STATE_IDLE));
+    let rx_recycler = Arc::new(RxRecycler::new(rx_recycle_tx, Arc::clone(&shared), 2));
     let mut port = ProtocolGroupPort {
         rx_ready: rx_ready_rx,
-        rx_recycle: rx_recycle_tx,
+        rx_recycler,
         tx_ready: tx_ready_tx,
         tx_free: tx_free_rx,
-        pending_recycle: Vec::with_capacity(2),
         tx_spares: Vec::new(),
         shared,
     };
 
     assert!(matches!(port.receive(), Err(NetDeviceError::InvalidParam)));
-    assert_eq!(port.pending_recycle.len(), 1);
+    assert_eq!(port.rx_recycler.overflow_len(), 1);
     assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), occupied_bus_addr);
 
     let frame = port
         .receive()
         .expect("a malformed frame must not consume the next completion");
     assert_eq!(frame.packet_len(), 64);
-    assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), oversized_bus_addr);
-
-    port.flush_recycle();
     assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), valid_bus_addr);
-    assert!(port.pending_recycle.is_empty());
+
+    port.rx_recycler.flush_overflow();
+    assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), oversized_bus_addr);
+    assert_eq!(port.rx_recycler.overflow_len(), 0);
 
     let invalid_length = dma_buffer(2048, 2048);
     let invalid_length_bus_addr = invalid_length.bus_addr();
@@ -484,6 +535,119 @@ fn oversized_rx_frame_recycles_token_and_next_frame_remains_receivable() {
         rx_recycle_rx.pop().unwrap().bus_addr(),
         invalid_length_bus_addr
     );
+}
+
+#[test]
+fn direct_rx_consumes_dma_backing_before_recycling_the_token() {
+    let (mut rx_ready_tx, rx_ready_rx) = spsc_ring(1);
+    let (rx_recycle_tx, mut rx_recycle_rx) = spsc_ring(1);
+    let (tx_ready_tx, _tx_ready_rx) = spsc_ring(1);
+    let (_tx_free_tx, tx_free_rx) = spsc_ring(1);
+    let mut buffer = dma_buffer(4096, 4096);
+    buffer.write_with_cpu(|packet| packet[..3000].fill(0x5a));
+    let bus_addr = buffer.bus_addr();
+    rx_ready_tx
+        .push(RxCompletion {
+            buffer,
+            packet_len: 3000,
+        })
+        .unwrap();
+
+    let shared = Arc::new(group_state(STATE_IDLE));
+    let mut port = ProtocolGroupPort {
+        rx_ready: rx_ready_rx,
+        rx_recycler: Arc::new(RxRecycler::new(rx_recycle_tx, Arc::clone(&shared), 1)),
+        tx_ready: tx_ready_tx,
+        tx_free: tx_free_rx,
+        tx_spares: Vec::new(),
+        shared,
+    };
+    let consumed = port
+        .receive_with(&mut |packet| {
+            assert_eq!(packet.len(), 3000);
+            assert!(packet.iter().all(|byte| *byte == 0x5a));
+            packet.len()
+        })
+        .unwrap();
+
+    assert_eq!(consumed, 3000);
+    assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), bus_addr);
+}
+
+#[test]
+fn detached_rx_retains_dma_until_the_owned_frame_is_dropped() {
+    let (mut rx_ready_tx, rx_ready_rx) = spsc_ring(1);
+    let (rx_recycle_tx, mut rx_recycle_rx) = spsc_ring(1);
+    let (tx_ready_tx, _tx_ready_rx) = spsc_ring(1);
+    let (_tx_free_tx, tx_free_rx) = spsc_ring(1);
+    let mut buffer = dma_buffer(4096, 4096);
+    buffer.write_with_cpu(|packet| packet[..3000].fill(0x6b));
+    let bus_addr = buffer.bus_addr();
+    rx_ready_tx
+        .push(RxCompletion {
+            buffer,
+            packet_len: 3000,
+        })
+        .unwrap();
+
+    let shared = Arc::new(group_state(STATE_IDLE));
+    let mut port = ProtocolGroupPort {
+        rx_ready: rx_ready_rx,
+        rx_recycler: Arc::new(RxRecycler::new(rx_recycle_tx, Arc::clone(&shared), 1)),
+        tx_ready: tx_ready_tx,
+        tx_free: tx_free_rx,
+        tx_spares: Vec::new(),
+        shared,
+    };
+    let frame = port
+        .receive_owned()
+        .expect("the queued DMA frame must be returned as owned storage");
+
+    assert!(rx_recycle_rx.pop().is_none());
+    frame.read_with(|packet| {
+        assert_eq!(packet.len(), 3000);
+        assert!(packet.iter().all(|byte| *byte == 0x6b));
+    });
+    drop(frame);
+    assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), bus_addr);
+}
+
+#[test]
+fn direct_tx_fills_dma_and_preserves_submission_options() {
+    let (_rx_ready_tx, rx_ready_rx) = spsc_ring(1);
+    let (rx_recycle_tx, _rx_recycle_rx) = spsc_ring(1);
+    let (tx_ready_tx, mut tx_ready_rx) = spsc_ring(1);
+    let (mut tx_free_tx, tx_free_rx) = spsc_ring(1);
+    tx_free_tx.push(dma_buffer(2048, 2048)).unwrap();
+    let shared = Arc::new(group_state(STATE_IDLE));
+    let mut port = ProtocolGroupPort {
+        rx_ready: rx_ready_rx,
+        rx_recycler: Arc::new(RxRecycler::new(rx_recycle_tx, Arc::clone(&shared), 1)),
+        tx_ready: tx_ready_tx,
+        tx_free: tx_free_rx,
+        tx_spares: Vec::new(),
+        shared,
+    };
+    let options = TxSubmitOptions::deferred(Some(rd_net::TxChecksumOffload {
+        network: TxNetworkProtocol::Ipv4,
+        transport: TxTransportProtocol::Tcp,
+        transport_offset: 34,
+    }));
+
+    port.transmit_frame_with_options(100, options, &mut |packet| {
+        packet.fill(0xa5);
+    })
+    .unwrap();
+
+    let request = tx_ready_rx
+        .pop()
+        .expect("one DMA request must be published");
+    assert_eq!(request.options, options);
+    assert_eq!(request.buffer.len(), 100);
+    request.buffer.read_with_cpu(100, |packet| {
+        assert!(packet.iter().all(|byte| *byte == 0xa5));
+    });
+    assert_eq!(options.notify, TxNotify::Deferred);
 }
 
 fn group_state(initial: u8) -> PollGroupState {

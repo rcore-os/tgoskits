@@ -387,18 +387,31 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 poll_groups,
             } = input.device;
             let mut protocol_groups = Vec::with_capacity(poll_groups.len());
+            let mut checksum_capabilities = None;
             let mut wifi_target = None;
             for mut group in poll_groups {
+                checksum_capabilities = Some(checksum_capabilities.map_or(
+                    group.tx.checksum_capabilities(),
+                    |current: rd_net::TxChecksumCapabilities| {
+                        current.intersection(group.tx.checksum_capabilities())
+                    },
+                ));
                 let owner_cpu = group_owners[flat_group];
                 let owner_group_index = groups_by_cpu[owner_cpu].len();
                 let shared = Arc::new(PollGroupState::new(
                     owner_cpu,
                     Arc::clone(&cpu_notifies[owner_cpu]),
                 ));
-                let (rx_ready_tx, rx_ready_rx) = spsc_ring(group.rx.capacity());
-                let (rx_recycle_tx, rx_recycle_rx) = spsc_ring(group.rx.capacity());
+                let rx_capacity = group.rx.capacity();
+                let (rx_ready_tx, rx_ready_rx) = spsc_ring(rx_capacity);
+                let (rx_recycle_tx, rx_recycle_rx) = spsc_ring(rx_capacity);
                 let (tx_ready_tx, tx_ready_rx) = spsc_ring(group.tx.capacity());
                 let (tx_free_tx, tx_free_rx) = spsc_ring(group.tx.capacity());
+                let rx_recycler = Arc::new(RxRecycler::new(
+                    rx_recycle_tx,
+                    Arc::clone(&shared),
+                    rx_capacity,
+                ));
 
                 for endpoint in group.irq_endpoints.drain(..) {
                     let irq = resolve_endpoint_irq(&input.irq_sources, endpoint.source_id())
@@ -419,10 +432,9 @@ impl<'a> NetworkRuntimeBuilder<'a> {
 
                 protocol_groups.push(ProtocolGroupPort {
                     rx_ready: rx_ready_rx,
-                    rx_recycle: rx_recycle_tx,
+                    rx_recycler: Arc::clone(&rx_recycler),
                     tx_ready: tx_ready_tx,
                     tx_free: tx_free_rx,
-                    pending_recycle: Vec::with_capacity(group.rx.capacity()),
                     tx_spares: Vec::with_capacity(group.tx.capacity()),
                     shared: Arc::clone(&shared),
                 });
@@ -430,10 +442,12 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     group,
                     rx_ready: rx_ready_tx,
                     rx_recycle: rx_recycle_rx,
+                    rx_recycler,
+                    rx_spares: Vec::with_capacity(rx_capacity.max(QUEUE_BUDGET)),
                     tx_ready: tx_ready_rx,
                     tx_free: tx_free_tx,
                     pending_rx: None,
-                    pending_rx_recycle: None,
+                    pending_rx_refill: VecDeque::with_capacity(rx_capacity),
                     pending_tx: None,
                     pending_tx_free: None,
                     retry_at: None,
@@ -475,6 +489,8 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 pending_tx: VecDeque::new(),
                 next_rx: 0,
                 next_tx: 0,
+                checksum_capabilities: checksum_capabilities
+                    .unwrap_or(rd_net::TxChecksumCapabilities::NONE),
             }) as Box<dyn EthernetFramePort>);
         }
 

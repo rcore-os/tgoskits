@@ -19,11 +19,14 @@
 //! register/wake operations after releasing the concrete device lock.
 
 use alloc::{string::String, vec::Vec};
+use core::ops::Range;
 
 use smoltcp::{
     storage::PacketBuffer,
     time::Instant,
-    wire::{IpAddress, Ipv4Cidr},
+    wire::{
+        IpAddress, IpProtocol, IpVersion, Ipv4Cidr, Ipv4Packet, Ipv6Packet, TcpPacket, UdpPacket,
+    },
 };
 
 use crate::config::InterfaceId;
@@ -39,6 +42,101 @@ pub use ethernet::*;
 pub use loopback::*;
 #[cfg(feature = "vsock")]
 pub use vsock::*;
+
+/// Completes a TCP or UDP checksum before software delivery.
+pub(crate) fn fill_transport_checksum(packet: &mut [u8]) {
+    let Ok(version) = IpVersion::of_packet(packet) else {
+        return;
+    };
+    let (src_addr, dst_addr, protocol, transport_offset) = match version {
+        IpVersion::Ipv4 => {
+            let Ok(ipv4) = Ipv4Packet::new_checked(&*packet) else {
+                return;
+            };
+            (
+                IpAddress::Ipv4(ipv4.src_addr()),
+                IpAddress::Ipv4(ipv4.dst_addr()),
+                ipv4.next_header(),
+                usize::from(ipv4.header_len()),
+            )
+        }
+        IpVersion::Ipv6 => {
+            let Ok(ipv6) = Ipv6Packet::new_checked(&*packet) else {
+                return;
+            };
+            (
+                IpAddress::Ipv6(ipv6.src_addr()),
+                IpAddress::Ipv6(ipv6.dst_addr()),
+                ipv6.next_header(),
+                ipv6.header_len(),
+            )
+        }
+    };
+    let Some(transport) = packet.get_mut(transport_offset..) else {
+        return;
+    };
+    match protocol {
+        IpProtocol::Tcp => {
+            if let Ok(mut tcp) = TcpPacket::new_checked(transport) {
+                tcp.fill_checksum(&src_addr, &dst_addr);
+            }
+        }
+        IpProtocol::Udp => {
+            if let Ok(mut udp) = UdpPacket::new_checked(transport) {
+                udp.fill_checksum(&src_addr, &dst_addr);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Owned IP packet whose backing RX DMA token is retained through consumption.
+pub struct DeviceRxPacket {
+    frame_len: usize,
+    frame: ProtocolRxFrame,
+    packet: Range<usize>,
+}
+
+impl DeviceRxPacket {
+    pub(crate) fn with_packet_range(
+        frame_len: usize,
+        frame: ProtocolRxFrame,
+        packet: Range<usize>,
+    ) -> Self {
+        assert!(packet.end <= frame.packet_len());
+        Self {
+            frame_len,
+            frame,
+            packet,
+        }
+    }
+
+    /// Borrows the IP packet without releasing the RX DMA token.
+    pub fn read_with<R>(&self, consume: impl FnOnce(&[u8]) -> R) -> R {
+        self.frame
+            .read_with(|frame| consume(&frame[self.packet.clone()]))
+    }
+
+    /// Consumes the IP packet and recycles its DMA token afterwards.
+    pub fn consume<R>(self, consume: impl FnOnce(&[u8]) -> R) -> R {
+        self.read_with(consume)
+    }
+
+    /// Returns the received L2 frame length excluding FCS.
+    pub const fn frame_len(&self) -> usize {
+        self.frame_len
+    }
+}
+
+/// Result of polling a device's optional owned receive path.
+pub enum DeviceRxPoll {
+    /// This device only implements the compatibility receive path.
+    Unsupported,
+    /// The owned receive path is supported but no IP packet is ready.
+    Idle,
+    /// One IP packet and its backing DMA token were received.
+    Packet(DeviceRxPacket),
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArpEntry {
@@ -58,6 +156,11 @@ pub struct ArpEntry {
 pub trait Device: Send {
     /// Human-readable device name used in logs and userspace queries.
     fn name(&self) -> &str;
+
+    /// Returns transport checksums the device can calculate on transmit.
+    fn tx_checksum_capabilities(&self) -> TxChecksumCapabilities {
+        TxChecksumCapabilities::NONE
+    }
 
     /// Moves packets from the device into the shared IP RX buffer.
     ///
@@ -82,6 +185,25 @@ pub trait Device: Send {
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> usize;
+
+    /// Polls an optional owned receive path that retains DMA through `RxToken`.
+    fn poll_owned_rx(&mut self, _timestamp: Instant) -> DeviceRxPoll {
+        DeviceRxPoll::Unsupported
+    }
+
+    /// Receives directly from queue-owned backing into the final protocol
+    /// destination when supported.
+    ///
+    /// `None` selects the compatibility [`recv`](Self::recv) path. `Some(0)`
+    /// means the direct path is supported but no IP packet was delivered.
+    fn recv_direct(
+        &mut self,
+        _timestamp: Instant,
+        _deliver: &mut dyn FnMut(&[u8]) -> bool,
+        _snoop: &mut dyn FnMut(&[u8]),
+    ) -> Option<usize> {
+        None
+    }
     /// Sends a packet to the next hop.
     ///
     /// Returns the L2 frame byte count (excluding FCS) actually transmitted,
@@ -89,6 +211,19 @@ pub trait Device: Send {
     /// resolution) or could not be sent. The returned byte count aligns with
     /// Linux `/proc/net/dev` semantics.
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> usize;
+
+    /// Attempts a transmission while preserving transient queue backpressure.
+    ///
+    /// [`NetDeviceError::Again`] means the caller still owns the packet and
+    /// must leave it queued until a later protocol poll.
+    fn try_send(
+        &mut self,
+        next_hop: IpAddress,
+        packet: &[u8],
+        timestamp: Instant,
+    ) -> NetDeviceResult<usize> {
+        Ok(self.send(next_hop, packet, timestamp))
+    }
 
     /// Returns the per-packet L2 frame byte counts for packets transmitted
     /// on a side path during `recv()` (e.g. ARP resolution and replies)

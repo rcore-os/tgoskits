@@ -104,6 +104,59 @@ pub struct QueueConfig {
     pub ring_size: usize,
 }
 
+/// Transport checksums a transmit queue can calculate for complete packets.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TxChecksumCapabilities(u8);
+
+impl TxChecksumCapabilities {
+    const TCP: u8 = 1 << 0;
+    const UDP: u8 = 1 << 1;
+
+    /// The queue does not calculate transport checksums.
+    pub const NONE: Self = Self(0);
+    /// The queue calculates TCP and UDP checksums for IPv4 and IPv6 packets.
+    pub const TCP_UDP: Self = Self(Self::TCP | Self::UDP);
+
+    /// Retains only checksum operations supported by both queues.
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// Returns whether TCP checksum calculation is supported.
+    pub const fn supports_tcp(self) -> bool {
+        self.0 & Self::TCP != 0
+    }
+
+    /// Returns whether UDP checksum calculation is supported.
+    pub const fn supports_udp(self) -> bool {
+        self.0 & Self::UDP != 0
+    }
+}
+
+/// Network protocol containing a transport checksum requested from hardware.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TxNetworkProtocol {
+    Ipv4,
+    Ipv6,
+}
+
+/// Transport protocol whose checksum hardware must calculate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TxTransportProtocol {
+    Tcp,
+    Udp,
+}
+
+/// Per-packet transmit checksum request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TxChecksumOffload {
+    pub network: TxNetworkProtocol,
+    pub transport: TxTransportProtocol,
+    /// Byte offset of the transport header from the start of the L2 frame.
+    pub transport_offset: u16,
+}
+
 /// Move-only DMA ownership token passed between a runtime and one driver queue.
 ///
 /// The token uniquely owns CPU access to the mapped range while it is outside
@@ -782,6 +835,39 @@ pub trait WifiControl: Send + 'static {
 // Transmit queue
 // ---------------------------------------------------------------------------
 
+/// Hardware-notification policy for one transmit submission.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TxNotify {
+    /// Make the submitted descriptor visible to the device immediately.
+    #[default]
+    Immediate,
+    /// Defer notification until [`ITxQueue::flush`] is called.
+    Deferred,
+}
+
+/// Per-packet options passed across the runtime transmit boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TxSubmitOptions {
+    pub checksum: Option<TxChecksumOffload>,
+    pub notify: TxNotify,
+}
+
+impl TxSubmitOptions {
+    pub const fn immediate(checksum: Option<TxChecksumOffload>) -> Self {
+        Self {
+            checksum,
+            notify: TxNotify::Immediate,
+        }
+    }
+
+    pub const fn deferred(checksum: Option<TxChecksumOffload>) -> Self {
+        Self {
+            checksum,
+            notify: TxNotify::Deferred,
+        }
+    }
+}
+
 /// Transmit queue interface.
 ///
 /// A driver moves one TX queue into each [`NetPollGroupParts`].
@@ -792,6 +878,11 @@ pub trait ITxQueue: Send + 'static {
     /// DMA buffer configuration for this queue.
     fn config(&self) -> QueueConfig;
 
+    /// Returns transport checksums this queue can calculate.
+    fn checksum_capabilities(&self) -> TxChecksumCapabilities {
+        TxChecksumCapabilities::NONE
+    }
+
     /// Submit a DMA buffer for transmission.
     ///
     /// `bus_addr` must point to a DMA-capable buffer whose first `len` bytes
@@ -799,6 +890,26 @@ pub trait ITxQueue: Send + 'static {
     /// [`NetError::LinkDown`] failure must have a future queue or link event
     /// that can wake the fixed-CPU poll owner after it rearms IRQs.
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError>;
+
+    /// Submits a buffer with checksum and device-notification options.
+    ///
+    /// The default rejects checksum requests and otherwise preserves the
+    /// existing immediate-notification behavior. A rejected submission must
+    /// return the original move-only token to the runtime.
+    fn submit_with_options(
+        &mut self,
+        buffer: DmaBuffer,
+        options: TxSubmitOptions,
+    ) -> Result<(), SubmitError> {
+        if options.checksum.is_some() {
+            Err(SubmitError::new(buffer, NetError::NotSupported))
+        } else {
+            self.submit(buffer)
+        }
+    }
+
+    /// Makes all deferred descriptors visible to the device.
+    fn flush(&mut self) {}
 
     /// Reclaim the next completed transmit buffer.
     ///

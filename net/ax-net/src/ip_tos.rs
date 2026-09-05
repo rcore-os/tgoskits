@@ -6,6 +6,8 @@
 //! boundary, after the IP header has been generated and before the packet is
 //! handed to loopback or a concrete device.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use ax_lazyinit::LazyLock;
 use ax_sync::Mutex;
 use hashbrown::HashMap;
@@ -55,23 +57,54 @@ impl EgressIpTosKey {
     }
 }
 
-static EGRESS_IP_TOS: LazyLock<Mutex<HashMap<EgressIpTosKey, u8>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+struct EgressIpTosPolicies {
+    table: Mutex<HashMap<EgressIpTosKey, u8>>,
+    active: AtomicBool,
+}
 
-pub(crate) fn set_egress_ip_tos(key: EgressIpTosKey, tos: u8) {
-    let mut table = EGRESS_IP_TOS.lock();
-    if tos == 0 {
+impl EgressIpTosPolicies {
+    fn new() -> Self {
+        Self {
+            table: Mutex::new(HashMap::new()),
+            active: AtomicBool::new(false),
+        }
+    }
+
+    fn set(&self, key: EgressIpTosKey, tos: u8) {
+        let mut table = self.table.lock();
+        if tos == 0 {
+            table.remove(&key);
+        } else {
+            table.insert(key, tos);
+        }
+        self.active.store(!table.is_empty(), Ordering::Release);
+    }
+
+    fn clear(&self, key: EgressIpTosKey) {
+        let mut table = self.table.lock();
         table.remove(&key);
-    } else {
-        table.insert(key, tos);
+        self.active.store(!table.is_empty(), Ordering::Release);
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
     }
 }
 
+static EGRESS_IP_TOS: LazyLock<EgressIpTosPolicies> = LazyLock::new(EgressIpTosPolicies::new);
+
+pub(crate) fn set_egress_ip_tos(key: EgressIpTosKey, tos: u8) {
+    EGRESS_IP_TOS.set(key, tos);
+}
+
 pub(crate) fn clear_egress_ip_tos(key: EgressIpTosKey) {
-    EGRESS_IP_TOS.lock().remove(&key);
+    EGRESS_IP_TOS.clear(key);
 }
 
 pub(crate) fn apply_egress_ip_tos(packet: &mut [u8]) {
+    if !EGRESS_IP_TOS.is_active() {
+        return;
+    }
     let tos = packet_egress_ip_tos(packet);
     if tos != 0 {
         apply_ip_tos(packet, tos);
@@ -159,7 +192,7 @@ fn egress_ip_tos(protocol: IpProtocol, local: IpEndpoint, remote: IpEndpoint) ->
         return 0;
     }
 
-    let table = EGRESS_IP_TOS.lock();
+    let table = EGRESS_IP_TOS.table.lock();
     let protocol = protocol.into();
     let candidates = [
         EgressIpTosKey {
@@ -203,6 +236,27 @@ mod tests {
     use smoltcp::wire::{Ipv4Address, Ipv6Address};
 
     use super::*;
+
+    #[test]
+    fn policy_activity_tracks_nonzero_entries() {
+        let policies = EgressIpTosPolicies::new();
+        let key = EgressIpTosKey::exact(
+            IpProtocol::Tcp,
+            (Ipv4Address::new(192, 0, 2, 10), 41001).into(),
+            (Ipv4Address::new(198, 51, 100, 20), 5201).into(),
+        )
+        .unwrap();
+
+        assert!(!policies.is_active());
+        policies.set(key, 0x10);
+        assert!(policies.is_active());
+        policies.set(key, 0);
+        assert!(!policies.is_active());
+
+        policies.set(key, 0x10);
+        policies.clear(key);
+        assert!(!policies.is_active());
+    }
 
     #[test]
     fn exact_policy_takes_precedence_over_listener_policy() {

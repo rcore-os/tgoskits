@@ -61,6 +61,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 | Wi-Fi STA/AP 重配 | `WifiTransaction` 进入 owner-CPU 有界 control queue，成功后提交 STA DHCP 或 SoftAP 地址/DHCP server | 基础完成；DC/DW 变体 fail-closed |
 | QoS/TOS 兼容 | `IP_TOS` 发包时在 Router 边界改写 IP header；`IP_RECVTOS`/`IPV6_RECVTCLASS` 通过 smoltcp `PacketMeta` 返回 cmsg；`SO_PRIORITY` 仅保存兼容值 | 基础完成 |
 | 运行期 IPv4 地址 | `set_interface_ipv4()` / `remove_interface_ipv4()` 原子更新接口、connected route 和 DHCP 状态 | 每接口仅一个 IPv4，无运行期 gateway 参数 |
+| TX checksum offload | `TxChecksumCapabilities` 与逐包 `TxSubmitOptions`；按所有已注册物理出口的共同能力向 smoltcp 公布 | 可选；RTL8125 支持，其他设备默认软件 checksum |
 | 网卡统计 | `NetDevStats` 汇总 L2 包/字节、错误和丢包，供 StarryOS `/proc/net/dev` 使用 | 累计统计，不含硬件专属计数器 |
 
 矩阵中的“支持”意味着存在可用实现路径，“受限”则需要结合后文章节理解范围。设计原则说明这些取舍为何围绕单协议核心、多设备 Router 和有界资源展开。
@@ -132,8 +133,8 @@ Linux 与 `ax-net` 都需要解决接口身份、路由、邻居和 socket 语�
 | 多 NIC | 独立 netdev + per-device NAPI queue | 单 `Router` + 多 affinity domain；独立 IRQ source 可分布到不同 CPU |
 | ARP/邻居发现 | 内核 neighbour table + GC | `EthernetDevice` 内部 `HashMap` + `NEIGHBOR_TTL=300s` |
 | DHCP | 用户态 dhclient / systemd-networkd | 内核态 `DhcpState` 状态机，bootstrap 阻塞启动 |
-| Socket 缓冲区 | 动态可调 sk_buff 链 | 固定大小 `PacketBuffer` + 有界 inline packet queue |
-| Zero-copy | `MSG_ZEROCOPY` / `io_uring` | 不支持端到端 zero-copy；Router 队列无每包堆分配，loopback 快速路径少一次队列 hop |
+| Socket 缓冲区 | 动态可调 sk_buff 链 | TCP 每方向固定 256 KiB；UDP/raw 使用 `PacketBuffer`，设备 FIFO 有界 |
+| Zero-copy | `MSG_ZEROCOPY` / `io_uring` | DMA RX token 保留至 smoltcp 消费，TX 直接在 DMA buffer 组帧；不提供用户态端到端 zero-copy |
 
 Linux 对比表说明 `ax-net` 复用行为概念但采用更小的单核心实现，并不尝试复制 Linux 内部子系统。下一节转向 smoltcp 原生模型，解释 Router、控制面和 socket 兼容层具体增加了什么。
 
@@ -172,7 +173,7 @@ lwIP 对比表说明多接口协议栈可以采用不同内部拓扑，当前选
 
 ### 5.2 收发路径拷贝
 
-RX DMA token move 到 protocol SPSC 后复制为 protocol frame，消费后通过 recycle ring 归还；TX 方向从 protocol frame 写入 move-only DMA token，再由 queue owner submit/reclaim。跨 CPU 所有权已经显式化，但 smoltcp 与 Ethernet frame 之间仍有复制；端到端 zero-copy 不在当前范围。
+RX completion 先补 replacement，再以 `ProtocolRxFrame` 持有 DMA token，经 EthernetDevice、Router 传到 smoltcp `RxToken::consume`；消费结束后回收到原 queue。DMA 主路径不再复制整帧或中间 IP payload。TX 在可用 DMA buffer 中直接组帧，设备 FIFO 积压时才保留兼容 frame。非 DMA 端口继续使用复制路径，socket buffer 与用户 buffer 的复制仍然存在。
 完整内存所有权和队列模型见[内存与队列](memory.md)。
 
 ### 5.3 DHCP 租约管理
@@ -197,4 +198,4 @@ StarryOS 目前只做初步可见性过滤（root namespace 可见全部接口�
 
 ### 5.8 高性能数据面
 
-queue-level batch poll 已实现，但当前生产 backend 均只发布 queue-0 group。真正启用 virtio/fxmac 多硬件队列、RSS/RPS/RFS、GRO、busy-poll 与 zero-copy dataplane 是后续独立工作。
+queue-level batch poll 已实现，但当前生产 backend 均只发布 queue-0 group。RTL8125 支持逐包 checksum offload 和批次 doorbell；不满足 descriptor 约束的包使用软件 checksum。真正启用 virtio/fxmac 多硬件队列、RSS/RPS/RFS、GRO、busy-poll 与用户态 zero-copy 仍是后续工作。checksum 能力在网络初始化时汇总，不支持运行期新增设备后的能力刷新。

@@ -2,7 +2,8 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec};
+use alloc::{boxed::Box, sync::Arc, vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_sync::SpinLock as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
@@ -32,17 +33,12 @@ const RX_START_THRESHOLD: usize = QUEUE_SIZE;
 const MAX_PACKET: usize = 2048;
 const RX_BUF_SIZE: usize = 2048;
 const DMA_ALIGN: usize = 256;
-const DMA_CACHE_LINE_SIZE: usize = 64;
-const RX_DESC_PER_CACHE_LINE: usize = DMA_CACHE_LINE_SIZE / core::mem::size_of::<RxDesc>();
-const RX_DEFERRED_REFILL_CAPACITY: usize = QUEUE_SIZE;
 const LINK_DOWN_DROP_LOG_INTERVAL: u64 = 64;
-const EARLY_PACKET_LOG_COUNT: u64 = 8;
 const TX_SUBMIT_LOG_INTERVAL: u64 = 16;
 const TX_RECLAIM_LOG_INTERVAL: u64 = 64;
 const RX_RECLAIM_LOG_INTERVAL: u64 = 64;
 const RX_IDLE_LOG_INTERVAL: u64 = 262_144;
 const RX_OVERFLOW_REARM_IDLE_POLLS: u64 = 2048;
-const TX_LINK_SAMPLE_INTERVAL: u64 = 64;
 const OCP_STD_PHY_BASE: u32 = 0xa400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +95,7 @@ pub struct Rtl8125 {
     chip: ChipVersion,
     phy_ocp_base: u32,
     queue_start: QueueStart,
+    link_up: Arc<AtomicBool>,
 }
 
 impl Rtl8125 {
@@ -126,8 +123,10 @@ impl Rtl8125 {
             chip,
             phy_ocp_base: OCP_STD_PHY_BASE,
             queue_start: Arc::new(Mutex::new(QueueStartState::default())),
+            link_up: Arc::new(AtomicBool::new(false)),
         };
         dev.init()?;
+        dev.link_up.store(dev.regs.link_up(), Ordering::Release);
         info!(
             "RTL8125 device initialized: chip={:?}, xid={:#x}, \
              mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, status={:?}",
@@ -227,6 +226,7 @@ impl NetDevice for Rtl8125 {
             chip: _,
             phy_ocp_base: _,
             queue_start,
+            link_up,
         } = *self;
 
         let mut tx_desc = dma
@@ -255,10 +255,11 @@ impl NetDevice for Rtl8125 {
             buffers: core::array::from_fn(|_| None),
             next_submit: 0,
             next_reclaim: 0,
-            link_up: None,
+            link_up: Arc::clone(&link_up),
             link_down_drops: 0,
             submitted: 0,
             reclaimed: 0,
+            notification: queue::TxNotificationState::default(),
         };
 
         let rx_desc = dma
@@ -284,7 +285,6 @@ impl NetDevice for Rtl8125 {
             submitted: 0,
             reclaimed: 0,
             rx_errors: 0,
-            deferred_refill: VecDeque::with_capacity(RX_DEFERRED_REFILL_CAPACITY),
         };
 
         Ok(NetDeviceParts {
@@ -301,11 +301,12 @@ impl NetDevice for Rtl8125 {
                     regs,
                     _mmio,
                     queue_start,
+                    link_up: Arc::clone(&link_up),
                 }),
                 owner_startup: None,
                 irq_endpoints: vec![NetHardIrqEndpoint::new(
                     IRQ_SOURCE0,
-                    Box::new(Rtl8125IrqHandler { regs }),
+                    Box::new(Rtl8125IrqHandler { regs, link_up }),
                 )],
             }],
         })
@@ -316,6 +317,7 @@ struct Rtl8125IrqControl {
     regs: Regs,
     _mmio: Mmio,
     queue_start: QueueStart,
+    link_up: Arc<AtomicBool>,
 }
 
 impl NetPollIrqControl for Rtl8125IrqControl {
@@ -352,11 +354,15 @@ impl NetPollIrqControl for Rtl8125IrqControl {
             return Err(NetError::InvalidParts);
         }
 
-        let before = rtl8125_irq_snapshot(self.regs.read_interrupt_status());
+        let before_status = self.regs.read_interrupt_status();
+        let before = rtl8125_irq_snapshot(before_status);
         self.regs.write_interrupt_status(u32::MAX);
         self.regs.write_interrupt_mask(DEFAULT_IRQ_MASK);
         self.regs.commit();
         let after_status = self.regs.read_interrupt_status();
+        if irq_has_link_change(before_status | after_status) {
+            self.link_up.store(self.regs.link_up(), Ordering::Release);
+        }
         let pending = before.union(rtl8125_irq_snapshot(after_status));
         if pending == NetIrqSnapshot::empty() {
             Ok(NetRearmResult::Idle)
@@ -371,6 +377,7 @@ impl NetPollIrqControl for Rtl8125IrqControl {
 
 struct Rtl8125IrqHandler {
     regs: Regs,
+    link_up: Arc<AtomicBool>,
 }
 
 impl NetHardIrqHandler for Rtl8125IrqHandler {
@@ -379,6 +386,10 @@ impl NetHardIrqHandler for Rtl8125IrqHandler {
         let snapshot = rtl8125_irq_snapshot(status);
         if snapshot == NetIrqSnapshot::empty() {
             return NetHardIrqResult::Spurious;
+        }
+
+        if irq_has_link_change(status) {
+            self.link_up.store(self.regs.link_up(), Ordering::Release);
         }
 
         self.regs.write_interrupt_mask(0);

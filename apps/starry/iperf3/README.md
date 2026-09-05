@@ -4,8 +4,8 @@ This board app runs a fixed TCP benchmark matrix on Orange Pi 5 Plus or AKA-00-S
 single-stream TX/RX, bidirectional traffic, 2/4/8-stream TX, and 4-stream RX.
 Every scenario runs three times. The native iperf3 text is shown as the test
 runs, followed by the parsed median and a final summary table. Per-run text and
-the machine-readable summary remain under `/tmp/starry-iperf3-bench/` for later
-inspection.
+the machine-readable summary remain under `${TMPDIR:-/tmp}/starry-iperf3-bench/` for later
+inspection. Set `TMPDIR` before running the script to keep results in a project directory.
 
 Run the complete benchmark from the repository root:
 

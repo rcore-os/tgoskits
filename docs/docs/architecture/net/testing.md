@@ -136,6 +136,18 @@ queue runtime 与统计还有专门覆盖：protocol generation 测试验证同�
 
 `DeviceBinding` 使用 atomic raw ifindex 保存，这个测试验证 public 语义不会因为内部原子编码而丢失。
 
+### DMA 与批次提交回归
+
+`queue_runtime/tests.rs` 覆盖 RX token 消费前不归还、回收 ring 满时保留所有权、
+直接填充 TX DMA buffer，以及提交选项跨 FIFO 重试的保留。检查 frame 内容时也核对
+buffer 地址，避免一次额外复制仍通过相同内容断言。`rd-net` 测试检查 replacement
+分配和 `SubmitError` 返回原 token；RTL8125 测试检查 checksum descriptor 编码及约束。
+
+板端验证还需要确认每轮退出前的 `flush()` 真正推动已发布发送、replacement refill
+不会饿死 RX、checksum offload 下接收端数据正确。Orange Pi 5 Plus 的 iperf3 矩阵
+使用 `apps/starry/iperf3/iperf-bench.sh`，记录构建提交、FIT 与脚本 SHA-256、链路速率、
+每轮 receiver 结果。吞吐数据单独记录，不能替代 token 生命周期与 IRQ 状态机断言。
+
 ## 3. StarryOS 系统测试
 
 StarryOS 系统测试在 QEMU 中运行真实用户态程序和 syscall 路径，覆盖单元测试无法观察的 ABI 编解码、fd 生命周期和 proc/netlink 输出。测试分组位于 `test-suit/starryos/qemu/system`，应通过 xtask 入口运行以保持镜像、参数和成功正则一致。
@@ -489,8 +501,8 @@ AF_PACKET、ioctl、netlink 与 procfs 视图不一致通常意味着某个 ABI 
 
 - 协议核心仍是单 smoltcp `Interface + SocketSet`，TCP/UDP 状态机本身不多核并行。
 - 多设备 dataplane 已使用 queue-level NAPI 状态机；当前生产 backend 仍只发布 queue-0 group，未启用 RSS 或真实硬件多队列。
-- loopback 已有直接注入快路径，但普通设备 RX/TX 仍存在必要的 packet copy。
-- 尚未实现端到端 zero-copy；这需要 rd-net buffer ownership、packet pool 和 smoltcp token 共同改造。
+- DMA RX 已覆盖 token 保留到 smoltcp 消费后的回收，TX 可直接组帧；非 DMA 端口、FIFO 积压以及 socket/user buffer 仍有复制。
+- 不提供用户态端到端 zero-copy；现有 DMA token 测试不能替代真实硬件的 cache maintenance 和 descriptor ordering 验证。
 - StarryOS network namespace 当前主要是可见性过滤，不是完整 per-namespace network stack。
 
 这些限制使当前测试更适合作为功能与边界回归，而不是完整性能或硬件兼容认证。扩展覆盖时应保持失败可定位、命令可复现，并让新增用例真正编译和运行目标实现。

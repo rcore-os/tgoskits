@@ -61,11 +61,14 @@ pub struct NetDeviceParts {
 `DmaBuffer` 不实现 `Clone`/`Copy`。它从 pool 分配后只能处于以下一个位置：
 
 ```text
-RX pool -> hardware RX -> RxCompletion -> RX-ready SPSC
-        -> protocol frame read -> recycle SPSC -> hardware RX
+RX pool/spares -> hardware RX -> RxCompletion
+        -> submit replacement -> RX-ready SPSC -> ProtocolRxFrame
+        -> EthernetDevice -> Router -> smoltcp RxToken::consume
+        -> RxRecycler -> recycle SPSC/overflow -> queue-local spares
 
-TX pool -> TX-free SPSC -> protocol fills -> TX-ready SPSC
-        -> hardware TX -> completion reclaim -> TX-free SPSC
+TX pool -> TX-free SPSC -> protocol fills DMA frame -> TX-ready SPSC
+        -> submit_with_options -> batch flush -> hardware TX
+        -> completion reclaim -> TX-free SPSC
 ```
 
 `ITxQueue::submit()` 和 `IRxQueue::submit()/recycle()` 失败时，typed
@@ -73,6 +76,16 @@ TX pool -> TX-free SPSC -> protocol fills -> TX-ready SPSC
 RX reclaim 等可观察进展，则完成本轮 poll、rearm IRQ 并等待未来硬件或 task 事件，不能
 在 IRQ 保持关闭时立即自调度。只有 reclaim 已释放 descriptor 时，RX refill 才立即重试。
 其它错误可以归还 free ring 或使 group 失败，但不能丢失 DMA ownership。
+
+`TxSubmitOptions` 携带逐包 checksum 和通知方式。`TxNotify::Deferred` 允许驱动延迟
+写 doorbell；queue executor 在完成发送批次以及提交提前返回前调用 `flush()`，已发布
+的 descriptor 不会因为 RX backpressure 或下一次 submit 返回 `Retry` 而滞留。
+默认 queue 只支持软件 checksum；不支持的 offload 请求必须返回原 DMA token。
+
+RTL8125 在 descriptor 发布与 doorbell 之间使用 Release 顺序，支持满足其格式约束的
+IPv4/IPv6 TCP/UDP checksum-v2；短 padding frame 走软件 checksum。Router 只公布所有
+物理出口共同支持的能力，loopback 补齐 offload 路径留下的 checksum。driver 支持 IPv6
+checksum 不代表物理 Ethernet IPv6 协议已完整接入。
 
 非一致 DMA 平台的 CPU/device sync 在 `DmaBuffer` 的 read/write 与 driver submit/reclaim
 边界完成。跨 CPU 只 move token，不共享可变 payload reference。
@@ -132,18 +145,18 @@ scheduled。
 
 一个 group poll 按顺序处理：
 
-1. RX recycle；
-2. RX reclaim；
-3. TX completion；
-4. TX submission。
+1. TX completion；
+2. TX submission 与批次 `flush()`；
+3. 已消费 RX token 回收到 queue-local spare cache；
+4. RX reclaim、replacement refill 与完成项发布。
 
-四类各最多 64 项，每 CPU executor round 最多 256 项。任一子预算用尽、CPU round
+各类使用 64 项子预算，每 CPU executor round 使用 256 项总预算。任一子预算用尽、CPU round
 用尽、`MISSED` 或硬件仍有工作时，group 保持 IRQ 关闭并重新排队。
 
 四条 SPSC ring 都预分配且有界：
 
 - RX-ready 满：queue owner 保留 `pending_rx`；
-- recycle submit retry：保留 `pending_rx_recycle`；
+- replacement submit retry：在有界 `pending_rx_refill` 中同时保留 completion 和 replacement；继续 reclaim，避免软件队列因 completion ring 满而无法推进；
 - TX-free 满：保留 `pending_tx_free`；
 - TX submit retry：保留 `pending_tx`。
 
@@ -152,9 +165,16 @@ group-local task schedule；只有目标 group 被精准激活。
 
 ## 7. Protocol frame port 与 Router
 
-`QueueFramePort` 位于 protocol owner 一侧。RX 时它从 RX-ready ring 取
-`RxCompletion`，读取 frame 后把 token 放入 recycle ring；TX 时从 spare/free ring 取
-token、写入 Ethernet frame、move 到 TX-ready ring。
+`QueueFramePort` 位于 protocol owner 一侧。`receive_owned()` 从 RX-ready ring 取
+completion，返回带回收器的 `ProtocolRxFrame`。它保留 token 到 smoltcp 消费结束；
+ARP 和未知二层帧在原 token 回收前处理。回收 ring 满时由 `RxRecycler` 暂存 token，
+queue owner 再将其转入 spare cache，不提前释放 DMA mapping。
+
+TX 优先从 spare/free ring 取 token，在 DMA buffer 中写 Ethernet header、IP packet
+及 `ETH_ZLEN` padding。`NoQueue` 在忙时返回 `Again`；`Fifo` 只在积压时保留有界
+inline frame 和原提交选项，按序重试。各 RX 接口都会推进待发送 FIFO，避免仅使用
+owned RX 的生产路径遗漏发送重试。Router peek 待发 packet，仅在接受提交后 dequeue。
+非 DMA 端口沿用 `ProtocolEthernetFrame` 的兼容复制接口。
 
 `EthernetDevice` 在 frame port 上完成：
 
