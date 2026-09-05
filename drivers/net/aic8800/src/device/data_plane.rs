@@ -8,7 +8,7 @@ use crate::{
     },
     profile::DataTxFlowPolicy,
     protocol::{BLOCK_SIZE, ethernet_tx_frame},
-    registers::{ReceiveLength, flow_credits},
+    registers::ReceiveLength,
     rx::{ParsedFrame, RX_CAPACITY, parse_fifo},
 };
 
@@ -137,7 +137,24 @@ impl AicDevice {
     ) -> Result<(), AicError> {
         let count = expect_byte(response)?;
         match self.registers().receive_length(count) {
-            ReceiveLength::Empty | ReceiveLength::OtherInterrupt => self.advance_receive_path(),
+            ReceiveLength::Empty => self.advance_receive_path(),
+            ReceiveLength::OtherInterrupt => {
+                // The vendor D80 IRQ handler acknowledges the dev-to-host soft
+                // IRQ here: read the interrupt-pending register, clear bit 0,
+                // and write it back. Without the acknowledgement the pending
+                // bit keeps CARD_INT asserted, which both starves the owner
+                // loop and leaves the firmware waiting for its interrupt to
+                // be consumed.
+                self.io.next = Some((
+                    IoPurpose::ReceiveOtherAck(path),
+                    read_byte(
+                        self.receive_function(path),
+                        self.registers()
+                            .sleep_status
+                            .expect("v3 interrupt status implies a sleep-status register"),
+                    ),
+                ));
+            }
             ReceiveLength::Blocks(blocks) => {
                 self.io.next = Some((
                     IoPurpose::ReceiveData(path),
@@ -158,6 +175,42 @@ impl AicDevice {
                 ));
             }
         }
+        Ok(())
+    }
+
+    pub(super) fn consume_receive_other_ack(
+        &mut self,
+        path: RxPath,
+        response: SdioResponse,
+    ) -> Result<(), AicError> {
+        let pending = expect_byte(response)?;
+        self.io.next = Some((
+            IoPurpose::ReceiveOtherClear(path),
+            write_byte(
+                self.receive_function(path),
+                self.registers()
+                    .sleep_status
+                    .expect("v3 interrupt status implies a sleep-status register"),
+                pending & !1,
+            ),
+        ));
+        Ok(())
+    }
+
+    pub(super) fn consume_receive_other_clear(
+        &mut self,
+        path: RxPath,
+        response: SdioResponse,
+    ) -> Result<(), AicError> {
+        // The write is issued with read-after-write; the read-back byte is the
+        // register's pre-write value and is not compared.
+        let _ = expect_byte(response)?;
+        // The vendor D80 handler re-reads the interrupt status after the soft
+        // IRQ acknowledgement; stay on the same path until it reads empty.
+        self.io.next = Some((
+            IoPurpose::ReceiveCount(path),
+            read_byte(self.receive_function(path), self.registers().block_count),
+        ));
         Ok(())
     }
 
@@ -319,13 +372,15 @@ impl AicDevice {
         response: SdioResponse,
         now: MonotonicTime,
     ) -> Result<(), AicError> {
-        let credits = flow_credits(expect_byte(response)?);
+        let credits = self.registers().flow_credits(expect_byte(response)?);
         let active = self
             .data
             .active_tx
             .as_ref()
             .ok_or(AicError::CompletionMismatch)?;
-        if credits == 0 || usize::from(credits) * BLOCK_SIZE <= active.wire_frame.len() {
+        // The vendor gate only requires a nonzero buffer count; one credit
+        // carries one frame rounded up to a whole SDIO block.
+        if credits == 0 || usize::from(credits) * BLOCK_SIZE < active.wire_frame.len() {
             self.lifecycle.retry_at = Some(now.after(IO_RETRY));
             return Ok(());
         }
@@ -848,5 +903,157 @@ mod tests {
         assert!(
             matches!(request.kind, SdioRequestKind::Write { function, .. } if function.get() == 1)
         );
+    }
+
+    #[test]
+    fn v3_single_credit_sends_a_single_block_frame() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.data.active_tx = Some(ActiveTx {
+            completion: super::owner::TxCompletion::User(TxToken::new(1)),
+            wire_frame: vec![0; BLOCK_SIZE],
+        });
+
+        // The vendor credit gate only requires a nonzero buffer count; a frame
+        // rounded to one SDIO block fits in one credit.
+        assert_eq!(
+            device.consume_transmit_flow(SdioResponse::Byte(1), MonotonicTime::from_nanos(0)),
+            Ok(())
+        );
+        assert!(matches!(
+            device.io.next,
+            Some((IoPurpose::TransmitData, SdioRequestKind::Write { .. }))
+        ));
+    }
+
+    fn complete(request: &SdioRequest, response: SdioResponse, now: MonotonicTime) -> AicInput {
+        AicInput {
+            now,
+            event: Some(AicInputEvent::Sdio(SdioCompletion {
+                request_id: request.id,
+                result: Ok(response),
+            })),
+        }
+    }
+
+    #[test]
+    fn v3_other_interrupt_acknowledges_the_dev_to_host_soft_irq() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.request_receive_scan();
+
+        let AicAction::SubmitSdio(count) =
+            device.advance(AicInput::tick(MonotonicTime::from_nanos(0)))
+        else {
+            panic!("expected the receive count read")
+        };
+        assert!(matches!(
+            count.kind,
+            SdioRequestKind::ReadByte { function, address } if function.get() == 1
+                && address.get() == device.registers().block_count
+        ));
+
+        let AicAction::SubmitSdio(ack) = device.advance(complete(
+            &count,
+            SdioResponse::Byte(0x83),
+            MonotonicTime::from_nanos(1),
+        )) else {
+            panic!("expected the interrupt-pending ack read after an OTHER interrupt")
+        };
+        assert!(matches!(
+            ack.kind,
+            SdioRequestKind::ReadByte { function, address } if function.get() == 1
+                && address.get() == device.registers().sleep_status.expect("v3 sleep status")
+        ));
+
+        let AicAction::SubmitSdio(clear) = device.advance(complete(
+            &ack,
+            SdioResponse::Byte(0x11),
+            MonotonicTime::from_nanos(2),
+        )) else {
+            panic!("expected the soft-irq clear write after the pending read")
+        };
+        assert!(matches!(
+            clear.kind,
+            SdioRequestKind::WriteByte {
+                function,
+                address,
+                value: 0x10,
+                ..
+            } if function.get() == 1
+                && address.get() == device.registers().sleep_status.expect("v3 sleep status")
+        ));
+
+        let _ = device.advance(complete(
+            &clear,
+            SdioResponse::Byte(0x00),
+            MonotonicTime::from_nanos(3),
+        ));
+    }
+
+    #[test]
+    fn v1_receive_counts_never_trigger_the_v3_other_interrupt_ack() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.request_receive_scan();
+
+        let AicAction::SubmitSdio(count) =
+            device.advance(AicInput::tick(MonotonicTime::from_nanos(0)))
+        else {
+            panic!("expected the receive count read")
+        };
+        let AicAction::SubmitSdio(next) = device.advance(complete(
+            &count,
+            SdioResponse::Byte(0x83),
+            MonotonicTime::from_nanos(1),
+        )) else {
+            panic!("expected the byte-mode length read")
+        };
+        assert!(matches!(
+            next.kind,
+            SdioRequestKind::ReadByte { address, .. } if address.get() == device.registers().byte_mode_length
+        ));
+    }
+
+    #[test]
+    fn v3_other_ack_re_reads_the_same_path_count_until_empty() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.request_receive_scan();
+
+        let AicAction::SubmitSdio(count) =
+            device.advance(AicInput::tick(MonotonicTime::from_nanos(0)))
+        else {
+            panic!("expected the receive count read")
+        };
+        let AicAction::SubmitSdio(ack) = device.advance(complete(
+            &count,
+            SdioResponse::Byte(0x83),
+            MonotonicTime::from_nanos(1),
+        )) else {
+            panic!("expected the interrupt-pending ack read")
+        };
+        let AicAction::SubmitSdio(clear) = device.advance(complete(
+            &ack,
+            SdioResponse::Byte(0x11),
+            MonotonicTime::from_nanos(2),
+        )) else {
+            panic!("expected the soft-irq clear write")
+        };
+        // The vendor D80 handler re-reads the interrupt status after the soft
+        // IRQ acknowledgement; the scan must stay on the same path instead of
+        // advancing so queued data is drained before the scan ends.
+        let AicAction::SubmitSdio(recount) = device.advance(complete(
+            &clear,
+            SdioResponse::Byte(0x00),
+            MonotonicTime::from_nanos(3),
+        )) else {
+            panic!("expected the same-path count re-read after the soft IRQ acknowledgement")
+        };
+        assert!(matches!(
+            recount.kind,
+            SdioRequestKind::ReadByte { address, .. } if address.get()
+                == device.registers().block_count
+        ));
     }
 }

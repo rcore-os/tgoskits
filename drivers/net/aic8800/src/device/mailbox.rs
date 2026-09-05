@@ -8,7 +8,6 @@ use crate::{
         DBG_MEM_BLOCK_WRITE_REQ, DBG_MEM_MASK_WRITE_REQ, DBG_MEM_READ_REQ, DBG_MEM_WRITE_REQ,
         DBG_START_APP_REQ, command_frame, debug_command_frame,
     },
-    registers::flow_credits,
 };
 
 const MAILBOX_TIMEOUT: Duration = Duration::from_secs(5);
@@ -135,6 +134,16 @@ impl AicDevice {
         response: SdioResponse,
         now: MonotonicTime,
     ) -> Result<(), AicError> {
+        // The flow register decode is profile-dependent and borrows the
+        // device; resolve it before taking the mailbox reference.
+        let flow = if purpose == IoPurpose::MailboxFlow {
+            Some(
+                self.registers()
+                    .flow_credits(expect_byte(response.clone())?),
+            )
+        } else {
+            None
+        };
         let mailbox = self
             .lifecycle
             .mailbox
@@ -142,7 +151,7 @@ impl AicDevice {
             .ok_or(AicError::CompletionMismatch)?;
         match purpose {
             IoPurpose::MailboxFlow => {
-                let flow = flow_credits(expect_byte(response)?);
+                let flow = flow.expect("mailbox flow decoded before the borrow");
                 if flow == 0 {
                     mailbox.flow_retries = mailbox.flow_retries.saturating_add(1);
                     if mailbox.flow_retries >= MAX_MAILBOX_FLOW_RETRIES {
@@ -224,9 +233,10 @@ impl AicDevice {
     }
 
     fn complete_control_mailbox(&mut self, result: Vec<u8>) -> Result<(), AicError> {
-        use super::control::{ConnectPhase, ControlOperation};
+        use super::control::{APM_START_VIF_INDEX, ConnectPhase, ControlOperation};
         use crate::lmac::{
-            ME_SET_CONTROL_PORT_CFM, MM_KEY_ADD_CFM, SM_CONNECT_CFM, SM_DISCONNECT_CFM,
+            APM_SET_BEACON_IE_REQ, APM_START_CFM, APM_START_REQ, ME_SET_CONTROL_PORT_CFM,
+            MM_ADD_IF_CFM, MM_KEY_ADD_CFM, SM_CONNECT_CFM, SM_DISCONNECT_CFM,
         };
 
         let control = self
@@ -292,6 +302,42 @@ impl AicDevice {
                 control.commands.pop_front();
                 self.data.link.clear_peer();
                 finish = true;
+            }
+            MM_ADD_IF_CFM => {
+                // The AP interface index is assigned by the firmware: the
+                // startup station vif already holds index 0, so the beacon
+                // upload and APM_START requests must target the index this
+                // confirmation reports instead of a hard-coded constant.
+                let [status, inst_nbr, ..] = result.as_slice() else {
+                    return Err(AicError::MalformedResponse);
+                };
+                if *status != 0 {
+                    return Err(AicError::FirmwareRejected {
+                        message_id: MM_ADD_IF_CFM,
+                        status: u16::from(*status),
+                    });
+                }
+                control.commands.pop_front();
+                for command in &mut control.commands {
+                    match command.message_id {
+                        APM_SET_BEACON_IE_REQ => command.payload[0] = *inst_nbr,
+                        APM_START_REQ => command.payload[APM_START_VIF_INDEX] = *inst_nbr,
+                        _ => {}
+                    }
+                }
+            }
+            APM_START_CFM => {
+                let [status, ..] = result.as_slice() else {
+                    return Err(AicError::MalformedResponse);
+                };
+                if *status != 0 {
+                    return Err(AicError::FirmwareRejected {
+                        message_id: APM_START_CFM,
+                        status: u16::from(*status),
+                    });
+                }
+                control.commands.pop_front();
+                finish = control.commands.is_empty();
             }
             _ => {
                 control.commands.pop_front();
@@ -617,6 +663,131 @@ mod tests {
         mailbox.result = Some(vec![0; 8]);
 
         assert!(!device.mailbox_timed_out(deadline));
+    }
+
+    #[test]
+    fn ap_add_if_confirmation_assigns_the_vif_index_to_beacon_and_apm_start() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.lifecycle.control = Some(
+            super::control::build(
+                ControlRequest::StartOpenAccessPoint {
+                    ssid: b"SG2002".to_vec(),
+                    channel: 6,
+                },
+                [2, 0, 0, 0, 0, 1],
+                Some(0),
+            )
+            .unwrap(),
+        );
+        device.lifecycle.mailbox = Some(MailboxState {
+            frame: Vec::new(),
+            request: MailboxRequest::Lmac {
+                message_id: crate::lmac::MM_ADD_IF_REQ,
+            },
+            expected_message_id: crate::lmac::MM_ADD_IF_CFM,
+            phase: MailboxPhase::Complete,
+            deadline: MonotonicTime::from_nanos(1),
+            retry_at: None,
+            flow_retries: 0,
+            result: Some(vec![0, 1]),
+        });
+
+        assert_eq!(device.complete_mailbox(), Ok(()));
+        let control = device.lifecycle.control.as_ref().unwrap();
+        let beacon_upload = control
+            .commands
+            .iter()
+            .find(|command| command.message_id == crate::lmac::APM_SET_BEACON_IE_REQ)
+            .unwrap();
+        let apm_start = control
+            .commands
+            .iter()
+            .find(|command| command.message_id == crate::lmac::APM_START_REQ)
+            .unwrap();
+        assert_eq!(beacon_upload.payload[0], 1);
+        assert_eq!(apm_start.payload[51], 1);
+    }
+
+    #[test]
+    fn ap_add_if_rejection_surfaces_the_firmware_status() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.lifecycle.control = Some(
+            super::control::build(
+                ControlRequest::StartOpenAccessPoint {
+                    ssid: b"SG2002".to_vec(),
+                    channel: 6,
+                },
+                [2, 0, 0, 0, 0, 1],
+                Some(0),
+            )
+            .unwrap(),
+        );
+        device.lifecycle.mailbox = Some(MailboxState {
+            frame: Vec::new(),
+            request: MailboxRequest::Lmac {
+                message_id: crate::lmac::MM_ADD_IF_REQ,
+            },
+            expected_message_id: crate::lmac::MM_ADD_IF_CFM,
+            phase: MailboxPhase::Complete,
+            deadline: MonotonicTime::from_nanos(1),
+            retry_at: None,
+            flow_retries: 0,
+            result: Some(vec![3, 1]),
+        });
+
+        assert!(matches!(
+            device.complete_mailbox(),
+            Err(AicError::FirmwareRejected {
+                message_id: crate::lmac::MM_ADD_IF_CFM,
+                status: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn apm_start_rejection_surfaces_the_firmware_status() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        let control = super::control::build(
+            ControlRequest::StartOpenAccessPoint {
+                ssid: b"SG2002".to_vec(),
+                channel: 6,
+            },
+            [2, 0, 0, 0, 0, 1],
+            Some(0),
+        )
+        .unwrap();
+        let mut control = control;
+        while control
+            .commands
+            .front()
+            .is_some_and(|command| command.expected_message_id != crate::lmac::APM_START_CFM)
+        {
+            control.commands.pop_front();
+        }
+        device.lifecycle.control = Some(control);
+        device.lifecycle.mailbox = Some(MailboxState {
+            frame: Vec::new(),
+            request: MailboxRequest::Lmac {
+                message_id: crate::lmac::APM_START_REQ,
+            },
+            expected_message_id: crate::lmac::APM_START_CFM,
+            phase: MailboxPhase::Complete,
+            deadline: MonotonicTime::from_nanos(1),
+            retry_at: None,
+            flow_retries: 0,
+            result: Some(vec![5]),
+        });
+
+        assert!(matches!(
+            device.complete_mailbox(),
+            Err(AicError::FirmwareRejected {
+                message_id: crate::lmac::APM_START_CFM,
+                status: 5
+            })
+        ));
     }
 
     #[test]

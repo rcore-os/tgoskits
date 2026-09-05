@@ -365,6 +365,8 @@ pub(super) enum IoPurpose {
     ReceiveCount(RxPath),
     ReceiveByteLength(RxPath),
     ReceiveData(RxPath),
+    ReceiveOtherAck(RxPath),
+    ReceiveOtherClear(RxPath),
     TransmitFlow,
     TransmitData,
     Shutdown,

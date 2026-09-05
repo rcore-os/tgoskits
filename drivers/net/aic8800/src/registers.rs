@@ -105,18 +105,47 @@ impl RegisterMap {
                 } else if value == 0 {
                     ReceiveLength::Empty
                 } else {
-                    ReceiveLength::Blocks(
-                        (value & INTERRUPT_STATUS::BLOCK_COUNT.mask)
-                            >> INTERRUPT_STATUS::BLOCK_COUNT.shift,
-                    )
+                    // Vendor D80 IRQ handler composite encoding: the status
+                    // byte folds the function-2 queue sentinel into bit 3.
+                    // 120 (and 127) are byte-mode markers, 113..118 and
+                    // 121..126 belong to the function-2 queue (1..6 blocks),
+                    // and only 1..112 are plain function-1 block counts.
+                    let function_two = value | (1 << 3);
+                    if function_two > 120 {
+                        if function_two == 127 {
+                            ReceiveLength::ByteMode
+                        } else {
+                            ReceiveLength::Blocks(value & 0x07)
+                        }
+                    } else if value == 120 {
+                        ReceiveLength::ByteMode
+                    } else {
+                        ReceiveLength::Blocks(
+                            (value & INTERRUPT_STATUS::BLOCK_COUNT.mask)
+                                >> INTERRUPT_STATUS::BLOCK_COUNT.shift,
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-pub(crate) fn flow_credits(value: u8) -> u8 {
-    (value & FLOW_CONTROL::CREDITS.mask) >> FLOW_CONTROL::CREDITS.shift
+impl RegisterMap {
+    /// Flow-credit count carried by the flow-control register.
+    ///
+    /// The vendor driver masks the register for 8801/DC/DW but reads the raw
+    /// byte for D80; the V3 register is a plain eight-bit buffer count, so a
+    /// drained mailbox reports 128 (0x80), which a seven-bit mask would read
+    /// as zero and stall the TX path forever.
+    pub(crate) fn flow_credits(self, value: u8) -> u8 {
+        match self.receive_length_encoding {
+            ReceiveLengthEncoding::V3 => value,
+            ReceiveLengthEncoding::V1 => {
+                (value & FLOW_CONTROL::CREDITS.mask) >> FLOW_CONTROL::CREDITS.shift
+            }
+        }
+    }
 }
 
 pub(crate) fn interface_ready(value: u8) -> bool {
@@ -136,6 +165,49 @@ mod tests {
         assert_eq!(
             RegisterMap::v3().receive_length(0x83),
             ReceiveLength::OtherInterrupt
+        );
+    }
+
+    #[test]
+    fn v3_interrupt_status_treats_120_as_the_byte_mode_marker() {
+        assert_eq!(
+            RegisterMap::v3().receive_length(120),
+            ReceiveLength::ByteMode
+        );
+        assert_eq!(
+            RegisterMap::v3().receive_length(119),
+            ReceiveLength::ByteMode
+        );
+        assert_eq!(
+            RegisterMap::v3().receive_length(127),
+            ReceiveLength::ByteMode
+        );
+    }
+
+    #[test]
+    fn v3_interrupt_status_decodes_the_function_two_queue_domain() {
+        // 113..118 and 121..126 fold the function-2 queue sentinel into bit 3;
+        // they carry 1..6 blocks, not the raw value as a block count.
+        assert_eq!(
+            RegisterMap::v3().receive_length(113),
+            ReceiveLength::Blocks(1)
+        );
+        assert_eq!(
+            RegisterMap::v3().receive_length(118),
+            ReceiveLength::Blocks(6)
+        );
+        assert_eq!(
+            RegisterMap::v3().receive_length(121),
+            ReceiveLength::Blocks(1)
+        );
+        assert_eq!(
+            RegisterMap::v3().receive_length(126),
+            ReceiveLength::Blocks(6)
+        );
+        // Plain function-1 block counts stay intact.
+        assert_eq!(
+            RegisterMap::v3().receive_length(112),
+            ReceiveLength::Blocks(112)
         );
     }
 
@@ -161,5 +233,16 @@ mod tests {
         assert_eq!(registers.block_count, 0x04);
         assert_eq!(registers.read_fifo, 0x0f);
         assert_eq!(registers.write_fifo, 0x10);
+    }
+
+    #[test]
+    fn v3_flow_credits_read_the_full_byte_without_the_vendor_mask() {
+        // The vendor applies the 7-bit mask only to 8801/DC/DW; the D80
+        // register is a raw eight-bit count, and a drained mailbox reports
+        // 128 (0x80).
+        assert_eq!(RegisterMap::v3().flow_credits(0x80), 128);
+        assert_eq!(RegisterMap::v3().flow_credits(0x85), 133);
+        assert_eq!(RegisterMap::v1().flow_credits(0x80), 0);
+        assert_eq!(RegisterMap::v1().flow_credits(0x85), 5);
     }
 }

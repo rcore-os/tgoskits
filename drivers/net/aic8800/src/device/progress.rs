@@ -165,6 +165,8 @@ impl AicDevice {
             IoPurpose::ReceiveCount(path) => self.consume_receive_count(path, response),
             IoPurpose::ReceiveByteLength(path) => self.consume_receive_byte_length(path, response),
             IoPurpose::ReceiveData(path) => self.consume_receive_data(path, response),
+            IoPurpose::ReceiveOtherAck(path) => self.consume_receive_other_ack(path, response),
+            IoPurpose::ReceiveOtherClear(path) => self.consume_receive_other_clear(path, response),
             IoPurpose::TransmitFlow => self.consume_transmit_flow(response, now),
             IoPurpose::TransmitData => self.consume_transmit_data(response),
             IoPurpose::Shutdown => {

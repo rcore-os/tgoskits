@@ -27,6 +27,7 @@ mod firmware;
 mod vendor;
 
 use dc::{DcStage, DcStartupState};
+use firmware::D80PatchStage;
 
 const START_STABILIZE: Duration = Duration::from_millis(200);
 const FUNCTION_READY_DELAY_V2: Duration = Duration::from_millis(10);
@@ -47,6 +48,7 @@ enum StartupStage {
     VendorReady,
     ReadRevision,
     UploadMain(usize),
+    D80Patch(D80PatchStage),
     Dc(DcStage),
     StartApplication,
     Stabilize,
@@ -200,6 +202,7 @@ impl AicDevice {
                 self.drive_mailbox(now)
             }
             StartupStage::UploadMain(offset) => self.drive_main_upload(offset, now),
+            StartupStage::D80Patch(stage) => self.drive_d80_patch(stage, now),
             StartupStage::Dc(stage) => self.drive_dc_startup(stage, now),
             StartupStage::StartApplication => {
                 let (address, boot_type) = match self.firmware_profile() {
