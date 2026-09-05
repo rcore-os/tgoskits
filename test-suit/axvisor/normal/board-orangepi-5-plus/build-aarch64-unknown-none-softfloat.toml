@@ -1,4 +1,5 @@
 features = [
+  "ax-driver/rk3588-cpufreq",
   "ax-driver/rockchip-sdhci",
   "fs",
 ]
