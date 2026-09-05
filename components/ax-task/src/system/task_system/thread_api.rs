@@ -86,10 +86,7 @@ impl TaskSystem {
         }
         let next_handle = address_space.handle();
         let next_membarrier_state = task_runtime::address_space_membarrier_state(next_handle);
-        let binding = crate::runtime::ThreadRuntimeBinding::new(
-            sched.runtime.context,
-            next_handle,
-        );
+        let binding = crate::runtime::ThreadRuntimeBinding::new(sched.runtime.context, next_handle);
         let remote = Arc::clone(cpu.remote());
         let mut transaction = OwnerRqTxn::begin(self, &remote);
         transaction.update_current_runtime_binding(current, binding, next_membarrier_state);

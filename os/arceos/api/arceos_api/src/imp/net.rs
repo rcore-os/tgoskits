@@ -287,6 +287,7 @@ fn poll_state(events: IoEvents) -> AxPollState {
     AxPollState {
         readable: events.intersects(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP),
         writable: events.contains(IoEvents::OUT),
-        readiness_version: 0,
+        read_readiness_version: 0,
+        write_readiness_version: 0,
     }
 }

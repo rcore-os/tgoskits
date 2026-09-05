@@ -370,12 +370,7 @@ pub(super) fn current_cpu_owner_handles(cpu_pin: &CpuPin) -> CurrentCpuOwnerHand
     // SAFETY: initialization publishes both endpoints from one exclusive CPU
     // transaction before that CPU is admitted to scheduler traffic. The
     // containing runtime keeps both endpoint allocations live until shutdown.
-    unsafe {
-        CurrentCpuOwnerHandles::new(
-            CurrentCpuLocalHandle::from_raw(local),
-            remote,
-        )
-    }
+    unsafe { CurrentCpuOwnerHandles::new(CurrentCpuLocalHandle::from_raw(local), remote) }
 }
 
 fn current_cpu_remote_handle(cpu_pin: &CpuPin) -> CpuRemoteHandle {

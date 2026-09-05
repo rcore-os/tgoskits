@@ -53,9 +53,55 @@ pub fn setup_guest_fdt_from_vmm(
     let fdt = Fdt::from_bytes(fdt_bytes)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
 
+    // The runtime configuration may contain an implicit root selector to
+    // establish the passthrough address-space policy. Keep its non-PCI
+    // devices (for example the guest-owned virtio-blk endpoint), but remove
+    // PCI host bridges unless the guest explicitly claims one.
+    let explicit_device_names = crate_config
+        .devices
+        .passthrough
+        .iter()
+        .map(|device| device.path.clone())
+        .collect::<Vec<_>>();
+    let implicit_root_passthrough = explicit_device_names.is_empty()
+        && vm_cfg
+            .pass_through_devices()
+            .iter()
+            .any(|device| device.name == "/");
+    let selected_device_names = if implicit_root_passthrough {
+        vm_cfg
+            .pass_through_devices()
+            .iter()
+            .map(|device| device.name.clone())
+            .collect::<Vec<_>>()
+    } else {
+        explicit_device_names
+    };
+    if implicit_root_passthrough {
+        for node_id in fdt.iter_node_ids() {
+            if fdt.node(node_id).is_some_and(Node::is_pci) {
+                vm_cfg.exclude_device_path(fdt.path_of(node_id));
+            }
+        }
+    }
     reserve_excluded_device_ranges(vm_cfg, crate_config, fdt_bytes)?;
-    let passthrough_device_names = super::device::find_all_passthrough_devices(vm_cfg, &fdt);
-    super::create::create_guest_fdt(&fdt, &passthrough_device_names, crate_config)
+    let excluded_device_paths = vm_cfg
+        .excluded_devices()
+        .iter()
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+    let passthrough_device_names = super::device::find_all_passthrough_devices_from_paths(
+        &selected_device_names,
+        &excluded_device_paths,
+        &fdt,
+    );
+    super::create::create_guest_fdt(
+        &fdt,
+        &passthrough_device_names,
+        crate_config,
+        &excluded_device_paths,
+    )
 }
 
 fn is_reserved_memory_path(node_path: &str) -> bool {
@@ -249,7 +295,6 @@ pub fn reserve_excluded_device_ranges(
         }
 
         exclude_node_interrupt_sources(vm_cfg, &fdt, node_id, decode_interrupt);
-
         for reg in node_regs(&fdt, node_id) {
             push_reserved_address_range(
                 &mut reserved_ranges,
@@ -258,7 +303,6 @@ pub fn reserve_excluded_device_ranges(
                 reg.size.unwrap_or(0) as usize,
             );
         }
-
         for range in node_pci_ranges(&fdt, node_id) {
             push_reserved_address_range(
                 &mut reserved_ranges,
@@ -817,6 +861,59 @@ mod tests {
         fdt.encode().as_ref().to_vec()
     }
 
+    fn fdt_with_pci_host_and_endpoint() -> Vec<u8> {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+        let intc = fdt.add_node(root, Node::new("interrupt-controller@0"));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(prop_u32("#interrupt-cells", 1));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(prop_u32("phandle", 1));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(super::super::tree::prop_string("compatible", "riscv,plic0"));
+        let soc = fdt.add_node(root, Node::new("soc"));
+        let pci = fdt.add_node(soc, Node::new("pci@30000000"));
+        fdt.node_mut(pci)
+            .unwrap()
+            .set_property(super::super::tree::prop_string("device_type", "pci"));
+        fdt.view_typed_mut(pci)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x3000_0000, Some(0x1000_0000))]);
+        let nvme = fdt.add_node(pci, Node::new("nvme@0"));
+        fdt.node_mut(nvme)
+            .unwrap()
+            .set_property(prop_u32("interrupt-parent", 1));
+        fdt.node_mut(nvme)
+            .unwrap()
+            .set_property(prop_u32_list("interrupts", &[11]));
+        let virtio = fdt.add_node(soc, Node::new("virtio_mmio@10001000"));
+        fdt.node_mut(virtio)
+            .unwrap()
+            .set_property(super::super::tree::prop_string("compatible", "virtio,mmio"));
+        fdt.node_mut(virtio)
+            .unwrap()
+            .set_property(prop_u32("interrupt-parent", 1));
+        fdt.node_mut(virtio)
+            .unwrap()
+            .set_property(prop_u32_list("interrupts", &[11]));
+        fdt.view_typed_mut(virtio)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x1000_1000, Some(0x1000))]);
+        fdt.encode().as_ref().to_vec()
+    }
+
     fn fdt_with_serial_and_device_interrupts() -> Vec<u8> {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
@@ -1206,6 +1303,89 @@ mod tests {
                 .iter()
                 .any(|range| range.base_gpa == 0x1000_1000 && range.length == 0x1000)
         );
+    }
+
+    #[test]
+    fn implicit_root_passthrough_excludes_unassigned_pci_resources() {
+        let dtb = fdt_with_pci_host_and_endpoint();
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 0,
+            name: "test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, Some(vec![0]), None),
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let crate_cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(vec![0]),
+                guest_type: GuestType::Passthrough,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let guest_dtb = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap();
+        let guest = Fdt::from_bytes(&guest_dtb).unwrap();
+
+        assert!(guest.get_by_path_id("/soc/pci@30000000").is_none());
+        assert!(guest.get_by_path_id("/soc/pci@30000000/nvme@0").is_none());
+        assert!(guest.get_by_path_id("/soc/virtio_mmio@10001000").is_some());
+        assert!(
+            vm_cfg
+                .reserved_address_ranges()
+                .iter()
+                .any(|range| { range.base_gpa == 0x3000_0000 && range.length == 0x1000_0000 })
+        );
+        assert!(vm_cfg.excluded_passthrough_irq_sources().contains(&11));
+
+        parse_passthrough_devices_address(&mut vm_cfg, &crate_cfg, &guest_dtb).unwrap();
+        let error = parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &guest_dtb).unwrap_err();
+        assert_eq!(
+            error,
+            crate::AxVmError::InvalidConfig {
+                detail: "passthrough device /soc/virtio_mmio@10001000 shares host-owned interrupt \
+                         source 0xb"
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_pci_passthrough_is_published() {
+        let dtb = fdt_with_pci_host_and_endpoint();
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 0,
+            name: "test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, Some(vec![0]), None),
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/soc/pci@30000000".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let crate_cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(vec![0]),
+                guest_type: GuestType::Passthrough,
+                ..Default::default()
+            },
+            devices: GuestDevices {
+                passthrough: vec![PhysicalDeviceRef {
+                    path: "/soc/pci@30000000".to_string(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let guest_dtb = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap();
+        let guest = Fdt::from_bytes(&guest_dtb).unwrap();
+
+        assert!(guest.get_by_path_id("/soc/pci@30000000").is_some());
+        assert!(guest.get_by_path_id("/soc/pci@30000000/nvme@0").is_some());
     }
 
     #[test]

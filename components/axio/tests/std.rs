@@ -225,16 +225,19 @@ fn axio_poll_state_and_formatting_rules_hold() {
     let default_state = PollState::default();
     assert!(!default_state.readable);
     assert!(!default_state.writable);
-    assert_eq!(default_state.readiness_version, 0);
+    assert_eq!(default_state.read_readiness_version, 0);
+    assert_eq!(default_state.write_readiness_version, 0);
 
     let state = PollState {
         readable: true,
         writable: true,
-        readiness_version: 7,
+        read_readiness_version: 7,
+        write_readiness_version: 9,
     };
     let formatted = format!("{state:?}");
     assert!(formatted.contains("readable: true"));
-    assert!(formatted.contains("readiness_version: 7"));
+    assert!(formatted.contains("read_readiness_version: 7"));
+    assert!(formatted.contains("write_readiness_version: 9"));
 }
 
 #[test]

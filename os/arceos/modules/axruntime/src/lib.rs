@@ -28,7 +28,6 @@
 //!
 //! Interrupt handling and task scheduling are mandatory runtime capabilities.
 
-#![feature(extern_item_impls)]
 #![cfg_attr(not(test), no_std)]
 #![allow(missing_abi)]
 
@@ -134,16 +133,23 @@ pub(crate) fn runtime_default_task_stack_size() -> usize {
     build_info::TASK_STACK_SIZE
 }
 
-#[eii]
 fn ax_app_entry() {
-    #[cfg(not(test))]
-    unsafe extern "C" {
-        /// Legacy application's entry point.
-        safe fn main();
+    #[cfg(all(feature = "std-compat", not(test)))]
+    {
+        unsafe extern "C" {
+            safe fn __axstd_std_check_entry();
+        }
+        __axstd_std_check_entry();
     }
-    // Default implementation
-    #[cfg(not(test))]
-    main();
+
+    #[cfg(all(not(feature = "std-compat"), not(test)))]
+    {
+        unsafe extern "C" {
+            /// Legacy application's entry point.
+            safe fn main();
+        }
+        main();
+    }
 }
 
 struct LogIfImpl;

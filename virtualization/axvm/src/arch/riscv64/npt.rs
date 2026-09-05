@@ -21,7 +21,13 @@ impl ptg::TableMeta for Sv39x4MetaData {
         // SAFETY: `hfence.gvma` only orders guest-stage translations. It does
         // not access memory directly and is required after G-stage PTE updates.
         unsafe {
-            std::arch::asm!("hfence.gvma", options(nostack, preserves_flags));
+            std::arch::asm!(
+                ".option push",
+                ".option arch, +h",
+                "hfence.gvma",
+                ".option pop",
+                options(nostack, preserves_flags),
+            );
         }
     }
 }

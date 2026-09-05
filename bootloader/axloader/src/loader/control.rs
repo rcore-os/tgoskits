@@ -12,7 +12,6 @@ use crate::console;
 const TARGET_ARCH_NAME: &str = "x86_64";
 
 const SERIAL_BOOT_LINE_LIMIT: usize = 4096;
-const SERIAL_BOOT_READ_BATCH: usize = 64;
 const SERIAL_BOOT_WAIT_POLLS: usize = 60_000;
 const SERIAL_BOOT_POLL_STALL: core::time::Duration = core::time::Duration::from_millis(1);
 
@@ -82,10 +81,8 @@ fn announce_ready() {
 
 fn read_boot_line() -> Result<String, ControlError> {
     let mut line = Vec::new();
-    let mut input = [0; SERIAL_BOOT_READ_BATCH];
     for _ in 0..SERIAL_BOOT_WAIT_POLLS {
-        let read = console::serial_read_available(&mut input);
-        for &byte in &input[..read] {
+        while let Some(byte) = console::serial_read_byte() {
             match byte {
                 b'\r' => {}
                 b'\n' => {

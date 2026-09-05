@@ -626,11 +626,7 @@ impl CpuRunQueueState {
         self.queue.install_current(current);
     }
 
-    pub(crate) fn replace_linked_current(
-        &mut self,
-        linked: LinkedRqTaskRef,
-        now: RqTaskTime,
-    ) {
+    pub(crate) fn replace_linked_current(&mut self, linked: LinkedRqTaskRef, now: RqTaskTime) {
         let current = linked.thread();
         let task_membarrier_state = self.state_for_task(
             current.core.membarrier_identity(),
@@ -866,10 +862,7 @@ impl CpuRunQueueState {
         binding: crate::runtime::ThreadRuntimeBinding,
         next_membarrier_state: AddressSpaceMembarrierState,
     ) -> Result<(), TaskError> {
-        let current = self
-            .queue
-            .current()
-            .ok_or(TaskError::NoRunnableThread)?;
+        let current = self.queue.current().ok_or(TaskError::NoRunnableThread)?;
         if current.thread() != thread {
             return Err(TaskError::InvalidConfiguration);
         }

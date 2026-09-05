@@ -729,6 +729,7 @@ dependencies = [
 name = "ax-alloc"
 version = "0.8.16"
 dependencies = [
+ "ax-crate-interface",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat",
@@ -1940,6 +1941,7 @@ dependencies = [
 name = "buddy-slab-allocator"
 version = "0.5.0"
 dependencies = [
+ "ax-crate-interface",
  "ax-sync",
  "divan",
  "log",

@@ -37,12 +37,13 @@ impl EpollEvent {
 
 /// The `#[no_mangle]` symbols provided by `ax_std::os::libc_compat`.
 mod raw {
-    use core::ffi::c_int;
+    use core::ffi::{c_int, c_void};
 
     use super::EpollEvent;
 
     unsafe extern "C" {
         pub(super) fn eventfd(initval: u32, flags: c_int) -> c_int;
+        pub(super) fn pipe(pipefd: *mut c_int) -> c_int;
         pub(super) fn epoll_create1(flags: c_int) -> c_int;
         pub(super) fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut EpollEvent)
         -> c_int;
@@ -52,8 +53,8 @@ mod raw {
             maxevents: c_int,
             timeout: c_int,
         ) -> c_int;
-        pub(super) fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
-        pub(super) fn write(fd: c_int, buf: *const u8, count: usize) -> isize;
+        pub(super) fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+        pub(super) fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
         pub(super) fn close(fd: c_int) -> c_int;
         pub(super) fn __errno_location() -> *mut c_int;
     }
@@ -104,6 +105,13 @@ pub fn eventfd(initval: u32, flags: c_int) -> Result<OwnedFd, c_int> {
     fd_syscall(unsafe { raw::eventfd(initval, flags) }).map(OwnedFd)
 }
 
+/// Creates a pipe and returns its uniquely owned read and write descriptors.
+pub fn pipe() -> Result<(OwnedFd, OwnedFd), c_int> {
+    let mut fds = [0 as c_int; 2];
+    fd_syscall(unsafe { raw::pipe(fds.as_mut_ptr()) })?;
+    Ok((OwnedFd(fds[0]), OwnedFd(fds[1])))
+}
+
 pub fn epoll_create1(flags: c_int) -> Result<OwnedFd, c_int> {
     fd_syscall(unsafe { raw::epoll_create1(flags) }).map(OwnedFd)
 }
@@ -134,11 +142,11 @@ pub fn epoll_wait(
 }
 
 pub fn read(fd: &OwnedFd, buf: &mut [u8]) -> Result<usize, c_int> {
-    io_syscall(unsafe { raw::read(fd.as_raw(), buf.as_mut_ptr(), buf.len()) })
+    io_syscall(unsafe { raw::read(fd.as_raw(), buf.as_mut_ptr().cast(), buf.len()) })
 }
 
 pub fn write(fd: &OwnedFd, buf: &[u8]) -> Result<usize, c_int> {
-    io_syscall(unsafe { raw::write(fd.as_raw(), buf.as_ptr(), buf.len()) })
+    io_syscall(unsafe { raw::write(fd.as_raw(), buf.as_ptr().cast(), buf.len()) })
 }
 
 pub fn read_u64(fd: &OwnedFd) -> Result<u64, c_int> {

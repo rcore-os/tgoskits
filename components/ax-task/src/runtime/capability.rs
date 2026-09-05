@@ -520,10 +520,7 @@ impl CurrentCpuOwnerHandles {
     /// scheduler endpoints for the pinned CPU. Every non-empty handle must
     /// remain live until shutdown, and the caller must keep migration excluded
     /// while the snapshot is used.
-    pub const unsafe fn new(
-        local: CurrentCpuLocalHandle,
-        remote: CpuRemoteHandle,
-    ) -> Self {
+    pub const unsafe fn new(local: CurrentCpuLocalHandle, remote: CpuRemoteHandle) -> Self {
         Self { local, remote }
     }
 

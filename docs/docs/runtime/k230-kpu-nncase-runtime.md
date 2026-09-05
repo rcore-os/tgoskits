@@ -313,7 +313,7 @@ bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh
 该脚本的构建步骤和输出位置由 `apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh` 固定，主要用于保证 CMake、SDK toolchain 和 Linux musl sysroot 在不同机器上能找到同一套输入。
 
 1. 从当前 worktree 向上查找 `target/official-k230/k230-sdk-src`。
-2. 使用 `starryos-dev:ubuntu-qemu10.2.1` 把 `/opt/riscv64-linux-musl-cross` 复制到 Docker volume `tgoskits-riscv64-linux-musl-cross`。
+2. 使用 `starryos-dev:ubuntu-qemu11.1.1` 把 `/opt/riscv64-linux-musl-cross` 复制到 Docker volume `tgoskits-riscv64-linux-musl-cross`。
 3. 进入 `ghcr.io/kendryte/k230_sdk:latest` amd64 容器。
 4. 调用 CMake，并显式设置 SDK C++ compiler 与 Linux musl sysroot。
 5. 静态链接 K230 SDK NNCase runtime、`rvv`、JPEG decode、K230 SDK C++ runtime、Linux musl libc、libgcc、libatomic 等库。
@@ -413,7 +413,7 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
 
 ### 10.3 演示脚本
 
-`apps/starry/k230-kpu-nncase/demo-teacher.sh` 提供流式日志演示入口。脚本默认会在需要时进入 `starryos-dev:ubuntu-qemu10.2.1` Docker 环境，流式打印完整 QEMU/Cargo 输出，并保存 `target/k230-kpu-demo/teacher-nncase-runtime.log`。
+`apps/starry/k230-kpu-nncase/demo-teacher.sh` 提供流式日志演示入口。脚本默认会在需要时进入 `starryos-dev:ubuntu-qemu11.1.1` Docker 环境，流式打印完整 QEMU/Cargo 输出，并保存 `target/k230-kpu-demo/teacher-nncase-runtime.log`。
 
 ```sh
 bash apps/starry/k230-kpu-nncase/demo-teacher.sh

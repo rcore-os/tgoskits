@@ -43,8 +43,8 @@ pub struct Aarch64ContextFrame {
 /// Implementations of [`fmt::Display`] for [`Aarch64ContextFrame`].
 impl core::fmt::Display for Aarch64ContextFrame {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), core::fmt::Error> {
-        for i in 0..31 {
-            write!(f, "x{:02}: {:016x}   ", i, self.gpr[i])?;
+        for (i, register) in self.gpr.iter().enumerate() {
+            write!(f, "x{i:02}: {register:016x}   ")?;
             if (i + 1) % 2 == 0 {
                 writeln!(f)?;
             }

@@ -342,19 +342,19 @@ pub(crate) fn init_guest_iocsr(state: &LoongArchIocsrState, vcpu_id: LoongArchVc
 
     vcpu.reset();
 
-    for word in 0..EIOINTC_NODEMAP_WORDS {
+    for (word, nodemap) in vcpu.eiointc_nodemap.iter().enumerate() {
         let value = ((1usize << (word * 2 + 1)) << 16) | (1usize << (word * 2));
-        vcpu.eiointc_nodemap[word].store(value as u32 as usize, Ordering::Release);
+        nodemap.store(value as u32 as usize, Ordering::Release);
     }
     for word in 0..EIOINTC_ENABLE_WORDS_PER_VCPU {
         vcpu.eiointc_enable[word].store(u32::MAX as usize, Ordering::Release);
         vcpu.eiointc_bounce[word].store(u32::MAX as usize, Ordering::Release);
     }
-    for word in 0..EIOINTC_IPMAP_WORDS {
-        vcpu.eiointc_ipmap[word].store(0x0101_0101, Ordering::Release);
+    for ipmap in &vcpu.eiointc_ipmap {
+        ipmap.store(0x0101_0101, Ordering::Release);
     }
-    for word in 0..EIOINTC_COREMAP_WORDS {
-        vcpu.eiointc_coremap[word].store(0x0101_0101, Ordering::Release);
+    for coremap in &vcpu.eiointc_coremap {
+        coremap.store(0x0101_0101, Ordering::Release);
     }
 }
 

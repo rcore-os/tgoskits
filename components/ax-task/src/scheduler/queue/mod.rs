@@ -24,8 +24,8 @@ pub(crate) use task::{
 
 use super::fair_queue::{FairPick, FairRunQueue};
 use crate::{
-    CurrentDispatch, CurrentRemotePublication, DispatchCharge, FairEntity, SchedulePolicy,
-    RqTaskTime, SchedulingClass, SchedulingEntity, TaskError, ThreadCore, ThreadId,
+    CurrentDispatch, CurrentRemotePublication, DispatchCharge, FairEntity, RqTaskTime,
+    SchedulePolicy, SchedulingClass, SchedulingEntity, TaskError, ThreadCore, ThreadId,
 };
 
 /// Why a runnable thread is being inserted into its owner run queue.
@@ -202,11 +202,7 @@ impl RunQueue {
 
     /// Replaces a linked `rq->curr` by advancing only its canonical rq pointer.
     #[inline(always)]
-    pub(crate) fn replace_linked_current(
-        &mut self,
-        linked: LinkedRqTaskRef,
-        now: RqTaskTime,
-    ) {
+    pub(crate) fn replace_linked_current(&mut self, linked: LinkedRqTaskRef, now: RqTaskTime) {
         assert!(
             self.detached_current_publication.is_none(),
             "linked current replacement cannot follow a detached current"

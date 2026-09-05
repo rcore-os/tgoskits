@@ -24,6 +24,7 @@ use crate::{
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
     crate::stop_machine::init();
+    crate::trap::init_handlers();
     static_keys::global_init();
     crate::cgroup::init();
 

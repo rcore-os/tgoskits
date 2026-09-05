@@ -27,7 +27,7 @@ else
     REL_WORKTREE=${WORKTREE_ROOT#"$STORAGE_ROOT"/}
 fi
 IMAGE=${K230_SDK_DOCKER_IMAGE:-ghcr.io/kendryte/k230_sdk:latest}
-STARRY_DEV_IMAGE=${STARRY_DEV_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}
+STARRY_DEV_IMAGE=${STARRY_DEV_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu11.1.1}
 SYSROOT_VOLUME=${K230_LINUX_MUSL_SYSROOT_VOLUME:-tgoskits-riscv64-linux-musl-cross}
 BUILD_DIR=/workspace/target/k230-nncase-runtime/build-sdk
 HOST_BUILD_DIR="$STORAGE_ROOT/target/k230-nncase-runtime/build-sdk"

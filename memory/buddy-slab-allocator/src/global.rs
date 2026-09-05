@@ -13,8 +13,8 @@ use ax_sync::{RawSpinLockGuard, SpinLock};
 use crate::{
     align_up,
     buddy::{BuddyAllocator, BuddySection, ManagedSection, PageFlags, SectionInitSpec},
-    eii,
     error::{AllocError, AllocResult},
+    interface,
     slab::{
         SlabAllocResult,
         page::{SLAB_MAGIC, SlabPageHeader},
@@ -243,7 +243,7 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
     }
 
     fn slab_alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
-        let pool = eii::slab_pool();
+        let pool = interface::slab_pool();
 
         match pool.alloc(layout)? {
             SlabAllocResult::Allocated(ptr) => Ok(ptr),
@@ -271,7 +271,7 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
             let hdr = &*(base as *const SlabPageHeader);
             debug_assert_eq!(hdr.magic, SLAB_MAGIC);
 
-            match eii::slab_pool().dealloc(ptr, layout, hdr.owner_cpu as usize) {
+            match interface::slab_pool().dealloc(ptr, layout, hdr.owner_cpu as usize) {
                 crate::SlabPoolDeallocResult::Done => {}
                 crate::SlabPoolDeallocResult::RemoteQueued => {}
                 crate::SlabPoolDeallocResult::FreeSlab { base, pages } => {

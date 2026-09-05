@@ -1,7 +1,6 @@
 use core::fmt;
 
 use uefi::{
-    Status,
     boot::{self, OpenProtocolAttributes, OpenProtocolParams},
     proto::console::{
         serial::{IoMode, Parity, Serial, StopBits},
@@ -36,25 +35,33 @@ pub fn serial_println(args: fmt::Arguments<'_>) {
     serial_print(format_args!("\n"));
 }
 
-pub fn serial_read_available(buffer: &mut [u8]) -> usize {
-    if buffer.is_empty() {
-        return 0;
-    }
-    if let Some(read) = read_serial_available(buffer) {
-        return read;
-    }
+pub fn serial_read_byte() -> Option<u8> {
+    crate::control_input::next_serial_control_byte(
+        firmware_input_available(),
+        read_firmware_byte,
+        read_serial_byte,
+    )
+}
 
+fn firmware_input_available() -> bool {
+    let Some(system_table) = uefi::table::system_table_raw() else {
+        return false;
+    };
+
+    // SAFETY: `uefi::entry` initializes this pointer from the firmware system
+    // table, which remains valid while boot services are active. We only read
+    // the stable protocol pointers before invoking either protocol.
+    let system_table = unsafe { system_table.as_ref() };
+    !system_table.boot_services.is_null() && !system_table.stdin.is_null()
+}
+
+fn read_firmware_byte() -> Option<u8> {
     uefi::system::with_stdin(|stdin| match stdin.read_key() {
         Ok(Some(Key::Printable(ch))) => {
             let ch = char::from(ch);
-            if ch.is_ascii() {
-                buffer[0] = ch as u8;
-                1
-            } else {
-                0
-            }
+            if ch.is_ascii() { Some(ch as u8) } else { None }
         }
-        Ok(Some(Key::Special(_))) | Ok(None) | Err(_) => 0,
+        Ok(Some(Key::Special(_))) | Ok(None) | Err(_) => None,
     })
 }
 
@@ -94,12 +101,12 @@ fn configure_serial(serial: &mut Serial) {
     let _ = serial.set_attributes(&mode);
 }
 
-fn read_serial_available(buffer: &mut [u8]) -> Option<usize> {
-    with_serial(|serial| match serial.read(buffer) {
-        Ok(()) => buffer.len(),
-        Err(error) if error.status() == Status::TIMEOUT => *error.data(),
-        Err(_) => 0,
+fn read_serial_byte() -> Option<u8> {
+    with_serial(|serial| {
+        let mut byte = [0];
+        serial.read(&mut byte).ok().map(|()| byte[0])
     })
+    .flatten()
 }
 
 struct SerialWriter<'a> {

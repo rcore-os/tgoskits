@@ -52,7 +52,7 @@ TGOSKits 的工程组织由统一构建基线、分层运行时架构、领域�
 | Workspace 成员 | 184 |
 | 协议 | Apache-2.0 |
 | Rust Edition | 2024（Resolver v3） |
-| 工具链 | `nightly-2026-07-15`（minimal profile） |
+| 工具链 | `nightly-2026-09-04`（minimal profile） |
 | 构建 | Release 默认禁用 LTO |
 
 ### 2.3 核心架构

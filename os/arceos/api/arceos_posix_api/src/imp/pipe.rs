@@ -96,12 +96,12 @@ impl PipeRingBuffer {
         }
     }
 
-    pub const fn readiness_version(&self, readable_end: bool) -> u64 {
-        if readable_end {
-            self.read_readiness_version
-        } else {
-            self.write_readiness_version
-        }
+    pub const fn read_readiness_version(&self) -> u64 {
+        self.read_readiness_version
+    }
+
+    pub const fn write_readiness_version(&self) -> u64 {
+        self.write_readiness_version
     }
 }
 
@@ -228,7 +228,11 @@ impl FileLike for Pipe {
         Ok(PollState {
             readable: self.readable() && buf.available_read() > 0,
             writable: self.writable() && buf.available_write() > 0,
-            readiness_version: buf.readiness_version(self.readable()),
+            // Both ends report both directions: the shared ring buffer owns the
+            // readiness of the pipe as a whole, and the epoll edge logic keys
+            // each event class off its own direction's version.
+            read_readiness_version: buf.read_readiness_version(),
+            write_readiness_version: buf.write_readiness_version(),
         })
     }
 

@@ -552,6 +552,7 @@ impl PreparedAddressSpaceSwitch<'_, '_> {
             }
             #[cfg(all(feature = "uspace", not(target_arch = "aarch64")))]
             PreparedAddressSpaceAction::SameUser => {}
+            #[cfg(feature = "uspace")]
             PreparedAddressSpaceAction::User { next_raw, next } => {
                 let reclaim_ready = commit_user_address_space_activation(
                     self.cpu_id,

@@ -4,8 +4,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::cmp::Ordering;
 
 use super::{
-    LinkedRqTaskRef, QueuedThread, QueuedThreadSnapshot,
-    deadline_pushable::DeadlinePushableTasks,
+    LinkedRqTaskRef, QueuedThread, QueuedThreadSnapshot, deadline_pushable::DeadlinePushableTasks,
 };
 use crate::{
     DeadlineBandwidthSnapshot, SchedulingEntity, TaskError, ThreadCore, ThreadId,

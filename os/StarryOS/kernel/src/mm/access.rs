@@ -16,7 +16,7 @@ use ax_runtime::hal::{
     cpu::{
         UserAccessError, UserAtomicError, UserAtomicU32Op,
         asm::user_copy,
-        trap::{PageFaultFlags, page_fault_handler},
+        trap::PageFaultFlags,
         user_atomic_u32, user_read_u32,
     },
     paging::MappingFlags,
@@ -583,8 +583,7 @@ static PAGE_FAULT_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "axtest")]
 const _: fn(&UserTaskRef, &str, usize, usize, MappingFlags) -> VmResult = prepare_user_memory;
 
-#[page_fault_handler]
-fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
+pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
     #[cfg(feature = "stack-guard-page")]
     if ax_runtime::task::diagnose_current_stack_guard_page_fault(vaddr) {
         return false;

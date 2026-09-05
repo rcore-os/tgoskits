@@ -1,0 +1,11 @@
+features = [
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rockchip-sdhci",
+  "fs",
+]
+log = "Error"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/starry-axivc-benchmark.toml",
+  "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/zephyr-axivc-benchmark.toml",
+]

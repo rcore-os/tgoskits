@@ -29,10 +29,11 @@ use crate::{
     boot::images::load_vm_image_from_memory,
 };
 
-pub fn create_guest_fdt(
+pub(crate) fn create_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
     crate_config: &GuestConfig,
+    excluded_device_paths: &[String],
 ) -> AxVmResult<Vec<u8>> {
     let phys_cpu_ids = crate_config
         .base
@@ -52,7 +53,7 @@ pub fn create_guest_fdt(
         passthrough_device_names,
         phys_cpu_ids,
         machine_interrupt_providers: &machine_interrupt_providers,
-        disabled_devices: &crate_config.devices.disabled,
+        excluded_device_paths,
     };
     let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         policy.should_keep(node_id, path, node)
@@ -66,7 +67,7 @@ struct GeneratedNodePolicy<'a> {
     passthrough_device_names: &'a [String],
     phys_cpu_ids: &'a [usize],
     machine_interrupt_providers: &'a [String],
-    disabled_devices: &'a [axvmconfig::PhysicalDeviceRef],
+    excluded_device_paths: &'a [String],
 }
 
 impl GeneratedNodePolicy<'_> {
@@ -98,10 +99,10 @@ impl GeneratedNodePolicy<'_> {
             return true;
         }
 
-        if self.disabled_devices.iter().any(|device| {
-            node_path == device.path
+        if self.excluded_device_paths.iter().any(|path| {
+            node_path == path
                 || node_path
-                    .strip_prefix(&device.path)
+                    .strip_prefix(path)
                     .is_some_and(|suffix| suffix.starts_with('/'))
         }) {
             return false;
@@ -1162,7 +1163,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg, &[]).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
@@ -1230,8 +1231,14 @@ mod tests {
             "/soc/pci@30000000/nvme@0".into(),
             "/soc/virtio_mmio@10001000".into(),
         ];
+        let excluded = cfg
+            .devices
+            .disabled
+            .iter()
+            .map(|device| device.path.clone())
+            .collect::<std::vec::Vec<_>>();
 
-        let dtb = super::create_guest_fdt(&fdt, &selected, &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &selected, &cfg, &excluded).unwrap();
         let guest = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(guest.get_by_path_id("/soc/pci@30000000").is_none());
@@ -1253,7 +1260,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg, &[]).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(reparsed.get_by_path_id("/psci").is_some());
@@ -1305,7 +1312,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg, &[]).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
         let plic = reparsed.get_by_path("/soc/plic@c000000").unwrap();
         assert!(reparsed.get_by_path_id("/its@8080000").is_some());
@@ -1348,7 +1355,7 @@ mod tests {
             ..Default::default()
         };
 
-        let dtb = super::create_guest_fdt(&host, &passthrough_devices, &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&host, &passthrough_devices, &cfg, &[]).unwrap();
         let guest = Fdt::from_bytes(&dtb).unwrap();
         let cpu = guest.get_by_path("/cpus/cpu@0").unwrap().as_node();
 

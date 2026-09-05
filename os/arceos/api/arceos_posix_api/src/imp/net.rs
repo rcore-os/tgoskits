@@ -323,7 +323,8 @@ fn poll_state(events: IoEvents, readiness_version: u64) -> PollState {
     PollState {
         readable: events.intersects(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP),
         writable: events.contains(IoEvents::OUT),
-        readiness_version,
+        read_readiness_version: readiness_version,
+        write_readiness_version: readiness_version,
     }
 }
 
@@ -847,6 +848,7 @@ mod tests {
         let state = poll_state(IoEvents::IN, 7);
 
         assert!(state.readable);
-        assert_eq!(state.readiness_version, 7);
+        assert_eq!(state.read_readiness_version, 7);
+        assert_eq!(state.write_readiness_version, 7);
     }
 }
