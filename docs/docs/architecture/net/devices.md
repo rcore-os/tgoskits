@@ -87,6 +87,13 @@ IPv4/IPv6 TCP/UDP checksum-v2；短 padding frame 走软件 checksum。Router �
 物理出口共同支持的能力，loopback 补齐 offload 路径留下的 checksum。driver 支持 IPv6
 checksum 不代表物理 Ethernet IPv6 协议已完整接入。
 
+smoltcp 的 `Checksum` 描述协议栈需要完成的软件工作，不是 NIC 的卸载方向。
+因此 TX offload 对应 `Checksum::Rx`：保留接收校验，省去软件发送校验计算。
+`Checksum::Tx` 会要求软件计算发送 checksum，并跳过接收校验，不能用于这个映射。
+定义见 [smoltcp 0.13.1](https://github.com/smoltcp-rs/smoltcp/blob/v0.13.1/src/phy/mod.rs#L176-L204)。
+`router_advertises_tx_checksum_offload_only_for_capable_devices` 分别断言 TCP、UDP
+的 `rx() == true` 和 `tx() == false`；加入不支持卸载的出口后恢复软件发送计算。
+
 非一致 DMA 平台的 CPU/device sync 在 `DmaBuffer` 的 read/write 与 driver submit/reclaim
 边界完成。跨 CPU 只 move token，不共享可变 payload reference。
 

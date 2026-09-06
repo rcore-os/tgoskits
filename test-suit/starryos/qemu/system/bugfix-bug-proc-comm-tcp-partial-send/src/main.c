@@ -218,8 +218,8 @@ static void test_nonblocking_partial_send(void)
         return;
     }
 
-    /* Small buffers keep the pipe tiny so the fill loop is short and a bounded
-     * drain reopens only a partial window. */
+    /* Request small buffers on Linux. StarryOS currently uses fixed buffers,
+     * so filling the pipe must also work efficiently with its larger capacity. */
     int small = 4096;
     setsockopt(tx, SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
 
@@ -241,26 +241,42 @@ static void test_nonblocking_partial_send(void)
     CHECK(fl >= 0, "fcntl F_GETFL on sender");
     CHECK_RET(fcntl(tx, F_SETFL, fl | O_NONBLOCK), 0, "set O_NONBLOCK on sender");
 
-    /* Fill the send+receive pipe with single bytes until it reports EAGAIN. */
-    char one = 'x';
+    /* Fill in chunks: one-byte sends spend most of the test in syscalls on
+     * emulated CPUs. After EAGAIN, wait for outstanding ACKs before declaring
+     * the pipe full; otherwise the receiver may still have unused capacity. */
+    char fill[4096];
+    memset(fill, 'x', sizeof(fill));
     long filled = 0;
     int hit_eagain = 0;
-    for (long i = 0; i < 4000000; i++)
+    unsigned int attempts = 0;
+    while (attempts < 1024)
     {
-        ssize_t r = send(tx, &one, 1, 0); /* no MSG_DONTWAIT: rely on O_NONBLOCK */
-        if (r == 1)
+        attempts++;
+        ssize_t r = send(tx, fill, sizeof(fill), 0); /* rely on O_NONBLOCK */
+        if (r > 0)
         {
-            filled++;
+            filled += r;
             continue;
         }
         if (r < 0 && errno == EAGAIN)
         {
-            hit_eagain = 1;
-            break;
+            struct pollfd fill_ready = {.fd = tx, .events = POLLOUT};
+            int ready = poll(&fill_ready, 1, 2000);
+            if (ready == 0)
+            {
+                hit_eagain = 1;
+                break;
+            }
+            CHECK(ready == 1 && (fill_ready.revents & POLLOUT),
+                  "pending TCP acknowledgments reopen the sender while filling");
+            if (ready != 1 || !(fill_ready.revents & POLLOUT))
+                break;
+            continue;
         }
         CHECK(0, "unexpected send result while filling the buffer");
         break;
     }
+    printf("TCP buffer fill: %ld bytes, %u send calls\n", filled, attempts);
     CHECK(filled > 0, "non-blocking send enqueues bytes into the socket buffer");
     CHECK(hit_eagain, "non-blocking send reports EAGAIN once the buffer is full");
 
@@ -268,9 +284,29 @@ static void test_nonblocking_partial_send(void)
     ssize_t full = send(tx, "AAAA", 4, 0);
     CHECK(full < 0 && errno == EAGAIN, "send on a full non-blocking socket returns EAGAIN");
 
-    /* Drain a bounded amount at the receiver to reopen only a partial window. */
-    char drain[1000];
-    ssize_t drained = recv(rx, drain, sizeof(drain), 0);
+    /* Drain a bounded chunk large enough to acknowledge a complete segment
+     * even with Linux's large loopback MSS. Partial ACKs of a large segment
+     * need not release the sender's allocation or make POLLOUT ready. */
+    char drain[64 * 1024];
+    size_t drained = 0;
+    struct pollfd progress[] = {
+        {.fd = tx, .events = POLLOUT},
+        {.fd = rx, .events = POLLIN},
+    };
+    while (drained < sizeof(drain))
+    {
+        int ready = poll(progress, 2, 2000);
+        CHECK(ready > 0, "TCP window update or receiver data makes progress");
+        if (ready <= 0 || (progress[0].revents & POLLOUT))
+            break;
+        if (!(progress[1].revents & POLLIN))
+            break;
+        ssize_t r = recv(rx, drain + drained, sizeof(drain) - drained, 0);
+        CHECK(r > 0, "receive queued data while reopening the sender");
+        if (r <= 0)
+            break;
+        drained += r;
+    }
     CHECK(drained > 0, "receiver drains some bytes to reopen the window");
 
     /* Wait for the window update to make the sender writable again. */
@@ -279,8 +315,8 @@ static void test_nonblocking_partial_send(void)
     CHECK(pr == 1 && (pfd.revents & POLLOUT),
           "sender becomes writable after the receiver drains");
 
-    /* Send one megabyte, far more than any reopened window (capped by the small
-     * SO_SNDBUF): the fix reports the partial count of queued bytes (> 0)
+    /* Send one megabyte, far more than the bounded drain reopened: the fix
+     * reports the partial count of queued bytes (> 0)
      * instead of EAGAIN-after-consuming-src, and the count is strictly less than
      * requested because the window is bounded. */
     static char big[1 << 20];

@@ -152,6 +152,12 @@ buffer 地址，避免一次额外复制仍通过相同内容断言。`rd-net` �
 
 StarryOS 系统测试在 QEMU 中运行真实用户态程序和 syscall 路径，覆盖单元测试无法观察的 ABI 编解码、fd 生命周期和 proc/netlink 输出。测试分组位于 `test-suit/starryos/qemu/system`，应通过 xtask 入口运行以保持镜像、参数和成功正则一致。
 
+`bugfix-bug-proc-comm-tcp-partial-send` 使用 `O_NONBLOCK`，不设置
+`MSG_DONTWAIT`。准备阶段以 4 KiB 分块填满固定容量的 socket，等待持续背压后，
+最多排空 64 KiB 来重新打开发送窗口，再检查 1 MiB 发送返回正的部分字节数。
+这样保留原 nonblocking 回归的断言，同时避免逐字节填充在仿真 CPU 上耗尽测试时限。
+排空过程同时等待接收数据和发送端可写，适配 Linux 大 loopback 分段的内存回收时机。
+
 ### 3.1 运行方式
 
 完整 QEMU system 组会构建 StarryOS、启动 QEMU 并按 case 配置执行用户态测试，适合验证网络改动的主要 ABI 回归。定向调试时可以缩小 case，但最终仍应回到相同 xtask 流程，避免原生命令遗漏 feature 或运行参数。

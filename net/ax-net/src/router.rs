@@ -1040,6 +1040,9 @@ impl smoltcp::phy::Device for Router {
         caps.medium = Medium::Ip;
         caps.max_transmission_unit = STANDARD_MTU;
         caps.max_burst_size = Some(SOCKET_BUFFER_SIZE);
+        // smoltcp's Checksum describes work left to the software stack:
+        // Rx keeps receive verification and skips transmit computation so
+        // EthernetDevice can request the hardware TX checksum below.
         if let Some(checksum) = self.tx_checksum_capabilities {
             if checksum.supports_tcp() {
                 caps.checksum.tcp = Checksum::Rx;
@@ -1218,6 +1221,7 @@ mod tests {
         router.add_device(IF0, Box::new(ChecksumDevice));
 
         let caps = smoltcp::phy::Device::capabilities(&router);
+        // rx()/tx() mean software verification/computation, not NIC offload.
         assert!(caps.checksum.tcp.rx());
         assert!(!caps.checksum.tcp.tx());
         assert!(caps.checksum.udp.rx());
