@@ -4,7 +4,7 @@ use core::{
     slice,
 };
 #[cfg(target_arch = "loongarch64")]
-use std::os::arceos::api::modules::ax_hal::mem::{kernel_aspace, phys_to_virt};
+use std::os::arceos::api::modules::ax_hal::mem::{phys_to_virt, virtual_address_space};
 use std::{
     collections::BTreeMap,
     format,
@@ -295,11 +295,11 @@ fn test_cross_cpu_free() {
 
 #[cfg(target_arch = "loongarch64")]
 fn test_kernel_page_table_window_excludes_direct_map() {
-    let (base, size) = kernel_aspace();
-    let base = base.as_usize();
-    let end = base
-        .checked_add(size)
-        .expect("kernel page-table window must not overflow");
+    let kernel_range = virtual_address_space()
+        .expect("platform virtual-address layout must be initialized")
+        .kernel();
+    let base = kernel_range.start.as_usize();
+    let end = kernel_range.end.as_usize();
     let direct_map = phys_to_virt(0usize.into()).as_usize();
 
     assert!(

@@ -22,6 +22,11 @@ use crate::{
     block::{BlockRegion, FsBlockDevice, RegionBlockDevice},
 };
 
+// These contracts inspect exact IO sequences in the process-wide registry.
+// A global sync or pressure-reclaim contract must not mutate another test's
+// live cache. Retain this guard until all wrappers have been dropped.
+static REGISTRY_TEST: Mutex<()> = Mutex::new(());
+
 const KEY_A: usize = 0x1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,6 +264,7 @@ fn buffered(key: usize, device: RecordingDevice) -> BufferedBlockDevice<Recordin
 
 #[test]
 fn read_is_served_from_cache_on_second_access() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A, device);
     write_pattern(&state, 1, 512, 0xAB);
@@ -276,6 +282,7 @@ fn read_is_served_from_cache_on_second_access() {
 
 #[test]
 fn partial_folio_reads_track_slot_state() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 1, device);
     // One 4 KiB folio covers 8 blocks; reading blocks 1 and 3 of frame 0
@@ -296,6 +303,7 @@ fn partial_folio_reads_track_slot_state() {
 
 #[test]
 fn write_is_deferred_until_flush() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 2, device);
 
@@ -323,8 +331,9 @@ fn write_is_deferred_until_flush() {
 #[cfg(feature = "ext4")]
 #[test]
 fn fua_bypasses_deferred_write_and_refreshes_cached_bytes() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
-    let mut cached = buffered(KEY_A + 24, device);
+    let mut cached = buffered(KEY_A + 27, device);
     let old = [0x11u8; 512];
     let durable = [0x5au8; 512];
 
@@ -349,8 +358,9 @@ fn fua_bypasses_deferred_write_and_refreshes_cached_bytes() {
 #[cfg(feature = "ext4")]
 #[test]
 fn failed_fua_invalidates_overlapping_cache_slots() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
-    let mut cached = buffered(KEY_A + 25, device);
+    let mut cached = buffered(KEY_A + 28, device);
     let mut observed = [0u8; 512];
     cached.read_block(4, &mut observed).unwrap();
     state.lock().unwrap().fail_writes = true;
@@ -367,6 +377,7 @@ fn failed_fua_invalidates_overlapping_cache_slots() {
 
 #[test]
 fn flush_merges_adjacent_dirty_runs() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 3, device);
 
@@ -385,6 +396,7 @@ fn flush_merges_adjacent_dirty_runs() {
 
 #[test]
 fn dirty_writeback_precedes_barrier_and_later_writes() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 5, device);
 
@@ -415,6 +427,7 @@ fn dirty_writeback_precedes_barrier_and_later_writes() {
 
 #[test]
 fn lru_eviction_writes_back_dirty_victim() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     // Eviction is exercised on a direct two-folio tree: dirtying frame 0
     // and touching two other frames must write frame 0 back before it is
     // dropped.
@@ -442,6 +455,7 @@ fn lru_eviction_writes_back_dirty_victim() {
 
 #[test]
 fn lru_hit_preserves_the_recently_used_folio() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (mut inner, state) = RecordingDevice::new(64, 512);
     let mut tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 2);
     let mut buf = [0u8; 512];
@@ -465,6 +479,7 @@ fn lru_hit_preserves_the_recently_used_folio() {
 
 #[test]
 fn lru_reserve_failure_preserves_existing_entry() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let mut cache = FolioCache::new(NonZeroUsize::new(2).unwrap());
     cache.try_reserve_entry().unwrap();
     cache.insert_reserved(7, CacheFolio::try_new(1, 1).unwrap());
@@ -479,6 +494,7 @@ fn lru_reserve_failure_preserves_existing_entry() {
 
 #[test]
 fn direct_write_overlays_cached_folio() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 7, device);
 
@@ -504,6 +520,7 @@ fn direct_write_overlays_cached_folio() {
 
 #[test]
 fn failed_direct_write_invalidates_partially_updated_folios() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 26, device);
 
@@ -539,6 +556,7 @@ fn failed_direct_write_invalidates_partially_updated_folios() {
 
 #[test]
 fn direct_read_observes_deferred_dirty_data() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 8, device);
 
@@ -562,6 +580,7 @@ fn direct_read_observes_deferred_dirty_data() {
 
 #[test]
 fn shared_registry_serves_two_instances_from_one_tree() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device_a, state_a) = RecordingDevice::new(64, 512);
     let (device_b, state_b) = RecordingDevice::new(64, 512);
     let key = KEY_A + 9;
@@ -583,6 +602,7 @@ fn shared_registry_serves_two_instances_from_one_tree() {
 
 #[test]
 fn shared_wrappers_observe_dirty_and_direct_updates_without_stale_reads() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let key = KEY_A + 24;
     let mut first = buffered(key, device.clone());
@@ -606,6 +626,7 @@ fn shared_wrappers_observe_dirty_and_direct_updates_without_stale_reads() {
 
 #[test]
 fn shared_partition_wrappers_keep_physical_lbas_distinct() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let key = KEY_A + 25;
     let mut first = RegionBlockDevice::new(buffered(key, device.clone()), BlockRegion::new(8, 8));
@@ -633,6 +654,7 @@ fn shared_partition_wrappers_keep_physical_lbas_distinct() {
 
 #[test]
 fn drop_flushes_last_instance() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 10, device);
 
@@ -652,6 +674,7 @@ fn drop_flushes_last_instance() {
 
 #[test]
 fn dropping_last_consumer_releases_registry_endpoint() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let shutdowns = Arc::new(AtomicUsize::new(0));
     let key = KEY_A + 11;
 
@@ -675,6 +698,7 @@ fn dropping_last_consumer_releases_registry_endpoint() {
 
 #[test]
 fn folio_allocation_failure_returns_no_memory_without_io() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let block_size = 1usize << (usize::BITS - 1);
     let geometry = FolioGeometry::new(block_size).unwrap();
     let mut tree = BlockAddressSpace::with_capacity(geometry, 1);
@@ -701,6 +725,7 @@ fn folio_allocation_failure_returns_no_memory_without_io() {
 
 #[test]
 fn failed_writeback_retains_dirty_data_for_retry() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     // A direct tree keeps the failing device out of the process-global
     // registry, where a live failing endpoint would break registry-wide
     // sync in concurrently running tests.
@@ -728,6 +753,7 @@ fn failed_writeback_retains_dirty_data_for_retry() {
 
 #[test]
 fn non_power_of_two_block_size_is_rejected() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     assert!(FolioGeometry::new(1000).is_err());
     assert!(FolioGeometry::new(0).is_err());
     let geometry = FolioGeometry::new(4096).unwrap();
@@ -742,6 +768,7 @@ fn non_power_of_two_block_size_is_rejected() {
 
 #[test]
 fn invalid_request_geometry_is_rejected() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, _state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 12, device);
     let mut misaligned = [0u8; 100];
@@ -753,6 +780,7 @@ fn invalid_request_geometry_is_rejected() {
 
 #[test]
 fn sync_all_block_caches_writes_back_every_registered_device() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device_a, state_a) = RecordingDevice::new(64, 512);
     let (device_b, state_b) = RecordingDevice::new(64, 512);
     write_pattern(&state_a, 0, 512, 0xEE);
@@ -786,6 +814,7 @@ fn sync_all_block_caches_writes_back_every_registered_device() {
 #[test]
 #[cfg(feature = "vfs")]
 fn reclaim_clean_folios_drops_only_clean_frames() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     // A direct tree pins the exact dirty/clean layout without interference
     // from the process-global registry.
     let (mut inner, state) = RecordingDevice::new(64, 512);
@@ -815,6 +844,7 @@ fn reclaim_clean_folios_drops_only_clean_frames() {
 #[test]
 #[cfg(feature = "vfs")]
 fn allocator_reclaim_skips_a_cache_with_its_state_lock_held() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, _state) = RecordingDevice::new(64, 512);
     let cached = buffered(KEY_A + 22, device);
 
@@ -828,6 +858,7 @@ fn allocator_reclaim_skips_a_cache_with_its_state_lock_held() {
 #[test]
 #[cfg(feature = "vfs")]
 fn cache_drop_cleanup_skips_a_contended_registry_lock() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (device, _state) = RecordingDevice::new(64, 512);
     let cached = buffered(KEY_A + 23, device);
 

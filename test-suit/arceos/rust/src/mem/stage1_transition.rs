@@ -4,7 +4,7 @@ use std::{
         mem::{ax_alloc, ax_dealloc},
         modules::{
             ax_hal::{
-                mem::{kernel_aspace, virt_to_phys},
+                mem::{virt_to_phys, virtual_address_space},
                 paging::MappingFlags,
                 percpu::this_cpu_id,
                 trap::{PageFaultFlags, set_page_fault_handler},
@@ -154,7 +154,11 @@ pub fn run() -> crate::TestResult {
     let remote_cpu = cpu_count - 1;
     pin_current_to_cpu(controller_cpu);
 
-    let (kernel_base, kernel_size) = kernel_aspace();
+    let kernel_range = virtual_address_space()
+        .expect("platform virtual-address layout must be initialized")
+        .kernel();
+    let kernel_base = kernel_range.start;
+    let kernel_size = kernel_range.size();
     assert!(
         kernel_size >= 4 * PAGE_SIZE,
         "kernel stage-1 window is too small for the transition test"
