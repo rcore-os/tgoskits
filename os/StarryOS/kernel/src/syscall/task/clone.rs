@@ -968,3 +968,71 @@ mod tests {
         assert!(clone_validation_rules_hold_for_test());
     }
 }
+
+#[cfg(all(test, axtest))]
+mod axtests {
+    use alloc::sync::Arc;
+
+    use super::CloneTransaction;
+    use crate::task::{PidReservation, PidReservationKind, Tgid, Tid};
+
+    #[axtest::axtest]
+    fn unpublished_process_rollback_releases_identity_and_topology() {
+        let namespace = crate::task::new_test_pid_namespace();
+        let reservation =
+            PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader).unwrap();
+        let identity = reservation.identity();
+        let retired_identity = Arc::downgrade(&identity);
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let transaction = CloneTransaction::new(identity.clone());
+        let process = crate::task::new_test_process_data(identity.clone(), tgid);
+        let retired_topology = Arc::downgrade(&process.proc);
+
+        // Resource setup failed after binding process topology but before PID
+        // publication. Run the actual clone transaction's cancellation path.
+        drop(process);
+        drop(transaction);
+        drop(reservation);
+        drop(tid);
+        drop(identity);
+        assert!(
+            retired_topology.upgrade().is_none(),
+            "cancelled clone retained process topology"
+        );
+        assert!(
+            retired_identity.upgrade().is_none(),
+            "cancelled clone retained PID identity"
+        );
+    }
+
+    #[axtest::axtest]
+    fn cancelled_process_releases_tgid_before_last_identity() {
+        let namespace = crate::task::new_test_pid_namespace();
+        let reservation =
+            PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader).unwrap();
+        let identity = reservation.identity();
+        let retired_identity = Arc::downgrade(&identity);
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let transaction = CloneTransaction::new(identity.clone());
+        let process = crate::task::new_test_process_data(identity.clone(), tgid);
+        let retired_topology = Arc::downgrade(&process.proc);
+
+        // A staged task may retain ProcessData until the scheduler reclaims
+        // its extension, after all caller-owned rollback tokens are gone.
+        drop(transaction);
+        drop(reservation);
+        drop(tid);
+        drop(identity);
+        drop(process);
+        assert!(
+            retired_topology.upgrade().is_none(),
+            "deferred clone retained process topology"
+        );
+        assert!(
+            retired_identity.upgrade().is_none(),
+            "deferred clone retained PID identity"
+        );
+    }
+}

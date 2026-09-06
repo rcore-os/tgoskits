@@ -1479,20 +1479,13 @@ fn ptrace_stopped_tracee_with_tid(
         && tracee
             .ptrace_tracer_identity()
             .is_some_and(|registered| Arc::ptr_eq(&registered, &tracer));
-    if !is_tracer || tracee.ptrace_stop_signo().is_none() {
+    if !is_tracer || tracee.ptrace_stop_signo_for(pid).is_none() {
         return Err(StarryError::from(Errno::ESRCH));
     }
-    if pid.pid_number() == tracee.proc.pid().pid_number() {
-        if tracee.ptrace_stop_signo_for(pid).is_some() {
-            tracee.select_ptrace_stop(pid);
-        }
-    } else if !tracee.select_ptrace_stop(pid) {
-        return Err(StarryError::from(Errno::ESRCH));
-    }
-    let tid = tracee
-        .selected_ptrace_stop_tid()
-        .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
-    Ok((tracee, tid))
+    // Stop publication by a sibling may change the legacy selection cursor.
+    // The requested, resolved TID remains the authority for this operation.
+    tracee.select_ptrace_stop(pid);
+    Ok((tracee, pid))
 }
 
 #[cfg(target_arch = "x86_64")]

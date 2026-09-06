@@ -1306,18 +1306,18 @@ impl PidIdentity {
         }
     }
 
-    /// Non-blocking RAII fallback for a clone that published its PID identity
-    /// but failed before the scheduler retained a live task reference.
+    /// Non-blocking RAII fallback for failed clone resource preparation or
+    /// publication before a live task takes over the exit path.
     ///
     /// Normal clone completion never calls this transition. If a task is
     /// already scheduler-owned, the fallback deliberately leaves it alone;
     /// scheduler/task exit then performs the ordinary ordered release.
     pub(crate) fn abort_failed_task_publication(&self) {
-        let process = {
+        let retired = {
             let _publication = PUBLICATION_GATE.lock();
-            let process = {
+            let (published, retired) = {
                 let mut state = self.state.lock();
-                if state.publication != PidIdentityPublication::Published {
+                if state.publication == PidIdentityPublication::Detached {
                     return;
                 }
                 let scheduler_owns_task = match &state.runtime {
@@ -1333,20 +1333,26 @@ impl PidIdentity {
                 ) {
                     return;
                 }
+                let published = state.publication == PidIdentityPublication::Published;
                 state.runtime = RuntimeTaskLink::Exited;
                 state.publication = PidIdentityPublication::Detached;
-                state.process_lifecycle = ProcessLifecycle::Reaped;
-                state.process.take()
+                let lifecycle =
+                    core::mem::replace(&mut state.process_lifecycle, ProcessLifecycle::Reaped);
+                (published, (state.process.take(), lifecycle))
             };
-            for binding in self.bindings.iter().rev() {
-                binding.namespace.remove(self.id, binding.number);
+            if published {
+                for binding in self.bindings.iter().rev() {
+                    binding.namespace.remove(self.id, binding.number);
+                }
             }
-            process
+            // Unpublished number slots still belong to PidReservation, whose
+            // drop rolls back the whole namespace chain exactly once.
+            retired
         };
-        // Break the Process <-> PidIdentity lifecycle ownership only after
-        // publication removal, and outside both the publication and identity
-        // locks because dropping topology may release PID role leases.
-        drop(process);
+        // Break the reverse topology edge even before publication. Process
+        // drop may release PID roles, and the old lifecycle's final Weak may
+        // free ProcessData storage; both must run outside the IRQ locks.
+        drop(retired);
     }
 }
 

@@ -36,7 +36,7 @@ mod user_wait;
 
 use alloc::sync::Arc;
 
-pub(crate) use process_ptrace::PtraceAttachMode;
+pub(crate) use process_ptrace::{PtraceAttachMode, PtraceWaitAction, PtraceWaitStop};
 pub use process_ptrace::{PtraceStopFpData, SyscallTraceState};
 use starry_signal::{
     Signo,
@@ -67,12 +67,14 @@ use crate::{
 
 /// Resources shared by every thread in one Linux process generation.
 pub struct ProcessData {
+    /// TGID role ownership transferred into the zombie at final exit.
+    /// Keep this before the identity pins: failed clone can leave deferred
+    /// task reclamation as the last owner after PID reservation rollback.
+    tgid_lease: IrqMutex<Option<PidRoleLease<Tgid>>>,
     /// Process topology object.
     pub proc: Arc<Process>,
     /// Stable identity shared by PID namespaces, pidfds, and observers.
     identity: Arc<PidIdentity>,
-    /// TGID role ownership transferred into the zombie at final exit.
-    tgid_lease: IrqMutex<Option<PidRoleLease<Tgid>>>,
     /// Executable metadata independently synchronized for exec and procfs.
     image: ProcessImageState,
     /// Address-space publication and release state.
@@ -294,6 +296,37 @@ impl ProcessNamespaceUpdate<'_> {
         drop(self);
         drop(previous);
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn new_test_process_data(
+    identity: Arc<PidIdentity>,
+    tgid: PidRoleLease<Tgid>,
+) -> Arc<ProcessData> {
+    let parent = TidNumber::from(identity.root_number());
+    ProcessData::new(
+        Process::new_for_axtest(identity.clone()),
+        identity,
+        tgid,
+        ProcessDataInit::new(
+            ProcessImage::new(
+                Default::default(),
+                Arc::default(),
+                Arc::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            ),
+            MmHandle::from_arc(Arc::new(PiMutex::new(
+                crate::mm::AddrSpace::new_empty(0x10000.into(), 0x10000).unwrap(),
+            )))
+            .unwrap(),
+            Arc::default(),
+            NsProxy::new_root(),
+            None,
+            parent,
+        ),
+    )
 }
 
 #[cfg(all(test, not(axtest)))]

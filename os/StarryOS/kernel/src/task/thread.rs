@@ -44,8 +44,11 @@ impl ThreadIdentity {
 
 /// Stable Linux identity ownership retained independently from scheduler IDs.
 struct ThreadPidOwnership {
-    identity: Arc<PidIdentity>,
+    // Field drop order matters for cancelled, unpublished threads: their
+    // reservation may already be gone when scheduler reclamation runs.
+    // Release the weak role lease while this final identity pin still lives.
     tid_lease: Option<PidRoleLease<Tid>>,
+    identity: Arc<PidIdentity>,
 }
 
 /// Scope-local resources and their task-context serialization.
@@ -993,6 +996,30 @@ fn inactive_one_shot_flag_consumption_is_read_only_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 mod axtests {
+    #[axtest::axtest]
+    fn cancelled_thread_releases_tid_before_last_identity() {
+        use alloc::sync::Arc;
+
+        use crate::task::{PidReservation, PidReservationKind, Tid};
+
+        let namespace = crate::task::new_test_pid_namespace();
+        let reservation = PidReservation::reserve(&namespace, PidReservationKind::Thread).unwrap();
+        let identity = reservation.identity();
+        let number = identity.root_number();
+        let retired = Arc::downgrade(&identity);
+        let ownership = super::ThreadPidOwnership {
+            tid_lease: Some(identity.acquire_role::<Tid>().unwrap()),
+            identity,
+        };
+
+        // Cancellation can retire the reservation before deferred scheduler
+        // reclamation destroys the prepared thread and its final identity pin.
+        drop(reservation);
+        assert!(namespace.lookup(number).is_none());
+        drop(ownership);
+        assert!(retired.upgrade().is_none());
+    }
+
     #[axtest::axtest]
     fn inactive_one_shot_flag_consumption_is_read_only() {
         assert!(super::inactive_one_shot_flag_consumption_is_read_only_for_test());

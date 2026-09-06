@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ptrace.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -176,18 +177,45 @@ static int inspect_and_continue_new_thread(unsigned long new_tid)
 
 static int consume_clone_event(pid_t pid, int *clone_count)
 {
-    int status = 0;
-    pid_t stopped = waitpid(pid, &status, __WALL);
-    if (stopped != pid || !WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
-        printf("FAIL: expected clone SIGTRAP from pid=%d, got pid=%ld status=%#x\n", pid,
-               (long)stopped, status);
+    siginfo_t info = {0};
+    if (waitid(P_PID, (id_t)pid, &info, WSTOPPED | WNOWAIT | __WALL) != 0) {
+        return fail("peek clone event with waitid");
+    }
+    int expected = SIGTRAP | (PTRACE_EVENT_CLONE << 8);
+    if (info.si_pid != pid || info.si_code != CLD_TRAPPED || info.si_status != expected) {
+        printf("FAIL: expected waitid clone event pid=%d status=%#x, got pid=%ld "
+               "code=%d status=%#x\n", pid, expected, (long)info.si_pid,
+               info.si_code, info.si_status);
         return 1;
     }
 
-    unsigned int event = (unsigned int)status >> 16;
-    if (event != PTRACE_EVENT_CLONE) {
-        printf("FAIL: expected PTRACE_EVENT_CLONE, got event=%u status=%#x\n", event, status);
-        return 1;
+    int status = 0;
+    if (*clone_count == 0) {
+        errno = 0;
+        if (syscall(SYS_wait4, pid, (int *)-1, __WALL, NULL) != -1 || errno != EFAULT) {
+            return fail("wait4 clone event with invalid output");
+        }
+        /* Linux consumes the report before copyout. The sibling's initial
+         * stop must not be returned for this exact parent TID either. */
+        pid_t stopped = waitpid(pid, &status, __WALL | WNOHANG);
+        if (stopped != 0) {
+            printf("FAIL: consumed parent event reported again: pid=%ld status=%#x\n",
+                   (long)stopped, status);
+            return 1;
+        }
+    } else {
+        pid_t stopped = waitpid(pid, &status, __WALL);
+        if (stopped != pid || !WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
+            printf("FAIL: expected clone SIGTRAP from pid=%d, got pid=%ld status=%#x\n", pid,
+                   (long)stopped, status);
+            return 1;
+        }
+
+        unsigned int event = (unsigned int)status >> 16;
+        if (event != PTRACE_EVENT_CLONE) {
+            printf("FAIL: expected PTRACE_EVENT_CLONE, got event=%u status=%#x\n", event, status);
+            return 1;
+        }
     }
 
     unsigned long new_tid = 0;

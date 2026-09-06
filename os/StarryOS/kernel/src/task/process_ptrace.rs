@@ -38,6 +38,22 @@ struct PtraceStopRecord {
     event_msg: PtraceEventMessage,
 }
 
+/// One thread's immutable wait report, captured before releasing the stop lock.
+#[derive(Clone, Copy)]
+pub(crate) struct PtraceWaitStop {
+    pub tid: TidNumber,
+    pub signo: Signo,
+    pub event: u32,
+    pub syscall: bool,
+    pub options: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PtraceWaitAction {
+    Observe,
+    Consume,
+}
+
 #[derive(Clone, Copy)]
 enum PtraceStopKind {
     Signal,
@@ -376,14 +392,6 @@ impl ProcessData {
             .publish_stop(tid, signo, uctx, PtraceStopKind::syscall(syscall_no));
     }
 
-    pub fn ptrace_stop_tid(&self) -> Option<TidNumber> {
-        let stops = self.ptrace.stops.lock();
-        stops
-            .iter()
-            .find_map(|(tid, stop)| (!stop.reported && stop.signo.is_some()).then_some(*tid))
-            .or_else(|| stops.keys().next().copied())
-    }
-
     pub fn select_ptrace_stop(&self, tid: TidNumber) -> bool {
         if self.ptrace.stops.lock().contains_key(&tid) {
             self.ptrace.selected_tid.store(tid.get(), Ordering::Release);
@@ -432,61 +440,48 @@ impl ProcessData {
         self.ptrace.stops.lock().get(&tid)?.kind.syscall_number()
     }
 
-    pub fn ptrace_unreported_stop(
+    /// Captures and optionally consumes one report without retaining a lock
+    /// across user-memory access. An explicit TID never falls back to a sibling.
+    pub(crate) fn ptrace_wait_stop(
         &self,
-        preferred_tid: Option<TidNumber>,
-    ) -> Option<(TidNumber, Signo)> {
+        exact_tid: Option<TidNumber>,
+        action: PtraceWaitAction,
+    ) -> Option<PtraceWaitStop> {
+        let mut stops = self.ptrace.stops.lock();
+        let tid = if let Some(tid) = exact_tid {
+            tid
+        } else if let Some((tid, _)) = stops
+            .iter()
+            .find(|(_, stop)| !stop.reported && stop.signo.is_some() && stop.event != 0)
         {
-            let stops = self.ptrace.stops.lock();
-            if let Some(tid) = preferred_tid
-                && let Some(stop) = stops.get(&tid)
-                && !stop.reported
-                && let Some(signo) = stop.signo
-            {
-                return Some((tid, signo));
+            *tid
+        } else {
+            if !self.ptrace.pending_events.is_empty() {
+                return None;
             }
-            if let Some((tid, stop)) = stops
+            *stops
                 .iter()
-                .find(|(_, stop)| !stop.reported && stop.signo.is_some() && stop.event != 0)
-            {
-                return stop.signo.map(|signo| (*tid, signo));
-            }
-        }
-
-        if !self.ptrace.pending_events.is_empty() {
+                .find(|(_, stop)| !stop.reported && stop.signo.is_some())?
+                .0
+        };
+        let stop = stops.get_mut(&tid)?;
+        if stop.reported {
             return None;
         }
-
-        self.ptrace.stops.lock().iter().find_map(|(tid, stop)| {
-            (!stop.reported)
-                .then_some(stop.signo)
-                .flatten()
-                .map(|signo| (*tid, signo))
-        })
-    }
-
-    pub fn ptrace_unreported_stop_for(&self, tid: TidNumber) -> Option<(TidNumber, Signo)> {
-        self.ptrace.stops.lock().get(&tid).and_then(|stop| {
-            (!stop.reported)
-                .then_some(stop.signo)
-                .flatten()
-                .map(|signo| (tid, signo))
-        })
-    }
-
-    pub fn is_ptrace_syscall_stop(&self) -> bool {
-        let Some(tid) = self.selected_ptrace_stop_tid() else {
-            return false;
+        let report = PtraceWaitStop {
+            tid,
+            signo: stop.signo?,
+            event: stop.event,
+            syscall: stop.kind.is_syscall(),
+            options: self.ptrace.options.load(Ordering::Acquire),
         };
-        self.is_ptrace_syscall_stop_for(tid)
-    }
-
-    pub fn is_ptrace_syscall_stop_for(&self, tid: TidNumber) -> bool {
-        self.ptrace
-            .stops
-            .lock()
-            .get(&tid)
-            .is_some_and(|stop| stop.kind.is_syscall())
+        if action == PtraceWaitAction::Consume {
+            // Like Linux wait_task_stopped, claim the report before copyout.
+            // A failed user write does not make the same stop reportable again.
+            stop.reported = true;
+        }
+        self.ptrace.selected_tid.store(tid.get(), Ordering::Release);
+        Some(report)
     }
 
     pub fn ptrace_stop_siginfo_for(&self, tid: TidNumber) -> Option<SignalInfo> {
@@ -527,12 +522,6 @@ impl ProcessData {
 
     pub fn ptrace_stop_user_context_for(&self, tid: TidNumber) -> Option<UserContext> {
         self.ptrace.stops.lock().get(&tid).map(|stop| stop.uctx)
-    }
-
-    pub fn mark_ptrace_stop_reported_for(&self, tid: TidNumber) {
-        if let Some(stop) = self.ptrace.stops.lock().get_mut(&tid) {
-            stop.reported = true;
-        }
     }
 
     pub fn set_ptrace_stop_user_context_for(&self, tid: TidNumber, uctx: UserContext) -> bool {
@@ -769,33 +758,6 @@ impl ProcessData {
     /// the current thread owns the event.
     pub fn has_ptrace_pending_event(&self) -> bool {
         self.ptrace.pending_events.present()
-    }
-
-    pub fn ptrace_event(&self) -> Option<u32> {
-        if let Some(tid) = self.selected_ptrace_stop_tid() {
-            return self.ptrace_event_for(tid);
-        }
-        let stops = self.ptrace.stops.lock();
-        let event = stops
-            .values()
-            .find_map(|stop| (!stop.reported && stop.event != 0).then_some(stop.event))
-            .or_else(|| {
-                stops
-                    .values()
-                    .find_map(|stop| (stop.event != 0).then_some(stop.event))
-            })
-            .unwrap_or(0);
-        if event == 0 { None } else { Some(event) }
-    }
-
-    pub fn ptrace_event_for(&self, tid: TidNumber) -> Option<u32> {
-        let event = self
-            .ptrace
-            .stops
-            .lock()
-            .get(&tid)
-            .map_or(0, |stop| stop.event);
-        (event != 0).then_some(event)
     }
 
     #[cfg(any(

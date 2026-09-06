@@ -13,11 +13,11 @@ use crate::{
     file::{PidFd, get_file_like},
     mm::{VmMutPtr, VmPtr},
     task::{
-        JobStatus, PgidNumber, PidIdentity, PidIdentityId, PidNumber, Process, ProcessData,
-        ProcessGroup, ROOT_PID_NS, Tgid, Tid, TidNumber, current_pid_view, decode_wait_status,
-        future::block_on_user, get_task_by_number, get_zombie_cred, is_reaped_process,
-        is_zombie_clone_child, is_zombie_process, processes, reap_process, traced_zombies_for,
-        wait_on_pollset, zombie_wait_parent_tid,
+        JobStatus, PgidNumber, PidIdentity, PidIdentityId, PidNumber, Process, ProcessGroup,
+        PtraceWaitAction, PtraceWaitStop, ROOT_PID_NS, Tgid, Tid, TidNumber, current_pid_view,
+        decode_wait_status, future::block_on_user, get_task_by_number, get_zombie_cred,
+        is_reaped_process, is_zombie_clone_child, is_zombie_process, processes, reap_process,
+        traced_zombies_for, wait_on_pollset, zombie_wait_parent_tid,
     },
 };
 
@@ -149,23 +149,7 @@ impl WaitTarget {
             || matches!(self, WaitTarget::Identity(identity) if Self::identity_matches_thread(identity, child))
     }
 
-    fn ptrace_report_pid(&self, child: &Process, data: &crate::task::ProcessData) -> u32 {
-        match self {
-            WaitTarget::Identity(identity)
-                if identity.matches_process(child)
-                    || Self::identity_matches_thread(identity, child) =>
-            {
-                visible_identity(identity)
-            }
-            WaitTarget::PidFd(identity) => visible_identity(identity),
-            _ => visible_root_tid(
-                data.ptrace_stop_tid()
-                    .unwrap_or_else(|| TidNumber::from(child.pid().pid_number())),
-            ),
-        }
-    }
-
-    fn ptrace_preferred_stop_tid(&self, child: &Process) -> Option<TidNumber> {
+    fn ptrace_target_tid(&self, child: &Process) -> Option<TidNumber> {
         match self {
             WaitTarget::Identity(identity)
                 if identity.matches_process(child)
@@ -176,11 +160,6 @@ impl WaitTarget {
             WaitTarget::PidFd(identity) => Some(TidNumber::from(identity.root_number())),
             _ => None,
         }
-    }
-
-    fn ptrace_requires_exact_stop(&self, child: &Process) -> bool {
-        matches!(self, WaitTarget::Identity(identity)
-            if !identity.matches_process(child) && Self::identity_matches_thread(identity, child))
     }
 }
 
@@ -211,27 +190,25 @@ fn waitid_pidfd_target(fd: i32) -> StarryResult<WaitTarget> {
         .map_err(|_| StarryError::BadFileDescriptor)?;
     Ok(WaitTarget::PidFd(pidfd.identity()))
 }
-fn stopped_wait_signo(data: &ProcessData, signo: Signo) -> i32 {
-    let event = data.ptrace_event().unwrap_or(0);
+fn stopped_wait_signo(stop: PtraceWaitStop) -> i32 {
+    let event = stop.event;
     let mut wait_signo = if event != 0 && event != PTRACE_EVENT_STOP {
         Signo::SIGTRAP as i32
     } else {
-        signo as i32
+        stop.signo as i32
     };
     if event == 0
-        && signo == Signo::SIGTRAP
-        && data.is_ptrace_syscall_stop()
-        && data.ptrace_options() & PTRACE_O_TRACESYSGOOD != 0
+        && stop.signo == Signo::SIGTRAP
+        && stop.syscall
+        && stop.options & PTRACE_O_TRACESYSGOOD != 0
     {
         wait_signo |= 0x80;
     }
-    wait_signo
+    (event as i32) << 8 | wait_signo
 }
 
-fn stopped_wait_status(data: &ProcessData, signo: Signo) -> i32 {
-    let event = data.ptrace_event().unwrap_or(0) as i32;
-    let wait_signo = stopped_wait_signo(data, signo);
-    (event << 16) | (wait_signo << 8) | 0x7f
+fn stopped_wait_status(stop: PtraceWaitStop) -> i32 {
+    (stopped_wait_signo(stop) << 8) | 0x7f
 }
 
 fn child_uid(child: &Process) -> u32 {
@@ -393,14 +370,6 @@ fn untraced_wait_avoids_root_pid_snapshot_for_test() -> bool {
     snapshot_calls == 0
 }
 
-#[cfg(all(test, axtest))]
-mod axtests {
-    #[axtest::axtest]
-    fn untraced_wait_avoids_root_pid_snapshot() {
-        assert!(super::untraced_wait_avoids_root_pid_snapshot_for_test());
-    }
-}
-
 pub fn sys_waitpid(
     current: &crate::task::UserTaskRef,
     pid: i32,
@@ -454,24 +423,16 @@ pub fn sys_waitpid(
         // every wake; another thread can publish an eligible child while this
         // waiter is blocked.
         let children = candidate_scan.collect();
-        if let Some((child, data, stop_tid, signo)) = children.iter().find_map(|child| {
+        if let Some(stop) = children.iter().find_map(|child| {
             child.identity().live_data().and_then(|data| {
-                let preferred_tid = target.ptrace_preferred_stop_tid(child);
-                let stop = if target.ptrace_requires_exact_stop(child) {
-                    preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
-                } else {
-                    data.ptrace_unreported_stop(preferred_tid)
-                };
-                stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
+                data.ptrace_wait_stop(target.ptrace_target_tid(child), PtraceWaitAction::Consume)
             })
         }) {
-            data.select_ptrace_stop(stop_tid);
-            let wait_pid = target.ptrace_report_pid(child, &data);
-            let status = stopped_wait_status(&data, signo);
+            let wait_pid = visible_root_tid(stop.tid);
+            let status = stopped_wait_status(stop);
             if let Some(exit_code) = exit_code.nullable() {
                 exit_code.vm_write(current, status)?;
             }
-            data.mark_ptrace_stop_reported_for(stop_tid);
             return Ok(Some(wait_pid as _));
         } else if let Some((child, child_exit_code)) = children
             .iter()
@@ -595,35 +556,30 @@ pub fn sys_waitid(
     let check_children = || {
         let children = candidate_scan.collect();
         if options.contains(WaitIdOptions::WUNTRACED)
-            && let Some((child, data, stop_tid, signo)) = children.iter().find_map(|child| {
+            && let Some((child, stop)) = children.iter().find_map(|child| {
                 child.identity().live_data().and_then(|data| {
-                    let preferred_tid = target.ptrace_preferred_stop_tid(child);
-                    let stop = if target.ptrace_requires_exact_stop(child) {
-                        preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
+                    let action = if options.contains(WaitIdOptions::WNOWAIT) {
+                        PtraceWaitAction::Observe
                     } else {
-                        data.ptrace_unreported_stop(preferred_tid)
+                        PtraceWaitAction::Consume
                     };
-                    stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
+                    data.ptrace_wait_stop(target.ptrace_target_tid(child), action)
+                        .map(|stop| (child, stop))
                 })
             })
         {
-            let child_pid = target.ptrace_report_pid(child, &data);
+            let child_pid = visible_root_tid(stop.tid);
             let child_uid = child_uid(child);
-            data.select_ptrace_stop(stop_tid);
 
             if let Some(infop) = infop.nullable() {
                 let siginfo = SignalInfo::new_sigchld(
                     child_pid,
                     child_uid,
                     linux_raw_sys::general::CLD_TRAPPED as i32,
-                    stopped_wait_signo(&data, signo),
+                    stopped_wait_signo(stop),
                 );
                 infop.cast::<SignalInfo>().vm_write(current, siginfo)?;
             }
-            if !options.contains(WaitIdOptions::WNOWAIT) {
-                data.mark_ptrace_stop_reported_for(stop_tid);
-            }
-
             return Ok(Some(0));
         }
 
@@ -762,5 +718,60 @@ mod tests {
             WaitIdSelector::parse(u32::MAX, 1),
             Err(StarryError::InvalidInput)
         ));
+    }
+}
+
+#[cfg(all(test, axtest))]
+mod axtests {
+    #[axtest::axtest]
+    fn untraced_wait_avoids_root_pid_snapshot() {
+        assert!(super::untraced_wait_avoids_root_pid_snapshot_for_test());
+    }
+
+    #[axtest::axtest]
+    fn ptrace_wait_status_remains_bound_to_the_selected_stop() {
+        use ax_runtime::hal::cpu::uspace::UserContext;
+        use starry_signal::Signo;
+
+        use crate::task::{TidNumber, new_test_process_data};
+
+        let namespace = crate::task::new_test_pid_namespace();
+        let (identity, tgid) = crate::task::new_test_process_identity(&namespace);
+        let parent = TidNumber::try_from(1).unwrap();
+        let sibling = TidNumber::try_from(2).unwrap();
+        let data = new_test_process_data(identity, tgid);
+        let uctx = UserContext::new(0, 0.into(), 0);
+        data.set_ptrace_pending_event(parent, super::super::ptrace::PTRACE_EVENT_CLONE, 2);
+        data.set_ptrace_stop(parent, Signo::SIGTRAP, &uctx);
+        let stop = data
+            .ptrace_wait_stop(Some(parent), super::PtraceWaitAction::Consume)
+            .unwrap();
+
+        // A sibling can publish its initial stop after wait has selected the
+        // parent's clone event, but before wait encodes the status word.
+        data.set_ptrace_stop(sibling, Signo::SIGSTOP, &uctx);
+        assert_eq!(super::stopped_wait_status(stop), 0x0003_057f);
+        assert_eq!(super::stopped_wait_signo(stop), 0x0305);
+        assert!(
+            data.ptrace_wait_stop(Some(parent), super::PtraceWaitAction::Consume)
+                .is_none()
+        );
+
+        data.clear_ptrace_stop();
+        data.set_ptrace_options(super::PTRACE_O_TRACESYSGOOD);
+        data.set_ptrace_syscall_stop(parent, Signo::SIGTRAP, &uctx, 39);
+        let observed = data
+            .ptrace_wait_stop(Some(parent), super::PtraceWaitAction::Observe)
+            .unwrap();
+        data.set_ptrace_stop(sibling, Signo::SIGSTOP, &uctx);
+        assert_eq!(super::stopped_wait_signo(observed), 0x85);
+        let consumed = data
+            .ptrace_wait_stop(Some(parent), super::PtraceWaitAction::Consume)
+            .unwrap();
+        assert_eq!(super::stopped_wait_signo(consumed), 0x85);
+        assert!(
+            data.ptrace_wait_stop(Some(parent), super::PtraceWaitAction::Observe)
+                .is_none()
+        );
     }
 }
