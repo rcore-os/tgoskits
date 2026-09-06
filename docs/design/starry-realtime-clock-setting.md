@@ -88,6 +88,13 @@ The public ABI and errno descriptions are also documented by
 [`clock_settime(2)`](https://man7.org/linux/man-pages/man2/clock_settime.2.html)
 and [`timerfd_create(2)`](https://man7.org/linux/man-pages/man2/timerfd_create.2.html).
 
+`TFD_TIMER_CANCEL_ON_SET` is accepted for relative timers and non-realtime
+clocks, but has no cancellation effect in those modes. Linux's
+[`timerfd_setup_cancel`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c#L157-L173)
+removes the timer from the cancellation list instead of returning `EINVAL`.
+The realtime lower bound is a separate check in `do_settimeofday64`, after
+`timespec64_valid_settod`; validating the timespec alone does not replace it.
+
 ## Design
 
 ### One shared realtime adjustment
@@ -228,6 +235,8 @@ The deterministic regression is
 - root can move realtime forward while monotonic time does not jump;
 - `gettimeofday` and a written-and-closed file observe the adjusted clock;
 - a relative timerfd remains pending;
+- relative realtime/monotonic timers and absolute monotonic timers accept
+  `TFD_TIMER_CANCEL_ON_SET` and deliver ordinary expirations;
 - an absolute realtime cancel-on-set timerfd returns `ECANCELED`;
 - after consuming cancellation on an expired periodic timerfd, a second
   nonblocking read returns `EAGAIN` and `timerfd_gettime` reports no pending

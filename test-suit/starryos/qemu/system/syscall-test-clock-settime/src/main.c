@@ -94,6 +94,53 @@ static int check_unprivileged_set_is_rejected(const struct timespec *requested)
     return 0;
 }
 
+static int check_ignored_cancel_on_set_combinations(void)
+{
+    const struct {
+        clockid_t clock;
+        int flags;
+    } cases[] = {
+        {CLOCK_REALTIME, TFD_TIMER_CANCEL_ON_SET},
+        {CLOCK_MONOTONIC, TFD_TIMER_CANCEL_ON_SET},
+        {CLOCK_MONOTONIC, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET},
+    };
+
+    /* Linux accepts these flags but enables cancellation only for absolute
+     * realtime timers. Each timer must still deliver an ordinary expiration. */
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int fd = timerfd_create(cases[i].clock, TFD_NONBLOCK);
+        if (fd < 0) {
+            return fail("create timerfd for ignored cancel-on-set flags");
+        }
+        struct itimerspec timer = {.it_value = {.tv_nsec = 20000000}};
+        if (cases[i].flags & TFD_TIMER_ABSTIME) {
+            struct timespec now = {0};
+            if (clock_gettime(cases[i].clock, &now) < 0) {
+                close(fd);
+                return fail("read clock for absolute timerfd flag probe");
+            }
+            timer.it_value = nanos_to_timespec(timespec_to_nanos(&now) +
+                                                20000000);
+        }
+        if (timerfd_settime(fd, cases[i].flags, &timer, NULL) < 0) {
+            close(fd);
+            return fail("accept cancel-on-set outside absolute realtime");
+        }
+        struct pollfd ready = {.fd = fd, .events = POLLIN};
+        uint64_t expirations = 0;
+        int passed = poll(&ready, 1, 2000) == 1 &&
+                     read(fd, &expirations, sizeof(expirations)) ==
+                         (ssize_t)sizeof(expirations) && expirations == 1;
+        close(fd);
+        if (!passed) {
+            errno = EPROTO;
+            return fail("expire normally when cancel-on-set is ignored");
+        }
+    }
+    puts("timerfd cancel-on-set: relative and monotonic combinations accepted");
+    return 0;
+}
+
 static int check_realtime_observers(int64_t requested_nanos,
                                     int64_t monotonic_before_nanos)
 {
@@ -378,6 +425,9 @@ static int restore_realtime(const struct timespec *original_realtime,
 
 int main(void)
 {
+    if (check_ignored_cancel_on_set_combinations()) {
+        return EXIT_FAILURE;
+    }
     struct timespec original_realtime = {0};
     struct timespec original_monotonic = {0};
     if (clock_gettime(CLOCK_REALTIME, &original_realtime) < 0 ||
