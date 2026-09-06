@@ -3,10 +3,11 @@ use std::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
         modules::ax_hal::percpu::this_cpu_id,
         task::{
-            CpuSet, FairMode, Nice, SchedulePolicy, current_thread_id, set_current_thread_affinity,
-            set_thread_policy,
+            self as scheduler, CpuSet, FairMode, Nice, SchedulePolicy, ThreadState,
+            current_thread_id, set_current_thread_affinity, set_thread_policy,
         },
     },
+    string::String,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -17,6 +18,7 @@ use std::{
 
 const PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
 const HRTICK_PROGRESS_TIMEOUT: Duration = Duration::from_millis(250);
+const TEST_STACK_SIZE: usize = 256 * 1024;
 
 static WAKEE_WAIT: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static READY: AtomicBool = AtomicBool::new(false);
@@ -100,9 +102,10 @@ fn sched_idle_makes_progress_against_normal_current() {
         "the SCHED_IDLE worker did not re-enter the public wait queue",
     );
 
-    // The successful wake above made the parked worker runnable. Publish the
-    // true predicate before it can resume; no second wake is necessary.
+    // The probe wake may already have resumed and re-parked the remote worker.
+    // Publish its condition before the notification that releases this wait.
     RUN_IDLE.store(true, Ordering::Release);
+    api::ax_wait_queue_wake(&IDLE_WAIT, 1);
     let started = Instant::now();
     while IDLE_PROGRESS.load(Ordering::Acquire) == 0 && started.elapsed() < Duration::from_secs(2) {
         thread::yield_now();
@@ -136,17 +139,22 @@ fn sched_batch_wake_uses_fair_hrtick() {
     NORMAL_READY.store(false, Ordering::Release);
     STOP_NORMAL.store(false, Ordering::Release);
 
-    let batch = thread::spawn(|| {
-        pin_current_to_cpu(0);
-        set_thread_policy(
-            current_thread_id().expect("the SCHED_BATCH worker must have an identity"),
-            SchedulePolicy::fair(Nice::ZERO, FairMode::Batch),
-        )
-        .expect("the SCHED_BATCH worker must accept its policy");
-        BATCH_READY.store(true, Ordering::Release);
-        api::ax_wait_queue_wait_until(&BATCH_WAIT, || RUN_BATCH.load(Ordering::Acquire), None);
-        BATCH_PROGRESS.store(true, Ordering::Release);
-    });
+    let batch = scheduler::spawn_raw(
+        || {
+            pin_current_to_cpu(0);
+            set_thread_policy(
+                current_thread_id().expect("the SCHED_BATCH worker must have an identity"),
+                SchedulePolicy::fair(Nice::ZERO, FairMode::Batch),
+            )
+            .expect("the SCHED_BATCH worker must accept its policy");
+            BATCH_READY.store(true, Ordering::Release);
+            api::ax_wait_queue_wait_until(&BATCH_WAIT, || RUN_BATCH.load(Ordering::Acquire), None);
+            BATCH_PROGRESS.store(true, Ordering::Release);
+        },
+        String::from("fair-batch-wakee"),
+        TEST_STACK_SIZE,
+    )
+    .expect("the SCHED_BATCH worker must spawn");
     wait_until(
         || BATCH_READY.load(Ordering::Acquire),
         "the SCHED_BATCH worker did not publish readiness",
@@ -172,9 +180,18 @@ fn sched_batch_wake_uses_fair_hrtick() {
         "the SCHED_BATCH worker did not re-enter the public wait queue",
     );
 
-    // The successful wake above made the parked worker runnable. Publish the
-    // true predicate before it can resume; no second wake is necessary.
+    // Force the remote wakee to observe the still-false predicate and park
+    // again before publishing RUN_BATCH. This is a valid SMP interleaving,
+    // and makes a missing publish-after-probe notification deterministic.
+    wait_until(
+        || batch.state() == ThreadState::Blocked,
+        "the SCHED_BATCH worker did not park after the false-predicate wake",
+    );
+
+    // The probe wake may already have resumed and re-parked the remote worker.
+    // Publish its condition before the notification that releases this wait.
     RUN_BATCH.store(true, Ordering::Release);
+    api::ax_wait_queue_wake(&BATCH_WAIT, 1);
     let started = Instant::now();
     while !BATCH_PROGRESS.load(Ordering::Acquire) && started.elapsed() < HRTICK_PROGRESS_TIMEOUT {
         thread::yield_now();
@@ -182,12 +199,11 @@ fn sched_batch_wake_uses_fair_hrtick() {
     let made_progress = BATCH_PROGRESS.load(Ordering::Acquire);
 
     STOP_NORMAL.store(true, Ordering::Release);
+    api::ax_wait_queue_wake(&BATCH_WAIT, 1);
     normal
         .join()
         .expect("the normal Fair occupier must exit normally");
-    batch
-        .join()
-        .expect("the SCHED_BATCH worker must exit normally");
+    scheduler::join_thread(batch).expect("the SCHED_BATCH worker must exit normally");
     assert!(
         made_progress,
         "SCHED_BATCH wakee did not run before the periodic scheduler tick fallback"
