@@ -981,10 +981,17 @@ impl MmPin {
 
     /// Resolves a fault for a kernel faultable user-copy scope.
     pub fn handle_page_fault(&self, vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
-        matches!(
-            self.handle_page_fault_result(vaddr, access_flags),
-            FaultResult::Handled
-        )
+        loop {
+            match self.handle_page_fault_result(vaddr, access_flags) {
+                FaultResult::Handled => return true,
+                // The failed transaction has released its metadata guard and
+                // cancelled its candidate owners. Reacquire a fresh VMA/PTE
+                // snapshot after allowing the competing publisher to progress;
+                // a transient conflict must not take the copy's EFAULT fixup.
+                FaultResult::Retry => crate::task::yield_now(),
+                _ => return false,
+            }
+        }
     }
 
     /// Acquires scheduler activation for an already-pinned kernel
@@ -1646,6 +1653,67 @@ mod tests {
         let permit = handle.release_user_ref().unwrap();
         drop(handle);
         permit.reclaim().unwrap();
+    }
+
+    #[axtest::axtest]
+    fn faultable_user_copy_retries_pending_tlb_before_reporting_success() {
+        use ax_runtime::hal::paging::MappingFlags;
+
+        use super::super::{MutationError, TlbRange};
+
+        let start = VirtAddr::from(0x7600_0000);
+        let aspace = Arc::new(Mutex::new(AddrSpace::new_empty(start, 0x1000).unwrap()));
+        let handle = MmHandle::from_arc(aspace).unwrap();
+        let pin = handle.pin().unwrap();
+        {
+            let mut aspace = pin.lock();
+            aspace
+                .map(
+                    start,
+                    0x1000,
+                    MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+                    true,
+                    MappingOperation::new_alloc(start, 0x1000, "[copy-refault]"),
+                )
+                .unwrap();
+            aspace.discard_range(start, 0x1000).unwrap();
+            let mut discard = aspace.mutation_gate.begin(aspace.id, 1);
+            discard.add_tlb_range(TlbRange::new(start, 0x1000).unwrap());
+            assert_eq!(
+                aspace.mutation_gate.commit(discard).unwrap_err(),
+                MutationError::TlbPending
+            );
+        }
+        // A kernel copy faults without USER, unlike a userspace instruction.
+        // The old discard receipt forces the first attempt to return Retry.
+        assert!(pin.handle_page_fault(start, PageFaultFlags::WRITE));
+        assert_eq!(pin.lock().pending_tlb_obligations(), 0);
+        assert!(
+            pin.lock()
+                .pt
+                .query(start)
+                .is_ok_and(|(_, flags, _)| flags.contains(MappingFlags::WRITE))
+        );
+        assert!(!pin.handle_page_fault(start, PageFaultFlags::EXECUTE));
+        assert!(!pin.handle_page_fault(start + 0x1000, PageFaultFlags::WRITE));
+        let exhausted = AddrSpace::classify_fault_error(false, crate::StarryError::NoMemory);
+        pin.lock().mutation_gate.mark_needs_repair();
+        let quarantined = pin.handle_page_fault_result(start, PageFaultFlags::WRITE);
+        // This test did not damage any PTE; release its synthetic quarantine.
+        pin.lock().mutation_gate.clear_repair();
+        drop(pin);
+        let permit = handle.release_user_ref().unwrap();
+        drop(handle);
+        permit.reclaim().unwrap();
+        assert!(
+            exhausted != FaultResult::Retry && matches!(quarantined, FaultResult::Sigbus(_)),
+            "allocation failure and repair quarantine are terminal: {exhausted:?}, {quarantined:?}"
+        );
+        assert_eq!(exhausted, FaultResult::NoMemory);
+        assert_eq!(
+            quarantined,
+            FaultResult::Sigbus(super::super::BusCode::ObjErr)
+        );
     }
 
     #[axtest::axtest]

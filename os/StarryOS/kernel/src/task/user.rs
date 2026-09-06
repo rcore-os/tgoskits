@@ -32,7 +32,7 @@ fn handle_user_page_fault(
     // addresses are counted separately in the mm page-fault handler.
     crate::mm::PAGE_FAULT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // Classify the result while holding the aspace lock.  File faults past EOF
+    // Resolve through the pinned MM's fault transaction. File faults past EOF
     // are SIGBUS/BUS_ADRERR on Linux; collapsing them into SIGSEGV makes mmap'd
     // databases and runtimes mis-handle truncation.  A transient eviction
     // conflict is left retryable and does not publish a signal.
@@ -42,6 +42,10 @@ fn handle_user_page_fault(
         };
         match aspace.handle_page_fault_result(address, flags) {
             FaultResult::Handled | FaultResult::Retry => None,
+            // Preserve user-mode refault and the signal check below while
+            // keeping allocation failure distinct from transaction contention
+            // for the kernel's faultable-copy error path.
+            FaultResult::NoMemory => None,
             FaultResult::PermissionDenied => Some((Signo::SIGSEGV, SEGV_ACCERR)),
             FaultResult::Unmapped => Some((Signo::SIGSEGV, SEGV_MAPERR)),
             FaultResult::Sigbus(code) => Some((Signo::SIGBUS, code as i32)),

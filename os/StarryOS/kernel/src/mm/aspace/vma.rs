@@ -39,6 +39,10 @@ pub enum FaultResult {
     /// Resolution was blocked by an in-flight eviction or shootdown.  The
     /// instruction may be retried after the owner releases its lease.
     Retry,
+    /// Allocation failed after the backend's reclaim or base-page fallback.
+    /// Kernel user copies must terminate instead of waiting on a transaction
+    /// owner that does not exist.
+    NoMemory,
     Sigbus(BusCode),
 }
 

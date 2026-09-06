@@ -5679,6 +5679,11 @@ impl AddrSpace {
         access_flags: PageFaultFlags,
         thp_mode: TransparentHugePageMode,
     ) -> Result<PageFaultPlan, FaultResult> {
+        if self.mutation_gate.needs_repair() {
+            // An indeterminate publication retains its owners in quarantine.
+            // Neither a present PTE nor another allocation proves it usable.
+            return Err(FaultResult::Sigbus(BusCode::ObjErr));
+        }
         if !self.layout.range().contains(vaddr) {
             return Err(FaultResult::Unmapped);
         }
@@ -5772,7 +5777,15 @@ impl AddrSpace {
     }
 
     fn classify_fault_error(file_backed: bool, error: StarryError) -> FaultResult {
-        if matches!(error, StarryError::NoMemory | StarryError::ResourceBusy) {
+        if matches!(
+            error,
+            StarryError::NoMemory
+                | StarryError::Paging(PagingError::NoMemory)
+                | StarryError::Vfs(axfs_ng_vfs::VfsError::NoMemory)
+        ) {
+            return FaultResult::NoMemory;
+        }
+        if matches!(error, StarryError::ResourceBusy) {
             return FaultResult::Retry;
         }
         if !file_backed {
@@ -5878,7 +5891,7 @@ impl AddrSpace {
                             "could not prepare fallback page-table path for {owner_va:?}: {error}"
                         );
                         Self::cancel_fault_materialization(&plan, materialization)?;
-                        return Err(FaultResult::Retry);
+                        return Err(Self::classify_fault_error(false, error.into()));
                     }
                 }
             } else {
@@ -5924,14 +5937,14 @@ impl AddrSpace {
                                     owner.va
                                 );
                                 Self::cancel_fault_materialization(&plan, materialization)?;
-                                return Err(FaultResult::Retry);
+                                return Err(Self::classify_fault_error(false, error.into()));
                             }
                         }
                     }
                     Err(error) => {
                         warn!("could not prepare page-table path for {owner_va:?}: {error}");
                         Self::cancel_fault_materialization(&plan, materialization)?;
-                        return Err(FaultResult::Retry);
+                        return Err(Self::classify_fault_error(false, error.into()));
                     }
                 }
             }
