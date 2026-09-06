@@ -61,7 +61,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 | Wi-Fi STA/AP 重配 | `WifiTransaction` 进入 owner-CPU 有界 control queue，成功后提交 STA DHCP 或 SoftAP 地址/DHCP server | 基础完成；DC/DW 变体 fail-closed |
 | QoS/TOS 兼容 | `IP_TOS` 发包时在 Router 边界改写 IP header；`IP_RECVTOS`/`IPV6_RECVTCLASS` 通过 smoltcp `PacketMeta` 返回 cmsg；`SO_PRIORITY` 仅保存兼容值 | 基础完成 |
 | 运行期 IPv4 地址 | `set_interface_ipv4()` / `remove_interface_ipv4()` 原子更新接口、connected route 和 DHCP 状态 | 每接口仅一个 IPv4，无运行期 gateway 参数 |
-| TX checksum offload | `TxChecksumCapabilities` 与逐包 `TxSubmitOptions`；按所有已注册物理出口的共同能力向 smoltcp 公布 | 可选；RTL8125 支持，其他设备默认软件 checksum |
+| TX checksum offload | 驱动保留显式 `TxSubmitOptions`；Router 保留软件计算，Ethernet/loopback 不修改 raw transport checksum | 自动卸载等待协议生成端的逐包计算意图 |
 | 网卡统计 | `NetDevStats` 汇总 L2 包/字节、错误和丢包，供 StarryOS `/proc/net/dev` 使用 | 累计统计，不含硬件专属计数器 |
 
 矩阵中的“支持”意味着存在可用实现路径，“受限”则需要结合后文章节理解范围。设计原则说明这些取舍为何围绕单协议核心、多设备 Router 和有界资源展开。
@@ -198,4 +198,4 @@ StarryOS 目前只做初步可见性过滤（root namespace 可见全部接口�
 
 ### 5.8 高性能数据面
 
-queue-level batch poll 已实现，但当前生产 backend 均只发布 queue-0 group。RTL8125 支持逐包 checksum offload 和批次 doorbell；不满足 descriptor 约束的包使用软件 checksum。真正启用 virtio/fxmac 多硬件队列、RSS/RPS/RFS、GRO、busy-poll 与用户态 zero-copy 仍是后续工作。checksum 能力在网络初始化时汇总，不支持运行期新增设备后的能力刷新。
+queue-level batch poll 已实现，但当前生产 backend 均只发布 queue-0 group。RTL8125 驱动支持显式逐包 checksum 请求和批次 doorbell；当前协议栈统一使用软件 checksum，以保留 raw packet 的传输层字段。真正启用 virtio/fxmac 多硬件队列、RSS/RPS/RFS、GRO、busy-poll 与用户态 zero-copy 仍是后续工作。重新启用协议栈自动卸载前，需要补齐逐包 checksum 意图和出口回退契约。

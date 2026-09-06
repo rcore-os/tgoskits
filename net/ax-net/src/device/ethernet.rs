@@ -37,27 +37,11 @@ use crate::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
     device::{
         ArpEntry, Device, DeviceRxPacket, DeviceRxPoll, ETH_ZLEN, EthernetFramePort,
-        NetDeviceError, NetDeviceResult, ProtocolEthernetFrame, TxChecksumCapabilities,
-        TxChecksumOffload, TxNetworkProtocol, TxNotify, TxSubmitOptions, TxTransportProtocol,
-        fill_transport_checksum,
+        NetDeviceError, NetDeviceResult, ProtocolEthernetFrame, TxNotify, TxSubmitOptions,
     },
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
-const IPV4_MIN_HEADER_LEN: usize = 20;
-const IPV6_HEADER_LEN: usize = 40;
-const TCP_CHECKSUM_OFFSET: usize = 16;
-const UDP_CHECKSUM_OFFSET: usize = 6;
-const IP_PROTOCOL_TCP: u8 = 6;
-const IP_PROTOCOL_UDP: u8 = 17;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TxChecksumPlan {
-    None,
-    Software,
-    Hardware(TxChecksumOffload),
-}
-
 struct Neighbor {
     hardware_address: EthernetAddress,
     expires_at: Instant,
@@ -145,53 +129,6 @@ impl EthernetDevice {
         EthernetAddress(self.inner.mac_address())
     }
 
-    fn checksum_plan(&self, packet: &[u8]) -> TxChecksumPlan {
-        let capabilities = self.inner.checksum_capabilities();
-        let Some(version) = packet.first().map(|byte| byte >> 4) else {
-            return TxChecksumPlan::None;
-        };
-        let (network, protocol, transport_offset) = match version {
-            4 if packet.len() >= IPV4_MIN_HEADER_LEN => {
-                let header_len = usize::from(packet[0] & 0x0f) * 4;
-                if header_len < IPV4_MIN_HEADER_LEN || header_len >= packet.len() {
-                    return TxChecksumPlan::None;
-                }
-                (TxNetworkProtocol::Ipv4, packet[9], header_len)
-            }
-            6 if packet.len() > IPV6_HEADER_LEN => {
-                (TxNetworkProtocol::Ipv6, packet[6], IPV6_HEADER_LEN)
-            }
-            _ => return TxChecksumPlan::None,
-        };
-        let (transport, checksum_offset) = match protocol {
-            IP_PROTOCOL_TCP if capabilities.supports_tcp() => {
-                (TxTransportProtocol::Tcp, TCP_CHECKSUM_OFFSET)
-            }
-            IP_PROTOCOL_UDP if capabilities.supports_udp() => {
-                (TxTransportProtocol::Udp, UDP_CHECKSUM_OFFSET)
-            }
-            _ => return TxChecksumPlan::None,
-        };
-        let checksum = transport_offset + checksum_offset..transport_offset + checksum_offset + 2;
-        if packet.get(checksum) != Some(&[0, 0]) {
-            return TxChecksumPlan::None;
-        }
-        if EthernetFrame::<&[u8]>::header_len() + packet.len() < ETH_ZLEN {
-            return TxChecksumPlan::Software;
-        }
-        let Some(transport_offset) = EthernetFrame::<&[u8]>::header_len()
-            .checked_add(transport_offset)
-            .and_then(|offset| offset.try_into().ok())
-        else {
-            return TxChecksumPlan::None;
-        };
-        TxChecksumPlan::Hardware(TxChecksumOffload {
-            network,
-            transport,
-            transport_offset,
-        })
-    }
-
     fn transmit_ip_to(
         &mut self,
         destination: EthernetAddress,
@@ -202,14 +139,12 @@ impl EthernetDevice {
             Ok(IpVersion::Ipv6) => EthernetProtocol::Ipv6,
             Err(_) => return Err(NetDeviceError::InvalidParam),
         };
-        let checksum = self.checksum_plan(packet);
         Self::send_to_with_options(
             &mut *self.inner,
             destination,
             packet.len(),
             |buffer| buffer.copy_from_slice(packet),
             protocol,
-            checksum,
             TxNotify::Deferred,
         )
     }
@@ -229,15 +164,7 @@ impl EthernetDevice {
     where
         F: FnOnce(&mut [u8]),
     {
-        Self::send_to_with_options(
-            inner,
-            dst,
-            size,
-            f,
-            proto,
-            TxChecksumPlan::None,
-            TxNotify::Immediate,
-        )
+        Self::send_to_with_options(inner, dst, size, f, proto, TxNotify::Immediate)
     }
 
     fn send_to_with_options<F>(
@@ -246,7 +173,6 @@ impl EthernetDevice {
         size: usize,
         f: F,
         proto: EthernetProtocol,
-        checksum: TxChecksumPlan,
         notify: TxNotify,
     ) -> NetDeviceResult<usize>
     where
@@ -264,10 +190,6 @@ impl EthernetDevice {
         // FCS, aligned with Linux /proc/net/dev semantics.
         let wire_len = total_frame_len.max(ETH_ZLEN);
 
-        let hardware_checksum = match checksum {
-            TxChecksumPlan::Hardware(checksum) => Some(checksum),
-            TxChecksumPlan::None | TxChecksumPlan::Software => None,
-        };
         let mut fill_once = Some(f);
         let mut fill = |packet: &mut [u8]| {
             let mut frame = EthernetFrame::new_unchecked(packet);
@@ -277,9 +199,6 @@ impl EthernetDevice {
                 .expect("frame port must fill each packet exactly once")(
                 frame.payload_mut()
             );
-            if checksum == TxChecksumPlan::Software {
-                fill_transport_checksum(frame.payload_mut());
-            }
             trace!(
                 "SEND {} bytes: {:02X?}",
                 frame.as_ref().len(),
@@ -289,7 +208,7 @@ impl EthernetDevice {
         inner.transmit_frame_with_options(
             total_frame_len,
             TxSubmitOptions {
-                checksum: hardware_checksum,
+                checksum: None,
                 notify,
             },
             &mut fill,
@@ -588,10 +507,6 @@ impl Device for EthernetDevice {
         &self.name
     }
 
-    fn tx_checksum_capabilities(&self) -> TxChecksumCapabilities {
-        self.inner.checksum_capabilities()
-    }
-
     fn recv(
         &mut self,
         interface_id: InterfaceId,
@@ -838,7 +753,7 @@ impl Device for EthernetDevice {
     }
 
     fn drain_deferred_rx_drops(&mut self) -> u64 {
-        core::mem::take(&mut self.deferred_rx_drops)
+        core::mem::take(&mut self.deferred_rx_drops) + self.inner.drain_rx_drops()
     }
 
     fn set_ipv4_addr(&mut self, addr: Option<Ipv4Cidr>) {
@@ -887,7 +802,7 @@ mod ethernet_counter_tests {
     use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 
     use super::*;
-    use crate::device::{NetDeviceError, NetDeviceResult};
+    use crate::device::{NetDeviceError, NetDeviceResult, TxChecksumCapabilities};
 
     // ── Mock protocol-port infrastructure ──────────────────────────────
 
@@ -1032,13 +947,13 @@ mod ethernet_counter_tests {
         )
     }
 
-    fn tcp_packet_with_deferred_checksum() -> Vec<u8> {
+    fn raw_tcp_packet() -> Vec<u8> {
         let mut packet = vec![0u8; 60];
         let packet_len = packet.len() as u16;
         packet[0] = 0x45;
         packet[2..4].copy_from_slice(&packet_len.to_be_bytes());
         packet[8] = 64;
-        packet[9] = IP_PROTOCOL_TCP;
+        packet[9] = 6;
         packet[12..16].copy_from_slice(&DEV_IP.octets());
         packet[16..20].copy_from_slice(&REMOTE_IP.octets());
         packet[20..22].copy_from_slice(&41000u16.to_be_bytes());
@@ -1221,9 +1136,9 @@ mod ethernet_counter_tests {
     }
 
     #[test]
-    fn pending_tcp_packet_keeps_checksum_offload_after_arp_resolution() {
+    fn pending_raw_tcp_packet_preserves_checksum_after_arp_resolution() {
         let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
-        let packet = tcp_packet_with_deferred_checksum();
+        let packet = raw_tcp_packet();
         enqueue_pending_packet(&mut device, &packet);
 
         process_remote_arp_reply(&mut device, Instant::from_millis(0));
@@ -1235,20 +1150,45 @@ mod ethernet_counter_tests {
             &packet
         );
         assert_eq!(requests[0].1.notify, TxNotify::Deferred);
-        assert!(matches!(
-            requests[0].1.checksum,
-            Some(TxChecksumOffload {
-                network: TxNetworkProtocol::Ipv4,
-                transport: TxTransportProtocol::Tcp,
-                transport_offset: 34,
-            })
-        ));
+        assert_eq!(requests[0].1.checksum, None);
+    }
+
+    #[test]
+    fn ethernet_preserves_raw_udp_checksum_without_requesting_offload() {
+        let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
+        for len in [32usize, 60] {
+            for checksum in [0u16, 0x1234] {
+                let mut packet = vec![0u8; len];
+                packet[0] = 0x45;
+                packet[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+                packet[8] = 64;
+                packet[9] = 17;
+                packet[12..16].copy_from_slice(&DEV_IP.octets());
+                packet[16..20].copy_from_slice(&REMOTE_IP.octets());
+                packet[24..26].copy_from_slice(&((len - 20) as u16).to_be_bytes());
+                packet[26..28].copy_from_slice(&checksum.to_be_bytes());
+                device
+                    .transmit_ip_to(EthernetAddress(REMOTE_MAC), &packet)
+                    .unwrap();
+                let requests = probe.requests.lock_irqsave();
+                let (frame, options) = requests.last().unwrap();
+                assert_eq!(
+                    &frame[14..14 + len],
+                    &packet,
+                    "Ethernet rewrote raw UDP transport bytes"
+                );
+                assert_eq!(
+                    options.checksum, None,
+                    "zero checksum is not an offload request"
+                );
+            }
+        }
     }
 
     #[test]
     fn pending_packet_survives_arp_resolution_tx_backpressure() {
         let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
-        let packet = tcp_packet_with_deferred_checksum();
+        let packet = raw_tcp_packet();
         enqueue_pending_packet(&mut device, &packet);
         *probe.failure.lock_irqsave() = Some(NetDeviceError::Again);
 
@@ -1267,7 +1207,7 @@ mod ethernet_counter_tests {
     #[test]
     fn arp_request_backpressure_is_returned_to_the_router() {
         let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
-        let packet = tcp_packet_with_deferred_checksum();
+        let packet = raw_tcp_packet();
         *probe.failure.lock_irqsave() = Some(NetDeviceError::Again);
 
         let result = device.try_send(IpAddress::Ipv4(REMOTE_IP), &packet, Instant::from_millis(0));
@@ -1448,30 +1388,6 @@ mod ethernet_counter_tests {
         assert_eq!(wire_len, Ok(114));
     }
 
-    #[test]
-    fn long_tcp_packet_uses_hardware_checksum_but_short_frame_stays_software() {
-        let mut mock = MockEthernetDriver::new(DEV_MAC);
-        mock.checksum_capabilities = TxChecksumCapabilities::TCP_UDP;
-        let device = make_test_device(mock);
-
-        let mut long_tcp = [0u8; 60];
-        long_tcp[0] = 0x45;
-        long_tcp[9] = IP_PROTOCOL_TCP;
-        assert_eq!(
-            device.checksum_plan(&long_tcp),
-            TxChecksumPlan::Hardware(TxChecksumOffload {
-                network: TxNetworkProtocol::Ipv4,
-                transport: TxTransportProtocol::Tcp,
-                transport_offset: 34,
-            })
-        );
-
-        let mut short_udp = [0u8; 28];
-        short_udp[0] = 0x45;
-        short_udp[9] = IP_PROTOCOL_UDP;
-        assert_eq!(device.checksum_plan(&short_udp), TxChecksumPlan::Software);
-    }
-
     // ── Integration: combined ARP + IP recv/drain cycle ────────────────
 
     /// Simulates one protocol-executor drain cycle: receive IP frames, drain
@@ -1615,7 +1531,7 @@ mod ethernet_counter_tests {
 
         // The compatibility send path cannot retain the caller's packet.
         let broadcast = IpAddress::Ipv4(Ipv4Address::BROADCAST);
-        let packet = tcp_packet_with_deferred_checksum();
+        let packet = raw_tcp_packet();
         let result = device.send(broadcast, &packet, ts);
         assert_eq!(result, 0);
         assert_eq!(device.drain_deferred_tx_errors(), 0);

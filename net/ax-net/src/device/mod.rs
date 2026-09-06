@@ -24,9 +24,7 @@ use core::ops::Range;
 use smoltcp::{
     storage::PacketBuffer,
     time::Instant,
-    wire::{
-        IpAddress, IpProtocol, IpVersion, Ipv4Cidr, Ipv4Packet, Ipv6Packet, TcpPacket, UdpPacket,
-    },
+    wire::{IpAddress, Ipv4Cidr},
 };
 
 use crate::config::InterfaceId;
@@ -43,55 +41,8 @@ pub use loopback::*;
 #[cfg(feature = "vsock")]
 pub use vsock::*;
 
-/// Completes a TCP or UDP checksum before software delivery.
-pub(crate) fn fill_transport_checksum(packet: &mut [u8]) {
-    let Ok(version) = IpVersion::of_packet(packet) else {
-        return;
-    };
-    let (src_addr, dst_addr, protocol, transport_offset) = match version {
-        IpVersion::Ipv4 => {
-            let Ok(ipv4) = Ipv4Packet::new_checked(&*packet) else {
-                return;
-            };
-            (
-                IpAddress::Ipv4(ipv4.src_addr()),
-                IpAddress::Ipv4(ipv4.dst_addr()),
-                ipv4.next_header(),
-                usize::from(ipv4.header_len()),
-            )
-        }
-        IpVersion::Ipv6 => {
-            let Ok(ipv6) = Ipv6Packet::new_checked(&*packet) else {
-                return;
-            };
-            (
-                IpAddress::Ipv6(ipv6.src_addr()),
-                IpAddress::Ipv6(ipv6.dst_addr()),
-                ipv6.next_header(),
-                ipv6.header_len(),
-            )
-        }
-    };
-    let Some(transport) = packet.get_mut(transport_offset..) else {
-        return;
-    };
-    match protocol {
-        IpProtocol::Tcp => {
-            if let Ok(mut tcp) = TcpPacket::new_checked(transport) {
-                tcp.fill_checksum(&src_addr, &dst_addr);
-            }
-        }
-        IpProtocol::Udp => {
-            if let Ok(mut udp) = UdpPacket::new_checked(transport) {
-                udp.fill_checksum(&src_addr, &dst_addr);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Owned IP packet whose backing RX DMA token is retained through consumption.
-pub struct DeviceRxPacket {
+pub(crate) struct DeviceRxPacket {
     frame_len: usize,
     frame: ProtocolRxFrame,
     packet: Range<usize>,
@@ -129,7 +80,7 @@ impl DeviceRxPacket {
 }
 
 /// Result of polling a device's optional owned receive path.
-pub enum DeviceRxPoll {
+pub(crate) enum DeviceRxPoll {
     /// This device only implements the compatibility receive path.
     Unsupported,
     /// The owned receive path is supported but no IP packet is ready.
@@ -153,14 +104,9 @@ pub struct ArpEntry {
 }
 
 /// Packet I/O endpoint behind the multi-device router.
-pub trait Device: Send {
+pub(crate) trait Device: Send {
     /// Human-readable device name used in logs and userspace queries.
     fn name(&self) -> &str;
-
-    /// Returns transport checksums the device can calculate on transmit.
-    fn tx_checksum_capabilities(&self) -> TxChecksumCapabilities {
-        TxChecksumCapabilities::NONE
-    }
 
     /// Moves packets from the device into the shared IP RX buffer.
     ///

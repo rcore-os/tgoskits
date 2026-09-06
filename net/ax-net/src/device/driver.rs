@@ -6,10 +6,7 @@
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-pub use rd_net::{
-    DmaBuffer, RxCompletion, TxChecksumCapabilities, TxChecksumOffload, TxNetworkProtocol,
-    TxNotify, TxSubmitOptions, TxTransportProtocol,
-};
+pub use rd_net::{DmaBuffer, RxCompletion, TxChecksumCapabilities, TxNotify, TxSubmitOptions};
 
 /// Minimum Ethernet frame length on the wire, excluding the FCS.
 pub(crate) const ETH_ZLEN: usize = 60;
@@ -170,6 +167,11 @@ pub trait EthernetFramePort: Send + 'static {
 
     /// Takes one completed RX frame, if any.
     fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame>;
+
+    /// Takes RX drops accumulated before protocol delivery, for device statistics.
+    fn drain_rx_drops(&mut self) -> u64 {
+        0
+    }
 
     /// Takes one completed frame with its DMA ownership token when supported.
     ///

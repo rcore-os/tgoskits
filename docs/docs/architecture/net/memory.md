@@ -86,7 +86,7 @@ ring full 不会 busy-wait 或 drop token：
 | 边界 | owner 保留 |
 | --- | --- |
 | RX-ready full | `pending_rx: RxCompletion` |
-| RX recycle submit retry | `pending_rx_recycle: DmaBuffer` |
+| RX replacement submit retry | `pending_rx_refill` 保存 completion 和 replacement；丢包重投时只保存原 token |
 | TX-free full | `pending_tx_free: DmaBuffer` |
 | TX submit retry | `pending_tx: TxRequest` 保存 token 与提交选项 |
 | protocol recycle full | `RxRecycler` 的 overflow vector |
@@ -122,7 +122,11 @@ protocol write
 DMA RX 的 `ProtocolRxFrame` 保留原 token，经 EthernetDevice 和 Router 传到
 smoltcp `RxToken::consume`，不经过 inline frame 或 Router packet buffer 复制。
 消费完成才归还 token；queue owner 已在发布 completion 前提交 replacement，硬件
-不必等待协议栈释放旧 buffer。回收 token 优先进入 queue-local spare cache。
+不必等待协议栈释放旧 buffer。回收 token 优先进入 queue-local spare cache。额外 token 上限为 `max(RX capacity, 64)`，
+因此每 group 的 RX payload 上限为 `(RX capacity + max(RX capacity, 64)) * buf_size`；
+还需计入 pool/token 元数据。overflow 和 spare cache 只容纳这些已存在的 token，
+不再通过持续分配扩大这项预算。到达上限或 DMA 分配失败时丢包并重投原 token，
+RX drop 经 frame port 汇总到设备统计。
 
 TX 从 socket buffer 经 smoltcp/Router 生成 IP packet，直接填充 DMA token 中的
 Ethernet header、payload 和 padding。可选 checksum offload 与 deferred doorbell
@@ -154,6 +158,10 @@ LISTEN_QUEUE_SIZE: 512
 SOCKET_BUFFER_SIZE: 64 packet slots
 ETHERNET_MAX_PENDING_PACKETS: 128
 ```
+
+TCP 双向 buffer 合计每 socket 512 KiB；被动连接在 SYN 建立子 socket 时也分配这两块
+buffer，512 个排队连接仅 payload 预算就可能达到 256 MiB，另有 socket 元数据。
+当前通过 `consts.rs` 的两个常量统一设置，不支持运行期自动调节或每监听 socket 的独立预算。
 
 这些是 protocol/ARP 预算，不是 hardware queue capacity。提高 socket 预算会按 socket
 数量放大；提高 driver queue capacity 会按 group 增加 DMA pool 与 SPSC slot。

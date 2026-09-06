@@ -184,6 +184,13 @@ pub(super) struct QueueFramePort {
 }
 
 impl EthernetFramePort for QueueFramePort {
+    fn drain_rx_drops(&mut self) -> u64 {
+        self.groups
+            .iter()
+            .map(|group| group.shared.take_rx_drops())
+            .sum()
+    }
+
     fn device_name(&self) -> &str {
         &self.name
     }
@@ -358,7 +365,8 @@ pub(super) enum GroupPollOutcome {
 }
 
 pub(super) struct PendingRxRefill {
-    completion: RxCompletion,
+    // None means the packet was dropped and its original buffer is reposted.
+    completion: Option<RxCompletion>,
     replacement: DmaBuffer,
 }
 
@@ -406,6 +414,7 @@ pub(super) struct QueueGroupExecutor {
     pub(super) rx_recycle: SpscConsumer<DmaBuffer>,
     pub(super) rx_recycler: Arc<RxRecycler>,
     pub(super) rx_spares: Vec<DmaBuffer>,
+    pub(super) rx_extra_buffers: usize,
     pub(super) tx_ready: SpscConsumer<TxRequest>,
     pub(super) tx_free: SpscProducer<DmaBuffer>,
     pub(super) pending_rx: Option<RxCompletion>,
@@ -417,6 +426,21 @@ pub(super) struct QueueGroupExecutor {
 }
 
 impl QueueGroupExecutor {
+    fn take_rx_replacement(&mut self) -> Option<DmaBuffer> {
+        if let Some(buffer) = self.rx_spares.pop() {
+            return Some(buffer);
+        }
+        // In addition to the hardware ring, allow one ring/batch of detached
+        // tokens. Protocol consumers cannot cause unbounded DMA allocation by
+        // retaining received packets; reaching the limit uses the drop path.
+        if self.rx_extra_buffers >= self.group.rx.capacity().max(QUEUE_BUDGET) {
+            return None;
+        }
+        let buffer = self.group.rx.allocate_replacement().ok()?;
+        self.rx_extra_buffers += 1;
+        Some(buffer)
+    }
+
     fn initialize(&mut self) -> Result<(), NetError> {
         if let Some(mut startup) = self.group.owner_startup.take() {
             let mut progress = startup.start(ax_hal::time::monotonic_time_nanos());
@@ -571,11 +595,13 @@ impl QueueGroupExecutor {
                 match self.group.rx.recycle(pending.replacement) {
                     Ok(()) => {
                         work += 1;
-                        if let Err(completion) = self.rx_ready.push(pending.completion) {
-                            self.pending_rx = Some(completion);
-                            return GroupPollOutcome::Blocked(work);
+                        if let Some(completion) = pending.completion {
+                            if let Err(completion) = self.rx_ready.push(completion) {
+                                self.pending_rx = Some(completion);
+                                return GroupPollOutcome::Blocked(work);
+                            }
+                            crate::request_poll();
                         }
-                        crate::request_poll();
                     }
                     Err(error) => {
                         let (replacement, reason) = error.into_parts();
@@ -602,22 +628,29 @@ impl QueueGroupExecutor {
             };
             received += 1;
             work += 1;
-            let replacement = match self.rx_spares.pop() {
+            let replacement = match self.take_rx_replacement() {
                 Some(buffer) => buffer,
-                None => match self.group.rx.allocate_replacement() {
-                    Ok(buffer) => buffer,
-                    Err(_) => {
-                        self.shared.disable();
-                        return GroupPollOutcome::Failed;
-                    }
-                },
+                None => {
+                    // Memory pressure is recoverable. Drop this packet
+                    // and repost its token, retaining ownership across
+                    // Retry just like a normal replacement. Completion
+                    // progress or the rearmed device IRQ drives retries;
+                    // neither RX nor TX waits for an allocator wakeup.
+                    self.pending_rx_refill.push_back(PendingRxRefill {
+                        completion: None,
+                        replacement: completion.buffer,
+                    });
+                    self.shared.record_rx_drop();
+                    crate::request_poll();
+                    continue;
+                }
             };
             // Retain completion ownership until its replacement is submitted.
             // Reclaim remains allowed while refill is blocked: software-backed
             // queues may need completion-ring space before they accept buffers.
             // The retained queue is bounded by the hardware RX capacity.
             self.pending_rx_refill.push_back(PendingRxRefill {
-                completion,
+                completion: Some(completion),
                 replacement,
             });
         }

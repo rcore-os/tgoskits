@@ -44,7 +44,7 @@ use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
 use ax_sync::SpinRwLock as RwLock;
 use smoltcp::{
     iface::SocketSet,
-    phy::{Checksum, DeviceCapabilities, Medium, PacketMeta},
+    phy::{DeviceCapabilities, Medium, PacketMeta},
     storage::PacketMetadata,
     time::Instant,
     wire::{
@@ -57,10 +57,7 @@ use crate::{
     LISTEN_TABLE,
     config::{DeviceBinding, InterfaceId, RouteInfo},
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::{
-        ArpEntry, Device, DeviceRxPacket, DeviceRxPoll, NetDeviceError, TxChecksumCapabilities,
-        fill_transport_checksum,
-    },
+    device::{ArpEntry, Device, DeviceRxPacket, DeviceRxPoll, NetDeviceError},
     ip_tos::apply_egress_ip_tos,
     rx_meta::packet_meta_for_rx_packet,
 };
@@ -466,8 +463,6 @@ pub struct Router {
     tx_buffer: RouterPacketBuffer,
     /// DMA-backed packets waiting for smoltcp consumption.
     ready_rx: VecDeque<OwnedRxPacket>,
-    /// Checksum operations common to every registered physical TX path.
-    tx_checksum_capabilities: Option<TxChecksumCapabilities>,
     devices: Vec<DeviceHandle>,
     table: SharedRouteTable,
 }
@@ -486,7 +481,6 @@ impl Router {
             rx_buffer,
             tx_buffer,
             ready_rx: VecDeque::with_capacity(SOCKET_BUFFER_SIZE),
-            tx_checksum_capabilities: None,
             devices: Vec::new(),
             table,
         }
@@ -499,13 +493,6 @@ impl Router {
 
     /// Registers a concrete device and returns its router device index.
     pub fn add_device(&mut self, interface_id: InterfaceId, device: Box<dyn Device>) -> usize {
-        if interface_id != InterfaceId::LOOPBACK {
-            let capabilities = device.tx_checksum_capabilities();
-            self.tx_checksum_capabilities = Some(
-                self.tx_checksum_capabilities
-                    .map_or(capabilities, |current| current.intersection(capabilities)),
-            );
-        }
         self.devices.push(DeviceHandle::new(interface_id, device));
         self.devices.len() - 1
     }
@@ -897,7 +884,6 @@ fn inject_loopback_rx_direct(
         return false;
     };
     dst.copy_from_slice(packet);
-    fill_transport_checksum(dst);
     true
 }
 
@@ -1040,17 +1026,10 @@ impl smoltcp::phy::Device for Router {
         caps.medium = Medium::Ip;
         caps.max_transmission_unit = STANDARD_MTU;
         caps.max_burst_size = Some(SOCKET_BUFFER_SIZE);
-        // smoltcp's Checksum describes work left to the software stack:
-        // Rx keeps receive verification and skips transmit computation so
-        // EthernetDevice can request the hardware TX checksum below.
-        if let Some(checksum) = self.tx_checksum_capabilities {
-            if checksum.supports_tcp() {
-                caps.checksum.tcp = Checksum::Rx;
-            }
-            if checksum.supports_udp() {
-                caps.checksum.udp = Checksum::Rx;
-            }
-        }
+        // smoltcp does not distinguish raw transport payloads from stack-
+        // generated TCP packets at the TxToken boundary. Keep software TX
+        // checksums until that boundary carries explicit per-packet intent;
+        // a zero checksum can be intentional, especially for IPv4 raw UDP.
         caps
     }
 }
@@ -1060,6 +1039,97 @@ mod tests {
     use smoltcp::storage::PacketBuffer;
 
     use super::*;
+    use crate::device::TxChecksumCapabilities;
+
+    #[test]
+    fn stack_tcp_and_udp_emit_complete_software_checksums() {
+        use smoltcp::{
+            iface::{Config, Interface},
+            socket::{tcp, udp},
+            wire::{HardwareAddress, UdpPacket},
+        };
+
+        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        router.add_device(
+            IF0,
+            Box::new(crate::device::EthernetDevice::new(
+                "checksum".into(),
+                Box::new(ChecksumPort),
+                None,
+            )),
+        );
+        let now = Instant::from_millis(0);
+        let mut interface = Interface::new(Config::new(HardwareAddress::Ip), &mut router, now);
+        interface.update_ip_addrs(|addrs| {
+            addrs
+                .push(ipv4_cidr(Ipv4Address::new(10, 0, 0, 2), 24))
+                .unwrap()
+        });
+        let destination = IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1));
+        let mut sockets = SocketSet::new(vec![]);
+        let mut tcp = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 1024]),
+            tcp::SocketBuffer::new(vec![0; 1024]),
+        );
+        tcp.connect(interface.context(), (destination, 4321), 1234)
+            .unwrap();
+        sockets.add(tcp);
+        interface.poll_egress(now, &mut router, &mut sockets);
+        let (_, packet) = router.tx_buffer.dequeue().expect("TCP SYN must be emitted");
+        let ip = Ipv4Packet::new_checked(&*packet).unwrap();
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert!(tcp.syn());
+        assert!(tcp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()));
+
+        let mut udp = udp::Socket::new(
+            udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 1], vec![0; 64]),
+            udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 1], vec![0; 64]),
+        );
+        udp.bind(1235).unwrap();
+        udp.send_slice(b"checksum", (destination, 4322)).unwrap();
+        sockets.add(udp);
+        interface.poll_egress(now, &mut router, &mut sockets);
+        let (_, packet) = router
+            .tx_buffer
+            .dequeue()
+            .expect("UDP packet must be emitted");
+        let ip = Ipv4Packet::new_checked(&*packet).unwrap();
+        let udp = UdpPacket::new_checked(ip.payload()).unwrap();
+        assert_ne!(udp.checksum(), 0, "ordinary UDP must generate a checksum");
+        assert!(udp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()));
+        assert_eq!(udp.payload(), b"checksum");
+    }
+
+    #[test]
+    fn loopback_preserves_raw_udp_checksum() {
+        let table = Arc::new(RwLock::new(RouteTable::new()));
+        let mut router = Router::new(table);
+        let mut sockets = SocketSet::new(vec![]);
+        for checksum in [0u16, 0x1234] {
+            let mut packet = [0u8; 32];
+            packet[0] = 0x45;
+            packet[2..4].copy_from_slice(&32u16.to_be_bytes());
+            packet[8] = 64;
+            packet[9] = 17;
+            packet[12..16].copy_from_slice(&[127, 0, 0, 1]);
+            packet[16..20].copy_from_slice(&[127, 0, 0, 1]);
+            packet[20..22].copy_from_slice(&1234u16.to_be_bytes());
+            packet[22..24].copy_from_slice(&4321u16.to_be_bytes());
+            packet[24..26].copy_from_slice(&12u16.to_be_bytes());
+            packet[26..28].copy_from_slice(&checksum.to_be_bytes());
+            assert!(inject_loopback_rx_direct(
+                &mut router.rx_buffer,
+                IpAddress::Ipv4(Ipv4Address::LOCALHOST),
+                &packet,
+                &mut sockets
+            ));
+            let (_, received) = router.rx_buffer.dequeue().unwrap();
+            assert_eq!(
+                received, &packet,
+                "loopback rewrote raw UDP transport bytes"
+            );
+        }
+    }
 
     const IF0: InterfaceId = InterfaceId::new(2);
     const IF1: InterfaceId = InterfaceId::new(3);
@@ -1119,29 +1189,28 @@ mod tests {
         }
     }
 
-    struct ChecksumDevice;
+    struct ChecksumPort;
 
-    impl Device for ChecksumDevice {
-        fn name(&self) -> &str {
+    impl crate::device::EthernetFramePort for ChecksumPort {
+        fn device_name(&self) -> &str {
             "checksum"
         }
-
-        fn tx_checksum_capabilities(&self) -> TxChecksumCapabilities {
+        fn mac_address(&self) -> [u8; 6] {
+            [2, 0, 0, 0, 0, 1]
+        }
+        fn checksum_capabilities(&self) -> TxChecksumCapabilities {
             TxChecksumCapabilities::TCP_UDP
         }
-
-        fn recv(
+        fn transmit(
             &mut self,
-            _interface_id: InterfaceId,
-            _buffer: &mut PacketBuffer<InterfaceId>,
-            _timestamp: Instant,
-            _snoop: &mut dyn FnMut(&[u8]),
-        ) -> usize {
-            0
+            _: &crate::device::ProtocolEthernetFrame,
+        ) -> crate::device::NetDeviceResult {
+            Err(NetDeviceError::Again)
         }
-
-        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
-            0
+        fn receive(
+            &mut self,
+        ) -> crate::device::NetDeviceResult<crate::device::ProtocolEthernetFrame> {
+            Err(NetDeviceError::Again)
         }
     }
 
@@ -1215,17 +1284,24 @@ mod tests {
     }
 
     #[test]
-    fn router_advertises_tx_checksum_offload_only_for_capable_devices() {
+    fn router_keeps_software_checksums_even_with_offload_capable_devices() {
         let table = Arc::new(RwLock::new(RouteTable::new()));
         let mut router = Router::new(table);
-        router.add_device(IF0, Box::new(ChecksumDevice));
+        router.add_device(
+            IF0,
+            Box::new(crate::device::EthernetDevice::new(
+                "checksum".into(),
+                Box::new(ChecksumPort),
+                None,
+            )),
+        );
 
         let caps = smoltcp::phy::Device::capabilities(&router);
         // rx()/tx() mean software verification/computation, not NIC offload.
         assert!(caps.checksum.tcp.rx());
-        assert!(!caps.checksum.tcp.tx());
+        assert!(caps.checksum.tcp.tx());
         assert!(caps.checksum.udp.rx());
-        assert!(!caps.checksum.udp.tx());
+        assert!(caps.checksum.udp.tx());
 
         router.add_device(IF1, Box::new(EmptyDevice));
         let caps = smoltcp::phy::Device::capabilities(&router);

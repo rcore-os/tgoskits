@@ -142,9 +142,16 @@ queue runtime 与统计还有专门覆盖：protocol generation 测试验证同�
 直接填充 TX DMA buffer，以及提交选项跨 FIFO 重试的保留。检查 frame 内容时也核对
 buffer 地址，避免一次额外复制仍通过相同内容断言。`rd-net` 测试检查 replacement
 分配和 `SubmitError` 返回原 token；RTL8125 测试检查 checksum descriptor 编码及约束。
+`rdif-eth` 的能力组合测试与这两 crate 的完整 host tests 已加入 `scripts/test/std_crates.csv`。
+
+`rx_allocation_failure_recovers_without_disabling_tx` 让该设备的 DMA allocator 暂时失败，
+检查丢包重投、RX/TX 恢复、drop 计数、replacement 数量上限及上限后的 token 复用。
+loopback 和 Ethernet 的 raw UDP 回归同时覆盖零值与指定 checksum，Ethernet 还覆盖
+短帧 padding 和无需 padding 的长度；原传输层字节与提交选项必须保持不变。`stack_tcp_and_udp_emit_complete_software_checksums`
+通过实际 smoltcp Interface 发送 TCP SYN 和 UDP，验证普通 socket 仍输出有效 checksum。
 
 板端验证还需要确认每轮退出前的 `flush()` 真正推动已发布发送、replacement refill
-不会饿死 RX、checksum offload 下接收端数据正确。Orange Pi 5 Plus 的 iperf3 矩阵
+不会饿死 RX，以及接收端数据正确；显式驱动 checksum 请求需单独验证。Orange Pi 5 Plus 的 iperf3 矩阵
 使用 `apps/starry/iperf3/iperf-bench.sh`，记录构建提交、FIT 与脚本 SHA-256、链路速率、
 每轮 receiver 结果。吞吐数据单独记录，不能替代 token 生命周期与 IRQ 状态机断言。
 

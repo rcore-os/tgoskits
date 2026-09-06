@@ -22,6 +22,9 @@ page-table-generic
 ranges-ext
 rdif-base
 rdif-def
+rdif-eth
+rd-net
+realtek-rtl8125
 ax-sched
 axvm
 virtualization-tests

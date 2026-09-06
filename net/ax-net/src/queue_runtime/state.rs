@@ -76,6 +76,7 @@ pub(super) struct PollGroupState {
     pub(super) owner_cpu: usize,
     notify: Arc<ax_task::IrqNotify>,
     pub(super) stats: QueueStatsAtomic,
+    rx_drops: AtomicU64,
 }
 
 impl PollGroupState {
@@ -85,7 +86,17 @@ impl PollGroupState {
             owner_cpu,
             notify,
             stats: QueueStatsAtomic::new(),
+            rx_drops: AtomicU64::new(0),
         }
+    }
+
+    pub(super) fn record_rx_drop(&self) {
+        // Statistics only; packet ownership is published through the queues.
+        self.rx_drops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn take_rx_drops(&self) -> u64 {
+        self.rx_drops.swap(0, Ordering::Relaxed)
     }
 
     pub(super) fn activate(&self, pending: bool) {

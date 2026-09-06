@@ -444,6 +444,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     rx_recycle: rx_recycle_rx,
                     rx_recycler,
                     rx_spares: Vec::with_capacity(rx_capacity.max(QUEUE_BUDGET)),
+                    rx_extra_buffers: 0,
                     tx_ready: tx_ready_rx,
                     tx_free: tx_free_tx,
                     pending_rx: None,
