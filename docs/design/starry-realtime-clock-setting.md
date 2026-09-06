@@ -190,7 +190,21 @@ never marked for cancellation.
 
 A timerfd expiration publishes one tick and parks the timer task. A normal
 `read` or `timerfd_gettime` advances an expired periodic deadline past all
-missed intervals and rearms it. This matches Linux's lazy periodic restart.
+missed intervals and rearms it. This matches Linux's lazy periodic restart:
+[`do_timerfd_gettime`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c#L497-L525)
+also clears `expired`, adds missed ticks, and restarts the periodic timer;
+it is not a read-only snapshot of the internal state. Pending ticks remain
+available to `read`.
+
+Before returning `old_value`,
+[`do_timerfd_settime`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c#L473-L485)
+advances an expired periodic deadline to the next interval. The old remaining
+time is therefore positive, while an expired one-shot returns zero. Starry
+performs the same advance under the state lock before replacing the setting
+and clearing its ticks. The syscall test waits for `POLLIN` without consuming
+the expiration, then checks gettime and direct settime separately for both
+periodic and one-shot timers created with `CLOCK_MONOTONIC` and `CLOCK_REALTIME`.
+
 An `ECANCELED` read instead consumes the cancellation and pending ticks without
 restarting an expired timer. Its next expiration then requires an explicit
 `timerfd_settime`. Cancellation does not stop a future, unexpired deadline:
