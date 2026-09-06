@@ -213,6 +213,10 @@ pub fn set_wall_time(new_time: TimeValue) -> Result<(), WallTimeError> {
     let monotonic_nanos = monotonic_time_nanos();
     let requested_nanos =
         u64::try_from(new_time.as_nanos()).map_err(|_| WallTimeError::AdjustmentOutOfRange)?;
+    // Match Linux do_settimeofday64 after its timespec validation:
+    // wall_to_monotonic = monotonic - old_realtime, so rejecting
+    // wall_to_monotonic > new_realtime - old_realtime rejects exactly
+    // new_realtime < monotonic. clock_settime(2) documents this since Linux 4.3.
     if requested_nanos < monotonic_nanos {
         return Err(WallTimeError::BeforeMonotonic);
     }
