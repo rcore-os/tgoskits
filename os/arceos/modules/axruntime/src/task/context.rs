@@ -41,13 +41,13 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
                 // SAFETY: the scheduler owns the stack until this context can
                 // no longer run, and the current header keeps it on-CPU.
                 let stack = &*ptr::with_exposed_provenance::<RuntimeStack>(stack);
-                let super::resources::StackBacking::GuardedPages { guard_size, .. } =
-                    &stack.backing
+                let super::resources::StackBacking::VirtualPages(allocation) = &stack.backing
                 else {
                     return false;
                 };
-                let guard_end = stack.base.saturating_add(*guard_size);
-                if !(stack.base..guard_end).contains(&fault.as_usize()) {
+                let guard_start = allocation.reservation_range().start.as_usize();
+                let guard_end = allocation.usable_range().start.as_usize();
+                if !(guard_start..guard_end).contains(&fault.as_usize()) {
                     return false;
                 }
                 error!(
@@ -56,7 +56,7 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
                     fault.as_usize(),
                     guard_end,
                     stack.usable_top,
-                    stack.base,
+                    guard_start,
                     guard_end,
                 );
                 true

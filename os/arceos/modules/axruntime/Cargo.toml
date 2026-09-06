@@ -33,6 +33,7 @@ smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
 uspace = ["ax-hal/uspace"]
 lockdep = ["ax-task/lockdep", "ax-fs-ng?/lockdep"]
 stack-guard-page = ["ipi", "paging"]
+vmap-task-stack = ["ipi", "paging"]
 stack-protector = []
 tls = ["ax-hal/tls"]
 

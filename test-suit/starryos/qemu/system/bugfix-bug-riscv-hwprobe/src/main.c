@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -77,6 +78,34 @@ int main(void)
                 "explicit CPU set returns EINVAL");
     CHECK_ERRNO(syscall(SYS_riscv_hwprobe, (void *)1, 1, 0, NULL, 0), EFAULT,
                 "bad pairs pointer returns EFAULT");
+
+    const size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    unsigned char *region = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(region != MAP_FAILED, "allocate pair boundary fixture");
+    if (region != MAP_FAILED) {
+        struct riscv_hwprobe *first =
+            (struct riscv_hwprobe *)(region + page_size - sizeof(*first));
+        first->key = RISCV_HWPROBE_KEY_BASE_BEHAVIOR;
+        first->value = UINT64_MAX;
+        int protected = mprotect(region + page_size, page_size, PROT_NONE);
+        CHECK(protected == 0, "protect the following pair");
+        if (protected == 0) {
+            CHECK_ERRNO(syscall(SYS_riscv_hwprobe, first, 2, 0, NULL, 0), EFAULT,
+                        "later pair reports its copy fault");
+            CHECK(first->value != UINT64_MAX &&
+                      (first->value & RISCV_HWPROBE_BASE_BEHAVIOR_IMA) != 0,
+                  "completed pair remains visible before a later copy fault");
+        }
+        munmap(region, 2 * page_size);
+    }
+    if (test_failed != 0) {
+        printf("TEST FAILED: pair publication regression\n");
+        return EXIT_FAILURE;
+    }
+    CHECK_ERRNO(syscall(SYS_riscv_hwprobe, (void *)1, (size_t)1 << 32,
+                        0, NULL, 0), EFAULT,
+                "large pair count requires no array-sized scratch allocation");
 
     printf("\n=== result: %d passed, %d failed ===\n", test_passed, test_failed);
     if (test_failed == 0) {

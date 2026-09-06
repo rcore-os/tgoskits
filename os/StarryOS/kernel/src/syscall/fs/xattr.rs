@@ -4,10 +4,7 @@
 //! storage and create/replace atomicity belong to the selected filesystem;
 //! this layer owns userspace validation, overlay copy-up, and Linux ABI sizes.
 
-use alloc::{
-    string::String,
-    vec::Vec,
-};
+use alloc::{string::String, vec::Vec};
 use core::{
     ffi::c_char,
     mem::{MaybeUninit, size_of},
@@ -20,6 +17,7 @@ use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
     XATTR_REPLACE, XATTR_SIZE_MAX, xattr_args,
 };
+
 use crate::{
     StarryError, StarryResult,
     file::{fd_is_path, resolve_at},
@@ -260,11 +258,7 @@ fn set_xattr(
 }
 
 /// Remove an xattr, copying lower-backed overlay files up before mutation.
-fn remove_xattr(
-    current: &UserTaskRef,
-    loc: Location,
-    name: *const c_char,
-) -> StarryResult<isize> {
+fn remove_xattr(current: &UserTaskRef, loc: Location, name: *const c_char) -> StarryResult<isize> {
     let name = read_name(current, name)?;
     if loc.is_readonly() {
         return Err(StarryError::ReadOnlyFilesystem);

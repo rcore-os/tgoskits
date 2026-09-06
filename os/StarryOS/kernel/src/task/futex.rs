@@ -3,7 +3,7 @@
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 use core::{
     cmp::Ordering,
-    sync::atomic::{fence, AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
+    sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrdering, fence},
     time::Duration,
 };
 
@@ -15,7 +15,7 @@ use ax_std::os::arceos::task::{
 };
 
 use crate::{
-    mm::{AddrSpace, Backend, SharedPages},
+    mm::{AddrSpace, SharedFutexIdentity, SharedFutexRegion},
     sync::{LockdepMutexExt, PiMutex, SpinLock},
     task::{ProcessData, UserTaskRef, process_memory::ProcessMemoryShare},
 };
@@ -560,30 +560,6 @@ impl WaitQueue {
     }
 }
 
-/// Stable backing-object identity retained by a shared futex waiter.
-#[derive(Clone)]
-pub(crate) enum SharedFutexIdentity {
-    Pages(Arc<SharedPages>),
-    File(Arc<()>),
-}
-
-impl SharedFutexIdentity {
-    fn address(&self) -> usize {
-        match self {
-            Self::Pages(pages) => Arc::as_ptr(pages) as usize,
-            Self::File(file) => Arc::as_ptr(file) as usize,
-        }
-    }
-
-    fn same(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Pages(left), Self::Pages(right)) => Arc::ptr_eq(left, right),
-            (Self::File(left), Self::File(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }
-    }
-}
-
 /// A key that uniquely identifies a futex in the system.
 #[derive(Clone)]
 pub(crate) enum FutexKey {
@@ -591,10 +567,7 @@ pub(crate) enum FutexKey {
     Private { mm_generation: u64, address: usize },
 
     /// A shared futex follows a stable backing object and mapping offset.
-    Shared {
-        offset: usize,
-        identity: SharedFutexIdentity,
-    },
+    Shared { identity: SharedFutexIdentity },
 }
 
 /// Selects how a futex key should be resolved.
@@ -610,23 +583,9 @@ impl FutexKey {
     /// Creates a new `FutexKey`.
     fn new(aspace: &AddrSpace, mm_generation: u64, address: usize, mode: FutexKeyMode) -> Self {
         if matches!(mode, FutexKeyMode::Auto)
-            && let Some(area) = aspace.find_area(VirtAddr::from_usize(address))
+            && let Some(identity) = aspace.shared_futex_identity(VirtAddr::from_usize(address))
         {
-            match area.backend() {
-                Backend::Shared(backend) => {
-                    return Self::Shared {
-                        offset: address - area.start().as_usize(),
-                        identity: SharedFutexIdentity::Pages(backend.pages().clone()),
-                    };
-                }
-                Backend::File(file) => {
-                    return Self::Shared {
-                        offset: address - area.start().as_usize(),
-                        identity: SharedFutexIdentity::File(file.futex_handle()),
-                    };
-                }
-                _ => {}
-            }
+            return Self::Shared { identity };
         }
         Self::Private {
             mm_generation,
@@ -640,7 +599,13 @@ impl FutexKey {
                 mm_generation,
                 address,
             } => mix_futex_hash(*address, *mm_generation as usize),
-            Self::Shared { offset, identity } => mix_futex_hash(*offset, identity.address()),
+            Self::Shared { identity } => {
+                let region = match identity.region() {
+                    SharedFutexRegion::SharedMemory(id) => id.get(),
+                    SharedFutexRegion::File(id) => id.get(),
+                };
+                mix_futex_hash(identity.offset(), region as usize)
+            }
         }
     }
 
@@ -656,16 +621,7 @@ impl FutexKey {
                     address: right_address,
                 },
             ) => left_mm == right_mm && left_address == right_address,
-            (
-                Self::Shared {
-                    offset: left_offset,
-                    identity: left_identity,
-                },
-                Self::Shared {
-                    offset: right_offset,
-                    identity: right_identity,
-                },
-            ) => left_offset == right_offset && left_identity.same(right_identity),
+            (Self::Shared { identity: left }, Self::Shared { identity: right }) => left == right,
             _ => false,
         }
     }
@@ -861,7 +817,8 @@ impl<'task> FutexContext<'task> {
             );
         }
 
-        let aspace = self.memory.aspace_ref().lock();
+        let mm_pin = self.memory.aspace();
+        let aspace = mm_pin.lock();
         let mm_generation = self.memory.private_futexes_ref().generation();
         (
             FutexKey::new(&aspace, mm_generation, first_address, mode),
@@ -1460,19 +1417,17 @@ fn futex_keys_follow_mm_and_backing_identity_for_test() -> bool {
         mm_generation: second_mm.generation(),
         address: 0x1000,
     };
-    let file = Arc::new(());
-    let same_file = FutexKey::Shared {
-        offset: 0x20,
-        identity: SharedFutexIdentity::File(file.clone()),
+    let make_shared = || {
+        let start = VirtAddr::from(0x1000);
+        let object = Arc::new(crate::mm::SharedMemoryObject::allocate(0x1000, 0x1000).unwrap());
+        let operation = crate::mm::MappingOperation::new_shared(start, object);
+        FutexKey::Shared {
+            identity: operation.shared_futex_identity(start + 0x20).unwrap(),
+        }
     };
-    let alias = FutexKey::Shared {
-        offset: 0x20,
-        identity: SharedFutexIdentity::File(file),
-    };
-    let different_file = FutexKey::Shared {
-        offset: 0x20,
-        identity: SharedFutexIdentity::File(Arc::new(())),
-    };
+    let same_file = make_shared();
+    let alias = same_file.clone();
+    let different_file = make_shared();
 
     first.same(&same_mm)
         && !first.same(&other_mm)
@@ -1529,6 +1484,12 @@ fn park_notification_rechecks_condition_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 mod axtests {
+    use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+    use ax_runtime::hal::paging::MappingFlags;
+
+    use super::*;
+    use crate::mm::{MappingOperation, SharedMemoryObject};
+
     #[axtest::axtest]
     fn empty_wake_op_leaves_fixed_buckets_empty() {
         assert!(super::empty_wake_op_leaves_fixed_buckets_empty_for_test());
@@ -1562,5 +1523,52 @@ mod axtests {
     #[axtest::axtest]
     fn park_notification_rechecks_condition() {
         assert!(super::park_notification_rechecks_condition_for_test());
+    }
+    fn shared_offset(key: FutexKey) -> usize {
+        match key {
+            FutexKey::Shared { identity } => identity.offset(),
+            FutexKey::Private { .. } => panic!("shared mapping produced a private futex key"),
+        }
+    }
+
+    #[axtest::axtest]
+    fn shared_futex_key_survives_vma_split() {
+        let start = VirtAddr::from_usize(0x7100_0000);
+        let second_page = start.checked_add(PAGE_SIZE_4K).unwrap();
+        let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+        let pages = Arc::new(SharedMemoryObject::allocate(PAGE_SIZE_4K * 2, PAGE_SIZE_4K).unwrap());
+        let mut aspace = AddrSpace::new_empty(start, PAGE_SIZE_4K * 2).unwrap();
+        aspace
+            .map(
+                start,
+                PAGE_SIZE_4K * 2,
+                flags,
+                false,
+                MappingOperation::new_shared(start, pages),
+            )
+            .unwrap();
+
+        let before = shared_offset(FutexKey::new(
+            &aspace,
+            0,
+            second_page.as_usize(),
+            FutexKeyMode::Auto,
+        ));
+        aspace
+            .protect(
+                second_page,
+                PAGE_SIZE_4K,
+                MappingFlags::READ | MappingFlags::USER,
+            )
+            .unwrap();
+        let after = shared_offset(FutexKey::new(
+            &aspace,
+            0,
+            second_page.as_usize(),
+            FutexKeyMode::Auto,
+        ));
+
+        aspace.reset_uninstalled_for_loader().unwrap();
+        assert_eq!(before, after, "VMA split changed shared futex identity");
     }
 }

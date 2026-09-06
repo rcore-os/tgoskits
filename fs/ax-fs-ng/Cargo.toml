@@ -25,6 +25,7 @@ cfg-if = { workspace = true }
 chrono = { workspace = true }
 dma-api = { workspace = true }
 hashbrown = "0.16"
+heapless.workspace = true
 intrusive-collections = "0.9"
 irq-framework = { workspace = true }
 log = { workspace = true }
@@ -47,3 +48,4 @@ features = ["alloc", "lfn", "log_level_trace", "unicode"]
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-sync = { workspace = true, features = ["host-test"] }
+ax-runtime = { workspace = true, features = ["host-test"] }

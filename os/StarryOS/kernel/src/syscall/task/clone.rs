@@ -9,16 +9,16 @@ use scope_local::Scope;
 use starry_signal::Signo;
 
 use super::schedule_abi::fork_schedule_policy;
-#[cfg(target_arch = "riscv64")]
-use crate::task::prepare_user_thread_with_fp_scheduler_state;
 #[cfg(target_arch = "x86_64")]
 use crate::task::prepare_user_thread_inheriting_fp_scheduler_state;
+#[cfg(target_arch = "riscv64")]
+use crate::task::prepare_user_thread_with_fp_scheduler_state;
 #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
 use crate::task::prepare_user_thread_with_scheduler_state;
 use crate::{
     StarryError, StarryResult,
     file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
-    mm::{VmMutPtr, copy_from_kernel},
+    mm::{MmHandle, VmMutPtr, copy_from_kernel},
     sync::SpinLock,
     task::{
         PidIdentity, PidReservation, PidReservationKind, ProcessData, ProcessDataInit,
@@ -405,12 +405,14 @@ impl CloneArgs {
             prepared_fork = Some(prepared);
 
             let aspace = if flags.contains(CloneFlags::VM) {
-                old_proc_data.aspace()
+                old_proc_data
+                    .clone_aspace_user_ref()
+                    .map_err(|_| StarryError::InvalidInput)?
             } else {
-                let aspace_arc = old_proc_data.aspace();
-                let aspace = aspace_arc.lock().try_clone()?;
+                let parent_mm = old_proc_data.pin_aspace()?;
+                let aspace = parent_mm.lock().try_clone()?;
                 copy_from_kernel(&mut aspace.lock())?;
-                aspace
+                MmHandle::from_arc(aspace).map_err(|_| StarryError::BadState)?
             };
 
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
@@ -454,7 +456,6 @@ impl CloneArgs {
                 process_init,
             );
             proc_data.set_umask(old_proc_data.umask());
-            proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
             // fork/clone copies mm->dumpable from parent; without this, a
@@ -463,7 +464,7 @@ impl CloneArgs {
             // supposed to enforce. Verified via Linux host: parent sets 0,
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
-            proc_data.set_thp_disable(old_proc_data.thp_disable());
+            proc_data.set_transparent_huge_page_mode(old_proc_data.transparent_huge_page_mode())?;
 
             proc_data
         };
@@ -479,9 +480,9 @@ impl CloneArgs {
                 .scope_mut(&mut scope)
                 .clone_from(&crate::file::new_file_table_scope(current_fd_table.clone()));
         } else {
-            FD_TABLE.scope_mut(&mut scope).clone_from(
-                &crate::file::clone_file_table_scope(&current_fd_table),
-            );
+            FD_TABLE
+                .scope_mut(&mut scope)
+                .clone_from(&crate::file::clone_file_table_scope(&current_fd_table));
         }
 
         let current_fs_context = ax_fs_ng::vfs::current_fs_context();
@@ -682,7 +683,7 @@ ax_tracepoint::define_event_trace!(
     sys_clone,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(syscalls),
-    TP_PROTO(flags:u32, stack:usize, parent_tid:usize),
+    TP_PROTO(flags: u32, stack: usize, parent_tid: usize),
     TP_STRUCT__entry {
         stack: usize,
         parent_tid: usize,

@@ -86,18 +86,24 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // handlers or pending per-CPU IRQ enables.
     super::interrupt_bootstrap::init_cpu(cpu_id);
 
+    #[cfg(feature = "paging")]
+    let tlb_preparation = ax_hal::cache::prepare_current_cpu_tlb()
+        .expect("secondary CPU failed to prepare TLB capability");
+
     // Complete architecture-local IPI readiness before the scheduler exposes
     // this CPU as a target. A scheduler safe point after publication may rearm
     // a physical self-doorbell even while bootstrap preemption is still held.
     #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     {
-        ax_hal::asm::flush_tlb(None);
         ax_ipi::mark_current_cpu_ready();
     }
     let online_cpu = crate::task::publish_current_cpu_online()
         .expect("failed to publish secondary scheduler CPU");
     crate::task::start_current_ktimer_service().expect("failed to create secondary ktimer service");
     super::clock_event_runtime::enable_irqs_after_scheduler_online(online_cpu);
+    #[cfg(feature = "paging")]
+    ax_hal::cache::publish_current_cpu_tlb_ready(tlb_preparation)
+        .expect("secondary CPU failed to publish TLB readiness");
     crate::guard::release_bootstrap_preemption();
 
     // Publishing a log record is safe as soon as the per-CPU area exists, but

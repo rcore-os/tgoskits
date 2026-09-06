@@ -313,6 +313,15 @@ fn test_kernel_page_table_window_excludes_direct_map() {
 pub fn run() -> crate::TestResult {
     #[cfg(target_arch = "loongarch64")]
     test_kernel_page_table_window_excludes_direct_map();
+    // A fallible standard-library request must report allocation failure to
+    // the caller, and leave the allocator usable for subsequent requests.
+    let mut fallible = Vec::<u8>::new();
+    assert!(fallible.try_reserve_exact(1usize << 46).is_err());
+    assert!(fallible.is_empty());
+    fallible.extend_from_slice(b"allocator still usable");
+    assert_eq!(&fallible, b"allocator still usable");
+    drop(fallible);
+    println!("memtest: fallible allocation recovery OK");
 
     let mut rng = SmallRng::seed_from_u64(0xdead_beef);
     test_vec(&mut rng);

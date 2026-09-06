@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** publish a validated virtual-address-space layout instead of a
+  fixed kernel range, and derive LoongArch canonical halves from CPUCFG VALEN.
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/someboot-v0.4.1...someboot-v0.4.2) - 2026-08-27
 
 ### Added

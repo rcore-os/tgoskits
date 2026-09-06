@@ -93,9 +93,11 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
         "boot::tests::boot_entropy_is_unavailable_without_firmware",
         "boot::tests::bootargs_facade_is_available",
         "cache::tests::all_cpu_tlb_shootdown_propagates_remote_failure",
-        "cache::tests::all_cpu_tlb_shootdown_skips_offline_cpus_then_flushes_local",
+        "cache::tests::cpu_ready_publication_reflushes_a_racing_generation",
+        "cache::tests::cpu_ready_publication_rejects_unrepresentable_cpu_ids",
         "cache::tests::large_tlb_ranges_switch_to_one_full_invalidation",
         "cache::tests::local_mmu_cache_update_aligns_the_fault_address_once",
+        "cache::tests::selected_offline_cpu_cannot_be_silently_acknowledged",
         "cache::tests::targeted_tlb_shootdown_skips_unselected_remote_and_local_cpus",
         "irq::tests::acknowledged_irq_completion_precedes_preempt_release",
         "topology::tests::dummy_topology_only_maps_the_boot_cpu",
@@ -164,20 +166,11 @@ const FS_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
 
 const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
-        name: "host-test+vfs",
+        name: "host-test+vfs+fat+ext4",
         no_default_features: false,
-        features: &["host-test", "vfs"],
+        features: &["host-test", "vfs", "fat", "ext4"],
         name_filter: None,
-        expected_tests: &[],
-    },
-    PackageFeatureProfile {
-        name: "host-test+vfs-reclaim-discovery",
-        no_default_features: false,
-        features: &["host-test", "vfs"],
-        name_filter: Some("reclaim_releases_registry_spin_lock_before_sleepable_file_locks"),
-        expected_tests: &[
-            "file::cache::reclaim::tests::reclaim_releases_registry_spin_lock_before_sleepable_file_locks",
-        ],
+        expected_tests: &["block::cache::registry::tests::reclaim_capability_does_not_defer_last_endpoint_drop"],
     },
     PackageFeatureProfile {
         name: "host-test-resource-rollback-discovery",

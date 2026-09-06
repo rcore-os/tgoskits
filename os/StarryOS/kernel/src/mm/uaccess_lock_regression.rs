@@ -1,7 +1,6 @@
 //! Test-only synchronization for the faultable user-copy QEMU regression.
 
-use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crate::task::{UserTaskRef, try_current_user_task, yield_now};
 
@@ -14,10 +13,10 @@ const EAGER_PREPARATION_OBSERVED: u8 = 5;
 const USER_COPY_FAULT_OBSERVED: u8 = 6;
 
 static USER_COPY_TEST_STATE: AtomicU8 = AtomicU8::new(IDLE);
-static USER_COPY_TEST_ADDRESS_SPACE: AtomicUsize = AtomicUsize::new(0);
+static USER_COPY_TEST_ADDRESS_SPACE: AtomicU64 = AtomicU64::new(0);
 
-fn address_space_identity(task: &UserTaskRef) -> usize {
-    Arc::as_ptr(&task.as_thread().proc_data.aspace()) as usize
+fn address_space_identity(task: &UserTaskRef) -> u64 {
+    task.as_thread().proc_data.aspace().id().get()
 }
 
 fn belongs_to_armed_test(task: &UserTaskRef, expected_state: u8) -> bool {
@@ -39,7 +38,7 @@ pub(crate) fn hold_address_space_until_user_copy() -> bool {
         return false;
     };
     let address_space = task.as_thread().proc_data.aspace();
-    USER_COPY_TEST_ADDRESS_SPACE.store(Arc::as_ptr(&address_space) as usize, Ordering::Release);
+    USER_COPY_TEST_ADDRESS_SPACE.store(address_space.id().get(), Ordering::Release);
     USER_COPY_TEST_STATE.store(HOLDER_READY, Ordering::Release);
 
     loop {
@@ -138,11 +137,11 @@ pub(crate) fn record_faulting_user_copy(task: &UserTaskRef) -> bool {
     }
     USER_COPY_TEST_STATE
         .compare_exchange(
-        ADDRESS_SPACE_HELD,
-        USER_COPY_FAULT_OBSERVED,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    )
+            ADDRESS_SPACE_HELD,
+            USER_COPY_FAULT_OBSERVED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
         .is_ok()
 }
 

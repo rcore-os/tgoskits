@@ -7,6 +7,18 @@ use crate::{blockdev::*, bmalloc::AbsoluteBN, config::USE_MULTILEVEL_CACHE, erro
 /// Cache key for one physical data block.
 pub type BlockCacheKey = AbsoluteBN;
 
+#[derive(Debug, Clone, Copy)]
+struct DirtyBlock {
+    block_num: AbsoluteBN,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WritebackCompletion {
+    MarkClean,
+    RetainDirty,
+}
+
 /// Cached data block.
 #[derive(Debug, Clone)]
 pub struct CachedBlock {
@@ -123,26 +135,16 @@ impl DataBlockCache {
         // physically contiguous dirty blocks into a bounded device request.
         let victim_count = self.max_entries.div_ceil(4).max(1);
         let victim_count = core::cmp::min(victim_count, self.lru_order.len());
-        let victims = self.lru_order[..victim_count].to_vec();
-        let mut dirty_blocks = victims
-            .iter()
-            .filter_map(|block_num| {
-                self.cache.get(block_num).and_then(|cached| {
-                    cached.dirty.then(|| {
-                        (
-                            cached.block_num,
-                            cached.generation,
-                            cached.data.as_ref().clone(),
-                        )
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-        dirty_blocks.sort_by_key(|(block_num, ..)| *block_num);
+        let mut victims = Vec::new();
+        victims
+            .try_reserve_exact(victim_count)
+            .map_err(|_| Ext4Error::no_memory())?;
+        victims.extend_from_slice(&self.lru_order[..victim_count]);
+        let dirty_blocks = self.dirty_blocks_for_keys(&victims)?;
 
         // Keep every selected entry dirty and resident unless all writeback
         // requests succeed. Retrying a partially persisted batch is safe.
-        Self::write_dirty_runs(block_dev, &dirty_blocks, self.block_size)?;
+        self.write_dirty_runs(block_dev, &dirty_blocks, WritebackCompletion::RetainDirty)?;
         for block_num in &victims {
             self.cache.remove(block_num);
         }
@@ -427,21 +429,12 @@ impl DataBlockCache {
 
     /// Flushes all dirty cached blocks to disk.
     pub fn flush_all<B: BlockIo>(&mut self, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {
-        let dirty_blocks = self.dirty_blocks_for_flush();
+        let dirty_blocks = self.dirty_blocks_for_flush()?;
         if dirty_blocks.is_empty() {
             return Ok(());
         }
 
-        Self::write_dirty_runs(block_dev, &dirty_blocks, self.block_size)?;
-        for (block_num, generation, _) in dirty_blocks {
-            if let Some(cached) = self.cache.get_mut(&block_num)
-                && cached.generation == generation
-            {
-                cached.dirty = false;
-                cached.generation = cached.generation.saturating_add(1);
-            }
-        }
-        Ok(())
+        self.write_dirty_runs(block_dev, &dirty_blocks, WritebackCompletion::MarkClean)
     }
 
     /// Flushes one cached block to disk.
@@ -517,21 +510,36 @@ impl DataBlockCache {
         }
     }
 
-    fn dirty_blocks_for_flush(&self) -> Vec<(AbsoluteBN, u64, Vec<u8>)> {
-        let mut dirty_blocks = self
-            .cache
-            .values()
-            .filter(|cached| cached.dirty)
-            .map(|cached| {
-                (
-                    cached.block_num,
-                    cached.generation,
-                    cached.data.as_ref().clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        dirty_blocks.sort_by_key(|(block_num, ..)| *block_num);
+    fn dirty_blocks_for_flush(&self) -> Ext4Result<Vec<DirtyBlock>> {
+        let dirty_count = self.cache.values().filter(|cached| cached.dirty).count();
+        let mut dirty_blocks = Vec::new();
         dirty_blocks
+            .try_reserve_exact(dirty_count)
+            .map_err(|_| Ext4Error::no_memory())?;
+        dirty_blocks.extend(self.cache.iter().filter_map(|(&block_num, cached)| {
+            cached.dirty.then_some(DirtyBlock {
+                block_num,
+                generation: cached.generation,
+            })
+        }));
+        Ok(dirty_blocks)
+    }
+
+    fn dirty_blocks_for_keys(&self, block_nums: &[AbsoluteBN]) -> Ext4Result<Vec<DirtyBlock>> {
+        let mut dirty_blocks = Vec::new();
+        dirty_blocks
+            .try_reserve_exact(block_nums.len())
+            .map_err(|_| Ext4Error::no_memory())?;
+        dirty_blocks.extend(block_nums.iter().filter_map(|block_num| {
+            self.cache.get(block_num).and_then(|cached| {
+                cached.dirty.then_some(DirtyBlock {
+                    block_num: *block_num,
+                    generation: cached.generation,
+                })
+            })
+        }));
+        dirty_blocks.sort_by_key(|dirty| dirty.block_num);
+        Ok(dirty_blocks)
     }
 
     /// Writes one block to disk.
@@ -550,32 +558,69 @@ impl DataBlockCache {
     }
 
     fn write_dirty_runs<B: BlockIo>(
+        &mut self,
         block_dev: &mut Jbd2Dev<B>,
-        dirty_blocks: &[(AbsoluteBN, u64, Vec<u8>)],
-        block_size: usize,
+        dirty_blocks: &[DirtyBlock],
+        completion: WritebackCompletion,
     ) -> Ext4Result<()> {
-        const MAX_BLOCKS_PER_WRITE: usize = 100;
+        if dirty_blocks.is_empty() {
+            return Ok(());
+        }
+
+        let buffered_blocks = core::cmp::min(dirty_blocks.len(), MAX_BUFFERED_WRITE_BLOCKS);
+        let buffer_bytes = self
+            .block_size
+            .checked_mul(buffered_blocks)
+            .ok_or_else(Ext4Error::overflow)?;
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(buffer_bytes)
+            .map_err(|_| Ext4Error::no_memory())?;
 
         let mut idx = 0usize;
         while idx < dirty_blocks.len() {
-            let (start_block, ..) = dirty_blocks[idx];
+            let start_block = dirty_blocks[idx].block_num;
             let mut run_len = 1usize;
 
-            while idx + run_len < dirty_blocks.len() && run_len < MAX_BLOCKS_PER_WRITE {
+            while idx + run_len < dirty_blocks.len() && run_len < MAX_BUFFERED_WRITE_BLOCKS {
                 let expected = start_block.checked_add_usize(run_len)?;
-                if dirty_blocks[idx + run_len].0 != expected {
+                if dirty_blocks[idx + run_len].block_num != expected {
                     break;
                 }
                 run_len += 1;
             }
 
-            let mut buf = Vec::with_capacity(block_size * run_len);
-            for off in 0..run_len {
-                buf.extend_from_slice(&dirty_blocks[idx + off].2);
+            buffer.clear();
+            for dirty in &dirty_blocks[idx..idx + run_len] {
+                let cached = self.cache.get(&dirty.block_num).ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("data_cache:missing_dirty_block")
+                })?;
+                if !cached.dirty || cached.generation != dirty.generation {
+                    return Err(
+                        Ext4Error::corrupted().with_operation("data_cache:stale_dirty_snapshot")
+                    );
+                }
+                let data = cached.data.get(..self.block_size).ok_or_else(|| {
+                    Ext4Error::corrupted().with_operation("data_cache:short_dirty_block")
+                })?;
+                buffer.extend_from_slice(data);
             }
 
             let run_len_u32 = u32::try_from(run_len).map_err(|_| Ext4Error::overflow())?;
-            block_dev.write_blocks(&buf, start_block, run_len_u32, false)?;
+            block_dev.write_blocks(&buffer, start_block, run_len_u32, false)?;
+            if completion == WritebackCompletion::MarkClean {
+                for dirty in &dirty_blocks[idx..idx + run_len] {
+                    let cached = self.cache.get_mut(&dirty.block_num).ok_or_else(|| {
+                        Ext4Error::corrupted().with_operation("data_cache:lost_written_block")
+                    })?;
+                    if !cached.dirty || cached.generation != dirty.generation {
+                        return Err(Ext4Error::corrupted()
+                            .with_operation("data_cache:changed_written_block"));
+                    }
+                    cached.dirty = false;
+                    cached.generation = cached.generation.saturating_add(1);
+                }
+            }
             idx += run_len;
         }
         Ok(())
@@ -599,6 +644,8 @@ mod tests {
     struct TestBlockDevice {
         data: Vec<u8>,
         fail_writes: bool,
+        fail_write_number: Option<usize>,
+        write_attempts: usize,
         read_calls: Vec<(u64, u32)>,
         write_calls: Vec<(u64, u32)>,
     }
@@ -608,6 +655,8 @@ mod tests {
             Self {
                 data: alloc::vec![0; blocks * BLOCK_SIZE],
                 fail_writes: false,
+                fail_write_number: None,
+                write_attempts: 0,
                 read_calls: Vec::new(),
                 write_calls: Vec::new(),
             }
@@ -617,6 +666,20 @@ mod tests {
             Self {
                 data: alloc::vec![0; blocks * BLOCK_SIZE],
                 fail_writes: true,
+                fail_write_number: None,
+                write_attempts: 0,
+                read_calls: Vec::new(),
+                write_calls: Vec::new(),
+            }
+        }
+
+        #[cfg(feature = "USE_MULTILEVEL_CACHE")]
+        fn failing_write_number(blocks: usize, fail_write_number: usize) -> Self {
+            Self {
+                data: alloc::vec![0; blocks * BLOCK_SIZE],
+                fail_writes: false,
+                fail_write_number: Some(fail_write_number),
+                write_attempts: 0,
                 read_calls: Vec::new(),
                 write_calls: Vec::new(),
             }
@@ -643,7 +706,8 @@ mod tests {
             block_id: crate::io::SectorId,
             count: u32,
         ) -> Ext4Result<()> {
-            if self.fail_writes {
+            self.write_attempts += 1;
+            if self.fail_writes || self.fail_write_number == Some(self.write_attempts) {
                 return Err(Ext4Error::io());
             }
             self.write_calls.push((block_id.raw(), count));
@@ -810,6 +874,65 @@ mod tests {
         let device = jbd2_dev.into_inner();
         assert!(device.read_calls.is_empty());
         assert_eq!(device.write_calls, [(10, 1)]);
+    }
+
+    #[cfg(feature = "USE_MULTILEVEL_CACHE")]
+    #[test]
+    fn flush_bounds_each_contiguous_writeback_request() {
+        let mut cache = DataBlockCache::new(32, BLOCK_SIZE);
+        let device = TestBlockDevice::new(1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        for block in 10..27 {
+            cache
+                .modify_new(&mut jbd2_dev, AbsoluteBN::new(block), |data| {
+                    data.fill(block as u8);
+                })
+                .expect("fill dirty cache");
+        }
+        cache.flush_all(&mut jbd2_dev).expect("bounded writeback");
+
+        let device = jbd2_dev.into_inner();
+        assert_eq!(device.write_calls, [(10, 16), (26, 1)]);
+    }
+
+    #[cfg(feature = "USE_MULTILEVEL_CACHE")]
+    #[test]
+    fn flush_commits_only_batches_acknowledged_by_the_device() {
+        let mut cache = DataBlockCache::new(32, BLOCK_SIZE);
+        let device = TestBlockDevice::failing_write_number(1024, 2);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        for block in 10..27 {
+            cache
+                .modify_new(&mut jbd2_dev, AbsoluteBN::new(block), |data| {
+                    data.fill(block as u8);
+                })
+                .expect("fill dirty cache");
+        }
+
+        let error = cache
+            .flush_all(&mut jbd2_dev)
+            .expect_err("the second writeback batch must fail");
+        assert_eq!(error.kind(), Ext4ErrorKind::Io);
+        assert_eq!(cache.stats().dirty_entries, 1);
+        for block in 10..26 {
+            assert!(
+                !cache
+                    .get(AbsoluteBN::new(block))
+                    .expect("written block remains cached")
+                    .dirty
+            );
+        }
+        assert!(
+            cache
+                .get(AbsoluteBN::new(26))
+                .expect("failed block remains cached")
+                .dirty
+        );
+
+        let device = jbd2_dev.into_inner();
+        assert_eq!(device.write_calls, [(10, 16)]);
     }
 
     #[cfg(feature = "USE_MULTILEVEL_CACHE")]

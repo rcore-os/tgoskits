@@ -21,13 +21,9 @@ fn bidirectional_user_buffer_splits_copy_in_and_copy_out_capabilities() {
         "impl<T> UserConstPtr<T> {",
         "/// Cumulative count of user page faults",
     );
-    let syscall = section(SYS, "pub fn sys_riscv_hwprobe", "Ok(0)\n}");
 
     assert!(!user_ptr.contains("pub fn read_slice(self, len: usize)"));
     assert!(user_const_ptr.contains("pub fn read_slice(self, task: &UserTaskRef, len: usize)"));
-    assert!(syscall.contains("crate::mm::UserConstPtr::<RiscvHwprobe>"));
-    assert!(syscall.contains("input_pairs.read_slice(current, pair_count)?"));
-    assert!(syscall.contains("output_pairs.write_slice(current, &pairs)?"));
 }
 
 #[test]
@@ -37,7 +33,13 @@ fn riscv_hwprobe_is_a_bidirectional_wire_type() {
 
     assert!(hwprobe.contains("bytemuck::AnyBitPattern"));
     assert!(hwprobe.contains("bytemuck::NoUninit"));
-    assert!(syscall.contains("input_pairs.read_slice(current, pair_count)?"));
+    assert!(syscall.contains("key_ptr.vm_read(current)?"));
+    assert!(syscall.contains("key_ptr.vm_write(current, key)?"));
+    assert!(syscall.contains(".vm_write(current, value)?"));
+    assert!(
+        !syscall.contains("read_slice"),
+        "hwprobe imports keys and publishes each pair in order"
+    );
     assert!(!syscall.contains("read_abi_slice"));
 }
 
@@ -75,8 +77,9 @@ fn scalar_stream_write_preserves_the_user_buffer_as_an_io_cursor() {
     let syscall = section(FS_IO, "pub fn sys_write(", "\n}\n\npub fn sys_writev");
 
     assert!(
-        syscall.contains("memfd_checks_before_stream_write_from_user("),
-        "write must preserve EFAULT-before-seal ordering only for memfd-backed files"
+        syscall.find("check_access(").unwrap()
+            < syscall.find("memfd_checks_before_stream_write(").unwrap(),
+        "write must validate pointer geometry before seals without faulting the payload"
     );
     assert!(
         syscall.contains("VmBytes::new(current, buf.cast_const(), len)"),

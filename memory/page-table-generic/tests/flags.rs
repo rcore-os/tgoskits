@@ -216,7 +216,7 @@ fn test_high_with_flags<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
 ) where
     T: TableMeta<P = PteImpl>,
 {
-    let mut pg = unsafe { PageTableRef::<T, A>::new(alloc).unwrap() };
+    let mut pg = PageTable::<T, A>::new(alloc).unwrap();
     println!("table page size: {:#x}", T::PAGE_SIZE);
     println!("valid bits: {}", PageTableRef::<T, A>::valid_bits());
 

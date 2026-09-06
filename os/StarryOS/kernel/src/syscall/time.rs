@@ -1,8 +1,6 @@
 use core::mem::{offset_of, size_of};
 
-use ax_runtime::hal::time::{
-    NANOS_PER_SEC, TimeValue, monotonic_time, wall_time,
-};
+use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time, wall_time};
 use linux_raw_sys::general::{
     __kernel_clockid_t, __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, CLOCK_BOOTTIME,
     CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID,

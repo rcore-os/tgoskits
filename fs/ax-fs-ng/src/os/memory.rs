@@ -37,8 +37,16 @@ impl FsPage {
         self.addr
     }
 
-    pub fn as_mut_ptr(&self) -> *mut u8 {
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.addr as *mut u8
+    }
+
+    /// Borrows the uniquely owned page as writable bytes.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `from_raw` requires a writable page-sized allocation owned
+        // by this non-Clone token. Requiring `&mut self` prevents safe callers
+        // from creating overlapping mutable slices from shared references.
+        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), PAGE_SIZE) }
     }
 }
 
@@ -107,8 +115,8 @@ pub mod test_support {
         }
 
         fn reset(&self, translate: bool) {
-            self.translate.store(translate, Ordering::Release);
             self.generation.fetch_add(1, Ordering::AcqRel);
+            self.translate.store(translate, Ordering::Release);
             self.alloc_count.store(0, Ordering::Release);
             self.dealloc_count.store(0, Ordering::Release);
         }
@@ -128,7 +136,7 @@ pub mod test_support {
             })
         }
 
-        fn dealloc_page(&self, page: FsPage) {
+        fn dealloc_page(&self, mut page: FsPage) {
             let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
             let generation = page.generation;
             // SAFETY: `page` was allocated by `alloc_page` with this exact
@@ -170,11 +178,16 @@ mod tests {
 
     #[test]
     fn page_provider_allocates_and_deallocates_pages() {
+        let previous_scope_page = with_test_page_provider(true, |_| {
+            alloc_page().expect("allocate previous-scope page")
+        });
+
         with_test_page_provider(true, |provider| {
             let page = alloc_page().unwrap();
             assert_ne!(page.addr(), 0);
             assert_eq!(page.addr() % PAGE_SIZE, 0);
             assert_eq!(virt_to_phys(page.addr()), Some(page.addr() + 0x1000_0000));
+            dealloc_page(previous_scope_page);
             dealloc_page(page);
             assert_eq!(provider.alloc_count(), 1);
             assert_eq!(provider.dealloc_count(), 1);

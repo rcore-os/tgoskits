@@ -14,6 +14,57 @@ const TLB_PAIR_SIZE: usize = PAGE_SIZE_4K * 2;
 
 #[cfg(feature = "tls")]
 use crate::KernelTlsBase;
+#[cfg(feature = "uspace")]
+use crate::{InstalledAddressSpace, InstalledAddressSpaceMode};
+
+/// Returns the number of LoongArch ASIDs, including reserved ASID 0.
+pub fn address_space_tag_capacity(_cpu_count: usize) -> u32 {
+    // The generic installed identity stores a u16 tag. Preserve every ASID bit
+    // representable by that contract instead of imposing an arbitrary 10-bit
+    // software limit.
+    let width = asid::read().asid_width().min(u16::BITS as usize);
+    1u32.checked_shl(width as u32).unwrap_or(1).max(1)
+}
+
+#[cfg(feature = "uspace")]
+fn flush_tlb_asid(tag: u16) {
+    // op 0x4 invalidates every non-global entry matching the supplied ASID.
+    unsafe {
+        asm!(
+            "dbar 0; invtlb 0x04, {asid}, $r0",
+            asid = in(reg) usize::from(tag),
+        )
+    }
+}
+
+/// Installs one complete userspace identity into PGDL and CSR.ASID.
+///
+/// Incoming tagged contexts are invalidated before their root becomes usable;
+/// the full-flush path installs ASID 0 and discards every local translation.
+/// This is a conservative version of Linux's per-CPU ASID/version protocol:
+/// tags may be globally allocated, but stale per-CPU state is never reused.
+///
+/// # Safety
+///
+/// The caller must own the current CPU with interrupts disabled and the root
+/// must remain alive for the complete activation lease.
+#[cfg(feature = "uspace")]
+pub unsafe fn install_user_address_space(address_space: InstalledAddressSpace) {
+    address_space.validate_architecture_support();
+    let tagged = matches!(address_space.mode(), InstalledAddressSpaceMode::Tagged)
+        && u32::from(address_space.hardware_tag()) < address_space_tag_capacity(1);
+    if tagged {
+        flush_tlb_asid(address_space.hardware_tag());
+        // Linux writes PGDL before ASID so the new tag cannot name the old
+        // page-table root. Scheduling is IRQ-disabled across both CSR writes.
+        pgdl::set_base(address_space.root().as_usize() as _);
+        asid::set_asid(usize::from(address_space.hardware_tag()));
+    } else {
+        pgdl::set_base(address_space.root().as_usize() as _);
+        asid::set_asid(0);
+        flush_tlb(None);
+    }
+}
 
 core::arch::global_asm!(
     ".balign 16",
@@ -307,7 +358,7 @@ unsafe extern "C" {
 }
 
 /// Lock-free EL0/user access probe. No hardware address-translation probe is
-/// wired up on this architecture yet, so always report "not fast-path eligible"
+/// wired up on this architecture yet, so always report a present-page probe miss
 /// and let the caller take the locked slow path (correctness preserved).
 ///
 /// # Safety
@@ -317,6 +368,6 @@ unsafe extern "C" {
 /// IRQs-off), so callers can use one `unsafe` block across all targets.
 #[cfg(feature = "uspace")]
 #[inline]
-pub unsafe fn user_access_ok_page(_vaddr: usize, _write: bool) -> bool {
+pub unsafe fn user_access_ok_page(_vaddr: usize, _access: crate::UserAccessType) -> bool {
     false
 }

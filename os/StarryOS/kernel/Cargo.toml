@@ -58,7 +58,6 @@ features = [
     "ax-runtime/rtc",
     "smp",
     "starry-kernel/input",
-    "starry-kernel/user-access-fastpath",
     "starry-kernel/vsock",
 ]
 
@@ -220,17 +219,10 @@ AX_TARGET = "x86_64-unknown-none"
 [features]
 default = ["dynamic_debug"]
 dev-log = []
-# Lock-free user-copy fast path: probe the HW page table (aarch64 `AT S1E0R/W`)
-# so a syscall copy of already-present, EL0-permitted pages skips the aspace lock
-# and `populate_area`. Off by default; misses fall to the unchanged locked slow
-# path. The probe itself is always compiled (rides ax-cpu `uspace`); this gate
-# only enables its use. Only meaningful on aarch64 (other arches stub to false).
-user-access-fastpath = []
 ext4 = ["ax-fs-ng/ext4"]
 fat = ["ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-runtime/input"]
 ipi = ["ax-runtime/ipi"]
-loongarch64-low-va = []
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
 qperf-metrics = ["ax-runtime/qperf-metrics"]
 # Exposes a debugfs-only synchronization hook used by the real userspace QEMU
@@ -287,6 +279,7 @@ ax-runtime = { workspace = true, features = [
     "rtc",
     "ext4fs",
     "net",
+    "vmap-task-stack",
 ] }
 ax-std = { workspace = true, default-features = false, features = [
     "alloc",
@@ -318,7 +311,6 @@ bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl", "derive"] }
 cfg-if = "1.0"
 chrono = { version = "0.4", default-features = false }
 downcast-rs = { version = "2.0", default-features = false, features = ["sync"] }
-enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 flatten_objects = "0.2.4"
 hashbrown = "0.16"

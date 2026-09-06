@@ -12,8 +12,6 @@ use ax_task::runtime::{
 use super::PAGE_SIZE;
 
 pub(super) struct RuntimeStack {
-    #[cfg(feature = "paging")]
-    pub(super) base: usize,
     pub(super) usable_top: usize,
     pub(super) backing: StackBacking,
 }
@@ -24,7 +22,7 @@ pub(super) enum StackBacking {
         layout: Layout,
     },
     #[cfg(feature = "paging")]
-    GuardedPages { pages: usize, guard_size: usize },
+    VirtualPages(ax_mm::KernelVirtualAllocation),
 }
 
 #[cfg(feature = "tls")]
@@ -37,13 +35,13 @@ pub(super) fn allocate_runtime_stack(request: StackRequest) -> Result<StackHandl
         return Err(RuntimeStatus::InvalidArgument);
     }
 
-    if request.guard_size == 0 {
+    if request.guard_size == 0 && !cfg!(feature = "vmap-task-stack") {
         return allocate_heap_stack(request);
     }
 
     #[cfg(feature = "paging")]
     {
-        allocate_guarded_stack(request)
+        allocate_virtual_stack(request)
     }
     #[cfg(not(feature = "paging"))]
     {
@@ -62,8 +60,6 @@ fn allocate_heap_stack(request: StackRequest) -> Result<StackHandle, RuntimeStat
         .checked_add(request.usable_size)
         .ok_or(RuntimeStatus::InvalidArgument)?;
     let stack = Box::new(RuntimeStack {
-        #[cfg(feature = "paging")]
-        base,
         usable_top,
         backing: StackBacking::Heap { pointer, layout },
     });
@@ -73,49 +69,41 @@ fn allocate_heap_stack(request: StackRequest) -> Result<StackHandle, RuntimeStat
 }
 
 #[cfg(feature = "paging")]
-fn allocate_guarded_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
+fn allocate_virtual_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
     if !request.guard_size.is_multiple_of(PAGE_SIZE) {
         return Err(RuntimeStatus::InvalidArgument);
     }
+    let alignment = request.alignment.max(PAGE_SIZE);
     let usable_size = request
         .usable_size
-        .checked_add(PAGE_SIZE - 1)
-        .ok_or(RuntimeStatus::InvalidArgument)?
-        / PAGE_SIZE
-        * PAGE_SIZE;
-    let total_size = request
-        .guard_size
-        .checked_add(usable_size)
+        .checked_next_multiple_of(alignment)
         .ok_or(RuntimeStatus::InvalidArgument)?;
-    let pages = total_size / PAGE_SIZE;
-    let base = ax_alloc::global_allocator()
-        .alloc_pages(
-            pages,
-            request.alignment.max(PAGE_SIZE),
-            ax_alloc::UsageKind::Global,
-        )
-        .map_err(map_alloc_status)?;
-    let guard = ax_memory_addr::VirtAddr::from(base);
-    if crate::kernel_mapping::protect_kernel_range(
-        guard,
-        request.guard_size,
-        ax_hal::paging::MappingFlags::empty(),
+    let guard_size = request
+        .guard_size
+        .checked_next_multiple_of(alignment)
+        .ok_or(RuntimeStatus::InvalidArgument)?;
+    let layout = ax_mm::KernelVirtualAllocationLayout::new(
+        usable_size,
+        ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
+        ax_alloc::UsageKind::TaskStack,
     )
-    .is_err()
-    {
-        ax_alloc::global_allocator().dealloc_pages(base, pages, ax_alloc::UsageKind::Global);
-        return Err(RuntimeStatus::Platform);
-    }
+    .and_then(|layout| layout.with_leading_guard_pages(guard_size / PAGE_SIZE))
+    .and_then(|layout| layout.with_alignment(alignment))
+    .map_err(|_| RuntimeStatus::InvalidArgument)?;
+    // This is an ordinary resource-preparation path. A previous failed
+    // shootdown may be retried here, before reserving another virtual range.
+    ax_mm::retry_kernel_virtual_quarantines(8);
+    let allocation =
+        ax_mm::KernelVirtualAllocation::allocate(layout).map_err(|error| match error {
+            ax_mm::MmError::NoMemory => RuntimeStatus::NoMemory,
+            _ => RuntimeStatus::Platform,
+        })?;
     let stack = Box::new(RuntimeStack {
-        base,
-        usable_top: base + total_size,
-        backing: StackBacking::GuardedPages {
-            pages,
-            guard_size: request.guard_size,
-        },
+        usable_top: allocation.usable_range().end.as_usize(),
+        backing: StackBacking::VirtualPages(allocation),
     });
-    // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeStack that
-    // stays live until deallocate_runtime_stack consumes this exact handle.
+    // SAFETY: the box uniquely owns the reservation and remains live until
+    // the scheduler consumes this handle after the context has stopped.
     Ok(unsafe { StackHandle::from_raw(Box::into_raw(stack).expose_provenance()) })
 }
 
@@ -135,18 +123,12 @@ pub(super) fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
             ax_alloc::global_allocator().dealloc(pointer, layout);
         }
         #[cfg(feature = "paging")]
-        StackBacking::GuardedPages { pages, guard_size } => {
-            let guard = ax_memory_addr::VirtAddr::from(stack.base);
-            let restore = ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE;
-            if crate::kernel_mapping::protect_kernel_range(guard, guard_size, restore).is_err() {
-                core::mem::forget(stack);
-                return RuntimeStatus::Platform;
+        StackBacking::VirtualPages(allocation) => {
+            if let Err(error) = allocation.release() {
+                // The MM metadata retains the frames and VA across failure.
+                // The consumed stack handle itself no longer owns resources.
+                warn!("task stack retained in kernel virtual quarantine: {error}");
             }
-            ax_alloc::global_allocator().dealloc_pages(
-                stack.base,
-                pages,
-                ax_alloc::UsageKind::Global,
-            );
         }
     }
     RuntimeStatus::Success

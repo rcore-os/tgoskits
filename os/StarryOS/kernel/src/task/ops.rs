@@ -8,10 +8,9 @@ use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use starry_signal::{SignalInfo, Signo};
 
 use super::{
-    AlarmTarget, AlarmToken, PendingTimerActions, ProcessData, Thread, UserTaskRef,
-    ZombieSnapshot, current_user_task, processes, publish_zombie,
-    resolve_futex_for_process_teardown, send_signal_to_process, send_signal_to_process_data,
-    send_signal_to_thread, yield_now,
+    AlarmTarget, AlarmToken, PendingTimerActions, ProcessData, Thread, UserTaskRef, ZombieSnapshot,
+    current_user_task, processes, publish_zombie, resolve_futex_for_process_teardown,
+    send_signal_to_process, send_signal_to_process_data, send_signal_to_thread, yield_now,
 };
 use crate::{
     StarryError, StarryResult,
@@ -436,13 +435,7 @@ ax_tracepoint::define_event_trace!(
         exit_code: exit_code,
     },
     TP_ident(__entry),
-    TP_printk({
-        alloc::format!(
-            "tid={} exit_code={}",
-            __entry.tid,
-            __entry.exit_code,
-        )
-    })
+    TP_printk({ alloc::format!("tid={} exit_code={}", __entry.tid, __entry.exit_code,) })
 );
 
 fn emit_sched_process_exit(tid: TidNumber, exit_code: i32) {
@@ -642,15 +635,20 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // A parent that observes this child as a zombie must not see IPC
         // resources that still belong to the exiting process. In particular,
         // a vfork parent resumes only after this cleanup.
-        crate::syscall::clear_proc_shm(
-            process_identity_id,
-            process.identity().snapshot(),
-            &thr.proc_data.aspace(),
-        );
+        if let Ok(aspace) = thr.proc_data.pin_aspace() {
+            crate::syscall::clear_proc_shm(
+                process_identity_id,
+                process.identity().snapshot(),
+                &aspace,
+            );
+        } else {
+            warn!("shared-memory exit cleanup skipped for an unavailable MM");
+        }
 
-        // Drop memfd inode accounting before waitpid returns (SMP); use
-        // process_slots refcounting — not vm_aspace_shared + clear().
-        thr.proc_data.release_aspace_slot_if_needed();
+        // Release the process owner before publishing the zombie.  The typed
+        // MM lifecycle defers reclaim until all kernel pins and activations
+        // have quiesced, so this path cannot clear a root still in use.
+        thr.proc_data.retire_mm_owner();
 
         publish_zombie(
             &thr.proc_data,

@@ -86,7 +86,6 @@ pub(super) struct ProcessPolicyState {
     rlimits: ProcessResourceLimits,
     umask: AtomicU32,
     dumpable: AtomicI32,
-    thp_disable: AtomicU32,
     personality: AtomicUsize,
 }
 
@@ -96,7 +95,6 @@ impl ProcessPolicyState {
             rlimits: ProcessResourceLimits::new(),
             umask: AtomicU32::new(0o022),
             dumpable: AtomicI32::new(1),
-            thp_disable: AtomicU32::new(0),
             personality: AtomicUsize::new(0),
         }
     }
@@ -141,14 +139,6 @@ impl ProcessData {
 
     pub fn set_dumpable(&self, dumpable: i32) {
         self.policy.dumpable.store(dumpable, Ordering::SeqCst);
-    }
-
-    pub fn thp_disable(&self) -> u32 {
-        self.policy.thp_disable.load(Ordering::SeqCst)
-    }
-
-    pub fn set_thp_disable(&self, thp_disable: u32) {
-        self.policy.thp_disable.store(thp_disable, Ordering::SeqCst);
     }
 
     pub fn personality(&self) -> usize {

@@ -75,6 +75,11 @@ use ax_task::{
 };
 
 mod address_space;
+mod mm_activation;
+pub use mm_activation::{
+    AddressSpaceSwitchProof, SchedulerAddressSpaceActivation, SchedulerAddressSpaceOwner,
+    UserAddressSpaceOwner,
+};
 mod bootstrap;
 mod context;
 mod executor;

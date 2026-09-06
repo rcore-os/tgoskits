@@ -5,12 +5,12 @@ use ax_fs_ng::vfs::{OpenOptions, current_fs_context};
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
 pub(crate) use crate::file::memfd::{
+    apply_shared_writable_deltas as memfd_apply_shared_writable_deltas,
     check_write_seal_for_shared_file_backend as memfd_check_write_seal_for_shared_file_backend,
     collect_metas_touching_mprotect_range as memfd_collect_metas_touching_mprotect_range,
     on_after_map as memfd_on_after_map,
-    on_aspace_replace_metadata as memfd_on_aspace_replace_metadata,
-    prepare_shared_writable_release as memfd_prepare_shared_writable_release,
-    prepare_shared_writable_unmap as memfd_prepare_shared_writable_unmap,
+    prepare_aspace_replace_deltas as memfd_prepare_aspace_replace_deltas,
+    prepare_aspace_unmap_deltas as memfd_prepare_aspace_unmap_deltas,
     resync_shared_writable_counts_after_mprotect as memfd_resync_shared_writable_counts_after_mprotect,
 };
 use crate::{
@@ -148,22 +148,6 @@ pub fn memfd_checks_before_stream_write(
 /// Non-memfd streams keep the user buffer as an I/O cursor and therefore skip
 /// eager address-space preparation. A memfd can reject the write before
 /// consuming that cursor, so its input range must be validated first.
-pub fn memfd_checks_before_stream_write_from_user(
-    file_like: &Arc<dyn FileLike>,
-    current: &crate::task::UserTaskRef,
-    buf: *const u8,
-    len: usize,
-) -> StarryResult<()> {
-    if len == 0 {
-        return Ok(());
-    }
-    let Some(memfd) = memfd_from_file_like(file_like) else {
-        return Ok(());
-    };
-    crate::mm::UserConstPtr::<u8>::from(buf).validate_slice(current, len)?;
-    memfd.check_write_seal()
-}
-
 pub fn memfd_checks_before_write_at(
     file_like: &Arc<dyn FileLike>,
     _offset: u64,

@@ -145,7 +145,9 @@ fn task_context_owns_kernel_tls_but_not_scheduler_address_space_state() {
         .expect("raw context switch")
         .1;
     assert!(
-        !raw_switches.contains("write_user_page_table") && !raw_switches.contains("flush_tlb"),
+        !raw_switches.contains("install_user_address_space")
+            && !raw_switches.contains("write_user_page_table")
+            && !raw_switches.contains("flush_tlb"),
         "address-space work must complete before current-register publication and raw transfer"
     );
 }

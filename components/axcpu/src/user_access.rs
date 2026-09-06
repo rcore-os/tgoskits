@@ -1,5 +1,14 @@
 //! Nofault access to user-space words.
 
+/// Direction of an architecture-level user-memory access check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserAccessType {
+    /// The kernel intends to read bytes supplied by user space.
+    Read,
+    /// The kernel intends to write bytes into user space.
+    Write,
+}
+
 /// Failure returned by a nofault user read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserAccessError {

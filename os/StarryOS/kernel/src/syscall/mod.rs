@@ -889,6 +889,7 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
         Sysno::msync => sys_msync(current, uctx.arg0(), uctx.arg1() as _, uctx.arg2() as _),
         Sysno::mlock => sys_mlock(current, uctx.arg0(), uctx.arg1() as _),
         Sysno::mlock2 => sys_mlock2(current, uctx.arg0(), uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::munlock => sys_munlock(current, uctx.arg0(), uctx.arg1() as _),
 
         // task info
         Sysno::getpid => sys_getpid(current),

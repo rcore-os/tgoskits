@@ -10,10 +10,6 @@ features = [
   "ax-driver/xhci-pci",
   "starry-kernel/input",
   "starry-kernel/vsock",
-  # Exercise the lock-free user-copy fast path across the whole aarch64 suite
-  # (the AT-probe consumer of ax-cpu `user_access_ok_page`); every syscall copy
-  # of present pages now takes it, with the COW/not-present cases covered below.
-  "starry-kernel/user-access-fastpath",
 ]
 max_cpu_num = 4
 log = "Warn"

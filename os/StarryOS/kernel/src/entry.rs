@@ -8,7 +8,7 @@ use ax_runtime::hal::cpu::uspace::UserContext;
 
 use crate::{
     file::{FD_TABLE, FileTable, new_file_table_scope},
-    mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
+    mm::{MmHandle, load_user_app, new_user_image_builder},
     namespace::NsProxy,
     pseudofs::{self, dev::tty},
     sync::{PiMutex, RwLock},
@@ -36,6 +36,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
+    crate::mm::spawn_reclaimer_task();
     // DVFS: a one-shot OPP-calibration boot runs the sweep and skips the governor;
     // otherwise start the ondemand governor. Both run here (early init, before the
     // console tty handoff) so their kernel logs reach the serial console.
@@ -59,15 +60,14 @@ pub fn init(args: &[String], envs: &[String]) {
         .expect("Failed to get executable absolute path");
     let name = loc.name().into_owned();
 
-    let mut uspace = new_user_aspace_empty()
-        .and_then(|mut it| {
-            copy_from_kernel(&mut it)?;
-            Ok(it)
-        })
-        .expect("Failed to create user address space");
-
-    let (entry_vaddr, ustack_top, auxv) = load_user_app(&mut uspace, loc, &args[0], args, envs)
-        .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
+    let mut image_builder =
+        new_user_image_builder().expect("Failed to create unpublished user address space");
+    let loaded_image = load_user_app(&mut image_builder, loc, &args[0], args, envs)
+        .unwrap_or_else(|error| panic!("Failed to load user app: {error}"));
+    let prepared_image = image_builder
+        .finish(loaded_image)
+        .expect("loaded init image token no longer matches its address space");
+    let (uspace, entry_vaddr, ustack_top, auxv) = prepared_image.into_parts();
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
 
@@ -114,7 +114,8 @@ pub fn init(args: &[String], envs: &[String]) {
                 "/".to_string(),
                 "/".to_string(),
             ),
-            Arc::new(PiMutex::new(uspace)),
+            MmHandle::from_arc(Arc::new(PiMutex::new(uspace)))
+                .expect("init MM identity must be unique"),
             Arc::default(),
             NsProxy::new_root(),
             None,
@@ -128,8 +129,7 @@ pub fn init(args: &[String], envs: &[String]) {
     let mut scope = scope_local::Scope::new();
     let mut fd_table = FileTable::new();
     crate::file::add_stdio(&mut fd_table).expect("Failed to add stdio");
-    *FD_TABLE.scope_mut(&mut scope) =
-        new_file_table_scope(Arc::new(RwLock::new(fd_table)));
+    *FD_TABLE.scope_mut(&mut scope) = new_file_table_scope(Arc::new(RwLock::new(fd_table)));
 
     let thr = Thread::new(
         identity.clone(),

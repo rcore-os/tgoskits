@@ -19,10 +19,9 @@ use starry_vm::VmError;
 
 use crate::{
     StarryError, StarryResult,
-    config::USER_HEAP_BASE,
     file::{ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{
-        MAX_EXEC_ARG_BYTES, copy_from_kernel, load_user_app, new_user_aspace_empty,
+        MAX_EXEC_ARG_BYTES, MmHandle, load_user_app, new_user_image_builder,
         validate_exec_arg_size, vm_load_string, vm_load_until_nul,
     },
     sync::{InterruptibleMutexExt, PiMutex},
@@ -249,12 +248,11 @@ fn do_execve(
     // also acts as the bprm-equivalent: the executable contents are
     // pinned now, so the post-teardown commit phase doesn't re-resolve
     // the pathname (the FS could change while siblings are being reaped).
-    let mut new_aspace = new_user_aspace_empty()?;
-    copy_from_kernel(&mut new_aspace)?;
-    let (entry_point, user_stack_base, auxv) =
-        match load_user_app(&mut new_aspace, loc, &path, &args, &envs) {
-            Ok(result) => result,
-            Err(StarryError::InvalidExecutable) => {
+    let mut image_builder = new_user_image_builder()?;
+    let loaded_image = match load_user_app(&mut image_builder, loc, &path, &args, &envs) {
+        Ok(image) => image,
+        Err(error) => match error {
+            StarryError::InvalidExecutable => {
                 // ENOEXEC fallback: retry via /bin/sh.
                 // In Linux this retry is done by user-space (execvp / busybox),
                 // not by the kernel. This is a pragmatic workaround until
@@ -266,10 +264,26 @@ fn do_execve(
                 args = iter::once(String::from(shell_path))
                     .chain(args.iter().cloned())
                     .collect();
-                load_user_app(&mut new_aspace, shell_loc, shell_path, &args, &envs)?
+                load_user_app(&mut image_builder, shell_loc, shell_path, &args, &envs)?
             }
-            Err(e) => return Err(e),
-        };
+            error => return Err(error),
+        },
+    };
+    let prepared_image = image_builder.finish(loaded_image)?;
+    let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
+
+    // Registration, runtime ownership and process metadata must all be ready
+    // before the first sibling is killed, which is already irreversible.
+    let inherited_thp_mode = proc_data.transparent_huge_page_mode();
+    let newaspace_arc = Arc::new(PiMutex::new(new_aspace));
+    let new_mm = MmHandle::from_arc(newaspace_arc).map_err(|_| StarryError::BadState)?;
+    new_mm.set_transparent_huge_page_mode(inherited_thp_mode);
+
+    let scheduler_address_space =
+        crate::task::scheduler_address_space(&new_mm).map_err(|_| StarryError::BadState)?;
+    let prepared_memory = crate::task::PreparedProcessMemory::new(new_mm);
+    let new_cmdline = Arc::new(args);
+    let new_envp = Arc::new(envs);
 
     // ----------------------------------------------------------------
     // Sibling teardown (multi-thread only).
@@ -330,16 +344,11 @@ fn do_execve(
     // Nothing below may fail; errors here would leave the process broken.
     // ----------------------------------------------------------------
 
-    // Replace the aspace Arc so the parent's shared Arc<PiMutex<AddrSpace>>
-    // (from CLONE_VM) is never touched. The parent's page table register
-    // keeps pointing at the original still-live AddrSpace.
-    let newaspace_arc = Arc::new(PiMutex::new(new_aspace));
-    let scheduler_address_space = crate::task::scheduler_address_space(newaspace_arc.clone())
-        .unwrap_or_else(|error| panic!("new exec address space has no scheduler owner: {error}"));
+    // Publish only this process's new MM. CLONE_VM peers keep their owner.
     commit_address_space_handoff(
-        || proc_data.stage_memory_replacement(newaspace_arc),
+        || proc_data.stage_memory_replacement(prepared_memory),
         || curr.switch_address_space(scheduler_address_space),
-        |old_memory| crate::mm::release_process_slot(&old_memory.aspace()),
+        |old_memory| old_memory.retire(),
     );
 
     // PR_SET_KEEPCAPS is deliberately not inherited by a new executable
@@ -354,13 +363,11 @@ fn do_execve(
 
     curr.set_name(&new_name);
     proc_data.set_exe_path(new_exe_path);
-    proc_data.set_cmdline(Arc::new(args));
-    proc_data.set_envp(Arc::new(envs));
+    proc_data.set_cmdline(new_cmdline);
+    proc_data.set_envp(new_envp);
     let auxv_len = auxv.len();
     let has_ldso = auxv.iter().any(|e| e.get_type() == AuxType::BASE);
     proc_data.set_auxv(auxv);
-
-    proc_data.set_heap_top(USER_HEAP_BASE);
 
     // Reset signal state for the new image, per POSIX/Linux semantics
     // (see `flush_signal_handlers` + `do_execveat_common` in Linux):
@@ -387,43 +394,25 @@ fn do_execve(
     thr.set_robust_list_head(0);
     thr.clear_rseq_state();
 
-    // Collect and remove CLOEXEC fds after sibling teardown. Snapshotting
-    // before teardown would miss any fd a sibling promoted to CLOEXEC (via
-    // `open(... O_CLOEXEC)`, `fcntl(F_SETFD)`, or `close_range(..., CLOEXEC)`)
-    // between our snapshot and its own exit. The scan and removal share one
-    // short write critical section, but that guard must not span the address
-    // space and signal commit above: `FD_TABLE` uses a preempt-disabling lock,
-    // while those operations may acquire sleeping mutexes.
-    //
-    // Defer the actual
-    // `release_locks_on_close` (POSIX-lock release, OFD waker wakes,
-    // FileDescriptor drop) until after we've dropped the table write
-    // lock. The wakers fire on the global advisory-lock waiter queues
-    // and may immediately drive woken tasks back through `FD_TABLE`;
-    // running them under the write guard would risk lock re-entry and
-    // also expand the critical section across arbitrary destructor work.
-    // Linux's `do_close_on_exec` drops `files->file_lock` around each
-    // `filp_close` call for the same reason. We close the entire batch
-    // after the lock is released, which is equivalent: no new fd can
-    // appear in the slots we just emptied because nothing else in this
-    // process is running yet (siblings reaped, new image not started).
-    let closing = {
-        let current_fd_table = crate::file::current_fd_table();
-        let mut fd_table = current_fd_table.write();
-        let cloexec_fds: Vec<_> = fd_table
-            .ids()
-            .filter(|it| fd_table.get(*it).unwrap().cloexec)
-            .collect();
-        let mut closing = Vec::with_capacity(cloexec_fds.len());
-        for fd in cloexec_fds {
-            if let Some(f) = fd_table.remove(fd) {
-                closing.push(f);
-            }
-        }
-        closing
-    };
-    for f in closing {
-        crate::file::release_locks_on_close(f);
+    // Scan after sibling teardown so their final CLOEXEC changes are visible.
+    // As in Linux do_close_on_exec, detach one owner under the table lock and
+    // perform filp_close-equivalent callbacks after unlocking. No temporary
+    // Vec allocation or last descriptor drop occurs under the table guard.
+    let fd_table_owner = crate::file::current_fd_table();
+    let mut cursor = 0;
+    loop {
+        let closing = {
+            let mut table = fd_table_owner.write();
+            let next = table
+                .ids()
+                .find(|fd| *fd >= cursor && table.get(*fd).is_some_and(|entry| entry.cloexec));
+            next.and_then(|fd| table.remove(fd).map(|descriptor| (fd, descriptor)))
+        };
+        let Some((fd, descriptor)) = closing else {
+            break;
+        };
+        cursor = fd + 1;
+        crate::file::release_locks_on_close(descriptor);
     }
 
     // de_thread leader transfer (non-leader caller only).

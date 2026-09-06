@@ -931,6 +931,7 @@ version = "0.9.3"
 dependencies = [
  "ax-io",
  "ax-lazyinit",
+ "ax-runtime",
  "ax-sync",
  "axfs-ng-vfs",
  "axpoll",
@@ -939,6 +940,7 @@ dependencies = [
  "chrono",
  "dma-api",
  "hashbrown 0.16.1",
+ "heapless",
  "intrusive-collections",
  "irq-framework",
  "log",
@@ -8031,7 +8033,6 @@ dependencies = [
  "ddebug",
  "dma-api",
  "downcast-rs",
- "enum_dispatch",
  "event-listener",
  "flatten_objects",
  "hashbrown 0.16.1",

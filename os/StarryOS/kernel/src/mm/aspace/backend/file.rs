@@ -1,221 +1,611 @@
 use alloc::{
+    collections::BTreeMap,
+    format,
     string::ToString,
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_fs_ng::vfs::{CachedFile, EvictListenerOwner, FileFlags};
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_fs_ng::{
+    file::{
+        CacheMappingEndpoint, CacheMappingEvent, CacheMappingResult, CachePageIdentity,
+        CachedFileIdentity, CachedPagePin,
+    },
+    vfs::{CachedFile, FileFlags},
+};
+use ax_lazyinit::LazyLock;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
-use axfs_ng_vfs::{Location, VfsError};
-use weak_map::StrongRef;
+use axfs_ng_vfs::Location;
 
 use super::{
-    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapContext, MemoryAccounting,
-    PopulateCallback, RssKind, TlbGather, pages_in,
+    super::{
+        EvictMappingOutcome,
+        lifecycle::{RmapMmLookupError, pin_mm_for_rmap},
+        objects::{EvictionError, FrameLease, PageId, PageObject, PageState},
+        vma::{
+            FileSource, MappingId, MappingSource, PageOffset, PageSizePolicy, VmaDescriptor,
+            allocate_mapping_id,
+        },
+    },
+    FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingFileInfo, MappingOperation,
+    PopulateRequest, PreparedPteOwner, ProviderPublication, PteMaterialization, RssKind,
+    occupied_leaf_ranges, pages_in,
 };
-use crate::{StarryError, StarryResult, sync::PiMutex};
+use crate::{StarryError, StarryResult, mm::flush_tlb_range_sync, sync::Mutex};
 
 #[doc(hidden)]
 pub struct FileBackendInner {
+    /// Stable identity shared by all VMAs of this file object.  It is assigned
+    /// once at creation and is deliberately independent of an `Arc` pointer.
+    mapping_id: MappingId,
+    /// One software ownership domain shared by every mapping of the same
+    /// CachedFileIdentity.  VMA fragments never register their own callbacks or
+    /// retain a second strong page index.
+    page_domain: Arc<FilePageDomain>,
     shared: bool,
-    file_data: PiMutex<FileBackendInnerData>,
-    cache: CachedFile,
-    eviction_owner: EvictListenerOwner,
-    flags: FileFlags,
-    handle: AtomicUsize,
-    futex_handle: Arc<()>,
-}
-
-#[derive(Clone)]
-struct FileBackendInnerData {
+    /// Immutable coordinates of this VMA fragment.  Splits and left shrinks
+    /// path-copy the backend instead of mutating metadata behind a sleeping
+    /// lock, so PTE-only paths can never enter the VMA metadata domain.
     start: VirtAddr,
     offset_page: u32,
+    cache: CachedFile,
+    flags: FileFlags,
 }
 
-impl Drop for FileBackendInner {
-    fn drop(&mut self) {
-        let handle = self.handle.load(Ordering::Acquire);
-        if handle != 0 {
-            unsafe {
-                self.cache.remove_evict_listener(handle);
-            }
+enum FilePageEntry {
+    Publishing {
+        file_epoch: u64,
+        page: Arc<PageObject>,
+        pins: Vec<CachedPagePin>,
+    },
+    Published {
+        file_epoch: u64,
+        page: Weak<PageObject>,
+    },
+}
+
+impl FilePageEntry {
+    const fn file_epoch(&self) -> u64 {
+        match self {
+            Self::Publishing { file_epoch, .. } | Self::Published { file_epoch, .. } => *file_epoch,
+        }
+    }
+
+    fn page(&self) -> Option<Arc<PageObject>> {
+        match self {
+            Self::Publishing { page, .. } => Some(page.clone()),
+            Self::Published { page, .. } => page.upgrade(),
         }
     }
 }
-impl FileBackendInner {
-    pub fn register_listener(self: &Arc<Self>, aspace: &Arc<PiMutex<AddrSpace>>) {
-        if self.handle.load(Ordering::Acquire) != 0 {
-            panic!("Listener already registered");
-        }
-        debug_assert_eq!(self.eviction_owner, EvictListenerOwner::from_arc(aspace));
-        let aspace = Arc::downgrade(aspace);
-        let writeback_aspace = aspace.clone();
-        let this = Arc::downgrade(self);
-        let writeback = this.clone();
-        let handle = self.cache.add_owned_page_listener(
-            self.eviction_owner,
-            move |pn, _page| -> bool {
-                let Some(this) = this.upgrade() else {
-                    // Backend dropped — no mappings remain, safe to free.
-                    return true;
-                };
-                let Some(aspace) = writeback_aspace.upgrade() else {
-                    // The address space has been dropped, nothing to do.
-                    return true;
-                };
-                let Some(mut aspace) = aspace.try_lock() else {
-                    // Cannot acquire AddrSpace lock (contention with populate
-                    // or another thread).  Return false so the reclaim path
-                    // puts the page back into the cache instead of freeing it
-                    // — dropping the page here would leave a dangling PTE.
-                    return false;
-                };
-                this.on_evict(pn, &mut aspace)
-            },
-            move |pn| -> bool {
-                let Some(this) = writeback.upgrade() else {
-                    return true;
-                };
-                let Some(aspace) = aspace.upgrade() else {
-                    return true;
-                };
-                let mut aspace = aspace.lock();
-                this.protect_dirty_page(pn, &mut aspace)
-            },
-        );
-        self.handle.store(handle, Ordering::Release);
+
+#[derive(Default)]
+struct FilePageIndex {
+    pages: BTreeMap<u32, FilePageEntry>,
+}
+
+impl FilePageIndex {
+    fn prune_stale(&mut self) {
+        self.pages.retain(|_, entry| entry.page().is_some());
     }
 
-    fn on_evict(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) -> bool {
-        match aspace.mutate_with_tlb_gather_confirmed(&[], |aspace, gather| {
-            self.unmap_evicted_page(pn, aspace, gather)
-        }) {
-            Ok(()) => true,
-            Err(error) => {
-                warn!("Failed to finish page-cache eviction TLB transaction: {error}");
-                false
+    fn reserve_publication(
+        &mut self,
+        file_epoch: u64,
+        page_number: u32,
+        pin: CachedPagePin,
+    ) -> StarryResult<Arc<PageObject>> {
+        self.prune_stale();
+        let paddr = PhysAddr::from_usize(pin.paddr());
+        if let Some(entry) = self.pages.get_mut(&page_number) {
+            let page = entry.page().ok_or(StarryError::BadState)?;
+            if entry.file_epoch() > file_epoch {
+                return Err(StarryError::ResourceBusy);
             }
-        }
-    }
-
-    pub(in crate::mm::aspace) fn unmap_evicted_page(
-        self: &Arc<Self>,
-        pn: u32,
-        aspace: &mut AddrSpace,
-        gather: &mut TlbGather,
-    ) -> crate::StarryResult {
-        let vaddr = {
-            let file_data = self.file_data.lock();
-            let Some(pn) = pn.checked_sub(file_data.offset_page) else {
-                return Ok(());
-            };
-            file_data.start + pn as usize * PAGE_SIZE_4K
-        };
-        if !aspace.find_area(vaddr).is_some_and(
-            |it| matches!(it.backend(), Backend::File(file) if Arc::ptr_eq(&file.0, self)),
-        ) {
-            // Ignore if the page is not controlled by this file mapping.
-            return Ok(());
-        }
-        let shootdown_range = super::super::tlb::checked_range(vaddr, PAGE_SIZE_4K)?;
-
-        let kind = if self.shared {
-            RssKind::Shmem
-        } else {
-            RssKind::File
-        };
-        let mapped = match aspace.page_table().query_occupied(vaddr) {
-            Ok((_, _, PAGE_SIZE_4K)) => true,
-            Ok((_, _, page_size)) => {
-                warn!("Unexpected file-backed mmap page size: {page_size:?}");
+            let state = page.state();
+            if state != PageState::Present {
+                return if matches!(
+                    state,
+                    PageState::Evicting | PageState::Writeback | PageState::Retired
+                ) {
+                    Err(StarryError::ResourceBusy)
+                } else {
+                    Err(StarryError::BadState)
+                };
+            }
+            if page.frame().paddr() != paddr {
                 return Err(StarryError::BadState);
             }
-            Err(PagingError::NotMapped) => false,
-            Err(error) => return Err(error.into()),
-        };
-        let unmapped = if mapped {
-            gather
-                .prepare_page_table_reclaims(1)
-                .map_err(|_| StarryError::NoMemory)?;
-            let (_, _, _, deferred_page_tables) = aspace
-                .page_table_mut()
-                .unmap_page_deferred(vaddr)
-                .expect("a preflighted file-page eviction must remain mapped");
-            gather.defer_page_tables(deferred_page_tables);
-            true
-        } else {
-            false
-        };
-        if unmapped {
-            aspace.rss().dec(kind, 1);
-            gather.record_range(shootdown_range);
+            match entry {
+                FilePageEntry::Publishing {
+                    file_epoch: current_epoch,
+                    pins,
+                    ..
+                } => {
+                    pins.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
+                    pins.push(pin);
+                    *current_epoch = file_epoch;
+                }
+                FilePageEntry::Published { .. } => {
+                    let mut pins = Vec::new();
+                    pins.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
+                    pins.push(pin);
+                    *entry = FilePageEntry::Publishing {
+                        file_epoch,
+                        page: page.clone(),
+                        pins,
+                    };
+                }
+            }
+            return Ok(page);
         }
+
+        let frame = FrameLease::borrowed(paddr, PAGE_SIZE_4K, None).ok_or(StarryError::BadState)?;
+        let page = PageObject::new_present_with_resident_kind(
+            PageId::allocate(),
+            frame,
+            Some(RssKind::File),
+        );
+        let mut pins = Vec::new();
+        pins.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
+        pins.push(pin);
+        self.pages.insert(
+            page_number,
+            FilePageEntry::Publishing {
+                file_epoch,
+                page: page.clone(),
+                pins,
+            },
+        );
+        Ok(page)
+    }
+
+    fn resolve(
+        &mut self,
+        file_epoch: u64,
+        page_number: u32,
+        paddr: PhysAddr,
+    ) -> StarryResult<Option<Arc<PageObject>>> {
+        self.prune_stale();
+        let Some(entry) = self.pages.get(&page_number) else {
+            return Ok(None);
+        };
+        let page = entry.page().ok_or(StarryError::BadState)?;
+        if entry.file_epoch() > file_epoch || page.frame().paddr() != paddr {
+            return Err(StarryError::BadState);
+        }
+        Ok(Some(page))
+    }
+
+    fn finish_publication(
+        &mut self,
+        file_epoch: u64,
+        page_number: u32,
+        page: &Arc<PageObject>,
+    ) -> StarryResult<CachedPagePin> {
+        let entry = self
+            .pages
+            .get_mut(&page_number)
+            .ok_or(StarryError::BadState)?;
+        let FilePageEntry::Publishing {
+            file_epoch: current_epoch,
+            page: current,
+            pins,
+        } = entry
+        else {
+            return Err(StarryError::BadState);
+        };
+        if *current_epoch > file_epoch || !Arc::ptr_eq(current, page) || page.mapping_refs() == 0 {
+            return Err(StarryError::BadState);
+        }
+        let pin = pins.pop().ok_or(StarryError::BadState)?;
+        *current_epoch = file_epoch;
+        if pins.is_empty() {
+            *entry = FilePageEntry::Published {
+                file_epoch,
+                page: Arc::downgrade(page),
+            };
+        }
+        Ok(pin)
+    }
+
+    fn cancel_publication(
+        &mut self,
+        page_number: u32,
+        page: &Arc<PageObject>,
+    ) -> StarryResult<Option<CachedPagePin>> {
+        let Some(entry) = self.pages.get_mut(&page_number) else {
+            return Ok(None);
+        };
+        let FilePageEntry::Publishing {
+            file_epoch,
+            page: current,
+            pins,
+        } = entry
+        else {
+            return Ok(None);
+        };
+        if !Arc::ptr_eq(current, page) {
+            return Err(StarryError::BadState);
+        }
+        let pin = pins.pop().ok_or(StarryError::BadState)?;
+        if pins.is_empty() {
+            if page.mapping_refs() == 0 {
+                self.pages.remove(&page_number);
+            } else {
+                *entry = FilePageEntry::Published {
+                    file_epoch: *file_epoch,
+                    page: Arc::downgrade(page),
+                };
+            }
+        }
+        Ok(Some(pin))
+    }
+
+    fn ensure_identity(
+        &mut self,
+        file_epoch: u64,
+        page_number: u32,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
+        self.prune_stale();
+        if let Some(entry) = self.pages.get_mut(&page_number) {
+            let current = entry.page().ok_or(StarryError::BadState)?;
+            if !Arc::ptr_eq(&current, page) || entry.file_epoch() > file_epoch {
+                return Err(StarryError::BadState);
+            }
+            match entry {
+                FilePageEntry::Publishing {
+                    file_epoch: current_epoch,
+                    ..
+                }
+                | FilePageEntry::Published {
+                    file_epoch: current_epoch,
+                    ..
+                } => *current_epoch = file_epoch,
+            }
+            return Ok(());
+        }
+        self.pages.insert(
+            page_number,
+            FilePageEntry::Published {
+                file_epoch,
+                page: Arc::downgrade(page),
+            },
+        );
         Ok(())
     }
 
-    fn protect_dirty_page(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) -> bool {
-        let vaddr = {
-            let file_data = self.file_data.lock();
-            let Some(pn) = pn.checked_sub(file_data.offset_page) else {
-                return true;
-            };
-            file_data.start + pn as usize * PAGE_SIZE_4K
-        };
-        if !aspace.find_area(vaddr).is_some_and(
-            |it| matches!(it.backend(), Backend::File(file) if Arc::ptr_eq(&file.0, self)),
-        ) {
+    fn remove_retired(&mut self, page_number: u32, page: &Arc<PageObject>) -> bool {
+        let Some(entry) = self.pages.get(&page_number) else {
             return true;
+        };
+        let Some(current) = entry.page() else {
+            self.pages.remove(&page_number);
+            return true;
+        };
+        if !Arc::ptr_eq(&current, page) || matches!(entry, FilePageEntry::Publishing { .. }) {
+            return false;
         }
+        self.pages.remove(&page_number);
+        true
+    }
+}
 
-        let result = aspace.mutate_with_tlb_gather_confirmed(&[], |aspace, gather| {
-            let pt = aspace.page_table_mut();
-            match pt.query(vaddr) {
-                Ok((paddr, flags, PAGE_SIZE_4K)) => {
-                    // A writable shared mapping can dirty this page concurrently
-                    // with the writeback snapshot, so drop WRITE to fault the next
-                    // store. Read-only mappings need no transition.
-                    if flags.contains(MappingFlags::WRITE) {
-                        let new_flags = flags - MappingFlags::WRITE;
-                        pt.remap_page(vaddr, paddr, new_flags)?;
-                        gather.record_range(super::super::tlb::checked_range(
-                            vaddr,
-                            PAGE_SIZE_4K,
-                        )?);
-                    }
-                    Ok(true)
-                }
-                Ok((_, _, page_size)) => {
-                    warn!(
-                        "Unexpected file-backed mmap page size during writeback protect: {:?}",
-                        page_size
-                    );
-                    Ok(false)
-                }
-                Err(PagingError::NotMapped) => Ok(true),
-                Err(error) => Err(error.into()),
+struct FilePageDomain {
+    identity: CachedFileIdentity,
+    pages: Mutex<FilePageIndex>,
+}
+
+type FilePageDomains = BTreeMap<CachedFileIdentity, Weak<FilePageDomain>>;
+
+static FILE_PAGE_DOMAINS: LazyLock<Mutex<FilePageDomains>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+impl FilePageDomain {
+    fn get_or_create(cache: &CachedFile) -> StarryResult<Arc<Self>> {
+        let identity = cache.identity();
+        let domain = {
+            let mut domains = FILE_PAGE_DOMAINS.lock();
+            domains.retain(|_, domain| domain.strong_count() != 0);
+            if let Some(domain) = domains.get(&identity).and_then(Weak::upgrade) {
+                domain
+            } else {
+                let domain = Arc::new(Self {
+                    identity,
+                    pages: Mutex::new(FilePageIndex::default()),
+                });
+                domains.insert(identity, Arc::downgrade(&domain));
+                domain
             }
-        });
-        match result {
-            Ok(protected) => protected,
-            Err(error) => {
-                warn!("Failed to write-protect dirty mmap page {vaddr:?}: {error}");
-                false
+        };
+        let endpoint: Arc<dyn CacheMappingEndpoint> = domain.clone();
+        cache.install_mapping_endpoint(&endpoint)?;
+        Ok(domain)
+    }
+
+    fn reserve_page(
+        &self,
+        file_epoch: u64,
+        page_number: u32,
+        pin: CachedPagePin,
+    ) -> StarryResult<Arc<PageObject>> {
+        self.pages
+            .lock()
+            .reserve_publication(file_epoch, page_number, pin)
+    }
+
+    fn resolve_page(
+        &self,
+        file_epoch: u64,
+        page_number: u32,
+        paddr: PhysAddr,
+    ) -> StarryResult<Option<Arc<PageObject>>> {
+        self.pages.lock().resolve(file_epoch, page_number, paddr)
+    }
+
+    fn finish_page_publication(
+        &self,
+        file_epoch: u64,
+        page_number: u32,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
+        let pin = self
+            .pages
+            .lock()
+            .finish_publication(file_epoch, page_number, page)?;
+        drop(pin);
+        Ok(())
+    }
+
+    fn cancel_page_publication(&self, page_number: u32, page: &Arc<PageObject>) -> StarryResult {
+        let pin = self.pages.lock().cancel_publication(page_number, page)?;
+        drop(pin);
+        Ok(())
+    }
+
+    fn ensure_page_identity(
+        &self,
+        file_epoch: u64,
+        page_number: u32,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
+        self.pages
+            .lock()
+            .ensure_identity(file_epoch, page_number, page)
+    }
+
+    fn page_for_event(&self, identity: CachePageIdentity) -> StarryResult<Option<Arc<PageObject>>> {
+        if identity.file() != self.identity {
+            return Err(StarryError::BadState);
+        }
+        self.resolve_page(
+            identity.file_epoch(),
+            identity.page_number(),
+            PhysAddr::from_usize(identity.frame().paddr()),
+        )
+    }
+
+    fn evict_page(&self, identity: CachePageIdentity) -> CacheMappingResult {
+        let page = match self.page_for_event(identity) {
+            Ok(Some(page)) => page,
+            Ok(None) => return CacheMappingResult::Retired,
+            Err(_) => return CacheMappingResult::Failed,
+        };
+        if page.state() == PageState::Retired && page.mapping_refs() == 0 {
+            return if self
+                .pages
+                .lock()
+                .remove_retired(identity.page_number(), &page)
+            {
+                CacheMappingResult::Retired
+            } else {
+                CacheMappingResult::Busy
+            };
+        }
+        let lease = match page.state() {
+            PageState::Present => page.eviction_lease(),
+            PageState::Evicting => page.resume_eviction_lease(),
+            _ => Err(EvictionError::NotPresent),
+        };
+        let lease = match lease {
+            Ok(lease) => lease,
+            Err(EvictionError::NotPresent | EvictionError::Busy) => {
+                return CacheMappingResult::Busy;
+            }
+        };
+        let mappings = match page.rmap.try_snapshot() {
+            Ok(mappings) => mappings,
+            Err(_) => {
+                let _ = lease.cancel();
+                return CacheMappingResult::Busy;
+            }
+        };
+        for key in mappings {
+            let pin = match pin_mm_for_rmap(key.space_id) {
+                Ok(pin) => pin,
+                Err(RmapMmLookupError::Gone | RmapMmLookupError::Busy) => {
+                    let _ = lease.cancel();
+                    return CacheMappingResult::Busy;
+                }
+            };
+            let Some(mut aspace) = pin.try_lock() else {
+                let _ = lease.cancel();
+                return CacheMappingResult::Busy;
+            };
+            match aspace.evict_file_mapping_slot(key, &page) {
+                Ok(EvictMappingOutcome::Complete) => {}
+                Ok(EvictMappingOutcome::PublishedPendingTlb) => {
+                    drop(lease);
+                    return CacheMappingResult::Quarantined;
+                }
+                Ok(EvictMappingOutcome::NeedsRepair) => {
+                    drop(lease);
+                    return CacheMappingResult::Failed;
+                }
+                Err(StarryError::ResourceBusy) => {
+                    let _ = lease.cancel();
+                    return CacheMappingResult::Busy;
+                }
+                Err(_) => {
+                    let _ = lease.cancel();
+                    return CacheMappingResult::Failed;
+                }
             }
         }
+        match lease.retire() {
+            Ok(()) => {
+                if self
+                    .pages
+                    .lock()
+                    .remove_retired(identity.page_number(), &page)
+                {
+                    CacheMappingResult::Retired
+                } else {
+                    CacheMappingResult::Busy
+                }
+            }
+            Err((lease, _)) => {
+                let _ = lease.cancel();
+                CacheMappingResult::Busy
+            }
+        }
+    }
+
+    fn protect_dirty_page(&self, identity: CachePageIdentity) -> CacheMappingResult {
+        let page = match self.page_for_event(identity) {
+            Ok(Some(page)) => page,
+            Ok(None) => return CacheMappingResult::Protected,
+            Err(_) => return CacheMappingResult::Failed,
+        };
+        let lease = match page.writeback_lease() {
+            Ok(lease) => lease,
+            Err(_) => return CacheMappingResult::Busy,
+        };
+        let mappings = match page.rmap.try_snapshot() {
+            Ok(mappings) => mappings,
+            Err(_) => {
+                let _ = lease.cancel();
+                return CacheMappingResult::Busy;
+            }
+        };
+        for key in mappings {
+            let pin = match pin_mm_for_rmap(key.space_id) {
+                Ok(pin) => pin,
+                Err(_) => {
+                    let _ = lease.cancel();
+                    return CacheMappingResult::Busy;
+                }
+            };
+            let Some(mut aspace) = pin.try_lock() else {
+                let _ = lease.cancel();
+                return CacheMappingResult::Busy;
+            };
+            if let Err(error) = aspace.protect_file_mapping_slot(key, &page) {
+                let _ = lease.cancel();
+                return if matches!(
+                    error,
+                    StarryError::ResourceBusy
+                        | StarryError::Vfs(axfs_ng_vfs::VfsError::ResourceBusy)
+                ) {
+                    CacheMappingResult::Busy
+                } else {
+                    CacheMappingResult::Failed
+                };
+            }
+        }
+        if lease.complete().is_ok() {
+            CacheMappingResult::Protected
+        } else {
+            CacheMappingResult::Failed
+        }
+    }
+}
+
+impl CacheMappingEndpoint for FilePageDomain {
+    fn publish(&self, event: CacheMappingEvent) -> CacheMappingResult {
+        match event {
+            CacheMappingEvent::Evict(identity) => self.evict_page(identity),
+            CacheMappingEvent::WritebackProtect(identity) => self.protect_dirty_page(identity),
+        }
+    }
+}
+
+impl FileBackendInner {
+    fn page_number_at(&self, va: VirtAddr) -> Option<u32> {
+        let offset = va.checked_sub_addr(self.start)?;
+        if !offset.is_multiple_of(PAGE_SIZE_4K) {
+            return None;
+        }
+        self.offset_page
+            .checked_add(u32::try_from(offset / PAGE_SIZE_4K).ok()?)
+    }
+
+    fn page_object(&self, pn: u32, paddr: PhysAddr) -> Option<Arc<PageObject>> {
+        self.page_domain
+            .resolve_page(self.cache.mapping_epoch(), pn, paddr)
+            .ok()
+            .flatten()
+    }
+
+    fn page_object_for_va(&self, va: VirtAddr, paddr: PhysAddr) -> Option<Arc<PageObject>> {
+        self.page_object(self.page_number_at(va)?, paddr)
+    }
+
+    fn get_or_create_page_object(
+        &self,
+        pn: u32,
+        pin: CachedPagePin,
+    ) -> StarryResult<Arc<PageObject>> {
+        self.page_domain
+            .reserve_page(self.cache.mapping_epoch(), pn, pin)
+    }
+
+    fn finish_page_publication(&self, va: VirtAddr, page: &Arc<PageObject>) -> StarryResult {
+        let page_number = self.page_number_at(va).ok_or(StarryError::BadState)?;
+        self.page_domain
+            .finish_page_publication(self.cache.mapping_epoch(), page_number, page)
+    }
+
+    pub(super) fn cancel_page_publication(
+        &self,
+        va: VirtAddr,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
+        let page_number = self.page_number_at(va).ok_or(StarryError::BadState)?;
+        self.page_domain.cancel_page_publication(page_number, page)
+    }
+
+    fn ensure_page_identity(&self, va: VirtAddr, page: &Arc<PageObject>) -> StarryResult {
+        let page_number = self.page_number_at(va).ok_or(StarryError::BadState)?;
+        self.page_domain
+            .ensure_page_identity(self.cache.mapping_epoch(), page_number, page)
+    }
+
+    fn mapping_source(&self) -> MappingSource {
+        MappingSource::File(FileSource {
+            file_id: self.cache.identity().get(),
+            epoch: self.cache.mapping_epoch(),
+            shared: self.shared,
+        })
     }
 }
 
 /// File-backed mapping backend.
 #[derive(Clone)]
-pub struct FileBackend(Arc<FileBackendInner>, Weak<PiMutex<AddrSpace>>);
+pub struct FileBackend(Arc<FileBackendInner>);
 impl FileBackend {
-    pub(in crate::mm::aspace) fn retained_cache_owner(
-        &self,
-        cache: &CachedFile,
-    ) -> Option<Arc<FileBackendInner>> {
-        self.0.cache.ptr_eq(cache).then(|| self.0.clone())
+    fn with_coordinates(&self, start: VirtAddr, offset_page: u32) -> Self {
+        Self(Arc::new(FileBackendInner {
+            mapping_id: self.0.mapping_id,
+            page_domain: self.0.page_domain.clone(),
+            shared: self.0.shared,
+            start,
+            offset_page,
+            cache: self.0.cache.clone(),
+            flags: self.0.flags,
+        }))
     }
 
     pub(crate) fn check_flags(&self, flags: MappingFlags) -> StarryResult {
@@ -233,25 +623,9 @@ impl FileBackend {
         Ok(())
     }
 
-    /// Clone with a different start address and a fresh evict listener.
-    pub fn with_start(&self, new_start: VirtAddr, aspace: &Arc<PiMutex<AddrSpace>>) -> Self {
-        let mut file_data = self.0.file_data.lock().clone();
-        file_data.start = new_start;
-        let inner = Arc::new(FileBackendInner {
-            shared: self.0.shared,
-            file_data: PiMutex::new(file_data),
-            cache: self.0.cache.clone(),
-            eviction_owner: EvictListenerOwner::from_arc(aspace),
-            flags: self.0.flags,
-            handle: AtomicUsize::new(0),
-            futex_handle: self.0.futex_handle.clone(),
-        });
-        inner.register_listener(aspace);
-        Self(inner, aspace.downgrade())
-    }
-
-    pub fn futex_handle(&self) -> Arc<()> {
-        self.0.futex_handle.clone()
+    /// Clone with a different start address in the same file-page domain.
+    pub fn with_start(&self, new_start: VirtAddr) -> StarryResult<Self> {
+        Ok(self.with_coordinates(new_start, self.0.offset_page))
     }
 
     /// `true` when this file mapping is shared with the page cache (MAP_SHARED).
@@ -264,11 +638,7 @@ impl FileBackend {
         self.0.cache.location()
     }
 
-    pub fn is_shared(&self) -> bool {
-        self.0.shared
-    }
-
-    fn rss_kind(&self) -> RssKind {
+    pub(crate) fn rss_kind(&self) -> RssKind {
         if self.0.shared {
             RssKind::Shmem
         } else {
@@ -276,31 +646,144 @@ impl FileBackend {
         }
     }
 
+    pub fn cache(&self) -> &CachedFile {
+        &self.0.cache
+    }
+
+    pub(crate) fn mapping_id(&self) -> MappingId {
+        self.0.mapping_id
+    }
+
+    pub(crate) fn mapping_source(&self) -> MappingSource {
+        self.0.mapping_source()
+    }
+
+    pub(super) fn shared_futex_identity(
+        &self,
+        address: VirtAddr,
+    ) -> Option<super::SharedFutexIdentity> {
+        let local_offset = address.checked_sub_addr(self.0.start)?;
+        let source_base = usize::try_from(self.0.offset_page)
+            .ok()?
+            .checked_mul(PAGE_SIZE_4K)?;
+        let source_offset = source_base.checked_add(local_offset)?;
+        Some(super::SharedFutexIdentity::file(
+            self.0.cache.identity(),
+            source_offset,
+        ))
+    }
+
+    pub(crate) fn finish_page_publication(
+        &self,
+        va: VirtAddr,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
+        self.0.finish_page_publication(va, page)
+    }
+
+    pub(super) fn cancel_page_publication(
+        &self,
+        va: VirtAddr,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
+        self.0.cancel_page_publication(va, page)
+    }
+
+    pub(crate) fn ensure_page_identity(
+        &self,
+        va: VirtAddr,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
+        self.0.ensure_page_identity(va, page)
+    }
+
+    /// Retains the cache-owned frame behind one materialized file PTE.
+    ///
+    /// This lookup never performs I/O.  A present file PTE without the exact
+    /// cache page is an ownership invariant violation and must prevent the
+    /// caller from beginning an unmap transaction.
+    pub(crate) fn pin_cache_owner_for_mapping(
+        &self,
+        va: VirtAddr,
+        paddr: PhysAddr,
+    ) -> StarryResult<CachedPagePin> {
+        let page_number = self.0.page_number_at(va).ok_or(StarryError::BadState)?;
+        let pin = self.0.cache.pin_cached_page(page_number)?;
+        if pin.paddr() != paddr.as_usize() {
+            return Err(StarryError::BadState);
+        }
+        Ok(pin)
+    }
+
+    pub(super) fn mincore_location(&self) -> &Location {
+        self.0.cache.location()
+    }
+
+    pub(crate) fn page_cache_resident(&self, va: VirtAddr) -> bool {
+        let Some(local_offset) = va.checked_sub_addr(self.0.start) else {
+            return false;
+        };
+        let Ok(page_delta) = u32::try_from(local_offset / PAGE_SIZE_4K) else {
+            return false;
+        };
+        self.0
+            .offset_page
+            .checked_add(page_delta)
+            .is_some_and(|page| self.0.cache.is_page_cached(page))
+    }
+
     /// Byte offset into the backing file for a virtual address inside this
     /// mapping. Used by `madvise(MADV_REMOVE)` to punch a hole in the backing
     /// (`offset_page * PAGE + (va - mapping_start)`).
     pub(crate) fn file_offset_at(&self, va: VirtAddr) -> u64 {
-        let file_data = self.0.file_data.lock();
-        (file_data.offset_page as u64) * PAGE_SIZE_4K as u64
-            + (va.as_usize().saturating_sub(file_data.start.as_usize())) as u64
+        (self.0.offset_page as u64) * PAGE_SIZE_4K as u64
+            + (va.as_usize().saturating_sub(self.0.start.as_usize())) as u64
+    }
+
+    fn cache_page_range(
+        &self,
+        range_start: VirtAddr,
+        range_end: VirtAddr,
+    ) -> StarryResult<(u32, u32)> {
+        if range_start >= range_end {
+            return Ok((0, 0));
+        }
+        let offset_page = self.0.offset_page;
+        let mapping_start = self.0.start;
+        let local_start = range_start
+            .as_usize()
+            .checked_sub(mapping_start.as_usize())
+            .ok_or(StarryError::InvalidInput)?;
+        let local_end = range_end
+            .as_usize()
+            .checked_sub(mapping_start.as_usize())
+            .ok_or(StarryError::InvalidInput)?;
+        let start_page =
+            u32::try_from(local_start / PAGE_SIZE_4K).map_err(|_| StarryError::InvalidInput)?;
+        let end_page = u32::try_from(local_end.div_ceil(PAGE_SIZE_4K))
+            .map_err(|_| StarryError::InvalidInput)?;
+        let start_pn = offset_page
+            .checked_add(start_page)
+            .ok_or(StarryError::InvalidInput)?;
+        let end_pn = offset_page
+            .checked_add(end_page)
+            .ok_or(StarryError::InvalidInput)?;
+        Ok((start_pn, end_pn))
     }
 
     pub fn writeback_range(&self, range_start: VirtAddr, range_end: VirtAddr) -> StarryResult {
-        let file_data = self.0.file_data.lock();
+        if range_start >= range_end {
+            return Ok(());
+        }
+        // Cache lookup and writeback may sleep; immutable mapping coordinates
+        // let this path enter the cache without carrying a VMA metadata lock.
+        let (start_pn, end_pn) = self.cache_page_range(range_start, range_end)?;
 
-        let offset_page = file_data.offset_page;
-        let mapping_start = file_data.start;
-        let local_start = range_start
-            .as_usize()
-            .saturating_sub(mapping_start.as_usize());
-        let local_end = range_end
-            .as_usize()
-            .saturating_sub(mapping_start.as_usize());
-
-        let start_pn = offset_page + (local_start / PAGE_SIZE_4K) as u32;
-        let end_pn = offset_page + local_end.div_ceil(PAGE_SIZE_4K) as u32;
-
-        let dirty_pns = self.0.cache.dirty_pages_in_range(start_pn, end_pn);
+        let dirty_pns = self
+            .0
+            .cache
+            .dirty_pages_in_range(start_pn, end_pn)
+            .map_err(StarryError::from)?;
 
         if dirty_pns.is_empty() {
             return Ok(());
@@ -314,68 +797,139 @@ impl FileBackend {
         Ok(())
     }
 
-    pub fn file_info(&self) -> StarryResult<BackendFileInfo> {
-        let loc = self.0.cache.location();
-        let name = loc.absolute_path().map(|pb| pb.to_string())?;
-        let offset = (self.0.file_data.lock().offset_page as u64) * PAGE_SIZE_4K as u64;
-        let inode = loc.inode();
-        let dev = loc.metadata()?.device;
-        Ok(BackendFileInfo {
-            path: name,
-            offset: Some(offset),
-            inode: Some(inode),
-            dev: Some(dev),
-            shared: self.0.shared,
-        })
+    pub fn pageout_range(
+        &self,
+        range_start: VirtAddr,
+        range_end: VirtAddr,
+    ) -> StarryResult<ax_fs_ng::file::CachePageoutResult> {
+        let (start_pn, end_pn) = self.cache_page_range(range_start, range_end)?;
+        self.0
+            .cache
+            .pageout_pages(start_pn, end_pn)
+            .map_err(StarryError::from)
+    }
+
+    pub fn file_info(&self) -> StarryResult<MappingFileInfo> {
+        let offset = (self.0.offset_page as u64) * PAGE_SIZE_4K as u64;
+        mapping_file_info(self.0.cache.location(), offset, self.0.shared)
     }
 }
 
-impl BackendOps for FileBackend {
+pub(super) fn mapping_file_info(
+    loc: &Location,
+    offset: u64,
+    shared: bool,
+) -> StarryResult<MappingFileInfo> {
+    // An anonymous memfd has no parent dentry. Keep its inode-owned
+    // identity after fd close, without asking the path walker to invent
+    // a directory link. Release the user-data lock before formatting.
+    let memfd = {
+        loc.user_data()
+            .get::<crate::file::memfd::MemfdRef>()
+            .map(|memfd| memfd.0.clone())
+    };
+    let name = if let Some(memfd) = memfd {
+        format!("/memfd:{} (deleted)", memfd.name())
+    } else {
+        loc.absolute_path()?.to_string()
+    };
+    let inode = loc.inode();
+    let dev = loc.metadata()?.device;
+    Ok(MappingFileInfo {
+        path: name,
+        offset: Some(offset),
+        inode: Some(inode),
+        dev: Some(dev),
+        shared,
+    })
+}
+
+impl MappingExecution for FileBackend {
     fn page_size(&self) -> usize {
         PAGE_SIZE_4K
+    }
+
+    fn vma_descriptor(&self, area_start: VirtAddr) -> VmaDescriptor {
+        let offset = (self.0.offset_page as usize)
+            .saturating_mul(PAGE_SIZE_4K)
+            .saturating_add(
+                area_start
+                    .as_usize()
+                    .saturating_sub(self.0.start.as_usize()),
+            );
+        VmaDescriptor {
+            mapping: self.mapping_id(),
+            source: self.mapping_source(),
+            page_policy: PageSizePolicy::Base,
+            source_offset: PageOffset::new(offset),
+        }
     }
 
     fn map(
         &self,
         _range: VirtAddrRange,
         flags: MappingFlags,
-        _acct: Option<&MemoryAccounting>,
-        _gather: &mut TlbGather,
         _pt: &mut PageTable,
-    ) -> StarryResult {
-        self.check_flags(flags)
+    ) -> StarryResult<PteMaterialization> {
+        self.check_flags(flags)?;
+        Ok(PteMaterialization::empty())
     }
 
-    fn unmap(
-        &self,
-        range: VirtAddrRange,
-        acct: Option<&MemoryAccounting>,
-        gather: &mut TlbGather,
-        pt: &mut PageTable,
-    ) -> StarryResult {
-        let kind = self.rss_kind();
-        let mut mapped = Vec::new();
-        for addr in pages_in(range, PAGE_SIZE_4K)? {
-            match pt.query_occupied(addr) {
-                Ok((_, _, page_size)) if page_size == PAGE_SIZE_4K => mapped.push(addr),
-                Ok(_) => return Err(StarryError::BadState),
-                Err(PagingError::NotMapped) => {}
+    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
+        let provider_rollback = !super::tlb_retire_is_deferred();
+        for (addr, expected_size) in occupied_leaf_ranges(range, pt)? {
+            if expected_size != PAGE_SIZE_4K {
+                return Err(StarryError::BadState);
+            }
+            let (expected_paddr, _, page_size) = pt.query(addr)?;
+            if page_size != expected_size {
+                return Err(StarryError::BadState);
+            }
+            // A deferred unmap is owned by the outer address-space receipt:
+            // its retained MappingSlot/PageObject preimage is the exact frame
+            // authority until TLB acknowledgement.  Do not re-enter the
+            // sleeping file-page domain while a PTE stripe/structure cursor
+            // may be held.  Non-deferred calls are unpublished-map rollback
+            // and retain the provider reservation that must be cancelled.
+            let rollback_page = if provider_rollback {
+                Some(
+                    self.0
+                        .page_object_for_va(addr, expected_paddr)
+                        .ok_or(StarryError::BadState)?,
+                )
+            } else {
+                None
+            };
+            match pt.unmap_page(addr) {
+                Ok((paddr, _, page_size)) => {
+                    if page_size != PAGE_SIZE_4K {
+                        return Err(StarryError::BadState);
+                    }
+                    if expected_paddr != paddr {
+                        return Err(StarryError::BadState);
+                    }
+                    // The outer mutation normally holds a CachedPagePin until
+                    // its receipt is acknowledged.  Standalone rollback or
+                    // teardown callers have no such epoch batch and therefore
+                    // retain the immediate invalidation fallback.
+                    if provider_rollback {
+                        flush_tlb_range_sync(addr, page_size)?;
+                    }
+                    // MappingSlot/rmap is the sole installed-mapping owner.  A
+                    // reservation can still exist when an outer transaction is
+                    // rolling back before slot publication; canceling it here
+                    // releases the corresponding CachedPagePin.  Published
+                    // entries make this an idempotent no-op and are detached by
+                    // the outer address-space mutation.
+                    if let Some(page) = rollback_page {
+                        self.0.cancel_page_publication(addr, &page)?;
+                    }
+                }
+                Err(PagingError::NotMapped) => return Err(StarryError::BadState),
                 Err(err) => {
-                    warn!("Failed to prepare page unmap {:?}: {:?}", addr, err);
+                    warn!("Failed to unmap page {:?}: {:?}", addr, err);
                     return Err(err.into());
                 }
-            }
-        }
-        gather
-            .prepare_page_table_reclaims(mapped.len())
-            .map_err(|_| StarryError::NoMemory)?;
-        for addr in mapped {
-            let (_, _, _, deferred_page_tables) = pt
-                .unmap_page_deferred(addr)
-                .expect("a preflighted file page must remain mapped under the address-space lock");
-            gather.defer_page_tables(deferred_page_tables);
-            if let Some(acct) = acct {
-                acct.dec(kind, 1);
             }
         }
         Ok(())
@@ -385,51 +939,164 @@ impl BackendOps for FileBackend {
         &self,
         _range: VirtAddrRange,
         new_flags: MappingFlags,
-        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
         self.check_flags(new_flags)
     }
 
-    fn populate(
+    fn prepare_fault(
         &self,
-        range: VirtAddrRange,
+        _space_id: super::super::AddressSpaceId,
+        request: PopulateRequest,
         flags: MappingFlags,
         access_flags: MappingFlags,
-        acct: Option<&MemoryAccounting>,
-        gather: &mut TlbGather,
+        preimage: FaultPteSnapshot,
+    ) -> StarryResult<FaultMaterialization> {
+        let range = request.range();
+        if request.preferred_leaf_size() != PAGE_SIZE_4K
+            || range.size() != PAGE_SIZE_4K
+            || !range.start.is_aligned_4k()
+        {
+            return Err(StarryError::OperationNotSupported);
+        }
+        let local_offset = range
+            .start
+            .checked_sub_addr(self.0.start)
+            .ok_or(StarryError::BadState)?;
+        if !local_offset.is_multiple_of(PAGE_SIZE_4K) {
+            return Err(StarryError::BadState);
+        }
+        let page_delta =
+            u32::try_from(local_offset / PAGE_SIZE_4K).map_err(|_| StarryError::InvalidInput)?;
+        let page_number = self
+            .0
+            .offset_page
+            .checked_add(page_delta)
+            .ok_or(StarryError::InvalidInput)?;
+        let eof_page = self.0.cache.file_len()?.div_ceil(PAGE_SIZE_4K as u64);
+        if u64::from(page_number) >= eof_page {
+            return Ok(FaultMaterialization::empty());
+        }
+
+        match preimage {
+            FaultPteSnapshot::Mapped {
+                paddr,
+                flags: page_flags,
+                page_size,
+            } => {
+                if page_size != PAGE_SIZE_4K {
+                    return Err(StarryError::BadState);
+                }
+                if access_flags.contains(MappingFlags::WRITE)
+                    && !page_flags.contains(MappingFlags::WRITE)
+                {
+                    let page = self
+                        .0
+                        .page_object_for_va(range.start, paddr)
+                        .ok_or(StarryError::BadState)?;
+                    self.0.cache.mark_mmap_dirty_page(page_number)?;
+                    let owner = PreparedPteOwner::updated(
+                        range.start,
+                        paddr,
+                        PAGE_SIZE_4K,
+                        page,
+                        Some(self.rss_kind()),
+                    );
+                    Ok(FaultMaterialization::with_owner(1, owner, flags))
+                } else {
+                    Ok(FaultMaterialization::satisfied(usize::from(
+                        page_flags.contains(access_flags),
+                    )))
+                }
+            }
+            FaultPteSnapshot::NotMapped => {
+                let map_flags = if self.0.cache.in_memory() {
+                    flags
+                } else {
+                    flags - MappingFlags::WRITE
+                };
+                let page_pin = self.0.cache.pin_page_or_insert(page_number)?;
+                let paddr = PhysAddr::from(page_pin.paddr());
+                let page = self.0.get_or_create_page_object(page_number, page_pin)?;
+                let owner = PreparedPteOwner::installed(
+                    range.start,
+                    paddr,
+                    PAGE_SIZE_4K,
+                    page,
+                    Some(self.rss_kind()),
+                    ProviderPublication::Pending,
+                );
+                Ok(FaultMaterialization::with_owner(1, owner, map_flags))
+            }
+        }
+    }
+
+    fn populate(
+        &self,
+        _space_id: super::super::AddressSpaceId,
+        request: PopulateRequest,
+        flags: MappingFlags,
+        access_flags: MappingFlags,
         pt: &mut PageTable,
-    ) -> StarryResult<(usize, Option<PopulateCallback>)> {
-        let mut pages = 0;
-        let kind = self.rss_kind();
-        let file_data = self.0.file_data.lock();
-        let start_page =
-            ((range.start - file_data.start) / PAGE_SIZE_4K) as u32 + file_data.offset_page;
+    ) -> StarryResult<PteMaterialization> {
+        let range = request.range();
+        if request.preferred_leaf_size() != PAGE_SIZE_4K {
+            return Err(StarryError::OperationNotSupported);
+        }
+        let page_capacity = range.size() / PAGE_SIZE_4K;
+        let mut materialization = PteMaterialization::with_capacity(page_capacity)?;
+        // Copy mapping coordinates before cache lookup: cache insertion may
+        // perform filesystem I/O and must not run under the VMA metadata lock.
+        let mapping_start = self.0.start;
+        let offset_page = self.0.offset_page;
+        let local_offset = range
+            .start
+            .checked_sub_addr(mapping_start)
+            .ok_or(StarryError::BadState)?;
+        if !local_offset.is_multiple_of(PAGE_SIZE_4K) {
+            return Err(StarryError::BadState);
+        }
+        let page_delta =
+            u32::try_from(local_offset / PAGE_SIZE_4K).map_err(|_| StarryError::InvalidInput)?;
+        let start_page = offset_page
+            .checked_add(page_delta)
+            .ok_or(StarryError::InvalidInput)?;
         // Pages at or beyond EOF must not be eagerly backed (Linux SIGBUS past EOF;
         // without this bound MAP_POPULATE over a sparse mapping exhausts RAM).
-        let eof_page = self
-            .0
-            .cache
-            .file_len()
-            .unwrap_or(u64::MAX)
-            .div_ceil(PAGE_SIZE_4K as u64);
+        let eof_page = self.0.cache.file_len()?.div_ceil(PAGE_SIZE_4K as u64);
         for (i, addr) in pages_in(range, PAGE_SIZE_4K)?.enumerate() {
-            let pn = start_page + i as u32;
+            let pn = start_page
+                .checked_add(u32::try_from(i).map_err(|_| StarryError::InvalidInput)?)
+                .ok_or(StarryError::InvalidInput)?;
             if (pn as u64) >= eof_page {
                 continue;
             }
             match pt.query(addr) {
-                Ok((paddr, page_flags, _)) => {
+                Ok((paddr, page_flags, page_size)) => {
+                    if page_size != PAGE_SIZE_4K {
+                        return Err(StarryError::BadState);
+                    }
                     if access_flags.contains(MappingFlags::WRITE)
                         && !page_flags.contains(MappingFlags::WRITE)
                     {
-                        let shootdown_range = super::super::tlb::checked_range(addr, PAGE_SIZE_4K)?;
+                        let page = self
+                            .0
+                            .page_object_for_va(addr, paddr)
+                            .ok_or(StarryError::BadState)?;
                         self.0.cache.mark_mmap_dirty_page(pn)?;
-                        pt.remap_page(addr, paddr, flags)?;
-                        gather.record_range(shootdown_range);
-                        pages += 1;
+                        if pt.remap_page(addr, paddr, flags)? != PAGE_SIZE_4K {
+                            return Err(StarryError::BadState);
+                        }
+                        materialization.push(PreparedPteOwner::updated(
+                            addr,
+                            paddr,
+                            PAGE_SIZE_4K,
+                            page,
+                            Some(self.rss_kind()),
+                        ));
+                        materialization.increment_satisfied(1)?;
                     } else if page_flags.contains(access_flags) {
-                        pages += 1;
+                        materialization.increment_satisfied(1)?;
                     }
                 }
                 // If the page is not mapped, try map it.
@@ -442,129 +1109,187 @@ impl BackendOps for FileBackend {
                     } else {
                         flags - MappingFlags::WRITE
                     };
-                    gather
-                        .prepare_file_page_retention()
-                        .map_err(|_| StarryError::NoMemory)?;
-                    // SAFETY: retention capacity is reserved above. The
-                    // closure transfers any evicted page into this address
-                    // space's gather before fallible PTE work, and the outer
-                    // transaction invalidates every mapping owned by the
-                    // excluded address space before releasing the page.
-                    unsafe {
-                        self.0.cache.with_page_or_insert_excluding_owner(
-                            self.0.eviction_owner,
-                            pn,
-                            |page, evicted| {
-                        if let Some(evicted) = evicted {
-                            // Keep the evicted page (and thus its physical frame)
-                            // alive until the enclosing address-space transaction has
-                            // torn down its mapping and flushed the TLB. The eviction
-                            // listener cannot unmap
-                            // here because the address space is already locked by this
-                            // populate, so the unmap is deferred; freeing the frame now
-                            // (by dropping the page) would leave the evicted VA mapped
-                            // to a frame that can be reallocated, so a sibling thread
-                            // preempted into userspace could read another page's data
-                            // through the stale mapping.
-                            let (page_number, page) = evicted;
-                            gather.retain_file_page(
-                                page_number,
-                                self.0.cache.clone(),
-                                page,
-                            );
-                        }
-                        let paddr = page
-                            .paddr()
-                            .map_err(|error| VfsError::from(StarryError::from(error)))?;
-                        pt.map_page(addr, PhysAddr::from(paddr), PAGE_SIZE_4K, map_flags)
-                            .map_err(|error| VfsError::from(StarryError::from(error)))?;
-                        if let Some(acct) = acct {
-                            acct.inc(kind, 1);
-                        }
-                        pages += 1;
-                        Ok(())
-                            },
-                        )
-                    }?;
+                    let page_pin = self.0.cache.pin_page_or_insert(pn)?;
+                    let paddr = PhysAddr::from(page_pin.paddr());
+                    let page_object = self.0.get_or_create_page_object(pn, page_pin)?;
+                    if let Err(error) = pt.map_page(addr, paddr, PAGE_SIZE_4K, map_flags) {
+                        self.0.cancel_page_publication(addr, &page_object)?;
+                        return Err(error.into());
+                    }
+                    materialization.push(PreparedPteOwner::installed(
+                        addr,
+                        paddr,
+                        PAGE_SIZE_4K,
+                        page_object,
+                        Some(self.rss_kind()),
+                        ProviderPublication::Pending,
+                    ));
+                    materialization.increment_satisfied(1)?;
                 }
                 Err(_) => return Err(StarryError::BadAddress),
             }
         }
-        Ok((pages, None))
+        Ok(materialization)
     }
 
     fn clone_map(
         &self,
         _range: VirtAddrRange,
         _flags: MappingFlags,
-        context: CloneMapContext<'_>,
-    ) -> StarryResult<Backend> {
-        let start = self.0.file_data.lock().start;
-        Ok(Backend::File(
-            self.with_start(start, context.child_address_space),
+        _old_pt: &mut PageTable,
+        _new_pt: &mut PageTable,
+    ) -> StarryResult<(MappingOperation, PteMaterialization)> {
+        let start = self.0.start;
+        Ok((
+            MappingOperation::from_file(self.with_start(start)?),
+            PteMaterialization::empty(),
         ))
     }
 
-    fn split(&mut self, align_diff: usize) -> Option<Backend> {
-        assert!(align_diff.is_multiple_of(PAGE_SIZE_4K));
-        if align_diff == 0 {
+    fn split(&mut self, align_diff: usize) -> Option<MappingOperation> {
+        if align_diff == 0 || !align_diff.is_multiple_of(PAGE_SIZE_4K) {
             return None;
         }
-        let file_data = self.0.file_data.lock();
-        let inner = Arc::new(FileBackendInner {
-            shared: self.0.shared,
-            file_data: PiMutex::new(FileBackendInnerData {
-                start: file_data.start + align_diff,
-                offset_page: file_data.offset_page + (align_diff / PAGE_SIZE_4K) as u32,
-            }),
-            cache: self.0.cache.clone(),
-            eviction_owner: self.0.eviction_owner,
-            flags: self.0.flags,
-            handle: AtomicUsize::new(0),
-            futex_handle: self.0.futex_handle.clone(),
-        });
+        let start = self.0.start.checked_add(align_diff)?;
+        let page_delta = u32::try_from(align_diff / PAGE_SIZE_4K).ok()?;
+        let offset_page = self.0.offset_page.checked_add(page_delta)?;
 
-        {
-            let aspace = self.1.upgrade()?;
-            inner.register_listener(&aspace);
+        Some(MappingOperation::from_file(
+            self.with_coordinates(start, offset_page),
+        ))
+    }
+
+    fn shrink_left(&mut self, shrink_size: usize) -> bool {
+        if !shrink_size.is_multiple_of(PAGE_SIZE_4K) {
+            return false;
         }
-
-        Some(Backend::File(FileBackend(inner, self.1.clone())))
+        let Some(start) = self.0.start.checked_add(shrink_size) else {
+            return false;
+        };
+        let Ok(page_delta) = u32::try_from(shrink_size / PAGE_SIZE_4K) else {
+            return false;
+        };
+        let Some(offset_page) = self.0.offset_page.checked_add(page_delta) else {
+            return false;
+        };
+        *self = self.with_coordinates(start, offset_page);
+        true
     }
 
-    fn shrink_left(&mut self, shrink_size: usize) {
-        assert!(shrink_size.is_multiple_of(PAGE_SIZE_4K));
-
-        let mut file_data = self.0.file_data.lock();
-        file_data.start += shrink_size;
-        file_data.offset_page += (shrink_size / PAGE_SIZE_4K) as u32;
-    }
-
-    fn shrink_right(&mut self, _shrink_size: usize) {
+    fn shrink_right(&mut self, _shrink_size: usize) -> bool {
         // shrinking right does not require any action since the file backend does not have any state
+        true
     }
 }
 
-impl Backend {
+impl MappingOperation {
     pub fn new_file(
         start: VirtAddr,
         cache: CachedFile,
         flags: FileFlags,
         offset: usize,
-        aspace: &Arc<PiMutex<AddrSpace>>,
         shared: bool,
-    ) -> Self {
-        let offset_page = (offset / PAGE_SIZE_4K) as u32;
+    ) -> StarryResult<Self> {
+        if !offset.is_multiple_of(PAGE_SIZE_4K) {
+            return Err(StarryError::InvalidInput);
+        }
+        let offset_page =
+            u32::try_from(offset / PAGE_SIZE_4K).map_err(|_| StarryError::InvalidInput)?;
+        let page_domain = FilePageDomain::get_or_create(&cache)?;
         let inner = Arc::new(FileBackendInner {
+            mapping_id: allocate_mapping_id(),
+            page_domain,
             shared,
-            file_data: PiMutex::new(FileBackendInnerData { start, offset_page }),
+            start,
+            offset_page,
             cache,
-            eviction_owner: EvictListenerOwner::from_arc(aspace),
             flags,
-            handle: AtomicUsize::new(0),
-            futex_handle: Arc::new(()),
         });
-        inner.register_listener(aspace);
-        Self::File(FileBackend(inner, aspace.downgrade()))
+        Ok(Self::from_file(FileBackend(inner)))
+    }
+}
+
+#[cfg(all(axtest, test))]
+fn independent_file_backends_share_page_object_for_test() -> bool {
+    use axfs_ng_vfs::{Location, Mountpoint, NodePermission};
+
+    let (filesystem, memory_fs) = crate::pseudofs::MemoryFs::new_with_handle();
+    let entry = memory_fs.create_anonymous_file(
+        "file-page-object-domain",
+        NodePermission::from_bits_truncate(0o600),
+        0,
+        0,
+    );
+    let cache =
+        CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
+    let first_start = VirtAddr::from_usize(0x4000_0000);
+    let second_start = VirtAddr::from_usize(0x5000_0000);
+    let first_operation =
+        MappingOperation::new_file(first_start, cache.clone(), FileFlags::READ, 0, false).unwrap();
+    let second_operation =
+        MappingOperation::new_file(second_start, cache.clone(), FileFlags::READ, 0, false).unwrap();
+    let super::MappingOperationKind::File(first) = &first_operation.kind else {
+        unreachable!();
+    };
+    let super::MappingOperationKind::File(second) = &second_operation.kind else {
+        unreachable!();
+    };
+    let first_pin = cache.pin_page_or_insert(0).unwrap();
+    let second_pin = cache.pin_page_or_insert(0).unwrap();
+    let first_page = first.0.get_or_create_page_object(0, first_pin).unwrap();
+    let second_page = second.0.get_or_create_page_object(0, second_pin).unwrap();
+
+    first.cache().identity() == second.cache().identity() && Arc::ptr_eq(&first_page, &second_page)
+}
+
+#[cfg(all(axtest, test))]
+fn evicting_file_page_rejects_publication_as_retry_for_test() -> bool {
+    use axfs_ng_vfs::{Location, Mountpoint, NodePermission};
+
+    let (filesystem, memory_fs) = crate::pseudofs::MemoryFs::new_with_handle();
+    let entry = memory_fs.create_anonymous_file(
+        "file-page-eviction-retry",
+        NodePermission::from_bits_truncate(0o600),
+        0,
+        0,
+    );
+    let cache =
+        CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
+    let operation = MappingOperation::new_file(
+        VirtAddr::from_usize(0x6000_0000),
+        cache.clone(),
+        FileFlags::READ,
+        0,
+        false,
+    )
+    .unwrap();
+    let super::MappingOperationKind::File(file) = &operation.kind else {
+        unreachable!();
+    };
+    let initial_pin = cache.pin_page_or_insert(0).unwrap();
+    let page = file.0.get_or_create_page_object(0, initial_pin).unwrap();
+    let eviction = page.eviction_lease().unwrap();
+    let racing_pin = cache.pin_page_or_insert(0).unwrap();
+    let result = file.0.get_or_create_page_object(0, racing_pin);
+    let retry = matches!(result, Err(StarryError::ResourceBusy));
+    let _ = eviction.cancel();
+    file.0
+        .cancel_page_publication(VirtAddr::from_usize(0x6000_0000), &page)
+        .unwrap();
+    retry
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn independent_file_backends_share_page_object() {
+        assert!(super::independent_file_backends_share_page_object_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn evicting_file_page_rejects_publication_as_retry() {
+        assert!(super::evicting_file_page_rejects_publication_as_retry_for_test());
     }
 }

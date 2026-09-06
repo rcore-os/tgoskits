@@ -213,6 +213,7 @@ struct PidNamespaceState {
     lifecycle: PidNamespaceLifecycle,
     init_identity: Option<PidIdentityId>,
     reserved_init: Option<PidIdentityId>,
+    /// Cyclic allocation cursor, not the lowest currently available number.
     next_number: u32,
     by_number: BTreeMap<PidNumber, PidSlot>,
     by_identity: BTreeMap<PidIdentityId, PidNumber>,
@@ -403,8 +404,10 @@ impl PidNamespace {
         assert_eq!(state.by_identity.remove(&identity_id), Some(number));
         if state.reserved_init == Some(identity_id) {
             state.reserved_init = None;
+            // PID namespace init must remain PID 1 when its unpublished
+            // reservation is retried.
+            state.next_number = 1;
         }
-        state.next_number = state.next_number.min(number.get());
         true
     }
 
@@ -422,7 +425,6 @@ impl PidNamespace {
         assert_eq!(slot.state, PidSlotState::Published);
         state.by_number.remove(&number);
         assert_eq!(state.by_identity.remove(&identity_id), Some(number));
-        state.next_number = state.next_number.min(number.get());
         if state.lifecycle == PidNamespaceLifecycle::ShuttingDown && state.by_number.is_empty() {
             state.lifecycle = PidNamespaceLifecycle::Dead;
         }
@@ -1618,7 +1620,8 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     let first_child_number = first.number_in(&child).unwrap();
     drop(first);
     let second = PidReservation::reserve(&child, PidReservationKind::ProcessLeader).unwrap();
-    if second.number_in(&root) != Some(first_root_number)
+    let second_root_number = second.number_in(&root).unwrap();
+    if second_root_number == first_root_number
         || second.number_in(&child) != Some(first_child_number)
     {
         return false;
@@ -1650,7 +1653,7 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
         &session,
     ) || view.nspid_chain(&child_init) != Some(alloc::vec![first_child_number])
         || root_view.nspid_chain(&child_init)
-            != Some(alloc::vec![first_root_number, first_child_number])
+            != Some(alloc::vec![second_root_number, first_child_number])
     {
         return false;
     }
@@ -1746,7 +1749,7 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
         .publish()
         .unwrap();
     let replacement_role = replacement.acquire_role::<Pgid>().unwrap();
-    let generation_is_stable = replacement.root_number() == old_number
+    let generation_is_stable = replacement.root_number() != old_number
         && replacement.id() != old_generation
         && old.id() == old_generation
         && root.lookup_identity(old_generation).is_none()
@@ -1901,7 +1904,30 @@ mod tests {
     }
 
     #[test]
-    fn multi_namespace_reservation_drop_rolls_back_every_slot() {
+    fn released_pid_does_not_move_cyclic_cursor_backwards() {
+        let (root, _root_init, _root_tid, _root_tgid) = root_process();
+        let first = PidReservation::reserve(&root, PidReservationKind::Thread)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let first_tid = first.acquire_role::<Tid>().unwrap();
+        let first_number = first.root_number();
+        first.mark_task_exited();
+        first_tid.release();
+
+        let second = PidReservation::reserve(&root, PidReservationKind::Thread)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let second_tid = second.acquire_role::<Tid>().unwrap();
+        assert_eq!(second.root_number().get(), first_number.get() + 1);
+        second.mark_task_exited();
+        second_tid.release();
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn multi_namespace_reservation_drop_preserves_cyclic_cursors() {
         let (root, _root_init, _root_tid, _root_tgid) = root_process();
         let child = PidNamespace::new_child(root.clone());
         let first = PidReservation::reserve(&child, PidReservationKind::ProcessLeader).unwrap();
@@ -1910,7 +1936,12 @@ mod tests {
         drop(first);
 
         let second = PidReservation::reserve(&child, PidReservationKind::ProcessLeader).unwrap();
-        assert_eq!(second.number_in(&root), Some(root_number));
+        assert_eq!(
+            second.number_in(&root).unwrap().get(),
+            root_number.get() + 1
+        );
+        // A failed namespace-init reservation is the one exception: retrying
+        // that unpublished transaction must still allocate PID 1.
         assert_eq!(second.number_in(&child), Some(child_number));
         assert!(root.lookup(root_number).is_none());
         assert!(child.lookup(child_number).is_none());
@@ -1971,17 +2002,23 @@ mod tests {
     }
 
     #[test]
-    fn pidfd_arc_resists_reused_number_aba() {
-        let (root, identity, tid, tgid) = root_process();
+    fn pidfd_arc_resists_number_reuse_after_cyclic_wrap() {
+        let (root, _root_init, _root_tid, _root_tgid) = root_process();
+        let identity = PidReservation::reserve(&root, PidReservationKind::Thread)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let tid = identity.acquire_role::<Tid>().unwrap();
         let number = identity.visible_number(&root).unwrap();
         let old_identity_id = identity.id();
         let pidfd_identity = identity.clone();
         identity.mark_task_exited().complete();
         tid.release();
-        tgid.release();
         assert!(root.lookup(number).is_none());
         assert!(root.lookup_identity(old_identity_id).is_none());
 
+        // Model allocator wrap without exhausting the full PID number space.
+        root.state.lock().next_number = number.get();
         let replacement = PidReservation::reserve(&root, PidReservationKind::Thread)
             .unwrap()
             .publish()
@@ -2072,7 +2109,6 @@ mod tests {
         sid.release();
         assert!(root.lookup(number).is_none());
     }
-
 }
 
 #[cfg(all(test, axtest))]

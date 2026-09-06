@@ -3,17 +3,14 @@
 use alloc::sync::Arc;
 #[cfg(all(test, not(axtest)))]
 use alloc::{borrow::Cow, task::Wake, vec::Vec};
+#[cfg(all(test, axtest))]
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(all(test, not(axtest)))]
 use core::task::Waker;
 
-#[cfg(all(test, axtest))]
-use core::sync::atomic::AtomicUsize;
-
 #[cfg(all(test, not(axtest)))]
-use axpoll::{
-    ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedRegistrationSink,
-};
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedRegistrationSink};
 #[cfg(all(test, not(axtest)))]
 use axpoll_set::PollSet;
 

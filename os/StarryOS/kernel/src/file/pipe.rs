@@ -208,8 +208,8 @@ impl PipeWaitSet {
                     PIPE_WAIT_REGISTRATION_RACES.fetch_add(1, Ordering::Relaxed);
                     WaitQueueRegistration::Retry(None)
                 } else {
-                    let registration = self
-                        .register_target_locked(state, PipeWaitTarget::Direct(token));
+                    let registration =
+                        self.register_target_locked(state, PipeWaitTarget::Direct(token));
                     WaitQueueRegistration::Armed(Some(registration))
                 }
             },
@@ -1453,11 +1453,7 @@ mod tests {
     ) {
     }
 
-    unsafe extern "Rust" fn observe_block(
-        _data: usize,
-        _thread: ThreadId,
-        reason: SwitchReason,
-    ) {
+    unsafe extern "Rust" fn observe_block(_data: usize, _thread: ThreadId, reason: SwitchReason) {
         if reason == SwitchReason::Blocked && DIRECT_WAIT_ARMED.swap(false, Ordering::AcqRel) {
             DIRECT_BLOCKED.store(true, Ordering::Release);
         }

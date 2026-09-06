@@ -13,6 +13,7 @@
 
 #![no_std]
 #![cfg_attr(not(axtest), feature(likely_unlikely))]
+#![cfg_attr(not(axtest), feature(allocator_api))]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 

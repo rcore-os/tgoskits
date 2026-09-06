@@ -15,8 +15,11 @@ use super::{
 };
 use crate::{
     StarryError, StarryResult,
-    mm::{AddrSpace, Backend, SharedPages, UserPtr, VmMutPtr, VmPtr},
-    sync::{Mutex, PiMutex},
+    mm::{
+        AddressSpaceMutationOutcome, MappingOperation, MmPin, SharedMemoryObject, UserPtr,
+        VmMutPtr, VmPtr,
+    },
+    sync::PiMutex,
     task::{PidIdentityId, PidNamespaceId, PidSnapshot},
 };
 
@@ -132,7 +135,7 @@ pub struct ShmInner {
     pub page_num: usize,
     va_range: BTreeMap<PidIdentityId, Vec<VirtAddrRange>>,
     /// physical pages
-    pub phys_pages: Option<Arc<SharedPages>>,
+    pub phys_pages: Option<Arc<SharedMemoryObject>>,
     /// whether remove on last detach, see shm_ctl
     pub rmid: bool,
     /// Mapping flags used for this shared memory segment.
@@ -216,7 +219,7 @@ impl ShmInner {
     }
 
     /// Maps the given physical shared pages to this shared memory segment.
-    pub fn map_to_phys(&mut self, phys_pages: Arc<SharedPages>) {
+    pub fn map_to_phys(&mut self, phys_pages: Arc<SharedMemoryObject>) {
         self.phys_pages = Some(phys_pages);
     }
 
@@ -367,7 +370,7 @@ pub struct ShmManager {
     /// (key, ns_id) <-> shm_id
     key_shmid: BiBTreeMap<(i32, u64), i32>,
     /// shm_id -> shm_inner
-    shmid_inner: BTreeMap<i32, Arc<Mutex<ShmInner>>>,
+    shmid_inner: BTreeMap<i32, Arc<PiMutex<ShmInner>>>,
     /// process generation -> vaddr -> shm_id
     pid_shmid_vaddr: BTreeMap<PidIdentityId, BTreeMap<VirtAddr, i32>>,
 }
@@ -484,7 +487,7 @@ pub static SHM_MANAGER: PiMutex<ShmManager> = PiMutex::new(ShmManager::new());
 /// Collects segment info under SHM_MANAGER, drops the lock, unmaps from
 /// aspace, then reacquires SHM_MANAGER for bookkeeping. This keeps the
 /// lock ordering consistent with sys_shmget (SHM_MANAGER then ShmInner).
-pub fn clear_proc_shm(owner: PidIdentityId, operator: PidSnapshot, aspace: &Arc<Mutex<AddrSpace>>) {
+pub fn clear_proc_shm(owner: PidIdentityId, operator: PidSnapshot, aspace: &MmPin) {
     // Collect segments attached to this process.
     let segments: Vec<(i32, Arc<PiMutex<ShmInner>>)> = {
         let shm_manager = SHM_MANAGER.lock();
@@ -508,14 +511,38 @@ pub fn clear_proc_shm(owner: PidIdentityId, operator: PidSnapshot, aspace: &Arc<
         let shm_inner = shm_inner_arc.lock();
         ranges.extend(shm_inner.get_addr_ranges(owner));
     }
+    let mut unmap_failed = false;
     if !ranges.is_empty() {
         let mut aspace = aspace.lock();
         for va_range in &ranges {
-            let _ = aspace.unmap(va_range.start, va_range.size());
+            match aspace.unmap_outcome(va_range.start, va_range.size()) {
+                Ok(AddressSpaceMutationOutcome::Complete)
+                | Ok(AddressSpaceMutationOutcome::PublishedPendingTlb(_)) => {}
+                Err(error) => {
+                    // Do not remove the IPC ownership record when the
+                    // address-space transaction did not publish.  The
+                    // process is exiting, so leave the range visible for a
+                    // repair worker instead of claiming a detach that never
+                    // happened.
+                    unmap_failed = true;
+                    warn!(
+                        "shared-memory exit unmap failed at {:#x}+{:#x}: {error}",
+                        va_range.start.as_usize(),
+                        va_range.size()
+                    );
+                }
+            }
         }
     }
 
     // Now update the bookkeeping under SHM_MANAGER, then shm_inner.
+    if unmap_failed {
+        warn!(
+            "shared-memory exit cleanup retained IPC ownership for mm identity {:?}",
+            owner
+        );
+        return;
+    }
     let mut shm_manager = SHM_MANAGER.lock();
     for (shmid, shm_inner_arc) in segments {
         let mut shm_inner = shm_inner_arc.lock();
@@ -571,7 +598,7 @@ pub fn sys_shmget(
 
     // Create a new shm_inner
     let shmid = next_ipc_id();
-    let shm_inner = Arc::new(Mutex::new(ShmInner::new(
+    let shm_inner = Arc::new(PiMutex::new(ShmInner::new(
         key, shmid, size, shmflg, operator, cred.euid, cred.egid, ns_id,
     )));
     shm_manager.insert_key_shmid(key, ns_id, shmid);
@@ -607,7 +634,7 @@ pub fn sys_shmat(
     };
     info!("shmat pid={pid} shmid={shmid} lock shm_inner");
     let mut shm_inner = shm_inner_arc.lock();
-    let aspace_arc = proc_data.aspace();
+    let aspace_arc = proc_data.pin_aspace()?;
     info!("shmat pid={pid} shmid={shmid} lock aspace");
     let mut aspace = aspace_arc.lock();
 
@@ -650,16 +677,27 @@ pub fn sys_shmat(
     );
 
     // map the virtual address range to the physical address
+    let mut pending_tlb_error = None;
     if let Some(phys_pages) = shm_inner.phys_pages.clone() {
         // Another process has attached the shared memory
         // TODO(mivik): shm page size
-        let backend = Backend::new_shared(start_addr, phys_pages);
-        aspace.map(start_addr, length, mapping_flags, false, backend)?;
+        let backend = MappingOperation::new_shared(start_addr, phys_pages);
+        match aspace.map_outcome(start_addr, length, mapping_flags, false, backend)? {
+            AddressSpaceMutationOutcome::Complete => {}
+            AddressSpaceMutationOutcome::PublishedPendingTlb(error) => {
+                pending_tlb_error = Some(error);
+            }
+        }
     } else {
         // This is the first process to attach the shared memory
-        let pages = Arc::new(SharedPages::new(length, PAGE_SIZE_4K)?);
-        let backend = Backend::new_shared(start_addr, pages.clone());
-        aspace.map(start_addr, length, mapping_flags, false, backend)?;
+        let pages = Arc::new(SharedMemoryObject::allocate(length, PAGE_SIZE_4K)?);
+        let backend = MappingOperation::new_shared(start_addr, pages.clone());
+        match aspace.map_outcome(start_addr, length, mapping_flags, false, backend)? {
+            AddressSpaceMutationOutcome::Complete => {}
+            AddressSpaceMutationOutcome::PublishedPendingTlb(error) => {
+                pending_tlb_error = Some(error);
+            }
+        }
 
         shm_inner.map_to_phys(pages);
     }
@@ -673,7 +711,10 @@ pub fn sys_shmat(
     let mut shm_manager = SHM_MANAGER.lock();
     shm_manager.insert_shmid_vaddr(owner, shmid, start_addr);
     info!("shmat pid={pid} shmid={shmid} done");
-    Ok(start_addr.as_usize() as isize)
+    match pending_tlb_error {
+        Some(error) => Err(error),
+        None => Ok(start_addr.as_usize() as isize),
+    }
 }
 
 pub fn sys_shmctl(
@@ -872,12 +913,15 @@ pub fn sys_shmdt(current: &crate::task::UserTaskRef, shmaddr: usize) -> crate::S
     };
 
     // Unmap while only holding the aspace lock.
-    {
+    let pending_tlb_error = {
         info!("shmdt pid={pid} lock aspace for unmap");
-        let aspace_arc = proc_data.aspace();
+        let aspace_arc = proc_data.pin_aspace()?;
         let mut aspace = aspace_arc.lock();
-        aspace.unmap(va_range.start, va_range.size())?;
-    }
+        match aspace.unmap_outcome(va_range.start, va_range.size())? {
+            AddressSpaceMutationOutcome::Complete => None,
+            AddressSpaceMutationOutcome::PublishedPendingTlb(error) => Some(error),
+        }
+    };
 
     // Reacquire SHM_MANAGER then shm_inner for bookkeeping, matching
     // the global lock ordering.
@@ -896,5 +940,8 @@ pub fn sys_shmdt(current: &crate::task::UserTaskRef, shmaddr: usize) -> crate::S
         shm_manager.remove_shmid(shmid);
     }
 
-    Ok(0)
+    match pending_tlb_error {
+        Some(error) => Err(error),
+        None => Ok(0),
+    }
 }

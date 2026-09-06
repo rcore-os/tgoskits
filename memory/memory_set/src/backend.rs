@@ -28,6 +28,21 @@ pub trait MappingBackend: Clone {
         page_table: &mut Self::PageTable,
     ) -> bool;
 
+    /// Read-only validation for a mapping operation.  Backends that can
+    /// inspect conflicts or allocation requirements should override this
+    /// hook.  `MemorySet` invokes it before an overlapping `MAP_FIXED`
+    /// operation removes the old mapping, so a rejected request has no
+    /// externally visible side effect.
+    fn validate_map(
+        &self,
+        _start: Self::Addr,
+        _size: usize,
+        _flags: Self::Flags,
+        _page_table: &Self::PageTable,
+    ) -> bool {
+        true
+    }
+
     /// What to do when unmaping a memory region within the area.
     fn unmap(
         &self,
@@ -55,6 +70,18 @@ pub trait MappingBackend: Clone {
         true
     }
 
+    /// Validate a protection update before applying it.  This mirrors
+    /// [`Self::validate_unmap`] and is optional for legacy backends.
+    fn validate_protect(
+        &self,
+        _start: Self::Addr,
+        _size: usize,
+        _new_flags: Self::Flags,
+        _page_table: &Self::PageTable,
+    ) -> bool {
+        true
+    }
+
     /// What to do when changing access flags.
     fn protect(
         &self,
@@ -71,10 +98,14 @@ pub trait MappingBackend: Clone {
     /// Shrinks the backend from the left by the given size.
     ///
     /// The backend start address is increased by `shrink_size`.
-    fn shrink_left(&mut self, _shrink_size: usize) {}
+    fn shrink_left(&mut self, _shrink_size: usize) -> bool {
+        true
+    }
 
     /// Shrinks the backend from the right by the given size.
     ///
     /// The backend end address is decreased by `shrink_size`.
-    fn shrink_right(&mut self, _shrink_size: usize) {}
+    fn shrink_right(&mut self, _shrink_size: usize) -> bool {
+        true
+    }
 }

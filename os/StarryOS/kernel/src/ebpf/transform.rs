@@ -241,7 +241,10 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
             .copied()
             .map(PhysAddr::from_usize)
             .collect();
-        let (hint, _) = ax_runtime::hal::mem::kernel_aspace();
+        let hint = ax_runtime::hal::mem::virtual_address_space()
+            .expect("kernel virtual address layout is initialized")
+            .kernel()
+            .start;
         ax_runtime::kernel_mapping::map_kernel_pages(
             hint,
             &pages,
@@ -256,7 +259,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
             VirtAddr::from_usize(vaddr),
             PAGE_SIZE_4K * num_pages,
         )
-            .expect("vmunmap failed");
+        .expect("vmunmap failed");
     }
 }
 

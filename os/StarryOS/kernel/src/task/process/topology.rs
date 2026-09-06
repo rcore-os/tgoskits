@@ -801,9 +801,7 @@ mod tests {
 
         closing_reaper.reparent_children_to(&init);
         assert!(
-            parent
-                .try_begin_exit_relations(&closing_reaper)
-                .is_none(),
+            parent.try_begin_exit_relations(&closing_reaper).is_none(),
             "a closed reaper accepted a new orphan transaction"
         );
         drop(

@@ -590,7 +590,8 @@ impl TransportOps for DgramTransport {
             match rx.try_recv() {
                 Ok(packet) => packet,
                 Err(TryRecvError::Empty) => return Err(NetError::WouldBlock),
-                Err(TryRecvError::Closed) => return Ok(0),
+                Err(TryRecvError::Closed) if self.is_seqpacket => return Ok(0),
+                Err(TryRecvError::Closed) => return Err(NetError::WouldBlock),
             }
         };
 
@@ -646,6 +647,9 @@ impl Pollable for DgramTransport {
         let mut events = IoEvents::OUT;
         if let Some((rx, _)) = self.data_rx.lock().as_ref() {
             events.set(IoEvents::IN, !rx.is_empty());
+            if self.is_seqpacket && rx.is_closed() {
+                events.insert(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP);
+            }
         }
         // A packet parked by MSG_PEEK is immediately readable.
         if self.peeked.lock().is_some() {
@@ -683,14 +687,22 @@ impl DgramTransport {
         events: IoEvents,
         mut register: impl FnMut(&PollSet, IoEvents),
     ) {
-        if !events.contains(IoEvents::IN) {
+        let receive_events = if self.is_seqpacket {
+            IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP
+        } else {
+            IoEvents::IN
+        };
+        let interests = events & receive_events;
+        if interests.is_empty() {
             return;
         }
         if let Some((_, poll)) = self.data_rx.lock().as_ref() {
-            register(poll, IoEvents::IN);
+            register(poll, interests);
         }
         // Seqpacket listener waits for incoming connections.
-        if let Some((_, poll)) = self.conn_rx.lock().as_ref() {
+        if events.contains(IoEvents::IN)
+            && let Some((_, poll)) = self.conn_rx.lock().as_ref()
+        {
             register(poll, IoEvents::IN);
         }
     }
@@ -699,16 +711,44 @@ impl DgramTransport {
 impl Drop for DgramTransport {
     fn drop(&mut self) {
         if let Some(chan) = self.connected.write().take() {
-            // Connection teardown is visible before waking the peer.
-            unsafe { chan.poll_update.wake(IoEvents::IN | IoEvents::OUT) };
+            let peer_poll = chan.poll_update.clone();
+
+            // Publish channel closure before a woken reader can retry. On SMP,
+            // waking first lets the reader observe `Empty`, park again, and
+            // miss the sender's subsequent terminal drop forever.
+            drop(chan);
+            if self.is_seqpacket {
+                // Only connection-oriented sockets publish peer shutdown.
+                unsafe {
+                    peer_poll.wake(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP | IoEvents::HUP)
+                };
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::task::Wake;
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        task::Waker,
+    };
+
     use super::*;
     use crate::unix::BindSlot;
+
+    struct PeerCloseProbe {
+        receiver: async_channel::Receiver<Packet>,
+        saw_closed_channel: AtomicBool,
+    }
+
+    impl Wake for PeerCloseProbe {
+        fn wake(self: Arc<Self>) {
+            self.saw_closed_channel
+                .store(self.receiver.is_closed(), Ordering::Release);
+        }
+    }
 
     #[test]
     fn datagram_connect_does_not_lock_a_mutex_with_preemption_disabled() {
@@ -718,5 +758,62 @@ mod tests {
 
         let client = DgramTransport::new(2);
         client.connect(&slot, &UnixSocketAddr::Unnamed).unwrap();
+    }
+
+    #[test]
+    fn peer_channel_is_closed_before_reader_is_notified() {
+        let (closing, receiver) = DgramTransport::new_pair_seqpacket(1);
+        let receiver = Arc::new(receiver);
+        let channel_rx = receiver.data_rx.lock().as_ref().unwrap().0.clone();
+        let probe = Arc::new(PeerCloseProbe {
+            receiver: channel_rx,
+            saw_closed_channel: AtomicBool::new(false),
+        });
+        let waker = Waker::from(probe.clone());
+        let mut context = Context::from_waker(&waker);
+
+        receiver.register(&mut context, IoEvents::IN);
+        drop(closing);
+
+        assert!(probe.saw_closed_channel.load(Ordering::Acquire));
+        assert!(receiver.poll().contains(IoEvents::IN));
+    }
+
+    #[test]
+    fn datagram_peer_close_is_not_readable_eof() {
+        let (closing, receiver) = DgramTransport::new_pair(1);
+        drop(closing);
+
+        assert!(
+            !receiver
+                .poll()
+                .intersects(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
+        );
+    }
+
+    #[test]
+    fn seqpacket_close_wakes_terminal_only_waiters() {
+        for interest in [IoEvents::RDHUP, IoEvents::HUP] {
+            let (closing, receiver) = DgramTransport::new_pair_seqpacket(1);
+            let probe = Arc::new(PeerCloseProbe {
+                receiver: receiver.data_rx.lock().as_ref().unwrap().0.clone(),
+                saw_closed_channel: AtomicBool::new(false),
+            });
+            let waker = Waker::from(probe.clone());
+            receiver.register(&mut Context::from_waker(&waker), interest);
+            drop(closing);
+
+            assert!(
+                probe.saw_closed_channel.load(Ordering::Acquire),
+                "{interest:?}"
+            );
+            for _ in 0..2 {
+                assert!(
+                    receiver
+                        .poll()
+                        .contains(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
+                );
+            }
+        }
     }
 }

@@ -38,7 +38,7 @@ fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> 
     let len = maxevents
         .checked_mul(size_of::<epoll_event>())
         .ok_or(StarryError::BadAddress)?;
-    let start = events.as_ptr() as usize;
+    let start = events.address().as_usize();
     start.checked_add(len).ok_or(StarryError::BadAddress)?;
     check_access(start, len)?;
     Ok(())

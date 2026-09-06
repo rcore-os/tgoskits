@@ -132,6 +132,41 @@ fn test_huge_page_offset_calculation() {
     println!("✅ 大页偏移计算测试通过！");
 }
 
+/// A checked resolver may describe a sparse/device range. The resolver API
+/// installs base-page leaves and therefore cannot alias the second page
+/// through a block descriptor.
+#[test]
+fn test_checked_mapping_preserves_non_contiguous_pages() {
+    let mut pg = PageTable::<T4kL3, Fram4k>::new(Fram4k).unwrap();
+    let start = VirtAddr::from_usize(0);
+    let first = PhysAddr::from_usize(0x0040_0000);
+    let size = 2 * MB;
+
+    pg.map_region_checked(
+        start,
+        |vaddr| {
+            let offset = vaddr.as_usize();
+            if offset == 0 {
+                Ok(first)
+            } else {
+                // Deliberately break the physical progression at the second
+                // page; the remaining pages retain a valid, checked address.
+                Ok(PhysAddr::from_usize(0x0080_0000usize + offset))
+            }
+        },
+        size,
+        PteImpl::user_mode_config(),
+    )
+    .unwrap();
+
+    let (first_pa, _, first_size) = pg.query(start).unwrap();
+    let (second_pa, _, second_size) = pg.query(VirtAddr::from_usize(0x1000)).unwrap();
+    assert_eq!(first_size, T4kL3::PAGE_SIZE);
+    assert_eq!(second_size, T4kL3::PAGE_SIZE);
+    assert_eq!(first_pa, first);
+    assert_eq!(second_pa, PhysAddr::from_usize(0x0080_1000));
+}
+
 /// 测试多级别大页的正确处理
 ///
 /// 验证不同级别的大页（如果架构支持）都能正确计算偏移
@@ -222,8 +257,9 @@ fn test_walk_address_comparison() {
 /// stage-2 and other non-stage-1 users accumulate page-table frames until the
 /// entire root is destroyed.
 #[test]
-fn generic_range_unmap_reclaims_empty_intermediate_tables() {
-    let mut pg = PageTable::<T4kL4, TrackedFram4k>::new(TrackedFram4k::new()).unwrap();
+fn test_unmap_reclaim_logic() {
+    let allocator = TrackedFram4k::new();
+    let mut pg = PageTable::<T4kL4, TrackedFram4k>::new(allocator.clone()).unwrap();
 
     let base_addr = 0x10000000usize;
     let size = 0x3000; // 3个页面
@@ -239,7 +275,6 @@ fn generic_range_unmap_reclaims_empty_intermediate_tables() {
     })
     .unwrap();
 
-    let allocator = pg.root.allocator;
     let allocated_before = allocator.allocated_count();
     println!("取消映射前分配的帧数: {}", allocated_before);
 
@@ -346,7 +381,6 @@ fn failed_region_map_reclaims_unpublished_prefix_tables() {
             |vaddr| PhysAddr::from_usize(0x4000_0000 + (vaddr - prefix)),
             0x2000,
             PteImpl::user_mode_config(),
-            false,
         ),
         Err(PagingError::MappingConflict { .. })
     ));
@@ -452,11 +486,10 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
         page_table.query(vaddr),
         Err(PagingError::NotMapped)
     ));
-    let (occupied_paddr, occupied_config, occupied_size) =
-        page_table.query_occupied(vaddr).unwrap();
-    assert_eq!(occupied_paddr, paddr);
-    assert_eq!(occupied_config, MappingFlags::empty());
-    assert_eq!(occupied_size, 0x1000);
+    let (occupied, level) = page_table.query_occupied(vaddr).unwrap();
+    assert_eq!(occupied.paddr(false), paddr);
+    assert_eq!(occupied.config(false), MappingFlags::empty());
+    assert_eq!(page_table.mapping_size_for_level(level), Some(0x1000));
 
     page_table
         .protect_region(
@@ -566,7 +599,6 @@ fn map_region_rejects_virtual_overflow_before_mapping() {
         |_| PhysAddr::from_usize(0x10_0000),
         0x3000,
         MappingFlags::READ.into(),
-        false,
     );
 
     assert!(matches!(result, Err(PagingError::AddressOverflow { .. })));
@@ -598,7 +630,6 @@ fn map_region_rolls_back_prefix_after_late_conflict() {
         |vaddr| requested_paddr + (vaddr - start_vaddr),
         0x2000,
         MappingFlags::READ.into(),
-        false,
     );
 
     assert!(matches!(result, Err(PagingError::MappingConflict { .. })));
@@ -770,8 +801,8 @@ fn test_mixed_huge_and_normal_pages() {
 /// 验证在大量操作下的稳定性和正确性
 #[test]
 fn test_stress_mapping_unmapping() {
-    let mut pg = PageTable::<T4kL3, TrackedFram4k>::new(TrackedFram4k::new()).unwrap();
-    let allocator = pg.root.allocator;
+    let allocator = TrackedFram4k::new();
+    let mut pg = PageTable::<T4kL3, TrackedFram4k>::new(allocator.clone()).unwrap();
 
     // 创建多个映射
     for i in 0..100 {

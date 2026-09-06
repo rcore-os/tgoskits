@@ -1,31 +1,35 @@
 //! Process address-space ownership and exit-time release.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+#[cfg(axtest)]
+use core::sync::atomic::{AtomicBool, AtomicUsize};
+use core::sync::atomic::{AtomicPtr, Ordering};
+
+mod reader_epoch;
+use reader_epoch::ReaderEpoch;
 
 use super::ProcessData;
 use crate::{
-    mm::AddrSpace,
-    sync::{IrqMutex, PiMutex, PreemptGuard},
+    mm::{MmHandle, MmPin, TransparentHugePageMode},
+    sync::{IrqMutex, PreemptGuard},
     task::futex::FutexDomain,
 };
 
 /// One Linux mm generation and every facility whose identity follows it.
 ///
-/// `CLONE_VM` shares this object even when it creates a distinct process.
-/// `fork` and `exec` create a new object. Keeping the private futex domain next
+/// Each process owns one MmHandle. `CLONE_VM` shares its MM and private futex
+/// domain through explicit user-reference cloning; `fork` and `exec` replace both. Keeping the private futex domain next
 /// to the address space prevents process/thread-group identity from becoming a
 /// second, conflicting definition of private-futex ownership.
 struct ProcessMemoryOwner {
-    aspace: Arc<PiMutex<AddrSpace>>,
+    mm: MmHandle,
     private_futexes: Arc<FutexDomain>,
 }
 
 /// Rare-writer publication cell for one process mm generation.
 struct ProcessMemoryOwnerCell<T> {
     current: AtomicPtr<T>,
-    reader_epoch: AtomicUsize,
-    readers: [AtomicUsize; 2],
+    readers: ReaderEpoch,
     writer: IrqMutex<()>,
     #[cfg(axtest)]
     locked_snapshots: AtomicUsize,
@@ -35,8 +39,7 @@ impl<T> ProcessMemoryOwnerCell<T> {
     fn new(current: Arc<T>) -> Self {
         Self {
             current: AtomicPtr::new(Arc::into_raw(current).cast_mut()),
-            reader_epoch: AtomicUsize::new(0),
-            readers: [AtomicUsize::new(0), AtomicUsize::new(0)],
+            readers: ReaderEpoch::new(),
             writer: IrqMutex::new(()),
             #[cfg(axtest)]
             locked_snapshots: AtomicUsize::new(0),
@@ -57,13 +60,9 @@ impl<T> ProcessMemoryOwnerCell<T> {
         // never wait for a reader which it prevented from resuming.
         let _reader_pin = PreemptGuard::new();
         loop {
-            let epoch = self.reader_epoch.load(Ordering::Acquire);
-            debug_assert!(epoch < self.readers.len());
-            self.readers[epoch].fetch_add(1, Ordering::AcqRel);
-            if self.reader_epoch.load(Ordering::Acquire) != epoch {
-                self.readers[epoch].fetch_sub(1, Ordering::Release);
+            let Some(epoch) = self.readers.enter() else {
                 continue;
-            }
+            };
 
             let current = self.current.load(Ordering::Acquire);
             debug_assert!(!current.is_null());
@@ -77,7 +76,7 @@ impl<T> ProcessMemoryOwnerCell<T> {
                 Arc::increment_strong_count(current);
                 Arc::from_raw(current)
             };
-            self.readers[epoch].fetch_sub(1, Ordering::Release);
+            self.readers.leave(epoch);
             return snapshot;
         }
     }
@@ -86,10 +85,9 @@ impl<T> ProcessMemoryOwnerCell<T> {
         let writer = self.writer.lock();
         let next = Arc::into_raw(next).cast_mut();
         let previous = self.current.swap(next, Ordering::AcqRel);
-        let previous_epoch = self.reader_epoch.fetch_xor(1, Ordering::AcqRel);
-        debug_assert!(previous_epoch < self.readers.len());
+        let previous_epoch = self.readers.advance();
         after_publish();
-        while self.readers[previous_epoch].load(Ordering::Acquire) != 0 {
+        while !self.readers.is_quiescent(previous_epoch) {
             core::hint::spin_loop();
         }
         // SAFETY: `previous` was created by `Arc::into_raw` and the old reader
@@ -108,8 +106,8 @@ impl<T> ProcessMemoryOwnerCell<T> {
 
 impl<T> Drop for ProcessMemoryOwnerCell<T> {
     fn drop(&mut self) {
-        debug_assert_eq!(*self.readers[0].get_mut(), 0);
-        debug_assert_eq!(*self.readers[1].get_mut(), 0);
+        debug_assert!(self.readers.is_quiescent(0));
+        debug_assert!(self.readers.is_quiescent(1));
         let current = *self.current.get_mut();
         debug_assert!(!current.is_null());
         // SAFETY: mutable access proves no snapshot or replacement can be in
@@ -120,25 +118,31 @@ impl<T> Drop for ProcessMemoryOwnerCell<T> {
 }
 
 impl ProcessMemoryOwner {
-    fn new(aspace: Arc<PiMutex<AddrSpace>>) -> Self {
+    fn new(mm: MmHandle, shared: Option<ProcessMemoryShare>) -> Self {
+        let private_futexes = shared.map_or_else(
+            || Arc::new(FutexDomain::new_private()),
+            |shared| {
+                assert_eq!(mm.id(), shared.0.mm.id());
+                shared.private_futexes()
+            },
+        );
         Self {
-            aspace,
-            private_futexes: Arc::new(FutexDomain::new_private()),
+            mm,
+            private_futexes,
         }
     }
 }
 
-/// Opaque strong reference used to share or retire one mm generation.
+/// Snapshot of a process's MM generation; it does not create a process owner.
 #[derive(Clone)]
 pub(crate) struct ProcessMemoryShare(Arc<ProcessMemoryOwner>);
 
 impl ProcessMemoryShare {
-    pub(crate) fn aspace(&self) -> Arc<PiMutex<AddrSpace>> {
-        self.0.aspace.clone()
-    }
-
-    pub(crate) fn aspace_ref(&self) -> &Arc<PiMutex<AddrSpace>> {
-        &self.0.aspace
+    pub(crate) fn aspace(&self) -> MmPin {
+        self.0
+            .mm
+            .pin()
+            .expect("a live syscall must retain a live MM")
     }
 
     pub(crate) fn private_futexes(&self) -> Arc<FutexDomain> {
@@ -148,93 +152,78 @@ impl ProcessMemoryShare {
     pub(crate) fn private_futexes_ref(&self) -> &Arc<FutexDomain> {
         &self.0.private_futexes
     }
-}
 
-struct SchedulerAddressSpaceLease {
-    aspace: Arc<PiMutex<AddrSpace>>,
-    released: AtomicBool,
-}
-
-impl Drop for SchedulerAddressSpaceLease {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
-impl SchedulerAddressSpaceLease {
-    fn release(&self) {
-        if !self.released.swap(true, Ordering::AcqRel) {
-            crate::mm::release_scheduler_slot(&self.aspace);
+    pub(crate) fn retire(&self) {
+        if let Some(permit) = self.0.mm.release_user_ref() {
+            crate::mm::enqueue_retire(permit);
         }
     }
 }
 
-fn detach_scheduler_address_space(lease: &SchedulerAddressSpaceLease) {
-    lease.release();
-}
-
 pub(crate) fn scheduler_address_space(
-    aspace: Arc<PiMutex<AddrSpace>>,
+    mm: &MmHandle,
 ) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
-    let (root, active_cpus) = crate::mm::attach_scheduler_slot(&aspace);
-    ax_runtime::task::TaskAddressSpace::new_with_task_detach(
-        root,
-        active_cpus,
-        SchedulerAddressSpaceLease {
-            aspace,
-            released: AtomicBool::new(false),
-        },
-        detach_scheduler_address_space,
-    )
+    mm.scheduler_address_space()
 }
 
-/// Address-space state whose release must follow scheduler switch-tail rules.
+/// Unpublished MM owner prepared before exec starts sibling teardown.
+/// Dropping it before publication retires the unused image normally.
+pub(crate) struct PreparedProcessMemory(Arc<ProcessMemoryOwner>);
+
+impl PreparedProcessMemory {
+    pub(crate) fn new(mm: MmHandle) -> Self {
+        Self(Arc::new(ProcessMemoryOwner::new(mm, None)))
+    }
+}
+
+/// Process publication owns one MmHandle; CPU and kernel ownership live in MM.
 pub(super) struct ProcessMemoryState {
     owner: ProcessMemoryOwnerCell<ProcessMemoryOwner>,
-    heap_top: AtomicUsize,
-    aspace_slot_released: AtomicBool,
 }
 
 impl ProcessMemoryState {
-    pub(super) fn new(aspace: Arc<PiMutex<AddrSpace>>, shared: Option<ProcessMemoryShare>) -> Self {
+    pub(super) fn new(mm: MmHandle, shared: Option<ProcessMemoryShare>) -> Self {
         Self {
-            owner: ProcessMemoryOwnerCell::new(shared.map_or_else(
-                || Arc::new(ProcessMemoryOwner::new(aspace)),
-                |share| share.0,
-            )),
-            heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
-            aspace_slot_released: AtomicBool::new(false),
+            owner: ProcessMemoryOwnerCell::new(Arc::new(ProcessMemoryOwner::new(mm, shared))),
         }
     }
 }
 
 impl ProcessData {
-    /// Releases this process's [`AddrSpace::process_slots`] entry once.
-    pub fn release_aspace_slot_if_needed(&self) {
-        if self
-            .memory
-            .aspace_slot_released
-            .swap(true, Ordering::AcqRel)
-        {
-            return;
-        }
-        let aspace = self.memory.owner.snapshot().aspace.clone();
-        crate::mm::release_process_slot(&aspace);
+    /// Ends process ownership; pins and CPU activations defer actual reclaim.
+    pub fn retire_mm_owner(&self) {
+        self.memory_share().retire();
     }
 
-    /// Returns the top address of the user heap.
-    pub fn get_heap_top(&self) -> usize {
-        self.memory.heap_top.load(Ordering::Acquire)
+    pub fn clone_aspace_user_ref(&self) -> Result<MmHandle, crate::mm::CloneUserRefError> {
+        self.memory.owner.snapshot().mm.clone_user_ref()
     }
 
-    /// Updates the top address of the user heap.
-    pub fn set_heap_top(&self, top: usize) {
-        self.memory.heap_top.store(top, Ordering::Release)
+    pub fn pin_aspace(&self) -> crate::StarryResult<MmPin> {
+        self.memory
+            .owner
+            .snapshot()
+            .mm
+            .pin()
+            .map_err(|_| crate::StarryError::BadState)
     }
 
-    /// Returns a strong reference to the current address space.
-    pub fn aspace(&self) -> Arc<PiMutex<AddrSpace>> {
-        self.memory.owner.snapshot().aspace.clone()
+    /// Pins the address space for a kernel operation on a live process.
+    pub fn aspace(&self) -> MmPin {
+        self.pin_aspace()
+            .expect("operation requires a live process MM")
+    }
+
+    pub fn transparent_huge_page_mode(&self) -> TransparentHugePageMode {
+        self.memory.owner.snapshot().mm.transparent_huge_page_mode()
+    }
+
+    pub fn set_transparent_huge_page_mode(
+        &self,
+        mode: TransparentHugePageMode,
+    ) -> crate::StarryResult<()> {
+        self.pin_aspace()?.set_transparent_huge_page_mode(mode);
+        Ok(())
     }
 
     /// Captures the current mm generation once for clone/futex/teardown.
@@ -242,27 +231,20 @@ impl ProcessData {
         ProcessMemoryShare(self.memory.owner.snapshot())
     }
 
-    /// Creates one owning scheduler token for the current address space.
     pub(crate) fn scheduler_address_space(
         &self,
     ) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
-        scheduler_address_space(self.aspace())
+        self.memory.owner.snapshot().mm.scheduler_address_space()
     }
 
-    /// Publishes a new address space while retaining the replaced one.
-    ///
-    /// The caller must transfer the new scheduler token and install its active
-    /// mm before releasing the returned process slot. Moving the old `Arc` out
-    /// of the non-sleeping gate prevents its destructor from acquiring a
-    /// sleepable lock while IRQs and preemption are disabled.
-    #[must_use = "release the old process slot after committing the new active mm"]
-    pub fn stage_memory_replacement(
+    /// Publishes the new MM and returns the old owner for retirement after the
+    /// hardware switch. All allocation happens before entering the writer gate.
+    #[must_use = "retire the old MM only after committing the new active MM"]
+    pub(crate) fn stage_memory_replacement(
         &self,
-        new_aspace: Arc<PiMutex<AddrSpace>>,
+        prepared: PreparedProcessMemory,
     ) -> ProcessMemoryShare {
-        crate::mm::attach_process_slot(&new_aspace);
-        let new_owner = Arc::new(ProcessMemoryOwner::new(new_aspace));
-        ProcessMemoryShare(self.memory.owner.replace(new_owner))
+        ProcessMemoryShare(self.memory.owner.replace(prepared.0))
     }
 }
 
@@ -349,23 +331,16 @@ fn thread_page_table_lease_follows_task_lifetime_for_test() -> bool {
         return false;
     }
 
-    let aspace = Arc::new(PiMutex::new(aspace));
-    crate::mm::attach_process_slot(&aspace);
-    let task_aspace = match scheduler_address_space(aspace.clone()) {
+    let mm = MmHandle::from_arc(Arc::new(crate::sync::PiMutex::new(aspace))).unwrap();
+    let task_aspace = match scheduler_address_space(&mm) {
         Ok(task_aspace) => task_aspace,
-        Err(_) => {
-            crate::mm::release_process_slot(&aspace);
-            return false;
-        }
+        Err(_) => return false,
     };
-    let weak_aspace = Arc::downgrade(&aspace);
-
-    crate::mm::release_process_slot(&aspace);
-    drop(aspace);
-    let retained_until_task_detach = weak_aspace.upgrade().is_some();
-
+    let before_detach = mm.kernel_pins() == 1;
+    let no_early_retirement = mm.release_user_ref().is_none();
+    let retiring = mm.state() == crate::mm::MmState::Retiring;
     drop(task_aspace);
-    retained_until_task_detach && weak_aspace.upgrade().is_none()
+    before_detach && no_early_retirement && retiring && mm.kernel_pins() == 0
 }
 
 #[cfg(all(test, axtest))]

@@ -258,7 +258,6 @@ pub fn sys_accept4(
     }
 
     let cloexec = flags & O_CLOEXEC != 0;
-
     let listener = Socket::from_fd(fd)?;
     let socket = Socket::new(listener.accept_user(current)?, listener.ip_domain());
     if flags & O_NONBLOCK != 0 {
@@ -266,15 +265,16 @@ pub fn sys_accept4(
     }
 
     let remote_addr = socket_addr_ex_for_user_name(socket.ip_domain(), socket.peer_addr()?);
-    let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
-    debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
-
+    // Linux accepts the connection before reading the output length. A bad
+    // copyout drops this uninstalled socket rather than leaking its fd.
     if !addr.is_null() {
         let mut addrlen_value = addrlen.read(current)?;
         remote_addr.write_to_user(current, addr, &mut addrlen_value)?;
         addrlen.write(current, addrlen_value)?;
     }
 
+    let fd = socket.add_to_fd_table(cloexec).map(|fd| fd as isize)?;
+    debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
     Ok(fd)
 }
 
@@ -333,13 +333,12 @@ pub fn sys_socketpair(
     }
     let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    fds.write(
-        current,
-        [
-            sock1.add_to_fd_table(cloexec)?,
-            sock2.add_to_fd_table(cloexec)?,
-        ],
-    )?;
+    let first = crate::file::prepare_file_like(alloc::sync::Arc::new(sock1), cloexec)?;
+    let second = crate::file::prepare_file_like(alloc::sync::Arc::new(sock2), cloexec)?;
+    // Both fd slots stay reserved until the complete user result is visible.
+    fds.write(current, [first.fd(), second.fd()])?;
+    first.install();
+    second.install();
     Ok(0)
 }
 

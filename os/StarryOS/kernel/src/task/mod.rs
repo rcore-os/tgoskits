@@ -54,9 +54,13 @@ use self::{
     process_memory::ProcessMemoryState, process_policy::ProcessPolicyState,
     process_ptrace::ProcessPtraceState, process_wait::ProcessWaitState,
 };
-pub(crate) use self::{pid::*, process_identity::*, process_memory::scheduler_address_space};
+pub(crate) use self::{
+    pid::*,
+    process_identity::*,
+    process_memory::{PreparedProcessMemory, scheduler_address_space},
+};
 use crate::{
-    mm::AddrSpace,
+    mm::MmHandle,
     namespace::NsProxy,
     sync::{IrqMutex, PiMutex, PiMutexGuard, SpinLock},
 };
@@ -100,7 +104,7 @@ pub struct ProcessData {
 /// Fallible resources prepared before publishing one process generation.
 pub struct ProcessDataInit {
     image: ProcessImage,
-    aspace: Arc<PiMutex<AddrSpace>>,
+    aspace: MmHandle,
     signal_actions: Arc<SpinLock<SignalActions>>,
     nsproxy: NsProxy,
     cgroup: Arc<ax_cgroup::CgroupNode>,
@@ -113,7 +117,7 @@ impl ProcessDataInit {
     /// Collects the resources that become owned by one process identity.
     pub fn new(
         image: ProcessImage,
-        aspace: Arc<PiMutex<AddrSpace>>,
+        aspace: MmHandle,
         signal_actions: Arc<SpinLock<SignalActions>>,
         nsproxy: NsProxy,
         exit_signal: Option<Signo>,
@@ -186,8 +190,6 @@ impl ProcessData {
             job_control: ProcessJobControl::new(),
         });
         identity.bind_process(proc, exit_event, Arc::downgrade(&this));
-        let aspace = this.aspace();
-        crate::mm::attach_process_slot(&aspace);
         this
     }
 
@@ -268,7 +270,7 @@ impl ProcessData {
 
 impl Drop for ProcessData {
     fn drop(&mut self) {
-        self.release_aspace_slot_if_needed();
+        self.retire_mm_owner();
     }
 }
 

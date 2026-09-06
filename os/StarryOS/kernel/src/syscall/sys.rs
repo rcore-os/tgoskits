@@ -169,9 +169,7 @@ pub fn sys_reboot(
         LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => {
             ax_runtime::hal::power::system_reset()
         }
-        LINUX_REBOOT_CMD_HALT | LINUX_REBOOT_CMD_POWER_OFF => {
-            ax_runtime::hal::power::system_off()
-        }
+        LINUX_REBOOT_CMD_HALT | LINUX_REBOOT_CMD_POWER_OFF => ax_runtime::hal::power::system_off(),
         _ => Err(StarryError::from(Errno::EINVAL)),
     }
 }
@@ -835,6 +833,7 @@ pub fn sys_sysinfo(
         + usages.get(ax_alloc::UsageKind::VirtMem)
         + usages.get(ax_alloc::UsageKind::PageCache)
         + usages.get(ax_alloc::UsageKind::PageTable)
+        + usages.get(ax_alloc::UsageKind::TaskStack)
         + usages.get(ax_alloc::UsageKind::Dma)
         + usages.get(ax_alloc::UsageKind::Global);
     let free = total.saturating_sub(used);
@@ -1186,18 +1185,25 @@ pub fn sys_riscv_hwprobe(
         return Err(StarryError::InvalidInput);
     }
 
-    let input_pairs = crate::mm::UserConstPtr::<RiscvHwprobe>::from(pairs.cast_const().cast());
-    let output_pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast());
-    let mut pairs = input_pairs.read_slice(current, pair_count)?;
-    for pair in &mut pairs {
-        if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
-            pair.value = value;
+    let user_pairs = pairs.cast::<RiscvHwprobe>();
+    for index in 0..pair_count {
+        let pair = user_pairs.wrapping_add(index);
+        // Linux imports only the key, then publishes this pair before reading
+        // the next one. The value field is output-only and no array is staged.
+        let key_ptr = pair.cast::<i64>();
+        let mut key = key_ptr.vm_read(current)?;
+        let value = if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(key) {
+            value
         } else {
-            pair.key = -1;
-            pair.value = 0;
-        }
+            key = -1;
+            0
+        };
+        key_ptr.vm_write(current, key)?;
+        pair.cast::<u8>()
+            .wrapping_add(core::mem::offset_of!(RiscvHwprobe, value))
+            .cast::<u64>()
+            .vm_write(current, value)?;
     }
-    output_pairs.write_slice(current, &pairs)?;
 
     Ok(0)
 }
@@ -1244,9 +1250,7 @@ fn sys_constants_and_validation_rules_hold_for_test() -> bool {
     assert!(valid_flags & !(GRND_NONBLOCK | GRND_INSECURE | GRND_RANDOM) == 0);
 
     let nonblock_only = GRND_NONBLOCK;
-    assert!(
-        nonblock_only & !(GRND_NONBLOCK | GRND_INSECURE | GRND_RANDOM) == 0
-    );
+    assert!(nonblock_only & !(GRND_NONBLOCK | GRND_INSECURE | GRND_RANDOM) == 0);
 
     true
 }

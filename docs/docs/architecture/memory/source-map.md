@@ -27,7 +27,7 @@ sidebar_label: "源码结构"
 | `virtualization/axvm/src/arch/*/` | `axvm` | 客户机第二阶段页表项、几何和失效 | `NestedPageTable`、`GenericNestedPageTable` |
 | `platforms/someboot/src/arch/*/paging*` | `someboot` | 启动页表项、几何和启用流程 | 架构 boot table adapter |
 | `memory/memory_set/` | `ax-memory-set` | 虚拟内存区域集合和直接 backend 操作 | `MemorySet`、`MemoryArea`、`MappingBackend` |
-| `os/StarryOS/kernel/src/mm/` | Starry kernel mm | Linux 兼容虚拟区域、COW、RSS/VSS 统计、缺页和 syscall 接线 | `AddrSpace`、`Backend`、`MemoryAccounting`、`ProcessVmStat`、`ProcessMemStats` |
+| `os/StarryOS/kernel/src/mm/` | Starry kernel mm | Linux 兼容 MM 生命周期、persistent VMA、页对象/rmap、事务、缺页和 syscall 接线 | `MmHandle`、`VmaMap`、`MappingOperation`、`PageObject`、`MutationReceipt`、`ProcessVmStat` |
 | `memory/dma-api/` | `dma-api` | DMA 设备约束和资源所有权 | `DeviceDma`、`DmaAllocation`、`StreamingMap` |
 | `memory/mmio-api/` | `mmio-api` | 内存映射输入输出能力和易失性访问 | `Mmio`、`MmioRaw`、`MmioOp` |
 

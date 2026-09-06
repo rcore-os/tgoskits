@@ -2,9 +2,7 @@ use core::mem::offset_of;
 
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
-use linux_raw_sys::general::{
-    __kernel_old_timeval, RLIM_NLIMITS, RLIMIT_RTTIME, rlimit64, rusage,
-};
+use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, RLIMIT_RTTIME, rlimit64, rusage};
 
 use crate::{
     StarryError, StarryResult,
@@ -73,21 +71,22 @@ struct Rusage {
 }
 
 impl Rusage {
-    fn from_thread(thread: &Thread) -> Self {
+    fn from_thread(thread: &Thread) -> StarryResult<Self> {
         let (utime, stime) = thread.cpu_time_output();
-        let max_rss_kb = thread.proc_data.aspace().lock().rss().hiwater_rss_pages()
-            * (PAGE_SIZE_4K as u64 / 1024);
-        Self {
+        let mm = thread.proc_data.pin_aspace()?;
+        let max_rss_pages = mm.lock().resident_hiwater_pages();
+        let max_rss_kb = max_rss_pages * (PAGE_SIZE_4K as u64 / 1024);
+        Ok(Self {
             utime,
             stime,
             max_rss_kb,
-        }
+        })
     }
 
     fn from_process(proc_data: &ProcessData) -> Self {
         let (utime, stime) = proc_data.cpu_time();
         let max_rss_kb =
-            proc_data.aspace().lock().rss().hiwater_rss_pages() * (PAGE_SIZE_4K as u64 / 1024);
+            proc_data.aspace().lock().resident_hiwater_pages() * (PAGE_SIZE_4K as u64 / 1024);
         Self {
             utime,
             stime,
@@ -174,7 +173,7 @@ pub fn sys_getrusage(
     let result = match who {
         RUSAGE_SELF => Rusage::from_process(&thr.proc_data),
         RUSAGE_CHILDREN => Rusage::from_waited_children(&thr.proc_data),
-        RUSAGE_THREAD => Rusage::from_thread(thr),
+        RUSAGE_THREAD => Rusage::from_thread(thr)?,
         _ => return Err(StarryError::InvalidInput),
     };
     write_rusage(current, usage, result.into())?;

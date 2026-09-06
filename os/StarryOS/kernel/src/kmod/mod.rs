@@ -90,7 +90,7 @@ impl SectionMemOps for KmodMemSection {
                     PAGE_SIZE_4K * self.num_pages,
                     mapping_flags,
                 )
-                    .is_ok()
+                .is_ok()
             }
             #[cfg(target_arch = "loongarch64")]
             KmodMemBackend::DirectMap => {

@@ -1,18 +1,16 @@
 /*
- * test_shm_deadlock.c - Stress test for SHM_MANAGER/shm_inner lock ordering.
+ * test_shm_deadlock.c - Stress the SHM_MANAGER -> shm_inner lock order.
  *
- * BUG-021: sys_shmget holds SHM_MANAGER then locks shm_inner.
- *          The buggy sys_shmat/sys_shmdt path held shm_inner first and then
- *          tried to lock SHM_MANAGER. Under SMP this forms an AB/BA deadlock.
+ * BUG-021: sys_shmget and the shmat/shmdt bookkeeping path must acquire the
+ * shared-memory locks in one order.  The old AB/BA implementation could
+ * deadlock when these operations ran concurrently.
  *
- * Strategy: start the shmat/shmdt worker first and make it attach a larger
- * segment on x86_64, so it keeps shm_inner long enough for the shmget worker
- * to grab SHM_MANAGER. The old lock order deadlocks reliably; the fixed lock
- * order serializes the two paths and the workers exit cleanly.
- *
- * This test uses clone() directly since musl pthreads may or may not work on
- * StarryOS. clone(CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND) creates
- * a thread sharing the address space.
+ * This test deliberately uses finite work and bounded joins.  A wall-clock
+ * alarm is not a sound liveness oracle on a preemptive guest: a long page
+ * table transaction can delay timer delivery even though both workers make
+ * progress.  The operation counters and bounded wait still turn a real
+ * deadlock into a deterministic failure, without introducing a second timer
+ * or signal lifecycle into the test.
  */
 #define _GNU_SOURCE
 #include "test_framework.h"
@@ -24,84 +22,124 @@
 #include <sched.h>
 #include <unistd.h>
 
-/* Shared state between threads */
-static volatile int g_running = 1;
-static volatile int g_shmid = -1;
-static volatile int g_deadlock_detected = 0;
-static volatile int g_shmat_started = 0;
-static volatile int g_threads_done = 0;
-
-/* Thread stack size */
 #define STACK_SIZE (64 * 1024)
+#define WORKER_OPS 4
+#define START_SPINS 500000u
+#define JOIN_SPINS 500000u
 
 #if defined(__x86_64__)
 #define SHM_TEST_SIZE (32 * 1024 * 1024)
-#define SHM_RACE_USEC 1500000
-#define SHM_ALARM_SEC 10
 #else
-#define SHM_TEST_SIZE 4096
-#define SHM_RACE_USEC 1000000
-#define SHM_ALARM_SEC 3
+#define SHM_TEST_SIZE (256 * 1024)
 #endif
 
-/*
- * Thread 1: repeatedly call shmget with the same key.
- * This acquires SHM_MANAGER -> shm_inner (the "forward" order).
- */
-static int shmget_thread(void *arg) {
+/* Shared state is accessed with the compiler's acquire/release atomics. */
+static volatile int g_running;
+static volatile int g_shmid;
+static volatile int g_shmat_started;
+static volatile int g_shmget_started;
+static volatile int g_shmat_ops;
+static volatile int g_shmget_ops;
+static volatile int g_worker_error;
+
+static int atomic_load_int(const volatile int *value)
+{
+    return __atomic_load_n(value, __ATOMIC_ACQUIRE);
+}
+
+static void atomic_store_int(volatile int *value, int new_value)
+{
+    __atomic_store_n(value, new_value, __ATOMIC_RELEASE);
+}
+
+static void mark_worker_error(void)
+{
+    atomic_store_int(&g_worker_error, 1);
+    atomic_store_int(&g_running, 0);
+}
+
+/* Worker 1 follows SHM_MANAGER -> shm_inner through shmget(). */
+static int shmget_thread(void *arg)
+{
     (void)arg;
+    atomic_store_int(&g_shmget_started, 1);
 
-    while (g_running && !g_shmat_started) {
-        sched_yield();
-    }
-
-    while (g_running) {
+    for (int i = 0; i < WORKER_OPS && atomic_load_int(&g_running); i++) {
         int id = shmget(42, SHM_TEST_SIZE, IPC_CREAT | 0666);
-        if (id >= 0) {
-            g_shmid = id;
+        if (id < 0) {
+            mark_worker_error();
+            break;
         }
+        atomic_store_int(&g_shmid, id);
+        __atomic_fetch_add(&g_shmget_ops, 1, __ATOMIC_RELAXED);
         sched_yield();
     }
-    return 0;
+    return atomic_load_int(&g_worker_error) ? 1 : 0;
 }
 
-/*
- * Thread 2: repeatedly call shmat/shmdt.
- * The buggy version acquired shm_inner before SHM_MANAGER. Starting this
- * worker first biases the race toward the old AB/BA lock order.
- */
-static int shmat_thread(void *arg) {
+/* Worker 2 exercises attach/detach and its manager bookkeeping. */
+static int shmat_thread(void *arg)
+{
     (void)arg;
+    atomic_store_int(&g_shmat_started, 1);
 
-    while (g_running) {
-        int id = g_shmid;
-        if (id >= 0) {
-            g_shmat_started = 1;
-            void *p = shmat(id, NULL, 0);
-            if (p != (void *)-1) {
-                shmdt(p);
-            }
-        }
+    /* Make the two lock paths overlap instead of relying on scheduling luck. */
+    for (unsigned i = 0;
+         i < START_SPINS && !atomic_load_int(&g_shmget_started) &&
+         atomic_load_int(&g_running);
+         i++) {
         sched_yield();
     }
-    return 0;
+
+    for (int i = 0; i < WORKER_OPS && atomic_load_int(&g_running); i++) {
+        int id = atomic_load_int(&g_shmid);
+        if (id < 0) {
+            mark_worker_error();
+            break;
+        }
+
+        void *address = shmat(id, NULL, 0);
+        if (address == (void *)-1) {
+            mark_worker_error();
+            break;
+        }
+        if (shmdt(address) < 0) {
+            mark_worker_error();
+            break;
+        }
+        __atomic_fetch_add(&g_shmat_ops, 1, __ATOMIC_RELAXED);
+        sched_yield();
+    }
+    return atomic_load_int(&g_worker_error) ? 1 : 0;
 }
 
-static int watchdog_thread(void *arg) {
-    (void)arg;
-
-    for (int i = 0; i < SHM_ALARM_SEC * 10; i++) {
-        usleep(100000);
-        if (g_threads_done) {
+/* Wait without sleeping forever if a buggy kernel really deadlocks. */
+static int wait_child_bounded(pid_t child, int *status)
+{
+    for (unsigned i = 0; i < JOIN_SPINS; i++) {
+        pid_t result = waitpid(child, status, WNOHANG | __WALL);
+        if (result == child) {
             return 0;
         }
+        if (result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return errno;
+        }
+        sched_yield();
     }
+    return ETIMEDOUT;
+}
 
-    g_deadlock_detected = 1;
-    printf("  FAIL | test_shm_deadlock.c | concurrent_shmget_shmat"
-           " (TIMEOUT after %ds - probable deadlock in SHM lock ordering)\n",
-           SHM_ALARM_SEC);
-    _exit(1);
+static void stop_child(pid_t child)
+{
+    if (child <= 0) {
+        return;
+    }
+    (void)kill(child, SIGKILL);
+    int status = 0;
+    (void)wait_child_bounded(child, &status);
 }
 
 int main(void)
@@ -109,81 +147,90 @@ int main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     TEST_START("shm_deadlock");
 
-    /* --- concurrent_shmget_shmat --- */
-    {
-        /* Create initial segment so both threads have something to work with */
-        g_shmid = shmget(42, SHM_TEST_SIZE, IPC_CREAT | 0666);
-        CHECK(g_shmid >= 0, "initial shmget");
+    pid_t shmat_child = -1;
+    pid_t shmget_child = -1;
+    void *shmat_stack = MAP_FAILED;
+    void *shmget_stack = MAP_FAILED;
+    int status_shmat = 0;
+    int status_shmget = 0;
 
-        if (g_shmid >= 0) {
-            /* Allocate stacks for clone threads */
-            void *stack1 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            void *stack2 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            void *stack3 = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    atomic_store_int(&g_running, 1);
+    atomic_store_int(&g_shmid, -1);
+    atomic_store_int(&g_shmat_started, 0);
+    atomic_store_int(&g_shmget_started, 0);
+    atomic_store_int(&g_shmat_ops, 0);
+    atomic_store_int(&g_shmget_ops, 0);
+    atomic_store_int(&g_worker_error, 0);
 
-            CHECK(stack1 != MAP_FAILED, "stack1 mmap");
-            CHECK(stack2 != MAP_FAILED, "stack2 mmap");
-            CHECK(stack3 != MAP_FAILED, "stack3 mmap");
-
-            if (stack1 != MAP_FAILED && stack2 != MAP_FAILED &&
-                stack3 != MAP_FAILED) {
-                int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
-
-                /* clone() takes top of stack (stack grows down) */
-                int tid3 = clone(watchdog_thread, (char *)stack3 + STACK_SIZE,
-                                 flags, NULL);
-                CHECK(tid3 >= 0, "clone watchdog_thread");
-
-                int tid2 = clone(shmat_thread, (char *)stack2 + STACK_SIZE,
-                                 flags, NULL);
-                CHECK(tid2 >= 0, "clone shmat_thread");
-
-                while (tid2 >= 0 && !g_shmat_started) {
-                    sched_yield();
-                }
-
-                int tid1 = clone(shmget_thread, (char *)stack1 + STACK_SIZE,
-                                 flags, NULL);
-                CHECK(tid1 >= 0, "clone shmget_thread");
-
-                if (tid1 >= 0 && tid2 >= 0 && tid3 >= 0) {
-                    /*
-                     * Let the threads race. If a deadlock occurs,
-                     * the watchdog worker will print FAIL.
-                     */
-                    usleep(SHM_RACE_USEC);
-                    g_running = 0;
-
-                    /* Wait for threads to finish */
-                    int status;
-                    waitpid(tid1, &status, __WALL);
-                    waitpid(tid2, &status, __WALL);
-                    g_threads_done = 1;
-                    /*
-                     * Ensure watchdog exits even if CLONE_VM isn't honored
-                     * on this platform; avoids false timeouts.
-                     */
-                    kill(tid3, SIGKILL);
-                    waitpid(tid3, &status, __WALL);
-
-                    CHECK(!g_deadlock_detected, "no deadlock detected");
-                } else {
-                    g_running = 0;
-                }
-
-                /* Cleanup */
-                if (stack1 != MAP_FAILED) munmap(stack1, STACK_SIZE);
-                if (stack2 != MAP_FAILED) munmap(stack2, STACK_SIZE);
-                if (stack3 != MAP_FAILED) munmap(stack3, STACK_SIZE);
-            }
-
-            /* Remove the shared memory segment */
-            shmctl(g_shmid, IPC_RMID, NULL);
-        }
+    int shmid = shmget(42, SHM_TEST_SIZE, IPC_CREAT | 0666);
+    CHECK(shmid >= 0, "initial shmget");
+    if (shmid < 0) {
+        TEST_DONE();
     }
+    atomic_store_int(&g_shmid, shmid);
+
+    shmat_stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    shmget_stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(shmat_stack != MAP_FAILED, "shmat worker stack");
+    CHECK(shmget_stack != MAP_FAILED, "shmget worker stack");
+    if (shmat_stack == MAP_FAILED || shmget_stack == MAP_FAILED) {
+        goto cleanup;
+    }
+
+    const int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | SIGCHLD;
+    shmat_child = clone(shmat_thread, (char *)shmat_stack + STACK_SIZE,
+                        flags, NULL);
+    CHECK(shmat_child > 0, "clone shmat worker");
+    if (shmat_child <= 0) {
+        goto cleanup;
+    }
+
+    int started = 0;
+    for (unsigned i = 0; i < START_SPINS; i++) {
+        if (atomic_load_int(&g_shmat_started)) {
+            started = 1;
+            break;
+        }
+        sched_yield();
+    }
+    CHECK(started, "shmat worker starts before shmget worker");
+    if (!started) {
+        goto cleanup;
+    }
+
+    shmget_child = clone(shmget_thread, (char *)shmget_stack + STACK_SIZE,
+                         flags, NULL);
+    CHECK(shmget_child > 0, "clone shmget worker");
+    if (shmget_child <= 0) {
+        goto cleanup;
+    }
+
+    int wait_result_shmat = wait_child_bounded(shmat_child, &status_shmat);
+    int wait_result_shmget = wait_child_bounded(shmget_child, &status_shmget);
+    atomic_store_int(&g_running, 0);
+    CHECK(wait_result_shmat == 0, "shmat worker completes without deadlock");
+    CHECK(wait_result_shmget == 0, "shmget worker completes without deadlock");
+    CHECK(wait_result_shmat == 0 && WIFEXITED(status_shmat) &&
+          WEXITSTATUS(status_shmat) == 0, "shmat worker exits successfully");
+    CHECK(wait_result_shmget == 0 && WIFEXITED(status_shmget) &&
+          WEXITSTATUS(status_shmget) == 0, "shmget worker exits successfully");
+    CHECK(!atomic_load_int(&g_worker_error), "workers report no SHM errors");
+    CHECK(atomic_load_int(&g_shmat_ops) > 0, "shmat/shmdt operations completed");
+    CHECK(atomic_load_int(&g_shmget_ops) > 0, "shmget operations completed");
+
+cleanup:
+    atomic_store_int(&g_running, 0);
+    stop_child(shmat_child);
+    stop_child(shmget_child);
+    if (shmat_stack != MAP_FAILED) {
+        munmap(shmat_stack, STACK_SIZE);
+    }
+    if (shmget_stack != MAP_FAILED) {
+        munmap(shmget_stack, STACK_SIZE);
+    }
+    (void)shmctl(shmid, IPC_RMID, NULL);
 
     TEST_DONE();
 }

@@ -4,6 +4,8 @@ mod paging {
 
 // Compile target-owned PTE modules in the host test harness so their entry
 // semantics can be exercised without a target-side test runner.
+#[path = "../src/aarch64/asid.rs"]
+mod aarch64_asid;
 #[expect(
     dead_code,
     reason = "the host adapter exercises PTE behavior without architecture initialization"
@@ -70,6 +72,20 @@ fn aarch64_explicit_memory_types_roundtrip() {
 }
 
 #[test]
+fn aarch64_user_leaf_is_non_global_for_asid_isolation() {
+    const PTE_NG: u64 = 1 << 11;
+    let paddr = PhysAddr::from_usize(0x4000_0000);
+
+    for is_huge in [false, true] {
+        let user = A64Pte::new_page(paddr, MappingFlags::READ | MappingFlags::USER, is_huge);
+        let kernel = A64Pte::new_page(paddr, MappingFlags::READ, is_huge);
+
+        assert_ne!(user.raw_for_test() & PTE_NG, 0);
+        assert_eq!(kernel.raw_for_test() & PTE_NG, 0);
+    }
+}
+
+#[test]
 fn aarch64_unprogrammed_mair_indices_decode_as_device() {
     let paddr = PhysAddr::from_usize(0x1_81ea_5000);
     let normal_flags = MappingFlags::READ | MappingFlags::WRITE;
@@ -82,6 +98,13 @@ fn aarch64_unprogrammed_mair_indices_decode_as_device() {
             "AttrIndx {index} must match its zero-valued MAIR slot"
         );
     }
+}
+
+#[test]
+fn aarch64_tag_capacity_follows_the_configured_tcr_width() {
+    assert_eq!(aarch64_asid::configured_tag_capacity(2, 0), 1 << 8);
+    assert_eq!(aarch64_asid::configured_tag_capacity(2, 1), 1 << 16);
+    assert_eq!(aarch64_asid::configured_tag_capacity(0, 1), 1 << 8);
 }
 
 #[test]

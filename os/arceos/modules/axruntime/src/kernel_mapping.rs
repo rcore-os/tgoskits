@@ -98,12 +98,10 @@ pub fn unmap_kernel_range(start: VirtAddr, size: usize) -> RuntimeResult {
 /// Returns the flags and page size for a kernel mapping without exposing a
 /// mutable page-table reference.
 pub fn query_kernel_mapping(start: VirtAddr) -> RuntimeResult<(MappingFlags, usize)> {
-    let (_, flags, page_size) = ax_mm::kernel_aspace()
+    ax_mm::kernel_aspace()
         .lock()
-        .page_table()
-        .query(start)
-        .map_err(|_| ax_mm::MmError::BadAddress)?;
-    Ok((flags, page_size))
+        .mapping_attributes(start)
+        .map_err(Into::into)
 }
 
 /// Handles one kernel page fault through the global address-space owner.

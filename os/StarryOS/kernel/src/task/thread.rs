@@ -372,10 +372,7 @@ impl Thread {
     /// Contending task-context readers and writers sleep on the outer PI mutex.
     /// The closure itself runs with preemption and local IRQs disabled and must
     /// only install already-prepared scope entries.
-    pub(crate) fn with_current_scope_mut<R>(
-        &self,
-        f: impl FnOnce(&mut Scope) -> R,
-    ) -> R {
+    pub(crate) fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
         self.scope.with_current_mut(f)
     }
 
@@ -564,9 +561,7 @@ impl Thread {
         // SAFETY: switch-in established exactly one activation for this task,
         // and the scheduler baton still pins the same CPU during switch-out.
         unsafe { self.scope.deactivate_pinned(cpu_pin) };
-        self.accounting
-            .cpu_time
-            .scheduler_switch_out(reason);
+        self.accounting.cpu_time.scheduler_switch_out(reason);
     }
 
     pub(crate) fn apply_cpu_time_policy(&self, realtime_policy: bool, _observed_ns: u64) {
@@ -582,18 +577,14 @@ impl Thread {
     pub(crate) fn commit_cpu_time_now(&self) {
         let runtime_ns = self.scheduler_runtime_ns();
         self.proc_data.record_cpu_time_transition(|| {
-            self.accounting
-                .cpu_time
-                .publish_committed_delta(runtime_ns)
+            self.accounting.cpu_time.publish_committed_delta(runtime_ns)
         });
     }
 
     pub(super) fn sample_scheduler_tick_cpu_time(&self, _observed_ns: u64) {
         let runtime_ns = self.scheduler_runtime_ns();
         self.proc_data.record_cpu_time_transition(|| {
-            self.accounting
-                .cpu_time
-                .sample_scheduler_tick(runtime_ns)
+            self.accounting.cpu_time.sample_scheduler_tick(runtime_ns)
         });
     }
 

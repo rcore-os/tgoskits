@@ -28,6 +28,19 @@ const USER_LOOP: &str = include_str!("../src/task/user.rs");
 const ENTRY: &str = include_str!("../src/entry.rs");
 
 #[test]
+fn explicit_prefault_releases_mm_metadata_before_resource_preparation() {
+    // A source boundary check complements QEMU clone/copyout regressions:
+    // published-MM population can allocate or enter the file cache, so it
+    // must use the same lock-external transaction as an ordinary page fault.
+    let prepare = function_body(MM_ACCESS, "fn prepare(");
+    assert!(
+        !prepare.contains(".populate_area("),
+        "prefault must not allocate or perform file IO under the MM metadata guard"
+    );
+    assert!(prepare.contains(".handle_page_fault_result("));
+}
+
+#[test]
 fn generic_block_on_has_no_implicit_starry_user_identity() {
     assert!(FUTURE.contains("pub use ax_runtime::task::block_on;"));
     assert!(FUTURE.contains("pub fn block_on_user<"));
@@ -270,7 +283,7 @@ fn page_fault_identity_failure_is_nonblocking_and_nonreentrant() {
 fn kernel_page_fault_rejects_non_user_addresses_before_identity_or_sleep() {
     let handler = function_body(MM_ACCESS, "fn handle_page_fault(");
     let address_check = handler
-        .find("if !user_range.contains(&vaddr.as_usize())")
+        .find("if !layout.range().contains(vaddr)")
         .expect("kernel page-fault callback must reject non-user addresses");
     let identity_lookup = handler
         .find("resolve_page_fault_user_task(try_current_user_task())")

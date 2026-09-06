@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** replace the kernel-address-space tuple with a typed, fallible
+  platform layout that publishes disjoint user and page-table-backed kernel
+  ranges.
+
 ## [0.13.1](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.13.0...ax-plat-v0.13.1) - 2026-08-27
 
 ### Other

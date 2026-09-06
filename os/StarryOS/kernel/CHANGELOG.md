@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and typed ext4 fallocate operations for preallocation, zero/punch,
   collapse-range, and insert-range.
 
+### Changed
+
+- Remove the `loongarch64-low-va` board feature. Each new Starry user MM now
+  captures a typed layout clipped to the platform's runtime canonical lower
+  half.
+
 ### Fixed
 
 - Publish tmpfs/overlay symlinks atomically with their final targets and keep

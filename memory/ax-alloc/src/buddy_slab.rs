@@ -178,11 +178,13 @@ impl GlobalAllocator {
     /// Allocate arbitrary number of bytes. Returns the left bound of the
     /// allocated region.
     pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
-        let result = self
-            .inner
-            .lock_irqsave()
-            .alloc(layout)
-            .map_err(crate::AllocError::from);
+        let result =
+            crate::retry_after_registered_reclaim(crate::layout_reclaim_pages(layout), || {
+                self.inner
+                    .lock_irqsave()
+                    .alloc(layout)
+                    .map_err(crate::AllocError::from)
+            });
         if result.is_ok() {
             self.usages
                 .lock_irqsave()
@@ -208,28 +210,12 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let mut result = self.inner.lock_irqsave().alloc_pages(num_pages, alignment);
-        if result.is_err() {
-            for _ in 0..4 {
-                // Reclaim num_pages (at least 16 to build free-pool headroom).
-                // page_cache_reclaim doubles this target internally.
-                // NOTE: for very large contiguous requests, reclaimed pages
-                // may be too fragmented to satisfy the allocation even when
-                // the target is met.  Consider geometric growth across retries
-                // if this becomes a problem in practice.
-                let reclaimed = crate::try_page_reclaim(num_pages.max(16));
-                // Retry allocation regardless of whether reclaim ran;
-                // concurrent reclaim may have freed pages.
-                result = self.inner.lock_irqsave().alloc_pages(num_pages, alignment);
-                if result.is_ok() {
-                    break;
-                }
-                if reclaimed == 0 {
-                    break;
-                }
-            }
-        }
-        let addr = result.map_err(crate::AllocError::from)?;
+        let addr = crate::retry_after_registered_reclaim(num_pages, || {
+            self.inner
+                .lock_irqsave()
+                .alloc_pages(num_pages, alignment)
+                .map_err(crate::AllocError::from)
+        })?;
         self.usages
             .lock_irqsave()
             .alloc(kind, num_pages * PAGE_SIZE);
@@ -243,26 +229,12 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let mut result = self
-            .inner
-            .lock_irqsave()
-            .alloc_pages_lowmem(num_pages, alignment);
-        if result.is_err() {
-            for _ in 0..4 {
-                let reclaimed = crate::try_page_reclaim(num_pages.max(16));
-                result = self
-                    .inner
-                    .lock_irqsave()
-                    .alloc_pages_lowmem(num_pages, alignment);
-                if result.is_ok() {
-                    break;
-                }
-                if reclaimed == 0 {
-                    break;
-                }
-            }
-        }
-        let addr = result.map_err(crate::AllocError::from)?;
+        let addr = crate::retry_after_registered_reclaim(num_pages, || {
+            self.inner
+                .lock_irqsave()
+                .alloc_pages_lowmem(num_pages, alignment)
+                .map_err(crate::AllocError::from)
+        })?;
         self.usages
             .lock_irqsave()
             .alloc(kind, num_pages * PAGE_SIZE);
@@ -443,7 +415,10 @@ unsafe impl GlobalAlloc for GlobalAllocator {
             if let Ok(ptr) = GlobalAllocator::alloc(self, layout) {
                 ptr.as_ptr()
             } else {
-                alloc::alloc::handle_alloc_error(layout)
+                // Let fallible containers observe allocation failure. The
+                // standard library still calls its allocation-error handler
+                // for infallible Box/Vec/Arc construction after a null result.
+                core::ptr::null_mut()
             }
         };
 
@@ -453,6 +428,9 @@ unsafe impl GlobalAlloc for GlobalAllocator {
                 None => inner(),
                 Some(state) => {
                     let ptr = inner();
+                    if ptr.is_null() {
+                        return ptr;
+                    }
                     let generation = state.generation;
                     state.generation += 1;
                     state.map.insert(

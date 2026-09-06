@@ -63,7 +63,7 @@ ArceOS 是公共 runtime 和 Host Stage-1 的主要集成者。它使用统一 a
 | Rust heap/object | `GlobalAlloc` → Slab/Buddy | `RustHeap` |
 | Stage-1 page table | `ax-hal::paging::PagingAllocator` → Normal pages | `PageTable` |
 | allocation-backed 虚拟内存区域 | `ax-mm::Backend::Alloc` | `VirtMem` |
-| kernel task stack | `TaskStack` → GlobalAlloc/pages | `RustHeap` 或 `Global` |
+| kernel task stack | `StackHandle` → `RuntimeStack` → heap / `KernelVirtualAllocation` | `RustHeap` 或 `TaskStack` |
 | MMIO 虚拟地址 | `ax-mm::iomap` → Linear backend | 不拥有物理 RAM |
 
 runtime page-fault handler 先诊断 kernel stack guard，再把其他 fault 交给 `kernel_aspace().handle_page_fault()`。ArceOS policy 不实现 Linux overcommit 或 file 虚拟内存区域 reclaim。
@@ -99,7 +99,22 @@ Starry kernel 的 `AddrSpace` 与 ArceOS `ax-mm::AddrSpace` 并列，不在后�
 
 当前 `/proc/sys/vm/overcommit_memory` 由 procfs 展示，`/proc/meminfo` 的 `Committed_AS` 仍固定为 0；不能把它描述成已经有独立 committed-memory ledger。
 
-### 3.2 设备内存
+### 3.2 调度激活与进程所有权
+
+`ProcessMemoryOwnerCell` 原子发布当前 MM 与 private futex domain，`CLONE_VM` 显式复制 user reference。读者先登记 epoch，再取得发布指针的独立 `Arc`；写者发布新指针、关闭旧 epoch，并等待旧读者退出后才释放旧 publication。两侧 SeqCst fence 阻止读者登记和写者零计数检查互相漏看。
+
+`MmHandle::scheduler_address_space()` 在任务创建或 exec 的准备阶段分配 runtime token。切换时 `RuntimeMmOwner::prepare_activation()` 只取得预分配的 MM anchor 和 inline activation，并发布 CPU active bit；`ax-runtime` 安装完整 root/tag/generation/epoch 后持有 activation。旧 activation 只有收到 `AddressSpaceSwitchProof` 才减少 active accounting。
+
+| 所有者 | 结束时机 |
+| --- | --- |
+| `MmHandle` user reference | 进程 exit 或 exec 旧 MM 退休 |
+| `MmPin` | 内核运行中的访问或 task token detach |
+| CPU activation | 安装其他 root 后，或 offline 完成全 TLB flush 后 |
+| runtime token 的 MM anchor | CPU lease 清空，scheduler resource reaper 销毁 token 时 |
+
+激活回调只修改计数并发布预分配回收队列，不运行最终页表析构。exec 在停止 sibling 前准备新 MM、runtime token 和命令行/env 的 `Arc`；切换成功后才退休旧 MM。FD 表逐项撤销 CLOEXEC owner，锁外执行文件关闭回调。
+
+### 3.3 设备内存
 
 Starry `/dev/dma_heap`、ION compatibility 和 RGA/JPEG/NPU/TPU glue 使用 `dma-api`。用户 fd 只提供查找入口，实际 allocation 生命周期由 `Arc` owner 保留。
 
@@ -203,22 +218,25 @@ ArceOS 不经过 Starry kernel `mm/`，也不需要 Linux 常驻内存集大小�
 
 ### 6.2 Starry 匿名映射
 
-Starry 的 16 KiB `MAP_PRIVATE | MAP_ANONYMOUS | PROT_READ | PROT_WRITE` 先通过 syscall 应用程序二进制接口验证，再由 `MemorySet<Backend>` 发布 Cow 虚拟内存区域。未使用 `MAP_POPULATE` 时，建立 mapping不立即消耗四个 resident frame。
+Starry 的 16 KiB `MAP_PRIVATE | MAP_ANONYMOUS | PROT_READ | PROT_WRITE` 先通过 syscall 应用程序二进制接口验证，再由 `AddrSpace::map_with_permissions_publication()` 构造并发布 persistent `VmaMap` successor。未使用 `MAP_POPULATE` 时，建立 mapping 不立即消耗四个 resident frame。
 
 ```text
 sys_mmap
   -> validate flags, fd, offset and user range
-  -> AddrSpace::map / MemorySet direct backend operation
+  -> prepare VmaMap successor and MutationReceipt
+  -> publish VMA root and VmEpoch
   -> return user 虚拟地址
 
 later write fault
-  -> AddrSpace::handle_page_fault
-  -> CowBackend::populate
-  -> ax-alloc Normal × VirtMem
-  -> map 页表项 + record 常驻内存集大小 Anon
+  -> MmPin::handle_page_fault_result
+  -> AddrSpace::plan_page_fault / release metadata lock
+  -> AddrSpace::prepare_page_fault outside metadata lock
+  -> prepare PageObject(FrameLease) via ax-alloc Normal × VirtMem
+  -> lock PTE stripe and revalidate identity
+  -> install PTE + publish MappingSlot/rmap + receipt
 ```
 
-mapping 成功时 `ProcessVmStat` 的虚拟内存大小增加 16 KiB，常驻内存集大小仍可能为 0；每个首次写 fault 再使常驻内存集大小 Anon增加一页。syscall 返回值和 errno由 Starry kernel处理。
+mapping 成功时 `ProcessVmStat` 的虚拟内存大小增加 16 KiB，常驻内存集大小仍可能为 0；每个首次写 fault 发布一个 Anon `MappingSlot`，RSS 从这些 slot 派生。syscall 返回值和 errno 由 Starry kernel 处理，已发布但尚未完成 TLB retirement 的状态由 receipt/quarantine 保留，不能伪装成未发生。
 
 ### 6.3 Axvisor 客户机内存
 

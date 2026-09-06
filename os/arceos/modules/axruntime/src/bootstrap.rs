@@ -118,7 +118,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     crate::task::initialize_early_bootstrap_tls()
         .expect("failed to initialize primary bootstrap TLS");
 
-    let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
+    let layout = ax_hal::mem::virtual_address_space()
+        .expect("platform virtual-address layout must be supported");
+    let kernel_space_start = layout.kernel().start;
+    let kernel_space_size = layout.kernel().size();
 
     {
         use core::ops::Range;
@@ -170,6 +173,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         crate::interrupt_bootstrap::init_current_cpu();
     }
 
+    #[cfg(feature = "paging")]
+    let tlb_preparation = ax_hal::cache::prepare_current_cpu_tlb()
+        .expect("primary CPU failed to prepare TLB capability");
+
     // Linux enables the local IPI endpoint before publishing the CPU online to
     // the scheduler. Once scheduler work is visible, any safe point may need a
     // physical self-doorbell, including the bootstrap scheduling pass below.
@@ -179,6 +186,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         crate::task::publish_current_cpu_online().expect("failed to publish primary scheduler CPU");
     crate::task::start_current_ktimer_service().expect("failed to create primary ktimer service");
     crate::clock_event_runtime::enable_irqs_after_scheduler_online(online_cpu);
+    #[cfg(feature = "paging")]
+    ax_hal::cache::publish_current_cpu_tlb_ready(tlb_preparation)
+        .expect("primary CPU failed to publish TLB readiness");
     crate::guard::release_bootstrap_preemption();
     crate::task::start_deferred_task_work_service()
         .expect("failed to start deferred scheduler task-work service");

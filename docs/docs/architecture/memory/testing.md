@@ -310,18 +310,21 @@ no operation-sized snapshot or plan allocation
 
 针对 metadata split，使用不能 split 的 backend 替换虚拟内存区域中间一页时应在修改前返回 `BadState`。metadata-only 操作必须证明不会调用页表 backend；它们只供已经在策略层完成页表移动的路径使用。
 
-### 8.3 写时复制失败用例
+### 8.3 Starry MM 事务与 ownership 用例
 
-当前 Starry COW fault 路径没有独立 `FaultOutcome`、checked accounting overflow 或 host-only `starry-mm` 测试 crate。确定性失败覆盖应围绕现有内核路径设计：触发 frame allocation、页表映射或 backend 操作失败后，检查已经插入的页表项、COW frame table 引用和 `MemoryAccounting` 分类是否回滚。
+Starry 没有独立 `starry-mm` crate；可纯状态验证的生命周期、receipt、rmap 和 tag allocator 测试位于 `starry-kernel` axtest，真实 PTE、fault 与 syscall 语义由 grouped QEMU system case 覆盖。每个故障注入都要在旧实现上确定性失败，再由同一用例证明修复。
 
-| 检查对象 | 失败前可能中间状态 | 返回后期望 |
+| 检查对象 | 注入或交错 | 必须保持的不变量 |
 | --- | --- | --- |
-| 当前页页表项 | 已 map 或准备 map | 不存在或保持原合法 PTE |
-| COW frame table | 已增加 frame 引用 | 引用恢复，引用归零时 frame 已释放 |
-| `MemoryAccounting` 分类 | 已记录 Anon/File/Shared charge | charge map 与聚合计数一致 |
-| 返回值 | backend 或映射失败 | fault 返回失败，不能留下半完成状态 |
+| `PreparedMutation` | reservation 或 commit 前失败 | VMA/PTE/slot/epoch 均不变化 |
+| PTE apply | 中途失败 | preimage 逆序恢复；不能证明时进入 `NeedsRepair` |
+| TLB retirement | 远端 unsupported、timeout 或延迟 ack | receipt 保持 pending，detached owner 留在 quarantine |
+| MM lifecycle | 最后一个 `MmHandle` 释放但仍有 pin/activation | 页表不得 clear，不能产生 `RetirePermit` |
+| COW/rmap | 父子交错写或 File→Anon | 只替换当前 slot，其他 rmap 仍指向原 `PageObject` |
+| shared THP split | partial unmap/mprotect | child slot 共享原 `PageObject`，`frame_offset` 精确指向物理子范围 |
+| resident stats | sparse map、unmap 和 reclaim | 当前 RSS 等于 published slot 汇总，VmHWM 单调 |
 
-这类用例必须通过 `cargo xtask ktest qemu` 运行，因为它需要真实 kernel PageTable 与 frame table；当前没有独立 `starry-mm` crate 的 host-only 测试可以覆盖页表项/frame 回滚。现有 `MemoryAccounting::dec()` 只在 debug build 断言下溢，不能把发布构建 checked overflow 当作已实现行为来写测试。
+需要真实页表的 axtest 通过项目任务入口运行：
 
 ```sh
 cargo xtask ktest qemu \
@@ -330,7 +333,7 @@ cargo xtask ktest qemu \
   --arch x86_64
 ```
 
-测试输出必须包含对应 case 的 `ok` 和最终 `AXTEST_SUITE_OK`。QEMU启动成功但 case未被发现不算通过。
+测试输出必须包含对应 case 的 `ok` 和最终 `AXTEST_SUITE_OK`。Linux ABI 用例通过 `cargo xtask starry test qemu --arch <arch> -c qemu/system/<case>` 运行，最终必须出现 `STARRY_GROUPED_TESTS_PASSED`；QEMU 启动成功、任务取消或 case 未被发现都不算通过。
 
 ### 8.4 分配器压力用例
 

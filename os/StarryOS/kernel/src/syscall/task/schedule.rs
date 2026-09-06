@@ -23,8 +23,7 @@ use crate::{
     syscall::time::write_timespec,
     task::{
         Cred, PgidNumber, PidNumber, PidView, ProcessData, Tgid, TidNumber, UserTaskRef,
-        future::wall_deadline_to_monotonic_deadline,
-        get_task_by_number, processes,
+        future::wall_deadline_to_monotonic_deadline, get_task_by_number, processes,
     },
     time::{SleepDeadline, TimeValueLike},
 };

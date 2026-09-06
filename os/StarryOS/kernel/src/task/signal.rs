@@ -444,15 +444,12 @@ pub(super) fn queue_rttime_limit_signal_from_scheduler_tick(thr: &Thread, _obser
     if soft_limit_us == u64::MAX {
         return;
     }
-    let action = thr
-        .rttime()
-        .lock()
-        .check_limit_at(
-            thr.cpu_time(),
-            thr.scheduler_runtime_ns(),
-            soft_limit_us,
-            hard_limit_us,
-        );
+    let action = thr.rttime().lock().check_limit_at(
+        thr.cpu_time(),
+        thr.scheduler_runtime_ns(),
+        soft_limit_us,
+        hard_limit_us,
+    );
     let signo = match action {
         RttimeLimitAction::None => return,
         RttimeLimitAction::Soft => Signo::SIGXCPU,

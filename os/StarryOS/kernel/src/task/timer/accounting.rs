@@ -71,7 +71,11 @@ impl CpuTimeAccounting {
         Arc::clone(&self.scheduler_tick_cpu_time)
     }
 
-    pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool, runtime_ns: impl FnOnce() -> u64) {
+    pub(crate) fn scheduler_switch_in(
+        &self,
+        realtime_policy: bool,
+        runtime_ns: impl FnOnce() -> u64,
+    ) {
         let stable_state = u8::from(realtime_policy) * REALTIME_POLICY_ACTIVE;
         if self.realtime_state.load(Ordering::Acquire) == stable_state {
             return;
@@ -239,7 +243,6 @@ impl CpuTimeAccounting {
             runtime_ns: runtime_ns.saturating_sub(previous_runtime),
         }
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -445,13 +448,10 @@ pub(super) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool 
         CpuTimeDelta::ZERO
     });
 
-    let first = process.snapshot_at_with_live(10, &mut |runtime| {
-        accounting.unpublished_delta(runtime)
-    });
+    let first =
+        process.snapshot_at_with_live(10, &mut |runtime| accounting.unpublished_delta(runtime));
     accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 15);
-    process.record_transition(|| {
-        accounting.publish_committed_delta(15)
-    });
+    process.record_transition(|| accounting.publish_committed_delta(15));
     let second = process.snapshot_committed_at(15);
 
     first.user_ns.saturating_add(first.system_ns) == 10

@@ -41,8 +41,15 @@ int main(void) {
         perror("fopen /bind_src/hello.txt");
         return 1;
     }
-    fprintf(f, "bind mount test\n");
-    fclose(f);
+    if (fprintf(f, "bind mount test\n") < 0) {
+        perror("fprintf /bind_src/hello.txt");
+        fclose(f);
+        return 1;
+    }
+    if (fclose(f) != 0) {
+        perror("fclose /bind_src/hello.txt");
+        return 1;
+    }
 
     /* Bind mount /bind_src -> /bind_dst */
     if (mount("/bind_src", "/bind_dst", NULL, MS_BIND, NULL) < 0) {

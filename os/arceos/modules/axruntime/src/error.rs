@@ -86,6 +86,7 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
                 }
                 TlbShootdownError::Timeout => KlibError::TimedOut,
                 TlbShootdownError::Platform => KlibError::Io,
+                TlbShootdownError::GenerationExhausted => KlibError::BadState,
             },
         },
         #[cfg(feature = "paging")]
@@ -94,6 +95,7 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
                 KlibError::Unsupported
             }
             TlbShootdownError::Timeout => KlibError::TimedOut,
+            TlbShootdownError::GenerationExhausted => KlibError::BadState,
             TlbShootdownError::Platform => KlibError::Io,
         },
         RuntimeError::Irq(error) => match error {

@@ -547,6 +547,7 @@ pub fn sys_name_to_handle_at(
     let mut header = header_ptr.read(current)?;
     let capacity = header.handle_bytes as usize;
     header.handle_bytes = FILE_HANDLE_BYTES as u32;
+    handle.vm_write(current, header)?;
     if capacity < FILE_HANDLE_BYTES {
         header_ptr.write(current, header)?;
         return Err(crate::StarryError::from(crate::Errno::EOVERFLOW));

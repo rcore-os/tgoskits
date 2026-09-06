@@ -33,10 +33,7 @@ fn interval_timer_active_gate_rules_hold_for_test() -> bool {
 
     let _armed = timers.set_itimer(
         ITimerType::Virtual,
-        ITimerSetting::new(
-            time_value_from_nanos(1_000),
-            time_value_from_nanos(2_000),
-        ),
+        ITimerSetting::new(time_value_from_nanos(1_000), time_value_from_nanos(2_000)),
         snapshot,
     );
     if timers.active_mask() != 1 << ITimerType::Virtual as usize {
@@ -68,8 +65,7 @@ fn interval_timer_arm_uses_current_snapshot_for_test() -> bool {
     let pending = timers.poll(armed_at);
 
     pending.signals().next().is_none()
-        && timers.get_itimer(ITimerType::Real, armed_at).1.as_nanos()
-            == u128::from(2 * SECOND)
+        && timers.get_itimer(ITimerType::Real, armed_at).1.as_nanos() == u128::from(2 * SECOND)
 }
 
 fn cpu_interval_timers_avoid_wall_alarms_for_test() -> bool {

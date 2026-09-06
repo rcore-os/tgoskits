@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-unix-peer-close C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_executable(test-unix-peer-close src/main.c)
+target_compile_options(test-unix-peer-close PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(test-unix-peer-close PRIVATE pthread)
+install(TARGETS test-unix-peer-close RUNTIME DESTINATION usr/bin/starry-test-suit)

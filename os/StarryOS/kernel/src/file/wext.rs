@@ -185,9 +185,7 @@ fn parse_iw_frequency(data: &[u8; 16]) -> StarryResult<u8> {
     let frequency_hz = scale_iw_frequency_hz(mantissa, exponent)?;
     match frequency_hz {
         2_484_000_000 => Ok(14),
-        2_412_000_000..=2_472_000_000
-            if (frequency_hz - 2_407_000_000) % 5_000_000 == 0 =>
-        {
+        2_412_000_000..=2_472_000_000 if (frequency_hz - 2_407_000_000) % 5_000_000 == 0 => {
             Ok(((frequency_hz - 2_407_000_000) / 5_000_000) as u8)
         }
         _ => Err(StarryError::InvalidInput),
@@ -203,9 +201,7 @@ fn scale_iw_frequency_hz(mantissa: i32, exponent: i16) -> StarryResult<i64> {
         .checked_pow(u32::from(exponent.unsigned_abs()))
         .ok_or(StarryError::InvalidInput)?;
     if exponent >= 0 {
-        mantissa
-            .checked_mul(scale)
-            .ok_or(StarryError::InvalidInput)
+        mantissa.checked_mul(scale).ok_or(StarryError::InvalidInput)
     } else if mantissa % scale == 0 {
         Ok(mantissa / scale)
     } else {
@@ -246,8 +242,7 @@ pub fn handle(
             with_pending(&ifname, |p| p.mode = Some(staged));
         }
         SIOCSIWESSID => {
-            let (mut ssid, flags) =
-                read_iw_point(current, arg, IW_ESSID_MAX_SIZE + 1)?;
+            let (mut ssid, flags) = read_iw_point(current, arg, IW_ESSID_MAX_SIZE + 1)?;
             if ssid.len() == IW_ESSID_MAX_SIZE + 1 {
                 if ssid.last() != Some(&0) {
                     return Err(StarryError::ArgumentListTooLong);
@@ -332,9 +327,7 @@ fn parse_pmk_encode_ext(encoded: &[u8]) -> StarryResult<ax_net::Wpa2Pmk> {
     if algorithm != IW_ENCODE_ALG_PMK {
         return Err(StarryError::OperationNotSupported);
     }
-    if key_length != WPA2_PMK_SIZE
-        || encoded.len() != IW_ENCODE_EXT_HEADER_SIZE + key_length
-    {
+    if key_length != WPA2_PMK_SIZE || encoded.len() != IW_ENCODE_EXT_HEADER_SIZE + key_length {
         return Err(StarryError::InvalidInput);
     }
     let key: [u8; WPA2_PMK_SIZE] = encoded[IW_ENCODE_EXT_HEADER_SIZE..]

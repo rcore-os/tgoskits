@@ -20,11 +20,10 @@ use linux_raw_sys::{
     general::*,
     ioctl::{FIOASYNC, FIONBIO, FS_IOC_FIEMAP},
 };
+
 use crate::{
     Errno, StarryError, StarryResult,
-    file::{
-        Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at, with_fs,
-    },
+    file::{Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
     task::UserTaskRef,
     time::TimeValueLike,
@@ -109,12 +108,7 @@ fn path_info_at(dirfd: i32, path: &str) -> StarryResult<(String, bool)> {
 
 /// The ioctl() system call manipulates the underlying device parameters
 /// of special files.
-pub fn sys_ioctl(
-    current: &UserTaskRef,
-    fd: i32,
-    cmd: u32,
-    arg: usize,
-) -> StarryResult<isize> {
+pub fn sys_ioctl(current: &UserTaskRef, fd: i32, cmd: u32, arg: usize) -> StarryResult<isize> {
     debug!("sys_ioctl <= fd: {fd}, cmd: {cmd}, arg: {arg}");
     let f = get_file_like(fd)?;
     if cmd == FIONBIO {
@@ -321,10 +315,10 @@ ax_tracepoint::define_event_trace!(
     sys_mkdirat,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(syscalls),
-    TP_PROTO(path:&str, mode: u16),
+    TP_PROTO(path: &str, mode: u16),
     TP_STRUCT__entry {
         mode: u16,
-        path: [u8;64],
+        path: [u8; 64],
     },
     TP_fast_assign {
         mode: mode,
@@ -342,7 +336,11 @@ ax_tracepoint::define_event_trace!(
     },
     TP_ident(__entry),
     TP_printk({
-        let nul = __entry.path.iter().position(|&b| b == 0).unwrap_or(__entry.path.len());
+        let nul = __entry
+            .path
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(__entry.path.len());
         let path = core::str::from_utf8(&__entry.path[..nul]).unwrap_or("invalid utf8");
         let mode = __entry.mode;
         let mode = NodePermission::from_bits_truncate(mode);
@@ -657,10 +655,7 @@ pub fn sys_unlink(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
 }
 
 pub fn sys_getcwd(current: &UserTaskRef, buf: *mut u8, size: usize) -> StarryResult<isize> {
-    let cwd = current_fs_context()
-        .lock()
-        .current_dir()
-        .absolute_path()?;
+    let cwd = current_fs_context().lock().current_dir().absolute_path()?;
     debug!("sys_getcwd => cwd: {cwd}");
 
     let cwd = CString::new(cwd.as_str()).map_err(|_| StarryError::InvalidInput)?;
@@ -859,11 +854,7 @@ pub fn sys_fchownat(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_chmod(
-    current: &UserTaskRef,
-    path: *const c_char,
-    mode: u32,
-) -> StarryResult<isize> {
+pub fn sys_chmod(current: &UserTaskRef, path: *const c_char, mode: u32) -> StarryResult<isize> {
     sys_fchmodat(current, AT_FDCWD, path, mode, 0)
 }
 
@@ -1188,10 +1179,7 @@ pub fn sys_sync() -> StarryResult<isize> {
             Ok(())
         },
         || {
-            current_fs_context()
-                .lock()
-                .root_dir()
-                .sync(false)?;
+            current_fs_context().lock().root_dir().sync(false)?;
             Ok(())
         },
         || {

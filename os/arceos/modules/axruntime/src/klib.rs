@@ -87,6 +87,7 @@ pub(crate) fn map_mm_error(err: ax_mm::MmError) -> KlibError {
             | ax_hal::cache::TlbShootdownError::Unsupported => KlibError::Unsupported,
             ax_hal::cache::TlbShootdownError::Timeout => KlibError::TimedOut,
             ax_hal::cache::TlbShootdownError::Platform => KlibError::Io,
+            ax_hal::cache::TlbShootdownError::GenerationExhausted => KlibError::BadState,
         },
     }
 }

@@ -468,12 +468,12 @@ impl DeviceOps for CurrentTty {
 #[cfg(all(test, not(axtest)))]
 mod tests {
     use alloc::{sync::Arc, vec, vec::Vec};
+    use std::sync::Mutex;
 
     use super::{
         Terminal, Termios2, TtyWrite, apply_termios_update, filter_cursor_position_requests,
     };
     use crate::StarryResult;
-    use std::sync::Mutex;
 
     struct TermiosOrderWriter {
         terminal: Arc<Terminal>,

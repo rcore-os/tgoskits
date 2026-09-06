@@ -91,7 +91,7 @@ flowchart TB
 | 普通页 / DMA32 页 | `ax-alloc` 内部 Buddy section | `alloc_pages()`、`alloc_dma32_pages()`、`GlobalPage` |
 | Slab backing 页 | owner CPU 的 Slab | `SlabPageHeader`、remote-free stack |
 | 虚拟内存区域 | `MemorySet` | `BTreeMap` 中互不重叠的 `MemoryArea`；backend 直接修改页表 |
-| Starry 写时复制页 | Starry backend 与引用状态 | `FRAME_TABLE`、`MemoryAccounting` |
+| Starry resident 页 | `PageObject` 与其 `FrameLease` | 每个 PTE 的 `MappingSlot`/`RmapSet`、`MutationReceipt` |
 | DMA allocation/map | `dma-api` 资源获取即初始化 owner | `DmaAllocation`、`StreamingMap`、`DmaAllocHandle`、`DmaMapHandle` |
 
 当前 `DmaAllocHandle` 和 `DmaMapHandle` 在源码中派生了 `Clone + Copy`，高层 `DmaAllocation` / `StreamingMap` 才通过内部 `Option` 和 Drop 控制日常释放。`GlobalPage` 记录起始虚拟地址和页数，Drop 固定按 `UsageKind::Global` 归还；其他用途的长期 owner 必须保存原页数和 `UsageKind` 并调用对称释放。
@@ -151,31 +151,33 @@ Buddy 采用单个非抢占自旋锁，per-CPU Slab 将小对象热路径留在�
 
 ### 4.2 页所有权变化
 
-假设 Starry 缺页路径请求一个匿名 4 KiB 页。物理页从 Buddy free list 移出后，先由 `GlobalPage` 或 backend 临时所有，再写入页表项并转移给写时复制 frame owner；虚拟内存区域只描述虚拟范围，不直接拥有 Buddy free-list 节点。
+假设 Starry 缺页路径请求一个匿名 4 KiB 页。物理页从 Buddy free list 移出后立即进入 `FrameLease`，再由 `PageObject` 持有；VMA 只描述逻辑来源，已安装 PTE 的软件 ownership 由 `MappingSlot` 与 rmap 表达。
 
 ```mermaid
 sequenceDiagram
     participant Fault as Starry page fault
     participant Alloc as ax-alloc
     participant Buddy as Buddy section
-    participant Backend as Cow backend
+    participant Op as MappingOperation
     participant PT as Stage-1 page table
-    participant 常驻内存集大小 as MemoryAccounting
+    participant Graph as MappingSlot/rmap
+    participant Tx as MutationGate
 
-    Fault->>Backend: populate(vaddr, access)
-    Backend->>Alloc: alloc_pages(1, 4096, VirtMem)
+    Fault->>Fault: snapshot VMA and release metadata lock
+    Fault->>Op: prepare population
+    Op->>Alloc: alloc_pages(1, 4096, VirtMem)
     Alloc->>Buddy: alloc_pages(1, 4096)
-    Buddy-->>Backend: physical frame
-    Backend->>Backend: zero or copy file bytes
-    Backend->>PT: map(vaddr, paddr, flags)
-    PT-->>Backend: mapping installed
-    Backend->>常驻内存集大小: record_charge(vaddr, Anon)
-    Backend-->>Fault: Resolved
+    Buddy-->>Op: FrameLease inside PageObject
+    Op->>Op: zero page or copy source bytes
+    Fault->>PT: lock stripe, recheck, install PTE
+    Fault->>Graph: publish MappingSlot and rmap
+    Fault->>Tx: publish epoch and MutationReceipt
+    Tx-->>Fault: Published or PublishedPendingTlb
 ```
 
-单页失败路径由 backend 就地清理：文件读取或 `map_page()` 失败时，`CowBackend::alloc_new_at()` / `alloc_file_run()` 先调用 `deinit_frame()`（从 `FRAME_TABLE` 移除并归还物理页）再返回错误；映射尚未建立或刚刚失败，因此不存在需要先 unmap 的页表项。`record_charge()` 只在重复记账时失败，此时该页保持已映射并返回错误，属于调用方缺陷。解除映射方向的安全顺序仍由 backend 维护：只有页表项成功删除后才能递减引用并归还物理页，否则 CPU 仍可能通过旧地址转换访问已经重新分配的物理页。
+publish 前失败会释放未发布的 `FrameLease` 并逆序恢复已应用的 PTE/slot preimage，地址空间 epoch 不前进。若 inverse 无法被证明完整，mutation 进入 `NeedsRepair`；不能用“已经回滚”的错误码掩盖未知状态。publish 后发生 TLB timeout 时，VMA/PTE/slot 已是新状态，旧 frame 和页表节点留在 `TlbQuarantine`，直到 receipt 收齐远程确认才可释放。
 
-连续预读一次填充多页时（`CowBackend::alloc_file_run()`），当前实现逐页“分配、复制、映射、记账”，中途失败只清理当前页；此前成功的页保持映射，剩余页由后续缺页、显式 unmap 或进程退出回收。整段预读没有逆序回滚机制，审查内存压力下的部分失败行为时应以此为前提。
+文件预读可在 prepare 阶段产生多个候选 `PageObject`，但外部可见的 PTE、slot、RSS 与事件仍按 receipt publication 管理。`MAP_PRIVATE` 文件页第一次写入时只替换当前 slot 为匿名 `PageObject`；其他地址空间的 file slot 和 page-cache owner 不变。
 
 ## 5. 主流实现依据
 

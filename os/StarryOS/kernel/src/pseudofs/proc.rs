@@ -26,7 +26,7 @@ use zerocopy::IntoBytes;
 
 use crate::{
     file::{FD_TABLE, PidFd},
-    mm::{BackendFileInfo, ProcessMemStats},
+    mm::{MappingFileInfo, ProcessMemStats},
     pseudofs::{
         DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
         SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
@@ -156,6 +156,7 @@ fn render_meminfo() -> String {
         + usages.get(ax_alloc::UsageKind::VirtMem)
         + usages.get(ax_alloc::UsageKind::PageCache)
         + usages.get(ax_alloc::UsageKind::PageTable)
+        + usages.get(ax_alloc::UsageKind::TaskStack)
         + usages.get(ax_alloc::UsageKind::Dma)
         + usages.get(ax_alloc::UsageKind::Global);
     let cached = usages.get(ax_alloc::UsageKind::PageCache);
@@ -219,6 +220,7 @@ fn render_vmstat() -> String {
         + usages.get(ax_alloc::UsageKind::VirtMem)
         + usages.get(ax_alloc::UsageKind::PageCache)
         + usages.get(ax_alloc::UsageKind::PageTable)
+        + usages.get(ax_alloc::UsageKind::TaskStack)
         + usages.get(ax_alloc::UsageKind::Dma)
         + usages.get(ax_alloc::UsageKind::Global);
     let free_pages = total.saturating_sub(used) / 4096;
@@ -349,9 +351,7 @@ fn render_stat() -> VfsResult<String> {
         user_ms += u.as_millis();
         sys_ms += s.as_millis();
         match task.state() {
-            ThreadState::New | ThreadState::Running | ThreadState::Waking => {
-                procs_running += 1
-            }
+            ThreadState::New | ThreadState::Running | ThreadState::Waking => procs_running += 1,
             ThreadState::Parking | ThreadState::Blocked => procs_blocked += 1,
             ThreadState::Exited => {}
         }
@@ -760,8 +760,9 @@ fn render_thread_status(
 ) -> VfsResult<String> {
     let task = require_proc_task(task)?;
     let thread = task.as_thread();
-    let aspace_arc = proc_data.aspace();
-    let mem = ProcessMemStats::collect(&aspace_arc.lock());
+    let aspace = proc_data.pin_aspace().map_err(VfsError::from)?;
+    let aspace = aspace.lock();
+    let mem = ProcessMemStats::collect(&aspace).map_err(VfsError::from)?;
     let cred = thread.cred();
     let name = task.name();
     let num_threads = proc_data.proc.threads().len() as u32;
@@ -801,9 +802,7 @@ fn render_thread_status(
 
 fn task_status_state(task: &UserTaskRef) -> &'static str {
     match task.state() {
-        ThreadState::New | ThreadState::Running | ThreadState::Waking => {
-            "R (running)"
-        }
+        ThreadState::New | ThreadState::Running | ThreadState::Waking => "R (running)",
         ThreadState::Parking | ThreadState::Blocked => "S (sleeping)",
         ThreadState::Exited => "Z (zombie)",
     }
@@ -1196,21 +1195,18 @@ fn render_thread_maps(task: &WeakUserTaskRef) -> VfsResult<String> {
         Err(error) => return Err(error),
     };
 
-    let aspace_arc = task.as_thread().proc_data.aspace();
-    let mm = aspace_arc.lock();
+    let aspace = task
+        .as_thread()
+        .proc_data
+        .pin_aspace()
+        .map_err(VfsError::from)?;
+    let mm = aspace.lock();
 
-    for area in mm.areas() {
+    for area in mm.vma_inspection_records().map_err(VfsError::from)? {
         let start = area.start();
         let end = area.end();
-        let backend = area.backend();
-        let bi = backend.file_info().unwrap_or_else(|_| BackendFileInfo {
-            path: String::new(),
-            offset: None,
-            inode: None,
-            dev: None,
-            shared: false,
-        });
-        let BackendFileInfo {
+        let bi = area.file_info().clone();
+        let MappingFileInfo {
             path,
             offset: file_offset,
             inode,
@@ -1291,9 +1287,11 @@ fn render_thread_statm(
         Ok(None) => return Ok("0 0 0 0 0 0 0\n".into()),
         Err(error) => return Err(error),
     };
-    let aspace_arc = proc_data.aspace();
-    let mm = aspace_arc.lock();
-    Ok(ProcessMemStats::collect(&mm).format_statm())
+    let aspace = proc_data.pin_aspace().map_err(VfsError::from)?;
+    let mm = aspace.lock();
+    Ok(ProcessMemStats::collect(&mm)
+        .map_err(VfsError::from)?
+        .format_statm())
 }
 
 fn render_thread_stat(
@@ -1305,14 +1303,18 @@ fn render_thread_stat(
 ) -> VfsResult<Vec<u8>> {
     let task = require_proc_task(task)?;
     let mut stat = TaskStat::from_thread(&task)?;
-    let aspace_arc = proc_data.aspace();
-    let mem = ProcessMemStats::collect(&aspace_arc.lock());
+    let aspace = proc_data.pin_aspace().map_err(VfsError::from)?;
+    let mm = aspace.lock();
+    let mem = ProcessMemStats::collect(&mm).map_err(VfsError::from)?;
     stat.vsize = mem.vsize_bytes();
     stat.rss = mem.rss_pages();
     stat.start_code = mem.start_code;
     stat.end_code = mem.end_code;
     stat.start_stack = mem.start_stack;
-    stat.start_brk = proc_data.get_heap_top() as u64;
+    let (start_data, end_data) = mm.executable_data_bounds();
+    stat.start_data = start_data as u64;
+    stat.end_data = end_data as u64;
+    stat.start_brk = mm.heap_start() as u64;
     let thread = task.as_thread();
     stat.pid = view
         .visible_number(&thread.pid_identity())
@@ -1378,7 +1380,7 @@ impl ProcMemFile {
         let end = VirtAddr::from_usize(addr.checked_add(len).ok_or(VfsError::BadAddress)?);
         let page_start = start.align_down_4k();
         let page_end = end.align_up_4k();
-        let aspace = self.proc_data.aspace();
+        let aspace = self.proc_data.pin_aspace().map_err(VfsError::from)?;
         let mut aspace = aspace.lock();
         Ok(aspace.populate_area(page_start, page_end - page_start, flags)?)
     }
@@ -1392,7 +1394,7 @@ impl DirectRwFsFileOps for ProcMemFile {
         }
         let addr = usize::try_from(offset).map_err(|_| VfsError::BadAddress)?;
         self.populate_remote_range(addr, buf.len(), MappingFlags::READ)?;
-        let aspace = self.proc_data.aspace();
+        let aspace = self.proc_data.pin_aspace().map_err(VfsError::from)?;
         let aspace = aspace.lock();
         aspace.read(VirtAddr::from_usize(addr), buf)?;
         Ok(buf.len())
@@ -1405,9 +1407,10 @@ impl DirectRwFsFileOps for ProcMemFile {
         }
         let addr = usize::try_from(offset).map_err(|_| VfsError::BadAddress)?;
         self.populate_remote_range(addr, buf.len(), MappingFlags::WRITE)?;
-        let aspace = self.proc_data.aspace();
+        let aspace = self.proc_data.pin_aspace().map_err(VfsError::from)?;
         let aspace = aspace.lock();
         aspace.write(VirtAddr::from_usize(addr), buf)?;
+        drop(aspace);
         ax_runtime::hal::cache::flush_icache_all();
         Ok(buf.len())
     }
@@ -2639,11 +2642,10 @@ mod tests {
 
     #[cfg(all(test, not(axtest)))]
     use super::{
-        TaskStatusBase, TaskStatusFields, collect_cpu_presence_for_test,
-        format_cpu_presence_hex,
-        boot_id_formats_firmware_entropy_for_test,
-        boot_id_is_omitted_without_trusted_entropy_for_test, formatting_contracts_hold_for_test,
-        format_cpu_presence_list, proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout_for_test,
+        TaskStatusBase, TaskStatusFields, boot_id_formats_firmware_entropy_for_test,
+        boot_id_is_omitted_without_trusted_entropy_for_test, collect_cpu_presence_for_test,
+        format_cpu_presence_hex, format_cpu_presence_list, formatting_contracts_hold_for_test,
+        proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout_for_test,
         render_proc_bus_usb_devices_from_snapshots, render_proc_net_dev_from_stats,
         render_proc_net_snmp, render_task_status_fields,
     };
@@ -2781,8 +2783,7 @@ mod tests {
     #[cfg(all(test, not(axtest)))]
     #[test]
     fn cpus_allowed_list_compacts_contiguous_ranges() {
-        let cpu_presence =
-            collect_cpu_presence_for_test([0, 2, 3, 4, 7, 9, 10, 11], 12);
+        let cpu_presence = collect_cpu_presence_for_test([0, 2, 3, 4, 7, 9, 10, 11], 12);
 
         assert_eq!(format_cpu_presence_list(&cpu_presence), "0,2-4,7,9-11");
     }

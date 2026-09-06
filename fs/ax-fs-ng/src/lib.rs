@@ -8,6 +8,8 @@
 #![allow(clippy::new_ret_no_self)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate ax_runtime;
 
 #[macro_use]
 extern crate log;

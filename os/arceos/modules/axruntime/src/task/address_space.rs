@@ -23,6 +23,9 @@ use ax_task::{
     },
 };
 
+use super::mm_activation::UserAddressSpaceOwner;
+#[cfg(feature = "uspace")]
+use super::mm_activation::{AddressSpaceSwitchProof, SchedulerAddressSpaceActivation};
 #[cfg(feature = "uspace")]
 use super::with_current_cpu_pin;
 
@@ -31,6 +34,33 @@ trait TaskAddressSpaceOwner: Send + Sync {
     /// Releases ownership that follows the attached task while retaining any
     /// storage needed by CPUs that still carry the address space as lazy mm.
     fn detach_from_task(&self);
+
+    #[cfg(feature = "uspace")]
+    fn prepare_activation(
+        &self,
+        _cpu: usize,
+    ) -> Result<Option<SchedulerAddressSpaceActivation>, RuntimeStatus> {
+        Ok(None)
+    }
+}
+
+struct ManagedTaskAddressSpaceOwner<T>(T);
+
+impl<T: UserAddressSpaceOwner> TaskAddressSpaceOwner for ManagedTaskAddressSpaceOwner<T> {
+    fn detach_from_task(&self) {
+        self.0.detach_from_task();
+    }
+
+    #[cfg(feature = "uspace")]
+    fn prepare_activation(
+        &self,
+        cpu: usize,
+    ) -> Result<Option<SchedulerAddressSpaceActivation>, RuntimeStatus> {
+        self.0
+            .prepare_activation(cpu)
+            .map(Some)
+            .map_err(|_| RuntimeStatus::InvalidHandle)
+    }
 }
 
 struct RetainedTaskAddressSpaceOwner<T>(T);
@@ -125,8 +155,13 @@ pub(super) fn qperf_address_space_metrics_snapshot() -> QperfAddressSpaceMetrics
 /// mutation can target every CPU that may retain a translation.
 pub struct AddressSpaceCpuState {
     root: usize,
-    active_mask: AtomicUsize,
+    active_mask: ActiveCpuMask,
     membarrier_bits: AtomicU32,
+}
+
+enum ActiveCpuMask {
+    Runtime(AtomicUsize),
+    Mm(Arc<AtomicUsize>),
 }
 
 impl AddressSpaceCpuState {
@@ -134,7 +169,17 @@ impl AddressSpaceCpuState {
     pub fn new(root: PhysAddr) -> Self {
         Self {
             root: root.as_usize(),
-            active_mask: AtomicUsize::new(0),
+            active_mask: ActiveCpuMask::Runtime(AtomicUsize::new(0)),
+            membarrier_bits: AtomicU32::new(0),
+        }
+    }
+
+    /// Shares the MM's authoritative footprint; only its activation leases may
+    /// publish or clear bits. Runtime tokens retain separate reclamation counts.
+    pub fn with_mm_active_mask(root: PhysAddr, active_mask: Arc<AtomicUsize>) -> Self {
+        Self {
+            root: root.as_usize(),
+            active_mask: ActiveCpuMask::Mm(active_mask),
             membarrier_bits: AtomicU32::new(0),
         }
     }
@@ -149,7 +194,10 @@ impl AddressSpaceCpuState {
 
     /// Returns the CPUs that may currently retain translations for this root.
     pub fn active_mask(&self) -> usize {
-        self.active_mask.load(Ordering::Acquire)
+        match &self.active_mask {
+            ActiveCpuMask::Runtime(mask) => mask.load(Ordering::Acquire),
+            ActiveCpuMask::Mm(mask) => mask.load(Ordering::Acquire),
+        }
     }
 
     fn membarrier_state(this: &Arc<Self>) -> AddressSpaceMembarrierState {
@@ -191,14 +239,16 @@ impl AddressSpaceCpuState {
 
     #[cfg(any(feature = "uspace", test))]
     fn activate(&self, cpu_id: usize) {
-        self.active_mask
-            .fetch_or(Self::cpu_bit(cpu_id), Ordering::Release);
+        if let ActiveCpuMask::Runtime(mask) = &self.active_mask {
+            mask.fetch_or(Self::cpu_bit(cpu_id), Ordering::Release);
+        }
     }
 
     #[cfg(any(feature = "uspace", test))]
     fn deactivate(&self, cpu_id: usize) {
-        self.active_mask
-            .fetch_and(!Self::cpu_bit(cpu_id), Ordering::Release);
+        if let ActiveCpuMask::Runtime(mask) = &self.active_mask {
+            mask.fetch_and(!Self::cpu_bit(cpu_id), Ordering::Release);
+        }
     }
 }
 
@@ -235,6 +285,20 @@ impl TaskAddressSpace {
                 detached: core::sync::atomic::AtomicBool::new(false),
                 detach,
             }),
+        )
+    }
+
+    /// Creates a task token backed by an OS-owned MM lifecycle.
+    /// Allocation occurs here in task context, before scheduler publication.
+    pub fn new_managed<T: UserAddressSpaceOwner + 'static>(
+        root: PhysAddr,
+        cpu_state: Arc<AddressSpaceCpuState>,
+        owner: T,
+    ) -> Result<Self, TaskError> {
+        Self::new_with_owner(
+            root,
+            cpu_state,
+            Box::new(ManagedTaskAddressSpaceOwner(owner)),
         )
     }
 
@@ -308,6 +372,35 @@ impl Drop for TaskAddressSpace {
 
 #[ax_percpu::def_percpu]
 static ACTIVE_ADDRESS_SPACE: usize = 0;
+
+#[ax_percpu::def_percpu]
+#[cfg(feature = "uspace")]
+static ACTIVE_MM_ACTIVATION: Option<SchedulerAddressSpaceActivation> = None;
+
+#[cfg(feature = "uspace")]
+fn replace_active_activation(
+    pin: &CpuPin<'_>,
+    next: Option<SchedulerAddressSpaceActivation>,
+) -> Option<SchedulerAddressSpaceActivation> {
+    debug_assert!(!ax_hal::asm::irqs_enabled());
+    // SAFETY: the root-switch transaction holds local IRQ exclusion. This
+    // CPU-only slot has no remote readers, and the mutable borrow cannot escape.
+    unsafe {
+        ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+            ACTIVE_MM_ACTIVATION
+                .with_current_mut(exclusive, |active| core::mem::replace(active, next))
+        })
+    }
+}
+
+#[cfg(feature = "uspace")]
+fn install_mm_identity(installed: ax_hal::context::InstalledAddressSpace) {
+    // SAFETY: the prepared/active lease owns the root, and the caller keeps IRQs
+    // disabled from CPU-footprint publication through active-lease publication.
+    unsafe { ax_hal::asm::install_user_address_space(installed) };
+    #[cfg(feature = "qperf-metrics")]
+    ACTIVE_MM_HARDWARE_ROOT_WRITES.fetch_add(1, Ordering::Relaxed);
+}
 
 /// Last-active-mm notification claimed before the raw context switch.
 ///
@@ -486,6 +579,7 @@ enum PreparedAddressSpaceAction {
     User {
         next_raw: usize,
         next: &'static RuntimeAddressSpace,
+        activation: Option<SchedulerAddressSpaceActivation>,
     },
 }
 
@@ -554,15 +648,57 @@ impl PreparedAddressSpaceSwitch<'_, '_> {
             #[cfg(all(feature = "uspace", not(target_arch = "aarch64")))]
             PreparedAddressSpaceAction::SameUser => {}
             #[cfg(feature = "uspace")]
-            PreparedAddressSpaceAction::User { next_raw, next } => {
+            PreparedAddressSpaceAction::User {
+                next_raw,
+                next,
+                mut activation,
+            } => {
+                let cpu_id = pin.area().cpu_index().as_usize();
+                let installed = activation
+                    .as_ref()
+                    .map(SchedulerAddressSpaceActivation::installed)
+                    .or_else(|| {
+                        if !self
+                            .previous
+                            .is_some_and(|previous| same_logical_address_space(previous, next))
+                        {
+                            return None;
+                        }
+                        ACTIVE_MM_ACTIVATION.with_current(pin, |active| {
+                            active
+                                .as_ref()
+                                .map(SchedulerAddressSpaceActivation::installed)
+                        })
+                    });
                 let reclaim_ready = commit_user_address_space_activation(
                     pin.area().cpu_index().as_usize(),
                     self.previous_raw,
                     self.previous,
                     next_raw,
                     next,
-                    install_hardware_root,
-                    |active| ACTIVE_ADDRESS_SPACE.write_current(pin, active),
+                    |root, transition| {
+                        if let Some(installed) = installed {
+                            if hardware_root_install_required(
+                                current_hardware_root(),
+                                root,
+                                transition,
+                            ) {
+                                install_mm_identity(installed);
+                            }
+                        } else {
+                            install_hardware_root(root, transition);
+                        }
+                    },
+                    |active| {
+                        if let Some(next) = activation.as_mut() {
+                            next.commit(cpu_id);
+                        }
+                        let previous = replace_active_activation(pin, activation.take());
+                        ACTIVE_ADDRESS_SPACE.write_current(pin, active);
+                        if let Some(previous) = previous {
+                            previous.release(AddressSpaceSwitchProof::new(cpu_id));
+                        }
+                    },
                 );
                 if reclaim_ready {
                     route_reclaim_notification(
@@ -688,6 +824,13 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
                 PreparedAddressSpaceAction::User {
                     next_raw: next_selected.into_raw(),
                     next,
+                    activation: if previous
+                        .is_some_and(|previous| same_logical_address_space(previous, next))
+                    {
+                        None
+                    } else {
+                        next._owner.prepare_activation(cpu_id)?
+                    },
                 },
             )
         };
@@ -743,6 +886,13 @@ pub(super) fn release_current_active_address_space() {
                 offline_kernel_root(),
                 HardwareAddressSpaceTransition::DifferentAddressSpace,
             );
+            // CPU offline invalidates every local tag before retiring its MM.
+            ax_hal::asm::flush_tlb(None);
+            if let Some(activation) = replace_active_activation(pin, None) {
+                activation.release(AddressSpaceSwitchProof::new(
+                    pin.area().cpu_index().as_usize(),
+                ));
+            }
             ACTIVE_ADDRESS_SPACE.write_current(pin, 0);
             let previous = AddressSpaceHandle::from_raw(previous_raw);
             let previous = runtime_address_space(previous)

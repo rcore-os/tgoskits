@@ -25,8 +25,8 @@ macro_rules! include_asm_macros {
         .equ LA_CSR_PRMD,          0x1
         .equ LA_CSR_EUEN,          0x2
         .equ LA_CSR_ERA,           0x6
-        .equ LA_CSR_PGDL,          0x19    // Page table base address when VA[47] = 0
-        .equ LA_CSR_PGDH,          0x1a    // Page table base address when VA[47] = 1
+        .equ LA_CSR_PGDL,          0x19    // Page table base when VA[VALEN-1] = 0
+        .equ LA_CSR_PGDH,          0x1a    // Page table base when VA[VALEN-1] = 1
         .equ LA_CSR_PGD,           0x1b    // Page table base
         .equ LA_CSR_PWCL,          0x1c
         .equ LA_CSR_PWCH,          0x1d

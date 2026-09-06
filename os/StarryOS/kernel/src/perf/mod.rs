@@ -747,7 +747,10 @@ struct BPFJitMemory {
 #[allow(unused)]
 impl BPFJitMemory {
     fn new(num_pages: usize) -> StarryResult<Self> {
-        let (hint, _) = ax_runtime::hal::mem::kernel_aspace();
+        let hint = ax_runtime::hal::mem::virtual_address_space()
+            .expect("kernel virtual address layout is initialized")
+            .kernel()
+            .start;
         let virt_start = ax_runtime::kernel_mapping::allocate_kernel_range(
             hint,
             num_pages * PAGE_SIZE_4K,
@@ -779,10 +782,7 @@ impl BPFJitMemory {
 
 impl Drop for BPFJitMemory {
     fn drop(&mut self) {
-        ax_runtime::kernel_mapping::unmap_kernel_range(
-            self.pages,
-            self.num_pages * PAGE_SIZE_4K,
-        )
+        ax_runtime::kernel_mapping::unmap_kernel_range(self.pages, self.num_pages * PAGE_SIZE_4K)
             .expect("failed to unmap BPF JIT memory");
     }
 }

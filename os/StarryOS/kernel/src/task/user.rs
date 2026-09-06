@@ -1,8 +1,10 @@
 use ax_memory_addr::VirtAddr;
-use ax_runtime::task::UserExecutionContext;
-use ax_runtime::hal::cpu::{
-    trap::PageFaultFlags,
-    uspace::{ExceptionKind, ReturnReason, UserContext},
+use ax_runtime::{
+    hal::cpu::{
+        trap::PageFaultFlags,
+        uspace::{ExceptionKind, ReturnReason, UserContext},
+    },
+    task::UserExecutionContext,
 };
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use syscalls::Sysno;
@@ -10,12 +12,12 @@ use syscalls::Sysno;
 #[cfg(target_arch = "loongarch64")]
 use super::unaligned::{UnalignedEmulationResult, emulate_user_unaligned};
 use super::{
-    SignalCheckOutcome, SyscallRestartInfo, SyscallTraceState, Thread, TidNumber,
-    check_signals, check_signals_with_outcome, current_user_task, ptrace_stop_current,
+    SignalCheckOutcome, SyscallRestartInfo, SyscallTraceState, Thread, TidNumber, check_signals,
+    check_signals_with_outcome, current_user_task, ptrace_stop_current,
     ptrace_syscall_stop_current, raise_signal_fatal, wait_existing_ptrace_stop_current,
 };
 use crate::{
-    mm::{VmMutPtr, VmPtr},
+    mm::{FaultResult, VmMutPtr, VmPtr},
     syscall::{SyscallRestart, handle_syscall, syscall_allows_signal_restart},
 };
 
@@ -30,31 +32,31 @@ fn handle_user_page_fault(
     // addresses are counted separately in the mm page-fault handler.
     crate::mm::PAGE_FAULT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // Classify si_code while holding the aspace lock: an existing mapping
-    // that rejected the access is a permission violation (SEGV_ACCERR),
-    // otherwise the address is unmapped (SEGV_MAPERR), matching Linux's
-    // do_user_addr_fault().
-    let si_code = {
-        let aspace = thread.proc_data.aspace();
-        let mut aspace = aspace.lock();
-        if aspace.handle_page_fault(address, flags) {
-            None
-        } else if aspace.find_area(address).is_some() {
-            Some(SEGV_ACCERR)
-        } else {
-            Some(SEGV_MAPERR)
+    // Classify the result while holding the aspace lock.  File faults past EOF
+    // are SIGBUS/BUS_ADRERR on Linux; collapsing them into SIGSEGV makes mmap'd
+    // databases and runtimes mis-handle truncation.  A transient eviction
+    // conflict is left retryable and does not publish a signal.
+    let signal = {
+        let Ok(aspace) = thread.proc_data.pin_aspace() else {
+            return;
+        };
+        match aspace.handle_page_fault_result(address, flags) {
+            FaultResult::Handled | FaultResult::Retry => None,
+            FaultResult::PermissionDenied => Some((Signo::SIGSEGV, SEGV_ACCERR)),
+            FaultResult::Unmapped => Some((Signo::SIGSEGV, SEGV_MAPERR)),
+            FaultResult::Sigbus(code) => Some((Signo::SIGBUS, code as i32)),
         }
     };
-    if let Some(si_code) = si_code {
+    if let Some((signo, si_code)) = signal {
         warn!(
-            "{:?}: segmentation fault at {:#x} {:?}",
+            "{:?}: synchronous {signo:?} memory fault at {:#x} {:?}",
             thread.proc_data.proc, address, flags
         );
         raise_signal_fatal(
-            SignalInfo::new_fault(Signo::SIGSEGV, si_code, address.as_usize()),
+            SignalInfo::new_fault(signo, si_code, address.as_usize()),
             context,
         )
-        .expect("Failed to send SIGSEGV");
+        .expect("Failed to send synchronous memory-fault signal");
     }
 }
 
@@ -164,8 +166,7 @@ pub fn new_user_task(
 
                     syscall_restart = handle_syscall(&curr, &mut uctx);
                     if address_space_replaced {
-                        uctx
-                            .refresh_address_space()
+                        uctx.refresh_address_space()
                             .expect("execve must leave a valid current address space");
                     }
                     if let Some((tid, _)) = ptrace_trace {

@@ -25,8 +25,18 @@ pub mod signalfd;
 pub mod timerfd;
 mod wext;
 
-use alloc::{borrow::Cow, collections::BTreeSet, sync::{Arc, Weak}};
-use core::{cell::UnsafeCell, ffi::c_int, ops::{Deref, DerefMut}, sync::atomic::{AtomicUsize, Ordering}, time::Duration};
+use alloc::{
+    borrow::Cow,
+    collections::BTreeSet,
+    sync::{Arc, Weak},
+};
+use core::{
+    cell::UnsafeCell,
+    ffi::c_int,
+    ops::{Deref, DerefMut},
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::prelude::*;
@@ -438,9 +448,7 @@ impl Clone for FileTable {
             // An in-flight syscall owns each reservation. A copied fd table
             // inherits only descriptors that have reached install.
             reserved: BTreeSet::new(),
-            generation: Arc::new(AtomicUsize::new(
-                self.generation.load(Ordering::Acquire),
-            )),
+            generation: Arc::new(AtomicUsize::new(self.generation.load(Ordering::Acquire))),
         }
     }
 }
@@ -971,16 +979,28 @@ fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
     let scope = FileTableScope::new();
     let (first_read, _first_write) = Pipe::new();
     let (second_read, _second_write) = Pipe::new();
-    assert!(scope.table.write().add(FileDescriptor {
-        inner: Arc::new(first_read),
-        cloexec: false,
-    }).is_ok());
+    assert!(
+        scope
+            .table
+            .write()
+            .add(FileDescriptor {
+                inner: Arc::new(first_read),
+                cloexec: false,
+            })
+            .is_ok()
+    );
     let first = scope.lookup(0).ok();
     assert!(scope.table.write().remove(0).is_some());
-    assert!(scope.table.write().add(FileDescriptor {
-        inner: Arc::new(second_read),
-        cloexec: false,
-    }).is_ok());
+    assert!(
+        scope
+            .table
+            .write()
+            .add(FileDescriptor {
+                inner: Arc::new(second_read),
+                cloexec: false,
+            })
+            .is_ok()
+    );
     let second = scope.lookup(0).ok();
     match (first, second) {
         (Some(first), Some(second)) => !Arc::ptr_eq(&first, &second),
@@ -992,19 +1012,31 @@ fn descriptor_lookup_invalidates_after_reuse_for_test() -> bool {
 fn cloned_table_scope_invalidates_after_fd_reuse_for_test() -> bool {
     let parent = FileTableScope::new();
     let (parent_read, _parent_write) = Pipe::new();
-    assert!(parent.table.write().add(FileDescriptor {
-        inner: Arc::new(parent_read),
-        cloexec: false,
-    }).is_ok());
+    assert!(
+        parent
+            .table
+            .write()
+            .add(FileDescriptor {
+                inner: Arc::new(parent_read),
+                cloexec: false,
+            })
+            .is_ok()
+    );
 
     let child = clone_file_table_scope(&parent.table);
     let first = child.lookup(0).ok();
     assert!(child.table.write().remove(0).is_some());
     let (child_read, _child_write) = Pipe::new();
-    assert!(child.table.write().add(FileDescriptor {
-        inner: Arc::new(child_read),
-        cloexec: false,
-    }).is_ok());
+    assert!(
+        child
+            .table
+            .write()
+            .add(FileDescriptor {
+                inner: Arc::new(child_read),
+                cloexec: false,
+            })
+            .is_ok()
+    );
     let second = child.lookup(0).ok();
 
     match (first, second) {

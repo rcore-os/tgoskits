@@ -97,7 +97,8 @@ impl AxivcRegistry {
     fn register_notify_irq(self: &Arc<Self>) {
         let Some(irq) = self.notify_irq else {
             debug!(
-                "axivc: axvisor,ivc-channel notify IRQ not found; blocking poll waits need peer-side polling"
+                "axivc: axvisor,ivc-channel notify IRQ not found; blocking poll waits need \
+                 peer-side polling"
             );
             return;
         };
@@ -156,8 +157,7 @@ impl AxivcRegistry {
     }
 
     fn wake_channel_pollers(&self) -> usize {
-        self
-            .publisher_poll_sets
+        self.publisher_poll_sets
             .iter()
             .chain(self.subscriber_poll_sets.iter())
             .map(|poll_set| wake_pollers(poll_set, IoEvents::IN | IoEvents::OUT))
@@ -215,20 +215,23 @@ impl AxivcRegistry {
             let _ = ivc::unpublish_channel(arg.channel_key as usize);
             return Err(VfsError::NoMemory);
         };
-        inner.insert_publisher_at(index, ChannelState {
-            publisher_id,
-            notify_target_vm_id: Some(ivc::IVC_NOTIFY_PEER),
-            key: arg.channel_key,
-            shm_base_gpa,
-            shm_size,
-            mmap_anchor: Arc::new(()),
-            fd_refs: 0,
-            poll_set,
-            producer,
-            consumer,
-            sequence: AtomicU64::new(1),
-            closing: false,
-        });
+        inner.insert_publisher_at(
+            index,
+            ChannelState {
+                publisher_id,
+                notify_target_vm_id: Some(ivc::IVC_NOTIFY_PEER),
+                key: arg.channel_key,
+                shm_base_gpa,
+                shm_size,
+                mmap_anchor: Arc::new(()),
+                fd_refs: 0,
+                poll_set,
+                producer,
+                consumer,
+                sequence: AtomicU64::new(1),
+                closing: false,
+            },
+        );
         write_device_name(
             &mut arg.device_name,
             &channel_device_path(ChannelRole::Publisher, index),
@@ -322,20 +325,23 @@ impl AxivcRegistry {
             unsubscribe_hvc(arg);
             return Err(VfsError::NoMemory);
         };
-        inner.insert_subscriber_at(index, ChannelState {
-            publisher_id: arg.target_publisher_id as usize,
-            notify_target_vm_id: Some(arg.target_publisher_id as usize),
-            key: arg.channel_key,
-            shm_base_gpa,
-            shm_size,
-            mmap_anchor: Arc::new(()),
-            fd_refs: 0,
-            poll_set,
-            producer,
-            consumer,
-            sequence: AtomicU64::new(1),
-            closing: false,
-        });
+        inner.insert_subscriber_at(
+            index,
+            ChannelState {
+                publisher_id: arg.target_publisher_id as usize,
+                notify_target_vm_id: Some(arg.target_publisher_id as usize),
+                key: arg.channel_key,
+                shm_base_gpa,
+                shm_size,
+                mmap_anchor: Arc::new(()),
+                fd_refs: 0,
+                poll_set,
+                producer,
+                consumer,
+                sequence: AtomicU64::new(1),
+                closing: false,
+            },
+        );
         write_device_name(
             &mut arg.device_name,
             &channel_device_path(ChannelRole::Subscriber, index),
@@ -504,18 +510,20 @@ impl RegistryInner {
     }
 
     fn insert_publisher_at(&mut self, index: usize, state: ChannelState) {
-        debug_assert!(self
-            .publishers
-            .get(index)
-            .is_some_and(|entry| entry.is_none()));
+        debug_assert!(
+            self.publishers
+                .get(index)
+                .is_some_and(|entry| entry.is_none())
+        );
         self.publishers[index] = Some(state);
     }
 
     fn insert_subscriber_at(&mut self, index: usize, state: ChannelState) {
-        debug_assert!(self
-            .subscribers
-            .get(index)
-            .is_some_and(|entry| entry.is_none()));
+        debug_assert!(
+            self.subscribers
+                .get(index)
+                .is_some_and(|entry| entry.is_none())
+        );
         self.subscribers[index] = Some(state);
     }
 
@@ -565,7 +573,9 @@ impl RegistryInner {
     }
 
     fn open_channel(&mut self, role: ChannelRole, index: usize) -> VfsResult<()> {
-        let state = self.channel_mut(role, index).ok_or(VfsError::NoSuchDevice)?;
+        let state = self
+            .channel_mut(role, index)
+            .ok_or(VfsError::NoSuchDevice)?;
         if state.closing {
             return Err(VfsError::WouldBlock);
         }
@@ -657,12 +667,7 @@ impl DeviceOps for AxivcManager {
         Err(VfsError::InvalidInput)
     }
 
-    fn ioctl(
-        &self,
-        current: &crate::task::UserTaskRef,
-        cmd: u32,
-        arg: usize,
-    ) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             IVC_PUBLISH_CHANNEL => {
                 let user_arg = arg as *mut IvcPublishArg;
@@ -809,12 +814,7 @@ impl DeviceOps for AxivcChannel {
         Ok(buf.len())
     }
 
-    fn ioctl(
-        &self,
-        current: &crate::task::UserTaskRef,
-        cmd: u32,
-        arg: usize,
-    ) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         let op = match cmd {
             IVC_CACHE_FLUSH => DCacheOp::Clean,
             IVC_CACHE_INVALIDATE => DCacheOp::Invalidate,
@@ -946,13 +946,19 @@ impl Pollable for AxivcChannel {
     }
 
     unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
-        if self.ready_events().intersects(events | IoEvents::ALWAYS_POLL) {
+        if self
+            .ready_events()
+            .intersects(events | IoEvents::ALWAYS_POLL)
+        {
             sink.waker().wake_by_ref();
             return;
         }
         if let Some(poll_set) = self.poll_set() {
             unsafe { sink.register_shared(poll_set.as_ref(), events) };
-            if self.ready_events().intersects(events | IoEvents::ALWAYS_POLL) {
+            if self
+                .ready_events()
+                .intersects(events | IoEvents::ALWAYS_POLL)
+            {
                 sink.waker().wake_by_ref();
             }
         } else {
@@ -988,15 +994,15 @@ fn shared_page_mut(shm_base_gpa: usize, shm_size: usize) -> VfsResult<&'static m
     // same Normal WB contract as userspace mmap, Linux and Zephyr; mixing WB
     // and uncached aliases for the same PA can corrupt ring/header visibility
     // on ARM64.
-    let vaddr =
-        ax_mm::iomap_cached(PhysAddr::from_usize(shm_base_gpa), shm_size).map_err(|_| VfsError::NoMemory)?;
+    let vaddr = ax_mm::iomap_cached(PhysAddr::from_usize(shm_base_gpa), shm_size)
+        .map_err(|_| VfsError::NoMemory)?;
     Ok(unsafe { &mut *(vaddr.as_mut_ptr() as *mut IvcRegion) })
 }
 
 fn shared_page_ref(shm_base_gpa: usize, shm_size: usize) -> VfsResult<&'static IvcRegion> {
     check_shared_page_range(shm_base_gpa, shm_size)?;
-    let vaddr =
-        ax_mm::iomap_cached(PhysAddr::from_usize(shm_base_gpa), shm_size).map_err(|_| VfsError::NoMemory)?;
+    let vaddr = ax_mm::iomap_cached(PhysAddr::from_usize(shm_base_gpa), shm_size)
+        .map_err(|_| VfsError::NoMemory)?;
     Ok(unsafe { &*(vaddr.as_ptr() as *const IvcRegion) })
 }
 
@@ -1074,14 +1080,13 @@ fn cache_op_user_range(
         .checked_add(shm_size)
         .ok_or(VfsError::InvalidInput)?;
 
-    let aspace = current.as_thread().proc_data.aspace();
-    let aspace = aspace.lock();
+    let aspace_pin = current.as_thread().proc_data.pin_aspace()?;
+    let aspace = aspace_pin.lock();
     let mut cursor = addr;
     while cursor < end {
-        let (paddr, _flags, page_size) = aspace
-            .page_table()
-            .query(VirtAddr::from_usize(cursor))
-            .map_err(|_| VfsError::BadAddress)?;
+        let vaddr = VirtAddr::from_usize(cursor);
+        let paddr = aspace.translate(vaddr).map_err(|_| VfsError::BadAddress)?;
+        let page_size = aspace.resident_span(vaddr).ok_or(VfsError::BadAddress)?;
         if page_size == 0 {
             return Err(VfsError::InvalidInput);
         }
@@ -1122,8 +1127,6 @@ fn ring_error(err: axivc::IvcRingError) -> VfsError {
 mod tests {
     extern crate std;
 
-    use super::*;
-    use axpoll::{PollRegistrar, SharedObserver};
     use std::{
         sync::{
             Arc as StdArc,
@@ -1131,6 +1134,10 @@ mod tests {
         },
         task::{Wake, Waker},
     };
+
+    use axpoll::{PollRegistrar, SharedObserver};
+
+    use super::*;
 
     struct Counter(AtomicUsize);
 

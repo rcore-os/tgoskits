@@ -192,7 +192,9 @@ fn task_context_does_not_install_the_scheduler_address_space() {
         "ret\",",
     );
     assert!(
-        !raw_switch.contains("write_user_page_table") && !raw_switch.contains("flush_tlb"),
+        !raw_switch.contains("install_user_address_space")
+            && !raw_switch.contains("write_user_page_table")
+            && !raw_switch.contains("flush_tlb"),
         "fallible or policy-bearing address-space work must precede current-register publication"
     );
 }

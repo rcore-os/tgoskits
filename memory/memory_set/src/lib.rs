@@ -24,6 +24,11 @@ pub enum MappingError {
     /// The backend page table is in a bad state.
     #[error("mapping backend is in a bad state")]
     BadState,
+    /// A fallible operation changed part of the materialized page table but
+    /// could not prove that its inverse restored every preimage.  Callers must
+    /// quarantine the address-space range and repair it before reuse.
+    #[error("mapping operation requires repair")]
+    NeedsRepair,
 }
 
 /// A [`Result`] type with [`MappingError`] as the error type.

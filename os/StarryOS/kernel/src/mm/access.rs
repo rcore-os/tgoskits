@@ -9,25 +9,20 @@ use core::{
 };
 
 use ax_io::prelude::*;
-#[cfg(feature = "user-access-fastpath")]
-use ax_memory_addr::PAGE_SIZE_4K;
-use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{
     cpu::{
-        UserAccessError, UserAtomicError, UserAtomicU32Op,
-        asm::user_copy,
-        trap::PageFaultFlags,
-        user_atomic_u32, user_read_u32,
+        UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op, asm::user_copy,
+        trap::PageFaultFlags, user_atomic_u32, user_read_u32,
     },
     paging::MappingFlags,
 };
 use bytemuck::{AnyBitPattern, NoUninit};
 use starry_vm::{VmError, VmIo, VmResult};
 
-use super::io::vm_error_to_io_error;
+use super::{FaultResult, io::vm_error_to_io_error};
 use crate::{
     StarryError, StarryResult,
-    config::{USER_SPACE_BASE, USER_SPACE_SIZE},
     task::{UserTaskRef, might_sleep, try_current_user_task},
 };
 
@@ -48,50 +43,266 @@ fn access_user_memory<R>(task: &UserTaskRef, f: impl FnOnce() -> R) -> VmResult<
     Ok(f())
 }
 
-/// syscall-argument structs are far smaller than this; larger transfers take the
-/// slow path, where the aspace lock is amortized over a large copy anyway.
-#[cfg(feature = "user-access-fastpath")]
-const FASTPATH_MAX_PAGES: usize = 16;
+/// A faultable access may populate memory and sleep before the copy begins.
+struct Faultable;
+
+/// A nofault access is limited to architecture exception-table operations.
+struct NoFault;
+
+/// Direction and permission requirements of one user-memory operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UserAccessIntent {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl UserAccessIntent {
+    const fn mapping_flags(self) -> MappingFlags {
+        match self {
+            Self::Read => MappingFlags::READ,
+            Self::Write => MappingFlags::WRITE,
+            Self::ReadWrite => MappingFlags::READ.union(MappingFlags::WRITE),
+        }
+    }
+
+    const fn architecture_access(self) -> UserAccessType {
+        match self {
+            Self::Read => UserAccessType::Read,
+            Self::Write | Self::ReadWrite => UserAccessType::Write,
+        }
+    }
+}
+
+/// Checked user range used by both faultable and nofault access modes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UserAccessRange {
+    start: VirtAddr,
+    end: VirtAddr,
+}
+
+impl UserAccessRange {
+    fn new(start: usize, len: usize) -> VmResult<Self> {
+        check_access(start, len)?;
+        let end = start.checked_add(len).ok_or(VmError::AccessDenied)?;
+        Ok(Self {
+            start: VirtAddr::from(start),
+            end: VirtAddr::from(end),
+        })
+    }
+
+    fn len(self) -> usize {
+        self.end.as_usize() - self.start.as_usize()
+    }
+
+    fn is_empty(self) -> bool {
+        self.start.as_usize() == self.end.as_usize()
+    }
+
+    fn page_span(self) -> Option<UserPageSpan> {
+        if self.is_empty() {
+            return None;
+        }
+        let page_start = self.start.as_usize() & !(PAGE_SIZE_4K - 1);
+        let page_end = self.end.as_usize().checked_add(PAGE_SIZE_4K - 1)? & !(PAGE_SIZE_4K - 1);
+        let pages = page_end.checked_sub(page_start)? / PAGE_SIZE_4K;
+        (pages != 0).then_some(UserPageSpan {
+            start: page_start,
+            end: page_end,
+            pages,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UserPageSpan {
+    start: usize,
+    end: usize,
+    pages: usize,
+}
+
+/// A mode-typed, short-lived user-memory operation descriptor.
+///
+/// This is deliberately not a mapping lease: a concurrent `munmap` may make a
+/// successful preparation stale. Faultable copies still run through the
+/// architecture exception table, while nofault methods report `Fault`.
+struct UserAccess<Mode> {
+    range: UserAccessRange,
+    intent: UserAccessIntent,
+    _mode: PhantomData<Mode>,
+}
+
+impl UserAccess<Faultable> {
+    fn new(start: usize, len: usize, intent: UserAccessIntent) -> VmResult<Self> {
+        Ok(Self {
+            range: UserAccessRange::new(start, len)?,
+            intent,
+            _mode: PhantomData,
+        })
+    }
+
+    fn prepare(&self, task: &UserTaskRef, _op: &str) -> VmResult {
+        if self.range.is_empty() {
+            return Ok(());
+        }
+        if ax_runtime::hal::irq::in_irq_context() {
+            return Err(VmError::AccessDenied);
+        }
+        might_sleep();
+        #[cfg(feature = "uaccess-lock-regression")]
+        super::record_eager_user_memory_preparation(task);
+
+        let thr = task.as_thread();
+        let aspace_pin = thr
+            .proc_data
+            .pin_aspace()
+            .map_err(|_| VmError::AccessDenied)?;
+        if unsafe { aspace_pin.raw() }.is_owned_by_current() {
+            return Err(VmError::AccessDenied);
+        }
+
+        // This is only a present-page optimization decision. It does not pin
+        // the mapping; the following copy remains exception-table protected.
+        if user_range_probe_ready(self.range, self.intent) {
+            return Ok(());
+        }
+
+        let span = self.range.page_span().ok_or(VmError::AccessDenied)?;
+        if !aspace_pin.lock().can_access_range(
+            self.range.start,
+            self.range.len(),
+            self.intent.mapping_flags(),
+        ) {
+            return Err(VmError::AccessDenied);
+        }
+        let access = PageFaultFlags::USER
+            | match self.intent {
+                UserAccessIntent::Read => PageFaultFlags::READ,
+                UserAccessIntent::Write | UserAccessIntent::ReadWrite => PageFaultFlags::WRITE,
+            };
+        for page in (span.start..span.end).step_by(PAGE_SIZE_4K) {
+            // Use the published-MM fault transaction: candidate allocation,
+            // file I/O, cancellation and TLB completion all run outside the
+            // metadata guard. A competing VMA update is revalidated at apply.
+            loop {
+                match aspace_pin.handle_page_fault_result(VirtAddr::from(page), access) {
+                    FaultResult::Handled => break,
+                    // An eviction or shootdown conflict is not EFAULT. Each
+                    // retry reacquires the current VMA/PTE snapshot, with no
+                    // metadata guard retained while the owner makes progress.
+                    FaultResult::Retry => crate::task::yield_now(),
+                    _ => return Err(VmError::AccessDenied),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_from_user(self, task: &UserTaskRef, dst: &mut [MaybeUninit<u8>]) -> VmResult {
+        debug_assert_eq!(self.intent, UserAccessIntent::Read);
+        debug_assert_eq!(self.range.len(), dst.len());
+        if self.range.is_empty() {
+            return Ok(());
+        }
+        #[cfg(feature = "uaccess-lock-regression")]
+        super::synchronize_user_copy_with_address_space_holder(task);
+        // SAFETY: the checked range is user memory, the kernel buffer is valid
+        // for its declared length, and the exception table resolves faults.
+        let failed_at = access_user_memory(task, || unsafe {
+            user_copy(
+                dst.as_mut_ptr().cast(),
+                self.range.start.as_usize() as *const u8,
+                dst.len(),
+            )
+        })?;
+        if unlikely(failed_at != 0) {
+            Err(VmError::AccessDenied)
+        } else {
+            #[cfg(feature = "uaccess-lock-regression")]
+            super::record_user_copy_completed(task);
+            Ok(())
+        }
+    }
+
+    fn copy_to_user(self, task: &UserTaskRef, src: &[u8]) -> VmResult {
+        debug_assert_eq!(self.intent, UserAccessIntent::Write);
+        debug_assert_eq!(self.range.len(), src.len());
+        if self.range.is_empty() {
+            return Ok(());
+        }
+        #[cfg(feature = "uaccess-lock-regression")]
+        super::synchronize_user_copy_with_address_space_holder(task);
+        // SAFETY: the checked range is user memory, the kernel buffer is valid
+        // for its declared length, and the exception table resolves faults.
+        let failed_at = access_user_memory(task, || unsafe {
+            user_copy(
+                self.range.start.as_usize() as *mut u8,
+                src.as_ptr(),
+                src.len(),
+            )
+        })?;
+        if unlikely(failed_at != 0) {
+            Err(VmError::AccessDenied)
+        } else {
+            #[cfg(feature = "uaccess-lock-regression")]
+            super::record_user_copy_completed(task);
+            Ok(())
+        }
+    }
+}
+
+impl UserAccess<NoFault> {
+    fn aligned_u32(address: usize, intent: UserAccessIntent) -> Option<Self> {
+        if ax_runtime::hal::irq::in_irq_context() || !address.is_multiple_of(size_of::<u32>()) {
+            return None;
+        }
+        Some(Self {
+            range: UserAccessRange::new(address, size_of::<u32>()).ok()?,
+            intent,
+            _mode: PhantomData,
+        })
+    }
+
+    fn read_u32(self) -> Result<u32, UserAccessError> {
+        debug_assert_eq!(self.intent, UserAccessIntent::Read);
+        // SAFETY: construction checked alignment and the architecture user
+        // range. The nofault exception table handles a concurrent unmap.
+        unsafe { user_read_u32(self.range.start.as_usize() as *const u32) }
+    }
+
+    fn atomic_u32(self, operation: UserAtomicU32Op, argument: u32) -> Result<u32, UserAtomicError> {
+        debug_assert_eq!(self.intent, UserAccessIntent::ReadWrite);
+        // SAFETY: construction checked alignment and the architecture user
+        // range. The nofault exception table handles a concurrent unmap.
+        unsafe { user_atomic_u32(self.range.start.as_usize() as *mut u32, operation, argument) }
+    }
+}
+
+/// Syscall argument records are much smaller than this. Larger transfers use
+/// the locked fault-in path, where the address-space lock is amortized over the
+/// copy. The capability is always enabled; unsupported architectures return a
+/// probe miss and use the same fallback.
+const USER_ACCESS_PROBE_MAX_PAGES: usize = 16;
 
 /// Lock-free eligibility probe for a user range: `true` iff every 4 KiB page
-/// covering `[start, start+len)` is already present and EL0-permitted for the
-/// requested access, so the caller can skip the aspace lock and `populate_area`.
+/// is currently present and EL0-permitted for the requested access, so this
+/// attempt can skip the address-space lock and fault transaction.
 ///
 /// A write requires the page present *and* EL0-writable, so a copy-on-write page
 /// (present read-only) correctly misses and routes to the slow path where the COW
 /// copy happens. Any miss / empty / oversized range / address-space overflow
-/// returns `false` and the caller takes the unchanged locked slow path.
-#[cfg(feature = "user-access-fastpath")]
-fn user_range_fast_ok(start: VirtAddr, len: usize, access_flags: MappingFlags) -> bool {
-    if len == 0 {
-        return false;
-    }
-    // Reject to the slow path on address-space overflow instead of relying on
-    // wrap semantics. `prepare_user_memory` reaches this only after the public
-    // user-range check, but keeps checked arithmetic at this boundary as well.
-    let start = start.as_usize();
-    let Some(end) = start.checked_add(len) else {
+/// returns `false` and the caller uses the MM's fault transaction.
+fn user_range_probe_ready(range: UserAccessRange, intent: UserAccessIntent) -> bool {
+    let Some(span) = range.page_span() else {
         return false;
     };
-    let page_start = start & !(PAGE_SIZE_4K - 1);
-    let Some(page_end) = end
-        .checked_add(PAGE_SIZE_4K - 1)
-        .map(|v| v & !(PAGE_SIZE_4K - 1))
-    else {
-        return false;
-    };
-    // `end >= start` and both are rounded the same way, so `page_end >= page_start`.
-    let pages = (page_end - page_start) / PAGE_SIZE_4K;
-    // `pages == 0` is unreachable here: the `len == 0` early return plus
-    // `page_end > page_start` guarantee `pages >= 1`. It is kept as a defensive
-    // guard so the range cap still holds if either invariant is later removed.
-    if pages == 0 || pages > FASTPATH_MAX_PAGES {
+    if span.pages > USER_ACCESS_PROBE_MAX_PAGES {
         return false;
     }
     // A write access requires the page to be present *and* EL0-writable; a
     // copy-on-write page is present-read-only, so a write probe correctly misses
-    // and routes to the slow path where `populate_area` performs the COW copy.
-    let write = access_flags.contains(MappingFlags::WRITE);
+    // and routes to the fault transaction that prepares the COW copy unlocked.
+    let architecture_access = intent.architecture_access();
 
     // IRQs off across the whole probe: `PAR_EL1` is a per-CPU scratch register
     // shared with any interrupt handler that also executes an `AT`. Disabling
@@ -99,12 +310,12 @@ fn user_range_fast_ok(start: VirtAddr, len: usize, access_flags: MappingFlags) -
     // `mrs` that reads the result. The range is capped, so the window is a
     // handful of instructions.
     let _guard = crate::sync::NoPreemptIrqSave::new();
-    let mut page = page_start;
-    while page < page_end {
+    let mut page = span.start;
+    while page < span.end {
         // SAFETY: IRQs are disabled for the whole loop by the guard above, which
         // is `user_access_ok_page`'s precondition (`PAR_EL1` not clobbered by a
         // concurrent `AT` on this CPU).
-        if !unsafe { ax_runtime::hal::cpu::asm::user_access_ok_page(page, write) } {
+        if !unsafe { ax_runtime::hal::cpu::asm::user_access_ok_page(page, architecture_access) } {
             return false;
         }
         page += PAGE_SIZE_4K;
@@ -112,7 +323,7 @@ fn user_range_fast_ok(start: VirtAddr, len: usize, access_flags: MappingFlags) -
     true
 }
 
-/// Reads from a virtual pointer through an explicit Starry task capability.
+/// User-pointer operations bound to the explicitly selected task.
 pub trait VmPtr: starry_vm::VmPtr {
     /// Returns `None` for a null user pointer.
     fn nullable(self) -> Option<Self> {
@@ -127,6 +338,16 @@ pub trait VmPtr: starry_vm::VmPtr {
     fn vm_read_uninit(self, task: &UserTaskRef) -> VmResult<MaybeUninit<Self::Target>> {
         let mut vm = UserMemoryProvider::new(task);
         starry_vm::VmPtr::vm_read_uninit(self, &mut vm)
+    }
+
+    /// Copies an ABI record through the explicitly selected task.
+    ///
+    /// # Safety
+    /// Every copied user bit pattern must be a valid `Self::Target`.
+    unsafe fn vm_read_any(self, task: &UserTaskRef) -> VmResult<Self::Target> {
+        let mut vm = UserMemoryProvider::new(task);
+        // SAFETY: the caller supplies the target validity contract.
+        unsafe { starry_vm::VmPtr::vm_read_any(self, &mut vm) }
     }
 
     /// Copies one value whose type accepts every initialized byte pattern.
@@ -179,6 +400,7 @@ pub fn vm_load<T: AnyBitPattern>(
 /// # Safety
 ///
 /// Every copied user byte pattern must be a valid initialized `T`.
+#[cfg(feature = "jpeg")]
 pub unsafe fn vm_load_any<T>(task: &UserTaskRef, ptr: *const T, len: usize) -> VmResult<Vec<T>> {
     unsafe { starry_vm::vm_load_any(&mut UserMemoryProvider::new(task), ptr, len) }
 }
@@ -289,20 +511,6 @@ impl<T> UserPtr<T> {
         Ok(unsafe { value.assume_init() })
     }
 
-    /// Copies ABI values whose valid-bit-pattern contract is caller-provided.
-    ///
-    /// # Safety
-    ///
-    /// Every possible byte pattern supplied by userspace must be a valid `T`.
-    pub unsafe fn read_abi_slice(
-        self,
-        task: &UserTaskRef,
-        len: usize,
-    ) -> crate::StarryResult<Vec<T>> {
-        // SAFETY: the caller supplies the element validity contract.
-        unsafe { vm_load_any(task, self.0.cast_const(), len) }.map_err(Into::into)
-    }
-
     /// Copies one kernel-owned value to user memory.
     pub fn write(self, task: &UserTaskRef, value: T) -> crate::StarryResult<()>
     where
@@ -394,31 +602,15 @@ pub fn atomic_update_user_u32_nofault(
     operation: UserAtomicU32Op,
     argument: u32,
 ) -> Result<u32, UserAtomicError> {
-    if ax_runtime::hal::irq::in_irq_context()
-        || !ptr.addr().is_multiple_of(size_of::<u32>())
-        || check_access(ptr.addr(), size_of::<u32>()).is_err()
-    {
-        return Err(UserAtomicError::Fault);
-    }
-
-    // SAFETY: the range and alignment checks above establish the architecture
-    // contract. The dedicated nofault exception table converts a concurrent
-    // unmap or protection change into `UserAtomicError::Fault`.
-    unsafe { user_atomic_u32(ptr, operation, argument) }
+    UserAccess::<NoFault>::aligned_u32(ptr.addr(), UserAccessIntent::ReadWrite)
+        .ok_or(UserAtomicError::Fault)?
+        .atomic_u32(operation, argument)
 }
 
 pub fn read_user_u32_nofault(ptr: *const u32) -> Result<u32, UserAccessError> {
-    if ax_runtime::hal::irq::in_irq_context()
-        || !ptr.addr().is_multiple_of(size_of::<u32>())
-        || check_access(ptr.addr(), size_of::<u32>()).is_err()
-    {
-        return Err(UserAccessError::Fault);
-    }
-
-    // SAFETY: the range and alignment checks above establish the architecture
-    // contract. Concurrent mapping changes are recovered by the dedicated
-    // nofault exception table.
-    unsafe { user_read_u32(ptr) }
+    UserAccess::<NoFault>::aligned_u32(ptr.addr(), UserAccessIntent::Read)
+        .ok_or(UserAccessError::Fault)?
+        .read_u32()
 }
 
 /// Resolves and validates a readable futex word outside futex bucket locks.
@@ -549,24 +741,6 @@ impl<T> UserConstPtr<T> {
     {
         vm_load(task, self.0, len).map_err(Into::into)
     }
-
-    /// Validates and prefaults a readable user range without exposing it as a reference.
-    pub fn validate_slice(self, task: &UserTaskRef, len: usize) -> crate::StarryResult<()> {
-        if len == 0 {
-            return Ok(());
-        }
-        let byte_len = size_of::<T>()
-            .checked_mul(len)
-            .ok_or(crate::StarryError::InvalidInput)?;
-        prepare_user_memory(
-            task,
-            "validate read",
-            self.0.addr(),
-            byte_len,
-            MappingFlags::READ,
-        )
-        .map_err(Into::into)
-    }
 }
 
 /// Cumulative count of user page faults dispatched to the demand-paging handler.
@@ -592,8 +766,10 @@ pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -
     // This callback handles only faults caused by a user mapping or by the
     // kernel explicitly touching one. Reject unrelated kernel addresses before
     // consulting Starry task identity or entering any sleepable MM path.
-    let user_range = USER_SPACE_BASE..USER_SPACE_BASE + USER_SPACE_SIZE;
-    if !user_range.contains(&vaddr.as_usize()) {
+    let Ok(layout) = super::UserVirtualAddressLayout::platform_default() else {
+        return false;
+    };
+    if !layout.range().contains(vaddr) {
         return false;
     }
 
@@ -622,12 +798,14 @@ pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -
     #[cfg(feature = "uaccess-lock-regression")]
     let _ = super::record_faulting_user_copy(&curr);
     might_sleep();
-    let aspace_arc = thr.proc_data.aspace();
+    let Ok(aspace_arc) = thr.proc_data.pin_aspace() else {
+        return false;
+    };
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
         return false;
     }
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
-    aspace_arc.lock().handle_page_fault(vaddr, access_flags)
+    aspace_arc.handle_page_fault(vaddr, access_flags)
 }
 
 fn resolve_page_fault_user_task(
@@ -662,8 +840,11 @@ pub fn vm_load_path_string(task: &UserTaskRef, ptr: *const c_char) -> crate::Sta
 
 /// Briefly checks if the given memory region is valid user memory.
 pub fn check_access(start: usize, len: usize) -> VmResult {
-    const USER_SPACE_END: usize = USER_SPACE_BASE + USER_SPACE_SIZE;
-    let ok = (USER_SPACE_BASE..USER_SPACE_END).contains(&start) && (USER_SPACE_END - start) >= len;
+    let layout =
+        super::UserVirtualAddressLayout::platform_default().map_err(|_| VmError::AccessDenied)?;
+    let range = layout.range();
+    let end = range.end.as_usize();
+    let ok = (range.start.as_usize()..end).contains(&start) && (end - start) >= len;
     if unlikely(!ok) {
         Err(VmError::AccessDenied)
     } else {
@@ -678,44 +859,12 @@ fn prepare_user_memory(
     len: usize,
     access_flags: MappingFlags,
 ) -> VmResult {
-    if ax_runtime::hal::irq::in_irq_context() {
-        return Err(VmError::AccessDenied);
-    }
-    check_access(start, len)?;
-    debug_assert_ne!(len, 0, "empty user-memory ranges require no preparation");
-    #[cfg(feature = "uaccess-lock-regression")]
-    super::record_eager_user_memory_preparation(task);
-
-    let start = VirtAddr::from(start);
-    let end = start + len;
-    let page_start = start.align_down_4k();
-    let page_end = end.align_up_4k();
-
-    let thr = task.as_thread();
-    let aspace_arc = thr.proc_data.aspace();
-    if unsafe { aspace_arc.raw() }.is_owned_by_current() {
-        return Err(VmError::AccessDenied);
-    }
-
-    // Lock-free fast path: if every page is already present with the requested
-    // permission, the copy will not fault, so skip the aspace lock and
-    // `populate_area`. Misses fall through to the locked slow path.
-    #[cfg(feature = "user-access-fastpath")]
-    if user_range_fast_ok(start, len, access_flags) {
-        return Ok(());
-    }
-
-    let mut aspace = aspace_arc.lock();
-    if !aspace.can_access_range(start, len, access_flags) {
-        return Err(VmError::AccessDenied);
-    }
-
-    aspace
-        .populate_area(page_start, page_end - page_start, access_flags)
-        .map_err(|_| VmError::AccessDenied)?;
-    drop(aspace);
-    let _ = op;
-    Ok(())
+    let intent = if access_flags.contains(MappingFlags::WRITE) {
+        UserAccessIntent::ReadWrite
+    } else {
+        UserAccessIntent::Read
+    };
+    UserAccess::<Faultable>::new(start, len, intent)?.prepare(task, op)
 }
 
 /// Faults in and validates a userspace output range without modifying it.
@@ -727,6 +876,14 @@ pub(crate) fn prepare_user_write(task: &UserTaskRef, start: usize, len: usize) -
         return Ok(());
     }
     prepare_user_memory(task, "write", start, len, MappingFlags::WRITE)
+}
+
+/// Validates a transaction's captured source range before publication.
+pub(crate) fn prepare_user_read(task: &UserTaskRef, start: usize, len: usize) -> VmResult {
+    if len == 0 {
+        return Ok(());
+    }
+    UserAccess::<Faultable>::new(start, len, UserAccessIntent::Read)?.prepare(task, "read")
 }
 
 /// User-memory capability bound to one live Starry task generation.
@@ -741,43 +898,24 @@ impl<'task> UserMemoryProvider<'task> {
     }
 }
 
+// SAFETY: the provider is bound to a live task. Copies validate the user range,
+// retain a faultable task scope and use architecture exception-table recovery;
+// no borrowed user reference escapes the operation.
 unsafe impl VmIo for UserMemoryProvider<'_> {
     fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
         if buf.is_empty() {
             return Ok(());
         }
-        check_access(start, buf.len())?;
-        #[cfg(feature = "uaccess-lock-regression")]
-        super::synchronize_user_copy_with_address_space_holder(self.task);
-        let failed_at = access_user_memory(self.task, || unsafe {
-            user_copy(buf.as_mut_ptr() as *mut _, start as _, buf.len())
-        })?;
-        if unlikely(failed_at != 0) {
-            Err(VmError::AccessDenied)
-        } else {
-            #[cfg(feature = "uaccess-lock-regression")]
-            super::record_user_copy_completed(self.task);
-            Ok(())
-        }
+        UserAccess::<Faultable>::new(start, buf.len(), UserAccessIntent::Read)?
+            .copy_from_user(self.task, buf)
     }
 
     fn write(&mut self, start: usize, buf: &[u8]) -> VmResult {
         if buf.is_empty() {
             return Ok(());
         }
-        check_access(start, buf.len())?;
-        #[cfg(feature = "uaccess-lock-regression")]
-        super::synchronize_user_copy_with_address_space_holder(self.task);
-        let failed_at = access_user_memory(self.task, || unsafe {
-            user_copy(start as _, buf.as_ptr() as *const _, buf.len())
-        })?;
-        if unlikely(failed_at != 0) {
-            Err(VmError::AccessDenied)
-        } else {
-            #[cfg(feature = "uaccess-lock-regression")]
-            super::record_user_copy_completed(self.task);
-            Ok(())
-        }
+        UserAccess::<Faultable>::new(start, buf.len(), UserAccessIntent::Write)?
+            .copy_to_user(self.task, buf)
     }
 }
 
@@ -874,35 +1012,34 @@ where
     let aligned_addr = addr.align_down_4k();
     let aligned_length = (addr + len).align_up_4k() - aligned_addr;
 
-    // Acquire the kernel address-space IRQ-safe lock only after the task-context
-    // stopper coordinator has parked every remote CPU. The coordinator lock is
-    // sleepable and is acquired before IRQs are disabled; the page-table guard
-    // is therefore the only IRQ-saving lock nested inside the stopped region.
-    // Keeping that order avoids restoring saved IRQ state out of order.
+    // The kernel address-space lock (`SpinNoIrq`) MUST be acquired *inside* the
+    // `stop_machine` critical section, not before it. `stop_machine` itself
+    // takes a `SpinNoIrq` (`STOP_MACHINE_LOCK`); acquiring `kernel_aspace`
+    // first and then dropping it inside the closure produces a non-LIFO nesting
+    // of two IRQ-saving guards, which crosses their saved IRQ states and leaks
+    // an IRQ-disabled state out of this function. That stranded state later
+    // trips the atomic-context guard (e.g. `clear_proc_shm` on process exit
+    // right after a static-key `disable_key`). Nesting it LIFO here keeps the
+    // IRQ flag balanced — this mirrors the kprobe `set_writeable_for_address`
+    // path.
     crate::stop_machine::stop_machine(
         move || -> StarryResult<()> {
-            let (kernel_base, kernel_size) = ax_runtime::hal::mem::kernel_aspace();
-            if VirtAddrRange::from_start_size(kernel_base, kernel_size)
-                .contains_range(VirtAddrRange::from_start_size(aligned_addr, aligned_length))
-            {
-                let (original_flags, _) =
-                    ax_runtime::kernel_mapping::query_kernel_mapping(aligned_addr)?;
+            let mut guard = ax_mm::kernel_aspace().lock();
+            if guard.contains_range(aligned_addr, aligned_length) {
+                let original_flags = guard.mapping_flags(aligned_addr)?;
 
-                ax_runtime::kernel_mapping::protect_kernel_range(
+                guard.protect(
                     aligned_addr,
                     aligned_length,
                     original_flags | MappingFlags::WRITE,
                 )?;
 
+                flush_tlb_range(aligned_addr, aligned_length);
                 action(addr.as_mut_ptr());
 
                 ax_runtime::hal::cache::clean_dcache_to_pou(addr, len);
 
-                ax_runtime::kernel_mapping::protect_kernel_range(
-                    aligned_addr,
-                    aligned_length,
-                    original_flags,
-                )?;
+                guard.protect(aligned_addr, aligned_length, original_flags)?;
                 return Ok(());
             }
 
@@ -933,37 +1070,34 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> StarryResult<()> {
     })
 }
 
+pub fn flush_tlb_range(start: VirtAddr, size: usize) {
+    ax_runtime::hal::cache::flush_tlb_range(start, size);
+}
+
+pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) -> StarryResult {
+    ax_runtime::hal::cache::flush_tlb_range_all_cpus(start, size).map_err(|err| match err {
+        ax_runtime::hal::cache::TlbShootdownError::CpuOffline
+        | ax_runtime::hal::cache::TlbShootdownError::Unsupported => StarryError::Unsupported,
+        ax_runtime::hal::cache::TlbShootdownError::Timeout => StarryError::TimedOut,
+        ax_runtime::hal::cache::TlbShootdownError::GenerationExhausted => {
+            StarryError::Errno(syscalls::Errno::EOVERFLOW)
+        }
+        ax_runtime::hal::cache::TlbShootdownError::Platform => StarryError::Io,
+    })
+}
+
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
 }
 
 #[cfg(all(test, not(axtest)))]
-fn user_pointer_metadata_rules_hold_for_test() -> bool {
-    let user_base = USER_SPACE_BASE;
-    let user_end = USER_SPACE_BASE + USER_SPACE_SIZE;
-    let ptr = UserPtr::<u32>::from(user_base);
-    let const_ptr = UserConstPtr::<u64>::from(user_base + 8);
-    let default_ptr = UserPtr::<u8>::default();
-    let default_const_ptr = UserConstPtr::<u8>::default();
-    let cast_ptr = ptr.cast::<u8>();
-    let cast_const_ptr = const_ptr.cast::<u8>();
-
-    default_ptr.is_null()
-        && !ptr.is_null()
-        && ptr.address().as_usize() == user_base
-        && ptr.as_ptr() as usize == user_base
-        && cast_ptr.address().as_usize() == user_base
-        && const_ptr.address().as_usize() == user_base + 8
-        && cast_const_ptr.address().as_usize() == user_base + 8
-        // Default const pointer is also null.
-        && default_const_ptr.is_null()
-        && !const_ptr.is_null()
-        // UserPtr/UserConstPtr From<usize> round-trips through address().
-        && UserPtr::<u64>::from(user_end - 8).address().as_usize() == user_end - 8
-        && UserConstPtr::<u64>::from(user_end - 8).address().as_usize() == user_end - 8
-        // check_access accepts zero-length access anywhere in user space,
-        // including exactly at USER_SPACE_BASE and one byte before USER_SPACE_END.
-        && check_access(user_base, 0).is_ok()
+fn user_access_range_rules_hold_for_test() -> bool {
+    let user_base = crate::config::USER_SPACE_BASE;
+    let user_size = crate::config::USER_SPACE_MAX_SIZE;
+    let user_end = user_base + user_size;
+    // check_access accepts zero-length access anywhere in user space,
+    // including exactly at USER_SPACE_BASE and one byte before USER_SPACE_END.
+    check_access(user_base, 0).is_ok()
         && check_access(user_end - 1, 0).is_ok()
         && check_access(user_end, 0).is_err()
         // check_access rejects start below USER_SPACE_BASE even for zero length.
@@ -975,40 +1109,79 @@ fn user_pointer_metadata_rules_hold_for_test() -> bool {
         && check_access(user_end, 0).is_err()
         && check_access(user_end - 1, 2).is_err()
         // Lengths that would wrap the end pointer are rejected.
-        && check_access(user_base, USER_SPACE_SIZE).is_ok()
-        && check_access(user_base, USER_SPACE_SIZE + 1).is_err()
+        && check_access(user_base, user_size).is_ok()
+        && check_access(user_base, user_size + 1).is_err()
         && check_access(user_end - 1, usize::MAX).is_err()
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(test)]
 mod tests {
-    use ax_std::os::arceos::task::TaskError;
-
     use super::*;
 
+    #[cfg(all(test, not(axtest)))]
     #[test]
-    fn bootstrap_page_fault_has_no_starry_memory_owner() {
-        assert!(matches!(resolve_page_fault_user_task(Ok(None)), Ok(None)));
+    fn user_access_range_rules_hold() {
+        assert!(user_access_range_rules_hold_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn user_access_page_span_is_checked_and_bounded() {
+        let page = crate::config::USER_SPACE_BASE.next_multiple_of(PAGE_SIZE_4K);
+        let cross_page = UserAccessRange::new(page + PAGE_SIZE_4K - 1, 2).unwrap();
+        assert_eq!(
+            cross_page.page_span(),
+            Some(UserPageSpan {
+                start: page,
+                end: page + PAGE_SIZE_4K * 2,
+                pages: 2,
+            })
+        );
+
+        let at_budget = UserAccessRange::new(page, PAGE_SIZE_4K * 16).unwrap();
+        assert_eq!(at_budget.page_span().unwrap().pages, 16);
+        let above_budget = UserAccessRange::new(page, PAGE_SIZE_4K * 17).unwrap();
+        assert_eq!(above_budget.page_span().unwrap().pages, 17);
+        assert!(above_budget.page_span().unwrap().pages > USER_ACCESS_PROBE_MAX_PAGES);
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn user_access_intent_preserves_faultable_permissions() {
+        assert_eq!(UserAccessIntent::Read.mapping_flags(), MappingFlags::READ);
+        assert_eq!(UserAccessIntent::Write.mapping_flags(), MappingFlags::WRITE);
+        assert_eq!(
+            UserAccessIntent::ReadWrite.mapping_flags(),
+            MappingFlags::READ | MappingFlags::WRITE
+        );
+        assert_eq!(
+            UserAccessIntent::Read.architecture_access(),
+            UserAccessType::Read
+        );
+        assert_eq!(
+            UserAccessIntent::ReadWrite.architecture_access(),
+            UserAccessType::Write
+        );
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn nofault_user_read_recovers_unmapped_address() {
+        // SAFETY: the address is aligned and belongs to the configured user
+        // range. It is intentionally unmapped to exercise exception fixup.
         assert!(matches!(
-            resolve_page_fault_user_task(Err(TaskError::NotInitialized)),
-            Ok(None)
-        ));
-        assert!(matches!(
-            resolve_page_fault_user_task(Err(TaskError::CpuOwnerBorrowed)),
-            Ok(None)
+            unsafe { user_read_u32(crate::config::USER_SPACE_BASE as *const u32) },
+            Err(UserAccessError::Fault)
         ));
     }
 
+    #[cfg(all(test, not(axtest)))]
     #[test]
-    fn malformed_user_extension_is_reported_to_the_fatal_trap_path() {
-        assert!(matches!(
-            resolve_page_fault_user_task(Err(TaskError::InvalidRuntimeHandle)),
-            Err(TaskError::InvalidRuntimeHandle)
-        ));
-    }
-
-    #[test]
-    fn user_pointer_metadata_rules_hold() {
-        assert!(user_pointer_metadata_rules_hold_for_test());
+    fn user_access_range_rejects_null_overflow_and_kernel_addresses() {
+        assert!(UserAccessRange::new(0, 1).is_err());
+        assert!(UserAccessRange::new(usize::MAX, 1).is_err());
+        let layout = crate::mm::UserVirtualAddressLayout::platform_default().unwrap();
+        assert!(UserAccessRange::new(layout.range().end.as_usize(), 1).is_err());
+        assert!(UserAccessRange::new(layout.range().start.as_usize(), usize::MAX).is_err());
     }
 }

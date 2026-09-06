@@ -828,9 +828,17 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn debugfs_script_discards_normal_stdout_and_receives_all_commands() {
+        use std::fs::OpenOptions;
+
         let root = executable_helper_tempdir();
         let debugfs = root.path().join("debugfs");
         let received_commands = root.path().join("received-commands");
+        let _stale_writer = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&debugfs)
+            .unwrap();
         write_executable(
             &debugfs,
             &format!(
@@ -871,7 +879,18 @@ mod tests {
     fn write_executable(path: &Path, contents: &str) {
         use std::os::unix::fs::PermissionsExt;
 
-        fs::write(path, contents).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut staged_name = path
+            .file_name()
+            .expect("executable helper path must have a file name")
+            .to_os_string();
+        staged_name.push(".publishing");
+        let staged_path = path.with_file_name(staged_name);
+
+        fs::write(&staged_path, contents).unwrap();
+        fs::set_permissions(&staged_path, fs::Permissions::from_mode(0o755)).unwrap();
+        // Publish a fully closed and executable inode. A stale writer may still
+        // hold the previous destination inode, but it cannot make the newly
+        // published helper fail exec with ETXTBSY.
+        fs::rename(staged_path, path).unwrap();
     }
 }

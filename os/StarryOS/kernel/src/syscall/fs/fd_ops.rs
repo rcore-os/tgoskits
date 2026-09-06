@@ -443,13 +443,13 @@ ax_tracepoint::define_event_trace!(
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(syscalls),
     TP_PROTO(dfd: i32, path: *const u8, o_flags: u32, mode: u32),
-    TP_STRUCT__entry{
+    TP_STRUCT__entry {
         dfd: i32,
         o_flags: u32,
         path: u64,
         mode: u32,
     },
-    TP_fast_assign{
+    TP_fast_assign {
         dfd: dfd,
         path: path as u64,
         o_flags: o_flags,
@@ -459,10 +459,7 @@ ax_tracepoint::define_event_trace!(
     TP_printk({
         format!(
             "dfd: {}, path: {:#x}, o_flags: {:?}, mode: {:?}",
-            __entry.dfd,
-            __entry.path,
-            __entry.o_flags,
-            __entry.mode
+            __entry.dfd, __entry.path, __entry.o_flags, __entry.mode
         )
     })
 );
@@ -707,8 +704,7 @@ pub fn sys_close_range(
             crate::file::current_fd_table().read().clone(),
         ));
         curr.as_thread().with_current_scope_mut(|scope| {
-            *FD_TABLE.scope_mut(scope).deref_mut() =
-                crate::file::new_file_table_scope(new_files);
+            *FD_TABLE.scope_mut(scope).deref_mut() = crate::file::new_file_table_scope(new_files);
         });
     }
 
