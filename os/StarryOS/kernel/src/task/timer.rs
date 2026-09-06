@@ -19,7 +19,7 @@ use strum::FromRepr;
 
 use crate::{
     sync::IrqMutex as Mutex,
-    task::{PidIdentity, poll_process_timer, poll_timer},
+    task::{PidIdentity, poll_process_alarm, poll_timer},
 };
 
 fn time_value_from_nanos(nanos: usize) -> TimeValue {
@@ -373,7 +373,7 @@ async fn alarm_task() {
                 }
                 AlarmTarget::Process(identity) => {
                     if let Some(identity) = identity.upgrade() {
-                        poll_process_timer(&identity);
+                        poll_process_alarm(&identity, entry.deadline);
                     }
                 }
             }
@@ -412,6 +412,156 @@ fn itimer_type_signo_and_time_conversion_rules_hold_for_test() -> bool {
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
+    use super::*;
+    use crate::task::{
+        pid::{new_test_pid_namespace, new_test_process_identity},
+        posix_timer::{PosixTimerTable, TimerSpec},
+    };
+
+    fn take_process_alarm(owner: &Arc<PidIdentity>) -> Option<Entry> {
+        let mut alarms = ALARM_LIST.lock();
+        let index = alarms.iter().position(|entry| {
+            matches!(&entry.target, AlarmTarget::Process(weak) if Weak::ptr_eq(weak, &Arc::downgrade(owner)))
+        })?;
+        Some(alarms.swap_remove(index))
+    }
+
+    #[test]
+    fn realtime_alarm_survives_clock_rollback_after_dequeue() {
+        use ax_runtime::hal::time::set_wall_time;
+        use linux_raw_sys::general::{CLOCK_REALTIME, SIGEV_SIGNAL};
+
+        struct RestoreClock(TimeValue);
+        impl Drop for RestoreClock {
+            fn drop(&mut self) {
+                set_wall_time(self.0).unwrap();
+            }
+        }
+        let _restore = RestoreClock(wall_time());
+        let namespace = new_test_pid_namespace();
+        let (owner, _tgid) = new_test_process_identity(&namespace);
+        let timers = PosixTimerTable::default();
+        let id = timers
+            .create(CLOCK_REALTIME, SIGEV_SIGNAL, Signo::SIGALRM as i32, 17)
+            .unwrap();
+        set_wall_time(Duration::from_secs(5)).unwrap();
+        timers
+            .settime(
+                &owner,
+                id,
+                1,
+                TimerSpec {
+                    value_sec: 10,
+                    value_nsec: 0,
+                    interval_sec: 0,
+                    interval_nsec: 0,
+                },
+            )
+            .unwrap();
+
+        set_wall_time(Duration::from_secs(10)).unwrap();
+        let entry = take_process_alarm(&owner).expect("timer_settime must register an alarm");
+        assert!(entry.deadline.is_due());
+        // The dispatcher has consumed the registration, but another CPU can
+        // set CLOCK_REALTIME before the timer table is locked and polled.
+        set_wall_time(Duration::from_secs(5)).unwrap();
+        let mut signals = 0;
+        timers.poll_dequeued_alarm(&owner, entry.deadline, |_| signals += 1);
+        assert_eq!(signals, 0, "clock rollback must postpone expiration");
+        let retry = take_process_alarm(&owner)
+            .expect("clock rollback after dequeue lost the POSIX timer registration");
+        assert_eq!(retry.deadline, entry.deadline);
+        assert!(
+            take_process_alarm(&owner).is_none(),
+            "one consumed alarm needs one replacement"
+        );
+
+        set_wall_time(Duration::from_secs(10)).unwrap();
+        timers.poll_dequeued_alarm(&owner, retry.deadline, |_| signals += 1);
+        assert_eq!(signals, 1);
+        assert_eq!(timers.gettime(id).unwrap().1, 0);
+        assert!(
+            take_process_alarm(&owner).is_none(),
+            "one-shot timer must stay disarmed"
+        );
+
+        // A process registration can match several timers. Restoring it must
+        // not multiply registrations, including across repeated clock steps.
+        let second = timers
+            .create(CLOCK_REALTIME, SIGEV_SIGNAL, Signo::SIGALRM as i32, 18)
+            .unwrap();
+        set_wall_time(Duration::from_secs(5)).unwrap();
+        for timer_id in [id, second] {
+            timers
+                .settime(
+                    &owner,
+                    timer_id,
+                    1,
+                    TimerSpec {
+                        value_sec: 10,
+                        value_nsec: 0,
+                        interval_sec: 1,
+                        interval_nsec: 0,
+                    },
+                )
+                .unwrap();
+        }
+        for _ in 0..3 {
+            set_wall_time(Duration::from_secs(10)).unwrap();
+            let entry = take_process_alarm(&owner).unwrap();
+            set_wall_time(Duration::from_secs(5)).unwrap();
+            timers.poll_dequeued_alarm(&owner, entry.deadline, |_| {
+                panic!("timer fired after rollback")
+            });
+            timers.poll_expired(&owner, |_| panic!("syscall poll fired after rollback"));
+            let first = take_process_alarm(&owner).unwrap();
+            let second = take_process_alarm(&owner).unwrap();
+            assert!(
+                take_process_alarm(&owner).is_none(),
+                "shared deadlines multiplied alarms"
+            );
+            register_alarm_for(first.deadline, first.target);
+            register_alarm_for(second.deadline, second.target);
+        }
+        set_wall_time(Duration::from_secs(10)).unwrap();
+        let entry = take_process_alarm(&owner).unwrap();
+        timers.poll_dequeued_alarm(&owner, entry.deadline, |_| signals += 1);
+        assert_eq!(signals, 3, "both periodic timers must still expire");
+        assert_eq!(timers.gettime(id).unwrap().1, NANOS_PER_SEC);
+        assert_eq!(timers.gettime(second).unwrap().1, NANOS_PER_SEC);
+        while take_process_alarm(&owner).is_some() {}
+
+        // A stale dequeued alarm must not resurrect a deleted timer or the
+        // previous deadline of a concurrently reset timer.
+        timers.delete(second);
+        timers
+            .settime(
+                &owner,
+                id,
+                1,
+                TimerSpec {
+                    value_sec: 20,
+                    value_nsec: 0,
+                    interval_sec: 0,
+                    interval_nsec: 0,
+                },
+            )
+            .unwrap();
+        let reset = take_process_alarm(&owner).unwrap();
+        set_wall_time(Duration::from_secs(5)).unwrap();
+        timers.poll_dequeued_alarm(&owner, entry.deadline, |_| panic!("stale alarm fired"));
+        assert!(
+            take_process_alarm(&owner).is_none(),
+            "stale deadline was restored"
+        );
+        timers.delete(id);
+        timers.poll_dequeued_alarm(&owner, reset.deadline, |_| panic!("deleted timer fired"));
+        assert!(
+            take_process_alarm(&owner).is_none(),
+            "deleted timer was restored"
+        );
+    }
+
     #[test]
     fn itimer_type_signo_and_time_conversion_rules_hold() {
         assert!(super::itimer_type_signo_and_time_conversion_rules_hold_for_test());

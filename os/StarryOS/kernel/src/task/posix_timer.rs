@@ -258,12 +258,29 @@ impl PosixTimerTable {
         Ok((timer.interval_ns, remaining))
     }
 
-    /// Check all timers for expiry and return signals to deliver.
-    /// Called from the alarm_task via poll_timer.
-    /// `task` is the user task that owns these timers (needed to
-    /// re-register alarms for periodic timers).
-    pub fn poll_expired(&self, owner: &Arc<PidIdentity>, mut emitter: impl FnMut(SignalInfo)) {
+    /// Poll without consuming an alarm registration, for example on syscall return.
+    pub fn poll_expired(&self, owner: &Arc<PidIdentity>, emitter: impl FnMut(SignalInfo)) {
+        self.poll_timers(owner, None, emitter);
+    }
+
+    /// Poll after the dispatcher has removed one registration for this process.
+    pub(super) fn poll_dequeued_alarm(
+        &self,
+        owner: &Arc<PidIdentity>,
+        deadline: AlarmDeadline,
+        emitter: impl FnMut(SignalInfo),
+    ) {
+        self.poll_timers(owner, Some(deadline), emitter);
+    }
+
+    fn poll_timers(
+        &self,
+        owner: &Arc<PidIdentity>,
+        dequeued_deadline: Option<AlarmDeadline>,
+        mut emitter: impl FnMut(SignalInfo),
+    ) {
         let mut timers = self.timers.lock();
+        let mut retry_deadline = None;
         for timer in timers.values_mut() {
             let Some(deadline) = timer.deadline else {
                 continue;
@@ -281,10 +298,7 @@ impl PosixTimerTable {
                         Duration::from_nanos(timer.interval_ns),
                     );
                     timer.deadline = Some(deadline);
-                    register_alarm_for(
-                        deadline,
-                        AlarmTarget::Process(Arc::downgrade(owner)),
-                    );
+                    register_alarm_for(deadline, AlarmTarget::Process(Arc::downgrade(owner)));
                     overrun
                 } else {
                     // One-shot: disarm
@@ -293,13 +307,20 @@ impl PosixTimerTable {
                 };
 
                 if let Some(signo) = timer.signo {
-                    emitter(SignalInfo::new_timer(
-                        signo,
-                        timer.sigev_value,
-                        overrun,
-                    ));
+                    emitter(SignalInfo::new_timer(signo, timer.sigev_value, overrun));
                 }
+            } else if Some(deadline) == dequeued_deadline {
+                // CLOCK_REALTIME may have moved backwards after dequeue.
+                // Only restore a consumed registration that is still active;
+                // reset/deleted timers must not revive their old deadlines.
+                retry_deadline = Some(deadline);
             }
+        }
+        if let Some(deadline) = retry_deadline {
+            // Several timers can share this deadline. Replace the one entry
+            // consumed by the dispatcher, not one entry per matching timer.
+            // Keep the timer-table -> alarm-list lock order used by settime.
+            register_alarm_for(deadline, AlarmTarget::Process(Arc::downgrade(owner)));
         }
     }
 }

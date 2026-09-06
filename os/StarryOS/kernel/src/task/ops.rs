@@ -159,6 +159,20 @@ pub fn poll_timer(task: &TaskInner) {
 
 /// Poll the process-level POSIX timers.
 pub fn poll_process_timer(identity: &Arc<crate::task::PidIdentity>) {
+    poll_process_timers(identity, None);
+}
+
+pub(super) fn poll_process_alarm(
+    identity: &Arc<PidIdentity>,
+    deadline: super::timer::AlarmDeadline,
+) {
+    poll_process_timers(identity, Some(deadline));
+}
+
+fn poll_process_timers(
+    identity: &Arc<PidIdentity>,
+    dequeued_deadline: Option<super::timer::AlarmDeadline>,
+) {
     if let Some(proc_data) = identity.live_data() {
         if proc_data.poll_real_timer() {
             let _ = super::send_signal_to_process_data(
@@ -166,9 +180,16 @@ pub fn poll_process_timer(identity: &Arc<crate::task::PidIdentity>) {
                 Some(SignalInfo::new_kernel(Signo::SIGALRM)),
             );
         }
-        proc_data.posix_timers.poll_expired(identity, |sig| {
+        let emitter = |sig| {
             let _ = super::send_signal_to_process_data(&proc_data, Some(sig));
-        });
+        };
+        if let Some(deadline) = dequeued_deadline {
+            proc_data
+                .posix_timers
+                .poll_dequeued_alarm(identity, deadline, emitter);
+        } else {
+            proc_data.posix_timers.poll_expired(identity, emitter);
+        }
     }
 }
 

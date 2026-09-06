@@ -160,6 +160,16 @@ the dispatcher selects the entry with the smallest current remaining duration
 and sleeps against a monotonic deadline. A clock-change event wakes it to
 re-evaluate realtime entries.
 
+Dequeuing an alarm does not commit a POSIX timer expiration: another CPU can
+move realtime backwards before the process timer table is locked. The
+dispatcher therefore passes the consumed deadline to the timer poll. If an
+active timer still has that deadline but is no longer due, the poll restores
+one registration while holding the timer-table lock. Shared deadlines do not
+multiply registrations, and reset or deleted timers do not revive stale
+deadlines. Polls on syscall return consume no registration and do not add one.
+The lock order remains timer table then alarm list; the dispatcher releases
+the alarm-list lock before calling the process timer poll.
+
 When a periodic POSIX realtime timer becomes overdue after a wall-clock step,
 one expiration poll computes the full lag in units of the timer interval. It
 moves the deadline to the first interval strictly after the adjusted clock,
