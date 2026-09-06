@@ -93,11 +93,14 @@ fn eventfd_user_write_still_accepts_zero() {
 fn user_trap_passes_its_proven_task_to_uprobe_handlers() {
     assert!(UPROBE.contains("pub fn break_uprobe_handler(task: &UserTaskRef,"));
     assert!(!UPROBE.contains("try_current_user_task"));
-    assert!(USER_LOOP.contains("break_uprobe_handler(&curr, &mut uctx)"));
+    assert!(USER_LOOP.contains("handle_user_exception(&curr, &mut uctx, exc_info)"));
+    let exception = function_body(USER_LOOP, "fn handle_user_exception(");
+    assert!(exception.contains("break_uprobe_handler(current, uctx)"));
+    assert!(!exception.contains("current_user_task("));
     #[cfg(target_arch = "x86_64")]
     {
         assert!(UPROBE.contains("pub fn debug_uprobe_handler(task: &UserTaskRef,"));
-        assert!(USER_LOOP.contains("debug_uprobe_handler(&curr, &mut uctx)"));
+        assert!(exception.contains("debug_uprobe_handler(current, uctx)"));
     }
 }
 
