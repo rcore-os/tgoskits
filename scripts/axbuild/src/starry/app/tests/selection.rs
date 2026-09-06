@@ -28,17 +28,6 @@ fn all_qemu_selection_skips_apps_without_matching_arch_config() {
     };
     let apps = selected_apps(root.path(), &args, StarryAppKind::Qemu).unwrap();
     let names = apps.iter().map(|app| app.name.as_str()).collect::<Vec<_>>();
-    let args = ArgsAppQemu {
-        all: true,
-        test_case: None,
-        nixos_case: None,
-        all_nixos_cases: false,
-        list_nixos_cases: false,
-        caps: Vec::new(),
-        arch: Some("x86_64".to_string()),
-        qemu_config: None,
-        debug: false,
-    };
 
     assert!(names.contains(&"qemu/apk-curl"));
     assert!(!names.contains(&"qemu/apt"));

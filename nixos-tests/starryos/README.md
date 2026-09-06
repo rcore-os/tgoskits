@@ -2,7 +2,9 @@
 
 This directory owns the project-local NixOS test framework for StarryOS. It is independent of the Starry application cases under `test-suit/starryos/` and of the legacy `starry app qemu` acceptance path. Cases live in `cases/*.nix`. The in-tree catalog currently includes `boot`, `function-allowed`, `function-forbidden`, `hello-tmpfiles`, `service`, `service-fail`, `sysctl-forbidden`, and `unsupported`.
 
-## Supported boundary
+## 1. Supported boundary
+
+`run_nixos_app` 在执行前校验目标架构与应用的 `requires` 声明。当前框架的运行边界为：
 
 - Host: x86_64 Linux with Nix or Lix, flakes, and `nix-command`.
 - Guest: one x86_64 StarryOS VM using the existing NixOS stage-2 system.
@@ -11,24 +13,32 @@ This directory owns the project-local NixOS test framework for StarryOS. It is i
 
 Host-installed QEMU and OVMF are not prerequisites. The workflow does not change the active NixOS system, user profile, or tracked repository files.
 
-## Run the cases
+## 2. Run the cases
 
-From the repository root:
+`run_nixos_app` 将应用命令分为只读发现和用例执行；用例执行复用 `missing_caps` 检查，并通过单用例 runner 构建内核和运行 NixOS 测试。
+
+### 2.1 用例选择
+
+在仓库根目录执行。运行用例需要声明 `--cap nix`；列表操作不构建内核、不调用 Nix，因此不要求该能力声明。省略 `--arch` 时使用 `x86_64`，显式指定其他架构会在启动构建前报错。
 
 ```bash
-cargo xtask starry app qemu -t nixos
+cargo xtask starry app qemu -t nixos --cap nix
 cargo xtask starry app qemu -t nixos --list-cases
-cargo xtask starry app qemu -t nixos --case service
-cargo xtask starry app qemu -t nixos --all-cases
+cargo xtask starry app qemu -t nixos --cap nix --case service
+cargo xtask starry app qemu -t nixos --cap nix --all-cases
 ```
 
 The default command runs the `boot` case. `--list-cases` only discovers cases; `--case` runs one case; `--all-cases` runs the discovered catalog.
+
+### 2.2 执行结果
+
+`--all-cases` 按名称排序执行全部已发现用例，单项失败后继续执行后续项，最后通过 `QemuTestSummary` 输出每项结果和错误上下文。任一用例失败时，批次以非零状态退出。目录中的 `function-forbidden`、`service-fail`、`sysctl-forbidden` 和 `unsupported` 保留故意非零退出的契约，因此包含这些用例的完整批次也会非零退出；汇总不会把构建失败自动认定为预期成功。单项 `--case` 仍直接返回该用例的结果。
 
 `--list` is discovery-only: it reads `cases/*.nix` stems, does not build, evaluate Nix, or start QEMU, and does not require the runner to name those stems in source. The run command builds the current-checkout Starry UEFI image through the existing axbuild path, verifies its NAR hash, imports that exact content into the independent test flake, constructs the shared app-owned stage-2 system, and starts the pinned test driver.
 
 Do not manually stage a kernel or rootfs, and do not wrap the run in an external timeout shorter than 15 minutes. A cold closure build can add host time before QEMU starts.
 
-## Passing evidence and bounds
+## 3. Passing evidence and bounds
 
 The serial log must contain this ordered sequence:
 
@@ -50,7 +60,7 @@ The xtask output reports the prepared kernel identity and streams the Nix test-d
 
 Each driver run owns a fresh temporary rootfs overlay, OVMF variables copy, and ESP. The immutable Nix-store rootfs and firmware inputs are never reused as writable state. A retry needs no manual overlay cleanup.
 
-## Author a case
+## 4. Author a case
 
 Add a file under `cases/` whose stem matches `^[a-z][a-z0-9-]{0,62}$`. Copy `cases/hello-tmpfiles.nix` as the template. A record is:
 
@@ -70,12 +80,12 @@ Function-form NixOS modules are supported and are evaluated by `mkNixosSystem` b
 
 ```bash
 cargo xtask starry app qemu -t nixos --list-cases
-cargo xtask starry app qemu -t nixos --case <stem>
+cargo xtask starry app qemu -t nixos --cap nix --case <stem>
 ```
 
 A failing case sets `expectPass = false`. Zero exit on that case is a framework bug. Illegal stems fail listing. Unknown `--case` names fail with the discovered catalog.
 
-## Retained compatibility paths
+## 5. Retained compatibility paths
 
 The nixosTest entry point does not replace these existing checks:
 
@@ -85,7 +95,7 @@ cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
 cargo xtask starry test qemu --arch x86_64 -c qemu/system/starrynixos-stage2
 ```
 
-## Diagnostics and limits
+## 6. Diagnostics and limits
 
 A failure before QEMU indicates kernel preparation, NAR import, flake evaluation, rootfs, firmware, or launch-adapter setup. Look for `STARRY_NIXOS_PHASE_FAILED=` in driver/xtask output:
 
@@ -99,7 +109,7 @@ A failure before QEMU indicates kernel preparation, NAR import, flake evaluation
 
 Guest commands are declared systemd oneshots observed on serial, not `machine.succeed`. Shared marker poweroff still happens unless the test-owned `/etc/starry-nixos/keep-running` file is present. There is still no claim that unmodified upstream NixOS tests run on StarryOS, and CI scheduling is unchanged.
 
-## 当前验证记录
+## 7. 当前验证记录
 
 最新 TCG 身份、断言块、阶段名和三次 `service-fail` 隔离结果记在 `nixos-tests/starryos/compatibility.md`。
 
@@ -111,13 +121,13 @@ Guest commands are declared systemd oneshots observed on serial, not `machine.su
 - TCG `unsupported` 立即以 `unsupported Starry nixosTest operation: succeed` 非零退出，不等待 `/dev/hvc0`。
 - TCG `boot` 仍完成有序 marker 与关机。
 
-## 网络受限主机
+## 8. 网络受限主机
 
 如果 GitHub image registry 或 flake 内容请求超时，而本机 SOCKS5 代理监听在 `127.0.0.1:7890`，可用 `proxychains4` 包裹需要联网的命令：
 
 ```bash
-proxychains4 cargo xtask starry app qemu -t nixos --case boot
-proxychains4 cargo xtask starry app qemu -t nixos --case boot --arch x86_64
+proxychains4 cargo xtask starry app qemu -t nixos --cap nix --case boot
+proxychains4 cargo xtask starry app qemu -t nixos --cap nix --case boot --arch x86_64
 ```
 
 `proxychains4` 只解决宿主机下载路径；不会改变 guest 的 QEMU、TCG、串口或关机语义。不要把 `proxychains4` 注入 guest 的 `qemu-x86_64` 用户态预构建命令：该命令运行在 Starry 测试 rootfs 的动态链接环境中，代理库可能因 glibc 符号不兼容而导致预构建失败。

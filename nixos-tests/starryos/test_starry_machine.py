@@ -161,6 +161,8 @@ class StarryMachineTests(unittest.TestCase):
                 qemu_exited=False,
             )
         self.assertIn("STARRY_NIXOS_PHASE_FAILED=timeout", str(timeout.exception))
+        self.assertIn("early boot noise", str(timeout.exception))
+        self.assertIn("last serial evidence:\nearly boot noise", str(timeout.exception))
 
         with self.assertRaises(STARRY_MACHINE.StarryNixosTestError) as startup:
             STARRY_MACHINE.evaluate_boot_console(
@@ -191,6 +193,24 @@ class StarryMachineTests(unittest.TestCase):
             BOOT_CONSOLE,
             terminal_seen=True,
             qemu_exited=False,
+        )
+
+    def test_boot_timeout_retains_only_the_last_serial_lines(self) -> None:
+        console = "\n".join(f"boot line {index}" for index in range(45))
+        with self.assertRaises(STARRY_MACHINE.StarryNixosTestError) as timeout:
+            STARRY_MACHINE.evaluate_boot_console(
+                console,
+                terminal_seen=False,
+                qemu_exited=False,
+            )
+        self.assertEqual(
+            str(timeout.exception).splitlines(),
+            [
+                "STARRY_NIXOS_PHASE_FAILED=timeout",
+                "StarryNixOS boot produced no terminal evidence within 300 seconds",
+                "last serial evidence:",
+                *[f"boot line {index}" for index in range(5, 45)],
+            ],
         )
 
     def test_unsupported_succeed_does_not_connect(self) -> None:

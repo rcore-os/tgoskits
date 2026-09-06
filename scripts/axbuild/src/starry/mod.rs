@@ -197,34 +197,11 @@ impl Starry {
             anyhow::bail!("NixOS case options require `-t nixos`");
         }
         if args.test_case.as_deref() == Some("nixos") {
-            let cases = test::supported_cases(self.app.workspace_root())?;
-            if args.list_nixos_cases {
-                for case in &cases {
-                    println!("{}\tarch={}\ttarget={}", case.name, case.arch, case.target);
-                }
-                return Ok(());
-            }
-            let selected = if args.all_nixos_cases {
-                cases.into_iter().map(|case| case.name).collect()
-            } else {
-                vec![
-                    args.nixos_case
-                        .clone()
-                        .unwrap_or_else(|| "boot".to_string()),
-                ]
-            };
-            for case_name in selected {
-                test::run_nixos(
-                    self,
-                    test::ArgsTestNixos {
-                        arch: Some("x86_64".to_string()),
-                        test_case: Some(case_name),
-                        list: false,
-                    },
-                )
-                .await?;
-            }
-            return Ok(());
+            let workspace = self.app.workspace_root().to_path_buf();
+            return app::run_nixos_app(&workspace, &args, async |request| {
+                test::run_nixos(self, request).await
+            })
+            .await;
         }
         let apps = app::selected_apps(self.app.workspace_root(), &args, app::StarryAppKind::Qemu)?;
         let app_count = apps.len();
