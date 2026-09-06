@@ -102,6 +102,16 @@ Router 目前始终保留 smoltcp 的软件 TCP/UDP 发送计算。smoltcp 0.13.
 smoltcp checksum capability。驱动支持 IPv6 checksum 不代表物理 Ethernet IPv6
 协议已完整接入。
 
+广播与 IPv6 组播 fanout 在首次发送时记录非 loopback 出口。某个出口返回 `Again`
+时，原包继续留在 Router TX 队首；后续只重试尚未接受该包的出口，已经成功或返回
+永久错误的出口不重复发送。一次重试没有任何进展时等待队列事件，不立即空转。
+所有出口处理完成后才出队，再为下一包重新记录出口；额外状态只保存设备索引。
+
+Ethernet 发送将 IPv4 组播地址的低 23 位映射到 `01:00:5e`，将 IPv6 组播地址的低
+32 位映射到 `33:33`，分别遵循 [RFC 1112 §6.4](https://www.rfc-editor.org/rfc/rfc1112#section-6.4)
+和 [RFC 2464 §7](https://www.rfc-editor.org/rfc/rfc2464#section-7)。这两类发送直接使用
+映射后的目的 MAC，不经过 ARP；有限广播和子网广播继续使用 `ff:ff:ff:ff:ff:ff`。
+
 非一致 DMA 平台的 CPU/device sync 在 `DmaBuffer` 的 read/write 与 driver submit/reclaim
 边界完成。跨 CPU 只 move token，不共享可变 payload reference。
 

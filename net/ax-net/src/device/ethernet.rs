@@ -694,8 +694,23 @@ impl Device for EthernetDevice {
     ) -> NetDeviceResult<usize> {
         let is_subnet_broadcast =
             self.ip.and_then(|ip| ip.broadcast()).map(IpAddress::Ipv4) == Some(next_hop);
-        if next_hop.is_broadcast() || next_hop.is_multicast() || is_subnet_broadcast {
+        if next_hop.is_broadcast() || is_subnet_broadcast {
             return self.transmit_ip_to(EthernetAddress::BROADCAST, packet);
+        }
+        if next_hop.is_multicast() {
+            let hardware_address = match next_hop {
+                IpAddress::Ipv4(address) => {
+                    // RFC 1112 section 6.4: retain only the low 23 address bits.
+                    let octets = address.octets();
+                    EthernetAddress([0x01, 0x00, 0x5e, octets[1] & 0x7f, octets[2], octets[3]])
+                }
+                IpAddress::Ipv6(address) => {
+                    // RFC 2464 section 7: 33:33 followed by the low 32 bits.
+                    let octets = address.octets();
+                    EthernetAddress([0x33, 0x33, octets[12], octets[13], octets[14], octets[15]])
+                }
+            };
+            return self.transmit_ip_to(hardware_address, packet);
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
@@ -1202,6 +1217,70 @@ mod ethernet_counter_tests {
         assert_eq!(queued, packet);
         assert_eq!(device.drain_deferred_tx_errors(), 0);
         assert_eq!(device.drain_deferred_tx_drops(), 0);
+    }
+
+    #[test]
+    fn multicast_egress_uses_the_ip_version_specific_destination_mac() {
+        use smoltcp::wire::Ipv6Address;
+
+        let destinations = [
+            (
+                IpAddress::Ipv4(Ipv4Address::new(224, 0, 0, 1)),
+                [1, 0, 0x5e, 0, 0, 1],
+            ),
+            (
+                IpAddress::Ipv4(Ipv4Address::new(239, 255, 18, 52)),
+                [1, 0, 0x5e, 0x7f, 18, 52],
+            ),
+            (
+                IpAddress::Ipv6(Ipv6Address::new(0xff02, 0, 0, 0, 0, 1, 0xff12, 0x3456)),
+                [0x33, 0x33, 0xff, 0x12, 0x34, 0x56],
+            ),
+            (IpAddress::Ipv4(Ipv4Address::BROADCAST), [0xff; 6]),
+            (IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 255)), [0xff; 6]),
+        ];
+        for (destination, expected_mac) in destinations {
+            let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
+            let packet = match destination {
+                IpAddress::Ipv4(address) => {
+                    let mut packet = raw_tcp_packet();
+                    packet[16..20].copy_from_slice(&address.octets());
+                    packet
+                }
+                IpAddress::Ipv6(address) => {
+                    let mut packet = vec![0u8; 40];
+                    packet[0] = 0x60;
+                    packet[24..40].copy_from_slice(&address.octets());
+                    packet
+                }
+            };
+            *probe.failure.lock_irqsave() = Some(NetDeviceError::Again);
+            assert_eq!(
+                device.try_send(destination, &packet, Instant::ZERO),
+                Err(NetDeviceError::Again)
+            );
+            assert!(probe.requests.lock_irqsave().is_empty());
+            assert!(device.pending_packets.is_empty());
+            assert!(device.pending_neighbors.is_empty());
+            assert!(
+                device
+                    .try_send(destination, &packet, Instant::ZERO)
+                    .unwrap()
+                    > 0
+            );
+            let requests = probe.requests.lock_irqsave();
+            assert_eq!(requests.len(), 1);
+            let frame = EthernetFrame::new_checked(&requests[0].0).unwrap();
+            assert_eq!(
+                frame.dst_addr(),
+                EthernetAddress(expected_mac),
+                "destination {destination}"
+            );
+            assert_eq!(&frame.payload()[..packet.len()], packet);
+            assert_eq!(requests[0].1.checksum, None);
+            assert_eq!(device.drain_deferred_tx_errors(), 0);
+            assert_eq!(device.drain_deferred_tx_drops(), 0);
+        }
     }
 
     #[test]
