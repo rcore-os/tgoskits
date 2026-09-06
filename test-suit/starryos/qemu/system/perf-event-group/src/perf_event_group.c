@@ -16,6 +16,7 @@
 #define PERF_TYPE_RAW 4u
 #define PERF_COUNT_SW_CPU_CLOCK 0u
 #define PERF_COUNT_SW_TASK_CLOCK 1u
+#define PERF_SAMPLE_IP (1ull << 0)
 #define PERF_FORMAT_TOTAL_TIME_ENABLED (1ull << 0)
 #define PERF_FORMAT_TOTAL_TIME_RUNNING (1ull << 1)
 #define PERF_FORMAT_ID (1ull << 2)
@@ -57,6 +58,18 @@ static int open_system_raw(uint64_t read_format, uint64_t flags, int group_fd) {
         .config = 0x11,
         .read_format = read_format,
         .flags = flags,
+    };
+    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, -1, 0, group_fd, 0ul);
+}
+
+static int open_system_raw_sampling(int group_fd) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_RAW,
+        .size = sizeof(attr),
+        .config = 0x11,
+        .sample_period = 100000,
+        .sample_type = PERF_SAMPLE_IP,
+        .flags = PERF_ATTR_DISABLED,
     };
     return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, -1, 0, group_fd, 0ul);
 }
@@ -209,6 +222,52 @@ int main(void) {
     }
     close(member);
 
+    /* Direct system-wide sampling currently has no group-aware backend. It
+     * must reject every mixed or sampling-only group instead of publishing a
+     * file-level group whose PMU events still run independently. */
+    leader = open_system_raw_sampling(-1);
+    errno = 0;
+    member = open_system_raw_sampling(leader);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: system sampling group errno=%d\n",
+               errno);
+        if (member >= 0) {
+            close(member);
+        }
+        if (leader >= 0) {
+            close(leader);
+        }
+        return 1;
+    }
+    errno = 0;
+    member = open_system_raw(0, PERF_ATTR_DISABLED, leader);
+    if (member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: sampling leader mixed group errno=%d\n",
+               errno);
+        if (member >= 0) {
+            close(member);
+        }
+        close(leader);
+        return 1;
+    }
+    close(leader);
+
+    leader = open_system_raw(0, PERF_ATTR_DISABLED, -1);
+    errno = 0;
+    member = open_system_raw_sampling(leader);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: sampling member mixed group errno=%d\n",
+               errno);
+        if (member >= 0) {
+            close(member);
+        }
+        if (leader >= 0) {
+            close(leader);
+        }
+        return 1;
+    }
+    close(leader);
+
     /* CPU-context pinned events outrank flexible CPU/task contexts. Filling all
      * six A53 programmable slots with flexible events must not make a later
      * pinned event fail: the scheduler first evicts flexible work, then places
@@ -247,12 +306,11 @@ int main(void) {
     close(pinned_one);
 
     /* Task-pinned has second priority, ahead of both CPU/task flexible work.
-     * Establish the disabled task event in the current CPU context, then
-     * enable it while all programmable slots are occupied by CPU-flexible
-     * events. Linux reschedules immediately and gives pinned the slot. */
+     * The target is the calling task and is already running: Linux installs
+     * that task context at open, so enable must immediately reschedule the PMU
+     * without requiring an unrelated context switch. */
     int task_pinned = open_task_raw(PERF_ATTR_DISABLED | PERF_ATTR_PINNED);
-    if (task_pinned < 0 || sched_yield() != 0 ||
-        ioctl(task_pinned, PERF_IOC_ENABLE, 0) != 0) {
+    if (task_pinned < 0 || ioctl(task_pinned, PERF_IOC_ENABLE, 0) != 0) {
         printf("perf-event-group FAILED: task pinned setup errno=%d\n", errno);
         return 1;
     }
