@@ -1,0 +1,33 @@
+[package]
+name = "netmon"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+netmon-common = { path = "../netmon-common", features = ["user"] }
+
+anyhow = { workspace = true, default-features = true }
+aya = { workspace = true }
+aya-log = { workspace = true }
+env_logger = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "signal",
+    "time",
+] }
+
+[build-dependencies]
+anyhow = { workspace = true }
+aya-build = { workspace = true }
+cargo_metadata = { workspace = true }
+netmon-ebpf = { path = "../netmon-ebpf" }
+
+[[bin]]
+name = "netmon"
+path = "src/main.rs"

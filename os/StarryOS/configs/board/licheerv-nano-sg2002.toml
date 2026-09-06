@@ -1,8 +1,9 @@
 features = [
   "starry-kernel/sg2002",
+  "ax-driver/aic8800-wifi",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
   "ax-driver/cv181x-sdhci",
 ]
-log = "Info"
+log = "Error"
 target = "riscv64gc-unknown-none-elf"

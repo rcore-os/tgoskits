@@ -469,6 +469,44 @@ fn render_proc_net_dev_from_stats(stats: &[ax_net::NetDevStats]) -> String {
     buf
 }
 
+fn render_proc_net_queue() -> String {
+    let stats = ax_net::net_queue_stats();
+    render_proc_net_queue_from_stats(&stats)
+}
+
+fn render_proc_net_queue_from_stats(stats: &[ax_net::NetQueueStats]) -> String {
+    // Starry-specific view over the queue-runtime per-group counters backing
+    // the fixed-CPU IRQ/poll executors. One `field=value` line per poll group
+    // so shell and awk consumers can parse it without a fixed-width format.
+    let mut buf = String::new();
+    for (index, st) in stats.iter().enumerate() {
+        let last_irq_cpu = st
+            .last_irq_cpu
+            .map_or_else(|| "-".to_string(), |cpu| cpu.to_string());
+        let last_poll_cpu = st
+            .last_poll_cpu
+            .map_or_else(|| "-".to_string(), |cpu| cpu.to_string());
+        writeln!(
+            buf,
+            "g{index}: irq={} schedule={} missed={} poll_batches={} budget_exhaustion={} \
+             spurious={} probe_deferred={} rearm_race={} owner_cpu={} last_irq_cpu={last_irq_cpu} \
+             last_poll_cpu={last_poll_cpu} irq_to_poll_remote_wake={}",
+            st.irq,
+            st.schedule,
+            st.missed,
+            st.poll_batches,
+            st.budget_exhaustion,
+            st.spurious,
+            st.probe_deferred,
+            st.rearm_race,
+            st.owner_cpu,
+            st.irq_to_poll_remote_wake,
+        )
+        .expect("write to String cannot fail");
+    }
+    buf
+}
+
 fn render_proc_net_snmp() -> String {
     // Smoltcp 0.13.1 does not expose per-protocol cumulative counters
     // (retransmits, out-of-order, etc.) through its public socket API.
@@ -2283,6 +2321,10 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
             SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_dev())),
         );
         net.add(
+            "queue",
+            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_queue())),
+        );
+        net.add(
             "snmp",
             SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_snmp())),
         );
@@ -2415,6 +2457,7 @@ fn formatting_contracts_hold_for_test() -> bool {
             == "0,2-4,7,9-11"
         && proc_net_snmp_field_counts_match()
         && proc_net_dev_header_matches_linux_layout()
+        && proc_net_queue_format_matches_contract()
         && task_status_fields_match_linux_layout()
         && usb_label_helpers_match_busybox_lsusb_layout()
         && usb_bcd_format_matches_linux_layout()
@@ -2573,6 +2616,34 @@ fn proc_net_dev_header_matches_linux_layout() -> bool {
 }
 
 #[cfg(all(test, not(axtest)))]
+fn proc_net_queue_format_matches_contract() -> bool {
+    let stats = [ax_net::NetQueueStats {
+        irq: 1,
+        schedule: 2,
+        missed: 3,
+        poll_batches: 4,
+        budget_exhaustion: 5,
+        spurious: 6,
+        probe_deferred: 7,
+        rearm_race: 8,
+        owner_cpu: 9,
+        last_irq_cpu: None,
+        last_poll_cpu: Some(9),
+        irq_to_poll_remote_wake: 10,
+    }];
+    let text = render_proc_net_queue_from_stats(&stats);
+    let mut lines = text.lines();
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    first.starts_with("g0: irq=1 schedule=2 missed=3")
+        && first.contains("rearm_race=8 owner_cpu=9")
+        && first.contains("last_irq_cpu=- last_poll_cpu=9")
+        && first.contains("irq_to_poll_remote_wake=10")
+        && lines.next().is_none()
+}
+
+#[cfg(all(test, not(axtest)))]
 fn task_status_fields_match_linux_layout() -> bool {
     let cpu_presence = collect_cpu_presence([1usize, 3], 4);
     let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
@@ -2657,7 +2728,7 @@ mod tests {
         boot_id_is_omitted_without_trusted_entropy_for_test, formatting_contracts_hold_for_test,
         format_cpu_presence_list, proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout_for_test,
         render_proc_bus_usb_devices_from_snapshots, render_proc_net_dev_from_stats,
-        render_proc_net_snmp, render_task_status_fields,
+        render_proc_net_queue_from_stats, render_proc_net_snmp, render_task_status_fields,
     };
     #[cfg(all(test, not(axtest)))]
     use crate::{

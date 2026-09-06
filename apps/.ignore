@@ -25,6 +25,7 @@ apps/starry/ebpf/rawtp
 apps/starry/ebpf/upb
 apps/starry/ebpf/upb2
 apps/starry/mysql
+apps/starry/net-bench
 apps/starry/picoclaw-cli
 apps/starry/hdl-lang
 apps/starry/java-jse

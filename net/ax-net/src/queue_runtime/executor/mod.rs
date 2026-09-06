@@ -105,6 +105,9 @@ impl EthernetFramePort for QueueFramePort {
         *self.mac.lock_irqsave()
     }
 
+    // Kept out-of-line so eBPF kprobe observers (apps/starry/ebpf/netmon) can
+    // attach at a stable symbol; the call boundary cost is negligible here.
+    #[inline(never)]
     fn transmit(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
         if self.groups.is_empty() {
             return Err(NetDeviceError::Stopped);
@@ -127,6 +130,9 @@ impl EthernetFramePort for QueueFramePort {
         }
     }
 
+    // Kept out-of-line so eBPF kprobe observers (apps/starry/ebpf/netmon) can
+    // attach at a stable symbol; the call boundary cost is negligible here.
+    #[inline(never)]
     fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame> {
         if self.groups.is_empty() {
             return Err(NetDeviceError::Stopped);
@@ -307,6 +313,9 @@ impl QueueGroupExecutor {
         Ok(())
     }
 
+    // Kept out-of-line so eBPF kprobe observers (apps/starry/ebpf/netmon) can
+    // attach at a stable symbol; the call boundary cost is negligible here.
+    #[inline(never)]
     fn poll(&mut self, cpu_budget: usize) -> GroupPollOutcome {
         if self.shared.is_disabled() {
             return GroupPollOutcome::Failed;

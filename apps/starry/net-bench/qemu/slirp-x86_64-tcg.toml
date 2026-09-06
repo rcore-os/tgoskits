@@ -1,0 +1,23 @@
+# QEMU 配置: slirp-x86_64-tcg
+# SLIRP (usermode network) + TCG 模拟
+# 适用于: x86_64 无 KVM，仅功能冒烟测试
+
+args = [
+    "-nographic",
+    "-m", "512M",
+    "-accel", "tcg",
+    "-cpu", "max",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+    "-snapshot",
+]
+
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/net-bench.sh"
+success_regex = ["(?m)^NET_BENCH_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NET_BENCH_FAILED:"]
+timeout = 300

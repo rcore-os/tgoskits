@@ -707,6 +707,17 @@ pub fn net_dev_stats() -> Vec<NetDevStats> {
     get_service().net_dev_stats()
 }
 
+/// Returns queue-runtime statistics for every IRQ poll group (`/proc/net/queue`).
+///
+/// Returns an empty slice when the network stack runs without the queue
+/// runtime (e.g. unit-test setups), matching the optional `init_network`
+/// queue-runtime argument.
+pub fn net_queue_stats() -> Vec<NetQueueStats> {
+    QUEUE_RUNTIME
+        .get()
+        .map_or_else(Vec::new, |runtime| runtime.lock().stats())
+}
+
 /// Returns a snapshot of all configured network interfaces.
 pub fn interfaces() -> Vec<InterfaceInfo> {
     get_control().interfaces()

@@ -1,0 +1,23 @@
+# QEMU 配置: tap-smp4-x86_64-kvm
+# TAP (无 vhost) + KVM 加速, smp=4（多核扩展兜底；vhost 不可用时使用）
+
+args = [
+    "-nographic",
+    "-m", "2G",
+    "-smp", "4",
+    "-accel", "kvm",
+    "-cpu", "host",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57",
+    "-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no",
+    "-snapshot",
+]
+
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/net-bench-tap.sh"
+success_regex = ["(?m)^NET_BENCH_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NET_BENCH_FAILED:"]
+timeout = 300

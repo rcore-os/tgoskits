@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# bin/bench - net-bench 智能入口（实验性，非默认严肃测试入口）
+#
+# 重要：严肃性能测试请使用"入口 + 参数明确"的 run.sh：
+#     bash apps/starry/net-bench/run.sh --scenario vhost --arch x86_64
+#
+# 本脚本是开发期便捷壳：自动检测环境（WSL/裸 Linux/架构/KVM/vhost），
+# 推断一组合理参数，再委托给 run.sh 执行实际测试。自动检测能力刻意保持
+# 实验性、不作为默认入口——它便于本机快速验证，但不保证可复现的严肃结论。
+#
+# 用法:
+#   bench [scenario] [options]
+#
+#   scenario:
+#     vhost       TAP+vhost-net (默认，主力测试)
+#     vhost-smp4  TAP+vhost-net SMP4
+#     tap         TAP (无 vhost)
+#     slirp       SLIRP (仅功能冒烟)
+#
+#   options:
+#     --repeat N          重复测试 N 次
+#     --arch ARCH         指定架构 (x86_64/aarch64)
+#     --no-cleanup        测试后不自动清理
+#     --setup-only        仅配置环境，不运行测试
+#     --skip-setup        跳过环境配置，直接测试
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BENCH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=core/lib.sh
+. "$BENCH_ROOT/core/lib.sh"
+ENV_DIR="$NB_ENV_DIR"
+
+SCENARIO="vhost"
+REPEAT=1
+ARCH=""
+AUTO_CLEANUP=true
+SETUP_ONLY=false
+SKIP_SETUP=false
+
+# 解析选项
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repeat) REPEAT="$2"; shift 2 ;;
+        --arch) ARCH="$2"; shift 2 ;;
+        --no-cleanup) AUTO_CLEANUP=false; shift ;;
+        --setup-only) SETUP_ONLY=true; shift ;;
+        --skip-setup) SKIP_SETUP=true; shift ;;
+        -h|--help)
+            cat <<EOF
+用法: bench [scenario] [options]   （实验性智能入口；严肃测试请用 run.sh）
+
+场景:
+  vhost       TAP+vhost-net (默认，主力测试)
+  vhost-smp4  TAP+vhost-net SMP4
+  tap         TAP (无 vhost)
+  slirp       SLIRP (仅功能冒烟)
+
+选项:
+  --repeat N          重复测试 N 次 (默认: 1)
+  --arch ARCH         指定架构 x86_64/aarch64 (默认: 自动检测)
+  --no-cleanup        测试后不自动清理
+  --setup-only        仅配置环境，不运行测试
+  --skip-setup        跳过环境配置，直接测试
+
+严肃测试（参数明确，推荐）:
+  bash apps/starry/net-bench/run.sh --scenario vhost --arch x86_64
+EOF
+            exit 0
+            ;;
+        vhost|vhost-smp4|tap|tap-smp4|slirp) SCENARIO="$1"; shift ;;
+        *)
+            nb_error "未知选项: $1"
+            nb_error "有效场景: vhost, vhost-smp4, tap, tap-smp4, slirp"
+            nb_error "使用 --help 查看帮助"
+            exit 1
+            ;;
+    esac
+done
+
+[[ "$REPEAT" =~ ^[1-9][0-9]*$ ]] || nb_die "--repeat 需要正整数"
+
+# 清理函数（退出时调用）
+cleanup() {
+    local exit_code=$?
+    if [[ "$AUTO_CLEANUP" == "true" ]]; then
+        nb_section "自动清理环境"
+        sudo bash "$ENV_DIR/teardown.sh" || nb_warn "清理失败"
+    else
+        nb_info "跳过自动清理（--no-cleanup）；手动清理: sudo bash $BENCH_ROOT/bin/teardown"
+    fi
+    exit $exit_code
+}
+
+# 检测环境，推断 ARCH / ACCEL / 场景降级
+ACCEL=""
+detect_environment() {
+    nb_section "检测运行环境（实验性自动检测）"
+    nb_require_cmd jq "sudo apt-get install -y jq"
+    bash "$ENV_DIR/detect-env.sh" human || true
+
+    local env_json
+    env_json=$(bash "$ENV_DIR/detect-env.sh" json)
+    local recommended_arch kvm_available vhost_available host_arch
+    recommended_arch=$(echo "$env_json" | jq -r '.recommended_arch')
+    kvm_available=$(echo "$env_json" | jq -r '.kvm_available')
+    vhost_available=$(echo "$env_json" | jq -r '.vhost_available')
+    host_arch=$(echo "$env_json" | jq -r '.host_arch')
+
+    if [[ -z "$ARCH" ]]; then
+        ARCH="$recommended_arch"
+        nb_info "使用推荐架构: $ARCH"
+    else
+        nb_info "使用指定架构: $ARCH"
+    fi
+    nb_validate_arch "$ARCH" || exit 1
+
+    ACCEL="$(nb_default_accel "$ARCH")"
+    [[ "$ACCEL" == "tcg" ]] && nb_warn "将使用 TCG 模拟（性能数据仅供功能验证）"
+
+    if [[ "$vhost_available" == "false" ]] && [[ "$SCENARIO" =~ ^vhost ]]; then
+        nb_warn "vhost-net 不可用，降级到 TAP 模式"
+        case "$SCENARIO" in
+            vhost) SCENARIO="tap" ;;
+            vhost-smp4) SCENARIO="tap-smp4" ;;
+        esac
+    fi
+}
+
+setup_environment() {
+    nb_section "配置测试环境"
+    nb_info "运行通用网络配置..."
+    sudo bash "$ENV_DIR/setup-common.sh" || nb_die "环境配置失败"
+    nb_info "环境配置完成"
+}
+
+main() {
+    nb_info "=== Starry net-bench 智能入口（实验性）==="
+    nb_info "严肃测试请用: bash $BENCH_ROOT/run.sh --scenario $SCENARIO --arch <arch>"
+
+    detect_environment
+
+    if [[ "$SCENARIO" == "slirp" ]]; then
+        nb_info "slirp 模式不需要网络配置"
+    elif [[ "$SKIP_SETUP" == "true" ]]; then
+        nb_info "跳过环境配置（--skip-setup）"
+    else
+        setup_environment
+    fi
+
+    if [[ "$SETUP_ONLY" == "true" ]]; then
+        nb_info "环境配置完成（--setup-only）"
+        nb_info "运行测试: bash $BENCH_ROOT/run.sh --scenario $SCENARIO --arch $ARCH --accel $ACCEL"
+        exit 0
+    fi
+
+    if [[ "$AUTO_CLEANUP" == "true" ]]; then
+        trap cleanup EXIT INT TERM
+    fi
+
+    # 委托给唯一严肃入口 run.sh 执行实际测试（单一事实来源）。
+    # 网络配置已由本脚本完成，故 run.sh 自身的前置检查只做校验。
+    nb_section "委托 run.sh 执行测试"
+    bash "$BENCH_ROOT/run.sh" --scenario "$SCENARIO" --arch "$ARCH" --accel "$ACCEL" --repeat "$REPEAT"
+
+    nb_info "=== 测试流程完成 ==="
+}
+
+main

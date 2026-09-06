@@ -1,12 +1,12 @@
 /dts-v1/;
 
 / {
-    description = "StarryOS for LicheeRV Nano SG2002";
+    description = "StarryOS Wi-Fi for LicheeRV Nano SG2002";
     #address-cells = <1>;
 
     images {
         kernel {
-            description = "StarryOS kernel";
+            description = "StarryOS Wi-Fi kernel";
             data = /incbin/("${kernel_bin}");
             type = "kernel";
             arch = "riscv";
@@ -25,7 +25,7 @@
         default = "config";
 
         config {
-            description = "StarryOS SG2002";
+            description = "StarryOS SG2002 Wi-Fi";
             kernel = "kernel";
         };
     };

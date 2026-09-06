@@ -1,0 +1,24 @@
+# QEMU 配置: vhost-aarch64-kvm
+# TAP + vhost-net + KVM 加速
+# 适用于: aarch64 host + KVM 支持
+
+args = [
+    "-nographic",
+    "-m", "1G",
+    "-accel", "kvm",
+    "-cpu", "host",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",
+    "-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no,vhost=on",
+    "-snapshot",
+    "-machine", "virt",
+]
+
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/net-bench-tap.sh"
+success_regex = ["(?m)^NET_BENCH_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NET_BENCH_FAILED:"]
+timeout = 300
