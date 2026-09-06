@@ -271,36 +271,13 @@ fn inactive_ptrace_syscall_gate_is_lock_free_for_test() -> bool {
 
 #[cfg(axtest)]
 fn inactive_ptrace_pending_event_gate_is_nonblocking_for_test() -> bool {
-    use alloc::string::String;
-
-    let state = Arc::new(ProcessPtraceState::new());
-    let started = Arc::new(AtomicBool::new(false));
-    let completed = Arc::new(AtomicBool::new(false));
-    let worker_state = Arc::clone(&state);
-    let worker_started = Arc::clone(&started);
-    let worker_completed = Arc::clone(&completed);
-    let pending_events = state.pending_events.events.lock();
-    let worker = super::try_spawn_kernel_thread(
-        move || {
-            worker_started.store(true, Ordering::Release);
-            let tid = TidNumber::try_from(1).unwrap();
-            worker_completed.store(!worker_state.has_pending_event_for(tid), Ordering::Release);
-        },
-        String::from("ptrace-inactive-fast-path"),
-    )
-    .expect("failed to spawn ptrace fast-path test worker");
-
-    while !started.load(Ordering::Acquire) {
-        super::yield_now();
-    }
-    for _ in 0..4 {
-        super::yield_now();
-    }
-    let completed_while_pending_events_locked = completed.load(Ordering::Acquire);
-
-    drop(pending_events);
-    super::join_kernel_thread(worker);
-    completed_while_pending_events_locked
+    let state = ProcessPtraceState::new();
+    let tid = TidNumber::try_from(1).unwrap();
+    // Both inactive queries must complete while this task owns the real map
+    // lock. A regression takes the same nonrecursive PiMutex again instead of
+    // relying on another CPU to run within an arbitrary number of yields.
+    let _pending_events = state.pending_events.events.lock();
+    !state.has_pending_event_for(tid) && state.pending_events.is_empty()
 }
 
 #[cfg(target_arch = "riscv64")]
