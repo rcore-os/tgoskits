@@ -637,6 +637,7 @@ pub(crate) fn send_signal_to_task(
     if let Some(sig) = sig {
         let signo = sig.signo();
         info!("Send signal {signo:?} to thread {}", thread.tid());
+        continue_process_for_signal(&thread.proc_data, signo);
         // Only wake the target thread when the signal is deliverable
         // (not blocked/not ignored).  Sending a blocked signal via
         // tkill/tgkill must NOT interrupt the target per POSIX; the signal
@@ -678,23 +679,8 @@ pub(crate) fn send_signal_to_process_data(
     proc_data: &Arc<ProcessData>,
     sig: Option<SignalInfo>,
 ) -> StarryResult<()> {
-    // Job-control side effects must run at send time: a stopped process is
-    // parked in the kernel and cannot dequeue SIGCONT itself.
     if let Some(sig) = &sig {
-        match sig.signo() {
-            // POSIX: SIGCONT resumes a stopped process and reports CLD_CONTINUED.
-            // `set_job_continued` (evaluated in the guard) always advances the
-            // process's continue generation as a side effect — so a stop signal
-            // already dequeued but not yet parked (e.g. killall5's
-            // kill(-1,SIGSTOP) immediately followed by kill(-1,SIGCONT)) observes
-            // the continue and skips parking, closing the STOP-then-CONT race
-            // without scrubbing the pending queue — and returns whether the
-            // process had actually been stopped; only then do we notify the parent.
-            Signo::SIGCONT if proc_data.set_job_continued() => {
-                notify_parent_job_change(proc_data, CLD_CONTINUED as i32, Signo::SIGCONT as i32);
-            }
-            _ => {}
-        }
+        continue_process_for_signal(proc_data, sig.signo());
     }
 
     if let Some(sig) = sig {
@@ -722,6 +708,18 @@ pub(crate) fn send_signal_to_process_data(
     }
 
     Ok(())
+}
+
+fn continue_process_for_signal(proc_data: &ProcessData, signo: Signo) {
+    // Both process- and thread-directed SIGCONT resume the whole process at
+    // send time, even if the target blocks or ignores user delivery. A stopped
+    // thread cannot dequeue its own continue signal.
+    //
+    // Advance the continue generation even if no thread has parked yet: an
+    // already dequeued stop must observe this publication before parking.
+    if signo == Signo::SIGCONT && proc_data.set_job_continued() {
+        notify_parent_job_change(proc_data, CLD_CONTINUED as i32, signo as i32);
+    }
 }
 
 fn publish_process_signal(

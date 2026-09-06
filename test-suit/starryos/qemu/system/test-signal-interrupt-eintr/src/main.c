@@ -26,6 +26,8 @@
 
 static volatile sig_atomic_t got_usr1 = 0;
 
+int test_wait_signal_delivery(void);
+
 static void on_usr1(int signo)
 {
     if (signo == SIGUSR1) {
@@ -224,6 +226,9 @@ int main(void)
     close(block_pipe[1]);
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        if (test_wait_signal_delivery() != 0) {
+            return 1;
+        }
         printf("ALL TESTS PASSED\n");
         return 0;
     }
