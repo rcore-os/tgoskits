@@ -48,4 +48,6 @@ features = ["alloc", "lfn", "log_level_trace", "unicode"]
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-sync = { workspace = true, features = ["host-test"] }
-ax-runtime = { workspace = true, features = ["host-test"] }
+# Runtime integration is tested from the workspace. A published version here
+# would form a release-order cycle with ax-runtime's filesystem dependency.
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
