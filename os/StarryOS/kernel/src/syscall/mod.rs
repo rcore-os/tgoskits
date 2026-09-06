@@ -121,7 +121,9 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
             SeccompDecision::Allow => {}
             SeccompDecision::Errno(errno) => {
                 uctx.set_retval(seccomp_errno(errno));
-                return SyscallRestart::Allowed;
+                // The filter supplies the final errno; even EINTR does not
+                // represent a restartable interruption of a blocking syscall.
+                return SyscallRestart::Suppressed;
             }
             SeccompDecision::KillProcess => {
                 do_exit(Signo::SIGSYS as i32, true);
