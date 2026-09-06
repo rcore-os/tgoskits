@@ -37,8 +37,6 @@ fn access_user_memory<R>(task: &UserTaskRef, f: impl FnOnce() -> R) -> VmResult<
         ax_runtime::hal::cpu::asm::irqs_enabled(),
         "faultable user memory access requires IRQs enabled"
     );
-    might_sleep();
-
     let _scope = task.as_thread().enter_user_memory_access();
     Ok(f())
 }
@@ -429,13 +427,12 @@ impl<T> AbiFieldWriter<'_, T> {
         value: &U,
     ) -> crate::StarryResult<()> {
         let value = bytemuck::bytes_of(value);
-        let end = offset
-            .checked_add(value.len())
-            .ok_or(crate::StarryError::BadAddress)?;
-        let field = self
-            .bytes
-            .get_mut(offset..end)
-            .ok_or(crate::StarryError::BadAddress)?;
+        let Some(end) = offset.checked_add(value.len()) else {
+            return Err(crate::StarryError::BadAddress);
+        };
+        let Some(field) = self.bytes.get_mut(offset..end) else {
+            return Err(crate::StarryError::BadAddress);
+        };
         field.copy_from_slice(value);
         Ok(())
     }

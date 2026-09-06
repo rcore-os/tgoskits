@@ -31,6 +31,10 @@ pub use pio::*;
 pub use rockchip_fiq::*;
 
 pub trait Kind: Clone + Send + Sync + 'static {
+    /// Whether LSR.THRE grants a whole empty FIFO. Backends synthesizing THRE
+    /// from a not-full bit must instead recheck readiness after every byte.
+    const TX_READY_IS_FIFO_EMPTY: bool = true;
+
     fn read_reg(&self, reg: u8) -> u8;
     fn write_reg(&self, reg: u8, val: u8);
     fn get_base(&self) -> usize;
@@ -111,6 +115,8 @@ pub struct Ns16550<T: Kind> {
     pub(crate) base: T,
     pub(crate) clock_freq: u32,
     pub(crate) saved_lsr: LineStatusFlags,
+    /// Bytes accepted after THRE, established before the IRQ endpoint is live.
+    pub(crate) tx_load_size: usize,
 }
 
 /// IRQ endpoint for an NS16550-compatible UART.
@@ -396,7 +402,9 @@ impl<T: Kind> SplitUart for Ns16550<T> {
         }
     }
 
-    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
+    fn split(mut self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
+        // Capture firmware FIFO mode before IIR reads belong to the IRQ owner.
+        self.refresh_tx_load_size();
         let irq = Ns16550Irq {
             base: self.base.clone(),
             saved_lsr: LineStatusFlags::empty(),
@@ -445,13 +453,20 @@ impl<T: Kind> Ns16550<T> {
     }
 
     pub fn try_write(&mut self, bytes: &[u8]) -> usize {
+        if bytes.is_empty() || !self.poll_status().tx_ready() {
+            return 0;
+        }
+        // 16550 THRE means FIFO empty, not FIFO not-full. Once observed, the
+        // port owns one complete FIFO burst, as in Linux serial8250_tx_chars.
+        // Rechecking THRE after each byte would serialize output to one byte
+        // per interrupt even with 15 slots still available.
+        let limit = bytes.len().min(self.tx_load_size);
         let mut written = 0;
-        while written < bytes.len() {
-            let status = self.poll_status();
-            if !status.tx_ready() {
+        for &byte in &bytes[..limit] {
+            if !T::TX_READY_IS_FIFO_EMPTY && written != 0 && !self.poll_status().tx_ready() {
                 break;
             }
-            self.write_byte(bytes[written]);
+            self.write_byte(byte);
             written += 1;
         }
         written
@@ -661,16 +676,18 @@ impl<T: Kind> Ns16550<T> {
             // character on high-baudrate DesignWare UARTs.
             fcr.insert(FifoControlFlags::TRIGGER_8_BYTES);
             self.write_flags(UART_FCR, fcr);
-            if self.is_fifo_enabled() {
+            self.refresh_tx_load_size();
+            if self.tx_load_size > 1 {
                 return;
             }
         }
         self.write_flags(UART_FCR, FifoControlFlags::empty());
+        self.tx_load_size = 1;
     }
 
     /// 设置 FIFO 触发级别
     pub fn set_fifo_trigger_level(&mut self, level: u8) {
-        if !self.is_16550_plus() {
+        if self.tx_load_size == 1 {
             return;
         }
 
@@ -681,16 +698,25 @@ impl<T: Kind> Ns16550<T> {
             _ => FifoControlFlags::TRIGGER_14_BYTES,
         };
 
-        // 读取当前 FCR 设置，清除触发级别位，然后设置新的触发级别
-        let mut fcr: FifoControlFlags = self.read_flags(UART_FCR);
-        fcr.remove(FifoControlFlags::TRIGGER_LEVEL_MASK);
-        fcr.insert(trigger_value);
-        self.write_flags(UART_FCR, fcr);
+        // FCR is write-only and aliases IIR. Reading it would acknowledge an
+        // IRQ, then copy the interrupt ID into FIFO enable/reset bits. This
+        // driver uses FIFO mode without DMA; changing the RX trigger keeps
+        // FIFO enabled and does not issue either FIFO reset command.
+        self.write_flags(UART_FCR, FifoControlFlags::ENABLE_FIFO | trigger_value);
     }
 
     /// 初始化 UART
     fn init_core(&mut self) {
         self.base.init();
+        self.refresh_tx_load_size();
+    }
+
+    fn refresh_tx_load_size(&mut self) {
+        self.tx_load_size = if self.is_fifo_enabled() {
+            UART_FIFO_SIZE as usize
+        } else {
+            1
+        };
     }
 
     /// 检查 FIFO 是否启用
@@ -812,9 +838,11 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct MockKind;
+    struct MockKind<const EMPTY: bool = true>;
 
-    impl Kind for MockKind {
+    impl<const EMPTY: bool> Kind for MockKind<EMPTY> {
+        const TX_READY_IS_FIFO_EMPTY: bool = EMPTY;
+
         fn read_reg(&self, reg: u8) -> u8 {
             let dlab = REGS[UART_LCR as usize].load(Ordering::SeqCst)
                 & LineControlFlags::DIVISOR_LATCH_ACCESS.bits()
@@ -891,21 +919,13 @@ mod tests {
                     REGS[UART_IER as usize].load(Ordering::SeqCst),
                     Ordering::SeqCst,
                 );
-                let iir = REGS[UART_IIR as usize].load(Ordering::SeqCst);
-                if iir & InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits() == 0 {
-                    REGS[UART_LSR as usize].fetch_and(
-                        !LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
-                        Ordering::SeqCst,
-                    );
-                } else {
-                    let writes = THR_WRITES.fetch_add(1, Ordering::SeqCst) + 1;
-                    if writes >= UART_FIFO_SIZE as usize {
-                        REGS[UART_LSR as usize].fetch_and(
-                            !LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
-                            Ordering::SeqCst,
-                        );
-                    }
-                }
+                THR_WRITES.fetch_add(1, Ordering::SeqCst);
+                // THRE means empty, not not-full: it clears on the first byte
+                // even though an enabled 16550 FIFO still has 15 free slots.
+                REGS[UART_LSR as usize].fetch_and(
+                    !LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+                    Ordering::SeqCst,
+                );
             }
         }
 
@@ -983,6 +1003,7 @@ mod tests {
                 base: MockKind,
                 clock_freq: 1_843_200,
                 saved_lsr: LineStatusFlags::empty(),
+                tx_load_size: 1,
             },
         )
     }
@@ -1055,13 +1076,71 @@ mod tests {
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
         );
+        uart.enable_fifo(true);
+
+        assert_eq!(uart.try_write(b"abcdefghijklmnopq"), 16);
+        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'p');
+        assert_eq!(THR_WRITES.load(Ordering::SeqCst), 16);
+        assert_eq!(uart.try_write(b"q"), 0);
+    }
+
+    #[test]
+    fn split_adopts_firmware_fifo_before_irq_ownership() {
+        let (_guard, uart) = serial();
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits(),
             Ordering::SeqCst,
         );
+        let mut parts = uart.split();
+        REGS[UART_LSR as usize].store(
+            LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+            Ordering::SeqCst,
+        );
+        assert_eq!(parts.control.write_tx(&[b'x'; 17]), 16);
+        assert_eq!(THR_WRITES.load(Ordering::SeqCst), 16);
+        assert_eq!(parts.control.write_tx(b"x"), 0);
 
-        assert_eq!(uart.try_write(b"abcdefghijklmnopq"), 16);
-        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'p');
+        parts.control.enable_fifo(false);
+        REGS[UART_LSR as usize].store(
+            LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+            Ordering::SeqCst,
+        );
+        assert_eq!(parts.control.write_tx(b"xy"), 1);
+    }
+
+    #[test]
+    fn changing_rx_trigger_preserves_fifo_without_copying_iir_status() {
+        let (_guard, mut uart) = serial();
+        uart.enable_fifo(true);
+        REGS[UART_IIR as usize].store(
+            (InterruptIdentificationFlags::FIFO_ENABLE_MASK
+                | InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY)
+                .bits(),
+            Ordering::SeqCst,
+        );
+        uart.set_fifo_trigger_level(4);
+        assert_eq!(
+            LAST_FCR_WRITE.load(Ordering::SeqCst),
+            (FifoControlFlags::ENABLE_FIFO | FifoControlFlags::TRIGGER_4_BYTES).bits(),
+        );
+    }
+
+    #[test]
+    fn not_full_backend_checks_capacity_after_each_byte() {
+        let (_guard, _) = serial();
+        let mut uart = Ns16550 {
+            base: MockKind::<false>,
+            clock_freq: 1_843_200,
+            saved_lsr: LineStatusFlags::empty(),
+            tx_load_size: UART_FIFO_SIZE as usize,
+        };
+        REGS[UART_LSR as usize].store(
+            LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+            Ordering::SeqCst,
+        );
+        assert_eq!(uart.try_write(b"ab"), 1);
+        assert_eq!(THR_WRITES.load(Ordering::SeqCst), 1);
+        assert_eq!(uart.try_write(b"b"), 0);
     }
 
     #[test]
@@ -1201,7 +1280,9 @@ mod tests {
         let mut parts = started_parts(uart);
 
         REGS[UART_IIR as usize].store(
-            InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+            (InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY
+                | InterruptIdentificationFlags::FIFO_ENABLE_MASK)
+                .bits(),
             Ordering::SeqCst,
         );
         REGS[UART_LSR as usize].store(
@@ -1210,8 +1291,8 @@ mod tests {
         );
         let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
-        assert_eq!(parts.control.write_tx(b"ab"), 1);
-        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
+        assert_eq!(parts.control.write_tx(b"ab"), 2);
+        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'b');
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVED_DATA_AVAILABLE.bits(),
@@ -1448,7 +1529,9 @@ mod tests {
         let mut parts = started_parts(uart);
 
         REGS[UART_IIR as usize].store(
-            InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+            (InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY
+                | InterruptIdentificationFlags::FIFO_ENABLE_MASK)
+                .bits(),
             Ordering::SeqCst,
         );
         REGS[UART_LSR as usize].store(
@@ -1458,8 +1541,8 @@ mod tests {
 
         let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
-        assert_eq!(parts.control.write_tx(b"ab"), 1);
-        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
+        assert_eq!(parts.control.write_tx(b"ab"), 2);
+        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'b');
     }
 
     #[test]

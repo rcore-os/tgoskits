@@ -156,6 +156,7 @@ impl Ns16550<DwApb> {
             base: DwApb::new(base),
             clock_freq,
             saved_lsr: LineStatusFlags::empty(),
+            tx_load_size: 1,
         }
     }
 
@@ -278,6 +279,7 @@ mod tests {
             },
             clock_freq: 24_000_000,
             saved_lsr: LineStatusFlags::empty(),
+            tx_load_size: 1,
         };
 
         let _ = uart.runtime_info();

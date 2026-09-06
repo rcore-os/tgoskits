@@ -32,6 +32,21 @@ fn wait_until(mut condition: impl FnMut() -> bool, message: &'static str) -> cra
 }
 
 pub fn run() -> crate::TestResult {
+    // Exercise the real platform's fixed-point conversion, including Q64 on
+    // GHz counters and saturation on slower counters, before arming timers.
+    let frequency = ax_hal::time::nanos_to_ticks(ax_hal::time::NANOS_PER_SEC);
+    assert_ne!(frequency, 0);
+    for ticks in [0, 1, frequency - 1, frequency, u64::MAX] {
+        let expected = (u128::from(ticks) * u128::from(ax_hal::time::NANOS_PER_SEC)
+            / u128::from(frequency))
+        .min(u128::from(u64::MAX)) as u64;
+        let actual = ax_hal::time::ticks_to_nanos(ticks);
+        assert!(
+            actual.abs_diff(expected) <= 1,
+            "{frequency} Hz, {ticks} ticks"
+        );
+    }
+
     SOFT_CALLBACK_ORDER.store(0, Ordering::Release);
     CANCELLED_CALLBACK_RAN.store(false, Ordering::Release);
     RESTARTABLE_CALLBACKS.store(0, Ordering::Release);

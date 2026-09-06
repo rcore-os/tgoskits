@@ -735,6 +735,8 @@ mod tests {
         task::Waker,
     };
 
+    use axpoll::{PollRegistrar, SharedObserver};
+
     use super::*;
     use crate::unix::BindSlot;
 
@@ -770,9 +772,10 @@ mod tests {
             saw_closed_channel: AtomicBool::new(false),
         });
         let waker = Waker::from(probe.clone());
-        let mut context = Context::from_waker(&waker);
-
-        receiver.register(&mut context, IoEvents::IN);
+        let mut registrar = PollRegistrar::<SharedObserver>::new(&waker);
+        // SAFETY: this task-context observer remains registered until after
+        // peer close; its owned channel probe does not borrow the transport.
+        unsafe { receiver.register_shared(&mut registrar, IoEvents::IN) };
         drop(closing);
 
         assert!(probe.saw_closed_channel.load(Ordering::Acquire));
@@ -800,7 +803,10 @@ mod tests {
                 saw_closed_channel: AtomicBool::new(false),
             });
             let waker = Waker::from(probe.clone());
-            receiver.register(&mut Context::from_waker(&waker), interest);
+            let mut registrar = PollRegistrar::<SharedObserver>::new(&waker);
+            // SAFETY: the local registrar owns cancellation and is dropped
+            // before the receiver; notification only inspects the channel.
+            unsafe { receiver.register_shared(&mut registrar, interest) };
             drop(closing);
 
             assert!(

@@ -8,7 +8,8 @@ keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
 
 [profile.release]
-lto = false
+# Optimize the scheduler/runtime boundary across crate and codegen-unit edges.
+lto = "fat"
 
 [workspace]
 resolver = "3"

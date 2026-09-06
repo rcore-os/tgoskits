@@ -584,7 +584,16 @@ impl SocketOps for TcpSocket {
         request_poll();
         let accepted = {
             let mut sockets = SOCKET_SET.inner.lock();
-            LISTEN_TABLE.accept(bound_endpoint, &mut sockets)?
+            let accepted = LISTEN_TABLE.accept(bound_endpoint, &mut sockets)?;
+            if matches!(LISTEN_TABLE.can_accept(bound_endpoint, &sockets), Ok(false)) {
+                // Preserve the empty interval for EPOLLET even when another
+                // connection arrives before the next poll. Holding SOCKET_SET
+                // prevents protocol progress between draining and publication.
+                // A concurrent unlisten must not turn an already accepted
+                // child's ownership into an error after it left the queue.
+                self.readiness_version.publish();
+            }
+            accepted
         };
         Ok({
             let socket = TcpSocket::new_connected(

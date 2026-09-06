@@ -50,7 +50,13 @@ impl ClockScale {
 
     #[inline(always)]
     fn ticks_to_nanos(self, ticks: u64) -> u64 {
-        let nanos = (u128::from(ticks) * u128::from(self.multiplier)) >> self.shift;
+        let product = u128::from(ticks) * u128::from(self.multiplier);
+        if self.shift == u64::BITS {
+            // GHz counters use Q64. The upper product limb already fits u64;
+            // a constant shift lets the backend use multiply-high directly.
+            return (product >> u64::BITS) as u64;
+        }
+        let nanos = product >> self.shift;
         nanos.min(u64::MAX as u128) as u64
     }
 }

@@ -27,9 +27,17 @@ futex 场景只把 `FUTEX_WAIT` 确实返回“已被唤醒”的样本计入分
 - timer missed deadlines；
 - 固定纳秒区间直方图。
 
+`yield.c` 另提供两项显式调度基准。`sched_yield_no_peer` 测量 CPU 0 上没有同级
+竞争者时一次 yield 的往返；`sched_yield_handoff` 将两个线程都固定到 CPU 0，测量
+发送者发布时间戳并 yield 到接收者取得时间戳的单程延迟。FIFO 比较使用同一优先级
+80，后者的反向 yield 不计入当前样本。`baseline.c` 的 `clock_pair`、`getpid`、
+`futex_wait_mismatch` 和 `futex_wake_empty` 用于定位公共 syscall 成本。
+
 默认预热 1,000 次，futex 测量 20,000 次，timer 测量 10,000 次、周期 1 ms。
 `clock_resolution_ns` 与连续两次 raw `SYS_clock_gettime` 的最小开销单独报告，
-不从结果中猜测性扣除。Linux 与 StarryOS 都强制走同一个 syscall ABI，不能让 Linux
+原始分布不作扣除。需要辅助分析时，单独报告 `p50 - clock_pair_min_ns`，与原始 p50
+并列保留；这是取时成本估算，不等于纯调度器执行时间。Linux 与 StarryOS 都强制走
+同一个 syscall ABI，不能让 Linux
 的 vDSO 快路径把用户态取时成本伪装成调度收益；metadata 中的
 `clock_read=raw_syscall` 用来确认这条测量边界。
 
@@ -68,12 +76,17 @@ AX_SCHEDULER_TICK_MS=1000 \
 `WAKEUP_LATENCY_CASE_DONE`，后跟 `case=<name> policy=<policy>`。单场景 qperf 运行可
 用这两个 marker 收窄窗口。
 
+FIFO workload 可能阻止较低优先级的串口 worker 及时输出，因此串口看到 marker 的
+时间不一定等于 workload 的开始或结束。使用 qperf 前应验证窗口包含目标调用栈；
+marker 窗口为空时只能通过完整采样中的调用栈分析热点，不能将该窗口用于延迟结论。
+
 完整运行只使用唯一的 `WAKEUP_LATENCY_PROFILE_START` 和
 `WAKEUP_LATENCY_PROFILE_DONE`。前者位于 metadata、CPU 数量检查和调度策略能力探测
 之后，后者位于最后一个场景报告之后。qperf monitor 只消费第一次 start/stop，因此
 不能在完整运行中把多组 case marker 当作多个窗口。
 
-Linux 对照必须从本目录的 `main.c`、`handoff.c`、`timer.c`、`stats.c` 构建，定义
+Linux 对照必须从本目录的 `main.c`、`baseline.c`、`handoff.c`、`timer.c`、`yield.c`、
+`stats.c` 构建，定义
 `BENCH_INIT` 后静态链接为 initramfs 的 `/init`。三方保持以下 QEMU 参数一致：
 
 ```text
@@ -92,6 +105,10 @@ Linux 内核使用本地 `~/linux-src` 的 v7.1 提交 `8cd9520d35a6`，并确�
 QEMU TCG 的虚拟时钟还包含宿主线程调度与翻译开销，不能解释为硬件实时上界。
 严格横比只接受同一宿主、同一 QEMU 参数、同一源码、同一 workload 的成对结果。
 跨裸机或不同加速模式的数据只用于趋势判断。
+
+FIFO 的相对性能按 `Linux 延迟 / StarryOS 延迟 × 100%` 计算，分别列出原始和
+扣除取时估算后的结果。验收使用至少三轮成对运行的中位数，同时保留各轮原始输出、
+内核提交、PREEMPT_RT 配置及镜像校验值；构建和剖析期间的数据不进入性能验收。
 
 `cyclictest`/Linux `timerlat` 测的是 timer deadline 到 RT thread 运行的延迟；本基准
 的 `absolute_timer_same_cpu` 与它同类。futex 场景测显式任务 handoff，不应被称为

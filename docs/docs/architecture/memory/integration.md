@@ -94,7 +94,7 @@ Starry kernel 的 `AddrSpace` 与 ArceOS `ax-mm::AddrSpace` 并列，不在后�
 | 虚拟地址 range container | `ax-memory-set` | Linux mmap/mprotect/mremap 的区域查找与拆分 |
 | 页表项 | `ax-hal::paging::PageTable`（`ArchPagingMeta` 来自 `axcpu`） | Cow/Shared/File/Linear backend |
 | physical pages | `ax-alloc` | 常驻内存集大小 category、写时复制 refs、page cache owner |
-| 内存不足 | allocator page 路径可在锁外调用已注册 page-cache reclaim 并重试 | fault handler 直接返回 bool 成功/失败 |
+| 内存不足 | allocator 释放内部锁后调用有界 clean-page reclaim 并重试 | `FaultResult` 区分成功、暂态重试、权限错误、未映射和 SIGBUS |
 | admission | 无公共 allocator policy | syscall/resource 层处理 `RLIMIT_AS`；`Committed_AS` 当前展示为 0 |
 
 当前 `/proc/sys/vm/overcommit_memory` 由 procfs 展示，`/proc/meminfo` 的 `Committed_AS` 仍固定为 0；不能把它描述成已经有独立 committed-memory ledger。
@@ -113,6 +113,12 @@ Starry kernel 的 `AddrSpace` 与 ArceOS `ax-mm::AddrSpace` 并列，不在后�
 | runtime token 的 MM anchor | CPU lease 清空，scheduler resource reaper 销毁 token 时 |
 
 激活回调只修改计数并发布预分配回收队列，不运行最终页表析构。exec 在停止 sibling 前准备新 MM、runtime token 和命令行/env 的 `Arc`；切换成功后才退休旧 MM。FD 表逐项撤销 CLOEXEC owner，锁外执行文件关闭回调。
+
+`MmPin::handle_page_fault_result()` 在短暂的 MM 锁内生成计划，随后在锁外准备页面、文件 I/O 和页表 deposit，重新加锁时校验 VMA epoch 与 PTE preimage。显式用户内存预备也进入此事务，失败候选的取消及 TLB 确认在锁外处理。apply 阶段仍会为回滚快照和退休所有者准备元数据；它不持有分配器内部锁。`page_cache_reclaim()` 只尝试 clean cache eviction，不进入 MM 事务或设备回调，因此元数据分配失败不会反向等待当前 MM 锁。
+
+`UserVirtualAddressLayout::platform_default()` 缓存启动后不变的平台地址宽度与 Starry ABI 交集；缓存只含可复制的地址值，不保存 MM 所有者。用户内存复制仍执行范围检查、IRQ 上下文检查和异常表恢复。
+
+`MappingGraphReservation` 持有实际的反向映射容量份额。`RmapSet` 将现有映射数与尚未提交的预留数一起计入容量需求；扩容在 IRQ 锁外分配，再在锁内复制并切换存储。并发 fork 各自取得份额，提交时消费份额并更新 rmap 与映射计数，取消时归还份额。被替换的 Vec 由令牌保留，调用方释放 PTE stripe 和 mapping graph 锁后才析构，避免提交阶段扩容或在 IRQ 锁内释放存储。
 
 ### 3.3 设备内存
 

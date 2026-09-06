@@ -239,7 +239,14 @@ impl PageState {
 /// VMAs.  A slot remains in this set until its PTE invalidation is acknowledged.
 #[derive(Debug, Default)]
 pub struct RmapSet {
-    entries: IrqMutex<Vec<MappingSlotKey>>,
+    entries: IrqMutex<RmapEntries>,
+}
+
+#[derive(Debug, Default)]
+struct RmapEntries {
+    keys: Vec<MappingSlotKey>,
+    /// Capacity owned by prepared transactions, not yet installed mappings.
+    reserved: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -248,14 +255,27 @@ pub struct MappingSlotKey {
     pub va: VirtAddr,
 }
 
-/// Heap storage reserved before entering the page/rmap graph critical section.
+/// An exclusive claim on rmap capacity prepared outside IRQ-saving locks.
 ///
-/// If the live vector has spare capacity, this remains empty. Otherwise apply
-/// copies the current keys into this buffer and swaps it into `RmapSet`; the
-/// displaced allocation stays in the token and is released only after the
-/// caller drops every IRQ-saving graph guard.
-pub(crate) struct MappingGraphReservation {
-    replacement: Vec<MappingSlotKey>,
+/// Preparation installs any larger backing store before returning this token.
+/// Other publishers reserve their own space, so committing this claim cannot
+/// lose its capacity to a concurrent fork. Displaced storage remains owned by
+/// the token until all caller-held PTE and graph guards have been released.
+pub(crate) struct MappingGraphReservation<'a> {
+    owner: &'a RmapSet,
+    additional: usize,
+    displaced: Vec<MappingSlotKey>,
+}
+
+impl Drop for MappingGraphReservation<'_> {
+    fn drop(&mut self) {
+        if self.additional != 0 {
+            let mut entries = self.owner.entries.lock();
+            entries.reserved -= self.additional;
+        }
+        // Free backing storage only after the cancellation guard has gone away.
+        drop(core::mem::take(&mut self.displaced));
+    }
 }
 
 impl Hash for MappingSlotKey {
@@ -269,92 +289,96 @@ impl RmapSet {
     fn prepare_replace(
         &self,
         additional: usize,
-    ) -> Result<MappingGraphReservation, MappingGraphError> {
-        let (len, capacity) = {
-            let entries = self.entries.lock();
-            (entries.len(), entries.capacity())
-        };
-        let required = len
-            .checked_add(additional)
-            .ok_or(MappingGraphError::ResourceExhausted)?;
+    ) -> Result<MappingGraphReservation<'_>, MappingGraphError> {
         let mut replacement = Vec::new();
-        if capacity < required {
-            replacement
-                .try_reserve_exact(required)
-                .map_err(|_| MappingGraphError::ResourceExhausted)?;
+        loop {
+            let mut entries = self.entries.lock();
+            let reserved = entries
+                .reserved
+                .checked_add(additional)
+                .ok_or(MappingGraphError::ResourceExhausted)?;
+            let required = entries
+                .keys
+                .len()
+                .checked_add(reserved)
+                .ok_or(MappingGraphError::ResourceExhausted)?;
+            if entries.keys.capacity() < required {
+                if replacement.capacity() < required {
+                    drop(entries);
+                    replacement
+                        .try_reserve_exact(required)
+                        .map_err(|_| MappingGraphError::ResourceExhausted)?;
+                    continue;
+                }
+                replacement.extend_from_slice(&entries.keys);
+                core::mem::swap(&mut entries.keys, &mut replacement);
+            }
+            entries.reserved = reserved;
+            return Ok(MappingGraphReservation {
+                owner: self,
+                additional,
+                displaced: replacement,
+            });
         }
-        Ok(MappingGraphReservation { replacement })
     }
 
-    /// Applies an already-reserved rmap root change without allocating.
-    ///
-    /// `reservation` always retains any displaced allocation, including on a
-    /// stale-capacity error, so no backing storage is freed under this lock.
+    /// Commits a capacity claim without allocating or freeing backing storage.
+    /// Validation precedes both key changes and consumption of the claim.
     fn replace_reserved(
         &self,
         old: &[MappingSlotKey],
         new: &[MappingSlotKey],
-        reservation: &mut MappingGraphReservation,
+        reservation: &mut MappingGraphReservation<'_>,
     ) -> Result<(), MappingGraphError> {
+        if !core::ptr::eq(reservation.owner, self) {
+            return Err(MappingGraphError::SlotIdentityMismatch);
+        }
+        if new.len().saturating_sub(old.len()) > reservation.additional {
+            return Err(MappingGraphError::SlotStateConflict);
+        }
         let mut entries = self.entries.lock();
         for (index, key) in old.iter().enumerate() {
-            if old[..index].contains(key) || !entries.contains(key) {
+            if old[..index].contains(key) || !entries.keys.contains(key) {
                 return Err(MappingGraphError::MissingOldSlot);
             }
         }
         for (index, key) in new.iter().enumerate() {
-            if new[..index].contains(key) || (entries.contains(key) && !old.contains(key)) {
+            if new[..index].contains(key)
+                || (entries.keys.contains(key) && !old.contains(key))
+            {
                 return Err(MappingGraphError::DuplicateNewSlot);
             }
         }
-        let retained = entries
-            .len()
-            .checked_sub(old.len())
-            .ok_or(MappingGraphError::MissingOldSlot)?;
-        let target_len = retained
-            .checked_add(new.len())
-            .ok_or(MappingGraphError::ResourceExhausted)?;
-
-        if entries.capacity() >= target_len {
-            for key in old {
-                let index = entries
-                    .iter()
-                    .position(|entry| entry == key)
-                    .ok_or(MappingGraphError::MissingOldSlot)?;
-                entries.swap_remove(index);
-            }
-            entries.extend_from_slice(new);
-            return Ok(());
+        for key in old {
+            let index = entries
+                .keys
+                .iter()
+                .position(|entry| entry == key)
+                .ok_or(MappingGraphError::MissingOldSlot)?;
+            entries.keys.swap_remove(index);
         }
-        if reservation.replacement.capacity() < target_len {
-            return Err(MappingGraphError::ResourceExhausted);
-        }
-
-        reservation.replacement.clear();
-        reservation
-            .replacement
-            .extend(entries.iter().copied().filter(|entry| !old.contains(entry)));
-        reservation.replacement.extend_from_slice(new);
-        core::mem::swap(&mut *entries, &mut reservation.replacement);
+        entries.keys.extend_from_slice(new);
+        entries.reserved -= reservation.additional;
+        reservation.additional = 0;
         Ok(())
     }
 
     pub fn try_snapshot(&self) -> Result<Vec<MappingSlotKey>, MappingGraphError> {
         let mut snapshot = Vec::new();
         loop {
-            let required = self.entries.lock().len();
+            let required = self.entries.lock().keys.len();
             if snapshot.capacity() < required {
                 snapshot
                     .try_reserve_exact(required.saturating_sub(snapshot.len()))
                     .map_err(|_| MappingGraphError::ResourceExhausted)?;
             }
             let entries = self.entries.lock();
-            if entries.len() > snapshot.capacity() {
+            if entries.keys.len() > snapshot.capacity() {
                 drop(entries);
                 continue;
             }
             snapshot.clear();
-            snapshot.extend_from_slice(&entries);
+            snapshot.extend_from_slice(&entries.keys);
             return Ok(snapshot);
         }
     }
@@ -367,12 +391,12 @@ impl RmapSet {
 
     fn all_mappings_belong_to(&self, mm_id: AddressSpaceId, expected: u32) -> bool {
         let entries = self.entries.lock();
-        usize::try_from(expected).is_ok_and(|expected| entries.len() == expected)
-            && entries.iter().all(|entry| entry.space_id == mm_id)
+        usize::try_from(expected).is_ok_and(|expected| entries.keys.len() == expected)
+            && entries.keys.iter().all(|entry| entry.space_id == mm_id)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.lock().is_empty()
+        self.entries.lock().keys.is_empty()
     }
 }
 
@@ -505,7 +529,7 @@ impl PageObject {
                 }
             }
         };
-        // A successful grow-by-swap leaves the old vector allocation here.
+        // Preparation may leave the old vector allocation in the token.
         // Release it only after the IRQ-saving graph guard has gone away.
         drop(reservation);
         published
@@ -547,7 +571,7 @@ impl PageObject {
         &self,
         old: &[MappingSlotKey],
         new: &[MappingSlotKey],
-    ) -> Result<MappingGraphReservation, MappingGraphError> {
+    ) -> Result<MappingGraphReservation<'_>, MappingGraphError> {
         self.rmap
             .prepare_replace(new.len().saturating_sub(old.len()))
     }
@@ -556,7 +580,7 @@ impl PageObject {
         &self,
         old: &[MappingSlotKey],
         new: &[MappingSlotKey],
-        reservation: &mut MappingGraphReservation,
+        reservation: &mut MappingGraphReservation<'_>,
     ) -> Result<(), MappingGraphError> {
         let became_exclusive = {
             let _graph = self.mapping_graph.lock();
@@ -1192,6 +1216,42 @@ mod tests {
         assert!(slot_a.detach());
         assert_eq!(page.rmap.snapshot().len(), 1);
         assert!(slot_b.detach());
+        assert!(page.rmap.is_empty());
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn concurrent_mapping_publication_preserves_reserved_capacity() {
+        let page = PageObject::new_present(
+            PageId::new(7),
+            FrameLease::new(PhysAddr::from_usize(0x1000)),
+        );
+        let first = MappingSlotKey {
+            space_id: AddressSpaceId::allocate(),
+            va: VirtAddr::from_usize(0x4000),
+        };
+        let second = MappingSlotKey {
+            space_id: AddressSpaceId::allocate(),
+            va: first.va,
+        };
+        // Both MMs prepare against the same page before either publishes.
+        // Completing the second fork must not consume the first fork's space.
+        let mut first_reservation = page.prepare_mapping_graph_replace(&[], &[first]).unwrap();
+        page.replace_mapping_graph(&[], &[second]).unwrap();
+        page.replace_mapping_graph_reserved(&[], &[first], &mut first_reservation)
+            .unwrap();
+        drop(first_reservation);
+        assert_eq!(page.mapping_refs(), 2);
+        let mappings = page.rmap.snapshot();
+        assert_eq!(mappings.len(), 2);
+        assert!(mappings.contains(&first));
+        assert!(mappings.contains(&second));
+        let cancelled = page.prepare_mapping_graph_replace(&[], &[first]).unwrap();
+        drop(cancelled);
+        assert_eq!(page.rmap.entries.lock().reserved, 0);
+        assert_eq!(page.mapping_refs(), 2);
+        page.replace_mapping_graph(&[first, second], &[]).unwrap();
+        assert_eq!(page.mapping_refs(), 0);
         assert!(page.rmap.is_empty());
     }
 

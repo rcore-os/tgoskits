@@ -16,9 +16,25 @@ pub struct UserVirtualAddressLayout {
     stack_top: VirtAddr,
 }
 
+// Platform address widths and the Starry ABI ceiling are immutable after
+// boot. Cache their validated intersection without allocating or retaining
+// any MM owner; each new address space still captures its own layout value.
+static PLATFORM_USER_LAYOUT: ax_lazyinit::LazyInit<UserVirtualAddressLayout> =
+    ax_lazyinit::LazyInit::new();
+
 impl UserVirtualAddressLayout {
     /// Derives the default Starry ABI layout from the platform capability.
+    #[inline]
     pub fn platform_default() -> StarryResult<Self> {
+        if let Some(layout) = PLATFORM_USER_LAYOUT.get() {
+            return Ok(*layout);
+        }
+        PLATFORM_USER_LAYOUT
+            .get_or_try_init(Self::derive_platform_default)
+            .copied()
+    }
+
+    fn derive_platform_default() -> StarryResult<Self> {
         let platform =
             ax_runtime::hal::mem::virtual_address_space().map_err(|_| StarryError::Unsupported)?;
         Self::from_platform_range(platform.user())

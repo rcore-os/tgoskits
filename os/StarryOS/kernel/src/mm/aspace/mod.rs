@@ -1273,8 +1273,8 @@ impl AddrSpace {
         }
 
         // THP split grows one rmap entry into 512. Reserve any replacement
-        // backing store before taking the PTE stripe; apply below only copies
-        // keys and swaps vectors under the IRQ-saving graph lock.
+        // backing store and claim capacity before taking the PTE stripe; apply
+        // below only changes keys under the IRQ-saving graph lock.
         let old_keys = [old_key];
         let mut graph_reservation = old_slot
             .page
