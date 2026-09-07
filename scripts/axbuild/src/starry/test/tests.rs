@@ -294,6 +294,6 @@ fn aka_wifi_smoke_runs_one_connectivity_transfer() {
     );
     assert_eq!(
         fs::read_to_string(invocation_log).unwrap(),
-        "--debug -c 192.0.2.1 -t 3 -O 1 -P 1 -l 128K\n"
+        "-c 192.0.2.1 -t 3 -O 1 -P 1 -l 128K\n"
     );
 }
