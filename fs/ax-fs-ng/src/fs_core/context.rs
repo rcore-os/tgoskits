@@ -751,9 +751,31 @@ impl FsContext {
         self.check_mutation_parent(dst_dir, credentials)?;
 
         let source = src_dir.lookup_no_follow(src_name)?;
+        let destination = match dst_dir.lookup_no_follow(dst_name) {
+            Ok(destination) => Some(destination),
+            Err(VfsError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+
+        if options.no_replace() && destination.is_some() {
+            return Err(VfsError::AlreadyExists);
+        }
+
+        // Match the VFS no-op result before applying sticky-directory removal
+        // rules to an unchanged ordinary rename.
+        if options == RenameOptions::REPLACE
+            && destination
+                .as_ref()
+                .is_some_and(|destination| destination.inode() == source.inode())
+        {
+            return Ok(());
+        }
+
         Self::check_sticky(src_dir, &source, credentials)?;
-        if let Ok(destination) = dst_dir.lookup_no_follow(dst_name) {
-            Self::check_sticky(dst_dir, &destination, credentials)?;
+        if !options.no_replace()
+            && let Some(destination) = &destination
+        {
+            Self::check_sticky(dst_dir, destination, credentials)?;
         }
         src_dir.rename_with_options(src_name, dst_dir, dst_name, options)
     }
@@ -772,10 +794,12 @@ impl FsContext {
             return Err(VfsError::NotFound);
         }
         let (dir, name) = self.resolve_parent(path)?;
-        self.check_mutation_parent(&dir, credentials)?;
-        if dir.lookup_no_follow(&name).is_ok() {
-            return Err(VfsError::AlreadyExists);
+        match dir.lookup_no_follow(&name) {
+            Ok(_) => return Err(VfsError::AlreadyExists),
+            Err(VfsError::NotFound) => {}
+            Err(error) => return Err(error),
         }
+        self.check_mutation_parent(&dir, credentials)?;
         dir.create(&name, NodeType::Directory, mode, uid, gid)
     }
 

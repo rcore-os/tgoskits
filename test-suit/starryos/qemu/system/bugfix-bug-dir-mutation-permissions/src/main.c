@@ -100,9 +100,18 @@ static int run_unprivileged_checks(void)
           "renameat2 rejects an unsearchable parent");
 
     errno = 0;
+    check(mkdir("/tmp/bug-dir-mutation-permissions/protected", 0700) < 0
+              && errno == EEXIST,
+          "mkdir reports an existing target before checking parent write access");
+
+    errno = 0;
     check(unlink(sticky_file) < 0 && errno == EPERM,
           "sticky directory protects a file owned by another user");
     check(access(sticky_file, F_OK) == 0, "sticky unlink leaves the victim unchanged");
+
+    errno = 0;
+    check(rename(sticky_file, sticky_file) == 0,
+          "ordinary rename of the same sticky entry is a no-op");
 
     errno = 0;
     check(rename(sticky_file, "/tmp/bug-dir-mutation-permissions/sticky/renamed") < 0
@@ -135,6 +144,13 @@ static int run_unprivileged_checks(void)
 
     check(create_file(sticky_child) == 0, "unprivileged user creates its own file");
     errno = 0;
+    check(renameat2_call(sticky_child, sticky_target, RENAME_NOREPLACE) < 0
+              && errno == EEXIST,
+          "RENAME_NOREPLACE reports an existing target before sticky checks");
+    check(access(sticky_child, F_OK) == 0 && access(sticky_target, F_OK) == 0,
+          "failed RENAME_NOREPLACE leaves both entries unchanged");
+
+    errno = 0;
     check(rename(sticky_child, sticky_target) < 0 && errno == EPERM,
           "sticky rename protects an existing target owned by another user");
     check(access(sticky_child, F_OK) == 0 && access(sticky_target, F_OK) == 0,
@@ -152,6 +168,11 @@ int main(void)
     check(create_file(protected_file) == 0, "create protected victim");
     check(symlink(protected_new_file, dangling_link) == 0, "create dangling symlink");
     check(mkdir(sticky_dir, 01777) == 0, "create sticky directory");
+    check(chmod(sticky_dir, 01777) == 0, "restore sticky directory permissions");
+    struct stat sticky_metadata;
+    check(stat(sticky_dir, &sticky_metadata) == 0
+              && (sticky_metadata.st_mode & 07777) == 01777,
+          "sticky directory keeps mode 01777 after setup");
     check(create_file(sticky_file) == 0, "create sticky victim");
     check(create_file(sticky_target) == 0, "create sticky replacement target");
     check(mkdir("/tmp/bug-dir-mutation-permissions/sticky/root-dir", 0700) == 0,
