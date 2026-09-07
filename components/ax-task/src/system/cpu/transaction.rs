@@ -272,6 +272,10 @@ impl<'a> OwnerRqTxn<'a> {
         self.remote.owner()
     }
 
+    pub(crate) fn current_runtime_deadline(&self) -> SchedulerRuntimeDeadline {
+        self.run_queue().current_runtime_deadline()
+    }
+
     pub(crate) fn scheduler_deadline_rq_observation(
         &self,
         cpu: &CpuLocal,

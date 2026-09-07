@@ -799,6 +799,17 @@ impl CpuRunQueueState {
         self.queue.scheduling_state(thread)
     }
 
+    pub(crate) fn current_runtime_deadline(&self) -> SchedulerRuntimeDeadline {
+        if !self.current_runtime_timer_required() {
+            return SchedulerRuntimeDeadline::Disarmed;
+        }
+        match self.current_runtime_timer_delta_ns() {
+            Some(0) => SchedulerRuntimeDeadline::Due,
+            Some(delta_ns) => SchedulerRuntimeDeadline::After(core::time::Duration::from_nanos(delta_ns)),
+            None => SchedulerRuntimeDeadline::Disarmed,
+        }
+    }
+
     pub(crate) fn current_runtime_timer_delta_ns(&self) -> Option<u64> {
         let current = self.queue.current()?;
         let entity = self

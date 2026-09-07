@@ -217,7 +217,11 @@ impl LocalClockEvent {
         &mut self,
         deadline: Option<MonotonicDeadline>,
     ) -> ClockEventAction {
-        self.runtime_deadline = deadline.map(ClockDeadline::from_monotonic);
+        let deadline = deadline.map(ClockDeadline::from_monotonic);
+        if self.runtime_deadline == deadline {
+            return ClockEventAction::None;
+        }
+        self.runtime_deadline = deadline;
         self.reconcile_scheduler_publication()
     }
 

@@ -130,24 +130,6 @@ impl CpuLocal {
         }
     }
 
-    pub(crate) fn next_scheduler_runtime_deadline_update(
-        mut self: Pin<&mut Self>,
-        rq_observation: SchedulerDeadlineRqObservation,
-    ) -> Option<SchedulerRuntimeDeadline> {
-        let deadline = self
-            .as_ref()
-            .get_ref()
-            .scheduler_runtime_deadline_for_rq_observation(rq_observation);
-        // SAFETY: the scheduler owner exclusively mutates this pinned local
-        // hrtick state while local IRQs remain disabled.
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
-        if this.scheduler_runtime_deadline == deadline {
-            return None;
-        }
-        this.scheduler_runtime_deadline = deadline;
-        Some(deadline)
-    }
-
     fn next_non_timer_deadline_from_rq_observation(
         &self,
         rq_observation: SchedulerDeadlineRqObservation,
@@ -307,20 +289,7 @@ impl CpuLocal {
     ) -> SchedulerDeadlineRqObservation {
         let current_thread = run_queue.current_thread();
         let idle = run_queue.idle();
-        let current_is_idle = current_thread.is_some() && current_thread == idle;
-        let runtime_deadline = if !current_is_idle
-            && run_queue.current().is_some()
-            && run_queue.current_runtime_timer_required()
-            && let Some(delta_ns) = run_queue.current_runtime_timer_delta_ns()
-        {
-            if delta_ns == 0 {
-                SchedulerRuntimeDeadline::Due
-            } else {
-                SchedulerRuntimeDeadline::After(core::time::Duration::from_nanos(delta_ns))
-            }
-        } else {
-            SchedulerRuntimeDeadline::Disarmed
-        };
+        let runtime_deadline = run_queue.current_runtime_deadline();
         let current_non_idle = current_thread.is_some() && current_thread != idle;
         let has_periodic_fair_balance_work =
             run_queue.has_fair() && run_queue.nr_running() > usize::from(current_non_idle);

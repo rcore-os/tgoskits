@@ -288,12 +288,9 @@ impl TaskSystem {
         } else {
             false
         };
-        // A context switch is not itself a scheduler-clock deadline event.
-        // Linux keeps hrtick/RT-period programming owned by the rq state that
-        // actually changed.  Reuse the coherent post-selection observation
-        // whenever its publication still matches; this avoids sampling the
-        // monotonic clock and taking the deadline-base lock on FIFO/RR
-        // switches that have no runtime timer or balance deadline.
+        // Shared timer heads can remain unchanged while the selected task's
+        // hrtick changes. Let the publication layer reuse only the shared
+        // deadline and independently commit the selected runtime deadline.
         let timer_result = match (run_queue_changed, scheduler_deadline) {
             (true, _) => self.program_local_timer(
                 cpu.as_mut(),
@@ -301,13 +298,6 @@ impl TaskSystem {
             ),
             (false, OwnerSchedulerDeadline::Unchanged) => unreachable!(),
             (false, OwnerSchedulerDeadline::Reevaluate(rq_observation)) => {
-                if cpu
-                    .as_ref()
-                    .get_ref()
-                    .can_reuse_scheduler_deadline_for_rq_observation(rq_observation)
-                {
-                    return;
-                }
                 self.program_local_timer_from_rq_observation(
                     cpu.as_mut(),
                     rq_observation,

@@ -38,7 +38,6 @@ pub struct CpuLocal {
     rt_bandwidth: Arc<RootRtBandwidth>,
     dispatch: dispatch_state::OwnerDispatchState,
     drain: drain_state::OwnerDrainScratch,
-    scheduler_runtime_deadline: SchedulerRuntimeDeadline,
     _pinned: PhantomPinned,
 }
 
@@ -56,7 +55,6 @@ impl CpuLocal {
             rt_bandwidth,
             dispatch: dispatch_state::OwnerDispatchState::new(config),
             drain: drain_state::OwnerDrainScratch::new(config),
-            scheduler_runtime_deadline: SchedulerRuntimeDeadline::Disarmed,
             _pinned: PhantomPinned,
         })
     }

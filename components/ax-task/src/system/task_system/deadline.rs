@@ -898,9 +898,7 @@ impl TaskSystem {
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<(), TaskError> {
-        let runtime_deadline = cpu
-            .as_mut()
-            .next_scheduler_runtime_deadline_update(rq_observation);
+        let runtime_deadline = cpu.scheduler_runtime_deadline_for_rq_observation(rq_observation);
         if !cpu
             .as_ref()
             .get_ref()
@@ -914,9 +912,7 @@ impl TaskSystem {
         {
             task_runtime::publish_scheduler_deadline(update);
         }
-        if let Some(runtime_deadline) = runtime_deadline {
-            task_runtime::publish_scheduler_runtime_deadline(runtime_deadline);
-        }
+        task_runtime::publish_scheduler_runtime_deadline(runtime_deadline);
         Ok(())
     }
 }

@@ -1,7 +1,7 @@
 //! Direct wakeup transactions.
 
 use super::*;
-use crate::{FairEntity, WakePreemptionContext, lock::IrqOwner};
+use crate::{FairEntity, WakePreemptionContext, lock::IrqOwner, runtime::SchedulerRuntimeDeadline};
 
 struct FairWakeContext<'a> {
     affinity: &'a CpuSet,
@@ -831,27 +831,19 @@ impl TaskSystem {
             let _ = run_queue.settle_current(0);
         }
         let deadline_wake = matches!(policy, SchedulePolicy::Deadline(_)) && !sched.is_pi_boosted();
-        let queued_entity = deadline_wake.then(|| {
-            let mut entity = active.entity().clone();
-            entity.activate_deadline(run_queue.clock().wall().as_nanos());
-            *active.entity_mut() = entity.clone();
-            entity
-        });
+        if deadline_wake {
+            active.entity_mut().activate_deadline(run_queue.clock().wall().as_nanos());
+        }
+        let deadline_throttled = deadline_wake && active.entity().deadline().is_some_and(DeadlineEntity::is_throttled);
+        let maintains_fair_virtual_time = active.entity().fair().is_some();
+        let delayed_migration_wake = active.entity().fair().is_some_and(|fair| fair.is_delayed_migrating());
         drop(active);
-
-        let deadline_throttled = queued_entity
-            .as_ref()
-            .and_then(|entity| entity.deadline())
-            .is_some_and(DeadlineEntity::is_throttled);
         if deadline_throttled {
             self.link_owner_throttled_deadline_locked(run_queue, core, sched, target);
             return WakeActivationPreparation::Throttled;
         }
 
         Self::activate_deadline_bandwidth_locked(core, sched, run_queue, target);
-        let maintains_fair_virtual_time = queued_entity
-            .as_ref()
-            .is_some_and(|entity| entity.fair().is_some());
         let current_fair = if maintains_fair_virtual_time {
             let current_fair = run_queue.current_fair_contender();
             run_queue.update_fair_virtual_time(current_fair);
@@ -864,13 +856,6 @@ impl TaskSystem {
         });
         let active = core.sched().take_active(sched);
         debug_assert_eq!(active.policy(), policy);
-        if let Some(queued_entity) = queued_entity.as_ref() {
-            debug_assert_eq!(active.entity(), queued_entity);
-        }
-        let delayed_migration_wake = queued_entity
-            .as_ref()
-            .and_then(SchedulingEntity::fair)
-            .is_some_and(|fair| fair.is_delayed_migrating());
         WakeActivationPreparation::Ready {
             policy,
             active,
@@ -1024,13 +1009,26 @@ impl TaskSystem {
         crate::metrics::record_direct_wake_activation();
         let push_class = super::super::balance::push_class_for_policy(policy)
             .filter(|class| run_queue.has_pushable_class_tasks(class.scheduling_class()));
+        let refresh_runtime = !deadline_wake && enqueue.scheduler_deadline_refresh_required();
+        let local_runtime = (refresh_runtime && target == context.producer).then(|| {
+            if reschedule == Some(RescheduleKind::Immediate) || remote.immediate_preemption_requested() {
+                SchedulerRuntimeDeadline::Disarmed
+            } else {
+                run_queue.current_runtime_deadline()
+            }
+        });
         remote.publish_rq_scheduler_reasons(
             reschedule,
-            !deadline_wake && enqueue.scheduler_deadline_refresh_required(),
+            refresh_runtime && local_runtime.is_none(),
             context.producer,
             &irq_owner,
         );
         run_queue.commit();
+        if let Some(deadline) = local_runtime {
+            // The outer task lock retains local IRQ exclusion after rq commit.
+            // Remote updates retain their owner-work bit and are serviced later.
+            task_runtime::publish_scheduler_runtime_deadline(deadline);
+        }
         drop(sched_guard);
         let rt_period_started = self.activate_owner_rt_period_for_policy(target, policy);
         if rt_period_started {
