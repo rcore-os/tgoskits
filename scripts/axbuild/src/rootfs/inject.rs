@@ -13,11 +13,13 @@ use std::{
     fs,
     io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
     thread,
 };
 
 use anyhow::{Context, bail, ensure};
+
+use crate::support::process::retry_text_file_busy;
 
 /// Reads a text file from a rootfs image with `debugfs`.
 ///
@@ -150,9 +152,18 @@ struct RootfsExtraction<'a> {
 
 impl RootfsExtraction<'_> {
     fn run(&self) -> anyhow::Result<()> {
+        self.run_with_output(Command::output)
+    }
+
+    fn run_with_output(
+        &self,
+        mut output: impl FnMut(&mut Command) -> io::Result<Output>,
+    ) -> anyhow::Result<()> {
         let mut command = self.command();
         let rendered_command = format!("{command:?}");
-        let output = command.output().with_context(|| {
+        // A freshly published helper can still have a transient writable
+        // reference. Retry only ETXTBSY before it starts, using the shared bound.
+        let output = retry_text_file_busy(|| output(&mut command)).with_context(|| {
             if let Some(fakeroot) = self.fakeroot_program {
                 format!(
                     "failed to spawn fakeroot `{}`; rootfs extraction without full host ownership \
@@ -762,6 +773,46 @@ mod tests {
         .unwrap();
 
         assert!(marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extraction_retries_a_busy_executable_before_starting_debugfs() {
+        for use_fakeroot in [false, true] {
+            let root = executable_helper_tempdir();
+            let debugfs = root.path().join("debugfs");
+            let fakeroot = root.path().join("fakeroot");
+            let marker = root.path().join("debugfs-runs");
+            write_executable(
+                &debugfs,
+                "#!/bin/sh\nprintf 'ran\\n' >> \"$AXBUILD_TEST_EXTRACTION_MARKER\"\n",
+            );
+            write_executable(
+                &fakeroot,
+                "#!/bin/sh\ntest \"$1\" = -- || exit 91\nshift\nexec \"$@\"\n",
+            );
+            let mut attempts = 0;
+            RootfsExtraction {
+                rootfs_img: Path::new("rootfs.img"),
+                output_dir: root.path(),
+                debugfs_program: &debugfs,
+                fakeroot_program: use_fakeroot.then_some(fakeroot.as_path()),
+            }
+            .run_with_output(|command| {
+                attempts += 1;
+                if attempts == 1 {
+                    // Inject the observed spawn errno at the command boundary;
+                    // an actual writer/exec race depends on the host launcher.
+                    return Err(io::Error::from_raw_os_error(libc::ETXTBSY));
+                }
+                command
+                    .env("AXBUILD_TEST_EXTRACTION_MARKER", &marker)
+                    .output()
+            })
+            .unwrap();
+            assert_eq!(attempts, 2);
+            assert_eq!(fs::read_to_string(marker).unwrap(), "ran\n");
+        }
     }
 
     #[cfg(unix)]

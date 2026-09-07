@@ -24,8 +24,6 @@ pub mod priority;
 pub mod rt_policy;
 #[cfg(feature = "task-scheduler-irq-window")]
 pub mod scheduler_irq_window;
-#[cfg(feature = "task-scheduler-owner-claim")]
-pub mod scheduler_owner_claim;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;
 #[cfg(feature = "task-smp-online")]

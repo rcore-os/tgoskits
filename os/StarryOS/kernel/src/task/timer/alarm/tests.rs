@@ -6,11 +6,11 @@ mod tests {
     fn rearming_physically_replaces_the_previous_alarm_node() {
         let slot = AlarmSlot::new();
         let mut queue = AlarmQueue::new();
-        let first = slot.replace(Some(Duration::from_nanos(10)));
-        let second = slot.replace(Some(Duration::from_nanos(20)));
+        let first = slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(10))));
+        let second = slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(20))));
 
         let AlarmChange::Schedule {
-            delay: first_deadline,
+            deadline: first_deadline,
             token: first_token,
         } = first
         else {
@@ -18,7 +18,7 @@ mod tests {
         };
         queue.schedule(first_deadline, first_token, ());
         let AlarmChange::Schedule {
-            delay: second_deadline,
+            deadline: second_deadline,
             token: second_token,
         } = second
         else {
@@ -27,18 +27,20 @@ mod tests {
         queue.schedule(second_deadline, second_token, ());
 
         assert_eq!(queue.entries.len(), 1);
-        assert_eq!(queue.earliest_deadline(), Some(Duration::from_nanos(20)));
+        assert!(
+            matches!(queue.next_action(ClockSnapshot::new(Duration::ZERO, Duration::ZERO)), AlarmQueueAction::Wait(deadline) if deadline == Duration::from_nanos(20))
+        );
     }
 
     #[test]
     fn stale_generation_cannot_replace_the_current_alarm() {
         let slot = AlarmSlot::new();
         let mut queue = AlarmQueue::new();
-        let stale = slot.replace(Some(Duration::from_nanos(10)));
-        let current = slot.replace(Some(Duration::from_nanos(20)));
+        let stale = slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(10))));
+        let current = slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(20))));
 
         let AlarmChange::Schedule {
-            delay: current_deadline,
+            deadline: current_deadline,
             token: current_token,
         } = current
         else {
@@ -46,7 +48,7 @@ mod tests {
         };
         queue.schedule(current_deadline, current_token, ());
         let AlarmChange::Schedule {
-            delay: stale_deadline,
+            deadline: stale_deadline,
             token: stale_token,
         } = stale
         else {
@@ -55,16 +57,18 @@ mod tests {
         queue.schedule(stale_deadline, stale_token, ());
 
         assert_eq!(queue.entries.len(), 1);
-        assert_eq!(queue.earliest_deadline(), Some(Duration::from_nanos(20)));
+        assert!(
+            matches!(queue.next_action(ClockSnapshot::new(Duration::ZERO, Duration::ZERO)), AlarmQueueAction::Wait(deadline) if deadline == Duration::from_nanos(20))
+        );
     }
 
     #[test]
     fn disarming_physically_removes_the_alarm_node() {
         let slot = AlarmSlot::new();
         let mut queue = AlarmQueue::new();
-        let schedule = slot.replace(Some(Duration::from_nanos(10)));
+        let schedule = slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(10))));
         let AlarmChange::Schedule {
-            delay: deadline,
+            deadline: deadline,
             token,
         } = schedule
         else {
@@ -85,9 +89,9 @@ mod tests {
     fn stale_cancellation_does_not_remove_a_newer_alarm_generation() {
         let slot = AlarmSlot::new();
         let mut queue = AlarmQueue::new();
-        let stale_schedule = slot.replace(Some(Duration::from_nanos(10)));
+        let stale_schedule = slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(10))));
         let AlarmChange::Schedule {
-            delay: stale_deadline,
+            deadline: stale_deadline,
             token: stale_token,
         } = stale_schedule
         else {
@@ -98,9 +102,10 @@ mod tests {
         // Delay the cancellation until a concurrent rearm has already
         // published and installed a newer generation.
         let stale_cancellation = slot.replace(None);
-        let current_schedule = slot.replace(Some(Duration::from_nanos(20)));
+        let current_schedule =
+            slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(20))));
         let AlarmChange::Schedule {
-            delay: current_deadline,
+            deadline: current_deadline,
             token: current_token,
         } = current_schedule
         else {
@@ -114,7 +119,9 @@ mod tests {
         queue.cancel(&cancellation_token);
 
         assert_eq!(queue.entries.len(), 1);
-        assert_eq!(queue.earliest_deadline(), Some(Duration::from_nanos(20)));
+        assert!(
+            matches!(queue.next_action(ClockSnapshot::new(Duration::ZERO, Duration::ZERO)), AlarmQueueAction::Wait(deadline) if deadline == Duration::from_nanos(20))
+        );
     }
 
     #[test]
@@ -122,17 +129,17 @@ mod tests {
         let stale_slot = AlarmSlot::new();
         let future_slot = AlarmSlot::new();
         let mut queue = AlarmQueue::new();
-        let stale = stale_slot.replace(Some(Duration::from_nanos(10)));
-        let future = future_slot.replace(Some(Duration::from_nanos(20)));
+        let stale = stale_slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(10))));
+        let future = future_slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(20))));
         let AlarmChange::Schedule {
-            delay: stale_deadline,
+            deadline: stale_deadline,
             token: stale_token,
         } = stale
         else {
             unreachable!("armed slot must produce a schedule action")
         };
         let AlarmChange::Schedule {
-            delay: future_deadline,
+            deadline: future_deadline,
             token: future_token,
         } = future
         else {
@@ -146,7 +153,7 @@ mod tests {
         let _pending_cancellation = stale_slot.replace(None);
 
         assert!(matches!(
-            queue.next_action(Duration::from_nanos(15)),
+            queue.next_action(ClockSnapshot::new(Duration::from_nanos(15), Duration::ZERO)),
             AlarmQueueAction::Wait(deadline) if deadline == Duration::from_nanos(20)
         ));
         assert_eq!(queue.entries.len(), 1);
@@ -172,9 +179,9 @@ mod tests {
 pub(super) fn stale_alarm_cancellation_preserves_new_generation_for_test() -> bool {
     let slot = AlarmSlot::new();
     let mut queue = AlarmQueue::new();
-    let stale_schedule = slot.replace(Some(Duration::from_nanos(10)));
+    let stale_schedule = slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(10))));
     let AlarmChange::Schedule {
-        delay: stale_deadline,
+        deadline: stale_deadline,
         token: stale_token,
     } = stale_schedule
     else {
@@ -183,9 +190,9 @@ pub(super) fn stale_alarm_cancellation_preserves_new_generation_for_test() -> bo
     queue.schedule(stale_deadline, stale_token, ());
 
     let stale_cancellation = slot.replace(None);
-    let current_schedule = slot.replace(Some(Duration::from_nanos(20)));
+    let current_schedule = slot.replace(Some(ClockDeadline::Monotonic(Duration::from_nanos(20))));
     let AlarmChange::Schedule {
-        delay: current_deadline,
+        deadline: current_deadline,
         token: current_token,
     } = current_schedule
     else {
@@ -199,5 +206,5 @@ pub(super) fn stale_alarm_cancellation_preserves_new_generation_for_test() -> bo
     queue.cancel(&cancellation_token);
 
     queue.entries.len() == 1
-        && queue.earliest_deadline() == Some(Duration::from_nanos(20))
+        && matches!(queue.next_action(ClockSnapshot::new(Duration::ZERO, Duration::ZERO)), AlarmQueueAction::Wait(deadline) if deadline == Duration::from_nanos(20))
 }

@@ -1,9 +1,4 @@
-#[cfg(feature = "qperf-metrics")]
-use core::sync::atomic::AtomicU64;
-#[cfg(any(
-    feature = "qperf-metrics",
-    not(all(target_arch = "aarch64", not(feature = "host-test")))
-))]
+#[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
 use core::sync::atomic::Ordering;
 use core::{
     mem::{MaybeUninit, align_of, offset_of, size_of},
@@ -13,14 +8,6 @@ use core::{
 
 use crate::{CpuIndex, CpuLocalError, ExecutionContextHeader, preempt::PreemptionState};
 
-#[cfg(feature = "qperf-metrics")]
-const fn runtime_anchor_reserved_size() -> usize {
-    let state_end = 6 * size_of::<usize>() + size_of::<PreemptionState>();
-    let counter_offset = (state_end + align_of::<AtomicU64>() - 1) & !(align_of::<AtomicU64>() - 1);
-    64 - counter_offset - size_of::<AtomicU64>()
-}
-
-#[cfg(not(feature = "qperf-metrics"))]
 const fn runtime_anchor_reserved_size() -> usize {
     64 - 6 * size_of::<usize>() - size_of::<PreemptionState>()
 }
@@ -31,8 +18,6 @@ pub struct CpuRuntimeAnchor {
     current_context: AtomicUsize,
     architecture_state: [AtomicUsize; 5],
     preemption_state: PreemptionState,
-    #[cfg(feature = "qperf-metrics")]
-    cpu_pin_entries: AtomicU64,
     reserved: [u8; runtime_anchor_reserved_size()],
 }
 
@@ -51,8 +36,6 @@ impl CpuRuntimeAnchor {
             current_context: AtomicUsize::new(current_context),
             architecture_state: [const { AtomicUsize::new(0) }; 5],
             preemption_state: PreemptionState::bootstrap_disabled(),
-            #[cfg(feature = "qperf-metrics")]
-            cpu_pin_entries: AtomicU64::new(0),
             reserved: [0; runtime_anchor_reserved_size()],
         }
     }
@@ -71,16 +54,6 @@ impl CpuRuntimeAnchor {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     pub(crate) const fn preemption_state(&self) -> &PreemptionState {
         &self.preemption_state
-    }
-
-    #[cfg(feature = "qperf-metrics")]
-    pub(crate) fn record_cpu_pin_entry(&self) {
-        self.cpu_pin_entries.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[cfg(feature = "qperf-metrics")]
-    pub(crate) fn qperf_cpu_pin_entries(&self) -> u64 {
-        self.cpu_pin_entries.load(Ordering::Relaxed)
     }
 }
 

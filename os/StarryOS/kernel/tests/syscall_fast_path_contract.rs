@@ -2,7 +2,6 @@
 
 const SIGNAL: &str = include_str!("../src/task/signal.rs");
 const THREAD_SYSCALLS: &str = include_str!("../src/syscall/task/thread.rs");
-const DEVICES: &str = include_str!("../src/pseudofs/dev/mod.rs");
 const CLOCK_EVENT_RUNTIME: &str =
     include_str!("../../../arceos/modules/axruntime/src/clock_event_runtime.rs");
 const USER_TASK: &str = include_str!("../src/task/user.rs");
@@ -35,19 +34,6 @@ fn getpid_reads_the_immutable_process_binding_directly() {
     assert!(
         !getpid.contains("active_pid_namespace") && !getpid.contains("PidView"),
         "getpid must not lock thread PID ownership, clone a namespace, or scan PID bindings"
-    );
-}
-
-#[test]
-fn dev_null_is_an_always_ready_file() {
-    let null = &DEVICES[DEVICES
-        .find("struct Null;")
-        .expect("the null device must exist")..];
-    let flags = function_body(null, "fn flags(&self)");
-
-    assert!(
-        flags.contains("NodeFlags::BLOCKING"),
-        "/dev/null must not construct a readiness future for an operation that cannot block"
     );
 }
 

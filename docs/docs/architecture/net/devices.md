@@ -61,11 +61,14 @@ pub struct NetDeviceParts {
 `DmaBuffer` 不实现 `Clone`/`Copy`。它从 pool 分配后只能处于以下一个位置：
 
 ```text
-RX pool -> hardware RX -> RxCompletion -> RX-ready SPSC
-        -> protocol frame read -> recycle SPSC -> hardware RX
+RX pool/spares -> hardware RX -> RxCompletion
+        -> submit replacement -> RX-ready SPSC -> ProtocolRxFrame
+        -> EthernetDevice -> Router -> smoltcp RxToken::consume
+        -> RxRecycler -> recycle SPSC/overflow -> queue-local spares
 
-TX pool -> TX-free SPSC -> protocol fills -> TX-ready SPSC
-        -> hardware TX -> completion reclaim -> TX-free SPSC
+TX pool -> TX-free SPSC -> protocol fills DMA frame -> TX-ready SPSC
+        -> submit_with_options -> batch flush -> hardware TX
+        -> completion reclaim -> TX-free SPSC
 ```
 
 `ITxQueue::submit()` 和 `IRxQueue::submit()/recycle()` 失败时，typed
@@ -73,6 +76,41 @@ TX pool -> TX-free SPSC -> protocol fills -> TX-ready SPSC
 RX reclaim 等可观察进展，则完成本轮 poll、rearm IRQ 并等待未来硬件或 task 事件，不能
 在 IRQ 保持关闭时立即自调度。只有 reclaim 已释放 descriptor 时，RX refill 才立即重试。
 其它错误可以归还 free ring 或使 group 失败，但不能丢失 DMA ownership。
+
+`TxSubmitOptions` 携带逐包 checksum 和通知方式。`TxNotify::Deferred` 允许驱动延迟
+写 doorbell；queue executor 在完成发送批次以及提交提前返回前调用 `flush()`，已发布
+的 descriptor 不会因为 RX backpressure 或下一次 submit 返回 `Retry` 而滞留。
+默认 queue 只支持软件 checksum；不支持的 offload 请求必须返回原 DMA token。
+
+RTL8125 在 descriptor 发布与 doorbell 之间使用 Release 顺序。驱动保留显式
+`TxSubmitOptions::checksum` 请求及 checksum-v2 支持；超出 descriptor 表示范围的请求返回原 token，
+调用方可以完成软件计算后重试。能力分别表示 IPv4 TCP、IPv4 UDP、IPv6 TCP、IPv6 UDP，
+可通过 `union()` 组合，通过 `intersection()` 取共同能力；逐包请求还规定了完整 IP
+packet、L2 起点的 transport offset 和零 checksum 初值，由调用方保证这些条件，不使用
+partial-checksum seed。`Deferred` 是提示，驱动可以提前通知；`flush()`
+保证此前接受的提交已通知硬件，不等待发送完成。
+
+Router 目前始终保留 smoltcp 的软件 TCP/UDP 发送计算。smoltcp 0.13.1 的 TCP 和 raw
+发送在 `TxToken` 边界都使用默认 `PacketMeta`，不能据此区分普通协议报文和调用者
+要求保留的 raw payload。IPv4 UDP checksum 为零合法地表示没有生成 checksum，见
+[RFC 768](https://www.rfc-editor.org/rfc/rfc768.html)。Ethernet 和 loopback 因而只复制
+传输层字节，不再根据零值请求卸载，也不重算 raw packet 的 checksum。待协议生成端
+能显式传递逐包计算意图后，才能重新启用这条自动卸载路径。
+
+`router_keeps_software_checksums_even_with_offload_capable_devices` 验证即使出口支持
+卸载，TCP/UDP 的 `rx()`、`tx()` 仍为 true；动态加入无卸载设备也不会留下过期的
+smoltcp checksum capability。驱动支持 IPv6 checksum 不代表物理 Ethernet IPv6
+协议已完整接入。
+
+广播与 IPv6 组播 fanout 在首次发送时记录非 loopback 出口。某个出口返回 `Again`
+时，原包继续留在 Router TX 队首；后续只重试尚未接受该包的出口，已经成功或返回
+永久错误的出口不重复发送。一次重试没有任何进展时等待队列事件，不立即空转。
+所有出口处理完成后才出队，再为下一包重新记录出口；额外状态只保存设备索引。
+
+Ethernet 发送将 IPv4 组播地址的低 23 位映射到 `01:00:5e`，将 IPv6 组播地址的低
+32 位映射到 `33:33`，分别遵循 [RFC 1112 §6.4](https://www.rfc-editor.org/rfc/rfc1112#section-6.4)
+和 [RFC 2464 §7](https://www.rfc-editor.org/rfc/rfc2464#section-7)。这两类发送直接使用
+映射后的目的 MAC，不经过 ARP；有限广播和子网广播继续使用 `ff:ff:ff:ff:ff:ff`。
 
 非一致 DMA 平台的 CPU/device sync 在 `DmaBuffer` 的 read/write 与 driver submit/reclaim
 边界完成。跨 CPU 只 move token，不共享可变 payload reference。
@@ -132,18 +170,19 @@ scheduled。
 
 一个 group poll 按顺序处理：
 
-1. RX recycle；
-2. RX reclaim；
-3. TX completion；
-4. TX submission。
+1. TX completion；
+2. TX submission 与批次 `flush()`；
+3. 已消费 RX token 回收到 queue-local spare cache；
+4. RX reclaim、replacement refill 与完成项发布。
 
-四类各最多 64 项，每 CPU executor round 最多 256 项。任一子预算用尽、CPU round
+各类使用 64 项子预算，每 CPU executor round 使用 256 项总预算。任一子预算用尽、CPU round
 用尽、`MISSED` 或硬件仍有工作时，group 保持 IRQ 关闭并重新排队。
 
 四条 SPSC ring 都预分配且有界：
 
 - RX-ready 满：queue owner 保留 `pending_rx`；
-- recycle submit retry：保留 `pending_rx_recycle`；
+- replacement submit retry：在有界 `pending_rx_refill` 中同时保留 completion 和 replacement；继续 reclaim，避免软件队列因 completion ring 满而无法推进；
+- RX replacement 分配失败或达到 token 预算：丢弃当前 packet、累计 RX drop，并重投原 token；若 submit 返回 Retry，仍保留 token 等待 completion 进展或 rearm 后的硬件事件；
 - TX-free 满：保留 `pending_tx_free`；
 - TX submit retry：保留 `pending_tx`。
 
@@ -152,9 +191,22 @@ group-local task schedule；只有目标 group 被精准激活。
 
 ## 7. Protocol frame port 与 Router
 
-`QueueFramePort` 位于 protocol owner 一侧。RX 时它从 RX-ready ring 取
-`RxCompletion`，读取 frame 后把 token 放入 recycle ring；TX 时从 spare/free ring 取
-token、写入 Ethernet frame、move 到 TX-ready ring。
+`QueueFramePort` 位于 protocol owner 一侧。`receive_owned()` 从 RX-ready ring 取
+completion，返回带回收器的 `ProtocolRxFrame`。它保留 token 到 smoltcp 消费结束；
+ARP 和未知二层帧在原 token 回收前处理。回收 ring 满时由 `RxRecycler` 暂存 token，
+queue owner 再将其转入 spare cache，不提前释放 DMA mapping。硬件 ring 外最多取得
+`max(RX capacity, 64)` 个 replacement token；达到上限后只复用回收 token 或丢包，
+不会因协议消费者长期持有 packet 而无限增加 DMA 内存。
+
+TX 优先从 spare/free ring 取 token，在 DMA buffer 中写 Ethernet header、IP packet
+及 `ETH_ZLEN` padding。`NoQueue` 在忙时返回 `Again`；`Fifo` 只在积压时保留有界
+inline frame 和原提交选项，按序重试。各 RX 接口都会推进待发送 FIFO，避免仅使用
+owned RX 的生产路径遗漏发送重试。Router peek 待发 packet，仅在接受提交后 dequeue。
+非 DMA 端口沿用 `ProtocolEthernetFrame` 的兼容复制接口。
+
+`Device`、`DeviceRxPacket` 和 `DeviceRxPoll` 均为 crate 内部接口；DMA owned packet
+只服务本 crate 的 queue runtime。外部 frame port 使用公开的兼容接收接口，当前没有
+承诺通用 L3 owned backing API。Router 优先选择 owned RX，其余接收入口保留为兼容适配。
 
 `EthernetDevice` 在 frame port 上完成：
 

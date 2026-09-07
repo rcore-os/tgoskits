@@ -13,6 +13,7 @@ use std::{
 const NUM_TASKS: usize = 16;
 
 pub fn run() -> crate::TestResult {
+    test_wake_before_admission();
     test_wait();
     test_wait_timeout_until();
     test_release_all_runtime_tasks();
@@ -157,4 +158,55 @@ fn test_release_all_runtime_tasks() {
             .join()
             .expect("released wait-queue worker must exit cleanly");
     }
+}
+
+fn test_wake_before_admission() {
+    use std::os::arceos::{
+        guard::PreemptGuard,
+        modules::ax_runtime::task::{
+            self as scheduler, CpuId, CpuSet, CurrentParkStart, ThreadState,
+        },
+    };
+
+    let owner = scheduler::current_thread_id().unwrap();
+    let old_affinity = scheduler::thread_affinity(owner).unwrap();
+    let mut cpu0 = CpuSet::empty(scheduler::cpu_topology_len().unwrap());
+    assert!(cpu0.insert(CpuId::new(0)));
+    scheduler::set_current_thread_affinity(cpu0.clone()).unwrap();
+    let prepared = scheduler::prepare_raw(
+        || {
+            let CurrentParkStart::Prepared(park) = scheduler::begin_current_park().unwrap() else {
+                panic!("a New-state wake must not notify the first admitted park");
+            };
+            park.cancel().unwrap();
+            // Admission must clear only earlier wakes: a Running-state wake
+            // still interrupts the next park through the public facade.
+            scheduler::current_thread_handle()
+                .unwrap()
+                .wake_handle()
+                .wake();
+            assert!(matches!(
+                scheduler::begin_current_park().unwrap(),
+                CurrentParkStart::Notified
+            ));
+        },
+        "admission-wake".into(),
+        scheduler::default_task_stack_size(),
+    )
+    .unwrap();
+    let handle = prepared.thread_handle();
+    scheduler::set_thread_affinity(handle.id(), cpu0).unwrap();
+    assert_eq!(handle.state(), ThreadState::New);
+    handle.wake_handle().wake();
+    assert_eq!(handle.state(), ThreadState::New);
+    // Keep the start gate from parking before activation, which would consume
+    // the stale notification and hide the admission defect.
+    let published = {
+        let _guard = PreemptGuard::new();
+        prepared.publish().unwrap()
+    };
+    drop(handle);
+    assert_eq!(scheduler::join_thread(published).unwrap(), 0);
+    scheduler::set_current_thread_affinity(old_affinity).unwrap();
+    println!("task_wait_queue: pre-admission wake isolation OK");
 }

@@ -1,6 +1,6 @@
 use core::mem::{offset_of, size_of};
 
-use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time, wall_time};
+use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time, set_wall_time, wall_time};
 use linux_raw_sys::general::{
     __kernel_clockid_t, __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, CLOCK_BOOTTIME,
     CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID,
@@ -14,6 +14,34 @@ use crate::{
     task::{ITimerType, posix_timer::TimerSpec},
     time::TimeValueLike,
 };
+
+// Linux reserves 30 years for future uptime (`TIME_SETTOD_SEC_MAX`).
+const TIME_UPTIME_SEC_MAX: u64 = 30 * 365 * 24 * 60 * 60;
+const TIME_SETTOD_SEC_MAX: u64 = i64::MAX as u64 / NANOS_PER_SEC - TIME_UPTIME_SEC_MAX;
+
+pub fn sys_clock_settime(
+    current: &crate::task::UserTaskRef,
+    clock_id: __kernel_clockid_t,
+    ts: *const timespec,
+) -> crate::StarryResult<isize> {
+    if clock_id as u32 != CLOCK_REALTIME {
+        return Err(StarryError::InvalidInput);
+    }
+    // SAFETY: every bit pattern is a valid timespec; field ranges are checked
+    // before publication, and the copy uses the current task's pinned MM.
+    let requested = unsafe { ts.vm_read_uninit(current)?.assume_init() }.try_into_time_value()?;
+    if requested.as_secs() >= TIME_SETTOD_SEC_MAX {
+        return Err(StarryError::InvalidInput);
+    }
+    if !current.as_thread().cred().has_cap_sys_time() {
+        return Err(StarryError::OperationNotPermitted);
+    }
+    set_wall_time(requested).map_err(|_| StarryError::InvalidInput)?;
+    crate::file::timerfd::notify_realtime_clock_changed();
+    crate::task::notify_realtime_clock_changed();
+    crate::task::future::notify_wall_clock_changed();
+    Ok(0)
+}
 
 pub(crate) fn write_timespec(
     current: &crate::task::UserTaskRef,

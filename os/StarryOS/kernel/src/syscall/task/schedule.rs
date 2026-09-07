@@ -23,9 +23,10 @@ use crate::{
     syscall::time::write_timespec,
     task::{
         Cred, PgidNumber, PidNumber, PidView, ProcessData, Tgid, TidNumber, UserTaskRef,
-        future::wall_deadline_to_monotonic_deadline, get_task_by_number, processes,
+        future::{UserWaitOutcome, block_on_user_until_wall},
+        get_task_by_number, processes,
     },
-    time::{SleepDeadline, TimeValueLike},
+    time::{ClockDeadline, TimeValueLike},
 };
 
 #[repr(C)]
@@ -76,14 +77,24 @@ pub fn sys_sched_rr_get_interval_time64(
 
 fn sleep_until(
     current: &crate::task::UserTaskRef,
-    deadline: SleepDeadline,
+    deadline: ClockDeadline,
 ) -> crate::StarryResult<()> {
     debug!("sleep_until <= {deadline:?}");
     let deadline = match deadline {
-        SleepDeadline::Monotonic(deadline) => {
+        ClockDeadline::Monotonic(deadline) => {
             crate::task::future::monotonic_deadline_from_time(deadline)
         }
-        SleepDeadline::Realtime(deadline) => wall_deadline_to_monotonic_deadline(deadline),
+        ClockDeadline::Realtime(deadline) => {
+            return match block_on_user_until_wall(
+                current,
+                Some(deadline),
+                core::future::pending::<()>(),
+            ) {
+                UserWaitOutcome::TimedOut => Ok(()),
+                UserWaitOutcome::Interrupted => Err(StarryError::Interrupted),
+                UserWaitOutcome::Ready(()) => unreachable!("pending sleep future completed"),
+            };
+        }
     };
     let interrupted = core::cell::Cell::new(false);
     let timed_out = WaitQueue::new().wait_until_deadline(deadline, || {
@@ -107,7 +118,7 @@ fn sleep_relative(
     debug!("sleep_relative <= {duration:?}");
     let start = hal::time::monotonic_time();
     let deadline = start.saturating_add(duration);
-    let result = sleep_until(current, SleepDeadline::Monotonic(deadline));
+    let result = sleep_until(current, ClockDeadline::Monotonic(deadline));
 
     (result, hal::time::monotonic_time().saturating_sub(start))
 }
@@ -145,8 +156,8 @@ pub fn sys_clock_nanosleep(
     rem: *mut timespec,
 ) -> crate::StarryResult<isize> {
     let absolute_deadline = match clock_id as u32 {
-        CLOCK_REALTIME => SleepDeadline::Realtime,
-        CLOCK_MONOTONIC => SleepDeadline::Monotonic,
+        CLOCK_REALTIME => ClockDeadline::Realtime,
+        CLOCK_MONOTONIC => ClockDeadline::Monotonic,
         _ => {
             warn!("Unsupported clock_id: {clock_id}");
             return Err(StarryError::InvalidInput);

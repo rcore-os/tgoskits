@@ -71,7 +71,6 @@ pub mod net;
         feature = "task-priority",
         feature = "task-rt-policy",
         feature = "task-scheduler-irq-window",
-        feature = "task-scheduler-owner-claim",
         feature = "task-sleep",
         feature = "task-smp-online",
         feature = "task-stack-guard-page",
@@ -172,11 +171,6 @@ test_runner!(
     "task-scheduler-irq-window",
     run_task_scheduler_irq_window,
     task::scheduler_irq_window::run
-);
-test_runner!(
-    "task-scheduler-owner-claim",
-    run_task_scheduler_owner_claim,
-    task::scheduler_owner_claim::run
 );
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
 test_runner!(
@@ -337,12 +331,6 @@ const SELECTED_TESTS: &[TestCase] = &[
         "task-scheduler-irq-window",
         "IRQ-return scheduler passes reopen local interrupts",
         run_task_scheduler_irq_window,
-    ),
-    #[cfg(feature = "task-scheduler-owner-claim")]
-    TestCase::new(
-        "task-scheduler-owner-claim",
-        "no-switch scheduler frame avoids redundant CPU owner claims",
-        run_task_scheduler_owner_claim,
     ),
     #[cfg(feature = "task-sleep")]
     TestCase::new("task-sleep", "bounded task sleeps", run_task_sleep),

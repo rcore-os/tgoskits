@@ -15,7 +15,7 @@ zero-copy；目标是让 DMA buffer 在 queue CPU 与唯一 protocol CPU 之间�
 | --- | --- | --- |
 | hardware/DMA | `DmaBuffer`、descriptor/virtqueue | fixed-CPU `QueueGroupExecutor` |
 | queue/protocol boundary | 四条 SPSC ring + `pending_*` slot | 每条唯一 producer/consumer |
-| Ethernet frame | `ProtocolEthernetFrame` | 唯一 protocol executor |
+| Ethernet frame | DMA `ProtocolRxFrame` 或兼容 `ProtocolEthernetFrame` | 唯一 protocol executor |
 | Router packet buffer | `Router.rx_buffer` / `tx_buffer` | 唯一 protocol executor |
 | smoltcp socket buffer | TCP `SocketBuffer`、UDP/raw `PacketBuffer` | `SocketSet` / protocol executor |
 | user buffer | syscall `IoBuf`/`IoBufMut` | 调用者 |
@@ -32,10 +32,11 @@ pool
   -> IRxQueue::submit / initial_refill
   -> device DMA ownership
   -> IRxQueue::reclaim -> RxCompletion { buffer, packet_len }
-  -> RX-ready SPSC
-  -> protocol read/copy
-  -> RX-recycle SPSC
-  -> IRxQueue::recycle
+  -> submit replacement before publishing completion
+  -> RX-ready SPSC -> ProtocolRxFrame
+  -> EthernetDevice -> Router -> smoltcp RxToken::consume
+  -> RxRecycler -> RX-recycle SPSC/overflow
+  -> queue-local spares -> later replacement
 ```
 
 合法 TX 状态：
@@ -45,14 +46,14 @@ pool
   -> TX-free SPSC
   -> protocol fills frame
   -> TX-ready SPSC
-  -> ITxQueue::submit
+  -> ITxQueue::submit_with_options -> flush
   -> device DMA ownership
   -> ITxQueue::reclaim
   -> TX-free SPSC
 ```
 
 `SubmitError` 必须携带原 buffer。`Retry` 时 runtime 保存在 `pending_tx` 或
-`pending_rx_recycle`；terminal error 也先恢复可回收 ownership，再决定 group failure。
+`pending_rx_refill`；terminal error 也先恢复可回收 ownership，再决定 group failure。
 
 ## 3. SPSC memory ordering
 
@@ -85,10 +86,10 @@ ring full 不会 busy-wait 或 drop token：
 | 边界 | owner 保留 |
 | --- | --- |
 | RX-ready full | `pending_rx: RxCompletion` |
-| RX recycle submit retry | `pending_rx_recycle: DmaBuffer` |
+| RX replacement submit retry | `pending_rx_refill` 保存 completion 和 replacement；丢包重投时只保存原 token |
 | TX-free full | `pending_tx_free: DmaBuffer` |
-| TX submit retry | `pending_tx: DmaBuffer` |
-| protocol recycle full | protocol `pending_recycle` vector |
+| TX submit retry | `pending_tx: TxRequest` 保存 token 与提交选项 |
+| protocol recycle full | `RxRecycler` 的 overflow vector |
 | protocol TX-ready full | token 回到 protocol `tx_spares` |
 
 queue group 在 blocked 时保持 IRQ mask。protocol owner 消费或释放 ring 空间后精准
@@ -118,23 +119,29 @@ protocol write
 
 ## 7. Protocol copies
 
-RX 在 protocol owner 上从 DMA buffer 复制为 `ProtocolEthernetFrame`，随后立即归还
-token。Ethernet 解封装后 IP payload进入 `Router.rx_buffer`，再由 smoltcp token 复制/
-引用到 socket buffer。TX 方向从 socket buffer 经 smoltcp/Router 生成 IP packet，
-Ethernet framing 后写入 DMA token。
+DMA RX 的 `ProtocolRxFrame` 保留原 token，经 EthernetDevice 和 Router 传到
+smoltcp `RxToken::consume`，不经过 inline frame 或 Router packet buffer 复制。
+消费完成才归还 token；queue owner 已在发布 completion 前提交 replacement，硬件
+不必等待协议栈释放旧 buffer。回收 token 优先进入 queue-local spare cache。额外 token 上限为 `max(RX capacity, 64)`，
+因此每 group 的 RX payload 上限为 `(RX capacity + max(RX capacity, 64)) * buf_size`；
+还需计入 pool/token 元数据。overflow 和 spare cache 只容纳这些已存在的 token，
+不再通过持续分配扩大这项预算。到达上限或 DMA 分配失败时丢包并重投原 token，
+RX drop 经 frame port 汇总到设备统计。
 
-这些复制是当前单协议 core 与 portable DMA boundary 的明确成本。loopback 直接注入
-Router RX buffer，不分配物理 DMA token。
+TX 从 socket buffer 经 smoltcp/Router 生成 IP packet，直接填充 DMA token 中的
+Ethernet header、payload 和 padding。可选 checksum offload 与 deferred doorbell
+随 token 传递。非 DMA 端口和设备 FIFO 积压继续使用兼容 frame，socket/user buffer
+之间也仍有复制。loopback 直接注入 Router RX buffer，不分配物理 DMA token。
 
 ### 7.1 Device TX queue discipline
 
 每个物理设备的 `QueueFramePort` 都持有一个显式 `TxQueueDiscipline`。`NoQueue` 直接
 提交，busy 时返回 `Again`，其 `pending_tx` 始终为空且 `VecDeque` 不分配 backing。
-`Fifo { max_frames }` 在 busy 后复制完整 `ProtocolEthernetFrame` 并按序重试；构造时
+`Fifo { max_frames }` 在 busy 后保留 `ProtocolEthernetFrame` 和 `TxSubmitOptions` 并按序重试；构造时
 同样使用 `VecDeque::new()`，第一次真实入队前 capacity 为零。
 
 64 位目标上的一个 `ProtocolEthernetFrame` 是 2048 字节 payload 加 8 字节长度，
-因此 64 个 frame 的内容为 `64 * 2056 = 131584` 字节，即 128.5 KiB，不含 allocator
+因此 64 个 frame 的内容为 `64 * 2056 = 131584` 字节，即 128.5 KiB；此外还有逐包提交选项、队列和 allocator
 metadata。当前 `axruntime` 为每个生产网卡显式选择 64 帧 FIFO；这部分内存只在该设备
 实际形成 backlog 后增长，不再由所有网卡在启动时预留。不同设备的 limit 和 backlog
 彼此独立；hardware ring、SPSC token pool 与 AIC queue size 仍按各自所有者另外计算。
@@ -144,13 +151,17 @@ metadata。当前 `axruntime` 为每个生产网卡显式选择 64 帧 FIFO；�
 协议常量仍集中在 `consts.rs`：
 
 ```text
-TCP RX/TX: 64 KiB each per socket
+TCP RX/TX: 256 KiB each per socket
 UDP RX/TX: 64 KiB each per socket plus packet metadata
 RAW RX/TX: 64 KiB each per socket plus packet metadata
 LISTEN_QUEUE_SIZE: 512
 SOCKET_BUFFER_SIZE: 64 packet slots
 ETHERNET_MAX_PENDING_PACKETS: 128
 ```
+
+TCP 双向 buffer 合计每 socket 512 KiB；被动连接在 SYN 建立子 socket 时也分配这两块
+buffer，512 个排队连接仅 payload 预算就可能达到 256 MiB，另有 socket 元数据。
+当前通过 `consts.rs` 的两个常量统一设置，不支持运行期自动调节或每监听 socket 的独立预算。
 
 这些是 protocol/ARP 预算，不是 hardware queue capacity。提高 socket 预算会按 socket
 数量放大；提高 driver queue capacity 会按 group 增加 DMA pool 与 SPSC slot。
@@ -180,5 +191,5 @@ driver shutdown 必须返回或隔离仍可被设备 DMA 的 token。无法确�
 - budget exhaustion 保持 IRQ mask；
 - non-coherent sync 顺序由目标 driver/board 测试确认。
 
-真正 zero-copy、GRO、page-pool、scatter-gather protocol token 和 user zero-copy 不在本次
+GRO、page-pool、scatter-gather protocol token 和 user zero-copy 不在本次
 架构范围内。

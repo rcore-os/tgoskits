@@ -21,7 +21,7 @@ use starry_signal::{SignalInfo, Signo};
 #[cfg(axtest)]
 use super::PidIdentity;
 use super::timer::{AlarmChange, AlarmSlot, AlarmTarget, AlarmToken};
-use crate::{StarryError, StarryResult, sync::PiMutex};
+use crate::{StarryError, StarryResult, sync::PiMutex, time::ClockDeadline};
 
 const EXPIRY_SCAN_BATCH_SIZE: usize = 16;
 const MAX_TIMER_NANOS: u64 = i64::MAX as u64;
@@ -116,13 +116,24 @@ struct PosixTimer {
     sigev_value: i64,
     /// Interval for periodic timers (0 = one-shot).
     interval_ns: u64,
-    /// Absolute deadline in `clock_id`'s time domain, or 0 if disarmed.
+    /// Relative realtime timers run on the monotonic clock.
+    deadline_clock_id: u32,
+    /// Absolute deadline in `deadline_clock_id`'s domain, or 0 if disarmed.
     deadline_ns: u64,
     /// Stable alarm-queue identity with generation-based stale-wakeup rejection.
     alarm_slot: AlarmSlot,
 }
 
 impl PosixTimer {
+    fn alarm_deadline(&self) -> ClockDeadline {
+        let deadline = Duration::from_nanos(self.deadline_ns);
+        if self.deadline_clock_id == CLOCK_REALTIME {
+            ClockDeadline::Realtime(deadline)
+        } else {
+            ClockDeadline::Monotonic(deadline)
+        }
+    }
+
     fn poll_expiry(&mut self, now: u64, trigger: Option<&AlarmToken>) -> Option<ExpiryOutcome> {
         if self.deadline_ns == 0 {
             return None;
@@ -132,10 +143,14 @@ impl PosixTimer {
         }
 
         if now >= self.deadline_ns {
+            let elapsed = now.saturating_sub(self.deadline_ns);
+            let overrun = elapsed
+                .checked_div(self.interval_ns)
+                .unwrap_or(0)
+                .min(i32::MAX as u64) as i32;
             let signal = self
                 .signo
-                .map(|signo| SignalInfo::new_timer(signo, self.sigev_value));
-            let elapsed = now.saturating_sub(self.deadline_ns);
+                .map(|signo| SignalInfo::new_timer(signo, self.sigev_value, overrun));
             let alarm_change = if let Some(elapsed_periods) = elapsed.checked_div(self.interval_ns)
             {
                 // Advance to the first future period. A delayed worker
@@ -146,9 +161,7 @@ impl PosixTimer {
                     .deadline_ns
                     .saturating_add(periods.saturating_mul(self.interval_ns))
                     .min(MAX_TIMER_NANOS);
-                self.alarm_slot.replace(Some(Duration::from_nanos(
-                    self.deadline_ns.saturating_sub(now),
-                )))
+                self.alarm_slot.replace(Some(self.alarm_deadline()))
             } else {
                 self.deadline_ns = 0;
                 self.alarm_slot.replace(None)
@@ -165,9 +178,7 @@ impl PosixTimer {
             // again.
             ExpiryOutcome {
                 signal: None,
-                alarm_change: self.alarm_slot.replace(Some(Duration::from_nanos(
-                    self.deadline_ns.saturating_sub(now),
-                ))),
+                alarm_change: self.alarm_slot.replace(Some(self.alarm_deadline())),
             }
         })
     }
@@ -284,6 +295,7 @@ impl PosixTimerTable {
             signo,
             sigev_value,
             interval_ns: 0,
+            deadline_clock_id: clock_id,
             deadline_ns: 0,
             alarm_slot: AlarmSlot::new(),
         };
@@ -358,7 +370,7 @@ impl PosixTimerTable {
             // Compute old remaining time
             let old_interval = timer.interval_ns;
             let old_remaining = if timer.deadline_ns > 0 {
-                let now = clocks.now(timer.clock_id);
+                let now = clocks.now(timer.deadline_clock_id);
                 timer.deadline_ns.saturating_sub(now)
             } else {
                 0
@@ -370,27 +382,28 @@ impl PosixTimerTable {
 
             timer.interval_ns = new_interval_ns;
 
-            let alarm_delay = if new_value_ns == 0 {
-                // Disarm
+            let deadline = if new_value_ns == 0 {
                 timer.deadline_ns = 0;
                 None
             } else {
-                let now = clocks.now(timer.clock_id);
-                let abs_flag = flags & 1; // TIMER_ABSTIME = 1
-                if abs_flag != 0 {
-                    // Absolute time: use the requested time directly.
-                    // If it's already in the past, poll_expired will fire
-                    // immediately (now >= deadline) per POSIX.
-                    timer.deadline_ns = new_value_ns;
+                let absolute = flags & 1 != 0; // TIMER_ABSTIME
+                timer.deadline_clock_id = if absolute {
+                    timer.clock_id
                 } else {
-                    // Relative time
-                    timer.deadline_ns = now.saturating_add(new_value_ns).min(MAX_TIMER_NANOS);
-                }
-                let remaining = timer.deadline_ns.saturating_sub(now);
-                Some(Duration::from_nanos(remaining))
+                    CLOCK_MONOTONIC
+                };
+                timer.deadline_ns = if absolute {
+                    new_value_ns
+                } else {
+                    clocks
+                        .now(timer.deadline_clock_id)
+                        .saturating_add(new_value_ns)
+                        .min(MAX_TIMER_NANOS)
+                };
+                Some(timer.alarm_deadline())
             };
 
-            let alarm_change = timer.alarm_slot.replace(alarm_delay);
+            let alarm_change = timer.alarm_slot.replace(deadline);
             self.publish_armed_state(&timers);
             ((old_interval, old_remaining), alarm_change)
         };
@@ -409,7 +422,7 @@ impl PosixTimerTable {
         let timer = timers.get(&id).ok_or(())?;
 
         let remaining = if timer.deadline_ns > 0 {
-            let now = clocks.now(timer.clock_id);
+            let now = clocks.now(timer.deadline_clock_id);
             timer.deadline_ns.saturating_sub(now)
         } else {
             0
@@ -479,7 +492,9 @@ impl PosixTimerTable {
                     break;
                 };
                 batch.last_scanned_id = Some(id);
-                if let Some(outcome) = timer.poll_expiry(clocks.now(timer.clock_id), trigger) {
+                if let Some(outcome) =
+                    timer.poll_expiry(clocks.now(timer.deadline_clock_id), trigger)
+                {
                     batch.push(outcome);
                 }
             }
@@ -576,6 +591,7 @@ fn posix_timer_clock_sampling_rules_hold_for_test() -> bool {
             1,
             PosixTimer {
                 clock_id: CLOCK_MONOTONIC,
+                deadline_clock_id: CLOCK_MONOTONIC,
                 signo: None,
                 sigev_value: 0,
                 interval_ns: 0,
@@ -641,6 +657,7 @@ fn posix_timer_expiry_batch_rules_hold_for_test() -> bool {
                 id,
                 PosixTimer {
                     clock_id: CLOCK_MONOTONIC,
+                    deadline_clock_id: CLOCK_MONOTONIC,
                     signo: Some(Signo::SIGALRM),
                     sigev_value: id as i64,
                     interval_ns: 0,
@@ -680,6 +697,7 @@ fn posix_timer_stale_expiry_signal_is_suppressed_for_test() -> bool {
             1,
             PosixTimer {
                 clock_id: CLOCK_MONOTONIC,
+                deadline_clock_id: CLOCK_MONOTONIC,
                 signo: Some(Signo::SIGALRM),
                 sigev_value: 7,
                 interval_ns: 0,

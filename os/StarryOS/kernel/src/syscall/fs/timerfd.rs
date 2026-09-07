@@ -9,7 +9,7 @@ use crate::{
     StarryError, StarryResult,
     file::{
         FileLike, add_file_like,
-        timerfd::{TFD_TIMER_ABSTIME, TFD_TIMER_CANCEL_ON_SET, Timerfd},
+        timerfd::{TFD_TIMER_ABSTIME, TFD_TIMER_CANCEL_ON_SET, Timerfd, TimerfdSetMode},
     },
     mm::VmPtr,
     syscall::time::write_kernel_itimerspec,
@@ -79,8 +79,14 @@ pub fn sys_timerfd_settime(
     let new_ival = timespec_to_duration(&new.it_interval)?;
     let new_val = timespec_to_duration(&new.it_value)?;
 
-    let abstime = flags & TFD_TIMER_ABSTIME != 0;
-    let (old_ival, old_rem) = tfd.settime(abstime, new_val, new_ival)?;
+    let mode = if flags & TFD_TIMER_ABSTIME == 0 {
+        TimerfdSetMode::Relative
+    } else if flags & TFD_TIMER_CANCEL_ON_SET != 0 {
+        TimerfdSetMode::AbsoluteCancelOnSet
+    } else {
+        TimerfdSetMode::Absolute
+    };
+    let (old_ival, old_rem) = tfd.settime(mode, new_val, new_ival)?;
 
     if let Some(old_ptr) = old_value.nullable() {
         let old = __kernel_itimerspec {

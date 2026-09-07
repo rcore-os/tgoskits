@@ -78,7 +78,16 @@ impl ThreadLifecycle {
                     to: next,
                 });
             }
-            let updated = (observed & !STATE_MASK) | next as u8;
+            // Admission is the boundary between pre-publication notifications
+            // and runnable-thread wakes. Clear the former in this same CAS for
+            // every New transition, including bootstrap. A racing wake that
+            // observes Running publishes after this CAS and remains pending.
+            let retained = if current == ThreadState::New {
+                0
+            } else {
+                observed & !STATE_MASK
+            };
+            let updated = retained | next as u8;
             match self.state.compare_exchange_weak(
                 observed,
                 updated,

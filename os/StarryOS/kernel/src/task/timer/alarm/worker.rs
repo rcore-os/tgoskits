@@ -20,14 +20,14 @@ fn take_alarm_worker_snapshot(
 
 fn alarm_task() {
     loop {
-        let snapshot = take_alarm_worker_snapshot(&ALARM_EPOCH, || {
-            next_alarm_action(wall_time())
-        });
+        let snapshot =
+            take_alarm_worker_snapshot(
+                &ALARM_EPOCH,
+                || next_alarm_action(ClockSnapshot::capture()),
+            );
         match snapshot.action {
             AlarmAction::AwaitNewTimer => {
-                ALARM_WAIT.wait_until(|| {
-                    ALARM_EPOCH.load(Ordering::Acquire) != snapshot.epoch
-                });
+                ALARM_WAIT.wait_until(|| ALARM_EPOCH.load(Ordering::Acquire) != snapshot.epoch);
             }
             AlarmAction::Fire {
                 token,
@@ -38,7 +38,7 @@ fn alarm_task() {
                 }
             }
             AlarmAction::AwaitDeadline(deadline) => {
-                let remaining = deadline.saturating_sub(wall_time());
+                let remaining = deadline.saturating_sub(ax_runtime::hal::time::monotonic_time());
                 if !remaining.is_zero() {
                     let _timed_out = ALARM_WAIT.wait_timeout_until(remaining, || {
                         ALARM_EPOCH.load(Ordering::Acquire) != snapshot.epoch
@@ -58,7 +58,7 @@ enum AlarmAction {
     AwaitDeadline(Duration),
 }
 
-fn next_alarm_action(now: Duration) -> AlarmAction {
+fn next_alarm_action(now: ClockSnapshot) -> AlarmAction {
     let mut alarms = ALARM_LIST.lock();
     match alarms.next_action(now) {
         AlarmQueueAction::Empty => AlarmAction::AwaitNewTimer,

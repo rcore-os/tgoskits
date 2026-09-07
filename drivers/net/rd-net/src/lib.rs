@@ -61,10 +61,30 @@ impl TxQueue {
         self.config.ring_size.saturating_sub(1)
     }
 
+    /// Returns transport checksums this queue can calculate.
+    pub fn checksum_capabilities(&self) -> TxChecksumCapabilities {
+        self.queue.checksum_capabilities()
+    }
+
     /// Transfers one prepared token to the device.
     pub fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
         buffer.prepare_for_device();
         self.queue.submit(buffer)
+    }
+
+    /// Transfers one prepared token with checksum and notification options.
+    pub fn submit_with_options(
+        &mut self,
+        buffer: DmaBuffer,
+        options: TxSubmitOptions,
+    ) -> Result<(), SubmitError> {
+        buffer.prepare_for_device();
+        self.queue.submit_with_options(buffer, options)
+    }
+
+    /// Makes all deferred submissions visible to the device.
+    pub fn flush(&mut self) {
+        self.queue.flush();
     }
 
     /// Reclaims one completed token from the device.
@@ -100,6 +120,11 @@ impl RxQueue {
     /// Returns the number of buffers the queue can own concurrently.
     pub fn capacity(&self) -> usize {
         self.config.ring_size.saturating_sub(1)
+    }
+
+    /// Allocates one queue-compatible token for replacement-before-delivery.
+    pub fn allocate_replacement(&self) -> Result<DmaBuffer, NetError> {
+        self.pool.allocate(self.config.buf_size)
     }
 
     /// Posts fresh buffers up to `budget` or until the queue reaches capacity.
@@ -365,6 +390,31 @@ mod tests {
 
     struct RetryRxQueue;
 
+    struct PlainTxQueue;
+
+    impl ITxQueue for PlainTxQueue {
+        fn id(&self) -> NetQueueId {
+            NetQueueId::new(0)
+        }
+
+        fn config(&self) -> QueueConfig {
+            QueueConfig {
+                dma_mask: u64::MAX,
+                align: 64,
+                buf_size: 256,
+                ring_size: 2,
+            }
+        }
+
+        fn submit(&mut self, _buffer: DmaBuffer) -> Result<(), SubmitError> {
+            panic!("a checksum request must not fall through to plain submit")
+        }
+
+        fn reclaim(&mut self) -> Option<DmaBuffer> {
+            None
+        }
+    }
+
     impl IRxQueue for RetryRxQueue {
         fn id(&self) -> NetQueueId {
             NetQueueId::new(0)
@@ -430,6 +480,31 @@ mod tests {
             ),
             &DMA,
         )
+    }
+
+    #[test]
+    fn unsupported_checksum_submission_returns_the_move_only_token() {
+        let config = PlainTxQueue.config();
+        let pool = make_pool(&test_device_dma(), config, DmaDirection::ToDevice).unwrap();
+        let buffer = pool.allocate(128).unwrap();
+        let bus_addr = buffer.bus_addr();
+        let mut tx = TxQueue::new(Box::new(PlainTxQueue));
+
+        let error = tx
+            .submit_with_options(
+                buffer,
+                TxSubmitOptions::immediate(Some(TxChecksumOffload {
+                    network: TxNetworkProtocol::Ipv4,
+                    transport: TxTransportProtocol::Tcp,
+                    transport_offset: 34,
+                })),
+            )
+            .unwrap_err();
+        let (buffer, reason) = error.into_parts();
+
+        assert!(matches!(reason, NetError::NotSupported));
+        assert_eq!(buffer.bus_addr(), bus_addr);
+        assert_eq!(buffer.len(), 128);
     }
 
     #[test]

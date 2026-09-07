@@ -104,6 +104,94 @@ pub struct QueueConfig {
     pub ring_size: usize,
 }
 
+/// Transport checksums a transmit queue can calculate for complete packets.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TxChecksumCapabilities(u8);
+
+impl TxChecksumCapabilities {
+    /// The queue does not calculate transport checksums.
+    pub const NONE: Self = Self(0);
+    /// The queue calculates TCP checksums inside IPv4 packets.
+    pub const IPV4_TCP: Self = Self(1 << 0);
+    /// The queue calculates UDP checksums inside IPv4 packets.
+    pub const IPV4_UDP: Self = Self(1 << 1);
+    /// The queue calculates TCP checksums inside IPv6 packets.
+    pub const IPV6_TCP: Self = Self(1 << 2);
+    /// The queue calculates UDP checksums inside IPv6 packets.
+    pub const IPV6_UDP: Self = Self(1 << 3);
+    /// The queue calculates TCP and UDP checksums for IPv4 and IPv6 packets.
+    pub const TCP_UDP: Self = Self(0b1111);
+
+    /// Combines independent checksum capabilities.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Retains only checksum operations supported by both queues.
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// Returns whether TCP checksum calculation is supported for both IP versions.
+    pub const fn supports_tcp(self) -> bool {
+        self.supports(TxNetworkProtocol::Ipv4, TxTransportProtocol::Tcp)
+            && self.supports(TxNetworkProtocol::Ipv6, TxTransportProtocol::Tcp)
+    }
+
+    /// Returns whether UDP checksum calculation is supported for both IP versions.
+    pub const fn supports_udp(self) -> bool {
+        self.supports(TxNetworkProtocol::Ipv4, TxTransportProtocol::Udp)
+            && self.supports(TxNetworkProtocol::Ipv6, TxTransportProtocol::Udp)
+    }
+
+    /// Returns whether a specific network/transport pair is supported.
+    pub const fn supports(
+        self,
+        network: TxNetworkProtocol,
+        transport: TxTransportProtocol,
+    ) -> bool {
+        let required = match (network, transport) {
+            (TxNetworkProtocol::Ipv4, TxTransportProtocol::Tcp) => Self::IPV4_TCP,
+            (TxNetworkProtocol::Ipv4, TxTransportProtocol::Udp) => Self::IPV4_UDP,
+            (TxNetworkProtocol::Ipv6, TxTransportProtocol::Tcp) => Self::IPV6_TCP,
+            (TxNetworkProtocol::Ipv6, TxTransportProtocol::Udp) => Self::IPV6_UDP,
+        };
+        self.0 & required.0 != 0
+    }
+}
+
+/// Network protocol containing a transport checksum requested from hardware.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TxNetworkProtocol {
+    Ipv4,
+    Ipv6,
+}
+
+/// Transport protocol whose checksum hardware must calculate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TxTransportProtocol {
+    Tcp,
+    Udp,
+}
+
+/// Per-packet transmit checksum request.
+///
+/// The caller must supply a complete, unfragmented IP packet with the indicated
+/// transport header at `transport_offset`. Its transport checksum field is
+/// zero: this requests full checksum calculation, not a partial-checksum seed.
+/// The explicit request, not the field's value, carries the caller's intent.
+/// Drivers may impose additional descriptor constraints and reject unsupported
+/// requests without consuming the token. The caller can calculate the checksum
+/// in software and retry without this option.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TxChecksumOffload {
+    pub network: TxNetworkProtocol,
+    pub transport: TxTransportProtocol,
+    /// Byte offset of the transport header from the start of the L2 frame.
+    pub transport_offset: u16,
+}
+
 /// Move-only DMA ownership token passed between a runtime and one driver queue.
 ///
 /// The token uniquely owns CPU access to the mapped range while it is outside
@@ -782,6 +870,41 @@ pub trait WifiControl: Send + 'static {
 // Transmit queue
 // ---------------------------------------------------------------------------
 
+/// Hardware-notification policy for one transmit submission.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TxNotify {
+    /// Make the submitted descriptor visible to the device immediately.
+    #[default]
+    Immediate,
+    /// Hint that notification may be deferred until [`ITxQueue::flush`].
+    /// Drivers may notify earlier, including on every submission.
+    Deferred,
+}
+
+/// Per-packet options passed across the runtime transmit boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TxSubmitOptions {
+    /// None preserves transport checksum bytes supplied by the caller.
+    pub checksum: Option<TxChecksumOffload>,
+    pub notify: TxNotify,
+}
+
+impl TxSubmitOptions {
+    pub const fn immediate(checksum: Option<TxChecksumOffload>) -> Self {
+        Self {
+            checksum,
+            notify: TxNotify::Immediate,
+        }
+    }
+
+    pub const fn deferred(checksum: Option<TxChecksumOffload>) -> Self {
+        Self {
+            checksum,
+            notify: TxNotify::Deferred,
+        }
+    }
+}
+
 /// Transmit queue interface.
 ///
 /// A driver moves one TX queue into each [`NetPollGroupParts`].
@@ -792,6 +915,11 @@ pub trait ITxQueue: Send + 'static {
     /// DMA buffer configuration for this queue.
     fn config(&self) -> QueueConfig;
 
+    /// Returns transport checksums this queue can calculate.
+    fn checksum_capabilities(&self) -> TxChecksumCapabilities {
+        TxChecksumCapabilities::NONE
+    }
+
     /// Submit a DMA buffer for transmission.
     ///
     /// `bus_addr` must point to a DMA-capable buffer whose first `len` bytes
@@ -799,6 +927,27 @@ pub trait ITxQueue: Send + 'static {
     /// [`NetError::LinkDown`] failure must have a future queue or link event
     /// that can wake the fixed-CPU poll owner after it rearms IRQs.
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError>;
+
+    /// Submits a buffer with checksum and device-notification options.
+    ///
+    /// The default rejects checksum requests and otherwise preserves the
+    /// existing immediate-notification behavior. A rejected submission must
+    /// return the original move-only token to the runtime.
+    fn submit_with_options(
+        &mut self,
+        buffer: DmaBuffer,
+        options: TxSubmitOptions,
+    ) -> Result<(), SubmitError> {
+        if options.checksum.is_some() {
+            Err(SubmitError::new(buffer, NetError::NotSupported))
+        } else {
+            self.submit(buffer)
+        }
+    }
+
+    /// Ensures the device has been notified of every previously accepted
+    /// submission. This does not wait for transmission or completion.
+    fn flush(&mut self) {}
 
     /// Reclaim the next completed transmit buffer.
     ///
@@ -840,4 +989,40 @@ pub struct RxCompletion {
     pub buffer: DmaBuffer,
     /// Number of received bytes at the beginning of `buffer`.
     pub packet_len: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checksum_capabilities_distinguish_transport_and_ip_version() {
+        use TxChecksumCapabilities as Caps;
+        use TxNetworkProtocol::{Ipv4, Ipv6};
+        use TxTransportProtocol::{Tcp, Udp};
+
+        let pairs = [
+            (Caps::IPV4_TCP, Ipv4, Tcp),
+            (Caps::IPV4_UDP, Ipv4, Udp),
+            (Caps::IPV6_TCP, Ipv6, Tcp),
+            (Caps::IPV6_UDP, Ipv6, Udp),
+        ];
+        for (capability, network, transport) in pairs {
+            assert!(!Caps::NONE.supports(network, transport));
+            assert!(Caps::TCP_UDP.supports(network, transport));
+            for (other, other_network, other_transport) in pairs {
+                assert_eq!(
+                    capability.supports(other_network, other_transport),
+                    capability == other
+                );
+            }
+        }
+        let ipv4 = Caps::IPV4_TCP.union(Caps::IPV4_UDP);
+        let tcp = Caps::IPV4_TCP.union(Caps::IPV6_TCP);
+        assert_eq!(ipv4.intersection(tcp), Caps::IPV4_TCP);
+        assert!(!ipv4.supports_tcp());
+        assert!(!ipv4.supports_udp());
+        assert!(tcp.supports_tcp());
+        assert!(!tcp.supports_udp());
+    }
 }

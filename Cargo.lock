@@ -6773,6 +6773,7 @@ dependencies = [
  "ax-sync",
  "dma-api",
  "log",
+ "mbarrier",
  "mmio-api",
  "rdif-eth",
  "thiserror 2.0.20",
@@ -8076,7 +8077,6 @@ dependencies = [
  "tock-registers 0.10.1",
  "uluru",
  "usb-serial",
- "weak-map",
  "x86",
  "xmas-elf",
  "zerocopy",
@@ -9498,12 +9498,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
 ]
-
-[[package]]
-name = "weak-map"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dba9c05687e501b2710833fbe2cc7ff8cc24411fb0d81967498ca44598942f88"
 
 [[package]]
 name = "web-sys"

@@ -1,6 +1,6 @@
 use core::ffi::c_int;
 
-use ax_hal::time::wall_time;
+use ax_hal::time::monotonic_time;
 
 use crate::{PosixError, PosixResult, ctypes, imp::fd_ops::get_file_like};
 
@@ -123,7 +123,7 @@ pub unsafe fn sys_select(
             return Err(PosixError::EINVAL);
         }
         let nfds = (nfds as usize).min(FD_SETSIZE);
-        let deadline = unsafe { timeout.as_ref().map(|t| wall_time() + (*t).into()) };
+        let deadline = unsafe { timeout.as_ref().map(|t| monotonic_time() + (*t).into()) };
         let fd_sets = FdSets::from(nfds, readfds, writefds, exceptfds);
 
         unsafe {
@@ -140,7 +140,7 @@ pub unsafe fn sys_select(
                 return Ok(res);
             }
 
-            if deadline.is_some_and(|ddl| wall_time() >= ddl) {
+            if deadline.is_some_and(|ddl| monotonic_time() >= ddl) {
                 debug!("    timeout!");
                 return Ok(0);
             }

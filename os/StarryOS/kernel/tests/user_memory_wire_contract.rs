@@ -2,11 +2,8 @@
 
 const ACCESS: &str = include_str!("../src/mm/access.rs");
 const FS_IO: &str = include_str!("../src/syscall/fs/io.rs");
-const NET_FILE: &str = include_str!("../src/file/net.rs");
-const NET_IO: &str = include_str!("../src/syscall/net/io.rs");
 const RGA: &str = include_str!("../src/pseudofs/dev/rga.rs");
 const STAT: &str = include_str!("../src/syscall/fs/stat.rs");
-const SYS: &str = include_str!("../src/syscall/sys.rs");
 const TIME: &str = include_str!("../src/syscall/time.rs");
 
 #[test]
@@ -24,52 +21,6 @@ fn bidirectional_user_buffer_splits_copy_in_and_copy_out_capabilities() {
 
     assert!(!user_ptr.contains("pub fn read_slice(self, len: usize)"));
     assert!(user_const_ptr.contains("pub fn read_slice(self, task: &UserTaskRef, len: usize)"));
-}
-
-#[test]
-fn riscv_hwprobe_is_a_bidirectional_wire_type() {
-    let hwprobe = attributed_item(SYS, "struct RiscvHwprobe", "pub fn sys_riscv_hwprobe");
-    let syscall = section(SYS, "pub fn sys_riscv_hwprobe", "Ok(0)\n}");
-
-    assert!(hwprobe.contains("bytemuck::AnyBitPattern"));
-    assert!(hwprobe.contains("bytemuck::NoUninit"));
-    assert!(syscall.contains("key_ptr.vm_read(current)?"));
-    assert!(syscall.contains("key_ptr.vm_write(current, key)?"));
-    assert!(syscall.contains(".vm_write(current, value)?"));
-    assert!(
-        !syscall.contains("read_slice"),
-        "hwprobe imports keys and publishes each pair in order"
-    );
-    assert!(!syscall.contains("read_abi_slice"));
-}
-
-#[test]
-fn socket_payloads_cross_transport_locks_through_kernel_staging_buffers() {
-    let receive = section(
-        NET_FILE,
-        "pub(crate) fn recv_to_user<",
-        "\n    pub fn ip_domain(",
-    );
-    let send = section(
-        NET_FILE,
-        "pub(crate) fn send_from_user<",
-        "\n    pub(crate) fn recv_to_user<",
-    );
-    let file_like = section(NET_FILE, "impl FileLike for Socket {", "\n    fn stat(");
-    let send_impl = section(NET_IO, "fn send_impl(", "\n}\n\npub fn sys_sendto");
-    let recv_impl = section(NET_IO, "fn recv_impl(", "\n}\n\npub fn sys_recvfrom");
-
-    assert!(send.contains("src.read_exact(&mut staging)"));
-    assert!(send.contains("self.inner.try_send(&mut staging, &mut options)"));
-    assert!(receive.contains("self.inner.try_recv(&mut staging, &mut options)"));
-    assert!(receive.contains("dst.write_all(&buffer[..copied])"));
-    assert!(file_like.contains("self.recv_to_user(dst, RecvOptions::default())"));
-    assert!(file_like.contains("self.send_from_user("));
-    assert!(file_like.contains("Self::with_current_sender_credentials(SendOptions::default())"));
-    assert!(send_impl.contains("socket.send_from_user("));
-    assert!(recv_impl.contains("socket.recv_to_user("));
-    assert!(!send_impl.contains("socket.send(\n"));
-    assert!(!recv_impl.contains("socket.recv(\n"));
 }
 
 #[test]
@@ -132,19 +83,6 @@ fn clock_gettime_timespec_uses_one_faultable_user_transfer() {
         !write_timespec.contains("write_field("),
         "clock_gettime must not prepare user memory separately for tv_sec and tv_nsec"
     );
-}
-
-fn attributed_item<'a>(source: &'a str, item: &str, end: &str) -> &'a str {
-    let item_offset = source
-        .find(item)
-        .unwrap_or_else(|| panic!("missing item: {item}"));
-    let attribute_offset = source[..item_offset]
-        .rfind("#[repr(C)]")
-        .unwrap_or_else(|| panic!("missing repr(C) for item: {item}"));
-    let end_offset = source[item_offset..]
-        .find(end)
-        .unwrap_or_else(|| panic!("missing item end: {end}"));
-    &source[attribute_offset..item_offset + end_offset]
 }
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {

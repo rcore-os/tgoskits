@@ -1269,6 +1269,7 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
         Sysno::gettimeofday => sys_gettimeofday(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::times => sys_times(current, uctx.arg0() as _),
         Sysno::clock_gettime => sys_clock_gettime(current, uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::clock_settime => sys_clock_settime(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::clock_getres => sys_clock_getres(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::getitimer => sys_getitimer(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setitimer => sys_setitimer(

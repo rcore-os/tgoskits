@@ -20,7 +20,7 @@
 //! and does not inspect TCP/UDP socket state. Route selection is performed by
 //! the router before Ethernet sees the packet.
 
-use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, string::String, vec, vec::Vec};
 
 use hashbrown::HashMap;
 use smoltcp::{
@@ -28,7 +28,7 @@ use smoltcp::{
     time::{Duration, Instant},
     wire::{
         ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
-        EthernetRepr, IpAddress, Ipv4Cidr,
+        EthernetRepr, IpAddress, IpVersion, Ipv4Cidr,
     },
 };
 
@@ -36,14 +36,12 @@ use crate::{
     config::InterfaceId,
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
     device::{
-        ArpEntry, Device, ETH_ZLEN, EthernetFramePort, NetDeviceError, NetDeviceResult,
-        ProtocolEthernetFrame,
+        ArpEntry, Device, DeviceRxPacket, DeviceRxPoll, ETH_ZLEN, EthernetFramePort,
+        NetDeviceError, NetDeviceResult, ProtocolEthernetFrame, TxNotify, TxSubmitOptions,
     },
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
-const MAX_PENDING_CONTROL_FRAMES: usize = 16;
-
 struct Neighbor {
     hardware_address: EthernetAddress,
     expires_at: Instant,
@@ -53,18 +51,6 @@ struct PendingNeighbor {
     requested_at: Instant,
 }
 
-struct PendingFrame {
-    frame: ProtocolEthernetFrame,
-    wire_len: usize,
-}
-
-enum SubmitOutcome {
-    Sent(usize),
-    Queued,
-    Full,
-    Failed,
-}
-
 pub struct EthernetDevice {
     name: String,
     inner: Box<dyn EthernetFramePort>,
@@ -72,20 +58,7 @@ pub struct EthernetDevice {
     pending_neighbors: HashMap<IpAddress, PendingNeighbor>,
     ip: Option<Ipv4Cidr>,
 
-    /// Bounded link-control backlog. ARP must remain ahead of deferred IP
-    /// traffic when the lower queue reports transient backpressure, otherwise
-    /// a saturated data queue can prevent the neighbor state needed to drain
-    /// that same traffic from ever being refreshed.
-    pending_control_frames: VecDeque<PendingFrame>,
-    /// Bounded data backlog corresponding to Linux's qdisc ownership rule:
-    /// once a frame meets transient device backpressure, the link layer keeps
-    /// that exact frame until the lower queue accepts it.
-    pending_data_frames: VecDeque<PendingFrame>,
     pending_packets: PacketBuffer<'static, IpAddress>,
-    /// Set after a neighbour transition makes raw pending IP packets eligible
-    /// for transmission. This avoids rescanning and copying the neighbour
-    /// queue on every protocol poll while resolution is still outstanding.
-    pending_packets_ready: bool,
     /// Individual L2 frame lengths of packets transmitted on a side path
     /// during ARP resolution (inside `recv()`/`process_arp()`). Drained by
     /// the protocol executor via [`Device::drain_deferred_tx`].
@@ -141,10 +114,7 @@ impl EthernetDevice {
             pending_neighbors: HashMap::new(),
             ip,
 
-            pending_control_frames: VecDeque::new(),
-            pending_data_frames: VecDeque::new(),
             pending_packets,
-            pending_packets_ready: false,
             deferred_tx_frame_lens: Vec::new(),
             deferred_rx_frame_lens: Vec::new(),
             deferred_tx_errors: 0,
@@ -159,19 +129,57 @@ impl EthernetDevice {
         EthernetAddress(self.inner.mac_address())
     }
 
-    /// Builds an Ethernet frame around `size` bytes of payload written by `f`.
-    fn build_frame<F>(
-        source: EthernetAddress,
+    fn transmit_ip_to(
+        &mut self,
+        destination: EthernetAddress,
+        packet: &[u8],
+    ) -> NetDeviceResult<usize> {
+        let protocol = match IpVersion::of_packet(packet) {
+            Ok(IpVersion::Ipv4) => EthernetProtocol::Ipv4,
+            Ok(IpVersion::Ipv6) => EthernetProtocol::Ipv6,
+            Err(_) => return Err(NetDeviceError::InvalidParam),
+        };
+        Self::send_to_with_options(
+            &mut *self.inner,
+            destination,
+            packet.len(),
+            |buffer| buffer.copy_from_slice(packet),
+            protocol,
+            TxNotify::Deferred,
+        )
+    }
+
+    /// Builds an Ethernet frame around `size` bytes of payload written by `f`,
+    /// emits it via `inner.transmit()`, and returns the total L2 frame length
+    /// (including padding to [`ETH_ZLEN`], excluding FCS) on success.
+    /// [`NetDeviceError::Again`] leaves ownership with the caller so it can
+    /// retain and retry the packet after TX descriptors become available.
+    fn send_to<F>(
+        inner: &mut dyn EthernetFramePort,
         dst: EthernetAddress,
         size: usize,
         f: F,
         proto: EthernetProtocol,
-    ) -> NetDeviceResult<PendingFrame>
+    ) -> NetDeviceResult<usize>
+    where
+        F: FnOnce(&mut [u8]),
+    {
+        Self::send_to_with_options(inner, dst, size, f, proto, TxNotify::Immediate)
+    }
+
+    fn send_to_with_options<F>(
+        inner: &mut dyn EthernetFramePort,
+        dst: EthernetAddress,
+        size: usize,
+        f: F,
+        proto: EthernetProtocol,
+        notify: TxNotify,
+    ) -> NetDeviceResult<usize>
     where
         F: FnOnce(&mut [u8]),
     {
         let repr = EthernetRepr {
-            src_addr: source,
+            src_addr: EthernetAddress(inner.mac_address()),
             dst_addr: dst,
             ethertype: proto,
         };
@@ -182,151 +190,30 @@ impl EthernetDevice {
         // FCS, aligned with Linux /proc/net/dev semantics.
         let wire_len = total_frame_len.max(ETH_ZLEN);
 
-        let mut tx_buf = ProtocolEthernetFrame::new(total_frame_len)?;
-        let mut frame = EthernetFrame::new_unchecked(tx_buf.packet_mut());
-        repr.emit(&mut frame);
-        f(frame.payload_mut());
-        trace!(
-            "SEND {} bytes: {:02X?}",
-            tx_buf.packet_len(),
-            tx_buf.packet()
-        );
-        Ok(PendingFrame {
-            frame: tx_buf,
-            wire_len,
-        })
-    }
-
-    fn transmit_frame(&mut self, frame: &PendingFrame) -> NetDeviceResult<usize> {
-        self.inner.transmit(&frame.frame).map(|()| frame.wire_len)
-    }
-
-    /// Publishes an ARP frame or retains it until the lower TX queue reports
-    /// capacity again. `Again` is flow control, not a transmission error.
-    fn send_control_to<F>(
-        &mut self,
-        dst: EthernetAddress,
-        size: usize,
-        f: F,
-        proto: EthernetProtocol,
-    ) -> bool
-    where
-        F: FnOnce(&mut [u8]),
-    {
-        let frame = match Self::build_frame(self.hardware_address(), dst, size, f, proto) {
-            Ok(frame) => frame,
-            Err(error) => {
-                warn!("{}: failed to build control frame: {:?}", self.name, error);
-                self.deferred_tx_errors += 1;
-                return false;
-            }
-        };
-
-        if self.pending_control_frames.is_empty() {
-            match self.transmit_frame(&frame) {
-                Ok(frame_len) => {
-                    self.deferred_tx_frame_lens.push(frame_len);
-                    return true;
-                }
-                Err(NetDeviceError::Again) => {}
-                Err(error) => {
-                    warn!("{}: control frame transmit failed: {:?}", self.name, error);
-                    self.deferred_tx_errors += 1;
-                    return false;
-                }
-            }
-        }
-
-        if self.pending_control_frames.len() >= MAX_PENDING_CONTROL_FRAMES {
-            warn!(
-                "{}: control frame backlog is full, dropping frame",
-                self.name
+        let mut fill_once = Some(f);
+        let mut fill = |packet: &mut [u8]| {
+            let mut frame = EthernetFrame::new_unchecked(packet);
+            repr.emit(&mut frame);
+            fill_once
+                .take()
+                .expect("frame port must fill each packet exactly once")(
+                frame.payload_mut()
             );
-            self.deferred_tx_drops += 1;
-            return false;
-        }
-        self.pending_control_frames.push_back(frame);
-        true
-    }
-
-    fn submit_data_frame(&mut self, frame: PendingFrame) -> SubmitOutcome {
-        if self.pending_control_frames.is_empty() && self.pending_data_frames.is_empty() {
-            match self.transmit_frame(&frame) {
-                Ok(frame_len) => return SubmitOutcome::Sent(frame_len),
-                Err(NetDeviceError::Again) => {}
-                Err(error) => {
-                    warn!("{}: IPv4 frame transmit failed: {:?}", self.name, error);
-                    self.deferred_tx_errors += 1;
-                    return SubmitOutcome::Failed;
-                }
-            }
-        }
-
-        if self.pending_data_frames.len() >= ETHERNET_MAX_PENDING_PACKETS {
-            return SubmitOutcome::Full;
-        }
-        self.pending_data_frames.push_back(frame);
-        SubmitOutcome::Queued
-    }
-
-    fn send_data_to<F>(&mut self, dst: EthernetAddress, size: usize, f: F) -> SubmitOutcome
-    where
-        F: FnOnce(&mut [u8]),
-    {
-        match Self::build_frame(
-            self.hardware_address(),
-            dst,
-            size,
-            f,
-            EthernetProtocol::Ipv4,
-        ) {
-            Ok(frame) => self.submit_data_frame(frame),
-            Err(error) => {
-                warn!("{}: failed to build IPv4 frame: {:?}", self.name, error);
-                self.deferred_tx_errors += 1;
-                SubmitOutcome::Failed
-            }
-        }
-    }
-
-    fn flush_pending_control_frames(&mut self) {
-        while let Some(frame) = self.pending_control_frames.pop_front() {
-            match self.transmit_frame(&frame) {
-                Ok(frame_len) => self.deferred_tx_frame_lens.push(frame_len),
-                Err(NetDeviceError::Again) => {
-                    self.pending_control_frames.push_front(frame);
-                    break;
-                }
-                Err(error) => {
-                    warn!("{}: deferred control frame failed: {:?}", self.name, error);
-                    self.deferred_tx_errors += 1;
-                }
-            }
-        }
-    }
-
-    fn flush_pending_data_frames(&mut self) {
-        if !self.pending_control_frames.is_empty() {
-            return;
-        }
-        while let Some(frame) = self.pending_data_frames.pop_front() {
-            match self.transmit_frame(&frame) {
-                Ok(frame_len) => self.deferred_tx_frame_lens.push(frame_len),
-                Err(NetDeviceError::Again) => {
-                    self.pending_data_frames.push_front(frame);
-                    break;
-                }
-                Err(error) => {
-                    warn!("{}: deferred IPv4 frame failed: {:?}", self.name, error);
-                    self.deferred_tx_errors += 1;
-                }
-            }
-        }
-    }
-
-    fn flush_pending_frames(&mut self) {
-        self.flush_pending_control_frames();
-        self.flush_pending_data_frames();
+            trace!(
+                "SEND {} bytes: {:02X?}",
+                frame.as_ref().len(),
+                frame.as_ref()
+            );
+        };
+        inner.transmit_frame_with_options(
+            total_frame_len,
+            TxSubmitOptions {
+                checksum: None,
+                notify,
+            },
+            &mut fill,
+        )?;
+        Ok(wire_len)
     }
 
     /// Parses and handles a single Ethernet frame.
@@ -358,7 +245,7 @@ impl EthernetDevice {
         }
 
         match repr.ethertype {
-            EthernetProtocol::Ipv4 => {
+            EthernetProtocol::Ipv4 | EthernetProtocol::Ipv6 => {
                 snoop(frame.payload());
                 buffer
                     .enqueue(frame.payload().len(), interface_id)
@@ -391,16 +278,34 @@ impl EthernetDevice {
         }
     }
 
-    fn request_arp(&mut self, target_ip: IpAddress, timestamp: Instant) -> bool {
+    fn handle_non_ip_frame(&mut self, frame: &[u8], timestamp: Instant) {
+        let frame_len = frame.len();
+        let frame = EthernetFrame::new_unchecked(frame);
+        let Ok(repr) = EthernetRepr::parse(&frame) else {
+            self.deferred_rx_errors += 1;
+            return;
+        };
+        match repr.ethertype {
+            EthernetProtocol::Arp => {
+                self.process_arp(frame.payload(), timestamp);
+                self.deferred_rx_frame_lens.push(frame_len);
+            }
+            EthernetProtocol::Ipv4 | EthernetProtocol::Ipv6 => {}
+            _ => {
+                self.deferred_rx_frame_lens.push(frame_len);
+                self.deferred_rx_drops += 1;
+            }
+        }
+    }
+
+    fn request_arp(&mut self, target_ip: IpAddress, timestamp: Instant) -> NetDeviceResult {
         let IpAddress::Ipv4(target_ipv4) = target_ip else {
             warn!("IPv6 address ARP is not supported: {}", target_ip);
-            self.deferred_tx_errors += 1;
-            return false;
+            return Err(NetDeviceError::InvalidParam);
         };
         let Some(ip) = self.ip else {
             warn!("cannot request ARP for {target_ipv4}: ethernet IPv4 is not configured");
-            self.deferred_tx_errors += 1;
-            return false;
+            return Err(NetDeviceError::InvalidParam);
         };
         info!("{}: requesting ARP for {}", self.name, target_ipv4);
 
@@ -412,151 +317,24 @@ impl EthernetDevice {
             target_protocol_addr: target_ipv4,
         };
 
-        let accepted = self.send_control_to(
+        let arp_frame_len = Self::send_to(
+            &mut *self.inner,
             EthernetAddress::BROADCAST,
             arp_repr.buffer_len(),
             |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
             EthernetProtocol::Arp,
-        );
-        // Keep the neighbour state even if the bounded control queue is
-        // momentarily full. The retry timer owns retransmission; a transient
-        // lower-queue condition must not turn the neighbour back into an
-        // untracked entry.
+        )?;
+        // ARP requests are successfully transmitted L2 frames — record
+        // their length so the protocol executor can count them in TX stats.
+        self.deferred_tx_frame_lens.push(arp_frame_len);
+
         self.pending_neighbors.insert(
             target_ip,
             PendingNeighbor {
                 requested_at: timestamp,
             },
         );
-        if !accepted {
-            warn!(
-                "{}: failed to retain ARP request for {}",
-                self.name, target_ipv4
-            );
-            return false;
-        }
-        true
-    }
-
-    fn retry_pending_neighbors(&mut self, now: Instant) {
-        let due: Vec<IpAddress> = self
-            .pending_neighbors
-            .iter()
-            .filter_map(|(&target, pending)| {
-                (now >= pending.requested_at + Self::ARP_REQUEST_RETRY).then_some(target)
-            })
-            .collect();
-        for target in due {
-            let _ = self.request_arp(target, now);
-        }
-    }
-
-    fn enqueue_pending_packet(&mut self, next_hop: IpAddress, packet: &[u8]) -> bool {
-        if self.pending_packets.is_full() {
-            warn!(
-                "{}: pending packet buffer is full, dropping packet",
-                self.name
-            );
-            self.deferred_tx_drops += 1;
-            return false;
-        }
-        let Ok(dst_buffer) = self.pending_packets.enqueue(packet.len(), next_hop) else {
-            warn!("{}: failed to enqueue pending packet", self.name);
-            self.deferred_tx_drops += 1;
-            return false;
-        };
-        dst_buffer.copy_from_slice(packet);
-        true
-    }
-
-    /// Moves packets whose neighbour is now resolved into the bounded data
-    /// backlog. Unresolved packets remain in arrival order, and a full data
-    /// backlog leaves them owned here for a later TX-completion poll.
-    fn flush_resolved_packets(&mut self, now: Instant) {
-        if !self.pending_packets_ready || self.pending_packets.is_empty() {
-            self.pending_packets_ready = false;
-            return;
-        }
-        if !self.pending_control_frames.is_empty()
-            || self.pending_data_frames.len() >= ETHERNET_MAX_PENDING_PACKETS
-        {
-            return;
-        }
-
-        enum Action {
-            Send(EthernetAddress),
-            Resolve,
-            Keep,
-        }
-
-        let mut kept: Vec<(IpAddress, Vec<u8>)> = Vec::with_capacity(ETHERNET_MAX_PENDING_PACKETS);
-        let mut retry_when_tx_recovers = false;
-        for _ in 0..ETHERNET_MAX_PENDING_PACKETS {
-            let Ok((&next_hop, packet)) = self.pending_packets.peek() else {
-                break;
-            };
-            let payload = packet.to_vec();
-            self.pending_packets
-                .dequeue()
-                .expect("peek succeeded moments ago; dequeue must succeed");
-
-            let is_subnet_broadcast =
-                self.ip.and_then(|ip| ip.broadcast()).map(IpAddress::Ipv4) == Some(next_hop);
-            let action = if next_hop.is_broadcast() || is_subnet_broadcast {
-                Action::Send(EthernetAddress::BROADCAST)
-            } else {
-                match self.neighbors.get(&next_hop) {
-                    Some(neighbor) if neighbor.expires_at > now => {
-                        Action::Send(neighbor.hardware_address)
-                    }
-                    Some(_) => {
-                        self.neighbors.remove(&next_hop);
-                        Action::Resolve
-                    }
-                    None => {
-                        let need_request =
-                            self.pending_neighbors.get(&next_hop).is_none_or(|pending| {
-                                now >= pending.requested_at + Self::ARP_REQUEST_RETRY
-                            });
-                        if need_request {
-                            Action::Resolve
-                        } else {
-                            Action::Keep
-                        }
-                    }
-                }
-            };
-
-            match action {
-                Action::Send(mac) => {
-                    match self.send_data_to(mac, payload.len(), |target| {
-                        target.copy_from_slice(&payload)
-                    }) {
-                        SubmitOutcome::Sent(frame_len) => {
-                            self.deferred_tx_frame_lens.push(frame_len)
-                        }
-                        SubmitOutcome::Queued => {}
-                        SubmitOutcome::Full => {
-                            kept.push((next_hop, payload));
-                            retry_when_tx_recovers = true;
-                        }
-                        SubmitOutcome::Failed => {}
-                    }
-                }
-                Action::Resolve => {
-                    let _ = self.request_arp(next_hop, now);
-                    kept.push((next_hop, payload));
-                }
-                Action::Keep => kept.push((next_hop, payload)),
-            }
-        }
-
-        for (next_hop, payload) in kept {
-            if !self.enqueue_pending_packet(next_hop, &payload) {
-                break;
-            }
-        }
-        self.pending_packets_ready = retry_when_tx_recovers;
+        Ok(())
     }
 
     fn process_arp(&mut self, payload: &[u8], now: Instant) {
@@ -623,16 +401,103 @@ impl EthernetDevice {
                     target_protocol_addr: source_protocol_addr,
                 };
 
-                let _ = self.send_control_to(
+                let arp_frame_len = Self::send_to(
+                    &mut *self.inner,
                     source_hardware_addr,
                     response.buffer_len(),
                     |buf| response.emit(&mut ArpPacket::new_unchecked(buf)),
                     EthernetProtocol::Arp,
                 );
+                // ARP replies are successfully transmitted L2 frames — record
+                // their length so the protocol executor can count them in TX stats.
+                match arp_frame_len {
+                    Ok(frame_len) => self.deferred_tx_frame_lens.push(frame_len),
+                    Err(NetDeviceError::Again) => self.deferred_tx_drops += 1,
+                    Err(err) => {
+                        warn!("{}: failed to send ARP reply: {err:?}", self.name);
+                        self.deferred_tx_errors += 1;
+                    }
+                }
             }
-            self.pending_packets_ready = true;
-            self.flush_pending_frames();
-            self.flush_resolved_packets(now);
+
+            // Drain every entry in the pending queue and either send it (if
+            // the next-hop is now resolved) or re-queue it in arrival order.
+            // Peeking the head and stopping on the first mismatch would
+            // permanently block packets queued behind an unresolvable
+            // next-hop (e.g. a SYN to a fake IP at the head holds back a
+            // SYN to the gateway behind it).
+            //
+            // The kept buffer is pre-sized so the drain does not have to
+            // grow it through reallocations while a high-priority ARP IRQ
+            // is being processed.
+            let mut kept: Vec<(IpAddress, Vec<u8>)> =
+                Vec::with_capacity(ETHERNET_MAX_PENDING_PACKETS);
+            for _ in 0..ETHERNET_MAX_PENDING_PACKETS {
+                let Ok((&next_hop, buf)) = self.pending_packets.peek() else {
+                    break;
+                };
+                enum Action {
+                    Send(EthernetAddress, Vec<u8>),
+                    Refresh(Vec<u8>),
+                    Keep(Vec<u8>),
+                }
+                let action = match self.neighbors.get(&next_hop) {
+                    Some(neighbor) if neighbor.expires_at > now => {
+                        Action::Send(neighbor.hardware_address, buf.to_vec())
+                    }
+                    Some(_) => Action::Refresh(buf.to_vec()),
+                    None => Action::Keep(buf.to_vec()),
+                };
+                self.pending_packets
+                    .dequeue()
+                    .expect("peek succeeded moments ago; dequeue must succeed");
+
+                match action {
+                    Action::Send(mac, payload) => {
+                        info!(
+                            "{}: sending pending IPv4 packet to {} via {}",
+                            self.name, next_hop, mac
+                        );
+                        match self.transmit_ip_to(mac, &payload) {
+                            Ok(frame_len) => self.deferred_tx_frame_lens.push(frame_len),
+                            Err(NetDeviceError::Again) => kept.push((next_hop, payload)),
+                            Err(err) => {
+                                warn!(
+                                    "{}: failed to send pending packet to {}: {err:?}",
+                                    self.name, next_hop
+                                );
+                                self.deferred_tx_errors += 1;
+                            }
+                        }
+                    }
+                    Action::Refresh(payload) => {
+                        self.neighbors.remove(&next_hop);
+                        if let Err(err) = self.request_arp(next_hop, now)
+                            && !matches!(err, NetDeviceError::Again)
+                        {
+                            warn!(
+                                "{}: failed to refresh ARP entry for {}: {err:?}",
+                                self.name, next_hop
+                            );
+                            self.deferred_tx_errors += 1;
+                        }
+                        kept.push((next_hop, payload));
+                    }
+                    Action::Keep(payload) => {
+                        kept.push((next_hop, payload));
+                    }
+                }
+            }
+            for (next_hop, payload) in kept {
+                let Ok(dst) = self.pending_packets.enqueue(payload.len(), next_hop) else {
+                    warn!(
+                        "{}: pending buffer overflow while restoring queue entry to {}",
+                        self.name, next_hop
+                    );
+                    break;
+                };
+                dst.copy_from_slice(&payload);
+            }
         }
     }
 }
@@ -649,9 +514,6 @@ impl Device for EthernetDevice {
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> usize {
-        self.flush_pending_frames();
-        self.retry_pending_neighbors(timestamp);
-        self.flush_resolved_packets(timestamp);
         loop {
             let rx_buf = match self.inner.receive() {
                 Ok(buf) => buf,
@@ -677,38 +539,184 @@ impl Device for EthernetDevice {
         }
     }
 
-    fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> usize {
-        self.flush_pending_frames();
-        self.retry_pending_neighbors(timestamp);
-        self.flush_resolved_packets(timestamp);
+    fn poll_owned_rx(&mut self, timestamp: Instant) -> DeviceRxPoll {
+        loop {
+            let frame = match self.inner.receive_owned() {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return DeviceRxPoll::Unsupported,
+                Err(NetDeviceError::Again) => return DeviceRxPoll::Idle,
+                Err(err) => {
+                    warn!("receive failed: {err:?}");
+                    self.deferred_rx_errors += 1;
+                    return DeviceRxPoll::Idle;
+                }
+            };
+            let hardware_address = self.hardware_address();
+            let mut malformed = false;
+            let mut side_frame = false;
+            let packet_range = frame.read_with(|packet| {
+                trace!("RECV {} bytes: {:02X?}", packet.len(), packet);
+                let Ok(ethernet) = EthernetFrame::new_checked(packet) else {
+                    malformed = true;
+                    return None;
+                };
+                let Ok(repr) = EthernetRepr::parse(&ethernet) else {
+                    malformed = true;
+                    return None;
+                };
+                if !repr.dst_addr.is_broadcast()
+                    && repr.dst_addr != EMPTY_MAC
+                    && repr.dst_addr != hardware_address
+                {
+                    return None;
+                }
+                match repr.ethertype {
+                    EthernetProtocol::Ipv4 | EthernetProtocol::Ipv6 => {
+                        let payload_len = ethernet.payload().len();
+                        let payload_start = packet.len() - payload_len;
+                        Some(payload_start..payload_start + payload_len)
+                    }
+                    _ => {
+                        side_frame = true;
+                        None
+                    }
+                }
+            });
+            if malformed {
+                self.deferred_rx_errors += 1;
+            }
+            if side_frame {
+                frame.read_with(|packet| self.handle_non_ip_frame(packet, timestamp));
+            }
+            if let Some(packet_range) = packet_range {
+                let frame_len = frame.packet_len();
+                return DeviceRxPoll::Packet(DeviceRxPacket::with_packet_range(
+                    frame_len,
+                    frame,
+                    packet_range,
+                ));
+            }
+        }
+    }
 
+    fn recv_direct(
+        &mut self,
+        timestamp: Instant,
+        deliver: &mut dyn FnMut(&[u8]) -> bool,
+        snoop: &mut dyn FnMut(&[u8]),
+    ) -> Option<usize> {
+        loop {
+            let hardware_address = self.hardware_address();
+            let mut side_frame = None;
+            let mut malformed = false;
+            let mut dropped = false;
+            let result = self.inner.receive_with(&mut |packet| {
+                trace!("RECV {} bytes: {:02X?}", packet.len(), packet);
+                let Ok(frame) = EthernetFrame::new_checked(packet) else {
+                    malformed = true;
+                    return 0;
+                };
+                let Ok(repr) = EthernetRepr::parse(&frame) else {
+                    malformed = true;
+                    return 0;
+                };
+                if !repr.dst_addr.is_broadcast()
+                    && repr.dst_addr != EMPTY_MAC
+                    && repr.dst_addr != hardware_address
+                {
+                    return 0;
+                }
+                match repr.ethertype {
+                    EthernetProtocol::Ipv4 | EthernetProtocol::Ipv6 => {
+                        snoop(frame.payload());
+                        if deliver(frame.payload()) {
+                            packet.len()
+                        } else {
+                            dropped = true;
+                            0
+                        }
+                    }
+                    _ => {
+                        match ProtocolEthernetFrame::copy_from_slice(packet) {
+                            Ok(frame) => side_frame = Some(frame),
+                            Err(_) => malformed = true,
+                        }
+                        0
+                    }
+                }
+            });
+            let frame_len = match result {
+                Ok(frame_len) => frame_len,
+                Err(NetDeviceError::Again) => return Some(0),
+                Err(err) => {
+                    warn!("receive failed: {err:?}");
+                    self.deferred_rx_errors += 1;
+                    return Some(0);
+                }
+            };
+            if malformed {
+                self.deferred_rx_errors += 1;
+            }
+            if dropped {
+                self.deferred_rx_drops += 1;
+            }
+            if let Some(frame) = side_frame {
+                self.handle_non_ip_frame(frame.packet(), timestamp);
+            }
+            if frame_len > 0 {
+                return Some(frame_len);
+            }
+        }
+    }
+
+    fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> usize {
+        match self.try_send(next_hop, packet, timestamp) {
+            Ok(frame_len) => frame_len,
+            Err(NetDeviceError::Again) => {
+                // This compatibility entry point cannot retain the caller's
+                // packet for retry after transient queue pressure.
+                self.deferred_tx_drops += 1;
+                0
+            }
+            Err(err) => {
+                warn!("{}: transmit failed: {err:?}", self.name);
+                self.deferred_tx_errors += 1;
+                0
+            }
+        }
+    }
+
+    fn try_send(
+        &mut self,
+        next_hop: IpAddress,
+        packet: &[u8],
+        timestamp: Instant,
+    ) -> NetDeviceResult<usize> {
         let is_subnet_broadcast =
             self.ip.and_then(|ip| ip.broadcast()).map(IpAddress::Ipv4) == Some(next_hop);
         if next_hop.is_broadcast() || is_subnet_broadcast {
-            return match self.send_data_to(EthernetAddress::BROADCAST, packet.len(), |buf| {
-                buf.copy_from_slice(packet)
-            }) {
-                SubmitOutcome::Sent(frame_len) => frame_len,
-                SubmitOutcome::Queued | SubmitOutcome::Failed => 0,
-                SubmitOutcome::Full => {
-                    self.deferred_tx_drops += 1;
-                    0
+            return self.transmit_ip_to(EthernetAddress::BROADCAST, packet);
+        }
+        if next_hop.is_multicast() {
+            let hardware_address = match next_hop {
+                IpAddress::Ipv4(address) => {
+                    // RFC 1112 section 6.4: retain only the low 23 address bits.
+                    let octets = address.octets();
+                    EthernetAddress([0x01, 0x00, 0x5e, octets[1] & 0x7f, octets[2], octets[3]])
+                }
+                IpAddress::Ipv6(address) => {
+                    // RFC 2464 section 7: 33:33 followed by the low 32 bits.
+                    let octets = address.octets();
+                    EthernetAddress([0x33, 0x33, octets[12], octets[13], octets[14], octets[15]])
                 }
             };
+            return self.transmit_ip_to(hardware_address, packet);
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
             Some(neighbor) if neighbor.expires_at > timestamp => {
-                return match self.send_data_to(neighbor.hardware_address, packet.len(), |buf| {
-                    buf.copy_from_slice(packet)
-                }) {
-                    SubmitOutcome::Sent(frame_len) => frame_len,
-                    SubmitOutcome::Queued | SubmitOutcome::Failed => 0,
-                    SubmitOutcome::Full => {
-                        self.deferred_tx_drops += 1;
-                        0
-                    }
-                };
+                let hardware_address = neighbor.hardware_address;
+                return self.transmit_ip_to(hardware_address, packet);
             }
             Some(_) => {
                 self.neighbors.remove(&next_hop);
@@ -720,17 +728,23 @@ impl Device for EthernetDevice {
                 .is_none_or(|pending| timestamp >= pending.requested_at + Self::ARP_REQUEST_RETRY),
         };
         if need_request {
-            // Even when the bounded control backlog is full, retain the IP
-            // packet. The next TX-completion poll retries ARP before data.
-            if !self.request_arp(next_hop, timestamp) {
-                debug!(
-                    "{}: ARP request for {} remains pending under TX backpressure",
-                    self.name, next_hop
-                );
-            }
+            self.request_arp(next_hop, timestamp)?;
         }
-        let _ = self.enqueue_pending_packet(next_hop, packet);
-        0
+        if self.pending_packets.is_full() {
+            warn!(
+                "{}: Pending packets buffer is full, dropping packet",
+                self.name
+            );
+            self.deferred_tx_drops += 1;
+            return Ok(0);
+        }
+        let Ok(dst_buffer) = self.pending_packets.enqueue(packet.len(), next_hop) else {
+            warn!("Failed to enqueue packet in pending packets buffer");
+            self.deferred_tx_drops += 1;
+            return Ok(0);
+        };
+        dst_buffer.copy_from_slice(packet);
+        Ok(0)
     }
 
     fn drain_deferred_tx(&mut self) -> Vec<usize> {
@@ -754,7 +768,7 @@ impl Device for EthernetDevice {
     }
 
     fn drain_deferred_rx_drops(&mut self) -> u64 {
-        core::mem::take(&mut self.deferred_rx_drops)
+        core::mem::take(&mut self.deferred_rx_drops) + self.inner.drain_rx_drops()
     }
 
     fn set_ipv4_addr(&mut self, addr: Option<Ipv4Cidr>) {
@@ -797,36 +811,36 @@ impl Device for EthernetDevice {
 /// Unit tests for EthernetDevice counters: ARP, frame-length, and
 /// error/drop paths.
 mod ethernet_counter_tests {
-    use alloc::collections::VecDeque;
+    use alloc::{collections::VecDeque, sync::Arc};
 
+    use ax_sync::SpinLock;
     use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 
     use super::*;
-    use crate::device::{NetDeviceError, NetDeviceResult};
+    use crate::device::{NetDeviceError, NetDeviceResult, TxChecksumCapabilities};
 
     // ── Mock protocol-port infrastructure ──────────────────────────────
 
     /// Minimal protocol frame port for testing EthernetDevice ARP paths.
     struct MockEthernetDriver {
         mac: [u8; 6],
+        checksum_capabilities: TxChecksumCapabilities,
         /// Pre-canned frames returned by `receive()` in FIFO order.
         rx_frames: VecDeque<Vec<u8>>,
         /// Frames transmitted through `transmit()`, captured for inspection.
         tx_frames: Vec<Vec<u8>>,
         /// When set, frame publication returns an error.
         tx_alloc_fail: bool,
-        /// Number of transiently backpressured publications before TX recovers.
-        tx_again_remaining: usize,
     }
 
     impl MockEthernetDriver {
         fn new(mac: [u8; 6]) -> Self {
             Self {
                 mac,
+                checksum_capabilities: TxChecksumCapabilities::NONE,
                 rx_frames: VecDeque::new(),
                 tx_frames: Vec::new(),
                 tx_alloc_fail: false,
-                tx_again_remaining: 0,
             }
         }
 
@@ -844,13 +858,13 @@ mod ethernet_counter_tests {
             self.mac
         }
 
+        fn checksum_capabilities(&self) -> TxChecksumCapabilities {
+            self.checksum_capabilities
+        }
+
         fn transmit(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
-            if self.tx_again_remaining > 0 {
-                self.tx_again_remaining -= 1;
-                return Err(NetDeviceError::Again);
-            }
             if self.tx_alloc_fail {
-                return Err(NetDeviceError::NoMemory);
+                return Err(NetDeviceError::Again);
             }
             self.tx_frames.push(frame.packet().to_vec());
             Ok(())
@@ -861,6 +875,61 @@ mod ethernet_counter_tests {
                 .pop_front()
                 .map(|packet| ProtocolEthernetFrame::copy_from_slice(&packet).unwrap())
                 .ok_or(NetDeviceError::Again)
+        }
+    }
+
+    #[derive(Default)]
+    struct TxProbe {
+        requests: SpinLock<Vec<(Vec<u8>, TxSubmitOptions)>>,
+        failure: SpinLock<Option<NetDeviceError>>,
+    }
+
+    struct RecordingFramePort {
+        probe: Arc<TxProbe>,
+        checksum_capabilities: TxChecksumCapabilities,
+    }
+
+    impl EthernetFramePort for RecordingFramePort {
+        fn device_name(&self) -> &str {
+            "recording"
+        }
+
+        fn mac_address(&self) -> [u8; 6] {
+            DEV_MAC
+        }
+
+        fn checksum_capabilities(&self) -> TxChecksumCapabilities {
+            self.checksum_capabilities
+        }
+
+        fn transmit(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
+            if let Some(error) = self.probe.failure.lock_irqsave().take() {
+                return Err(error);
+            }
+            self.probe
+                .requests
+                .lock_irqsave()
+                .push((frame.packet().to_vec(), TxSubmitOptions::default()));
+            Ok(())
+        }
+
+        fn transmit_frame_with_options(
+            &mut self,
+            frame_len: usize,
+            options: TxSubmitOptions,
+            fill: &mut dyn FnMut(&mut [u8]),
+        ) -> NetDeviceResult {
+            if let Some(error) = self.probe.failure.lock_irqsave().take() {
+                return Err(error);
+            }
+            let mut frame = vec![0u8; frame_len];
+            fill(&mut frame);
+            self.probe.requests.lock_irqsave().push((frame, options));
+            Ok(())
+        }
+
+        fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame> {
+            Err(NetDeviceError::Again)
         }
     }
 
@@ -877,6 +946,55 @@ mod ethernet_counter_tests {
 
     fn make_test_device(mock: MockEthernetDriver) -> EthernetDevice {
         EthernetDevice::new("mock0".into(), Box::new(mock), Some(device_ip_cidr()))
+    }
+
+    fn make_recording_device(
+        checksum_capabilities: TxChecksumCapabilities,
+    ) -> (EthernetDevice, Arc<TxProbe>) {
+        let probe = Arc::new(TxProbe::default());
+        let port = RecordingFramePort {
+            probe: Arc::clone(&probe),
+            checksum_capabilities,
+        };
+        (
+            EthernetDevice::new("recording0".into(), Box::new(port), Some(device_ip_cidr())),
+            probe,
+        )
+    }
+
+    fn raw_tcp_packet() -> Vec<u8> {
+        let mut packet = vec![0u8; 60];
+        let packet_len = packet.len() as u16;
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&packet_len.to_be_bytes());
+        packet[8] = 64;
+        packet[9] = 6;
+        packet[12..16].copy_from_slice(&DEV_IP.octets());
+        packet[16..20].copy_from_slice(&REMOTE_IP.octets());
+        packet[20..22].copy_from_slice(&41000u16.to_be_bytes());
+        packet[22..24].copy_from_slice(&5201u16.to_be_bytes());
+        packet[32] = 5 << 4;
+        packet
+    }
+
+    fn enqueue_pending_packet(device: &mut EthernetDevice, packet: &[u8]) {
+        device
+            .pending_packets
+            .enqueue(packet.len(), IpAddress::Ipv4(REMOTE_IP))
+            .expect("the empty pending queue has capacity")
+            .copy_from_slice(packet);
+    }
+
+    fn process_remote_arp_reply(device: &mut EthernetDevice, timestamp: Instant) {
+        let reply = build_arp_frame(
+            ArpOperation::Reply,
+            REMOTE_MAC,
+            DEV_MAC,
+            REMOTE_IP,
+            DEV_IP,
+            DEV_MAC,
+        );
+        device.process_arp(&reply[EthernetFrame::<&[u8]>::header_len()..], timestamp);
     }
 
     /// Builds a complete Ethernet frame containing an ARP packet.
@@ -1033,6 +1151,153 @@ mod ethernet_counter_tests {
     }
 
     #[test]
+    fn pending_raw_tcp_packet_preserves_checksum_after_arp_resolution() {
+        let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
+        let packet = raw_tcp_packet();
+        enqueue_pending_packet(&mut device, &packet);
+
+        process_remote_arp_reply(&mut device, Instant::from_millis(0));
+
+        let requests = probe.requests.lock_irqsave();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            &requests[0].0[EthernetFrame::<&[u8]>::header_len()..],
+            &packet
+        );
+        assert_eq!(requests[0].1.notify, TxNotify::Deferred);
+        assert_eq!(requests[0].1.checksum, None);
+    }
+
+    #[test]
+    fn ethernet_preserves_raw_udp_checksum_without_requesting_offload() {
+        let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
+        for len in [32usize, 60] {
+            for checksum in [0u16, 0x1234] {
+                let mut packet = vec![0u8; len];
+                packet[0] = 0x45;
+                packet[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+                packet[8] = 64;
+                packet[9] = 17;
+                packet[12..16].copy_from_slice(&DEV_IP.octets());
+                packet[16..20].copy_from_slice(&REMOTE_IP.octets());
+                packet[24..26].copy_from_slice(&((len - 20) as u16).to_be_bytes());
+                packet[26..28].copy_from_slice(&checksum.to_be_bytes());
+                device
+                    .transmit_ip_to(EthernetAddress(REMOTE_MAC), &packet)
+                    .unwrap();
+                let requests = probe.requests.lock_irqsave();
+                let (frame, options) = requests.last().unwrap();
+                assert_eq!(
+                    &frame[14..14 + len],
+                    &packet,
+                    "Ethernet rewrote raw UDP transport bytes"
+                );
+                assert_eq!(
+                    options.checksum, None,
+                    "zero checksum is not an offload request"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pending_packet_survives_arp_resolution_tx_backpressure() {
+        let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
+        let packet = raw_tcp_packet();
+        enqueue_pending_packet(&mut device, &packet);
+        *probe.failure.lock_irqsave() = Some(NetDeviceError::Again);
+
+        process_remote_arp_reply(&mut device, Instant::from_millis(0));
+
+        let (&next_hop, queued) = device
+            .pending_packets
+            .peek()
+            .expect("transient queue pressure must retain the pending packet");
+        assert_eq!(next_hop, IpAddress::Ipv4(REMOTE_IP));
+        assert_eq!(queued, packet);
+        assert_eq!(device.drain_deferred_tx_errors(), 0);
+        assert_eq!(device.drain_deferred_tx_drops(), 0);
+    }
+
+    #[test]
+    fn multicast_egress_uses_the_ip_version_specific_destination_mac() {
+        use smoltcp::wire::Ipv6Address;
+
+        let destinations = [
+            (
+                IpAddress::Ipv4(Ipv4Address::new(224, 0, 0, 1)),
+                [1, 0, 0x5e, 0, 0, 1],
+            ),
+            (
+                IpAddress::Ipv4(Ipv4Address::new(239, 255, 18, 52)),
+                [1, 0, 0x5e, 0x7f, 18, 52],
+            ),
+            (
+                IpAddress::Ipv6(Ipv6Address::new(0xff02, 0, 0, 0, 0, 1, 0xff12, 0x3456)),
+                [0x33, 0x33, 0xff, 0x12, 0x34, 0x56],
+            ),
+            (IpAddress::Ipv4(Ipv4Address::BROADCAST), [0xff; 6]),
+            (IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 255)), [0xff; 6]),
+        ];
+        for (destination, expected_mac) in destinations {
+            let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
+            let packet = match destination {
+                IpAddress::Ipv4(address) => {
+                    let mut packet = raw_tcp_packet();
+                    packet[16..20].copy_from_slice(&address.octets());
+                    packet
+                }
+                IpAddress::Ipv6(address) => {
+                    let mut packet = vec![0u8; 40];
+                    packet[0] = 0x60;
+                    packet[24..40].copy_from_slice(&address.octets());
+                    packet
+                }
+            };
+            *probe.failure.lock_irqsave() = Some(NetDeviceError::Again);
+            assert_eq!(
+                device.try_send(destination, &packet, Instant::ZERO),
+                Err(NetDeviceError::Again)
+            );
+            assert!(probe.requests.lock_irqsave().is_empty());
+            assert!(device.pending_packets.is_empty());
+            assert!(device.pending_neighbors.is_empty());
+            assert!(
+                device
+                    .try_send(destination, &packet, Instant::ZERO)
+                    .unwrap()
+                    > 0
+            );
+            let requests = probe.requests.lock_irqsave();
+            assert_eq!(requests.len(), 1);
+            let frame = EthernetFrame::new_checked(&requests[0].0).unwrap();
+            assert_eq!(
+                frame.dst_addr(),
+                EthernetAddress(expected_mac),
+                "destination {destination}"
+            );
+            assert_eq!(&frame.payload()[..packet.len()], packet);
+            assert_eq!(requests[0].1.checksum, None);
+            assert_eq!(device.drain_deferred_tx_errors(), 0);
+            assert_eq!(device.drain_deferred_tx_drops(), 0);
+        }
+    }
+
+    #[test]
+    fn arp_request_backpressure_is_returned_to_the_router() {
+        let (mut device, probe) = make_recording_device(TxChecksumCapabilities::TCP_UDP);
+        let packet = raw_tcp_packet();
+        *probe.failure.lock_irqsave() = Some(NetDeviceError::Again);
+
+        let result = device.try_send(IpAddress::Ipv4(REMOTE_IP), &packet, Instant::from_millis(0));
+
+        assert_eq!(result, Err(NetDeviceError::Again));
+        assert!(device.pending_packets.is_empty());
+        assert_eq!(device.drain_deferred_tx_errors(), 0);
+        assert_eq!(device.drain_deferred_tx_drops(), 0);
+    }
+
+    #[test]
     fn consecutive_arp_frames_accumulate_in_drain_deferred_rx() {
         let mut mock = MockEthernetDriver::new(DEV_MAC);
         let frame1 = build_arp_frame(
@@ -1174,37 +1439,32 @@ mod ethernet_counter_tests {
         let dst = EthernetAddress(REMOTE_MAC);
 
         // 0-byte payload: 14 + 0 = 14 → padded to 60.
-        let frame = EthernetDevice::build_frame(
-            EthernetAddress(DEV_MAC),
-            dst,
-            0,
-            |_buf| {},
-            EthernetProtocol::Ipv4,
-        )
-        .unwrap();
-        assert_eq!(frame.wire_len, 60);
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let wire_len =
+            EthernetDevice::send_to(&mut mock, dst, 0, |_buf| {}, EthernetProtocol::Ipv4);
+        assert_eq!(wire_len, Ok(60));
 
         // 46-byte payload: 14 + 46 = 60 → exactly at ETH_ZLEN, no padding needed.
-        let frame = EthernetDevice::build_frame(
-            EthernetAddress(DEV_MAC),
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let wire_len = EthernetDevice::send_to(
+            &mut mock,
             dst,
             46,
             |buf| buf.copy_from_slice(&[0xAAu8; 46]),
             EthernetProtocol::Ipv4,
-        )
-        .unwrap();
-        assert_eq!(frame.wire_len, 60);
+        );
+        assert_eq!(wire_len, Ok(60));
 
         // 100-byte payload: 14 + 100 = 114 → above ETH_ZLEN, no padding.
-        let frame = EthernetDevice::build_frame(
-            EthernetAddress(DEV_MAC),
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let wire_len = EthernetDevice::send_to(
+            &mut mock,
             dst,
             100,
             |buf| buf.copy_from_slice(&[0xAAu8; 100]),
             EthernetProtocol::Ipv4,
-        )
-        .unwrap();
-        assert_eq!(frame.wire_len, 114);
+        );
+        assert_eq!(wire_len, Ok(114));
     }
 
     // ── Integration: combined ARP + IP recv/drain cycle ────────────────
@@ -1341,74 +1601,21 @@ mod ethernet_counter_tests {
     }
 
     #[test]
-    fn resolved_neighbor_backpressure_retains_packet_until_tx_recovers() {
-        let mut mock = MockEthernetDriver::new(DEV_MAC);
-        mock.tx_again_remaining = 1;
-        let mut device = make_test_device(mock);
-        let now = Instant::from_millis(0);
-        device.neighbors.insert(
-            IpAddress::Ipv4(REMOTE_IP),
-            Neighbor {
-                hardware_address: EthernetAddress(REMOTE_MAC),
-                expires_at: now + EthernetDevice::NEIGHBOR_TTL,
-            },
-        );
-
-        let payload = [0x5a; 64];
-        assert_eq!(device.send(IpAddress::Ipv4(REMOTE_IP), &payload, now), 0);
-        assert_eq!(device.drain_deferred_tx_errors(), 0);
-        assert_eq!(device.pending_data_frames.len(), 1);
-        let pending = device.pending_data_frames.front().unwrap();
-        let pending = EthernetFrame::new_checked(pending.frame.packet()).unwrap();
-        assert_eq!(pending.payload(), payload);
-
-        let mut rx_buffer = test_packet_buffer();
-        assert_eq!(
-            device.recv(InterfaceId::new(1), &mut rx_buffer, now, &mut |_| {}),
-            0
-        );
-        assert_eq!(
-            device.drain_deferred_tx(),
-            &[EthernetFrame::<&[u8]>::header_len() + payload.len()]
-        );
-        assert!(device.pending_data_frames.is_empty());
-    }
-
-    #[test]
-    fn arp_request_backpressure_retains_packet_and_retries() {
-        let mut mock = MockEthernetDriver::new(DEV_MAC);
-        mock.tx_again_remaining = 1;
-        let mut device = make_test_device(mock);
-        let now = Instant::from_millis(0);
-
-        assert_eq!(device.send(IpAddress::Ipv4(REMOTE_IP), &[0x6b; 64], now), 0);
-        assert_eq!(device.drain_deferred_tx_errors(), 0);
-        assert_eq!(device.pending_control_frames.len(), 1);
-
-        let mut rx_buffer = test_packet_buffer();
-        assert_eq!(
-            device.recv(InterfaceId::new(1), &mut rx_buffer, now, &mut |_| {}),
-            0
-        );
-        assert_eq!(device.drain_deferred_tx(), &[ETH_ZLEN]);
-        assert!(device.pending_control_frames.is_empty());
-        assert!(device.pending_packets.peek().is_ok());
-    }
-
-    #[test]
-    fn send_to_alloc_failure_counts_tx_errors() {
+    fn compatibility_send_counts_transient_backpressure_as_a_drop() {
         let mut mock = MockEthernetDriver::new(DEV_MAC);
         mock.tx_alloc_fail = true;
 
         let mut device = make_test_device(mock);
         let ts = Instant::from_millis(0);
 
-        // Sending to the broadcast path reaches a permanent port error.
+        // The compatibility send path cannot retain the caller's packet.
         let broadcast = IpAddress::Ipv4(Ipv4Address::BROADCAST);
-        let result = device.send(broadcast, &[0u8; 64], ts);
+        let packet = raw_tcp_packet();
+        let result = device.send(broadcast, &packet, ts);
         assert_eq!(result, 0);
-        assert_eq!(device.drain_deferred_tx_errors(), 1);
         assert_eq!(device.drain_deferred_tx_errors(), 0);
+        assert_eq!(device.drain_deferred_tx_drops(), 1);
+        assert_eq!(device.drain_deferred_tx_drops(), 0);
         // No bytes/packets were counted on failure.
         let tx_lens = device.drain_deferred_tx();
         assert!(tx_lens.is_empty());

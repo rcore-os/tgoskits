@@ -15,8 +15,8 @@
 
 pub const STANDARD_MTU: usize = 1500;
 
-pub const TCP_RX_BUF_LEN: usize = 64 * 1024;
-pub const TCP_TX_BUF_LEN: usize = 64 * 1024;
+pub const TCP_RX_BUF_LEN: usize = 256 * 1024;
+pub const TCP_TX_BUF_LEN: usize = 256 * 1024;
 pub const UDP_RX_BUF_LEN: usize = 64 * 1024;
 pub const UDP_TX_BUF_LEN: usize = 64 * 1024;
 pub const RAW_RX_BUF_LEN: usize = 64 * 1024;

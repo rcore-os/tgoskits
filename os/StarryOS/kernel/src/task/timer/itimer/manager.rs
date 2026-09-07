@@ -1,7 +1,7 @@
 /// Process-wide task-context interval timers.
 pub struct ProcessTimerManager {
     itimers: [ITimer; 3],
-    // Only ITIMER_REAL is backed by the wall-clock alarm worker.
+    // Only ITIMER_REAL is backed by the monotonic alarm worker.
     // ITIMER_VIRTUAL and ITIMER_PROF advance at scheduler accounting/resume
     // safe points, matching Linux CPU-timer semantics and avoiding idle polling.
     real_alarm_slot: AlarmSlot,
@@ -33,7 +33,7 @@ impl ProcessTimerManager {
     /// Polls interval timers at an accounting or task-resume safe point.
     ///
     /// The returned actions are applied after releasing timer metadata, so
-    /// signal delivery and wall-alarm publication cannot re-enter this manager.
+    /// signal delivery and alarm publication cannot re-enter this manager.
     pub(crate) fn poll(&mut self, snapshot: ProcessCpuTimeSnapshot) -> PendingTimerActions {
         self.poll_at(snapshot, false)
     }
@@ -69,10 +69,7 @@ impl ProcessTimerManager {
     ) -> PendingTimerActions {
         let mut pending = PendingTimerActions::new();
         for ty in [ITimerType::Virtual, ITimerType::Prof, ITimerType::Real] {
-            pending.record(
-                ty,
-                self.update_itimer(ty, snapshot, real_alarm_triggered),
-            );
+            pending.record(ty, self.update_itimer(ty, snapshot, real_alarm_triggered));
         }
         pending
     }
@@ -139,7 +136,10 @@ impl ProcessTimerManager {
     fn replace_real_alarm(&self, now_ns: u64) -> AlarmChange {
         let deadline_ns = self.itimers[ITimerType::Real as usize].deadline_ns;
         self.real_alarm_slot.replace(deadline_ns.map(|deadline_ns| {
-            real_itimer_alarm_delay(deadline_ns.saturating_sub(now_ns))
+            crate::time::ClockDeadline::Monotonic(
+                Duration::from_nanos(now_ns)
+                    .saturating_add(real_itimer_alarm_delay(deadline_ns.saturating_sub(now_ns))),
+            )
         }))
     }
 }

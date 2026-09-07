@@ -12,7 +12,7 @@ use linux_raw_sys::general::CAP_SYS_RAWIO;
 use linux_raw_sys::general::{
     CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_IPC_LOCK, CAP_KILL, CAP_LAST_CAP, CAP_NET_RAW,
     CAP_PERFMON, CAP_SETGID, CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE,
-    CAP_SYS_NICE, CAP_SYS_PTRACE, CAP_SYS_RESOURCE,
+    CAP_SYS_NICE, CAP_SYS_PTRACE, CAP_SYS_RESOURCE, CAP_SYS_TIME,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -199,6 +199,12 @@ impl Cred {
         self.has_cap(CAP_SYS_RESOURCE)
     }
 
+    /// Check whether this credential may set the system clock
+    /// (equivalent to `CAP_SYS_TIME`).
+    pub fn has_cap_sys_time(&self) -> bool {
+        self.has_cap(CAP_SYS_TIME)
+    }
+
     /// Check whether this credential may bypass `RLIMIT_MEMLOCK`.
     pub fn has_cap_ipc_lock(&self) -> bool {
         self.has_cap(CAP_IPC_LOCK)
@@ -344,6 +350,7 @@ fn credential_capability_rules_hold_for_test() -> bool {
         && root.has_cap_net_raw()
         && root.has_cap_sys_nice()
         && root.has_cap_sys_resource()
+        && root.has_cap_sys_time()
         && root.has_cap_ipc_lock()
         && root.has_cap_sys_admin()
         && root.has_cap_sys_boot()
@@ -375,6 +382,7 @@ fn credential_capability_rules_hold_for_test() -> bool {
         && !net_raw_only.has_cap_sys_module()
         && !net_raw_only.has_cap_sys_nice()
         && !net_raw_only.has_cap_sys_resource()
+        && !net_raw_only.has_cap_sys_time()
         && !net_raw_only.has_cap_ipc_lock()
         && !net_raw_only.has_cap_chown()
         && !net_raw_only.has_cap_dac_override()

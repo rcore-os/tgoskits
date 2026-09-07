@@ -1,4 +1,7 @@
+use alloc::vec::Vec;
+
 use super::*;
+use crate::time::{ClockDeadline, ClockSnapshot};
 
 static NEXT_ALARM_SLOT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -32,8 +35,8 @@ impl AlarmSlot {
         }
     }
 
-    pub(crate) fn replace(&self, delay: Option<Duration>) -> AlarmChange {
-        let armed = delay.is_some();
+    pub(crate) fn replace(&self, deadline: Option<ClockDeadline>) -> AlarmChange {
+        let armed = deadline.is_some();
         let previous = self
             .state
             .generation_and_armed
@@ -49,8 +52,8 @@ impl AlarmSlot {
             slot: self.clone(),
             generation: (previous >> 1) + 1,
         };
-        match delay {
-            Some(delay) => AlarmChange::Schedule { delay, token },
+        match deadline {
+            Some(deadline) => AlarmChange::Schedule { deadline, token },
             None => AlarmChange::Cancel(token),
         }
     }
@@ -90,33 +93,13 @@ pub enum AlarmTarget {
 }
 
 struct Entry<T> {
-    deadline: Duration,
+    deadline: ClockDeadline,
     token: AlarmToken,
     target: T,
 }
 
-impl<T> PartialEq for Entry<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.deadline == other.deadline && self.token.slot_id() == other.token.slot_id()
-    }
-}
-impl<T> Eq for Entry<T> {}
-impl<T> PartialOrd for Entry<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl<T> Ord for Entry<T> {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        other
-            .deadline
-            .cmp(&self.deadline)
-            .then_with(|| other.token.slot_id().cmp(&self.token.slot_id()))
-    }
-}
-
 struct AlarmQueue<T> {
-    entries: BinaryHeap<Entry<T>>,
+    entries: Vec<Entry<T>>,
 }
 
 enum AlarmQueueAction<T> {
@@ -128,7 +111,7 @@ enum AlarmQueueAction<T> {
 impl<T> AlarmQueue<T> {
     const fn new() -> Self {
         Self {
-            entries: BinaryHeap::new(),
+            entries: Vec::new(),
         }
     }
 
@@ -137,11 +120,7 @@ impl<T> AlarmQueue<T> {
         self.entries.is_empty()
     }
 
-    fn earliest_deadline(&self) -> Option<Duration> {
-        self.entries.peek().map(|entry| entry.deadline)
-    }
-
-    fn schedule(&mut self, deadline: Duration, token: AlarmToken, target: T) {
+    fn schedule(&mut self, deadline: ClockDeadline, token: AlarmToken, target: T) {
         if !token.is_armed() {
             return;
         }
@@ -164,31 +143,21 @@ impl<T> AlarmQueue<T> {
         });
     }
 
-    fn pop_expired(&mut self, now: Duration) -> Option<Entry<T>> {
-        loop {
-            let entry = self.entries.peek()?;
-            if !entry.token.is_armed() {
-                self.entries.pop();
-                continue;
-            }
-            if entry.deadline > now {
-                return None;
-            }
-            return self.entries.pop();
-        }
-    }
-
-    fn next_action(&mut self, now: Duration) -> AlarmQueueAction<T> {
-        loop {
-            let Some(deadline) = self.earliest_deadline() else {
-                return AlarmQueueAction::Empty;
-            };
-            if deadline > now {
-                return AlarmQueueAction::Wait(deadline);
-            }
-            if let Some(entry) = self.pop_expired(now) {
-                return AlarmQueueAction::Fire(entry);
-            }
+    fn next_action(&mut self, clocks: ClockSnapshot) -> AlarmQueueAction<T> {
+        self.entries.retain(|entry| entry.token.is_armed());
+        let Some((index, deadline)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (index, entry.deadline.resolve_monotonic(clocks)))
+            .min_by_key(|(_, deadline)| *deadline)
+        else {
+            return AlarmQueueAction::Empty;
+        };
+        if deadline > clocks.monotonic_now() {
+            AlarmQueueAction::Wait(deadline)
+        } else {
+            AlarmQueueAction::Fire(self.entries.swap_remove(index))
         }
     }
 }

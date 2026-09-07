@@ -20,7 +20,6 @@ tls = []
 host-test = []
 
 # Record per-CPU pin construction for scheduler qperf diagnostics.
-qperf-metrics = []
 
 [dependencies]
 thiserror.workspace = true

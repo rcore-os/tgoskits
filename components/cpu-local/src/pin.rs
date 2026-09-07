@@ -124,21 +124,7 @@ pub unsafe fn with_cpu_pin<R>(
     // Installation validates the area, while initial binding and every switch
     // validate current before publication. Like Linux per-CPU access, this hot
     // path trusts those owner boundaries instead of re-reading current.
-    #[cfg(feature = "qperf-metrics")]
-    pin.area.runtime_anchor().record_cpu_pin_entry();
     Ok(operation(&pin))
-}
-
-/// Returns the successful CPU-pin entries observed on the selected CPU.
-///
-/// # Safety
-///
-/// The caller must prevent migration until this scalar snapshot completes.
-#[cfg(feature = "qperf-metrics")]
-#[doc(hidden)]
-pub unsafe fn qperf_current_cpu_pin_entries() -> Result<u64, CpuLocalError> {
-    let area = register::current_area()?;
-    Ok(area.runtime_anchor().qperf_cpu_pin_entries())
 }
 
 /// Runs `operation` with exclusive access to mutable state on the pinned CPU.

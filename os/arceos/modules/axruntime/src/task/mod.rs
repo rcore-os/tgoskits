@@ -103,7 +103,7 @@ use address_space::{
     update_runtime_address_space_membarrier_state,
 };
 #[cfg(feature = "qperf-metrics")]
-pub use ax_task::{DEFAULT_BATCH_LIMIT, qperf_cpu_owner_claims};
+pub use ax_task::DEFAULT_BATCH_LIMIT;
 #[cfg(feature = "uspace")]
 use bootstrap::current_cpu_remote;
 #[cfg(feature = "tls")]
@@ -169,8 +169,7 @@ pub use runtime_impl::{
 pub use scheduler_events::timer_irq_count;
 #[cfg(feature = "qperf-metrics")]
 pub use scheduler_events::{
-    QperfRuntimeSchedulerMetricsSnapshot, qperf_current_cpu_pin_entries,
-    qperf_runtime_scheduler_metrics_snapshot,
+    QperfRuntimeSchedulerMetricsSnapshot, qperf_runtime_scheduler_metrics_snapshot,
 };
 pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
 #[cfg(feature = "qperf-metrics")]

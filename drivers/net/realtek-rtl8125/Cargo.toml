@@ -13,6 +13,7 @@ repository.workspace = true
 ax-sync.workspace = true
 dma-api.workspace = true
 log.workspace = true
+mbarrier = "0.1"
 mmio-api.workspace = true
 rdif-eth.workspace = true
 thiserror = { version = "2", default-features = false }

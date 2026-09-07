@@ -14,7 +14,7 @@ use core::{
 
 use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
-use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
+use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time};
 use ax_std::os::arceos::task::WaitQueue;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
@@ -29,7 +29,10 @@ use crate::{
     syscall::signal::check_sigset_size,
     task::{
         PidIdentityId,
-        future::{UserWaitOutcome, block_on, block_on_user_until_wall, poll_shared},
+        future::{
+            UserWaitOutcome, block_on, block_on_user_until, monotonic_deadline_from_time,
+            poll_shared,
+        },
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -1094,7 +1097,7 @@ fn wait_for_completion(
     );
 
     let task = current;
-    match block_on_user_until_wall(task, deadline, wait) {
+    match block_on_user_until(task, deadline.map(monotonic_deadline_from_time), wait) {
         UserWaitOutcome::Ready(()) => Ok(true),
         UserWaitOutcome::TimedOut => Ok(false),
         UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
@@ -1201,7 +1204,7 @@ fn do_io_getevents(
     let min_nr = min_nr as usize;
     let nr = nr as usize;
     let deadline =
-        read_timeout(current, timeout)?.and_then(|duration| wall_time().checked_add(duration));
+        read_timeout(current, timeout)?.and_then(|duration| monotonic_time().checked_add(duration));
     let mut completed = 0usize;
 
     loop {

@@ -2,9 +2,8 @@ use core::mem::{align_of, size_of};
 
 use ax_runtime::hal::{
     cpu::{UserAccessError, UserAtomicError, UserAtomicU32Op},
-    time::{TimeValue, monotonic_time, wall_time},
+    time::monotonic_time,
 };
-use ax_std::os::arceos::task::MonotonicDeadline;
 use linux_raw_sys::general::{
     FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ,
     FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE,
@@ -22,7 +21,7 @@ use crate::{
         FutexAccessError, FutexContext, FutexKeyMode, FutexWaitError, TidNumber, UserTaskRef,
         get_user_task_by_number,
     },
-    time::TimeValueLike,
+    time::{ClockDeadline, TimeValueLike},
 };
 
 const FUTEX_PRIVATE_FLAG: u32 = 128;
@@ -44,33 +43,6 @@ struct ParsedFutexOp {
     command: FutexCommand,
     key_mode: FutexKeyMode,
     clock_realtime: bool,
-}
-
-#[derive(Clone, Copy)]
-struct FutexWaitDeadline {
-    monotonic: Option<MonotonicDeadline>,
-}
-
-impl FutexWaitDeadline {
-    fn from_remaining(
-        remaining: Option<TimeValue>,
-        monotonic_now: impl FnOnce() -> TimeValue,
-    ) -> Self {
-        Self {
-            monotonic: remaining.map(|timeout| {
-                MonotonicDeadline::from_duration(monotonic_now().saturating_add(timeout))
-            }),
-        }
-    }
-
-    fn monotonic(self) -> Option<MonotonicDeadline> {
-        self.monotonic
-    }
-
-    #[cfg(axtest)]
-    fn deadline_for_attempt(self, _now: TimeValue) -> Option<MonotonicDeadline> {
-        self.monotonic
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -268,25 +240,21 @@ fn futex_wait_timeout(
     current: &UserTaskRef,
     op: &ParsedFutexOp,
     timeout: *const timespec,
-) -> crate::StarryResult<Option<TimeValue>> {
+) -> crate::StarryResult<Option<ClockDeadline>> {
     let Some(ts) = timeout.nullable() else {
         return Ok(None);
     };
 
     let timeout = unsafe { ts.vm_read_uninit(current)?.assume_init() }.try_into_time_value()?;
-    // FUTEX_WAIT keeps the traditional relative timeout. FUTEX_WAIT_BITSET
-    // uses an absolute deadline on the selected clock.
-    if op.command == FutexCommand::Wait {
-        return Ok(Some(timeout));
-    }
-
-    let now = if op.clock_realtime {
-        wall_time()
+    // Resolve relative waits once, before any user-fault or notification retry.
+    let deadline = if op.command == FutexCommand::Wait {
+        ClockDeadline::Monotonic(monotonic_time().saturating_add(timeout))
+    } else if op.clock_realtime {
+        ClockDeadline::Realtime(timeout)
     } else {
-        monotonic_time()
+        ClockDeadline::Monotonic(timeout)
     };
-
-    Ok(Some(timeout.saturating_sub(now)))
+    Ok(Some(deadline))
 }
 
 fn complete_futex_wake(count: usize) -> crate::StarryResult<isize> {
@@ -324,11 +292,7 @@ pub fn sys_futex(
 
     match op.command {
         FutexCommand::Wait | FutexCommand::WaitBitset => {
-            let deadline = FutexWaitDeadline::from_remaining(
-                futex_wait_timeout(current, &op, timeout)?,
-                monotonic_time,
-            )
-            .monotonic();
+            let deadline = futex_wait_timeout(current, &op, timeout)?;
 
             let bitset = if op.command == FutexCommand::WaitBitset {
                 value3
@@ -527,27 +491,6 @@ fn futex_wake_completion_is_scheduler_driven_for_test() -> bool {
     matches!(result, Ok(1)) && crate::task::yield_now_calls_for_test() == 0
 }
 
-#[cfg(all(test, axtest))]
-fn futex_retry_keeps_original_deadline_for_test() -> bool {
-    let first_now = TimeValue::from_secs(10);
-    let retry_now = first_now + TimeValue::from_millis(25);
-    let timeout =
-        FutexWaitDeadline::from_remaining(Some(TimeValue::from_millis(100)), || first_now);
-
-    timeout.deadline_for_attempt(first_now) == timeout.deadline_for_attempt(retry_now)
-}
-
-#[cfg(all(test, axtest))]
-fn futex_without_timeout_skips_clock_read_for_test() -> bool {
-    let clock_reads = core::cell::Cell::new(0);
-    let timeout = FutexWaitDeadline::from_remaining(None, || {
-        clock_reads.set(clock_reads.get() + 1);
-        TimeValue::ZERO
-    });
-
-    timeout.monotonic().is_none() && clock_reads.get() == 0
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(not(axtest))]
@@ -560,17 +503,5 @@ mod tests {
     #[axtest::axtest]
     fn futex_wake_completion_is_scheduler_driven() {
         assert!(super::futex_wake_completion_is_scheduler_driven_for_test());
-    }
-
-    #[cfg(axtest)]
-    #[axtest::axtest]
-    fn futex_retry_keeps_original_deadline() {
-        assert!(super::futex_retry_keeps_original_deadline_for_test());
-    }
-
-    #[cfg(axtest)]
-    #[axtest::axtest]
-    fn futex_without_timeout_skips_clock_read() {
-        assert!(super::futex_without_timeout_skips_clock_read_for_test());
     }
 }

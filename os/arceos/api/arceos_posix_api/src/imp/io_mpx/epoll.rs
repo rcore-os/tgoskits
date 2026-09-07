@@ -6,7 +6,7 @@ use alloc::{
 };
 use core::{ffi::c_int, time::Duration};
 
-use ax_hal::time::wall_time;
+use ax_hal::time::monotonic_time;
 
 use crate::{
     PosixError, PosixResult, ctypes,
@@ -355,8 +355,8 @@ pub unsafe fn sys_epoll_wait(
             return Err(PosixError::EFAULT);
         }
         let events = unsafe { core::slice::from_raw_parts_mut(events, maxevents as usize) };
-        let deadline =
-            (!timeout.is_negative()).then(|| wall_time() + Duration::from_millis(timeout as u64));
+        let deadline = (!timeout.is_negative())
+            .then(|| monotonic_time() + Duration::from_millis(timeout as u64));
         let epoll_instance = EpollInstance::from_fd(epfd)?;
         loop {
             #[cfg(feature = "net")]
@@ -366,7 +366,7 @@ pub unsafe fn sys_epoll_wait(
                 return Ok(events_num as c_int);
             }
 
-            if deadline.is_some_and(|ddl| wall_time() >= ddl) {
+            if deadline.is_some_and(|ddl| monotonic_time() >= ddl) {
                 debug!("    timeout!");
                 return Ok(0);
             }

@@ -345,7 +345,6 @@ strum = { version = "0.28", default-features = false, features = ["derive"] }
 syscalls.workspace = true
 thiserror.workspace = true
 uluru = "3.1.0"
-weak-map = "0.1.1"
 xmas-elf = "0.9"
 zerocopy = { version = "0.8", features = ["derive"] }
 static-keys = "0.8"

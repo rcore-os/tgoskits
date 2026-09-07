@@ -16,7 +16,7 @@ use core::{
 };
 
 use ax_lazyinit::OnceLock;
-use ax_runtime::hal::time::{TimeValue, epochoffset_nanos, monotonic_time};
+use ax_runtime::hal::time::{TimeValue, monotonic_time};
 pub use ax_runtime::task::block_on;
 use ax_std::os::arceos::task::{
     self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
@@ -26,10 +26,11 @@ use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedObserve
 
 pub use super::user_wait::{UserWaitError, UserWaitOutcome};
 use super::{UserTaskRef, user_wait::resolve_user_wait};
-use crate::{
-    sync::PiMutex,
-    time::{SleepClockSnapshot, SleepDeadline},
-};
+use crate::sync::PiMutex;
+
+mod clock;
+pub use clock::timeout_at_wall;
+pub(crate) use clock::{WallClockWaiter, notify_wall_clock_changed};
 
 static TIMER_WAIT: WaitQueue = WaitQueue::new();
 static TIMER_RUNTIME: PiMutex<TimerRuntime> = PiMutex::new(TimerRuntime::new());
@@ -92,11 +93,11 @@ pub fn block_on_user_until_wall<F: IntoFuture>(
     deadline: Option<TimeValue>,
     future: F,
 ) -> UserWaitOutcome<F::Output> {
-    block_on_user_until(
-        task,
-        deadline.map(wall_deadline_to_monotonic_deadline),
-        future,
-    )
+    match block_on_user(task, timeout_at_wall(deadline, future)) {
+        UserWaitOutcome::Ready(Ok(output)) => UserWaitOutcome::Ready(output),
+        UserWaitOutcome::Ready(Err(_)) | UserWaitOutcome::TimedOut => UserWaitOutcome::TimedOut,
+        UserWaitOutcome::Interrupted => UserWaitOutcome::Interrupted,
+    }
 }
 
 async fn user_wait_future<F: IntoFuture>(
@@ -402,14 +403,6 @@ pub async fn timeout_at<F: IntoFuture>(
     }
 }
 
-/// Requires a future to complete before an optional wall-clock deadline.
-pub async fn timeout_at_wall<F: IntoFuture>(
-    deadline: Option<TimeValue>,
-    future: F,
-) -> Result<F::Output, Elapsed> {
-    timeout_at(deadline.map(wall_deadline_to_monotonic), future).await
-}
-
 impl From<UserWaitError> for crate::StarryError {
     fn from(error: UserWaitError) -> Self {
         match error {
@@ -600,17 +593,6 @@ fn timer_worker() {
 fn publish_timer_change() {
     TIMER_EPOCH.fetch_add(1, Ordering::AcqRel);
     TIMER_WAIT.notify_one();
-}
-
-fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
-    let monotonic_now = monotonic_time();
-    let realtime_now = monotonic_now.saturating_add(TimeValue::from_nanos(epochoffset_nanos()));
-    SleepDeadline::Realtime(deadline)
-        .resolve_monotonic(SleepClockSnapshot::new(monotonic_now, realtime_now))
-}
-
-pub(crate) fn wall_deadline_to_monotonic_deadline(deadline: TimeValue) -> MonotonicDeadline {
-    monotonic_deadline_from_time(wall_deadline_to_monotonic(deadline))
 }
 
 #[cfg(all(test, not(axtest)))]

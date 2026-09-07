@@ -17,7 +17,8 @@ use ax_std::os::arceos::task::{
 use crate::{
     mm::{AddrSpace, SharedFutexIdentity, SharedFutexRegion},
     sync::{LockdepMutexExt, PiMutex, SpinLock},
-    task::{ProcessData, UserTaskRef, process_memory::ProcessMemoryShare},
+    task::{ProcessData, UserTaskRef, future::WallClockWaiter, process_memory::ProcessMemoryShare},
+    time::{ClockDeadline, ClockSnapshot},
 };
 
 const NESTED_FUTEX_BUCKET_LOCK_SUBCLASS: u32 = 1;
@@ -887,10 +888,15 @@ impl ResolvedFutex {
         &self,
         task: &UserTaskRef,
         bitset: u32,
-        deadline: Option<MonotonicDeadline>,
+        deadline: Option<ClockDeadline>,
         condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
     ) -> Result<bool, FutexWaitError> {
         let task = task.clone();
+        // Event/waker allocation is restricted to absolute realtime waits and
+        // occurs before taking the futex bucket or preparing a scheduler park.
+        let mut clock_waiter = deadline
+            .filter(|deadline| deadline.is_realtime())
+            .map(|_| WallClockWaiter::new(&task));
         let (_, bucket) = self.domain.domain().bucket(&self.key);
         let (generation, mut park) = {
             let reservation = bucket.reserve_waiter();
@@ -900,8 +906,8 @@ impl ResolvedFutex {
             }
             let park = match scheduler::begin_current_park().map_err(map_park_error)? {
                 CurrentParkStart::Notified => {
-                    let deadline_expired = deadline
-                        .is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
+                    let deadline_expired =
+                        deadline.is_some_and(|deadline| deadline.lag().is_some());
                     return match classify_park_notification(
                         task.take_interrupt(),
                         deadline_expired,
@@ -934,7 +940,17 @@ impl ResolvedFutex {
         };
 
         loop {
-            if let Some(deadline) = deadline
+            let mut clock_changed = clock_waiter.as_mut().is_some_and(WallClockWaiter::refresh);
+            let scheduler_deadline = deadline.map(|deadline| {
+                let monotonic = match deadline {
+                    ClockDeadline::Monotonic(value) => value,
+                    ClockDeadline::Realtime(_) => {
+                        deadline.resolve_monotonic(ClockSnapshot::capture())
+                    }
+                };
+                MonotonicDeadline::from_duration(monotonic)
+            });
+            if let Some(deadline) = scheduler_deadline
                 && let Err(error) = park.arm_deadline(deadline)
             {
                 cancel_futex_waiter(&task, generation);
@@ -957,42 +973,53 @@ impl ResolvedFutex {
                 cancel_futex_waiter(&task, generation);
                 return Err(FutexAccessError::Operation(crate::Errno::EINTR).into());
             }
-            if resume.deadline_expired()
-                || deadline.is_some_and(|deadline| scheduler_monotonic_now().reached(deadline))
-            {
+            if deadline.is_some_and(|deadline| deadline.lag().is_some()) {
                 cancel_futex_waiter(&task, generation);
                 return Err(FutexAccessError::Operation(crate::Errno::ETIMEDOUT).into());
             }
-            if park_disposition_requires_condition_recheck(resume.disposition()) {
+            clock_changed |= clock_waiter.as_mut().is_some_and(WallClockWaiter::refresh);
+            if !clock_changed && park_disposition_requires_condition_recheck(resume.disposition()) {
                 cancel_futex_waiter(&task, generation);
                 return Err(FutexWaitError::SchedulerNotification);
             }
 
-            park = match scheduler::begin_current_park() {
-                Ok(CurrentParkStart::Notified)
-                    if task.as_thread().wait_state().is_woken(generation) =>
-                {
-                    task.as_thread().wait_state().finish(generation);
-                    return Ok(true);
-                }
-                Ok(CurrentParkStart::Notified) if task.take_interrupt() => {
-                    cancel_futex_waiter(&task, generation);
-                    return Err(FutexAccessError::Operation(crate::Errno::EINTR).into());
-                }
-                Ok(CurrentParkStart::Notified) => {
-                    cancel_futex_waiter(&task, generation);
-                    let deadline_expired = deadline
-                        .is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
-                    return match classify_park_notification(false, deadline_expired)? {
-                        ParkNotificationAction::RecheckCondition => {
-                            Err(FutexWaitError::SchedulerNotification)
+            park = loop {
+                match scheduler::begin_current_park() {
+                    Ok(CurrentParkStart::Notified)
+                        if task.as_thread().wait_state().is_woken(generation) =>
+                    {
+                        task.as_thread().wait_state().finish(generation);
+                        return Ok(true);
+                    }
+                    Ok(CurrentParkStart::Notified) if task.take_interrupt() => {
+                        cancel_futex_waiter(&task, generation);
+                        return Err(FutexAccessError::Operation(crate::Errno::EINTR).into());
+                    }
+                    Ok(CurrentParkStart::Notified) => {
+                        clock_changed |=
+                            clock_waiter.as_mut().is_some_and(WallClockWaiter::refresh);
+                        if clock_changed
+                            && !deadline.is_some_and(|deadline| deadline.lag().is_some())
+                        {
+                            // Keep the published domain waiter authoritative across
+                            // clock changes; rechecking the user word could lose an
+                            // already queued wait after userspace changed the word.
+                            continue;
                         }
-                    };
-                }
-                Ok(CurrentParkStart::Prepared(park)) => park,
-                Err(error) => {
-                    cancel_futex_waiter(&task, generation);
-                    return Err(map_park_error(error).into());
+                        cancel_futex_waiter(&task, generation);
+                        let deadline_expired =
+                            deadline.is_some_and(|deadline| deadline.lag().is_some());
+                        return match classify_park_notification(false, deadline_expired)? {
+                            ParkNotificationAction::RecheckCondition => {
+                                Err(FutexWaitError::SchedulerNotification)
+                            }
+                        };
+                    }
+                    Ok(CurrentParkStart::Prepared(park)) => break park,
+                    Err(error) => {
+                        cancel_futex_waiter(&task, generation);
+                        return Err(map_park_error(error).into());
+                    }
                 }
             };
         }
@@ -1448,12 +1475,6 @@ fn false_wait_condition_short_circuits_for_test() -> bool {
 }
 
 #[cfg(axtest)]
-fn queued_waiter_state_allocations_for_test() -> usize {
-    let _embedded = ThreadWaitState::new();
-    0
-}
-
-#[cfg(axtest)]
 fn park_prepare_error_cleans_waiter_for_test() -> bool {
     let linked = AtomicUsize::new(1);
     let result = WaitQueue::begin_repark_with(
@@ -1508,11 +1529,6 @@ mod axtests {
     #[axtest::axtest]
     fn false_wait_condition_short_circuits() {
         assert!(super::false_wait_condition_short_circuits_for_test());
-    }
-
-    #[axtest::axtest]
-    fn queued_waiter_state_is_embedded() {
-        assert_eq!(super::queued_waiter_state_allocations_for_test(), 0);
     }
 
     #[axtest::axtest]

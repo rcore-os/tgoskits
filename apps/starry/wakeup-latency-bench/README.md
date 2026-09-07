@@ -6,7 +6,7 @@ ping-pong 总耗时当作单次唤醒延迟。
 
 ## 测量对象
 
-默认分别在 `SCHED_OTHER` 和 `SCHED_FIFO:80` 下运行四类场景：
+默认分别在 `SCHED_OTHER` 和 `SCHED_FIFO:80` 下运行全部十项场景。其中四项测量唤醒：
 
 - `thread_futex_same_cpu`：同一 CPU 上两个线程的 futex handoff；
 - `thread_futex_cross_cpu`：CPU 0 唤醒 CPU 1 上已经 park 的线程；
@@ -27,11 +27,11 @@ futex 场景只把 `FUTEX_WAIT` 确实返回“已被唤醒”的样本计入分
 - timer missed deadlines；
 - 固定纳秒区间直方图。
 
-`yield.c` 另提供两项显式调度基准。`sched_yield_no_peer` 测量 CPU 0 上没有同级
+`yield.c` 提供两项调度基准，也包含在默认完整运行中。`sched_yield_no_peer` 测量 CPU 0 上没有同级
 竞争者时一次 yield 的往返；`sched_yield_handoff` 将两个线程都固定到 CPU 0，测量
 发送者发布时间戳并 yield 到接收者取得时间戳的单程延迟。FIFO 比较使用同一优先级
 80，后者的反向 yield 不计入当前样本。`baseline.c` 的 `clock_pair`、`getpid`、
-`futex_wait_mismatch` 和 `futex_wake_empty` 用于定位公共 syscall 成本。
+`futex_wait_mismatch` 和 `futex_wake_empty` 用于定位公共 syscall 成本，同样包含在默认运行中。
 
 默认预热 1,000 次，futex 测量 20,000 次，timer 测量 10,000 次、周期 1 ms。
 `clock_resolution_ns` 与连续两次 raw `SYS_clock_gettime` 的最小开销单独报告，
