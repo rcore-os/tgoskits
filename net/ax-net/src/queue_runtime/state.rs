@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use super::{STATE_DISABLED, STATE_IDLE, STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED};
 
@@ -73,6 +73,7 @@ impl QueueStatsAtomic {
 /// Shared atomic state for one poll group.
 pub(super) struct PollGroupState {
     pub(super) state: AtomicU8,
+    startup_absent: AtomicBool,
     pub(super) owner_cpu: usize,
     notify: Arc<ax_task::IrqNotify>,
     pub(super) stats: QueueStatsAtomic,
@@ -83,11 +84,23 @@ impl PollGroupState {
     pub(super) fn new(owner_cpu: usize, notify: Arc<ax_task::IrqNotify>) -> Self {
         Self {
             state: AtomicU8::new(STATE_DISABLED),
+            startup_absent: AtomicBool::new(false),
             owner_cpu,
             notify,
             stats: QueueStatsAtomic::new(),
             rx_drops: AtomicU64::new(0),
         }
+    }
+
+    pub(super) fn mark_startup_absent(&self) {
+        // The owner publishes this only after startup cancellation has proved
+        // that the unpublished group can be released. The builder's acquire
+        // load precedes IRQ synchronization and removal of protocol endpoints.
+        self.startup_absent.store(true, Ordering::Release);
+    }
+
+    pub(super) fn startup_absent(&self) -> bool {
+        self.startup_absent.load(Ordering::Acquire)
     }
 
     pub(super) fn record_rx_drop(&self) {
@@ -110,6 +123,9 @@ impl PollGroupState {
         let cpu = ax_hal::percpu::this_cpu_id();
         self.stats.irq.fetch_add(1, Ordering::Relaxed);
         self.stats.last_irq_cpu.store(cpu, Ordering::Release);
+        if self.startup_absent() {
+            return;
+        }
         if cpu != self.owner_cpu {
             self.stats
                 .irq_to_poll_remote_wake

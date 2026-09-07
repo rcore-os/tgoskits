@@ -110,6 +110,7 @@ pub(super) struct ProtocolGroupPort {
     pub(super) tx_free: SpscConsumer<DmaBuffer>,
     pub(super) tx_spares: Vec<DmaBuffer>,
     pub(super) shared: Arc<PollGroupState>,
+    pub(super) checksum_capabilities: rd_net::TxChecksumCapabilities,
 }
 
 impl ProtocolGroupPort {
@@ -312,6 +313,17 @@ impl EthernetFramePort for QueueFramePort {
 }
 
 impl QueueFramePort {
+    pub(super) fn retain_started_groups(&mut self) -> bool {
+        self.groups.retain(|group| !group.shared.startup_absent());
+        self.checksum_capabilities = self
+            .groups
+            .iter()
+            .map(|group| group.checksum_capabilities)
+            .reduce(TxChecksumCapabilities::intersection)
+            .unwrap_or(TxChecksumCapabilities::NONE);
+        !self.groups.is_empty()
+    }
+
     fn try_transmit_with_options(
         &mut self,
         frame_len: usize,
@@ -458,6 +470,11 @@ impl QueueGroupExecutor {
                     Ok(NetOwnerStartupProgress::RetryAt { deadline_nanos }) => {
                         self.shared.wait_startup_deadline(deadline_nanos);
                         startup.advance(ax_hal::time::monotonic_time_nanos())
+                    }
+                    Err(NetError::DeviceNotPresent) => {
+                        startup.cancel()?;
+                        self.shared.mark_startup_absent();
+                        return Ok(());
                     }
                     Err(error) => {
                         let _ = startup.cancel();
@@ -890,6 +907,11 @@ fn shutdown_queue_groups(mut groups: Vec<QueueGroupExecutor>, irq_synchronized: 
     let mut dma_stopped = true;
     for group in &mut groups {
         group.shared.disable();
+        if group.shared.startup_absent() {
+            // owner_startup.cancel() already completed before this marker was
+            // published, so no control endpoint owns live DMA to shut down.
+            continue;
+        }
         let _ = group.group.irq_control.quiesce();
         if group.group.irq_control.shutdown().is_err() {
             dma_stopped = false;

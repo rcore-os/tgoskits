@@ -4,9 +4,9 @@ use std::sync::Mutex;
 
 use rd_net::{
     FixedNetControl, IRxQueue, ITxQueue, NetDevice, NetDeviceInfo, NetDeviceParts,
-    NetHardIrqEndpoint, NetHardIrqHandler, NetHardIrqResult, NetIrqSourceId, NetPollGroupId,
-    NetPollGroupParts, NetPollIrqControl, NetQueueId, NetQueuePairParts, QueueConfig, SubmitError,
-    TxNotify,
+    NetHardIrqEndpoint, NetHardIrqHandler, NetHardIrqResult, NetIrqSourceId, NetOwnerStartup,
+    NetOwnerStartupProgress, NetPollGroupId, NetPollGroupParts, NetPollIrqControl, NetQueueId,
+    NetQueuePairParts, QueueConfig, SubmitError, TxNotify,
     dma_api::{
         DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
         DmaDomainId, DmaError, DmaMapHandle, DmaOp,
@@ -265,6 +265,23 @@ impl NetHardIrqHandler for TestIrq {
         NetHardIrqResult::Spurious
     }
 }
+
+struct MissingDeviceStartup(Arc<AtomicBool>);
+
+impl NetOwnerStartup for MissingDeviceStartup {
+    fn start(&mut self, _now_nanos: u64) -> Result<NetOwnerStartupProgress, NetError> {
+        Err(NetError::DeviceNotPresent)
+    }
+
+    fn advance(&mut self, _now_nanos: u64) -> Result<NetOwnerStartupProgress, NetError> {
+        panic!("a missing device must not advance startup")
+    }
+
+    fn cancel(&mut self) -> Result<(), NetError> {
+        self.0.store(true, Ordering::Release);
+        Ok(())
+    }
+}
 impl NetPollIrqControl for TestIrq {
     fn quiesce(&mut self) -> Result<(), NetError> {
         Ok(())
@@ -310,6 +327,50 @@ impl NetDevice for TestDevice {
             }],
         })
     }
+}
+
+#[test]
+fn missing_device_startup_is_cancelled_without_publishing_queues() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let dma = DeviceDma::new(
+        DmaDeviceInfo::new(
+            DmaDomainId::Direct,
+            DmaCoherency::Coherent,
+            DmaConstraints::new(u64::MAX),
+        ),
+        &TEST_DMA,
+    );
+    let mut device = rd_net::prepare_device(Box::new(TestDevice(trace)), dma).unwrap();
+    let mut group = device.poll_groups.pop().unwrap();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    group.owner_startup = Some(Box::new(MissingDeviceStartup(Arc::clone(&cancelled))));
+
+    let (rx_ready, _protocol_rx) = spsc_ring(2);
+    let (rx_recycle, recycle) = spsc_ring(2);
+    let (tx_free, _protocol_tx_free) = spsc_ring(2);
+    let (_protocol_tx, tx_ready) = spsc_ring(2);
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+    let mut executor = QueueGroupExecutor {
+        group,
+        rx_ready,
+        rx_recycle: recycle,
+        rx_recycler: Arc::new(RxRecycler::new(rx_recycle, Arc::clone(&shared), 2)),
+        rx_spares: Vec::new(),
+        rx_extra_buffers: 0,
+        tx_ready,
+        tx_free,
+        pending_rx: None,
+        pending_rx_refill: VecDeque::with_capacity(2),
+        pending_tx: None,
+        pending_tx_free: None,
+        retry_at: None,
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(executor.initialize().is_ok());
+    assert!(cancelled.load(Ordering::Acquire));
+    assert!(shared.startup_absent());
+    assert_eq!(executor.group.rx.posted(), 0);
 }
 
 #[test]

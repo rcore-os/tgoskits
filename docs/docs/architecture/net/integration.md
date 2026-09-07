@@ -95,10 +95,12 @@ ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 
 ### 2.4 Wi-Fi 与 SoftAP
 
-Wi-Fi 与有线设备走同一个 all-at-once builder。AIC probe 只识别 variant 并提取 IRQ
-source，固件与 FDRV 初始化经 `NetOwnerStartup` 在 worker pin、disabled IRQ registration
-之后由 owner CPU 执行。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
-group 的 owner CPU；startup transaction 只在 IRQ enable 完成后执行，service 尚未发布。运行期
+Wi-Fi 与有线设备走同一个 all-at-once builder。AIC probe 封装 host parts 和 IRQ
+source，卡识别、固件与 FDRV 初始化经 `NetOwnerStartup` 在 worker pin、IRQ registration
+和 enable 之后由 owner CPU 执行。卡不包含 SDIO I/O Function 时，startup 返回
+`DeviceNotPresent`；runtime 在取消 owner 并同步该 IRQ callback 后不发布 `wlan0`，
+其余网卡继续初始化。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
+group 的 owner CPU；startup transaction 只在设备 startup 完成后执行，service 尚未发布。运行期
 `reconfigure_wifi(ifname, WifiTransaction)` 进入有界 control queue：owner 先
 quiesce group，在同 CPU 执行 SDIO/MMIO 控制，再 rearm，最后由 protocol owner
 提交 STA DHCP 或 SoftAP 静态地址/DHCP server 状态。启动后不支持新增物理 Wi-Fi。

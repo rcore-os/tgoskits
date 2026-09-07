@@ -361,7 +361,7 @@ pub struct NetPollGroupParts {
 - queue ID 与 group ID 使用 typed newtype。
 - 当前生产后端全部提供一个 queue-0 group；接口允许多个 group，但本次不启用 virtio/fxmac 硬件多队列。
 - 只有拥有独立 IRQ source 和独立 `rearm_and_check()` 域的硬件队列才能拆成多个 group。
-- `NetOwnerStartup` 是 move-only one-shot endpoint，只能由已固定 CPU 的 group worker 在 IRQ 注册但尚未 enable 时执行。AIC 固件和 FDRV 初始化经此边界延后，probe 不再执行 SDIO 数据面 I/O。
+- `NetOwnerStartup` 是 move-only one-shot endpoint，只能由已固定 CPU 的 group worker 在 IRQ 注册并 enable 后、普通 queue 尚未发布时执行。AIC 卡识别、固件和 FDRV 初始化经此边界延后，probe 不执行 SDIO 协议 I/O。若它返回 `NetError::DeviceNotPresent`，runtime 只在 `cancel()` 成功并 disable+synchronize 对应 IRQ callback 后剔除该 group；其他错误仍使 builder 回滚。
 - `NetPollIrqControl` 暴露 `quiesce()`、`shutdown()` 和 `rearm_and_check()`；`shutdown()` 只有在硬件已不能访问 descriptor/token backing 时才能成功，否则 runtime 必须隔离整个 group。
 - hard endpoint 是 move-only owned callback，不保存 queue 或 control 的反向引用。
 
@@ -510,7 +510,7 @@ AP/STA confirmation 已由同一 owner executor 中的 command/RX 有限状态�
 ### 14.6 AIC8800/SDIO
 
 - SDHCI controller IRQ 是 nested source，由 unified runtime 选择 CPU 后注册。
-- probe 只识别 chip variant 并提取 move-only CARD_INT source；固件下载与 FDRV/bus 创建由 `NetOwnerStartup` 在 group owner CPU 上完成。
+- probe 只封装 host parts 和 move-only CARD_INT source；卡类型、chip variant、固件下载与 FDRV/bus 创建由 `NetOwnerStartup` 在 group owner CPU 上完成。CMD5 没有 I/O Function 时，AIC 报告 `DeviceNotPresent`，同步撤销该 group 后不发布 `wlan0`。
 - top half 只 mask `CARD_INT` signal、发布 pending/snapshot 并激活本地 group。
 - RX FIFO、TX queue、firmware command completion 和 card-side clear 由 owner executor 推进。
 - 删除 `set_rx_wake`、全局 raw callback、RX/TX kicker 和独立 RX/TX data tasks。

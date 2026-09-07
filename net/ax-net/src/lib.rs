@@ -211,6 +211,7 @@ pub(crate) fn get_control() -> &'static NetControl {
 
 fn map_driver_net_error(error: rd_net::NetError) -> NetError {
     match error {
+        rd_net::NetError::DeviceNotPresent => NetError::NoSuchDevice,
         rd_net::NetError::NotSupported | rd_net::NetError::IrqUnavailable => {
             NetError::OperationNotSupported
         }
@@ -299,6 +300,14 @@ mod wifi_entropy_tests {
     fn driver_io_failures_do_not_become_bad_user_addresses() {
         let driver_error = rd_net::NetError::Other(Box::new(ax_io::IoError::Io));
         assert_eq!(map_driver_net_error(driver_error), NetError::BackendIo);
+    }
+
+    #[test]
+    fn missing_driver_device_maps_to_no_such_device() {
+        assert_eq!(
+            map_driver_net_error(rd_net::NetError::DeviceNotPresent),
+            NetError::NoSuchDevice
+        );
     }
 }
 

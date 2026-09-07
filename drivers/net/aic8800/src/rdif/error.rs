@@ -94,6 +94,7 @@ pub enum AicRdifError {
 impl From<AicRdifError> for rdif_eth::NetError {
     fn from(error: AicRdifError) -> Self {
         match error {
+            AicRdifError::Protocol(ProtocolError::NoIoFunctions) => Self::DeviceNotPresent,
             AicRdifError::QueueUnavailable => Self::Retry,
             AicRdifError::Stopped => Self::Stopped,
             AicRdifError::DmaUnavailable => Self::InvalidParts,
@@ -105,5 +106,17 @@ impl From<AicRdifError> for rdif_eth::NetError {
 impl From<dma_api::DmaError> for AicRdifError {
     fn from(_: dma_api::DmaError) -> Self {
         Self::DmaUnavailable
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_only_card_is_not_published_as_an_aic_network_device() {
+        let error = rdif_eth::NetError::from(AicRdifError::Protocol(ProtocolError::NoIoFunctions));
+
+        assert!(matches!(error, rdif_eth::NetError::DeviceNotPresent));
     }
 }

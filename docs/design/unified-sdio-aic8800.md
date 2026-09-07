@@ -104,10 +104,16 @@ signal-enable 字段始终通过单次 32-bit MMIO 访问；不能拆成两次
 2. ax-net 固定 owner CPU，注册并启用硬 IRQ；poll group 仍保持 disabled，
    IRQ 只能唤醒启动状态机，不能开放网络队列。
 3. owner 完成 IO-only 卡初始化、Function 生命周期、固件和 FDRV；每步只
-   返回 Ready、WaitForInterrupt、RetryAt 或错误。
-4. 成功后才 refill RX、rearm 并 publish 队列，再执行可选启动 transaction。
+   返回 Ready、WaitForInterrupt、RetryAt 或类型化错误。AIC 的 CMD5 返回
+   `NoIoFunctions` 时转换为 `NetError::DeviceNotPresent`，表示当前卡不属于该网络
+   驱动，不把其他协议错误或固件故障一起降级。
+4. `DeviceNotPresent` 分支先在 owner CPU 执行 `cancel()`；确认取消成功后，
+   `NetworkRuntimeBuilder` 才 disable+synchronize 对应 IRQ registration，并从
+   protocol port 中剔除该 poll group。该设备没有剩余 group 时不发布网络接口，
+   其他网络设备继续初始化。
+5. 成功后才 refill RX、rearm 并 publish 队列，再执行可选启动 transaction。
    Wi-Fi 控制同样使用 `start/advance/cancel`。
-5. 失败先 disable+synchronize IRQ，再 cancel/abort；证明 host DMA 停止后
+6. 其他失败先 disable+synchronize IRQ，再 cancel/abort；证明 host DMA 停止后
    释放队列，无法证明时隔离整个 ownership domain。
 
 等待原因必须由类型区分，不能再用一个 `rearm_ready` 布尔值同时表示定时器和

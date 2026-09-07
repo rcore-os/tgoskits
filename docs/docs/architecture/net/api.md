@@ -662,8 +662,10 @@ backlog；`Fifo` 的 `max_frames` 是 packet limit，存储只在第一次 busy 
 
 `NetworkRuntimeBuilder` 一次性消费全部设备，构造 shared-IRQ affinity domain，等待
 worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ。owner startup、initial
-refill/rearm、IRQ enable 与 startup transaction 任一步失败都会反向回滚；没有运行时
-新增/删除物理 NIC 的公共入口。
+refill/rearm、IRQ enable 与 startup transaction 任一步失败都会反向回滚。唯一的
+非致命结果是 owner startup 返回 `rdif_eth::NetError::DeviceNotPresent`：runtime 在
+`cancel()` 成功并同步该 group 的 IRQ callback 后剔除它；设备没有剩余 group 时不
+发布接口，其他设备不受影响。没有运行时新增/删除物理 NIC 的公共入口。
 
 ### 7.4 Wi-Fi 控制
 

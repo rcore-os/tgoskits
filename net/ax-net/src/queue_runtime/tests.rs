@@ -170,6 +170,7 @@ fn tx_test_port(
         tx_free,
         tx_spares: Vec::new(),
         shared,
+        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
     (
         QueueFramePort {
@@ -272,6 +273,15 @@ fn noqueue_never_retains_or_allocates_when_device_is_busy() {
     assert_eq!(port.transmit(&tx_frame(1)), Err(NetDeviceError::Again));
     assert!(port.pending_tx.is_empty());
     assert_eq!(port.pending_tx.capacity(), 0);
+}
+
+#[test]
+fn absent_startup_group_is_not_published_as_a_protocol_port() {
+    let (mut port, _tx_ready, _tx_free) = tx_test_port(TxQueueDiscipline::NoQueue, 0);
+    port.groups[0].shared.mark_startup_absent();
+
+    assert!(!port.retain_started_groups());
+    assert!(port.groups.is_empty());
 }
 
 #[test]
@@ -378,6 +388,37 @@ fn failed_initialization_unwinds_irq_leases_in_reverse_order() {
 
     assert!(disable_registrations(&registrations));
     assert_eq!(*order.lock().unwrap(), vec![2, 1, 0]);
+}
+
+#[test]
+fn absent_startup_group_synchronizes_only_its_irq_registration() {
+    let order = Arc::new(StdMutex::new(Vec::new()));
+    let started = Arc::new(group_state(STATE_IDLE));
+    let absent = Arc::new(group_state(STATE_DISABLED));
+    absent.mark_startup_absent();
+    let registrations = vec![
+        RegisteredEndpoint {
+            registration: Box::new(RecordingRegistration {
+                id: 0,
+                order: Arc::clone(&order),
+            }),
+            shared: started,
+        },
+        RegisteredEndpoint {
+            registration: Box::new(RecordingRegistration {
+                id: 1,
+                order: Arc::clone(&order),
+            }),
+            shared: absent,
+        },
+    ];
+
+    let retained = prune_absent_irq_registrations(registrations).unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(*order.lock().unwrap(), vec![1]);
+
+    assert!(release_registrations(retained));
+    assert_eq!(*order.lock().unwrap(), vec![1, 0]);
 }
 
 #[test]
@@ -506,6 +547,7 @@ fn oversized_rx_frame_recycles_token_and_next_frame_remains_receivable() {
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
         shared,
+        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
 
     assert!(matches!(port.receive(), Err(NetDeviceError::InvalidParam)));
@@ -561,6 +603,7 @@ fn direct_rx_consumes_dma_backing_before_recycling_the_token() {
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
         shared,
+        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
     let consumed = port
         .receive_with(&mut |packet| {
@@ -598,6 +641,7 @@ fn detached_rx_retains_dma_until_the_owned_frame_is_dropped() {
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
         shared,
+        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
     let frame = port
         .receive_owned()
@@ -627,6 +671,7 @@ fn direct_tx_fills_dma_and_preserves_submission_options() {
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
         shared,
+        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
     let options = TxSubmitOptions::deferred(Some(rd_net::TxChecksumOffload {
         network: TxNetworkProtocol::Ipv4,

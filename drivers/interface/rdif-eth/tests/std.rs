@@ -320,6 +320,10 @@ impl NetDevice for MockNic {
 #[test]
 fn rdif_eth_error_mapping_and_plain_config_rules_hold() {
     assert!(matches!(
+        rdif_eth::io::ErrorKind::from(NetError::DeviceNotPresent),
+        rdif_eth::io::ErrorKind::NotAvailable
+    ));
+    assert!(matches!(
         rdif_eth::io::ErrorKind::from(NetError::NotSupported),
         rdif_eth::io::ErrorKind::Unsupported
     ));
