@@ -95,6 +95,11 @@ ring full 不会 busy-wait 或 drop token：
 queue group 在 blocked 时保持 IRQ mask。protocol owner 消费或释放 ring 空间后精准
 schedule 该 group；没有周期 retry timer。
 
+`ProtocolGroupPort::receive_owned()` 取走 RX-ready completion 后立即通知 queue owner，
+因为 ring slot 此时已可复用。这个通知不能延后到 `ProtocolRxFrame` 析构：协议可能在
+等待 TX 空间时保留 DMA frame，而释放 TX 空间又需要 queue owner 继续运行。
+DMA token 仍只在消费完成后归还；ring 空间通知与 DMA 回收是两个独立的进度事件。
+
 ## 6. DMA synchronization
 
 CPU 读取 RX payload 前使用 `read_with_cpu()`，CPU 写 TX payload时使用

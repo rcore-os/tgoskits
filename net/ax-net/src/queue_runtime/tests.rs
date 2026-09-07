@@ -575,7 +575,7 @@ fn direct_rx_consumes_dma_backing_before_recycling_the_token() {
 }
 
 #[test]
-fn detached_rx_retains_dma_until_the_owned_frame_is_dropped() {
+fn detached_rx_releases_ring_backpressure_before_recycling_dma() {
     let (mut rx_ready_tx, rx_ready_rx) = spsc_ring(1);
     let (rx_recycle_tx, mut rx_recycle_rx) = spsc_ring(1);
     let (tx_ready_tx, _tx_ready_rx) = spsc_ring(1);
@@ -590,19 +590,24 @@ fn detached_rx_retains_dma_until_the_owned_frame_is_dropped() {
         })
         .unwrap();
 
-    let shared = Arc::new(group_state(STATE_IDLE));
+    let shared = Arc::new(group_state(STATE_POLLING));
     let mut port = ProtocolGroupPort {
         rx_ready: rx_ready_rx,
         rx_recycler: Arc::new(RxRecycler::new(rx_recycle_tx, Arc::clone(&shared), 1)),
         tx_ready: tx_ready_tx,
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
-        shared,
+        shared: Arc::clone(&shared),
     };
+    // A full RX-ready ring parked the owner with its interrupt masked.
     let frame = port
         .receive_owned()
         .expect("the queued DMA frame must be returned as owned storage");
 
+    assert!(
+        !shared.begin_rearm(),
+        "free RX-ready space must republish work even while DMA is retained"
+    );
     assert!(rx_recycle_rx.pop().is_none());
     frame.read_with(|packet| {
         assert_eq!(packet.len(), 3000);

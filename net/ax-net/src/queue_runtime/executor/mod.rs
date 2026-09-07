@@ -119,6 +119,10 @@ impl ProtocolGroupPort {
             self.rx_recycler.recycle(completion.buffer);
             return Err(NetDeviceError::Io);
         }
+        // Freeing an RX-ready slot can unblock the queue owner independently
+        // of recycling this DMA token. The protocol may retain the frame while
+        // waiting for TX space, which itself requires that owner to run.
+        self.shared.schedule_task();
         Ok(ProtocolRxFrame::new(
             completion,
             Arc::clone(&self.rx_recycler) as Arc<dyn RxBufferRecycler>,
