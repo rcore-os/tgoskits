@@ -256,8 +256,6 @@ impl TaskSystem {
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5251_1208, core.id().as_u64() as usize)
             });
-        core.publish_base_policy(policy);
-        core.publish_effective_schedule(applied.effective_policy, &applied.effective_entity);
         Self::finish_policy_admission_locked(&mut root_domain, &core, applied.commit);
         drop(root_domain);
         drop(sched);

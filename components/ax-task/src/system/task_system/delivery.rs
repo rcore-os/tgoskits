@@ -26,8 +26,6 @@ pub(super) struct OwnerPolicyApply {
     pub(super) reschedule: Option<RescheduleKind>,
     pub(super) scheduler_deadline_refresh_required: bool,
     pub(super) rt_period_started: bool,
-    pub(super) effective_policy: SchedulePolicy,
-    pub(super) effective_entity: SchedulingEntity,
 }
 
 impl TaskSystem {
@@ -180,6 +178,10 @@ impl TaskSystem {
                 }
             }
         };
+        // Publish policy while the same rq still serializes the applied
+        // entity against rq-only schedule-out writers.
+        core.publish_base_policy(sched.policy.base);
+        core.publish_effective_schedule(effective_policy, &effective_entity);
         transaction.commit();
         // Linux starts rt_bandwidth when sched_setscheduler() re-enqueues an
         // RT entity. Current tasks are detached and reinstalled rather than
@@ -192,8 +194,6 @@ impl TaskSystem {
             reschedule: enqueue.reschedule,
             scheduler_deadline_refresh_required: enqueue.scheduler_deadline_refresh_required,
             rt_period_started,
-            effective_policy,
-            effective_entity,
         })
     }
 

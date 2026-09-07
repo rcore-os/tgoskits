@@ -1,5 +1,7 @@
 //! Lock-free scheduling-policy publication and immutable core accessors.
 
+use core::sync::atomic::fence;
+
 use super::*;
 
 impl ThreadCore {
@@ -23,10 +25,13 @@ impl ThreadCore {
             return;
         }
 
-        // Every writer owns this thread's scheduler guard. The sequence only
-        // publishes a coherent snapshot to lock-free readers; it does not
-        // serialize competing writers.
+        // Task/rq ownership serializes writers, including rq-only schedule-out.
+        // The sequence publishes a coherent snapshot to lock-free readers;
+        // it does not serialize competing writers.
         self.effective_key_sequence.fetch_add(1, Ordering::AcqRel);
+        // A reader observing any new payload must also observe this odd
+        // sequence through the payload's release-fence/acquire-fence pair.
+        fence(Ordering::Release);
         self.effective_policy.store(policy);
         self.effective_deadline_active
             .store(absolute_deadline_ns.is_some(), Ordering::Relaxed);
@@ -49,6 +54,7 @@ impl ThreadCore {
             let policy = self.effective_policy.load();
             let deadline_active = self.effective_deadline_active.load(Ordering::Relaxed);
             let deadline_ns = self.effective_deadline_ns.load(Ordering::Relaxed);
+            fence(Ordering::Acquire);
             if self.effective_key_sequence.load(Ordering::Acquire) != sequence {
                 continue;
             }
@@ -81,6 +87,7 @@ impl ThreadCore {
             let policy = self.effective_policy.load();
             let deadline_active = self.effective_deadline_active.load(Ordering::Relaxed);
             let absolute_deadline_ns = self.effective_deadline_ns.load(Ordering::Relaxed);
+            fence(Ordering::Acquire);
             if self.effective_key_sequence.load(Ordering::Acquire) != sequence {
                 continue;
             }
@@ -214,6 +221,7 @@ impl AtomicPolicy {
                 self.third.load(Ordering::Relaxed),
                 self.flags.load(Ordering::Relaxed),
             );
+            fence(Ordering::Acquire);
             if self.sequence.load(Ordering::Acquire) == start {
                 return decode_policy(encoded);
             }
@@ -223,6 +231,7 @@ impl AtomicPolicy {
     fn store(&self, policy: SchedulePolicy) {
         let (kind, first, second, third, flags) = encode_policy(policy);
         self.sequence.fetch_add(1, Ordering::AcqRel);
+        fence(Ordering::Release);
         self.kind.store(kind, Ordering::Relaxed);
         self.first.store(first, Ordering::Relaxed);
         self.second.store(second, Ordering::Relaxed);
