@@ -1317,6 +1317,149 @@ mod tests {
     }
 
     #[test]
+    fn transmit_token_survives_backpressure_and_payload_wrap() {
+        check_tx_token_after_payload_wrap(false);
+    }
+
+    #[test]
+    fn receive_token_survives_backpressure_and_payload_wrap() {
+        check_tx_token_after_payload_wrap(true);
+    }
+
+    fn check_tx_token_after_payload_wrap(reply_to_rx: bool) {
+        use ax_sync::SpinLock;
+        use smoltcp::phy::{Device as _, RxToken as _, TxToken as _};
+
+        #[derive(Default)]
+        struct TxProbe {
+            allowance: usize,
+            packets: Vec<Vec<u8>>,
+        }
+
+        struct BackpressureDevice(Arc<SpinLock<TxProbe>>);
+
+        impl Device for BackpressureDevice {
+            fn name(&self) -> &str {
+                "backpressure"
+            }
+
+            fn recv(
+                &mut self,
+                _: InterfaceId,
+                _: &mut PacketBuffer<InterfaceId>,
+                _: Instant,
+                _: &mut dyn FnMut(&[u8]),
+            ) -> usize {
+                0
+            }
+
+            fn send(&mut self, _: IpAddress, _: &[u8], _: Instant) -> usize {
+                panic!("dispatch must use the fallible TX contract")
+            }
+
+            fn try_send(
+                &mut self,
+                _: IpAddress,
+                packet: &[u8],
+                _: Instant,
+            ) -> crate::device::NetDeviceResult<usize> {
+                let mut probe = self.0.lock_irqsave();
+                if probe.allowance == 0 {
+                    return Err(NetDeviceError::Again);
+                }
+                probe.allowance -= 1;
+                probe.packets.push(packet.to_vec());
+                Ok(packet.len())
+            }
+        }
+
+        fn packet(len: usize, id: u8) -> Vec<u8> {
+            let mut packet = vec![id; len];
+            packet[0] = 0x45;
+            packet[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+            packet[12..16].copy_from_slice(&[10, 0, 0, 2]);
+            packet[16..20].copy_from_slice(&[198, 51, 100, 1]);
+            packet
+        }
+
+        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        let probe = Arc::new(SpinLock::new(TxProbe::default()));
+        router.add_device(IF0, Box::new(BackpressureDevice(Arc::clone(&probe))));
+        router.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))),
+            0,
+            IF0,
+            SRC0,
+            100,
+        ));
+        let now = Instant::from_millis(0);
+        let mut sockets = SocketSet::new(vec![]);
+        let mut expected = vec![];
+
+        // Keep one small packet queued while advancing the payload ring's head.
+        for id in 0..2 {
+            let packet = packet(20, id);
+            router.transmit(now).unwrap().consume(packet.len(), |dst| {
+                dst.copy_from_slice(&packet);
+            });
+            expected.push(packet);
+        }
+        probe.lock_irqsave().allowance = 1;
+        assert!(router.dispatch(now, &mut sockets));
+        assert_eq!(probe.lock_irqsave().packets, expected[..1]);
+
+        for id in 0..SOCKET_BUFFER_SIZE - 1 {
+            let packet = packet(STANDARD_MTU, id as u8);
+            router.transmit(now).unwrap().consume(packet.len(), |dst| {
+                dst.copy_from_slice(&packet);
+            });
+            expected.push(packet);
+            assert!(!router.dispatch(now, &mut sockets));
+        }
+        assert!(router.transmit(now).is_none());
+
+        let incoming = packet(20, 0);
+        router
+            .rx_buffer
+            .enqueue(incoming.len(), rx_metadata(IF0, &incoming))
+            .unwrap()
+            .copy_from_slice(&incoming);
+        assert!(router.receive(now).is_none());
+
+        // With the old byte ring, the next MTU packet needs to wrap, but the
+        // free bytes are split into a 1460-byte tail and a 40-byte head.
+        probe.lock_irqsave().allowance = 1;
+        assert!(router.dispatch(now, &mut sockets));
+        assert_eq!(probe.lock_irqsave().packets, expected[..2]);
+        let token = if reply_to_rx {
+            let (rx, tx) = router.receive(now).unwrap();
+            rx.consume(|packet| assert_eq!(packet, incoming));
+            tx
+        } else {
+            router.transmit(now).unwrap()
+        };
+        let final_packet = packet(STANDARD_MTU, 0xfe);
+        assert_eq!(
+            token.consume(final_packet.len(), |dst| {
+                dst.copy_from_slice(&final_packet);
+                42
+            }),
+            42
+        );
+        expected.push(final_packet);
+
+        probe.lock_irqsave().allowance = expected.len();
+        assert!(router.dispatch(now, &mut sockets));
+        assert_eq!(probe.lock_irqsave().packets, expected);
+        assert!(router.transmit(now).is_some());
+        assert!(!router.dispatch(now, &mut sockets));
+        assert_eq!(router.devices[0].stats().tx_packets, expected.len() as u64);
+        assert_eq!(router.devices[0].stats().tx_errors, 0);
+        assert_eq!(router.devices[0].stats().tx_dropped, 0);
+    }
+
+    #[test]
     fn fanout_retries_only_blocked_ports_without_repeating_accepted_packets() {
         use ax_sync::SpinLock;
 
