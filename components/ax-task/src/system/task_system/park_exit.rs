@@ -424,6 +424,9 @@ impl TaskSystem {
             return Ok(None);
         }
 
+        let previous_fifo = transaction.current().is_some_and(|current| {
+            matches!(current.schedule_policy(), SchedulePolicy::Fifo { .. })
+        });
         transaction.adopt_scheduler_request(initial_request);
         let scheduler_request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let now_ns = transaction.clock().wall().as_nanos();
@@ -578,8 +581,21 @@ impl TaskSystem {
             None,
         );
 
-        let deadline_rq_observation =
-            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
+        // FIFO has no per-task hrtick. Blocking changes rq membership, but
+        // another FIFO dispatch retains the same shared timer heads, just as
+        // the existing FIFO yield selection does. Retain the shared Fair
+        // balance timer only when blocking cannot change its runnable-work
+        // predicate: no Fair tasks, or more than the new FIFO current remain.
+        let scheduler_deadline = if previous_fifo
+            && matches!(next_policy_ref.get(), SchedulePolicy::Fifo { .. })
+            && (!transaction.has_fair() || transaction.nr_running() > 1)
+        {
+            OwnerSchedulerDeadline::Unchanged
+        } else {
+            OwnerSchedulerDeadline::Reevaluate(
+                transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref()),
+            )
+        };
 
         self.commit_owner_switch_selection(cpu.as_mut(), transaction, handoff, true);
 
@@ -590,7 +606,7 @@ impl TaskSystem {
             next_endpoint.thread(),
             Some(previous_urgency),
             next_urgency,
-            OwnerSchedulerDeadline::Reevaluate(deadline_rq_observation),
+            scheduler_deadline,
         );
         let decision = Self::owner_switch_plan(
             Some(previous_endpoint),
