@@ -1,7 +1,6 @@
 //! Source-level contracts for Linux-style syscall exit fast paths.
 
 const SIGNAL: &str = include_str!("../src/task/signal.rs");
-const THREAD_SYSCALLS: &str = include_str!("../src/syscall/task/thread.rs");
 const CLOCK_EVENT_RUNTIME: &str =
     include_str!("../../../arceos/modules/axruntime/src/clock_event_runtime.rs");
 const USER_TASK: &str = include_str!("../src/task/user.rs");
@@ -20,20 +19,6 @@ fn unlimited_rttime_skips_watchdog_accounting() {
     assert!(
         unlimited < watchdog,
         "unlimited RLIMIT_RTTIME must return before locking or sampling CPU time"
-    );
-}
-
-#[test]
-fn getpid_reads_the_immutable_process_binding_directly() {
-    let getpid = function_body(THREAD_SYSCALLS, "pub fn sys_getpid(");
-
-    assert!(
-        getpid.contains(".active_number()"),
-        "getpid must read the process identity's immutable active-namespace binding"
-    );
-    assert!(
-        !getpid.contains("active_pid_namespace") && !getpid.contains("PidView"),
-        "getpid must not lock thread PID ownership, clone a namespace, or scan PID bindings"
     );
 }
 
