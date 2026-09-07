@@ -6,7 +6,10 @@
 //! CPU. Inherited task bindings keep slice-local scheduling state while sharing
 //! the aggregate count owned by the original event.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -129,6 +132,11 @@ pub struct SwPerTaskCounter {
     enabled_since_ns: AtomicU64,
     run_since_ns: AtomicU64,
     epoch: AtomicU64,
+    /// A sibling keeps only weak ownership of its leader. Closing the leader
+    /// therefore makes the sibling standalone instead of creating a cycle.
+    group_leader: IrqMutex<Option<Weak<SwPerTaskCounter>>>,
+    /// The leader owns no sibling; scheduler-visible task bindings retain them.
+    group_members: IrqMutex<Vec<Weak<SwPerTaskCounter>>>,
 }
 
 impl SwPerTaskCounter {
@@ -150,6 +158,8 @@ impl SwPerTaskCounter {
             retired: AtomicBool::new(false),
             enabled_since_ns: AtomicU64::new(if enabled { now } else { 0 }),
             run_since_ns: AtomicU64::new(0),
+            group_leader: IrqMutex::new(None),
+            group_members: IrqMutex::new(Vec::new()),
         }
     }
 
@@ -167,12 +177,44 @@ impl SwPerTaskCounter {
         self.cpu_filter.is_none_or(|filter| filter == cpu)
     }
 
+    fn live_group_leader(&self) -> Option<Arc<Self>> {
+        self.group_leader
+            .lock()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .filter(|leader| !leader.state.dead.load(Ordering::Acquire))
+    }
+
+    fn is_effectively_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+            && self
+                .live_group_leader()
+                .is_none_or(|leader| leader.enabled.load(Ordering::Acquire))
+    }
+
+    fn live_group_members(&self) -> Vec<Arc<Self>> {
+        let mut members = self.group_members.lock();
+        let live = members
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|member| !member.state.dead.load(Ordering::Acquire))
+            .collect::<Vec<_>>();
+        members.retain(|member| {
+            member
+                .upgrade()
+                .is_some_and(|member| !member.state.dead.load(Ordering::Acquire))
+        });
+        live
+    }
+
     fn synchronize_epoch(&self, now: u64) {
         let epoch = self.state.reset_epoch.load(Ordering::Acquire);
         if self.epoch.swap(epoch, Ordering::AcqRel) != epoch {
             self.run_since_ns.store(0, Ordering::Release);
-            if self.enabled.load(Ordering::Acquire) {
+            if self.is_effectively_enabled() {
                 self.enabled_since_ns.store(now, Ordering::Release);
+            } else {
+                self.enabled_since_ns.store(0, Ordering::Release);
             }
         }
     }
@@ -181,45 +223,93 @@ impl SwPerTaskCounter {
         self.synchronize_epoch(now);
         if !self.retired.load(Ordering::Acquire)
             && !self.state.dead.load(Ordering::Acquire)
-            && self.enabled.load(Ordering::Acquire)
+            && self.is_effectively_enabled()
             && self.accepts_cpu(cpu)
         {
-            let _ = self.run_since_ns.compare_exchange(
-                0,
-                now,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
+            let _ = self
+                .run_since_ns
+                .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
         }
     }
 
     fn close_slice(&self, now: u64) {
         let since = self.run_since_ns.swap(0, Ordering::AcqRel);
-        if since != 0 && self.epoch.load(Ordering::Acquire) == self.state.reset_epoch.load(Ordering::Acquire) {
+        if since != 0
+            && self.epoch.load(Ordering::Acquire) == self.state.reset_epoch.load(Ordering::Acquire)
+        {
             self.state
                 .runtime_ns
                 .fetch_add(now.saturating_sub(since), Ordering::AcqRel);
         }
     }
 
-    fn enable(&self) {
+    fn enable_at(&self, now: u64) -> bool {
         if !self.enabled.swap(true, Ordering::AcqRel) {
-            let now = now_ns();
             self.synchronize_epoch(now);
-            self.enabled_since_ns.store(now, Ordering::Release);
+            if self.is_effectively_enabled() {
+                self.enabled_since_ns.store(now, Ordering::Release);
+                self.arm_if_current(now);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    fn disable_at(&self, now: u64) -> bool {
+        if self.enabled.swap(false, Ordering::AcqRel) {
+            self.close_slice(now);
+            self.close_enabled_window(now);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn close_enabled_window(&self, now: u64) {
+        let since = self.enabled_since_ns.swap(0, Ordering::AcqRel);
+        if since != 0 {
+            self.state
+                .time_enabled_ns
+                .fetch_add(now.saturating_sub(since), Ordering::AcqRel);
+        }
+    }
+
+    fn pause_for_group(&self, now: u64) {
+        if self.enabled.load(Ordering::Acquire) {
+            self.close_slice(now);
+            self.close_enabled_window(now);
+        }
+    }
+
+    fn resume_for_group(&self, now: u64) {
+        if !self.retired.load(Ordering::Acquire)
+            && !self.state.dead.load(Ordering::Acquire)
+            && self.is_effectively_enabled()
+        {
+            self.synchronize_epoch(now);
+            let _ =
+                self.enabled_since_ns
+                    .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
             self.arm_if_current(now);
         }
     }
 
-    fn disable(&self) {
-        if self.enabled.swap(false, Ordering::AcqRel) {
-            let now = now_ns();
-            self.close_slice(now);
-            let since = self.enabled_since_ns.swap(0, Ordering::AcqRel);
-            if since != 0 {
-                self.state
-                    .time_enabled_ns
-                    .fetch_add(now.saturating_sub(since), Ordering::AcqRel);
+    fn set_enabled(&self) {
+        let now = now_ns();
+        if self.enable_at(now) && self.live_group_leader().is_none() {
+            for member in self.live_group_members() {
+                member.resume_for_group(now);
+            }
+        }
+    }
+
+    fn set_disabled(&self) {
+        let now = now_ns();
+        let is_group_root = self.live_group_leader().is_none();
+        if self.disable_at(now) && is_group_root {
+            for member in self.live_group_members() {
+                member.pause_for_group(now);
             }
         }
     }
@@ -240,17 +330,20 @@ impl SwPerTaskCounter {
         let epoch = self.state.reset();
         self.epoch.store(epoch, Ordering::Release);
         self.run_since_ns.store(0, Ordering::Release);
-        if self.enabled.load(Ordering::Acquire) {
+        if self.is_effectively_enabled() {
             self.enabled_since_ns.store(now, Ordering::Release);
             self.arm_if_current(now);
+        } else {
+            self.enabled_since_ns.store(0, Ordering::Release);
         }
     }
 
     fn snapshot(&self) -> PerfReadValues {
         let now = now_ns();
-        let enabled = self.enabled.load(Ordering::Acquire);
-        let live_enabled = if enabled {
-            now.saturating_sub(self.enabled_since_ns.load(Ordering::Acquire))
+        let enabled = self.is_effectively_enabled();
+        let enabled_since = self.enabled_since_ns.load(Ordering::Acquire);
+        let live_enabled = if enabled && enabled_since != 0 {
+            now.saturating_sub(enabled_since)
         } else {
             0
         };
@@ -276,7 +369,69 @@ impl SwPerTaskCounter {
 
     fn retire(&self) {
         if !self.retired.swap(true, Ordering::AcqRel) {
-            self.disable();
+            self.set_disabled();
+        }
+    }
+
+    fn link_group(leader: &Arc<Self>, member: &Arc<Self>) -> StarryResult<()> {
+        Self::link_group_binding(leader, member, true)
+    }
+
+    fn link_inherited_group(leader: &Arc<Self>, member: &Arc<Self>) -> StarryResult<()> {
+        Self::link_group_binding(leader, member, false)
+    }
+
+    fn link_group_binding(
+        leader: &Arc<Self>,
+        member: &Arc<Self>,
+        reset_new_event: bool,
+    ) -> StarryResult<()> {
+        if leader.owner != member.owner
+            || leader.cpu_filter != member.cpu_filter
+            || leader.state.dead.load(Ordering::Acquire)
+            || member.state.dead.load(Ordering::Acquire)
+        {
+            return Err(StarryError::InvalidInput);
+        }
+
+        let now = now_ns();
+        member.run_since_ns.store(0, Ordering::Release);
+        member.enabled_since_ns.store(0, Ordering::Release);
+        if reset_new_event {
+            let epoch = member.state.reset();
+            member.epoch.store(epoch, Ordering::Release);
+        }
+        *member.group_leader.lock() = Some(Arc::downgrade(leader));
+        let mut members = leader.group_members.lock();
+        members.retain(|entry| {
+            entry
+                .upgrade()
+                .is_some_and(|event| !event.state.dead.load(Ordering::Acquire))
+        });
+        members.push(Arc::downgrade(member));
+        drop(members);
+        if leader.enabled.load(Ordering::Acquire) {
+            member.resume_for_group(now);
+        }
+        Ok(())
+    }
+
+    fn detach_group_members(leader: &Arc<Self>) {
+        let members = core::mem::take(&mut *leader.group_members.lock());
+        let weak_leader = Arc::downgrade(leader);
+        let now = now_ns();
+        for member in members.into_iter().filter_map(|member| member.upgrade()) {
+            let mut group_leader = member.group_leader.lock();
+            let attached = group_leader
+                .as_ref()
+                .is_some_and(|owner| Weak::ptr_eq(owner, &weak_leader));
+            if attached {
+                *group_leader = None;
+            }
+            drop(group_leader);
+            if attached {
+                member.resume_for_group(now);
+            }
         }
     }
 }
@@ -289,6 +444,8 @@ struct SwSystemCounter {
     cpu: usize,
     enabled: AtomicBool,
     enabled_since_ns: AtomicU64,
+    group_leader: IrqMutex<Option<Weak<SwSystemCounter>>>,
+    group_members: IrqMutex<Vec<Weak<SwSystemCounter>>>,
 }
 
 impl SwSystemCounter {
@@ -298,36 +455,117 @@ impl SwSystemCounter {
             cpu,
             enabled: AtomicBool::new(enabled),
             enabled_since_ns: AtomicU64::new(if enabled { now_ns() } else { 0 }),
+            group_leader: IrqMutex::new(None),
+            group_members: IrqMutex::new(Vec::new()),
         }
     }
 
-    fn enable(&self) {
+    fn live_group_leader(&self) -> Option<Arc<Self>> {
+        self.group_leader
+            .lock()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .filter(|leader| !leader.state.dead.load(Ordering::Acquire))
+    }
+
+    fn is_effectively_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+            && self
+                .live_group_leader()
+                .is_none_or(|leader| leader.enabled.load(Ordering::Acquire))
+    }
+
+    fn live_group_members(&self) -> Vec<Arc<Self>> {
+        let mut members = self.group_members.lock();
+        let live = members
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|member| !member.state.dead.load(Ordering::Acquire))
+            .collect::<Vec<_>>();
+        members.retain(|member| {
+            member
+                .upgrade()
+                .is_some_and(|member| !member.state.dead.load(Ordering::Acquire))
+        });
+        live
+    }
+
+    fn enable_at(&self, now: u64) -> bool {
         if !self.enabled.swap(true, Ordering::AcqRel) {
-            self.enabled_since_ns.store(now_ns(), Ordering::Release);
+            if self.is_effectively_enabled() {
+                self.enabled_since_ns.store(now, Ordering::Release);
+            }
+            true
+        } else {
+            false
         }
     }
 
-    fn disable(&self) {
+    fn disable_at(&self, now: u64) -> bool {
         if self.enabled.swap(false, Ordering::AcqRel) {
-            let now = now_ns();
-            let since = self.enabled_since_ns.swap(0, Ordering::AcqRel);
+            self.close_enabled_window(now);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn close_enabled_window(&self, now: u64) {
+        let since = self.enabled_since_ns.swap(0, Ordering::AcqRel);
+        if since != 0 {
             self.state
                 .time_enabled_ns
                 .fetch_add(now.saturating_sub(since), Ordering::AcqRel);
         }
     }
 
+    fn pause_for_group(&self, now: u64) {
+        if self.enabled.load(Ordering::Acquire) {
+            self.close_enabled_window(now);
+        }
+    }
+
+    fn resume_for_group(&self, now: u64) {
+        if !self.state.dead.load(Ordering::Acquire) && self.is_effectively_enabled() {
+            let _ =
+                self.enabled_since_ns
+                    .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+
+    fn set_enabled(&self) {
+        let now = now_ns();
+        if self.enable_at(now) && self.live_group_leader().is_none() {
+            for member in self.live_group_members() {
+                member.resume_for_group(now);
+            }
+        }
+    }
+
+    fn set_disabled(&self) {
+        let now = now_ns();
+        let is_group_root = self.live_group_leader().is_none();
+        if self.disable_at(now) && is_group_root {
+            for member in self.live_group_members() {
+                member.pause_for_group(now);
+            }
+        }
+    }
+
     fn reset(&self) {
         self.state.reset();
-        if self.enabled.load(Ordering::Acquire) {
+        if self.is_effectively_enabled() {
             self.enabled_since_ns.store(now_ns(), Ordering::Release);
+        } else {
+            self.enabled_since_ns.store(0, Ordering::Release);
         }
     }
 
     fn enabled_time(&self) -> u64 {
+        let enabled_since = self.enabled_since_ns.load(Ordering::Acquire);
         self.state.time_enabled_ns.load(Ordering::Acquire)
-            + if self.enabled.load(Ordering::Acquire) {
-                now_ns().saturating_sub(self.enabled_since_ns.load(Ordering::Acquire))
+            + if self.is_effectively_enabled() && enabled_since != 0 {
+                now_ns().saturating_sub(enabled_since)
             } else {
                 0
             }
@@ -352,9 +590,54 @@ impl SwSystemCounter {
         if self.cpu == ax_hal::percpu::this_cpu_id()
             && self.state.kind == kind
             && !self.state.dead.load(Ordering::Acquire)
-            && self.enabled.load(Ordering::Acquire)
+            && self.is_effectively_enabled()
         {
             self.state.count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn link_group(leader: &Arc<Self>, member: &Arc<Self>) -> StarryResult<()> {
+        if leader.cpu != member.cpu
+            || leader.state.dead.load(Ordering::Acquire)
+            || member.state.dead.load(Ordering::Acquire)
+        {
+            return Err(StarryError::InvalidInput);
+        }
+
+        let now = now_ns();
+        member.enabled_since_ns.store(0, Ordering::Release);
+        member.state.reset();
+        *member.group_leader.lock() = Some(Arc::downgrade(leader));
+        let mut members = leader.group_members.lock();
+        members.retain(|entry| {
+            entry
+                .upgrade()
+                .is_some_and(|event| !event.state.dead.load(Ordering::Acquire))
+        });
+        members.push(Arc::downgrade(member));
+        drop(members);
+        if leader.enabled.load(Ordering::Acquire) {
+            member.resume_for_group(now);
+        }
+        Ok(())
+    }
+
+    fn detach_group_members(leader: &Arc<Self>) {
+        let members = core::mem::take(&mut *leader.group_members.lock());
+        let weak_leader = Arc::downgrade(leader);
+        let now = now_ns();
+        for member in members.into_iter().filter_map(|member| member.upgrade()) {
+            let mut group_leader = member.group_leader.lock();
+            let attached = group_leader
+                .as_ref()
+                .is_some_and(|owner| Weak::ptr_eq(owner, &weak_leader));
+            if attached {
+                *group_leader = None;
+            }
+            drop(group_leader);
+            if attached {
+                member.resume_for_group(now);
+            }
         }
     }
 }
@@ -375,6 +658,10 @@ pub struct SwPerfEvent {
 impl Drop for SwPerfEvent {
     fn drop(&mut self) {
         if !self.state.dead.swap(true, Ordering::AcqRel) {
+            match &self.target {
+                SwTargetCounter::Task(counter) => SwPerTaskCounter::detach_group_members(counter),
+                SwTargetCounter::Cpu(counter) => SwSystemCounter::detach_group_members(counter),
+            }
             PERF_SW_ACTIVE.fetch_sub(1, Ordering::AcqRel);
         }
     }
@@ -383,16 +670,16 @@ impl Drop for SwPerfEvent {
 impl PerfEventOps for SwPerfEvent {
     fn enable(&mut self) -> StarryResult<()> {
         match &self.target {
-            SwTargetCounter::Task(counter) => counter.enable(),
-            SwTargetCounter::Cpu(counter) => counter.enable(),
+            SwTargetCounter::Task(counter) => counter.set_enabled(),
+            SwTargetCounter::Cpu(counter) => counter.set_enabled(),
         }
         Ok(())
     }
 
     fn disable(&mut self) -> StarryResult<()> {
         match &self.target {
-            SwTargetCounter::Task(counter) => counter.disable(),
-            SwTargetCounter::Cpu(counter) => counter.disable(),
+            SwTargetCounter::Task(counter) => counter.set_disabled(),
+            SwTargetCounter::Cpu(counter) => counter.set_disabled(),
         }
         Ok(())
     }
@@ -417,10 +704,19 @@ impl PerfEventOps for SwPerfEvent {
     }
 
     fn link_group(&mut self, leader: &mut dyn PerfEventOps) -> StarryResult<()> {
-        if leader.as_any_mut().downcast_mut::<SwPerfEvent>().is_none() {
-            return Err(StarryError::InvalidInput);
+        let leader = leader
+            .as_any_mut()
+            .downcast_mut::<SwPerfEvent>()
+            .ok_or(StarryError::InvalidInput)?;
+        match (&leader.target, &self.target) {
+            (SwTargetCounter::Task(leader), SwTargetCounter::Task(member)) => {
+                SwPerTaskCounter::link_group(leader, member)
+            }
+            (SwTargetCounter::Cpu(leader), SwTargetCounter::Cpu(member)) => {
+                SwSystemCounter::link_group(leader, member)
+            }
+            _ => Err(StarryError::InvalidInput),
         }
-        Ok(())
     }
 }
 
@@ -494,7 +790,10 @@ pub fn perf_event_open_sw(
         }
     };
     PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
-    Ok(SwPerfEvent { state, target: counter })
+    Ok(SwPerfEvent {
+        state,
+        target: counter,
+    })
 }
 
 fn for_each_system(mut operation: impl FnMut(&SwSystemCounter)) {
@@ -521,7 +820,7 @@ pub fn sched_in(thread: &Thread) {
         for counter in counters.iter() {
             if migrated
                 && counter.state.kind == SwId::CpuMigrations
-                && counter.enabled.load(Ordering::Acquire)
+                && counter.is_effectively_enabled()
                 && counter.accepts_cpu(cpu)
                 && !counter.state.dead.load(Ordering::Acquire)
             {
@@ -545,7 +844,7 @@ pub fn sched_out(thread: &Thread) {
         let counters = thread.perf_sw_counters.lock();
         for counter in counters.iter() {
             if counter.state.kind == SwId::ContextSwitches
-                && counter.enabled.load(Ordering::Acquire)
+                && counter.is_effectively_enabled()
                 && counter.accepts_cpu(ax_hal::percpu::this_cpu_id())
                 && !counter.state.dead.load(Ordering::Acquire)
             {
@@ -566,7 +865,7 @@ pub fn on_exec(thread: &Thread) {
     let counters = thread.perf_sw_counters.lock();
     for counter in counters.iter() {
         if counter.enable_on_exec {
-            counter.enable();
+            counter.set_enabled();
         }
     }
 }
@@ -581,7 +880,7 @@ pub fn on_page_fault(thread: &Thread) {
         let counters = thread.perf_sw_counters.lock();
         for counter in counters.iter() {
             if counter.state.kind == SwId::PageFaults
-                && counter.enabled.load(Ordering::Acquire)
+                && counter.is_effectively_enabled()
                 && counter.accepts_cpu(cpu)
                 && !counter.state.dead.load(Ordering::Acquire)
             {
@@ -602,13 +901,26 @@ pub fn on_clone_inherit(parent: &Thread, child: &Thread) {
         let counters = parent.perf_sw_counters.lock();
         counters
             .iter()
-            .filter(|counter| {
-                counter.state.inherit && !counter.state.dead.load(Ordering::Acquire)
-            })
-            .map(|counter| counter.clone_for(child))
+            .filter(|counter| counter.state.inherit && !counter.state.dead.load(Ordering::Acquire))
+            .map(|counter| (counter.clone(), counter.clone_for(child)))
             .collect::<Vec<_>>()
     };
-    child.perf_sw_counters.lock().extend(inherited);
+    for (parent_counter, child_counter) in &inherited {
+        let Some(parent_leader) = parent_counter.live_group_leader() else {
+            continue;
+        };
+        let Some((_, child_leader)) = inherited
+            .iter()
+            .find(|(candidate, _)| Arc::ptr_eq(candidate, &parent_leader))
+        else {
+            continue;
+        };
+        let _ = SwPerTaskCounter::link_inherited_group(child_leader, child_counter);
+    }
+    child
+        .perf_sw_counters
+        .lock()
+        .extend(inherited.into_iter().map(|(_, child)| child));
 }
 
 /// Folds an exiting task's last running/enabled windows while leaving the

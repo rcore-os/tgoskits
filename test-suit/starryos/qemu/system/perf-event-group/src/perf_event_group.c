@@ -40,15 +40,32 @@ struct perf_event_attr_v0 {
 #if defined(__aarch64__)
 static volatile uint64_t sink;
 
-static int open_sw(uint64_t config, uint64_t read_format, int group_fd) {
+static int open_sw_flags(uint64_t config, uint64_t read_format, int group_fd,
+                         uint64_t flags) {
     struct perf_event_attr_v0 attr = {
         .type = PERF_TYPE_SOFTWARE,
         .size = sizeof(attr),
         .config = config,
         .read_format = read_format,
-        .flags = PERF_ATTR_DISABLED,
+        .flags = flags,
     };
     return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, group_fd, 0ul);
+}
+
+static int open_sw(uint64_t config, uint64_t read_format, int group_fd) {
+    return open_sw_flags(config, read_format, group_fd, PERF_ATTR_DISABLED);
+}
+
+static int open_system_sw_flags(uint64_t config, uint64_t read_format,
+                                int group_fd, uint64_t flags) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_SOFTWARE,
+        .size = sizeof(attr),
+        .config = config,
+        .read_format = read_format,
+        .flags = flags,
+    };
+    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, -1, 0, group_fd, 0ul);
 }
 
 static int open_system_raw(uint64_t read_format, uint64_t flags, int group_fd) {
@@ -96,6 +113,84 @@ int main(void) {
     puts("STARRY_PERF_EVENT_GROUP_OK");
     return 0;
 #else
+    /* An enabled sibling inherits the disabled leader's effective OFF state.
+     * Enabling only the sibling cannot bypass that gate; enabling the leader
+     * alone then schedules every sibling whose own state is enabled. */
+    int gated_leader = open_sw(PERF_COUNT_SW_TASK_CLOCK, 0, -1);
+    int eager_member = open_sw_flags(
+        PERF_COUNT_SW_CPU_CLOCK,
+        PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING,
+        gated_leader, 0);
+    if (gated_leader < 0 || eager_member < 0) {
+        printf("perf-event-group FAILED: disabled leader setup errno=%d\n",
+               errno);
+        return 1;
+    }
+    uint64_t gated_values[3] = {0};
+    work();
+    if (read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] != 0 || gated_values[1] != 0 || gated_values[2] != 0 ||
+        ioctl(eager_member, PERF_IOC_ENABLE, 0) != 0) {
+        printf("perf-event-group FAILED: member bypassed disabled leader "
+               "value=%llu enabled=%llu running=%llu errno=%d\n",
+               (unsigned long long)gated_values[0],
+               (unsigned long long)gated_values[1],
+               (unsigned long long)gated_values[2], errno);
+        return 1;
+    }
+    work();
+    if (read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] != 0 || gated_values[1] != 0 || gated_values[2] != 0 ||
+        ioctl(gated_leader, PERF_IOC_ENABLE, 0) != 0) {
+        puts("perf-event-group FAILED: member-only enable bypassed leader");
+        return 1;
+    }
+    work();
+    if (ioctl(gated_leader, PERF_IOC_DISABLE, 0) != 0 ||
+        read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] == 0 || gated_values[1] == 0 ||
+        gated_values[2] == 0) {
+        puts("perf-event-group FAILED: leader-only enable did not run member");
+        return 1;
+    }
+    close(eager_member);
+    close(gated_leader);
+
+    /* The same effective-state rule applies to a fixed-CPU software context. */
+    gated_leader = open_system_sw_flags(PERF_COUNT_SW_TASK_CLOCK, 0, -1,
+                                        PERF_ATTR_DISABLED);
+    eager_member = open_system_sw_flags(
+        PERF_COUNT_SW_CPU_CLOCK,
+        PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING,
+        gated_leader, 0);
+    if (gated_leader < 0 || eager_member < 0) {
+        printf("perf-event-group FAILED: system disabled leader errno=%d\n",
+               errno);
+        return 1;
+    }
+    work();
+    if (read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] != 0 || gated_values[1] != 0 || gated_values[2] != 0 ||
+        ioctl(gated_leader, PERF_IOC_ENABLE, 0) != 0) {
+        puts("perf-event-group FAILED: system member bypassed leader");
+        return 1;
+    }
+    work();
+    if (ioctl(gated_leader, PERF_IOC_DISABLE, 0) != 0 ||
+        read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] == 0 || gated_values[1] == 0 ||
+        gated_values[2] == 0) {
+        puts("perf-event-group FAILED: system leader did not run member");
+        return 1;
+    }
+    close(eager_member);
+    close(gated_leader);
+
     const uint64_t format = PERF_FORMAT_GROUP | PERF_FORMAT_ID |
                             PERF_FORMAT_TOTAL_TIME_ENABLED |
                             PERF_FORMAT_TOTAL_TIME_RUNNING;
