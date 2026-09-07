@@ -1,0 +1,10 @@
+# CLI inputs for `devenv shell` / `devenv allow`.
+# Independent of flake.nix; rust-overlay is pulled here, not from flake.lock.
+inputs:
+  nixpkgs:
+    url: github:NixOS/nixpkgs/nixos-unstable
+  rust-overlay:
+    url: github:oxalica/rust-overlay
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
