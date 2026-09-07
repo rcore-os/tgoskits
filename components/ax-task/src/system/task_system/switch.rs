@@ -297,13 +297,12 @@ impl TaskSystem {
                 SchedulerDeadlineDerivationSource::ScheduleSelection,
             ),
             (false, OwnerSchedulerDeadline::Unchanged) => unreachable!(),
-            (false, OwnerSchedulerDeadline::Reevaluate(rq_observation)) => {
-                self.program_local_timer_from_rq_observation(
+            (false, OwnerSchedulerDeadline::Reevaluate(rq_observation)) => self
+                .program_local_timer_from_rq_observation(
                     cpu.as_mut(),
                     rq_observation,
                     SchedulerDeadlineDerivationSource::ScheduleSelection,
-                )
-            }
+                ),
         };
         if timer_result.is_err() {
             task_runtime::fatal_invariant(0x5343_0002, next.as_u64() as usize);

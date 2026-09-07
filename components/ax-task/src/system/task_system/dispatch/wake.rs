@@ -832,11 +832,20 @@ impl TaskSystem {
         }
         let deadline_wake = matches!(policy, SchedulePolicy::Deadline(_)) && !sched.is_pi_boosted();
         if deadline_wake {
-            active.entity_mut().activate_deadline(run_queue.clock().wall().as_nanos());
+            active
+                .entity_mut()
+                .activate_deadline(run_queue.clock().wall().as_nanos());
         }
-        let deadline_throttled = deadline_wake && active.entity().deadline().is_some_and(DeadlineEntity::is_throttled);
+        let deadline_throttled = deadline_wake
+            && active
+                .entity()
+                .deadline()
+                .is_some_and(DeadlineEntity::is_throttled);
         let maintains_fair_virtual_time = active.entity().fair().is_some();
-        let delayed_migration_wake = active.entity().fair().is_some_and(|fair| fair.is_delayed_migrating());
+        let delayed_migration_wake = active
+            .entity()
+            .fair()
+            .is_some_and(|fair| fair.is_delayed_migrating());
         drop(active);
         if deadline_throttled {
             self.link_owner_throttled_deadline_locked(run_queue, core, sched, target);
@@ -1011,7 +1020,9 @@ impl TaskSystem {
             .filter(|class| run_queue.has_pushable_class_tasks(class.scheduling_class()));
         let refresh_runtime = !deadline_wake && enqueue.scheduler_deadline_refresh_required();
         let local_runtime = (refresh_runtime && target == context.producer).then(|| {
-            if reschedule == Some(RescheduleKind::Immediate) || remote.immediate_preemption_requested() {
+            if reschedule == Some(RescheduleKind::Immediate)
+                || remote.immediate_preemption_requested()
+            {
                 SchedulerRuntimeDeadline::Disarmed
             } else {
                 run_queue.current_runtime_deadline()

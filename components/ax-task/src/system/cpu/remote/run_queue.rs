@@ -805,7 +805,9 @@ impl CpuRunQueueState {
         }
         match self.current_runtime_timer_delta_ns() {
             Some(0) => SchedulerRuntimeDeadline::Due,
-            Some(delta_ns) => SchedulerRuntimeDeadline::After(core::time::Duration::from_nanos(delta_ns)),
+            Some(delta_ns) => {
+                SchedulerRuntimeDeadline::After(core::time::Duration::from_nanos(delta_ns))
+            }
             None => SchedulerRuntimeDeadline::Disarmed,
         }
     }
