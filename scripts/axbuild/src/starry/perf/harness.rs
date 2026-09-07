@@ -31,8 +31,9 @@ pub(super) fn build_qperf_tools(
     root: &Path,
     analyzer_flamegraph: bool,
 ) -> anyhow::Result<QperfTools> {
-    let qperf_root = qperf_source_root(root)?;
+    let qperf_root = root.join("tools/qperf");
     let manifest = qperf_root.join("Cargo.toml");
+    ensure_file(&manifest, "local qperf plugin manifest")?;
     let analyzer_manifest = qperf_root.join("analyzer/Cargo.toml");
     let target_dir = qperf_root.join("target");
     if !analyzer_manifest.exists() {
@@ -80,26 +81,6 @@ pub(super) fn build_qperf_tools(
     ensure_file(&tools.plugin, "qperf plugin")?;
     ensure_file(&tools.analyzer, "qperf analyzer")?;
     Ok(tools)
-}
-
-fn qperf_source_root(root: &Path) -> anyhow::Result<PathBuf> {
-    if let Some(path) = [root.join("apps/qperf"), root.join("tools/qperf")]
-        .into_iter()
-        .find(|path| path.join("Cargo.toml").exists())
-    {
-        return Ok(path);
-    }
-
-    let checkout = ensure_harness_kit_checkout(root)?;
-    let fixed_qperf = checkout.join("tools/qperf");
-    if fixed_qperf.join("Cargo.toml").exists() {
-        return Ok(fixed_qperf);
-    }
-
-    Err(anyhow::anyhow!(
-        "qperf sources not found; expected apps/qperf, tools/qperf, or fixed harness kit \
-         tools/qperf to be present"
-    ))
 }
 
 fn ensure_harness_kit_checkout(root: &Path) -> anyhow::Result<PathBuf> {
