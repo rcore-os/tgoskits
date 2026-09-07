@@ -674,12 +674,6 @@ impl SocketOps for TcpSocket {
                         Ok(total)
                     }
                 } else if !socket.may_recv() {
-                    warn!(
-                        "TCP EOF local={:?} remote={:?} state={:?}",
-                        socket.local_endpoint(),
-                        socket.remote_endpoint(),
-                        socket.state()
-                    );
                     Ok(0)
                 } else {
                     Err(NetError::WouldBlock)
