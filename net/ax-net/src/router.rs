@@ -977,6 +977,19 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
     let Ok(tcp_packet) = TcpPacket::new_checked(payload) else {
         return;
     };
+    if tcp_packet.fin() || tcp_packet.rst() {
+        warn!(
+            "TCP close packet {}:{} -> {}:{} fin={} rst={} seq={} ack={}",
+            src_addr,
+            tcp_packet.src_port(),
+            dst_addr,
+            tcp_packet.dst_port(),
+            tcp_packet.fin(),
+            tcp_packet.rst(),
+            tcp_packet.seq_number(),
+            tcp_packet.ack_number(),
+        );
+    }
     let src_addr = (src_addr, tcp_packet.src_port()).into();
     let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
     let is_first = tcp_packet.syn() && !tcp_packet.ack();
