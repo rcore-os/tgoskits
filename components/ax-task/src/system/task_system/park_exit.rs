@@ -999,6 +999,7 @@ impl TaskSystem {
             }
             let incoming = handoff.incoming_ref();
             let incoming_policy = handoff.incoming_policy();
+            let incoming_runtime_ns = handoff.incoming_runtime_ns();
             let previous_exited = handoff.previous_exited();
             #[cfg(feature = "qperf-metrics")]
             let qperf_owner_finish_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
@@ -1033,6 +1034,7 @@ impl TaskSystem {
             return Ok(SwitchInCompletion::for_core(
                 incoming.as_ref(),
                 incoming_policy,
+                incoming_runtime_ns,
             ));
         }
         // The architecture switch is now irreversible. Move the one owner
@@ -1126,6 +1128,7 @@ impl TaskSystem {
         let completion = SwitchInCompletion::for_core(
             completed.incoming.as_ref(),
             completed.incoming_policy.get(),
+            completed.incoming_runtime_ns,
         );
         Ok(completion)
     }

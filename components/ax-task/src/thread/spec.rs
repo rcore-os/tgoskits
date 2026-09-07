@@ -305,9 +305,15 @@ impl CpuSet {
 #[repr(C)]
 #[derive(Debug)]
 pub struct ThreadExtensionOps {
-    /// Invoked with the applied base policy before the thread becomes current.
-    pub on_switch_in:
-        unsafe extern "Rust" fn(data: usize, thread: ThreadId, policy: SchedulePolicy),
+    /// Invoked after the incoming thread becomes current. The runtime value
+    /// is the rq-charged total before its new execution interval, allowing OS
+    /// accounting to use the switch boundary without querying the registry.
+    pub on_switch_in: unsafe extern "Rust" fn(
+        data: usize,
+        thread: ThreadId,
+        policy: SchedulePolicy,
+        charged_runtime_ns: u64,
+    ),
     /// Invoked after the thread stops being the current execution context.
     pub on_switch_out: unsafe extern "Rust" fn(data: usize, thread: ThreadId, reason: SwitchReason),
     /// Invoked in task context after the thread exits.

@@ -1450,7 +1450,8 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         _policy: SchedulePolicy,
-    ) {
+    _charged_runtime_ns: u64,
+) {
     }
 
     unsafe extern "Rust" fn observe_block(_data: usize, _thread: ThreadId, reason: SwitchReason) {

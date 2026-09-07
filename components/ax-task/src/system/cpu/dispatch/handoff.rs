@@ -8,6 +8,7 @@ pub(crate) struct SwitchHandoff {
     previous: PreviousSwitchOwnership,
     incoming: SchedulerThreadRef,
     incoming_policy: SchedulerPolicyRef,
+    incoming_runtime_ns: u64,
     previous_disposition: PreviousSwitchDisposition,
     route: SwitchRoute,
 }
@@ -64,6 +65,7 @@ enum SwitchRoute {
 pub(crate) struct CompletedMigrationSwitchHandoff {
     pub(crate) incoming: SchedulerThreadRef,
     pub(crate) incoming_policy: SchedulerPolicyRef,
+    pub(crate) incoming_runtime_ns: u64,
     pub(crate) migration: PreparedMigrationDelivery,
     pub(crate) reclaim_ready: bool,
     pub(crate) previous_exited: bool,
@@ -77,9 +79,14 @@ impl SwitchHandoff {
         previous_disposition: PreviousSwitchDisposition,
         migration: Option<PreparedMigrationDelivery>,
     ) -> Self {
+        // The caller still owns rq after selecting the new dispatch. Capture
+        // its charged total before releasing that transaction, so later
+        // remote accounting cannot move the OS's execution-interval boundary.
+        let incoming_runtime_ns = incoming.as_ref().runtime_snapshot(None).charged_runtime_ns();
         Self {
             previous,
             incoming,
+            incoming_runtime_ns,
             incoming_policy,
             previous_disposition,
             route: match migration {
@@ -136,6 +143,10 @@ impl SwitchHandoff {
         self.incoming_policy.get()
     }
 
+    pub(crate) const fn incoming_runtime_ns(&self) -> u64 {
+        self.incoming_runtime_ns
+    }
+
     pub(crate) fn migration_target(&self) -> Option<CpuId> {
         match &self.route {
             SwitchRoute::Local { .. } => None,
@@ -156,6 +167,7 @@ impl SwitchHandoff {
             previous,
             incoming,
             incoming_policy,
+            incoming_runtime_ns,
             previous_disposition,
             route,
         } = self;
@@ -166,6 +178,7 @@ impl SwitchHandoff {
         Ok(CompletedMigrationSwitchHandoff {
             incoming,
             incoming_policy,
+            incoming_runtime_ns,
             migration,
             reclaim_ready,
             previous_exited: matches!(previous_disposition, PreviousSwitchDisposition::Exited),

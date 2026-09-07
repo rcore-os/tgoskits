@@ -62,6 +62,7 @@ unsafe extern "Rust" fn vcpu_task_switch_in(
     _data: usize,
     _thread: ThreadId,
     _policy: SchedulePolicy,
+    _charged_runtime_ns: u64,
 ) {
 }
 

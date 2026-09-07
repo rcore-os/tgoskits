@@ -541,12 +541,13 @@ impl Thread {
         &self,
         id: ax_std::os::arceos::task::ThreadId,
         realtime_policy: bool,
+        charged_runtime_ns: u64,
         cpu_pin: &CpuPin<'_>,
     ) {
         debug_assert!(self.validate_scheduler_id(id).is_ok());
         self.accounting
             .cpu_time
-            .scheduler_switch_in(realtime_policy, || self.scheduler_runtime_ns());
+            .scheduler_switch_in(realtime_policy, || charged_runtime_ns);
         // SAFETY: the scheduler switch baton pins this CPU and retains the
         // thread-owned ProcessData until the matching switch-out callback.
         unsafe { self.scope.activate_pinned(cpu_pin) };
