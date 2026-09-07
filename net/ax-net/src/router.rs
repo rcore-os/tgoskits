@@ -141,6 +141,9 @@ struct RxMetadata {
 }
 
 type RouterPacketBuffer = smoltcp::storage::PacketBuffer<'static, RxMetadata>;
+// Every TX record owns one full MTU slot; the header retains the emitted length.
+// Descriptor availability therefore proves contiguous payload availability.
+type RouterTxBuffer = smoltcp::storage::PacketBuffer<'static, usize>;
 type DevicePacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
 
 struct OwnedRxPacket {
@@ -148,21 +151,10 @@ struct OwnedRxPacket {
     packet: DeviceRxPacket,
 }
 
-// TX metadata is created before route lookup; dispatch() selects the real
-// egress interface from the packet destination and route table.
-const TX_INTERFACE_PLACEHOLDER: InterfaceId = InterfaceId::new(0);
-
 fn rx_metadata(interface_id: InterfaceId, packet: &[u8]) -> RxMetadata {
     RxMetadata {
         interface_id,
         packet_meta: packet_meta_for_rx_packet(packet),
-    }
-}
-
-fn tx_metadata() -> RxMetadata {
-    RxMetadata {
-        interface_id: TX_INTERFACE_PLACEHOLDER,
-        packet_meta: PacketMeta::default(),
     }
 }
 
@@ -460,7 +452,7 @@ pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
 /// Virtual smoltcp device that multiplexes all concrete devices.
 pub struct Router {
     rx_buffer: RouterPacketBuffer,
-    tx_buffer: RouterPacketBuffer,
+    tx_buffer: RouterTxBuffer,
     /// Device indices still awaiting the head TX packet. Devices are append-only;
     /// accepted or permanently failed ports leave this list before the next retry.
     pending_fanout: Vec<usize>,
@@ -476,7 +468,7 @@ impl Router {
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
-        let tx_buffer = RouterPacketBuffer::new(
+        let tx_buffer = RouterTxBuffer::new(
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
@@ -733,7 +725,8 @@ impl Router {
             table,
             ..
         } = self;
-        while let Ok((_, packet)) = tx_buffer.peek() {
+        while let Ok((len, slot)) = tx_buffer.peek() {
+            let packet = &slot[..*len];
             let outcome = match IpVersion::of_packet(packet).expect("got invalid IP packet") {
                 IpVersion::Ipv4 => {
                     let packet = smoltcp::wire::Ipv4Packet::new_checked(packet)
@@ -921,19 +914,20 @@ fn inject_loopback_rx_direct(
 }
 
 /// smoltcp TX token backed by the router's temporary TX buffer.
-pub struct TxToken<'a>(&'a mut RouterPacketBuffer);
+pub struct TxToken<'a>(&'a mut RouterTxBuffer);
 
 impl smoltcp::phy::TxToken for TxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        // TX metadata is ignored: Router::dispatch parses the emitted IP
-        // packet and selects the actual egress interface from the route table.
-        let packet = self
+        // Fixed MTU slots cannot fragment or require a padding descriptor.
+        // The exclusive token preserves the capacity checked by Device.
+        let slot = self
             .0
-            .enqueue(len, tx_metadata())
-            .expect("This was checked before creating the TxToken");
+            .enqueue(STANDARD_MTU, len)
+            .expect("TX token retains one MTU slot");
+        let packet = &mut slot[..len];
         let result = f(packet);
         apply_egress_ip_tos(packet);
         result
@@ -1108,8 +1102,8 @@ mod tests {
             .unwrap();
         sockets.add(tcp);
         interface.poll_egress(now, &mut router, &mut sockets);
-        let (_, packet) = router.tx_buffer.dequeue().expect("TCP SYN must be emitted");
-        let ip = Ipv4Packet::new_checked(&*packet).unwrap();
+        let (len, packet) = router.tx_buffer.dequeue().expect("TCP SYN must be emitted");
+        let ip = Ipv4Packet::new_checked(&packet[..len]).unwrap();
         let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
         assert!(tcp.syn());
         assert!(tcp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()));
@@ -1122,11 +1116,11 @@ mod tests {
         udp.send_slice(b"checksum", (destination, 4322)).unwrap();
         sockets.add(udp);
         interface.poll_egress(now, &mut router, &mut sockets);
-        let (_, packet) = router
+        let (len, packet) = router
             .tx_buffer
             .dequeue()
             .expect("UDP packet must be emitted");
-        let ip = Ipv4Packet::new_checked(&*packet).unwrap();
+        let ip = Ipv4Packet::new_checked(&packet[..len]).unwrap();
         let udp = UdpPacket::new_checked(ip.payload()).unwrap();
         assert_ne!(udp.checksum(), 0, "ordinary UDP must generate a checksum");
         assert!(udp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()));
@@ -1302,7 +1296,7 @@ mod tests {
         ));
         let packet = router
             .tx_buffer
-            .enqueue(20, tx_metadata())
+            .enqueue(STANDARD_MTU, 20)
             .expect("the empty router TX queue has capacity");
         packet[0] = 0x45;
         packet[2..4].copy_from_slice(&20u16.to_be_bytes());
@@ -1311,7 +1305,7 @@ mod tests {
 
         let mut sockets = SocketSet::new(vec![]);
         assert!(!router.dispatch(Instant::from_millis(0), &mut sockets));
-        assert_eq!(router.tx_buffer.payload_bytes_count(), 20);
+        assert_eq!(*router.tx_buffer.peek().unwrap().0, 20);
         assert_eq!(router.devices[0].stats().tx_packets, 0);
         assert_eq!(router.devices[0].stats().tx_dropped, 0);
     }
@@ -1405,15 +1399,15 @@ mod tests {
             for queued in [&packet, &next_packet] {
                 router
                     .tx_buffer
-                    .enqueue(queued.len(), tx_metadata())
-                    .unwrap()
+                    .enqueue(STANDARD_MTU, queued.len())
+                    .unwrap()[..queued.len()]
                     .copy_from_slice(queued);
             }
             let mut sockets = SocketSet::new(vec![]);
             for completed_port in [0, 2] {
                 assert!(router.dispatch(Instant::from_millis(0), &mut sockets));
-                assert_eq!(router.tx_buffer.peek().unwrap().1, packet);
-                assert_eq!(router.tx_buffer.payload_bytes_count(), packet.len() * 2);
+                assert_eq!(&router.tx_buffer.peek().unwrap().1[..packet.len()], packet);
+                assert_eq!(router.tx_buffer.payload_bytes_count(), STANDARD_MTU * 2);
                 assert_eq!(
                     probes[completed_port].lock_irqsave().packets,
                     vec![packet.clone()]
@@ -1427,7 +1421,7 @@ mod tests {
                 .failures
                 .push_back(NetDeviceError::Again);
             assert!(!router.dispatch(Instant::from_millis(0), &mut sockets));
-            assert_eq!(router.tx_buffer.peek().unwrap().1, packet);
+            assert_eq!(&router.tx_buffer.peek().unwrap().1[..packet.len()], packet);
             assert_eq!(probes[0].lock_irqsave().attempts, 1);
             assert_eq!(probes[2].lock_irqsave().attempts, 2);
             assert!(router.dispatch(Instant::from_millis(0), &mut sockets));
