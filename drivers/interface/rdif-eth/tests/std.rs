@@ -1,4 +1,6 @@
 extern crate alloc;
+// Link the runtime-owned synchronization provider used by DMA pool tests.
+extern crate ax_runtime as _;
 
 use alloc::{
     alloc::{alloc_zeroed, dealloc},

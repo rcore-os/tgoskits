@@ -15,4 +15,6 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 rdif-eth.workspace = true
 
 [dev-dependencies]
-ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+ax-runtime = { workspace = true, features = ["host-test"] }

@@ -16,7 +16,9 @@ thiserror = { version = "2", default-features = false }
 zeroize.workspace = true
 
 [dev-dependencies]
-ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
 dma-api = { workspace = true, features = ["pool"] }
 
 [features]
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+ax-runtime = { workspace = true, features = ["host-test"] }

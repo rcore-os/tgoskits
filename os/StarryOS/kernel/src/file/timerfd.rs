@@ -487,7 +487,7 @@ impl Pollable for Timerfd {
     }
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
 mod tests {
     use super::*;
 
@@ -502,7 +502,7 @@ mod tests {
         })
     }
 
-    #[test]
+    #[axtest::axtest]
     fn canceled_expiration_is_consumed_without_rearming() {
         let timerfd = unspawned_timerfd();
         {
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(state.interval, Duration::from_millis(10));
     }
 
-    #[test]
+    #[axtest::axtest]
     fn cancellation_read_preserves_an_unexpired_timer() {
         let timerfd = unspawned_timerfd();
         let deadline = ClockDeadline::Realtime(Duration::from_secs(600));
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(timerfd.state.lock().next_deadline, Some(deadline));
     }
 
-    #[test]
+    #[axtest::axtest]
     fn dropping_timerfd_unregisters_clock_change_observer() {
         let timerfd = unspawned_timerfd();
         let timerfd_ptr = Arc::as_ptr(&timerfd);

@@ -321,6 +321,8 @@ fn queue_dma(device_dma: &DeviceDma, config: QueueConfig) -> DeviceDma {
 
 #[cfg(test)]
 mod tests {
+    // DMA pool locks use the same provider as the kernel integration.
+    extern crate ax_runtime as _;
     use alloc::{
         alloc::{alloc_zeroed, dealloc},
         collections::VecDeque,
