@@ -426,6 +426,15 @@ pub(super) struct QueueGroupExecutor {
 }
 
 impl QueueGroupExecutor {
+    fn disable_after_error(&self, operation: &str, error: &NetError) {
+        log::error!(
+            "network poll group {} on CPU {} disabled during {operation}: {error}",
+            self.group.id.get(),
+            self.shared.owner_cpu,
+        );
+        self.shared.disable();
+    }
+
     fn take_rx_replacement(&mut self) -> Option<DmaBuffer> {
         if let Some(buffer) = self.rx_spares.pop() {
             return Some(buffer);
@@ -497,8 +506,8 @@ impl QueueGroupExecutor {
         if self.shared.is_disabled() {
             return GroupPollOutcome::Failed;
         }
-        if self.group.irq_control.quiesce().is_err() {
-            self.shared.disable();
+        if let Err(error) = self.group.irq_control.quiesce() {
+            self.disable_after_error("IRQ quiesce", &error);
             return GroupPollOutcome::Failed;
         }
 
@@ -610,7 +619,7 @@ impl QueueGroupExecutor {
                             replacement,
                         });
                         if !matches!(reason, NetError::Retry) {
-                            self.shared.disable();
+                            self.disable_after_error("RX refill", &reason);
                             return GroupPollOutcome::Failed;
                         }
                         rx_refill_blocked = true;
@@ -691,7 +700,7 @@ impl QueueGroupExecutor {
             Ok(NetRearmResult::RetryAt { deadline_nanos }) => {
                 self.retry_at = Some(deadline_nanos);
             }
-            Err(_) => self.shared.disable(),
+            Err(error) => self.disable_after_error("IRQ rearm", &error),
         }
     }
 
