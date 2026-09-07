@@ -96,7 +96,7 @@ pub(super) const INDEX_HTML: &str = r##"<!doctype html>
           event.preventDefault();
           const text = this.terminal.getSelection();
           if (navigator.clipboard && window.isSecureContext) {
-            navigator.clipboard.writeText(text).catch(() => {});
+            navigator.clipboard.writeText(text).catch(() => document.execCommand('copy'));
           } else {
             document.execCommand('copy');
           }

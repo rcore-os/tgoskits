@@ -184,6 +184,7 @@ def check_page():
         b"/assets/xterm.css",
         b"new Terminal",
         b"terminal.onData",
+        b"catch(() => document.execCommand('copy'))",
         b"rows: 40",
         b"height: calc(100vh - 4.8rem)",
     ):
