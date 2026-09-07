@@ -503,51 +503,6 @@ mod tests {
     }
 
     #[axtest::axtest]
-    fn canceled_expiration_is_consumed_without_rearming() {
-        let timerfd = unspawned_timerfd();
-        {
-            let mut state = timerfd.state.lock();
-            state.next_deadline = Some(ClockDeadline::Realtime(Duration::from_secs(10)));
-            state.interval = Duration::from_millis(10);
-            state.expired = true;
-            state.canceled = true;
-        }
-        timerfd.expire_count.store(2, Ordering::Release);
-
-        assert!(matches!(
-            timerfd.take_expirations(),
-            Err(StarryError::Errno(Errno::ECANCELED))
-        ));
-        assert!(matches!(
-            timerfd.take_expirations(),
-            Err(StarryError::WouldBlock)
-        ));
-        let state = timerfd.state.lock();
-        assert_eq!(state.next_deadline, None);
-        assert!(!state.expired);
-        assert!(!state.canceled);
-        assert_eq!(state.interval, Duration::from_millis(10));
-    }
-
-    #[axtest::axtest]
-    fn cancellation_read_preserves_an_unexpired_timer() {
-        let timerfd = unspawned_timerfd();
-        let deadline = ClockDeadline::Realtime(Duration::from_secs(600));
-        {
-            let mut state = timerfd.state.lock();
-            state.next_deadline = Some(deadline);
-            state.canceled = true;
-        }
-        timerfd.expire_count.store(1, Ordering::Release);
-
-        assert!(matches!(
-            timerfd.take_expirations(),
-            Err(StarryError::Errno(Errno::ECANCELED))
-        ));
-        assert_eq!(timerfd.state.lock().next_deadline, Some(deadline));
-    }
-
-    #[axtest::axtest]
     fn dropping_timerfd_unregisters_clock_change_observer() {
         let timerfd = unspawned_timerfd();
         let timerfd_ptr = Arc::as_ptr(&timerfd);

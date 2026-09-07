@@ -98,7 +98,10 @@ fn rx_allocation_failure_recovers_without_disabling_tx() {
     let (recycle, rx_recycle) = spsc_ring(2);
     let (mut transmit, tx_ready) = spsc_ring(2);
     let (tx_free, _free) = spsc_ring(2);
-    let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+    let shared = Arc::new(PollGroupState::new(
+        0,
+        Arc::new(crate::queue_runtime::QueueNotification::new()),
+    ));
     shared.activate(false);
     let mut executor = QueueGroupExecutor {
         group,
@@ -330,7 +333,10 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
     let (recycle, rx_recycle) = spsc_ring(2);
     let (mut transmit, tx_ready) = spsc_ring(2);
     let (tx_free, _free) = spsc_ring(2);
-    let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+    let shared = Arc::new(PollGroupState::new(
+        0,
+        Arc::new(crate::queue_runtime::QueueNotification::new()),
+    ));
     shared.activate(false);
     let buffer = group.tx_pool.allocate(60).unwrap();
     assert!(
