@@ -88,7 +88,11 @@ fn rx_allocation_failure_recovers_without_disabling_tx() {
         ),
         &DMA,
     );
-    let mut device = rd_net::prepare_device(Box::new(TestDevice(Arc::clone(&trace))), dma).unwrap();
+    let mut device = rd_net::prepare_device(
+        Box::new(TestDevice(Arc::clone(&trace), TestTx(Arc::clone(&trace)))),
+        dma,
+    )
+    .unwrap();
     let mut group = device.poll_groups.pop().unwrap();
     group.rx.initial_refill(2).unwrap();
     // Hold the third preallocated pool token so the next replacement reaches
@@ -277,13 +281,13 @@ impl NetPollIrqControl for TestIrq {
     }
 }
 
-struct TestDevice(Trace);
-impl rd_net::DriverGeneric for TestDevice {
+struct TestDevice<T>(Trace, T);
+impl<T: ITxQueue> rd_net::DriverGeneric for TestDevice<T> {
     fn name(&self) -> &str {
         "test"
     }
 }
-impl NetDevice for TestDevice {
+impl<T: ITxQueue + 'static> NetDevice for TestDevice<T> {
     fn into_parts(self: Box<Self>) -> Result<NetDeviceParts, NetError> {
         Ok(NetDeviceParts {
             info: NetDeviceInfo::new("test", [0; 6]),
@@ -292,7 +296,7 @@ impl NetDevice for TestDevice {
             poll_groups: vec![NetPollGroupParts {
                 id: NetPollGroupId::new(0),
                 queues: NetQueuePairParts {
-                    tx: Box::new(TestTx(Arc::clone(&self.0))),
+                    tx: Box::new(self.1),
                     rx: Box::new(TestRx {
                         trace: self.0,
                         completions: VecDeque::new(),
@@ -323,7 +327,11 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
         ),
         &TEST_DMA,
     );
-    let mut device = rd_net::prepare_device(Box::new(TestDevice(Arc::clone(&trace))), dma).unwrap();
+    let mut device = rd_net::prepare_device(
+        Box::new(TestDevice(Arc::clone(&trace), TestTx(Arc::clone(&trace)))),
+        dma,
+    )
+    .unwrap();
     let mut group = device.poll_groups.pop().unwrap();
     group.rx.initial_refill(2).unwrap();
     let (rx_ready, mut received) = spsc_ring(1);
@@ -394,5 +402,121 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
             .filter(|&&event| event == "refill")
             .count(),
         2
+    );
+}
+
+struct GatedTx {
+    blocked: Arc<AtomicBool>,
+    packets: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl ITxQueue for GatedTx {
+    fn id(&self) -> NetQueueId {
+        NetQueueId::new(0)
+    }
+
+    fn config(&self) -> QueueConfig {
+        queue_config()
+    }
+
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
+        if self.blocked.load(Ordering::Relaxed) {
+            return Err(SubmitError::new(buffer, NetError::Retry));
+        }
+        buffer.read_with_cpu(buffer.len(), |packet| {
+            self.packets.lock().unwrap().push(packet.to_vec());
+        });
+        Ok(())
+    }
+
+    fn reclaim(&mut self) -> Option<DmaBuffer> {
+        None
+    }
+}
+
+#[test]
+fn tx_backpressure_allows_rx_delivery_before_tx_resumes() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let blocked = Arc::new(AtomicBool::new(true));
+    let packets = Arc::new(Mutex::new(Vec::new()));
+    let dma = DeviceDma::new(
+        DmaDeviceInfo::new(
+            DmaDomainId::Direct,
+            DmaCoherency::Coherent,
+            DmaConstraints::new(u64::MAX),
+        ),
+        &TEST_DMA,
+    );
+    let mut device = rd_net::prepare_device(
+        Box::new(TestDevice(
+            trace,
+            GatedTx {
+                blocked: Arc::clone(&blocked),
+                packets: Arc::clone(&packets),
+            },
+        )),
+        dma,
+    )
+    .unwrap();
+    let mut group = device.poll_groups.pop().unwrap();
+    group.rx.initial_refill(2).unwrap();
+    let (rx_ready, mut received) = spsc_ring(2);
+    let (recycle, rx_recycle) = spsc_ring(2);
+    let (mut transmit, tx_ready) = spsc_ring(2);
+    let (tx_free, _free) = spsc_ring(2);
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+    shared.activate(false);
+    for byte in [0xa5, 0x5a] {
+        let mut buffer = group.tx_pool.allocate(60).unwrap();
+        buffer.write_with_cpu(|packet| packet.fill(byte));
+        assert!(
+            transmit
+                .push(TxRequest {
+                    buffer,
+                    options: TxSubmitOptions::default(),
+                })
+                .is_ok()
+        );
+    }
+    let mut executor = QueueGroupExecutor {
+        group,
+        rx_ready,
+        rx_recycle,
+        rx_recycler: Arc::new(RxRecycler::new(recycle, Arc::clone(&shared), 2)),
+        rx_spares: Vec::new(),
+        rx_extra_buffers: 0,
+        tx_ready,
+        tx_free,
+        pending_rx: None,
+        pending_rx_refill: VecDeque::with_capacity(2),
+        pending_tx: None,
+        pending_tx_free: None,
+        retry_at: None,
+        shared,
+    };
+    // A software-backed NIC may need its completed RX slots drained before
+    // the common owner can finish outstanding TX. Keep TX blocked until RX
+    // delivery is proven, rather than relying on an IRQ or a timed retry.
+    executor.poll(256);
+    executor.poll(256);
+    for byte in [1, 0] {
+        let completion = received
+            .pop()
+            .expect("TX Retry starved a completed RX packet");
+        completion
+            .buffer
+            .read_with_cpu(60, |packet| assert_eq!(packet, &[byte; 60]));
+    }
+    assert!(packets.lock().unwrap().is_empty());
+    assert!(
+        matches!(executor.poll(256), GroupPollOutcome::Idle(_)),
+        "a still-blocked TX must rearm instead of busy-polling"
+    );
+    blocked.store(false, Ordering::Relaxed);
+    executor.poll(256);
+    executor.poll(256);
+    assert_eq!(
+        *packets.lock().unwrap(),
+        vec![vec![0xa5; 60], vec![0x5a; 60]]
     );
 }
