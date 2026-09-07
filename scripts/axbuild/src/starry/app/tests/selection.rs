@@ -167,6 +167,9 @@ fn selected_qemu_case_accepts_combined_app() {
     let args = ArgsAppQemu {
         all: false,
         test_case: Some("linux-perf".to_string()),
+        nixos_case: None,
+        all_nixos_cases: false,
+        list_nixos_cases: false,
         caps: Vec::new(),
         arch: Some("aarch64".to_string()),
         qemu_config: None,
