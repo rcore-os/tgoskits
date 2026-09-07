@@ -20,7 +20,9 @@ use alloc::{boxed::Box, sync::Arc};
 
 use ax_fs_ng::vfs::{FsContext, current_fs_context};
 use ax_lazyinit::LazyInit;
-use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
+use axfs_ng_vfs::{
+    DirNodeOps, FileNodeOps, Filesystem, MutationCredentials, NodePermission, WeakDirEntry,
+};
 pub use tmp::MemoryFs;
 
 pub use self::{device::*, dir::*, file::*, fs::*};
@@ -73,7 +75,7 @@ pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> StarryResult<()> {
     let initial_resolve = fs.resolve(path);
     if initial_resolve.is_err() {
-        fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
+        fs.create_dir(path, DIR_PERMISSION, 0, 0, &MutationCredentials::root())?;
     }
     let loc = fs.resolve(path)?;
     loc.mount_with_source(&mount_fs, mount_fs.name())?;
