@@ -10,7 +10,7 @@
 //! References: rockchip-linux/mpp `osal/inc/mpp_service.h` and the vendor kernel
 //! `include/uapi/linux/rk-mpp.h` (`develop-5.10`).
 
-use crate::registers::{ADDR_REG_INDICES, REG_COUNT};
+use crate::registers::{self, ADDR_REG_INDICES, REG_COUNT};
 
 /// `MPP_IOC_CFG_V1 = _IOW('v', 1, unsigned int)`.
 pub const MPP_IOC_CFG_V1: u32 = 0x4004_7601;
@@ -110,6 +110,31 @@ pub enum MppError {
     /// More address-offset fixups than supported.
     #[error("MPP register offset table is full")]
     TooManyOffsets,
+    /// The resolved address plus its offset wrapped the 32-bit device address.
+    #[error("MPP dma-buf address calculation overflowed")]
+    AddressOverflow,
+    /// The requested DMA range is outside the imported dma-buf allocation.
+    #[error("MPP DMA range is outside the imported dma-buf")]
+    DmaRangeOutOfBounds,
+    /// The hardware address register requires a stronger alignment.
+    #[error("MPP DMA address is not correctly aligned")]
+    MisalignedAddress,
+    /// The register geometry selects an output layout not supported by this node.
+    #[error("MPP JPEG output geometry is unsupported")]
+    UnsupportedGeometry,
+}
+
+/// Device address and allocation size of an imported contiguous dma-buf.
+///
+/// The address is the physical/bus address visible to the IOMMU-bypassed JPEG
+/// block. `size` is the complete allocation size, not the userspace payload
+/// length, and is required to validate every register-derived DMA range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedDmaBuf {
+    /// 32-bit device-visible base address.
+    pub address: u32,
+    /// Number of bytes owned by the allocation.
+    pub size: usize,
 }
 
 /// Accumulated state for one MPP decode task.
@@ -187,22 +212,134 @@ impl MppSession {
 
     /// Resolve fd-bearing address registers to physical addresses (plus their
     /// recorded offsets), producing the final register array.
+    ///
+    /// The resolver must return the complete imported allocation size. Before
+    /// programming the device, this method checks the offset, the DMA length
+    /// derived from the register geometry, the 32-bit address addition, and the
+    /// alignment required by each address register.
     pub fn resolve_addresses<F>(&mut self, mut resolve_fd: F) -> Result<(), MppError>
     where
-        F: FnMut(u32) -> Option<u32>,
+        F: FnMut(u32) -> Option<ResolvedDmaBuf>,
     {
         if !self.have_regs {
             return Err(MppError::NoRegisters);
         }
+        let mut resolved = self.regs;
         for &idx in ADDR_REG_INDICES {
             let fd = self.regs[idx];
             if fd == 0 {
                 continue; // unused address slot
             }
-            let phys = resolve_fd(fd).ok_or(MppError::UnresolvedFd(fd))?;
-            self.regs[idx] = phys.wrapping_add(self.offset_for(idx as u32));
+            let buffer = resolve_fd(fd).ok_or(MppError::UnresolvedFd(fd))?;
+            let offset = self.offset_for(idx as u32);
+            let length = self.dma_length(idx)?;
+            let end = (offset as usize)
+                .checked_add(length)
+                .ok_or(MppError::AddressOverflow)?;
+            if end > buffer.size {
+                return Err(MppError::DmaRangeOutOfBounds);
+            }
+
+            let address = buffer
+                .address
+                .checked_add(offset)
+                .ok_or(MppError::AddressOverflow)?;
+            if address & (Self::address_alignment(idx) - 1) != 0 {
+                return Err(MppError::MisalignedAddress);
+            }
+            resolved[idx] = address;
         }
+        self.regs = resolved;
         Ok(())
+    }
+
+    fn dma_length(&self, index: usize) -> Result<usize, MppError> {
+        match index {
+            registers::REG_QTBL_BASE => table_length(self.regs[registers::REG_TABLE_LEN], 0, 0x1f),
+            registers::REG_HUFFMIN_BASE => {
+                table_length(self.regs[registers::REG_TABLE_LEN], 8, 0x1f)
+            }
+            registers::REG_HUFFVAL_BASE => {
+                table_length(self.regs[registers::REG_TABLE_LEN], 16, 0x3f)
+            }
+            registers::REG_STRM_BASE => {
+                let reg = self.regs[registers::REG_STRM_LEN];
+                let blocks = ((reg >> 4) & 0x0fff_ffff) as usize;
+                (blocks + 1)
+                    .checked_mul(16)
+                    .and_then(|length| length.checked_add((reg & 0xf) as usize))
+                    .ok_or(MppError::AddressOverflow)
+            }
+            registers::REG_DEC_OUT_BASE => self.output_length(),
+            _ => Err(MppError::UnsupportedGeometry),
+        }
+    }
+
+    fn output_length(&self) -> Result<usize, MppError> {
+        let sys = self.regs[registers::REG_SYS];
+        let output_format = (sys >> registers::OUT_FMT_SHIFT) & 0x7;
+        if output_format != registers::OUT_FMT_NATIVE && output_format != registers::OUT_FMT_NV12
+            || sys & registers::SYS_OUT_SEQ != 0
+        {
+            return Err(MppError::UnsupportedGeometry);
+        }
+
+        let mode = self.regs[registers::REG_PIC_FMT] & 0x7;
+        let height_alignment = if sys & registers::SYS_FILL_DOWN != 0 {
+            16
+        } else {
+            8
+        };
+        match mode {
+            registers::JPEG_MODE_400
+            | registers::JPEG_MODE_411
+            | registers::JPEG_MODE_420
+            | registers::JPEG_MODE_440
+            | registers::JPEG_MODE_422
+            | registers::JPEG_MODE_444 => {}
+            _ => return Err(MppError::UnsupportedGeometry),
+        }
+        let height = ((self.regs[registers::REG_PIC_SIZE] >> 16) & 0xffff) as usize + 1;
+        let height = height
+            .checked_add(height_alignment - 1)
+            .ok_or(MppError::AddressOverflow)?
+            / height_alignment
+            * height_alignment;
+
+        let y_stride_units = (self.regs[registers::REG_HOR_VIRSTRIDE] & 0xffff) as usize
+            | (((self.regs[registers::REG_TABLE_LEN] >> 24) & 1) as usize) << 16;
+        if y_stride_units == 0 {
+            return Err(MppError::UnsupportedGeometry);
+        }
+        let uv_stride_units = (self.regs[registers::REG_HOR_VIRSTRIDE] >> 16) as usize;
+        let y_stride = y_stride_units
+            .checked_mul(16)
+            .ok_or(MppError::AddressOverflow)?;
+        let uv_stride = uv_stride_units
+            .checked_mul(16)
+            .ok_or(MppError::AddressOverflow)?;
+        let y_rows = y_stride
+            .checked_mul(height)
+            .ok_or(MppError::AddressOverflow)?;
+        let y_virstride = ((self.regs[registers::REG_Y_VIRSTRIDE] >> 4) as usize)
+            .checked_mul(16)
+            .ok_or(MppError::AddressOverflow)?;
+        let y_size = y_rows.max(y_virstride);
+        let uv_size = if mode == registers::JPEG_MODE_400 {
+            0
+        } else {
+            uv_stride
+                .checked_mul(height)
+                .ok_or(MppError::AddressOverflow)?
+        };
+        y_size.checked_add(uv_size).ok_or(MppError::AddressOverflow)
+    }
+
+    const fn address_alignment(index: usize) -> u32 {
+        match index {
+            registers::REG_STRM_BASE => 16,
+            _ => 64,
+        }
     }
 
     fn offset_for(&self, index: u32) -> u32 {
@@ -241,6 +378,12 @@ impl MppSession {
     pub fn reset(&mut self) {
         *self = Self::new();
     }
+}
+
+fn table_length(reg: u32, shift: u32, mask: u32) -> Result<usize, MppError> {
+    (((reg >> shift) & mask) as usize + 1)
+        .checked_mul(16)
+        .ok_or(MppError::AddressOverflow)
 }
 
 #[cfg(test)]
@@ -294,6 +437,9 @@ mod tests {
         words[registers::REG_HUFFVAL_BASE] = 7;
         words[registers::REG_STRM_BASE] = 9; // stream fd
         words[registers::REG_DEC_OUT_BASE] = 11; // output fd
+        words[registers::REG_PIC_SIZE] = 15 | (15 << 16);
+        words[registers::REG_HOR_VIRSTRIDE] = 1 | (1 << 16);
+        words[registers::REG_Y_VIRSTRIDE] = 16 << 4;
         s.set_reg_write(&words);
         // Offsets, as MPP sends for jpegd (table mincode/value, stream start).
         s.add_reg_offsets(&[
@@ -314,9 +460,18 @@ mod tests {
 
         // fd 7 -> 0x1000_0000 (table), 9 -> 0x2000_0000 (stream), 11 -> 0x3000_0000.
         let resolve = |fd: u32| match fd {
-            7 => Some(0x1000_0000u32),
-            9 => Some(0x2000_0000u32),
-            11 => Some(0x3000_0000u32),
+            7 => Some(ResolvedDmaBuf {
+                address: 0x1000_0000,
+                size: 4096,
+            }),
+            9 => Some(ResolvedDmaBuf {
+                address: 0x2000_0000,
+                size: 4096,
+            }),
+            11 => Some(ResolvedDmaBuf {
+                address: 0x3000_0000,
+                size: 4096,
+            }),
             _ => None,
         };
         s.resolve_addresses(resolve).unwrap();
@@ -343,7 +498,114 @@ mod tests {
     #[test]
     fn resolve_without_regs_errors() {
         let mut s = MppSession::new();
-        assert_eq!(s.resolve_addresses(|_| Some(0)), Err(MppError::NoRegisters));
+        assert_eq!(
+            s.resolve_addresses(|_| {
+                Some(ResolvedDmaBuf {
+                    address: 0,
+                    size: 4096,
+                })
+            }),
+            Err(MppError::NoRegisters)
+        );
+    }
+
+    #[test]
+    fn rejects_wrapping_dma_address_offset() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_STRM_BASE] = 9;
+        s.set_reg_write(&words);
+        s.add_reg_offsets(&[RegOffset {
+            index: registers::REG_STRM_BASE as u32,
+            offset: 0x20,
+        }])
+        .unwrap();
+
+        // A checked address calculation must reject this instead of programming
+        // the wrapped address 0x10 into the decoder.
+        assert!(
+            s.resolve_addresses(|_| {
+                Some(ResolvedDmaBuf {
+                    address: 0xffff_fff0,
+                    size: 4096,
+                })
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_dma_range_at_or_past_imported_buffer() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_STRM_BASE] = 9;
+        s.set_reg_write(&words);
+        s.add_reg_offsets(&[RegOffset {
+            index: registers::REG_STRM_BASE as u32,
+            offset: 4081,
+        }])
+        .unwrap();
+
+        // The stream register describes one 16-byte DMA block. The first four
+        // bytes would fit in a 4096-byte allocation, but the full range does not.
+        assert_eq!(
+            s.resolve_addresses(|_| {
+                Some(ResolvedDmaBuf {
+                    address: 0x2000_0000,
+                    size: 4096,
+                })
+            }),
+            Err(MppError::DmaRangeOutOfBounds)
+        );
+    }
+
+    #[test]
+    fn rejects_output_stride_beyond_imported_buffer() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_DEC_OUT_BASE] = 11;
+        words[registers::REG_SYS] = registers::SYS_FILL_DOWN;
+        words[registers::REG_PIC_SIZE] = 15 | (15 << 16);
+        words[registers::REG_PIC_FMT] = registers::JPEG_MODE_420;
+        words[registers::REG_HOR_VIRSTRIDE] = 1 | (1 << 16);
+        words[registers::REG_Y_VIRSTRIDE] = 32 << 4;
+        s.set_reg_write(&words);
+
+        // The programmed Y stride already consumes 512 bytes; the NV12 chroma
+        // plane adds another 256 bytes, so a 512-byte import must be rejected.
+        assert_eq!(
+            s.resolve_addresses(|_| {
+                Some(ResolvedDmaBuf {
+                    address: 0x3000_0000,
+                    size: 512,
+                })
+            }),
+            Err(MppError::DmaRangeOutOfBounds)
+        );
+    }
+
+    #[test]
+    fn accepts_exact_output_allocation_size() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_DEC_OUT_BASE] = 11;
+        words[registers::REG_SYS] = registers::SYS_FILL_DOWN;
+        words[registers::REG_PIC_SIZE] = 15 | (15 << 16);
+        words[registers::REG_PIC_FMT] = registers::JPEG_MODE_420;
+        words[registers::REG_HOR_VIRSTRIDE] = 1 | (1 << 16);
+        words[registers::REG_Y_VIRSTRIDE] = 32 << 4;
+        s.set_reg_write(&words);
+
+        // 512 bytes of Y (the programmed Y virtual stride) plus 256 bytes of
+        // chroma is the exact legal end of this two-plane output allocation.
+        s.resolve_addresses(|_| {
+            Some(ResolvedDmaBuf {
+                address: 0x3000_0000,
+                size: 768,
+            })
+        })
+        .unwrap();
+        assert_eq!(s.regs()[registers::REG_DEC_OUT_BASE], 0x3000_0000);
     }
 
     #[test]
@@ -354,7 +616,15 @@ mod tests {
         s.clear_task();
         assert_eq!(s.client_type(), Some(MPP_DEVICE_RKJPEGD));
         assert_eq!(s.regs()[0], 0);
-        assert_eq!(s.resolve_addresses(|_| Some(0)), Err(MppError::NoRegisters));
+        assert_eq!(
+            s.resolve_addresses(|_| {
+                Some(ResolvedDmaBuf {
+                    address: 0,
+                    size: 4096,
+                })
+            }),
+            Err(MppError::NoRegisters)
+        );
     }
 
     #[test]

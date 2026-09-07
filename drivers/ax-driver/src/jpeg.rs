@@ -170,7 +170,7 @@ fn page_aligned_region(start_raw: usize, size_raw: usize) -> (usize, usize, usiz
 
 // --- Kernel-facing accessors for the /dev/mpp_service node (mirror rknpu) ---
 
-pub use rockchip_jpeg::{JpuError, mpp, registers};
+pub use rockchip_jpeg::{JpuError, mpp, mpp::ResolvedDmaBuf, registers};
 
 /// Errors surfaced to the `/dev/mpp_service` node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
