@@ -423,6 +423,16 @@ impl<T: Kind> PollingUart for Ns16550<T> {
 }
 
 impl<T: Kind> Ns16550<T> {
+    /// Returns the register base used by this UART instance.
+    pub fn register_base(&self) -> usize {
+        self.base.get_base()
+    }
+
+    /// Returns the UART input clock used for baud-rate calculation.
+    pub const fn input_clock_hz(&self) -> u32 {
+        self.clock_freq
+    }
+
     // 类型安全的 bitflags 寄存器访问
     fn read_flags<F: Flags<Bits = u8>>(&self, reg: u8) -> F {
         F::from_bits_retain(self.base.read_reg(reg))

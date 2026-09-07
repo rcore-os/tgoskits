@@ -719,6 +719,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-acpi"
+version = "6.1.1"
+dependencies = [
+ "bit_field",
+ "bitflags 2.13.1",
+ "byteorder",
+ "log",
+ "pci_types",
+ "spinning_top 0.3.0",
+]
+
+[[package]]
 name = "ax-alloc"
 version = "0.8.16"
 dependencies = [
@@ -897,6 +909,7 @@ dependencies = [
  "sg200x-bsp",
  "sha1 0.11.0",
  "some-serial",
+ "someboot",
  "starfive-jh7110-dwmmc",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
@@ -6658,7 +6671,7 @@ dependencies = [
 name = "rdrive"
 version = "0.24.1"
 dependencies = [
- "acpi",
+ "ax-acpi",
  "ax-lazyinit",
  "ax-sync",
  "fdt-edit",

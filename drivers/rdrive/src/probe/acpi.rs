@@ -3,11 +3,16 @@ use alloc::{
     format,
     rc::Rc,
     string::{String, ToString},
+    sync::Arc,
     vec::Vec,
 };
-use core::{ptr::NonNull, str::FromStr};
+use core::{
+    ptr::NonNull,
+    str::FromStr,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
-use acpi::{
+use ax_acpi::{
     AcpiError, AcpiTables, Handler, PhysicalMapping,
     address::{AddressSpace, GenericAddress},
     aml::{
@@ -26,10 +31,14 @@ use acpi::{
         interrupt::{InterruptModel, Polarity, TriggerMode},
         pci::PciConfigRegions,
     },
-    sdt::spcr::{Spcr, SpcrInterfaceType},
+    sdt::{
+        madt::Madt,
+        spcr::{Spcr, SpcrInterfaceType},
+    },
 };
 use ax_lazyinit::OnceLock;
 use ax_sync::SpinLock as Mutex;
+use mmio_api::MmioRaw;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 
 use crate::{
@@ -47,12 +56,11 @@ const LOONGARCH_PCH_PIC_GSI_COUNT: u16 = 256;
 const PCI_ROOT_FALLBACK_PATHS: &[&str] = &["\\_SB.PCI0", "\\_SB.PCI1", "\\_SB.PC00", "\\_SB.PC01"];
 
 static SYSTEM: OnceLock<System> = OnceLock::new();
-static NULL_LOCK: Mutex<()> = Mutex::new(());
-
 #[derive(Clone, Copy)]
 pub struct AcpiRoot {
     pub rsdp: usize,
     pub phys_to_virt: fn(usize) -> *mut u8,
+    direct_mapped: fn(usize, usize) -> bool,
 }
 
 impl core::fmt::Debug for AcpiRoot {
@@ -65,7 +73,25 @@ impl core::fmt::Debug for AcpiRoot {
 
 impl AcpiRoot {
     pub const fn new(rsdp: usize, phys_to_virt: fn(usize) -> *mut u8) -> Self {
-        Self { rsdp, phys_to_virt }
+        Self {
+            rsdp,
+            phys_to_virt,
+            direct_mapped: all_system_memory_is_direct_mapped,
+        }
+    }
+
+    /// Creates an ACPI root that distinguishes existing direct mappings from dynamic
+    /// SystemMemory operation regions requiring an MMIO mapping.
+    pub const fn with_direct_mapping(
+        rsdp: usize,
+        phys_to_virt: fn(usize) -> *mut u8,
+        direct_mapped: fn(usize, usize) -> bool,
+    ) -> Self {
+        Self {
+            rsdp,
+            phys_to_virt,
+            direct_mapped,
+        }
     }
 
     pub const fn identity(rsdp: usize) -> Self {
@@ -179,6 +205,16 @@ pub struct AcpiRouting {
     io_apics: Vec<AcpiIoApic>,
     pch_pics: Vec<AcpiPchPic>,
     isa_overrides: Vec<AcpiIsaIrqOverride>,
+    pcat_compatible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Interrupt-controller model selected for an x86 ACPI platform.
+pub enum X86InterruptModel {
+    /// Legacy dual-8259 PIC mode.
+    Pic,
+    /// Local APIC with external interrupts routed through one or more IOAPICs.
+    IoApic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,11 +231,21 @@ impl AcpiRouting {
             io_apics: Vec::new(),
             pch_pics: Vec::new(),
             isa_overrides: Vec::new(),
+            pcat_compatible: false,
         }
     }
 
     pub fn add_io_apic(&mut self, io_apic: AcpiIoApic) {
         self.io_apics.push(io_apic);
+    }
+
+    pub(crate) fn set_pcat_compatible(&mut self, compatible: bool) {
+        self.pcat_compatible = compatible;
+    }
+
+    /// Returns whether MADT declares PC/AT-compatible dual 8259 PICs.
+    pub const fn pcat_compatible(&self) -> bool {
+        self.pcat_compatible
     }
 
     pub fn io_apics(&self) -> &[AcpiIoApic] {
@@ -222,6 +268,16 @@ impl AcpiRouting {
         self.gsi_sources()
             .find(|source| source.contains_gsi(gsi))?
             .route(gsi, self.default_trigger(gsi), self.default_polarity(gsi))
+    }
+
+    /// Resolves a legacy ISA IRQ through any MADT Interrupt Source Override.
+    pub fn resolve_isa_irq(&self, irq: u8) -> Option<AcpiGsiRoute> {
+        let gsi = self
+            .isa_overrides
+            .iter()
+            .find(|irq_override| irq_override.source == irq)
+            .map_or(u32::from(irq), |irq_override| irq_override.gsi);
+        self.resolve_gsi(gsi)
     }
 
     fn gsi_sources(&self) -> impl Iterator<Item = AcpiGsiSource> + '_ {
@@ -275,14 +331,18 @@ mod tests {
         sync::Arc,
         vec::Vec,
     };
-    use core::str::FromStr;
+    use core::{
+        str::FromStr,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
-    use acpi::{
+    use ax_acpi::{
+        Handler,
         address::{AddressSpace, GenericAddress},
         aml::{
-            Interpreter,
+            AmlError, Interpreter,
             namespace::{AmlName, NamespaceLevelKind},
-            object::Object,
+            object::{MethodFlags, Object},
             pci_routing::IrqDescriptor,
             resource::{InterruptPolarity, InterruptTrigger},
         },
@@ -292,16 +352,37 @@ mod tests {
     use super::{
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
         AcpiIsaIrqOverride, AcpiPchPic, AcpiPciEcam, AcpiPciNamespace, AcpiPciRoot,
-        AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource, LinkIrqResourceKind, Mutex,
-        PciLinkAllocator, System, apply_pci_root_dma_coherency, inherited_device_cca,
-        irq_descriptor_gsi, is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
-        pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
+        AcpiResourceAddress, AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource,
+        LinkIrqResourceKind, Mutex, PciLinkAllocator, SendableInterpreter, System,
+        X86InterruptModel, apply_pci_root_dma_coherency, configure_interrupt_model,
+        inherited_device_cca, irq_descriptor_gsi, is_buffer_field_to_field_unit_store_gap,
+        pci_irq_descriptor_gsi, pci_link_irq_field_candidates, route_with_irq_descriptor_flags,
+        select_interrupt_model_without_aml, select_pci_link_irq, select_x86_interrupt_model,
+        system_memory_mapping_span,
     };
-    use crate::register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority};
+    use crate::{
+        DeviceId,
+        register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority},
+    };
+
+    #[test]
+    fn aml_mutex_handles_are_unique() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+
+        assert_ne!(handler.create_mutex(), handler.create_mutex());
+    }
+
+    #[test]
+    fn system_memory_mapping_covers_an_unaligned_register() {
+        assert_eq!(
+            system_memory_mapping_span(0xe0d2_06b0, 4),
+            Some((0xe0d2_0000, 0x1000, 0x6b0))
+        );
+    }
 
     #[expect(
         clippy::arc_with_non_send_sync,
-        reason = "acpi::Interpreter requires Arc even for this single-threaded test handler"
+        reason = "ax_acpi::Interpreter requires Arc even for this single-threaded test handler"
     )]
     fn test_fixed_registers(handler: &AcpiHandler) -> Arc<FixedRegisters<AcpiHandler>> {
         let event_gas = GenericAddress {
@@ -321,11 +402,13 @@ mod tests {
         Arc::new(FixedRegisters {
             pm1_event_registers: Pm1EventRegisterBlock {
                 pm1_event_length: 4,
-                pm1a: unsafe { acpi::address::MappedGas::map_gas(event_gas, handler).unwrap() },
+                pm1a: unsafe { ax_acpi::address::MappedGas::map_gas(event_gas, handler).unwrap() },
                 pm1b: None,
             },
             pm1_control_registers: Pm1ControlRegisterBlock {
-                pm1a: unsafe { acpi::address::MappedGas::map_gas(control_gas, handler).unwrap() },
+                pm1a: unsafe {
+                    ax_acpi::address::MappedGas::map_gas(control_gas, handler).unwrap()
+                },
                 pm1b: None,
             },
         })
@@ -381,6 +464,216 @@ mod tests {
         interpreter
     }
 
+    #[test]
+    fn x86_ioapic_selection_invokes_pic_with_apic_model() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        let selected_model = Arc::new(AtomicU64::new(u64::MAX));
+        let selected_model_for_method = selected_model.clone();
+        interpreter
+            .namespace
+            .lock()
+            .insert(
+                AmlName::from_str("\\_PIC").unwrap(),
+                Object::native_method(1, move |args| {
+                    selected_model_for_method.store(args[0].as_integer()?, Ordering::Relaxed);
+                    Ok(Object::Uninitialized.wrap())
+                })
+                .wrap(),
+            )
+            .unwrap();
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+
+        let model = configure_interrupt_model(&interpreter, &routing).unwrap();
+
+        assert_eq!(model, Some(X86InterruptModel::IoApic));
+        assert_eq!(selected_model.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn x86_ioapic_selection_accepts_missing_pic_method() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+
+        assert_eq!(
+            configure_interrupt_model(&interpreter, &routing),
+            Ok(Some(X86InterruptModel::IoApic))
+        );
+    }
+
+    #[test]
+    fn x86_ioapic_selection_propagates_pic_method_failure() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        interpreter
+            .namespace
+            .lock()
+            .insert(
+                AmlName::from_str("\\_PIC").unwrap(),
+                Object::native_method(1, |_| Err(ax_acpi::aml::AmlError::LibUnimplemented)).wrap(),
+            )
+            .unwrap();
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+
+        assert_eq!(
+            configure_interrupt_model(&interpreter, &routing),
+            Err(ax_acpi::aml::AmlError::LibUnimplemented)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "legacy 8259 PIC fallback is not implemented")]
+    fn x86_without_ioapic_reaches_legacy_pic_todo() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        let mut routing = AcpiRouting::new();
+        routing.set_pcat_compatible(true);
+
+        configure_interrupt_model(&interpreter, &routing).unwrap();
+    }
+
+    #[test]
+    fn pcat_compatible_routing_selects_pic_without_an_ioapic() {
+        let mut routing = AcpiRouting::new();
+        routing.set_pcat_compatible(true);
+
+        assert!(routing.pcat_compatible());
+        assert_eq!(select_x86_interrupt_model(&routing), X86InterruptModel::Pic);
+    }
+
+    #[test]
+    fn x86_without_aml_keeps_the_madt_ioapic_selection() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+
+        assert_eq!(
+            select_interrupt_model_without_aml(&routing),
+            Some(X86InterruptModel::IoApic)
+        );
+    }
+
+    #[test]
+    fn x86_interrupt_model_is_published_only_after_matching_driver_commit() {
+        let system = test_system();
+
+        assert_eq!(
+            system.selected_x86_interrupt_model(),
+            Some(X86InterruptModel::IoApic)
+        );
+        assert_eq!(system.x86_interrupt_model(), None);
+        assert_eq!(
+            system.publish_selected_x86_interrupt_model(),
+            Some(X86InterruptModel::IoApic)
+        );
+
+        assert_eq!(
+            system.x86_interrupt_model(),
+            Some(X86InterruptModel::IoApic)
+        );
+        assert!(
+            system
+                .publish_selected_x86_interrupt_model()
+                .is_some_and(|model| model == X86InterruptModel::IoApic)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "neither an IOAPIC nor a PCAT-compatible PIC")]
+    fn x86_without_any_interrupt_controller_reaches_todo() {
+        select_x86_interrupt_model(&AcpiRouting::new());
+    }
+
+    #[test]
+    fn aml_method_return_removes_temporary_namespace_objects() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        let method = AmlName::from_str("\\TEST").unwrap();
+        let temporary = AmlName::from_str("\\TEST.TEMP").unwrap();
+        interpreter
+            .namespace
+            .lock()
+            .insert(
+                method.clone(),
+                Object::Method {
+                    code: Vec::from([0x08, b'T', b'E', b'M', b'P', 0x01, 0xa4, 0x01]),
+                    flags: MethodFlags(0),
+                }
+                .wrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            interpreter
+                .evaluate(method, Vec::new())
+                .unwrap()
+                .as_integer(),
+            Ok(1)
+        );
+        assert!(matches!(
+            interpreter.namespace.lock().get(temporary),
+            Err(AmlError::LevelDoesNotExist(_))
+        ));
+    }
+
+    #[test]
+    fn aml_method_error_removes_temporary_namespace_objects() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        let method = AmlName::from_str("\\FAIL").unwrap();
+        let temporary = AmlName::from_str("\\FAIL.TEMP").unwrap();
+        interpreter
+            .namespace
+            .lock()
+            .insert(
+                method.clone(),
+                Object::Method {
+                    code: Vec::from([0x08, b'T', b'E', b'M', b'P', 0x01, 0x02]),
+                    flags: MethodFlags(0),
+                }
+                .wrap(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            interpreter.evaluate(method, Vec::new()),
+            Err(AmlError::IllegalOpcode(0x02))
+        ));
+        assert!(matches!(
+            interpreter.namespace.lock().get(temporary),
+            Err(AmlError::LevelDoesNotExist(_))
+        ));
+    }
+
     fn test_system() -> System {
         let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
         let mut routing = AcpiRouting::new();
@@ -393,13 +686,33 @@ mod tests {
         System {
             ecam_regions: Vec::new(),
             routing,
-            interpreter: Some(interpreter_with_devices(handler.clone())),
+            x86_interrupt_model_selection: Some(X86InterruptModel::IoApic),
+            x86_interrupt_model: ax_lazyinit::OnceLock::new(),
+            interpreter: Some(Mutex::new(SendableInterpreter(interpreter_with_devices(
+                handler.clone(),
+            )))),
             handler,
             pci: None,
             probed_names: Mutex::new(alloc::collections::BTreeSet::new()),
             populated_paths: Mutex::new(alloc::collections::BTreeMap::new()),
             populated_resources: Mutex::new(alloc::collections::BTreeMap::new()),
         }
+    }
+
+    #[test]
+    fn acpi_resource_association_preserves_the_first_owner() {
+        let system = test_system();
+        let resource = AcpiResourceAddress::io(0x3f8);
+        let first = DeviceId::new();
+        let second = DeviceId::new();
+
+        assert_eq!(system.associate_resource_address(resource, first), Ok(()));
+        assert_eq!(system.resource_address_to_device_id(resource), Some(first));
+        assert_eq!(
+            system.associate_resource_address(resource, second),
+            Err(first)
+        );
+        assert_eq!(system.resource_address_to_device_id(resource), Some(first));
     }
 
     static LAST_PATH: Mutex<Option<String>> = Mutex::new(None);
@@ -720,6 +1033,30 @@ mod tests {
     }
 
     #[test]
+    fn isa_irq_resolution_applies_source_override_before_selecting_ioapic_input() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+        routing.add_isa_irq_override(AcpiIsaIrqOverride {
+            source: 4,
+            gsi: 20,
+            trigger: AcpiIrqTrigger::Level,
+            polarity: AcpiIrqPolarity::ActiveLow,
+        });
+
+        let route = routing.resolve_isa_irq(4).unwrap();
+
+        assert_eq!(route.gsi, 20);
+        assert_eq!(route.controller_input, 20);
+        assert_eq!(route.trigger, AcpiIrqTrigger::Level);
+        assert_eq!(route.polarity, AcpiIrqPolarity::ActiveLow);
+    }
+
+    #[test]
     fn pci_link_irq_selects_prs_when_crs_is_unassigned() {
         let current = LinkIrqResource {
             kind: LinkIrqResourceKind::ExtendedIrq,
@@ -786,13 +1123,13 @@ mod tests {
 
     #[test]
     fn pci_link_srs_gap_detection_is_narrow() {
-        let gap = acpi::aml::AmlError::ObjectNotOfExpectedType {
-            expected: acpi::aml::object::ObjectType::Integer,
-            got: acpi::aml::object::ObjectType::BufferField,
+        let gap = ax_acpi::aml::AmlError::ObjectNotOfExpectedType {
+            expected: ax_acpi::aml::object::ObjectType::Integer,
+            got: ax_acpi::aml::object::ObjectType::BufferField,
         };
-        let other = acpi::aml::AmlError::ObjectNotOfExpectedType {
-            expected: acpi::aml::object::ObjectType::Buffer,
-            got: acpi::aml::object::ObjectType::BufferField,
+        let other = ax_acpi::aml::AmlError::ObjectNotOfExpectedType {
+            expected: ax_acpi::aml::object::ObjectType::Buffer,
+            got: ax_acpi::aml::object::ObjectType::BufferField,
         };
 
         assert!(is_buffer_field_to_field_unit_store_gap(&gap));
@@ -1091,17 +1428,36 @@ fn identity_phys_to_virt(paddr: usize) -> *mut u8 {
     paddr as *mut u8
 }
 
+const fn all_system_memory_is_direct_mapped(_address: usize, _width: usize) -> bool {
+    true
+}
+
+fn system_memory_mapping_span(address: usize, width: usize) -> Option<(usize, usize, usize)> {
+    const PAGE_SIZE: usize = 4096;
+
+    let end = address.checked_add(width.checked_sub(1)?)?;
+    let base = address & !(PAGE_SIZE - 1);
+    let mapped_end = end.checked_add(PAGE_SIZE)?.checked_div(PAGE_SIZE)? * PAGE_SIZE;
+    Some((base, mapped_end.checked_sub(base)?, address - base))
+}
+
 #[derive(Clone)]
 struct AcpiHandler {
     root: AcpiRoot,
-    pci_ecam_regions: Rc<Vec<AcpiPciEcam>>,
+    pci_ecam_regions: Arc<Vec<AcpiPciEcam>>,
+    next_mutex_handle: Arc<AtomicU32>,
+    // Raw mappings remain valid for the ACPI system lifetime and avoid remapping repeated AML
+    // accesses to the same operation-region page.
+    system_memory_mappings: Arc<Mutex<Vec<MmioRaw>>>,
 }
 
 impl AcpiHandler {
     fn new(root: AcpiRoot, pci_ecam_regions: Vec<AcpiPciEcam>) -> Self {
         Self {
             root,
-            pci_ecam_regions: Rc::new(pci_ecam_regions),
+            pci_ecam_regions: Arc::new(pci_ecam_regions),
+            next_mutex_handle: Arc::new(AtomicU32::new(0)),
+            system_memory_mappings: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1109,9 +1465,43 @@ impl AcpiHandler {
         (self.root.phys_to_virt)(physical_address) as usize
     }
 
+    fn system_memory_ptr(&self, address: usize, width: usize) -> *mut u8 {
+        if (self.root.direct_mapped)(address, width) {
+            return (self.root.phys_to_virt)(address);
+        }
+        let (base, size, offset) = system_memory_mapping_span(address, width)
+            .expect("ACPI SystemMemory access range must not overflow");
+        let mut mappings = self.system_memory_mappings.lock();
+        if let Some(mapping) = mappings.iter().find(|mapping| {
+            let mapping_base = mapping.phys_addr().as_usize();
+            let mapping_end = mapping_base.saturating_add(mapping.size());
+            address >= mapping_base
+                && address
+                    .checked_add(width)
+                    .is_some_and(|end| end <= mapping_end)
+        }) {
+            return unsafe {
+                mapping
+                    .as_ptr()
+                    .add(address - mapping.phys_addr().as_usize())
+            };
+        }
+
+        // SAFETY: the platform MMIO provider is installed before rdrive setup. The checked,
+        // page-aligned mapping is retained in `system_memory_mappings` for all later accesses.
+        let mapping =
+            unsafe { mmio_api::ioremap_raw((base as u64).into(), size) }.unwrap_or_else(|error| {
+                panic!("failed to map ACPI SystemMemory range {base:#x}+{size:#x}: {error}")
+            });
+        // SAFETY: `offset + width` lies inside the new mapping by construction.
+        let pointer = unsafe { mapping.as_ptr().add(offset) };
+        mappings.push(mapping);
+        pointer
+    }
+
     fn pci_config_ptr(
         &self,
-        address: acpi::PciAddress,
+        address: ax_acpi::PciAddress,
         offset: u16,
         width: usize,
     ) -> Option<*mut u8> {
@@ -1155,35 +1545,59 @@ impl Handler for AcpiHandler {
     fn unmap_physical_region<T>(_region: &PhysicalMapping<Self, T>) {}
 
     fn read_u8(&self, address: usize) -> u8 {
-        unsafe { (self.virt_addr(address) as *const u8).read_volatile() }
+        unsafe { self.system_memory_ptr(address, 1).read_volatile() }
     }
 
     fn read_u16(&self, address: usize) -> u16 {
-        unsafe { (self.virt_addr(address) as *const u16).read_volatile() }
+        unsafe {
+            self.system_memory_ptr(address, 2)
+                .cast::<u16>()
+                .read_volatile()
+        }
     }
 
     fn read_u32(&self, address: usize) -> u32 {
-        unsafe { (self.virt_addr(address) as *const u32).read_volatile() }
+        unsafe {
+            self.system_memory_ptr(address, 4)
+                .cast::<u32>()
+                .read_volatile()
+        }
     }
 
     fn read_u64(&self, address: usize) -> u64 {
-        unsafe { (self.virt_addr(address) as *const u64).read_volatile() }
+        unsafe {
+            self.system_memory_ptr(address, 8)
+                .cast::<u64>()
+                .read_volatile()
+        }
     }
 
     fn write_u8(&self, address: usize, value: u8) {
-        unsafe { (self.virt_addr(address) as *mut u8).write_volatile(value) }
+        unsafe { self.system_memory_ptr(address, 1).write_volatile(value) }
     }
 
     fn write_u16(&self, address: usize, value: u16) {
-        unsafe { (self.virt_addr(address) as *mut u16).write_volatile(value) }
+        unsafe {
+            self.system_memory_ptr(address, 2)
+                .cast::<u16>()
+                .write_volatile(value)
+        }
     }
 
     fn write_u32(&self, address: usize, value: u32) {
-        unsafe { (self.virt_addr(address) as *mut u32).write_volatile(value) }
+        unsafe {
+            self.system_memory_ptr(address, 4)
+                .cast::<u32>()
+                .write_volatile(value)
+        }
     }
 
     fn write_u64(&self, address: usize, value: u64) {
-        unsafe { (self.virt_addr(address) as *mut u64).write_volatile(value) }
+        unsafe {
+            self.system_memory_ptr(address, 8)
+                .cast::<u64>()
+                .write_volatile(value)
+        }
     }
 
     fn read_io_u8(&self, port: u16) -> u8 {
@@ -1210,20 +1624,20 @@ impl Handler for AcpiHandler {
         write_io_u32(port, value);
     }
 
-    fn read_pci_u8(&self, address: acpi::PciAddress, offset: u16) -> u8 {
+    fn read_pci_u8(&self, address: ax_acpi::PciAddress, offset: u16) -> u8 {
         if let Some(ptr) = self.pci_config_ptr(address, offset, 1) {
             return unsafe { ptr.read_volatile() };
         }
         pci_legacy_read_u8(address, offset).unwrap_or(u8::MAX)
     }
 
-    fn read_pci_u16(&self, address: acpi::PciAddress, offset: u16) -> u16 {
+    fn read_pci_u16(&self, address: ax_acpi::PciAddress, offset: u16) -> u16 {
         let lo = u16::from(self.read_pci_u8(address, offset));
         let hi = u16::from(self.read_pci_u8(address, offset.saturating_add(1)));
         lo | (hi << 8)
     }
 
-    fn read_pci_u32(&self, address: acpi::PciAddress, offset: u16) -> u32 {
+    fn read_pci_u32(&self, address: ax_acpi::PciAddress, offset: u16) -> u32 {
         let b0 = u32::from(self.read_pci_u8(address, offset));
         let b1 = u32::from(self.read_pci_u8(address, offset.saturating_add(1)));
         let b2 = u32::from(self.read_pci_u8(address, offset.saturating_add(2)));
@@ -1231,7 +1645,7 @@ impl Handler for AcpiHandler {
         b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     }
 
-    fn write_pci_u8(&self, address: acpi::PciAddress, offset: u16, value: u8) {
+    fn write_pci_u8(&self, address: ax_acpi::PciAddress, offset: u16, value: u8) {
         if let Some(ptr) = self.pci_config_ptr(address, offset, 1) {
             unsafe { ptr.write_volatile(value) };
             return;
@@ -1239,12 +1653,12 @@ impl Handler for AcpiHandler {
         pci_legacy_write_u8(address, offset, value);
     }
 
-    fn write_pci_u16(&self, address: acpi::PciAddress, offset: u16, value: u16) {
+    fn write_pci_u16(&self, address: ax_acpi::PciAddress, offset: u16, value: u16) {
         self.write_pci_u8(address, offset, value as u8);
         self.write_pci_u8(address, offset.saturating_add(1), (value >> 8) as u8);
     }
 
-    fn write_pci_u32(&self, address: acpi::PciAddress, offset: u16, value: u32) {
+    fn write_pci_u32(&self, address: ax_acpi::PciAddress, offset: u16, value: u32) {
         self.write_pci_u8(address, offset, value as u8);
         self.write_pci_u8(address, offset.saturating_add(1), (value >> 8) as u8);
         self.write_pci_u8(address, offset.saturating_add(2), (value >> 16) as u8);
@@ -1265,16 +1679,19 @@ impl Handler for AcpiHandler {
         self.stall(milliseconds.saturating_mul(1000));
     }
 
-    fn create_mutex(&self) -> acpi::Handle {
-        acpi::Handle(0)
+    fn create_mutex(&self) -> ax_acpi::Handle {
+        ax_acpi::Handle(self.next_mutex_handle.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn acquire(&self, _mutex: acpi::Handle, _timeout: u16) -> Result<(), acpi::aml::AmlError> {
-        let _guard = NULL_LOCK.lock();
+    fn acquire(
+        &self,
+        _mutex: ax_acpi::Handle,
+        _timeout: u16,
+    ) -> Result<(), ax_acpi::aml::AmlError> {
         Ok(())
     }
 
-    fn release(&self, _mutex: acpi::Handle) {}
+    fn release(&self, _mutex: ax_acpi::Handle) {}
 }
 
 impl AcpiRoot {
@@ -1294,7 +1711,9 @@ impl AcpiRoot {
 pub struct System {
     ecam_regions: Vec<AcpiPciEcam>,
     routing: AcpiRouting,
-    interpreter: Option<Interpreter<AcpiHandler>>,
+    x86_interrupt_model_selection: Option<X86InterruptModel>,
+    x86_interrupt_model: OnceLock<X86InterruptModel>,
+    interpreter: Option<Mutex<SendableInterpreter>>,
     handler: AcpiHandler,
     pci: Option<AcpiPciNamespace>,
     probed_names: Mutex<BTreeSet<&'static str>>,
@@ -1302,8 +1721,17 @@ pub struct System {
     populated_resources: Mutex<BTreeMap<AcpiResourceAddress, DeviceId>>,
 }
 
-unsafe impl Send for System {}
-unsafe impl Sync for System {}
+struct SendableInterpreter(Interpreter<AcpiHandler>);
+
+// SAFETY: `System::new_with_options` only wraps an interpreter created directly by
+// `Interpreter::new_from_platform`. Before wrapping it, rdrive does not install a custom region
+// handler or inject a native AML method that could capture thread-affine state; the only native
+// method comes from ax-acpi's predefined namespace and has no captures. `AcpiHandler` contains
+// only immutable firmware metadata, a function pointer, and physical mappings that remain valid
+// for the kernel lifetime. After construction, this private wrapper never escapes
+// `System::interpreter`, every interpreter operation is serialized by that mutex, and no API
+// returns an `ObjectToken`, `WrappedObject`, or reference into the interpreter.
+unsafe impl Send for SendableInterpreter {}
 
 struct AcpiPciNamespace {
     link_allocator: Mutex<PciLinkAllocator>,
@@ -1317,6 +1745,64 @@ struct AcpiPciRoot {
     dma_coherent: Option<bool>,
     prt: Option<PciRoutingTable>,
     link_prt: Option<PciLinkRoutingTable>,
+}
+
+fn configure_interrupt_model(
+    interpreter: &Interpreter<AcpiHandler>,
+    routing: &AcpiRouting,
+) -> Result<Option<X86InterruptModel>, AmlError> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        const ACPI_IRQ_MODEL_IOAPIC: u64 = 1;
+
+        match select_x86_interrupt_model(routing) {
+            X86InterruptModel::Pic => {
+                todo!("legacy 8259 PIC fallback is not implemented");
+            }
+            X86InterruptModel::IoApic => {}
+        }
+
+        let result = interpreter.evaluate_if_present(
+            AmlName::from_str("\\_PIC").unwrap(),
+            Vec::from([Object::Integer(ACPI_IRQ_MODEL_IOAPIC).wrap()]),
+        )?;
+        if result.is_some() {
+            info!("ACPI interrupt model switched to IOAPIC through _PIC");
+        } else {
+            info!("ACPI _PIC is absent; firmware retains its default interrupt model");
+        }
+        Ok(Some(X86InterruptModel::IoApic))
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (interpreter, routing);
+        Ok(None)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn select_x86_interrupt_model(routing: &AcpiRouting) -> X86InterruptModel {
+    if !routing.io_apics().is_empty() {
+        X86InterruptModel::IoApic
+    } else if routing.pcat_compatible() {
+        X86InterruptModel::Pic
+    } else {
+        todo!("x86 ACPI platform has neither an IOAPIC nor a PCAT-compatible PIC");
+    }
+}
+
+fn select_interrupt_model_without_aml(routing: &AcpiRouting) -> Option<X86InterruptModel> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        Some(select_x86_interrupt_model(routing))
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = routing;
+        None
+    }
 }
 
 impl System {
@@ -1335,10 +1821,12 @@ impl System {
         let mut ecam_regions = read_pci_ecam_regions(&tables)?;
         let routing = read_interrupt_routing(&tables)?;
         let namespace_handler = root.handler_with_pci_ecam(ecam_regions.clone());
-        let (interpreter, pci) = if load_aml {
+        let (interpreter, pci, x86_interrupt_model_selection) = if load_aml {
             let platform =
                 AcpiPlatform::new(tables, namespace_handler.clone()).map_err(acpi_error)?;
             let interpreter = Interpreter::new_from_platform(&platform).map_err(acpi_error)?;
+            let x86_interrupt_model_selection = configure_interrupt_model(&interpreter, &routing)
+                .map_err(|err| acpi_error(AcpiError::Aml(err)))?;
             interpreter.initialize_namespace();
             let pci = match read_pci_namespace(&interpreter) {
                 Ok(pci) => Some(pci),
@@ -1350,14 +1838,24 @@ impl System {
             if let Some(pci) = &pci {
                 apply_pci_root_dma_coherency(&mut ecam_regions, pci)?;
             }
-            (Some(interpreter), pci)
+            (
+                Some(Mutex::new(SendableInterpreter(interpreter))),
+                pci,
+                x86_interrupt_model_selection,
+            )
         } else {
-            (None, None)
+            let selection = select_interrupt_model_without_aml(&routing);
+            if selection.is_some() {
+                warn!("ACPI AML loading disabled; using the MADT interrupt model without _PIC");
+            }
+            (None, None, selection)
         };
 
         Ok(Self {
             ecam_regions,
             routing,
+            x86_interrupt_model_selection,
+            x86_interrupt_model: OnceLock::new(),
             interpreter,
             handler: namespace_handler,
             pci,
@@ -1375,12 +1873,48 @@ impl System {
         &self.routing
     }
 
+    /// Returns the firmware model selected before the platform driver is registered.
+    pub const fn selected_x86_interrupt_model(&self) -> Option<X86InterruptModel> {
+        self.x86_interrupt_model_selection
+    }
+
+    /// Returns the model whose matching platform interrupt domain is fully registered.
+    pub fn x86_interrupt_model(&self) -> Option<X86InterruptModel> {
+        self.x86_interrupt_model.get().copied()
+    }
+
+    /// Publishes the preselected model after its platform interrupt domain is registered.
+    pub fn publish_selected_x86_interrupt_model(&self) -> Option<X86InterruptModel> {
+        let selected = self.x86_interrupt_model_selection?;
+        Some(*self.x86_interrupt_model.call_once(|| selected))
+    }
+
     pub fn path_to_device_id(&self, path: &str) -> Option<DeviceId> {
         self.populated_paths.lock().get(path).copied()
     }
 
     pub fn resource_address_to_device_id(&self, address: AcpiResourceAddress) -> Option<DeviceId> {
         self.populated_resources.lock().get(&address).copied()
+    }
+
+    /// Associates a firmware resource address with an already prepared platform device.
+    ///
+    /// The first owner remains authoritative. A conflicting association returns that owner's
+    /// device ID without changing the resource index.
+    pub fn associate_resource_address(
+        &self,
+        address: AcpiResourceAddress,
+        device_id: DeviceId,
+    ) -> Result<(), DeviceId> {
+        use alloc::collections::btree_map::Entry;
+
+        match self.populated_resources.lock().entry(address) {
+            Entry::Vacant(entry) => {
+                entry.insert(device_id);
+                Ok(())
+            }
+            Entry::Occupied(entry) => Err(*entry.get()),
+        }
     }
 
     pub fn spcr_console_device_id(&self) -> Option<DeviceId> {
@@ -1496,6 +2030,11 @@ impl System {
         let Some(pci) = &self.pci else {
             return Ok(None);
         };
+        let interpreter = self
+            .interpreter
+            .as_ref()
+            .expect("ACPI PCI routing requires an AML interpreter")
+            .lock();
         let roots = self.pci_root_candidates(address, pci);
         if roots.is_empty() {
             return Ok(None);
@@ -1512,9 +2051,7 @@ impl System {
                         u16::from(route.root_device),
                         u16::from(route.root_function),
                         pin,
-                        self.interpreter
-                            .as_ref()
-                            .expect("ACPI PCI routing requires an AML interpreter"),
+                        &interpreter.0,
                         &self.handler,
                         &mut pci.link_allocator.lock(),
                     )
@@ -1527,9 +2064,7 @@ impl System {
                 u16::from(route.root_device),
                 u16::from(route.root_function),
                 pin,
-                self.interpreter
-                    .as_ref()
-                    .expect("ACPI PCI routing requires an AML interpreter"),
+                &interpreter.0,
             ) {
                 Ok(route) => return Ok(Some(route)),
                 Err(AmlError::PrtNoEntry) => {}
@@ -1572,6 +2107,8 @@ impl System {
         let Some(interpreter) = &self.interpreter else {
             return Ok(Vec::new());
         };
+        let interpreter = interpreter.lock();
+        let interpreter = &interpreter.0;
         let mut devices = Vec::new();
         let mut device_paths = Vec::new();
         let mut namespace = interpreter.namespace.lock().clone();
@@ -1607,6 +2144,8 @@ impl System {
         let Some(interpreter) = &self.interpreter else {
             return Ok(Vec::new());
         };
+        let interpreter = interpreter.lock();
+        let interpreter = &interpreter.0;
         let mut devices = Vec::new();
         let mut device_paths = Vec::new();
         let mut namespace = interpreter.namespace.lock().clone();
@@ -1647,7 +2186,6 @@ impl System {
             if self.probed_names.lock().contains(register.name) {
                 continue;
             }
-
             if !ids.is_empty() && !is_root_acpi_id_list(ids) {
                 for device in self.device_infos_for_ids(ids)? {
                     if self.probed_names.lock().contains(register.name) {
@@ -1756,8 +2294,13 @@ fn read_pci_ecam_regions(
 }
 
 fn read_interrupt_routing(tables: &AcpiTables<AcpiHandler>) -> Result<AcpiRouting, DriverError> {
+    let pcat_compatible = tables
+        .find_table::<Madt>()
+        .map(|madt| madt.get().supports_8259())
+        .unwrap_or(false);
     let (model, _) = InterruptModel::new(tables).map_err(acpi_error)?;
     let mut routing = AcpiRouting::new();
+    routing.set_pcat_compatible(pcat_compatible);
     if let InterruptModel::Apic(apic) = model {
         for io_apic in &apic.io_apics {
             routing.add_io_apic(AcpiIoApic {
@@ -1807,10 +2350,10 @@ struct RawMadtBioPic {
 }
 
 const ACPI_MADT_TYPE_BIO_PIC: u8 = 22;
-const RAW_MADT_HEADER_LEN: usize = core::mem::size_of::<acpi::sdt::SdtHeader>() + 8;
+const RAW_MADT_HEADER_LEN: usize = core::mem::size_of::<ax_acpi::sdt::SdtHeader>() + 8;
 
 fn read_loongarch_pch_pic_routing(tables: &AcpiTables<AcpiHandler>, routing: &mut AcpiRouting) {
-    let Some(madt) = tables.find_table::<acpi::sdt::madt::Madt>() else {
+    let Some(madt) = tables.find_table::<ax_acpi::sdt::madt::Madt>() else {
         return;
     };
 
@@ -1938,7 +2481,7 @@ fn read_device_resources(
     for resource in resources {
         match resource {
             Resource::MemoryRange(memory) => match memory {
-                acpi::aml::resource::MemoryRangeDescriptor::FixedLocation {
+                ax_acpi::aml::resource::MemoryRangeDescriptor::FixedLocation {
                     base_address,
                     range_length,
                     ..
@@ -2167,7 +2710,7 @@ fn eval_wrapped_child(
     interpreter: &Interpreter<AcpiHandler>,
     path: &AmlName,
     name: &str,
-) -> Result<Option<acpi::aml::object::WrappedObject>, AmlError> {
+) -> Result<Option<ax_acpi::aml::object::WrappedObject>, AmlError> {
     let child = AmlName::from_str(name)?.resolve(path)?;
     interpreter.evaluate_if_present(child, Vec::new())
 }
@@ -2213,7 +2756,7 @@ impl PciLinkRoutingTable {
         let prt = interpreter.evaluate(prt_path.clone(), Vec::new())?;
         let Object::Package(ref entries) = *prt else {
             return Err(AmlError::InvalidOperationOnObject {
-                op: acpi::aml::Operation::DecodePrt,
+                op: ax_acpi::aml::Operation::DecodePrt,
                 typ: prt.typ(),
             });
         };
@@ -2222,7 +2765,7 @@ impl PciLinkRoutingTable {
         for entry in entries {
             let Object::Package(ref package) = **entry else {
                 return Err(AmlError::InvalidOperationOnObject {
-                    op: acpi::aml::Operation::DecodePrt,
+                    op: ax_acpi::aml::Operation::DecodePrt,
                     typ: entry.typ(),
                 });
             };
@@ -2629,12 +3172,12 @@ fn write_native_region(
 fn pci_address_for_region(
     interpreter: &Interpreter<AcpiHandler>,
     region: &OpRegion,
-) -> Result<acpi::PciAddress, AmlError> {
+) -> Result<ax_acpi::PciAddress, AmlError> {
     let path = &region.parent_device_path;
     let segment = eval_integer_child(interpreter, path, "_SEG")?.unwrap_or(0) as u16;
     let bus = eval_integer_child(interpreter, path, "_BBN")?.unwrap_or(0) as u8;
     let address = eval_integer_child(interpreter, path, "_ADR")?.unwrap_or(0);
-    Ok(acpi::PciAddress::new(
+    Ok(ax_acpi::PciAddress::new(
         segment,
         bus,
         ((address >> 16) & 0xff) as u8,
@@ -2661,11 +3204,11 @@ fn align_down(value: usize, align: usize) -> usize {
 }
 
 fn parse_link_irq_resources(
-    value: &acpi::aml::object::WrappedObject,
+    value: &ax_acpi::aml::object::WrappedObject,
 ) -> Result<Vec<LinkIrqResource>, AmlError> {
     let Object::Buffer(ref bytes) = **value else {
         return Err(AmlError::InvalidOperationOnObject {
-            op: acpi::aml::Operation::ParseResource,
+            op: ax_acpi::aml::Operation::ParseResource,
             typ: value.typ(),
         });
     };
@@ -2961,34 +3504,34 @@ fn route_with_irq_descriptor_flags(
     }
 }
 
-fn irq_trigger(trigger: acpi::aml::resource::InterruptTrigger) -> AcpiIrqTrigger {
+fn irq_trigger(trigger: ax_acpi::aml::resource::InterruptTrigger) -> AcpiIrqTrigger {
     match trigger {
-        acpi::aml::resource::InterruptTrigger::Edge => AcpiIrqTrigger::Edge,
-        acpi::aml::resource::InterruptTrigger::Level => AcpiIrqTrigger::Level,
+        ax_acpi::aml::resource::InterruptTrigger::Edge => AcpiIrqTrigger::Edge,
+        ax_acpi::aml::resource::InterruptTrigger::Level => AcpiIrqTrigger::Level,
     }
 }
 
-fn irq_polarity(polarity: acpi::aml::resource::InterruptPolarity) -> AcpiIrqPolarity {
+fn irq_polarity(polarity: ax_acpi::aml::resource::InterruptPolarity) -> AcpiIrqPolarity {
     match polarity {
-        acpi::aml::resource::InterruptPolarity::ActiveHigh => AcpiIrqPolarity::ActiveHigh,
-        acpi::aml::resource::InterruptPolarity::ActiveLow => AcpiIrqPolarity::ActiveLow,
+        ax_acpi::aml::resource::InterruptPolarity::ActiveHigh => AcpiIrqPolarity::ActiveHigh,
+        ax_acpi::aml::resource::InterruptPolarity::ActiveLow => AcpiIrqPolarity::ActiveLow,
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn pci_legacy_read_u8(address: acpi::PciAddress, offset: u16) -> Option<u8> {
+fn pci_legacy_read_u8(address: ax_acpi::PciAddress, offset: u16) -> Option<u8> {
     let value = pci_legacy_read_aligned_u32(address, offset)?;
     let shift = u32::from(offset & 0b11) * 8;
     Some((value >> shift) as u8)
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn pci_legacy_read_u8(_address: acpi::PciAddress, _offset: u16) -> Option<u8> {
+fn pci_legacy_read_u8(_address: ax_acpi::PciAddress, _offset: u16) -> Option<u8> {
     None
 }
 
 #[cfg(target_arch = "x86_64")]
-fn pci_legacy_write_u8(address: acpi::PciAddress, offset: u16, value: u8) {
+fn pci_legacy_write_u8(address: ax_acpi::PciAddress, offset: u16, value: u8) {
     let Some(old) = pci_legacy_read_aligned_u32(address, offset) else {
         return;
     };
@@ -2999,10 +3542,10 @@ fn pci_legacy_write_u8(address: acpi::PciAddress, offset: u16, value: u8) {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn pci_legacy_write_u8(_address: acpi::PciAddress, _offset: u16, _value: u8) {}
+fn pci_legacy_write_u8(_address: ax_acpi::PciAddress, _offset: u16, _value: u8) {}
 
 #[cfg(target_arch = "x86_64")]
-fn pci_legacy_config_address(address: acpi::PciAddress, offset: u16) -> Option<u32> {
+fn pci_legacy_config_address(address: ax_acpi::PciAddress, offset: u16) -> Option<u32> {
     if address.segment() != 0 || offset >= 256 {
         return None;
     }
@@ -3017,7 +3560,7 @@ fn pci_legacy_config_address(address: acpi::PciAddress, offset: u16) -> Option<u
 }
 
 #[cfg(target_arch = "x86_64")]
-fn pci_legacy_read_aligned_u32(address: acpi::PciAddress, offset: u16) -> Option<u32> {
+fn pci_legacy_read_aligned_u32(address: ax_acpi::PciAddress, offset: u16) -> Option<u32> {
     let config_address = pci_legacy_config_address(address, offset)?;
     unsafe {
         x86::io::outl(0xcf8, config_address);
@@ -3026,7 +3569,7 @@ fn pci_legacy_read_aligned_u32(address: acpi::PciAddress, offset: u16) -> Option
 }
 
 #[cfg(target_arch = "x86_64")]
-fn pci_legacy_write_aligned_u32(address: acpi::PciAddress, offset: u16, value: u32) {
+fn pci_legacy_write_aligned_u32(address: ax_acpi::PciAddress, offset: u16, value: u32) {
     if let Some(config_address) = pci_legacy_config_address(address, offset) {
         unsafe {
             x86::io::outl(0xcf8, config_address);

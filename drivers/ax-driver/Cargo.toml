@@ -55,7 +55,7 @@ rockchip-ehci = ["usb", "rockchip-soc", "rockchip-pm"]
 sg2002-dwc2 = ["usb", "dep:sg200x-bsp"]
 xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
-serial = ["dep:rdif-serial", "dep:some-serial"]
+serial = ["dep:rdif-serial", "dep:some-serial", "dep:someboot"]
 rknpu = ["rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
 rga = ["rockchip-pm", "rockchip-soc", "dep:rockchip-rga"]
 jpeg = ["rockchip-pm", "rockchip-soc", "dep:rockchip-jpeg"]
@@ -212,6 +212,7 @@ riscv_goldfish = "0.1"
 ax-arm-pl031.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+someboot = { workspace = true, optional = true }
 x86.workspace = true
 
 [[test]]

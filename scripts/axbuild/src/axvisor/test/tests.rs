@@ -660,6 +660,28 @@ fn rejects_empty_board_test_group() {
 }
 
 #[test]
+fn asus_nuc15crh_uses_firmware_selected_ioapic_without_build_switches() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for path in [
+        "os/axvisor/configs/board/asus-nuc15crh-x86_64.toml",
+        "test-suit/axvisor/normal/board-asus-nuc15crh/build-x86_64-unknown-none.toml",
+    ] {
+        let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let features = config["features"].as_array().unwrap();
+        let env = config["env"].as_table().unwrap();
+
+        assert!(!env.contains_key("RDRIVE_ACPI_LOAD_AML"));
+        assert!(!env.contains_key("AX_X86_LEGACY_PIC_CONSOLE"));
+        assert!(
+            features
+                .iter()
+                .all(|feature| feature.as_str() != Some("ax-std/x86-legacy-pic-console"))
+        );
+    }
+}
+
+#[test]
 fn qemu_build_groups_preserve_distinct_executable_artifacts() {
     let root = tempdir().unwrap();
     let build_output = root.path().join("target/release/axvisor");

@@ -56,6 +56,25 @@ impl DeviceContainer {
             .is_none_or(|devices| !devices.iter().any(DeviceOwner::is::<T>))
     }
 
+    pub(crate) fn insert_pair<A: DriverGeneric, B: DriverGeneric>(
+        &mut self,
+        descriptor: Descriptor,
+        first: A,
+        second: B,
+    ) {
+        let device_id = descriptor.device_id;
+        assert!(
+            core::any::TypeId::of::<A>() != core::any::TypeId::of::<B>(),
+            "paired device interfaces must have distinct outer types"
+        );
+        assert!(
+            self.can_insert::<A>(device_id) && self.can_insert::<B>(device_id),
+            "duplicate paired device interface for device {device_id:?}"
+        );
+        self.insert(descriptor.clone(), first);
+        self.insert(descriptor, second);
+    }
+
     pub fn get_typed<T: DriverGeneric>(&self, id: DeviceId) -> Result<Device<T>, GetDeviceError> {
         let devices = self.devices.get(&id).ok_or(GetDeviceError::NotFound)?;
         for dev in devices {
@@ -88,6 +107,8 @@ impl DeviceContainer {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use alloc::boxed::Box;
 
     use super::*;
@@ -152,6 +173,34 @@ mod tests {
         container.insert(desc, DeviceTest);
 
         assert!(container.get_typed::<Empty>(id).is_ok());
+        assert!(container.get_typed::<DeviceTest>(id).is_ok());
+    }
+
+    #[test]
+    fn paired_insert_publishes_both_interfaces_after_preflight() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+        let id = desc.device_id;
+
+        container.insert_pair(desc, Empty, DeviceTest);
+
+        assert!(container.get_typed::<Empty>(id).is_ok());
+        assert!(container.get_typed::<DeviceTest>(id).is_ok());
+    }
+
+    #[test]
+    fn paired_insert_rejects_duplicates_before_publishing_either_interface() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+        let id = desc.device_id;
+        container.insert(desc.clone(), DeviceTest);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            container.insert_pair(desc, Empty, DeviceTest);
+        }));
+
+        assert!(result.is_err());
+        assert!(container.get_typed::<Empty>(id).is_err());
         assert!(container.get_typed::<DeviceTest>(id).is_ok());
     }
 

@@ -3,10 +3,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
-    module_driver,
+    DeviceId, module_driver,
     probe::{
         OnProbeError,
-        acpi::{AcpiId, ProbeAcpi},
+        acpi::{AcpiId, ProbeAcpi, X86InterruptModel},
     },
 };
 use x86_apic_driver::{IoApicIntc, VirtAddr, ioapic::IoApicInfo};
@@ -49,6 +49,32 @@ module_driver!(
 
 struct X86IoApicCpuInterface {
     vector_routes: [AtomicU64; 256],
+}
+
+struct UnpublishedIrqDomainGuard {
+    owner: DeviceId,
+    committed: bool,
+}
+
+impl UnpublishedIrqDomainGuard {
+    const fn new(owner: DeviceId) -> Self {
+        Self {
+            owner,
+            committed: false,
+        }
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for UnpublishedIrqDomainGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            crate::irq::rollback_unpublished_irq_domains(self.owner);
+        }
+    }
 }
 
 impl X86IoApicCpuInterface {
@@ -100,12 +126,16 @@ fn decode_irq_id(encoded: u64) -> Option<IrqId> {
 
 fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
     let (info, dev) = probe.into_parts();
+    if info.root.selected_x86_interrupt_model() != Some(X86InterruptModel::IoApic) {
+        return Err(OnProbeError::NotMatch);
+    }
     let ioapics = info.root.routing().io_apics();
     if ioapics.is_empty() {
         return Err(OnProbeError::NotMatch);
     }
 
     let owner = dev.descriptor.device_id();
+    let domain_guard = UnpublishedIrqDomainGuard::new(owner);
     let domain = crate::irq::alloc_irq_domain(owner, crate::irq::IrqDomainKind::X86IoApic)
         .map_err(|err| OnProbeError::other(format!("failed to register IOAPIC domain: {err:?}")))?;
     let infos: Vec<IoApicInfo> = ioapics
@@ -122,11 +152,21 @@ fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
         })
         .collect();
     let intc = unsafe { IoApicIntc::new(&infos) };
-    dev.register(rdif_intc::Intc::new(domain, intc));
     let msi = msi::X86MsiProvider::new(owner).map_err(|err| {
         OnProbeError::other(format!("failed to register x86 MSI domain: {err:?}"))
     })?;
-    dev.register(rdif_msi::Msi::new(msi.provider_id(), msi));
+    dev.register_pair(
+        rdif_intc::Intc::new(domain, intc),
+        rdif_msi::Msi::new(msi.provider_id(), msi),
+    );
+    let published = info.root.publish_selected_x86_interrupt_model();
+    assert_eq!(
+        published,
+        Some(X86InterruptModel::IoApic),
+        "IOAPIC probe committed a different x86 interrupt model"
+    );
+    domain_guard.commit();
+    info!("x86 interrupt model published after IOAPIC domain registration");
     Ok(())
 }
 
@@ -354,10 +394,15 @@ fn enable_unconfigured_gsi(
 }
 
 fn firmware_gsi_routes(gsi: u32) -> Vec<AcpiGsiRoute> {
-    rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_gsi(gsi))
-        .flatten()
-        .into_iter()
-        .collect()
+    rdrive::probe::acpi::with_acpi(|system| {
+        if system.x86_interrupt_model() != Some(X86InterruptModel::IoApic) {
+            return None;
+        }
+        system.routing().resolve_gsi(gsi)
+    })
+    .flatten()
+    .into_iter()
+    .collect()
 }
 
 fn route_to_irq_framework(route: AcpiGsiRoute) -> irq_framework::AcpiGsiRoute {
@@ -467,6 +512,17 @@ mod tests {
 
         assert_eq!(cpu_if.irq_for_vector(vector), Some(irq));
         assert_eq!(cpu_if.irq_for_vector(vector + 1), None);
+    }
+
+    #[test]
+    fn ioapic_gsi4_keeps_its_firmware_vector() {
+        let vector = rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + 4;
+        let irq = ioapic_gsi_irq_id(4);
+        let cpu_if = X86IoApicCpuInterface::new();
+
+        cpu_if.remember_vector_route(vector, irq).unwrap();
+
+        assert_eq!(cpu_if.irq_for_vector(vector), Some(irq));
     }
 
     #[test]

@@ -10,7 +10,7 @@ repository.workspace = true
 version = "0.24.1"
 
 [dependencies]
-acpi = "6.1.1"
+ax-acpi = { workspace = true, features = ["alloc", "aml"] }
 ax-sync = { workspace = true }
 ax-lazyinit.workspace = true
 fdt-edit.workspace = true

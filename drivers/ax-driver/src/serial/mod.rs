@@ -7,6 +7,8 @@ use rdif_serial::{
 };
 use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 
+#[cfg(target_arch = "x86_64")]
+mod legacy_com1;
 mod ns16550;
 mod pl011;
 mod rockchip_fiq;

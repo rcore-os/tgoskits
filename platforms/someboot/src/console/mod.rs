@@ -225,6 +225,15 @@ pub enum EarlySerialRaw {
     Pl011(pl011::Pl011),
 }
 
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EarlyNs16550Port {
+    /// Base I/O port of the active UART.
+    pub port: u16,
+    /// Input clock used to derive the configured baud rate.
+    pub input_clock_hz: u32,
+}
+
 impl EarlySerial {
     pub fn new(raw: EarlySerialRaw) -> Self {
         Self {
@@ -309,6 +318,13 @@ pub fn set_earlycon_serial(serial: EarlySerial) {
     };
     EARLYCON.set_serial(serial);
     unsafe { set_out(&EARLYCON) };
+}
+
+/// Returns the active early PIO NS16550 resource without transferring ownership.
+#[cfg(target_arch = "x86_64")]
+pub fn early_ns16550_port() -> Option<EarlyNs16550Port> {
+    let _access = handoff::try_enter_early()?;
+    EARLYCON.ns16550_port()
 }
 
 pub fn read_byte() -> Option<u8> {
@@ -412,6 +428,19 @@ impl EarlyconCell {
     fn try_write(&self, bytes: &[u8]) -> Option<usize> {
         self.0
             .with_lock(|earlycon| earlycon.as_mut().map(|serial| serial.try_write(bytes)))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn ns16550_port(&self) -> Option<EarlyNs16550Port> {
+        self.0.with_lock(|earlycon| {
+            let EarlySerialRaw::Ns16550Port(serial) = &earlycon.as_ref()?.raw else {
+                return None;
+            };
+            Some(EarlyNs16550Port {
+                port: u16::try_from(serial.register_base()).ok()?,
+                input_clock_hz: serial.input_clock_hz(),
+            })
+        })
     }
 }
 
@@ -556,6 +585,26 @@ mod tests {
         assert_eq!(handoff::state(), handoff::EARLY);
         assert_eq!(_write_bytes(b"early"), 5);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
+        reset_handoff();
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn early_ns16550_port_reports_the_active_boot_uart() {
+        let _test = TEST_LOCK.lock().unwrap();
+        reset_handoff();
+        set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Port(
+            Ns16550::new_port(0x3f8, 1_843_200),
+        )));
+
+        assert_eq!(
+            early_ns16550_port(),
+            Some(EarlyNs16550Port {
+                port: 0x3f8,
+                input_clock_hz: 1_843_200,
+            })
+        );
+
         reset_handoff();
     }
 
