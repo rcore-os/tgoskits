@@ -1,4 +1,7 @@
-use axfs_ng_vfs::{Location, NodeFlags, NodePermission, NodeType, VfsError, VfsResult, path::Path};
+use axfs_ng_vfs::{
+    Location, MutationCredentials, NodeFlags, NodePermission, NodeType, VfsError, VfsResult,
+    path::Path,
+};
 
 use super::handle::{File, FileBackend};
 use crate::fs_core::FsContext;
@@ -268,6 +271,16 @@ impl OpenOptions {
 
     /// Opens a file at the given path relative to the provided [`FsContext`].
     pub fn open(&self, context: &FsContext, path: impl AsRef<Path>) -> VfsResult<OpenResult> {
+        self.open_with_credentials(context, path, &MutationCredentials::root())
+    }
+
+    /// Opens a file while authorizing any file creation against its parent.
+    pub fn open_with_credentials(
+        &self,
+        context: &FsContext,
+        path: impl AsRef<Path>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<OpenResult> {
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
@@ -298,6 +311,15 @@ impl OpenOptions {
                 // ordering left a stale file on disk for failing calls).
                 let effective_create = self.create && !must_be_dir;
                 let effective_create_new = self.create_new && !must_be_dir;
+                if effective_create || effective_create_new {
+                    match parent.lookup_no_follow(&name) {
+                        Ok(_) => {}
+                        Err(VfsError::NotFound) => {
+                            context.check_mutation_parent(&parent, credentials)?;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
                 let mut loc = parent.open_file(
                     &name,
                     &axfs_ng_vfs::OpenOptions {
@@ -330,7 +352,11 @@ impl OpenOptions {
                             // symlink target as the new path.
                             // Fixes bug-open-creat-dangling-no-create.
                             let target = symlink_target.unwrap();
-                            return self.open(&context.with_current_dir(parent)?, &target);
+                            return self.open_with_credentials(
+                                &context.with_current_dir(parent)?,
+                                &target,
+                                credentials,
+                            );
                         }
                         Err(e) => return Err(e),
                     }

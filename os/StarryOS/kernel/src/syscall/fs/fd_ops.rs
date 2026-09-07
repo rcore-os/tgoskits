@@ -7,7 +7,10 @@ use core::{
 
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
+<<<<<<< HEAD
+use axfs_ng_vfs::{
+    DirEntry, FileNode, Location, MutationCredentials, NodeOps, NodeType, Reference, VfsError,
+};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -530,6 +533,13 @@ pub fn sys_openat(
     }
 
     let cred = thread.cred();
+    let mutation_cred = MutationCredentials {
+        fsuid: cred.fsuid,
+        fsgid: cred.fsgid,
+        supplementary_gids: &cred.groups,
+        cap_dac_override: cred.has_cap_dac_override(),
+        cap_fowner: cred.has_cap_fowner(),
+    };
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let should_notify_create = uflags & O_CREAT != 0
         && uflags & O_PATH == 0
@@ -540,7 +550,7 @@ pub fn sys_openat(
         })?;
 
     // Open first, then install the file so filesystem errors propagate unchanged.
-    let result = with_fs(dirfd, |fs| Ok(options.open(fs, path)?))?;
+    let result = with_fs(dirfd, |fs| Ok(options.open_with_credentials(fs, path, &mutation_cred)?))?;
     let mount_table_namespace = mount_table_namespace(current, &result);
     let fd = add_to_fd(current, result, flags as _, mount_table_namespace)?;
     if should_notify_create {
@@ -618,6 +628,13 @@ pub fn sys_openat2(
     let thread = curr.as_thread();
     let mode = mode & !thread.proc_data.umask();
     let cred = thread.cred();
+    let mutation_cred = MutationCredentials {
+        fsuid: cred.fsuid,
+        fsgid: cred.fsgid,
+        supplementary_gids: &cred.groups,
+        cap_dac_override: cred.has_cap_dac_override(),
+        cap_fowner: cred.has_cap_fowner(),
+    };
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let result = with_fs(dirfd, |fs| {
         let (parent, name) = fs.resolve_parent_beneath_no_symlinks(path.as_ref())?;
@@ -628,8 +645,9 @@ pub fn sys_openat2(
             Err(VfsError::NotFound) | Ok(_) => {}
             Err(error) => return Err(error.into()),
         }
+        let fs = fs.with_current_dir(parent)?;
         options.no_follow(true);
-        Ok(options.open(&fs.with_current_dir(parent)?, name.as_ref())?)
+        Ok(options.open_with_credentials(&fs, name.as_ref(), &mutation_cred)?)
     })?;
     let mount_table_namespace = mount_table_namespace(current, &result);
     add_to_fd(current, result, flags as u32, mount_table_namespace).map(|fd| fd as isize)

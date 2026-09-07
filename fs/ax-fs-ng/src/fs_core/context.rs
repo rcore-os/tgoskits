@@ -18,8 +18,8 @@ use ax_lazyinit::OnceLock;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    DirectoryCursor, DirectoryReadState, Location, Metadata, NodePermission, NodeType,
-    RenameOptions, VfsError, VfsResult,
+    DirectoryCursor, DirectoryReadState, Location, Metadata, MutationCredentials, NodePermission,
+    NodeType, RenameOptions, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
@@ -578,20 +578,101 @@ impl FsContext {
         })
     }
 
+    /// Check one DAC permission class for a filesystem location.
+    fn check_permission(
+        location: &Location,
+        credentials: &MutationCredentials<'_>,
+        required: NodePermission,
+    ) -> VfsResult<()> {
+        if credentials.cap_dac_override {
+            return Ok(());
+        }
+
+        let metadata = location.metadata()?;
+        let mode = if credentials.fsuid == metadata.uid {
+            metadata.mode.bits() >> 6
+        } else if credentials.in_group(metadata.gid) {
+            metadata.mode.bits() >> 3
+        } else {
+            metadata.mode.bits()
+        };
+        if NodePermission::from_bits_truncate(mode).contains(required) {
+            Ok(())
+        } else {
+            Err(VfsError::PermissionDenied)
+        }
+    }
+
+    /// Check execute/search permission on the directory and every ancestor.
+    fn check_search_path(
+        &self,
+        directory: &Location,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        let mut current = directory.clone();
+        loop {
+            Self::check_permission(&current, credentials, NodePermission::OTHER_EXEC)?;
+            if current.ptr_eq(&self.root_dir) {
+                return Ok(());
+            }
+            current = current.parent().ok_or(VfsError::InvalidInput)?;
+        }
+    }
+
+    /// Check the search and write permissions required to mutate a directory.
+    pub(crate) fn check_mutation_parent(
+        &self,
+        directory: &Location,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        self.check_search_path(directory, credentials)?;
+        Self::check_permission(directory, credentials, NodePermission::OTHER_WRITE)
+    }
+
+    /// Check sticky-directory ownership rules for removing or replacing an entry.
+    fn check_sticky(
+        directory: &Location,
+        target: &Location,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        let directory_metadata = directory.metadata()?;
+        if !directory_metadata.mode.contains(NodePermission::STICKY) {
+            return Ok(());
+        }
+
+        let target_metadata = target.metadata()?;
+        if credentials.cap_fowner
+            || credentials.fsuid == directory_metadata.uid
+            || credentials.fsuid == target_metadata.uid
+        {
+            Ok(())
+        } else {
+            Err(VfsError::OperationNotPermitted)
+        }
+    }
+
     /// Removes a file from the filesystem.
-    pub fn remove_file(&self, path: impl AsRef<Path>) -> VfsResult<()> {
+    pub fn remove_file(
+        &self,
+        path: impl AsRef<Path>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
         let entry = self.resolve_no_follow(path.as_ref())?;
         if entry.ptr_eq(&self.root_dir) {
             return Err(VfsError::IsADirectory);
         }
-        entry
-            .parent()
-            .ok_or(VfsError::IsADirectory)?
-            .unlink(&entry.name(), false)
+        let directory = entry.parent().ok_or(VfsError::IsADirectory)?;
+        self.check_mutation_parent(&directory, credentials)?;
+        Self::check_sticky(&directory, &entry, credentials)?;
+        directory.unlink(&entry.name(), false)
     }
 
     /// Removes a directory from the filesystem.
-    pub fn remove_dir(&self, path: impl AsRef<Path>) -> VfsResult<()> {
+    pub fn remove_dir(
+        &self,
+        path: impl AsRef<Path>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
         let path = path.as_ref();
         // Path components normalize away trailing dots. Linux classifies the
         // final component before normalization, after resolving its parent.
@@ -615,20 +696,25 @@ impl FsContext {
         if entry.ptr_eq(&self.root_dir) || entry.is_root_of_mount() {
             return Err(VfsError::ResourceBusy);
         }
+        let directory = entry.parent().ok_or(VfsError::ResourceBusy)?;
+        self.check_mutation_parent(&directory, credentials)?;
+        Self::check_sticky(&directory, &entry, credentials)?;
         let dir = entry.entry().as_dir()?;
         if dir.has_children()? {
             return Err(VfsError::DirectoryNotEmpty);
         }
-        entry
-            .parent()
-            .ok_or(VfsError::ResourceBusy)?
-            .unlink(&entry.name(), true)
+        directory.unlink(&entry.name(), true)
     }
 
     /// Renames a file or directory to a new name, replacing the original file
     /// if `to` already exists.
-    pub fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> VfsResult<()> {
-        self.rename_with_options(from, to, RenameOptions::REPLACE)
+    pub fn rename(
+        &self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        self.rename_with_options(from, to, RenameOptions::REPLACE, credentials)
     }
 
     /// Renames a path with typed `renameat2` behavior.
@@ -637,10 +723,39 @@ impl FsContext {
         from: impl AsRef<Path>,
         to: impl AsRef<Path>,
         options: RenameOptions,
+        credentials: &MutationCredentials<'_>,
     ) -> VfsResult<()> {
         let (src_dir, src_name) = self.resolve_parent(from.as_ref())?;
         let (dst_dir, dst_name) = self.resolve_parent(to.as_ref())?;
-        src_dir.rename_with_options(&src_name, &dst_dir, &dst_name, options)
+        self.rename_locations(
+            &src_dir,
+            &src_name,
+            &dst_dir,
+            &dst_name,
+            options,
+            credentials,
+        )
+    }
+
+    /// Rename already resolved entries after applying directory authorization.
+    pub fn rename_locations(
+        &self,
+        src_dir: &Location,
+        src_name: &str,
+        dst_dir: &Location,
+        dst_name: &str,
+        options: RenameOptions,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        self.check_mutation_parent(src_dir, credentials)?;
+        self.check_mutation_parent(dst_dir, credentials)?;
+
+        let source = src_dir.lookup_no_follow(src_name)?;
+        Self::check_sticky(src_dir, &source, credentials)?;
+        if let Ok(destination) = dst_dir.lookup_no_follow(dst_name) {
+            Self::check_sticky(dst_dir, &destination, credentials)?;
+        }
+        src_dir.rename_with_options(src_name, dst_dir, dst_name, options)
     }
 
     /// Creates a new, empty directory at the provided path.
@@ -650,20 +765,18 @@ impl FsContext {
         mode: NodePermission,
         uid: u32,
         gid: u32,
+        credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
         let path = path.as_ref();
         if path.as_str().is_empty() {
             return Err(VfsError::NotFound);
         }
-        // Check through the visible mount tree before asking the parent
-        // filesystem to create the entry. A static pseudo-filesystem may
-        // reject mutations with EPERM even though the mounted or generated
-        // destination already exists; mkdir(2) must report EEXIST instead.
-        if self.resolve_no_follow(path).is_ok() {
+        let (dir, name) = self.resolve_parent(path)?;
+        self.check_mutation_parent(&dir, credentials)?;
+        if dir.lookup_no_follow(&name).is_ok() {
             return Err(VfsError::AlreadyExists);
         }
-        let (dir, name) = self.resolve_nonexistent(path)?;
-        dir.create(name, NodeType::Directory, mode, uid, gid)
+        dir.create(&name, NodeType::Directory, mode, uid, gid)
     }
 
     /// Creates a new hard link on the filesystem.
@@ -671,10 +784,33 @@ impl FsContext {
         &self,
         old_path: impl AsRef<Path>,
         new_path: impl AsRef<Path>,
+        credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
         let old = self.resolve(old_path.as_ref())?;
-        let (new_dir, new_name) = self.resolve_nonexistent(new_path.as_ref())?;
-        new_dir.link(new_name, &old)
+        let (new_dir, new_name) = self.resolve_parent(new_path.as_ref())?;
+        self.link_locations(&old, &new_dir, &new_name, credentials)
+    }
+
+    /// Create a hard link between already resolved locations.
+    pub fn link_locations(
+        &self,
+        old: &Location,
+        new_dir: &Location,
+        new_name: &str,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<Location> {
+        if let Some(old_dir) = old.parent() {
+            self.check_search_path(&old_dir, credentials)?;
+        }
+        self.check_mutation_parent(new_dir, credentials)?;
+        if old.is_dir() {
+            return Err(VfsError::OperationNotPermitted);
+        }
+        let old_metadata = old.metadata()?;
+        if !credentials.cap_fowner && credentials.fsuid != old_metadata.uid {
+            return Err(VfsError::OperationNotPermitted);
+        }
+        new_dir.link(new_name, old)
     }
 
     /// Creates a new symbolic link on the filesystem.
@@ -684,9 +820,32 @@ impl FsContext {
         link_path: impl AsRef<Path>,
         uid: u32,
         gid: u32,
+        credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
-        let (dir, name) = self.resolve_nonexistent(link_path.as_ref())?;
-        dir.create_symlink(name, target.as_ref(), NodePermission::default(), uid, gid)
+        let (dir, name) = self.resolve_parent(link_path.as_ref())?;
+        self.check_mutation_parent(&dir, credentials)?;
+        if dir.lookup_no_follow(&name).is_ok() {
+            return Err(VfsError::AlreadyExists);
+        }
+        dir.create_symlink(&name, target.as_ref(), NodePermission::default(), uid, gid)
+    }
+
+    /// Create a non-directory node after applying parent-directory DAC.
+    pub fn create_node(
+        &self,
+        path: impl AsRef<Path>,
+        node_type: NodeType,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<Location> {
+        let (dir, name) = self.resolve_parent(path.as_ref())?;
+        self.check_mutation_parent(&dir, credentials)?;
+        if dir.lookup_no_follow(&name).is_ok() {
+            return Err(VfsError::AlreadyExists);
+        }
+        dir.create(&name, node_type, permission, uid, gid)
     }
 
     /// Returns the canonical, absolute form of a path.

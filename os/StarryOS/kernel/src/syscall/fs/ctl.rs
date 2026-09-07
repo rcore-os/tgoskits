@@ -13,8 +13,8 @@ use core::{
 use ax_fs_ng::vfs::{FsContext, current_fs_context, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use axfs_ng_vfs::{
-    DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, NodePermission, NodeType,
-    RenameOptions, VfsError, path::Path,
+    DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, MutationCredentials,
+    NodePermission, NodeType, RenameOptions, VfsError, path::Path,
 };
 use linux_raw_sys::{
     general::*,
@@ -28,6 +28,17 @@ use crate::{
     task::UserTaskRef,
     time::TimeValueLike,
 };
+
+/// Convert a Starry task credential into the VFS mutation snapshot.
+fn mutation_credentials(cred: &crate::task::Cred) -> MutationCredentials<'_> {
+    MutationCredentials {
+        fsuid: cred.fsuid,
+        fsgid: cred.fsgid,
+        supplementary_gids: &cred.groups,
+        cap_dac_override: cred.has_cap_dac_override(),
+        cap_fowner: cred.has_cap_fowner(),
+    }
+}
 
 /// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
 /// via `ioctl` (the ioctl spelling of `fcntl(fd, F_SETFD, ...)`). libc/musl and CPython
@@ -341,11 +352,12 @@ pub fn sys_mkdirat(
     let cred = thread.cred();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
+    let mutation_cred = mutation_credentials(&cred);
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
 
-    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode, uid, gid) {
+    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode, uid, gid, &mutation_cred) {
         Ok(_) => Ok(0),
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
@@ -397,14 +409,15 @@ pub fn sys_mknodat(
     let cred = thread.cred();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
+    let mutation_cred = mutation_credentials(&cred);
     let res = with_fs(dirfd, |fs| {
-        let (dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
-        let loc = dir.create(
-            name,
+        let loc = fs.create_node(
+            Path::new(&path),
             node_type,
             NodePermission::from_bits_truncate(perm as u16),
             uid,
             gid,
+            &mutation_cred,
         )?;
 
         // If device node, set rdev via update_metadata
@@ -559,24 +572,16 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
+    let cred = current.as_thread().cred();
+    let mutation_cred = mutation_credentials(&cred);
     let old = resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?
         .into_file()
         .ok_or(StarryError::BadFileDescriptor)?;
-    if old.is_dir() {
-        return Err(StarryError::OperationNotPermitted);
-    }
-    // An absolute destination path is rooted at the process filesystem and
-    // ignores new_dirfd, including an invalid or non-directory descriptor.
-    let new_dirfd = if new_path.starts_with('/') {
-        AT_FDCWD
-    } else {
-        new_dirfd
-    };
-    let (new_dir, new_name) = with_fs(new_dirfd, |fs| {
-        Ok(fs.resolve_nonexistent(Path::new(&new_path))?)
+    with_fs(new_dirfd, |fs| {
+        let (new_dir, new_name) = fs.resolve_parent(Path::new(&new_path))?;
+        fs.link_locations(&old, &new_dir, &new_name, &mutation_cred)?;
+        Ok(())
     })?;
-
-    new_dir.link(new_name, &old)?;
     Ok(0)
 }
 
@@ -601,6 +606,8 @@ pub fn sys_unlinkat(
     flags: i32,
 ) -> StarryResult<isize> {
     let path = vm_load_path_string(current, path)?;
+    let cred = current.as_thread().cred();
+    let mutation_cred = mutation_credentials(&cred);
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -614,9 +621,9 @@ pub fn sys_unlinkat(
     let deleted = path_info_at(dirfd, &path).ok();
     let result = with_fs(dirfd, |fs| {
         if flags & AT_REMOVEDIR as i32 != 0 {
-            fs.remove_dir(&path)?;
+            fs.remove_dir(&path, &mutation_cred)?;
         } else {
-            fs.remove_file(&path)?;
+            fs.remove_file(&path, &mutation_cred)?;
         }
         Ok(0)
     });
@@ -676,30 +683,9 @@ pub fn sys_symlinkat(
     let cred = current.as_thread().cred();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
+    let mutation_cred = mutation_credentials(&cred);
     with_fs(new_dirfd, |fs| {
-        let (parent, name) = fs.resolve_parent(Path::new(&linkpath))?;
-        match parent.lookup_no_follow(&name) {
-            Ok(_) => return Err(StarryError::AlreadyExists),
-            Err(VfsError::NotFound) => {}
-            Err(err) => return Err(err.into()),
-        }
-        let meta = parent.metadata()?;
-        if !cred.has_cap_dac_override() {
-            let can_create = if cred.fsuid == meta.uid {
-                meta.mode
-                    .contains(NodePermission::OWNER_WRITE | NodePermission::OWNER_EXEC)
-            } else if cred.in_group(meta.gid) {
-                meta.mode
-                    .contains(NodePermission::GROUP_WRITE | NodePermission::GROUP_EXEC)
-            } else {
-                meta.mode
-                    .contains(NodePermission::OTHER_WRITE | NodePermission::OTHER_EXEC)
-            };
-            if !can_create {
-                return Err(StarryError::PermissionDenied);
-            }
-        }
-        fs.symlink(target, linkpath, uid, gid)?;
+        fs.symlink(target, linkpath, uid, gid, &mutation_cred)?;
         Ok(0)
     })
 }
@@ -1124,19 +1110,19 @@ pub fn sys_renameat2(
     let (new_dir, new_name) =
         with_fs(new_dirfd, |fs| Ok(fs.resolve_parent(Path::new(&new_path))?))?;
 
-    if flags & RENAME_NOREPLACE != 0 {
-        // Linux reports a missing source leaf before checking whether the
-        // no-replace destination already exists.
-        old_dir.lookup_no_follow(&old_name)?;
-        match new_dir.lookup_no_follow(&new_name) {
-            Ok(_) => return Err(StarryError::AlreadyExists),
-            Err(VfsError::NotFound) => {}
-            Err(err) => return Err(err.into()),
-        }
-    }
-
     // Propagate the filesystem errno directly to match renameat2 callers.
-    old_dir.rename_with_options(&old_name, &new_dir, &new_name, options)?;
+    let cred = current.as_thread().cred();
+    let mutation_cred = mutation_credentials(&cred);
+    with_fs(AT_FDCWD, |fs| {
+        Ok(fs.rename_locations(
+            &old_dir,
+            &old_name,
+            &new_dir,
+            &new_name,
+            options,
+            &mutation_cred,
+        )?)
+    })?;
     Ok(0)
 }
 

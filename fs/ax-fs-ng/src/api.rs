@@ -1,28 +1,38 @@
 use alloc::string::{String, ToString};
 
-use axfs_ng_vfs::{NodePermission, VfsResult};
+use axfs_ng_vfs::{MutationCredentials, NodePermission, VfsResult};
 
 use crate::{fops::FileAttr, highlevel::current_fs_context};
 
 pub fn create_dir(path: &str) -> VfsResult {
-    current_fs_context()
-        .lock()
-        .create_dir(path, NodePermission::default(), 0, 0)?;
+    current_fs_context().lock().create_dir(
+        path,
+        NodePermission::default(),
+        0,
+        0,
+        &MutationCredentials::root(),
+    )?;
     Ok(())
 }
 
 pub fn remove_dir(path: &str) -> VfsResult {
-    current_fs_context().lock().remove_dir(path)?;
+    current_fs_context()
+        .lock()
+        .remove_dir(path, &MutationCredentials::root())?;
     Ok(())
 }
 
 pub fn remove_file(path: &str) -> VfsResult {
-    current_fs_context().lock().remove_file(path)?;
+    current_fs_context()
+        .lock()
+        .remove_file(path, &MutationCredentials::root())?;
     Ok(())
 }
 
 pub fn rename(old: &str, new: &str) -> VfsResult {
-    current_fs_context().lock().rename(old, new)?;
+    current_fs_context()
+        .lock()
+        .rename(old, new, &MutationCredentials::root())?;
     Ok(())
 }
 
