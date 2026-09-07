@@ -804,6 +804,11 @@ impl Router {
                 }
             }
         }
+        if tx_buffer.is_empty() {
+            // Reuse the hot slots after a drained batch instead of rotating
+            // through the entire allocation for shallow TX queues.
+            tx_buffer.clear();
+        }
         poll_next
     }
 }
@@ -1331,6 +1336,48 @@ mod tests {
         assert_eq!(router.tx_buffer.get_allocated(0, 1)[0].as_bytes().len(), 20);
         assert_eq!(router.devices[0].stats().tx_packets, 0);
         assert_eq!(router.devices[0].stats().tx_dropped, 0);
+    }
+
+    #[test]
+    fn drained_tx_queue_reuses_packet_storage() {
+        use smoltcp::phy::RxToken as _;
+
+        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        router.add_device(InterfaceId::LOOPBACK, Box::new(EmptyDevice));
+        router.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::LOCALHOST, 8),
+            None,
+            0,
+            InterfaceId::LOOPBACK,
+            IpAddress::Ipv4(Ipv4Address::LOCALHOST),
+            0,
+        ));
+        let now = Instant::from_millis(0);
+        let mut sockets = SocketSet::new(vec![]);
+        let mut first_slot = None;
+
+        // Storage identity is the cache-reuse contract: successful delivery
+        // alone would not detect rotating through cold slots after each drain.
+        for len in [64, STANDARD_MTU, 64] {
+            let mut packet = vec![0; len];
+            packet[0] = 0x45;
+            packet[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+            packet[12..16].copy_from_slice(&[127, 0, 0, 1]);
+            packet[16..20].copy_from_slice(&[127, 0, 0, 1]);
+            let address = router.transmit(now).unwrap().consume(len, |dst| {
+                dst.copy_from_slice(&packet);
+                dst.as_ptr() as usize
+            });
+            assert_eq!(
+                address,
+                *first_slot.get_or_insert(address),
+                "a drained TX queue must reuse the first packet's storage"
+            );
+            assert!(router.dispatch(now, &mut sockets));
+            let (rx, _tx) = router.receive(now).unwrap();
+            rx.consume(|received| assert_eq!(received, packet));
+        }
+        assert!(router.receive(now).is_none());
     }
 
     #[test]
