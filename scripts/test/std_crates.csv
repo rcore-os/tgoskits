@@ -43,6 +43,7 @@ ax-display
 ax-hal
 ax-input
 ax-log
+ax-net
 rockchip-jpeg
 rockchip-npu
 rockchip-rga

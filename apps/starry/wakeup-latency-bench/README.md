@@ -20,6 +20,10 @@ futex 场景只把 `FUTEX_WAIT` 确实返回“已被唤醒”的样本计入分
 `FUTEX_WAIT`。这样同核 wake 调用链不会被每轮无关的 task deadline 污染。timer
 每次执行 `deadline += period`，因此不会把相对 sleep 漂移混入调度延迟。
 
+接收者按序号检查等待条件，容忍 `FUTEX_WAIT` 的虚假唤醒；只由观察到目标序号的最后
+一次等待决定样本分类，避免先前一次虚假唤醒把后续 `EAGAIN` 算成有效延迟。预构建的
+`tests/handoff-spurious.c` 在 futex 调用边界注入这个交错，验证用户态测量协议。
+
 每个场景输出一行 `WAKEUP_LATENCY_RESULT` JSON，包含：
 
 - `min/mean/stddev/p50/p95/p99/p99.9/max`；

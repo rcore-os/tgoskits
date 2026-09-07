@@ -47,6 +47,13 @@ trap 'rm -rf "$build_dir"' EXIT
 "$build_dir/clock-source-test"
 
 "$cc" \
+    -std=c11 -O2 -Wall -Wextra -Werror -pthread -static \
+    -I"$app_dir" \
+    "$app_dir/tests/handoff-spurious.c" "$app_dir/stats.c" \
+    -Wl,--wrap=syscall -lm -o "$build_dir/handoff-spurious-test"
+"$build_dir/handoff-spurious-test"
+
+"$cc" \
     -std=c11 \
     -O2 \
     -Wall \

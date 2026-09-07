@@ -191,19 +191,30 @@ static int run_receiver(struct handoff_state *state)
             return 3;
         }
 
-        enum futex_wait_outcome outcome = futex_wait_once(
-            &state->gate, sequence - 1, state->private_futex);
-        if (outcome == FUTEX_WAIT_FAILED) {
-            publish_receiver_error(state, errno);
-            return 4;
-        }
-        if (abort_error(state) != 0) {
-            return 5;
-        }
-        if (atomic_load_explicit(&state->gate, memory_order_acquire) !=
-            sequence) {
-            publish_receiver_error(state, EPROTO);
-            return 6;
+        enum futex_wait_outcome outcome;
+        for (;;) {
+            outcome = futex_wait_once(&state->gate, sequence - 1,
+                                      state->private_futex);
+            if (outcome == FUTEX_WAIT_FAILED) {
+                publish_receiver_error(state, errno);
+                return 4;
+            }
+            if (abort_error(state) != 0) {
+                return 5;
+            }
+            uint32_t gate = atomic_load_explicit(&state->gate,
+                                                 memory_order_acquire);
+            if (gate == sequence) {
+                break;
+            }
+            if (gate != sequence - 1) {
+                publish_receiver_error(state, EPROTO);
+                return 6;
+            }
+            /* FUTEX_WAIT may return spuriously. Only the attempt observing
+             * this sequence decides whether the measured wake found us
+             * parked; an earlier spurious wake must not turn EAGAIN into a
+             * valid latency sample. */
         }
 
         uint64_t resumed_ns = bench_monotonic_ns();
@@ -356,7 +367,9 @@ int bench_thread_handoff(const struct bench_config *config,
         if (error != 0) {
             errno = error;
         } else if (receiver_result != NULL) {
-            errno = EPROTO;
+            uint32_t receiver_error = atomic_load_explicit(
+                &state->error, memory_order_acquire);
+            errno = receiver_error == 0 ? EPROTO : (int)receiver_error;
         }
         munmap(state, mapping_size);
         return -1;
@@ -398,7 +411,9 @@ int bench_process_handoff(const struct bench_config *config,
     if (sender_status != 0 || waited != child || !WIFEXITED(wait_status) ||
         WEXITSTATUS(wait_status) != 0) {
         if (sender_status == 0) {
-            errno = EPROTO;
+            uint32_t receiver_error = atomic_load_explicit(
+                &state->error, memory_order_acquire);
+            errno = receiver_error == 0 ? EPROTO : (int)receiver_error;
         }
         munmap(state, mapping_size);
         return -1;

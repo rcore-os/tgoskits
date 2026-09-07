@@ -88,7 +88,14 @@ fn rx_allocation_failure_recovers_without_disabling_tx() {
         ),
         &DMA,
     );
-    let mut device = rd_net::prepare_device(Box::new(TestDevice(Arc::clone(&trace))), dma).unwrap();
+    let mut device = rd_net::prepare_device(
+        Box::new(TestDevice {
+            trace: Arc::clone(&trace),
+            tx_retry: false,
+        }),
+        dma,
+    )
+    .unwrap();
     let mut group = device.poll_groups.pop().unwrap();
     group.rx.initial_refill(2).unwrap();
     // Hold the third preallocated pool token so the next replacement reaches
@@ -198,7 +205,10 @@ fn queue_config() -> QueueConfig {
     }
 }
 
-struct TestTx(Trace);
+struct TestTx {
+    trace: Trace,
+    retry: bool,
+}
 
 impl ITxQueue for TestTx {
     fn id(&self) -> NetQueueId {
@@ -207,12 +217,16 @@ impl ITxQueue for TestTx {
     fn config(&self) -> QueueConfig {
         queue_config()
     }
-    fn submit(&mut self, _buffer: DmaBuffer) -> Result<(), SubmitError> {
-        self.0.lock().unwrap().push("tx");
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
+        if self.retry {
+            self.trace.lock().unwrap().push("tx_retry");
+            return Err(SubmitError::new(buffer, NetError::Retry));
+        }
+        self.trace.lock().unwrap().push("tx");
         Ok(())
     }
     fn flush(&mut self) {
-        self.0.lock().unwrap().push("flush");
+        self.trace.lock().unwrap().push("flush");
     }
     fn reclaim(&mut self) -> Option<DmaBuffer> {
         None
@@ -280,7 +294,10 @@ impl NetPollIrqControl for TestIrq {
     }
 }
 
-struct TestDevice(Trace);
+struct TestDevice {
+    trace: Trace,
+    tx_retry: bool,
+}
 impl rd_net::DriverGeneric for TestDevice {
     fn name(&self) -> &str {
         "test"
@@ -295,9 +312,12 @@ impl NetDevice for TestDevice {
             poll_groups: vec![NetPollGroupParts {
                 id: NetPollGroupId::new(0),
                 queues: NetQueuePairParts {
-                    tx: Box::new(TestTx(Arc::clone(&self.0))),
+                    tx: Box::new(TestTx {
+                        trace: Arc::clone(&self.trace),
+                        retry: self.tx_retry,
+                    }),
                     rx: Box::new(TestRx {
-                        trace: self.0,
+                        trace: self.trace,
                         completions: VecDeque::new(),
                         initial: 2,
                         reclaimed: 0,
@@ -326,7 +346,14 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
         ),
         &TEST_DMA,
     );
-    let mut device = rd_net::prepare_device(Box::new(TestDevice(Arc::clone(&trace))), dma).unwrap();
+    let mut device = rd_net::prepare_device(
+        Box::new(TestDevice {
+            trace: Arc::clone(&trace),
+            tx_retry: false,
+        }),
+        dma,
+    )
+    .unwrap();
     let mut group = device.poll_groups.pop().unwrap();
     group.rx.initial_refill(2).unwrap();
     let (rx_ready, mut received) = spsc_ring(1);
@@ -401,4 +428,71 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
             .count(),
         2
     );
+}
+
+#[test]
+fn tx_backpressure_does_not_starve_rx_completions() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let dma = DeviceDma::new(
+        DmaDeviceInfo::new(
+            DmaDomainId::Direct,
+            DmaCoherency::Coherent,
+            DmaConstraints::new(u64::MAX),
+        ),
+        &TEST_DMA,
+    );
+    let mut device = rd_net::prepare_device(
+        Box::new(TestDevice {
+            trace: Arc::clone(&trace),
+            tx_retry: true,
+        }),
+        dma,
+    )
+    .unwrap();
+    let mut group = device.poll_groups.pop().unwrap();
+    group.rx.initial_refill(2).unwrap();
+    let buffer = group.tx_pool.allocate(60).unwrap();
+    let (rx_ready, mut received) = spsc_ring(2);
+    let (recycle, rx_recycle) = spsc_ring(2);
+    let (mut transmit, tx_ready) = spsc_ring(2);
+    let (tx_free, _free) = spsc_ring(2);
+    transmit
+        .push(TxRequest {
+            buffer,
+            options: TxSubmitOptions::default(),
+        })
+        .unwrap_or_else(|_| panic!("the empty TX ring must accept one request"));
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
+    shared.activate(false);
+    let mut executor = QueueGroupExecutor {
+        group,
+        rx_ready,
+        rx_recycle,
+        rx_recycler: Arc::new(RxRecycler::new(recycle, Arc::clone(&shared), 2)),
+        rx_spares: Vec::new(),
+        rx_extra_buffers: 0,
+        tx_ready,
+        tx_free,
+        pending_rx: None,
+        pending_rx_refill: VecDeque::with_capacity(2),
+        pending_tx: None,
+        pending_tx_free: None,
+        retry_at: None,
+        shared,
+    };
+
+    let _ = executor.poll(256);
+    assert!(
+        trace.lock().unwrap().contains(&"rx"),
+        "a retained busy TX request must not prevent consuming RX completions"
+    );
+    let _ = executor.poll(256);
+    assert!(
+        executor.pending_tx.is_some(),
+        "TX ownership must be retained"
+    );
+    assert!(received.pop().is_some());
+    assert!(received.pop().is_some());
+    assert!(received.pop().is_none());
+    assert!(matches!(executor.poll(256), GroupPollOutcome::Idle(0)));
 }

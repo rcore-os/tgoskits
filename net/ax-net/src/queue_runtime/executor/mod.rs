@@ -549,10 +549,10 @@ impl QueueGroupExecutor {
                             buffer,
                             options: request.options,
                         });
-                        if submitted > 0 {
-                            self.group.tx.flush();
-                        }
-                        return hardware_retry_outcome(work);
+                        // RX completion and refill may release resources
+                        // needed by a busy software-backed TX queue. Retain
+                        // this request, but service RX before rearming IRQs.
+                        break;
                     }
                     if let Err(buffer) = self.tx_free.push(buffer) {
                         self.pending_tx_free = Some(buffer);
