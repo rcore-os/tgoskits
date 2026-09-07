@@ -36,6 +36,7 @@ pub enum ElfLoadError {
     AllocateFailed,
     EntryNotInLoadSegment,
     UnsupportedEntrySymbol,
+    HashMismatch,
 }
 
 #[derive(Debug)]
@@ -95,11 +96,17 @@ struct LoadSegment {
 }
 
 pub fn download_and_load(
+    nic_handle: uefi::Handle,
     url: &str,
     expected_size: u64,
+    expected_sha256: &str,
     entry_symbol: Option<&str>,
 ) -> Result<LoadedElf, ElfLoadError> {
-    let image = http::download_sized_body(url, expected_size).map_err(ElfLoadError::Download)?;
+    let image = http::download_sized_body(nic_handle, url, expected_size)
+        .map_err(ElfLoadError::Download)?;
+    if !axloader::integrity::sha256_matches(&image, expected_sha256) {
+        return Err(ElfLoadError::HashMismatch);
+    }
     load_elf(&image, entry_symbol)
 }
 

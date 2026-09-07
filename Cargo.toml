@@ -255,7 +255,7 @@ smoltcp = { version = "0.13.1", default-features = false }
 starry-kernel = { version = "0.9", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.9", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.6", path = "os/StarryOS/vm" }
-httpboot-protocol = { version = "0.1.0", default-features = false }
+httpboot-protocol = { version = "0.2.0", default-features = false, features = ["alloc", "json"] }
 x86_vcpu = { version = "0.7.1", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.9", path = "memory/page-table-generic" }

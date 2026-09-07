@@ -1296,6 +1296,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "getrandom 0.3.4",
+ "httpboot-protocol 0.2.0",
  "indicatif",
  "jkconfig 0.1.8",
  "libc",
@@ -1410,8 +1411,11 @@ name = "axloader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "httpboot-protocol",
+ "httpboot-protocol 0.2.0",
  "object 0.38.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "uefi",
  "uefi-raw",
 ]
@@ -4006,6 +4010,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "httpboot-protocol"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25a7983bb1fc265163792b9c4e4ee68ff1bf4721557536b56cdb6d9be746158f"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5590,7 +5604,7 @@ dependencies = [
  "fitimage",
  "fs4",
  "futures",
- "httpboot-protocol",
+ "httpboot-protocol 0.1.1",
  "indicatif",
  "jkconfig 0.2.5",
  "keyring",
