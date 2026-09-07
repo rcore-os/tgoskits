@@ -892,7 +892,7 @@ fn uncommitted_journal_tail_is_discarded_during_recovery() {
         .expect("mount should discard uncommitted journal tail");
     assert_eq!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
-        0
+        Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER
     );
     umount(fs, &mut remount_dev).expect("umount failed");
 
@@ -936,7 +936,7 @@ fn uncommitted_journal_tail_does_not_read_payload_blocks() {
         Ext4FileSystem::mount(&mut remount_dev).expect("uncommitted payload should not be read");
     assert_eq!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
-        0
+        Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER
     );
     umount(fs, &mut remount_dev).expect("umount failed");
 }
@@ -1080,7 +1080,7 @@ fn empty_descriptor_header_is_discarded_during_recovery() {
         .expect("mount should discard empty descriptor tail");
     assert_eq!(
         fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
-        0
+        Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER
     );
     umount(fs, &mut remount_dev).expect("umount failed");
 }
