@@ -73,11 +73,18 @@ impl ProtocolPollRuntime {
     }
 
     pub(crate) fn finish_cycle(&self, external_pending: impl FnOnce() -> bool) -> bool {
-        self.scheduled.store(false, Ordering::Release);
+        // Every producer performs a release RMW on scheduled, including
+        // already-scheduled requests. Acquire that publication before reading
+        // requested/external work; a release store alone can lose the producer
+        // that observed scheduled=true and therefore sent no wakeup.
+        self.scheduled.swap(false, Ordering::AcqRel);
         if self.requested.load(Ordering::Acquire) != self.completed.load(Ordering::Acquire)
             || external_pending()
         {
-            self.scheduled.store(true, Ordering::Release);
+            // Keep the RMW chain intact when another producer races this
+            // rearm. Overwriting its release with a plain store would hide its
+            // generation from the following cycle's acquire-clear.
+            self.scheduled.swap(true, Ordering::AcqRel);
             true
         } else {
             false
