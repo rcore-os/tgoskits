@@ -378,6 +378,21 @@ mod tests {
         assert!(validate_arch("aarch64").is_err());
     }
 
+    #[tokio::test]
+    async fn loongarch_uefi_rejects_unconverted_kernel_before_boot() {
+        let temp = tempfile::tempdir().unwrap();
+        let outputs = super::super::outputs::prepare_outputs(
+            temp.path(), "loongarch64", "boot", None, None,
+        ).unwrap();
+        let config = toml::from_str::<super::PerfQemuConfig>(
+            "args = []\nuefi = true\nto_bin = false\nsuccess_regex = []\nfail_regex = []\n",
+        ).unwrap();
+        let error = super::prepare_boot_args(
+            &outputs, &config, "loongarch64", &temp.path().join("kernel.bin"),
+        ).await.unwrap_err();
+        assert!(error.to_string().contains("to_bin = true"));
+    }
+
     #[test]
     fn timeout_keeps_interactive_qemu_in_the_foreground() {
         let prefix = qemu_command_prefix("qemu-system-x86_64", 15, false);
