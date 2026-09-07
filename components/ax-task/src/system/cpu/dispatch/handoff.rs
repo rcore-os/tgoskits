@@ -82,7 +82,10 @@ impl SwitchHandoff {
         // The caller still owns rq after selecting the new dispatch. Capture
         // its charged total before releasing that transaction, so later
         // remote accounting cannot move the OS's execution-interval boundary.
-        let incoming_runtime_ns = incoming.as_ref().runtime_snapshot(None).charged_runtime_ns();
+        let incoming_runtime_ns = incoming
+            .as_ref()
+            .runtime_snapshot(None)
+            .charged_runtime_ns();
         Self {
             previous,
             incoming,

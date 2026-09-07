@@ -936,9 +936,12 @@ unsafe extern "Rust" fn starry_user_task_switch_in(
     unsafe {
         ax_runtime::hal::percpu::with_cpu_pin(|pin| {
             CURRENT_USER_EXTENSION.write_current(pin, data);
-            extension
-                .thread
-                .scheduler_switch_in(thread, is_realtime_policy(base_policy), charged_runtime_ns, pin);
+            extension.thread.scheduler_switch_in(
+                thread,
+                is_realtime_policy(base_policy),
+                charged_runtime_ns,
+                pin,
+            );
         })
         .unwrap_or_else(|_| panic!("Starry switch-in has no bound per-CPU area"));
     }
@@ -1150,8 +1153,8 @@ mod tests {
         _data: usize,
         _thread: scheduler::ThreadId,
         _policy: scheduler::SchedulePolicy,
-    _charged_runtime_ns: u64,
-) {
+        _charged_runtime_ns: u64,
+    ) {
     }
 
     unsafe extern "Rust" fn foreign_thread_switch_out(

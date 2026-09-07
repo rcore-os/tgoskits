@@ -51,7 +51,11 @@ impl SwitchInCompletion {
         charged_runtime_ns: 0,
     };
 
-    pub(crate) fn for_core(core: &ThreadCore, policy: SchedulePolicy, charged_runtime_ns: u64) -> Self {
+    pub(crate) fn for_core(
+        core: &ThreadCore,
+        policy: SchedulePolicy,
+        charged_runtime_ns: u64,
+    ) -> Self {
         Self {
             thread: Some(core.id()),
             policy: Some(policy),
@@ -71,7 +75,14 @@ impl SwitchInCompletion {
         // publication, previous-binding withdrawal, and switch-handoff
         // consumption. The facade drops its CpuLocal owner borrow before
         // finishing the token while retaining the scheduler IRQ baton.
-        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, policy, self.charged_runtime_ns) };
+        unsafe {
+            (extension.ops().on_switch_in)(
+                extension.data(),
+                thread,
+                policy,
+                self.charged_runtime_ns,
+            )
+        };
     }
 }
 

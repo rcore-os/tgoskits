@@ -53,7 +53,14 @@ unsafe extern "Rust" fn runtime_thread_switch_in_hook(
     if let Some(extension) = runtime.os_extension.as_ref() {
         // SAFETY: `spawn_raw_with_extension` retains the OS extension until the
         // outer runtime extension is reaped and forwards the same thread ID.
-        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, base_policy, charged_runtime_ns) };
+        unsafe {
+            (extension.ops().on_switch_in)(
+                extension.data(),
+                thread,
+                base_policy,
+                charged_runtime_ns,
+            )
+        };
     }
 }
 
