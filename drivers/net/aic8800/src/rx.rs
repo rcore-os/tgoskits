@@ -8,6 +8,9 @@ use crate::{
 };
 
 pub(crate) const RX_CAPACITY: usize = 256;
+pub(crate) const RX_BYTE_CAPACITY: usize = RX_CAPACITY * 2048;
+pub(crate) const CONTROL_RX_CAPACITY: usize = 64;
+pub(crate) const CONTROL_RX_BYTE_CAPACITY: usize = 64 * 1024;
 const ALIGNMENT: usize = 4;
 const E2A_HEADER_SIZE: usize = 12;
 
@@ -42,6 +45,36 @@ pub(crate) struct RxParseError {
     pub available_length: usize,
 }
 
+struct FrameBudget {
+    items: usize,
+    bytes: usize,
+    item_limit: usize,
+    byte_limit: usize,
+}
+
+impl FrameBudget {
+    const fn new(item_limit: usize, byte_limit: usize) -> Self {
+        Self {
+            items: 0,
+            bytes: 0,
+            item_limit,
+            byte_limit,
+        }
+    }
+
+    fn admit(&mut self, bytes: usize) -> bool {
+        let Some(total_bytes) = self.bytes.checked_add(bytes) else {
+            return false;
+        };
+        if self.items >= self.item_limit || total_bytes > self.byte_limit {
+            return false;
+        }
+        self.items += 1;
+        self.bytes = total_bytes;
+        true
+    }
+}
+
 fn malformed_frame(
     offset: usize,
     packet_type: u8,
@@ -59,6 +92,8 @@ fn malformed_frame(
 /// Parses a FIFO aggregation without retaining aliases into the transfer buffer.
 pub(crate) fn parse_fifo(bytes: &[u8]) -> Result<Vec<ParsedFrame>, RxParseError> {
     let mut frames = Vec::new();
+    let mut data_budget = FrameBudget::new(RX_CAPACITY, RX_BYTE_CAPACITY);
+    let mut control_budget = FrameBudget::new(CONTROL_RX_CAPACITY, CONTROL_RX_BYTE_CAPACITY);
     let mut offset = 0;
     while offset + 4 <= bytes.len() {
         let packet_len = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]) as usize;
@@ -96,20 +131,22 @@ pub(crate) fn parse_fifo(bytes: &[u8]) -> Result<Vec<ParsedFrame>, RxParseError>
                     message.len(),
                 ));
             }
-            let payload = message[E2A_HEADER_SIZE..payload_end].to_vec();
-            if is_indication_message(message_id) {
-                frames.push(ParsedFrame::Indication {
-                    message_id,
-                    payload,
-                });
-            } else {
-                frames.push(ParsedFrame::Confirmation {
-                    message_id,
-                    payload,
-                });
-            }
-            if frames.len() >= RX_CAPACITY {
-                break;
+            // Check the control-plane budget before copying an untrusted
+            // firmware payload.  Frames over the budget are deliberately
+            // dropped, while later frames in the same FIFO remain parseable.
+            if control_budget.admit(declared) {
+                let payload = message[E2A_HEADER_SIZE..payload_end].to_vec();
+                if is_indication_message(message_id) {
+                    frames.push(ParsedFrame::Indication {
+                        message_id,
+                        payload,
+                    });
+                } else {
+                    frames.push(ParsedFrame::Confirmation {
+                        message_id,
+                        payload,
+                    });
+                }
             }
             offset = offset.saturating_add(4 + align_up(packet_len));
         } else if packet_type == SDIO_TYPE_CFG_DATA_CFM {
@@ -127,7 +164,9 @@ pub(crate) fn parse_fifo(bytes: &[u8]) -> Result<Vec<ParsedFrame>, RxParseError>
                     bytes.len() - offset,
                 ));
             }
-            frames.push(ParsedFrame::DataConfirmation);
+            if control_budget.admit(0) {
+                frames.push(ParsedFrame::DataConfirmation);
+            }
             offset += aggregate_len;
         } else if packet_type == SDIO_TYPE_CFG_PRINT {
             let aggregate_len = 4usize.checked_add(align_up(packet_len)).ok_or_else(|| {
@@ -144,7 +183,9 @@ pub(crate) fn parse_fifo(bytes: &[u8]) -> Result<Vec<ParsedFrame>, RxParseError>
                     bytes.len() - offset,
                 ));
             }
-            frames.push(ParsedFrame::FirmwarePrint { length: packet_len });
+            if control_budget.admit(0) {
+                frames.push(ParsedFrame::FirmwarePrint { length: packet_len });
+            }
             offset += aggregate_len;
         } else if packet_type == SDIO_TYPE_DATA {
             // RX data includes a vendor hardware header. Keep conversion in one
@@ -164,10 +205,12 @@ pub(crate) fn parse_fifo(bytes: &[u8]) -> Result<Vec<ParsedFrame>, RxParseError>
                     .try_into()
                     .expect("hardware header status is within the fixed header"),
             );
-            frames.push(ParsedFrame::Data {
-                frame: bytes[offset + HARDWARE_HEADER..offset + aggregate_len].to_vec(),
-                decryption_status: ((status >> 2) & 0x7) as u8,
-            });
+            if data_budget.admit(packet_len) {
+                frames.push(ParsedFrame::Data {
+                    frame: bytes[offset + HARDWARE_HEADER..offset + aggregate_len].to_vec(),
+                    decryption_status: ((status >> 2) & 0x7) as u8,
+                });
+            }
             offset = offset.saturating_add(align_up(aggregate_len));
         } else {
             return Err(malformed_frame(
@@ -261,6 +304,35 @@ mod tests {
             parse_fifo(&fifo).unwrap().as_slice(),
             [ParsedFrame::FirmwarePrint { length: 8 }]
         ));
+    }
+
+    #[test]
+    fn control_response_payloads_have_a_byte_budget() {
+        const PAYLOAD_LENGTH: usize = 1024;
+        const RESPONSE_COUNT: usize = 128;
+        let packet_length = 12 + PAYLOAD_LENGTH;
+        let aggregate_length = 4 + packet_length.div_ceil(4) * 4;
+        let mut fifo = vec![0; aggregate_length * RESPONSE_COUNT];
+
+        for index in 0..RESPONSE_COUNT {
+            let offset = index * aggregate_length;
+            fifo[offset..offset + 2].copy_from_slice(&(packet_length as u16).to_le_bytes());
+            fifo[offset + 2] = SDIO_TYPE_CFG_CMD_RSP;
+            fifo[offset + 4..offset + 6].copy_from_slice(&0x0401u16.to_le_bytes());
+            fifo[offset + 10..offset + 12].copy_from_slice(&(PAYLOAD_LENGTH as u16).to_le_bytes());
+            fifo[offset + 16..offset + 16 + PAYLOAD_LENGTH].fill(index as u8);
+        }
+
+        let frames = parse_fifo(&fifo).unwrap();
+        let retained_payload_bytes: usize = frames
+            .iter()
+            .map(|frame| match frame {
+                ParsedFrame::Confirmation { payload, .. }
+                | ParsedFrame::Indication { payload, .. } => payload.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(retained_payload_bytes <= CONTROL_RX_BYTE_CAPACITY);
     }
 
     #[test]

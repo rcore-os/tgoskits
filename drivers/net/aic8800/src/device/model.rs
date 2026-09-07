@@ -353,6 +353,10 @@ pub enum AicError {
     UnsupportedRevision(u8),
     #[error("TX queue is full")]
     TxQueueFull,
+    #[error("AIC control command queue is full")]
+    ControlQueueFull,
+    #[error("AIC event queue is full")]
+    EventQueueFull,
     #[error("owner supplied a non-monotonic timestamp")]
     NonMonotonicTime,
 }

@@ -4,7 +4,12 @@ use super::{
     AicError, AicEvent, AicState, ControlState, IoPurpose, LinkState, MailboxState, MonotonicTime,
     PendingIo, SdioRequestKind, StartupState, TxToken,
 };
-use crate::{common::ChipVariant, profile::ChipProfile, tx::TxState};
+use crate::{
+    common::ChipVariant,
+    profile::ChipProfile,
+    rx::{RX_BYTE_CAPACITY, RX_CAPACITY},
+    tx::TxState,
+};
 
 pub(super) struct ActiveTx {
     pub completion: TxCompletion,
@@ -52,10 +57,79 @@ pub(super) struct ReceiveScan {
 
 pub(super) struct DataPlaneState {
     pub events: VecDeque<AicEvent>,
+    pub event_bytes: usize,
     pub tx: TxState,
     pub active_tx: Option<ActiveTx>,
     pub internal_tx: VecDeque<InternalTx>,
+    pub internal_tx_bytes: usize,
     pub link: LinkState,
+}
+
+impl DataPlaneState {
+    pub(super) fn push_event(&mut self, event: AicEvent) -> Result<(), AicError> {
+        let event_bytes = match &event {
+            AicEvent::Receive(frame) => frame.len(),
+            _ => 0,
+        };
+        let is_receive = matches!(event, AicEvent::Receive(_));
+        while (self.events.len() >= RX_CAPACITY
+            || self.event_bytes.saturating_add(event_bytes) > RX_BYTE_CAPACITY)
+            && !is_receive
+        {
+            let Some(index) = self
+                .events
+                .iter()
+                .position(|queued| matches!(queued, AicEvent::Receive(_)))
+            else {
+                break;
+            };
+            self.remove_event(index);
+        }
+        if self.events.len() >= RX_CAPACITY
+            || self.event_bytes.saturating_add(event_bytes) > RX_BYTE_CAPACITY
+        {
+            // Data frames are lossy at this boundary.  Dropping them keeps
+            // firmware-controlled traffic from growing the owner's memory.
+            return if is_receive {
+                Ok(())
+            } else {
+                Err(AicError::EventQueueFull)
+            };
+        }
+        self.event_bytes += event_bytes;
+        self.events.push_back(event);
+        Ok(())
+    }
+
+    pub(super) fn pop_event(&mut self) -> Option<AicEvent> {
+        let event = self.events.pop_front()?;
+        self.event_bytes -= event_payload_bytes(&event);
+        Some(event)
+    }
+
+    pub(super) fn remove_event(&mut self, index: usize) -> Option<AicEvent> {
+        let event = self.events.remove(index)?;
+        self.event_bytes -= event_payload_bytes(&event);
+        Some(event)
+    }
+
+    pub(super) fn pop_internal_tx(&mut self) -> Option<InternalTx> {
+        let internal = self.internal_tx.pop_front()?;
+        self.internal_tx_bytes -= internal.ethernet_frame.len();
+        Some(internal)
+    }
+
+    pub(super) fn clear_internal_tx(&mut self) {
+        self.internal_tx.clear();
+        self.internal_tx_bytes = 0;
+    }
+}
+
+fn event_payload_bytes(event: &AicEvent) -> usize {
+    match event {
+        AicEvent::Receive(frame) => frame.len(),
+        _ => 0,
+    }
 }
 
 /// Sole owner of all AIC protocol and data-plane state.
@@ -98,9 +172,11 @@ impl AicDevice {
             },
             data: DataPlaneState {
                 events: VecDeque::new(),
+                event_bytes: 0,
                 tx: TxState::new(),
                 active_tx: None,
                 internal_tx: VecDeque::new(),
+                internal_tx_bytes: 0,
                 link: LinkState::new(),
             },
         })
