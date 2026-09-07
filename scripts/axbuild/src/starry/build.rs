@@ -69,7 +69,6 @@ fn reject_unsupported_starry_fields(path: &Path, content: &str) -> anyhow::Resul
     Ok(())
 }
 
-#[cfg(test)]
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
     let makefile_features = crate::build::makefile_features_from_env();
     let mut build_info = if let Some(build_info) = &request.build_info_override {
@@ -95,24 +94,10 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
 pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Result<Cargo> {
     let metadata =
         crate::build::cached_workspace_metadata().context("failed to load workspace metadata")?;
-    let makefile_features = crate::build::makefile_features_from_env();
-    let mut build_info = if let Some(build_info) = &request.build_info_override {
-        build_info.clone()
-    } else {
-        crate::build::ensure_build_info(&request.build_info_path, default_starry_build_info)?;
-        crate::build::load_toml_with_rejector(
-            &request.build_info_path,
-            "build info",
-            crate::build::reject_arceos_app_c_field,
-        )?
-    };
-    crate::build::apply_makefile_features(&mut build_info, &makefile_features)?;
+    let mut build_info = load_build_info(request)?;
     enable_starry_smp_capability(&mut build_info.features);
     build_info.features.sort();
     build_info.features.dedup();
-    if let Some(smp) = request.smp {
-        build_info.max_cpu_num = Some(smp);
-    }
     let mut cargo = build_info.into_prepared_no_std_cargo_config_with_metadata(
         &request.package,
         &request.target,

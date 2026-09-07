@@ -191,6 +191,18 @@ impl Starry {
     }
 
     async fn app_qemu_run(&mut self, args: app::ArgsAppQemu) -> anyhow::Result<()> {
+        if (args.nixos_case.is_some() || args.all_nixos_cases || args.list_nixos_cases)
+            && args.test_case.as_deref() != Some("nixos")
+        {
+            anyhow::bail!("NixOS case options require `-t nixos`");
+        }
+        if args.test_case.as_deref() == Some("nixos") {
+            let workspace = self.app.workspace_root().to_path_buf();
+            return app::run_nixos_app(&workspace, &args, async |request| {
+                test::run_nixos(self, request).await
+            })
+            .await;
+        }
         let apps = app::selected_apps(self.app.workspace_root(), &args, app::StarryAppKind::Qemu)?;
         let app_count = apps.len();
         for (index, app) in apps.into_iter().enumerate() {
