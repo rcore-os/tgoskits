@@ -1,0 +1,60 @@
+name: Devenv
+
+on:
+  pull_request:
+    paths:
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "devenv.lock"
+      - "flake.nix"
+      - "flake.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/devenv.yml"
+  push:
+    paths:
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "devenv.lock"
+      - "flake.nix"
+      - "flake.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/devenv.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devenv-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: nix develop
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Evaluate the devenv-backed development shell
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --env NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false' \
+            --volume "$PWD:/workspace" \
+            --workdir /workspace \
+            docker.io/nixos/nix:2.33.1 \
+            sh -lc '
+              set -euo pipefail
+              git config --global --add safe.directory /workspace
+              nix develop --accept-flake-config --no-pure-eval -c \
+                bash -lc "
+                  set -euo pipefail
+                  command -v cargo
+                  command -v rustc
+                  rustc --version
+                  test -z \"\${CC-}\"
+                  test -z \"\${RUSTUP_TOOLCHAIN-}\"
+                "
+            '
