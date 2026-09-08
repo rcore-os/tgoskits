@@ -34,7 +34,7 @@ pub(crate) enum MailboxFlowPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DataTxFlowPolicy {
-    Direct,
+    FirmwareBuffers,
     CreditGated,
 }
 
@@ -119,7 +119,7 @@ static AIC8800DC_PROFILE: ChipProfile = ChipProfile {
     transport: TransportGeneration::V1,
     transport_header: TransportHeader::Zero,
     mailbox_flow: MailboxFlowPolicy::Direct,
-    data_tx_flow: DataTxFlowPolicy::Direct,
+    data_tx_flow: DataTxFlowPolicy::FirmwareBuffers,
     firmware: FirmwareProfile::Aic8800Dc,
     functions: DC_FUNCTIONS,
 };

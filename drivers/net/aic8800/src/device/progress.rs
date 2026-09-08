@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
 use super::*;
+use crate::profile::DataTxFlowPolicy;
 
 #[cfg(test)]
 const NANOS_PER_MILLISECOND: u64 = 1_000_000;
@@ -45,6 +46,21 @@ impl AicDevice {
         }
         if let Some(deadline) = self.lifecycle.retry_at {
             if input.now < deadline {
+                if self.lifecycle.state == AicState::Ready
+                    && self.data.active_tx.is_some()
+                    && self.lifecycle.mailbox.is_none()
+                    && matches!(
+                        self.data_tx_flow_policy(),
+                        DataTxFlowPolicy::FirmwareBuffers
+                    )
+                {
+                    // Credit waits keep CARD_INT enabled. Drain a latched RX
+                    // scan before rearming, without polling TX before its deadline.
+                    if let Some(action) = self.drive_receive_scan() {
+                        return action;
+                    }
+                    return AicAction::WaitForInterruptUntil(deadline);
+                }
                 return AicAction::RetryAt(deadline);
             }
             self.lifecycle.retry_at = None;

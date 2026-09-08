@@ -13,6 +13,10 @@ use crate::{
 };
 
 const IO_RETRY: Duration = Duration::from_millis(1);
+// The DC data FIFO reports packet buffers, independently of SDIO block size.
+// Keep the BSP's two-buffer reserve; its direct mailbox path is separate.
+// https://github.com/sipeed/LicheeRV-Nano-Build/blob/d4003f15b35d43ad4842f427050ab2bba0114fa5/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aicwf_sdio.c#L351-L392
+const DC_TX_RESERVED_BUFFERS: u8 = 2;
 const INTERNAL_TX_CAPACITY: usize = 2;
 const ETHERTYPE_EAPOL: [u8; 2] = [0x88, 0x8e];
 
@@ -57,29 +61,10 @@ impl AicDevice {
         }
         self.prepare_next_transmit();
         if self.data.active_tx.is_some() {
-            return match self.data_tx_flow_policy() {
-                DataTxFlowPolicy::Direct => {
-                    let wire_frame = self
-                        .data
-                        .active_tx
-                        .as_ref()
-                        .expect("active TX is present after preparation")
-                        .wire_frame
-                        .clone();
-                    self.emit(
-                        IoPurpose::TransmitData,
-                        write_fifo(
-                            self.data_function(),
-                            self.registers().write_fifo,
-                            wire_frame,
-                        ),
-                    )
-                }
-                DataTxFlowPolicy::CreditGated => self.emit(
-                    IoPurpose::TransmitFlow,
-                    read_byte(self.data_function(), self.registers().flow_control),
-                ),
-            };
+            return self.emit(
+                IoPurpose::TransmitFlow,
+                read_byte(self.data_function(), self.registers().flow_control),
+            );
         }
         AicAction::WaitForInterrupt
     }
@@ -339,7 +324,15 @@ impl AicDevice {
             .active_tx
             .as_ref()
             .ok_or(AicError::CompletionMismatch)?;
-        if credits == 0 || usize::from(credits) * BLOCK_SIZE <= active.wire_frame.len() {
+        let can_transmit = match self.data_tx_flow_policy() {
+            // Each write contains one frame. Read fresh firmware availability
+            // for the next frame instead of reusing this admission budget.
+            DataTxFlowPolicy::FirmwareBuffers => credits > DC_TX_RESERVED_BUFFERS,
+            DataTxFlowPolicy::CreditGated => {
+                credits != 0 && usize::from(credits) * BLOCK_SIZE > active.wire_frame.len()
+            }
+        };
+        if !can_transmit {
             self.lifecycle.retry_at = Some(now.after(IO_RETRY));
             return Ok(());
         }
@@ -923,8 +916,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn dc_transmit_starts_without_reading_data_flow_credits() {
+    fn ready_dc() -> AicDevice {
         let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
         device.lifecycle.state = AicState::Ready;
         device.data.link.install_mac([2, 0, 0, 0, 0, 1]).unwrap();
@@ -935,16 +927,183 @@ mod tests {
             .install_peer(0, 0, [2, 1, 2, 3, 4, 5])
             .unwrap();
         device
-            .data
-            .tx
-            .enqueue(TxToken::new(1), vec![0; 60])
-            .unwrap();
+    }
 
-        let AicAction::SubmitSdio(request) = device.drive_ready(MonotonicTime::default()) else {
-            panic!("expected a direct DC data write")
+    fn sdio_request(action: AicAction) -> SdioRequest {
+        let AicAction::SubmitSdio(request) = action else {
+            panic!("expected an SDIO request, got {action:?}");
         };
-        assert!(
-            matches!(request.kind, SdioRequestKind::Write { function, .. } if function.get() == 1)
+        request
+    }
+
+    fn complete(request: &SdioRequest, response: SdioResponse, now: MonotonicTime) -> AicInput {
+        AicInput {
+            now,
+            event: Some(AicInputEvent::Sdio(SdioCompletion {
+                request_id: request.id,
+                result: Ok(response),
+            })),
+        }
+    }
+
+    fn assert_dc_flow_read(request: &SdioRequest) {
+        assert!(matches!(
+            request.kind,
+            SdioRequestKind::ReadByte { function, address }
+                if function.get() == 1 && address.get() == 0x0a
+        ));
+    }
+
+    #[test]
+    fn dc_data_reserves_firmware_buffers_and_rechecks_each_frame() {
+        let mut device = ready_dc();
+        let mut now = MonotonicTime::default();
+        let first = vec![0x5a; 1514];
+        let second = vec![0xa5; 60];
+        let mut flow = sdio_request(device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Tx {
+                token: TxToken::new(11),
+                frame: first.clone(),
+            }),
+        }));
+        assert_dc_flow_read(&flow);
+        assert_eq!(
+            device.advance(AicInput {
+                now,
+                event: Some(AicInputEvent::Tx {
+                    token: TxToken::new(12),
+                    frame: second.clone(),
+                }),
+            }),
+            AicAction::WaitForInterrupt
+        );
+
+        for available in [0, 1, 2, 0x82] {
+            let deadline = now.after(IO_RETRY);
+            assert_eq!(
+                device.advance(complete(&flow, SdioResponse::Byte(available), now)),
+                AicAction::WaitForInterruptUntil(deadline),
+                "low credits must retain the active frame without writing or completing it"
+            );
+            assert_eq!(
+                device.advance(AicInput::tick(now)),
+                AicAction::WaitForInterruptUntil(deadline)
+            );
+            now = deadline;
+            flow = sdio_request(device.advance(AicInput::tick(now)));
+            assert_dc_flow_read(&flow);
+        }
+
+        // Three firmware buffers allow one MTU frame, even though its padded
+        // transport length equals three SDIO blocks. Bit 7 is not a credit.
+        let write = sdio_request(device.advance(complete(&flow, SdioResponse::Byte(0x83), now)));
+        let SdioRequestKind::Write {
+            function,
+            address,
+            bytes,
+            ..
+        } = &write.kind
+        else {
+            panic!("one available firmware buffer must permit an MTU write");
+        };
+        assert_eq!(function.get(), 1);
+        assert_eq!(address.get(), 0x07);
+        assert_eq!(bytes.len(), 1536);
+        assert_eq!(&bytes[32..1532], &first[14..]);
+        assert_eq!(
+            device.advance(complete(&write, SdioResponse::Unit, now)),
+            AicAction::Event(AicEvent::TransmitComplete(TxToken::new(11)))
+        );
+
+        flow = sdio_request(device.advance(AicInput::tick(now)));
+        assert_dc_flow_read(&flow);
+        let deadline = now.after(IO_RETRY);
+        assert_eq!(
+            device.advance(complete(&flow, SdioResponse::Byte(2), now)),
+            AicAction::WaitForInterruptUntil(deadline)
+        );
+        now = deadline;
+        flow = sdio_request(device.advance(AicInput::tick(now)));
+        assert_dc_flow_read(&flow);
+        let write = sdio_request(device.advance(complete(&flow, SdioResponse::Byte(3), now)));
+        let SdioRequestKind::Write { bytes, .. } = &write.kind else {
+            panic!("the second frame must resume after credits recover");
+        };
+        assert_eq!(&bytes[32..78], &second[14..]);
+        assert_eq!(
+            device.advance(complete(&write, SdioResponse::Unit, now)),
+            AicAction::Event(AicEvent::TransmitComplete(TxToken::new(12)))
+        );
+        assert_eq!(
+            device.advance(AicInput::tick(now)),
+            AicAction::WaitForInterrupt
+        );
+    }
+
+    #[test]
+    fn dc_receive_progresses_while_data_waits_for_firmware_buffers() {
+        let mut device = ready_dc();
+        let now = MonotonicTime::default();
+        let flow = sdio_request(device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Tx {
+                token: TxToken::new(1),
+                frame: vec![0; 60],
+            }),
+        }));
+        assert_dc_flow_read(&flow);
+        let deadline = now.after(IO_RETRY);
+        assert_eq!(
+            device.advance(complete(&flow, SdioResponse::Byte(2), now)),
+            AicAction::WaitForInterruptUntil(deadline)
+        );
+        let command_count = sdio_request(device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Irq(IrqSnapshot {
+                sequence: 1,
+                card_interrupt: true,
+                ..IrqSnapshot::default()
+            })),
+        }));
+        assert!(matches!(
+            command_count.kind,
+            SdioRequestKind::ReadByte { function, address }
+                if function.get() == 2 && address.get() == 0x12
+        ));
+        let data_count =
+            sdio_request(device.advance(complete(&command_count, SdioResponse::Byte(0), now)));
+        assert!(matches!(
+            data_count.kind,
+            SdioRequestKind::ReadByte { function, address }
+                if function.get() == 1 && address.get() == 0x12
+        ));
+        let read = sdio_request(device.advance(complete(&data_count, SdioResponse::Byte(1), now)));
+        assert!(matches!(
+            read.kind,
+            SdioRequestKind::Read { function, address, length, .. }
+                if function.get() == 1 && address.get() == 0x08 && length == BLOCK_SIZE
+        ));
+        let mut fifo = data_fifo(0x42);
+        fifo.resize(BLOCK_SIZE, 0);
+        let received = device.advance(complete(&read, SdioResponse::Data(fifo), now));
+        let AicAction::Event(AicEvent::Receive(frame)) = received else {
+            panic!("RX must be delivered before retrying blocked TX: {received:?}");
+        };
+        assert_eq!(frame[0], 0x42);
+        assert_eq!(frame.last(), Some(&0x42));
+        let count = sdio_request(device.advance(AicInput::tick(now)));
+        assert_eq!(
+            device.advance(complete(&count, SdioResponse::Byte(0), now)),
+            AicAction::WaitForInterruptUntil(deadline),
+            "draining RX must restore the IRQ-enabled wait without polling TX early"
+        );
+        let flow = sdio_request(device.advance(AicInput::tick(deadline)));
+        assert_dc_flow_read(&flow);
+        assert_eq!(
+            device.advance(complete(&flow, SdioResponse::Byte(2), deadline)),
+            AicAction::WaitForInterruptUntil(deadline.after(IO_RETRY)),
+            "receiving a frame does not grant firmware TX credits"
         );
     }
 }
