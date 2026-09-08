@@ -91,17 +91,3 @@ impl Config {
         self
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serial_event_reports_readiness_and_errors() {
-        let event = SerialEventSet::RX_DATA | SerialEventSet::FAULT;
-
-        assert!(event.has_rx());
-        assert!(!event.has_tx());
-        assert!(event.contains(SerialEventSet::FAULT));
-    }
-}

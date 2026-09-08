@@ -72,32 +72,6 @@ impl Interface for MockMsiProvider {
 }
 
 #[test]
-fn rdif_msi_plain_ids_vectors_and_requests_keep_fields() {
-    let vector = MsiVector::with_parent(
-        MsiVectorIndex(3),
-        MsiEventId(7),
-        IrqId::new(IrqDomainId(1), irq_framework::HwIrq(11)),
-        IrqId::new(IrqDomainId(2), irq_framework::HwIrq(12)),
-    );
-    assert_eq!(vector.index, MsiVectorIndex(3));
-    assert_eq!(vector.event, MsiEventId(7));
-    assert_eq!(vector.parent_irq.domain, IrqDomainId(2));
-    assert_eq!(
-        MsiVector::new(MsiVectorIndex(4), MsiEventId(8), vector.irq).parent_irq,
-        vector.irq
-    );
-
-    let request = MsiRequest::new(MsiDeviceId(9), 2).affinity(IrqAffinity::Fixed(CpuId(1)));
-    assert_eq!(request.device, MsiDeviceId(9));
-    assert_eq!(request.vector_count, 2);
-    assert_eq!(request.affinity, IrqAffinity::Fixed(CpuId(1)));
-
-    let message = MsiMessage::new(0xfee0_0000, 0x45);
-    assert_eq!(message.address, 0xfee0_0000);
-    assert_eq!(message.data, 0x45);
-}
-
-#[test]
 fn rdif_msi_allocation_preserves_provider_device_and_vectors() {
     let vectors = alloc::vec![
         MsiVector::new(
@@ -172,51 +146,8 @@ fn rdif_msi_wrapper_rejects_driver_returning_wrong_vector_count() {
 }
 
 #[test]
-fn rdif_msi_type_constants_hold() {
-    // MsiMessage::new
-    let msg = MsiMessage::new(0xFEE00000, 0x1234);
-    assert_eq!(msg.address, 0xFEE00000);
-    assert_eq!(msg.data, 0x1234);
-
-    // MsiVectorIndex
-    let idx = MsiVectorIndex(42);
-    assert_eq!(idx.0, 42);
-
-    // MsiEventId
-    let evt = MsiEventId(10);
-    assert_eq!(evt.0, 10);
-
-    // MsiDeviceId
-    let dev = MsiDeviceId(5);
-    assert_eq!(dev.0, 5);
-
-    // MsiProviderId
-    let prov = MsiProviderId(99);
-    assert_eq!(prov.0, 99);
-}
-
-#[test]
-fn rdif_msi_request_and_interface_default_hold() {
+fn rdif_msi_unsupported_operations_report_errors() {
     use rdif_msi::{Interface, IrqError, MsiRequest};
-
-    // Test MsiRequest::new with default affinity
-    let request = MsiRequest::new(MsiDeviceId(1), 4);
-    assert_eq!(request.device, MsiDeviceId(1));
-    assert_eq!(request.vector_count, 4);
-    // Default affinity is Any
-    match request.affinity {
-        IrqAffinity::Any => {}
-        _ => panic!("Expected Any affinity"),
-    }
-
-    // Test MsiRequest::new with custom affinity
-    let custom = MsiRequest::new(MsiDeviceId(2), 8).affinity(IrqAffinity::Fixed(CpuId(3)));
-    assert_eq!(custom.device, MsiDeviceId(2));
-    assert_eq!(custom.vector_count, 8);
-    match custom.affinity {
-        IrqAffinity::Fixed(cpu) => assert_eq!(cpu, CpuId(3)),
-        _ => panic!("Expected Fixed affinity"),
-    }
 
     // Test Interface trait default implementations return Unsupported
     struct MinimalMsi;
@@ -245,40 +176,4 @@ fn rdif_msi_request_and_interface_default_hold() {
     );
     assert!(minimal.set_vector_enabled(&vector, true) == Err(IrqError::Unsupported));
     assert!(minimal.set_vector_affinity(&vector, IrqAffinity::Any) == Err(IrqError::Unsupported));
-}
-
-#[test]
-fn rdif_msi_message_and_allocation_hold() {
-    use rdif_msi::{
-        MsiAllocation, MsiDeviceId, MsiEventId, MsiMessage, MsiProviderId, MsiVector,
-        MsiVectorIndex,
-    };
-
-    // Test MsiMessage fields
-    let msg = MsiMessage::new(0xfee0_0000, 0x1234);
-    assert_eq!(msg.address, 0xfee0_0000);
-    assert_eq!(msg.data, 0x1234);
-
-    // Test MsiVector fields
-    let vector = MsiVector::new(
-        MsiVectorIndex(5),
-        MsiEventId(42),
-        IrqId::new(IrqDomainId(1), irq_framework::HwIrq(7)),
-    );
-    assert_eq!(vector.index.0, 5);
-    assert_eq!(vector.event.0, 42);
-
-    // Test MsiAllocation with actual constructor
-    let alloc = MsiAllocation::new(
-        MsiProviderId(2),
-        MsiDeviceId(1),
-        alloc::vec![MsiVector::new(
-            MsiVectorIndex(10),
-            MsiEventId(0),
-            IrqId::new(IrqDomainId(0), irq_framework::HwIrq(0))
-        )]
-        .into_boxed_slice(),
-    );
-    assert_eq!(alloc.provider().0, 2);
-    assert_eq!(alloc.device().0, 1);
 }

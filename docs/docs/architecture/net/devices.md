@@ -117,8 +117,11 @@ Ethernet 发送将 IPv4 组播地址的低 23 位映射到 `01:00:5e`，将 IPv6
 
 ## 4. IRQ affinity domain
 
-builder 先把每个 endpoint source ID 解析为 physical `IrqId`。共享同一 IRQ 的 group
-通过并查集合并为一个 affinity domain，再按稳定顺序分配在线 CPU。
+平台（axruntime）在构造 `NetworkDeviceInput` 时已把每个 driver source 解析为
+`ResolvedNetIrqSource { source_id, irq }`；builder 内部把每个 endpoint 的 source ID
+映射到唯一 physical `IrqId`，同一 source ID 解析出多个 `IrqId` 或存在未被任何
+endpoint 引用的 source 都会使初始化失败。共享同一 IRQ 的 group 通过并查集合并为一个
+affinity domain，domain 按稳定创建顺序轮转分配在线 CPU。
 
 硬性不变量：
 
@@ -130,10 +133,10 @@ IRQ callback CPU == group poll CPU == owner_cpu
 
 1. 构造全部 group state、DMA pool、SPSC 和 per-CPU executor。
 2. executor 设置 `AxCpuMask::one_shot(owner_cpu)`，yield 后回报 affinity-ready。
-3. registrar 以 `NonReentrant + AutoEnable::No + Fixed(owner_cpu)` 注册 action。
-4. owner worker 执行 one-shot startup；AIC 固件/FDRV 初始化只允许发生在这里。
-5. owner worker initial refill 并执行第一次 `rearm_and_check()`。
-6. enable 全部 registration；startup Wi-Fi transaction 成功后才发布 service。
+3. registrar 以 `NonReentrant + AutoEnable::No + Fixed(owner_cpu)` 注册 disabled action，随后 enable 全部 registration。
+4. owner worker 执行 one-shot startup；AIC 固件/FDRV 初始化只允许发生在这里（IRQ 已注册并 enable，队列尚未发布）。
+5. owner worker 预填 TX pool、执行 initial refill 并完成第一次 `rearm_and_check()`。
+6. startup Wi-Fi transaction 成功并刷新 MAC 后才发布 service。
 
 shared action affinity 冲突、fixed route 不支持、worker pin 失败或 registration 返回的
 CPU 不一致都会使整个物理网络初始化失败。没有 `Any` affinity、远程 IRQ continuation、
@@ -170,10 +173,12 @@ scheduled。
 
 一个 group poll 按顺序处理：
 
-1. TX completion；
-2. TX submission 与批次 `flush()`；
-3. 已消费 RX token 回收到 queue-local spare cache；
-4. RX reclaim、replacement refill 与完成项发布。
+1. 上轮滞留的 `pending_tx_free` 回推 TX-free ring；
+2. TX completion reclaim；
+3. TX submission 与批次 `flush()`；
+4. 上轮滞留的 `pending_rx` 发布到 RX-ready ring；
+5. 已消费 RX token 回收到 queue-local spare cache；
+6. RX reclaim、replacement refill 与完成项发布。
 
 各类使用 64 项子预算，每 CPU executor round 使用 256 项总预算。任一子预算用尽、CPU round
 用尽、`MISSED` 或硬件仍有工作时，group 保持 IRQ 关闭并重新排队。

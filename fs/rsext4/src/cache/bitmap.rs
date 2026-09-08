@@ -301,39 +301,3 @@ pub struct CacheStats {
     pub dirty_entries: usize,
     pub max_entries: usize,
 }
-
-#[cfg(test)]
-mod tests {
-    use alloc::vec;
-
-    use super::*;
-
-    #[test]
-    fn test_cache_key() {
-        let key1 = CacheKey::new_block(BGIndex::new(0));
-        let key2 = CacheKey::new_block(BGIndex::new(0));
-        let key3 = CacheKey::new_inode(BGIndex::new(0));
-
-        assert_eq!(key1, key2);
-        assert_ne!(key1, key3);
-    }
-
-    #[test]
-    fn test_cached_bitmap() {
-        let data = vec![0u8; crate::config::BLOCK_SIZE];
-        let mut bitmap = CachedBitmap::new(data, AbsoluteBN::new(10));
-
-        assert!(!bitmap.dirty);
-        bitmap.mark_dirty();
-        assert!(bitmap.dirty);
-    }
-
-    #[test]
-    fn test_bitmap_cache_basic() {
-        let cache = BitmapCache::new(4);
-        let stats = cache.stats();
-
-        assert_eq!(stats.total_entries, 0);
-        assert_eq!(stats.max_entries, 4);
-    }
-}

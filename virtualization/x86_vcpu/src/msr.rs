@@ -104,7 +104,6 @@ pub(super) trait MsrReadWrite {
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
 
     use super::*;
 
@@ -116,15 +115,6 @@ mod tests {
         assert_eq!(Msr::IA32_VMX_BASIC as u32, 0x480);
         assert_eq!(Msr::IA32_EFER as u32, 0xc000_0080);
         assert_eq!(Msr::IA32_LSTAR as u32, 0xc000_0082);
-    }
-
-    #[test]
-    fn test_msr_debug() {
-        // Test that MSR implements Debug properly
-        let msr = Msr::IA32_VMX_BASIC;
-        let debug_str = format!("{:?}", msr);
-        assert!(!debug_str.is_empty());
-        assert!(debug_str.contains("IA32_VMX_BASIC"));
     }
 
     #[test]

@@ -37,7 +37,5 @@ x86.workspace = true
 # Pull ax-sync's host-test interface for the crate's host-test composition.
 host-test = ["ax-sync/host-test"]
 
-[[test]]
-name = "std"
-path = "tests/std.rs"
-required-features = ["host-test"]
+[dev-dependencies]
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

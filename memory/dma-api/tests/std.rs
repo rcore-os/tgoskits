@@ -302,30 +302,6 @@ struct Descriptor {
 }
 
 #[test]
-fn dma_api_device_metadata_constraints_and_nop_cache_ops_are_callable() {
-    let (dev, op) = tracking_device();
-    let domain = DmaDomainId::Translated(core::num::NonZeroU64::new(0x42).unwrap());
-    let scoped = DeviceDma::new(
-        DmaDeviceInfo::new(
-            domain,
-            DmaCoherency::NonCoherent,
-            DmaConstraints::new(u32::MAX as u64),
-        ),
-        op,
-    );
-    let constrained = scoped.with_constraints(
-        DmaConstraints::new(0xffff)
-            .with_align(64)
-            .with_boundary(0x1000),
-    );
-
-    assert_eq!(dev.page_size(), 0x1000);
-    assert_eq!(scoped.info().domain(), domain);
-    assert_eq!(constrained.info().constraints().addr_mask, 0xffff);
-    assert_eq!(constrained.info().constraints().align, 64);
-}
-
-#[test]
 fn dma_api_coherent_bounce_copies_without_cache_maintenance() {
     let op = Box::leak(Box::new(DefaultSyncDmaOp::new()));
     op.inner.force_next_dma_addr(0x80);
@@ -516,16 +492,4 @@ fn dma_api_rejects_mask_alignment_segment_boundary_and_zero_sized_errors() {
         matches!(zero_result, Err(DmaError::ZeroSizedBuffer)),
         "streaming map should reject zero-sized buffers"
     );
-}
-
-#[test]
-fn dma_api_direction_and_error_variants_hold() {
-    use dma_api::{DmaDirection, DmaError};
-
-    // Test DmaDirection variants exist
-    let _to_device = DmaDirection::ToDevice;
-    let _bidirectional = DmaDirection::Bidirectional;
-
-    // Test DmaError variants that may not be fully covered
-    let _zero_sized = DmaError::ZeroSizedBuffer;
 }

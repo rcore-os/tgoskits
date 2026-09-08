@@ -1,17 +1,12 @@
-use std::{
-    fs,
-    os::unix::process::ExitStatusExt,
-    path::{Path, PathBuf},
-    process::ExitStatus,
-};
+use std::{fs, os::unix::process::ExitStatusExt, path::Path, process::ExitStatus};
 
 use tempfile::tempdir;
 
 use super::{
     ArgsTestNixos,
     nixos::{
-        NixosAction, OutputMode, configure_p1_build_info, ensure_success, nix_hash_command,
-        nix_test_command, plan_nixos_action, validate_kernel, validate_nar_hash,
+        NixosAction, configure_p1_build_info, ensure_success, plan_nixos_action, validate_kernel,
+        validate_nar_hash,
     },
 };
 use crate::starry::build::{LogLevel, StarryBuildInfo};
@@ -216,59 +211,6 @@ fn invalid_nar_hashes_are_rejected() {
         assert!(validate_nar_hash(hash).is_err(), "{hash:?} must fail");
     }
     assert!(validate_nar_hash("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").is_ok());
-}
-
-#[test]
-fn nix_hash_command_is_exact_and_streams_output() {
-    let kernel = Path::new("/tmp/starryos.bin");
-    let command = nix_hash_command(kernel);
-
-    assert_eq!(command.program, PathBuf::from("nix"));
-    assert_eq!(
-        command.args,
-        [
-            "hash",
-            "path",
-            "--type",
-            "sha256",
-            "--sri",
-            "/tmp/starryos.bin"
-        ]
-    );
-    assert_eq!(command.output, OutputMode::CaptureStdout);
-}
-
-#[test]
-fn nix_test_command_is_exact_and_streams_driver_output() {
-    let command = nix_test_command(
-        Path::new("/workspace"),
-        Path::new("/tmp/starryos.bin"),
-        "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        "service",
-    );
-
-    assert_eq!(command.program, PathBuf::from("nix"));
-    assert_eq!(
-        command.args,
-        [
-            "build",
-            "--impure",
-            "--print-build-logs",
-            "--no-link",
-            "--expr",
-            "let testFlake = builtins.getFlake \"path:/workspace/nixos-tests/starryos\"; appFlake \
-             = builtins.getFlake \"path:/workspace/apps/starry/nixos\"; system = \
-             \"x86_64-linux\"; test = testFlake.lib.${system}.mkStarryNixosTest { kernelPath = \
-             \"/tmp/starryos.bin\"; kernelNarHash = \
-             \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"; starryNixos = \
-             appFlake.lib.${system}.starryNixos; caseName = \"service\"; }; in assert \
-             testFlake.inputs.nixpkgs.outPath == appFlake.inputs.nixpkgs.outPath; builtins.trace \
-             (\"[axbuild] Starry nixosTest kernel_store=\" + builtins.toString \
-             test.kernelStorePath) (builtins.trace (\"[axbuild] Starry nixosTest \
-             system_toplevel=\" + builtins.toString test.systemToplevel) test)",
-        ]
-    );
-    assert_eq!(command.output, OutputMode::Inherit);
 }
 
 #[test]

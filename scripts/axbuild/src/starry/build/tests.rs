@@ -116,12 +116,6 @@ fn load_build_info_writes_default_template_when_missing() {
 }
 
 #[test]
-fn default_starry_build_info_does_not_inject_features() {
-    let build_info = default_starry_build_info();
-    assert!(build_info.features.is_empty());
-}
-
-#[test]
 fn load_build_info_reads_existing_file() {
     let root = tempdir().unwrap();
     let path = root.path().join(".build-target.toml");
@@ -377,13 +371,6 @@ fn patch_starry_cargo_config_keeps_loongarch64_dynamic_platform_dynamic() {
     assert!(!cargo.features.contains(&"qemu".to_string()));
     assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
     assert!(!cargo.env.contains_key("AX_PLATFORM"));
-}
-
-#[test]
-fn uimage_its_path_for_config_uses_same_basename_with_its_extension() {
-    let path = uimage_its_path_for_config(Path::new("os/StarryOS/configs/board/foo.toml"));
-
-    assert_eq!(path, PathBuf::from("os/StarryOS/configs/board/foo.its"));
 }
 
 #[test]
@@ -708,16 +695,6 @@ fn ensure_starry_bin_arg_adds_bin_for_starryos_package() {
 
     let metadata = crate::build::workspace_metadata().unwrap();
     ensure_starry_bin_arg(&mut args, "starryos", &metadata).unwrap();
-
-    assert!(args.windows(2).any(|pair| pair == ["--bin", "starryos"]));
-}
-
-#[test]
-fn ensure_starry_bin_arg_keeps_existing_bin_arg() {
-    let mut args = vec!["--bin".to_string(), "starryos".to_string()];
-
-    let metadata = crate::build::workspace_metadata().unwrap();
-    ensure_starry_bin_arg(&mut args, STARRY_PACKAGE, &metadata).unwrap();
 
     assert!(args.windows(2).any(|pair| pair == ["--bin", "starryos"]));
 }

@@ -28,9 +28,10 @@ sequenceDiagram
     Builder->>QE: spawn + pin owner CPU
     QE-->>Builder: affinity-ready
     Builder->>IRQ: register disabled Fixed(owner_cpu)
-    Builder->>QE: initial refill + rearm
-    QE-->>Builder: startup-ready
     Builder->>IRQ: enable leases
+    Builder->>QE: owner startup (COMMAND_START)
+    Builder->>QE: TX prefill + initial refill + rearm
+    QE-->>Builder: startup-ready
     Builder->>QE: optional Wi-Fi startup transaction
     Builder-->>RT: NetworkQueueRuntime + frame ports
     RT->>PE: init_network() / spawn unique owner
@@ -88,10 +89,10 @@ remote wake 计数增加并作为契约失败。
 owner executor claim `SCHEDULED -> POLLING` 后先 `quiesce()`，随后按顺序处理：
 
 ```text
+TX completion    budget 64
+TX submission    budget 64（批次结束后 flush）
 RX recycle       budget 64
 RX reclaim       budget 64
-TX completion    budget 64
-TX submission    budget 64
 per-CPU round total 256
 ```
 

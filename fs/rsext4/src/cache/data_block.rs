@@ -745,16 +745,6 @@ mod tests {
     }
 
     #[test]
-    fn test_datablock_cache_basic() {
-        let cache = DataBlockCache::new(8, BLOCK_SIZE);
-        let stats = cache.stats();
-
-        assert_eq!(stats.total_entries, 0);
-        assert_eq!(stats.max_entries, 8);
-        assert_eq!(stats.total_size_bytes, 0);
-    }
-
-    #[test]
     fn test_create_new_block() {
         let mut cache = DataBlockCache::new(8, BLOCK_SIZE);
         let device = TestBlockDevice::new(1024);

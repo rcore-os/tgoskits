@@ -177,7 +177,7 @@ buffer，512 个排队连接仅 payload 预算就可能达到 256 MiB，另有 s
 
 ## 9. Queue budget
 
-一个 group poll 对 RX recycle、RX reclaim、TX completion、TX submit 各最多处理 64
+一个 group poll 对 TX completion、TX submit、RX recycle、RX reclaim 各最多处理 64
 项；一个 CPU round 最多 256 项。预算用尽不会 rearm IRQ，而是保留 group ownership、
 yield/repoll。这限制单个 burst 对同 CPU 其它 group 的占用，同时合并 IRQ。
 

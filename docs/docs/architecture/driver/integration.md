@@ -1,97 +1,100 @@
 ---
-sidebar_position: 10
+sidebar_position: 12
 sidebar_label: "系统集成"
 ---
 
-# 系统集成
+# 系统启动与驱动集成
 
-`rdrive + rdif` 驱动框架是 ArceOS、StarryOS、Axvisor 共享的宿主设备能力来源。三个系统通过各自的 OS Glue 和领域 service 接入驱动框架，但不复制设备状态或绕过 `rdrive` registry。
+系统集成连接平台初始化、设备发现和领域服务。ArceOS 的 `ax-runtime` 组织主要宿主启动流程，StarryOS 提供用户态设备语义，Axvisor 区分宿主资源与 guest 模型。集成层不重新实现设备描述符或领域调度算法。
 
-## 集成模型
+## 1. 启动依赖
+
+`os/arceos/modules/axruntime/src/lib.rs` 的 `rust_main()` 是主启动顺序的依据。内存、平台 IRQ 和调度基础设施需要在相应消费者使用之前就绪。
+
+### 1.1 早期与平台初始化
+
+`rust_main()` 先调用 `ax_hal::init_early()`，完成内存相关初始化后调用 `ax_hal::init_later()`。若 `rdrive` 已初始化，随后装载链接器注册项并调用 `ax_hal::irq::init_boot_irqs()`；未初始化时记录跳过相应阶段的警告。
+
+`registers.rs` 的 `append_linker_registers()` 读取注册项链接区间，不能把它及全部早期 probe 都笼统归入平台 `init_later()`。早期资源发现与具体 HAL 路径见[探测与初始化](probe.md)。
+
+### 1.2 调度与普通设备
+
+平台准备后初始化调度器，释放 bootstrap 抢占状态，按 feature 安装 IPI 跨 CPU 同步回调，再初始化中断处理并执行 `devices::probe_all_devices()`。
 
 ```mermaid
-flowchart TB
-    Platform["platform / FDT / ACPI / PCI"] --> AxDriver["ax-driver OS Glue"]
-    AxDriver --> Rdrive["rdrive Manager"]
-    Rdrive --> Registry["typed device registry"]
-
-    Registry --> BlockSvc["block volume service"]
-    Registry --> NetSvc["net interface service"]
-    Registry --> DispSvc["display service"]
-    Registry --> InSvc["input service"]
-    Registry --> VsSvc["vsock service"]
-    Registry --> HalSvc["HAL: intc / clk / pinctrl / pcie"]
-
-    subgraph ArceOS["ArceOS"]
-        AxRuntime["ax-runtime"]
-        AxFs["ax-fs / ax-fs-ng"]
-        AxNet["ax-net"]
-    end
-
-    subgraph StarryOS["StarryOS"]
-        StarryKernel["starry-kernel"]
-        StarryDrv["Linux-like driver layer"]
-    end
-
-    subgraph Axvisor["Axvisor"]
-        AvHal["Axvisor HAL / GIC backend"]
-        AvGuest["guest emulated devices"]
-    end
-
-    AxRuntime --> Rdrive
-    AxRuntime --> BlockSvc
-    AxRuntime --> NetSvc
-    AxRuntime --> DispSvc
-    AxFs --> BlockSvc
-    AxNet --> NetSvc
-
-    StarryKernel --> HalSvc
-    StarryKernel --> BlockSvc
-    StarryKernel --> NetSvc
-    StarryDrv --> Registry
-
-    AvHal --> Registry
-    AvGuest -.->|"不参与宿主 probe"| AxDevice["axdevice / axdevice_base"]
+sequenceDiagram
+    participant Main as rust_main
+    participant HAL as ax_hal
+    participant Registry as rdrive
+    participant Tasks as 调度与跨 CPU 支持
+    participant Domain as 领域初始化
+    Main->>HAL: init_early
+    Main->>Main: 分配及内存管理
+    Main->>HAL: init_later
+    Main->>Registry: 装载链接器注册项
+    Main->>HAL: init_boot_irqs
+    Main->>Tasks: 初始化调度器及配置的 IPI
+    Main->>HAL: 安装中断处理
+    Main->>Registry: probe_all(false)
+    Main->>Domain: 按 feature 建立领域服务
 ```
 
-## ArceOS 集成
+`probe_all(false)` 仍可能返回发现后端错误。领域初始化的缺设备行为也不同，不能把“个别 probe 允许失败”扩大为启动过程忽略所有错误。
 
-ArceOS 的 `ax-runtime` 是驱动框架的主要消费者：
+## 2. 宿主领域接入
 
-| 集成点 | 职责 |
-| --- | --- |
-| `ax-runtime` init_later | 调用 `rdrive::init()`、`register_append()`、`probe_pre_kernel()` |
-| `ax-runtime` devices init | 调用 `rdrive::probe_all(false)`，初始化领域 service |
-| `ax-runtime` IRQ | 将 platform IRQ 注册能力适配为仅接受固定 CPU 的 `ax_net::PinnedNetIrqRegistrar`，并由网络 builder 原子注册/回滚所有 queue source |
-| `ax-fs` / `ax-fs-ng` | 通过 block volume service 消费块设备 |
-| `ax-net` | 通过 net interface service 消费网卡 |
+集成代码获取设备并转换资源，领域运行时维护后续状态。各功能具有自己的初始化条件，不必经过同一个工厂。
 
-`ax-runtime` 不再拆 `AllDevices.block/net/display/input/vsock` 后逐个传给模块，只触发 probe 和领域 service 初始化。
+### 2.1 消费入口
 
-## StarryOS 集成
+`devices.rs` 组织显示、输入、网络及 vsock 接入，串口具有独立 `serial/` 路径，存储服务由文件系统领域消费。平台 provider 则供 HAL 和其他绑定查询。
 
-StarryOS 复用 ArceOS 的 `ax-driver` glue 和 `rdrive` registry，上层通过 Linux-like driver layer 适配：
+| 领域 | 接入操作 | 交付后的职责 |
+| --- | --- | --- |
+| 串口 | `serial::init()` 与控制台交接 | 字节、日志、控制请求及紧急输出 |
+| 显示 | take 后构造 `RdifDisplayDevice` | 帧缓冲、flush 及显示事件 |
+| 输入 | take 后构造 `RdifInputDevice` | 输入能力与事件 |
+| 块 | IRQ 来源转换和 `BlockRuntime` | 请求、卷及文件系统 |
+| 网络 | `collect_net_devices()`、prepare 与 builder | 帧端口及协议服务 |
+| vsock | `ax_net::init_vsock()` | 连接及事件 |
+| USB | 系统主机管理查询 `PlatformUsbHost` | 主机 init、枚举与设备视图 |
 
-| 集成点 | 职责 |
-| --- | --- |
-| starry-kernel 启动 | 复用 ax-runtime 的 probe 流程 |
-| Linux-like driver layer | 把 `rdif-*` 能力适配为 Linux 驱动模型（如 `/dev/kpu`、USBFS） |
-| Starry USBFS host 管理 | 允许直接使用 `rdrive::get_*` 查询 USB 设备 |
+`rd-display`、`rd-input` 和 `rd-vsock` 不是当前统一运行时包名；显示输入包装位于各自 ArceOS 模块。服务内部状态见[领域服务](services.md)。
 
-StarryOS 的 ext4 rootfs 启动、net/DHCP、display/input 都通过领域 service 消费驱动能力。
+### 2.2 资源与默认策略
 
-## Axvisor 集成
+HAL IRQ 适配位于 `os/arceos/modules/axruntime/src/irq.rs`，把领域注册要求映射为平台 action。网络适配明确提供固定 CPU 合同，USB 与串口有自己的事件 handler 和 bridge，不能互相替换。
 
-Axvisor 作为 hypervisor，使用驱动框架管理宿主物理设备：
+当前网络 `parse_network_config()` 返回默认配置，TX 选择 64 帧有界 FIFO；无物理网卡时建立空端口协议服务。显示输入也有空设备输入路径。根文件系统、控制台和网络配置的选择是不同策略，不由 `rdrive` 决定。
 
-| 集成点 | 职责 |
-| --- | --- |
-| Axvisor HAL | 查询 `rdif-intc` 设置 GIC backend |
-| Axvisor GIC backend | 允许直接使用 `rdrive::get_*` 查询中断控制器 |
-| guest emulated devices | `axdevice` / `axdevice_base` 提供 guest 设备模型，不参与宿主 probe |
+## 3. 系统消费边界
 
-`axdevice` 与 `axdevice_base` 不纳入驱动框架范围。它们作为 Axvisor / axvm 的 guest emulated device model，不作为 FS、NET、display、input、vsock 的设备来源。
+不同系统复用硬件能力，但保留不同用户接口、地址空间和生命周期。设备类别相同不能作为合并状态的理由。
 
-## 自定义平台接入
+### 3.1 StarryOS
 
-`ax-driver` 不再提供面向旧平台私有路径的自动注册 feature，也不再通过 feature 选择平台探测路径。仓库内置平台路径默认使用 FDT/ACPI/PCI probe 注册设备；外部平台应优先提供可发现的设备描述，缺少固件描述时再使用 `rdrive::Platform::Static` / `PlatformSource::Static` 和 `ProbeKind::Static` 做显式设备注册。完整平台侧接入方式见[设备发现](../platform/devices.md)。
+StarryOS 复用宿主绑定和领域模块，在内核系统层提供文件描述符、设备节点与相应 ABI。USBFS 的 `manager.rs`、`tree.rs` 和 `irq.rs` 位于 `os/StarryOS/kernel/src/pseudofs/usbfs/`，管理主机、枚举视图和事件接入。
+
+块卷与文件系统、输入事件与用户读取、显示帧缓冲与用户映射分别存在适配边界。硬件核心不直接操作 Linux 文件描述符，系统也不为同一资源另建竞争的注册身份。
+
+### 3.2 Axvisor
+
+Axvisor 宿主 HAL 可以按需要查询中断控制器等 provider，guest 模拟设备由 `virtualization/axdevice` 与 `virtualization/axdevice_base` 等组件实现。guest 设备不是 `probe_all()` 的普通宿主输出。
+
+设备直通涉及原 owner、IRQ、DMA 和地址空间交接，不能仅从宿主注册表移除一个对象就认定安全。块领域的 `release_block_irqs_for_passthrough()` 和时钟 provider 的寄存器保护各自覆盖不同边界。
+
+## 4. 外部平台
+
+外部平台需要提供设备描述与基础资源能力，框架不能从软件包 feature 推导硬件布局。Static 来源用于显式接入，不放宽领域合同。
+
+### 4.1 来源与 provider
+
+FDT 或 ACPI 平台通过 `init_sources()` 建立发现后端，PCI 枚举依赖主控制器已发布。Static 回调构造设备时仍需真实 MMIO、DMA 和 IRQ 来源，不能复制其他板卡裸地址或中断数值作为通用配置。
+
+时钟、复位、引脚和中断 provider 的启动顺序沿平台代码与 probe 核对。平台通用入口见[设备发现](../platform/devices.md)，资源描述由[平台资源](resources.md)维护。
+
+### 4.2 执行能力与失败
+
+固定路由、跨 CPU 同步、DMA domain、事件服务和定时等待都需要对应平台能力。某个 feature 可编译不保证全部领域运行时可以在该平台建立。
+
+初始化日志应区分未链接、未匹配、资源失败、接管失败和服务失败。已注册 action 或硬件可访问的内存必须按[生命周期](lifecycle.md)处理，不能统一析构后继续报告可用。

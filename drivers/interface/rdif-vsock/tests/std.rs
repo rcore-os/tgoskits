@@ -122,4 +122,16 @@ fn public_interface_transfers_mandatory_irq_capabilities_once() {
         io::ErrorKind::from(VsockError::NotConnected),
         io::ErrorKind::BrokenPipe
     ));
+    assert!(matches!(
+        io::ErrorKind::from(VsockError::AlreadyExists),
+        io::ErrorKind::NotAvailable
+    ));
+    assert!(matches!(
+        io::ErrorKind::from(VsockError::NotAvailable),
+        io::ErrorKind::NotAvailable
+    ));
+    assert!(matches!(
+        io::ErrorKind::from(VsockError::Other("vsock backend".into())),
+        io::ErrorKind::Other(_)
+    ));
 }

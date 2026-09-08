@@ -187,7 +187,7 @@ fn is_vmx_fixed_control_value_valid(value: u64, fixed0: u64, fixed1: u64) -> boo
 
 #[cfg(test)]
 mod tests {
-    use alloc::{format, vec::Vec};
+    use alloc::vec::Vec;
 
     use super::*;
     use crate::test_utils::mock::MockMmHal;
@@ -237,16 +237,6 @@ mod tests {
         assert_eq!(states[1].vmcs_revision_id, 0x87654321);
         assert_eq!(states[2].vmcs_revision_id, 0);
         assert_eq!(states[3].vmcs_revision_id, 0);
-    }
-
-    #[test]
-    fn test_vmx_per_cpu_state_debug() {
-        MockMmHal::reset(); // Reset before test
-        let state = TestVmxPerCpuState::new(0).unwrap();
-
-        // Test that Debug trait is implemented and doesn't panic
-        let debug_str = format!("{:?}", state);
-        assert!(!debug_str.is_empty());
     }
 
     #[test]

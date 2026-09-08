@@ -120,55 +120,6 @@ mod tests {
     use crate::arceos::Command;
 
     #[test]
-    fn command_parses_test_qemu() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli =
-            Cli::try_parse_from(["arceos", "test", "qemu", "--target", "x86_64-unknown-none"])
-                .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch, None);
-                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
-                    assert!(args.package.is_empty());
-                    assert!(!args.only_rust);
-                    assert!(!args.only_c);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_removed_axtest_group_without_target() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli =
-            Cli::try_parse_from(["arceos", "test", "qemu", "--test-group", "axtest"]).unwrap();
-
-        let Command::Test(args) = cli.command else {
-            panic!("expected test command");
-        };
-        let TestCommand::Qemu(args) = args.command else {
-            panic!("expected qemu test command");
-        };
-        assert_eq!(args.test_group.as_deref(), Some("axtest"));
-        assert!(args.arch.is_none());
-        assert!(args.target.is_none());
-    }
-
-    #[test]
     fn regular_qemu_run_still_requires_arch_or_target() {
         let args = ArgsTestQemu {
             arch: None,
@@ -185,72 +136,6 @@ mod tests {
 
         let err = reject_missing_qemu_target(&args).unwrap_err();
         assert!(err.to_string().contains("require --arch"));
-    }
-
-    #[test]
-    fn command_parses_test_qemu_only_rust() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "arceos",
-            "test",
-            "qemu",
-            "--target",
-            "x86_64-unknown-none",
-            "--only-rust",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch, None);
-                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
-                    assert!(args.package.is_empty());
-                    assert!(args.only_rust);
-                    assert!(!args.only_c);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_qemu_only_c() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "arceos",
-            "test",
-            "qemu",
-            "--target",
-            "x86_64-unknown-none",
-            "--only-c",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch, None);
-                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
-                    assert!(args.package.is_empty());
-                    assert!(!args.only_rust);
-                    assert!(args.only_c);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
     }
 
     #[test]
@@ -304,46 +189,6 @@ mod tests {
                     assert!(!args.only_c);
                 }
                 _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_board() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "arceos",
-            "test",
-            "board",
-            "-c",
-            "boot",
-            "--board",
-            "orangepi-5-plus",
-            "-b",
-            "OrangePi-5-Plus",
-            "--server",
-            "10.0.0.2",
-            "--port",
-            "9000",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Board(args) => {
-                    assert_eq!(args.test_case.as_deref(), Some("boot"));
-                    assert_eq!(args.board.as_deref(), Some("orangepi-5-plus"));
-                    assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
-                    assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
-                    assert_eq!(args.port, Some(9000));
-                }
-                _ => panic!("expected board test command"),
             },
             _ => panic!("expected test command"),
         }

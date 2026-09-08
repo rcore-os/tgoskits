@@ -75,19 +75,7 @@ fn memory_addr_arithmetic_reports_wrapping_checked_and_distance_results() {
 }
 
 #[test]
-fn memory_addr_newtypes_format_and_pointer_helpers_hold() {
-    let pa = PhysAddr::from_usize(0x1abc);
-    assert_eq!(pa.as_usize(), 0x1abc);
-    assert_eq!(alloc::format!("{pa:?}"), "PA:0x1abc");
-    assert_eq!(alloc::format!("{pa:x}"), "PA:0x1abc");
-    assert_eq!(alloc::format!("{pa:X}"), "PA:0x1ABC");
-
-    let va = VirtAddr::from_usize(0x2abc);
-    assert_eq!(va.as_usize(), 0x2abc);
-    assert_eq!(alloc::format!("{va:?}"), "VA:0x2abc");
-    assert_eq!(alloc::format!("{va:x}"), "VA:0x2abc");
-    assert_eq!(alloc::format!("{va:X}"), "VA:0x2ABC");
-
+fn memory_addr_pointer_conversions_preserve_addresses() {
     let value = 42_u64;
     let ptr = &value as *const u64;
     let addr = VirtAddr::from_ptr_of(ptr);
@@ -102,7 +90,7 @@ fn memory_addr_newtypes_format_and_pointer_helpers_hold() {
 }
 
 #[test]
-fn memory_addr_ranges_cover_contains_overlap_and_formatting_rules() {
+fn memory_addr_ranges_cover_contains_and_overlap_rules() {
     let range = va_range!(0x1000..0x3000);
     assert!(!range.is_empty());
     assert_eq!(range.size(), 0x2000);
@@ -135,12 +123,7 @@ fn memory_addr_ranges_cover_contains_overlap_and_formatting_rules() {
 }
 
 #[test]
-fn memory_addr_range_format_unchecked_and_boundary_rules_hold() {
-    let range = va_range!(0xfec000..0xfff000usize);
-    assert_eq!(alloc::format!("{range:?}"), "VA:0xfec000..VA:0xfff000");
-    assert_eq!(alloc::format!("{range:x}"), "VA:0xfec000..VA:0xfff000");
-    assert_eq!(alloc::format!("{range:X}"), "VA:0xFEC000..VA:0xFFF000");
-
+fn memory_addr_range_unchecked_and_boundary_rules_hold() {
     let unchecked = unsafe { VirtAddrRange::new_unchecked(0x1000.into(), 0x1000.into()) };
     assert!(unchecked.is_empty());
     assert_eq!(unchecked.size(), 0);

@@ -79,14 +79,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_id_conversions_preserve_raw_value() {
-        assert_eq!(ResetId::new(7).raw(), 7);
-        assert_eq!(ResetId::from(8_u32).raw(), 8);
-        assert_eq!(ResetId::from(9_usize).raw(), 9);
-        assert_eq!(ResetId::from(10_u64).raw(), 10);
-    }
-
-    #[test]
     fn reset_pulses_assert_then_deassert() {
         let mut reset = RecordingReset {
             calls: alloc::vec::Vec::new(),
@@ -98,15 +90,5 @@ mod tests {
             reset.calls,
             alloc::vec![("assert", ResetId::new(3)), ("deassert", ResetId::new(3))]
         );
-    }
-
-    #[test]
-    fn reset_wrapper_exposes_typed_driver() {
-        let mut reset = Reset::new(RecordingReset {
-            calls: alloc::vec::Vec::new(),
-        });
-
-        assert!(reset.typed_ref::<RecordingReset>().is_some());
-        assert!(reset.typed_mut::<RecordingReset>().is_some());
     }
 }

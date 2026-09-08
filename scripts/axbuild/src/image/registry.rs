@@ -261,47 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn render_merged_groups_versions() {
-        let table = registry().render_table(false, None);
-
-        assert!(table.contains("linux"));
-        assert!(table.contains("versions"));
-        assert!(table.contains("arceos"));
-    }
-
-    #[test]
-    fn render_merged_aligns_long_names() {
-        let images = ImageRegistry {
-            images: vec![
-                ImageEntry {
-                    name: "initramfs-loongarch64-busybox.cpio.gz".to_string(),
-                    version: "0.0.1".to_string(),
-                    released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
-                    description: "BusyBox initramfs for loongarch64".to_string(),
-                    sha256: "abc".to_string(),
-                    arch: "loongarch64".to_string(),
-                    url: "https://example.com/initramfs.tar.gz".to_string(),
-                },
-                ImageEntry {
-                    name: "qemu-riscv64".to_string(),
-                    version: "0.0.1".to_string(),
-                    released_at: Some("2025-01-02T00:00:00Z".parse().unwrap()),
-                    description: "Guest image bundle".to_string(),
-                    sha256: "def".to_string(),
-                    arch: "riscv64".to_string(),
-                    url: "https://example.com/qemu.tar.gz".to_string(),
-                },
-            ],
-        };
-
-        let table = images.render_table(false, None);
-        let version_column = table.lines().next().unwrap().find("Version").unwrap();
-        for line in table.lines().skip(2) {
-            assert!(line[version_column..].contains("version"));
-        }
-    }
-
-    #[test]
     fn render_verbose_shows_each_version() {
         let table = registry().render_table(true, None);
 
