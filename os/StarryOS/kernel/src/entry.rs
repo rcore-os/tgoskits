@@ -62,8 +62,15 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let mut image_builder =
         new_user_image_builder().expect("Failed to create unpublished user address space");
-    let loaded_image = load_user_app(&mut image_builder, loc, &args[0], args, envs)
-        .unwrap_or_else(|error| panic!("Failed to load user app: {error}"));
+    let loaded_image = load_user_app(
+        &mut image_builder,
+        loc,
+        &args[0],
+        args,
+        envs,
+        &crate::task::Cred::root(),
+    )
+    .unwrap_or_else(|error| panic!("Failed to load user app: {error}"));
     let prepared_image = image_builder
         .finish(loaded_image)
         .expect("loaded init image token no longer matches its address space");

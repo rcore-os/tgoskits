@@ -6,7 +6,6 @@ use alloc::{
 };
 use core::{
     ffi::{c_char, c_int},
-    iter,
     mem::size_of,
 };
 
@@ -168,7 +167,7 @@ pub fn sys_execveat(
 /// `sys_execve` and `sys_execveat` resolve the program to a `Location`, then
 /// funnel it plus the raw `argv` / `envp` user pointers here to be loaded once.
 /// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
-/// the loader's `.sh`/shebang handling), not re-resolved against the FS.
+/// the loader's shebang handling), not re-resolved against the FS.
 fn do_execve(
     current: &crate::task::UserTaskRef,
     uctx: &mut UserContext,
@@ -234,8 +233,8 @@ fn do_execve(
     // Collect metadata from the already-resolved location before touching
     // anything. An anonymous memfd has no filesystem path, so fall back to the
     // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
-    let mut new_name = loc.name().to_string();
-    let mut new_exe_path = loc
+    let new_name = loc.name().to_string();
+    let new_exe_path = loc
         .absolute_path()
         .map(|p| p.to_string())
         .unwrap_or_else(|_| path.clone());
@@ -249,26 +248,7 @@ fn do_execve(
     // pinned now, so the post-teardown commit phase doesn't re-resolve
     // the pathname (the FS could change while siblings are being reaped).
     let mut image_builder = new_user_image_builder()?;
-    let loaded_image = match load_user_app(&mut image_builder, loc, &path, &args, &envs) {
-        Ok(image) => image,
-        Err(error) => match error {
-            StarryError::InvalidExecutable => {
-                // ENOEXEC fallback: retry via /bin/sh.
-                // In Linux this retry is done by user-space (execvp / busybox),
-                // not by the kernel. This is a pragmatic workaround until
-                // musl's execvp or busybox's ENOEXEC handling is available.
-                let shell_path = "/bin/sh";
-                let shell_loc = current_fs_context().lock().resolve(shell_path)?;
-                new_name = shell_loc.name().to_string();
-                new_exe_path = shell_loc.absolute_path()?.to_string();
-                args = iter::once(String::from(shell_path))
-                    .chain(args.iter().cloned())
-                    .collect();
-                load_user_app(&mut image_builder, shell_loc, shell_path, &args, &envs)?
-            }
-            error => return Err(error),
-        },
-    };
+    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, &thr.cred())?;
     let prepared_image = image_builder.finish(loaded_image)?;
     let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
 

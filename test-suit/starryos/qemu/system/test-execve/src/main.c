@@ -26,6 +26,7 @@
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -145,6 +146,47 @@ static void test_execve_missing_path_reports_enoent(void)
     if (waited == pid) {
         check_exited_with(status, 127, "execve missing path reports ENOENT in child");
     }
+}
+
+/* A raw exec must return its errno, not silently replace this child with sh. */
+static void check_exec_rejection(const char *path, bool use_execveat, int expected)
+{
+    pid_t pid = fork();
+    CHECK(pid >= 0, "fork for raw executable rejection");
+    if (pid < 0) {
+        return;
+    }
+    if (pid == 0) {
+        char *const argv[] = {(char *)path, NULL};
+        long result = use_execveat
+            ? syscall(SYS_execveat, AT_FDCWD, path, argv, environ, 0)
+            : syscall(SYS_execve, path, argv, environ);
+        _exit(result == -1 && errno == expected ? 123 : 124);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid, "collect rejected executable child");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 123,
+          "raw exec preserves the caller and returns the expected errno");
+}
+
+static void test_exec_permission_and_format_rejection(void)
+{
+    char path[] = "/tmp/exec-rejection-XXXXXX.sh";
+    int fd = mkstemps(path, 3);
+    CHECK(fd >= 0, "create executable rejection fixture");
+    if (fd < 0) {
+        return;
+    }
+    CHECK(fchmod(fd, 0444) == 0, "remove every execute bit");
+    close(fd);
+    for (int api = 0; api < 2; api++) {
+        check_exec_rejection(path, api != 0, EACCES);
+    }
+    CHECK(chmod(path, 0755) == 0, "permit execution of the invalid image");
+    for (int api = 0; api < 2; api++) {
+        check_exec_rejection(path, api != 0, ENOEXEC);
+    }
+    CHECK(unlink(path) == 0, "remove executable rejection fixture");
 }
 
 /* The shell command whose exit status proves the new image really ran. */
@@ -501,6 +543,7 @@ int main(void)
     test_fork_child_exit_wait4();
     test_fork_execve_shell_exit_wait4();
     test_execve_missing_path_reports_enoent();
+    test_exec_permission_and_format_rejection();
 
     test_execveat_relative_path_via_dirfd();
     test_execveat_absolute_path_ignores_dirfd();

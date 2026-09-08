@@ -29,12 +29,10 @@ const MFD_ALLOW_SEALING: u32 = 0x0002;
 
 /// `MFD_HUGETLB` — bit 2. We do not back memfds with hugepages yet, so reject it.
 const MFD_HUGETLB: u32 = 0x0004;
-/// `MFD_NOEXEC_SEAL` — Linux 6.3+. Forces the W^X policy on the memfd.
-/// We don't enforce executable mappings, so accepting and ignoring is
-/// equivalent in our security model.
+/// `MFD_NOEXEC_SEAL` — Linux 6.3+. Removes the backing inode's execute bits.
+/// Locking those mode bits with `F_SEAL_EXEC` is not implemented yet.
 const MFD_NOEXEC_SEAL: u32 = 0x0008;
-/// `MFD_EXEC` — opt-out from `MFD_NOEXEC_SEAL`, also Linux 6.3+. Same
-/// reasoning: accepted and ignored.
+/// `MFD_EXEC` — explicitly selects the default executable inode mode.
 const MFD_EXEC: u32 = 0x0010;
 
 /// Linux enforces `NAME_MAX - strlen("memfd:")` = 249 bytes for the name.
@@ -70,9 +68,16 @@ pub fn sys_memfd_create(
     let fs = fs_context.lock();
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
     let cred = current.as_thread().cred();
+    // Linux shmem_file_setup creates an executable anonymous inode; the
+    // explicit no-exec flag removes its execute bits before publication.
+    let mode = if flags & MFD_NOEXEC_SEAL != 0 {
+        0o666
+    } else {
+        0o777
+    };
     let entry = tmpfs.create_anonymous_file(
         &name_str,
-        axfs_ng_vfs::NodePermission::from_bits_truncate(0o666),
+        axfs_ng_vfs::NodePermission::from_bits_truncate(mode),
         cred.fsuid,
         cred.fsgid,
     );
