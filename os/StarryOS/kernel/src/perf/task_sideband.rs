@@ -18,7 +18,7 @@ const PROT_EXEC: u32 = 4;
 const MAP_SHARED: u32 = 1;
 const MAP_PRIVATE: u32 = 2;
 
-fn system_subject(thr: &Thread) -> Option<(TgidNumber, TidNumber)> {
+pub(in crate::perf) fn system_subject(thr: &Thread) -> Option<(TgidNumber, TidNumber)> {
     let observer = thr.active_pid_namespace().id();
     let pid = thr
         .proc_data
@@ -181,10 +181,12 @@ pub(crate) fn on_clone_sideband(
     child_process: &PidIdentity,
     child_thread: &PidIdentity,
 ) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = {
+    let mut targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = if PERF_TASK_ACTIVE
+        .load(Ordering::Acquire)
+        == 0
+    {
+        Vec::new()
+    } else {
         let counters = parent_thr.perf_context().snapshot();
         counters
             .iter()
@@ -200,6 +202,31 @@ pub(crate) fn on_clone_sideband(
             })
             .collect()
     };
+    let observer = parent_thr.active_pid_namespace().id();
+    if let (Some((parent_pid, parent_tid)), Some(child_pid), Some(child_tid)) = (
+        system_subject(parent_thr),
+        child_process
+            .visible_number_in(observer)
+            .map(TgidNumber::from),
+        child_thread
+            .visible_number_in(observer)
+            .map(TidNumber::from),
+    ) {
+        targets.extend(
+            sideband::system_targets(parent_pid, parent_tid)
+                .into_iter()
+                .filter(|target| target.task)
+                .map(|target| {
+                    (
+                        target.target,
+                        child_pid,
+                        child_tid,
+                        parent_pid,
+                        parent_tid,
+                    )
+                }),
+        );
+    }
     for (target, child_pid, child_tid, parent_pid, parent_tid) in &targets {
         sideband::emit_fork(target, *child_pid, *parent_pid, *child_tid, *parent_tid);
     }

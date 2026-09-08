@@ -64,7 +64,7 @@ impl PmuRunLease {
         self.registration
     }
 
-    pub(crate) const fn counter(self) -> Counter {
+    pub(super) const fn counter(self) -> Counter {
         self.counter
     }
 

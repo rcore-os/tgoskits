@@ -76,12 +76,30 @@ pub(in crate::perf) fn sideband_target(
 /// `free_hw` is idempotent per counter; safe even if the perf fd is still open
 /// (its `Drop` will call `free_hw` again and find it already freed).
 pub fn on_task_exit(thr: &Thread) {
+    let system_exit = super::super::task_sideband::system_subject(thr).map(|(pid, tid)| {
+        let observer = thr.active_pid_namespace().id();
+        let parent = thr.proc_data.proc.parent().and_then(|parent| {
+            let number = parent.identity().visible_number_in(observer)?;
+            Some((TgidNumber::from(number), TidNumber::from(number)))
+        });
+        let targets = sideband::system_targets(pid, tid);
+        (pid, tid, parent, targets)
+    });
+
     // Closing and snapshotting share the same lock as attach. An open either
     // commits into this exact snapshot or observes the tombstone and returns
     // ESRCH; no counter can appear after cleanup has selected its ownership set.
     let counters = thr.perf_context().close_and_snapshot();
-    if counters.is_empty() {
-        return;
+    if let Some((pid, tid, parent, targets)) = system_exit {
+        for target in targets.into_iter().filter(|target| target.task) {
+            sideband::emit_exit(
+                &target.target,
+                pid,
+                parent.map(|(parent_pid, _)| parent_pid),
+                tid,
+                parent.map(|(_, parent_tid)| parent_tid),
+            );
+        }
     }
     for ptc in &counters {
         if ptc.want_task

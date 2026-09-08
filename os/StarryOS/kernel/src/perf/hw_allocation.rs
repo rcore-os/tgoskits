@@ -90,14 +90,6 @@ pub(super) fn alloc_programmable(event: u16) -> crate::StarryResult<Counter> {
     Ok(Counter::Programmable(n))
 }
 
-/// Reserves one unconfigured programmable slot for a task event.
-pub(crate) fn alloc_programmable_counter() -> Option<usize> {
-    match ALLOC.lock().alloc_counter() {
-        Some(Counter::Programmable(n)) => Some(n),
-        _ => None,
-    }
-}
-
 /// Returns whether a legacy fixed event owns this programmable index globally.
 pub(super) fn programmable_reserved(slot: usize) -> bool {
     slot < 32 && ALLOC.lock().used & (1 << slot) != 0
