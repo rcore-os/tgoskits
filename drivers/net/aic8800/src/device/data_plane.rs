@@ -229,6 +229,17 @@ impl AicDevice {
                     message_id: SM_CONNECT_IND,
                     payload,
                 } => {
+                    // Firmware can leave an asynchronous association result in
+                    // the FIFO across host restart. Startup has no connection
+                    // transaction: its owner is handed to the network runtime
+                    // before a new Connect request can be submitted. Do not
+                    // interpret the old status or install its peer identity.
+                    if self.lifecycle.state == AicState::Starting {
+                        log::debug!(
+                            "[wifi] discarded pre-connection association indication during startup"
+                        );
+                        continue;
+                    }
                     let indication = parse_connect_indication(&payload)?;
                     log::info!(
                         "[wifi] association complete; learned firmware vif={} station={}",
@@ -612,6 +623,75 @@ mod tests {
         frame[header_len + 6..header_len + 8].copy_from_slice(&[0x08, 0x00]);
         frame[header_len + 8..].copy_from_slice(payload);
         frame
+    }
+
+    #[test]
+    fn startup_ignores_unowned_connect_results_and_keeps_mailbox_confirmation() {
+        for status in [1u16, 0] {
+            let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+            device.start(MonotonicTime::default()).unwrap();
+            device.lifecycle.mailbox =
+                Some(super::super::mailbox::MailboxState::confirmation_for_test(
+                    MonotonicTime::from_nanos(5_000_000_000),
+                ));
+            let mut payload = vec![0; 11];
+            payload[..2].copy_from_slice(&status.to_le_bytes());
+            let mut fifo = indication_fifo(SM_CONNECT_IND, &payload);
+            fifo.extend(indication_fifo(2, &[]));
+            device.io.pending = Some(PendingIo {
+                id: 7,
+                purpose: IoPurpose::ReceiveData(RxPath::Command),
+            });
+            let action = device.advance(AicInput {
+                now: MonotonicTime::default(),
+                event: Some(AicInputEvent::Sdio(SdioCompletion {
+                    request_id: 7,
+                    result: Ok(SdioResponse::Data(fifo)),
+                })),
+            });
+            assert!(
+                matches!(action, AicAction::SubmitSdio(_)),
+                "unowned connection result stopped startup: {action:?}"
+            );
+            assert_eq!(device.state(), AicState::Starting);
+            assert!(device.data.link.peer().is_none());
+            assert_eq!(
+                device.accept_mailbox_confirmation(2, Vec::new()),
+                Err(AicError::CompletionMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn active_connect_rejection_is_not_discarded_as_a_startup_indication() {
+        let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
+        let mut control = super::super::control::build(
+            ControlRequest::Connect {
+                ssid: b"network".to_vec(),
+                pmk: None,
+                entropy: None,
+            },
+            [2, 0, 0, 0, 0, 1],
+            Some(0),
+        )
+        .unwrap();
+        if let super::super::control::ControlOperation::Connect(connect) = &mut control.operation {
+            connect.phase = super::super::control::ConnectPhase::AwaitIndication;
+        }
+        control.commands.clear();
+        device.lifecycle.control = Some(control);
+        let mut payload = vec![0; 11];
+        payload[0] = 1;
+        assert_eq!(
+            device.consume_receive_data(
+                RxPath::Command,
+                SdioResponse::Data(indication_fifo(SM_CONNECT_IND, &payload)),
+            ),
+            Err(AicError::FirmwareRejected {
+                message_id: SM_CONNECT_IND,
+                status: 1
+            })
+        );
     }
 
     #[test]
