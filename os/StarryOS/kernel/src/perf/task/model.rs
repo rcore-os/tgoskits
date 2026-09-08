@@ -24,6 +24,9 @@ pub struct PerTaskCounter {
     pub(super) counter: Counter,
     /// Programmable events acquire a physical slot only for each running slice.
     pub(super) flexible: bool,
+    /// Keeps deferred scheduler ticks published while this logical event may
+    /// need multiplex rotation.
+    _scheduler_tick_lease: Option<crate::task::PerfSchedulerTickLease>,
     /// ARM PMUv3 event number. It is programmed only for a programmable
     /// counter; a dedicated cycle-counter reservation carries the same semantic
     /// event so an inherited child can fall back to a programmable slot.
@@ -182,6 +185,7 @@ pub(in crate::perf) struct PerTaskConfig {
     /// Reserved physical PMU counter.
     pub(in crate::perf) counter: Counter,
     pub(in crate::perf) flexible: bool,
+    pub(in crate::perf) scheduler_tick_lease: Option<crate::task::PerfSchedulerTickLease>,
     /// ARM PMUv3 event number.
     pub(in crate::perf) event: u16,
     /// `attr.exclude_user`.
@@ -232,6 +236,7 @@ impl PerTaskCounter {
             scheduler_id: cfg.scheduler_id,
             counter: cfg.counter,
             flexible: cfg.flexible,
+            _scheduler_tick_lease: cfg.scheduler_tick_lease,
             event: cfg.event,
             exclude_user: cfg.exclude_user,
             exclude_kernel: cfg.exclude_kernel,
@@ -290,12 +295,14 @@ impl PerTaskCounter {
         &self,
         scheduler_id: ax_runtime::task::thread::ThreadId,
         counter: Counter,
+        scheduler_tick_lease: Option<crate::task::PerfSchedulerTickLease>,
         owner_ids: Option<(TgidNumber, TidNumber)>,
     ) -> PerTaskConfig {
         PerTaskConfig {
             scheduler_id,
             counter,
             flexible: self.flexible,
+            scheduler_tick_lease,
             event: self.event,
             exclude_user: self.exclude_user,
             exclude_kernel: self.exclude_kernel,

@@ -452,6 +452,9 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         let child = Arc::new(PerTaskCounter::new(parent.inherited_config(
             scheduler_id,
             Counter::Programmable(0),
+            parent
+                .flexible
+                .then(|| child_thr.proc_data.acquire_perf_scheduler_tick()),
             owner_ids,
         )));
         child.set_sample_id(parent.sample_id());

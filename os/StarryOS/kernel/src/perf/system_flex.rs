@@ -92,8 +92,9 @@ impl SystemFlexCounter {
             if armed {
                 crate::task::sleep(SLICE);
                 self.finish_slice();
-            } else {
                 crate::task::yield_now();
+            } else {
+                crate::task::sleep(SLICE);
             }
         }
         self.finish_slice();

@@ -234,6 +234,12 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
         true
     }
 
+    /// Number of programmable PMU slots required by one pinned-group member.
+    #[cfg(target_arch = "aarch64")]
+    fn programmable_slots(&mut self) -> usize {
+        0
+    }
+
     #[cfg(target_arch = "aarch64")]
     fn output_scope(&mut self) -> Option<PerfOutputScope> {
         None
@@ -313,6 +319,10 @@ pub struct PerfEvent {
     context: Option<PerfContextKey>,
     /// `attr.inherit`, which Linux requires to agree inside a task group.
     inherit: bool,
+    /// `attr.pinned` on this event (only a leader may carry it).
+    pinned: bool,
+    /// Pinned-group ERROR state. Linux exposes this as EOF from `read()`.
+    group_error: AtomicBool,
     /// Live members owned weakly so closing fds cannot form a cycle.
     members: PiMutex<Vec<Weak<PerfEvent>>>,
     /// Ordinary group leader, or `None` for a leader/standalone event.
@@ -332,6 +342,7 @@ impl PerfEvent {
         mut event: Box<dyn PerfEventOps>,
         context: Option<PerfContextKey>,
         inherit: bool,
+        pinned: bool,
     ) -> crate::StarryResult<Self> {
         let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
         event.set_sample_id(id);
@@ -360,6 +371,8 @@ impl PerfEvent {
             nonblocking: AtomicBool::new(false),
             context,
             inherit,
+            pinned,
+            group_error: AtomicBool::new(false),
             members: PiMutex::new(Vec::new()),
             group_leader: PiMutex::new(None),
         })
@@ -415,6 +428,29 @@ impl PerfEvent {
             }
             changed.push(member);
         }
+        Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn validate_pinned_group_capacity(&self) -> StarryResult<()> {
+        if !self.pinned {
+            self.group_error.store(false, Ordering::Release);
+            return Ok(());
+        }
+        let Some(PerfContextKey::Cpu(cpu)) = self.context else {
+            self.group_error.store(false, Ordering::Release);
+            return Ok(());
+        };
+        let mut required = self.event.lock().programmable_slots();
+        for member in self.live_members() {
+            required += member.event.lock().programmable_slots();
+        }
+        let capacity = percpu::cpu_info(cpu.as_usize()).map_or(0, |info| info.num_counters);
+        if required > capacity {
+            self.group_error.store(true, Ordering::Release);
+            return Err(StarryError::ResourceBusy);
+        }
+        self.group_error.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -582,6 +618,9 @@ impl Pollable for PerfEvent {
 
 impl FileLike for PerfEvent {
     fn read(&self, dst: &mut crate::file::IoDst) -> StarryResult<usize> {
+        if self.group_error.load(Ordering::Acquire) {
+            return Ok(0);
+        }
         // A hardware-PMU event reads as a sequence of native-endian `u64`s in
         // Linux's strict `read_format` order: always `value`; then
         // `time_enabled` if `PERF_FORMAT_TOTAL_TIME_ENABLED`; then
@@ -693,6 +732,8 @@ impl FileLike for PerfEvent {
         let req = PerfEventIoc::try_from(cmd).map_err(|_| StarryError::InvalidInput)?;
         match req {
             PerfEventIoc::Enable => {
+                #[cfg(target_arch = "aarch64")]
+                self.validate_pinned_group_capacity()?;
                 self.propagate_members(true)?;
                 if let Err(error) = self.set_enabled(true) {
                     let _ = self.propagate_members(false);
@@ -882,7 +923,12 @@ pub fn perf_event_open(
                 }
             }
         };
-        let perf_event = Arc::new(PerfEvent::new(event, Some(context), attr.inherit() != 0)?);
+        let perf_event = Arc::new(PerfEvent::new(
+            event,
+            Some(context),
+            attr.inherit() != 0,
+            attr.pinned() != 0,
+        )?);
         if let Some(leader) = group_leader {
             if leader.context != perf_event.context
                 || leader.inherit != perf_event.inherit
@@ -1005,9 +1051,14 @@ fn control_callback_runs_preemptible_for_test() -> bool {
     }
 
     let preemptible = Arc::new(AtomicBool::new(false));
-    let event = PerfEvent::new(Box::new(YieldingControl {
-        preemptible: Arc::clone(&preemptible),
-    }), None, false)
+    let event = PerfEvent::new(
+        Box::new(YieldingControl {
+            preemptible: Arc::clone(&preemptible),
+        }),
+        None,
+        false,
+        false,
+    )
     .expect("failed to create perf control test event");
     event
         .event

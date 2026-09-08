@@ -941,6 +941,21 @@ impl PerfEventOps for HwPerfEvent {
         !(state.per_task.is_none() && state.sampling.is_some())
     }
 
+    fn programmable_slots(&mut self) -> usize {
+        let state = self.control.state.lock();
+        if state.system_flexible.is_some()
+            || state
+                .per_task
+                .as_ref()
+                .is_some_and(|family| family.root().flexible)
+            || matches!(state.counter, Counter::Programmable(_))
+        {
+            1
+        } else {
+            0
+        }
+    }
+
     fn device_mmap(
         &mut self,
         len: usize,

@@ -252,6 +252,7 @@ fn perf_event_open_hw_per_task(
             scheduler_id,
             counter,
             flexible,
+            scheduler_tick_lease: flexible.then(|| thread.proc_data.acquire_perf_scheduler_tick()),
             event,
             exclude_user,
             exclude_kernel,
