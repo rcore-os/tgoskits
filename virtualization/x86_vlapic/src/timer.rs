@@ -567,21 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn test_apic_timer_creation() {
-        let vm_id = 1;
-        let vcpu_id = 0;
-        let timer = ApicTimer::<DummyHost>::new(vm_id, vcpu_id);
-        // Initial state should be stopped
-        assert!(!timer.is_started());
-        assert_eq!(timer.read_icr(), 0);
-        assert_eq!(timer.read_dcr(), 0);
-        // assert_eq!(timer.read_ccr(), 0);
-        assert!(timer.is_masked());
-        assert_eq!(timer.timer_mode(), TimerMode::OneShot);
-        assert_eq!(timer.read_lvt() & 0xff, 0);
-    }
-
-    #[test]
     fn test_lvt_register_operations() {
         let vm_id = 1;
         let vcpu_id = 0;

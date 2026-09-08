@@ -82,9 +82,9 @@ fn rdif_pcie_controller_initializes_bar_windows() {
         last_value: 0,
     });
 
-    ax_assert!(!controller.dma_coherent());
+    assert!(!controller.dma_coherent());
     controller.set_dma_coherent(true);
-    ax_assert!(controller.dma_coherent());
+    assert!(controller.dma_coherent());
 
     controller.set_mem32(
         PciMem32 {

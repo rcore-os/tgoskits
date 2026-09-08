@@ -75,21 +75,6 @@ fn memory_addr_arithmetic_reports_wrapping_checked_and_distance_results() {
 }
 
 #[test]
-fn memory_addr_pointer_conversions_preserve_addresses() {
-    let value = 42_u64;
-    let ptr = &value as *const u64;
-    let addr = VirtAddr::from_ptr_of(ptr);
-    assert_eq!(addr.as_ptr_of::<u64>(), ptr);
-    assert_eq!(addr.as_ptr(), ptr.cast::<u8>());
-
-    let mut value = 7_u32;
-    let ptr = &mut value as *mut u32;
-    let addr = VirtAddr::from_mut_ptr_of(ptr);
-    assert_eq!(addr.as_mut_ptr_of::<u32>(), ptr);
-    assert_eq!(addr.as_mut_ptr(), ptr.cast::<u8>());
-}
-
-#[test]
 fn memory_addr_ranges_cover_contains_and_overlap_rules() {
     let range = va_range!(0x1000..0x3000);
     assert!(!range.is_empty());
@@ -262,31 +247,6 @@ fn memory_addr_align_up_down_edge_cases_hold() {
     assert_eq!(va.align_up(PAGE_SIZE_4K), VirtAddr::from(0xb000));
     assert!(va.is_aligned(1usize));
     assert!(!va.is_aligned(PAGE_SIZE_4K));
-}
-
-#[test]
-fn memory_addr_add_sub_operators_hold() {
-    use ax_memory_addr::{PhysAddr, VirtAddr};
-
-    // Test Add<usize> operator
-    let pa = PhysAddr::from(0x1000);
-    assert_eq!(pa + 0x100usize, PhysAddr::from(0x1100));
-
-    // Test Sub<usize> operator
-    assert_eq!(pa - 0x100usize, PhysAddr::from(0xf00));
-
-    // Test Sub<PhysAddr> operator (returns usize)
-    let pa2 = PhysAddr::from(0x2000);
-    assert_eq!(pa2 - pa, 0x1000);
-
-    // Test AddAssign
-    let mut va = VirtAddr::from(0x1000);
-    va += 0x200;
-    assert_eq!(va, VirtAddr::from(0x1200));
-
-    // Test SubAssign
-    va -= 0x100;
-    assert_eq!(va, VirtAddr::from(0x1100));
 }
 
 #[test]

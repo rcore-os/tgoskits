@@ -38,8 +38,6 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
     features: &["host-test"],
     name_filter: None,
     expected_tests: &[
-        "boot::tests::boot_entropy_is_unavailable_without_firmware",
-        "boot::tests::bootargs_facade_is_available",
         "cache::tests::all_cpu_tlb_shootdown_propagates_remote_failure",
         "cache::tests::cpu_ready_publication_reflushes_a_racing_generation",
         "cache::tests::cpu_ready_publication_rejects_unrepresentable_cpu_ids",

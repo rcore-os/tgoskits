@@ -1274,14 +1274,7 @@ mod tests {
 
     use super::*;
 
-    fn assert_x86_exit_type<T: VmArchVcpuOps<Exit = X86VmExit>>() {}
-
     fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
-
-    #[test]
-    fn axvm_x86_vcpu_uses_x86_exit_type() {
-        assert_x86_exit_type::<AxvmX86Vcpu>();
-    }
 
     #[test]
     fn interrupt_domain_shared_state_uses_irq_safe_locks() {

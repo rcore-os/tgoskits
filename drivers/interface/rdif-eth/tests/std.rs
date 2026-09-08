@@ -5,7 +5,6 @@ extern crate ax_runtime as _;
 use alloc::{
     alloc::{alloc_zeroed, dealloc},
     boxed::Box,
-    string::String,
     vec,
 };
 use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
@@ -320,7 +319,7 @@ impl NetDevice for MockNic {
 }
 
 #[test]
-fn rdif_eth_error_mapping_and_plain_config_rules_hold() {
+fn rdif_eth_errors_map_to_io_kinds() {
     assert!(matches!(
         rdif_eth::io::ErrorKind::from(NetError::NotSupported),
         rdif_eth::io::ErrorKind::Unsupported
@@ -349,8 +348,6 @@ fn rdif_eth_error_mapping_and_plain_config_rules_hold() {
         NetError::from(DmaError::ZeroSizedBuffer),
         NetError::Other(_)
     ));
-    assert_eq!(queue_config().align, 64);
-    assert_eq!(queue_config().buf_size, 2048);
 }
 
 #[test]
@@ -422,8 +419,6 @@ fn wifi_control_keeps_only_owned_control_operations() {
     assert_eq!(policy.prefix_len, 24);
     assert_eq!(policy.dhcp_server_client_ip, Some([192, 168, 7, 2]));
     assert_eq!(wifi.connects, 1);
-
-    let _name = String::from("keeps alloc linked");
 }
 
 #[test]

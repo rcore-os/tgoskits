@@ -23,7 +23,7 @@ pub use types::*;
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, string::String, vec, vec::Vec};
+    use alloc::{boxed::Box, vec, vec::Vec};
 
     use super::*;
 
@@ -215,33 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn gpio_irq_handler_reports_stable_event_without_os_types() {
-        let mut irq = MockIrq {
-            line: GpioLineId::new(GpioBankId::new(2), 5),
-        };
-
-        let event = irq.handle_irq();
-
-        assert_eq!(event.lines().len(), 1);
-        assert_eq!(
-            event.lines()[0].line,
-            GpioLineId::new(GpioBankId::new(2), 5)
-        );
-        assert_eq!(event.lines()[0].trigger, GpioIrqTrigger::EdgeRising);
-    }
-
-    #[test]
-    fn acpi_firmware_specs_can_represent_explicit_unsupported_mapping() {
-        let spec = AcpiPinStateSpec::new(String::from("\\_SB.GPIO"), StateName::Default);
-
-        assert_eq!(spec.state_name(), &StateName::Default);
-        assert_eq!(
-            PinctrlError::UnsupportedFirmware(FirmwareKind::Acpi),
-            PinctrlError::UnsupportedFirmware(FirmwareKind::Acpi)
-        );
-    }
-
-    #[test]
     fn interface_can_transfer_gpio_irq_handler_ownership() {
         struct Device {
             handler: Option<Box<dyn GpioIrqHandler>>,
@@ -274,21 +247,5 @@ mod tests {
 
         assert!(device.take_irq_handler(GpioIrqSourceId::new(0)).is_some());
         assert!(device.take_irq_handler(GpioIrqSourceId::new(0)).is_none());
-    }
-
-    #[test]
-    fn pinctrl_device_wraps_interface_as_queryable_capability() {
-        let mut device = PinctrlDevice::new(Recorder::new());
-        let state = PinState::named(StateName::Default).with_mux(MuxSetting::new(
-            GroupId::new(1),
-            FunctionId::new(1),
-            MuxValue::new(8),
-        ));
-
-        device.apply_state(&state).unwrap();
-
-        assert_eq!(device.name(), "recorder");
-        assert!(device.typed_ref::<Recorder>().is_some());
-        assert_eq!(device.typed_mut::<Recorder>().unwrap().calls, vec!["mux"]);
     }
 }

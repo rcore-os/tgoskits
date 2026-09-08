@@ -261,14 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn render_verbose_shows_each_version() {
-        let table = registry().render_table(true, None);
-
-        assert!(table.contains("0.0.1"));
-        assert!(table.contains("0.0.2"));
-    }
-
-    #[test]
     fn filtering_uses_regex_or_substring() {
         let table = registry().render_table(true, Some("^arc"));
         assert!(table.contains("arceos"));

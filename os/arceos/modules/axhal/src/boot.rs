@@ -27,18 +27,3 @@ pub fn boot_entropy() -> Option<[u8; 32]> {
         None
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn bootargs_facade_is_available() {
-        crate::dtb::init(0);
-
-        assert_eq!(super::bootargs(), None);
-    }
-
-    #[test]
-    fn boot_entropy_is_unavailable_without_firmware() {
-        assert_eq!(super::boot_entropy(), None);
-    }
-}

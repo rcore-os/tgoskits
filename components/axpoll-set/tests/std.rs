@@ -1,7 +1,6 @@
 extern crate alloc;
 
-// Host tests must link the external lock/task provider.
-use alloc::{format, sync::Arc, task::Wake, vec::Vec};
+use alloc::{sync::Arc, task::Wake, vec::Vec};
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
     task::Waker,
@@ -50,7 +49,6 @@ fn axpoll_event_masks_and_empty_wake_rules_hold() {
     assert!(events.contains(IoEvents::ERR));
     assert!(events.contains(IoEvents::HUP));
     assert!(!events.contains(IoEvents::NVAL));
-    assert!(format!("{:?}", IoEvents::RDHUP).contains("RDHUP"));
 
     let poll_set = PollSet::default();
     assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 0);

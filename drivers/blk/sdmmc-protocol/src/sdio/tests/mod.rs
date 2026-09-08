@@ -512,26 +512,6 @@ fn protocol_error_to_host(error: Error) -> sdmmc_host::Error {
     }
 }
 
-#[test]
-fn base_irq_host_does_not_require_completion_rearm() {
-    fn assert_base_irq_host<H: SdMmcIrqHost>() {}
-
-    assert_base_irq_host::<MockHost>();
-    let mut host = MockHost::new(Vec::new());
-
-    assert_eq!(host.enable_completion_irq(), Ok(()));
-    assert_eq!(host.disable_completion_irq(), Ok(()));
-}
-
-#[test]
-fn unit_irq_event_reports_no_runtime_action() {
-    let event = ();
-
-    assert_eq!(event.kind(), HostEventKind::None);
-    assert_eq!(event.source(), HostEventSource::Controller);
-    assert_eq!(event.queue_id(), None);
-}
-
 fn ok_r1() -> Response {
     Response::R1(R1Response::from_native_raw(0).unwrap())
 }

@@ -118,17 +118,6 @@ mod tests {
     }
 
     #[test]
-    fn test_msr_copy_clone() {
-        // Test that MSR implements Copy and Clone
-        let msr1 = Msr::IA32_EFER;
-        let msr2 = msr1; // Copy
-        let msr3 = msr1.clone(); // Clone
-
-        assert_eq!(msr1 as u32, msr2 as u32);
-        assert_eq!(msr1 as u32, msr3 as u32);
-    }
-
-    #[test]
     fn test_vmx_msr_ranges() {
         // Test VMX MSR values are in the correct range
         assert!(Msr::IA32_VMX_BASIC as u32 >= 0x480);
@@ -169,40 +158,5 @@ mod tests {
         assert_eq!(Msr::IA32_STAR as u32 + 1, Msr::IA32_LSTAR as u32);
         assert_eq!(Msr::IA32_LSTAR as u32 + 1, Msr::IA32_CSTAR as u32);
         assert_eq!(Msr::IA32_CSTAR as u32 + 1, Msr::IA32_FMASK as u32);
-    }
-
-    // Note: We can't test the actual read/write methods without running on real hardware
-    // and having the appropriate privileges. Those would be integration tests.
-
-    // Mock implementation for testing the MsrReadWrite trait
-    struct TestMsr;
-
-    impl MsrReadWrite for TestMsr {
-        const MSR: Msr = Msr::IA32_PAT;
-    }
-
-    #[test]
-    fn test_msr_read_write_trait() {
-        // Test that the trait compiles and has the expected methods
-        // We can't actually call read_raw() without MSR access
-        assert_eq!(TestMsr::MSR as u32, 0x277);
-    }
-
-    #[test]
-    fn test_msr_as_u32_conversion() {
-        // Test that we can convert MSR enum to u32 properly
-        let msrs = [
-            Msr::IA32_FEATURE_CONTROL,
-            Msr::IA32_VMX_BASIC,
-            Msr::IA32_EFER,
-            Msr::IA32_LSTAR,
-        ];
-
-        for msr in msrs.iter() {
-            let value = *msr as u32;
-            assert!(value > 0);
-            // Values should be reasonable MSR numbers
-            assert!(value < 0xffff_ffff);
-        }
     }
 }

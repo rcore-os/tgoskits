@@ -108,7 +108,6 @@ members = [
     "test-suit/arceos/loongarch/unaligned-fixup",
     "test-suit/arceos/axtest/sg2002-usb-msc",
     "test-suit/arceos/rust",
-    "test-suit/arceos/std/smoke",
     "apps/arceos/*",
     "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",

@@ -426,10 +426,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-test-smoke"
-version = "0.1.0"
-
-[[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [

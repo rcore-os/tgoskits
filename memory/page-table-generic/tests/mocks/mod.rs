@@ -49,16 +49,6 @@ bitflags::bitflags! {
     }
 }
 
-bitflags::bitflags! {
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct AccessFlags: usize {
-        const READ = 1 << 0;
-        const WRITE = 1 << 1;
-        const EXECUTE = 1 << 2;
-        const LOWER = 1 << 3;
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MemAttributes {
     #[default]
@@ -66,12 +56,6 @@ pub enum MemAttributes {
     PerCpu,
     Device,
     Uncached,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MemConfig {
-    pub access: AccessFlags,
-    pub attrs: MemAttributes,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -611,56 +595,6 @@ impl PteImpl {
             mem_attr: MemAttributes::Normal,
             ..Default::default()
         }
-    }
-
-    /// 获取页表项的内存配置
-    ///
-    /// 这是一个便捷方法，将细粒度的 PageTableEntry trait 方法
-    /// 组合成高级别的 MemConfig 结构。
-    pub fn mem_config(&self) -> MemConfig {
-        let config = self.to_config(false);
-        let mut access = AccessFlags::empty();
-
-        // 根据页表项状态设置访问权限
-        if config.writable {
-            access |= AccessFlags::WRITE;
-        }
-        if config.executable {
-            access |= AccessFlags::EXECUTE;
-        }
-        if config.lower {
-            access |= AccessFlags::LOWER;
-        }
-
-        // 假设所有有效的页表项都是可读的
-        // （如果架构不支持不可读的页，则总是设置此位）
-        if config.valid {
-            access |= AccessFlags::READ;
-        }
-
-        MemConfig {
-            access,
-            attrs: config.mem_attr,
-        }
-    }
-
-    /// 设置页表项的内存配置
-    ///
-    /// 这是一个便捷方法，从高级别的 MemConfig 结构中提取配置
-    /// 并调用相应的 PageTableEntry trait 方法。
-    pub fn set_mem_config(&mut self, config: MemConfig) {
-        let current_config = self.to_config(false);
-
-        // 创建新的配置
-        let new_config = PteConfig {
-            writable: config.access.contains(AccessFlags::WRITE),
-            executable: config.access.contains(AccessFlags::EXECUTE),
-            lower: config.access.contains(AccessFlags::LOWER),
-            mem_attr: config.attrs,
-            ..current_config
-        };
-
-        *self = Self::from_config(new_config);
     }
 }
 

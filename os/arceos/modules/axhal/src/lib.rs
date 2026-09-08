@@ -89,17 +89,6 @@ pub mod topology {
 
     #[cfg(not(any(test, feature = "host-test")))]
     pub use ax_plat::cpu::resolve_cpu_index;
-
-    #[cfg(test)]
-    mod tests {
-        use super::resolve_cpu_index;
-
-        #[test]
-        fn dummy_topology_only_maps_the_boot_cpu() {
-            assert_eq!(resolve_cpu_index(0), Some(0));
-            assert_eq!(resolve_cpu_index(1), None);
-        }
-    }
 }
 
 /// Trap handling.

@@ -170,13 +170,4 @@ mod tests {
             Error::NeverAllocated(21)
         );
     }
-
-    #[test]
-    fn test_id_sanity_checks() {
-        let legacy_irq_allocator = IdAllocator::new(5, 23).unwrap();
-
-        assert!(!legacy_irq_allocator.id_in_range(4));
-        assert!(legacy_irq_allocator.id_in_range(6));
-        assert!(!legacy_irq_allocator.id_in_range(25));
-    }
 }

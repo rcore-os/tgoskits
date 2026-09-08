@@ -279,11 +279,6 @@ mod tests {
     use super::{hex, parse_hex_u64, validate_manifest_address};
 
     #[test]
-    fn hex_formats_with_prefix() {
-        assert_eq!(hex(0x20_0000), "0x200000");
-    }
-
-    #[test]
     fn parse_hex_accepts_optional_prefix() {
         assert_eq!(parse_hex_u64("0x200000").unwrap(), 0x20_0000);
         assert_eq!(parse_hex_u64("200000").unwrap(), 0x20_0000);

@@ -86,15 +86,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn block_irq_outcomes_keep_handled_and_wake_distinct() {
-        let handled = BlockIrqOutcome::Handled;
-        let copied = handled;
-
-        assert_eq!(copied, BlockIrqOutcome::Handled);
-        assert_ne!(handled, BlockIrqOutcome::Wake);
-    }
-
-    #[test]
     fn irq_registrar_readiness_starts_unpublished() {
         let ready = AtomicBool::new(false);
 

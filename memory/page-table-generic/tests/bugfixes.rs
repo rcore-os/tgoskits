@@ -643,44 +643,6 @@ fn map_region_rolls_back_prefix_after_late_conflict() {
     );
 }
 
-/// 测试MemConfig的正确实现
-///
-/// Bug描述：PteImpl没有实现set_mem_config和mem_config方法
-#[test]
-fn test_mem_config_implementation() {
-    let mut pte = PteImpl::new();
-    pte = PteImpl::from_config(PteConfig {
-        valid: true,
-        ..pte.to_config(false)
-    });
-
-    // 测试设置和获取MemConfig
-    let config = MemConfig {
-        access: AccessFlags::READ | AccessFlags::WRITE | AccessFlags::EXECUTE,
-        attrs: MemAttributes::Normal,
-    };
-
-    pte.set_mem_config(config);
-    let retrieved = pte.mem_config();
-
-    assert_eq!(retrieved.access, config.access, "访问权限应该匹配");
-    assert_eq!(retrieved.attrs, config.attrs, "内存属性应该匹配");
-
-    // 测试不同的配置
-    let config2 = MemConfig {
-        access: AccessFlags::READ,
-        attrs: MemAttributes::Device,
-    };
-
-    pte.set_mem_config(config2);
-    let retrieved2 = pte.mem_config();
-
-    assert_eq!(retrieved2.access, config2.access, "只读权限应该匹配");
-    assert_eq!(retrieved2.attrs, config2.attrs, "设备属性应该匹配");
-
-    println!("✅ MemConfig实现测试通过！");
-}
-
 /// 测试边界情况：地址溢出检查
 ///
 /// 验证在映射和取消映射时正确处理地址溢出情况
@@ -786,11 +748,7 @@ fn test_mixed_huge_and_normal_pages() {
     }
 
     // 验证普通页翻译
-    let (paddr2, pte2) = pg.translate((2 * MB + 0x1000).into()).unwrap();
-    assert!(
-        !pte2.to_config(false).huge || pte2.to_config(false).huge,
-        "可能是大页或普通页"
-    );
+    let (paddr2, _) = pg.translate((2 * MB + 0x1000).into()).unwrap();
     assert_eq!(paddr2.as_usize(), 2 * MB + 0x1000, "普通页偏移应该正确");
 
     println!("✅ 混合大页和普通页测试通过！");

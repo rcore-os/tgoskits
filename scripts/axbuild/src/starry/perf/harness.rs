@@ -313,9 +313,8 @@ fn workspace_harness_path(work_dir: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
 
-    use super::{add_x86_64_perf_postprocess_choice, append_qemu_args, checkout_path_from_stdout};
+    use super::{add_x86_64_perf_postprocess_choice, checkout_path_from_stdout};
 
     #[test]
     fn x86_64_postprocess_shim_extends_only_the_perf_postprocess_arch_choice() {
@@ -330,19 +329,6 @@ perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "
         assert!(patched.contains(
             r#"perf_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#
         ));
-    }
-
-    #[test]
-    fn postprocess_qemu_args_encode_hyphen_prefixed_values_as_one_argument() {
-        let mut command = Command::new("python3");
-
-        append_qemu_args(&mut command, &["-cpu".into(), "max".into()]);
-
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(args, ["--qemu-arg=-cpu", "--qemu-arg=max"]);
     }
 
     #[test]

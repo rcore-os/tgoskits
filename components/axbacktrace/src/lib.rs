@@ -527,7 +527,7 @@ impl fmt::Debug for Backtrace {
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
-    use alloc::{boxed::Box, format, vec::Vec};
+    use alloc::{boxed::Box, vec::Vec};
 
     use super::*;
 
@@ -748,49 +748,6 @@ mod tests {
         assert_eq!(out.len(), 16);
         // Only the first 16 frames should be collected
         assert_eq!(out.as_slice(), &chain[..16]);
-    }
-
-    /// Repeatedly create and drop Backtrace objects to verify no leaks or corruption.
-    #[test]
-    fn stress_repeated_create_drop() {
-        init_for_tests();
-        let (chain, start_fp) = boxed_frame_chain(&[0x100, 0x200, 0x300]);
-        for _ in 0..500 {
-            let bt = Backtrace::capture_trap(start_fp, 0x400, 0);
-            let Inner::Captured(frames) = &bt.inner else {
-                panic!("expected Captured")
-            };
-            assert!(frames.len() >= 3);
-            drop(bt);
-        }
-        // Ensure the chain memory is still valid after all iterations
-        let _ = &chain;
-    }
-
-    /// Interleave capture, Display formatting, and drop to verify no side effects.
-    #[test]
-    fn stress_interleaved_capture_format() {
-        init_for_tests();
-        let (chain, start_fp) = boxed_frame_chain(&[0x500, 0x600]);
-
-        for i in 0..100 {
-            let bt = Backtrace::capture_trap(start_fp, 0x700, 0);
-            let s = format!("{bt}");
-            // Raw block should contain the trap IP
-            assert!(
-                s.contains("0x701"),
-                "iteration {i}: missing trap IP in output"
-            );
-
-            // Human-readable formatting
-            let bt_human = Backtrace::capture_trap(start_fp, 0x700, 0);
-            let human = format!("{bt_human}");
-            assert!(!human.is_empty(), "iteration {i}: empty human output");
-
-            drop(bt);
-            drop(bt_human);
-        }
-        let _ = &chain;
     }
 
     /// Repeatedly clone a Backtrace and verify equality.

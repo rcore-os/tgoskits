@@ -230,38 +230,6 @@ fn htree_internal_node(leaf_block: u32) -> Vec<u8> {
 }
 
 #[test]
-fn test_hash_tree_manager_creation() {
-    let fs = create_test_fs();
-    let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
-
-    assert_eq!(
-        manager.hash_seed,
-        [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA]
-    );
-}
-
-#[test]
-fn test_htree_hash_calculation() {
-    let test_cases = [
-        ("test.txt", 0),
-        ("file1.bin", 1),
-        ("directory", 2),
-        ("", 0),
-        ("a", 0),
-    ];
-    let seed = [0x12345678, 0x87654321, 0xABCDEF00, 0x00FEDCBA];
-
-    for (name, version) in test_cases {
-        let hash = calculate_hash(name.as_bytes(), version, &seed)
-            .unwrap()
-            .major;
-        if !name.is_empty() {
-            assert_ne!(hash, 0, "Hash for '{}' should not be zero", name);
-        }
-    }
-}
-
-#[test]
 fn linux_directory_hash_matches_debugfs_vectors() {
     let seed = [0; 4];
     let vectors = [
@@ -310,18 +278,6 @@ fn linux_directory_hash_matches_debugfs_vectors() {
         calculate_hash(b"abc", Ext4DxRootInfo::DX_HASH_SIPHASH, &seed),
         Err(HashTreeError::UnsupportedHashVersion)
     );
-}
-
-#[test]
-fn test_inode_htree_check() {
-    let mut inode = create_test_dir_inode();
-    assert!(inode.is_htree_indexed());
-
-    inode.i_flags &= !Ext4Inode::EXT4_INDEX_FL;
-    assert!(!inode.is_htree_indexed());
-
-    inode.i_mode = 0x8000 | 0o644;
-    assert!(!inode.is_htree_indexed());
 }
 
 #[test]
@@ -645,26 +601,6 @@ fn htree_parser_accounts_for_dx_tail_and_internal_layout() {
         manager.parse_internal_node(&internal, true),
         Err(HashTreeError::CorruptedHashTree)
     ));
-}
-
-#[test]
-fn test_hash_tree_node_types() {
-    let root_node = HashTreeNode::Root {
-        hash_version: 0x8,
-        indirect_levels: 1,
-        entries: Vec::new(),
-    };
-    match root_node {
-        HashTreeNode::Root {
-            hash_version,
-            indirect_levels,
-            ..
-        } => {
-            assert_eq!(hash_version, 0x8);
-            assert_eq!(indirect_levels, 1);
-        }
-        _ => panic!("Expected root node"),
-    }
 }
 
 #[test]

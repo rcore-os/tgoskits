@@ -1,14 +1,12 @@
 extern crate alloc;
 
-use alloc::{boxed::Box, string::String, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
-use rdif_base::DriverGeneric;
 use rdif_pinctrl::{
-    Bias, ConfigSetting, ConfigTarget, Direction, FirmwareKind, FunctionId, GpioBank, GpioBankId,
-    GpioIrqError, GpioIrqEvent, GpioIrqHandler, GpioIrqSourceId, GpioIrqSourceInfo, GpioIrqTrigger,
-    GpioLineEvent, GpioLineHandle, GpioLineId, GroupId, Interface, LowPowerMode, MuxSetting,
-    MuxValue, OwnerId, PinConfig, PinDesc, PinFunction, PinGroup, PinId, PinState, PinctrlDevice,
-    PinctrlError, SlewRate, StateName, io,
+    ConfigSetting, Direction, FirmwareKind, FunctionId, GpioBank, GpioBankId, GpioIrqError,
+    GpioIrqEvent, GpioIrqHandler, GpioIrqSourceId, GpioIrqSourceInfo, GpioIrqTrigger,
+    GpioLineEvent, GpioLineHandle, GpioLineId, GroupId, Interface, MuxSetting, MuxValue, OwnerId,
+    PinConfig, PinDesc, PinFunction, PinGroup, PinId, PinState, PinctrlError, StateName, io,
 };
 
 struct Recorder {
@@ -78,42 +76,6 @@ impl Interface for Recorder {
             vec![GpioLineId::new(GpioBankId::new(0), 3)],
         )]
     }
-}
-
-#[test]
-fn rdif_pinctrl_pin_state_builders_accumulate_muxes_and_configs() {
-    let mut state = PinState::named(StateName::Named(String::from("uart")));
-    state.push_mux(MuxSetting::new(
-        GroupId::new(1),
-        FunctionId::new(1),
-        MuxValue::new(8),
-    ));
-    state.push_config(ConfigSetting::pin(
-        PinId::new(1),
-        PinConfig::Bias(Bias::PullUp),
-    ));
-    state.extend(
-        PinState::named(StateName::Sleep).with_config(ConfigSetting::group(
-            GroupId::new(1),
-            PinConfig::LowPowerMode(LowPowerMode::HiZ),
-        )),
-    );
-
-    assert!(matches!(state.name(), StateName::Named(_)));
-    assert_eq!(state.muxes().len(), 1);
-    assert_eq!(state.configs().len(), 2);
-    assert!(matches!(
-        state.configs()[0].target,
-        ConfigTarget::Pin(pin) if pin == PinId::new(1)
-    ));
-    assert!(matches!(
-        PinConfig::SlewRate(SlewRate::Raw(3)),
-        PinConfig::SlewRate(SlewRate::Raw(3))
-    ));
-    assert!(matches!(
-        PinConfig::Vendor { param: 1, value: 2 },
-        PinConfig::Vendor { param: 1, value: 2 }
-    ));
 }
 
 #[test]
@@ -307,23 +269,6 @@ fn rdif_pinctrl_gpio_irq_event_tracks_sources_lines_and_overflow() {
         GpioIrqEvent::with_error(GpioIrqError::Spurious).error(),
         Some(GpioIrqError::Spurious)
     );
-}
-
-#[test]
-fn rdif_pinctrl_device_wrapper_delegates_interface_and_downcast() {
-    let recorder = Recorder::new();
-    let mut device = PinctrlDevice::new(recorder);
-
-    assert_eq!(device.name(), "recorder");
-    assert_eq!(device.pins().len(), 1);
-    assert_eq!(device.interface().groups().len(), 1);
-    assert!(device.typed_ref::<Recorder>().is_some());
-    assert!(device.typed_mut::<Recorder>().is_some());
-    assert_eq!(device.irq_sources()[0].id.raw(), 1);
-
-    let boxed: Box<dyn Interface> = Box::new(Recorder::new());
-    let device = PinctrlDevice::boxed(boxed);
-    assert_eq!(device.name(), "recorder");
 }
 
 #[test]

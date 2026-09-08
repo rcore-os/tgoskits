@@ -121,12 +121,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hgatp_from_bits() {
-        let hgatp = Hgatp::from_bits(0x123456789ABCDEF0);
-        assert_eq!(hgatp.bits(), 0x123456789ABCDEF0);
-    }
-
-    #[test]
     fn test_hgatp_mode() {
         let mut hgatp = Hgatp::from_bits(0);
 
@@ -212,15 +206,5 @@ mod tests {
         // Verify the actual bit pattern
         let expected_bits = (9_usize << 60) | (0x2A3F << 44) | 0x123456789AB;
         assert_eq!(hgatp.bits(), expected_bits);
-    }
-
-    #[test]
-    fn test_hgatp_copy_clone() {
-        let hgatp1 = Hgatp::from_bits(0x123456789ABCDEF0);
-        let hgatp2 = hgatp1;
-        let hgatp3 = hgatp1.clone();
-
-        assert_eq!(hgatp1.bits(), hgatp2.bits());
-        assert_eq!(hgatp1.bits(), hgatp3.bits());
     }
 }

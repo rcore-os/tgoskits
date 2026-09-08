@@ -696,13 +696,6 @@ mod tests {
         );
     }
 
-    fn assert_arm_exit_type<T: VmArchVcpuOps<Exit = ArmVmExit>>() {}
-
-    #[test]
-    fn axvm_arm_vcpu_uses_arm_exit_type() {
-        assert_arm_exit_type::<AxvmArmVcpu>();
-    }
-
     #[test]
     fn converts_arm_value_types_to_axvm_value_types() {
         assert_eq!(

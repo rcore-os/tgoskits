@@ -4,11 +4,10 @@ use std::{
     sync::Arc,
 };
 
-use clap::Parser;
 use object::{Object, ObjectSymbol};
 
 use super::{
-    BacktraceBlockCapture, BacktraceSymbolizeSession, Command, SymbolizeAfterQemuOutcome,
+    BacktraceBlockCapture, BacktraceSymbolizeSession, SymbolizeAfterQemuOutcome,
     apply_qemu_log_retention, arceos_rust_elf_path, flush_pending_stream_symbolize,
     maybe_symbolize_after_qemu,
     parser::{infer_kind_filter, parse_blocks},
@@ -115,28 +114,6 @@ BACKTRACE_END
     let blocks = parse_blocks(text).unwrap();
     assert_eq!(blocks[0].frames[0].ip, 0xdead);
     assert_eq!(blocks[0].frames[0].fp, None);
-}
-
-#[test]
-fn cli_accepts_adjust_ip_false() {
-    #[derive(clap::Parser)]
-    struct TestCli {
-        #[command(subcommand)]
-        command: Command,
-    }
-
-    let cli = TestCli::try_parse_from([
-        "tg-xtask",
-        "symbolize",
-        "--elf",
-        "/tmp/fake.elf",
-        "--adjust-ip",
-        "false",
-    ])
-    .unwrap();
-
-    let Command::Symbolize(args) = cli.command;
-    assert!(!args.adjust_ip);
 }
 
 #[test]

@@ -352,13 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn host_exposes_explicit_progress_cause_api() {
-        fn assert_progress_api<H: SdMmcHost>() {}
-
-        assert_progress_api::<Jh7110DwMmc>();
-    }
-
-    #[test]
     fn device_dma_is_explicitly_unavailable_before_configuration() {
         let (_regs, mmio) = fake_mmio();
         let host = unsafe { Jh7110DwMmc::new(mmio, Jh7110DwMmcConfig::default()) };

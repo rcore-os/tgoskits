@@ -488,13 +488,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_grf_type() {
-        assert_eq!(GrfType::UsbdpPhy, GrfType::UsbdpPhy);
-        assert_eq!(GrfType::Usb, GrfType::Usb);
-        assert_ne!(GrfType::UsbdpPhy, GrfType::Usb);
-    }
-
-    #[test]
     fn test_register_bitfields() {
         // 测试 USBDPPHY_LOW_PWRN 位字段
         let value =

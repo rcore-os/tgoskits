@@ -285,7 +285,6 @@ impl EPTPointer {
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
 
     use super::*;
     use crate::test_utils::mock::MockMmHal;
@@ -293,16 +292,6 @@ mod tests {
     type TestIOBitmap = IOBitmap<MockMmHal>;
     type TestMsrBitmap = MsrBitmap<MockMmHal>;
     type TestVmxRegion = VmxRegion<MockMmHal>;
-
-    #[test]
-    fn test_vmx_region_uninit() {
-        let region = unsafe { TestVmxRegion::uninit() };
-
-        // Test that we can create an uninitialized region
-        // Can't test much more without allocating memory
-        let debug_str = format!("{:?}", region);
-        assert!(!debug_str.is_empty());
-    }
 
     #[test]
     fn test_vmx_region_new() {

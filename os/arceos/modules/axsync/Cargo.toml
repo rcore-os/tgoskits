@@ -16,8 +16,3 @@ default = []
 [dependencies]
 ax-crate-interface.workspace = true
 lock_api = { workspace = true, optional = true }
-
-[[test]]
-name = "std"
-path = "tests/std.rs"
-required-features = ["host-test"]

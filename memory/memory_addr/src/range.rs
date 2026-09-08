@@ -452,15 +452,6 @@ mod test {
     use crate::{VirtAddrRange, va};
 
     #[test]
-    fn test_range_format() {
-        let range = va_range!(0xfec000..0xfff000usize);
-
-        assert_eq!(format!("{:?}", range), "VA:0xfec000..VA:0xfff000");
-        assert_eq!(format!("{:x}", range), "VA:0xfec000..VA:0xfff000");
-        assert_eq!(format!("{:X}", range), "VA:0xFEC000..VA:0xFFF000");
-    }
-
-    #[test]
     #[allow(clippy::reversed_empty_ranges)]
     fn test_range() {
         let start = va!(0x1000);

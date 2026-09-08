@@ -109,8 +109,3 @@ pub use fxmac_dma::*;
 // Re-exports for PHY interface
 pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {}
-}

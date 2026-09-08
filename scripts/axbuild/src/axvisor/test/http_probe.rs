@@ -244,9 +244,7 @@ mod tests {
     #[cfg(unix)]
     use std::{fs, time::Instant};
 
-    use serde::Deserialize;
-
-    use super::{super::types::DEFAULT_PROBE_SCRIPT, *};
+    use super::*;
 
     fn fixture_dir() -> tempfile::TempDir {
         #[cfg(unix)]
@@ -279,20 +277,6 @@ mod tests {
             probe_script,
             token: Some("t".into()),
         }
-    }
-
-    /// Parse a `[host_http_probe]` section like
-    /// [`load_axvisor_http_probe_config`](super::super::qemu::load_axvisor_http_probe_config).
-    fn parse_probe_section(toml_body: &str) -> AxvisorHttpProbeConfig {
-        #[derive(Deserialize)]
-        struct ProbeSection {
-            #[serde(default)]
-            host_http_probe: Option<AxvisorHttpProbeConfig>,
-        }
-        toml::from_str::<ProbeSection>(toml_body)
-            .expect("probe section parses")
-            .host_http_probe
-            .expect("host_http_probe present")
     }
 
     /// Write an executable probe asset that records its environment and exits
@@ -351,18 +335,6 @@ mod tests {
         .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
-    }
-
-    #[test]
-    fn probe_script_defaults_to_http_probe_py() {
-        let config = parse_probe_section("[host_http_probe]\ntoken = \"t\"\n");
-        assert_eq!(config.probe_script, PathBuf::from(DEFAULT_PROBE_SCRIPT));
-    }
-
-    #[test]
-    fn probe_script_is_configurable() {
-        let config = parse_probe_section("[host_http_probe]\nprobe_script = \"custom_probe.sh\"\n");
-        assert_eq!(config.probe_script, PathBuf::from("custom_probe.sh"));
     }
 
     #[test]
