@@ -85,7 +85,7 @@ hard callback 只调用对应 `NetHardIrqEndpoint::handle_irq()`，将
 
 ### 2.3 Unix 命名空间
 
-Unix domain socket 的路径名绑定需要文件系统命名空间协助。`ax-runtime` 在启用 `fs-ng` 时注册 namespace adapter：
+Unix domain socket 的路径名绑定需要文件系统命名空间协助。`ax-runtime` 在启用 `net` 和 `fs` feature（`fs` 经 `ax-fs-ng` 提供文件系统）时注册 namespace adapter：
 
 ```rust
 ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);

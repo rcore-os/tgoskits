@@ -5,75 +5,106 @@ sidebar_label: "概览"
 
 # 驱动框架概览
 
-TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它向上为 ArceOS、StarryOS、Axvisor 提供统一的设备发现、注册、查询和领域能力接口，向下通过分层结构适配真实硬件。`rdrive` 负责设备探测（probe）、驱动注册（register）和类型化设备查询；`rdif-*` 负责各设备类别的能力边界（capability boundary）；具体硬件驱动 core 保持 `no_std` 且不耦合 OS runtime。
+TGOSKits 的驱动框架连接平台设备描述、硬件实现和系统消费者。`rdrive` 负责发现与类型化注册，`rdif-*` 表达领域能力，平台绑定提供寄存器、DMA 和中断资源，运行时按设备合同推进操作并维护资源生命周期。框架统一接入边界，不要求所有驱动具有相同的队列、线程或关闭状态机。
 
-旧的 `ax-driver` 全局容器模型（`AllDevices`、`AxDeviceContainer`、`Ax*Device`）已移除。宿主物理设备初始化与交付主线不再经过 legacy driver crates；块设备路径的 runtime 已删除，统一以 `rdif-block` 作为 block capability boundary。`ax-driver` 现在作为共享驱动聚合 crate 接入 `rdrive + rdif`，负责 OS glue（probe、iomap、IRQ 注册、DMA 适配）。
+## 1. 框架范围
 
-## 源码
+管理对象包括存储、网络、显示、输入、串口、USB host，以及中断、时钟、复位、电源、引脚、PCIe 和定时器等平台控制器。设备可能是真实硬件，也可能是宿主操作系统消费的 VirtIO 设备。
 
-驱动相关源码分布在 `drivers/` 下，按职责分层组织：
+### 1.1 设备与平台能力
 
-| 目录 | 角色 | 关键内容 |
+普通外设消费平台控制器提供的资源；平台控制器本身也可以通过 `rdrive` 注册。`DriverRegister` 描述可用探测回调，`PlatformDevice` 发布实例，`DeviceId` 和外层 Rust 类型共同定位已注册对象。
+
+时钟提供者被查询后可直接执行控制操作，块控制器交付硬件队列，USB host 继续枚举外部设备，显示对象提供帧缓冲借用。注册表不会把这些能力变成相同的数据收发接口。
+
+### 1.2 系统边界
+
+ArceOS 的 HAL 与 `ax-runtime` 组织平台初始化、探测和领域启动；StarryOS 在相关宿主能力上建立用户态设备语义；Axvisor 的宿主模块按需消费平台设备。`virtualization/axdevice` 与 `virtualization/axdevice_base` 的 guest 模拟设备属于虚拟化层，不是宿主 probe 自动生成的对象。
+
+挂载策略、IP 路由、Linux ioctl 和 guest 中断注入由各自系统或领域维护。硬件核心不应通过判断当前操作系统来接管这些策略。
+
+## 2. 架构组成
+
+公共机制按状态归属划分，而不是为每个设备类别建立一套独立框架。下面的结构同时适用于直接控制的 provider、拥有队列的控制器和继续发现下游设备的总线主机。
+
+### 2.1 组件关系
+
+平台描述经发现后端和绑定层转为实例，能力契约约束实例的操作，运行时将其转换为系统可消费的服务。IRQ 和 DMA 的生命周期跨越绑定与运行期，不能归入一次性的 probe 日志。
+
+![驱动框架的公共组成与不同执行模型](images/driver-framework.svg)
+
+图中的运行时是职责概念，不是一个适用于所有驱动的公共 crate。`ax-fs-ng::block::runtime`、USB `Core`、显示输入适配和 `ax-net::queue_runtime` 分别实现不同合同。
+
+### 2.2 状态归属
+
+每种状态需要有明确所有者。注册身份、资源来源、硬件状态和上层服务状态相互关联，但不能由一张全局设备表代替。
+
+| 状态 | 主要保存位置 | 不能替代的状态 |
 | --- | --- | --- |
-| `drivers/rdrive/` | 设备管理框架 | `Manager`、`DriverRegister`、`PlatformDevice`、`probe::*` |
-| `drivers/rdrive-macros/` | 注册宏 | `module_driver!`、linker section 收集 |
-| `drivers/interface/rdif-*/` | 能力边界 | `rdif-block`、`rdif-eth`、`rdif-display`、`rdif-input`、`rdif-vsock`、`rdif-intc`、`rdif-pinctrl`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial`、`rdif-pwm`、`rdif-power` |
-| `drivers/ax-driver/` | OS glue / ArceOS 适配 | VirtIO、PCI、SoC、USB、serial、block/net/display/input/vsock binding |
-| `drivers/blk/` | 块设备 driver core | `nvme-driver`、`sdhci-host`、`dwmmc-host`、`sdmmc-protocol`、`phytium-mci-host`、`ramdisk`；core 存在不代表 `ax-driver` 已公开注册 |
-| `drivers/net/` | 网卡 driver core | `rd-net`、`fxmac_rs`、`eth-intel`、`realtek-rtl8125` |
-| `drivers/gpu/` | 显示/加速 driver core | `rockchip-rga` |
-| `drivers/intc/` | 中断控制器 driver core | `arm-gic-driver`、`riscv_plic` |
-| `drivers/pci/` | PCIe driver core | `pcie`、`rk3588-pci` |
-| `drivers/usb/` | USB driver core | `usb-host`（CrabUSB/xHCI）、`usb-device`、`usb-serial`、`usb-if` |
-| `drivers/serial/` | 串口 driver core | `some-serial` |
-| `drivers/soc/` | SoC 平台 driver core | `rockchip`（clk/pinctrl/pm） |
-| `drivers/tpu/`、`drivers/npu/`、`drivers/vpu/` | AI 加速 driver core | `sg2002-tpu`、`k230-kpu`、`rockchip-npu`、`rockchip-jpeg` |
-| `drivers/pwm/`、`drivers/rtc/` | 平台设备 driver core | `rockchip-pwm`、`arm_pl031` |
-| `drivers/firmware/` | 固件协议 | `arm-scmi-rs` |
-| `drivers/examples/` | 设备树样例 | `enumerate/` |
-| `drivers/data/` | 测试数据 | `qemu.dtb` / `qemu.dts` |
-| `drivers/test_crates/` | 测试 crate | `driver-tests/` |
+| 探测规则 | `DriverRegister`、发现后端 | 实际硬件存在性 |
+| 注册身份 | `Descriptor`、`DeviceContainer` | 设备已经就绪或尚未接管 |
+| 平台来源 | FDT/ACPI/PCI 元数据、`BindingInfo` | 已申请的 IRQ action |
+| 硬件操作 | 驱动核心、控制器与队列对象 | 文件系统或协议状态 |
+| 执行与完成 | 领域运行时、事件 handler、等待者 | 全局热插拔事务 |
+| 上层服务 | 卷、帧端口、输入事件、设备树、连接对象 | 寄存器和 DMA backing |
 
-## 能力矩阵
+`drivers/rdrive/src/manager.rs` 保存设备所有者，`drivers/ax-driver/src/registration.rs` 组织绑定发布；具体服务状态保留在消费它的领域，而不回填为另一套注册表。
 
-| 能力 | interface crate | runtime crate | 上层消费 | 状态 |
-| --- | --- | --- | --- | --- |
-| 块设备 | `rdif-block` | 已删除，直接消费 submit/poll 边界 | block volume service、FS | 完整 |
-| 网络设备 | `rdif-eth` | `rd-net` | net interface service、ax-net | 完整 |
-| 显示 | `rdif-display` | `rd-display` | display service、Starry fb | 完整 |
-| 输入 | `rdif-input` | `rd-input` | input service、Starry input | 完整 |
-| vsock | `rdif-vsock` | `rd-vsock` | vsock service、ax-net vsock | 完整 |
-| 中断控制器 | `rdif-intc` | 按需 | HAL、Axvisor GIC backend | 完整 |
-| pinctrl/GPIO | `rdif-pinctrl` | 按需 | HAL、SoC glue | 完整 |
-| PCIe | `rdif-pcie` | 按需 | PCI endpoint 枚举 | 完整 |
-| 时钟 | `rdif-clk` | 按需 | HAL、SoC glue | 完整 |
-| 定时器 | `rdif-timer` / `rdif-systick` | 按需 | HAL systick | 完整 |
-| 串口 | `rdif-serial` | 按需 | early console、HAL | 完整 |
-| PWM | `rdif-pwm` | 按需 | SoC glue | 完整 |
-| 电源 | `rdif-power` | 按需 | SoC glue | 基础 |
+## 3. 接入与交付
 
-## 设计原则
+设备声明、注册、接管、启动和关闭是不同阶段。公共框架提供其中的发现和身份机制，领域代码负责其余阶段的实际状态转换。
 
-- **分层隔离**：Driver Core 只推进硬件状态机，不调用 `iomap`、IRQ 注册或任务调度；Capability Boundary 只定义能力契约；OS Glue 负责平台发现与注册；Runtime 负责上层运行时封装。
-- **能力边界优先**：设备通过 `rdif-*` trait 向上暴露领域能力，上层模块不直接接触硬件寄存器、DMA、MMIO 或平台 IRQ ABI。
-- **多来源发现**：Static、FDT、ACPI、PCI 是并列的平台发现来源，不存在唯一默认平台抽象。
-- **类型化设备查询**：`rdrive::Manager` 只保存 `DriverRegister` 和类型化设备 registry，上层通过 `Device<T>` 弱引用按领域能力查询设备，不使用全局字符串匹配或大容器。
-- **IRQ domain 化**：所有中断路径使用 `IrqId` 作为运行时注册 key，平台 IRQ namespace 解析留在平台 resolver 侧。
-- **领域 service 消费**：上层业务模块通过领域 service 消费设备能力，不直接把 `rdrive` 当作全局设备篮子。
+### 3.1 发现和资源准备
 
-## 非目标与硬约束
+Static、FDT、ACPI 后端处理平台描述，PCI endpoint 枚举依赖先存在的主控制器。回调准备资源并创建具体对象；`ProbeLevel` 与 `ProbePriority` 控制调度，但不能代替资源提供者可用性检查。
 
-本轮驱动框架只处理宿主侧物理设备，包括 ArceOS、StarryOS、Axvisor 在真实平台或 QEMU 平台上使用的块设备、网卡、中断控制器、pinctrl/GPIO、时钟、显示、输入、vsock、PCIe、USB host 等设备。
+MMIO 地址映射、DMA domain 和约束、时钟复位控制、IRQ 来源解析在不同接口中表达。缺失资源不能通过默认 IRQ、猜测物理地址或虚构频率补齐。
 
-`axdevice` 与 `axdevice_base` 不纳入驱动框架范围。它们作为 Axvisor / axvm 的 guest emulated device model，不参与宿主物理设备 probe，不作为 FS、NET、display、input、vsock 的设备来源。
+### 3.2 运行和撤销
 
-架构硬约束：
+消费者按类型查找设备，再按合同直接借用、一次性接管或移交端点。块队列维护者、USB future、显示输入接口和网络 owner 具有不同推进方式；不能把某一领域的“禁止轮询”或“固定 CPU”扩大为全框架规则。
 
-- 不新增长期存在的 `rdrive <-> ax-driver` 双向适配层。
-- 不新增 `RDriveDeviceContainer`、`AllRDriveDevices` 这类换名后的 `AllDevices` 大容器。
-- 不用一个 `KernelHal`、`PlatformSystem` 或其它大结构体包办 Static、FDT、ACPI、PCI、MMIO、DMA、IRQ、runtime。
-- 不把 FDT 当作唯一或默认平台抽象；Static、FDT、ACPI 是并列平台来源。
-- 不在 portable driver core 中调用 `iomap`、`ioremap`、`axklib`、`somehal`、任务调度或 IRQ 注册。
-- 不用字符串拼接或 ad-hoc 匹配替代 FDT compatible、ACPI HID/CID、PCI vendor/device 的结构化匹配。
-- 不在文档或代码中保留“以后补”的占位路径；ACPI 第一版必须返回明确 unsupported error。
-- 除测试外，新增或重构后的单个 `.rs` 文件不超过 600 行。
+```mermaid
+flowchart LR
+    Decl[平台描述与注册项] --> Probe[匹配并构造]
+    Probe --> Registered[发布设备身份]
+    Registered --> Consumer[按合同查询或接管]
+    Consumer --> Service[启动并交付领域能力]
+    Service --> Stop[领域关闭或设备撤销]
+    Stop --> Check[确认回调及硬件访问边界]
+    Check --> Release[释放或按领域策略保留资源]
+```
+
+这些节点是源码操作的归纳，不是框架中已有的通用状态枚举。USB 拓扑撤销、块控制器关闭和一次性网络接管分别有自己的实现边界。
+
+## 4. 文档与实现边界
+
+主架构章节按公共机制组织，具体设备代码作为机制的实现证据。平台专属寄存器、外部源码对照和诊断记录保留为实现专题，不决定主架构的章节划分。
+
+### 4.1 公共机制章节
+
+各独立文档维护一个明确的架构部分，避免在总览、服务和系统集成中重复完整的领域内部算法。
+
+| 文档 | 维护的边界 |
+| --- | --- |
+| [总体架构](architecture.md) | 组件关系、依赖和状态归属 |
+| [驱动分层](layering.md) | 硬件核心、能力、绑定和执行策略的代码归属 |
+| [设备管理](rdrive.md) | 身份、注册容器、句柄和子设备发布 |
+| [探测与初始化](probe.md) | 来源、阶段、匹配和错误传播 |
+| [能力接口](capability.md) | 操作、端点、请求和所有权合同 |
+| [平台资源](resources.md) | MMIO、DMA、时钟、复位、引脚与绑定 |
+| [中断与事件](irq.md) | 来源解析、action 注册和事件交付 |
+| [运行时与完成](runtime.md) | 队列、异步等待、预算、背压和控制推进 |
+| [生命周期](lifecycle.md) | 发布、接管、回滚、关闭和撤销 |
+| [领域服务](services.md) | 卷、帧、显示输入及设备树等交付物 |
+| [系统集成](integration.md) | 启动调用位置和系统消费边界 |
+| [构建配置](features.md) | feature、链接、平台匹配与支持证据 |
+| [迁移约束](migration.md) | 旧入口与当前合同的差异 |
+
+运行时细节以当前领域源码为依据，不为形式对称而假定每种设备都具备相同的工作线程、热插拔或安全隔离能力。
+
+### 4.2 实现专题
+
+[USB 实现专题](usb/overview.md) 将主机、拓扑、异步传输和 RK3588 平台资源映射回公共机制。专题中的 SoC 地址、lane 配置和 PHY 等待不是其他驱动的通用要求。
+
+硬件支持需要区分源码存在、feature 公开、目标编译、初始化成功和真实传输验证。文档描述调用关系与合同，不把静态分析扩大为所有板卡或功能组合已验证的结论。

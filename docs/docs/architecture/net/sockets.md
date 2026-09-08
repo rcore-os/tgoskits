@@ -363,13 +363,15 @@ pub fn listen(
     let port = listen_endpoint.port;
     let entries = self.listen_entry_or_create(port);
     let mut entries = entries.lock();
-    if entries
-        .iter()
-        .any(|entry| listen_entries_conflict(entry, listen_endpoint, reuse_port))
-    {
+    if entries.iter().any(|entry| {
+        listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr)
+            && !(reuse_port
+                && entry.reuse_port
+                && entry.listen_endpoint.addr == listen_endpoint.addr)
+    }) {
         return Err(NetError::AddrInUse);
     }
-    entries.push(ListenTableEntryInner::new(listen_endpoint, backlog));
+    entries.push(ListenTableEntryInner::new(listen_endpoint, backlog, reuse_port));
     Ok(())
 }
 ```
@@ -516,7 +518,7 @@ raw socket 有两个特别路径：
 
 - `loopback_rx` 保存本地快速路径产生、尚未被 recv 取走的 loopback packet。
 - `deferred_rx` 保存 connected-peer 过滤时暂存的非当前可交付 packet，格式保持为一致的 wire packet，避免 peek/filter 后破坏 smoltcp receive queue 语义。
-- `RawSocketMode::PingDatagram` 由 `new_ipv4_ping()` 创建，Linux-visible 类型为 `SOCK_DGRAM`，接收只返回 ICMP payload；普通 IPv4 raw 接收返回完整 IP packet。
+- `RawSocketMode::IcmpDatagram` 由 `new_ipv4_ping()` 创建，Linux-visible 类型为 `SOCK_DGRAM`，接收只返回 ICMP payload；普通 `RawSocketMode::Raw` 的 IPv4 raw 接收返回完整 IP packet。
 - `recv_ttl` 对应 `IP_RECVTTL`，启用后生成 `IpCmsg::Ipv4Ttl`。
 
 发送时，如果没有显式本地地址，raw socket 通过控制面按 remote 选择 source；loopback 目的地址走本地路径，非 loopback 目的地址交给 smoltcp raw socket 和 Router dispatch。
@@ -783,7 +785,7 @@ pub fn register_waker(&self, waker: &Waker) {
 }
 ```
 
-TCP listener 还有额外 accept waker：`ListenTable::register_accept_waker()` 会把 userspace waker 放到 listener 的 `accept_poll`，并把 `accept_poll` 转成 waker 注册到 pending child 的 recv/send readiness 上。
+TCP listener 还有额外 accept waker：`ListenTable::accept_waker()` 把 listener 的 `accept_poll` 转成 waker，`register_pending_accept_wakers()` 再把它注册到 pending child 的 recv/send readiness 上。
 
 ### 7.3 本地传输就绪状态
 

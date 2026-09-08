@@ -21,7 +21,7 @@ pub use self::{
         NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime,
         NetworkRuntimeBuilder, NetworkRuntimeError, PinnedNetIrqAction,
         PinnedNetIrqError, PinnedNetIrqOutcome, PinnedNetIrqRegistrar,
-        PinnedNetIrqRegistration, ResolvedNetIrqSource,
+        PinnedNetIrqRegistration, ResolvedNetIrqSource, TxQueueDiscipline,
     },
     socket::{
         CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions,
@@ -141,13 +141,14 @@ pub fn request_poll();
 
 ```rust
 pub fn request_poll() {
-    publish_poll_request(&NET_POLL_REQUESTED, || {
-        NET_POLL_WAKE.notify_one(true);
-    });
+    let _ = PROTOCOL_POLL.request();
 }
 ```
 
-`publish_poll_request()` 使用 `swap(false→true)` 合并重复请求：只有从未 pending 变为 pending 的第一次调用会真正 `notify_one()`。这样 socket 热路径可以频繁请求协议推进，而不会在 worker 尚未消费请求时制造重复唤醒。
+`ProtocolPollRuntime::request()` 先对 `requested` generation 做 `fetch_add`，再由
+`schedule()` 用 `swap(false→true)` 合并重复请求：只有从未 scheduled 变为 scheduled
+的第一次调用会真正唤醒固定 CPU 的 protocol executor。这样 socket 热路径可以频繁请求
+协议推进，而不会在 worker 尚未消费请求时制造重复唤醒。
 
 ### 2.4 Vsock 初始化
 
@@ -195,7 +196,7 @@ pub fn remove_interface_ipv4(
 
 `set_interface_ipv4()` / `remove_interface_ipv4()` 是 StarryOS rtnetlink 使用的运行期控制入口。当前每个 Ethernet 接口最多保存一个 IPv4 地址：设置第二个地址返回 `AlreadyExists`，删除必须与现有地址和 prefix 完全一致。设置操作会移除该接口的 DHCP 状态、安装 connected route，但不会创建 default route 或 gateway；删除也会关闭该接口 DHCP 并移除它贡献的路由和 DHCP DNS。
 
-`NetDevStats` 按接口返回累计的 `rx/tx bytes`、`packets`、`errors` 和 `dropped`。Ethernet 的字节口径是“不含 FCS 的 L2 frame”，loopback 则按 IP packet 长度；见[多设备实现](devices.md#9-网卡统计)。
+`NetDevStats` 按接口返回累计的 `rx/tx bytes`、`packets`、`errors` 和 `dropped`。Ethernet 的字节口径是“不含 FCS 的 L2 frame”，loopback 则按 IP packet 长度；统计快照由 `net/ax-net/src/router.rs` 的 `Router::net_dev_stats()` 汇总。
 
 `InterfaceId` 是稳定接口 ID，同时作为 StarryOS/Linux ifindex 来源：
 
@@ -661,8 +662,8 @@ backlog；`Fifo` 的 `max_frames` 是 packet limit，存储只在第一次 busy 
 该接口当前按设备生效，不是 per-hardware-queue 配置。
 
 `NetworkRuntimeBuilder` 一次性消费全部设备，构造 shared-IRQ affinity domain，等待
-worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ。owner startup、initial
-refill/rearm、IRQ enable 与 startup transaction 任一步失败都会反向回滚。唯一的
+worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ 并 enable。owner startup、
+initial refill/rearm、IRQ enable 与 startup transaction 任一步失败都会反向回滚。唯一的
 非致命结果是 owner startup 返回 `rdif_eth::NetError::DeviceNotPresent`：runtime 在
 `cancel()` 成功并同步该 group 的 IRQ callback 后剔除它；设备没有剩余 group 时不
 发布接口，其他设备不受影响。没有运行时新增/删除物理 NIC 的公共入口。
@@ -711,7 +712,7 @@ cfg80211 WEXT backend 的兼容承诺。passphrase 到 PMK 的 PBKDF2 属于产�
 Unix path socket 需要外部文件系统 namespace provider：
 
 ```rust
-pub fn register_unix_namespace(ns: impl UnixNamespace + 'static);
+ax_net::unix::register_unix_namespace(ns: impl UnixNamespace + 'static);
 ```
 
 abstract Unix socket 使用 `ax-net` 内部内存 namespace；path socket 通过注册的 `UnixNamespace` 完成路径绑定和解析。

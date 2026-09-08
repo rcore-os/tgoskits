@@ -1,50 +1,82 @@
 ---
-sidebar_position: 11
-sidebar_label: "迁移记录"
+sidebar_position: 14
+sidebar_label: "迁移约束"
 ---
 
-# 驱动框架迁移记录
+# 驱动接入与合同迁移
 
-宿主物理设备已经从旧 `ax-driver` 全局容器模型迁移到 `rdrive + rdif` 驱动框架。迁移围绕设备发现、能力接口、领域服务和上层消费路径分阶段完成。
+迁移涉及发现来源、能力、平台资源、执行和上层交付，不是只替换旧设备类型名。当前边界以 `rdrive`、领域能力、平台绑定和各自运行时为准；历史阶段计划不能直接当作已完成的提交或硬件验证记录。
 
-## 迁移阶段
+## 1. 入口与身份
 
-### Phase 1: rdrive backend 分发
+旧聚合设备交付与当前类型化注册具有不同所有权。调用方不能继续期待一次初始化返回可以任意复制的全部硬件对象。
 
-- 增加 `PlatformSource::{Static,Fdt,Acpi}` 和 `ProbeKind::{Static,Fdt,Acpi,Pci}`。
-- 新增 `probe::acpi` 模块；ACPI 初始化提供 MCFG、GSI controller routing、PCI `_PRT` 和普通设备 IRQ metadata。
-- `probe_pre_kernel()` 和 `probe_all()` 改为 backend 分发，保留当前 FDT 与 PCI 能力。
-- `Manager` 保持只管理 register 和 typed device registry。
+### 1.1 发现路径
 
-### Phase 2: 补齐 rdif-display/input/vsock
+`init_sources()` 建立 Static、FDT 或 ACPI 来源，注册项描述 probe，PCI 枚举依赖已发布主控制器。平台启动和运行时装载注册项的位置由 HAL 与 `rust_main()` 共同决定。
 
-- 新增三个 interface crate 并接入 workspace。
-- 每个 crate 按 `error/types/interface` 或 `addr/event/interface` 拆文件。
-- 不依赖 `ax-driver`、`ax-runtime`、`ax-hal` 或平台 crate。
+| 旧假设 | 当前边界 | 迁移影响 |
+| --- | --- | --- |
+| `AllDevices` 统一拆包 | 注册身份与领域接管 | 查询、移交和就绪分开 |
+| 单个 `Ax*Device` 静态类型 | 外层包装与内部领域能力 | 按真实注册类型查询 |
+| feature 决定旧平台私有路径 | feature 链接，来源选择匹配 | 同时检查构建与固件 |
+| 裸 IRQ 可直接跨域使用 | 来源、`IrqId`、action | 保留控制器及 source |
+| 注册成功即服务就绪 | 领域初始化与交付 | 检查控制器和上层状态 |
 
-### Phase 3: block volume service
+`PlatformSource` 包括 `AcpiWithoutAml`；`probe_all()` 取得全部注册项并依靠后端完成记录，不仅筛选普通设备阶段。
 
-- 抽出唯一分区扫描实现，支持 GPT、MBR、raw disk。
-- 产出 `BlockVolume` 和裁剪后的 block reader。
-- `ax-fs` / `ax-fs-ng` 只消费 volume 和 FS block trait。
+### 1.2 接管模式
 
-### Phase 4: NET / NET-NG 硬切
+provider 可以持续借用，显示输入等使用 `TakeRegistered`，块和网络使用专用 take，USB 可接管事件 handler 而保留主机对象。迁移代码不能要求所有设备都先拆成网络 parts。
 
-- `ax-net` / `ax-net` 从 `AxNetDevice` 切到 `rd-net` 或 net service。
-- DHCP/static IP policy 留在 net service 或 NET/NET-NG，不回到 platform glue。
+接管后注册身份可以继续存在，第二次 take 为空或报错是领域合同，不代表需要重新 probe。同一身份下的不同能力发布也不能通过重复注册相同外层类型实现。
 
-### Phase 5: display / input / vsock 硬切
+## 2. 能力与执行
 
-- 新增 runtime wrapper `rd-display`、`rd-input`、`rd-vsock`。
-- 上层 display/input/vsock 模块消费领域 service，不接收 `AxDeviceContainer`。
+迁移需要保留设备真实语义：请求、字节、帧、事件和资源配置不是相同数据模型。成功、部分接受和取消也需分别处理。
 
-### Phase 6: ax-runtime 切主线
+### 2.1 数据与控制合同
 
-- 删除宿主初始化主线中的 `ax-driver::init_drivers()` 和 `AllDevices` 拆包。
-- 平台 later init 后调用 `rdrive::probe_all(false)`。
-- 调用领域 service 初始化 FS、NET、display、input、vsock。
+块 `HardwareQueue` 使用 owned 批次及完成，串口 `SplitUart` 拆分控制、IRQ 和紧急发送，网络 `NetDeviceParts` 拆分 poll group，显示输入保留领域接口，USB 主机维护拓扑与异步请求。
 
-### Phase 7: feature 映射切换
+仅复制旧的同步 read/write 外形会丢失批量前缀、DMA 归还或端点取消条件。具体字段由[能力接口](capability.md)定义，资源配置由[平台资源](resources.md)定义。
 
-- `ax-runtime` 中旧 `ax-driver/virtio-*`、`driver-*`、`bus-*` 映射到 rdrive probe feature。
-- legacy `ax-driver` feature 只保留给未迁移代码，不作为新宿主路径入口。
+### 2.2 事件与等待
+
+块完成只由已确认 IRQ 推进，串口允许其已定义 polling 模式，输入 fallback 受用户兴趣和 IRQ 活跃条件限制，USB handler 消费事件环，网络 owner 使用固定 CPU 和精确 deadline。
+
+这些不同策略必须从旧调用链迁入正确执行上下文，不能把某一领域的事件规则变成全框架限制。公共注册查询也不能留在需要有界执行的硬 IRQ 数据路径。
+
+## 3. 生命周期迁移
+
+失败和关闭属于迁移范围，不能作为成功接入后的可选补充。资源转移之后，旧调用方不能继续持有未经授权的可变访问或缓冲所有权。
+
+### 3.1 接受、完成与回滚
+
+块批次部分接受后仍需发布接受前缀，网络拒绝提交要归还令牌，UART 启动失败需要恢复配置或停止服务，USB 取消需要端点停止与完成路由处理。每种失败都需要保存正确的剩余资源状态。
+
+![迁移需覆盖的发布与释放边界](images/driver-lifecycle-common.svg)
+
+图中安全条件不表示框架已经提供统一 rollback 函数。具体操作、错误传播和资源隔离由[生命周期](lifecycle.md)维护。
+
+### 3.2 上层交付
+
+块卷扫描位于 `fs/ax-fs-ng/src/volume/`，显示输入包装位于各自 ArceOS 模块，串口由运行时交付字节和控制台能力，USBFS 属于系统设备管理。不能继续导入旧分区接口或不存在的 `rd-display`、`rd-input`、`rd-vsock` 包。
+
+用户态设备撤销、挂载、socket 和 guest 直通涉及系统层状态，不能通过丢弃底层对象假定全部完成。调用关系由[领域服务](services.md)及[系统集成](integration.md)定义。
+
+## 4. 配置与验证
+
+源码存在、feature 公开、目标编译和硬件通过是不同证据。配置别名只兼容名字，不兼容旧的资源所有权假设。
+
+### 4.1 feature 对应
+
+当前 Cargo 公开 AHCI、NVMe、多种 SDHCI、MCI 和 DWMMC 入口，不能继续按旧清单认定均无注册 feature。`aic8800-wifi` 的 `dep:cv181x-sdhci` 是依赖启用，不是同名块 feature；VirtIO 开关也不能自行添加不存在的 transport 后缀。
+
+`cvsd`、`ls2k1000-ahci` 等别名维持配置名称，实际能力仍需满足当前合同。完整入口由[构建配置](features.md)维护。
+
+### 4.2 证据范围
+
+迁移记录分别列出静态对应、目标启动、正常传输和失败恢复证据。部分提交、取消、共享 IRQ、控制台恢复和无法确认硬件停止不能只由一次正常启动覆盖。
+
+代码验证使用项目 `cargo xtask` 入口，回归修复先证明旧实现失败。文档和接口检查通过不替代板卡运行，也不能把尚未执行的测试记为成功。

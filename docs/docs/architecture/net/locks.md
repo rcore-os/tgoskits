@@ -59,11 +59,11 @@ lock 时反向调用完整 IP protocol poll。
 requested: AtomicU64
 completed: AtomicU64
 scheduled: AtomicBool
-worker_wake: WaitQueue
+executor_wake: WaitQueue
 completion: WaitQueue
 ```
 
-调用者 `fetch_add` requested 后只在 `scheduled false -> true` 时通知 worker。唯一
+调用者 `fetch_add` requested 后只在 `scheduled false -> true` 时通知 executor。唯一
 worker 记录 target、poll until idle、Release publish completed。结束一轮时先清
 scheduled，再 Acquire 比较 requested/completed；若 request 在 completion 窗口并发，
 立即保留 scheduled 并继续。
@@ -124,7 +124,7 @@ driver retry、executor stop 都不会产生两个可变别名。
 
 ## 7. Budget 与 blocked state
 
-owner 在 IRQ mask 状态按 RX recycle、RX reclaim、TX completion、TX submit 各 64 的
+owner 在 IRQ mask 状态按 TX completion、TX submit、RX recycle、RX reclaim 各 64 的
 预算推进，每 CPU round 256。预算用尽只把 group 重新置为 scheduled，不重开 IRQ。
 
 ring full 时 group 留在 `POLLING`，token 保存在 `pending_*`。protocol owner 释放空间
