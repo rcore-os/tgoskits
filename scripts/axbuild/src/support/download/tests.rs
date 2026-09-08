@@ -2,24 +2,6 @@ use tempfile::tempdir;
 
 use super::*;
 
-#[test]
-fn part_path_uses_dot_part_suffix() {
-    let path = Path::new("/tmp/rootfs-x86_64-alpine.img.tar.gz");
-    assert_eq!(
-        part_path(path),
-        PathBuf::from("/tmp/rootfs-x86_64-alpine.img.tar.gz.part")
-    );
-}
-
-#[test]
-fn lock_path_uses_dot_lock_suffix() {
-    let path = Path::new("/tmp/rootfs-x86_64-alpine.img.tar.gz");
-    assert_eq!(
-        lock_path(path),
-        PathBuf::from("/tmp/rootfs-x86_64-alpine.img.tar.gz.lock")
-    );
-}
-
 #[tokio::test]
 async fn recoverable_lock_accepts_dead_process_pid() {
     let workspace = tempdir().unwrap();

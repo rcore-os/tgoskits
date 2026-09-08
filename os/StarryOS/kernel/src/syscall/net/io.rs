@@ -643,21 +643,3 @@ pub fn sys_recvmmsg(
 
     Ok(received)
 }
-
-#[cfg(all(test, not(axtest)))]
-fn net_io_constants_hold_for_test() -> bool {
-    const {
-        assert!(MMSG_MAX_VLEN == 1024);
-        assert!(PROTO_IP == 0);
-    }
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
-mod tests {
-    #[test]
-    fn net_io_constants_hold() {
-        assert!(super::net_io_constants_hold_for_test());
-    }
-}

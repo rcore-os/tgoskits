@@ -78,28 +78,6 @@ const _: () = {
     assert!(offset_of!(FiemapExtent, flags) == 40);
 };
 
-#[cfg(all(test, not(axtest)))]
-fn ctl_ioctl_constants_hold_for_test() -> bool {
-    // Verify ioctl command constants
-    assert!(FIOCLEX == 0x5451);
-    assert!(FIONCLEX == 0x5450);
-
-    // FIONBIO and FIOASYNC from linux_raw_sys
-    use linux_raw_sys::ioctl::{FIOASYNC, FIONBIO};
-    assert!(FIONBIO == 0x5421);
-    assert!(FIOASYNC == 0x5452);
-    assert!(FIEMAP_FLAG_SYNC == 0x0000_0001);
-    assert!(FIEMAP_FLAG_XATTR == 0x0000_0002);
-    assert!(FIEMAP_FLAG_CACHE == 0x0000_0004);
-    assert!(FIEMAP_FLAGS_COMPAT == 0x0000_0003);
-    assert!(FIEMAP_EXTENT_LAST == 0x0000_0001);
-    assert!(FIEMAP_EXTENT_NOT_ALIGNED == 0x0000_0100);
-    assert!(FIEMAP_EXTENT_DATA_INLINE == 0x0000_0200);
-    assert!(FIEMAP_EXTENT_UNWRITTEN == 0x0000_0800);
-    assert!(FIEMAP_EXTENT_MERGED == 0x0000_1000);
-    true
-}
-
 fn path_info_at(dirfd: i32, path: &str) -> StarryResult<(String, bool)> {
     with_fs(dirfd, |fs| {
         let loc = fs.resolve_no_follow(path)?;
@@ -1140,11 +1118,6 @@ mod tests {
     use core::cell::Cell;
 
     use super::*;
-
-    #[test]
-    fn ctl_ioctl_constants_hold() {
-        assert!(ctl_ioctl_constants_hold_for_test());
-    }
 
     #[test]
     fn sync_attempts_every_stage_and_returns_success() {

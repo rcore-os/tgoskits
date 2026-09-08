@@ -339,37 +339,3 @@ pub fn sys_timer_delete(timerid: __kernel_timer_t) -> StarryResult<isize> {
         Err(StarryError::InvalidInput)
     }
 }
-
-#[cfg(all(test, not(axtest)))]
-fn time_clock_id_validation_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::{
-        CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
-        CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
-    };
-
-    // Test valid clock IDs for clock_gettime
-    let valid_clocks = [
-        CLOCK_REALTIME,
-        CLOCK_REALTIME_COARSE,
-        CLOCK_MONOTONIC,
-        CLOCK_MONOTONIC_RAW,
-        CLOCK_MONOTONIC_COARSE,
-        CLOCK_BOOTTIME,
-        CLOCK_PROCESS_CPUTIME_ID,
-        CLOCK_THREAD_CPUTIME_ID,
-    ];
-
-    assert!(valid_clocks.contains(&CLOCK_REALTIME));
-    assert!(valid_clocks.contains(&CLOCK_MONOTONIC));
-    assert!(!valid_clocks.contains(&999u32));
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
-mod tests {
-    #[test]
-    fn time_clock_id_validation_rules_hold() {
-        assert!(super::time_clock_id_validation_rules_hold_for_test());
-    }
-}

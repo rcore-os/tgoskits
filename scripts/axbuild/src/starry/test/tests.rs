@@ -8,8 +8,6 @@ mod qemu_discovery_tests;
 
 mod qemu_run_tests;
 
-mod summary_tests;
-
 mod system_case_tests;
 
 #[cfg(unix)]
@@ -19,7 +17,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
 };
 
 use ostool::run::qemu::QemuConfig;

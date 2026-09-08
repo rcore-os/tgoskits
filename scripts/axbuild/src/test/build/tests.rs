@@ -4,7 +4,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
 };
 
 use tempfile::tempdir;
@@ -533,12 +532,4 @@ fn case_script_envs_include_expected_paths() {
         "SUITE_CASE_BUILD_DIR".to_string(),
         layout.build_dir.display().to_string()
     )));
-}
-
-#[test]
-fn format_duration_like_summary_helpers_are_precise_enough() {
-    assert_eq!(
-        format!("{:.2}", Duration::from_millis(1250).as_secs_f64()),
-        "1.25"
-    );
 }

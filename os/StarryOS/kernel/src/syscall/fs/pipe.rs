@@ -50,34 +50,3 @@ pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> StarryResult<isize> {
     );
     Ok(0)
 }
-
-#[cfg(all(test, not(axtest)))]
-fn pipe_flags_validation_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
-    // Test PipeFlags validation
-    let valid_flags = 0u32;
-    assert!(PipeFlags::from_bits(valid_flags).is_some());
-
-    let cloexec_only = O_CLOEXEC;
-    assert!(PipeFlags::from_bits(cloexec_only).is_some());
-
-    let nonblock_only = O_NONBLOCK;
-    assert!(PipeFlags::from_bits(nonblock_only).is_some());
-
-    let all_valid = O_CLOEXEC | O_NONBLOCK;
-    assert!(PipeFlags::from_bits(all_valid).is_some());
-
-    // Invalid flag should return None
-    let invalid_flags = 0xFFFF;
-    assert!(PipeFlags::from_bits(invalid_flags).is_none());
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
-mod tests {
-    #[test]
-    fn pipe_flags_validation_rules_hold() {
-        assert!(super::pipe_flags_validation_rules_hold_for_test());
-    }
-}

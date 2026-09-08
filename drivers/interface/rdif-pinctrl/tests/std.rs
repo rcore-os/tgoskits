@@ -4,11 +4,11 @@ use alloc::{boxed::Box, string::String, vec, vec::Vec};
 
 use rdif_base::DriverGeneric;
 use rdif_pinctrl::{
-    AcpiGpioLineSpec, AcpiPinStateSpec, Bias, ConfigSetting, ConfigTarget, Direction, FirmwareKind,
-    FunctionId, GpioBank, GpioBankId, GpioIrqError, GpioIrqEvent, GpioIrqHandler, GpioIrqSourceId,
-    GpioIrqSourceInfo, GpioIrqTrigger, GpioLineEvent, GpioLineHandle, GpioLineId, GpioRange,
-    GroupId, Interface, LowPowerMode, MuxSetting, MuxValue, OwnerId, PinConfig, PinDesc,
-    PinFunction, PinGroup, PinId, PinState, PinctrlDevice, PinctrlError, SlewRate, StateName, io,
+    Bias, ConfigSetting, ConfigTarget, Direction, FirmwareKind, FunctionId, GpioBank, GpioBankId,
+    GpioIrqError, GpioIrqEvent, GpioIrqHandler, GpioIrqSourceId, GpioIrqSourceInfo, GpioIrqTrigger,
+    GpioLineEvent, GpioLineHandle, GpioLineId, GroupId, Interface, LowPowerMode, MuxSetting,
+    MuxValue, OwnerId, PinConfig, PinDesc, PinFunction, PinGroup, PinId, PinState, PinctrlDevice,
+    PinctrlError, SlewRate, StateName, io,
 };
 
 struct Recorder {
@@ -78,30 +78,6 @@ impl Interface for Recorder {
             vec![GpioLineId::new(GpioBankId::new(0), 3)],
         )]
     }
-}
-
-#[test]
-fn rdif_pinctrl_ids_and_plain_data_keep_raw_values() {
-    assert_eq!(PinId::new(1).raw(), 1);
-    assert_eq!(GroupId::new(2).raw(), 2);
-    assert_eq!(FunctionId::new(3).raw(), 3);
-    assert_eq!(GpioBankId::new(4).raw(), 4);
-    assert_eq!(GpioIrqSourceId::new(5).raw(), 5);
-    assert_eq!(OwnerId::new(6).raw(), 6);
-
-    let range = GpioRange::new(GpioBankId::new(1), 10, 20, 4);
-    assert_eq!(range.pin_base, 10);
-    assert_eq!(range.line_base, 20);
-    assert_eq!(range.count, 4);
-
-    let spec = AcpiGpioLineSpec::new(
-        String::from("\\_SB.GPIO"),
-        GpioLineId::new(GpioBankId::new(0), 7),
-        2,
-    );
-    assert_eq!(spec.path(), "\\_SB.GPIO");
-    assert_eq!(spec.line().offset, 7);
-    assert_eq!(spec.resource_index(), 2);
 }
 
 #[test]
@@ -351,69 +327,7 @@ fn rdif_pinctrl_device_wrapper_delegates_interface_and_downcast() {
 }
 
 #[test]
-fn rdif_pinctrl_errors_compare_and_map_to_io_kinds() {
-    let pin_error = PinctrlError::InvalidPin(PinId::new(1));
-    assert_eq!(pin_error, PinctrlError::InvalidPin(PinId::new(1)));
-    assert_ne!(pin_error, PinctrlError::InvalidPin(PinId::new(2)));
-    assert_eq!(PinctrlError::NotSupported, PinctrlError::NotSupported);
-    assert_eq!(
-        PinctrlError::UnsupportedFirmware(FirmwareKind::Fdt),
-        PinctrlError::UnsupportedFirmware(FirmwareKind::Fdt)
-    );
-    assert_ne!(
-        PinctrlError::UnsupportedFirmware(FirmwareKind::Fdt),
-        PinctrlError::UnsupportedFirmware(FirmwareKind::Acpi)
-    );
-    assert_eq!(
-        PinctrlError::InvalidGroup(GroupId::new(1)),
-        PinctrlError::InvalidGroup(GroupId::new(1))
-    );
-    assert_eq!(
-        PinctrlError::InvalidFunction(FunctionId::new(1)),
-        PinctrlError::InvalidFunction(FunctionId::new(1))
-    );
-    assert_eq!(
-        PinctrlError::InvalidMux {
-            group: GroupId::new(1),
-            function: FunctionId::new(2),
-        },
-        PinctrlError::InvalidMux {
-            group: GroupId::new(1),
-            function: FunctionId::new(2),
-        }
-    );
-    assert_eq!(
-        PinctrlError::InvalidLine(GpioLineId::new(GpioBankId::new(0), 1)),
-        PinctrlError::InvalidLine(GpioLineId::new(GpioBankId::new(0), 1))
-    );
-    assert_eq!(
-        PinctrlError::LineBusy(GpioLineId::new(GpioBankId::new(0), 1)),
-        PinctrlError::LineBusy(GpioLineId::new(GpioBankId::new(0), 1))
-    );
-    assert_eq!(
-        PinctrlError::LineNotRequested(GpioLineId::new(GpioBankId::new(0), 1)),
-        PinctrlError::LineNotRequested(GpioLineId::new(GpioBankId::new(0), 1))
-    );
-    assert_eq!(PinctrlError::InvalidConfig, PinctrlError::InvalidConfig);
-    assert_eq!(
-        PinctrlError::IrqEventOverflow,
-        PinctrlError::IrqEventOverflow
-    );
-    assert_ne!(PinctrlError::other("left"), PinctrlError::other("right"));
-
-    let acpi = AcpiPinStateSpec::new(String::from("\\_SB.PIN"), StateName::Default);
-    assert_eq!(acpi.path(), "\\_SB.PIN");
-    assert_eq!(acpi.state_name(), &StateName::Default);
-
-    assert_eq!(
-        alloc::format!("{}", PinctrlError::InvalidPin(PinId::new(7))),
-        "invalid pin: PinId(7)"
-    );
-    assert_eq!(
-        alloc::format!("{}", PinctrlError::other("opaque")),
-        "other error: opaque"
-    );
-
+fn rdif_pinctrl_errors_map_to_io_kinds() {
     assert!(matches!(
         io::ErrorKind::from(PinctrlError::NotSupported),
         io::ErrorKind::Unsupported

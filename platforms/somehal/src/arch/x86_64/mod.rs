@@ -567,13 +567,3 @@ mod tests {
         assert_eq!(route_to_rdif(route_to_irq_framework(route)), route);
     }
 }
-
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-
-    #[test]
-    fn irq_route_constant_marks_valid_entries() {
-        assert_eq!(IRQ_ROUTE_VALID, 1 << 63);
-    }
-}

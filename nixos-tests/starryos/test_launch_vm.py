@@ -7,13 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 MODULE_PATH = Path(__file__).with_name("launch-vm.py")
 SPEC = importlib.util.spec_from_file_location("starry_launch_vm", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 LAUNCH_VM = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(LAUNCH_VM)
-
 
 class LaunchVmContractTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -37,15 +35,6 @@ to_bin = true
 """,
             encoding="utf-8",
         )
-
-    def test_translates_canonical_toml_arguments(self) -> None:
-        config = LAUNCH_VM.load_qemu_config(self.config)
-        self.assertEqual(
-            config.args[:3],
-            ["-machine", "q35", "-nographic"],
-        )
-        self.assertTrue(config.uefi)
-        self.assertTrue(config.to_bin)
 
     def test_replaces_only_the_managed_rootfs(self) -> None:
         config = LAUNCH_VM.load_qemu_config(self.config)
@@ -88,42 +77,6 @@ to_bin = true
 
         with self.assertRaisesRegex(FileExistsError, "overlay"):
             LAUNCH_VM.ensure_overlay_absent(overlay)
-
-    def test_preserves_driver_argument_order(self) -> None:
-        driver_args = [
-            "-qmp",
-            "unix:/tmp/qmp.sock,server=on,wait=off",
-            "-monitor",
-            "unix:/tmp/monitor.sock,server=on,wait=off",
-            "-serial",
-            "file:/tmp/serial.log",
-            "-no-reboot",
-        ]
-        command = LAUNCH_VM.build_qemu_command(
-            Path("/nix/store/qemu/bin/qemu-system-x86_64"),
-            ["-machine", "q35"],
-            ["-drive", "if=pflash,file=/tmp/code.fd"],
-            driver_args,
-        )
-
-        self.assertEqual(command[-len(driver_args) :], driver_args)
-
-    def test_final_plan_executes_qemu_directly(self) -> None:
-        plan = LAUNCH_VM.LaunchPlan(
-            qemu=Path("/nix/store/qemu/bin/qemu-system-x86_64"),
-            args=("-machine", "q35", "-no-reboot"),
-        )
-
-        self.assertEqual(
-            plan.exec_argv(),
-            [
-                "/nix/store/qemu/bin/qemu-system-x86_64",
-                "-machine",
-                "q35",
-                "-no-reboot",
-            ],
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

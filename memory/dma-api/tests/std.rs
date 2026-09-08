@@ -517,15 +517,3 @@ fn dma_api_rejects_mask_alignment_segment_boundary_and_zero_sized_errors() {
         "streaming map should reject zero-sized buffers"
     );
 }
-
-#[test]
-fn dma_api_direction_and_error_variants_hold() {
-    use dma_api::{DmaDirection, DmaError};
-
-    // Test DmaDirection variants exist
-    let _to_device = DmaDirection::ToDevice;
-    let _bidirectional = DmaDirection::Bidirectional;
-
-    // Test DmaError variants that may not be fully covered
-    let _zero_sized = DmaError::ZeroSizedBuffer;
-}

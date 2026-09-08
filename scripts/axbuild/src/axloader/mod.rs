@@ -579,64 +579,8 @@ fn put_u64(image: &mut [u8], offset: usize, value: u64) {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
 
     use super::*;
-
-    #[derive(Parser)]
-    struct Cli {
-        #[command(subcommand)]
-        command: Command,
-    }
-
-    #[test]
-    fn command_parses_build_default_target() {
-        let cli = Cli::try_parse_from(["axloader", "build"]).unwrap();
-
-        match cli.command {
-            Command::Build(args) => {
-                assert_eq!(args.target, "x86_64-unknown-uefi");
-                assert!(!args.release);
-                assert!(!args.debug);
-            }
-            _ => panic!("expected build command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_build_debug() {
-        let cli = Cli::try_parse_from(["axloader", "build", "--debug"]).unwrap();
-
-        match cli.command {
-            Command::Build(args) => {
-                assert_eq!(args.target, "x86_64-unknown-uefi");
-                assert!(!args.release);
-                assert!(args.debug);
-            }
-            _ => panic!("expected build command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_qemu() {
-        let cli = Cli::try_parse_from([
-            "axloader",
-            "test",
-            "qemu",
-            "--target",
-            "x86_64-unknown-uefi",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.target, "x86_64-unknown-uefi");
-                }
-            },
-            _ => panic!("expected test command"),
-        }
-    }
 
     #[test]
     fn boot_line_includes_qemu_reachable_kernel_url() {

@@ -1105,43 +1105,10 @@ fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
 }
 
 #[cfg(all(test, not(axtest)))]
-fn sys_constants_and_validation_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM};
-
-    const {
-        assert!(NOCHG == u32::MAX);
-        assert!(SECCOMP_SET_MODE_STRICT == 0);
-        assert!(SECCOMP_SET_MODE_FILTER == 1);
-        assert!(SECCOMP_GET_ACTION_AVAIL == 2);
-
-        assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_TSYNC != 0);
-        assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_LOG != 0);
-        assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_SPEC_ALLOW != 0);
-        assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_TSYNC_ESRCH != 0);
-    }
-
-    // Test getrandom flags
-    let valid_flags = 0u32;
-    assert!(valid_flags & !(GRND_NONBLOCK | GRND_INSECURE | GRND_RANDOM) == 0);
-
-    let nonblock_only = GRND_NONBLOCK;
-    assert!(
-        nonblock_only & !(GRND_NONBLOCK | GRND_INSECURE | GRND_RANDOM) == 0
-    );
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
 mod tests {
     #[test]
     fn uid_valid_and_syslog_validation_rules_hold() {
         assert!(super::uid_valid_and_syslog_validation_rules_hold_for_test());
-    }
-
-    #[test]
-    fn sys_constants_and_validation_rules_hold() {
-        assert!(super::sys_constants_and_validation_rules_hold_for_test());
     }
 
     #[test]

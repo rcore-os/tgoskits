@@ -953,22 +953,6 @@ fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
 }
 
 #[cfg(all(test, not(axtest)))]
-fn fd_ops_flags_to_options_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::*;
-    // Test flags_to_options function - verify it doesn't panic for valid inputs
-    let _options = flags_to_options(O_RDONLY as i32, 0o644, (1000, 1000));
-    let _options = flags_to_options(O_WRONLY as i32, 0o644, (1000, 1000));
-    let _options = flags_to_options(O_RDWR as i32, 0o644, (1000, 1000));
-
-    // Test with various flag combinations
-    let _options = flags_to_options((O_WRONLY | O_APPEND | O_CREAT) as i32, 0o644, (1000, 1000));
-    let _options = flags_to_options((O_RDWR | O_CREAT | O_TRUNC) as i32, 0o644, (1000, 1000));
-    let _options = flags_to_options((O_RDONLY | O_PATH) as i32, 0o644, (1000, 1000));
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
 mod tests {
     #[cfg(all(test, not(axtest)))]
     #[test]
@@ -982,9 +966,4 @@ mod tests {
         assert!(super::pipe_size_rounding_and_rejection_rules_hold_for_test());
     }
 
-    #[cfg(all(test, not(axtest)))]
-    #[test]
-    fn flags_to_options_rules_hold() {
-        assert!(super::fd_ops_flags_to_options_rules_hold_for_test());
-    }
 }

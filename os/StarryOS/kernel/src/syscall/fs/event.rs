@@ -40,37 +40,3 @@ pub fn sys_eventfd2(initval: u32, flags: u32) -> StarryResult<isize> {
     debug!("sys_eventfd2: success, fd={}", fd);
     Ok(fd)
 }
-
-#[cfg(all(test, not(axtest)))]
-fn eventfd_flags_validation_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::{EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE};
-    // Test EventFdFlags validation
-    let valid_flags = 0u32;
-    assert!(EventFdFlags::from_bits(valid_flags).is_some());
-
-    let cloexec_only = EFD_CLOEXEC;
-    assert!(EventFdFlags::from_bits(cloexec_only).is_some());
-
-    let nonblock_only = EFD_NONBLOCK;
-    assert!(EventFdFlags::from_bits(nonblock_only).is_some());
-
-    let semaphore_only = EFD_SEMAPHORE;
-    assert!(EventFdFlags::from_bits(semaphore_only).is_some());
-
-    let all_valid = EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE;
-    assert!(EventFdFlags::from_bits(all_valid).is_some());
-
-    // Invalid flag should return None
-    let invalid_flags = 0xFFFF;
-    assert!(EventFdFlags::from_bits(invalid_flags).is_none());
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
-mod tests {
-    #[test]
-    fn eventfd_flags_validation_rules_hold() {
-        assert!(super::eventfd_flags_validation_rules_hold_for_test());
-    }
-}

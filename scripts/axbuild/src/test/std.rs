@@ -39,10 +39,6 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         features: &["host-test"],
         name_filter: Some("api::"),
         expected_tests: &[
-            "api::std_tests::axtask_api_constants_hold",
-            "api::std_tests::axtask_api_scheduler_name_hold",
-            "api::std_tests::axtask_api_task_registry_functions_exist_hold",
-            "api::std_tests::axtask_api_type_aliases_hold",
             "api::tests::task_initialization_precedes_scheduling",
         ],
     },

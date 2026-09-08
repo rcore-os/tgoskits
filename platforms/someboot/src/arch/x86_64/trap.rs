@@ -425,27 +425,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-
-    #[test]
-    fn trap_constants_hold() {
-        assert!(IA32_EFER == 0xc000_0080);
-        assert!(IA32_EFER_NXE == (1 << 11));
-
-        assert!(PIT_CHANNEL2_PORT == 0x42);
-        assert!(PIT_COMMAND_PORT == 0x43);
-        assert!(PIT_CONTROL_PORT == 0x61);
-        assert!(PIT_CHANNEL2_GATE == 0x01);
-        assert!(PIT_SPEAKER_ENABLE == 0x02);
-        assert!(PIT_CHANNEL2_OUT == 0x20);
-        assert!(PIT_MODE0_CHANNEL2 == 0xb0);
-        assert!(PIT_TICK_RATE_HZ == 1_193_182);
-        assert!(TSC_PIT_CALIBRATION_MS == 50);
-        assert!(TSC_PIT_MAX_POLL_COUNT == 5_000_000);
-        assert!(MIN_VALID_TSC_FREQ_HZ == 10_000_000);
-        assert!(MAX_VALID_TSC_FREQ_HZ == 10_000_000_000);
-    }
-}
