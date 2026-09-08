@@ -30,14 +30,14 @@ concurrency:
 
 jobs:
   smoke:
-    name: nix develop
+    name: nix develop and devenv shell
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Evaluate the devenv-backed development shell
+      - name: Evaluate flake and devenv CLI shells
         run: |
           set -euo pipefail
           docker run --rm \
@@ -48,13 +48,16 @@ jobs:
             sh -lc '
               set -euo pipefail
               git config --global --add safe.directory /workspace
-              nix develop --accept-flake-config --no-pure-eval -c \
-                bash -lc "
-                  set -euo pipefail
-                  command -v cargo
-                  command -v rustc
-                  rustc --version
-                  test -z \"\${CC-}\"
-                  test -z \"\${RUSTUP_TOOLCHAIN-}\"
-                "
+              smoke="
+                set -euo pipefail
+                command -v cargo
+                command -v rustc
+                rustc --version
+                test -z \"\${CC-}\"
+                test -z \"\${RUSTUP_TOOLCHAIN-}\"
+              "
+              nix develop --accept-flake-config --no-pure-eval -c bash -lc "$smoke"
+              devenv_rev="$(nix eval --raw --impure --expr "(builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.devenv.locked.rev")"
+              nix run --accept-flake-config "github:cachix/devenv/${devenv_rev}" -- \
+                --no-tui shell -- bash -lc "$smoke"
             '
