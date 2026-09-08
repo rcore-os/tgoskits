@@ -805,5 +805,4 @@ mod tests {
     fn seccomp_action_and_precedence_rules_hold() {
         assert!(super::seccomp_action_and_precedence_rules_hold_for_test());
     }
-
 }

@@ -11,7 +11,7 @@ use core::{
 
 use ax_lazyinit::LazyLock;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos};
-use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::sync::WaitQueue};
+use ax_std::os::arceos::{task as scheduler, task::sync::WaitQueue};
 use starry_signal::Signo;
 use strum::FromRepr;
 

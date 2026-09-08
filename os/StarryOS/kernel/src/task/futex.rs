@@ -9,7 +9,16 @@ use core::{
 
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::time::monotonic_time;
-use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::thread::current::CurrentParkDisposition, ax_std::os::arceos::task::thread::current::CurrentParkStart, ax_std::os::arceos::task::time::MonotonicDeadline, ax_std::os::arceos::task::time::MonotonicInstant, ax_std::os::arceos::task::thread::ThreadWakeBatch};
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::{
+        thread::{
+            ThreadWakeBatch,
+            current::{CurrentParkDisposition, CurrentParkStart},
+        },
+        time::{MonotonicDeadline, MonotonicInstant},
+    },
+};
 
 use crate::{
     mm::{AddrSpace, SharedFutexIdentity, SharedFutexRegion},
@@ -387,21 +396,22 @@ impl WaitQueue {
                 return Ok(false);
             }
             let task = task();
-            let park = match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
-                CurrentParkStart::Notified => {
-                    let deadline_expired = deadline
-                        .is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
-                    return match classify_park_notification(
-                        task.take_interrupt(),
-                        deadline_expired,
-                    )? {
-                        ParkNotificationAction::RecheckCondition => {
-                            Err(FutexWaitError::SchedulerNotification)
-                        }
-                    };
-                }
-                CurrentParkStart::Prepared(park) => park,
-            };
+            let park =
+                match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
+                    CurrentParkStart::Notified => {
+                        let deadline_expired = deadline
+                            .is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
+                        return match classify_park_notification(
+                            task.take_interrupt(),
+                            deadline_expired,
+                        )? {
+                            ParkNotificationAction::RecheckCondition => {
+                                Err(FutexWaitError::SchedulerNotification)
+                            }
+                        };
+                    }
+                    CurrentParkStart::Prepared(park) => park,
+                };
             let generation = match task.as_thread().wait_state().begin(cleanup) {
                 Ok(generation) => generation,
                 Err(error) => {
@@ -901,21 +911,22 @@ impl ResolvedFutex {
             if !condition()? {
                 return Ok(false);
             }
-            let park = match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
-                CurrentParkStart::Notified => {
-                    let deadline_expired =
-                        deadline.is_some_and(|deadline| deadline.lag().is_some());
-                    return match classify_park_notification(
-                        task.take_interrupt(),
-                        deadline_expired,
-                    )? {
-                        ParkNotificationAction::RecheckCondition => {
-                            Err(FutexWaitError::SchedulerNotification)
-                        }
-                    };
-                }
-                CurrentParkStart::Prepared(park) => park,
-            };
+            let park =
+                match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
+                    CurrentParkStart::Notified => {
+                        let deadline_expired =
+                            deadline.is_some_and(|deadline| deadline.lag().is_some());
+                        return match classify_park_notification(
+                            task.take_interrupt(),
+                            deadline_expired,
+                        )? {
+                            ParkNotificationAction::RecheckCondition => {
+                                Err(FutexWaitError::SchedulerNotification)
+                            }
+                        };
+                    }
+                    CurrentParkStart::Prepared(park) => park,
+                };
             let generation = match task.as_thread().wait_state().begin(Some(self.cleanup())) {
                 Ok(generation) => generation,
                 Err(error) => {

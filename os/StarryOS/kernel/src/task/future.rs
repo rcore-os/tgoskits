@@ -17,8 +17,18 @@ use core::{
 
 use ax_lazyinit::OnceLock;
 use ax_runtime::hal::time::{TimeValue, monotonic_time};
-pub use {ax_runtime::task::executor::block_on};
-use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::sync::irq::IrqRegisterResult, ax_std::os::arceos::task::sync::irq::IrqWaitCell, ax_std::os::arceos::task::sync::irq::IrqWaitRegistration, ax_std::os::arceos::task::executor::LocalExecutor, ax_std::os::arceos::task::time::MonotonicDeadline, ax_std::os::arceos::task::time::MonotonicInstant, ax_std::os::arceos::task::sync::WaitQueue};
+pub use ax_runtime::task::executor::block_on;
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::{
+        executor::LocalExecutor,
+        sync::{
+            WaitQueue,
+            irq::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration},
+        },
+        time::{MonotonicDeadline, MonotonicInstant},
+    },
+};
 use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedObserver};
 
 pub use super::user_wait::{UserWaitError, UserWaitOutcome};

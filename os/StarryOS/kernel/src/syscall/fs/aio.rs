@@ -15,7 +15,7 @@ use core::{
 use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time};
-use {ax_std::os::arceos::task::sync::WaitQueue};
+use ax_std::os::arceos::task::sync::WaitQueue;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
 use linux_raw_sys::general::timespec;

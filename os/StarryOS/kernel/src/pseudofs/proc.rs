@@ -18,7 +18,10 @@ use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
-use {ax_std::os::arceos::task::sched::CpuId, ax_std::os::arceos::task::sched::CpuSet, ax_std::os::arceos::task::thread::ThreadState};
+use ax_std::os::arceos::task::{
+    sched::{CpuId, CpuSet},
+    thread::ThreadState,
+};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;

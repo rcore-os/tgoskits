@@ -461,7 +461,8 @@ fn callbacks_run_without_raw_guard_for_test() -> bool {
     let tracepoint =
         KernelExtTracePoint::new(sched::tracepoint_state_for_test(), &TRACE_STATE.reclaimer);
     let read_result = tracepoint.read(|_| ax_runtime::task::thread::current::yield_current_cpu());
-    let write_result = tracepoint.update(|_| ax_runtime::task::thread::current::yield_current_cpu());
+    let write_result =
+        tracepoint.update(|_| ax_runtime::task::thread::current::yield_current_cpu());
     let blocked_retirement = tracepoint.read(|_| {
         // Cross both reader-counter epochs while the first epoch is still
         // leased. Neither generation sharing that counter may be reclaimed.
@@ -557,9 +558,9 @@ fn start_trace_pipe_notify_worker() -> ax_runtime::task::thread::ThreadHandle {
                     if !drain.pending {
                         break;
                     }
-                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(|error| {
-                        panic!("trace ingress worker failed to yield: {error}")
-                    });
+                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(
+                        |error| panic!("trace ingress worker failed to yield: {error}"),
+                    );
                 }
             }
         },
@@ -567,7 +568,11 @@ fn start_trace_pipe_notify_worker() -> ax_runtime::task::thread::ThreadHandle {
     )
 }
 
-fn publish_trace_worker_id(slot: &AtomicU64, worker: &ax_runtime::task::thread::ThreadHandle, name: &str) {
+fn publish_trace_worker_id(
+    slot: &AtomicU64,
+    worker: &ax_runtime::task::thread::ThreadHandle,
+    name: &str,
+) {
     let worker_id = worker.id().as_u64();
     assert_ne!(worker_id, 0, "{name} has an invalid scheduler identity");
     slot.compare_exchange(0, worker_id, Ordering::Release, Ordering::Relaxed)

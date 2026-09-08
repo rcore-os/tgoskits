@@ -35,7 +35,8 @@ impl Default for CpuTimeAccounting {
 
 impl CpuTimeAccounting {
     pub(crate) fn new() -> Self {
-        let scheduler_tick_cpu_time = Arc::new(scheduler::runtime::service::SchedulerTickCpuTime::new());
+        let scheduler_tick_cpu_time =
+            Arc::new(scheduler::runtime::service::SchedulerTickCpuTime::new());
         Self {
             scheduler_tick_cpu_time,
             published_user_ns: AtomicU64::new(0),
@@ -67,7 +68,9 @@ impl CpuTimeAccounting {
         )
     }
 
-    pub(crate) fn scheduler_tick_cpu_time(&self) -> Arc<scheduler::runtime::service::SchedulerTickCpuTime> {
+    pub(crate) fn scheduler_tick_cpu_time(
+        &self,
+    ) -> Arc<scheduler::runtime::service::SchedulerTickCpuTime> {
         Arc::clone(&self.scheduler_tick_cpu_time)
     }
 

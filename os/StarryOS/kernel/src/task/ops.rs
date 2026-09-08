@@ -119,7 +119,17 @@ mod axtests {
     use alloc::{string::ToString, sync::Arc};
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use {ax_runtime::task::sync::WaitQueue, ax_runtime::task::diagnostics::begin_pi_schedule_test_probe, ax_runtime::task::thread::current::current_thread_id, ax_runtime::task::diagnostics::end_pi_schedule_test_probe, ax_runtime::thread::join_thread, ax_runtime::task::diagnostics::pi_schedule_test_probe_snapshot, ax_runtime::thread::spawn_raw};
+    use ax_runtime::{
+        task::{
+            diagnostics::{
+                begin_pi_schedule_test_probe, end_pi_schedule_test_probe,
+                pi_schedule_test_probe_snapshot,
+            },
+            sync::WaitQueue,
+            thread::current::current_thread_id,
+        },
+        thread::{join_thread, spawn_raw},
+    };
 
     use crate::sync::Mutex;
 

@@ -15,7 +15,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, ffi::c_int, mem::size_of};
 
-use ax_driver::jpeg::{self, mpp, registers, ResolvedDmaBuf};
+use ax_driver::jpeg::{self, ResolvedDmaBuf, mpp, registers};
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
 use crate::{
@@ -210,7 +210,10 @@ fn run_decode(current: &crate::task::UserTaskRef, state: &mut TaskState) -> VfsR
 /// Resolve a dma-buf fd (as MPP places it in an address register) to the
 /// physical base of its contiguous buffer. MPP allocates these from our
 /// `/dev/dma_heap` ([`DmaBufFile`]).
-fn resolve_fd(fd: u32, imported: &mut Vec<Arc<crate::file::dmabuf::DmaBufFile>>) -> Option<ResolvedDmaBuf> {
+fn resolve_fd(
+    fd: u32,
+    imported: &mut Vec<Arc<crate::file::dmabuf::DmaBufFile>>,
+) -> Option<ResolvedDmaBuf> {
     let Some(buf) = resolve_contiguous_dmabuf(fd as c_int) else {
         warn!("mpp_service: register fd {fd} is not a resolvable dma-buf");
         return None;

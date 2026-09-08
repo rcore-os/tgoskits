@@ -226,9 +226,9 @@ impl TracepointReclaimer {
                     if !drain.pending || !drain.runnable {
                         break;
                     }
-                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(|error| {
-                        panic!("tracepoint reclaim worker failed to yield: {error}")
-                    });
+                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(
+                        |error| panic!("tracepoint reclaim worker failed to yield: {error}"),
+                    );
                 }
             },
             "tracepoint-reclaim".into(),

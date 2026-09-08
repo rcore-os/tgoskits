@@ -34,7 +34,16 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::PhysAddr;
-use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::sync::irq::IrqRegisterResult, ax_std::os::arceos::task::sync::irq::IrqWaitCell, ax_std::os::arceos::task::sync::irq::IrqWaitRegistration, ax_std::os::arceos::task::thread::ThreadId, ax_std::os::arceos::task::sync::WaitQueue};
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::{
+        sync::{
+            WaitQueue,
+            irq::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration},
+        },
+        thread::ThreadId,
+    },
+};
 use sg2002_tpu::{
     ion::IonBuffer,
     tpu::{

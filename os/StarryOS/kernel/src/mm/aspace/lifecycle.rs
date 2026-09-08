@@ -1172,8 +1172,10 @@ unsafe impl ax_runtime::thread::UserAddressSpaceOwner for RuntimeMmOwner {
     fn prepare_activation(
         &self,
         cpu: usize,
-    ) -> Result<ax_runtime::thread::SchedulerAddressSpaceActivation, ax_runtime::task::thread::TaskError>
-    {
+    ) -> Result<
+        ax_runtime::thread::SchedulerAddressSpaceActivation,
+        ax_runtime::task::thread::TaskError,
+    > {
         self.pin
             .lock()
             .as_ref()

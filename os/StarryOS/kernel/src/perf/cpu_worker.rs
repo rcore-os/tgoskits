@@ -3,7 +3,10 @@
 use alloc::{collections::VecDeque, format, sync::Arc, vec::Vec};
 
 use ax_lazyinit::LazyInit;
-use {ax_runtime::task::sched::CpuId, ax_runtime::task::sched::CpuSet, ax_runtime::task::sync::WaitQueue};
+use ax_runtime::task::{
+    sched::{CpuId, CpuSet},
+    sync::WaitQueue,
+};
 
 use super::{
     hw::{

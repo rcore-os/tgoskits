@@ -16,7 +16,7 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-use {ax_runtime::task::runtime::switch::SchedSwitchRecord};
+use ax_runtime::task::runtime::switch::SchedSwitchRecord;
 
 use super::sched_filter::should_defer_sched_switch;
 use crate::task::try_current_user_irq_view;
@@ -141,7 +141,9 @@ struct ReplayGuard;
 
 impl ReplayGuard {
     fn begin(record: &DeferredSchedSwitch) -> Option<Self> {
-        let owner = ax_runtime::task::thread::current::current_thread_id().ok()?.as_u64();
+        let owner = ax_runtime::task::thread::current::current_thread_id()
+            .ok()?
+            .as_u64();
         for (slot, byte) in REPLAY_IDENTITY.comm.iter().zip(record.comm) {
             slot.store(byte, Ordering::Relaxed);
         }
@@ -247,9 +249,9 @@ pub(super) fn start_worker() -> ax_runtime::task::thread::ThreadHandle {
             loop {
                 super::TRACE_STATE.sched_notify.wait();
                 while drain_deferred(DEFERRED_DRAIN_BATCH, replay_sched_switch) {
-                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(|error| {
-                        panic!("scheduler trace worker failed to yield: {error}")
-                    });
+                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(
+                        |error| panic!("scheduler trace worker failed to yield: {error}"),
+                    );
                 }
             }
         },

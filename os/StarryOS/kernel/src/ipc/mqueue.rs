@@ -1240,8 +1240,7 @@ impl Pollable for MqDescriptor {
 /// removes the binding while descriptors keep the `Arc` alive. Name lookup and
 /// mutation only run from syscall/VFS task context, so contention may sleep
 /// instead of extending an IRQ-disabled critical section.
-pub static MQ_REGISTRY: Mutex<BTreeMap<String, Arc<MessageQueue>>> =
-    Mutex::new(BTreeMap::new());
+pub static MQ_REGISTRY: Mutex<BTreeMap<String, Arc<MessageQueue>>> = Mutex::new(BTreeMap::new());
 
 /// Validate a POSIX message-queue name.
 ///

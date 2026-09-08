@@ -22,7 +22,7 @@ use super::{
     scheduler_identity::SchedulerIdentity,
     user_memory_access::{UserMemoryAccessDepth, UserMemoryAccessGuard},
 };
-use crate::sync::{IrqMutex, NoPreemptIrqSave, Mutex};
+use crate::sync::{IrqMutex, Mutex, NoPreemptIrqSave};
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
 const SYSCALL_WORK_SECCOMP: u32 = 1 << 0;
@@ -517,7 +517,11 @@ impl Thread {
         self.identity
             .scheduler
             .get()
-            .and_then(|id| ax_runtime::task::thread::ThreadHandle::lookup(id).and_then(|thread| thread.runtime()).ok())
+            .and_then(|id| {
+                ax_runtime::task::thread::ThreadHandle::lookup(id)
+                    .and_then(|thread| thread.runtime())
+                    .ok()
+            })
             .map(|snapshot| snapshot.charged_runtime_ns())
             .unwrap_or_else(|| self.accounting.cpu_time.published_runtime_ns())
     }

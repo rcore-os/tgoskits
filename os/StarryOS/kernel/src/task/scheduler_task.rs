@@ -15,7 +15,7 @@ use ax_std::os::arceos::task as scheduler;
 use super::{PidIdentity, PidSnapshot, Thread};
 #[cfg(target_arch = "aarch64")]
 use super::{PidNamespaceId, TgidNumber, TidNumber};
-use crate::sync::{NoPreemptIrqSave, Mutex};
+use crate::sync::{Mutex, NoPreemptIrqSave};
 
 const TASK_COMM_LEN: usize = 16;
 
@@ -166,7 +166,10 @@ impl UserTaskRef {
     }
 
     /// Commits an exec-time address-space replacement for the running thread.
-    pub fn switch_address_space(&self, address_space: ax_std::os::arceos::thread::TaskAddressSpace) {
+    pub fn switch_address_space(
+        &self,
+        address_space: ax_std::os::arceos::thread::TaskAddressSpace,
+    ) {
         assert_eq!(
             self.id(),
             scheduler::thread::current::current_thread_id()
@@ -208,7 +211,8 @@ impl UserTaskRef {
 
     /// Returns the scheduler affinity snapshot.
     pub fn affinity(&self) -> scheduler::sched::CpuSet {
-        self.scheduler.affinity()
+        self.scheduler
+            .affinity()
             .unwrap_or_else(|error| panic!("failed to read Starry task affinity: {error}"))
     }
 
@@ -268,8 +272,9 @@ pub struct WeakUserTaskRef {
 impl WeakUserTaskRef {
     /// Upgrades the reference only while the same slot generation is live.
     pub fn upgrade(self) -> Result<Option<UserTaskRef>, scheduler::thread::TaskError> {
-        let Some(handle) =
-            resolve_weak_scheduler_handle(scheduler::thread::ThreadHandle::lookup(self.scheduler_id))?
+        let Some(handle) = resolve_weak_scheduler_handle(scheduler::thread::ThreadHandle::lookup(
+            self.scheduler_id,
+        ))?
         else {
             return Ok(None);
         };
@@ -437,8 +442,13 @@ pub fn spawn_kernel_thread_with_affinity<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    ax_std::os::arceos::thread::spawn_raw_with_affinity(entry, name, crate::config::KERNEL_STACK_SIZE, affinity)
-        .unwrap_or_else(|error| panic!("failed to spawn affine kernel thread: {error}"))
+    ax_std::os::arceos::thread::spawn_raw_with_affinity(
+        entry,
+        name,
+        crate::config::KERNEL_STACK_SIZE,
+        affinity,
+    )
+    .unwrap_or_else(|error| panic!("failed to spawn affine kernel thread: {error}"))
 }
 
 /// Spawns a fixed per-CPU kernel service with its scheduler policy committed
@@ -1051,7 +1061,8 @@ fn is_starry_thread_extension(ops: &'static scheduler::thread::ThreadExtensionOp
 const fn is_realtime_policy(policy: scheduler::sched::SchedulePolicy) -> bool {
     matches!(
         policy,
-        scheduler::sched::SchedulePolicy::Fifo { .. } | scheduler::sched::SchedulePolicy::RoundRobin { .. }
+        scheduler::sched::SchedulePolicy::Fifo { .. }
+            | scheduler::sched::SchedulePolicy::RoundRobin { .. }
     )
 }
 
@@ -1065,13 +1076,14 @@ unsafe fn extension_data_from_raw(data: usize) -> &'static StarryUserTaskExtensi
 mod tests {
     use super::*;
 
-    static FOREIGN_EXTENSION_OPS: scheduler::thread::ThreadExtensionOps = scheduler::thread::ThreadExtensionOps {
-        on_switch_in: foreign_thread_switch_in,
-        on_switch_out: foreign_thread_switch_out,
-        on_exit: foreign_thread_hook,
-        on_deadline_overrun: foreign_thread_hook,
-        drop: foreign_thread_drop,
-    };
+    static FOREIGN_EXTENSION_OPS: scheduler::thread::ThreadExtensionOps =
+        scheduler::thread::ThreadExtensionOps {
+            on_switch_in: foreign_thread_switch_in,
+            on_switch_out: foreign_thread_switch_out,
+            on_exit: foreign_thread_hook,
+            on_deadline_overrun: foreign_thread_hook,
+            drop: foreign_thread_drop,
+        };
 
     #[test]
     fn accepts_only_starry_extension_ops_identity() {
@@ -1131,10 +1143,12 @@ mod tests {
         assert!(is_realtime_policy(scheduler::sched::SchedulePolicy::fifo(
             priority
         )));
-        assert!(is_realtime_policy(scheduler::sched::SchedulePolicy::round_robin(
-            priority
-        )));
-        assert!(!is_realtime_policy(scheduler::sched::SchedulePolicy::default()));
+        assert!(is_realtime_policy(
+            scheduler::sched::SchedulePolicy::round_robin(priority)
+        ));
+        assert!(!is_realtime_policy(
+            scheduler::sched::SchedulePolicy::default()
+        ));
         let deadline = scheduler::sched::DeadlinePolicy::new(
             1_000_000,
             2_000_000,
@@ -1142,12 +1156,16 @@ mod tests {
             scheduler::sched::DeadlineFlags::NONE,
         )
         .unwrap();
-        assert!(!is_realtime_policy(scheduler::sched::SchedulePolicy::Deadline(
-            deadline,
-        )));
+        assert!(!is_realtime_policy(
+            scheduler::sched::SchedulePolicy::Deadline(deadline,)
+        ));
     }
 
-    unsafe extern "Rust" fn foreign_thread_hook(_data: usize, _thread: scheduler::thread::ThreadId) {}
+    unsafe extern "Rust" fn foreign_thread_hook(
+        _data: usize,
+        _thread: scheduler::thread::ThreadId,
+    ) {
+    }
 
     unsafe extern "Rust" fn foreign_thread_switch_in(
         _data: usize,

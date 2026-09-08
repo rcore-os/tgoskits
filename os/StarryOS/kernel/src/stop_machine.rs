@@ -5,9 +5,15 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-use {ax_runtime::hal::cpu_num, ax_runtime::hal::percpu::this_cpu_id, ax_runtime::task::sched::CpuId, ax_runtime::task::sched::CpuSet, ax_runtime::task::sched::SchedulePolicy, ax_runtime::task::sync::WaitQueue};
+use ax_runtime::{
+    hal::{cpu_num, percpu::this_cpu_id},
+    task::{
+        sched::{CpuId, CpuSet, SchedulePolicy},
+        sync::WaitQueue,
+    },
+};
 
-use crate::sync::{NoPreemptIrqSave, Mutex};
+use crate::sync::{Mutex, NoPreemptIrqSave};
 
 static STOP_MACHINE_LOCK: Mutex<()> = Mutex::new(());
 static CPU_STOPPERS: LazyInit<Vec<Arc<CpuStopper>>> = LazyInit::new();

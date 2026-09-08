@@ -19,7 +19,13 @@ pub fn input_device_count() -> u32 {
 use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
 use ax_lazyinit::OnceLock;
 use ax_runtime::hal::{irq::IrqId, time::wall_time};
-use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::sync::irq::IrqWaitCell, ax_std::os::arceos::task::sync::irq::IrqWaitRegistration, ax_std::os::arceos::task::sync::WaitQueue};
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::sync::{
+        WaitQueue,
+        irq::{IrqWaitCell, IrqWaitRegistration},
+    },
+};
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;

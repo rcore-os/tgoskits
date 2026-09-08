@@ -245,8 +245,10 @@ fn cpufreq_governor_loop() {
         // zero runtime and therefore reads as idle.
         let mut busy = [0u64; 8];
         for (cpu, slot) in busy.iter_mut().enumerate() {
-            *slot = ax_runtime::task::sched::cpu_busy_runtime_ns(ax_runtime::task::sched::CpuId::new(cpu as u32))
-                .unwrap_or(0);
+            *slot = ax_runtime::task::sched::cpu_busy_runtime_ns(
+                ax_runtime::task::sched::CpuId::new(cpu as u32),
+            )
+            .unwrap_or(0);
         }
         ax_driver::cpufreq::governor_poll(&busy);
     }

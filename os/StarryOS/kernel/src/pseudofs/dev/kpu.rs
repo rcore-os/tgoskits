@@ -8,7 +8,16 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
-use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::sync::irq::IrqWaitCell, ax_std::os::arceos::task::sync::irq::IrqWaitRegistration, ax_std::os::arceos::task::thread::ThreadId, ax_std::os::arceos::task::sync::WaitQueue};
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::{
+        sync::{
+            WaitQueue,
+            irq::{IrqWaitCell, IrqWaitRegistration},
+        },
+        thread::ThreadId,
+    },
+};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use bytemuck::NoUninit;
 use k230_kpu::{

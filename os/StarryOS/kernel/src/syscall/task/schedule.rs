@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use ax_runtime::hal::{self, time::TimeValue};
-use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::sync::WaitQueue};
+use ax_std::os::arceos::{task as scheduler, task::sync::WaitQueue};
 use bytemuck::{Pod, Zeroable};
 #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
 use linux_raw_sys::general::__kernel_timespec;
@@ -210,8 +210,9 @@ pub fn sys_sched_getaffinity(
         return Err(crate::StarryError::InvalidInput);
     }
 
-    let affinity =
-        scheduler::thread::ThreadHandle::lookup(scheduler_thread_id(current, pid)?).and_then(|thread| thread.affinity()).map_err(map_task_error)?;
+    let affinity = scheduler::thread::ThreadHandle::lookup(scheduler_thread_id(current, pid)?)
+        .and_then(|thread| thread.affinity())
+        .map_err(map_task_error)?;
     let mut mask_bytes = vec![0_u8; kernel_mask_bytes.min(cpusetsize)];
     for cpu in 0..cpu_count {
         let cpu_id = u32::try_from(cpu).map_err(|_| crate::StarryError::InvalidInput)?;
@@ -271,9 +272,11 @@ pub fn sys_sched_setaffinity(
     }
     let target_tid = scheduler_tid(current, pid)?;
     if target_tid == current.as_thread().tid() {
-        scheduler::thread::current::set_current_thread_affinity(affinity).map_err(map_task_error)?;
+        scheduler::thread::current::set_current_thread_affinity(affinity)
+            .map_err(map_task_error)?;
     } else {
-        scheduler::thread::ThreadHandle::lookup(scheduler_thread_id(current, pid)?).and_then(|thread| thread.set_affinity_and_wait(affinity))
+        scheduler::thread::ThreadHandle::lookup(scheduler_thread_id(current, pid)?)
+            .and_then(|thread| thread.set_affinity_and_wait(affinity))
             .map_err(map_task_error)?;
     }
 
@@ -438,7 +441,9 @@ fn apply_scheduler_update(
     )?;
 
     let thread = scheduler_thread_id(current, pid)?;
-    scheduler::thread::ThreadHandle::lookup(thread).and_then(|thread| thread.set_policy(update.policy)).map_err(map_task_error)?;
+    scheduler::thread::ThreadHandle::lookup(thread)
+        .and_then(|thread| thread.set_policy(update.policy))
+        .map_err(map_task_error)?;
 
     task.set_reset_on_fork(update.reset_on_fork);
     if let scheduler::sched::SchedulePolicy::Fair { nice, .. } = update.policy {
@@ -452,7 +457,9 @@ fn scheduler_policy(
     pid: i32,
 ) -> crate::StarryResult<scheduler::sched::SchedulePolicy> {
     let thread = scheduler_thread_id(current, pid)?;
-    scheduler::thread::ThreadHandle::lookup(thread).map(|thread| thread.base_policy()).map_err(map_task_error)
+    scheduler::thread::ThreadHandle::lookup(thread)
+        .map(|thread| thread.base_policy())
+        .map_err(map_task_error)
 }
 
 fn scheduler_reset_on_fork(
@@ -806,10 +813,12 @@ fn set_thread_scheduler_nice(task: &UserTaskRef, nice: i32) -> crate::StarryResu
     let nice = scheduler::sched::Nice::new(nice as i8).map_err(map_task_error)?;
     let policy = task.base_policy();
     if let scheduler::sched::SchedulePolicy::Fair { mode, .. } = policy {
-        scheduler::thread::ThreadHandle::lookup(task.id()).and_then(|thread| thread.set_policy(scheduler::sched::SchedulePolicy::fair(nice, mode)))
+        scheduler::thread::ThreadHandle::lookup(task.id())
+            .and_then(|thread| {
+                thread.set_policy(scheduler::sched::SchedulePolicy::fair(nice, mode))
+            })
             .map_err(map_task_error)?;
     }
     task.as_thread().set_nice(i32::from(nice.get()));
     Ok(())
 }
-

@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use {ax_runtime::hal::time::TimeValue, ax_runtime::task::runtime::service::SchedulerTickGate};
+use ax_runtime::{hal::time::TimeValue, task::runtime::service::SchedulerTickGate};
 use linux_raw_sys::general::RLIMIT_RTTIME;
 
 use super::{

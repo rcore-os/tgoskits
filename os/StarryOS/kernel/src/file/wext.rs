@@ -22,7 +22,7 @@ use core::mem::MaybeUninit;
 use crate::{
     StarryError, StarryResult,
     mm::{vm_read_slice, vm_write_slice},
-    sync::Mutex as Mutex,
+    sync::Mutex,
 };
 
 // ---------------------------------------------------------------------------

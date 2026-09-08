@@ -6,7 +6,7 @@ use ax_io::IoError;
 use ax_memory_set::MappingError;
 use ax_mm::MmError;
 use ax_net::NetError;
-use {ax_runtime::RuntimeError, ax_runtime::serial::ConfigError, ax_runtime::task::thread::TaskError};
+use ax_runtime::{RuntimeError, serial::ConfigError, task::thread::TaskError};
 use axfs_ng_vfs::VfsError;
 use dma_api::DmaError;
 #[cfg(all(test, not(axtest)))]

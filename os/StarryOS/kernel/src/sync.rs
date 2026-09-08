@@ -6,7 +6,10 @@
 use alloc::vec::Vec;
 
 pub(crate) use ax_fs_ng::os::sync::SleepMutex as FsMutex;
-pub(crate) use {ax_runtime::task::sync::InterruptibleMutexExt, ax_runtime::task::sync::LockdepMutexExt, ax_runtime::task::sync::Mutex, ax_runtime::task::sync::MutexGuard, ax_runtime::task::sync::PreemptGuard, ax_runtime::task::sync::PreemptIrqSaveGuard as NoPreemptIrqSave, ax_runtime::task::sync::RawIrqSaveMutex, ax_runtime::task::sync::SpinLock, ax_runtime::task::sync::SpinLockGuard, ax_runtime::task::sync::SpinRwLock};
+pub(crate) use ax_runtime::task::sync::{
+    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PreemptGuard,
+    PreemptIrqSaveGuard as NoPreemptIrqSave, RawIrqSaveMutex, SpinLock, SpinLockGuard, SpinRwLock,
+};
 
 /// An IRQ-save spin mutex for state reachable from interrupt context.
 #[repr(transparent)]
