@@ -686,11 +686,13 @@ unsafe fn per_task_sample_read_irq(
     let mut value = counter.accumulated.load(Ordering::Acquire);
     let running = counter.run_state.lock().running();
     if !account_source
-        && running.is_some_and(|lease| lease.owner().as_usize() == ax_hal::percpu::this_cpu_id())
+        && let Some(lease) = running
+        && lease.owner().as_usize() == ax_hal::percpu::this_cpu_id()
     {
-        let live = match counter.counter {
+        let physical = lease.counter();
+        let live = match physical {
             Counter::Programmable(index) if index == source_slot => 0,
-            Counter::Cycle | Counter::Programmable(_) => counter.counter.read(),
+            Counter::Cycle | Counter::Programmable(_) => physical.read(),
         };
         value = value.saturating_add(live);
     }
