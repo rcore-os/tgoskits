@@ -82,6 +82,12 @@ CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.
 
 从实际四架构根文件系统提取musl后反汇编`epoll_wait`与`epoll_pwait`：前者转发后者，后者使用x86_64编号281、其他架构编号22；x86_64仅在`ENOSYS`时回退232。Starry已实现281，因此这些LTP结果验证`epoll_pwait`路径，不能补回第八项清理的raw旧入口断言。反汇编证据为`/tmp/starry-ltp-migration-evidence/epoll-libc-<arch>.asm`。
 
+### 2.12 EPOLLET 第二段数据
+
+`bug-epollet-second-chunk` 原来在TCP回环连接上检查空闲时不产生幻事件，并重复32轮“写A、等待、读尽、写B、等待、读尽”。固定LTP [epoll_wait06.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/epoll_wait/epoll_wait06.c) 以非阻塞pipe验证写满后的IN事件、半读后不重复产生边缘事件、读空后的OUT事件，并检查FD、事件位与满/空时`EAGAIN`，共九项TPASS。
+
+这里只部分承接EPOLLET下的数据就绪事件；半读后不重复通知是LTP增加的检查。pipe不能证明TCP已连接套接字的OUT就绪不导致IN幻事件，也没有保留读尽后第二次写入重新交付IN及32轮重复检查；这些覆盖损失随原程序和CMake清理明确记录。四架构均完成九项TPASS，执行集合和共同集核对通过，未发现新缺陷。验证复用上一项记录的同一轮四架构日志，测试替换与完成门槛保持独立提交。
+
 ## 3. 系统调用兼容性对照
 
 结论仅针对本轮明确检查的路径，不表示整个系统调用在所有输入下都兼容。移除 procfs 或 sysfs 的特定断言后，LTP 的绿色结果不能证明那些文件的表示仍然正确。
@@ -113,3 +119,6 @@ CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.
 | epoll_ctl(并发反向ADD) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2069) | 并发建立相反边时必须拒绝其中一条，避免共同形成环路 | `sys_epoll_ctl` → `Epoll::add_interest` → 全局拓扑锁覆盖校验与提交 | 无法确认 | 原屏障并发回归已清理，LTP04/05只验证串行图操作 |
 | epoll_pwait(静态错误输入) / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 坏FD为EBADF，非epoll FD及非正maxevents为EINVAL，就绪事件写入只读页为EFAULT | `sys_epoll_pwait` → `do_epoll_wait`参数/FD检查 → `poll_events_with` → `write_epoll_event`逐事件用户写回 | 正确 | epoll_wait03四架构各5项TPASS，实际libc后端已反汇编确认 |
 | epoll_pwait(解除映射、部分复制与极限范围) / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 等待后复制重新检查映射；部分完成优先返回数量，未交付事件保留；超大数量和溢出用户范围被拒绝 | `do_epoll_wait` → `check_epoll_events_access` → `poll_events_with`逐事件消费与复制失败恢复 | 无法确认 | 原专门回归已清理，静态只读页LTP没有承接上述断言 |
+| epoll_ctl(管道EPOLLET注册) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 为读/写pipe端登记带用户FD数据的边缘触发兴趣 | `sys_epoll_ctl` → `EpollFlags::EDGE_TRIGGER` → `Epoll::add_interest` → `TriggerMode::Edge`及PollRegistrar | 正确 | epoll_wait06四架构验证已登记读写端实际边缘通知 |
+| epoll_pwait(管道EPOLLET消费) / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 交付IN后半读不重复通知；完全读空后交付OUT，返回对应FD与事件位 | `do_epoll_wait` → `poll_events_with` → `EpollInterest::consume`匹配就绪与触发模式 → 用户事件写回 | 正确 | epoll_wait06四架构各9项TPASS；实际musl后端已确认 |
+| epoll_pwait(TCP EPOLLET重复数据交付) / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 无匹配就绪时不返回幻事件；TCP读尽后新数据再次触发IN | `do_epoll_wait` → Epoll兴趣队列及Socket Pollable注册/通知 → 事件消费与写回 | 无法确认 | 原TCP空闲与32轮两段数据回归已清理，pipe LTP未承接TCP专有路径 |

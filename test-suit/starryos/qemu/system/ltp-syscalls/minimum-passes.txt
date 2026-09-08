@@ -18,3 +18,5 @@ epoll_ctl02 9
 epoll_wait01 3
 # epoll_wait03.c: five errno cases.
 epoll_wait03 5
+# epoll_wait06.c: nine pipe edge-trigger assertions.
+epoll_wait06 9
