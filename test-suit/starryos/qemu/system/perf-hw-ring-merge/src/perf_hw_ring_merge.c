@@ -177,6 +177,24 @@ int main(void) {
     }
     struct perf_event_mmap_page *meta = (struct perf_event_mmap_page *)base;
 
+    /* Linux treats FD_OUTPUT alone as both an output redirect and a group
+     * link. Starry does not support groups for direct CPU sampling events, so
+     * this combination must report that limitation instead of silently
+     * dropping the group relationship. FD_NO_GROUP below requests the
+     * independent redirected-event behavior used by perf record. */
+    init_attr(&attr);
+    errno = 0;
+    long grouped_output =
+        perf_event_open(&attr, -1, 0, afd, PERF_FLAG_FD_OUTPUT);
+    if (grouped_output >= 0 || errno != EOPNOTSUPP) {
+        if (grouped_output >= 0) {
+            close((int)grouped_output);
+        }
+        munmap(base, PERF_MMAP_TOTAL_BYTES);
+        close(afd);
+        return fail("FD_OUTPUT alone must retain group semantics");
+    }
+
     /* B is independent but shares A's output ring at open time. */
     init_attr(&attr);
     long lb = perf_event_open(&attr, -1, 0, afd,
