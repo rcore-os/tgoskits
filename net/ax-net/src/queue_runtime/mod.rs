@@ -44,10 +44,12 @@ const COMMAND_WAIT: u8 = 0;
 const COMMAND_START: u8 = 1;
 const COMMAND_STOP: u8 = 2;
 const COMMAND_QUARANTINE: u8 = 3;
+const COMMAND_RUN: u8 = 4;
 
 const STATUS_PENDING: u8 = 0;
 const STATUS_READY: u8 = 1;
 const STATUS_FAILED: u8 = 2;
+const STATUS_EMPTY: u8 = 3;
 
 struct WifiCommandCompletion {
     result: SpinLock<Option<Result<(), NetError>>>,
@@ -533,6 +535,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 command: AtomicU8::new(COMMAND_WAIT),
                 affinity_status: AtomicU8::new(STATUS_PENDING),
                 startup_status: AtomicU8::new(STATUS_PENDING),
+                publication_status: AtomicU8::new(STATUS_PENDING),
                 startup_error: SpinLock::new(None),
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
             });
@@ -716,6 +719,8 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             }
         };
 
+        publish_executors(&mut executors);
+
         let (started_ports, device_index_map) = retain_started_ports(ports);
         group_states.retain(|state| !state.startup_absent());
         let controls = controls
@@ -753,12 +758,6 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             .map(|state| state.owner_cpu)
             .collect::<Vec<_>>();
         let protocol_owner_cpu = select_protocol_owner(&active_group_owners, &active_cpus);
-        let executors = if group_states.is_empty() {
-            stop_executors(&mut executors, true);
-            Vec::new()
-        } else {
-            executors
-        };
         let mut runtime = NetworkQueueRuntime {
             registrations,
             executors,
@@ -998,11 +997,26 @@ fn stop_executors(executors: &mut Vec<ExecutorLease>, irq_synchronized: bool) {
         executor.stop(irq_synchronized);
     }
     while let Some(executor) = executors.pop() {
-        if let Err(error) = executor.task.join() {
-            log::error!(
-                "failed to join network queue executor for CPU {}: {error}",
-                executor.control.owner_cpu
-            );
+        executor.join();
+    }
+}
+
+fn publish_executors(executors: &mut Vec<ExecutorLease>) {
+    for executor in executors.iter() {
+        executor
+            .control
+            .command
+            .store(COMMAND_RUN, Ordering::Release);
+        executor.control.notify.notify();
+    }
+    let mut index = 0;
+    while index < executors.len() {
+        let status = &executors[index].control.publication_status;
+        wait_status(status);
+        if status.load(Ordering::Acquire) == STATUS_EMPTY {
+            executors.swap_remove(index).join();
+        } else {
+            index += 1;
         }
     }
 }

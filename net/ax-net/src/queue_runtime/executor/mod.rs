@@ -8,9 +8,9 @@ use rd_net::{
 };
 
 use super::{
-    COMMAND_QUARANTINE, COMMAND_STOP, COMMAND_WAIT, CPU_ROUND_BUDGET, PollGroupState, QUEUE_BUDGET,
-    QueueNotification, STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED, STATUS_FAILED,
-    STATUS_READY, SpscConsumer, SpscProducer, TxQueueDiscipline,
+    COMMAND_QUARANTINE, COMMAND_RUN, COMMAND_STOP, COMMAND_WAIT, CPU_ROUND_BUDGET, PollGroupState,
+    QUEUE_BUDGET, QueueNotification, STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED,
+    STATUS_EMPTY, STATUS_FAILED, STATUS_READY, SpscConsumer, SpscProducer, TxQueueDiscipline,
 };
 use crate::device::{
     ETH_ZLEN, EthernetFramePort, NetDeviceError, NetDeviceResult, ProtocolEthernetFrame,
@@ -738,6 +738,7 @@ pub(super) struct ExecutorControl {
     pub(super) command: AtomicU8,
     pub(super) affinity_status: AtomicU8,
     pub(super) startup_status: AtomicU8,
+    pub(super) publication_status: AtomicU8,
     pub(super) startup_error: SpinLock<Option<NetError>>,
     pub(super) notify: Arc<QueueNotification>,
 }
@@ -748,6 +749,15 @@ pub(super) struct ExecutorLease {
 }
 
 impl ExecutorLease {
+    pub(super) fn join(self) {
+        if let Err(error) = self.task.join() {
+            log::error!(
+                "failed to join network queue executor for CPU {}: {error}",
+                self.control.owner_cpu
+            );
+        }
+    }
+
     pub(super) fn stop(&self, irq_synchronized: bool) {
         self.control.command.store(
             if irq_synchronized {
@@ -814,6 +824,23 @@ pub(super) fn queue_executor_main(
     }
 
     loop {
+        let command = control.command.load(Ordering::Acquire);
+        if let Some(irq_synchronized) = requested_irq_synchronization(command) {
+            release_executor_resources(groups, wifi, irq_synchronized);
+            return;
+        }
+        if let Some(status) = retain_started_executor_groups(&mut groups, &mut wifi, command) {
+            control.publication_status.store(status, Ordering::Release);
+            control.notify.notify();
+            if status == STATUS_EMPTY {
+                return;
+            }
+            break;
+        }
+        control.notify.wait(&waiter);
+    }
+
+    loop {
         if let Some(irq_synchronized) =
             requested_irq_synchronization(control.command.load(Ordering::Acquire))
         {
@@ -875,6 +902,43 @@ pub(super) fn queue_executor_main(
             }
         }
     }
+}
+
+fn retain_started_executor_groups(
+    groups: &mut Vec<QueueGroupExecutor>,
+    wifi: &mut Vec<WifiExecutorSlot>,
+    command: u8,
+) -> Option<u8> {
+    if command != COMMAND_RUN {
+        return None;
+    }
+    let mut next_index = 0;
+    let group_indices = groups
+        .iter()
+        .map(|group| {
+            if group.shared.startup_absent() {
+                None
+            } else {
+                let index = next_index;
+                next_index += 1;
+                Some(index)
+            }
+        })
+        .collect::<Vec<_>>();
+    wifi.retain_mut(|slot| {
+        if let Some(index) = group_indices[slot.group_index] {
+            slot.group_index = index;
+            true
+        } else {
+            false
+        }
+    });
+    groups.retain(|group| !group.shared.startup_absent());
+    Some(if groups.is_empty() {
+        STATUS_EMPTY
+    } else {
+        STATUS_READY
+    })
 }
 
 fn wait_for_cleanup_command(control: &ExecutorControl, waiter: &ax_task::IrqWorkerWaiter) -> bool {

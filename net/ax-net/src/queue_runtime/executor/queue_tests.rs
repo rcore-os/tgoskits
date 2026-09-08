@@ -398,6 +398,152 @@ fn missing_device_startup_is_cancelled_without_publishing_queues() {
     }
 }
 
+struct StartupWifi(Arc<AtomicBool>);
+
+impl Drop for StartupWifi {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+impl rd_net::WifiControl for StartupWifi {
+    fn start(
+        &mut self,
+        _operation: &rd_net::WifiOperation,
+        _now_nanos: u64,
+    ) -> Result<rd_net::WifiControlProgress, NetError> {
+        panic!("Wi-Fi transactions must not start before publication")
+    }
+
+    fn advance(&mut self, _now_nanos: u64) -> Result<rd_net::WifiControlProgress, NetError> {
+        panic!("Wi-Fi transactions must not advance before publication")
+    }
+
+    fn cancel(&mut self) -> Result<(), NetError> {
+        panic!("no Wi-Fi transaction is active before publication")
+    }
+
+    fn startup_transaction(&self) -> Option<rd_net::WifiTransaction> {
+        None
+    }
+}
+
+fn startup_executor(absent: bool, trace: Trace) -> QueueGroupExecutor {
+    let dma = DeviceDma::new(
+        DmaDeviceInfo::new(
+            DmaDomainId::Direct,
+            DmaCoherency::Coherent,
+            DmaConstraints::new(u64::MAX),
+        ),
+        &TEST_DMA,
+    );
+    let mut device =
+        rd_net::prepare_device(Box::new(TestDevice(Arc::clone(&trace), TestTx(trace))), dma)
+            .unwrap();
+    let group = device.poll_groups.pop().unwrap();
+    let (rx_ready, _protocol_rx) = spsc_ring(2);
+    let (rx_recycle, recycle) = spsc_ring(2);
+    let (tx_free, _protocol_tx_free) = spsc_ring(2);
+    let (_protocol_tx, tx_ready) = spsc_ring(2);
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
+    let mut executor = QueueGroupExecutor {
+        group,
+        rx_ready,
+        rx_recycle: recycle,
+        rx_recycler: Arc::new(RxRecycler::new(rx_recycle, Arc::clone(&shared), 2)),
+        rx_spares: Vec::new(),
+        rx_extra_buffers: 0,
+        tx_ready,
+        tx_free,
+        pending_rx: None,
+        pending_rx_refill: VecDeque::with_capacity(2),
+        pending_tx: None,
+        pending_tx_free: None,
+        retry_at: None,
+        shared,
+    };
+    if absent {
+        executor.group.owner_startup = Some(Box::new(MissingDeviceStartup {
+            cancel_attempted: Arc::new(AtomicBool::new(false)),
+            cancel_fails: false,
+        }));
+        executor
+            .initialize(|| panic!("absent startup must not wait"))
+            .unwrap();
+    }
+    executor
+}
+
+#[test]
+fn startup_pruning_releases_absent_queues_and_remaps_wifi_slots() {
+    for absent in [
+        vec![true, false, true, false],
+        vec![true],
+        vec![false],
+        vec![],
+    ] {
+        let mut groups = Vec::new();
+        let mut wifi = Vec::new();
+        let mut queue_owners = Vec::new();
+        let mut wifi_dropped = Vec::new();
+        let mut states = Vec::new();
+        for (group_index, &missing) in absent.iter().enumerate() {
+            let trace = Arc::new(Mutex::new(Vec::new()));
+            queue_owners.push(Arc::downgrade(&trace));
+            let executor = startup_executor(missing, trace);
+            states.push(Arc::clone(&executor.shared));
+            groups.push(executor);
+            let dropped = Arc::new(AtomicBool::new(false));
+            wifi_dropped.push(Arc::clone(&dropped));
+            wifi.push(WifiExecutorSlot {
+                group_index,
+                control: Box::new(StartupWifi(dropped)),
+                queue: Arc::new(crate::queue_runtime::WifiControlQueue::new()),
+                active: None,
+            });
+        }
+
+        for command in [
+            crate::queue_runtime::COMMAND_START,
+            COMMAND_QUARANTINE,
+            COMMAND_STOP,
+        ] {
+            assert_eq!(
+                retain_started_executor_groups(&mut groups, &mut wifi, command),
+                None
+            );
+            assert!(queue_owners.iter().all(|owner| owner.upgrade().is_some()));
+            assert!(
+                wifi_dropped
+                    .iter()
+                    .all(|dropped| !dropped.load(Ordering::Acquire))
+            );
+        }
+        let status = retain_started_executor_groups(&mut groups, &mut wifi, COMMAND_RUN);
+
+        let mut published = 0;
+        for (index, &missing) in absent.iter().enumerate() {
+            assert_eq!(queue_owners[index].upgrade().is_none(), missing);
+            assert_eq!(wifi_dropped[index].load(Ordering::Acquire), missing);
+            if !missing {
+                assert_eq!(wifi[published].group_index, published);
+                assert!(Arc::ptr_eq(&groups[published].shared, &states[index]));
+                published += 1;
+            }
+        }
+        assert_eq!(groups.len(), published);
+        assert_eq!(wifi.len(), published);
+        assert_eq!(
+            status,
+            Some(if published == 0 {
+                STATUS_EMPTY
+            } else {
+                STATUS_READY
+            })
+        );
+    }
+}
+
 #[test]
 fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
     let trace = Arc::new(Mutex::new(Vec::new()));

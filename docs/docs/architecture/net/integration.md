@@ -105,7 +105,9 @@ Wi-Fi 与有线设备走同一个 all-at-once builder。固定连接的 AIC 由�
 
 候选登记不等于接口可用。卡不包含 SDIO I/O Function 时，AIC startup 返回
 `DeviceNotPresent`；runtime 只有在取消成功并同步该 IRQ callback 后才剔除对应
-group，设备没有剩余 group 时不发布接口，其余网卡继续初始化。其他初始化错误
+group。清理由持有队列的 owner 执行，同时删除对应 Wi-Fi slot 并重映射存活 slot
+的 group 索引；builder 等待清理确认并 join 没有存活 group 的 worker，再提交
+startup transaction。设备没有剩余 group 时不发布接口，其余网卡继续初始化。其他初始化错误
 仍返回失败。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
 group 的 owner CPU；startup transaction 只在设备 startup 完成后执行，service 尚未发布。运行期
 `reconfigure_wifi(ifname, WifiTransaction)` 进入有界 control queue：owner 先

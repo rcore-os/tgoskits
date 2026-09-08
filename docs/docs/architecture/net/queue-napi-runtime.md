@@ -425,6 +425,10 @@ protocol executor:
 
 ### 12.1 原子初始化
 
+`NetworkRuntimeBuilder` 在 owner startup 与接口发布之间确认资源清理完成。
+worker 发布 `startup_status` 后等待 builder 决策，不提前进入数据面或执行 Wi-Fi
+事务；builder 同步 absent group 的 IRQ 后才允许 owner 回收其资源。
+
 ```mermaid
 sequenceDiagram
     participant P as Platform
@@ -442,11 +446,24 @@ sequenceDiagram
     I-->>B: move-only leases with actual CPU
     B->>I: enable registrations
     B->>W: run owner_startup on owner CPU
-    B->>D: initial refill + rearm_and_check
+    W->>D: initial refill + rearm_and_check for present groups
+    W-->>B: startup_status
+    B->>I: disable+synchronize absent registrations
+    B->>W: COMMAND_RUN
+    W->>W: drop absent Wi-Fi slots and queues; remap group_index
+    W-->>B: publication_status (READY or EMPTY)
+    B->>W: join EMPTY workers
     B->>S: publish complete runtime atomically
 ```
 
 worker 的 `affinity-ready` 不能等价于“task 已创建”。worker 必须在其自身上下文验证 `current_cpu == owner_cpu` 并发布成功；失败时在任何 IRQ 注册前回滚。
+
+`retain_started_executor_groups` 在 owner CPU 上删除 absent group 及其
+`WifiExecutorSlot`，并重映射存活 slot 的 `group_index`。`publication_status`
+只在析构完成后发布；`publish_executors` 等待该确认，并 join 没有存活 group 的
+worker。混合设备场景不保留缺席设备的队列，也不保留仅承载缺席设备的任务。
+builder 随后提交存活设备的 startup transaction；IRQ 同步失败时不发送
+`COMMAND_RUN`，而是沿 `QUARANTINE` 路径保留无法安全释放的所有权关系。
 
 ### 12.2 反向回滚
 
