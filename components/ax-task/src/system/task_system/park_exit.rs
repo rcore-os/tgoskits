@@ -492,14 +492,24 @@ impl TaskSystem {
         let park_class = park_class.unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x504b_111a, previous_core.id().as_u64() as usize)
         });
-        match park_class {
+        let previous_runtime_owner = match park_class {
             RqOnlyParkClass::Realtime => {
-                let active = transaction
-                    .deactivate_task(previous_core.id())
-                    .into_active();
+                // End the rq-current borrow while its RT node is still linked.
+                // The caller retains previous_core through handoff construction;
+                // unlink therefore need not clone a temporary current owner and
+                // metadata only to discard them before selecting the next task.
+                let outgoing = transaction.take_current().unwrap_or_else(|| {
+                    task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize)
+                });
+                if outgoing.thread() != previous_core.id() || outgoing.into_active().is_some() {
+                    task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
+                }
+                let QueuedThread { active, core: runtime_owner, .. } =
+                    transaction.deactivate_task(previous_core.id());
                 placement.block_current(owner);
                 // Publish the detached owner only after `on_rq = NONE`.
                 publication.finish(active);
+                runtime_owner
             }
             RqOnlyParkClass::Fair => {
                 let timing_granularity_ns = self.config.timing_granularity_ns();
@@ -542,24 +552,13 @@ impl TaskSystem {
                     placement.block_current(owner);
                     publication.finish(active);
                 }
+                Arc::clone(previous_core)
             }
-        }
+        };
 
         cpu.finish_park_preemption(false);
-        let outgoing = transaction.take_current();
-        match (park_class, outgoing) {
-            (RqOnlyParkClass::Realtime, Some(outgoing)) => {
-                if outgoing.thread() != previous_core.id() || outgoing.into_active().is_some() {
-                    task_runtime::fatal_invariant(
-                        0x504b_1117,
-                        previous_core.id().as_u64() as usize,
-                    );
-                }
-            }
-            (RqOnlyParkClass::Fair, None) => {}
-            _ => {
-                task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
-            }
+        if transaction.current().is_some() {
+            task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
         }
         transaction.merge_scheduler_request(SchedulerRequestScope::All);
 
@@ -574,7 +573,7 @@ impl TaskSystem {
         });
         let handoff = Self::prepare_switch_handoff(
             Some(token.thread()),
-            Some(PreviousSwitchOwnership::retained(Arc::clone(previous_core))),
+            Some(PreviousSwitchOwnership::retained(previous_runtime_owner)),
             next_core,
             next_policy_ref,
             PreviousSwitchDisposition::Live,
