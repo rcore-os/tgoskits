@@ -40,7 +40,7 @@ pub fn with_fs<R>(
         f(&mut fs)
     } else {
         let dir = Directory::from_fd(dirfd)?.inner.clone();
-        f(&mut fs.with_current_dir(dir)?)
+        f(&mut fs.with_dirfd(dir)?)
     }
 }
 
@@ -87,10 +87,6 @@ pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
     })
 }
 
-pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
-    resolve_at_with_search(dirfd, path, flags, None)
-}
-
 /// Resolves the same dirfd/empty-path contract with directory search admission.
 pub fn resolve_at_checked(
     dirfd: c_int,
@@ -99,6 +95,7 @@ pub fn resolve_at_checked(
     check_search: impl Fn(&Location) -> VfsResult<()>,
 ) -> StarryResult<ResolveAtResult> {
     resolve_at_with_search(dirfd, path, flags, Some(&check_search))
+        .map(|(result, _)| result)
 }
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
@@ -108,7 +105,7 @@ fn resolve_at_with_search(
     path: Option<&str>,
     flags: u32,
     search: SearchCheck<'_>,
-) -> StarryResult<ResolveAtResult> {
+) -> StarryResult<(ResolveAtResult, Option<Location>)> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
@@ -116,10 +113,10 @@ fn resolve_at_with_search(
             }
             if dirfd == AT_FDCWD {
                 return with_fs(dirfd, |fs| {
-                    Ok(ResolveAtResult::File(fs.current_dir().clone()))
+                    Ok((ResolveAtResult::File(fs.current_dir().clone()), None))
                 });
             }
-            resolve_fd(dirfd)
+            Ok((resolve_fd(dirfd)?, None))
         }
         Some(path) => {
             let dirfd = if path.starts_with('/') {
@@ -128,16 +125,29 @@ fn resolve_at_with_search(
                 dirfd
             };
             with_fs(dirfd, |fs| {
+                let boundary = fs.permission_boundary().cloned();
                 let location = match (search, flags & AT_SYMLINK_NOFOLLOW != 0) {
                     (Some(check), true) => fs.resolve_no_follow_checked(path, check),
                     (Some(check), false) => fs.resolve_checked(path, check),
                     (None, true) => fs.resolve_no_follow(path),
                     (None, false) => fs.resolve(path),
                 }?;
-                Ok(ResolveAtResult::File(location))
+                Ok((ResolveAtResult::File(location), boundary))
             })
         }
     }
+}
+
+pub fn resolve_at_with_boundary(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+) -> StarryResult<(ResolveAtResult, Option<Location>)> {
+    resolve_at_with_search(dirfd, path, flags, None)
+}
+
+pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_boundary(dirfd, path, flags).map(|(result, _)| result)
 }
 
 pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {

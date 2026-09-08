@@ -16,6 +16,7 @@
 #include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/mount.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -35,6 +36,13 @@ static const char *const dangling_link =
 static const char *const sticky_file = "/tmp/bug-dir-mutation-permissions/sticky/root-file";
 static const char *const sticky_target = "/tmp/bug-dir-mutation-permissions/sticky/root-target";
 static const char *const sticky_child = "/tmp/bug-dir-mutation-permissions/sticky/child-file";
+static const char *const dirfd_parent = "/tmp/bug-dir-mutation-permissions/dirfd-parent";
+static const char *const dirfd_root = "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened";
+static const char *const dirfd_existing =
+    "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/existing";
+static const char *const mount_a = "/tmp/bug-dir-mutation-permissions/mount-a";
+static const char *const mount_b = "/tmp/bug-dir-mutation-permissions/mount-b";
+static int dirfd = -1;
 
 static int failures;
 
@@ -156,7 +164,110 @@ static int run_unprivileged_checks(void)
     check(access(sticky_child, F_OK) == 0 && access(sticky_target, F_OK) == 0,
           "failed sticky replacement leaves both entries unchanged");
     check(unlink(sticky_child) == 0, "file owner can unlink its own sticky entry");
+
+    errno = 0;
+    check(symlink("target", protected_file) < 0 && errno == EEXIST,
+          "symlink reports an existing target before parent permissions");
+
+    errno = 0;
+    check(mknodat(AT_FDCWD, protected_file, S_IFREG | 0600, 0) < 0 && errno == EEXIST,
+          "mknodat reports an existing target before parent permissions");
+
+    if (dirfd >= 0) {
+        int opened = openat(dirfd, "existing", O_RDONLY);
+        check(opened >= 0, "openat uses the opened dirfd as permission boundary");
+        if (opened >= 0) {
+            close(opened);
+        }
+
+        opened = openat(dirfd, "created-by-openat", O_WRONLY | O_CREAT | O_EXCL, 0600);
+        check(opened >= 0, "openat O_CREAT does not recheck the dirfd parent");
+        if (opened >= 0) {
+            close(opened);
+        }
+
+        check(mkdirat(dirfd, "created-by-mkdirat", 0700) == 0,
+              "mkdirat does not recheck the dirfd parent");
+        check(linkat(dirfd, "existing", dirfd, "created-by-linkat", 0) == 0,
+              "linkat does not recheck the dirfd parent");
+        check(unlinkat(dirfd, "created-by-linkat", 0) == 0,
+              "unlinkat does not recheck the dirfd parent");
+
+        opened = openat(dirfd, "rename-source", O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (opened >= 0) {
+            close(opened);
+        }
+        errno = 0;
+        check(syscall(SYS_renameat2, dirfd, "rename-source", dirfd, "rename-target", 0) == 0,
+              "renameat2 does not recheck the dirfd parent");
+    }
+
     return failures == 0 ? 0 : 1;
+}
+
+static void test_cross_mount_same_inode_rename(void)
+{
+    int fd_a = -1;
+    int fd_b = -1;
+    int mounted_a = 0;
+    int mounted_b = 0;
+
+    if (mkdir(mount_a, 0755) < 0 || mkdir(mount_b, 0755) < 0) {
+        check(0, "mount independent filesystems for cross-device rename");
+        goto cleanup;
+    }
+    if (mount("tmpfs", mount_a, "tmpfs", 0, NULL) < 0) {
+        check(0, "mount independent filesystems for cross-device rename");
+        goto cleanup;
+    }
+    mounted_a = 1;
+    if (mount("tmpfs", mount_b, "tmpfs", 0, NULL) < 0) {
+        check(0, "mount independent filesystems for cross-device rename");
+        goto cleanup;
+    }
+    mounted_b = 1;
+
+    fd_a = open(mount_a, O_RDONLY | O_DIRECTORY);
+    fd_b = open(mount_b, O_RDONLY | O_DIRECTORY);
+    check(fd_a >= 0 && fd_b >= 0, "open independent mount roots");
+    if (fd_a >= 0 && fd_b >= 0) {
+        int file_a = openat(fd_a, "same-inode", O_WRONLY | O_CREAT | O_EXCL, 0600);
+        int file_b = openat(fd_b, "same-inode", O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (file_a >= 0) {
+            close(file_a);
+        }
+        if (file_b >= 0) {
+            close(file_b);
+        }
+
+        struct stat stat_a;
+        struct stat stat_b;
+        check(fstatat(fd_a, "same-inode", &stat_a, 0) == 0
+                  && fstatat(fd_b, "same-inode", &stat_b, 0) == 0
+                  && stat_a.st_ino == stat_b.st_ino,
+              "independent mounts expose equal inode numbers for the regression");
+        errno = 0;
+        check(renameat(fd_a, "same-inode", fd_b, "same-inode") < 0 && errno == EXDEV,
+              "rename across mounts returns EXDEV before inode no-op shortcut");
+        check(fstatat(fd_a, "same-inode", &stat_a, 0) == 0
+                  && fstatat(fd_b, "same-inode", &stat_b, 0) == 0,
+              "cross-mount rename leaves both entries unchanged");
+    }
+cleanup:
+    if (fd_a >= 0) {
+        close(fd_a);
+    }
+    if (fd_b >= 0) {
+        close(fd_b);
+    }
+    if (mounted_b) {
+        umount(mount_b);
+    }
+    if (mounted_a) {
+        umount(mount_a);
+    }
+    rmdir(mount_b);
+    rmdir(mount_a);
 }
 
 int main(void)
@@ -178,14 +289,33 @@ int main(void)
     check(mkdir("/tmp/bug-dir-mutation-permissions/sticky/root-dir", 0700) == 0,
           "create sticky directory victim");
 
+    check(mkdir(dirfd_parent, 0755) == 0, "create dirfd parent");
+    check(mkdir(dirfd_root, 0700) == 0, "create dirfd target");
+    check(chown(dirfd_root, 1000, 1000) == 0, "assign dirfd target to unprivileged user");
+    check(create_file(dirfd_existing) == 0, "create dirfd existing entry");
+    check(chown(dirfd_existing, 1000, 1000) == 0,
+          "assign dirfd source entry to unprivileged user");
+    check(chmod(dirfd_existing, 0644) == 0, "make dirfd existing entry readable");
+    dirfd = open(dirfd_root, O_RDONLY | O_DIRECTORY);
+    check(dirfd >= 0, "open dirfd before restricting its parent");
+    check(chmod(dirfd_parent, 0700) == 0, "remove search permission from dirfd parent");
+
+    test_cross_mount_same_inode_rename();
+
     pid_t child = fork();
     check(child >= 0, "fork unprivileged test process");
     if (child == 0) {
-        _exit(run_unprivileged_checks());
+        int result = run_unprivileged_checks();
+        fflush(stdout);
+        _exit(result);
     }
     int status = 0;
-    check(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+    int waited = waitpid(child, &status, 0);
+    check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
           "all unprivileged mutations are rejected or authorized");
+    if (waited == child && WIFSIGNALED(status)) {
+        printf("FAIL: unprivileged child terminated by signal %d\n", WTERMSIG(status));
+    }
 
     remove_if_present("/tmp/bug-dir-mutation-permissions/sticky/new-dir");
     remove_if_present("/tmp/bug-dir-mutation-permissions/sticky/root-dir");
@@ -197,6 +327,12 @@ int main(void)
     remove_if_present(protected_file);
     remove_if_present(protected_dir);
     remove_if_present(source);
+    if (dirfd >= 0) {
+        close(dirfd);
+    }
+    remove_if_present(dirfd_existing);
+    remove_if_present(dirfd_root);
+    remove_if_present(dirfd_parent);
     remove_if_present(base);
 
     printf("DIR_MUTATION_PERMISSIONS_TEST_%s\n", failures == 0 ? "PASSED" : "FAILED");
