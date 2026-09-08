@@ -35,12 +35,16 @@ impl YieldOutcome {
 }
 
 /// Callback work that becomes valid only after the incoming thread is current.
+///
+/// The facade completes this work after releasing runqueue locks and its
+/// CPU-local borrow, while retaining the scheduler's local IRQ exclusion.
 #[doc(hidden)]
 pub struct SwitchInCompletion {
     thread: Option<ThreadId>,
     policy: Option<SchedulePolicy>,
     extension: Option<ThreadExtensionView>,
     charged_runtime_ns: u64,
+    trace_wake: Option<fn()>,
 }
 
 impl SwitchInCompletion {
@@ -49,6 +53,7 @@ impl SwitchInCompletion {
         policy: None,
         extension: None,
         charged_runtime_ns: 0,
+        trace_wake: None,
     };
 
     pub(crate) fn for_core(
@@ -61,28 +66,39 @@ impl SwitchInCompletion {
             policy: Some(policy),
             extension: core.extension_view(),
             charged_runtime_ns,
+            trace_wake: None,
         }
+    }
+
+    pub(crate) fn with_trace_wake(mut self, wake: Option<fn()>) -> Self {
+        self.trace_wake = wake;
+        self
     }
 
     #[doc(hidden)]
     pub fn finish(self) {
-        let (Some(thread), Some(policy), Some(extension)) =
+        if let (Some(thread), Some(policy), Some(extension)) =
             (self.thread, self.policy, self.extension)
-        else {
-            return;
-        };
-        // SAFETY: TaskSystem creates this token only after architecture current
-        // publication, previous-binding withdrawal, and switch-handoff
-        // consumption. The facade drops its CpuLocal owner borrow before
-        // finishing the token while retaining the scheduler IRQ baton.
-        unsafe {
-            (extension.ops().on_switch_in)(
-                extension.data(),
-                thread,
-                policy,
-                self.charged_runtime_ns,
-            )
-        };
+        {
+            // SAFETY: TaskSystem creates this token after current publication,
+            // previous-binding withdrawal and handoff consumption. The facade
+            // drops its CpuLocal borrow before finishing this token, while
+            // retaining the scheduler IRQ baton.
+            unsafe {
+                (extension.ops().on_switch_in)(
+                    extension.data(),
+                    thread,
+                    policy,
+                    self.charged_runtime_ns,
+                )
+            };
+        }
+        // Kernel-only incoming threads must also complete the notification.
+        // Capture retained no task pointer; this static callback may now wake
+        // its service thread without recursively acquiring the outgoing rq.
+        if let Some(wake) = self.trace_wake {
+            wake();
+        }
     }
 }
 

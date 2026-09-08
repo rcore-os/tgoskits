@@ -230,10 +230,14 @@ fn sched_switch_hook_only_publishes_to_a_preallocated_deferred_ring() {
     assert!(hook.contains("should_defer_sched_switch"));
     assert!(hook.contains("SCHED_TRACE_WORKER_ID"));
     assert!(hook.contains("publish_deferred"));
-    assert!(hook.contains("notify_irq"));
+    assert!(hook.contains("notify_sched_trace_worker as fn()"));
+    assert!(!hook.contains("notify_irq"));
     assert!(!hook.contains("trace_sched_switch("));
     assert!(!hook.contains("lock()"));
     assert!(!hook.contains("Vec"));
+
+    let notify = function_body(TRACE_SCHED, "fn notify_sched_trace_worker(");
+    assert!(notify.contains("sched_notify.notify_irq()"));
 
     let worker = function_body(TRACE_SCHED, "fn start_worker(");
     assert!(worker.contains("drain_deferred"));

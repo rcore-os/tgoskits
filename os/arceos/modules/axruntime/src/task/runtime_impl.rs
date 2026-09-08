@@ -16,8 +16,11 @@ unsafe fn membarrier_ipi_refresh_run_queue(_arg: *mut ()) {
         .unwrap_or_else(|error| panic!("membarrier rq refresh failed in IPI: {error}"));
 }
 
-/// Allocation-free scheduler-switch diagnostic hook installed by an OS layer.
-pub type SchedSwitchTraceHook = fn(SchedSwitchRecord);
+/// Allocation-free scheduler-switch capture hook installed by an OS layer.
+///
+/// Capture must not acquire task/rq locks. Its optional returned notification
+/// runs in incoming switch completion after those locks have been released.
+pub type SchedSwitchTraceHook = fn(SchedSwitchRecord) -> Option<fn()>;
 
 /// Installs the process-wide scheduler-switch diagnostic consumer.
 ///
@@ -553,18 +556,18 @@ impl_task_runtime! {
             ax_hal::asm::flush_tlb(None);
         }
 
-        fn trace_sched_switch(record: SchedSwitchRecord) {
+        fn trace_sched_switch(record: SchedSwitchRecord) -> Option<fn()> {
             if !SCHED_SWITCH_TRACE_ENABLED.load(Ordering::Acquire) {
-                return;
+                return None;
             }
             let hook = SCHED_SWITCH_TRACE_HOOK.load(Ordering::Acquire);
             if hook.is_null() {
-                return;
+                return None;
             }
             // SAFETY: installation accepts exactly this function-pointer type,
             // and the process-wide hook is never replaced or removed.
             let hook = unsafe { core::mem::transmute::<*mut (), SchedSwitchTraceHook>(hook) };
-            hook(record);
+            hook(record)
         }
 
         fn emergency_console_write(message: &str) {

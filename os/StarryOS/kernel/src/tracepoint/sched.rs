@@ -257,9 +257,9 @@ pub(super) fn start_worker() -> ax_runtime::task::ThreadHandle {
     )
 }
 
-fn on_sched_switch(record: SchedSwitchRecord) {
+fn on_sched_switch(record: SchedSwitchRecord) -> Option<fn()> {
     if !__sched_switch.key_is_enabled() {
-        return;
+        return None;
     }
     let worker_ids = [
         super::SCHED_TRACE_WORKER_ID.load(Ordering::Acquire),
@@ -267,11 +267,14 @@ fn on_sched_switch(record: SchedSwitchRecord) {
         super::TRACEPOINT_RECLAIM_WORKER_ID.load(Ordering::Acquire),
     ];
     if !should_defer_sched_switch(true, worker_ids, record.previous_thread, record.next_thread) {
-        return;
+        return None;
     }
-    if publish_deferred(DeferredSchedSwitch::capture(record)) {
-        super::TRACE_STATE.sched_notify.notify_irq();
-    }
+    publish_deferred(DeferredSchedSwitch::capture(record))
+        .then_some(notify_sched_trace_worker as fn())
+}
+
+fn notify_sched_trace_worker() {
+    super::TRACE_STATE.sched_notify.notify_irq();
 }
 
 fn publish_deferred(record: DeferredSchedSwitch) -> bool {

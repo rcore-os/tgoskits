@@ -488,8 +488,12 @@ pub trait TaskRuntime {
     /// Flushes the current address space's local translation cache.
     fn flush_tlb_local(start: usize, size: usize);
 
-    /// Emits an allocation-free context-switch trace record.
-    fn trace_sched_switch(record: SchedSwitchRecord);
+    /// Captures a context-switch trace record without allocation or rq reentry.
+    ///
+    /// The outgoing rq lock may remain held. An optional returned notification
+    /// runs exactly once in incoming switch completion, after scheduler locks
+    /// and CPU-local borrows are released, with local IRQs still disabled.
+    fn trace_sched_switch(record: SchedSwitchRecord) -> Option<fn()>;
 
     /// Writes directly to the runtime's emergency console without taking an
     /// OS lock or re-entering the scheduler.

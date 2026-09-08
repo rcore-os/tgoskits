@@ -268,15 +268,24 @@ pub(super) fn execute_switch_plan(
     #[cfg(feature = "qperf-metrics")]
     let switch_validate_finished_ns = task_runtime::monotonic_now().as_nanos();
     // Match Linux's sched_switch observation point: the trace runs while the
-    // previous extension is still the published current task, but after all
-    // scheduler locks have been released and the switch decision is final.
-    task_runtime::trace_sched_switch(SchedSwitchRecord {
+    // previous extension is still the published current task and the switch
+    // decision is final. The rq baton may still be held, so notifications
+    // returned by capture belong to incoming switch completion.
+    let trace_wake = task_runtime::trace_sched_switch(SchedSwitchRecord {
         cpu: scheduler_frame.cpu_id(),
         previous_thread: previous.as_u64(),
         next_thread: next.as_u64(),
         timestamp_ns: decision.timestamp_ns(),
         reason: decision.switch_reason() as u32,
     });
+    if let Some(wake) = trace_wake {
+        let mut cpu = runtime_current_cpu_mut(scheduler_frame)
+            .unwrap_or_else(|_| task_runtime::fatal_invariant(6, next.as_u64() as usize));
+        cpu.as_mut()
+            .switch_handoff_mut()
+            .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.as_u64() as usize))
+            .install_trace_wake(wake);
+    }
     #[cfg(feature = "qperf-metrics")]
     let switch_trace_finished_ns = task_runtime::monotonic_now().as_nanos();
     if let Some(extension) = previous_extension {

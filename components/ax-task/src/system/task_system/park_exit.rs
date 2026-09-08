@@ -1022,6 +1022,7 @@ impl TaskSystem {
             let incoming_policy = handoff.incoming_policy();
             let incoming_runtime_ns = handoff.incoming_runtime_ns();
             let previous_exited = handoff.previous_exited();
+            let trace_wake = handoff.take_trace_wake();
             #[cfg(feature = "qperf-metrics")]
             let qperf_owner_finish_prev_finished_ns = task_runtime::monotonic_now().as_nanos();
             #[cfg(feature = "qperf-metrics")]
@@ -1056,7 +1057,8 @@ impl TaskSystem {
                 incoming.as_ref(),
                 incoming_policy,
                 incoming_runtime_ns,
-            ));
+            )
+            .with_trace_wake(trace_wake));
         }
         // The architecture switch is now irreversible. Move the one owner
         // token out of the CPU-local slot and consume that exact state through
@@ -1150,7 +1152,8 @@ impl TaskSystem {
             completed.incoming.as_ref(),
             completed.incoming_policy.get(),
             completed.incoming_runtime_ns,
-        );
+        )
+        .with_trace_wake(completed.trace_wake);
         Ok(completion)
     }
 

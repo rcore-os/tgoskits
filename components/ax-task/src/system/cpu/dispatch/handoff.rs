@@ -10,6 +10,7 @@ pub(crate) struct SwitchHandoff {
     incoming_policy: SchedulerPolicyRef,
     incoming_runtime_ns: u64,
     previous_disposition: PreviousSwitchDisposition,
+    trace_wake: Option<fn()>,
     route: SwitchRoute,
 }
 
@@ -69,6 +70,7 @@ pub(crate) struct CompletedMigrationSwitchHandoff {
     pub(crate) migration: PreparedMigrationDelivery,
     pub(crate) reclaim_ready: bool,
     pub(crate) previous_exited: bool,
+    pub(crate) trace_wake: Option<fn()>,
 }
 
 impl SwitchHandoff {
@@ -92,11 +94,23 @@ impl SwitchHandoff {
             incoming_runtime_ns,
             incoming_policy,
             previous_disposition,
+            trace_wake: None,
             route: match migration {
                 Some(migration) => SwitchRoute::Migration(migration),
                 None => SwitchRoute::Local { rq_baton: None },
             },
         }
+    }
+
+    pub(crate) fn install_trace_wake(&mut self, wake: fn()) {
+        assert!(
+            self.trace_wake.replace(wake).is_none(),
+            "switch trace notification already installed"
+        );
+    }
+
+    pub(crate) fn take_trace_wake(&mut self) -> Option<fn()> {
+        self.trace_wake.take()
     }
 
     pub(crate) fn install_rq_baton(&mut self, baton: RqSwitchBaton) -> Result<(), TaskError> {
@@ -172,6 +186,7 @@ impl SwitchHandoff {
             incoming_policy,
             incoming_runtime_ns,
             previous_disposition,
+            trace_wake,
             route,
         } = self;
         let SwitchRoute::Migration(migration) = route else {
@@ -185,6 +200,7 @@ impl SwitchHandoff {
             migration,
             reclaim_ready,
             previous_exited: matches!(previous_disposition, PreviousSwitchDisposition::Exited),
+            trace_wake,
         })
     }
 }
