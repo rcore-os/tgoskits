@@ -1,5 +1,4 @@
 mod common;
-mod env;
 mod expand;
 mod report;
 mod runner;

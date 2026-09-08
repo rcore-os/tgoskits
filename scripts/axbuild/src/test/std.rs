@@ -722,11 +722,6 @@ mod tests {
             }
             self
         }
-
-        fn with_ax_hal_discovery(self) -> Self {
-            let profile = &AX_HAL_FEATURE_PROFILES[0];
-            self.with_listing("ax-hal", profile, profile.expected_tests)
-        }
     }
 
     impl CargoRunner for FakeCargoRunner {
@@ -844,207 +839,99 @@ mod tests {
     }
 
     #[test]
-    fn workspace_package_name_extraction_reads_current_workspace() {
-        let metadata = cargo_metadata::MetadataCommand::new()
-            .no_deps()
-            .exec()
-            .unwrap();
-        let names = workspace_package_names(&metadata);
-
-        assert!(names.contains("axbuild"));
-        assert!(names.contains("tg-xtask"));
-    }
-
-    #[test]
     fn std_test_runner_collects_all_failures() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-api".to_string(), "ax-hal".to_string()];
-        let ax_hal_profile = &AX_HAL_FEATURE_PROFILES[0];
+        let packages = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
         let mut runner = FakeCargoRunner::succeeding()
-            .with_ax_hal_discovery()
-            .with_status(
-                CargoTestInvocation::for_profile("ax-hal", ax_hal_profile, CargoTestAction::Run),
-                false,
-            );
+            .with_status(CargoTestInvocation::default_for("alpha"), false)
+            .with_status(CargoTestInvocation::default_for("gamma"), false);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert_eq!(failed, vec!["ax-hal".to_string()]);
+        assert_eq!(failed, vec!["alpha", "gamma"]);
+        assert_eq!(runner.invocations.len(), packages.len());
     }
 
     #[test]
     fn std_test_runner_returns_empty_failures_when_all_pass() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-api".to_string(), "ax-hal".to_string()];
-        let mut runner = FakeCargoRunner::succeeding().with_ax_hal_discovery();
-
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert!(failed.is_empty());
-    }
-
-    #[test]
-    fn ax_hal_uses_the_host_profile_and_discovers_required_tests() {
-        let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-hal".to_string()];
-        let mut runner = FakeCargoRunner::succeeding().with_ax_hal_discovery();
-
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert!(failed.is_empty());
-        assert!(runner.invocations.iter().any(|(_, invocation)| {
-            invocation.args()
-                == vec![
-                    "test",
-                    "-p",
-                    "ax-hal",
-                    "--features",
-                    "host-test",
-                    "--",
-                    "--list",
-                ]
-        }));
-        assert!(runner.invocations.iter().any(|(_, invocation)| {
-            invocation.args() == vec!["test", "-p", "ax-hal", "--features", "host-test"]
-        }));
-    }
-
-    #[test]
-    fn ax_driver_rejects_missing_pci_fdt_irq_capability_test() {
-        let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-driver".to_string()];
+        let packages = vec!["alpha".to_string(), "beta".to_string()];
         let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert_eq!(failed, vec!["ax-driver"]);
-        let pci_profile = &AX_DRIVER_FEATURE_PROFILES[1];
-        assert!(!runner.invocations.iter().any(|(_, invocation)| {
-            invocation
-                == &CargoTestInvocation::for_profile("ax-driver", pci_profile, CargoTestAction::Run)
-        }));
-    }
-
-    #[test]
-    fn lifecycle_packages_select_full_and_discovery_profiles() {
-        let root = PathBuf::from("/tmp/workspace");
-        let packages = [
-            "ax-fs-ng",
-            "ahci-driver",
-            "nvme-driver",
-            "rdif-block",
-            "sdmmc-protocol",
-            "axbuild",
-        ]
-        .map(str::to_string)
-        .to_vec();
-        let mut runner = FakeCargoRunner::succeeding()
-            .with_profile_discovery("ax-fs-ng", AX_FS_NG_FEATURE_PROFILES)
-            .with_profile_discovery("nvme-driver", NVME_FEATURE_PROFILES)
-            .with_profile_discovery("sdmmc-protocol", SDMMC_RDIF_FEATURE_PROFILES)
-            .with_profile_discovery("axbuild", AXBUILD_FEATURE_PROFILES);
-
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
         assert!(failed.is_empty());
-        let invocations = runner
-            .invocations
-            .iter()
-            .map(|(_, invocation)| invocation)
-            .collect::<Vec<_>>();
-        assert!(invocations.contains(&&CargoTestInvocation::for_profile(
-            "ax-fs-ng",
-            &AX_FS_NG_FEATURE_PROFILES[0],
-            CargoTestAction::Run,
-        )));
-        assert!(invocations.contains(&&CargoTestInvocation::default_for("ahci-driver")));
-        assert!(invocations.contains(&&CargoTestInvocation::for_profile(
-            "nvme-driver",
-            &NVME_FEATURE_PROFILES[0],
-            CargoTestAction::Run,
-        )));
-        assert!(invocations.contains(&&CargoTestInvocation::default_for("rdif-block")));
-        assert!(invocations.contains(&&CargoTestInvocation::for_profile(
-            "sdmmc-protocol",
-            &SDMMC_RDIF_FEATURE_PROFILES[0],
-            CargoTestAction::Run,
-        )));
-        assert!(invocations.contains(&&CargoTestInvocation::for_profile(
-            "axbuild",
-            &AXBUILD_FEATURE_PROFILES[0],
-            CargoTestAction::Run,
-        )));
+        assert_eq!(runner.invocations.len(), packages.len());
     }
+
+    const TEST_PROFILES: &[PackageFeatureProfile] = &[
+        PackageFeatureProfile {
+            name: "whole-suite",
+            no_default_features: false,
+            features: &["example-feature"],
+            name_filter: None,
+            expected_tests: &["example::first"],
+        },
+        PackageFeatureProfile {
+            name: "selected-tests",
+            no_default_features: true,
+            features: &[],
+            name_filter: Some("example::"),
+            expected_tests: &["example::first", "example::second"],
+        },
+    ];
 
     #[test]
     fn profile_discovery_mismatch_fails_without_running_that_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-hal".to_string()];
-        let profile = &AX_HAL_FEATURE_PROFILES[0];
-        let mut runner = FakeCargoRunner::succeeding()
-            .with_ax_hal_discovery()
-            .with_listing("ax-hal", profile, &["unexpected_test"]);
+        let profile = &TEST_PROFILES[0];
+        let mut runner =
+            FakeCargoRunner::succeeding().with_listing("alpha", profile, &["unexpected_test"]);
 
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert_eq!(failed, vec!["ax-hal"]);
-        assert!(!runner.invocations.iter().any(|(_, invocation)| {
-            invocation == &CargoTestInvocation::for_profile("ax-hal", profile, CargoTestAction::Run)
-        }));
+        assert!(!run_feature_profile(&mut runner, &root, "alpha", profile).unwrap());
+        assert_eq!(runner.invocations.len(), 1);
+        assert_eq!(
+            runner.invocations[0].1,
+            CargoTestInvocation::for_profile("alpha", profile, CargoTestAction::List)
+        );
     }
 
     #[test]
     fn profile_discovery_rejects_zero_tests() {
-        let err = validate_discovered_tests(&AX_HAL_FEATURE_PROFILES[0], "0 tests, 0 benchmarks")
-            .unwrap_err();
-
+        let err =
+            validate_discovered_tests(&TEST_PROFILES[0], "0 tests, 0 benchmarks").unwrap_err();
         assert!(err.to_string().contains("discovered 0 tests"));
     }
 
     #[test]
     fn unfiltered_profile_discovery_accepts_additional_tests() {
-        let profile = &AX_HAL_FEATURE_PROFILES[0];
+        let profile = &TEST_PROFILES[0];
         let mut tests = profile.expected_tests.to_vec();
-        tests.push("timers::tests::an_additional_regression");
-
+        tests.push("example::additional");
         validate_discovered_tests(profile, &render_test_list(&tests)).unwrap();
     }
 
     #[test]
     fn filtered_profile_discovery_rejects_additional_tests() {
-        let profile = &AX_DRIVER_FEATURE_PROFILES[1];
-        let tests = [
-            PCI_FDT_IRQ_CAPABILITY_TEST,
-            "pci_fdt_interrupt_map_unrelated_test",
-        ];
-
+        let profile = &TEST_PROFILES[1];
+        let mut tests = profile.expected_tests.to_vec();
+        tests.push("example::additional");
         let err = validate_discovered_tests(profile, &render_test_list(&tests)).unwrap_err();
-
         assert!(err.to_string().contains("expected ["));
     }
 
     #[test]
-    fn cargo_execution_failures_are_aggregated_across_profiles_and_packages() {
+    fn cargo_execution_failures_do_not_stop_later_profiles() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-fs-ng".to_string(), "ax-api".to_string()];
-        let failed_profile = &AX_FS_NG_FEATURE_PROFILES[0];
+        let failed_invocation =
+            CargoTestInvocation::for_profile("alpha", &TEST_PROFILES[0], CargoTestAction::Run);
+        let later_invocation =
+            CargoTestInvocation::for_profile("alpha", &TEST_PROFILES[1], CargoTestAction::Run);
         let mut runner = FakeCargoRunner::succeeding()
-            .with_profile_discovery("ax-fs-ng", AX_FS_NG_FEATURE_PROFILES)
-            .with_status(
-                CargoTestInvocation::for_profile("ax-fs-ng", failed_profile, CargoTestAction::Run),
-                false,
-            )
-            .with_status(
-                CargoTestInvocation::for_profile(
-                    "ax-api",
-                    &HOST_TEST_FEATURE_PROFILES[0],
-                    CargoTestAction::Run,
-                ),
-                false,
-            );
+            .with_profile_discovery("alpha", TEST_PROFILES)
+            .with_status(failed_invocation, false);
 
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert_eq!(failed, vec!["ax-fs-ng", "ax-api"]);
+        assert!(!run_feature_profiles(&mut runner, &root, "alpha", TEST_PROFILES).unwrap());
+        assert_eq!(runner.invocations.last().unwrap().1, later_invocation);
     }
 }

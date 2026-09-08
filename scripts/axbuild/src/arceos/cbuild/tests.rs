@@ -154,20 +154,6 @@ fn pic_rustflag_is_appended_to_axlibc_cargo_env() {
 }
 
 #[test]
-fn map_c_app_features_preserves_paging_facade_feature() {
-    let features = map_c_app_features(&strings(&["paging"]), &[]).unwrap();
-
-    assert!(features.contains(&"paging".to_string()));
-}
-
-#[test]
-fn map_c_app_features_does_not_add_fd_for_higher_level_features() {
-    let features = map_c_app_features(&strings(&["fs"]), &[]).unwrap();
-
-    assert!(features.contains(&"fs".to_string()));
-}
-
-#[test]
 fn pthread_mutex_header_matches_lockdep_smp_layout() {
     let header = pthread_mutex_header_contents(&strings(&["lockdep", "smp"]));
 

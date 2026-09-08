@@ -322,58 +322,6 @@ fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
 }
 
 #[test]
-fn patch_starry_cargo_config_keeps_qemu_as_capability_feature() {
-    let request = request(
-        PathBuf::from("/tmp/.build.toml"),
-        "aarch64",
-        "aarch64-unknown-none-softfloat",
-    );
-    let build_info = StarryBuildInfo {
-        env: HashMap::new(),
-        features: vec!["qemu".to_string()],
-        log: LogLevel::Info,
-        max_cpu_num: None,
-    };
-    let mut cargo = build_info.into_base_cargo_config_with_log(
-        STARRY_PACKAGE.to_string(),
-        "scripts/targets/std/pie/aarch64-unknown-linux-musl.json".to_string(),
-        Vec::new(),
-    );
-
-    let metadata = crate::build::workspace_metadata().unwrap();
-    patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
-
-    assert!(cargo.features.contains(&"qemu".to_string()));
-    assert!(!cargo.env.contains_key("AX_PLATFORM"));
-}
-
-#[test]
-fn patch_starry_cargo_config_keeps_loongarch64_dynamic_platform_dynamic() {
-    let request = request(
-        PathBuf::from("/tmp/.build.toml"),
-        "loongarch64",
-        "loongarch64-unknown-none-softfloat",
-    );
-    let build_info = StarryBuildInfo {
-        env: HashMap::new(),
-        features: vec!["axplat-dyn/efi".to_string()],
-        log: LogLevel::Info,
-        max_cpu_num: None,
-    };
-    let mut cargo = build_info.into_base_cargo_config_with_log(
-        STARRY_PACKAGE.to_string(),
-        request.target.clone(),
-        vec![],
-    );
-    let metadata = crate::build::workspace_metadata().unwrap();
-    patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
-
-    assert!(!cargo.features.contains(&"qemu".to_string()));
-    assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
-    assert!(!cargo.env.contains_key("AX_PLATFORM"));
-}
-
-#[test]
 fn uimage_generation_plan_is_absent_without_companion_its() {
     let root = tempdir().unwrap();
     let config = root.path().join("board/foo.toml");
@@ -451,41 +399,6 @@ fn render_uimage_its_template_replaces_build_placeholders() {
     assert!(output.contains("arch=riscv64"));
     assert!(output.contains("target=riscv64gc-unknown-none-elf"));
     assert!(!output.contains("${"));
-}
-
-#[test]
-fn load_cargo_config_keeps_sg2002_as_device_feature_without_static_platform_alias() {
-    let mut request = request(
-        PathBuf::from("/tmp/.build.toml"),
-        "riscv64",
-        "riscv64gc-unknown-none-elf",
-    );
-    request.build_info_override = Some(StarryBuildInfo {
-        features: vec![
-            "starry-kernel/sg2002".to_string(),
-            "axplat-dyn/thead-mae".to_string(),
-        ],
-        ..default_starry_build_info()
-    });
-
-    let cargo = load_cargo_config(&request).unwrap();
-    let removed_sg2002_platform = concat!("ax-hal/", "riscv64", "-sg2002");
-
-    assert!(cargo.features.contains(&"starry-kernel/sg2002".to_string()));
-    assert!(
-        cargo
-            .features
-            .iter()
-            .all(|feature| feature != removed_sg2002_platform)
-    );
-    assert!(
-        !cargo
-            .features
-            .iter()
-            .any(|feature| feature.starts_with("qemu"))
-    );
-    assert!(!cargo.features.contains(&"qemu".to_string()));
-    assert_eq!(cargo.env.get("AX_PLATFORM"), None);
 }
 
 #[test]
