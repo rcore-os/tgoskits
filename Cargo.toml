@@ -63,6 +63,7 @@ members = [
     "drivers/gpu/*",
     "drivers/intc/*",
     "drivers/interface/*",
+    "drivers/media/*",
     "drivers/net/*",
     "drivers/npu/*",
     "drivers/pci/*",
@@ -254,6 +255,8 @@ crab-uvc = { version = "0.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1", path = "drivers/usb/utils/ktest-helper" }
 usb-if = { version = "0.8", path = "drivers/usb/usb-if" }
 usb-serial = { version = "0.1", path = "drivers/usb/usb-serial" }
+ax-media = { version = "0.1", path = "drivers/media/ax-media" }
+media-uvc = { version = "0.1", path = "drivers/media/uvc" }
 dwmmc-host = { version = "0.4", path = "drivers/blk/dwmmc-host", default-features = false }
 phytium-mci-host = { version = "0.4", path = "drivers/blk/phytium-mci-host", default-features = false }
 cv181x-sdhci = { version = "0.1", path = "drivers/blk/cv181x-sdhci", default-features = false }

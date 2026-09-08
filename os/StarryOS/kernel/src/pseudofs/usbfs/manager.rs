@@ -81,7 +81,7 @@ struct LiveInterfaceSession {
     session: InterfaceSession,
 }
 
-struct LiveDeviceState {
+pub(crate) struct LiveDeviceState {
     device: BlockingMutex<Device>,
     interfaces: BlockingMutex<BTreeMap<u8, LiveInterfaceSession>>,
 }
@@ -90,8 +90,8 @@ pub(super) struct IsoTransferResult {
     pub(super) actual_length: usize,
 }
 
-pub(super) struct SubmittedTransfer {
-    inner: SubmittedTransferInner,
+pub(crate) struct SubmittedTransfer {
+    pub(crate) inner: SubmittedTransferInner,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -100,7 +100,7 @@ pub(super) enum SubmittedTransferQueue {
     Control(usize),
 }
 
-enum SubmittedTransferInner {
+pub(crate) enum SubmittedTransferInner {
     Endpoint {
         endpoint: EndpointHandle,
         request_id: RequestId,
