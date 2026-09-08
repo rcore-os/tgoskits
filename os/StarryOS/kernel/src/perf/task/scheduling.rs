@@ -29,7 +29,9 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
     }
     let now = now_ns();
     let current_cpu = PerfCpuId::new(ax_hal::percpu::this_cpu_id());
-    for ptc in counters.iter() {
+    let start = super::super::percpu::next_rotation_start(counters.len());
+    for offset in 0..counters.len() {
+        let ptc = &counters[(start + offset) % counters.len()];
         if !ptc.enabled.load(Ordering::Acquire) {
             continue;
         }
@@ -44,15 +46,33 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
         } else {
             None
         };
+        let counter = if ptc.flexible {
+            let Some(slot) = super::super::percpu::alloc_current_programmable() else {
+                continue;
+            };
+            Counter::Programmable(slot)
+        } else {
+            ptc.counter
+        };
         let mut run_state = ptc.run_state.lock();
-        let Some(ticket) = run_state.begin_arm(current_cpu) else {
+        let Some(ticket) = run_state.begin_arm(current_cpu, counter) else {
+            if ptc.flexible {
+                super::super::percpu::free_current_programmable(
+                    counter.programmable_index().expect("flexible PMU slot"),
+                );
+            }
             continue;
         };
         if let Some(output) = sample_output {
-            let n = ptc.programmable_index();
+            let n = counter
+                .programmable_index()
+                .expect("sampling events require a programmable PMU slot");
             let (read_entries, read_len) = ptc.sample_read_entries();
             if let Err(error) = sampling::enable_local_pmu_irq() {
                 run_state.cancel_arm(ticket);
+                if ptc.flexible {
+                    super::super::percpu::free_current_programmable(n);
+                }
                 warn!(
                     "perf: failed to enable the PMU IRQ on CPU {}: {error:?}",
                     current_cpu.as_usize()
@@ -60,8 +80,8 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
                 continue;
             }
             // configure() programs event + EL filter AND resets the counter to 0.
-            ptc.counter
-                .configure(ptc.programmed_event(), ptc.exclude_user, ptc.exclude_kernel)
+            counter
+                .configure(ptc.programmed_event(counter), ptc.exclude_user, ptc.exclude_kernel)
                 .expect("validated task PMU counter/event pairing");
             // Overflow after `sample_period` events.
             ax_cpu::pmu::counter::preload(n, ptc.sample_period);
@@ -89,6 +109,9 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
                 Ok(registration) => registration,
                 Err(error) => {
                     run_state.cancel_arm(ticket);
+                    if ptc.flexible {
+                        super::super::percpu::free_current_programmable(n);
+                    }
                     warn!(
                         "perf: failed to register counter {} on CPU {}: {error:?}",
                         n,
@@ -103,10 +126,10 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
             ax_cpu::pmu::counter::enable(n);
         } else {
             // Counting: configure() programs event + EL filter AND resets to 0.
-            ptc.counter
-                .configure(ptc.programmed_event(), ptc.exclude_user, ptc.exclude_kernel)
+            counter
+                .configure(ptc.programmed_event(counter), ptc.exclude_user, ptc.exclude_kernel)
                 .expect("validated task PMU counter/event pairing");
-            ptc.counter.enable();
+            counter.enable();
         }
         ptc.last_in_ns.store(now, Ordering::Release);
         run_state.finish_arm(ticket);
@@ -162,7 +185,10 @@ fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> crate::St
         return Err(crate::StarryError::BadState);
     }
     if let Some(registration) = lease.registration() {
-        let n = ptc.programmable_index();
+        let counter = lease.counter();
+        let n = counter
+            .programmable_index()
+            .ok_or(crate::StarryError::BadState)?;
         if registration.counter() != n {
             return Err(crate::StarryError::BadState);
         }
@@ -173,9 +199,19 @@ fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> crate::St
     } else {
         // Freeze the physical slice before sampling its terminal value. Reading
         // first would lose the events retired between the read and disable.
-        ptc.counter.disable();
-        let delta = ptc.counter.read();
+        let counter = lease.counter();
+        counter.disable();
+        let delta = counter.read();
         ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
+    }
+
+    if ptc.flexible {
+        super::super::percpu::free_current_programmable(
+            lease
+                .counter()
+                .programmable_index()
+                .ok_or(crate::StarryError::BadState)?,
+        );
     }
 
     let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));

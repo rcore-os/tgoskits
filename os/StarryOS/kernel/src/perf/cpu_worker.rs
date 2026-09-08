@@ -11,7 +11,8 @@ use ax_runtime::task::{
 use super::{
     hw::{
         self, SystemPmuConfigure, SystemPmuDisable, SystemPmuDisableResult, SystemPmuEnable,
-        SystemPmuEnableResult, SystemPmuRead, SystemPmuReadResult, SystemPmuReset,
+        SystemPmuEnableResult, SystemPmuRead, SystemPmuReadResult, SystemPmuReplaceOutput,
+        SystemPmuReset,
     },
     sampling_lifecycle::PmuRunLease,
     target::PerfCpuId,
@@ -87,6 +88,10 @@ enum PerfCpuCommand {
         request: SystemPmuReset,
         completion: Arc<PerfCompletion<()>>,
     },
+    ReplaceSystemOutput {
+        request: SystemPmuReplaceOutput,
+        completion: Arc<PerfCompletion<()>>,
+    },
 }
 
 impl PerfCpuCommand {
@@ -152,6 +157,15 @@ impl PerfCpuCommand {
                 completion,
             } => {
                 let result = with_local_pmu_exclusion(|| hw::reset_system_on_owner(request));
+                completion.finish(result);
+            }
+            Self::ReplaceSystemOutput {
+                request,
+                completion,
+            } => {
+                let result = with_local_pmu_exclusion(|| {
+                    hw::replace_system_output_on_owner(request)
+                });
                 completion.finish(result);
             }
         }
@@ -390,6 +404,28 @@ pub(super) fn reset_system(owner: PerfCpuId, request: SystemPmuReset) -> crate::
     let completion = Arc::new(PerfCompletion::new());
     owner_worker(owner)?.submit(PerfCpuCommand::ResetSystem {
         request: request.expect("remote PMU reset request"),
+        completion: Arc::clone(&completion),
+    });
+    completion.wait()
+}
+
+
+/// Rebinds an already-running system sampling slot to its newly mmap'd ring.
+pub(super) fn replace_system_output(
+    owner: PerfCpuId,
+    request: SystemPmuReplaceOutput,
+) -> crate::StarryResult<()> {
+    let mut request = Some(request);
+    if let Some(result) = try_local(owner, || {
+        hw::replace_system_output_on_owner(
+            request.take().expect("single local PMU output replacement"),
+        )
+    }) {
+        return result;
+    }
+    let completion = Arc::new(PerfCompletion::new());
+    owner_worker(owner)?.submit(PerfCpuCommand::ReplaceSystemOutput {
+        request: request.expect("remote PMU output replacement request"),
         completion: Arc::clone(&completion),
     });
     completion.wait()

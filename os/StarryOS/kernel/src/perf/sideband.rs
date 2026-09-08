@@ -24,9 +24,13 @@
 //! The trailer is part of `header.size`; omitting it would desync `perf`'s parser.
 //! [`push_trailer`] appends it when [`SidebandTarget::sample_id_all`] is set.
 
-use alloc::vec::Vec;
+use alloc::{sync::{Arc, Weak}, vec::Vec};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+use ax_lazyinit::LazyInit;
 
 use super::output::PerfRingOutput;
+use crate::sync::IrqMutex;
 use crate::task::{TgidNumber, TidNumber};
 
 /// `PERF_RECORD_COMM`.
@@ -52,6 +56,133 @@ const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
 
 /// `comm` is capped at Linux's `TASK_COMM_LEN` (16, including the NUL).
 const COMM_MAX: usize = 15;
+
+static SYSTEM_SOURCES: LazyInit<IrqMutex<Vec<Weak<SystemSidebandSource>>>> = LazyInit::new();
+static SYSTEM_SOURCE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn initialize() {
+    SYSTEM_SOURCES.init_once(IrqMutex::new(Vec::new()));
+}
+
+/// Side-band-only subscription for one fixed CPU perf context.
+pub struct SystemSidebandSource {
+    owner_cpu: usize,
+    sample_type: u64,
+    sample_id_all: bool,
+    want_comm: bool,
+    want_mmap2: bool,
+    want_task: bool,
+    sample_id: AtomicU64,
+    enabled: AtomicBool,
+    redirect: IrqMutex<Option<PerfRingOutput>>,
+}
+
+impl SystemSidebandSource {
+    pub fn register(
+        owner_cpu: usize,
+        sample_type: u64,
+        sample_id_all: bool,
+        want_comm: bool,
+        want_mmap2: bool,
+        want_task: bool,
+    ) -> Option<Arc<Self>> {
+        if !(want_comm || want_mmap2 || want_task) {
+            return None;
+        }
+        let source = Arc::new(Self {
+            owner_cpu,
+            sample_type,
+            sample_id_all,
+            want_comm,
+            want_mmap2,
+            want_task,
+            sample_id: AtomicU64::new(0),
+            enabled: AtomicBool::new(false),
+            redirect: IrqMutex::new(None),
+        });
+        SYSTEM_SOURCES
+            .get()
+            .expect("perf side-band registry not initialized")
+            .lock()
+            .push(Arc::downgrade(&source));
+        SYSTEM_SOURCE_COUNT.fetch_add(1, Ordering::AcqRel);
+        Some(source)
+    }
+
+    pub fn set_sample_id(&self, id: u64) {
+        self.sample_id.store(id, Ordering::Release);
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn set_redirect(&self, redirect: Option<PerfRingOutput>) {
+        *self.redirect.lock() = redirect;
+    }
+
+    pub fn output_scope(&self) -> super::output::PerfOutputScope {
+        super::output::PerfOutputScope::Cpu(self.owner_cpu)
+    }
+
+    fn target(&self, pid: TgidNumber, tid: TidNumber) -> Option<SystemSidebandTarget> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        let ring = self.redirect.lock().clone()?;
+        Some(SystemSidebandTarget {
+            target: SidebandTarget {
+                ring,
+                sample_type: self.sample_type,
+                sample_id_all: self.sample_id_all,
+                id: self.sample_id.load(Ordering::Acquire),
+                pid,
+                tid,
+            },
+            comm: self.want_comm,
+            mmap2: self.want_mmap2,
+            task: self.want_task,
+        })
+    }
+}
+
+impl Drop for SystemSidebandSource {
+    fn drop(&mut self) {
+        SYSTEM_SOURCE_COUNT.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub struct SystemSidebandTarget {
+    pub target: SidebandTarget,
+    pub comm: bool,
+    pub mmap2: bool,
+    pub task: bool,
+}
+
+/// Snapshots enabled fixed-CPU side-band sources for the executing CPU.
+pub fn system_targets(pid: TgidNumber, tid: TidNumber) -> Vec<SystemSidebandTarget> {
+    if SYSTEM_SOURCE_COUNT.load(Ordering::Acquire) == 0 {
+        return Vec::new();
+    }
+    let cpu = ax_hal::percpu::this_cpu_id();
+    let Some(sources) = SYSTEM_SOURCES.get() else {
+        return Vec::new();
+    };
+    let mut sources = sources.lock();
+    let mut targets = Vec::new();
+    sources.retain(|weak| {
+        let Some(source) = weak.upgrade() else {
+            return false;
+        };
+        if source.owner_cpu == cpu
+            && let Some(target) = source.target(pid, tid)
+        {
+            targets.push(target);
+        }
+        true
+    });
+    targets
+}
 
 /// Where a side-band record is written, plus the parameters of its
 /// `sample_id_all` trailer. Built per monitored event from its `PerTaskCounter`.

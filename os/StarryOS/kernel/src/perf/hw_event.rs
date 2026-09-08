@@ -144,6 +144,8 @@ struct HwPerfEventState {
     counter: Counter,
     /// CPU that owns a system-wide event; task-bound events use scheduler leases.
     system_owner: Option<PerfCpuId>,
+    /// Logical flexible system counter, when no permanent physical slot exists.
+    system_flexible: Option<Arc<super::system_flex::SystemFlexCounter>>,
     /// Context used to validate `PERF_EVENT_IOC_SET_OUTPUT`.
     output_scope: PerfOutputScope,
     /// Unique event id emitted in `PERF_SAMPLE_ID` / `PERF_SAMPLE_IDENTIFIER`
@@ -181,6 +183,7 @@ pub(super) struct SystemEventInit {
     pub(super) owner: PerfCpuId,
     pub(super) read_format: u64,
     pub(super) sampling: Option<SamplingState>,
+    pub(super) flexible: Option<Arc<super::system_flex::SystemFlexCounter>>,
     pub(super) enable_at_open: bool,
 }
 
@@ -248,6 +251,10 @@ impl HwPerfEventState {
         // task-exit hook may have freed it already) and stop here.
         if let Some(family) = &self.per_task {
             return family.close();
+        }
+        if let Some(flexible) = &self.system_flexible {
+            flexible.close();
+            return Ok(());
         }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let stopped = cpu_worker::disable_system(
@@ -319,6 +326,10 @@ impl HwPerfEventState {
         if let Some(family) = &self.per_task {
             return family.enable();
         }
+        if let Some(flexible) = &self.system_flexible {
+            flexible.enable();
+            return Ok(());
+        }
         if self.enabled_since.is_some() {
             return Ok(());
         }
@@ -379,6 +390,10 @@ impl HwPerfEventState {
         if let Some(family) = &self.per_task {
             return family.disable();
         }
+        if let Some(flexible) = &self.system_flexible {
+            flexible.disable();
+            return Ok(());
+        }
         let Some(since) = self.enabled_since else {
             return Ok(());
         };
@@ -412,6 +427,10 @@ impl HwPerfEventState {
         if let Some(family) = &self.per_task {
             return family.reset();
         }
+        if let Some(flexible) = &self.system_flexible {
+            flexible.reset();
+            return Ok(());
+        }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         cpu_worker::reset_system(
             owner,
@@ -442,6 +461,16 @@ impl HwPerfEventState {
                 time_running,
                 lost: root.lost_samples(),
                 read_format: root.read_format(),
+            });
+        }
+        if let Some(flexible) = &self.system_flexible {
+            let (value, time_enabled, time_running) = flexible.read();
+            return Ok(PerfReadValues {
+                value,
+                time_enabled,
+                time_running,
+                lost: 0,
+                read_format: self.read_format,
             });
         }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
@@ -578,6 +607,20 @@ impl HwPerfEventState {
         let page_anchor: Arc<dyn Any + Send + Sync> = pages;
         let output = PerfRingOutput::new(ring_vaddr, len, page_anchor);
         sampling.output.publish_owned(&output);
+        if let Some(registration) = self.sampling_registration {
+            let (ring, redirected) = sampling
+                .output
+                .effective()
+                .map_or((None, false), |(ring, redirected)| (Some(ring), redirected));
+            let notify = (!redirected).then(|| Arc::clone(&sampling.notify));
+            cpu_worker::replace_system_output(
+                self.system_owner.ok_or(crate::StarryError::BadState)?,
+                super::hw_owner::SystemPmuReplaceOutput {
+                    registration,
+                    output: SampleOutput::new(ring, notify, Arc::clone(&sampling.loss)),
+                },
+            )?;
+        }
         Ok((paddr, output.mapping_anchor()))
     }
 }
@@ -758,6 +801,7 @@ impl HwPerfEvent {
             HwPerfEventState {
                 counter: init.counter,
                 system_owner: Some(init.owner),
+                system_flexible: init.flexible,
                 output_scope: PerfOutputScope::Cpu(init.owner.as_usize()),
                 sample_id: 0,
                 read_format: init.read_format,
@@ -778,6 +822,7 @@ impl HwPerfEvent {
             HwPerfEventState {
                 counter: init.counter,
                 system_owner: None,
+                system_flexible: None,
                 output_scope: PerfOutputScope::Task(init.scheduler_id),
                 sample_id: 0,
                 read_format: init.read_format,
@@ -889,6 +934,11 @@ impl PerfEventOps for HwPerfEvent {
             (None, None) => Ok(()),
             _ => Err(crate::StarryError::InvalidInput),
         }
+    }
+
+    fn supports_group_link(&mut self) -> bool {
+        let state = self.control.state.lock();
+        !(state.per_task.is_none() && state.sampling.is_some())
     }
 
     fn device_mmap(

@@ -1,7 +1,7 @@
 //! CPU-local ARM PMUv3 operations and value-only rendezvous requests.
 
 use super::{
-    sampling::{self, SampleSlot},
+    sampling::{self, SampleOutput, SampleSlot},
     sampling_lifecycle::SampleRegistration,
 };
 
@@ -125,6 +125,12 @@ pub(super) struct SystemPmuReset {
     pub(super) sampling_period: Option<u32>,
 }
 
+/// Owner-CPU request to publish a newly attached output ring to one live slot.
+pub(super) struct SystemPmuReplaceOutput {
+    pub(super) registration: SampleRegistration,
+    pub(super) output: SampleOutput,
+}
+
 /// Configures one reserved counter on the current owner CPU.
 pub(super) fn configure_system_on_owner(request: SystemPmuConfigure) -> crate::StarryResult<()> {
     ax_cpu::pmu::init_cpu();
@@ -202,4 +208,13 @@ pub(super) fn reset_system_on_owner(request: SystemPmuReset) -> crate::StarryRes
         (Counter::Cycle, Some(_)) => return Err(crate::StarryError::BadState),
     }
     Ok(())
+}
+
+
+/// Replaces only the IRQ-visible output for one live sampling generation.
+pub(super) fn replace_system_output_on_owner(
+    request: SystemPmuReplaceOutput,
+) -> crate::StarryResult<()> {
+    sampling::replace_output(request.registration, request.output)
+        .map_err(|_| crate::StarryError::BadState)
 }

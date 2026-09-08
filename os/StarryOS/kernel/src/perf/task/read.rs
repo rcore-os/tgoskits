@@ -26,7 +26,7 @@ pub(crate) fn read_task_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<(u
         // Live slice: add the in-progress count and elapsed time. This is a
         // local owner-CPU snapshot; remote reads are routed through the CPU
         // worker in the complete PMU ownership path.
-        value += ptc.counter.read();
+        value += lease.counter().read();
         let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
         time_enabled += dt;
         time_running += dt;

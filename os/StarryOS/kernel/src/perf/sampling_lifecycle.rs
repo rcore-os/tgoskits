@@ -1,6 +1,6 @@
 //! Generation-bearing CPU ownership state for task-bound PMU events.
 
-use super::cpu_id::PerfCpuId;
+use super::{cpu_id::PerfCpuId, hw_owner::Counter};
 
 /// Identity returned by the per-CPU sampling registry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +40,7 @@ impl SampleRegistration {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PmuArmTicket {
     owner: PerfCpuId,
+    counter: Counter,
     generation: u64,
 }
 
@@ -47,6 +48,7 @@ pub(crate) struct PmuArmTicket {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PmuRunLease {
     owner: PerfCpuId,
+    counter: Counter,
     generation: u64,
     registration: Option<SampleRegistration>,
 }
@@ -60,6 +62,10 @@ impl PmuRunLease {
     /// Returns the sampling slot identity, when this is a sampling event.
     pub(crate) const fn registration(self) -> Option<SampleRegistration> {
         self.registration
+    }
+
+    pub(crate) const fn counter(self) -> Counter {
+        self.counter
     }
 
     const fn generation(self) -> u64 {
@@ -127,7 +133,7 @@ impl PmuRunState {
     }
 
     /// Starts one schedule-in generation.
-    pub(crate) fn begin_arm(&mut self, owner: PerfCpuId) -> Option<PmuArmTicket> {
+    pub(crate) fn begin_arm(&mut self, owner: PerfCpuId, counter: Counter) -> Option<PmuArmTicket> {
         if self.phase != PmuRunPhase::Detached {
             return None;
         }
@@ -137,6 +143,7 @@ impl PmuRunState {
             .expect("PMU run generation exhausted");
         let ticket = PmuArmTicket {
             owner,
+            counter,
             generation: self.next_generation,
         };
         self.phase = PmuRunPhase::Arming(ticket);
@@ -163,6 +170,7 @@ impl PmuRunState {
         assert_eq!(observed, ticket);
         self.phase = PmuRunPhase::Running(PmuRunLease {
             owner: ticket.owner,
+            counter: ticket.counter,
             generation: ticket.generation,
             registration,
         });
@@ -266,6 +274,7 @@ impl PmuRunState {
             PmuRunPhase::Registered(ticket, registration) => (
                 PmuRunLease {
                     owner: ticket.owner,
+                    counter: ticket.counter,
                     generation: ticket.generation,
                     registration: Some(registration),
                 },

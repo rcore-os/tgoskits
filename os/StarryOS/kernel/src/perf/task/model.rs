@@ -22,6 +22,8 @@ pub struct PerTaskCounter {
     scheduler_id: ax_runtime::task::thread::ThreadId,
     /// Physical counter reservation used while this task is scheduled.
     pub(super) counter: Counter,
+    /// Programmable events acquire a physical slot only for each running slice.
+    pub(super) flexible: bool,
     /// ARM PMUv3 event number. It is programmed only for a programmable
     /// counter; a dedicated cycle-counter reservation carries the same semantic
     /// event so an inherited child can fall back to a programmable slot.
@@ -179,6 +181,7 @@ pub(in crate::perf) struct PerTaskConfig {
     pub(in crate::perf) scheduler_id: ax_runtime::task::thread::ThreadId,
     /// Reserved physical PMU counter.
     pub(in crate::perf) counter: Counter,
+    pub(in crate::perf) flexible: bool,
     /// ARM PMUv3 event number.
     pub(in crate::perf) event: u16,
     /// `attr.exclude_user`.
@@ -228,6 +231,7 @@ impl PerTaskCounter {
         PerTaskCounter {
             scheduler_id: cfg.scheduler_id,
             counter: cfg.counter,
+            flexible: cfg.flexible,
             event: cfg.event,
             exclude_user: cfg.exclude_user,
             exclude_kernel: cfg.exclude_kernel,
@@ -291,6 +295,7 @@ impl PerTaskCounter {
         PerTaskConfig {
             scheduler_id,
             counter,
+            flexible: self.flexible,
             event: self.event,
             exclude_user: self.exclude_user,
             exclude_kernel: self.exclude_kernel,
@@ -314,14 +319,8 @@ impl PerTaskCounter {
         }
     }
 
-    pub(super) fn programmed_event(&self) -> Option<u16> {
-        self.counter.programmable_index().map(|_| self.event)
-    }
-
-    pub(super) fn programmable_index(&self) -> usize {
-        self.counter
-            .programmable_index()
-            .expect("sampling events are validated onto programmable counters")
+    pub(super) fn programmed_event(&self, counter: Counter) -> Option<u16> {
+        counter.programmable_index().map(|_| self.event)
     }
 
     /// Joins event publication with the target CPU's scheduler order.
@@ -375,6 +374,9 @@ impl PerTaskCounter {
     ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
         if self.is_sampling {
             return Err(crate::StarryError::InvalidInput);
+        }
+        if self.flexible {
+            return Err(crate::StarryError::Unsupported);
         }
         let page = self
             .rdpmc

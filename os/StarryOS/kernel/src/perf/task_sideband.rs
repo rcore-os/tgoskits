@@ -18,6 +18,20 @@ const PROT_EXEC: u32 = 4;
 const MAP_SHARED: u32 = 1;
 const MAP_PRIVATE: u32 = 2;
 
+fn system_subject(thr: &Thread) -> Option<(TgidNumber, TidNumber)> {
+    let observer = thr.active_pid_namespace().id();
+    let pid = thr
+        .proc_data
+        .identity()
+        .visible_number_in(observer)
+        .map(TgidNumber::from)?;
+    let tid = thr
+        .pid_identity()
+        .visible_number_in(observer)
+        .map(TidNumber::from)?;
+    Some((pid, tid))
+}
+
 /// Snapshots executable file-backed mappings without retaining the address-space
 /// lock across ring publication.
 fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
@@ -59,16 +73,15 @@ fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
 
 /// Emits COMM and executable MMAP2 records after a task commits exec.
 pub(crate) fn on_exec_sideband(thr: &Thread) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
     struct WantTarget {
         target: SidebandTarget,
         comm: bool,
         mmap2: bool,
     }
 
-    let targets: Vec<WantTarget> = {
+    let mut targets: Vec<WantTarget> = if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        Vec::new()
+    } else {
         let counters = thr.perf_context().snapshot();
         counters
             .iter()
@@ -81,6 +94,17 @@ pub(crate) fn on_exec_sideband(thr: &Thread) {
             })
             .collect()
     };
+    if let Some((pid, tid)) = system_subject(thr) {
+        targets.extend(
+            sideband::system_targets(pid, tid)
+                .into_iter()
+                .map(|target| WantTarget {
+                    target: target.target,
+                    comm: target.comm,
+                    mmap2: target.mmap2,
+                }),
+        );
+    }
     if targets.is_empty() {
         return;
     }
@@ -114,10 +138,9 @@ pub(crate) fn on_mmap_sideband(
     shared: bool,
     filename: &str,
 ) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let targets: Vec<SidebandTarget> = {
+    let mut targets: Vec<SidebandTarget> = if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        Vec::new()
+    } else {
         let counters = thr.perf_context().snapshot();
         counters
             .iter()
@@ -125,6 +148,14 @@ pub(crate) fn on_mmap_sideband(
             .filter_map(|counter| sideband_target(counter, thr))
             .collect()
     };
+    if let Some((pid, tid)) = system_subject(thr) {
+        targets.extend(
+            sideband::system_targets(pid, tid)
+                .into_iter()
+                .filter(|target| target.mmap2)
+                .map(|target| target.target),
+        );
+    }
     if targets.is_empty() {
         return;
     }

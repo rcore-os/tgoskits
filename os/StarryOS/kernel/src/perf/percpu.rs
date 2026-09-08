@@ -16,12 +16,16 @@ const MAX_TRACKED_CPUS: usize = 64;
 struct CpuPmuState {
     initialized: bool,
     info: Option<PmuInfo>,
+    used_programmable: u32,
+    rotation_cursor: usize,
 }
 
 impl CpuPmuState {
     const EMPTY: Self = Self {
         initialized: false,
         info: None,
+        used_programmable: 0,
+        rotation_cursor: 0,
     };
 }
 
@@ -48,8 +52,53 @@ pub(super) fn ensure_current_cpu_initialized() -> Option<PmuInfo> {
     CPU_STATES.lock()[cpu] = CpuPmuState {
         initialized: true,
         info,
+        used_programmable: 0,
+        rotation_cursor: 0,
     };
     info
+}
+
+/// Reserves one programmable PMU slot on the executing CPU.
+pub(super) fn alloc_current_programmable() -> Option<usize> {
+    let cpu = ax_hal::percpu::this_cpu_id();
+    let mut states = CPU_STATES.lock();
+    let state = states.get_mut(cpu)?;
+    let count = state.info?.num_counters.min(32);
+    for slot in 0..count {
+        if state.used_programmable & (1 << slot) == 0
+            && !super::hw_allocation::programmable_reserved(slot)
+        {
+            state.used_programmable |= 1 << slot;
+            return Some(slot);
+        }
+    }
+    None
+}
+
+/// Releases one programmable PMU slot on the executing CPU.
+pub(super) fn free_current_programmable(slot: usize) {
+    let cpu = ax_hal::percpu::this_cpu_id();
+    let mut states = CPU_STATES.lock();
+    let state = states
+        .get_mut(cpu)
+        .expect("perf CPU exceeds PMU state capacity");
+    assert!(slot < 32 && state.used_programmable & (1 << slot) != 0);
+    state.used_programmable &= !(1 << slot);
+}
+
+/// Chooses a new round-robin start for one scheduler-visible event list.
+pub(super) fn next_rotation_start(len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let cpu = ax_hal::percpu::this_cpu_id();
+    let mut states = CPU_STATES.lock();
+    let state = states
+        .get_mut(cpu)
+        .expect("perf CPU exceeds PMU state capacity");
+    let start = state.rotation_cursor % len;
+    state.rotation_cursor = (start + 1) % len;
+    start
 }
 
 /// Returns the cached PMU information for one logical CPU.

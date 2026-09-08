@@ -165,7 +165,9 @@ pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<()> {
         }
         ptc.clear_family_output();
     }
-    crate::perf::hw_allocation::free_counter(ptc.counter);
+    if !ptc.flexible {
+        crate::perf::hw_allocation::free_counter(ptc.counter);
+    }
     if resource_claim == PmuResourceClaim::Published {
         let previous = PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
         assert!(previous > 0, "task perf active count underflow");

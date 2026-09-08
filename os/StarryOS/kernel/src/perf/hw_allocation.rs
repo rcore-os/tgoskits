@@ -97,3 +97,8 @@ pub(crate) fn alloc_programmable_counter() -> Option<usize> {
         _ => None,
     }
 }
+
+/// Returns whether a legacy fixed event owns this programmable index globally.
+pub(super) fn programmable_reserved(slot: usize) -> bool {
+    slot < 32 && ALLOC.lock().used & (1 << slot) != 0
+}

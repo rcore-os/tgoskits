@@ -432,19 +432,11 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         let Some(family) = parent.family().filter(|family| family.is_open()) else {
             continue;
         };
-        let Some(n) = hw::alloc_programmable_counter() else {
-            warn!(
-                "perf: attr.inherit skipped for child tid {} (no free PMU counter)",
-                child_thr.tid()
-            );
-            continue;
-        };
         let Some(scheduler_id) = child_thr.scheduler_id() else {
             warn!(
                 "perf: attr.inherit skipped for child tid {} (scheduler identity unavailable)",
                 child_thr.tid()
             );
-            super::hw_allocation::free_counter(Counter::Programmable(n));
             continue;
         };
         let owner_ids = child_thr
@@ -460,7 +452,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             );
         let child = Arc::new(PerTaskCounter::new(parent.inherited_config(
             scheduler_id,
-            Counter::Programmable(n),
+            Counter::Programmable(0),
             owner_ids,
         )));
         child.set_sample_id(parent.sample_id());

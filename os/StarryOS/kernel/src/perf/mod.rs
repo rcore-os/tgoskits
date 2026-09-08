@@ -47,6 +47,8 @@ pub mod sampling;
 mod sampling_lifecycle;
 #[cfg(target_arch = "aarch64")]
 mod sampling_registry;
+#[cfg(target_arch = "aarch64")]
+mod system_flex;
 /// Side-band records (`PERF_RECORD_COMM`/`MMAP2`/`FORK`/`EXIT`) for `perf report`
 /// symbolization. Writes into the sampling ring from process context, so it is
 /// gated like `sampling`.
@@ -100,7 +102,7 @@ use kbpf_basic::{
 };
 
 #[cfg(target_arch = "aarch64")]
-use self::output::validate_output_redirect;
+use self::output::{PerfOutputScope, PerfRingOutput, validate_output_redirect};
 use self::{
     access::ResolvedPerfTarget,
     control::PerfControl,
@@ -221,6 +223,30 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// Connects a backend to an already validated file-layer group leader.
     fn link_group(&mut self, _leader: &mut dyn PerfEventOps) -> StarryResult<()> {
         Ok(())
+    }
+
+    /// Whether this backend can participate in a file-layer event group.
+    ///
+    /// Backends override this when their implementation cannot provide the
+    /// group control/read contract. The open path checks the leader before
+    /// constructing a new backend so a rejected link has no PMU side effects.
+    fn supports_group_link(&mut self) -> bool {
+        true
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn output_scope(&mut self) -> Option<PerfOutputScope> {
+        None
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn redirect_output(&mut self, _output: PerfRingOutput) -> StarryResult<()> {
+        Err(StarryError::InvalidInput)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn detach_output(&mut self) -> StarryResult<()> {
+        Err(StarryError::InvalidInput)
     }
 }
 
@@ -448,6 +474,8 @@ impl PerfEvent {
             #[cfg(target_arch = "aarch64")]
             if let Some(control) = &self.control {
                 control.detach_output()?;
+            } else {
+                self.event.lock().detach_output()?;
             }
             return Ok(0);
         }
@@ -482,9 +510,6 @@ impl PerfEvent {
                 .output_ring()
                 .ok_or(crate::StarryError::InvalidInput)?;
 
-            // Events without a hardware output producer (for example the software
-            // dummy tracking event) accept the Linux ioctl as a no-op after the
-            // target fd/ring has been validated.
             if let Some(control) = &self.control {
                 let source_scope = control
                     .output_scope()
@@ -492,6 +517,14 @@ impl PerfEvent {
                 validate_output_redirect(self.id, target.id, source_scope, target_scope)
                     .map_err(|_| crate::StarryError::InvalidInput)?;
                 control.redirect_output(output)?;
+            } else {
+                let mut source = self.event.lock();
+                let source_scope = source
+                    .output_scope()
+                    .ok_or(crate::StarryError::InvalidInput)?;
+                validate_output_redirect(self.id, target.id, source_scope, target_scope)
+                    .map_err(|_| crate::StarryError::InvalidInput)?;
+                source.redirect_output(output)?;
             }
             Ok(())
         }
@@ -682,7 +715,7 @@ impl FileLike for PerfEvent {
         // Anchor the ringbuf pages to the VMA: the retainer keeps them alive
         // until `munmap`/exit, so closing the perf fd can't free memory the
         // user address space still maps. See `BpfPerfEventWrapper::pages`.
-        Ok(DeviceMmap::Physical(
+        Ok(DeviceMmap::PhysicalCached(
             PhysAddrRange::from_start_size(paddr, len),
             Some(anchor),
         ))
@@ -790,6 +823,15 @@ pub fn perf_event_open(
 
     target.with_authorized(attr.sigtrap() != 0, |target| {
         let context = target.context_key()?;
+        let direct_system_sampling = validated_hw
+            .as_ref()
+            .is_some_and(|validated| validated.is_sampling)
+            && target.kind() == PerfTargetKind::Cpu;
+        if let Some(leader) = &group_leader
+            && (direct_system_sampling || !leader.event.lock().supports_group_link())
+        {
+            return Err(crate::StarryError::Unsupported);
+        }
         // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus
         // the dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE`) bypass
         // `PerfProbeArgs`, which maps non-probe configs through `perf_sw_ids`.
@@ -806,6 +848,9 @@ pub fn perf_event_open(
                 PerfTypeId::PERF_TYPE_SOFTWARE => match args.config {
                     PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(sw_id) => {
                         Box::new(sw::perf_event_open_sw(attr, sw_id, &target)?)
+                    }
+                    PerfProbeConfig::PerfSwIds(sw_id) if sw::is_tracking_dummy(sw_id) => {
+                        Box::new(bpf::perf_event_open_tracking(args, attr, &target))
                     }
                     _ => Box::new(bpf::perf_event_open_bpf(args)),
                 },
@@ -870,7 +915,10 @@ pub fn perf_event_init() {
     PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
     sw::initialize();
     #[cfg(target_arch = "aarch64")]
-    cpu_worker::init();
+    {
+        sideband::initialize();
+        cpu_worker::init();
+    }
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,

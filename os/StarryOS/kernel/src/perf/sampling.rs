@@ -442,6 +442,52 @@ pub fn unregister(registration: SampleRegistration) -> Result<(), SamplingUnregi
     Ok(())
 }
 
+/// Rebinds the output of one exact live sampling generation.
+///
+/// Linux publishes a ring after an already-enabled event is mmap'd. Keep the
+/// registered PMU slot and its period/read state intact while replacing only
+/// the owned output snapshot that the IRQ handler reads.
+pub fn replace_output(
+    registration: SampleRegistration,
+    output: SampleOutput,
+) -> Result<(), SamplingUnregisterError> {
+    if registration.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
+        return Err(SamplingUnregisterError::WrongCpu);
+    }
+    let old = {
+        let _guard = NoPreemptIrqSave::new();
+        // SAFETY: the guard prevents migration and local IRQ reentry.
+        unsafe {
+            with_registry_mut(|registry| {
+                let slot = registry
+                    .get_mut(registration.counter())
+                    .ok_or(UnregisterError::Stale)?;
+                let config = SampleSlotConfig {
+                    period: slot.period,
+                    sample_type: slot.sample_type,
+                    id: slot.id,
+                    read_format: slot.read_format,
+                    read_entries: slot.read_entries,
+                    read_len: slot.read_len,
+                    observer: slot.observer,
+                    owner_ids: slot.owner_ids,
+                    freq: slot.freq,
+                    target_freq: slot.target_freq,
+                    last_time: slot.last_time,
+                };
+                registry.replace(
+                    registration.counter(),
+                    registration.generation(),
+                    SampleSlot::new(output, config),
+                )
+            })
+        }
+        .map_err(SamplingUnregisterError::Registry)?
+    };
+    drop(old);
+    Ok(())
+}
+
 /// Ensures [`pmu_overflow_handler`] is registered with the IRQ framework.
 ///
 /// This process-context operation may allocate inside IRQ registration and must

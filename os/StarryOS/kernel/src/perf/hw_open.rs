@@ -123,26 +123,39 @@ pub(super) fn perf_event_open_hw(
         sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
     }
 
-    let (counter, event) = match validated.counter {
+    let (counter, event, flexible) = match validated.counter {
         ValidatedHwCounter::SystemPreferredCycle(event) => {
             let counter = alloc_preferred_cycle(event)?;
             let programmed_event = counter.programmable_index().map(|_| event);
-            (counter, programmed_event)
+            (counter, programmed_event, None)
         }
-        ValidatedHwCounter::SystemProgrammable(event) => (alloc_programmable(event)?, Some(event)),
+        ValidatedHwCounter::SystemProgrammable(event) if !validated.is_sampling => {
+            let flexible = super::system_flex::SystemFlexCounter::new(
+                owner_cpu,
+                event,
+                exclude_user,
+                exclude_kernel,
+            );
+            (super::hw_owner::Counter::Programmable(0), Some(event), Some(flexible))
+        }
+        ValidatedHwCounter::SystemProgrammable(event) => {
+            (alloc_programmable(event)?, Some(event), None)
+        }
         ValidatedHwCounter::TaskPreferredCycle(_) | ValidatedHwCounter::TaskProgrammable(_) => {
             return Err(crate::StarryError::BadState);
         }
     };
-    if let Err(error) = cpu_worker::configure_system(
-        owner_cpu,
-        SystemPmuConfigure {
-            counter,
-            event,
-            exclude_user,
-            exclude_kernel,
-        },
-    ) {
+    if flexible.is_none()
+        && let Err(error) = cpu_worker::configure_system(
+            owner_cpu,
+            SystemPmuConfigure {
+                counter,
+                event,
+                exclude_user,
+                exclude_kernel,
+            },
+        )
+    {
         free_counter(counter);
         return Err(error);
     }
@@ -182,6 +195,7 @@ pub(super) fn perf_event_open_hw(
         owner: owner_cpu,
         read_format: attr.read_format,
         sampling,
+        flexible,
         enable_at_open: attr.disabled() == 0,
     }))
 }
@@ -203,9 +217,15 @@ fn perf_event_open_hw_per_task(
         sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
     }
 
-    let (counter, event) = match validated.counter {
-        ValidatedHwCounter::TaskPreferredCycle(event) => (alloc_preferred_cycle(event)?, event),
-        ValidatedHwCounter::TaskProgrammable(event) => (alloc_programmable(event)?, event),
+    let (counter, event, flexible) = match validated.counter {
+        ValidatedHwCounter::TaskPreferredCycle(event) => {
+            (alloc_preferred_cycle(event)?, event, false)
+        }
+        ValidatedHwCounter::TaskProgrammable(event) => {
+            // Flexible events are logical until a scheduler slice acquires one
+            // of the executing CPU's physical programmable slots.
+            (super::hw_owner::Counter::Programmable(0), event, true)
+        }
         ValidatedHwCounter::SystemPreferredCycle(_) | ValidatedHwCounter::SystemProgrammable(_) => {
             return Err(crate::StarryError::BadState);
         }
@@ -231,6 +251,7 @@ fn perf_event_open_hw_per_task(
         super::task::PerTaskConfig {
             scheduler_id,
             counter,
+            flexible,
             event,
             exclude_user,
             exclude_kernel,
