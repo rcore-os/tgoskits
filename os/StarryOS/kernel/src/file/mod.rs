@@ -169,6 +169,16 @@ pub type IoSrc<'a> = dyn ReadBuf + 'a;
 
 #[allow(dead_code)]
 pub trait FileLike: Pollable + DowncastSync {
+    /// Size in bytes reported for `lseek(SEEK_END)` on seekable pseudo-files
+    /// such as dma-buf fds. `None` keeps the historical `ESPIPE` behavior.
+    ///
+    /// Mesa/gbm probe a dma-buf's size with `lseek(fd, 0, SEEK_END)` before
+    /// importing it as an EGLImage; without this hook those imports fail
+    /// with `EGL_BAD_ALLOC`.
+    fn seekable_size(&self) -> Option<u64> {
+        None
+    }
+
     /// Validate a scalar write length before importing the user buffer.
     ///
     /// File types with count errors that take precedence over `EFAULT` can

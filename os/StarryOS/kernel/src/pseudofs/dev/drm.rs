@@ -406,8 +406,8 @@ pub struct DrmModeGetPlaneRes {
 #[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
 pub struct DrmModeGetPlane {
     pub plane_id: u32,
-    pub crtc_id: u32,
     pub fb_id: u32,
+    pub crtc_id: u32,
     pub possible_crtcs: u32,
     pub gamma_size: u32,
     pub count_format_types: u32,
@@ -415,12 +415,16 @@ pub struct DrmModeGetPlane {
     pub format_type_ptr: u64,
 }
 
-/// `DRM_MODE_OBJECT_*` — type tags for `OBJ_GETPROPERTIES` and atomic
-/// commits.  Values match Linux's uapi exactly; weston/modetest pattern-
-/// match on them.
+/// `DRM_MODE_OBJECT_*` — type tags for `OBJ_GETPROPERTIES`, atomic commits,
+/// and `GETPROPERTY` value payloads.  Values match the drm-rs/drm-sys
+/// consumer constants exactly (CRTC/ENCODER differ from Linux's uapi);
+/// weston/modetest pattern-match on them, and drm-rs maps `GETPROPERTY`
+/// `values[0]` for OBJECT-typed properties against these constants.
 pub const DRM_MODE_OBJECT_CRTC: u32 = 0xcccc_cccc;
 pub const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xc0c0_c0c0;
 pub const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
+pub const DRM_MODE_OBJECT_FB: u32 = 0xfbfb_fbfb;
+pub const DRM_MODE_OBJECT_BLOB: u32 = 0xbbbb_bbbb;
 
 pub const DRM_PLANE_TYPE_PRIMARY: u64 = 1;
 
@@ -443,6 +447,7 @@ pub const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;
 pub const DRM_MODE_PROP_ENUM: u32 = 1 << 3;
 pub const DRM_MODE_PROP_BLOB: u32 = 1 << 4;
 pub const DRM_MODE_PROP_OBJECT: u32 = 1 << 6;
+pub const DRM_MODE_PROP_SIGNED_RANGE: u32 = 1 << 7;
 pub const DRM_MODE_PROP_ATOMIC: u32 = 0x8000_0000;
 
 /// `DRM_PROP_NAME_LEN` from Linux uapi.
