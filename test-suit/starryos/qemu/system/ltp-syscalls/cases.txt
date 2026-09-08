@@ -34,6 +34,7 @@ pselect03
 pselect03_64
 ptrace02
 ptrace03
+sched_getaffinity01
 timerfd01
 timerfd02
 timerfd_create01

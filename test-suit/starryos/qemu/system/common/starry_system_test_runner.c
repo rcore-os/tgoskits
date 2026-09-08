@@ -469,7 +469,9 @@ int main(int argc, char **argv)
             path, capture_failures != 0 ? output_path : NULL, timeout_seconds);
         double elapsed = elapsed_seconds(start);
 
-        if (capture_failures != 0 && exit_status != 0) {
+        /* LTP completion contracts need TPASS evidence even for successful tests. */
+        if (capture_failures != 0 &&
+            (exit_status != 0 || current_phase == TEST_PHASE_LTP_SYSCALLS)) {
             replay_output(output_path);
         }
         if (exit_status == 0) {
