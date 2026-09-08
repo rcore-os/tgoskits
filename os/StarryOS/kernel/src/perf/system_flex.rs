@@ -28,6 +28,16 @@ pub(super) struct SystemFlexCounter {
     active: IrqMutex<Option<(Counter, u64)>>,
 }
 
+impl core::fmt::Debug for SystemFlexCounter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SystemFlexCounter")
+            .field("owner", &self.owner)
+            .field("event", &self.event)
+            .field("enabled", &self.enabled.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
 impl SystemFlexCounter {
     pub(super) fn new(
         owner: PerfCpuId,

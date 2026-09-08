@@ -74,11 +74,10 @@ pub(super) fn perf_event_open_hw(
     }
 }
 #[cfg(target_arch = "aarch64")]
-pub(crate) use super::hw_allocation::alloc_programmable_counter;
-#[cfg(target_arch = "aarch64")]
 pub(super) use super::hw_owner::{
     SystemPmuConfigure, SystemPmuDisable, SystemPmuDisableResult, SystemPmuEnable,
-    SystemPmuEnableResult, SystemPmuRead, SystemPmuReadResult, SystemPmuReset,
+    SystemPmuEnableResult, SystemPmuRead, SystemPmuReadResult, SystemPmuReplaceOutput,
+    SystemPmuReset,
     configure_system_on_owner, disable_system_on_owner, enable_system_on_owner,
-    read_system_on_owner, reset_system_on_owner,
+    read_system_on_owner, replace_system_output_on_owner, reset_system_on_owner,
 };

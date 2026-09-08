@@ -11,7 +11,6 @@ use alloc::sync::{Arc, Weak};
 use core::sync::atomic::Ordering;
 
 use super::{
-    hw,
     hw_owner::Counter,
     inheritance_lifecycle::PerfInheritanceLifecycle,
     output::{PerfRingOutput, PerfRingWeak},
