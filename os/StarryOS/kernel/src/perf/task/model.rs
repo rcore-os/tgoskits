@@ -49,6 +49,13 @@ pub struct PerTaskCounter {
     pub(super) run_state: IrqMutex<PmuRunState>,
     /// Sum of completed-slice deltas (raw event count).
     pub(super) accumulated: AtomicU64,
+    /// Greatest raw value published through `PERF_SAMPLE_READ`.
+    ///
+    /// A live PMU read and the completed-slice accumulator are observed through
+    /// separate ownership transitions.  Keep the IRQ-visible result monotonic
+    /// across a multiplex boundary, as Linux perf event counts never move
+    /// backwards between samples unless userspace explicitly resets the event.
+    pub(super) sample_read_floor: AtomicU64,
     /// Accumulated enabled time across past windows (ns).
     pub(super) time_enabled_ns: AtomicU64,
     /// Accumulated running time across past windows (ns). Equal to
@@ -246,6 +253,7 @@ impl PerTaskCounter {
             enabled: AtomicBool::new(cfg.enabled),
             run_state: IrqMutex::new(PmuRunState::new()),
             accumulated: AtomicU64::new(0),
+            sample_read_floor: AtomicU64::new(0),
             time_enabled_ns: AtomicU64::new(0),
             time_running_ns: AtomicU64::new(0),
             last_in_ns: AtomicU64::new(0),
@@ -705,6 +713,8 @@ unsafe fn per_task_sample_read_irq(
         let elapsed = now.saturating_sub(counter.last_in_ns.load(Ordering::Acquire));
         time_running = time_running.saturating_add(elapsed);
     }
+    let previous = counter.sample_read_floor.fetch_max(value, Ordering::AcqRel);
+    value = value.max(previous);
     SampleReadValue {
         value,
         time_enabled,
