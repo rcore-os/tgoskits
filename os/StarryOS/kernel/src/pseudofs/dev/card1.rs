@@ -368,6 +368,8 @@ fn map_rknpu_err(err: rknpu::Error) -> VfsError {
     match err {
         rknpu::Error::NotFound => VfsError::NotFound,
         rknpu::Error::Busy => VfsError::AlreadyExists,
+        rknpu::Error::TimedOut => VfsError::TimedOut,
+        rknpu::Error::Quarantined => VfsError::Io,
         rknpu::Error::InvalidData => VfsError::InvalidData,
     }
 }
@@ -427,7 +429,8 @@ pub fn rknpu_driver_ioctl(current: &UserTaskRef, op: RknpuCmd, arg: usize) -> Vf
             info!("rknpu submit ioctl {submit_args:#x?}");
 
             let submit_start_ns = monotonic_time_nanos();
-            match rknpu::submit(&mut submit_args).map_err(map_rknpu_err) {
+            let submit_result = rknpu::submit(&mut submit_args).map_err(map_rknpu_err);
+            match &submit_result {
                 Ok(()) => {
                     let submit_end_ns = monotonic_time_nanos();
                     if log_index < RKNPU_SUBMIT_LOG_LIMIT {
@@ -459,6 +462,7 @@ pub fn rknpu_driver_ioctl(current: &UserTaskRef, op: RknpuCmd, arg: usize) -> Vf
             debug!("rknpu submit ioctl result: {:#x?}", submit_args);
 
             write_user_value(current, arg, submit_args)?;
+            submit_result?;
         }
         RknpuCmd::MemCreate => {
             info!("rknpu mem_create ioctl");

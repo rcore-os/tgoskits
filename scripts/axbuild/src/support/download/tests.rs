@@ -97,6 +97,26 @@ async fn download_file_does_not_retry_permanent_http_status() {
     assert_eq!(server.request_count(), 1);
 }
 
+#[tokio::test]
+async fn verified_download_rejects_existing_file_with_unknown_digest() {
+    let server = TestServer::start_with_failures(
+        b"replacement".to_vec(),
+        vec![StatusCode::SERVICE_UNAVAILABLE],
+    )
+    .await;
+    let workspace = tempdir().unwrap();
+    let output_path = workspace.path().join("rootfs.img.tar.gz");
+    fs::write(&output_path, b"untrusted-local-archive").unwrap();
+
+    let client = http_client().unwrap();
+    let _ = download_file_verified_sha256(&client, &server.url(), &output_path, "expected")
+        .await
+        .unwrap_err();
+
+    assert!(server.request_count() >= 1);
+    assert!(!output_path.exists());
+}
+
 struct TestServer {
     handle: test_support::MockHandle,
 }

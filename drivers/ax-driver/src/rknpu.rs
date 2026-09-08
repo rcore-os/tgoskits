@@ -3,7 +3,11 @@ use core::any::Any;
 
 use log::info;
 use rdrive::{
-    probe::{OnProbeError, fdt::FdtInfo},
+    DriverGeneric,
+    probe::{
+        OnProbeError,
+        fdt::{FdtInfo, ResetLine},
+    },
     register::ProbeFdt,
 };
 pub use rockchip_npu::{
@@ -24,6 +28,10 @@ pub enum Error {
     NotFound,
     #[error("Rockchip NPU is busy")]
     Busy,
+    #[error("Rockchip NPU request timed out")]
+    TimedOut,
+    #[error("Rockchip NPU reset failed after a timed-out submission; the device is quarantined")]
+    Quarantined,
     #[error("Rockchip NPU request contains invalid data")]
     InvalidData,
 }
@@ -39,6 +47,63 @@ crate::model_register!(
         }
     ],
 );
+
+struct RknpuDevice {
+    core: Rknpu,
+    resets: Vec<ResetLine>,
+    quarantined: bool,
+}
+
+impl RknpuDevice {
+    fn ensure_available(&self) -> Result<(), Error> {
+        ensure_device_available(self.quarantined)
+    }
+
+    fn recover_timeout(&mut self) -> Result<(), Error> {
+        recover_after_timeout(&mut self.quarantined, || {
+            for reset in &self.resets {
+                reset.reset().map_err(|err| {
+                    log::error!(
+                        "RKNPU reset {:?} ({:#x}) failed after timeout: {err}",
+                        reset.name(),
+                        reset.id().raw()
+                    );
+                    Error::Quarantined
+                })?;
+            }
+            Ok(())
+        })
+    }
+}
+
+fn recover_after_timeout(
+    quarantined: &mut bool,
+    reset_all_cores: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
+    if let Err(err) = reset_all_cores() {
+        quarantine_device(quarantined);
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn quarantine_device(quarantined: &mut bool) {
+    *quarantined = true;
+}
+
+fn ensure_device_available(quarantined: bool) -> Result<(), Error> {
+    if quarantined {
+        Err(Error::Quarantined)
+    } else {
+        Ok(())
+    }
+}
+
+impl DriverGeneric for RknpuDevice {
+    fn name(&self) -> &str {
+        self.core.name()
+    }
+}
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let (info, plat_dev) = probe.into_parts();
@@ -68,7 +133,15 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         crate::binding_resolver::dma_coherency_from_fdt(&info),
         dma_api::DmaConstraints::new(u32::MAX as u64),
     ));
-    let npu = Rknpu::new(&base_regs, config, dma);
+    let resets = info.reset_lines()?;
+    if resets.is_empty() {
+        return Err(OnProbeError::other("RKNPU node has no reset line"));
+    }
+    let npu = RknpuDevice {
+        core: Rknpu::new(&base_regs, config, dma),
+        resets,
+        quarantined: false,
+    };
     plat_dev.register(npu);
     info!("NPU registered successfully");
     Ok(())
@@ -91,7 +164,7 @@ fn configure_fixed_clock(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
 }
 
 pub fn is_available() -> bool {
-    rdrive::get_one::<Rknpu>().is_some()
+    rdrive::get_one::<RknpuDevice>().is_some()
 }
 
 pub fn obj_addr_and_size(handle: u32) -> Result<(usize, usize), Error> {
@@ -110,7 +183,20 @@ pub fn buffer_retainer(handle: u32) -> Result<Arc<dyn Any + Send + Sync>, Error>
 }
 
 pub fn submit(args: &mut RknpuSubmit) -> Result<(), Error> {
-    with_npu(|npu| npu.submit_ioctrl(args).map_err(|_| Error::InvalidData))
+    let mut npu = rdrive::get_one::<RknpuDevice>()
+        .ok_or(Error::NotFound)?
+        .try_lock()
+        .map_err(|_| Error::Busy)?;
+    npu.ensure_available()?;
+    let mut clock = axklib::time::monotonic_nanos;
+    match npu.core.submit_ioctrl(args, &mut clock) {
+        Ok(()) => Ok(()),
+        Err(rockchip_npu::RknpuError::Timeout) => {
+            npu.recover_timeout()?;
+            Err(Error::TimedOut)
+        }
+        Err(_) => Err(Error::InvalidData),
+    }
 }
 
 pub fn mem_create(args: &mut RknpuMemCreate) -> Result<(), Error> {
@@ -160,9 +246,35 @@ fn with_npu<F, R>(f: F) -> Result<R, Error>
 where
     F: FnOnce(&mut Rknpu) -> Result<R, Error>,
 {
-    let mut npu = rdrive::get_one::<Rknpu>()
+    let mut npu = rdrive::get_one::<RknpuDevice>()
         .ok_or(Error::NotFound)?
         .try_lock()
         .map_err(|_| Error::Busy)?;
-    f(&mut npu)
+    npu.ensure_available()?;
+    f(&mut npu.core)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_timeout_recovery_quarantines_the_device() {
+        let mut quarantined = false;
+        let mut reset_attempted = false;
+
+        assert_eq!(
+            recover_after_timeout(&mut quarantined, || {
+                reset_attempted = true;
+                Err(Error::Quarantined)
+            }),
+            Err(Error::Quarantined)
+        );
+
+        assert!(reset_attempted);
+        assert_eq!(
+            ensure_device_available(quarantined),
+            Err(Error::Quarantined)
+        );
+    }
 }
