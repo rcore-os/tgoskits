@@ -56,10 +56,11 @@ use self::{
 };
 pub(crate) use self::{
     pid::*,
-    process_accounting::PerfSchedulerTickLease,
     process_identity::*,
     process_memory::{PreparedProcessMemory, scheduler_address_space},
 };
+#[cfg(target_arch = "aarch64")]
+pub(crate) use self::process_accounting::PerfSchedulerTickLease;
 use crate::{
     mm::MmHandle,
     namespace::NsProxy,

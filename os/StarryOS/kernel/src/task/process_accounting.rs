@@ -1,7 +1,11 @@
 //! Process CPU accounting and process-owned timer tables.
 
-use alloc::sync::{Arc, Weak};
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use alloc::sync::Arc;
+#[cfg(target_arch = "aarch64")]
+use alloc::sync::Weak;
+use core::sync::atomic::{AtomicU8, Ordering};
+#[cfg(target_arch = "aarch64")]
+use core::sync::atomic::AtomicUsize;
 
 use ax_runtime::{hal::time::TimeValue, task::runtime::service::SchedulerTickGate};
 use linux_raw_sys::general::RLIMIT_RTTIME;
@@ -22,6 +26,7 @@ pub(super) struct ProcessAccountingState {
     process_cpu_time: ProcessCpuTimeAccounting,
     interval_timers: Mutex<ProcessTimerManager>,
     active_interval_timers: AtomicU8,
+    #[cfg(target_arch = "aarch64")]
     perf_scheduler_tick_users: AtomicUsize,
     scheduler_tick_gate: Arc<SchedulerTickGate>,
     posix_timers: Arc<PosixTimerTable>,
@@ -34,6 +39,7 @@ impl ProcessAccountingState {
             process_cpu_time: ProcessCpuTimeAccounting::new(),
             interval_timers: Mutex::new(ProcessTimerManager::new()),
             active_interval_timers: AtomicU8::new(0),
+            #[cfg(target_arch = "aarch64")]
             perf_scheduler_tick_users: AtomicUsize::new(0),
             scheduler_tick_gate: Arc::new(SchedulerTickGate::new()),
             posix_timers: Arc::new(PosixTimerTable::default()),
@@ -50,14 +56,18 @@ impl ProcessData {
             & CPU_INTERVAL_TIMER_MASK
             != 0;
         let has_rttime_watchdog = self.rlimit_current(RLIMIT_RTTIME) != u64::MAX;
-        let has_perf_rotation = self
-            .accounting
-            .perf_scheduler_tick_users
-            .load(Ordering::Acquire)
-            != 0;
+        let mut enabled = has_cpu_interval_timer || has_rttime_watchdog;
+        #[cfg(target_arch = "aarch64")]
+        {
+            enabled |= self
+                .accounting
+                .perf_scheduler_tick_users
+                .load(Ordering::Acquire)
+                != 0;
+        }
         self.accounting
             .scheduler_tick_gate
-            .set_enabled(has_cpu_interval_timer || has_rttime_watchdog || has_perf_rotation);
+            .set_enabled(enabled);
     }
 
     fn publish_active_interval_timers(&self, mask: u8) {
@@ -75,6 +85,7 @@ impl ProcessData {
         Arc::clone(&self.accounting.scheduler_tick_gate)
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub(crate) fn acquire_perf_scheduler_tick(self: &Arc<Self>) -> PerfSchedulerTickLease {
         self.accounting
             .perf_scheduler_tick_users
@@ -214,10 +225,12 @@ impl ProcessData {
 
 /// RAII interest keeping scheduler-tick task work enabled for PMU rotation.
 #[derive(Debug)]
+#[cfg(target_arch = "aarch64")]
 pub(crate) struct PerfSchedulerTickLease {
     process: Weak<ProcessData>,
 }
 
+#[cfg(target_arch = "aarch64")]
 impl Drop for PerfSchedulerTickLease {
     fn drop(&mut self) {
         let Some(process) = self.process.upgrade() else {

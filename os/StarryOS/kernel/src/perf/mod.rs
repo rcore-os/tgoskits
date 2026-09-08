@@ -320,6 +320,7 @@ pub struct PerfEvent {
     /// `attr.inherit`, which Linux requires to agree inside a task group.
     inherit: bool,
     /// `attr.pinned` on this event (only a leader may carry it).
+    #[cfg(target_arch = "aarch64")]
     pinned: bool,
     /// Pinned-group ERROR state. Linux exposes this as EOF from `read()`.
     group_error: AtomicBool,
@@ -347,6 +348,8 @@ impl PerfEvent {
         let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
         event.set_sample_id(id);
         event.finish_open()?;
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = pinned;
         #[cfg(target_arch = "aarch64")]
         let control = event
             .as_any_mut()
@@ -371,6 +374,7 @@ impl PerfEvent {
             nonblocking: AtomicBool::new(false),
             context,
             inherit,
+            #[cfg(target_arch = "aarch64")]
             pinned,
             group_error: AtomicBool::new(false),
             members: PiMutex::new(Vec::new()),
