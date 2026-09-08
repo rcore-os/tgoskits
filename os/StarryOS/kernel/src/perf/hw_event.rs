@@ -947,7 +947,7 @@ impl PerfEventOps for HwPerfEvent {
             || state
                 .per_task
                 .as_ref()
-                .is_some_and(|family| family.root().flexible)
+                .is_some_and(|family| family.root().is_flexible())
             || matches!(state.counter, Counter::Programmable(_))
         {
             1

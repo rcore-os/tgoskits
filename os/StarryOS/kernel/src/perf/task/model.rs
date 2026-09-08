@@ -280,6 +280,10 @@ impl PerTaskCounter {
         self.read_format
     }
 
+    pub(in crate::perf) fn is_flexible(&self) -> bool {
+        self.flexible
+    }
+
     /// PID namespace used to expose this event's task identity to userspace.
     pub(in crate::perf) fn observer(&self) -> PidNamespaceId {
         self.observer
