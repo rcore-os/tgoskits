@@ -325,9 +325,9 @@ pub struct PerfEvent {
     /// Pinned-group ERROR state. Linux exposes this as EOF from `read()`.
     group_error: AtomicBool,
     /// Live members owned weakly so closing fds cannot form a cycle.
-    members: PiMutex<Vec<Weak<PerfEvent>>>,
+    members: Mutex<Vec<Weak<PerfEvent>>>,
     /// Ordinary group leader, or `None` for a leader/standalone event.
-    group_leader: PiMutex<Option<Weak<PerfEvent>>>,
+    group_leader: Mutex<Option<Weak<PerfEvent>>>,
 }
 
 impl Debug for PerfEvent {
@@ -377,8 +377,8 @@ impl PerfEvent {
             #[cfg(target_arch = "aarch64")]
             pinned,
             group_error: AtomicBool::new(false),
-            members: PiMutex::new(Vec::new()),
-            group_leader: PiMutex::new(None),
+            members: Mutex::new(Vec::new()),
+            group_leader: Mutex::new(None),
         })
     }
 

@@ -68,7 +68,7 @@ pub(crate) enum PerfTargetKind {
 pub(crate) enum PerfContextKey {
     /// One scheduler thread generation and its optional CPU constraint.
     Task {
-        scheduler_id: ax_runtime::task::ThreadId,
+        scheduler_id: ax_runtime::task::thread::ThreadId,
         cpu: Option<PerfCpuId>,
     },
     /// One fixed system-wide CPU context.
