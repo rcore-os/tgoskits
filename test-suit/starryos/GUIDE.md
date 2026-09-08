@@ -159,7 +159,11 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 该目录不会复制 LTP 测试逻辑：`cases.txt` 中每个 testcase 会生成一个独立 wrapper，
 wrapper 在 guest 内依次确认 `/opt/ltp/Version`、`runtest/syscalls` 的唯一条目和对应
 可执行文件，然后原样运行上游命令并传播退出码；即使 LTP 返回 0，wrapper 也会检查
-输出并拒绝 `TCONF`、`TBROK`、`TFAIL`。因此这些结果及超时都不会被当成通过。
+输出并拒绝 `TCONF`、`TBROK`、`TFAIL`，并且至少出现一项 `TPASS`。
+`minimum-passes.txt` 保存从固定上游源码核实的完成数量契约；例如 `execve03` 必须完成
+六个 errno 用例，不能把“前四项通过后进程被错误替换、随后退出 0”当成成功。
+`CMakeLists.txt` 把该门槛写入每个 wrapper，兼容新旧 LTP 输出中 `TPASS` 的空格差异。
+这些门槛不从历史绿色日志推导，也不随共同集重新生成而丢失。
 
 system runner 固定分成两个顺序阶段：先按名称执行剩余的原生 C binary，再执行所有
 `ltp-syscalls-*` wrapper。两个阶段仍对每个 binary 分配独立 PID/mount namespace，日志用
@@ -187,7 +191,8 @@ scripts/test/ltp-syscalls/generate-common.sh \
 ```
 
 生成器只保留四份完整 LTP 阶段日志中都出现 `STARRY_SYSTEM_TEST_PASSED`，并且对应
-输出中没有 `TCONF`、`TBROK`、`TFAIL` 的 testcase，再按静态排序冻结 `cases.txt`。
+输出中没有 `TCONF`、`TBROK`、`TFAIL`，且满足同一 `minimum-passes.txt` 完成门槛的 testcase，
+再按静态排序冻结 `cases.txt`。旧日志即使错误打印了通过标记，缺失的完成项也会使它失去候选资格。
 `qemu/system/ltp-syscalls` 运行目录只保存该最终 manifest 和 wrapper 生成资产。修改候选集、LTP
 版本或镜像内容后必须重新进行四架构 probe，不能依据单一架构或历史 TODO 清单手工放行。
 

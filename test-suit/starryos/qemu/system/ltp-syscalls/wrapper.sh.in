@@ -2,6 +2,7 @@
 set -eu
 
 case_id="@LTP_CASE_ID@"
+minimum_passes=@LTP_MIN_PASSES@
 ltp_root="/opt/ltp"
 version_file="${ltp_root}/Version"
 runtest_file="${ltp_root}/runtest/syscalls"
@@ -76,4 +77,12 @@ if grep -Eq 'T(CONF|BROK|FAIL)[[:space:]]*:' "${case_output}"; then
     echo "LTP testcase reported a non-passing result: ${case_id}" >&2
     exit 1
 fi
-exit "${status}"
+# Old and new LTP APIs both print TPASS, with different spacing before ':'.
+# A zero exit status alone does not prove that the test body completed: a
+# wrongly successful exec can replace the child and skip its remaining cases.
+passes="$(awk '/(^|[[:space:]])TPASS[[:space:]]*:/ { count++ } END { print count+0 }' "${case_output}")"
+if [ "${passes}" -lt "${minimum_passes}" ]; then
+    echo "incomplete LTP testcase: ${case_id}: ${passes} TPASS, expected at least ${minimum_passes}" >&2
+    exit 1
+fi
+exit 0

@@ -9,6 +9,7 @@ fi
 candidates=$1
 output=$2
 shift 2
+contracts_file="$(dirname -- "${BASH_SOURCE[0]}")/../../../test-suit/starryos/qemu/system/ltp-syscalls/minimum-passes.txt"
 
 work_dir=$(mktemp -d /tmp/starry-ltp-syscalls-common.XXXXXX)
 cleanup()
@@ -28,8 +29,23 @@ for log_path in "$@"; do
         echo "incomplete LTP phase in $log_path" >&2
         exit 1
     fi
-    sed -n 's#^STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/ltp-syscalls-\([^ ]*\) elapsed_s=.*#\1#p' \
-        "$normalized_log" | sort -u > "$work_dir/passed-$log_index"
+    awk '
+        FNR == NR {
+            if ($1 !~ /^#/ && NF == 2) minimum[$1] = $2
+            next
+        }
+        /^STARRY_SYSTEM_TEST_BEGIN: \/usr\/bin\/starry-test-suit\/ltp-syscalls-/ {
+            testcase = $0
+            sub(/^.*\/ltp-syscalls-/, "", testcase)
+            passes = 0
+            next
+        }
+        /(^|[[:space:]])TPASS[[:space:]]*:/ { passes++ }
+        /^STARRY_SYSTEM_TEST_PASSED: \/usr\/bin\/starry-test-suit\/ltp-syscalls-/ {
+            required = (testcase in minimum) ? minimum[testcase] : 1
+            if (testcase != "" && passes >= required) print testcase
+        }
+    ' "$contracts_file" "$normalized_log" | sort -u > "$work_dir/passed-$log_index"
     awk '
         /^STARRY_SYSTEM_TEST_BEGIN: \/usr\/bin\/starry-test-suit\/ltp-syscalls-/ {
             testcase = $0

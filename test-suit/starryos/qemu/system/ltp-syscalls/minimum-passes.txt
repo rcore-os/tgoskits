@@ -1,0 +1,4 @@
+# LTP 20260529 source-derived minimum TPASS counts, not previous run totals.
+# execve03.c: tst_test.tcnt = ARRAY_SIZE(tcases), with six errno cases.
+# https://github.com/linux-test-project/ltp/blob/20260529/testcases/kernel/syscalls/execve/execve03.c
+execve03 6

@@ -2,6 +2,9 @@ mod board_tests;
 
 mod host_http_tests;
 
+#[cfg(unix)]
+mod ltp_wrapper_tests;
+
 mod nixos_tests;
 
 mod qemu_discovery_tests;
