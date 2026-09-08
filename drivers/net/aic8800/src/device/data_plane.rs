@@ -6,13 +6,15 @@ use crate::{
     lmac::{
         SM_CONNECT_IND, SM_DISCONNECT_IND, parse_connect_indication, parse_disconnect_indication,
     },
-    profile::DataTxFlowPolicy,
     protocol::{BLOCK_SIZE, ethernet_tx_frame},
     registers::{ReceiveLength, flow_credits},
     rx::{ParsedFrame, RX_CAPACITY, parse_fifo},
 };
 
 const IO_RETRY: Duration = Duration::from_millis(1);
+// The firmware reports packet buffers, not SDIO blocks. Keep two buffers
+// available for commands, as in the vendor DATA_FLOW_CTRL_THRESH contract.
+const DATA_TX_RESERVED_CREDITS: u8 = 2;
 const INTERNAL_TX_CAPACITY: usize = 2;
 const ETHERTYPE_EAPOL: [u8; 2] = [0x88, 0x8e];
 
@@ -57,29 +59,12 @@ impl AicDevice {
         }
         self.prepare_next_transmit();
         if self.data.active_tx.is_some() {
-            return match self.data_tx_flow_policy() {
-                DataTxFlowPolicy::Direct => {
-                    let wire_frame = self
-                        .data
-                        .active_tx
-                        .as_ref()
-                        .expect("active TX is present after preparation")
-                        .wire_frame
-                        .clone();
-                    self.emit(
-                        IoPurpose::TransmitData,
-                        write_fifo(
-                            self.data_function(),
-                            self.registers().write_fifo,
-                            wire_frame,
-                        ),
-                    )
-                }
-                DataTxFlowPolicy::CreditGated => self.emit(
-                    IoPurpose::TransmitFlow,
-                    read_byte(self.data_function(), self.registers().flow_control),
-                ),
-            };
+            // DC bypasses flow control only for its separate command mailbox.
+            // Every data packet must obtain firmware capacity before CMD53.
+            return self.emit(
+                IoPurpose::TransmitFlow,
+                read_byte(self.data_function(), self.registers().flow_control),
+            );
         }
         AicAction::WaitForInterrupt
     }
@@ -325,7 +310,7 @@ impl AicDevice {
             .active_tx
             .as_ref()
             .ok_or(AicError::CompletionMismatch)?;
-        if credits == 0 || usize::from(credits) * BLOCK_SIZE <= active.wire_frame.len() {
+        if credits <= DATA_TX_RESERVED_CREDITS {
             self.lifecycle.retry_at = Some(now.after(IO_RETRY));
             return Ok(());
         }
@@ -825,9 +810,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn dc_transmit_starts_without_reading_data_flow_credits() {
-        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+    fn ready_transmitter(chip: ChipVariant, frame_len: usize) -> AicDevice {
+        let mut device = AicDevice::new(chip).unwrap();
         device.lifecycle.state = AicState::Ready;
         device.data.link.install_mac([2, 0, 0, 0, 0, 1]).unwrap();
         device.data.link.install_interface(0).unwrap();
@@ -839,14 +823,97 @@ mod tests {
         device
             .data
             .tx
-            .enqueue(TxToken::new(1), vec![0; 60])
+            .enqueue(TxToken::new(1), vec![0; frame_len])
             .unwrap();
+        device
+    }
 
-        let AicAction::SubmitSdio(request) = device.drive_ready(MonotonicTime::default()) else {
-            panic!("expected a direct DC data write")
+    #[test]
+    fn dc_data_tx_checks_firmware_credits_before_writing() {
+        let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
+        let AicAction::SubmitSdio(request) = device.advance(AicInput {
+            now: MonotonicTime::default(),
+            event: None,
+        }) else {
+            panic!("expected a DC data credit read")
         };
-        assert!(
-            matches!(request.kind, SdioRequestKind::Write { function, .. } if function.get() == 1)
-        );
+        assert!(matches!(request.kind,
+            SdioRequestKind::ReadByte { function, address }
+            if function.get() == 1 && address.get() == 0x0a));
+    }
+
+    #[test]
+    fn data_tx_retains_packet_until_credit_reserve_is_available() {
+        // One full-sized packet consumes one firmware buffer, not three
+        // 512-byte SDIO blocks. Two buffers remain reserved for commands.
+        for chip in [ChipVariant::Aic8800D80, ChipVariant::Aic8800DC] {
+            let mut device = ready_transmitter(chip, 1414);
+            let mut now = MonotonicTime::default();
+            let mut action = device.advance(AicInput { now, event: None });
+            for credits in [0, 2, 3] {
+                let AicAction::SubmitSdio(request) = action else {
+                    panic!("expected a fresh credit read")
+                };
+                assert!(matches!(request.kind, SdioRequestKind::ReadByte { .. }));
+                action = device.advance(AicInput {
+                    now,
+                    event: Some(AicInputEvent::Sdio(SdioCompletion {
+                        request_id: request.id,
+                        result: Ok(SdioResponse::Byte(credits)),
+                    })),
+                });
+                if credits <= 2 {
+                    let AicAction::RetryAt(deadline) = action else {
+                        panic!("data TX must retain the packet while firmware buffers are reserved")
+                    };
+                    assert!(device.data.active_tx.is_some());
+                    assert!(device.data.events.is_empty());
+                    assert!(matches!(
+                        device.advance(AicInput { now, event: None }),
+                        AicAction::RetryAt(_)
+                    ));
+                    now = deadline;
+                    action = device.advance(AicInput { now, event: None });
+                }
+            }
+            let AicAction::SubmitSdio(write) = action else {
+                panic!("three packet credits must permit one full-sized data frame")
+            };
+            assert!(
+                matches!(&write.kind, SdioRequestKind::Write { bytes, .. } if bytes.len() == 1536)
+            );
+            let complete = device.advance(AicInput {
+                now,
+                event: Some(AicInputEvent::Sdio(SdioCompletion {
+                    request_id: write.id,
+                    result: Ok(SdioResponse::Unit),
+                })),
+            });
+            assert!(
+                matches!(complete, AicAction::Event(AicEvent::TransmitComplete(token)) if token == TxToken::new(1))
+            );
+            assert!(device.data.active_tx.is_none());
+            assert!(matches!(
+                device.advance(AicInput { now, event: None }),
+                AicAction::WaitForInterrupt
+            ));
+            let next = device.advance(AicInput {
+                now,
+                event: Some(AicInputEvent::Tx {
+                    token: TxToken::new(2),
+                    frame: vec![0; 60],
+                }),
+            });
+            assert!(
+                matches!(
+                    next,
+                    AicAction::SubmitSdio(SdioRequest {
+                        kind: SdioRequestKind::ReadByte { .. },
+                        ..
+                    })
+                ),
+                "each packet requires a fresh firmware credit check"
+            );
+        }
     }
 }
