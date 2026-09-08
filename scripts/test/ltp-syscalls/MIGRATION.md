@@ -74,6 +74,14 @@ CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.
 
 这是部分替代：上游深度用例接受`EINVAL`或`ELOOP`，不能保留原来的精确errno断言；上游也不覆盖dup别名边的逐条删除和并发反向加边。原程序及CMake已清理，这三类断言明确不再由本项提供。四架构累计LTP全部通过，新增两个用例实际均返回`ELOOP`；x86_64执行64个LTP程序，其他架构各62个，实际集合与配置逐项一致，生成共同集与`cases.txt`逐字相同。日志为实施机器`/tmp/starry-ltp-migration-evidence/09-topology-<arch>.log`。本项未发现新的实现缺陷，没有增加内核改动。
 
+### 2.11 epoll 用户输出缓冲区
+
+`bug-epoll-wait-user-buffer-race` 原来覆盖阻塞后munmap输出缓冲区返回`EFAULT`、跨页部分复制后返回已完成事件数并重排队失败事件、过大maxevents返回`EINVAL`、没有就绪事件时拒绝内核地址和溢出范围。固定LTP [epoll_wait03.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/epoll_wait/epoll_wait03.c) 只部分承接不可写输出缓冲区的`EFAULT`，并增加坏FD、非epoll FD、负数与零maxevents检查，共五项TPASS。
+
+原程序及CMake已清理。未承接的是阻塞期间解除映射、部分复制计数与ONESHOT事件重排队、`INT_MAX`数量上限、无就绪事件时的非法/溢出用户范围；静态只读映射不能证明这些竞态和边界。四架构定向LTP均完成五项，实际执行集合和共同集核对通过，无新增实现缺陷。证据保存于实施机器`/tmp/starry-ltp-migration-evidence/10-11-epoll-wait-<arch>.log`，同一轮同时验证下一项独立提交的候选。
+
+从实际四架构根文件系统提取musl后反汇编`epoll_wait`与`epoll_pwait`：前者转发后者，后者使用x86_64编号281、其他架构编号22；x86_64仅在`ENOSYS`时回退232。Starry已实现281，因此这些LTP结果验证`epoll_pwait`路径，不能补回第八项清理的raw旧入口断言。反汇编证据为`/tmp/starry-ltp-migration-evidence/epoll-libc-<arch>.asm`。
+
 ## 3. 系统调用兼容性对照
 
 结论仅针对本轮明确检查的路径，不表示整个系统调用在所有输入下都兼容。移除 procfs 或 sysfs 的特定断言后，LTP 的绿色结果不能证明那些文件的表示仍然正确。
@@ -99,7 +107,9 @@ CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.
 | epoll_ctl(目录MOD) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2256) | 目录目标在interest查找前返回EPERM | `sys_epoll_ctl` → `Epoll::modify` → `EntryKey::new`能力检查 | 无法确认 | 修改路径也使用该能力检查；epoll_ctl02目录用例只覆盖ADD，未声称其他路径已实测 |
 | epoll_ctl(目录DEL) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2256) | 目录目标在interest查找前返回EPERM | `sys_epoll_ctl` → `Epoll::delete` → `EntryKey::new`能力检查 | 无法确认 | 删除路径也使用该能力检查；epoll_ctl02目录用例只覆盖ADD，未声称其他路径已实测 |
 | epoll_wait / x86_64:232 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 返回就绪事件数量、事件位与user data | `sys_epoll_wait` → `sys_epoll_pwait` → `do_epoll_wait` → Epoll `poll_events_with`与用户写回 | 无法确认 | epoll_wait01使用libc；不能仅凭该结果宣称原直接SYS_epoll_wait断言被保留 |
-| epoll_pwait / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | libc epoll_wait后端的读/写/组合就绪语义；此处不涉及非空sigmask | `sys_epoll_pwait` → `do_epoll_wait` → `with_blocked_signals`、`poll_io`、Epoll事件消费和写回 | 无法确认 | epoll_wait01四架构各3项TPASS；具体libc后端未逐架构反汇编 |
+| epoll_pwait / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | libc epoll_wait后端的读/写/组合就绪语义；此处不涉及非空sigmask | `sys_epoll_pwait` → `do_epoll_wait` → `with_blocked_signals`、`poll_io`、Epoll事件消费和写回 | 正确 | epoll_wait01四架构各3项TPASS；实际musl反汇编确认使用epoll_pwait，结论限本行空sigmask就绪场景 |
 | epoll_ctl(嵌套深度与环路ADD) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2069) | 最多四条嵌套边；超深或闭环拒绝且不发布新边 | `sys_epoll_ctl` → `Epoll::add_interest` → 全局拓扑锁 → `prepare_nested_link`双向深度扫描 → 成功后提交interest及双向边 | 正确 | epoll_ctl04/05四架构各1项TPASS，实际返回ELOOP；上游04允许EINVAL，未来精确errno回归保护较原程序弱 |
 | epoll_ctl(dup别名边DEL) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2069) | 删除指定FD边，其他别名边仍阻止反向闭环；全部删除后允许反向边 | `sys_epoll_ctl` → `Epoll::delete` → `remove_interest_locked` → `detach_nested_link`按edge id删除双向边 | 无法确认 | 原dup别名边删除回归已清理，LTP04/05未承接该生命周期 |
 | epoll_ctl(并发反向ADD) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2069) | 并发建立相反边时必须拒绝其中一条，避免共同形成环路 | `sys_epoll_ctl` → `Epoll::add_interest` → 全局拓扑锁覆盖校验与提交 | 无法确认 | 原屏障并发回归已清理，LTP04/05只验证串行图操作 |
+| epoll_pwait(静态错误输入) / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 坏FD为EBADF，非epoll FD及非正maxevents为EINVAL，就绪事件写入只读页为EFAULT | `sys_epoll_pwait` → `do_epoll_wait`参数/FD检查 → `poll_events_with` → `write_epoll_event`逐事件用户写回 | 正确 | epoll_wait03四架构各5项TPASS，实际libc后端已反汇编确认 |
+| epoll_pwait(解除映射、部分复制与极限范围) / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 等待后复制重新检查映射；部分完成优先返回数量，未交付事件保留；超大数量和溢出用户范围被拒绝 | `do_epoll_wait` → `check_epoll_events_access` → `poll_events_with`逐事件消费与复制失败恢复 | 无法确认 | 原专门回归已清理，静态只读页LTP没有承接上述断言 |

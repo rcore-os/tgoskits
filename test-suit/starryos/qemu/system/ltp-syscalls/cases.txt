@@ -16,6 +16,7 @@ epoll_ctl02
 epoll_ctl04
 epoll_ctl05
 epoll_wait01
+epoll_wait03
 execve01
 execve03
 execve06

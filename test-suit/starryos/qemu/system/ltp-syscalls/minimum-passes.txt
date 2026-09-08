@@ -16,3 +16,5 @@ epoll_create02 4
 # epoll_ctl02.c: nine errno cases; epoll_wait01.c: OUT, IN, and combined IO.
 epoll_ctl02 9
 epoll_wait01 3
+# epoll_wait03.c: five errno cases.
+epoll_wait03 5
