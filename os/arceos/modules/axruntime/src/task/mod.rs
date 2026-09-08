@@ -61,7 +61,6 @@ pub fn notify_cpu(cpu_id: usize) -> Result<(), ax_hal::irq::IrqError> {
 
 use ax_task::{
     CpuLocal, CpuRemote, TaskSystem, TaskSystemConfig, ThreadResources, ThreadSpec,
-    impl_trait as impl_task_runtime,
     runtime::{
         AddressSpaceDestroyOutcome, AddressSpaceHandle, AddressSpaceMembarrierState,
         AddressSpaceReclaimArmOutcome, ContextThreadBinding, CpuRemoteHandle,
@@ -69,8 +68,8 @@ use ax_task::{
         ExecutionContextHandle, IrqGuardToken, KernelContextRequest, MembarrierRegistrationPhase,
         RuntimeCpuId, RuntimeHandleResult, RuntimeMembarrierAction,
         RuntimeSchedulerFrameEnterResult, RuntimeStatus, RuntimeSwitchPlan, StackHandle,
-        StackRequest, TaskRuntime, TaskSystemHandle, ThreadIdentityV1, TlsHandle, TlsRequest,
-        UserContextRequest,
+        StackRequest, TaskSystemHandle, ThreadIdentityV1, TlsHandle, TlsRequest,
+        UserContextRequest, task_runtime::impl_trait as impl_task_runtime,
     },
 };
 

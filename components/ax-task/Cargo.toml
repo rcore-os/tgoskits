@@ -19,7 +19,7 @@ axpanic = { workspace = true, optional = true }
 cfg-if.workspace = true
 lock_api.workspace = true
 thiserror.workspace = true
-trait-ffi = "0.2.11"
+trait-ffi.workspace = true
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 sbi-rt = { workspace = true, features = ["legacy"] }
