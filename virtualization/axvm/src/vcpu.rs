@@ -17,7 +17,7 @@
 use std::{cell::UnsafeCell, format, mem::MaybeUninit};
 
 use ax_std::os::arceos::{
-    guard::PreemptGuard,
+    guard::{PreemptGuard, PreemptIrqSaveGuard},
     percpu::{self as ax_percpu, CpuAreaRef, CpuPin},
     sync::IrqSafeMutex as Mutex,
 };
@@ -26,7 +26,7 @@ use axvm_types::{
     VmArchVcpuOps, VmBackendError, VmVcpuState,
 };
 
-use crate::{AxVmError, AxVmResult, ax_err};
+use crate::{AxVmError, AxVmResult, ax_err, host::HostCpu};
 
 /// Borrowed proof that one AxVM operation cannot migrate between host CPUs.
 struct PinnedCpuContext<'pin, 'cpu> {
@@ -297,11 +297,24 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Runs `f` with this vCPU recorded as current on the physical CPU.
+    #[track_caller]
     pub(crate) fn with_current_cpu_set<F, T>(&self, f: F) -> T
     where
         F: FnOnce() -> T,
     {
-        let _guard = PreemptGuard::new();
+        // Capture the caller location before any formatting: a bare
+        // `Location::caller()` inside `panic!` arguments resolves to the
+        // argument expression itself instead of the propagated caller.
+        let caller = core::panic::Location::caller();
+        // The guard must block IRQs as well: without the `preempt` feature the
+        // preempt-count stays zero, so `might_sleep()` would not flag a
+        // contended sleepable mutex, and blocking here (e.g. on guest console
+        // output) would deschedule the task with `CURRENT_VCPU` still set.
+        // With IRQs disabled, any accidental sleep in `f` panics loudly in
+        // `might_sleep` instead of corrupting the publication invariant.
+        let _guard = PreemptIrqSaveGuard::new();
+        //let _guard = PreemptGuard::new();
+
         // SAFETY: the guard prevents migration through the backend operation,
         // guest run, restoration check, and publication withdrawal.
         unsafe {
@@ -314,7 +327,40 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
                         pinned_cpu.assert_host_cpu_binding();
                         result
                     } else {
-                        panic!("nested vCPU operation is not allowed");
+                        let host_cpu = crate::host::default_host().this_cpu_id();
+                        let panicking_task = crate::host::task::current_task().id_name();
+                        let current_vcpu_task =
+                            crate::get_vm_by_id(current_vcpu.vm_id()).and_then(|vm| {
+                                vm.with_runtime(|runtime| {
+                                    Ok(runtime.vcpu_task(current_vcpu.id()))
+                                })
+                                .ok()
+                                .flatten()
+                            });
+                        let current_vcpu_task_info = current_vcpu_task
+                            .as_ref()
+                            .map(|task| {
+                                format!("{} (state = {:?})", task.id_name(), task.state())
+                            })
+                            .unwrap_or_else(|| "unknown".into());
+                        panic!(
+                            "nested vCPU operation is not allowed (at {}): current = VM[{}] \
+                             VCpu[{}] (phys = {:?}, ptr = {:p}, task = {}), self = VM[{}] \
+                             VCpu[{}] (phys = {:?}, ptr = {:p}), panicking task = {}, host_cpu = \
+                             {}",
+                            caller,
+                            current_vcpu.vm_id(),
+                            current_vcpu.id(),
+                            current_vcpu.phys_cpu_set(),
+                            current_vcpu,
+                            current_vcpu_task_info,
+                            self.vm_id(),
+                            self.id(),
+                            self.phys_cpu_set(),
+                            self,
+                            panicking_task,
+                            host_cpu,
+                        );
                     }
                 } else {
                     set_current_vcpu(self, cpu_pin);

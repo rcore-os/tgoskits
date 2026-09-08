@@ -78,5 +78,10 @@ pub(super) fn update_cpu_node(
         }
     }
 
+    // With vCPU over-subscription the host FDT does not provide a CPU node for
+    // every guest virtual CPU id; clone the missing ones so the guest SMP
+    // bootstrap can power all vCPUs up via PSCI.
+    tree.ensure_guest_cpu_nodes(host_fdt, phys_cpu_ids)?;
+
     Ok(tree.finish())
 }
