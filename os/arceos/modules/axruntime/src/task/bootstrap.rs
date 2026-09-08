@@ -80,12 +80,7 @@ pub(crate) fn initialize_early_bootstrap_tls() -> Result<(), TaskError> {
     // SAFETY: early runtime entry owns this offline CPU until publication.
     let existing = unsafe { with_current_cpu_pin(|pin| EARLY_BOOTSTRAP_TLS.read_current(pin)) };
     assert_eq!(existing, 0, "bootstrap TLS initialized twice on one CPU");
-    let result = allocate_runtime_tls(TlsRequest {
-        template_start: 0,
-        initialized_size: 0,
-        total_size: 0,
-        alignment: 1,
-    });
+    let result = allocate_runtime_tls();
     if result.status != RuntimeStatus::Success {
         return Err(runtime_status_error(result.status));
     }

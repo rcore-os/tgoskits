@@ -202,8 +202,8 @@ impl UserTaskRef {
     }
 
     /// Returns the base scheduling policy.
-    pub fn policy(&self) -> scheduler::SchedulePolicy {
-        self.scheduler.policy()
+    pub fn base_policy(&self) -> scheduler::SchedulePolicy {
+        self.scheduler.base_policy()
     }
 
     /// Returns the scheduler affinity snapshot.

@@ -123,7 +123,7 @@ impl ThreadHandle {
     }
 
     /// Returns the thread's base scheduling policy.
-    pub fn policy(&self) -> SchedulePolicy {
+    pub fn base_policy(&self) -> SchedulePolicy {
         self.core.base_policy.load()
     }
 

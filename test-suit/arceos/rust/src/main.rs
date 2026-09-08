@@ -7,7 +7,7 @@ extern crate ax_std as std;
 #[cfg(feature = "task-runtime")]
 use std::os::arceos::task::{
     CpuSet, SchedulePolicy, ThreadId, current_thread_id, set_current_thread_affinity,
-    set_thread_policy, thread_affinity, thread_policy,
+    set_thread_policy, thread_affinity, thread_base_policy,
 };
 #[cfg(feature = "ax-std")]
 use std::{println, time::Instant};
@@ -27,7 +27,7 @@ impl RunnerTaskState {
     fn capture() -> Self {
         let thread = current_thread_id().expect("test runner must have a task identity");
         let affinity = thread_affinity(thread).expect("test runner must have CPU affinity");
-        let policy = thread_policy(thread).expect("test runner must have a scheduling policy");
+        let policy = thread_base_policy(thread).expect("test runner must have a scheduling policy");
         Self {
             thread,
             affinity,
@@ -41,7 +41,7 @@ impl RunnerTaskState {
             Ok(self.thread),
             "an ArceOS test must not replace the shared runner task"
         );
-        if thread_policy(self.thread) != Ok(self.policy) {
+        if thread_base_policy(self.thread) != Ok(self.policy) {
             set_thread_policy(self.thread, self.policy)
                 .expect("failed to restore the test runner scheduling policy");
         }
@@ -55,7 +55,7 @@ impl RunnerTaskState {
             "an ArceOS test must not leak runner CPU affinity"
         );
         assert_eq!(
-            thread_policy(self.thread),
+            thread_base_policy(self.thread),
             Ok(self.policy),
             "an ArceOS test must not leak runner scheduling policy"
         );

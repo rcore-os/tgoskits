@@ -5,9 +5,9 @@ mod kernel;
 mod node;
 
 pub use kernel::{
-    HardKernelTimerAction, HardKernelTimerCallback, HardRestartableKernelTimerCallback,
-    KernelTimerAction, KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerHandle,
-    RestartableKernelTimerCallback,
+    HardKernelTimerAction, HardKernelTimerCallback, HardKernelTimerHandle,
+    HardRestartableKernelTimerCallback, KernelTimerAction, KernelTimerCallback,
+    KernelTimerCancelOutcome, KernelTimerHandle, RestartableKernelTimerCallback,
 };
 pub(crate) use kernel::{KernelTimerEntry, KernelTimerExecution, KernelTimerQueue};
 pub use node::{

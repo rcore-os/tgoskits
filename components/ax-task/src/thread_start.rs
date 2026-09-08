@@ -13,7 +13,7 @@ use crate::{
     lock::PreemptTicketLock,
     runtime::{
         ExecutionContextHandle, KernelContextRequest, RuntimeStatus, StackHandle, StackRequest,
-        TlsHandle, TlsRequest, task_runtime,
+        TlsHandle, task_runtime,
     },
 };
 
@@ -274,10 +274,8 @@ where
     let handle = system.create_thread(thread_spec)?;
 
     let mut irq_guard = RuntimeIrqGuard::enter();
-    let result = runtime_current_cpu_mut(&mut irq_guard).and_then(|mut cpu| {
-        system.make_ready(handle.id())?;
-        system.place_ready(cpu.as_mut(), handle.id())
-    });
+    let result = runtime_current_cpu_mut(&mut irq_guard)
+        .and_then(|mut cpu| system.start_thread(cpu.as_mut(), handle.id()));
     drop(irq_guard);
     if let Err(error) = result {
         cleanup_unstarted_thread(system, handle);
@@ -462,12 +460,7 @@ fn allocate_thread_resources(
     // SAFETY: successful TaskRuntime stack allocation returns one non-zero,
     // uniquely owned handle that remains live until deallocation.
     let stack = unsafe { StackHandle::from_raw(stack_result.handle) };
-    let tls_result = task_runtime::allocate_tls(TlsRequest {
-        template_start: 0,
-        initialized_size: 0,
-        total_size: 0,
-        alignment: 1,
-    });
+    let tls_result = task_runtime::allocate_kernel_tls();
     let tls = match (tls_result.status, tls_result.handle) {
         (RuntimeStatus::Success, 0) => {
             return Err(release_partial_thread_resources(

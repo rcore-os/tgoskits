@@ -176,8 +176,8 @@ impl TaskSystem {
         Ok(handle.extension_view())
     }
 
-    /// Returns the thread's effective/base scheduling policy snapshot.
-    pub fn thread_policy(&self, thread: ThreadId) -> Result<SchedulePolicy, TaskError> {
+    /// Returns the owner-applied base policy, before priority inheritance.
+    pub fn thread_base_policy(&self, thread: ThreadId) -> Result<SchedulePolicy, TaskError> {
         Ok(self
             .state
             .lock()
@@ -185,7 +185,7 @@ impl TaskSystem {
             .sched
             .lock()
             .policy
-            .requested_policy())
+            .base)
     }
 
     /// Replaces a task's base policy in one synchronous owner-rq transaction.

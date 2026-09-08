@@ -452,7 +452,7 @@ fn scheduler_policy(
     pid: i32,
 ) -> crate::StarryResult<scheduler::SchedulePolicy> {
     let thread = scheduler_thread_id(current, pid)?;
-    scheduler::thread_policy(thread).map_err(map_task_error)
+    scheduler::thread_base_policy(thread).map_err(map_task_error)
 }
 
 fn scheduler_reset_on_fork(
@@ -804,7 +804,7 @@ fn set_priority_for_tasks(
 
 fn set_thread_scheduler_nice(task: &UserTaskRef, nice: i32) -> crate::StarryResult<()> {
     let nice = scheduler::Nice::new(nice as i8).map_err(map_task_error)?;
-    let policy = task.policy();
+    let policy = task.base_policy();
     if let scheduler::SchedulePolicy::Fair { mode, .. } = policy {
         scheduler::set_thread_policy(task.id(), scheduler::SchedulePolicy::fair(nice, mode))
             .map_err(map_task_error)?;

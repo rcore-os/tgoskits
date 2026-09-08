@@ -95,13 +95,42 @@ impl KernelTimerHandle {
     }
 }
 
+/// Capability to arm or disarm an explicitly hard-expiry registration.
+///
+/// Only hard registration creates this capability. Conversion to the general
+/// cancellation handle is one-way; neither handle owns the callback payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HardKernelTimerHandle(KernelTimerHandle);
+
+impl HardKernelTimerHandle {
+    pub(crate) const fn new(handle: KernelTimerHandle) -> Self {
+        Self(handle)
+    }
+
+    /// Returns the CPU deadline base that owns this registration.
+    pub const fn owner(self) -> CpuId {
+        self.0.owner()
+    }
+}
+
+impl From<HardKernelTimerHandle> for KernelTimerHandle {
+    fn from(handle: HardKernelTimerHandle) -> Self {
+        handle.0
+    }
+}
+
 /// Outcome of a non-blocking kernel-timer cancellation attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelTimerCancelOutcome {
-    /// The queued or expired callback was removed before execution.
+    /// The registration was removed and its payload is reclaimed before return.
     Cancelled,
-    /// The handle was already cancelled, claimed for execution, or completed.
-    NotCancelled,
+    /// Cancellation was accepted, but a claimed callback or deferred payload
+    /// reclamation is still in flight. The callback cannot restart itself.
+    /// This result does not permit the caller to release borrowed resources.
+    CancellationDeferred,
+    /// No registration remains in the base for this handle. Another caller
+    /// may still be reclaiming a removed payload; this is not a reclamation fence.
+    AlreadyCompleted,
 }
 
 pub(crate) struct KernelTimerEntry {
@@ -265,6 +294,7 @@ impl KernelTimerExecution {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ExecutingKernelTimer {
     identity: NonZeroU64,
+    hard: bool,
     disposition: ExecutingKernelTimerDisposition,
 }
 
@@ -338,20 +368,29 @@ impl KernelTimerQueue {
         Ok(handle)
     }
 
-    pub(crate) fn cancel(&mut self, handle: KernelTimerHandle) -> Option<KernelTimerEntry> {
+    pub(crate) fn cancel(
+        &mut self,
+        handle: KernelTimerHandle,
+    ) -> (KernelTimerCancelOutcome, Option<KernelTimerEntry>) {
         if let Some(index) = self
             .active
             .iter()
             .position(|entry| entry.identity() == handle.identity())
         {
-            return Some(self.active.remove(index));
+            return (
+                KernelTimerCancelOutcome::Cancelled,
+                Some(self.active.remove(index)),
+            );
         }
         if let Some(index) = self
             .inactive
             .iter()
             .position(|entry| entry.identity() == handle.identity())
         {
-            return Some(self.inactive.remove(index));
+            return (
+                KernelTimerCancelOutcome::Cancelled,
+                Some(self.inactive.remove(index)),
+            );
         }
         let removed = self
             .expired
@@ -359,7 +398,7 @@ impl KernelTimerQueue {
             .position(|entry| entry.identity() == handle.identity())
             .map(|index| self.expired.remove(index));
         if removed.is_some() {
-            return removed;
+            return (KernelTimerCancelOutcome::Cancelled, removed);
         }
         if let Some(executing) = self
             .executing
@@ -367,8 +406,16 @@ impl KernelTimerQueue {
             .find(|entry| entry.identity == handle.identity())
         {
             executing.disposition = ExecutingKernelTimerDisposition::Destroy;
+            return (KernelTimerCancelOutcome::CancellationDeferred, None);
         }
-        None
+        if self
+            .completed
+            .iter()
+            .any(|entry| entry.identity() == handle.identity())
+        {
+            return (KernelTimerCancelOutcome::CancellationDeferred, None);
+        }
+        (KernelTimerCancelOutcome::AlreadyCompleted, None)
     }
 
     pub(crate) fn arm_hard(
@@ -389,7 +436,7 @@ impl KernelTimerQueue {
         if let Some(executing) = self
             .executing
             .iter_mut()
-            .find(|entry| entry.identity == handle.identity())
+            .find(|entry| entry.identity == handle.identity() && entry.hard)
             && executing.disposition != ExecutingKernelTimerDisposition::Destroy
         {
             // Like hrtimer_start() racing a running callback, task context
@@ -430,7 +477,7 @@ impl KernelTimerQueue {
         if let Some(executing) = self
             .executing
             .iter_mut()
-            .find(|entry| entry.identity == handle.identity())
+            .find(|entry| entry.identity == handle.identity() && entry.hard)
         {
             if executing.disposition != ExecutingKernelTimerDisposition::Destroy {
                 executing.disposition = ExecutingKernelTimerDisposition::Disarm;
@@ -486,6 +533,7 @@ impl KernelTimerQueue {
         entry.expire(now);
         self.executing.push(ExecutingKernelTimer {
             identity: entry.identity(),
+            hard: entry.is_hard(),
             disposition: ExecutingKernelTimerDisposition::Continue,
         });
         Some(KernelTimerExecution { entry })
@@ -498,6 +546,7 @@ impl KernelTimerQueue {
         let entry = self.expired.remove(0);
         self.executing.push(ExecutingKernelTimer {
             identity: entry.identity(),
+            hard: entry.is_hard(),
             disposition: ExecutingKernelTimerDisposition::Continue,
         });
         Some(KernelTimerExecution { entry })
@@ -668,6 +717,24 @@ mod tests {
     }
 
     #[test]
+    fn hard_operations_reject_executing_soft_timer_without_changing_restart() {
+        let entry = KernelTimerEntry::new_restartable(
+            deadline(10),
+            Box::new(|_| KernelTimerAction::Rearm(deadline(20))),
+        )
+        .unwrap();
+        let mut queue = KernelTimerQueue::new(1);
+        let handle = queue.insert(CpuId::new(0), entry).unwrap();
+        queue.expire_due_soft(instant(10), 1);
+        let mut execution = queue.claim_expired().unwrap();
+        assert!(!queue.arm_hard(handle, deadline(30)));
+        assert_eq!(queue.disarm_hard(handle), None);
+        let action = execution.invoke_soft();
+        assert!(queue.complete_soft_execution(execution, action).is_none());
+        assert_eq!(queue.next_soft_deadline(), Some(deadline(20)));
+    }
+
+    #[test]
     fn restartable_timer_reuses_identity_until_cancelled() {
         let invocations = Arc::new(AtomicUsize::new(0));
         let callback_invocations = Arc::clone(&invocations);
@@ -695,7 +762,7 @@ mod tests {
         assert_eq!(queue.next_soft_deadline(), Some(deadline(30)));
         assert_eq!(invocations.load(Ordering::Relaxed), 2);
 
-        assert!(queue.cancel(handle).is_some());
+        assert!(queue.cancel(handle).1.is_some());
         assert!(!queue.has_active_work());
     }
 
@@ -711,10 +778,17 @@ mod tests {
         assert_eq!(queue.expire_due_soft(instant(10), 1).expired(), 1);
         let mut execution = queue.claim_expired().unwrap();
 
-        assert!(queue.cancel(handle).is_none());
+        assert_eq!(
+            queue.cancel(handle).0,
+            KernelTimerCancelOutcome::CancellationDeferred
+        );
         let action = execution.invoke_soft();
         assert!(queue.complete_soft_execution(execution, action).is_some());
         assert!(!queue.has_active_work());
+        assert_eq!(
+            queue.cancel(handle).0,
+            KernelTimerCancelOutcome::AlreadyCompleted
+        );
     }
 
     #[test]
@@ -740,7 +814,7 @@ mod tests {
         assert!(queue.complete_hard_execution(execution, action));
         assert_eq!(invocations.load(Ordering::Relaxed), 1);
         assert!(queue.has_completed());
-        assert!(queue.cancel(handle).is_none());
+        assert!(queue.cancel(handle).1.is_none());
 
         drop(queue.claim_completed());
         assert!(!queue.has_active_work());
@@ -773,7 +847,7 @@ mod tests {
         };
         assert!(!queue.complete_hard_execution(execution, action));
         assert!(queue.has_inactive());
-        assert!(queue.cancel(handle).is_some());
+        assert!(queue.cancel(handle).1.is_some());
         assert!(!queue.has_active_work());
     }
 

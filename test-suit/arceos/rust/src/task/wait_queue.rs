@@ -195,7 +195,10 @@ fn test_wake_before_admission() {
     )
     .unwrap();
     let handle = prepared.thread_handle();
-    scheduler::set_thread_affinity(handle.id(), cpu0).unwrap();
+    scheduler::request_thread_affinity(handle.id(), cpu0)
+        .unwrap()
+        .wait()
+        .unwrap();
     assert_eq!(handle.state(), ThreadState::New);
     handle.wake_handle().wake();
     assert_eq!(handle.state(), ThreadState::New);

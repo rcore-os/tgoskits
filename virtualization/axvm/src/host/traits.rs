@@ -55,9 +55,21 @@ pub trait HostTime {
     fn monotonic_time(&self) -> Duration;
 }
 
+/// Completion state of non-blocking host timer cancellation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostTimerCancelOutcome {
+    /// Registration removed and payload reclaimed.
+    Cancelled,
+    /// Accepted, but callback execution or reclamation is still in flight.
+    CancellationDeferred,
+    /// No live registration remains.
+    AlreadyCompleted,
+}
+
 /// Typed host deadline capability used by AxVM architectural and device timers.
 pub trait HostTimer {
     type TimerHandle: Copy + Send + Sync + 'static;
+    type HardTimerHandle: Copy + Send + Sync + Into<Self::TimerHandle> + 'static;
 
     fn register_timer(
         &self,
@@ -84,15 +96,15 @@ pub trait HostTimer {
         &self,
         deadline: Duration,
         callback: Box<dyn FnMut(Duration) -> HostHardTimerAction + Send + 'static>,
-    ) -> AxVmResult<Self::TimerHandle>;
+    ) -> AxVmResult<Self::HardTimerHandle>;
 
     #[cfg(target_arch = "aarch64")]
-    fn arm_hard_timer(&self, handle: Self::TimerHandle, deadline: Duration) -> AxVmResult;
+    fn arm_hard_timer(&self, handle: Self::HardTimerHandle, deadline: Duration) -> AxVmResult;
 
     #[cfg(target_arch = "aarch64")]
-    fn disarm_hard_timer(&self, handle: Self::TimerHandle) -> AxVmResult;
+    fn disarm_hard_timer(&self, handle: Self::HardTimerHandle) -> AxVmResult;
 
-    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<bool>;
+    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<HostTimerCancelOutcome>;
 }
 
 /// Host CPU topology and affinity operations.

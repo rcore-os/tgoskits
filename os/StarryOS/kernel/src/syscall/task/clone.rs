@@ -292,7 +292,7 @@ impl CloneArgs {
             return Err(StarryError::OperationNotPermitted);
         }
         let (child_policy, child_reset_on_fork) =
-            fork_schedule_policy(curr.policy(), curr.reset_on_fork())?;
+            fork_schedule_policy(curr.base_policy(), curr.reset_on_fork())?;
         let child_nice = match child_policy {
             ax_std::os::arceos::task::SchedulePolicy::Fair { nice, .. } => i32::from(nice.get()),
             _ => curr_thread.nice(),

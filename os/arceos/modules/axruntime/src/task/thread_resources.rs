@@ -67,12 +67,7 @@ pub(super) fn create_idle_resources() -> ThreadResources {
         guard_size,
     })
     .unwrap_or_else(|status| panic!("failed to allocate idle stack: {status:?}"));
-    let tls = allocate_runtime_tls(TlsRequest {
-        template_start: 0,
-        initialized_size: 0,
-        total_size: 0,
-        alignment: 1,
-    });
+    let tls = allocate_runtime_tls();
     let tls = if tls.status == RuntimeStatus::Success {
         assert_ne!(
             tls.handle, 0,
@@ -110,12 +105,7 @@ pub(super) fn create_idle_resources() -> ThreadResources {
 }
 
 pub(super) fn create_bootstrap_resources() -> Result<ThreadResources, TaskError> {
-    let tls_result = allocate_runtime_tls(TlsRequest {
-        template_start: 0,
-        initialized_size: 0,
-        total_size: 0,
-        alignment: 1,
-    });
+    let tls_result = allocate_runtime_tls();
     let tls = match (tls_result.status, tls_result.handle) {
         (RuntimeStatus::Success, 0) => return Err(TaskError::InvalidRuntimeHandle),
         (RuntimeStatus::Success, handle) => {
@@ -190,7 +180,7 @@ pub(super) trait ThreadResourceBackend {
 
     fn deallocate_stack(&mut self, stack: StackHandle) -> RuntimeStatus;
 
-    fn allocate_tls(&mut self, request: TlsRequest) -> RuntimeHandleResult;
+    fn allocate_kernel_tls(&mut self) -> RuntimeHandleResult;
 
     fn deallocate_tls(&mut self, tls: TlsHandle) -> RuntimeStatus;
 
@@ -257,8 +247,8 @@ impl ThreadResourceBackend for RuntimeThreadResourceBackend {
         deallocate_runtime_stack(stack)
     }
 
-    fn allocate_tls(&mut self, request: TlsRequest) -> RuntimeHandleResult {
-        allocate_runtime_tls(request)
+    fn allocate_kernel_tls(&mut self) -> RuntimeHandleResult {
+        allocate_runtime_tls()
     }
 
     fn deallocate_tls(&mut self, tls: TlsHandle) -> RuntimeStatus {
@@ -297,12 +287,7 @@ pub(super) fn create_thread_resources_with(
             TaskError::InvalidRuntimeHandle,
         ));
     }
-    let tls_result = backend.allocate_tls(TlsRequest {
-        template_start: 0,
-        initialized_size: 0,
-        total_size: 0,
-        alignment: 1,
-    });
+    let tls_result = backend.allocate_kernel_tls();
     let tls = match (tls_result.status, tls_result.handle) {
         (RuntimeStatus::Success, 0) => {
             return Err(rollback_thread_resource_creation(

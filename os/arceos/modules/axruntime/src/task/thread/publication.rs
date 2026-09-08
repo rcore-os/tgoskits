@@ -139,9 +139,7 @@ fn publish_prepared_thread(
     system: &'static TaskSystem,
     handle: ThreadHandle,
 ) -> Result<ThreadHandle, TaskError> {
-    let result = system.make_ready(handle.id()).and_then(|()| {
-        with_current_cpu_local_mut_owner(|cpu| system.place_ready(cpu, handle.id()))
-    });
+    let result = with_current_cpu_local_mut_owner(|cpu| system.start_thread(cpu, handle.id()));
     if let Err(error) = result {
         cleanup_failed_thread(system, handle);
         return Err(error);

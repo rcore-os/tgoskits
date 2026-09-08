@@ -450,8 +450,8 @@ impl_task_runtime! {
             );
         }
 
-        fn allocate_tls(_request: TlsRequest) -> RuntimeHandleResult {
-            allocate_runtime_tls(_request)
+        fn allocate_kernel_tls() -> RuntimeHandleResult {
+            allocate_runtime_tls()
         }
 
         fn deallocate_tls(_tls: TlsHandle) {

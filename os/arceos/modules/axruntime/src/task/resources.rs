@@ -4,9 +4,7 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use ax_task::runtime::{
-    RuntimeHandleResult, RuntimeStatus, StackHandle, StackRequest, TlsHandle, TlsRequest,
-};
+use ax_task::runtime::{RuntimeHandleResult, RuntimeStatus, StackHandle, StackRequest, TlsHandle};
 
 #[cfg(feature = "paging")]
 use super::PAGE_SIZE;
@@ -134,7 +132,7 @@ pub(super) fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
     RuntimeStatus::Success
 }
 
-pub(super) fn allocate_runtime_tls(_request: TlsRequest) -> RuntimeHandleResult {
+pub(super) fn allocate_runtime_tls() -> RuntimeHandleResult {
     #[cfg(feature = "tls")]
     {
         let tls = Box::new(RuntimeTls {

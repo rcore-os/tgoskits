@@ -97,7 +97,7 @@ cfg_task! {
             "read current task identity",
         )?;
         let policy = task_result(
-            ax_runtime::task::thread_policy(thread),
+            ax_runtime::task::thread_base_policy(thread),
             "read current scheduling policy",
         )?;
         let SchedulePolicy::Fair { mode, .. } = policy else {

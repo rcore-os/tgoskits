@@ -376,11 +376,14 @@ pub trait TaskRuntime {
     /// polling retry protocol.
     fn deallocate_stack(stack: StackHandle);
 
-    /// Allocates a TLS area satisfying `request`.
+    /// Allocates TLS for the runtime's fixed kernel-image template.
+    ///
+    /// Template layout, initialization, and alignment belong to the runtime.
+    /// This operation does not allocate arbitrary application TLS.
     ///
     /// On success, `handle` must be non-zero and uniquely identify a live TLS
     /// allocation accepted by [`Self::deallocate_tls`] until ownership moves.
-    fn allocate_tls(request: TlsRequest) -> RuntimeHandleResult;
+    fn allocate_kernel_tls() -> RuntimeHandleResult;
 
     /// Releases a TLS area after its execution context has been destroyed.
     ///

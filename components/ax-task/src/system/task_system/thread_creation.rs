@@ -206,14 +206,6 @@ impl TaskSystem {
         Ok(ThreadHandle::from_core(core))
     }
 
-    /// Publishes a new or waking thread as Linux-style `TASK_RUNNING`.
-    pub fn make_ready(&self, thread: ThreadId) -> Result<(), TaskError> {
-        let state = self.state.lock();
-        let record = state.thread_record(thread)?;
-        let mut sched = record.sched.lock();
-        sched.transition(&record.core, ThreadState::Running)
-    }
-
     /// Performs the initial runnable transition before the owner CPU is online.
     ///
     /// # Safety

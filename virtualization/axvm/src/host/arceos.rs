@@ -94,6 +94,7 @@ impl HostTime for ArceOsHost {
 
 impl HostTimer for ArceOsHost {
     type TimerHandle = runtime_task::KernelTimerHandle;
+    type HardTimerHandle = runtime_task::HardKernelTimerHandle;
 
     fn register_timer(
         &self,
@@ -134,7 +135,7 @@ impl HostTimer for ArceOsHost {
         &self,
         deadline: Duration,
         mut callback: Box<dyn FnMut(Duration) -> HostHardTimerAction + Send + 'static>,
-    ) -> AxVmResult<Self::TimerHandle> {
+    ) -> AxVmResult<Self::HardTimerHandle> {
         let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
         let callback = unsafe {
             // SAFETY: the caller owns the callback's hard-IRQ proof. This
@@ -157,21 +158,31 @@ impl HostTimer for ArceOsHost {
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn arm_hard_timer(&self, handle: Self::TimerHandle, deadline: Duration) -> AxVmResult {
+    fn arm_hard_timer(&self, handle: Self::HardTimerHandle, deadline: Duration) -> AxVmResult {
         let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
         runtime_task::arm_hard_kernel_timer(handle, deadline)
             .map_err(|error| crate::AxVmError::host("arm hard host timer", error))
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn disarm_hard_timer(&self, handle: Self::TimerHandle) -> AxVmResult {
+    fn disarm_hard_timer(&self, handle: Self::HardTimerHandle) -> AxVmResult {
         runtime_task::disarm_hard_kernel_timer(handle)
             .map_err(|error| crate::AxVmError::host("disarm hard host timer", error))
     }
 
-    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<bool> {
+    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<super::HostTimerCancelOutcome> {
         runtime_task::cancel_kernel_timer(handle)
-            .map(|outcome| matches!(outcome, runtime_task::KernelTimerCancelOutcome::Cancelled))
+            .map(|outcome| match outcome {
+                runtime_task::KernelTimerCancelOutcome::Cancelled => {
+                    super::HostTimerCancelOutcome::Cancelled
+                }
+                runtime_task::KernelTimerCancelOutcome::CancellationDeferred => {
+                    super::HostTimerCancelOutcome::CancellationDeferred
+                }
+                runtime_task::KernelTimerCancelOutcome::AlreadyCompleted => {
+                    super::HostTimerCancelOutcome::AlreadyCompleted
+                }
+            })
             .map_err(|error| crate::AxVmError::host("cancel host timer", error))
     }
 }

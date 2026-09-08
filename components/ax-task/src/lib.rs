@@ -49,7 +49,7 @@ pub use system::*;
 pub use thread::*;
 pub use thread_start::*;
 pub use timer::{
-    HardKernelTimerAction, HardKernelTimerCallback, KernelTimerAction, KernelTimerCancelOutcome,
-    KernelTimerHandle,
+    HardKernelTimerAction, HardKernelTimerCallback, HardKernelTimerHandle, KernelTimerAction,
+    KernelTimerCancelOutcome, KernelTimerHandle,
 };
 pub use wait_queue::*;

@@ -5,7 +5,7 @@ use std::{
         modules::ax_hal::percpu::this_cpu_id,
         task::{
             CpuSet, FairMode, Nice, RtPriority, SchedulePolicy, ThreadId, current_thread_id,
-            set_current_thread_affinity, set_thread_policy, thread_policy,
+            set_current_thread_affinity, set_thread_policy, thread_base_policy,
         },
     },
     sync::{
@@ -219,9 +219,9 @@ fn promoted_fifo_keeps_running_after_one_period() -> crate::TestResult {
             worker_id.store(current.as_u64(), Ordering::Release);
             let fifo =
                 SchedulePolicy::fifo(RtPriority::new(20).expect("priority 20 must be valid"));
-            if thread_policy(current) != Ok(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+            if thread_base_policy(current) != Ok(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
                 || set_thread_policy(current, fifo).is_err()
-                || thread_policy(current) != Ok(fifo)
+                || thread_base_policy(current) != Ok(fifo)
             {
                 promotion_failed.store(true, Ordering::Release);
                 return;

@@ -3,7 +3,7 @@ use std::{
         api::task::ax_set_current_priority,
         task::{
             FairMode, Nice, RtPriority, SchedulePolicy, current_thread_id, set_thread_policy,
-            thread_policy,
+            thread_base_policy,
         },
     },
     sync::Arc,
@@ -42,7 +42,7 @@ impl SchedulerCase {
                 .expect("failed to set test thread scheduling policy"),
         }
         assert_eq!(
-            thread_policy(current),
+            thread_base_policy(current),
             Ok(expected),
             "test thread did not enter the selected scheduling policy"
         );

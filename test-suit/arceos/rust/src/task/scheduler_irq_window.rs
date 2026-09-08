@@ -7,8 +7,8 @@ use std::{
             ax_runtime::task::{
                 CpuId, CpuSet, DEFAULT_BATCH_LIMIT, FairMode, Nice, RtPriority, SchedulePolicy,
                 ThreadId, ThreadState, cpu_topology_len, current_thread_id,
-                qperf_runtime_scheduler_metrics_snapshot, set_thread_affinity, set_thread_policy,
-                thread_handle,
+                qperf_runtime_scheduler_metrics_snapshot, request_thread_affinity,
+                set_thread_policy, thread_handle,
             },
         },
     },
@@ -95,8 +95,11 @@ pub fn run() -> crate::TestResult {
                 hint::spin_loop();
             }
             for worker in worker_ids {
-                set_thread_affinity(worker, cpu1.clone())
-                    .expect("remote affinity update must publish owner work");
+                // This case deliberately leaves reconciliation to IRQ return.
+                drop(
+                    request_thread_affinity(worker, cpu1.clone())
+                        .expect("remote affinity update must publish owner work"),
+                );
             }
             owner_work_published.store(true, Ordering::Release);
         })

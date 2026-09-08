@@ -70,7 +70,7 @@ impl ThreadResourceBackend for InjectedResourceBackend {
         }
     }
 
-    fn allocate_tls(&mut self, _request: TlsRequest) -> RuntimeHandleResult {
+    fn allocate_kernel_tls(&mut self) -> RuntimeHandleResult {
         self.events.push(ResourceEvent::AllocateTls);
         match self.failure {
             InjectedResourceFailure::Tls | InjectedResourceFailure::StackRollback => {

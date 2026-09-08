@@ -1076,6 +1076,51 @@ impl TaskSystem {
         WakeResult::Notified
     }
 
+    /// Commits New -> Running and owner-local admission under one task lock.
+    pub(in crate::system::task_system) fn start_owner_thread(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+    ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_online(&cpu)?;
+        let mut guard = core.sched().lock();
+        let (sched, irq_owner) = guard.split_irq_owner();
+        if sched.lifecycle.state() != ThreadState::New {
+            return Err(TaskError::NotReady);
+        }
+        if !sched.affinity.affinity.contains(cpu.owner()) {
+            return Err(TaskError::InvalidCpu(cpu.owner().as_u32()));
+        }
+        sched.transition(&core, ThreadState::Running)?;
+        // All fallible admission checks precede the lifecycle publication.
+        // The task lock keeps affinity and lifecycle fixed through enqueue.
+        let commit = self
+            .enqueue_owner_thread_locked(
+                cpu.as_mut(),
+                &core,
+                sched,
+                &irq_owner,
+                EnqueueReason::Wake,
+            )
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5251_1211, core.id().as_u64() as usize)
+            });
+        let completed = Self::complete_affinity_if_satisfied_locked(&core, sched);
+        drop(guard);
+        if completed {
+            core.notify_affinity_waiters();
+        }
+        self.finish_owner_enqueue(
+            cpu,
+            EnqueueReason::Wake,
+            commit.reschedule,
+            commit.scheduler_deadline_refresh_required,
+            Some(commit.effective_policy),
+            commit.push_class,
+        );
+        Ok(())
+    }
+
     pub(in crate::system::task_system) fn enqueue_owner_thread(
         &self,
         mut cpu: Pin<&mut CpuLocal>,

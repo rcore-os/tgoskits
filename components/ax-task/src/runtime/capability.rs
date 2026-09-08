@@ -938,20 +938,6 @@ pub struct ContextThreadBinding {
     pub publication: CurrentThreadPublication,
 }
 
-/// Allocation requirements for a thread-local storage area.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub struct TlsRequest {
-    /// TLS template start, or zero when no template is required.
-    pub template_start: usize,
-    /// Bytes copied from the template.
-    pub initialized_size: usize,
-    /// Total allocation size including zero-filled bytes.
-    pub total_size: usize,
-    /// Required allocation alignment.
-    pub alignment: usize,
-}
-
 /// Allocation-free scheduler switch diagnostic record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]

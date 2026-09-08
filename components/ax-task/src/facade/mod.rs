@@ -276,8 +276,8 @@ pub fn thread_handle(thread: ThreadId) -> Result<ThreadHandle, TaskError> {
 }
 
 /// Returns a thread scheduling policy snapshot.
-pub fn thread_policy(thread: ThreadId) -> Result<SchedulePolicy, TaskError> {
-    runtime_task_system()?.thread_policy(thread)
+pub fn thread_base_policy(thread: ThreadId) -> Result<SchedulePolicy, TaskError> {
+    runtime_task_system()?.thread_base_policy(thread)
 }
 
 /// Returns a cumulative charged-runtime snapshot for a live thread.
@@ -321,10 +321,16 @@ pub fn thread_affinity(thread: ThreadId) -> Result<CpuSet, TaskError> {
     runtime_task_system()?.thread_affinity(thread)
 }
 
-/// Updates a thread CPU affinity after Deadline root-domain validation.
-pub fn set_thread_affinity(thread: ThreadId, affinity: CpuSet) -> Result<(), TaskError> {
+/// Requests an affinity change and returns its owner-runqueue completion.
+///
+/// Dropping the completion leaves the request asynchronous. Use `wait()` or
+/// [`set_thread_affinity_and_wait`] when placement must finish before return.
+pub fn request_thread_affinity(
+    thread: ThreadId,
+    affinity: CpuSet,
+) -> Result<crate::ThreadAffinityChange, TaskError> {
     validate_task_context()?;
-    runtime_task_system()?.set_affinity(thread, affinity)
+    runtime_task_system()?.request_thread_affinity(thread, affinity)
 }
 
 /// Updates a remote thread's affinity and waits for owner-runqueue completion.
@@ -340,7 +346,7 @@ pub fn set_thread_affinity_and_wait(thread: ThreadId, affinity: CpuSet) -> Resul
     }
     validate_blocking_context()?;
     runtime_task_system()?
-        .request_affinity(thread, affinity)?
+        .request_thread_affinity(thread, affinity)?
         .wait()
 }
 

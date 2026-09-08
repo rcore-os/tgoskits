@@ -209,7 +209,12 @@ impl TaskSystem {
         self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::Enqueue)
     }
 
-    /// Places a newly ready thread on an allowed active CPU.
+    /// Admits a new thread and commits its placement on an allowed active CPU.
+    ///
+    /// Rejected admission does not change lifecycle or placement. Success
+    /// guarantees either local
+    /// runqueue admission or an owned remote activation delivery. There is no
+    /// public state-only runnable transition to complete in a second call.
     ///
     /// Ordinary fair work is placed on the least-loaded allowed CPU, including
     /// its current non-idle dispatch and migrations not yet consumed by the
@@ -220,9 +225,9 @@ impl TaskSystem {
     /// # Errors
     ///
     /// Returns an error when the source CPU is offline, the thread is not a
-    /// unique unqueued runnable thread, no allowed CPU is online, or local timer
-    /// programming fails.
-    pub fn place_ready(
+    /// new unqueued thread, no allowed CPU is online, or remote delivery
+    /// cannot be reserved. Failures after admission are runtime invariants.
+    pub fn start_thread(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         thread: ThreadId,
@@ -233,8 +238,8 @@ impl TaskSystem {
             let state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
             let record = state.thread_record(thread)?;
-            let sched = record.sched.lock();
-            if sched.lifecycle.state() != ThreadState::Running {
+            let mut sched = record.sched.lock();
+            if sched.lifecycle.state() != ThreadState::New {
                 return Err(TaskError::NotReady);
             }
             if sched.placement.queued_cpu().is_some()
@@ -267,10 +272,11 @@ impl TaskSystem {
             if target == owner {
                 drop(sched);
                 drop(state);
-                self.enqueue_owner_thread(cpu.as_mut(), core, EnqueueReason::Wake)?;
+                self.start_owner_thread(cpu.as_mut(), core)?;
                 None
             } else {
                 let carrier = self.prepare_owner_migration(&core, owner, target)?;
+                sched.transition(&core, ThreadState::Running)?;
                 sched.placement.begin_remote_wakeup(target);
                 record.core.set_wake_cpu_hint(target);
                 drop(sched);
@@ -282,6 +288,10 @@ impl TaskSystem {
             return Ok(());
         }
         self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::Placement)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5251_1210, thread.as_u64() as usize)
+            });
+        Ok(())
     }
 
     /// Removes a ready thread from its owner run queue for migration or update.

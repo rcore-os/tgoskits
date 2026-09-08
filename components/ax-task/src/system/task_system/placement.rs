@@ -124,7 +124,7 @@ impl TaskSystem {
     }
 
     /// Publishes one affinity generation and returns its completion owner.
-    pub fn request_affinity(
+    pub fn request_thread_affinity(
         &self,
         thread: ThreadId,
         affinity: CpuSet,
@@ -194,11 +194,6 @@ impl TaskSystem {
         }
         publication?;
         Ok(ThreadAffinityChange::new(core, generation))
-    }
-
-    /// Changes thread affinity after validating Deadline root-domain coverage.
-    pub fn set_affinity(&self, thread: ThreadId, affinity: CpuSet) -> Result<(), TaskError> {
-        self.request_affinity(thread, affinity).map(drop)
     }
 
     /// Updates the owner CPU's running thread without publishing a self inbox.

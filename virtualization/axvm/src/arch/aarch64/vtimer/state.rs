@@ -19,7 +19,7 @@ use crate::{
     host::{HostCpu, HostHardTimerAction, HostTime, HostTimer, default_host},
 };
 
-type KernelTimerHandle = <crate::host::arceos::ArceOsHost as HostTimer>::TimerHandle;
+type HardKernelTimerHandle = <crate::host::arceos::ArceOsHost as HostTimer>::HardTimerHandle;
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
@@ -31,7 +31,7 @@ struct HostTimerActivation {
 
 #[derive(Clone, Copy)]
 struct ScheduledWaitTimer {
-    handle: KernelTimerHandle,
+    handle: HardKernelTimerHandle,
     owner_cpu: usize,
     owner_thread: crate::host::task::ThreadId,
     epoch: u64,
@@ -449,8 +449,8 @@ mod tests {
     }
 }
 
-fn cancel_wait_timer(handle: KernelTimerHandle) {
-    if let Err(error) = default_host().cancel_timer(handle) {
+fn cancel_wait_timer(handle: HardKernelTimerHandle) {
+    if let Err(error) = default_host().cancel_timer(handle.into()) {
         warn!("failed to cancel blocked-vCPU architectural timer: {error}");
     }
 }
