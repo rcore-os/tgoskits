@@ -31,7 +31,7 @@ impl CachedFileRegistry {
     }
 
     #[cfg(feature = "ext4")]
-    fn release_unlinked(&self, file: &Arc<CachedFileShared>) {
+    fn release(&self, file: &Arc<CachedFileShared>) {
         let removed = {
             let mut registry = self.files.write();
             registry
@@ -59,10 +59,10 @@ impl CachedFileRegistry {
             // Unlink publishes this flag before taking the registry lock.
             // Recheck under that same lock: either restoration observes it,
             // or unlink subsequently removes the restored registration.
-            if file.unlinked.load(Ordering::Acquire) {
+            if file.unlinked.load(Ordering::Acquire) || file.retired.load(Ordering::Acquire) {
                 drop(registry);
                 drop(file);
-            } else {
+            } else if !registry.iter().any(|cached| Arc::ptr_eq(cached, &file)) {
                 registry.push(file);
             }
         }
@@ -140,22 +140,36 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
 
 pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
     prune_cached_files();
-    GLOBAL_CACHED_FILES.files.write().push(file.clone());
+    let mut registry = GLOBAL_CACHED_FILES.files.write();
+    if !registry.iter().any(|cached| Arc::ptr_eq(cached, file)) {
+        registry.push(file.clone());
+    }
 }
 
-/// Drops the reclaim registry's ownership after the backing inode is reaped.
+/// Drops reclaim ownership after inode reaping or final mount-cache writeback.
 ///
 /// The removed `Arc` is dropped only after releasing the registry spin lock:
 /// destroying a cached file can take its sleepable page-cache lock.
 #[cfg(feature = "ext4")]
-pub(super) fn release_unlinked_cached_file(file: &Arc<CachedFileShared>) {
-    GLOBAL_CACHED_FILES.release_unlinked(file);
+pub(super) fn release_cached_file(file: &Arc<CachedFileShared>) {
+    GLOBAL_CACHED_FILES.release(file);
 }
 
 pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
+    sync_cached_files(None)
+}
+
+fn sync_cached_files(filesystem: Option<&dyn axfs_ng_vfs::FilesystemOps>) -> VfsResult<()> {
     let files = GLOBAL_CACHED_FILES.files.read().clone();
     let mut first_error = None;
     for file in &files {
+        if let Some(filesystem) = filesystem
+            && !file.backing.as_ref().is_some_and(|backing| {
+                super::filesystem_key(backing.filesystem()) == super::filesystem_key(filesystem)
+            })
+        {
+            continue;
+        }
         if let Err(error) = file.writeback_dirty_for_global_sync()
             && first_error.is_none()
         {
@@ -166,6 +180,11 @@ pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
     drop(files);
     prune_cached_files();
     first_error.map_or(Ok(()), Err)
+}
+
+/// Writes back cached files belonging to one filesystem before its unmount.
+pub fn sync_filesystem_cached_files(filesystem: &dyn axfs_ng_vfs::FilesystemOps) -> VfsResult<()> {
+    sync_cached_files(Some(filesystem))
 }
 
 fn prune_cached_files() {
@@ -343,22 +362,26 @@ mod tests {
 
     #[cfg(feature = "ext4")]
     #[test]
-    fn registry_does_not_restore_unlinked_cached_file_after_pruning() {
-        // Use an isolated registry: concurrent global sync may legitimately
-        // retain a temporary owner after unlink has removed the registration.
-        let registry = CachedFileRegistry::new();
-        let cached = Arc::new(CachedFileShared::new_unbounded(0));
-        let lifetime = Arc::downgrade(&cached);
-        registry.files.write().push(cached.clone());
-        registry.prune_with(|| {
-            cached.mark_unlinked();
-            registry.release_unlinked(&cached);
-        });
-        drop(cached);
-
-        assert!(
-            lifetime.upgrade().is_none(),
-            "pruning must not restore an unlinked inode's cache ownership"
-        );
+    fn registry_does_not_restore_retired_cache_owners_after_pruning() {
+        // Force retirement while pruning temporarily owns the registry entries.
+        for unlinked in [true, false] {
+            let registry = CachedFileRegistry::new();
+            let cached = Arc::new(CachedFileShared::new_unbounded(0));
+            let lifetime = Arc::downgrade(&cached);
+            registry.files.write().push(cached.clone());
+            registry.prune_with(|| {
+                if unlinked {
+                    cached.mark_unlinked();
+                } else {
+                    cached.retired.store(true, Ordering::Release);
+                }
+                registry.release(&cached);
+            });
+            drop(cached);
+            assert!(
+                lifetime.upgrade().is_none(),
+                "pruning restored retired cache ownership: unlinked={unlinked}"
+            );
+        }
     }
 }

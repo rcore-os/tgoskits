@@ -44,6 +44,13 @@ pselect03
 pselect03_64
 ptrace02
 ptrace03
+readdir01
+rename03
+rename04
+rename05
+rename07
+rmdir01
+rmdir02
 sched_getaffinity01
 timerfd01
 timerfd02

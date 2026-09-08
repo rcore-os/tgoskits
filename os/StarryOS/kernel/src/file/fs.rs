@@ -149,7 +149,9 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        if let Ok(device) = self.inner.location().entry().downcast::<Device>() {
+        if self.open_flags & linux_raw_sys::general::O_PATH == 0
+            && let Ok(device) = self.inner.location().entry().downcast::<Device>()
+        {
             device.inner().close(self.open_flags & O_EXCL != 0);
         }
     }

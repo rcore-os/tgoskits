@@ -7,7 +7,7 @@ use core::{
 
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference, VfsError};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -112,7 +112,8 @@ fn add_to_fd(
     //   File backend 即不区分 reader / writer），属 IPC 子系统专项。
     //
     // Fixes bug-open-fifo-wronly-no-reader-no-enxio (no-reader case only).
-    if flags & O_NONBLOCK != 0
+    if flags & O_PATH == 0
+        && flags & O_NONBLOCK != 0
         && flags & 0b11 == O_WRONLY
         && let OpenResult::File(ref f) = result
         && let Ok(meta) = f.location().metadata()
@@ -123,15 +124,11 @@ fn add_to_fd(
 
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
+            if flags & O_PATH != 0 {
+                return add_file_like(Arc::new(File::new(file, flags)), flags & O_CLOEXEC != 0);
+            }
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
-                // Block device exclusive open (O_EXCL without O_CREAT).
-                if let Ok(meta) = device.metadata()
-                    && meta.node_type == NodeType::BlockDevice
-                    && flags & O_EXCL != 0
-                {
-                    device.inner().open(true)?;
-                }
                 let inner = device.inner().as_any();
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
                     let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
@@ -186,17 +183,9 @@ fn add_to_fd(
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
-            // Call open() on the final device after /dev/ptmx and /dev/tty
-            // rewrites, so PTY open-count tracking (Tty) pairs the last-fd
-            // close with peer POLLHUP/EOF notification. Block devices already
-            // use the O_EXCL hook above, so skip them to avoid a double open().
+            // Pair one final device open with the last close of the shared file.
             if let Ok(device) = file.location().entry().downcast::<Device>() {
-                let is_block = device
-                    .metadata()
-                    .is_ok_and(|m| m.node_type == NodeType::BlockDevice);
-                if !is_block {
-                    device.inner().open(flags & O_EXCL != 0)?;
-                }
+                device.inner().open(flags & O_EXCL != 0)?;
             }
             let file = Arc::new(File::new(file, flags));
             if let Some(namespace) = mount_table_namespace {
@@ -240,7 +229,7 @@ fn mount_table_namespace(
     };
 
     let task = get_user_task_by_number(tid).ok()?;
-    let fs_context = task.as_thread().clone_scope_item(&FS_CONTEXT);
+    let fs_context = task.as_thread().clone_scope_item(&FS_CONTEXT)?;
     Some(fs_context.lock().mount_namespace().clone())
 }
 
@@ -410,7 +399,9 @@ fn try_open_nsfd(
             Ok(task) => task,
             Err(_) => return Some(Err(StarryError::NotFound)),
         };
-        let fs_context = task.as_thread().clone_scope_item(&FS_CONTEXT);
+        let Some(fs_context) = task.as_thread().clone_scope_item(&FS_CONTEXT) else {
+            return Some(Err(StarryError::NotFound));
+        };
         Some(fs_context.lock().mount_namespace().clone())
     } else {
         None
@@ -1000,5 +991,4 @@ mod tests {
     fn pipe_size_rounding_and_rejection_rules_hold() {
         assert!(super::pipe_size_rounding_and_rejection_rules_hold_for_test());
     }
-
 }

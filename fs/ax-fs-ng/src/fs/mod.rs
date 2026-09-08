@@ -47,6 +47,23 @@ pub fn new_from_handle(dev: Arc<BlockDeviceHandle>, region: BlockRegion) -> VfsR
     new_default(dev, region)
 }
 
+/// Creates an ext4 filesystem using on-demand file I/O.
+///
+/// The filesystem owns `lease` until its final references are released. Device
+/// callers must provide an open lease that keeps the source binding stable;
+/// detaching a mount must not release that lease while files remain open.
+/// I/O and flush errors propagate through the filesystem's block-I/O boundary.
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+pub fn new_from_file<L: Send + 'static>(
+    backend: crate::file::FileBackend,
+    read_only: bool,
+    lease: L,
+) -> VfsResult<Filesystem> {
+    let device = crate::block::file_image::FileImageDevice::new(backend, read_only, lease)?;
+    let region = BlockRegion::from_num_blocks(device.num_blocks());
+    new_ext4(Box::new(device), region)
+}
+
 #[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) fn new_from_handle_with_kind(
     dev: Arc<BlockDeviceHandle>,

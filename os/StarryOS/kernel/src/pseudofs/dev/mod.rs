@@ -21,7 +21,7 @@ mod kmsg;
 mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
-mod r#loop;
+pub(crate) mod r#loop;
 #[cfg(feature = "memtrack")]
 mod memtrack;
 #[cfg(feature = "jpeg")]

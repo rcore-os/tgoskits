@@ -491,6 +491,13 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // shared tables remain alive until their final sharer exits.
     crate::file::close_all_fds();
 
+    // Linux exit_fs() precedes zombie publication. A retained runtime task
+    // must not keep cwd/root references alive after waitpid can observe exit.
+    let retired_fs =
+        thr.with_current_scope_mut(|scope| ax_fs_ng::vfs::FS_CONTEXT.scope_mut(scope).take());
+    // Final mount/device teardown may sleep; leave the pinned scope mutation first.
+    drop(retired_fs);
+
     // Match Linux exit_mm(): every thread leaves its user mm in task context
     // before it retires from the thread group. Consequently ThreadExit::Last
     // proves that all scheduler address-space slots are detached before the

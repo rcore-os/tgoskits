@@ -57,7 +57,7 @@ impl CachedFileShared {
         Ok(())
     }
 
-    #[cfg(feature = "vfs")]
+    #[cfg(any(feature = "vfs", feature = "ext4"))]
     pub(super) fn writeback_dirty_for_global_sync(&self) -> VfsResult<()> {
         let dirty_keys = self.begin_writeback_all_dirty()?;
         if dirty_keys.is_empty() {

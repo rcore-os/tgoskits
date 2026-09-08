@@ -87,17 +87,17 @@ impl UnmountPlan {
         Ok(())
     }
 
-    fn commit_locked(self) -> Result<(), UnmountCommitError> {
+    fn commit_locked(&self) -> Result<(), UnmountCommitError> {
         self.revalidate_locked()?;
         self.detach_targets_locked()
     }
 
-    fn commit_current_locked(self) -> Result<(), UnmountCommitError> {
+    fn commit_current_locked(&self) -> Result<(), UnmountCommitError> {
         self.revalidate_targets_locked()?;
         self.detach_targets_locked()
     }
 
-    fn detach_targets_locked(self) -> Result<(), UnmountCommitError> {
+    fn detach_targets_locked(&self) -> Result<(), UnmountCommitError> {
         for target in &self.targets {
             Mountpoint::detach_from_parent_locked(&target.mountpoint)
                 .map_err(|_| UnmountCommitError::TopologyChanged)?;
@@ -245,9 +245,14 @@ impl Mountpoint {
 
     /// Lazily detach this mountpoint and its complete propagation subtree.
     pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        self.plan_unmount_locked(UnmountKind::Detach)?
-            .commit_current_locked()?;
+        // Keep detached targets alive until after topology exclusion ends:
+        // their final filesystem lease can flush and destroy cached inodes.
+        let plan;
+        {
+            let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            plan = self.plan_unmount_locked(UnmountKind::Detach)?;
+            plan.commit_current_locked()?;
+        }
         Ok(())
     }
 

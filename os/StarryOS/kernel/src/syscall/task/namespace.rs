@@ -77,7 +77,7 @@ impl PreparedUnshare {
                     nsproxy.unshare_mnt();
                 }
             }
-            Some(Arc::new(FsMutex::new(fs_context)))
+            Some(fs_context.into_shared())
         } else {
             None
         };
@@ -96,16 +96,18 @@ impl PreparedUnshare {
             nsproxy,
         } = self;
 
+        let file_table = file_table.map(crate::file::new_file_table_scope);
         if file_table.is_some() || fs_context.is_some() {
-            thread.with_current_scope_mut(|scope| {
-                if let Some(file_table) = file_table {
-                    *FD_TABLE.scope_mut(scope).deref_mut() =
-                        crate::file::new_file_table_scope(file_table);
-                }
-                if let Some(fs_context) = fs_context {
-                    *FS_CONTEXT.scope_mut(scope) = fs_context;
-                }
+            let retired = thread.with_current_scope_mut(|scope| {
+                let files = file_table.map(|replacement| {
+                    core::mem::replace(FD_TABLE.scope_mut(scope).deref_mut(), replacement)
+                });
+                let fs =
+                    fs_context.map(|replacement| FS_CONTEXT.scope_mut(scope).replace(replacement));
+                (files, fs)
             });
+            // Releasing files or the last filesystem reference can perform I/O.
+            drop(retired);
         }
         match (nsproxy, namespace_update) {
             (Some(nsproxy), Some(update)) => update.publish(nsproxy),
@@ -279,7 +281,10 @@ fn setns_via_pidfd(
             .process_identity()
             .live_task()
             .ok_or(StarryError::NoSuchProcess)?;
-        let fs_context = task.as_thread().clone_scope_item(&FS_CONTEXT);
+        let fs_context = task
+            .as_thread()
+            .clone_scope_item(&FS_CONTEXT)
+            .ok_or(StarryError::NoSuchProcess)?;
         Some(fs_context.lock().mount_namespace().clone())
     } else {
         None

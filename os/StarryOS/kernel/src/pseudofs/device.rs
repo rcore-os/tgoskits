@@ -45,6 +45,16 @@ pub enum DeviceMmap {
 
 /// Trait for device operations.
 pub trait DeviceOps: Send + Sync {
+    /// Returns the addressable byte length, independently of stat's size field.
+    fn len(&self) -> VfsResult<u64> {
+        Ok(0)
+    }
+
+    /// Flushes device data and, unless `data_only`, its backing metadata.
+    fn sync(&self, _data_only: bool) -> VfsResult<()> {
+        Err(VfsError::InvalidInput)
+    }
+
     /// Reads data from the device at the specified offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
     /// Writes data to the device at the specified offset.
@@ -145,8 +155,8 @@ impl NodeOps for Device {
 
     fn filesystem(&self) -> &dyn FilesystemOps;
 
-    fn sync(&self, _data_only: bool) -> VfsResult<()> {
-        Err(VfsError::InvalidInput)
+    fn sync(&self, data_only: bool) -> VfsResult<()> {
+        self.ops.sync(data_only)
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
@@ -154,7 +164,7 @@ impl NodeOps for Device {
     }
 
     fn len(&self) -> VfsResult<u64> {
-        Ok(0)
+        self.ops.len()
     }
 
     fn flags(&self) -> NodeFlags {

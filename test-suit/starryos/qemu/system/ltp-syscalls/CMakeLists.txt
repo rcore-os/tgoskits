@@ -1,5 +1,22 @@
 cmake_minimum_required(VERSION 3.20)
-project(ltp-syscalls NONE)
+project(ltp-syscalls C)
+
+# Deterministic coverage for worker teardown required by LTP mount cleanup.
+# This helper runs in the native phase and is not an upstream LTP testcase.
+add_executable(ltp-isolation-exit-fs src/exit_fs_context.c)
+target_compile_options(ltp-isolation-exit-fs PRIVATE -Wall -Wextra -Werror)
+install(TARGETS ltp-isolation-exit-fs RUNTIME DESTINATION usr/bin/starry-test-suit)
+
+if(NOT DEFINED STARRY_STAGING_ROOT)
+    message(FATAL_ERROR "STARRY_STAGING_ROOT must be provided by axbuild")
+endif()
+file(REAL_PATH "${STARRY_STAGING_ROOT}/sbin/mkfs.ext4" LTP_MKFS_EXT4)
+if(NOT EXISTS "${LTP_MKFS_EXT4}")
+    message(FATAL_ERROR "mkfs.ext4 is missing from the staging root")
+endif()
+# Install the executable itself so axbuild also discovers its shared libraries.
+install(PROGRAMS "${LTP_MKFS_EXT4}" DESTINATION sbin RENAME mkfs.ext4)
+install(FILES "${STARRY_STAGING_ROOT}/etc/mke2fs.conf" DESTINATION etc)
 
 set(LTP_SYSCALLS_CASES_FILE "${CMAKE_CURRENT_LIST_DIR}/cases.txt")
 file(STRINGS "${LTP_SYSCALLS_CASES_FILE}" LTP_SYSCALLS_CASES
@@ -33,6 +50,19 @@ foreach(LTP_PASS_CONTRACT IN LISTS LTP_PASS_CONTRACTS)
     set(LTP_MIN_PASSES_${CMAKE_MATCH_1} "${CMAKE_MATCH_2}")
 endforeach()
 
+# A total pass count must not hide a silently omitted filesystem.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/filesystem-passes.txt" LTP_FS_CONTRACTS)
+foreach(LTP_FS_CONTRACT IN LISTS LTP_FS_CONTRACTS)
+    string(STRIP "${LTP_FS_CONTRACT}" LTP_FS_CONTRACT)
+    if(LTP_FS_CONTRACT STREQUAL "" OR LTP_FS_CONTRACT MATCHES "^#")
+        continue()
+    endif()
+    if(NOT LTP_FS_CONTRACT MATCHES "^([A-Za-z0-9_]+) +([A-Za-z0-9_]+) +([1-9][0-9]*)$")
+        message(FATAL_ERROR "invalid LTP filesystem contract: ${LTP_FS_CONTRACT}")
+    endif()
+    string(APPEND LTP_FILESYSTEM_PASSES_${CMAKE_MATCH_1} " ${CMAKE_MATCH_2}:${CMAKE_MATCH_3}")
+endforeach()
+
 set(LTP_SYSCALLS_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${LTP_SYSCALLS_GENERATED_DIR}")
 
@@ -40,6 +70,7 @@ foreach(LTP_CASE_ID IN LISTS LTP_SYSCALLS_CASES)
     if(NOT LTP_CASE_ID MATCHES "^[A-Za-z0-9_]+$")
         message(FATAL_ERROR "invalid LTP testcase id: ${LTP_CASE_ID}")
     endif()
+    set(LTP_FILESYSTEM_PASSES "${LTP_FILESYSTEM_PASSES_${LTP_CASE_ID}}")
     set(LTP_MIN_PASSES 1)
     if(DEFINED LTP_MIN_PASSES_${LTP_CASE_ID})
         set(LTP_MIN_PASSES "${LTP_MIN_PASSES_${LTP_CASE_ID}}")

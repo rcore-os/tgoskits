@@ -224,3 +224,10 @@ perf_event_open03
 alarm02
 alarm05
 alarm06
+readdir01
+rename03
+rename04
+rename05
+rename07
+rmdir01
+rmdir02

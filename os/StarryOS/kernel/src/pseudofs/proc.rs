@@ -1511,7 +1511,10 @@ impl SimpleDirOps for ThreadDir {
                 let task = self.task;
                 SimpleFile::new_regular(fs, move || {
                     let task = require_proc_task(&task)?;
-                    let ctx_arc = task.as_thread().clone_scope_item(&FS_CONTEXT);
+                    let ctx_arc = task
+                        .as_thread()
+                        .clone_scope_item(&FS_CONTEXT)
+                        .ok_or(VfsError::NotFound)?;
                     let ctx = ctx_arc.lock();
                     Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
                 })
@@ -1521,7 +1524,10 @@ impl SimpleDirOps for ThreadDir {
                 let task = self.task;
                 SimpleFile::new_regular(fs, move || {
                     let task = require_proc_task(&task)?;
-                    let ctx_arc = task.as_thread().clone_scope_item(&FS_CONTEXT);
+                    let ctx_arc = task
+                        .as_thread()
+                        .clone_scope_item(&FS_CONTEXT)
+                        .ok_or(VfsError::NotFound)?;
                     let ctx = ctx_arc.lock();
                     Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
                 })

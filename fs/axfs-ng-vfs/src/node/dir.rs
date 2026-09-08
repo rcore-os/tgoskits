@@ -358,7 +358,7 @@ impl DirNode {
         if let Some(entry) = entry
             && let Ok(dir) = entry.as_dir()
         {
-            dir.forget();
+            dir.clear_cached_entries();
         }
     }
 
@@ -712,12 +712,12 @@ impl DirNode {
     }
 
     /// Clears the cache of directory entries & user data, allowing them to be
-    /// released.
-    pub(crate) fn forget(&self) {
+    /// released. This does not unlink backing entries; open locations remain valid.
+    pub fn clear_cached_entries(&self) {
         let children = mem::take(self.cache.lock().deref_mut());
         for (_, child) in children {
             if let Ok(dir) = child.as_dir() {
-                dir.forget();
+                dir.clear_cached_entries();
             }
         }
     }

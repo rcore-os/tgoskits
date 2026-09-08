@@ -129,25 +129,26 @@ impl MountNamespace {
 }
 
 scope_local::scope_local! {
-    /// Task-local filesystem context, defaulting to a clone of [`ROOT_FS_CONTEXT`].
-    pub static FS_CONTEXT: Arc<Mutex<FsContext>> = {
-        let ctx = Arc::new(Mutex::new(
-            ROOT_FS_CONTEXT
-                .get()
-                .expect("Root FS context not initialized")
-                .clone(),
-        ));
-        register_fs_context(&ctx);
-        ctx
-    };
+    /// The active task's filesystem owner. `None` means filesystem teardown
+    /// completed; retained task objects must not keep cwd or mounts alive.
+    pub static FS_CONTEXT: Option<Arc<Mutex<FsContext>>> = Some(
+        ROOT_FS_CONTEXT
+            .get()
+            .expect("Root FS context not initialized")
+            .clone()
+            .into_shared()
+    );
 }
 
 /// Returns an owned reference to the filesystem context of the active scope.
 ///
 /// CPU pinning only covers the `Arc` clone. Callers may therefore acquire the
-/// sleepable filesystem lock after preemption has been restored.
+/// sleepable filesystem lock after preemption has been restored. This entry
+/// must not be used after the task has released its filesystem owner on exit.
 pub fn current_fs_context() -> Arc<Mutex<FsContext>> {
-    FS_CONTEXT.clone_current()
+    FS_CONTEXT
+        .clone_current()
+        .expect("filesystem context already released")
 }
 
 /// A single entry returned by [`FsContext::read_dir`].
@@ -172,6 +173,17 @@ pub struct FsContext {
 }
 
 impl FsContext {
+    /// Publishes a shared context to mount-busy and pivot-root tracking.
+    ///
+    /// Every independently owned context, including an unshared replacement,
+    /// must enter through this method. Clones of the returned Arc share the
+    /// same registration; its weak entry expires after the last owner leaves.
+    pub fn into_shared(self) -> Arc<Mutex<Self>> {
+        let context = Arc::new(Mutex::new(self));
+        register_fs_context(&context);
+        context
+    }
+
     /// Creates a new context with `root_dir` as both root and current directory.
     pub fn new(root_dir: Location) -> Self {
         #[cfg(feature = "vfs")]
@@ -493,8 +505,27 @@ impl FsContext {
 
     /// Removes a directory from the filesystem.
     pub fn remove_dir(&self, path: impl AsRef<Path>) -> VfsResult<()> {
-        let entry = self.resolve_no_follow(path.as_ref())?;
-        if entry.ptr_eq(&self.root_dir) {
+        let path = path.as_ref();
+        // Path components normalize away trailing dots. Linux classifies the
+        // final component before normalization, after resolving its parent.
+        let trimmed = path.as_str().trim_end_matches('/');
+        let last = trimmed.rsplit('/').next().unwrap_or("");
+        if matches!(last, "." | "..") {
+            let parent =
+                trimmed.rsplit_once('/').map_or(
+                    ".",
+                    |(parent, _)| if parent.is_empty() { "/" } else { parent },
+                );
+            self.resolve(parent)?.check_is_dir()?;
+            return Err(if last == "." {
+                VfsError::InvalidInput
+            } else {
+                VfsError::DirectoryNotEmpty
+            });
+        }
+
+        let entry = self.resolve_no_follow(path)?;
+        if entry.ptr_eq(&self.root_dir) || entry.is_root_of_mount() {
             return Err(VfsError::ResourceBusy);
         }
         let dir = entry.entry().as_dir()?;

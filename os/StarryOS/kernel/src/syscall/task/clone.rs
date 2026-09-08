@@ -491,13 +491,13 @@ impl CloneArgs {
         if flags.contains(CloneFlags::FS) {
             FS_CONTEXT
                 .scope_mut(&mut scope)
-                .clone_from(&current_fs_context);
+                .clone_from(&Some(current_fs_context));
         } else {
             let mut fs_context = current_fs_context.lock().clone();
             if flags.contains(CloneFlags::NEWNS) {
                 fs_context.unshare_mount_namespace()?;
             }
-            *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
+            *FS_CONTEXT.scope_mut(&mut scope) = Some(fs_context.into_shared());
         }
 
         let parent_cred = Some(curr_thread.cred());

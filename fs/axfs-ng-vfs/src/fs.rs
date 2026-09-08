@@ -19,6 +19,12 @@ pub struct StatFs {
     pub mount_flags: u32,
 }
 
+/// Shared ownership of a filesystem's mounts, including detached open files.
+///
+/// Implementations may retire filesystem caches on final release. Destruction
+/// can perform blocking I/O and must occur outside mount topology locks.
+pub trait FilesystemMountLease: Send + Sync + core::fmt::Debug {}
+
 /// Trait for filesystem operations
 pub trait FilesystemOps: Send + Sync {
     /// Gets the name of the filesystem
@@ -31,6 +37,12 @@ pub trait FilesystemOps: Send + Sync {
 
     /// Gets the root directory entry of the filesystem
     fn root_dir(&self) -> DirEntry;
+
+    /// Retains mount ownership separately from cached inode references.
+    /// Bind mounts and namespace copies retain the same filesystem lease.
+    fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
+        None
+    }
 
     /// Returns statistics about the filesystem
     fn stat(&self) -> VfsResult<StatFs>;

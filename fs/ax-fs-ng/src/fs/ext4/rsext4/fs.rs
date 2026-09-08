@@ -7,10 +7,9 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{
-    DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsError, VfsResult,
-    path::MAX_NAME_LEN,
+    DirEntry, DirNode, Filesystem, FilesystemMountLease, FilesystemOps, Reference, StatFs,
+    VfsError, VfsResult, WeakDirEntry, path::MAX_NAME_LEN,
 };
 use rsext4::{InodeNumber, MmpIdentity, MountServices};
 
@@ -102,9 +101,16 @@ impl InodeLifetimeTracker {
 pub(crate) struct Ext4State {
     pub ext4: MountedExt4,
     lifetimes: InodeLifetimeTracker,
+    shutdown_attempted: bool,
 }
 
 impl Ext4State {
+    fn unmount(&mut self) -> VfsResult<()> {
+        // An uncertain final MMP CLEAN write must not be retried from Drop.
+        self.shutdown_attempted = true;
+        self.ext4.unmount().map_err(into_vfs_err)
+    }
+
     pub(crate) fn inc_ref(&mut self, ino: InodeNumber) {
         self.lifetimes.inc_ref(ino);
     }
@@ -134,7 +140,51 @@ pub struct Ext4Filesystem {
     self_ref: Weak<Self>,
     inner: Mutex<Ext4State>,
     mmp_worker: MmpWorker,
-    root_dir: LazyInit<DirEntry>,
+    root_dir: Mutex<Option<WeakDirEntry>>,
+    mount_lease: Mutex<Weak<Ext4MountLease>>,
+}
+
+struct Ext4MountLease {
+    filesystem: Arc<Ext4Filesystem>,
+}
+
+impl core::fmt::Debug for Ext4MountLease {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("Ext4MountLease")
+    }
+}
+
+impl FilesystemMountLease for Ext4MountLease {}
+
+impl Drop for Ext4MountLease {
+    fn drop(&mut self) {
+        let lease = self.filesystem.mount_lease.lock();
+        // A new generation may have been published before this destructor
+        // acquired exclusion. In that case it owns the still-live caches.
+        if lease.strong_count() != 0 {
+            return;
+        }
+        if let Err(error) = crate::file::retire_filesystem_cache(&*self.filesystem) {
+            log::error!("failed to retire final ext4 mount cache: {error:?}");
+            // Without the global writeback registry, dentries are the only
+            // remaining dirty-cache owners. Preserve them after an I/O error.
+            #[cfg(not(feature = "vfs"))]
+            return;
+        }
+        // Cached children strongly reference their parents. Clear the tree
+        // only after the last mount (including bind aliases) is gone.
+        let root = self
+            .filesystem
+            .root_dir
+            .lock()
+            .as_ref()
+            .and_then(WeakDirEntry::upgrade);
+        if let Some(root) = root {
+            root.as_dir()
+                .expect("filesystem root directory")
+                .clear_cached_entries();
+        }
+    }
 }
 
 struct MmpWorker {
@@ -184,31 +234,26 @@ impl Ext4Filesystem {
         if ext4.options().readonly {
             warn!("ext4 recovery required a read-only fallback mount");
         }
-        let root_ino = ext4.root_inode();
-
         let fs = Arc::new_cyclic(|self_ref| Self {
             self_ref: self_ref.clone(),
             inner: Mutex::new(Ext4State {
                 ext4,
                 lifetimes: InodeLifetimeTracker::default(),
+                shutdown_attempted: false,
             }),
             mmp_worker: MmpWorker::disabled(),
-            root_dir: LazyInit::new(),
+            root_dir: Mutex::new(None),
+            mount_lease: Mutex::new(Weak::new()),
         });
         if fs.lock().ext4.mmp_refresh_interval().is_some()
             && let Err(error) = fs.start_mmp_worker()
         {
-            let cleanup = fs.lock().ext4.unmount().map_err(into_vfs_err);
+            let cleanup = fs.lock().unmount();
             return match cleanup {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => Err(cleanup_error),
             };
         }
-        fs.lock().inc_ref(root_ino);
-        fs.root_dir.init_once(DirEntry::new_dir(
-            |this| DirNode::new(Inode::new(fs.clone(), root_ino, Some(this))),
-            Reference::root(),
-        ));
         Ok(Filesystem::new(fs))
     }
 
@@ -249,7 +294,7 @@ impl Ext4Filesystem {
             return Err(into_vfs_err(rsext4::Ext4Error::busy()));
         }
         self.mmp_worker.stop_and_join();
-        let result = self.inner.lock().ext4.unmount().map_err(into_vfs_err);
+        let result = self.inner.lock().unmount();
         if result.is_err()
             && self.inner.lock().ext4.mmp_refresh_interval().is_some()
             && let Err(worker_error) = self.start_mmp_worker()
@@ -289,6 +334,24 @@ impl Ext4Filesystem {
         *self.mmp_worker.notification.lock() = Some(notification);
         *self.mmp_worker.thread.lock() = Some(thread);
         Ok(())
+    }
+}
+
+impl Drop for Ext4Filesystem {
+    fn drop(&mut self) {
+        // The MMP worker may be dropping the final strong reference itself.
+        // Stop and notify it, but never join the current worker from Drop.
+        self.mmp_worker.stopping.store(true, Ordering::Release);
+        let notification = self.mmp_worker.notification.lock().clone();
+        if let Some(notification) = notification {
+            notification.notify();
+        }
+        let mut state = self.inner.lock();
+        if !state.shutdown_attempted
+            && let Err(error) = state.unmount()
+        {
+            log::error!("failed to unmount the final ext4 reference: {error:?}");
+        }
     }
 }
 
@@ -356,8 +419,39 @@ impl FilesystemOps for Ext4Filesystem {
         self.lock().ext4.options().readonly
     }
 
+    fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
+        let mut installed = self.mount_lease.lock();
+        if let Some(lease) = installed.upgrade() {
+            return Some(lease);
+        }
+        let lease = Arc::new(Ext4MountLease {
+            filesystem: self.self_ref.upgrade().expect("live filesystem owner"),
+        });
+        *installed = Arc::downgrade(&lease);
+        Some(lease)
+    }
+
     fn root_dir(&self) -> DirEntry {
-        self.root_dir.clone()
+        let mut root = self.root_dir.lock();
+        if let Some(entry) = root.as_ref().and_then(WeakDirEntry::upgrade) {
+            return entry;
+        }
+
+        // Inodes own the filesystem. Keeping only a weak root here avoids
+        // the filesystem -> root inode -> filesystem ownership cycle.
+        let filesystem = self.self_ref.upgrade().expect("live filesystem owner");
+        let root_ino = {
+            let mut state = self.inner.lock();
+            let root_ino = state.ext4.root_inode();
+            state.inc_ref(root_ino);
+            root_ino
+        };
+        let entry = DirEntry::new_dir(
+            |this| DirNode::new(Inode::new(filesystem, root_ino, Some(this))),
+            Reference::root(),
+        );
+        *root = Some(entry.downgrade());
+        entry
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
@@ -481,7 +575,7 @@ mod tests {
         }
     }
 
-    fn test_filesystem(readonly_fallback: bool) -> (Ext4Filesystem, Arc<AtomicUsize>) {
+    fn formatted_test_storage() -> (Arc<StdMutex<Vec<u8>>>, Arc<AtomicUsize>) {
         let storage = Arc::new(StdMutex::new(alloc::vec![0; TEST_DEVICE_BYTES]));
         let flushes = Arc::new(AtomicUsize::new(0));
         let blocks = (TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64;
@@ -496,6 +590,13 @@ mod tests {
         )
         .expect("valid format-device geometry");
         rsext4::format(disk, Ext4Clock, MkfsOptions::default()).expect("format test image");
+
+        (storage, flushes)
+    }
+
+    fn test_filesystem(readonly_fallback: bool) -> (Ext4Filesystem, Arc<AtomicUsize>) {
+        let (storage, flushes) = formatted_test_storage();
+        let blocks = (TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64;
 
         if readonly_fallback {
             let mut storage = storage.lock().unwrap();
@@ -528,9 +629,11 @@ mod tests {
                 inner: Mutex::new(Ext4State {
                     ext4,
                     lifetimes: InodeLifetimeTracker::default(),
+                    shutdown_attempted: false,
                 }),
                 mmp_worker: MmpWorker::disabled(),
-                root_dir: LazyInit::new(),
+                root_dir: Mutex::new(None),
+                mount_lease: Mutex::new(Weak::new()),
             },
             flushes,
         )
@@ -613,5 +716,33 @@ mod tests {
         drop(state);
 
         assert!(filesystem.is_readonly());
+    }
+
+    #[test]
+    fn final_root_reference_releases_the_backing_device() {
+        let (storage, flushes) = formatted_test_storage();
+        let backing = Arc::downgrade(&storage);
+        let device = SharedMemoryDevice {
+            storage,
+            read_only: false,
+            flushes,
+        };
+        let filesystem = Ext4Filesystem::new(
+            Box::new(device),
+            BlockRegion::from_num_blocks((TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64),
+        )
+        .expect("mount the formatted device");
+        let root = filesystem.root_dir();
+
+        drop(filesystem);
+        root.metadata()
+            .expect("the root keeps its filesystem usable");
+        assert!(backing.upgrade().is_some());
+
+        drop(root);
+        assert!(
+            backing.upgrade().is_none(),
+            "the final filesystem reference must release its backing device"
+        );
     }
 }

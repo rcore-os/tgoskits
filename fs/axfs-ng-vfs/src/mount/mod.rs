@@ -19,9 +19,9 @@ use inherit_methods_macro::inherit_methods;
 
 use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
-    Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps,
-    NodePermission, NodeType, OpenOptions, Reference, ReferenceKey, RenameOptions, TypeMap,
-    VfsError, VfsResult, WeakDirEntry, XattrSetMode,
+    Filesystem, FilesystemMountLease, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard,
+    NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, Reference, ReferenceKey,
+    RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -287,6 +287,8 @@ pub struct Mountpoint {
     /// Resource ownership tied to the active mount rather than the cached
     /// lifetime of this mountpoint object.
     lifetime_guard: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
+    // Declared last: dentries retire before the filesystem drains its caches.
+    _filesystem_lease: Option<Arc<dyn FilesystemMountLease>>,
 }
 
 impl Mountpoint {
@@ -305,6 +307,7 @@ impl Mountpoint {
         device: u64,
         source: String,
     ) -> Arc<Self> {
+        let filesystem_lease = root.filesystem().mount_lease();
         Arc::new(Self {
             root,
             location: Mutex::new(location_in_parent),
@@ -321,6 +324,7 @@ impl Mountpoint {
             slaves: Mutex::default(),
             masters: Mutex::default(),
             lifetime_guard: Mutex::new(None),
+            _filesystem_lease: filesystem_lease,
         })
     }
 
@@ -1235,7 +1239,7 @@ impl Location {
     fn finish_unmount(&self) {
         self.mountpoint.clear_expired();
         if let Ok(directory) = self.entry.as_dir() {
-            directory.forget();
+            directory.clear_cached_entries();
         }
     }
 

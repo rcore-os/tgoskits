@@ -20,3 +20,6 @@ epoll_wait01 3
 epoll_wait03 5
 # epoll_wait06.c: nine pipe edge-trigger assertions.
 epoll_wait06 9
+# rmdir02.c: nine errno cases; rename03.c: eight replacement/inode assertions per filesystem.
+rmdir02 9
+rename03 8

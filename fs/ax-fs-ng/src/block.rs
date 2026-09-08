@@ -6,6 +6,9 @@ use crate::BlockResult;
 
 pub mod runtime;
 
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+pub(crate) mod file_image;
+
 #[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) mod cache;
 

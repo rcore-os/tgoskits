@@ -3,6 +3,7 @@ set -eu
 
 case_id="@LTP_CASE_ID@"
 minimum_passes=@LTP_MIN_PASSES@
+filesystem_passes="@LTP_FILESYSTEM_PASSES@"
 ltp_root="/opt/ltp"
 version_file="${ltp_root}/Version"
 runtest_file="${ltp_root}/runtest/syscalls"
@@ -56,7 +57,7 @@ cleanup_case_tmp()
 trap cleanup_case_tmp EXIT HUP INT TERM
 
 export LTPROOT="${ltp_root}"
-export PATH="${binary_dir}:${ltp_root}/bin:/usr/bin:/bin"
+export PATH="${binary_dir}:${ltp_root}/bin:/usr/sbin:/sbin:/usr/bin:/bin"
 export TMPDIR="${case_tmp}"
 export LTP_TIMEOUT_MUL=1
 case_output="${case_tmp}/ltp-output.log"
@@ -85,4 +86,17 @@ if [ "${passes}" -lt "${minimum_passes}" ]; then
     echo "incomplete LTP testcase: ${case_id}: ${passes} TPASS, expected at least ${minimum_passes}" >&2
     exit 1
 fi
+for contract in ${filesystem_passes}; do
+    filesystem="${contract%:*}"
+    required="${contract#*:}"
+    completed="$(awk -v fs="${filesystem}" '
+        /TINFO: === Testing on / { active = ($0 ~ "Testing on " fs " ===") }
+        active && /(^|[[:space:]])TPASS[[:space:]]*:/ { count++ }
+        END { print count+0 }
+    ' "${case_output}")"
+    if [ "${completed}" -lt "${required}" ]; then
+        echo "incomplete LTP filesystem: ${case_id} ${filesystem}: ${completed} TPASS, expected at least ${required}" >&2
+        exit 1
+    fi
+done
 exit 0

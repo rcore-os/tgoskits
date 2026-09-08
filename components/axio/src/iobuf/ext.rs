@@ -60,7 +60,9 @@ impl<R: Read + IoBuf + ?Sized> IoBufSpec for R {
 
 impl IoBufSpec for &[u8] {
     fn write_to<W: Write + ?Sized>(&mut self, writer: &mut W) -> Result<usize> {
-        writer.write(self)
+        let written = writer.write(self)?;
+        *self = &self[written..];
+        Ok(written)
     }
 }
 
@@ -108,7 +110,9 @@ impl<W: Write + IoBufMut + ?Sized> IoBufMutSpec for W {
 
 impl IoBufMutSpec for &mut [u8] {
     fn read_from<R: Read + ?Sized>(&mut self, reader: &mut R) -> Result<usize> {
-        reader.read(self)
+        let read = reader.read(self)?;
+        *self = core::mem::take(self).split_at_mut(read).1;
+        Ok(read)
     }
 }
 
@@ -134,8 +138,9 @@ impl IoBufMutSpec for Vec<u8> {
 
 impl IoBufMutSpec for BorrowedCursor<'_, u8> {
     fn read_from<R: Read + ?Sized>(&mut self, reader: &mut R) -> Result<usize> {
+        let before = self.written();
         reader.read_buf(self.reborrow())?;
-        Ok(self.written())
+        Ok(self.written() - before)
     }
 }
 

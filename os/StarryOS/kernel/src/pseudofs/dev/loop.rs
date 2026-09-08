@@ -1,7 +1,7 @@
 use core::{
     any::Any,
     mem::offset_of,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use ax_fs_ng::vfs::FileBackend;
@@ -13,8 +13,9 @@ use linux_raw_sys::{
         BLKROGET, BLKROSET, BLKRRPART, BLKSSZGET,
     },
     loop_device::{
-        LO_FLAGS_READ_ONLY, LOOP_CLR_FD, LOOP_CONFIGURE, LOOP_GET_STATUS, LOOP_GET_STATUS64,
-        LOOP_SET_FD, LOOP_SET_STATUS, LOOP_SET_STATUS64, loop_config, loop_info, loop_info64,
+        LO_FLAGS_AUTOCLEAR, LO_FLAGS_READ_ONLY, LOOP_CLR_FD, LOOP_CONFIGURE, LOOP_GET_STATUS,
+        LOOP_GET_STATUS64, LOOP_SET_FD, LOOP_SET_STATUS, LOOP_SET_STATUS64, loop_config, loop_info,
+        loop_info64,
     },
 };
 
@@ -37,18 +38,39 @@ const HDIO_GETGEO: u32 = 0x0301;
 pub struct LoopDevice {
     number: u32,
     dev_id: DeviceId,
-    /// Underlying file for the loop device, if any.
-    pub file: Mutex<Option<FileBackend>>,
-    /// Read-only flag for the loop device.
-    pub ro: AtomicBool,
-    /// Read-ahead size for the loop device, in bytes.
-    pub ra: AtomicU32,
-    /// Backing file name for the loop device.
-    file_name: Mutex<[u8; 64]>,
-    /// Bit mask of `LO_FLAGS_*` (READ_ONLY, AUTOCLEAR, PARTSCAN, DIRECT_IO).
-    flags: AtomicU32,
-    /// Whether the device is opened exclusively (O_EXCL).
-    exclusive: AtomicBool,
+    // Binding publication and open/close transitions share one lock.
+    state: Mutex<LoopState>,
+    ra: AtomicU32,
+}
+
+struct LoopBinding {
+    file: FileBackend,
+    file_name: [u8; 64],
+    flags: u32,
+    rundown: bool,
+}
+
+#[derive(Default)]
+struct LoopState {
+    binding: Option<LoopBinding>,
+    openers: usize,
+    exclusive: bool,
+}
+
+impl LoopState {
+    fn binding(&self) -> VfsResult<&LoopBinding> {
+        self.binding
+            .as_ref()
+            .filter(|binding| !binding.rundown)
+            .ok_or(VfsError::NoSuchDeviceOrAddress)
+    }
+
+    fn binding_mut(&mut self) -> VfsResult<&mut LoopBinding> {
+        self.binding
+            .as_mut()
+            .filter(|binding| !binding.rundown)
+            .ok_or(VfsError::NoSuchDeviceOrAddress)
+    }
 }
 
 impl LoopDevice {
@@ -56,32 +78,42 @@ impl LoopDevice {
         Self {
             number,
             dev_id,
-            file: Mutex::new(None),
-            ro: AtomicBool::new(false),
+            state: Mutex::new(LoopState::default()),
             ra: AtomicU32::new(512),
-            file_name: Mutex::new([0u8; 64]),
-            flags: AtomicU32::new(0),
-            exclusive: AtomicBool::new(false),
         }
     }
 
-    /// Apply `lo_flags` from userspace, keeping `ro` and `flags` in sync.
-    fn set_lo_flags(&self, lo_flags: u32) {
-        self.flags.store(lo_flags, Ordering::Relaxed);
-        self.ro
-            .store(lo_flags & LO_FLAGS_READ_ONLY as u32 != 0, Ordering::Relaxed);
+    pub(crate) fn is_read_only(&self) -> VfsResult<bool> {
+        Ok(self.state.lock().binding()?.flags & LO_FLAGS_READ_ONLY as u32 != 0)
+    }
+
+    fn bind(&self, file: &crate::file::File, name: [u8; 64], mut flags: u32) -> VfsResult<()> {
+        let backend = file.inner().backend()?.clone();
+        if file.open_flags() & O_ACCMODE == O_RDONLY {
+            flags |= LO_FLAGS_READ_ONLY as u32;
+        }
+        let mut state = self.state.lock();
+        if state.binding.is_some() {
+            return Err(VfsError::ResourceBusy);
+        }
+        state.binding = Some(LoopBinding {
+            file: backend,
+            file_name: name,
+            flags,
+            rundown: false,
+        });
+        Ok(())
     }
 
     /// Get information about the loop device.
     pub fn get_info(&self) -> VfsResult<loop_info> {
-        if self.file.lock().is_none() {
-            return Err(VfsError::NoSuchDeviceOrAddress);
-        }
+        let state = self.state.lock();
+        let binding = state.binding()?;
         let mut res: loop_info = unsafe { core::mem::zeroed() };
         res.lo_number = self.number as _;
         res.lo_rdevice = self.dev_id.0 as _;
-        res.lo_flags = self.flags.load(Ordering::Relaxed) as _;
-        let name = self.file_name.lock();
+        res.lo_flags = binding.flags as _;
+        let name = &binding.file_name;
         for (i, &c) in name.iter().enumerate() {
             if i < 64 {
                 res.lo_name[i] = c as _;
@@ -93,62 +125,88 @@ impl LoopDevice {
         Ok(res)
     }
 
-    /// Set information for the loop device.
-    pub fn set_info(&self, _src: loop_info) -> VfsResult<()> {
-        Ok(())
-    }
-
     /// Get information about the loop device (64-bit variant).
     pub fn get_info64(&self) -> VfsResult<loop_info64> {
-        if self.file.lock().is_none() {
-            return Err(VfsError::NoSuchDeviceOrAddress);
-        }
+        let state = self.state.lock();
+        let binding = state.binding()?;
         let mut res: loop_info64 = unsafe { core::mem::zeroed() };
         res.lo_number = self.number as _;
         res.lo_rdevice = self.dev_id.0 as _;
-        res.lo_file_name = *self.file_name.lock();
-        res.lo_flags = self.flags.load(Ordering::Relaxed);
+        res.lo_file_name = binding.file_name;
+        res.lo_flags = binding.flags;
         Ok(res)
     }
 
     /// Clone the underlying file of the loop device.
     pub fn clone_file(&self) -> VfsResult<FileBackend> {
-        let file = self.file.lock().clone();
-        file.ok_or(VfsError::NoSuchDeviceOrAddress)
+        Ok(self.state.lock().binding()?.file.clone())
     }
 }
 
 impl DeviceOps for LoopDevice {
+    fn len(&self) -> VfsResult<u64> {
+        self.clone_file()?.len()
+    }
+
+    fn sync(&self, data_only: bool) -> VfsResult<()> {
+        self.clone_file()?.sync(data_only)
+    }
+
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        let file = self.file.lock().clone();
-        file.ok_or(VfsError::OperationNotPermitted)?
-            .read_at(buf, offset)
+        self.clone_file()?.read_at(buf, offset)
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        if self.ro.load(Ordering::Relaxed) {
-            return Err(VfsError::ReadOnlyFilesystem);
-        }
-        let file = self.file.lock().clone();
-        file.ok_or(VfsError::OperationNotPermitted)?
-            .write_at(buf, offset)
+        let file = {
+            let state = self.state.lock();
+            let binding = state.binding()?;
+            if binding.flags & LO_FLAGS_READ_ONLY as u32 != 0 {
+                return Err(VfsError::ReadOnlyFilesystem);
+            }
+            binding.file.clone()
+        };
+        file.write_at(buf, offset)
     }
 
     fn open(&self, exclusive: bool) -> VfsResult<()> {
-        if exclusive {
-            if self.exclusive.swap(true, Ordering::Acquire) {
-                return Err(VfsError::ResourceBusy);
-            }
-        } else if self.exclusive.load(Ordering::Acquire) {
+        let mut state = self.state.lock();
+        if state
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.rundown)
+        {
+            return Err(VfsError::NoSuchDeviceOrAddress);
+        }
+        if state.exclusive {
             return Err(VfsError::ResourceBusy);
         }
+        state.openers = state.openers.checked_add(1).ok_or(VfsError::ResourceBusy)?;
+        state.exclusive |= exclusive;
         Ok(())
     }
 
     fn close(&self, exclusive: bool) {
-        if exclusive {
-            self.exclusive.store(false, Ordering::Release);
-        }
+        let released = {
+            let mut state = self.state.lock();
+            // Each successful device open owns exactly one final close.
+            assert!(state.openers > 0);
+            state.openers -= 1;
+            if exclusive {
+                state.exclusive = false;
+            }
+            if state.openers == 0
+                && state
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.flags & LO_FLAGS_AUTOCLEAR as u32 != 0)
+            {
+                state.binding.take()
+            } else {
+                None
+            }
+        };
+        // Backing file destruction may enter another filesystem.
+        drop(released);
     }
 
     fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
@@ -162,29 +220,14 @@ impl DeviceOps for LoopDevice {
                 let Some(file) = f.downcast_ref::<crate::file::File>() else {
                     return Err(VfsError::InvalidInput);
                 };
-                let mut guard = self.file.lock();
-                if guard.is_some() {
-                    return Err(VfsError::ResourceBusy);
-                }
-
-                // Match Linux: if backing file opened O_RDONLY, device is read-only.
-                let ro = (file.open_flags() & O_ACCMODE) == O_RDONLY;
-                if ro {
-                    self.set_lo_flags(LO_FLAGS_READ_ONLY as u32);
-                } else {
-                    self.set_lo_flags(0);
-                }
-                *guard = Some(file.inner().backend()?.clone());
+                self.bind(file, [0; 64], 0)?;
             }
             LOOP_CLR_FD => {
-                let mut guard = self.file.lock();
-                if guard.is_none() {
-                    return Err(VfsError::NoSuchDeviceOrAddress);
-                }
-
-                *guard = None;
-                *self.file_name.lock() = [0u8; 64];
-                self.flags.store(0, Ordering::Relaxed);
+                let mut state = self.state.lock();
+                let only_opener = state.openers == 1;
+                let binding = state.binding_mut()?;
+                binding.flags |= LO_FLAGS_AUTOCLEAR as u32;
+                binding.rundown = only_opener;
             }
             LOOP_GET_STATUS => {
                 write_loop_info(current, arg as *mut loop_info, self.get_info()?)?;
@@ -197,8 +240,9 @@ impl DeviceOps for LoopDevice {
                         .map_err(vm_error_to_vfs)?
                         .assume_init()
                 };
-                self.set_info(info)?;
-                let mut name = self.file_name.lock();
+                let mut state = self.state.lock();
+                let binding = state.binding_mut()?;
+                let name = &mut binding.file_name;
                 for (i, &c) in info.lo_name.iter().enumerate() {
                     if i < 64 {
                         name[i] = c as _;
@@ -207,7 +251,7 @@ impl DeviceOps for LoopDevice {
                         break;
                     }
                 }
-                self.set_lo_flags(info.lo_flags as u32);
+                binding.flags = info.lo_flags as u32;
             }
             LOOP_GET_STATUS64 => {
                 write_loop_info64(current, arg as *mut loop_info64, self.get_info64()?)?;
@@ -220,8 +264,10 @@ impl DeviceOps for LoopDevice {
                         .map_err(vm_error_to_vfs)?
                         .assume_init()
                 };
-                *self.file_name.lock() = info.lo_file_name;
-                self.set_lo_flags(info.lo_flags);
+                let mut state = self.state.lock();
+                let binding = state.binding_mut()?;
+                binding.file_name = info.lo_file_name;
+                binding.flags = info.lo_flags;
             }
             LOOP_CONFIGURE => {
                 // `loop_config` is a C ioctl payload copied from the guest ABI.
@@ -239,22 +285,11 @@ impl DeviceOps for LoopDevice {
                 let Some(file) = f.downcast_ref::<crate::file::File>() else {
                     return Err(VfsError::InvalidInput);
                 };
-                let mut guard = self.file.lock();
-                if guard.is_some() {
-                    return Err(VfsError::ResourceBusy);
-                }
-                *guard = Some(file.inner().backend()?.clone());
-                drop(guard);
-                *self.file_name.lock() = cfg.info.lo_file_name;
-                let mut flags = cfg.info.lo_flags;
-                if (file.open_flags() & O_ACCMODE) == O_RDONLY {
-                    flags |= LO_FLAGS_READ_ONLY as u32;
-                }
-                self.set_lo_flags(flags);
+                self.bind(file, cfg.info.lo_file_name, cfg.info.lo_flags)?;
             }
             BLKGETSIZE | BLKGETSIZE64 => {
                 let sectors = if let Ok(f) = self.clone_file() {
-                    f.location().len()? / 512
+                    f.len()? / 512
                 } else {
                     return Err(VfsError::NoSuchDeviceOrAddress);
                 };
@@ -285,7 +320,7 @@ impl DeviceOps for LoopDevice {
             }
             BLKROGET => {
                 (arg as *mut u32)
-                    .vm_write(current, self.ro.load(Ordering::Relaxed) as u32)
+                    .vm_write(current, self.is_read_only()? as u32)
                     .map_err(vm_error_to_vfs)?;
             }
             BLKROSET => {
@@ -295,13 +330,15 @@ impl DeviceOps for LoopDevice {
                 if ro != 0 && ro != 1 {
                     return Err(VfsError::InvalidInput);
                 }
-                let mut flags = self.flags.load(Ordering::Relaxed);
+                let mut state = self.state.lock();
+                let binding = state.binding_mut()?;
+                let mut flags = binding.flags;
                 if ro != 0 {
                     flags |= LO_FLAGS_READ_ONLY as u32;
                 } else {
                     flags &= !(LO_FLAGS_READ_ONLY as u32);
                 }
-                self.set_lo_flags(flags);
+                binding.flags = flags;
             }
             BLKRAGET => {
                 (arg as *mut u32)
@@ -340,10 +377,7 @@ impl DeviceOps for LoopDevice {
             }
             // HDIO_GETGEO: virtual CHS geometry for fdisk
             HDIO_GETGEO => {
-                let size = match self.file.lock().clone() {
-                    Some(f) => f.location().len().unwrap_or(0),
-                    None => 0,
-                };
+                let size = self.len()?;
                 // hd_geometry: { u8 heads, u8 sectors, u16 cylinders, unsigned long start }
                 // On 64-bit targets unsigned long is 8 bytes.
                 let heads: u8 = 64;
@@ -386,8 +420,8 @@ impl DeviceOps for LoopDevice {
     }
 
     fn mmap(&self, _offset: u64, _length: u64) -> DeviceMmap {
-        if let Some(FileBackend::Cached(cache)) = self.file.lock().as_ref() {
-            DeviceMmap::Cache(cache.clone())
+        if let Ok(FileBackend::Cached(cache)) = self.clone_file() {
+            DeviceMmap::Cache(cache)
         } else {
             DeviceMmap::None
         }

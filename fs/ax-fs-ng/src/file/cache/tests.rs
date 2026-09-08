@@ -306,6 +306,36 @@ fn tmpfs_and_ramfs_use_unbounded_page_cache() {
     assert!(!filesystem_uses_unbounded_page_cache("ext4"));
 }
 
+#[cfg(feature = "vfs")]
+#[test]
+fn filesystem_sync_does_not_visit_another_filesystems_busy_mapping() {
+    with_test_page_provider(true, |_| {
+        let cached = reopen_cached_file(Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE])));
+        cached.write_at(&b"dirty"[..], 0).unwrap();
+        let visits = Arc::new(AtomicUsize::new(0));
+        let observed = visits.clone();
+        let endpoint = install_shared_test_endpoint(&cached.shared, move |event| {
+            if matches!(event, CacheMappingEvent::WritebackProtect(_)) {
+                observed.fetch_add(1, Ordering::AcqRel);
+                CacheMappingResult::Busy
+            } else {
+                CacheMappingResult::Protected
+            }
+        });
+        let unrelated = sync_filesystem_cached_files(&TMPFS_CACHE_TEST_FILESYSTEM);
+        let unrelated_visits = visits.load(Ordering::Acquire);
+        let own = sync_filesystem_cached_files(&CACHE_TEST_FILESYSTEM);
+        let own_visits = visits.load(Ordering::Acquire);
+        drop(endpoint);
+        cached.sync(false).unwrap();
+
+        assert_eq!(unrelated, Ok(()));
+        assert_eq!(unrelated_visits, 0);
+        assert_eq!(own, Err(VfsError::ResourceBusy));
+        assert!(own_visits > 0);
+    });
+}
+
 #[test]
 fn cached_file_identity_follows_shared_cache_owner() {
     let first = reopen_cached_file(Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE])));

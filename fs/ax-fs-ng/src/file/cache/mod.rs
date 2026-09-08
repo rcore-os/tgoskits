@@ -19,7 +19,7 @@ use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
 use lru::LruCache;
 use readahead::ReadAheadState;
 #[cfg(feature = "vfs")]
-pub use reclaim::{page_cache_reclaim, sync_all_cached_files};
+pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 
 use super::page::PageCache;
 use crate::os::{
@@ -287,6 +287,8 @@ struct CachedFileShared {
     mapping_epoch: AtomicU64,
     mapping_update_in_progress: AtomicBool,
     unlinked: AtomicBool,
+    #[cfg(feature = "vfs")]
+    retired: AtomicBool,
 }
 
 impl CachedFileShared {
@@ -304,6 +306,8 @@ impl CachedFileShared {
             mapping_epoch: AtomicU64::new(0),
             mapping_update_in_progress: AtomicBool::new(false),
             unlinked: AtomicBool::new(false),
+            #[cfg(feature = "vfs")]
+            retired: AtomicBool::new(false),
         }
     }
 
@@ -319,6 +323,8 @@ impl CachedFileShared {
             mapping_epoch: AtomicU64::new(0),
             mapping_update_in_progress: AtomicBool::new(false),
             unlinked: AtomicBool::new(false),
+            #[cfg(feature = "vfs")]
+            retired: AtomicBool::new(false),
         }
     }
 
@@ -488,6 +494,10 @@ impl CachedFile {
                 .map(FileUserData::get)
         };
         if let Some(shared) = existing {
+            #[cfg(feature = "vfs")]
+            if shared.retired.swap(false, Ordering::AcqRel) {
+                reclaim::register_cached_file(&shared);
+            }
             return Ok(Self {
                 inner: location,
                 shared,
@@ -529,7 +539,7 @@ impl CachedFile {
         // tmpfs and ramfs have no backing store, so evicting clean pages would
         // lose data. Only register disk-backed files for reclaim.
         #[cfg(feature = "vfs")]
-        if owner_created && !in_memory {
+        if !in_memory && (owner_created || shared.retired.swap(false, Ordering::AcqRel)) {
             reclaim::register_cached_file(&shared);
         }
         #[cfg(not(feature = "vfs"))]
@@ -1218,6 +1228,33 @@ fn publish_inode_cached_file(
     }
 }
 
+/// Retires the reclaim ownership after the last mount and open file leave.
+/// The filesystem serializes this operation against acquiring a new lease.
+#[cfg(feature = "ext4")]
+pub(crate) fn retire_filesystem_cache(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    let key = filesystem_key(filesystem);
+    let files: Vec<_> = CACHED_FILE_BY_INODE
+        .lock()
+        .range((key, 0)..=(key, u64::MAX))
+        .filter_map(|(_, cached)| cached.upgrade())
+        .collect();
+    let mut first_error = None;
+    for file in files {
+        if let Err(error) = file.writeback_dirty_for_global_sync() {
+            first_error.get_or_insert(error);
+            continue;
+        }
+        // Retain failed dirty owners for the existing global writeback path.
+        // A concurrent registry prune must not restore successful retirees.
+        #[cfg(feature = "vfs")]
+        {
+            file.retired.store(true, Ordering::Release);
+            reclaim::release_cached_file(&file);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 #[cfg(feature = "ext4")]
 pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64) {
     if filesystem.name() == "ext4" {
@@ -1228,7 +1265,7 @@ pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64)
         #[cfg(feature = "vfs")]
         if let Some(cached) = cached {
             cached.mark_unlinked();
-            reclaim::release_unlinked_cached_file(&cached);
+            reclaim::release_cached_file(&cached);
         }
         #[cfg(not(feature = "vfs"))]
         let _ = cached;

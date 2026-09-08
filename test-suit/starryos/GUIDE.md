@@ -169,6 +169,15 @@ wrapper 在 guest 内依次确认 `/opt/ltp/Version`、`runtest/syscalls` 的唯
 六个 errno 用例，不能把“前四项通过后进程被错误替换、随后退出 0”当成成功。
 `CMakeLists.txt` 把该门槛写入每个 wrapper，兼容新旧 LTP 输出中 `TPASS` 的空格差异。
 这些门槛不从历史绿色日志推导，也不随共同集重新生成而丢失。
+`filesystem-passes.txt` 另行约束上游 `all_filesystems` 用例在指定文件系统内的
+`TPASS` 数量：ext4 未执行时，即使 tmpfs 已通过，wrapper 也必须失败。
+LTP 分组的共享 prebuild 安装 e2fsprogs，CMake 把 `mkfs.ext4`、配置及运行依赖
+注入测试镜像；wrapper 的 PATH 包含 sbin。不得通过隐藏格式化工具或只运行 tmpfs
+来报告 ext4 测试迁移完成。
+LTP 分组还安装 `ltp-isolation-exit-fs`，在 native 阶段验证活跃 cwd 阻止卸载及
+退出通知前释放 cwd，以及 loop 挂载、bind 别名和 lazy detach 的最终释放。
+回归还在最后关闭时留下脏页，再重新挂载核对写回结果。这些是运行设施的配套回归，
+不是上游 LTP 用例，不计入 `cases.txt` 或共同集数量。
 仅特定体系结构存在的 syscall 用 `cases-<arch>.txt` 补充共同清单，CMake 根据
 `CMAKE_C_COMPILER_TARGET` 的架构前缀加载。`cases-x86_64.txt` 中旧 `epoll_create`
 入口用例只在 x86_64 执行，不能把其他架构不存在该入口的 `TCONF` 放行。

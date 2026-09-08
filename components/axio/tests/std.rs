@@ -190,7 +190,7 @@ fn axio_iobuf_extension_rules_hold() {
     let mut output = Vec::new();
     assert_eq!(input.write_to(&mut output).unwrap(), 4);
     assert_eq!(output, b"copy");
-    assert_eq!(input, b"copy");
+    assert!(input.is_empty());
 
     let mut fixed = [0; 3];
     {
@@ -198,7 +198,7 @@ fn axio_iobuf_extension_rules_hold() {
         let mut reader: &[u8] = b"abcdef";
         assert_eq!(writer.remaining_mut(), 3);
         assert_eq!(writer.read_from(&mut reader).unwrap(), 3);
-        assert_eq!(writer.remaining_mut(), 3);
+        assert!(writer.is_full());
         assert_eq!(reader, b"def");
     }
     assert_eq!(&fixed, b"abc");
@@ -1042,7 +1042,7 @@ fn axio_iobuf_extension_specialization_rules_hold() {
     let mut output = Vec::new();
     assert_eq!(source.write_to(&mut output).unwrap(), 10);
     assert_eq!(output, b"slice-copy");
-    assert_eq!(source, b"slice-copy");
+    assert!(source.is_empty());
 
     let mut fixed = [0_u8; 4];
     {

@@ -88,6 +88,12 @@ CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.
 
 这里只部分承接EPOLLET下的数据就绪事件；半读后不重复通知是LTP增加的检查。pipe不能证明TCP已连接套接字的OUT就绪不导致IN幻事件，也没有保留读尽后第二次写入重新交付IN及32轮重复检查；这些覆盖损失随原程序和CMake清理明确记录。四架构均完成九项TPASS，执行集合和共同集核对通过，未发现新缺陷。验证复用上一项记录的同一轮四架构日志，测试替换与完成门槛保持独立提交。
 
+### 2.13 ext4 目录操作
+
+`bug-ext4-dir-ops` 的替代项是`rmdir01/02`、`rename03/04/05/07`和`readdir01`，处理为部分替代并修复。rmdir两项在tmpfs验证空目录删除和九种错误；rename与readdir必须实际完成ext4阶段，并继续执行上游发现的其他文件系统。原程序的ext4 rmdir后置状态、失败后兄弟及内容完整性、rename后父目录引用、重建旧名字、pip升级序列、32/80字节读删交错和HTree长目录SEEK_END/回卷断言未被完整承接。`getdents01`包含当前musl及部分架构不可用的变体，不能隐藏其TCONF后宣称替代getdents64。
+
+本项先用`rmdir02`证明挂载点和`.`错误返回ENOTEMPTY，再分别修复为EBUSY和EINVAL；并恢复loop来源的ext4挂载、消除ext4根引用环、修复传输游标以及LTP文件系统漏跑门禁。后续暴露的退出cwd滞留和unshare上下文未登记问题，由`ltp-isolation-exit-fs`确定性复现：旧实现分别在等待子进程退出后错误EBUSY，以及活跃私有cwd仍存在时错误允许卸载。其调度与进程交接控制没有完整等效LTP用例，作为此次新增缺陷的配套回归保留在LTP分组的native阶段，不计入上游LTP数量，也不冒充原程序的完整替代。
+
 ## 3. 系统调用兼容性对照
 
 结论仅针对本轮明确检查的路径，不表示整个系统调用在所有输入下都兼容。移除 procfs 或 sysfs 的特定断言后，LTP 的绿色结果不能证明那些文件的表示仍然正确。
@@ -122,3 +128,99 @@ CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.
 | epoll_ctl(管道EPOLLET注册) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 为读/写pipe端登记带用户FD数据的边缘触发兴趣 | `sys_epoll_ctl` → `EpollFlags::EDGE_TRIGGER` → `Epoll::add_interest` → `TriggerMode::Edge`及PollRegistrar | 正确 | epoll_wait06四架构验证已登记读写端实际边缘通知 |
 | epoll_pwait(管道EPOLLET消费) / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 交付IN后半读不重复通知；完全读空后交付OUT，返回对应FD与事件位 | `do_epoll_wait` → `poll_events_with` → `EpollInterest::consume`匹配就绪与触发模式 → 用户事件写回 | 正确 | epoll_wait06四架构各9项TPASS；实际musl后端已确认 |
 | epoll_pwait(TCP EPOLLET重复数据交付) / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 无匹配就绪时不返回幻事件；TCP读尽后新数据再次触发IN | `do_epoll_wait` → Epoll兴趣队列及Socket Pollable注册/通知 → 事件消费与写回 | 无法确认 | 原TCP空闲与32轮两段数据回归已清理，pipe LTP未承接TCP专有路径 |
+| mount(ext4 loop来源) / x86_64:165；aarch64、riscv64、loongarch64:40 | [Linux v7.1 fs/namespace.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c) | 本轮flags=0的loop镜像挂载成功，后端引用持续到最终文件系统使用者释放 | sys_mount → mount_ext4 → LoopMountLease → new_filesystem_from_file → FileImageDevice → Ext4Filesystem | 正确 | 七项LTP中五项实际完成ext4阶段；ext4漏跑门禁及挂载EIO先红后绿 |
+| umount2(普通卸载) / x86_64:166；aarch64、riscv64、loongarch64:39 | [Linux v7.1 fs/namespace.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c) | 活跃cwd阻止卸载；等待子进程退出后不得因已退役task仍持有cwd而返回EBUSY | sys_umount2 → is_mount_busy → FS_REGISTRY及FD表 → commit_unmount；do_exit提前释放FS_CONTEXT | 正确 | exit_fs_context.c的普通及unshare场景确定性先红后绿；LTP卸载不再依赖EBUSY重试 |
+| umount2(缓存写回范围) / x86_64:166；aarch64、riscv64、loongarch64:39 | [Linux v7.1 fs/super.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/super.c) | 卸载目标文件系统只同步其缓存，不因无关文件系统映射忙而失败 | sys_umount2 → sync_filesystem_cached_files → 缓存backing的FilesystemOps身份过滤 → 目标flush | 无法确认 | 确定性缓存端点回归先红后绿，且保留目标自身ResourceBusy；真实system成功，但尚无系统级确定性跨FS忙交错证据 |
+| umount2(MNT_DETACH) / x86_64:166；aarch64、riscv64、loongarch64:39 | [Linux v7.1 fs/namespace.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c) | 延迟卸载摘除挂载树后，已有打开文件继续拥有文件系统及来源 | sys_umount2 → detach_mount → Mountpoint共享Ext4MountLease → retire_filesystem_cache及目录缓存清理 → FileImageDevice释放LoopMountLease | 正确 | 四架构native回归：两个bind别名依次detach后打开文件仍可读写；最后close释放loop并写回脏页，重新挂载读回相同数据；同一释放回归先红后绿 |
+| rmdir / x86_64:84 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 空目录删除；非空ENOTEMPTY、挂载点EBUSY、最终点组件EINVAL | sys_rmdir → sys_unlinkat(AT_REMOVEDIR) → FsContext::remove_dir → Location::unlink | 正确 | rmdir01及rmdir02全部10项断言；02错误码回归先红后绿 |
+| unlinkat(AT_REMOVEDIR) / aarch64、riscv64、loongarch64:35 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | rmdir的libc后端，保持目录删除及九种错误条件 | sys_unlinkat → with_fs → FsContext::remove_dir → Location::unlink | 正确 | 三架构rmdir01/02各10项TPASS；已核验镜像musl实际调用35 |
+| unlinkat(AT_REMOVEDIR) / x86_64:263 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 与rmdir共享目录删除语义 | sys_unlinkat → with_fs → FsContext::remove_dir | 无法确认 | x86_64本轮由libc调用raw rmdir，未把内部复用当成此编号的直接运行证据 |
+| rename / x86_64:82 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 文件及空目录替换保持inode身份；非空目录目标及类型不匹配报错 | sys_rename → sys_renameat2(flags=0) → resolve_parent → Location::rename_with_options | 正确 | rename03/04/05/07在ext4及tmpfs各完成11项断言；已核验musl入口 |
+| renameat / aarch64:38 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | libc rename后端，两个目录FD均为AT_FDCWD | sys_renameat → sys_renameat2(flags=0) → Location::rename_with_options | 正确 | 同组LTP在ext4及tmpfs通过；镜像musl调用38 |
+| renameat2(flags=0) / riscv64、loongarch64:276 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | libc rename后端，不附加特殊renameat2 flag | sys_renameat2 → resolve_parent → Location::rename_with_options(REPLACE) | 正确 | 同组LTP在ext4及tmpfs通过；镜像musl调用276 |
+| getdents64(静态枚举) / x86_64:217；aarch64、riscv64、loongarch64:61 | [Linux v7.1 fs/readdir.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/readdir.c) | 枚举目录中的固定条目集合 | sys_getdents64 → Directory目录游标 → ext4/tmpfs目录节点 | 正确 | readdir01在两个文件系统各核对10个前缀条目；不含原读删交错及HTree SEEK_END断言 |
+| open(普通loop设备) / x86_64:2 | [Linux v7.1 fs/open.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 打开文件描述持有设备使用引用，最后关闭才释放 | sys_open → sys_openat → add_to_fd → LoopDevice::open；File::drop配对close | 正确 | LTP设备发现、绑定、mkfs、挂载和清理实际执行并重复复用loop0；结论限普通打开配对 |
+| openat(普通loop设备) / aarch64、riscv64、loongarch64:56 | [Linux v7.1 fs/open.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 普通块设备打开也需要使用引用，不仅O_EXCL路径 | sys_openat → add_to_fd → LoopDevice::open；File::drop配对close | 正确 | 同一LTP设备生命周期在三架构实际执行 |
+| open(O_PATH设备) / x86_64:2 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 仅取得loop路径句柄，其关闭不能释放普通打开者的设备引用 | sys_open → add_to_fd的O_PATH提前返回 → File::drop跳过设备close | 正确 | x86_64 native回归在AUTOCLEAR绑定上打开/关闭O_PATH，随后GET_STATUS64仍成功；结论不含ptmx创建语义 |
+| openat(O_PATH设备) / x86_64:257 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 仅取得loop路径句柄，其关闭不能释放普通打开者的设备引用 | sys_openat → add_to_fd的O_PATH提前返回 → File::drop跳过设备close | 无法确认 | 本轮x86_64 libc open调用旧open入口，未把内部复用当成257编号的直接证据 |
+| openat(O_PATH设备) / aarch64、riscv64、loongarch64:56 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 仅取得loop路径句柄，其关闭不能释放普通打开者的设备引用 | sys_openat → add_to_fd的O_PATH提前返回 → File::drop跳过设备close | 正确 | 三架构同一native回归通过；已核验musl open使用openat后端；结论不含ptmx创建语义 |
+| close(loop设备) / x86_64:3；aarch64、riscv64、loongarch64:57 | [Linux v7.1 fs/open.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 最后一个打开文件描述释放设备引用；AUTOCLEAR在最终使用者离开时解绑 | sys_close → release_locks_on_close → File::drop → LoopDevice::close → 锁外释放LoopBinding | 正确 | 连续五项LTP均重新取得loop0并成功格式化、挂载、卸载和解绑 |
+| ioctl(LOOP_SET_FD) / x86_64:16；aarch64、riscv64、loongarch64:29 | [Linux v7.1 drivers/block/loop.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/block/loop.c) | 空闲loop绑定后端文件，已有绑定不能被替换 | sys_ioctl → Device::ioctl_for_task → LoopDevice::bind → 单锁发布LoopBinding | 正确 | LTP tst_attach_device实际绑定；结论限成功绑定及随后I/O |
+| ioctl(LOOP_SET_STATUS) / x86_64:16；aarch64、riscv64、loongarch64:29 | [Linux v7.1 drivers/block/loop.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/block/loop.c) | 已绑定设备更新旧ABI的文件名与flags | sys_ioctl → LoopDevice::ioctl → state.binding_mut，名称和flags在同一锁内发布 | 无法确认 | LTP tst_attach_device实际设置状态；其他offset和flag语义不在本行验证范围 |
+| ioctl(LOOP_CLR_FD) / x86_64:16；aarch64、riscv64、loongarch64:29 | [Linux v7.1 drivers/block/loop.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/block/loop.c) | 挂载仍使用设备时延迟解绑，不能重绑；最后设备引用释放后变为空闲 | sys_ioctl → LoopDevice::ioctl设置AUTOCLEAR/rundown → 最后close释放binding | 正确 | 四架构native回归在挂载及detached打开文件存活时核对GET_STATUS64成功、SET_FD返回EBUSY，最终关闭后GET_STATUS64返回ENXIO |
+| ioctl(LOOP_GET_STATUS) / x86_64:16；aarch64、riscv64、loongarch64:29 | [Linux v7.1 drivers/block/loop.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/block/loop.c) | 空闲设备ENXIO，已绑定状态从一致快照读取 | sys_ioctl → LoopDevice::get_info → state.binding → write_loop_info | 正确 | LTP每项以旧GET_STATUS识别可复用loop0；结论限空闲ENXIO和普通绑定流程 |
+| ioctl(LOOP_CONFIGURE) / x86_64:16；aarch64、riscv64、loongarch64:29 | [Linux v7.1 drivers/block/loop.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/block/loop.c) | 文件后端、名称和flags应一次发布 | sys_ioctl → LoopDevice::bind发布LoopBinding | 无法确认 | 本轮LTP使用SET_FD及旧SET_STATUS，不把该路径标为已验证 |
+| ioctl(LOOP_GET_STATUS64) / x86_64:16；aarch64、riscv64、loongarch64:29 | [Linux v7.1 drivers/block/loop.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/block/loop.c) | 已绑定设备返回AUTOCLEAR状态；空闲设备返回ENXIO | sys_ioctl → LoopDevice::get_info64 → write_loop_info64 | 正确 | 四架构native回归核对绑定状态、AUTOCLEAR及最后关闭后的ENXIO；未承诺offset、size限制或加密字段 |
+| ioctl(LOOP_SET_STATUS64) / x86_64:16；aarch64、riscv64、loongarch64:29 | [Linux v7.1 drivers/block/loop.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/block/loop.c) | 设置AUTOCLEAR后，最终关闭释放绑定 | sys_ioctl → LoopDevice::ioctl → state.binding_mut | 正确 | 四架构native回归设置该flag，并在关闭/重新挂载过程中核对实际释放；其他可设置及只读flag组合未验证 |
+| exit_group(单线程进程) / x86_64:231；aarch64、riscv64、loongarch64:94 | [Linux v7.1 kernel/exit.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c) | 文件系统owner在zombie可见及父进程通知前释放 | sys_exit_group → do_exit → FS_CONTEXT.take并锁外drop → publish_zombie及父进程唤醒 | 正确 | 更高FIFO优先级父进程wait后立即卸载，普通/私有FS上下文两场景先红后绿 |
+| exit(线程退出) / x86_64:60；aarch64、riscv64、loongarch64:93 | [Linux v7.1 kernel/exit.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c) | 退出线程释放自身FS引用，活跃CLONE_FS共享者继续拥有上下文 | sys_exit → do_exit(group_exit=false) → 当前scope的FS_CONTEXT.take | 无法确认 | 本轮辅助回归使用libc _exit的exit_group路径，未把它当成共享线程exit直接证据 |
+| wait4 / x86_64:61；aarch64、riscv64、loongarch64:260 | [Linux v7.1 kernel/exit.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c) | 正常等待返回不得早于子进程自身FS资源释放 | sys_wait4 → zombie状态消费；do_exit在publish_zombie前释放FS_CONTEXT | 正确 | 已核验四架构waitpid的musl后端；确定性回归在wait后执行一次umount2 |
+| unshare(CLONE_FS) / x86_64:272；aarch64、riscv64、loongarch64:97 | [Linux v7.1 kernel/fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 独立FS上下文继续承担活跃cwd阻止卸载的语义 | sys_unshare → PreparedUnshare::prepare → FsContext::into_shared登记 → commit替换scope，旧owner锁外释放 | 正确 | 私有cwd活跃时旧实现错误允许卸载；同一确定性回归先红后绿 |
+| unshare(CLONE_NEWNS) / x86_64:272；aarch64、riscv64、loongarch64:97 | [Linux v7.1 kernel/fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 挂载命名空间替换仍登记其FS上下文 | sys_unshare → PreparedUnshare → into_shared → commit | 无法确认 | LTP隔离运行经过该路径；尚未单独覆盖该flag的全部挂载边界及错误顺序 |
+| setns(挂载命名空间) / x86_64:308；aarch64、riscv64、loongarch64:268 | [Linux v7.1 kernel/nsproxy.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nsproxy.c) | 目标已无FS上下文时不能继续借用其挂载状态 | sys_setns → 远程FS_CONTEXT快照 → None返回NoSuchProcess；PreparedUnshare发布替换 | 无法确认 | 所有调用者已迁移Option状态；未新增该竞态的直接系统证据 |
+| mount(MS_BIND) / x86_64:165；aarch64、riscv64、loongarch64:40 | [Linux v7.1 fs/namespace.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c) | bind别名保留同一文件系统；摘除另一个挂载不使别名失效 | sys_mount → Location::bind_mount → Mountpoint::bind → Ext4Filesystem::mount_lease共享租约 | 正确 | 四架构native回归在原挂载detach后从bind别名读回原数据，并继续验证最后文件释放 |
+| pread64 / x86_64:17；aarch64、riscv64、loongarch64:67 | [Linux v7.1 fs/read_write.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c) | 挂载detach后已有文件仍能按偏移读回数据，返回实际读取长度 | sys_pread64 → File::read_at → FileBackend/CachedFile → 持有Location及挂载租约 | 正确 | 四架构native回归核对6字节返回值及内容；重新挂载核对最终写回内容；镜像musl入口已反汇编核实 |
+| pwrite64 / x86_64:18；aarch64、riscv64、loongarch64:68 | [Linux v7.1 fs/read_write.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/read_write.c) | 挂载detach后已有文件仍能按偏移写入；最终卸载不能丢失脏页 | sys_pwrite64 → File::write_at → CachedFile；最后Ext4MountLease写回再释放来源 | 正确 | 四架构native回归分别在解绑和detach后写入6字节，并在最后close前留下未fsync的修改，重新挂载读回 |
+| fsync / x86_64:74；aarch64、riscv64、loongarch64:82 | [Linux v7.1 fs/sync.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/sync.c) | detached文件仍可把内容同步到持有的来源设备 | sys_fsync → File::sync → FileBackend::sync → CachedFileShared::sync → ext4及FileImageDevice::flush | 正确 | 四架构native回归在detach后调用fsync成功并核对内容；不涵盖设备故障时的错误传播；musl入口已核验 |
+| openat(procfs远程挂载信息) / x86_64:257；aarch64、riscv64、loongarch64:56 | [Linux v7.1 fs/proc_namespace.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc_namespace.c) | 退出任务已释放fs上下文时，不能继续借用其旧挂载树 | sys_openat → procfs远程FS_CONTEXT快照 → None返回NotFound | 无法确认 | 已迁移Option所有权调用者；本轮没有为目标退出与procfs读取竞态增加直接系统回归 |
+
+## 4. 文件系统挂载修复设计
+
+本节对应第十二项ext4目录测试迁移中发现的挂载缺口，已完成本项四架构定向验证和静态检查。恢复涉及文件系统与设备生命周期，合入前需要文件系统及块I/O维护者审查；本PR不自动合并。
+
+### 4.1 I/O边界
+
+LTP用`mount("/dev/zero", ..., "ext4", ...)`探测支持范围，而当前`mount_ext4`恒返回`ENODEV`，使目录候选只在tmpfs执行。继续保留停用后端无法承接原ext4测试；仅改变探测errno同样不能建立真实挂载。历史全镜像缓存和同步`IQueue::poll_request`依赖已经删除的块接口，也不能恢复。
+
+选择在ax-fs-ng内部用现有`FsBlockDevice`适配有所有权的`FileBackend`，通过一个文件来源构造入口交给Starry的loop挂载使用。`FsBlockDevice`保持内部接口，物理设备的`BlockDeviceHandle`及IRQ完成路径保持原有所有者。文件适配器按需调用`read_at`、`write_at`、`sync`，不复制整幅镜像，不建立软件IRQ或第二个块运行时；底层物理I/O继续经过文件系统现有块运行时。块范围用受检算术验证，短I/O和同步错误必须传播。
+
+Starry设备边界需要转发长度和同步能力，默认行为与原`Device::len`、`Device::sync`一致，loop实现提供真实容量和后端同步。挂载入口验证块设备类型及绑定状态，在FsContext锁外构造文件系统，最后发布挂载；失败时由源租约自动释放打开计数。现有从native handle构造文件系统的调用者保持既有接口。
+
+### 4.2 生命周期
+
+文件适配器同时拥有后端与源设备打开租约，租约必须持续到文件系统最后引用释放。`Mountpoint::set_lifetime_guard`只保护attached状态，lazy detach会提前释放，故不能承载该租约。loop的绑定、打开计数、flags与延迟清理状态应由同一锁保护；`LOOP_CLR_FD`遇到其他使用者时延迟清理，最终关闭后释放绑定，禁止在挂载仍使用设备时重绑到其他文件。实际文件I/O在释放该状态锁后执行。
+
+ext4当前强持有root DirEntry，root Inode又强持有Ext4Filesystem，形成循环。需要让文件系统保存弱root引用，由实际目录/文件消费者保持文件系统存活；最后引用释放时停止MMP工作、完成首次必要的卸载并释放后端。析构不能加入对不确定MMP CLEAN写入的重试，也不能在MMP工作线程自己持有最后引用时自我join。生命周期回归先证明旧引用环不释放后端，再证明修复后最后root引用释放后端；四架构LTP必须实际报告ext4执行与完整断言，并验证loop设备能够重复使用。
+
+这项改动没有镜像格式迁移。代码可整体回退，但测试中写入的文件系统数据仍由正常flush/unmount保证；验证仅使用QEMU快照。性能目标是避免全镜像常驻缓存，复用现有文件缓存并按需I/O，不引入轮询、额外重试或超时扩张。
+
+### 4.3 实际执行门禁
+
+固定LTP的`all_filesystems`会自动排除缺少mkfs的文件系统，并且仅执行tmpfs后仍可返回0。迁移必须由`filesystem-passes.txt`按`=== Testing on <fs> ===`阶段核验源代码定义的TPASS数量，不能只检查总数。共享prebuild安装e2fsprogs，CMake安装真实mkfs可执行文件，使运行依赖扫描同步其动态库；wrapper补齐sbin路径。新增门禁已在缺少ext4执行的x86_64输出上确定性失败。
+
+### 4.4 传输游标缺陷
+
+接通实际ext4格式化后，`readdir01`稳定在挂载时返回EIO。诊断发现`FileBackend::Direct::read_at`请求1024字节却累计返回314571776字节：`ax-io::IoBufMutExt::read_from`的切片特化没有推进目的切片，重复覆盖同一缓冲区直至镜像EOF。同族`IoBufExt::write_to`也没有推进源切片。新增组件回归先验证旧实现的部分读取、连续读取、部分写入和零进展状态失败；修复需在特化实现中推进实际完成的字节数，不能在ext4适配层绕过。另一个同族问题是`BorrowedCursor::read_from`返回累计written而非本次增量，连续两次2字节读取错误返回2、4；独立回归在旧实现失败、修复后通过。`tests/std.rs`原来把不推进切片的错误行为写成预期，本项同步改成源耗尽/目的填满断言。三个新回归及57包`cargo xtask test`已通过；x86_64同一LTP七项通过，五项同时完成ext4和tmpfs且每项均复用`/dev/loop0`。同一七项在另外三个架构也已通过，实际ext4阶段及完成数量均核对成功。
+
+### 4.5 退出与上下文登记
+
+Linux v7.1 `kernel/exit.c::do_exit`在退出通知前调用`exit_fs`。Starry旧实现把`FS_CONTEXT`留在已退出线程的资源scope中，运行时回收前仍被`FS_REGISTRY`视为cwd所有者；LTP上游卸载重试会掩盖这个窗口。新增回归把父子固定在CPU0，父进程使用更高FIFO优先级，在`waitpid`返回后立即执行一次`umount2`，确定性报告EBUSY。第二个场景先`unshare(CLONE_FS)`，证明未登记的新上下文会导致活跃cwd错误地不阻止卸载。
+
+`FS_CONTEXT`现在显式保存`Option<Arc<Mutex<FsContext>>>`，None表示该任务已释放文件系统资源。`do_exit`在关闭描述符后、发布zombie前取出这一owner，在scope临界区外释放。其他CLONE_FS共享者持有自己的Arc，不会被退出线程重置cwd或根目录。`FsContext::into_shared`统一登记初始、fork私有及unshare替换上下文；procfs和setns的远程读取显式处理已释放状态。unshare安装新scope值后把旧文件表和旧FsContext带出临界区再释放，避免最终文件系统卸载在关抢占上下文进行。
+
+该公共类型变更的全部工作区直接调用者已更新，`current_fs_context()`对仍活跃任务保持原有返回类型；退出后调用该当前任务入口属于内部生命周期错误。新回归两种场景在x86_64已先红后绿，四架构均通过；七项新增LTP也在四架构通过，未再触发上游EBUSY卸载重试。累计71个共同LTP用例、x86_64两个旧入口及native辅助程序已在四架构通过；57软件包标准库测试、ax-io两项、ax-fs-ng六项及starry-kernel九十二项静态检查也已通过。后续4.6节的新挂载缓存修复另需重验受影响范围。
+
+
+### 4.6 最后挂载引用与页缓存
+
+新增loop生命周期回归在x86_64确定性失败：`LOOP_CLR_FD`和lazy detach后已打开文件仍可使用，但关闭最后文件后`LOOP_GET_STATUS64`仍成功。全局`CachedFileRegistry`强持有缓存，缓存的后端inode又持有ext4；单独消除根目录引用环不能释放这条持有链。
+
+`FilesystemOps::mount_lease`提供独立于缓存inode的挂载所有权。每个`Mountpoint`在构造时取得它，bind和命名空间副本也走同一构造路径；字段排在目录引用之后，使最后挂载的dentry先释放。ext4在自身的睡眠锁内发布一个弱`Ext4MountLease`，所有挂载及由`Location`持有的打开文件共享该租约。最后租约析构在同一锁下排除新一代发布；若新一代已经发布，则把缓存交给新所有者。
+
+`retire_filesystem_cache`从现有inode弱索引收集该文件系统的缓存，在回收表锁外写回。成功后发布`retired`状态再移除全局强引用，使并发prune不能把旧缓存恢复到表中；失败的脏缓存保留给现有全局同步路径并记录错误。仍被外部目录对象保存的干净缓存如果重新打开，会重新登记。未开启全局VFS的配置也先写回再清目录缓存，写回失败则保留目录的脏缓存所有权。卸载计划的内部提交改为借用计划，detach把目标持有到拓扑锁释放之后，避免最后租约在拓扑临界区执行I/O。目录缓存还存在父目录缓存子条目、子条目强引用父目录的环；最后租约在写回后调用`DirNode::clear_cached_entries`递归解除该环，不删除磁盘条目。仍有别名挂载或打开文件时不会触发。该公开入口沿用原内部`forget`的缓存清理实现，全部调用者同步更名。本轮其他文件系统使用默认空租约，设备IRQ和物理块运行时不承担这一所有权。同一x86_64生命周期回归现已通过；补充bind别名与最后关闭前不fsync的写入，重新挂载读回数据也通过。证据为实施机器`/tmp/starry-ltp-migration-evidence/12-loop-lifetime-x86_64-{red,green2}.log`和`12-loop-alias-dirty-x86_64.log`。并发prune回归已先红后绿，57软件包标准库测试通过；四架构累计集合均通过，逐程序集合及五个ext4阶段完成数量已核对。最新日志为`12-retire-prune-std-{red,green}.log`和`12-mount-final-<arch>.log`；受影响VFS三项、ax-fs-ng六项及starry-kernel九十二项clippy全部通过；补齐无全局VFS配置的同一路径后，再次完整57软件包标准库测试通过。最终全套system及最新dev重验另按2.2节执行。
+
+本项累计运行日志为实施机器`/tmp/starry-ltp-migration-evidence/12-mount-final-<arch>.log`；共同集生成与清单逐字比较一致，x86_64执行74个程序，另外三个架构各72个程序，均含一个独立native辅助程序。最终标准库测试日志为`12-precommit-std.log`，静态检查日志为`12-mount-clippy-<package>.log`。
+
+
+### 4.7 最新基线重验
+
+本项提交后重基到`origin/dev`的`fb0e2a20d7`，包含普通卸载的受影响拓扑校验以及板卡iperf2迁移。十二项提交的`git range-diff`均为内容相同，没有冲突，也没有改写锁文件。重基后四架构累计LTP集合、58软件包标准库测试、x86_64内核174项测试，以及VFS三项、ax-fs-ng六项和starry-kernel九十二项clippy全部通过。日志为实施机器`/tmp/starry-ltp-migration-evidence/12-rebase-*.log`；逐程序集合和ext4完成数量复核通过。此前十一提交版本的CI曾因共享iperf3服务繁忙失败，最新推送仍需取得自己的CI终态，不能用本地成功替代。
+
+### 4.8 卸载写回范围
+
+十三项版本`cc0ff68e07`的CI运行`34255649369`在loongarch64完整system中报告`test-per-ns-mounts`卸载私有tmpfs返回EBUSY，其他Starry矩阵随之取消。同一用例单独运行及一次本地完整system均通过，所以不把偶然通过当作根因解决。
+
+核验发现`sys_umount2`先调用全局`sync_all_cached_files`，它会同步所有文件系统的缓存；其他文件的WritebackProtect映射端点返回Busy时会错误阻止本次卸载。Linux v7.1 `fs/super.c::generic_shutdown_super`调用目标superblock的`fs/sync.c::sync_filesystem`，不是同步所有文件系统。新增确定性回归让一个无关文件系统的映射端点始终返回Busy，再同步目标文件系统，旧全局实现必然返回ResourceBusy；日志为`13-unmount-scope-std-red.log`。
+
+`sync_filesystem_cached_files`复用现有缓存登记表和不可变backing的文件系统身份，只对目标所有者写回，保持目标自身错误传播；全局sync仍调用原全局入口。没有新增登记表、重试、错误吞并或超时。回归同时确认无关端点没有被调用、目标端点的ResourceBusy仍保留，修复后及完整58包std通过，日志为`13-unmount-scope-std-green.log`。CI中具体EBUSY来源缺少现场分支记录，因此这是确定性复现并修复的相关范围缺陷，不能宣称已从CI日志直接证明唯一根因；仍需同一完整套件和新推送CI终态确认。 修复后的loongarch64完整system已完成509个程序，全部通过；另外三个架构累计LTP均通过，四架构实际LTP集合和五项ext4阶段数量符合清单，生成共同集逐字一致。ax-fs-ng六项及starry-kernel九十二项clippy全部通过。日志为`13-unmount-scope-full-loongarch64.log`、`13-unmount-scope-<arch>.log`及`13-unmount-scope-clippy-<package>.log`。
+
