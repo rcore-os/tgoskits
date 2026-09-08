@@ -6,7 +6,7 @@ test-suit/starryos/qemu/system/apk-curl-equivalence,apk-curl-equivalence,保留,
 test-suit/starryos/qemu/system/block-io-bench,block-io-bench,保留,,,,块I/O性能基准，不纳入syscall测试清理,
 test-suit/starryos/qemu/system/block-io-smoke,block-io-smoke,保留,,,,CMake预置rootfs上的4KiB文件，验证实际块I/O写入、fsync及回读；保留硬件与文件系统装配证据,
 test-suit/starryos/qemu/system/bugfix-alarm-syscall,bugfix-alarm-syscall,部分替代并修复,alarm02 alarm05 alarm06,首次设置/取消剩余秒数、替换、SIGALRM交付及取消；纯算法回归保留Linux半秒取整边界,线程间共享及创建线程退出后的alarm交付；setitimer与alarm的系统级小数秒互操作不再由本项C回归保留,确定性单元及x86_64同一C回归先红后绿；完整57软件包std通过；101项clippy通过；四架构alarm02/05/06分别6/3/2 TPASS；共同集生成通过,test(starry): migrate alarm checks and fix remaining-time rounding
-test-suit/starryos/qemu/system/bugfix-bug-advisory-lock-dir,bug-advisory-lock-dir,待清理,,,目录FD上的flock共享/排他/释放；同进程不同OFD间读锁可见；只读目录写记录锁EBADF,已核实flock/fcntl家族未建立目录FD场景；flock01仅普通O_RDWR文件,
+test-suit/starryos/qemu/system/bugfix-bug-advisory-lock-dir,bug-advisory-lock-dir,无等效项清理,,,目录FD上的flock共享/排他/释放；同进程不同OFD间读锁可见；只读目录写记录锁EBADF,已完整读取原测试及LTP flock/fcntl目录条件；静态引用与差异检查通过；未新增运行覆盖,test(starry): remove unmatched directory advisory-lock regression
 test-suit/starryos/qemu/system/bugfix-bug-af-inet6-v4mapped,bug-af-inet6-v4mapped,待审计,,,Starry IPv4栈伪IPv6的mapped地址；V6ONLY设置1读取0；UDP/TCP getpeername与accept返回mapped地址,固定LTP bind04/bind05/connect02/in6_01未承接原断言；V6ONLY原断言本身与Linux语义存在差异，需进一步核实,
 test-suit/starryos/qemu/system/bugfix-bug-chroot-parent-escape,bug-chroot-parent-escape,待清理,,,jail与tmpfs挂载根的多级..约束；父祖目录文件隐藏；符号链接逃逸；rmdir(..)返回EBUSY,固定LTP chroot01-04未覆盖这些边界；删除后不宣称仍有覆盖,
 test-suit/starryos/qemu/system/bugfix-bug-cow-refcount-overflow,bug-cow-refcount-overflow,待清理,,,预触只读页、300同时存活子进程维持共享、fork不因引用计数溢出返回EFAULT、全部正常回收,固定LTP fork07的100子进程文件偏移测试及hugefork01单子进程COW均不等效,
