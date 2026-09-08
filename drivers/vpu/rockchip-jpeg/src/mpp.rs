@@ -265,9 +265,11 @@ impl MppSession {
             registers::REG_STRM_BASE => {
                 let reg = self.regs[registers::REG_STRM_LEN];
                 let blocks = ((reg >> 4) & 0x0fff_ffff) as usize;
+                // The low nibble is consumed by the hardware as the byte
+                // position within the first block; it is not another byte
+                // in the DMA range.
                 (blocks + 1)
                     .checked_mul(16)
-                    .and_then(|length| length.checked_add((reg & 0xf) as usize))
                     .ok_or(MppError::AddressOverflow)
             }
             registers::REG_DEC_OUT_BASE => self.output_length(),
@@ -285,6 +287,8 @@ impl MppSession {
         }
 
         let mode = self.regs[registers::REG_PIC_FMT] & 0x7;
+        let vertical_subsampling =
+            matches!(mode, registers::JPEG_MODE_420 | registers::JPEG_MODE_440);
         let height_alignment = if sys & registers::SYS_FILL_DOWN != 0 {
             16
         } else {
@@ -306,12 +310,28 @@ impl MppSession {
             / height_alignment
             * height_alignment;
 
+        let width = (self.regs[registers::REG_PIC_SIZE] & 0xffff) as usize + 1;
+        let width_aligned = width.checked_add(15).ok_or(MppError::AddressOverflow)? / 16 * 16;
+        let minimum_y_stride_units = width_aligned / 16;
         let y_stride_units = (self.regs[registers::REG_HOR_VIRSTRIDE] & 0xffff) as usize
             | (((self.regs[registers::REG_TABLE_LEN] >> 24) & 1) as usize) << 16;
-        if y_stride_units == 0 {
+        if y_stride_units < minimum_y_stride_units {
             return Err(MppError::UnsupportedGeometry);
         }
         let uv_stride_units = (self.regs[registers::REG_HOR_VIRSTRIDE] >> 16) as usize;
+        let minimum_uv_stride_units = match mode {
+            registers::JPEG_MODE_400 => 0,
+            registers::JPEG_MODE_411 => (minimum_y_stride_units / 2).max(1),
+            registers::JPEG_MODE_420 | registers::JPEG_MODE_422 => minimum_y_stride_units,
+            registers::JPEG_MODE_440 | registers::JPEG_MODE_444 => minimum_y_stride_units
+                .checked_mul(2)
+                .ok_or(MppError::AddressOverflow)?,
+            _ => return Err(MppError::UnsupportedGeometry),
+        };
+        if uv_stride_units < minimum_uv_stride_units {
+            return Err(MppError::UnsupportedGeometry);
+        }
+
         let y_stride = y_stride_units
             .checked_mul(16)
             .ok_or(MppError::AddressOverflow)?;
@@ -324,12 +344,20 @@ impl MppSession {
         let y_virstride = ((self.regs[registers::REG_Y_VIRSTRIDE] >> 4) as usize)
             .checked_mul(16)
             .ok_or(MppError::AddressOverflow)?;
-        let y_size = y_rows.max(y_virstride);
+        if y_virstride < y_rows {
+            return Err(MppError::UnsupportedGeometry);
+        }
+        let y_size = y_virstride;
+        let chroma_height = if vertical_subsampling {
+            height / 2
+        } else {
+            height
+        };
         let uv_size = if mode == registers::JPEG_MODE_400 {
             0
         } else {
             uv_stride
-                .checked_mul(height)
+                .checked_mul(chroma_height)
                 .ok_or(MppError::AddressOverflow)?
         };
         y_size.checked_add(uv_size).ok_or(MppError::AddressOverflow)
@@ -585,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_exact_output_allocation_size() {
+    fn accepts_exact_nv12_output_allocation_size() {
         let mut s = MppSession::new();
         let mut words = [0u32; REG_COUNT];
         words[registers::REG_DEC_OUT_BASE] = 11;
@@ -593,19 +621,138 @@ mod tests {
         words[registers::REG_PIC_SIZE] = 15 | (15 << 16);
         words[registers::REG_PIC_FMT] = registers::JPEG_MODE_420;
         words[registers::REG_HOR_VIRSTRIDE] = 1 | (1 << 16);
-        words[registers::REG_Y_VIRSTRIDE] = 32 << 4;
+        words[registers::REG_Y_VIRSTRIDE] = 16 << 4;
         s.set_reg_write(&words);
 
-        // 512 bytes of Y (the programmed Y virtual stride) plus 256 bytes of
-        // chroma is the exact legal end of this two-plane output allocation.
+        // 256 bytes of Y plus 128 bytes of 4:2:0 chroma is the exact legal end
+        // of this two-plane output allocation.
         s.resolve_addresses(|_| {
             Some(ResolvedDmaBuf {
                 address: 0x3000_0000,
-                size: 768,
+                size: 384,
             })
         })
         .unwrap();
         assert_eq!(s.regs()[registers::REG_DEC_OUT_BASE], 0x3000_0000);
+    }
+
+    #[test]
+    fn accepts_exact_nv12_output_allocation_size_for_440() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_DEC_OUT_BASE] = 11;
+        words[registers::REG_PIC_SIZE] = 15 | (7 << 16);
+        words[registers::REG_PIC_FMT] = registers::JPEG_MODE_440;
+        words[registers::REG_HOR_VIRSTRIDE] = 1 | (2 << 16);
+        words[registers::REG_Y_VIRSTRIDE] = 8 << 4;
+        s.set_reg_write(&words);
+
+        // 128 bytes of Y plus 128 bytes of 4:4:0 chroma is exact; its UV plane
+        // has half as many rows as the Y plane but twice its row stride.
+        s.resolve_addresses(|_| {
+            Some(ResolvedDmaBuf {
+                address: 0x3000_0000,
+                size: 256,
+            })
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_horizontal_stride_smaller_than_picture_width() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_DEC_OUT_BASE] = 11;
+        words[registers::REG_SYS] = registers::SYS_FILL_DOWN;
+        // 63 pixels require a 64-byte aligned Y row, but the client supplies
+        // only one 16-byte stride unit.
+        words[registers::REG_PIC_SIZE] = 62 | (15 << 16);
+        words[registers::REG_PIC_FMT] = registers::JPEG_MODE_420;
+        words[registers::REG_HOR_VIRSTRIDE] = 1 | (1 << 16);
+        words[registers::REG_Y_VIRSTRIDE] = 16 << 4;
+        s.set_reg_write(&words);
+
+        assert_eq!(
+            s.resolve_addresses(|_| {
+                Some(ResolvedDmaBuf {
+                    address: 0x3000_0000,
+                    size: 384,
+                })
+            }),
+            Err(MppError::UnsupportedGeometry)
+        );
+    }
+
+    #[test]
+    fn rejects_uv_stride_smaller_than_picture_width() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_DEC_OUT_BASE] = 11;
+        words[registers::REG_SYS] = registers::SYS_FILL_DOWN;
+        words[registers::REG_PIC_SIZE] = 31 | (15 << 16);
+        words[registers::REG_PIC_FMT] = registers::JPEG_MODE_420;
+        // Y has the required 32-byte stride, while NV12 UV has only 16 bytes.
+        words[registers::REG_HOR_VIRSTRIDE] = 2;
+        words[registers::REG_Y_VIRSTRIDE] = 32 << 4;
+        s.set_reg_write(&words);
+
+        assert_eq!(
+            s.resolve_addresses(|_| {
+                Some(ResolvedDmaBuf {
+                    address: 0x3000_0000,
+                    size: 768,
+                })
+            }),
+            Err(MppError::UnsupportedGeometry)
+        );
+    }
+
+    #[test]
+    fn rejects_y_virtual_stride_smaller_than_y_plane() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_DEC_OUT_BASE] = 11;
+        words[registers::REG_SYS] = registers::SYS_FILL_DOWN;
+        words[registers::REG_PIC_SIZE] = 15 | (15 << 16);
+        words[registers::REG_PIC_FMT] = registers::JPEG_MODE_420;
+        words[registers::REG_HOR_VIRSTRIDE] = 1 | (1 << 16);
+        // Y needs 16 * 16 = 256 bytes, but the virtual stride is only 240.
+        words[registers::REG_Y_VIRSTRIDE] = 15 << 4;
+        s.set_reg_write(&words);
+
+        assert_eq!(
+            s.resolve_addresses(|_| {
+                Some(ResolvedDmaBuf {
+                    address: 0x3000_0000,
+                    size: 384,
+                })
+            }),
+            Err(MppError::UnsupportedGeometry)
+        );
+    }
+
+    #[test]
+    fn accepts_stream_range_with_nonzero_start_byte() {
+        let mut s = MppSession::new();
+        let mut words = [0u32; REG_COUNT];
+        words[registers::REG_STRM_BASE] = 9;
+        // One 16-byte DMA block, with the first coded byte at byte five inside
+        // that block. The start marker is not an additional DMA byte count.
+        words[registers::REG_STRM_LEN] = 5;
+        s.set_reg_write(&words);
+        s.add_reg_offsets(&[RegOffset {
+            index: registers::REG_STRM_BASE as u32,
+            offset: 4080,
+        }])
+        .unwrap();
+
+        s.resolve_addresses(|_| {
+            Some(ResolvedDmaBuf {
+                address: 0x2000_0000,
+                size: 4096,
+            })
+        })
+        .unwrap();
     }
 
     #[test]
