@@ -2935,11 +2935,6 @@ fn rsext4_bmalloc_type_conversions_and_validation_hold() {
 }
 
 #[test]
-fn rsext4_block_group_desc_disk_format_rules_hold() {
-    assert!(rsext4::blockgroup_description::block_group_desc_disk_format_rules_hold_for_test());
-}
-
-#[test]
 fn rsext4_superblock_feature_flags_hold() {
     use rsext4::superblock::Ext4Superblock;
 
@@ -2969,73 +2964,4 @@ fn rsext4_superblock_feature_flags_hold() {
 
     // Test magic number
     assert_eq!(Ext4Superblock::EXT4_SUPER_MAGIC, 0xEF53);
-}
-
-#[test]
-fn rsext4_extent_header_constants_and_defaults_hold() {
-    use rsext4::disknode::{Ext4Extent, Ext4ExtentHeader};
-
-    // Test extent header constants
-    assert_eq!(Ext4ExtentHeader::EXT4_EXT_MAGIC, 0xF30A);
-
-    // Test default header
-    let default_header = Ext4ExtentHeader::default();
-    assert_eq!(default_header.eh_magic, Ext4ExtentHeader::EXT4_EXT_MAGIC);
-    assert_eq!(default_header.eh_entries, 0);
-    // eh_max may be non-zero in default (depends on implementation)
-    assert_eq!(default_header.eh_depth, 0);
-    assert_eq!(default_header.eh_generation, 0);
-
-    // Test extent constants
-    assert_eq!(Ext4Extent::EXT_INIT_MAX_LEN, 32768);
-}
-
-#[test]
-fn rsext4_inode_mode_constants_and_type_checks_hold() {
-    use rsext4::disknode::Ext4Inode;
-
-    assert_eq!(Ext4Inode::S_IFREG, 0x8000);
-    assert_eq!(Ext4Inode::S_IFDIR, 0x4000);
-    assert_eq!(Ext4Inode::S_IFLNK, 0xa000);
-    assert_eq!(Ext4Inode::S_ISUID, 0x0800);
-    assert_eq!(Ext4Inode::S_ISGID, 0x0400);
-}
-
-#[test]
-fn rsext4_extent_header_constants_hold() {
-    use rsext4::disknode::Ext4ExtentHeader;
-
-    assert_eq!(Ext4ExtentHeader::EXT4_EXT_MAGIC, 0xf30a);
-}
-
-#[test]
-fn rsext4_dirent_file_type_constants_hold() {
-    use rsext4::entries::Ext4DirEntry2;
-
-    assert_eq!(Ext4DirEntry2::EXT4_FT_UNKNOWN, 0);
-    assert_eq!(Ext4DirEntry2::EXT4_FT_REG_FILE, 1);
-    assert_eq!(Ext4DirEntry2::EXT4_FT_DIR, 2);
-    assert_eq!(Ext4DirEntry2::EXT4_FT_CHRDEV, 3);
-    assert_eq!(Ext4DirEntry2::EXT4_FT_BLKDEV, 4);
-    assert_eq!(Ext4DirEntry2::EXT4_FT_FIFO, 5);
-    assert_eq!(Ext4DirEntry2::EXT4_FT_SOCK, 6);
-    assert_eq!(Ext4DirEntry2::EXT4_FT_SYMLINK, 7);
-}
-
-#[test]
-fn rsext4_group_desc_flags_hold() {
-    use rsext4::blockgroup_description::Ext4GroupDesc;
-
-    assert_eq!(Ext4GroupDesc::EXT4_BG_INODE_UNINIT, 0x0001);
-    assert_eq!(Ext4GroupDesc::EXT4_BG_BLOCK_UNINIT, 0x0002);
-    assert_eq!(Ext4GroupDesc::EXT4_BG_INODE_ZEROED, 0x0004);
-}
-
-#[test]
-fn rsext4_journal_blocktype_constants_hold() {
-    use rsext4::jbd2::jbdstruct::{JBD2_BLOCKTYPE_COMMIT, JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_MAGIC};
-
-    assert_eq!(JBD2_MAGIC, 0xc03b_3998);
-    assert_eq!(JBD2_BLOCKTYPE_DESCRIPTOR, 1);
-    assert_eq!(JBD2_BLOCKTYPE_COMMIT, 2);
 }

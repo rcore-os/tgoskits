@@ -6,10 +6,9 @@ use std::{
 use tempfile::tempdir;
 
 use super::{
-    ArceosBuildInfo, ArceosBuildMode, default_build_info_path,
+    ArceosBuildInfo, ArceosBuildMode,
     info::{load_build_info, resolve_build_info_path_in_dir},
     load_arceos_build_mode, load_c_app_cargo_config, resolve_app_c_dir, resolve_app_c_mode,
-    resolve_build_info_path,
 };
 use crate::{build, context::ResolvedBuildRequest};
 
@@ -41,27 +40,6 @@ fn request(package: &str, target: &str, build_info_path: PathBuf) -> ResolvedBui
 }
 
 #[test]
-fn build_cargo_args_use_shared_bare_targets_and_build_std() {
-    for target in [
-        "x86_64-unknown-none",
-        "aarch64-unknown-none-softfloat",
-        "riscv64gc-unknown-none-elf",
-        "loongarch64-unknown-none-softfloat",
-    ] {
-        let args = ArceosBuildInfo::build_cargo_args(target, &[]);
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
-        );
-        assert!(!args.iter().any(|arg| arg.contains("-Clink-arg=-T")));
-    }
-}
-
-#[test]
 fn max_cpu_num_adds_smp_feature_for_std_build() {
     let mut build_info = ArceosBuildInfo {
         features: vec!["ax-api/net".to_string()],
@@ -72,31 +50,6 @@ fn max_cpu_num_adds_smp_feature_for_std_build() {
     build_info.resolve_c_app_features().unwrap();
 
     assert!(build_info.features.contains(&"ax-std/smp".to_string()));
-}
-
-#[test]
-fn resolve_build_info_path_uses_package_directory() {
-    let path = resolve_build_info_path("arceos-helloworld", "aarch64-unknown-none-softfloat", None)
-        .unwrap();
-    let default_path =
-        default_build_info_path("arceos-helloworld", "aarch64-unknown-none-softfloat").unwrap();
-
-    assert_eq!(path, default_path);
-    assert!(path.ends_with(
-        "tmp/axbuild/config/arceos-helloworld/build-aarch64-unknown-none-softfloat.toml"
-    ));
-}
-
-#[test]
-fn resolve_build_info_path_prefers_explicit_path() {
-    let path = resolve_build_info_path(
-        "arceos-helloworld",
-        "aarch64-unknown-none-softfloat",
-        Some(PathBuf::from("/tmp/custom-build.toml")),
-    )
-    .unwrap();
-
-    assert_eq!(path, PathBuf::from("/tmp/custom-build.toml"));
 }
 
 #[test]

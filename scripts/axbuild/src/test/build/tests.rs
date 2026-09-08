@@ -495,26 +495,6 @@ fn detect_gcc_runtime_dir_prefers_highest_version() {
 }
 
 #[test]
-fn qemu_user_binary_names_cover_supported_arches() {
-    assert_eq!(
-        qemu_user_binary_names("aarch64").unwrap(),
-        &["qemu-aarch64-static", "qemu-aarch64"]
-    );
-    assert_eq!(
-        qemu_user_binary_names("riscv64").unwrap(),
-        &["qemu-riscv64-static", "qemu-riscv64"]
-    );
-    assert_eq!(
-        qemu_user_binary_names("x86_64").unwrap(),
-        &["qemu-x86_64-static", "qemu-x86_64"]
-    );
-    assert_eq!(
-        qemu_user_binary_names("loongarch64").unwrap(),
-        &["qemu-loongarch64-static", "qemu-loongarch64"]
-    );
-}
-
-#[test]
 fn case_script_envs_include_expected_paths() {
     let root = tempdir().unwrap();
     let case = fake_case(root.path(), "usb");

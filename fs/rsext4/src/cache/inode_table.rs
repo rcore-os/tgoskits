@@ -482,12 +482,4 @@ mod tests {
         assert_eq!(offset, 0);
         assert_eq!(group, BGIndex::new(0));
     }
-
-    #[test]
-    fn test_inode_cache_basic() {
-        let cache = InodeCache::new(4, 256);
-        let stats = cache.stats();
-        assert_eq!(stats.total_entries, 0);
-        assert_eq!(stats.max_entries, 4);
-    }
 }

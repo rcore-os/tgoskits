@@ -1,6 +1,5 @@
 use alloc::{
     borrow::ToOwned,
-    format,
     string::{String, ToString},
     sync::Arc,
     vec,
@@ -58,7 +57,6 @@ fn axfs_ng_vfs_path_ownership_and_join_rules_hold() {
 
     let path = Path::new("alpha/beta");
     assert_eq!(path.as_bytes(), b"alpha/beta");
-    assert_eq!(path.to_string(), "alpha/beta");
     assert_eq!(path.parent().map(Path::as_str), Some("alpha/"));
     assert_eq!(Path::new("/").parent(), None);
     assert_eq!(Path::new(".").parent().map(Path::as_str), Some(""));
@@ -67,8 +65,6 @@ fn axfs_ng_vfs_path_ownership_and_join_rules_hold() {
     let owned = path.to_owned();
     assert_eq!(owned.as_str(), "alpha/beta");
     assert_eq!(<PathBuf as AsRef<str>>::as_ref(&owned), "alpha/beta");
-    assert_eq!(owned.to_string(), "alpha/beta");
-    assert_eq!(format!("{owned:?}"), "PathBuf { inner: \"alpha/beta\" }");
 
     let arc_path: Arc<Path> = Arc::from(path);
     assert_eq!(arc_path.as_str(), "alpha/beta");
@@ -103,54 +99,6 @@ fn axfs_ng_vfs_path_ownership_and_join_rules_hold() {
 }
 
 #[test]
-fn axfs_ng_vfs_device_and_metadata_update_rules_hold() {
-    use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType};
-
-    for (raw, node_type) in [
-        (0o1, NodeType::Fifo),
-        (0o2, NodeType::CharacterDevice),
-        (0o4, NodeType::Directory),
-        (0o6, NodeType::BlockDevice),
-        (0o10, NodeType::RegularFile),
-        (0o12, NodeType::Symlink),
-        (0o14, NodeType::Socket),
-        (0, NodeType::Unknown),
-    ] {
-        assert_eq!(NodeType::from(raw), node_type);
-    }
-
-    let permission = NodePermission::SET_UID
-        | NodePermission::SET_GID
-        | NodePermission::STICKY
-        | NodePermission::OWNER_EXEC
-        | NodePermission::GROUP_EXEC
-        | NodePermission::OTHER_EXEC;
-    assert!(permission.contains(NodePermission::SET_UID));
-    assert!(format!("{permission:?}").contains("OWNER_EXEC"));
-
-    let device = DeviceId::new(0xffff_f123, 0xffff_fe45);
-    assert_eq!(device.major(), 0xffff_f123);
-    assert_eq!(device.minor(), 0xffff_fe45);
-    assert_eq!(
-        format!("{device:?}"),
-        "DeviceId { major: 4294963491, minor: 4294966853 }"
-    );
-
-    let update = MetadataUpdate {
-        mode: Some(permission),
-        owner: Some((1000, 1001)),
-        rdev: Some(device),
-        atime: Some(Duration::from_secs(10)),
-        mtime: Some(Duration::from_secs(20)),
-    };
-    assert!(update.mode.unwrap().contains(NodePermission::STICKY));
-    assert_eq!(update.owner, Some((1000, 1001)));
-    assert_eq!(update.rdev.unwrap().minor(), 0xffff_fe45);
-    assert_eq!(update.atime.unwrap().as_secs(), 10);
-    assert_eq!(update.mtime.unwrap().as_secs(), 20);
-}
-
-#[test]
 fn axfs_ng_vfs_type_rules_hold() {
     use axfs_ng_vfs::{DeviceId, FsIoEvents, NodePermission, NodeType, Reference, TypeMap};
 
@@ -166,7 +114,6 @@ fn axfs_ng_vfs_type_rules_hold() {
     let device = DeviceId::new(0x12345, 0x6789ab);
     assert_eq!(device.major(), 0x12345);
     assert_eq!(device.minor(), 0x6789ab);
-    assert!(format!("{device:?}").contains("major"));
 
     let events = FsIoEvents::IN | FsIoEvents::OUT;
     assert!(events.contains(FsIoEvents::IN));

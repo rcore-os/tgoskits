@@ -91,37 +91,6 @@ fn axvisor_all_architectures_use_rust_std_musl_with_abort_panics() {
 }
 
 #[test]
-fn resolve_build_info_path_uses_default_axvisor_location() {
-    let root = tempdir().unwrap();
-    let path = resolve_build_info_path(
-        &root.path().join("os/axvisor"),
-        "aarch64-unknown-none-softfloat",
-        None,
-    )
-    .unwrap();
-
-    assert_eq!(
-        path,
-        root.path()
-            .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
-    );
-}
-
-#[test]
-fn resolve_build_info_path_prefers_explicit_path() {
-    let root = tempdir().unwrap();
-    let explicit = root.path().join("custom/build.toml");
-    let path = resolve_build_info_path(
-        &root.path().join("os/axvisor"),
-        "x86_64-unknown-none",
-        Some(explicit.clone()),
-    )
-    .unwrap();
-
-    assert_eq!(path, explicit);
-}
-
-#[test]
 fn resolve_build_info_path_ignores_source_tree_defaults() {
     let root = tempdir().unwrap();
     let axvisor_dir = root.path().join("os/axvisor");

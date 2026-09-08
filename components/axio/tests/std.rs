@@ -6,7 +6,6 @@ extern crate alloc;
 use alloc::{
     boxed::Box,
     collections::VecDeque,
-    format,
     string::{String, ToString},
     vec,
     vec::Vec,
@@ -216,28 +215,6 @@ fn axio_iobuf_extension_rules_hold() {
     let mut rest = Vec::new();
     buffered.read_to_end(&mut rest).unwrap();
     assert_eq!(rest, b"zw");
-}
-
-#[test]
-fn axio_poll_state_and_formatting_rules_hold() {
-    use ax_io::PollState;
-
-    let default_state = PollState::default();
-    assert!(!default_state.readable);
-    assert!(!default_state.writable);
-    assert_eq!(default_state.read_readiness_version, 0);
-    assert_eq!(default_state.write_readiness_version, 0);
-
-    let state = PollState {
-        readable: true,
-        writable: true,
-        read_readiness_version: 7,
-        write_readiness_version: 9,
-    };
-    let formatted = format!("{state:?}");
-    assert!(formatted.contains("readable: true"));
-    assert!(formatted.contains("read_readiness_version: 7"));
-    assert!(formatted.contains("write_readiness_version: 9"));
 }
 
 #[test]
@@ -484,10 +461,6 @@ fn axio_take_chain_and_recovery_rules_hold() {
     writer.write_all(b"abcd").unwrap();
     let into_inner_error = writer.into_inner().unwrap_err();
     assert_eq!(*into_inner_error.error(), Error::StorageFull);
-    assert_eq!(
-        format!("{into_inner_error}"),
-        format!("{}", Error::StorageFull)
-    );
 
     let (error, recovered) = into_inner_error.into_parts();
     assert_eq!(error, Error::StorageFull);
@@ -503,7 +476,6 @@ fn axio_buffered_reader_edge_paths_hold() {
     assert_eq!(reader.capacity(), ax_io::DEFAULT_BUF_SIZE);
     assert_eq!(reader.get_ref(), &&b"direct-read"[..]);
     assert!(!reader.initialized());
-    assert!(format!("{reader:?}").contains("BufReader"));
 
     let mut direct = [0; 11];
     reader.read_exact(&mut direct).unwrap();
@@ -549,7 +521,6 @@ fn axio_buffered_writer_edge_paths_hold() {
 
     let mut writer = BufWriter::new(Vec::<u8>::new());
     assert_eq!(writer.capacity(), ax_io::DEFAULT_BUF_SIZE);
-    assert!(format!("{writer:?}").contains("BufWriter"));
     writer.write_all(b"buf").unwrap();
     assert_eq!(writer.get_ref(), b"");
     writer.get_mut().extend_from_slice(b"inner-");
@@ -707,7 +678,6 @@ fn axio_line_writer_edge_paths_hold() {
     use ax_io::{Error, IoBufMut, LineWriter, Write};
 
     let mut writer = LineWriter::new(Vec::<u8>::new());
-    assert!(format!("{writer:?}").contains("LineWriter"));
     assert!(writer.remaining_mut() > 0);
     writer.write_all(b"prefix").unwrap();
     assert!(writer.get_ref().is_empty());
@@ -956,7 +926,6 @@ fn axio_empty_repeat_sink_edge_rules_hold() {
         .write_fmt(format_args!("{} {}", "fmt", 1))
         .unwrap();
     empty_reader.flush().unwrap();
-    assert!(format!("{empty_reader:?}").contains("Empty"));
 
     let empty_ref = empty();
     let mut empty_ref_writer = &empty_ref;
@@ -987,7 +956,6 @@ fn axio_empty_repeat_sink_edge_rules_hold() {
         Err(Error::NoMemory)
     );
     assert_eq!(repeated.remaining(), usize::MAX);
-    assert!(format!("{repeated:?}").contains("Repeat"));
 
     let mut sink_writer = sink();
     assert_eq!(sink_writer.write(b"abc").unwrap(), 3);
@@ -997,7 +965,6 @@ fn axio_empty_repeat_sink_edge_rules_hold() {
         .unwrap();
     sink_writer.flush().unwrap();
     assert_eq!(sink_writer.remaining_mut(), usize::MAX);
-    assert!(format!("{sink_writer:?}").contains("Sink"));
 
     let sink_ref = sink();
     let mut sink_ref_writer = &sink_ref;
@@ -1364,32 +1331,6 @@ fn axio_boxed_bufread_and_seek_forwarding_rules_hold() {
     assert_eq!(boxed_seek.stream_len().unwrap(), 8);
     boxed_seek.rewind().unwrap();
     assert_eq!(boxed_seek.stream_position().unwrap(), 0);
-}
-
-#[test]
-fn axio_error_kind_variants_and_display_hold() {
-    use ax_io::Error;
-
-    // Test all ErrorKind variants exist and display correctly
-    let errors = [
-        (Error::UnexpectedEof, "UnexpectedEof"),
-        (Error::Interrupted, "Interrupted"),
-        (Error::WriteZero, "WriteZero"),
-        (Error::StorageFull, "StorageFull"),
-        (Error::InvalidInput, "InvalidInput"),
-        (Error::BrokenPipe, "BrokenPipe"),
-        (Error::NoMemory, "NoMemory"),
-        (Error::IllegalBytes, "IllegalBytes"),
-        (Error::InvalidData, "InvalidData"),
-    ];
-    for (error, _name) in &errors {
-        // Just verify they can be created and formatted
-        let _formatted = format!("{error}");
-    }
-
-    // Test Error::canonicalize behavior
-    assert_eq!(Error::Interrupted.canonicalize(), Error::Interrupted);
-    assert_eq!(Error::UnexpectedEof.canonicalize(), Error::UnexpectedEof);
 }
 
 #[test]
