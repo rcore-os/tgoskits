@@ -201,10 +201,12 @@ pub struct SampleReadValue {
     pub lost: u64,
 }
 
+type SampleReadCallback = unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue;
+
 #[derive(Clone, Copy)]
 pub struct SampleReadEntry {
     context: *const (),
-    callback: Option<unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue>,
+    callback: Option<SampleReadCallback>,
     pub id: u64,
 }
 
@@ -223,7 +225,7 @@ impl SampleReadEntry {
 
     pub fn new(
         context: *const (),
-        callback: unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue,
+        callback: SampleReadCallback,
         id: u64,
     ) -> Self {
         Self {

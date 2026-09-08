@@ -1,6 +1,6 @@
 //! Fixed task-context workers for CPU-owned PMU operations.
 
-use alloc::{collections::VecDeque, format, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, format, sync::Arc, vec::Vec};
 
 use ax_lazyinit::LazyInit;
 use ax_runtime::task::{
@@ -72,7 +72,7 @@ enum PerfCpuCommand {
         completion: Arc<PerfCompletion<()>>,
     },
     EnableSystem {
-        request: SystemPmuEnable,
+        request: Box<SystemPmuEnable>,
         completion: Arc<PerfCompletion<SystemPmuEnableResult>>,
     },
     DisableSystem {
@@ -130,7 +130,7 @@ impl PerfCpuCommand {
                 request,
                 completion,
             } => {
-                let result = with_local_pmu_exclusion(|| hw::enable_system_on_owner(request));
+                let result = with_local_pmu_exclusion(|| hw::enable_system_on_owner(*request));
                 completion.finish(result);
             }
             Self::DisableSystem {
@@ -335,7 +335,7 @@ pub(super) fn enable_system(
     }
     let completion = Arc::new(PerfCompletion::new());
     owner_worker(owner)?.submit(PerfCpuCommand::EnableSystem {
-        request: request.expect("remote PMU enable request"),
+        request: Box::new(request.expect("remote PMU enable request")),
         completion: Arc::clone(&completion),
     });
     completion.wait()

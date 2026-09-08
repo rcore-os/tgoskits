@@ -138,7 +138,7 @@ pub fn read_midr_el1() -> u64 {
 pub fn cpu_midr(cpu: usize) -> u64 {
     #[cfg(target_arch = "aarch64")]
     {
-        return percpu::cpu_info(cpu).map_or(0, |info| info.midr);
+        percpu::cpu_info(cpu).map_or(0, |info| info.midr)
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
