@@ -88,7 +88,9 @@ use core::{
 use ax_io::Write;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr};
-use ax_runtime::hal::{paging::MappingFlags, pmu};
+use ax_runtime::hal::paging::MappingFlags;
+#[cfg(target_arch = "aarch64")]
+use ax_runtime::hal::pmu;
 use axpoll::{ExclusiveRegistrationSink, Pollable, SharedRegistrationSink};
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
@@ -125,10 +127,9 @@ static NEXT_PERF_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 /// `MIDR_EL1` for the cpuid `sysfs`/`procfs` nodes (`/proc/cpuinfo`,
 /// `/sys/devices/.../cpuid`, `.../regs/identification/midr_el1`).
 ///
-/// The real register on aarch64 (ARM PMUv3); `0` on other arches, where there is
-/// no PMU and the nodes exist only so the layout stays uniform. Centralizes the
-/// `#[cfg(target_arch = "aarch64")]` gate so the pseudo-fs call sites stay arch
-/// agnostic (and compile under multi-target clippy).
+/// The real register on aarch64 (ARM PMUv3). The corresponding pseudo-fs node
+/// is architecture-gated with this helper.
+#[cfg(target_arch = "aarch64")]
 pub fn read_midr_el1() -> u64 {
     pmu::cpu_id_raw().unwrap_or(0)
 }

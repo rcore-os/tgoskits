@@ -450,12 +450,12 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         let owner_ids = child_thr
             .proc_data
             .identity()
-            .visible_number_in(parent.observer)
+            .visible_number_in(parent.observer())
             .map(crate::task::TgidNumber::from)
             .zip(
                 child_thr
                     .pid_identity()
-                    .visible_number_in(parent.observer)
+                    .visible_number_in(parent.observer())
                     .map(crate::task::TidNumber::from),
             );
         let child = Arc::new(PerTaskCounter::new(parent.inherited_config(

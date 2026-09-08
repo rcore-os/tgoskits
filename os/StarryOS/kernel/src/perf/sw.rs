@@ -73,14 +73,6 @@ pub fn is_counting_sw(id: perf_sw_ids) -> bool {
     SwId::from_raw(id).is_some()
 }
 
-/// Returns whether this is Linux's non-counting tracking event. Upstream
-/// `perf record` creates one `PERF_COUNT_SW_DUMMY` event per CPU and places all
-/// COMM/MMAP/TASK side-band subscriptions on it, then redirects it into the
-/// hardware sampling ring with `PERF_EVENT_IOC_SET_OUTPUT`.
-pub fn is_tracking_dummy(id: perf_sw_ids) -> bool {
-    id == perf_sw_ids::PERF_COUNT_SW_DUMMY
-}
-
 /// Aggregate state owned by one perf event and shared with inherited task
 /// bindings. Scheduling-window state deliberately stays in each binding.
 #[derive(Debug)]

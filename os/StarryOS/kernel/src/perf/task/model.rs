@@ -271,6 +271,11 @@ impl PerTaskCounter {
         self.read_format
     }
 
+    /// PID namespace used to expose this event's task identity to userspace.
+    pub(in crate::perf) fn observer(&self) -> PidNamespaceId {
+        self.observer
+    }
+
     /// Record the unique event id for `PERF_SAMPLE_ID` / `IDENTIFIER`. Called
     /// once at open (before the scheduler hooks run), so a relaxed store suffices.
     pub fn set_sample_id(&self, id: u64) {
