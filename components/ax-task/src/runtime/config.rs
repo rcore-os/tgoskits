@@ -1,4 +1,4 @@
-//! Scheduler configuration and topology identifiers.
+//! Scheduler configuration and capacity limits.
 
 /// Normalized fair scheduling request in nanoseconds.
 pub const NORMALIZED_FAIR_SLICE_NS: u64 = 700_000;
@@ -30,28 +30,6 @@ pub const DEFAULT_BATCH_LIMIT: usize = 64;
 /// transaction for the complete walk, so the bound must also cap worst-case
 /// non-preemptible latency.
 pub const DEFAULT_PI_CHAIN_LIMIT: usize = 64;
-
-/// A logical processor identifier in the configured topology.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct CpuId(u32);
-
-impl CpuId {
-    /// Creates a logical processor identifier.
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    /// Returns the numeric identifier.
-    pub const fn as_u32(self) -> u32 {
-        self.0
-    }
-
-    /// Returns the identifier as an array index.
-    pub const fn as_usize(self) -> usize {
-        self.0 as usize
-    }
-}
 
 /// Immutable sizing and bandwidth policy for one task system.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

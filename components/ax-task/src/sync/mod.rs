@@ -1,8 +1,8 @@
-//! Scheduler-owned synchronization facade and runtime bridge.
+//! Scheduler-owned locks, wait queues and IRQ waiting.
 //!
-//! The stable lock surface is collected in [`api`]. Runtime providers use
-//! [`bridge`] for scheduler-owned PI, blocking, and lockdep capabilities. The
-//! bridge never owns a second waiter, donation graph, or wakeup state.
+//! Runtime providers use [`crate::runtime::sync`] for PI, blocking and lockdep
+//! capabilities. The bridge shares the scheduler's waiters, donation graph
+//! and wakeup state.
 
 #[doc(hidden)]
 pub(crate) mod bridge;

@@ -1,7 +1,10 @@
 //! Scheduling policy, CPU placement and runtime accounting.
 
+use crate::{
+    runtime::context::{runtime_task_system, validate_task_context},
+    thread::TaskError,
+};
 pub use crate::{
-    runtime::config::CpuId,
     sched::{
         affinity::ThreadAffinityChange,
         algorithm::SchedulerTimestamp,
@@ -9,10 +12,28 @@ pub use crate::{
     },
     thread::spec::CpuSet,
 };
-use crate::{
-    runtime::context::{runtime_task_system, validate_task_context},
-    thread::TaskError,
-};
+
+/// A logical processor identifier in the configured topology.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CpuId(u32);
+
+impl CpuId {
+    /// Creates a logical processor identifier.
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns the numeric identifier.
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// Returns the identifier as an array index.
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
 
 /// Returns cumulative non-idle runtime charged by one online CPU.
 pub fn cpu_busy_runtime_ns(cpu: CpuId) -> Result<u64, TaskError> {
