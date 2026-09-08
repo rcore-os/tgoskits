@@ -8,7 +8,6 @@ repository.workspace = true
 description = "VirtIO network device implementation with MMIO transport for hypervisors"
 keywords = ["virtio", "net", "hypervisor", "no_std", "arceos"]
 categories = ["no-std", "embedded", "hardware-support", "network-programming"]
-readme = "README.md"
 
 [features]
 default = []

@@ -1,5 +1,5 @@
 [package]
-name = "arceos-io_test"
+name = "arceos-io-test"
 version = "0.1.0"
 edition.workspace = true
 authors = ["eternalcomet <mydragonos@outlook.com>"]

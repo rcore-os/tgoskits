@@ -7,7 +7,6 @@ description = "Small kernel-helper abstractions used across the microkernel"
 repository = "https://github.com/arceos-hypervisor/axklib"
 keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
-readme = "README.md"
 documentation = "https://arceos-hypervisor.github.io/axklib"
 license = "Apache-2.0"
 

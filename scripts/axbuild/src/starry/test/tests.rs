@@ -258,7 +258,7 @@ fn write_test_image_config(workspace_root: &Path) {
 
 #[cfg(unix)]
 #[test]
-fn aka_wifi_smoke_runs_one_connectivity_transfer() {
+fn aka_wifi_smoke_requires_sustained_progress_and_propagates_iperf_failure() {
     let fake_bin = tempdir().unwrap();
     let invocation_log = fake_bin.path().join("iperf3-invocations");
     let ip = fake_bin.path().join("ip");
@@ -267,7 +267,8 @@ fn aka_wifi_smoke_runs_one_connectivity_transfer() {
     fs::write(&ip, "#!/bin/sh\necho '2: wlan0    inet 192.0.2.2/24'\n").unwrap();
     fs::write(
         &iperf3,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$IPERF_INVOCATION_LOG\"\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$IPERF_INVOCATION_LOG\"\nprintf '%s\\n' \
+         \"$IPERF_OUTPUT\"\nexit \"$IPERF_STATUS\"\n",
     )
     .unwrap();
     for executable in [&ip, &iperf3] {
@@ -276,24 +277,54 @@ fn aka_wifi_smoke_runs_one_connectivity_transfer() {
 
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../test-suit/starryos/board-aka-00-sg2002/wifi-iperf-smoke/iperf-smoke.sh");
-    let output = Command::new("/bin/sh")
-        .arg(script)
-        .arg("192.0.2.1")
-        .env(
-            "PATH",
-            format!("{}:/usr/bin:/bin", fake_bin.path().display()),
-        )
-        .env("IPERF_INVOCATION_LOG", &invocation_log)
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "smoke script failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        fs::read_to_string(invocation_log).unwrap(),
-        "-c 192.0.2.1 -t 3 -O 1 -P 1 -l 128K\n"
-    );
+    let report = |stalled: bool| {
+        let mut report = "[  5] 0.00-4.00 sec 0 Bytes 0 bits/sec (omitted)\n".to_owned();
+        for second in 0..20 {
+            let transferred = if second == 10 || (stalled && (8..12).contains(&second)) {
+                0
+            } else {
+                512
+            };
+            report.push_str(&format!(
+                "[  5] {second}.00-{}.00 sec {transferred} KBytes 0 bits/sec\n",
+                second + 1
+            ));
+        }
+        report.push_str("[  5] 0.00-20.00 sec 8 MBytes 3.36 Mbits/sec sender\n");
+        report.push_str("[  5] 0.00-20.10 sec 8 MBytes 3.34 Mbits/sec receiver\n");
+        report
+    };
+    for (name, report, status, expected) in [
+        ("progress with one empty interval", report(false), "0", true),
+        ("successful exit after a stall", report(true), "0", false),
+        ("no report", String::new(), "0", false),
+        ("iperf error after progress", report(false), "1", false),
+    ] {
+        let output = Command::new("/bin/sh")
+            .arg(&script)
+            .arg("192.0.2.1")
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", fake_bin.path().display()),
+            )
+            .env("IPERF_INVOCATION_LOG", &invocation_log)
+            .env("IPERF_OUTPUT", report)
+            .env("IPERF_STATUS", status)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.success(), expected, "{name}: {stdout}");
+        assert_eq!(
+            stdout.contains("STARRY_AKA_WIFI_IPERF_SMOKE_PASSED"),
+            expected
+        );
+        assert_eq!(
+            stdout.contains("STARRY_AKA_WIFI_IPERF_SMOKE_FAILED"),
+            !expected
+        );
+        assert_eq!(
+            fs::read_to_string(&invocation_log).unwrap(),
+            "-c 192.0.2.1 -t 20 -O 2 -P 1 -l 128K\n"
+        );
+    }
 }

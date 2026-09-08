@@ -25,6 +25,7 @@ rdif-def
 rdif-eth
 rd-net
 realtek-rtl8125
+aic8800
 ax-sched
 axvm
 virtualization-tests

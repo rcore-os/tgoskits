@@ -125,7 +125,6 @@ exclude = [
 # propagate patch-only releases to dependent workspace crates.
 aarch64_sysreg = { version = "0.3", path = "virtualization/aarch64_sysreg" }
 arm-scmi-rs = { version = "0.1", path = "drivers/firmware/arm-scmi-rs" }
-arceos-test-suit = { version = "0.3", path = "test-suit/arceos/rust" }
 arm_vcpu = { version = "0.5", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.6", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.8", path = "memory/ax-alloc", default-features = false }
@@ -148,7 +147,6 @@ ax-input = { version = "0.6", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.6", path = "components/axio" }
 ax-ipi = { version = "0.5", path = "os/arceos/modules/axipi" }
 ax-lazyinit = { version = "0.5", path = "components/ax-lazyinit" }
-ax-libc = { version = "0.5", path = "os/arceos/ulib/axlibc" }
 libc = { version = "0.2", default-features = false }
 ax-linked-list-r4l = { version = "0.5", path = "components/linked_list_r4l" }
 ax-log = { version = "0.6", path = "os/arceos/modules/axlog" }
@@ -184,7 +182,6 @@ axivc = { version = "0.1", path = "virtualization/axivc" }
 axklib = { version = "0.8", path = "components/axklib" }
 axplat-dyn = { version = "0.8", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.6", path = "components/axpoll" }
-axvisor = { version = "0.6", path = "os/axvisor" }
 axvirtio-blk = { version = "0.2", path = "virtualization/axvirtio-blk" }
 axvirtio-common = { version = "0.2", path = "virtualization/axvirtio-common" }
 axvirtio-net = { version = "0.2", path = "virtualization/axvirtio-net" }
@@ -193,10 +190,8 @@ axvm-types = { version = "0.7", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8", path = "virtualization/axvmconfig", default-features = false }
 ahci-driver = { version = "0.2", path = "drivers/blk/ahci-driver" }
 
-bwbench-client = { version = "0.3", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3", path = "components/crate_interface/test_crates/define-weak-traits" }
-deptool = { version = "0.3", path = "os/arceos/tools/deptool" }
 fxmac_rs = { version = "0.6", path = "drivers/net/fxmac_rs" }
 impl-simple-traits = { version = "0.3", path = "components/crate_interface/test_crates/impl-simple-traits" }
 impl-weak-partial = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-partial" }
@@ -204,16 +199,13 @@ impl-weak-traits = { version = "0.3", path = "components/crate_interface/test_cr
 arm-gic-driver = { version = "0.17", path = "drivers/intc/arm-gic-driver" }
 loongarch-intc-driver = { version = "0.1", path = "drivers/intc/loongarch-intc-driver" }
 x86-apic-driver = { version = "0.1", path = "drivers/intc/x86-apic-driver" }
-enumerate = { version = "0.1", path = "drivers/examples/enumerate" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }
 loongarch_vcpu = { version = "0.5", path = "virtualization/loongarch_vcpu" }
-mingo = { version = "0.8", path = "os/arceos/tools/raspi4/chainloader" }
 riscv-h = { version = "0.4", path = "virtualization/riscv-h" }
 riscv_vcpu = { version = "0.6", path = "virtualization/riscv_vcpu" }
 riscv_vplic = { version = "0.5", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.8", path = "drivers/blk/nvme-driver" }
 pcie = { version = "0.7", path = "drivers/pci/pcie" }
-ramdisk = { version = "0.1", path = "drivers/blk/ramdisk" }
 rd-net = { version = "0.3", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.9", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.12", path = "drivers/interface/rdif-block" }
@@ -230,8 +222,6 @@ rdif-pwm = { version = "0.1", path = "drivers/interface/rdif-pwm" }
 rdif-power = { version = "0.9", path = "drivers/interface/rdif-power" }
 rdif-reset = { version = "0.2", path = "drivers/interface/rdif-reset" }
 rdif-serial = { version = "0.10", path = "drivers/interface/rdif-serial" }
-rdif-systick = { version = "0.6", path = "drivers/interface/rdif-systick" }
-rdif-timer = { version = "0.6", path = "drivers/interface/rdif-timer" }
 rdif-vsock = { version = "0.2", path = "drivers/interface/rdif-vsock" }
 rk3588-pci = { version = "0.2", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.3", path = "drivers/npu/rockchip-npu" }
@@ -251,7 +241,6 @@ sdmmc-host = { version = "0.1", path = "drivers/blk/sdmmc-host" }
 aic8800 = { version = "0.2", path = "drivers/net/aic8800" }
 crab-usb = { version = "0.11", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1", path = "drivers/usb/usb-device/uvc" }
-ktest-helper = { version = "0.1", path = "drivers/usb/utils/ktest-helper" }
 usb-if = { version = "0.8", path = "drivers/usb/usb-if" }
 usb-serial = { version = "0.1", path = "drivers/usb/usb-serial" }
 dwmmc-host = { version = "0.4", path = "drivers/blk/dwmmc-host", default-features = false }
@@ -264,12 +253,6 @@ smoltcp = { version = "0.13.1", default-features = false }
 starry-kernel = { version = "0.8", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.8", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.5", path = "os/StarryOS/vm" }
-starryos = { version = "0.5", path = "os/StarryOS/starryos" }
-test-simple = { version = "0.3", path = "components/crate_interface/test_crates/test-simple" }
-test-weak = { version = "0.3", path = "components/crate_interface/test_crates/test-weak" }
-test-weak-partial = { version = "0.3", path = "components/crate_interface/test_crates/test-weak-partial" }
-tg-xtask = { version = "0.5", path = "xtask" }
-axloader = { version = "0.5", path = "bootloader/axloader" }
 httpboot-protocol = { version = "0.1.0", default-features = false }
 x86_vcpu = { version = "0.6", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
@@ -319,7 +302,6 @@ mmio-api = { version = "0.3", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.27.1" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
@@ -327,13 +309,11 @@ uefi = "0.37.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
-trait-ffi = "0.2.11"
 tock-registers = "0.10"
 zeroize = { version = "1.9.0", default-features = false }
 sg200x-bsp = { version = "0.7.1", default-features = false }
 sg200x-jpu = { version = "0.1", path = "drivers/vpu/sg200x-jpu" }
 syscalls = { version = "0.8.1", default-features = false }
-bcm2835-sdhci = "0.1.1-preview.1"
 x86 = "0.52"
 x2apic = "0.5"
 kmod-tools = "0.3"

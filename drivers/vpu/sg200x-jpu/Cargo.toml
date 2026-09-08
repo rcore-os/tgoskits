@@ -6,7 +6,6 @@ edition.workspace = true
 keywords = ["sg2002", "jpeg", "jpu", "dma", "no-std"]
 license = "MIT"
 name = "sg200x-jpu"
-readme = "README.md"
 repository.workspace = true
 version = "0.1.4"
 

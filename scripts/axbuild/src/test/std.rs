@@ -277,6 +277,16 @@ const SDMMC_RDIF_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     },
 ];
 
+const AIC8800_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "host-test+rdif",
+    no_default_features: false,
+    features: &["host-test", "rdif"],
+    name_filter: None,
+    expected_tests: &[
+        "rdif::owner::progress::tests::transmit_completion_yields_to_card_irq_before_next_sdio_submission",
+    ],
+}];
+
 const AXBUILD_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "default",
     no_default_features: false,
@@ -563,6 +573,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         "nvme-driver" => Some(NVME_FEATURE_PROFILES),
         "sdmmc-protocol" => Some(SDMMC_RDIF_FEATURE_PROFILES),
+        "aic8800" => Some(AIC8800_FEATURE_PROFILES),
         "axbuild" => Some(AXBUILD_FEATURE_PROFILES),
         "axvisor" => Some(FS_FEATURE_PROFILES),
         _ => None,
