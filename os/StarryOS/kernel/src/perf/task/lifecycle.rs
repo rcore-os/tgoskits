@@ -10,14 +10,13 @@ pub fn on_exec(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let now = now_ns();
     thr.perf_context().with_counters(|counters| {
         for ptc in counters.iter() {
             if ptc.run_state.lock().is_stopping() {
                 continue;
             }
-            if ptc.enable_on_exec && !ptc.enabled.swap(true, Ordering::AcqRel) {
-                ptc.enabled_at_ns.store(now, Ordering::Release);
+            if ptc.enable_on_exec {
+                ptc.enabled.store(true, Ordering::Release);
             }
         }
     });

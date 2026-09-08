@@ -55,11 +55,13 @@
 //!
 //! ## Scope / deferrals
 //!
-//! There is no counter multiplexing (so `time_running == time_enabled`).
-//! Generation-bearing owner leases follow task migration across CPUs, and an
-//! optional CPU filter limits eligibility. Sampling supports fixed-period
-//! (`-c <period>`) and frequency mode (`-F`, `sample_freq`); inherited child
-//! events share the root output through the same owned redirect boundary.
+//! Flexible programmable counters are multiplexed at scheduler boundaries:
+//! every eligible task-context slice advances `time_enabled`, while only a
+//! hardware-programmed slice advances `time_running`. Generation-bearing owner
+//! leases follow task migration across CPUs, and an optional CPU filter limits
+//! eligibility. Sampling supports fixed-period (`-c <period>`) and frequency
+//! mode (`-F`, `sample_freq`); inherited child events share the root output
+//! through the same owned redirect boundary.
 
 use alloc::{sync::{Arc, Weak}, vec::Vec};
 use core::{

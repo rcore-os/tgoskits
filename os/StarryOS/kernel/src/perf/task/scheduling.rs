@@ -38,6 +38,7 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
         if ptc.cpu_filter.is_some_and(|cpu| cpu != current_cpu) {
             continue;
         }
+        ptc.begin_enabled_context(now);
         let sample_output = if ptc.is_sampling {
             let Some(output) = ptc.sample_output() else {
                 continue;
@@ -193,7 +194,9 @@ fn perf_sched_out_counters(counters: &[Arc<PerTaskCounter>]) {
     if counters.is_empty() {
         return;
     }
+    let now = now_ns();
     for ptc in counters.iter() {
+        ptc.finish_enabled_context(now);
         let Some(lease) = ptc.run_state.lock().claim_schedule_out() else {
             continue;
         };
@@ -242,8 +245,9 @@ fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> crate::St
         );
     }
 
-    let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
-    ptc.time_enabled_ns.fetch_add(dt, Ordering::AcqRel);
+    let now = now_ns();
+    ptc.finish_enabled_context(now);
+    let dt = now.saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
     ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
     ptc.publish_rdpmc_inactive();
     Ok(())

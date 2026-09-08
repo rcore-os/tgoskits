@@ -7,7 +7,10 @@ pub(crate) fn disable_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<
     // rendezvous. See `stop_requested_on_owner` for the temporary-lifetime trap.
     let action = ptc.run_state.lock().begin_disable();
     let result = match action {
-        PmuCloseAction::AlreadyClosed | PmuCloseAction::Complete => Ok(()),
+        PmuCloseAction::AlreadyClosed | PmuCloseAction::Complete => {
+            ptc.finish_enabled_context(now_ns());
+            Ok(())
+        }
         PmuCloseAction::Stop(lease) => cpu_worker::stop_task_counter(Arc::clone(ptc), lease),
     };
     if result.is_ok() {

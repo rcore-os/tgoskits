@@ -56,10 +56,10 @@ pub struct PerTaskCounter {
     pub(super) time_running_ns: AtomicU64,
     /// Monotonic ns timestamp of the last [`perf_sched_in`] (live slice start).
     pub(super) last_in_ns: AtomicU64,
-    /// Monotonic ns timestamp at which the event last became `enabled`.
-    /// Unused for the no-multiplexing timing math but kept for parity with the
-    /// system-wide path and future multiplexing accounting.
-    pub(super) enabled_at_ns: AtomicU64,
+    /// Monotonic ns timestamp at which the enabled event's current task-context
+    /// slice started. This advances `time_enabled` even when a flexible event
+    /// has no physical slot, matching Linux's INACTIVE event state.
+    pub(super) context_in_ns: AtomicU64,
     // --- Per-task sampling (`perf record -- cmd`) ---
     /// This event samples (`sample_period > 0`): the scheduler hooks arm/disarm
     /// the overflow-IRQ path each slice instead of plain counting.
@@ -249,7 +249,7 @@ impl PerTaskCounter {
             time_enabled_ns: AtomicU64::new(0),
             time_running_ns: AtomicU64::new(0),
             last_in_ns: AtomicU64::new(0),
-            enabled_at_ns: AtomicU64::new(0),
+            context_in_ns: AtomicU64::new(0),
             is_sampling: cfg.sample_period > 0,
             sample_period: cfg.sample_period,
             sample_type: cfg.sample_type,
@@ -406,8 +406,32 @@ impl PerTaskCounter {
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
     /// [`perf_sched_in`] programs the counter onto HW.
     pub fn set_enabled(&self) {
-        if !self.enabled.swap(true, Ordering::AcqRel) {
-            self.enabled_at_ns.store(now_ns(), Ordering::Relaxed);
+        self.enabled.store(true, Ordering::Release);
+    }
+
+    pub(super) fn begin_enabled_context(&self, now: u64) {
+        let _ = self.context_in_ns.compare_exchange(
+            0,
+            now,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    pub(super) fn finish_enabled_context(&self, now: u64) {
+        let since = self.context_in_ns.swap(0, Ordering::AcqRel);
+        if since != 0 {
+            self.time_enabled_ns
+                .fetch_add(now.saturating_sub(since), Ordering::AcqRel);
+        }
+    }
+
+    pub(super) fn live_enabled_time(&self, now: u64) -> u64 {
+        let since = self.context_in_ns.load(Ordering::Acquire);
+        if since == 0 {
+            0
+        } else {
+            now.saturating_sub(since)
         }
     }
 
@@ -670,11 +694,13 @@ unsafe fn per_task_sample_read_irq(
         };
         value = value.saturating_add(live);
     }
-    let mut time_enabled = counter.time_enabled_ns.load(Ordering::Acquire);
+    let time_enabled = counter
+        .time_enabled_ns
+        .load(Ordering::Acquire)
+        .saturating_add(counter.live_enabled_time(now));
     let mut time_running = counter.time_running_ns.load(Ordering::Acquire);
     if running.is_some() {
         let elapsed = now.saturating_sub(counter.last_in_ns.load(Ordering::Acquire));
-        time_enabled = time_enabled.saturating_add(elapsed);
         time_running = time_running.saturating_add(elapsed);
     }
     SampleReadValue {

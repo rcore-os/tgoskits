@@ -17,7 +17,11 @@ pub(crate) fn read_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<(u6
 /// Reads a task-bound event from a pinned owner worker or a detached state.
 pub(crate) fn read_task_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<(u64, u64, u64)> {
     let mut value = ptc.accumulated.load(Ordering::Acquire);
-    let mut time_enabled = ptc.time_enabled_ns.load(Ordering::Acquire);
+    let now = now_ns();
+    let time_enabled = ptc
+        .time_enabled_ns
+        .load(Ordering::Acquire)
+        .saturating_add(ptc.live_enabled_time(now));
     let mut time_running = ptc.time_running_ns.load(Ordering::Acquire);
     let run_state = ptc.run_state.lock();
     if let Some(lease) = run_state.running()
@@ -27,8 +31,7 @@ pub(crate) fn read_task_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<(u
         // local owner-CPU snapshot; remote reads are routed through the CPU
         // worker in the complete PMU ownership path.
         value += lease.counter().read();
-        let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
-        time_enabled += dt;
+        let dt = now.saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
         time_running += dt;
     }
     Ok((value, time_enabled, time_running))
