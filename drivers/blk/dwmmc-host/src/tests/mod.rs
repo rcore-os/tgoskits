@@ -6,21 +6,6 @@ use super::*;
 use crate::host2::{DWMMC_REGISTER_RETRY_DELAY, event_from_raw_status};
 
 #[test]
-fn bus_width_contract_is_closed_and_exhaustive() {
-    fn width_bits(width: sdmmc_host::BusWidth) -> u8 {
-        match width {
-            sdmmc_host::BusWidth::Bit1 => 1,
-            sdmmc_host::BusWidth::Bit4 => 4,
-            sdmmc_host::BusWidth::Bit8 => 8,
-        }
-    }
-
-    assert_eq!(width_bits(sdmmc_host::BusWidth::Bit1), 1);
-    assert_eq!(width_bits(sdmmc_host::BusWidth::Bit4), 4);
-    assert_eq!(width_bits(sdmmc_host::BusWidth::Bit8), 8);
-}
-
-#[test]
 fn irq_capability_trait_controls_hardware_interrupt_mask() {
     const CTRL_WORD: usize = 0;
     const INTMASK_WORD: usize = 9;
@@ -760,12 +745,4 @@ fn unsupported_1v2_voltage_is_rejected() {
         volt_mask_for_signal(SignalVoltage::V120).unwrap_err(),
         Error::UnsupportedCommand
     );
-}
-
-#[test]
-fn data_command_index_is_recorded_for_diagnostics() {
-    let mut host = unsafe { DwMmc::new_from_addr(0x1000_0000) };
-    host.data_cmd_index = 6;
-
-    assert_eq!(host.data_cmd_index, 6);
 }

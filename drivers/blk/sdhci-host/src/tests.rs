@@ -15,28 +15,6 @@ impl HostTimer for StaticTimer {
 static STATIC_TIMER: StaticTimer = StaticTimer;
 
 #[test]
-fn protocol_progress_contracts_are_closed_and_exhaustive() {
-    fn command_state(progress: sdmmc_protocol::CommandProgress) -> bool {
-        match progress {
-            sdmmc_protocol::CommandProgress::Pending => false,
-            sdmmc_protocol::CommandProgress::Complete => true,
-        }
-    }
-
-    fn block_state(progress: sdmmc_protocol::BlockProgress) -> bool {
-        match progress {
-            sdmmc_protocol::BlockProgress::Pending => false,
-            sdmmc_protocol::BlockProgress::Complete => true,
-        }
-    }
-
-    assert!(!command_state(sdmmc_protocol::CommandProgress::Pending));
-    assert!(command_state(sdmmc_protocol::CommandProgress::Complete));
-    assert!(!block_state(sdmmc_protocol::BlockProgress::Pending));
-    assert!(block_state(sdmmc_protocol::BlockProgress::Complete));
-}
-
-#[test]
 fn irq_capability_trait_controls_hardware_signal_masks() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);

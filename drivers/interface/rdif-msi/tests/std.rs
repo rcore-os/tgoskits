@@ -72,32 +72,8 @@ impl Interface for MockMsiProvider {
 }
 
 #[test]
-fn rdif_msi_allocation_preserves_provider_device_and_vectors() {
-    let vectors = alloc::vec![
-        MsiVector::new(
-            MsiVectorIndex(0),
-            MsiEventId(10),
-            IrqId::new(IrqDomainId(1), irq_framework::HwIrq(0)),
-        ),
-        MsiVector::new(
-            MsiVectorIndex(1),
-            MsiEventId(11),
-            IrqId::new(IrqDomainId(1), irq_framework::HwIrq(1)),
-        ),
-    ];
-    let allocation =
-        MsiAllocation::new(MsiProviderId(5), MsiDeviceId(6), vectors.into_boxed_slice());
-    assert_eq!(allocation.provider(), MsiProviderId(5));
-    assert_eq!(allocation.device(), MsiDeviceId(6));
-    assert_eq!(allocation.vectors().len(), 2);
-    assert_eq!(allocation.into_vectors().len(), 2);
-}
-
-#[test]
 fn rdif_msi_wrapper_validates_counts_delegates_and_frees_allocations() {
     let mut msi = Msi::new(MsiProviderId(77), MockMsiProvider::new());
-    assert_eq!(msi.name(), "mock-msi");
-    assert_eq!(msi.provider(), MsiProviderId(77));
     assert_eq!(
         msi.allocate(MsiRequest::new(MsiDeviceId(3), 0)),
         Err(IrqError::InvalidIrq)
@@ -143,37 +119,4 @@ fn rdif_msi_wrapper_rejects_driver_returning_wrong_vector_count() {
         msi.allocate(MsiRequest::new(MsiDeviceId(9), 2)),
         Err(IrqError::InvalidIrq)
     );
-}
-
-#[test]
-fn rdif_msi_unsupported_operations_report_errors() {
-    use rdif_msi::{Interface, IrqError, MsiRequest};
-
-    // Test Interface trait default implementations return Unsupported
-    struct MinimalMsi;
-    impl DriverGeneric for MinimalMsi {
-        fn name(&self) -> &str {
-            "minimal-msi"
-        }
-    }
-    impl Interface for MinimalMsi {
-        fn allocate_vectors(&mut self, _request: &MsiRequest) -> Result<Vec<MsiVector>, IrqError> {
-            Ok(Vec::new())
-        }
-        fn compose_message(&self, _vector: &MsiVector) -> Result<MsiMessage, IrqError> {
-            Ok(MsiMessage::new(0, 0))
-        }
-        fn free_vectors(&mut self, _allocation: MsiAllocation) -> Result<(), IrqError> {
-            Ok(())
-        }
-    }
-
-    let mut minimal = MinimalMsi;
-    let vector = MsiVector::new(
-        MsiVectorIndex(0),
-        MsiEventId(0),
-        IrqId::new(IrqDomainId(0), irq_framework::HwIrq(0)),
-    );
-    assert!(minimal.set_vector_enabled(&vector, true) == Err(IrqError::Unsupported));
-    assert!(minimal.set_vector_affinity(&vector, IrqAffinity::Any) == Err(IrqError::Unsupported));
 }

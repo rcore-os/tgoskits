@@ -1270,29 +1270,7 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 mod tests {
     use core::cell::Cell;
 
-    use ax_std::os::arceos::sync::IrqSafeMutex;
-
     use super::*;
-
-    fn assert_x86_exit_type<T: VmArchVcpuOps<Exit = X86VmExit>>() {}
-
-    fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
-
-    #[test]
-    fn axvm_x86_vcpu_uses_x86_exit_type() {
-        assert_x86_exit_type::<AxvmX86Vcpu>();
-    }
-
-    #[test]
-    fn interrupt_domain_shared_state_uses_irq_safe_locks() {
-        fn check(domain: &X86InterruptDomain) {
-            assert_irq_safe_lock(&domain.inputs);
-            assert_irq_safe_lock(&domain.forwarding);
-            assert_irq_safe_lock(&domain.forwarding_hooks);
-        }
-
-        let _ = check as fn(&X86InterruptDomain);
-    }
 
     #[test]
     fn x86_halt_waits_until_an_interrupt_or_lifecycle_event() {

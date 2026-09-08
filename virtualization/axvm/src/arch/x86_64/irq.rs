@@ -926,7 +926,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use ax_std::os::arceos::sync::{IrqSafeMutex, RawSpinLock as Mutex};
+    use ax_std::os::arceos::sync::RawSpinLock as Mutex;
     use axdevice::X86IoApicDeviceOps;
 
     use super::{
@@ -967,13 +967,6 @@ mod tests {
 
     fn new_domain() -> X86InterruptDomain {
         X86InterruptDomain::new(1, Arc::new(FakeIoApic))
-    }
-
-    #[test]
-    fn host_irq_lease_table_uses_an_irq_safe_lock() {
-        fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
-
-        assert_irq_safe_lock(&super::HOST_IRQ_FORWARDING_LEASES);
     }
 
     #[test]

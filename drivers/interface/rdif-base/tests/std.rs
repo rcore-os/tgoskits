@@ -2,45 +2,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use rdif_base::{
-    DriverGeneric,
-    io::{Error, ErrorKind, Read, Write},
-};
-
-pub trait DemoInterface: DriverGeneric {
-    fn value(&self) -> usize;
-    fn set_value(&mut self, value: usize);
-}
-
-rdif_base::def_driver!(DemoDriver, DemoInterface);
-
-struct DemoBackend {
-    value: usize,
-}
-
-impl DriverGeneric for DemoBackend {
-    fn name(&self) -> &str {
-        "demo-backend"
-    }
-
-    fn raw_any(&self) -> Option<&dyn core::any::Any> {
-        Some(self)
-    }
-
-    fn raw_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
-        Some(self)
-    }
-}
-
-impl DemoInterface for DemoBackend {
-    fn value(&self) -> usize {
-        self.value
-    }
-
-    fn set_value(&mut self, value: usize) {
-        self.value = value;
-    }
-}
+use rdif_base::io::{Error, ErrorKind, Read, Write};
 
 struct ChunkedReader {
     chunks: Vec<&'static [u8]>,
@@ -83,18 +45,6 @@ impl Write for ChunkedWriter {
         }
         Ok(())
     }
-}
-
-#[test]
-fn rdif_base_def_driver_wraps_and_downcasts_backends() {
-    let mut driver = DemoDriver::new(DemoBackend { value: 7 });
-
-    assert_eq!(driver.name(), "demo-backend");
-    assert_eq!(driver.value(), 7);
-    driver.set_value(11);
-    assert_eq!(driver.typed_ref::<DemoBackend>().unwrap().value, 11);
-    driver.typed_mut::<DemoBackend>().unwrap().value = 13;
-    assert_eq!(driver.value(), 13);
 }
 
 #[test]

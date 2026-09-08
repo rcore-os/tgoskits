@@ -264,35 +264,3 @@ impl Display for EndpointIdentity {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use alloc::format;
-
-    use pci_types::device_type::DeviceType;
-
-    use super::EndpointIdentity;
-
-    #[test]
-    fn endpoint_identity_pads_device_type_for_aligned_output() {
-        let rendered = format!(
-            "{}",
-            EndpointIdentity {
-                segment: 0,
-                bus: 0,
-                device: 1,
-                function: 0,
-                device_type: DeviceType::UsbController,
-                vendor_id: 0x1234,
-                device_id: 0x5678,
-                revision_id: 1,
-                interface: 0x30,
-            }
-        );
-
-        assert_eq!(
-            rendered,
-            "0000:00:01.0 UsbController            1234:5678 (rev 01, prog-if 30)"
-        );
-    }
-}

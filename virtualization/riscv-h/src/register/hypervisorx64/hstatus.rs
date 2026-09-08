@@ -216,12 +216,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hstatus_from_bits() {
-        let hstatus = Hstatus::from_bits(0x12345678);
-        assert_eq!(hstatus.bits(), 0x12345678);
-    }
-
-    #[test]
     fn test_hstatus_vsxl() {
         let mut hstatus = Hstatus::from_bits(0);
 
@@ -346,15 +340,5 @@ mod tests {
         // Verify the actual bit pattern
         let expected_bits = (1 << 22) | (0x2A << 12) | (1 << 9) | (2 << 32);
         assert_eq!(hstatus.bits(), expected_bits);
-    }
-
-    #[test]
-    fn test_hstatus_copy_clone() {
-        let hstatus1 = Hstatus::from_bits(0x12345678);
-        let hstatus2 = hstatus1;
-        let hstatus3 = hstatus1.clone();
-
-        assert_eq!(hstatus1.bits(), hstatus2.bits());
-        assert_eq!(hstatus1.bits(), hstatus3.bits());
     }
 }

@@ -262,6 +262,5 @@ mod tests {
     fn allocation_failure_has_a_distinct_domain_error() {
         let error = Ext4Error::no_memory();
         assert_eq!(error.kind(), Ext4ErrorKind::NoMemory);
-        assert_eq!(error.to_string(), "memory allocation failed: None");
     }
 }

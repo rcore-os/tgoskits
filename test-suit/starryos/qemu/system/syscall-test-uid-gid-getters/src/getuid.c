@@ -26,23 +26,12 @@ static int waitpid_safely(pid_t pid, int *status)
  *   "These functions are always successful and never modify errno."
  *
  * 测试方式：
- *   (a) getuid() 返回非负 uid_t 值（不报错）
  *   (b) 多次调用结果一致（无 side effect / 状态变化）
  *   (c) 不修改 errno（即使 errno 预先是非 0）
  *   (d) raw syscall 与 libc 包装一致（验证 libc 没做转换）
  *   (e) fork 子进程继承相同 uid（fork 不改变 cred.uid）
  */
 
-static void getuid_basic_returns_uid(void)
-{
-    uid_t u = getuid();
-    /* 怎么测：直接调 getuid()
-     * 期望：返回当前进程的真实 uid
-     * 为什么：man "getuid() returns the real user ID" — root 时为 0 */
-    /* uid 是 uid_t (unsigned int)，无 -1 失败语义；任何值都是合法 */
-    CHECK(u == u, "getuid (a) basic: returned value (always succeeds)");
-    printf("  current real uid = %u\n", (unsigned)u);
-}
 
 static void getuid_idempotent(void)
 {
@@ -107,7 +96,6 @@ static void getuid_fork_child_inherits(void)
 int getuid_run(void)
 {
     printf("\n----- getuid -----\n");
-    getuid_basic_returns_uid();
     getuid_idempotent();
     getuid_does_not_modify_errno();
     getuid_raw_syscall_matches_libc();

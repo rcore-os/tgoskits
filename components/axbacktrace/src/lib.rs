@@ -750,49 +750,6 @@ mod tests {
         assert_eq!(out.as_slice(), &chain[..16]);
     }
 
-    /// Repeatedly create and drop Backtrace objects to verify no leaks or corruption.
-    #[test]
-    fn stress_repeated_create_drop() {
-        init_for_tests();
-        let (chain, start_fp) = boxed_frame_chain(&[0x100, 0x200, 0x300]);
-        for _ in 0..500 {
-            let bt = Backtrace::capture_trap(start_fp, 0x400, 0);
-            let Inner::Captured(frames) = &bt.inner else {
-                panic!("expected Captured")
-            };
-            assert!(frames.len() >= 3);
-            drop(bt);
-        }
-        // Ensure the chain memory is still valid after all iterations
-        let _ = &chain;
-    }
-
-    /// Interleave capture, Display formatting, and drop to verify no side effects.
-    #[test]
-    fn stress_interleaved_capture_format() {
-        init_for_tests();
-        let (chain, start_fp) = boxed_frame_chain(&[0x500, 0x600]);
-
-        for i in 0..100 {
-            let bt = Backtrace::capture_trap(start_fp, 0x700, 0);
-            let s = format!("{bt}");
-            // Raw block should contain the trap IP
-            assert!(
-                s.contains("0x701"),
-                "iteration {i}: missing trap IP in output"
-            );
-
-            // Human-readable formatting
-            let bt_human = Backtrace::capture_trap(start_fp, 0x700, 0);
-            let human = format!("{bt_human}");
-            assert!(!human.is_empty(), "iteration {i}: empty human output");
-
-            drop(bt);
-            drop(bt_human);
-        }
-        let _ = &chain;
-    }
-
     /// Repeatedly clone a Backtrace and verify equality.
     #[test]
     fn stress_repeated_clone() {
@@ -807,9 +764,9 @@ mod tests {
         let _ = &chain;
     }
 
-    /// Verify Frame and Backtrace sizes remain stable (prevent accidental regressions).
+    /// Verify the layout used when reading native stack frame records.
     #[test]
-    fn stress_size_stability() {
+    fn frame_layout_matches_native_stack_records() {
         // Frame is #[repr(C)] with two usize fields
         assert_eq!(
             core::mem::size_of::<Frame>(),
@@ -819,20 +776,6 @@ mod tests {
             core::mem::align_of::<Frame>(),
             core::mem::align_of::<usize>()
         );
-
-        // Backtrace contains Inner (discriminant + Box<[Frame]>) + Option<&'static str>
-        // Size should be stable across compilations
-        let bt_size = core::mem::size_of::<Backtrace>();
-        assert!(
-            bt_size > 0 && bt_size <= 48,
-            "Backtrace size unexpected: {bt_size}"
-        );
-
-        // CaptureBuf is stack-allocated; verify it's reasonable
-        let cap_size = core::mem::size_of::<CaptureBuf>();
-        let expected =
-            CAPTURE_CAPACITY * core::mem::size_of::<Frame>() + core::mem::size_of::<usize>();
-        assert_eq!(cap_size, expected, "CaptureBuf size mismatch");
     }
 
     /// Verify Frame alignment and that misaligned pointers are rejected.

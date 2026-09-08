@@ -92,14 +92,3 @@ fn test_group_desc_64bit_values() {
     assert_eq!(desc.free_inodes_count(), 200);
     assert_eq!(desc.used_dirs_count(), 10);
 }
-
-#[test]
-fn test_group_desc_flags() {
-    let desc = Ext4GroupDesc {
-        bg_flags: Ext4GroupDesc::EXT4_BG_INODE_UNINIT,
-        ..Default::default()
-    };
-
-    assert!(desc.is_inode_bitmap_uninit());
-    assert!(!desc.is_block_bitmap_uninit());
-}

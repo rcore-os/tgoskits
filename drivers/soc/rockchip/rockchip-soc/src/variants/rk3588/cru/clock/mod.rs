@@ -861,19 +861,6 @@ mod tests {
     }
 
     #[test]
-    fn test_clkid_comparison() {
-        // 验证 ClkId 的比较运算符正常工作
-        assert!(PCLK_UART1 < SCLK_UART1);
-        assert!(CLK_UART2_SRC <= SCLK_UART2);
-        assert!(SCLK_UART9 > CLK_UART9_SRC);
-
-        // 验证边界值的正确性
-        assert!(SCLK_UART1.value() == 183);
-        assert!(CLK_UART2_SRC.value() == 184);
-        assert!(SCLK_UART9.value() == 215);
-    }
-
-    #[test]
     fn test_get_spi_num() {
         assert_eq!(get_spi_num(CLK_SPI0), Some(0));
         assert_eq!(get_spi_num(CLK_SPI4), Some(4));

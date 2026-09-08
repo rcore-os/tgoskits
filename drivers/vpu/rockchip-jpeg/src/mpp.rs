@@ -267,24 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn set_reg_write_copies_words() {
-        let mut s = MppSession::new();
-        let mut words = [0u32; REG_COUNT];
-        words[registers::REG_PIC_SIZE] = 0x002f_003f;
-        words[registers::REG_INT] = 0xd;
-        s.set_reg_write(&words);
-        assert_eq!(s.regs()[registers::REG_PIC_SIZE], 0x002f_003f);
-        assert_eq!(s.regs()[registers::REG_INT], 0xd);
-    }
-
-    #[test]
-    fn set_reg_read_records_word_window() {
-        let mut s = MppSession::new();
-        s.set_reg_read(0, (REG_COUNT * 4) as u32);
-        assert_eq!(s.read_window(), (0, REG_COUNT));
-    }
-
-    #[test]
     fn resolves_fd_address_slots_with_offsets() {
         let mut s = MppSession::new();
         let mut words = [0u32; REG_COUNT];

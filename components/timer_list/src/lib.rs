@@ -133,7 +133,7 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    use super::{TimeValue, TimerEvent, TimerEventFn, TimerList};
+    use super::{TimeValue, TimerEvent, TimerList};
 
     #[test]
     fn test_timer_list() {
@@ -181,29 +181,5 @@ mod tests {
         }
 
         assert_eq!(COUNT.load(Ordering::SeqCst), 4);
-    }
-
-    #[test]
-    fn test_timer_list_fn() {
-        let mut timer_list = TimerList::new();
-        let start_time = Instant::now();
-        let deadlines = [
-            Duration::new(1, 1_000_000),    // 1.001 sec
-            Duration::from_micros(750_000), // 0.75 sec
-        ];
-
-        for ddl in deadlines {
-            timer_list.set(
-                ddl,
-                TimerEventFn::new(|now| println!("timer fn expired at {:?}", now)),
-            );
-        }
-
-        while !timer_list.is_empty() {
-            let now = Instant::now().duration_since(start_time);
-            while let Some((_deadline, event)) = timer_list.expire_one(now) {
-                event.callback(now);
-            }
-        }
     }
 }

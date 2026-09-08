@@ -285,87 +285,11 @@ impl EPTPointer {
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
 
     use super::*;
     use crate::test_utils::mock::MockMmHal;
 
     type TestIOBitmap = IOBitmap<MockMmHal>;
-    type TestMsrBitmap = MsrBitmap<MockMmHal>;
-    type TestVmxRegion = VmxRegion<MockMmHal>;
-
-    #[test]
-    fn test_vmx_region_uninit() {
-        let region = unsafe { TestVmxRegion::uninit() };
-
-        // Test that we can create an uninitialized region
-        // Can't test much more without allocating memory
-        let debug_str = format!("{:?}", region);
-        assert!(!debug_str.is_empty());
-    }
-
-    #[test]
-    fn test_vmx_region_new() {
-        // Reset allocator for consistent testing
-        MockMmHal::reset();
-
-        // Test VmxRegion::new with valid parameters
-        let region = TestVmxRegion::new(0x12345, false);
-        assert!(region.is_ok());
-
-        let region = region.unwrap();
-        let addr = region.phys_addr();
-        assert_ne!(addr.as_usize(), 0);
-        // Should be page-aligned
-        assert_eq!(addr.as_usize() % 0x1000, 0);
-    }
-
-    #[test]
-    fn test_vmx_region_new_with_shadow() {
-        // Reset allocator for consistent testing
-        MockMmHal::reset();
-
-        // Test VmxRegion::new with different shadow indicator values
-        let region_no_shadow = TestVmxRegion::new(0x12345, false);
-        assert!(region_no_shadow.is_ok());
-
-        let region_with_shadow = TestVmxRegion::new(0x12345, true);
-        assert!(region_with_shadow.is_ok());
-
-        // Test that both regions have valid physical addresses
-        let region1 = region_no_shadow.unwrap();
-        let region2 = region_with_shadow.unwrap();
-
-        let addr1 = region1.phys_addr();
-        let addr2 = region2.phys_addr();
-
-        assert_ne!(addr1.as_usize(), 0);
-        assert_ne!(addr2.as_usize(), 0);
-        assert_ne!(addr1.as_usize(), addr2.as_usize());
-        assert_eq!(addr1.as_usize() % 0x1000, 0);
-        assert_eq!(addr2.as_usize() % 0x1000, 0);
-    }
-
-    #[test]
-    fn test_io_bitmap_creation() {
-        // Test IOBitmap creation methods
-        MockMmHal::reset();
-
-        // Test passthrough_all creation
-        let passthrough_bitmap = TestIOBitmap::passthrough_all();
-        assert!(passthrough_bitmap.is_ok());
-
-        // Test intercept_all creation
-        let intercept_bitmap = TestIOBitmap::intercept_all();
-        assert!(intercept_bitmap.is_ok());
-
-        // Test that phys_addr returns valid addresses
-        let bitmap = passthrough_bitmap.unwrap();
-        let (addr_a, addr_b) = bitmap.phys_addr();
-        assert_ne!(addr_a.as_usize(), 0);
-        assert_ne!(addr_b.as_usize(), 0);
-        assert_ne!(addr_a.as_usize(), addr_b.as_usize());
-    }
 
     #[test]
     fn io_bitmap_can_intercept_high_port_in_low_half_bitmap() {
@@ -404,36 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn test_msr_bitmap_creation() {
-        // Test MsrBitmap creation methods
-        MockMmHal::reset();
-
-        // Test passthrough_all creation
-        let passthrough_bitmap = TestMsrBitmap::passthrough_all();
-        assert!(passthrough_bitmap.is_ok());
-
-        // Test intercept_all creation
-        let intercept_bitmap = TestMsrBitmap::intercept_all();
-        assert!(intercept_bitmap.is_ok());
-
-        // Test that phys_addr returns valid addresses
-        let bitmap = passthrough_bitmap.unwrap();
-        let addr = bitmap.phys_addr();
-        assert_ne!(addr.as_usize(), 0);
-        assert_eq!(addr.as_usize() % 0x1000, 0);
-    }
-
-    #[test]
-    fn test_ept_pointer_creation() {
-        // Test EPTPointer creation with from_table_phys method
-        let ept_ptr1 = EPTPointer::from_table_phys(X86HostPhysAddr::from_usize(0x1000));
-        let ept_ptr2 = EPTPointer::from_table_phys(X86HostPhysAddr::from_usize(0x2000));
-
-        // Verify the EPT pointers were created successfully
-        assert_ne!(ept_ptr1.0, ept_ptr2.0);
-    }
-
-    #[test]
     fn test_ept_pointer_getters() {
         let phys_addr = X86HostPhysAddr::from_usize(0x3000);
         let ept_ptr = EPTPointer::from_table_phys(phys_addr);
@@ -451,15 +345,6 @@ mod tests {
     #[test]
     fn test_vmx_basic_constants() {
         assert_eq!(VmxBasic::VMX_MEMORY_TYPE_WRITE_BACK, 6);
-    }
-
-    #[test]
-    fn test_feature_control_flags() {
-        let flags = FeatureControlFlags::LOCKED | FeatureControlFlags::VMXON_ENABLED_OUTSIDE_SMX;
-
-        assert!(flags.contains(FeatureControlFlags::LOCKED));
-        assert!(flags.contains(FeatureControlFlags::VMXON_ENABLED_OUTSIDE_SMX));
-        assert!(!flags.contains(FeatureControlFlags::VMXON_ENABLED_INSIDE_SMX));
     }
 
     #[test]

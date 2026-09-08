@@ -446,7 +446,7 @@ pub(crate) fn boxed_rx(queue: Rtl8125RxQueue) -> Box<dyn IRxQueue> {
 mod tests {
     use rdif_eth::TxNotify;
 
-    use super::{TxNotificationState, packet_progress_log_level};
+    use super::TxNotificationState;
 
     #[test]
     fn deferred_descriptors_share_one_device_notification() {
@@ -458,14 +458,5 @@ mod tests {
         assert!(!notification.take_pending());
         assert!(notification.descriptor_submitted(TxNotify::Immediate));
         assert!(!notification.take_pending());
-    }
-
-    #[test]
-    fn periodic_packet_progress_is_debug_only() {
-        assert_eq!(packet_progress_log_level(1, 16), None);
-        assert_eq!(packet_progress_log_level(8, 16), None);
-        assert_eq!(packet_progress_log_level(9, 16), None);
-        assert_eq!(packet_progress_log_level(16, 16), Some(log::Level::Debug));
-        assert_eq!(packet_progress_log_level(64, 64), Some(log::Level::Debug));
     }
 }

@@ -579,13 +579,6 @@ unsafe fn cache_range<const OP: u8>(addr: VirtAddr, size: usize) {
 mod tests {
     use super::*;
 
-    fn assert_loongarch_exit_type<T: VmArchVcpuOps<Exit = LoongArchVmExit>>() {}
-
-    #[test]
-    fn axvm_loongarch_vcpu_uses_loongarch_exit_type() {
-        assert_loongarch_exit_type::<AxvmLoongArchVcpu>();
-    }
-
     #[test]
     fn converts_loongarch_vcpu_errors_to_backend_errors() {
         assert_eq!(

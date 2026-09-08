@@ -71,15 +71,6 @@ pub fn post_paging() {
     driver::rdrive_setup();
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn current_cpu_idx_api_is_arch_independent() {
-        let current = crate::cpu::current_cpu_idx();
-        let _current: Option<usize> = current;
-    }
-}
-
 #[unsafe(no_mangle)]
 pub fn __somehal_secondary_default() -> ! {
     loop {

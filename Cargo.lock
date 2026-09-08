@@ -426,10 +426,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-test-smoke"
-version = "0.1.0"
-
-[[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
@@ -8423,15 +8419,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "test_hub"
-version = "0.1.1"
-dependencies = [
- "crab-usb",
- "futures",
- "log",
-]
-
-[[package]]
 name = "test_libusb"
 version = "0.1.1"
 dependencies = [
@@ -8439,16 +8426,6 @@ dependencies = [
  "env_logger",
  "log",
  "tokio",
-]
-
-[[package]]
-name = "test_xhci_uvc"
-version = "0.1.1"
-dependencies = [
- "crab-usb",
- "crab-uvc",
- "futures",
- "log",
 ]
 
 [[package]]

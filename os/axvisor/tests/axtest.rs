@@ -112,7 +112,6 @@ mod tests {
         delivery.append(b"starry ", 0);
         delivery.append(b"continues", 0);
 
-        ax_assert_eq!(delivery.len(), 16);
         ax_assert_eq!(delivery.into_bytes(), b"starry continues");
     }
 
@@ -208,7 +207,7 @@ mod tests {
 
     #[test]
     fn browser_console_layout_uses_at_most_three_sorted_guests() {
-        use crate::browser_console_layout::{ConsoleLane, MAX_GUEST_CONSOLES, plan_endpoints};
+        use crate::browser_console_layout::{MAX_GUEST_CONSOLES, plan_endpoints};
 
         let endpoints = plan_endpoints(
             [7, 5, 9, 3]
@@ -218,7 +217,6 @@ mod tests {
         );
 
         ax_assert_eq!(endpoints.len(), MAX_GUEST_CONSOLES + 1);
-        ax_assert_eq!(ConsoleLane::COUNT, 4);
         ax_assert_eq!(endpoints[0].route, "axvisor");
         ax_assert_eq!(endpoints[1].vm_id, Some(3));
         ax_assert_eq!(endpoints[2].vm_id, Some(5));

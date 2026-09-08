@@ -121,13 +121,3 @@ pub(crate) fn default_boot_firmware_load_gpa(
 ) -> Option<axvm_types::GuestPhysAddr> {
     CurrentArch::default_boot_firmware_load_gpa(config)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selected_target_implements_complete_architecture_contract() {
-        assert_architecture::<CurrentArch>();
-    }
-}

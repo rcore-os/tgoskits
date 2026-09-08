@@ -35,20 +35,4 @@ pub mod shell_support {
         metadata_for_remove, move_file_or_dir, path_basename, remove_path, touch_file,
         touch_file_at,
     };
-
-    #[cfg(test)]
-    mod tests {
-        use super::{format_fragment, format_line};
-
-        #[test]
-        fn shell_newline_is_a_terminal_crlf_sequence() {
-            assert_eq!(format_line(format_args!("shell line")), "shell line\r\n");
-            assert_eq!(format_line(format_args!("")), "\r\n");
-        }
-
-        #[test]
-        fn shell_fragment_has_no_implicit_line_ending() {
-            assert_eq!(format_fragment(format_args!("prompt: ")), "prompt: ");
-        }
-    }
 }

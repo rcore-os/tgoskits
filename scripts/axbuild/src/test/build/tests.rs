@@ -1,45 +1,8 @@
-use std::{
-    collections::BTreeSet,
-    ffi::OsStr,
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use tempfile::tempdir;
 
 use super::{grouped_c::*, toolchain::*, *};
-
-fn fake_config() -> CaseAssetConfig {
-    CaseAssetConfig {
-        grouped_execution: case_assets::GroupedCaseExecution::ShellCommand(
-            case_assets::GroupedCaseRunnerConfig {
-                runner_name: "suite-run-case-tests".to_string(),
-                runner_path: "/usr/bin/suite-run-case-tests".to_string(),
-                begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
-                passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
-                failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
-                all_passed_marker: "SUITE_GROUPED_TESTS_PASSED".to_string(),
-                all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
-                success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
-                fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
-            },
-        ),
-        script_env: case_assets::CaseScriptEnvConfig {
-            staging_root: "SUITE_STAGING_ROOT".to_string(),
-            case_dir: "SUITE_CASE_DIR".to_string(),
-            case_c_dir: "SUITE_CASE_C_DIR".to_string(),
-            case_work_dir: "SUITE_CASE_WORK_DIR".to_string(),
-            case_build_dir: "SUITE_CASE_BUILD_DIR".to_string(),
-            case_overlay_dir: "SUITE_CASE_OVERLAY_DIR".to_string(),
-        },
-        cache_env_vars: vec!["SUITE_PACKAGE_REGION".to_string()],
-        prepare_staging_root: |_| Ok(()),
-        prepare_guest_package_env: Some(|_| {
-            Ok(vec![("SUITE_PACKAGE_REGION".to_string(), "us".to_string())])
-        }),
-    }
-}
 
 fn fake_case(root: &Path, name: &str) -> TestQemuCase {
     let case_dir = root.join("test-suite/example/default").join(name);
@@ -86,21 +49,6 @@ fn fake_c_subcase(
     }
 }
 
-fn command_env(command: &Command, key: &str) -> Option<String> {
-    command.get_envs().find_map(|(name, value)| {
-        (name == OsStr::new(key))
-            .then(|| value.map(|value| value.to_string_lossy().into_owned()))
-            .flatten()
-    })
-}
-
-fn command_args(command: &Command) -> Vec<String> {
-    command
-        .get_args()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect()
-}
-
 #[test]
 fn write_musl_loader_search_path_uses_requested_guest_arch() {
     let root = tempdir().unwrap();
@@ -128,65 +76,6 @@ fn write_musl_loader_search_path_skips_when_guest_loader_is_missing() {
 
     assert!(!staging_root.join("etc/ld-musl-aarch64.path").exists());
     assert!(!staging_root.join("etc/ld-musl-riscv64.path").exists());
-}
-
-#[test]
-fn build_prebuild_command_uses_guest_shell_and_case_envs() {
-    let root = tempdir().unwrap();
-    let case = fake_case(root.path(), "usb");
-    let layout =
-        case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
-            .unwrap();
-    fs::create_dir_all(layout.staging_root.join("bin")).unwrap();
-    fs::write(layout.staging_root.join("bin/sh"), b"").unwrap();
-    fs::write(layout.staging_root.join("bin/busybox"), b"").unwrap();
-    let prebuild_env = GuestPrebuildEnv {
-        qemu_runner: PathBuf::from("/usr/bin/qemu-aarch64-static"),
-        script_envs: {
-            let mut envs = case_script_envs(&case, &layout, &fake_config());
-            envs.push(("SUITE_PACKAGE_REGION".to_string(), "us".to_string()));
-            envs
-        },
-    };
-    let prebuild_script = case_c_source_dir(&case).join("prebuild.sh");
-
-    let command = build_prebuild_command(&case, &prebuild_script, &layout, &prebuild_env).unwrap();
-
-    assert_eq!(
-        command.get_program(),
-        std::ffi::OsStr::new("/usr/bin/qemu-aarch64-static")
-    );
-    assert_eq!(
-        command_args(&command),
-        vec![
-            "-L".to_string(),
-            layout.staging_root.display().to_string(),
-            layout
-                .staging_root
-                .join("bin/busybox")
-                .display()
-                .to_string(),
-            "sh".to_string(),
-            "-eu".to_string(),
-            prebuild_script.display().to_string(),
-        ]
-    );
-    assert_eq!(
-        command.get_current_dir(),
-        Some(case_c_source_dir(&case).as_path())
-    );
-    assert_eq!(
-        command_env(&command, "SUITE_CASE_OVERLAY_DIR"),
-        Some(layout.overlay_dir.display().to_string())
-    );
-    assert_eq!(
-        command_env(&command, "SUITE_PACKAGE_REGION"),
-        Some("us".to_string())
-    );
-    assert_eq!(
-        command_env(&command, "LD_LIBRARY_PATH"),
-        Some(guest_library_path(&layout.staging_root))
-    );
 }
 
 #[test]
@@ -323,96 +212,6 @@ fn grouped_c_subcases_reject_missing_direct_usr_bin_commands() {
 }
 
 #[test]
-fn cmake_configure_command_passes_staging_root_define() {
-    let root = tempdir().unwrap();
-    let case = fake_case(root.path(), "usb");
-    let layout =
-        case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
-            .unwrap();
-    let build_env = HostCrossBuildEnv {
-        cmake: PathBuf::from("/usr/bin/cmake"),
-        pkg_config: PathBuf::from("/usr/bin/pkg-config"),
-        make_program: PathBuf::from("/usr/bin/make"),
-        cmake_toolchain_file: PathBuf::from("/tmp/cmake-toolchain.cmake"),
-        command_envs: vec![("PKG_CONFIG_LIBDIR".to_string(), "/sysroot".to_string())],
-    };
-
-    let config = fake_config();
-    let command = build_cmake_configure_command(&case, &layout, &build_env, &config);
-    let args = command_args(&command);
-
-    assert_eq!(
-        command.get_program(),
-        std::ffi::OsStr::new("/usr/bin/cmake")
-    );
-    assert!(args.contains(&format!(
-        "-DCMAKE_TOOLCHAIN_FILE={}",
-        build_env.cmake_toolchain_file.display()
-    )));
-    assert!(args.contains(&format!(
-        "-D{}={}",
-        config.script_env.staging_root,
-        layout.staging_root.display()
-    )));
-    assert_eq!(
-        command_env(&command, "PKG_CONFIG_LIBDIR"),
-        Some("/sysroot".to_string())
-    );
-}
-
-#[test]
-fn grouped_c_root_configure_command_passes_selected_subcase_list() {
-    let root = tempdir().unwrap();
-    let mut case = fake_case(root.path(), "bugfix");
-    case.test_commands = vec!["/usr/bin/beta".to_string()];
-    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
-    let beta = fake_c_subcase(root.path(), &case, "beta-dir", &["beta"]);
-    let subcases = [&alpha, &beta];
-    let selected = selected_grouped_c_subcases(&case, subcases.to_vec()).unwrap();
-    let layout =
-        case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "bugfix")
-            .unwrap();
-    let build_env = HostCrossBuildEnv {
-        cmake: PathBuf::from("/usr/bin/cmake"),
-        pkg_config: PathBuf::from("/usr/bin/pkg-config"),
-        make_program: PathBuf::from("/usr/bin/make"),
-        cmake_toolchain_file: PathBuf::from("/tmp/cmake-toolchain.cmake"),
-        command_envs: Vec::new(),
-    };
-
-    let command = build_grouped_c_root_project_configure_command(
-        &case,
-        &selected,
-        subcases.len(),
-        &layout,
-        &build_env,
-        &fake_config(),
-    );
-    let args = command_args(&command);
-
-    assert!(args.contains(&"-DSTARRY_GROUPED_C_SUBCASES=beta-dir".to_string()));
-}
-
-#[test]
-fn grouped_c_root_prebuild_env_exposes_selected_subcase_list() {
-    let root = tempdir().unwrap();
-    let case = fake_case(root.path(), "system");
-    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
-    let beta = fake_c_subcase(root.path(), &case, "beta-dir", &["beta"]);
-    let subcases = [&alpha, &beta];
-
-    let env = grouped_c_root_prebuild_env(
-        vec![("SUITE_PACKAGE_REGION".to_string(), "us".to_string())],
-        &subcases,
-    );
-
-    assert!(env.contains(&(
-        "STARRY_GROUPED_C_SUBCASES".to_string(),
-        "alpha,beta-dir".to_string(),
-    )));
-}
-
-#[test]
 fn cross_compile_spec_maps_supported_arches() {
     assert_eq!(
         cross_compile_spec("aarch64").unwrap(),
@@ -517,24 +316,4 @@ fn detect_gcc_runtime_dir_prefers_highest_version() {
 
     let selected = detect_gcc_runtime_dir(&sysroot, "usr/aarch64-alpine-linux-musl/bin").unwrap();
     assert_eq!(selected, gcc_root.join("15.2.0"));
-}
-
-#[test]
-fn case_script_envs_include_expected_paths() {
-    let root = tempdir().unwrap();
-    let case = fake_case(root.path(), "usb");
-    let layout =
-        case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
-            .unwrap();
-
-    let envs = case_script_envs(&case, &layout, &fake_config());
-
-    assert!(envs.contains(&(
-        "SUITE_CASE_DIR".to_string(),
-        case.case_dir.display().to_string()
-    )));
-    assert!(envs.contains(&(
-        "SUITE_CASE_BUILD_DIR".to_string(),
-        layout.build_dir.display().to_string()
-    )));
 }

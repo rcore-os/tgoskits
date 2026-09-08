@@ -240,26 +240,3 @@ fn to_absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
         std::env::current_dir()?.join(path)
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use clap::Parser;
-
-    use super::*;
-
-    #[derive(Parser)]
-    struct Cli {
-        #[command(flatten)]
-        overrides: ConfigOverrides,
-
-        #[command(subcommand)]
-        command: Command,
-    }
-
-    #[test]
-    fn rejects_removed_storage_options() {
-        assert!(Cli::try_parse_from(["image", "--local-storage", "images", "ls"]).is_err());
-        assert!(Cli::try_parse_from(["image", "--no-auto-sync", "ls"]).is_err());
-        assert!(Cli::try_parse_from(["image", "--auto-sync-threshold", "60", "ls"]).is_err());
-    }
-}

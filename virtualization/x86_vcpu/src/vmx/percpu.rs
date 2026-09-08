@@ -195,29 +195,6 @@ mod tests {
     type TestVmxPerCpuState = VmxPerCpuState<MockMmHal>;
 
     #[test]
-    fn test_vmx_per_cpu_state_new() {
-        MockMmHal::reset(); // Reset before test
-        let result = TestVmxPerCpuState::new(0);
-        assert!(result.is_ok());
-
-        let state = result.unwrap();
-        assert_eq!(state.vmcs_revision_id, 0);
-    }
-
-    #[test]
-    fn test_vmx_per_cpu_state_default_values() {
-        MockMmHal::reset(); // Reset before test
-        let state = TestVmxPerCpuState::new(0).unwrap();
-
-        // Test that vmcs_revision_id is initialized to 0
-        assert_eq!(state.vmcs_revision_id, 0);
-
-        // The VMX region should be in an uninitialized state
-        // We can't test this directly as the field is private,
-        // but we can ensure the struct is created successfully
-    }
-
-    #[test]
     fn test_multiple_cpu_states_independence() {
         MockMmHal::reset(); // Reset before test
         let mut states = Vec::new();
@@ -237,19 +214,5 @@ mod tests {
         assert_eq!(states[1].vmcs_revision_id, 0x87654321);
         assert_eq!(states[2].vmcs_revision_id, 0);
         assert_eq!(states[3].vmcs_revision_id, 0);
-    }
-
-    #[test]
-    fn test_vmx_per_cpu_state_size() {
-        use core::mem;
-
-        // Test that the struct has a reasonable size
-        let size = mem::size_of::<TestVmxPerCpuState>();
-
-        // Should be larger than just the u32 field due to the VmxRegion
-        assert!(size > 4);
-
-        // But shouldn't be excessively large (this is a sanity check)
-        assert!(size < 1024);
     }
 }

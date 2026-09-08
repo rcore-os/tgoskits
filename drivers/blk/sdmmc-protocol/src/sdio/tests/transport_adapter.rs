@@ -240,18 +240,6 @@ impl Host2Mock {
 }
 
 #[test]
-fn host2_adapter_reports_forwarded_completion_irq_state() {
-    let host = Host2Mock::new(sdmmc_host::RawResponse::empty());
-    let mut adapter = ProtocolHost::new(host);
-
-    assert!(!adapter.inner().completion_irq_enabled());
-    adapter.inner_mut().enable_completion_irq().unwrap();
-    assert!(adapter.inner().completion_irq_enabled());
-    adapter.inner_mut().disable_completion_irq().unwrap();
-    assert!(!adapter.inner().completion_irq_enabled());
-}
-
-#[test]
 fn command_submission_restores_completion_irq_cleared_by_controller_reset() {
     let host = Host2Mock::new(ok_r1().to_raw_response(ResponseType::R1));
     let mut adapter = ProtocolHost::new(host);

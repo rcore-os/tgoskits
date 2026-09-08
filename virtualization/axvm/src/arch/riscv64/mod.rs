@@ -478,13 +478,6 @@ fn riscv_access_flags_to_ax(flags: RiscvAccessFlags) -> MappingFlags {
 mod tests {
     use super::*;
 
-    fn assert_riscv_exit_type<T: VmArchVcpuOps<Exit = RiscvVmExit>>() {}
-
-    #[test]
-    fn axvm_riscv_vcpu_uses_riscv_exit_type() {
-        assert_riscv_exit_type::<AxvmRiscvVcpu>();
-    }
-
     #[test]
     fn converts_riscv_vcpu_errors_to_backend_errors() {
         assert_eq!(

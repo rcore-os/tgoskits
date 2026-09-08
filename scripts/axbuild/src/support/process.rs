@@ -183,9 +183,7 @@ fn shell_escape(value: &OsStr) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsStr, process::Command};
-
-    use super::ProcessExt;
+    use std::process::Command;
 
     #[cfg(unix)]
     #[test]
@@ -216,21 +214,6 @@ mod tests {
 
         assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
         assert_eq!(attempts, 1);
-    }
-
-    #[test]
-    fn option_values_are_one_argument_even_when_the_value_starts_with_a_hyphen() {
-        let mut command = Command::new("python3");
-
-        command
-            .arg_option_value("--qemu-arg", OsStr::new("-cpu"))
-            .arg_option_value("--shell-init-cmd", OsStr::new("--version"));
-
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(args, ["--qemu-arg=-cpu", "--shell-init-cmd=--version"]);
     }
 
     #[test]

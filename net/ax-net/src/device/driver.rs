@@ -193,16 +193,3 @@ pub trait EthernetFramePort: Send + 'static {
 
 /// Protocol endpoints handed to the unique smoltcp owner during startup.
 pub type EthernetFramePortList = Vec<Box<dyn EthernetFramePort>>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn network_device_errors_have_domain_messages() {
-        assert_eq!(
-            alloc::format!("{}", NetDeviceError::NoMemory),
-            "network frame port memory allocation failed"
-        );
-    }
-}

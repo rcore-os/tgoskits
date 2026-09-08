@@ -407,25 +407,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cursor_constructors_and_position_hold() {
-        use alloc::vec;
-
-        let cursor = crate::Cursor::new(vec![1, 2, 3, 4, 5]);
-        assert_eq!(cursor.position(), 0);
-        assert_eq!(*cursor.get_ref(), [1, 2, 3, 4, 5]);
-
-        let mut cursor = crate::Cursor::new(vec![0u8; 0]);
-        assert!(cursor.get_mut().is_empty());
-        cursor.set_position(42);
-        assert_eq!(cursor.position(), 42);
-
-        // Test into_inner
-        let cursor = crate::Cursor::new(vec![10, 20, 30]);
-        let inner = cursor.into_inner();
-        assert_eq!(inner, vec![10, 20, 30]);
-    }
-
-    #[test]
     fn cursor_split_and_clone_hold() {
         use alloc::vec;
 

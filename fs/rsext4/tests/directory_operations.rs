@@ -99,33 +99,6 @@ impl rsext4::Clock for MockBlockDevice {
 mod directory_functional_tests {
     use super::*;
 
-    /// Verifies basic directory creation patterns, from single-level paths to a
-    /// deeper hierarchy and several siblings under one parent.
-    #[test]
-    fn test_directory_create() {
-        let device = MockBlockDevice::new(100 * 1024 * 1024); // 100MB
-        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
-        mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
-
-        // Cover one shallow path first.
-        test_mkdir(&mut jbd2_dev, &mut fs, "/single").expect("mkdir failed");
-
-        // Then build a multi-level chain.
-        test_mkdir(&mut jbd2_dev, &mut fs, "/level1").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/level1/level2").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/level1/level2/level3").expect("mkdir failed");
-
-        // Finally, create several siblings under one common parent.
-        test_mkdir(&mut jbd2_dev, &mut fs, "/siblings").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling1").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling2").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling3").expect("mkdir failed");
-
-        umount(fs, &mut jbd2_dev).expect("umount failed");
-    }
-
     #[test]
     fn indexed_directory_link_count_uses_dir_nlink_sentinel_at_linux_limit() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);

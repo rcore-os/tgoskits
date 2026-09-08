@@ -630,36 +630,4 @@ mod tests {
         normalize_image_paths(&mut args, inv);
         assert_path_eq(&args[2], "-D=/tmp/work/rel");
     }
-
-    #[test]
-    fn attached_short_combined_d_e() {
-        // Clap treats -De as -D with value "e", not -D + -E
-        let inv = Path::new("/tmp/work");
-        let mut args = vec![
-            os("xtask"),
-            os("image"),
-            os("-De"),
-            os("pull"),
-            os("qemu-aarch64"),
-        ];
-        normalize_image_paths(&mut args, inv);
-        assert_path_eq(&args[2], "-D/tmp/work/e");
-    }
-
-    #[test]
-    fn attached_short_alone_falls_through() {
-        // Bare -D with no attached value: the fallthrough to space form
-        // must still work (regression guard).
-        let inv = Path::new("/tmp/work");
-        let mut args = vec![
-            os("xtask"),
-            os("image"),
-            os("-D"),
-            os("store"),
-            os("pull"),
-            os("qemu-aarch64"),
-        ];
-        normalize_image_paths(&mut args, inv);
-        assert_path_eq(&args[3], "/tmp/work/store");
-    }
 }

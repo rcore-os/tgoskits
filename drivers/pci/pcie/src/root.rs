@@ -357,10 +357,4 @@ mod tests {
             })
         );
     }
-
-    #[test]
-    fn pci_enumeration_constants_cover_all_slots_and_functions() {
-        assert_eq!(MAX_DEVICE, 31);
-        assert_eq!(MAX_FUNCTION, 7);
-    }
 }

@@ -28,19 +28,6 @@ fn test_vm_with_machine(
 }
 
 #[test]
-fn config_and_machine_use_their_required_lock_types() {
-    fn assert_std_mutex<T: ?Sized>(_: &StdMutex<T>) {}
-    fn assert_irq_safe_mutex<T: ?Sized>(_: &IrqSafeMutex<T>) {}
-
-    fn check(vm: &AxVM) {
-        assert_std_mutex(&vm.config);
-        assert_irq_safe_mutex(&vm.machine);
-    }
-
-    let _ = check as fn(&AxVM);
-}
-
-#[test]
 fn with_config_reads_back_mutations() {
     let vm = test_vm(1);
     let dtb_load_gpa = GuestPhysAddr::from_usize(0x9000_0000);

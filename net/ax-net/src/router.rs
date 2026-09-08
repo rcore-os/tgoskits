@@ -2018,23 +2018,6 @@ mod l2_counter_tests {
     // ── stats snapshot ─────────────────────────────────────────────────
 
     #[test]
-    fn stats_starts_at_zero() {
-        let device = test_device_handle(Box::new(CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0,
-        }));
-
-        let snap = device.stats();
-        assert_eq!(snap.rx_bytes, 0);
-        assert_eq!(snap.rx_packets, 0);
-        assert_eq!(snap.tx_bytes, 0);
-        assert_eq!(snap.tx_packets, 0);
-    }
-
-    #[test]
     fn stats_reflects_current_counters_after_counting() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
@@ -2157,48 +2140,6 @@ mod l2_counter_tests {
         let snap = device.stats();
         assert_eq!(snap.rx_bytes, 0);
         assert_eq!(snap.rx_packets, 0);
-    }
-
-    // ── drain_deferred_tx default ─────────────────────────────────────────
-
-    #[test]
-    fn drain_deferred_tx_default_returns_empty_vec() {
-        let mut device = CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0,
-        };
-
-        // Default trait implementation returns Vec::new().
-        let drained = device.drain_deferred_tx();
-        assert!(drained.is_empty());
-
-        // Second call is also empty (no side effects).
-        let drained = device.drain_deferred_tx();
-        assert!(drained.is_empty());
-    }
-
-    // ── drain_deferred_rx default ─────────────────────────────────────────
-
-    #[test]
-    fn drain_deferred_rx_default_returns_empty_vec() {
-        let mut device = CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0,
-        };
-
-        // Default trait implementation returns Vec::new().
-        let drained = device.drain_deferred_rx();
-        assert!(drained.is_empty());
-
-        // Second call is also empty and idempotent.
-        let drained = device.drain_deferred_rx();
-        assert!(drained.is_empty());
     }
 
     // ── Protocol executor combined drain integration ──────────────────

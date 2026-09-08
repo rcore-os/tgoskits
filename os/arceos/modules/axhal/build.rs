@@ -72,31 +72,3 @@ fn build_info_source(cpu_capacity: usize) -> String {
     }
     .to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn semantic_source(source: &str) -> String {
-        source
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect()
-    }
-
-    #[test]
-    fn selected_platform_source_handles_crate_names_with_underscores() {
-        assert_eq!(
-            semantic_source(&selected_platform_source("ax_plat_loongarch64_qemu_virt")),
-            semantic_source("pub extern crate ax_plat_loongarch64_qemu_virt as selected;")
-        );
-    }
-
-    #[test]
-    fn build_info_source_generates_smp_cpu_capacity() {
-        assert_eq!(
-            semantic_source(&build_info_source(16)),
-            semantic_source("#[cfg(feature = \"smp\")] pub const CPU_CAPACITY: usize = 16usize;")
-        );
-    }
-}

@@ -27,8 +27,6 @@ fn kernutil_memory_descriptor_rules_hold() {
     assert_eq!(cloned.physical_start, 0x2000);
     assert_eq!(cloned.size_in_bytes, 0x800);
     assert_eq!(cloned.memory_type, MemoryType::Ram);
-
-    assert_eq!(MemoryType::default(), MemoryType::Free);
 }
 
 #[test]

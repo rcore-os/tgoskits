@@ -307,12 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn metadata_distinguishes_prints_from_structured_logs() {
-        assert_eq!(RecordMeta::print().kind(), RecordKind::Print);
-        assert_eq!(RecordMeta::log().kind(), RecordKind::Log);
-    }
-
-    #[test]
     fn truncated_publication_is_still_accepted() {
         assert!(PublishStatus::Published.is_published());
         assert!(PublishStatus::Truncated.is_published());

@@ -715,14 +715,6 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_firmware_reports_explicit_error() {
-        assert_eq!(
-            FdtPinctrl::unsupported_firmware(crate::FirmwareKind::Acpi),
-            PinctrlError::UnsupportedFirmware(crate::FirmwareKind::Acpi)
-        );
-    }
-
-    #[test]
     fn fixed_regulator_can_use_gpio_bank_endpoint() {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();

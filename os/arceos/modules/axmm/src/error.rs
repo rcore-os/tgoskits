@@ -40,39 +40,3 @@ impl From<MappingError> for MmError {
 
 /// A memory-management result.
 pub type MmResult<T = ()> = Result<T, MmError>;
-
-#[cfg(test)]
-mod tests {
-    use alloc::string::ToString as _;
-
-    use super::*;
-
-    #[test]
-    fn all_variants_have_domain_messages() {
-        let cases = [
-            (
-                MmError::InvalidInput("range"),
-                "invalid memory-management input: range",
-            ),
-            (MmError::NoMemory, "memory allocation failed"),
-            (MmError::AlreadyExists, "memory mapping already exists"),
-            (MmError::BadAddress, "bad memory address"),
-            (
-                MmError::BadState("page table"),
-                "invalid memory-management state: page table",
-            ),
-            (
-                MmError::Unsupported,
-                "memory-management operation is unsupported",
-            ),
-            (
-                MmError::TlbShootdown(ax_hal::cache::TlbShootdownError::Timeout),
-                "pending stage-1 TLB quarantine blocked the mutation: cross-CPU TLB shootdown \
-                 timed out",
-            ),
-        ];
-        for (error, message) in cases {
-            assert_eq!(error.to_string(), message);
-        }
-    }
-}

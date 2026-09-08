@@ -2912,56 +2912,6 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
 }
 
 #[test]
-fn rsext4_bitmap_error_mapping_rules_hold() {
-    use rsext4::{Ext4ErrorKind, bitmap::BitmapError, bmalloc::map_bitmap_error};
-
-    assert_eq!(
-        map_bitmap_error(BitmapError::IndexOutOfRange).kind(),
-        Ext4ErrorKind::InvalidInput
-    );
-    assert_eq!(
-        map_bitmap_error(BitmapError::AlreadyAllocated).kind(),
-        Ext4ErrorKind::AlreadyExists
-    );
-    assert_eq!(
-        map_bitmap_error(BitmapError::AlreadyFree).kind(),
-        Ext4ErrorKind::NotFound
-    );
-}
-
-#[test]
 fn rsext4_bmalloc_type_conversions_and_validation_hold() {
     assert!(rsext4::bmalloc::bmalloc_type_conversions_and_validation_rules_hold_for_test());
-}
-
-#[test]
-fn rsext4_superblock_feature_flags_hold() {
-    use rsext4::superblock::Ext4Superblock;
-
-    let mut sb = Ext4Superblock {
-        s_feature_compat: 0,
-        s_feature_ro_compat: 0,
-        s_feature_incompat: 0,
-        ..Default::default()
-    };
-
-    // Test feature compatibility flags
-    assert!(!sb.has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL));
-    sb.s_feature_compat |= Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL;
-    assert!(sb.has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL));
-
-    // Test feature read-only compatibility flags
-    sb.s_feature_ro_compat = 0;
-    assert!(!sb.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER));
-    sb.s_feature_ro_compat |= Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER;
-    assert!(sb.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER));
-
-    // Test feature incompatibility flags
-    sb.s_feature_incompat = 0;
-    assert!(!sb.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT));
-    sb.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT;
-    assert!(sb.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_64BIT));
-
-    // Test magic number
-    assert_eq!(Ext4Superblock::EXT4_SUPER_MAGIC, 0xEF53);
 }

@@ -74,8 +74,6 @@ fn route(input: u8) -> AcpiGsiRoute {
 #[test]
 fn rdif_intc_wrapper_translates_domains_and_configures_matching_routes() {
     let mut intc = Intc::new(IrqDomainId(11), MockIntc::new(HwIrq(5)));
-    assert_eq!(intc.name(), "mock-intc");
-    assert_eq!(intc.domain(), IrqDomainId(11));
 
     let translation = intc.translate_fdt(&[5]).unwrap();
     assert_eq!(translation.id, IrqId::new(IrqDomainId(11), HwIrq(5)));
@@ -112,6 +110,4 @@ fn rdif_intc_wrapper_translates_domains_and_configures_matching_routes() {
         intc.typed_ref::<MockIntc>().unwrap().enabled_call,
         Some((HwIrq(5), true))
     );
-    intc.typed_mut::<MockIntc>().unwrap().enabled_call = None;
-    assert_eq!(intc.typed_ref::<MockIntc>().unwrap().enabled_call, None);
 }

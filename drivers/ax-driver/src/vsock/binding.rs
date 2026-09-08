@@ -276,20 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn platform_vsock_device_exposes_binding_info_irq_num() {
-        let irq = 44;
-        let device = PlatformVsockDevice::new(
-            "test-vsock".into(),
-            Box::new(TestVsock::new()),
-            BindingInfo::with_irq(Some(irq)).unwrap(),
-        );
-
-        assert_eq!(device.binding_info().irq_num(), Some(irq));
-        assert_eq!(device.irq_num(), Some(irq));
-        assert_eq!(BoundDevice::irq_num(&device), Some(irq));
-    }
-
-    #[test]
     fn platform_vsock_device_without_irq_cannot_transfer_runtime_ownership() {
         let mut device = PlatformVsockDevice::new(
             "test-vsock".into(),

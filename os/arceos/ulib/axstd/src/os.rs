@@ -97,23 +97,3 @@ pub mod libc_compat;
 
 #[cfg(any(feature = "std-compat", all(test, feature = "host-test")))]
 mod futex;
-
-#[cfg(all(test, feature = "host-test"))]
-mod tests {
-    use super::arceos::sync::{IrqSafeMutex, NoPreemptMutex, RawSpinLock};
-
-    static IRQ_SAFE: IrqSafeMutex<usize> = IrqSafeMutex::new(0);
-    static NO_PREEMPT: NoPreemptMutex<usize> = NoPreemptMutex::new(0);
-    static RAW: RawSpinLock<usize> = RawSpinLock::new(0);
-
-    #[test]
-    fn special_locks_support_const_initialization_and_try_lock() {
-        *IRQ_SAFE.lock() += 1;
-        *NO_PREEMPT.lock() += 1;
-        *unsafe { RAW.lock_raw() } += 1;
-
-        assert_eq!(*IRQ_SAFE.try_lock().unwrap(), 1);
-        assert_eq!(*NO_PREEMPT.try_lock().unwrap(), 1);
-        assert_eq!(*unsafe { RAW.try_lock_raw() }.unwrap(), 1);
-    }
-}

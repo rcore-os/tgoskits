@@ -21,13 +21,3 @@ num-align = "0.1"
 rdif-base.workspace = true
 thiserror = {version = "2.0", default-features = false}
 tock-registers = "0.10"
-
-[dev-dependencies]
-# fdt-edit = "0.2.3"
-# rockchip-pm = { workspace = true }
-# rockchip-soc = { workspace = true }
-
-# bare-test integration test is temporarily disabled.
-# [[test]]
-# harness = false
-# name = "test"

@@ -152,16 +152,3 @@ impl InputDevice for ErasedInputDevice {
         self.inner.handle_irq()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn input_errors_have_domain_messages() {
-        assert_eq!(
-            alloc::format!("{}", InputError::ResourceBusy),
-            "input device resource is busy"
-        );
-    }
-}

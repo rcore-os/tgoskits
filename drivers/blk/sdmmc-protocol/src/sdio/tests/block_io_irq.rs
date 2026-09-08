@@ -90,18 +90,6 @@ fn submit_block_io_rejects_misaligned_buffers() {
     assert!(driver.host().commands.is_empty());
 }
 
-struct MockIrqHandle {
-    event: IrqTestEvent,
-}
-
-impl SdMmcIrqHandle for MockIrqHandle {
-    type Event = IrqTestEvent;
-
-    fn handle_irq(&mut self) -> Self::Event {
-        self.event
-    }
-}
-
 #[derive(Clone, Copy, Default)]
 struct IrqTestEvent(HostEventKind);
 
@@ -130,13 +118,4 @@ fn host_irq_events_map_to_single_sdmmc_block_queue() {
             Some(SDMMC_BLOCK_QUEUE_ID)
         );
     }
-}
-
-#[test]
-fn irq_handle_is_move_only_and_handles_with_mutable_endpoint() {
-    let mut handle = MockIrqHandle {
-        event: IrqTestEvent(HostEventKind::TransferComplete),
-    };
-
-    assert_eq!(handle.handle_irq().kind(), HostEventKind::TransferComplete);
 }

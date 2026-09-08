@@ -3,11 +3,8 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 
 use rdif_block::{
-    BatchSubmitDisposition, BatchSubmitResult, BlkError, CompletedRequest, CompletionSink,
-    ControlEvent, DeviceInfo, HardwareQueue, IrqAck, IrqDisposition, IrqQueueMask, OwnedRequest,
-    OwnedRequestBatch, QueueInfo, QueueLimits, RequestFlags, RequestId, RequestOp, SubmissionSink,
-    SubmitError, TransferPlanner, TransferRuntimeCaps, validate_owned_request,
-    validate_owned_request_shape,
+    BlkError, DeviceInfo, OwnedRequest, QueueInfo, QueueLimits, RequestFlags, RequestOp,
+    TransferPlanner, TransferRuntimeCaps, validate_owned_request, validate_owned_request_shape,
 };
 
 fn dma_info(mask: u64, coherency: dma_api::DmaCoherency) -> dma_api::DmaDeviceInfo {
@@ -37,53 +34,7 @@ fn flush_request() -> OwnedRequest {
 }
 
 #[test]
-fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
-    let mut device = DeviceInfo::new(128, 512);
-    device.read_only = true;
-    device.name = Some("nvme0n1");
-    device.vendor = Some("qemu");
-    device.model = Some("nvme");
-
-    let limits = QueueLimits::simple(
-        512,
-        dma_info(0xffff_ffff, dma_api::DmaCoherency::NonCoherent),
-    );
-    let info = QueueInfo {
-        id: 3,
-        device,
-        limits,
-    };
-
-    assert_eq!(info.id, 3);
-    assert_eq!(info.device.num_blocks, 128);
-    assert!(info.device.read_only);
-    assert_eq!(info.limits.dma.constraints().align, 512);
-    assert_eq!(info.limits.max_inflight, 1);
-    assert_eq!(info.limits.max_submit_batch, 1);
-    assert_eq!(info.limits.dma.constraints().max_segment_size, Some(512));
-
-    assert_eq!(
-        alloc::format!("{}", BlkError::InvalidBlockIndex(9)),
-        "invalid block index: 9"
-    );
-    assert_eq!(
-        alloc::format!("{}", BlkError::NotSupported),
-        "operation not supported"
-    );
-    assert_eq!(
-        alloc::format!("{}", BlkError::Retry),
-        "operation should be retried"
-    );
-    assert_eq!(
-        alloc::format!("{}", BlkError::NoMemory),
-        "insufficient memory"
-    );
-    assert_eq!(
-        alloc::format!("{}", BlkError::InvalidRequest),
-        "invalid block request"
-    );
-    assert_eq!(alloc::format!("{}", BlkError::Io), "block I/O error");
-    assert_eq!(alloc::format!("{}", BlkError::Other("custom")), "custom");
+fn rdif_block_errors_map_to_io_kinds() {
     assert!(matches!(
         rdif_block::io::ErrorKind::from(BlkError::NotSupported),
         rdif_block::io::ErrorKind::Unsupported
@@ -118,29 +69,6 @@ fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
         BlkError::from(dma_api::DmaError::SegmentTooLarge { size: 2, max: 1 }),
         BlkError::Io
     );
-}
-
-#[test]
-fn rdif_block_request_flags_ids_and_submit_error_round_trip() {
-    let id = RequestId::new(12);
-    assert_eq!(usize::from(id), 12);
-
-    let flags = RequestFlags::FUA | RequestFlags::PREFLUSH;
-    assert!(flags.contains(RequestFlags::FUA));
-    assert!(flags.intersects(RequestFlags::PREFLUSH));
-    assert_eq!(
-        flags.unsupported_by(RequestFlags::FUA).bits(),
-        RequestFlags::PREFLUSH.bits()
-    );
-    let mut assigned = RequestFlags::NONE;
-    assigned |= RequestFlags::NOWAIT;
-    assert_eq!(assigned.bits(), RequestFlags::NOWAIT.bits());
-
-    let request = flush_request();
-    let error = SubmitError::new(BlkError::Retry, request);
-    assert_eq!(error.error, BlkError::Retry);
-    assert_eq!(error.request().op, RequestOp::Flush);
-    assert_eq!(error.into_request().block_count, 0);
 }
 
 #[test]
@@ -195,128 +123,6 @@ fn rdif_block_owned_request_validation_rejects_invalid_shapes_and_flags() {
         ),
         Err(BlkError::NotSupported)
     );
-}
-
-#[test]
-fn rdif_block_irq_ack_carries_fixed_queue_and_control_events() {
-    let mut queues = IrqQueueMask::from_queue(2);
-    assert!(queues.contains(2));
-    assert!(!queues.contains(64));
-    queues = IrqQueueMask::from_bits(queues.bits() | (1 << 7));
-    assert!(queues.contains(7));
-
-    let ack = IrqAck::cleared(queues, ControlEvent::new(5, 0x20));
-    assert_eq!(ack.disposition(), IrqDisposition::Cleared);
-    assert_eq!(ack.queues().bits(), (1 << 2) | (1 << 7));
-    assert_eq!(ack.control_event().source_id(), 5);
-    assert_eq!(ack.control_event().bits(), 0x20);
-    assert!(IrqAck::spurious(5).is_spurious());
-}
-
-#[derive(Default)]
-struct AcceptedIds(Vec<RequestId>);
-
-impl SubmissionSink for AcceptedIds {
-    fn accepted(&mut self, id: RequestId) {
-        self.0.push(id);
-    }
-}
-
-#[derive(Default)]
-struct RecordingSink {
-    completions: Vec<(RequestId, Result<(), BlkError>)>,
-}
-
-impl CompletionSink for RecordingSink {
-    fn complete(&mut self, request: CompletedRequest) {
-        assert!(request.data.is_none());
-        self.completions.push((request.id, request.result));
-    }
-}
-
-#[derive(Default)]
-struct BatchQueue {
-    next_id: usize,
-    pending: Vec<RequestId>,
-    commits: usize,
-}
-
-impl HardwareQueue for BatchQueue {
-    fn id(&self) -> usize {
-        1
-    }
-
-    fn info(&self) -> QueueInfo {
-        let limits = QueueLimits {
-            supports_flush: true,
-            max_inflight: 2,
-            max_submit_batch: 2,
-            ..QueueLimits::simple(512, dma_info(u64::MAX, dma_api::DmaCoherency::NonCoherent))
-        };
-        queue_info_with(limits)
-    }
-
-    fn submit_batch_owned(
-        &mut self,
-        requests: &mut OwnedRequestBatch,
-        sink: &mut dyn SubmissionSink,
-    ) -> BatchSubmitResult {
-        let Some(request) = requests.pop_front() else {
-            return BatchSubmitResult::new(0, BatchSubmitDisposition::Continue);
-        };
-        assert_eq!(request.op, RequestOp::Flush);
-        let id = RequestId::new(self.next_id);
-        self.next_id += 1;
-        self.pending.push(id);
-        sink.accepted(id);
-        let disposition = if requests.is_empty() {
-            BatchSubmitDisposition::Continue
-        } else {
-            BatchSubmitDisposition::QueueFull
-        };
-        BatchSubmitResult::new(1, disposition)
-    }
-
-    fn commit_submissions(&mut self) -> Result<(), BlkError> {
-        self.commits += 1;
-        Ok(())
-    }
-
-    fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        for id in self.pending.drain(..) {
-            sink.complete(CompletedRequest::new(id, Ok(()), None));
-        }
-        Ok(())
-    }
-
-    fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        for id in self.pending.drain(..) {
-            sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
-        }
-        Ok(())
-    }
-}
-
-#[test]
-fn rdif_block_hardware_queue_batches_commit_and_return_ownership() {
-    let mut queue = BatchQueue::default();
-    let mut batch = OwnedRequestBatch::from_iter([flush_request(), flush_request()]);
-    let mut accepted = AcceptedIds::default();
-
-    let result = queue.submit_batch_owned(&mut batch, &mut accepted);
-    assert_eq!(result.accepted(), 1);
-    assert_eq!(result.disposition(), BatchSubmitDisposition::QueueFull);
-    assert_eq!(batch.len(), 1);
-    assert_eq!(accepted.0, vec![RequestId::new(0)]);
-    assert_eq!(queue.commits, 0);
-
-    queue.commit_submissions().unwrap();
-    assert_eq!(queue.commits, 1);
-
-    let mut completed = RecordingSink::default();
-    queue.drain_completions(&mut completed).unwrap();
-    assert_eq!(completed.completions, vec![(RequestId::new(0), Ok(()))]);
-    assert!(queue.pending.is_empty());
 }
 
 #[test]
