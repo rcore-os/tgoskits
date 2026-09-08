@@ -357,7 +357,9 @@ pub fn init_network(
         let cfg_idx = find_interface_config(
             &config.interfaces,
             &mut used_configs,
-            order,
+            queue_runtime
+                .as_ref()
+                .map_or(order, |runtime| runtime.discovery_order(order)),
             mac,
             dev.device_name(),
         );

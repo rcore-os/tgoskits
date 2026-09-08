@@ -278,10 +278,18 @@ pub struct NetworkQueueRuntime {
     _controls: Vec<Box<dyn rd_net::NetControlEndpoint>>,
     wifi_handles: Vec<WifiRuntimeHandle>,
     initial_wifi_policies: Vec<(usize, WifiLinkPolicy)>,
+    device_index_map: Vec<Option<usize>>,
     protocol_owner_cpu: usize,
 }
 
 impl NetworkQueueRuntime {
+    pub(crate) fn discovery_order(&self, device_index: usize) -> usize {
+        self.device_index_map
+            .iter()
+            .position(|&index| index == Some(device_index))
+            .expect("published network port must have a discovery order")
+    }
+
     pub fn protocol_owner_cpu(&self) -> usize {
         self.protocol_owner_cpu
     }
@@ -682,19 +690,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             }
         };
 
-        let mut device_index_map = vec![None; ports.len()];
-        let mut started_ports = Vec::with_capacity(ports.len());
-        for (device_index, mut port) in ports.into_iter().enumerate() {
-            if port.retain_started_groups() {
-                device_index_map[device_index] = Some(started_ports.len());
-                started_ports.push(Box::new(port) as Box<dyn EthernetFramePort>);
-            } else {
-                log::warn!(
-                    "network device {} is not present after owner startup; skipping it",
-                    port.name
-                );
-            }
-        }
+        let (started_ports, device_index_map) = retain_started_ports(ports);
         group_states.retain(|state| !state.startup_absent());
         let controls = controls
             .into_iter()
@@ -744,6 +740,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             _controls: controls,
             wifi_handles,
             initial_wifi_policies: Vec::new(),
+            device_index_map,
             protocol_owner_cpu,
         };
         for (handle, transaction) in startup_transactions {
@@ -763,6 +760,23 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         }
         Ok((runtime, started_ports))
     }
+}
+
+fn retain_started_ports(ports: Vec<QueueFramePort>) -> (EthernetFramePortList, Vec<Option<usize>>) {
+    let mut device_index_map = vec![None; ports.len()];
+    let mut started_ports = Vec::with_capacity(ports.len());
+    for (device_index, mut port) in ports.into_iter().enumerate() {
+        if port.retain_started_groups() {
+            device_index_map[device_index] = Some(started_ports.len());
+            started_ports.push(Box::new(port) as Box<dyn EthernetFramePort>);
+        } else {
+            log::warn!(
+                "network device {} is not present after owner startup; skipping it",
+                port.name
+            );
+        }
+    }
+    (started_ports, device_index_map)
 }
 
 fn prepare_startup_transaction(

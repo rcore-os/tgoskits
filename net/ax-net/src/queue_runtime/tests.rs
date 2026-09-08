@@ -276,6 +276,85 @@ fn noqueue_never_retains_or_allocates_when_device_is_busy() {
 }
 
 #[test]
+fn absent_ports_preserve_discovery_order_for_interface_configuration() {
+    use smoltcp::wire::EthernetAddress;
+
+    use crate::{InterfaceConfig, NetworkConfig, config::InterfaceMatcher};
+
+    for absent_orders in [vec![], vec![0], vec![1], vec![0, 1, 2]] {
+        let ports = (0..3)
+            .map(|order| {
+                let (port, _tx_ready, _tx_free) = tx_test_port(TxQueueDiscipline::NoQueue, 0);
+                if absent_orders.contains(&order) {
+                    port.groups[0].shared.mark_startup_absent();
+                }
+                port
+            })
+            .collect();
+        let (ports, device_index_map) = retain_started_ports(ports);
+        let runtime = NetworkQueueRuntime {
+            registrations: Vec::new(),
+            executors: Vec::new(),
+            group_states: Vec::new(),
+            _controls: Vec::new(),
+            wifi_handles: Vec::new(),
+            initial_wifi_policies: Vec::new(),
+            device_index_map,
+            protocol_owner_cpu: 0,
+        };
+        let surviving_orders = (0..3)
+            .filter(|order| !absent_orders.contains(order))
+            .collect::<Vec<_>>();
+        assert_eq!(ports.len(), surviving_orders.len());
+        let config = NetworkConfig {
+            interfaces: surviving_orders
+                .iter()
+                .map(|&order| InterfaceConfig {
+                    name: format!("nic{order}"),
+                    match_by: InterfaceMatcher::ByOrder(order),
+                    static_ip: None,
+                    dhcp: true,
+                    metric: 100,
+                    dns_servers: Vec::new(),
+                })
+                .collect(),
+            default_dns_servers: Vec::new(),
+        };
+        let mut used = vec![false; config.interfaces.len()];
+        for (device_index, port) in ports.iter().enumerate() {
+            let order = runtime.discovery_order(device_index);
+            assert_eq!(order, surviving_orders[device_index]);
+            assert_eq!(runtime.device_index_map[order], Some(device_index));
+            assert_eq!(
+                crate::find_interface_config(
+                    &config.interfaces,
+                    &mut used,
+                    order,
+                    EthernetAddress(port.mac_address()),
+                    port.device_name(),
+                ),
+                Some(device_index)
+            );
+            for &absent_order in &absent_orders {
+                let mut absent_config = config.interfaces[device_index].clone();
+                absent_config.match_by = InterfaceMatcher::ByOrder(absent_order);
+                assert_eq!(
+                    crate::find_interface_config(
+                        &[absent_config],
+                        &mut [false],
+                        order,
+                        EthernetAddress(port.mac_address()),
+                        port.device_name(),
+                    ),
+                    None
+                );
+            }
+        }
+        crate::ensure_all_interface_configs_used(&config, &used);
+    }
+}
+
+#[test]
 fn absent_startup_group_is_not_published_as_a_protocol_port() {
     let (mut port, _tx_ready, _tx_free) = tx_test_port(TxQueueDiscipline::NoQueue, 0);
     port.groups[0].shared.mark_startup_absent();

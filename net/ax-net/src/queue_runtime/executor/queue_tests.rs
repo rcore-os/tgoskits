@@ -344,7 +344,9 @@ fn missing_device_startup_is_cancelled_without_publishing_queues() {
         ),
         &TEST_DMA,
     );
-    let mut device = rd_net::prepare_device(Box::new(TestDevice(trace)), dma).unwrap();
+    let mut device =
+        rd_net::prepare_device(Box::new(TestDevice(Arc::clone(&trace), TestTx(trace))), dma)
+            .unwrap();
     let mut group = device.poll_groups.pop().unwrap();
     let cancelled = Arc::new(AtomicBool::new(false));
     group.owner_startup = Some(Box::new(MissingDeviceStartup(Arc::clone(&cancelled))));
