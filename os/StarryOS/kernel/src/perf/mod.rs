@@ -133,6 +133,19 @@ pub fn read_midr_el1() -> u64 {
     pmu::cpu_id_raw().unwrap_or(0)
 }
 
+/// Cached `MIDR_EL1` for one logical CPU, populated by its fixed perf worker.
+pub fn cpu_midr(cpu: usize) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        return percpu::cpu_info(cpu).map_or(0, |info| info.midr);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = cpu;
+        0
+    }
+}
+
 /// `ioctl` type byte for the perf-event ioctls (`'$'`).
 const PERF_IOC_TYPE: u32 = 0x24;
 /// `PERF_EVENT_IOC_SET_OUTPUT` request number (`_IO('$', 5)`).

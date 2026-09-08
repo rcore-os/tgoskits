@@ -550,10 +550,10 @@ impl PerTaskCounter {
         self.output.lock().owned().is_some()
     }
 
-    /// Expose this counter's mmap ring for a `PERF_EVENT_IOC_SET_OUTPUT` redirect
-    /// (target side). Only the event's own mmap ring may be shared.
+    /// Expose the effective ring for a `PERF_EVENT_IOC_SET_OUTPUT` redirect
+    /// target, following an existing redirect chain.
     pub(crate) fn output_ring(&self) -> Option<PerfRingOutput> {
-        self.output.lock().owned()
+        self.output.lock().effective_output()
     }
 
     /// Point this counter's samples at *another* event's ring

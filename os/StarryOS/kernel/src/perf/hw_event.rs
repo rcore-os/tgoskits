@@ -492,11 +492,15 @@ impl HwPerfEventState {
         if let Some(family) = &self.per_task {
             return family.root().output_ring();
         }
-        self.sampling.as_ref()?.output.owned()
+        self.sampling.as_ref()?.output.effective_output()
     }
 
     fn redirect_output(&mut self, output: PerfRingOutput) -> crate::StarryResult<()> {
-        if self.output_ring().is_some() {
+        if self
+            .sampling
+            .as_ref()
+            .is_some_and(|sampling| sampling.output.owned().is_some())
+        {
             return Err(crate::StarryError::InvalidInput);
         }
         if let Some(family) = &self.per_task {
@@ -516,7 +520,11 @@ impl HwPerfEventState {
     }
 
     fn detach_output(&mut self) -> crate::StarryResult<()> {
-        if self.output_ring().is_some() {
+        if self
+            .sampling
+            .as_ref()
+            .is_some_and(|sampling| sampling.output.owned().is_some())
+        {
             return Err(crate::StarryError::InvalidInput);
         }
         if let Some(family) = &self.per_task {

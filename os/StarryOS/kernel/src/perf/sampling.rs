@@ -147,8 +147,8 @@ impl LossState {
 }
 
 // `perf_event_sample_format` bits (see `man perf_event_open`). Only the scalar
-// fields below are supported; every other bit (READ, CALLCHAIN, RAW,
-// BRANCH_STACK, REGS_USER/INTR, STACK_USER, WEIGHT, DATA_SRC, TRANSACTION,
+// fields below are supported; every other bit (RAW, BRANCH_STACK, REGS_INTR,
+// STACK_USER, WEIGHT, DATA_SRC, TRANSACTION,
 // PHYS_ADDR, …) is rejected at open time.
 /// `PERF_SAMPLE_IP`: instruction pointer. Always set by real `perf` for samples.
 const PERF_SAMPLE_IP: u64 = 1 << 0;
@@ -170,6 +170,9 @@ const PERF_SAMPLE_CPU: u64 = 1 << 7;
 const PERF_SAMPLE_PERIOD: u64 = 1 << 8;
 /// `PERF_SAMPLE_STREAM_ID`: stream id (`u64`).
 const PERF_SAMPLE_STREAM_ID: u64 = 1 << 9;
+/// `PERF_SAMPLE_REGS_USER`: user-register ABI discriminator. Starry currently
+/// reports `PERF_SAMPLE_REGS_ABI_NONE`, so no register payload follows.
+const PERF_SAMPLE_REGS_USER: u64 = 1 << 12;
 /// `PERF_SAMPLE_IDENTIFIER`: leading event id (`u64`), emitted first.
 const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
 
@@ -187,6 +190,7 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_CPU
     | PERF_SAMPLE_PERIOD
     | PERF_SAMPLE_STREAM_ID
+    | PERF_SAMPLE_REGS_USER
     | PERF_SAMPLE_IDENTIFIER;
 
 #[derive(Clone, Copy, Default)]
@@ -792,6 +796,11 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
                 put!(value.lost);
             }
         }
+    }
+    if sample_type & PERF_SAMPLE_REGS_USER != 0 {
+        // Linux requires only the ABI word when no user register set is
+        // available; a zero value means PERF_SAMPLE_REGS_ABI_NONE.
+        put!(0u64);
     }
 
     // Back-patch the header's `size` field now that the total length is known.
