@@ -28,10 +28,9 @@ use kbpf_basic::{
 use kprobe::PtRegs;
 use rbpf::EbpfVmRaw;
 
-use super::PerfEventOps;
+use super::{PerfEventOps, access::AuthorizedPerfTarget};
 #[cfg(target_arch = "aarch64")]
 use super::{
-    access::AuthorizedPerfTarget,
     output::{PerfOutputScope, PerfRingOutput},
     sideband::SystemSidebandSource,
 };
@@ -398,6 +397,7 @@ pub fn perf_event_open_tracking(
     if let AuthorizedPerfTarget::Cpu(cpu) = target {
         return wrapper.with_system_sideband(cpu.as_usize(), attr);
     }
+    #[cfg(not(target_arch = "aarch64"))]
     let _ = (attr, target);
     wrapper
 }

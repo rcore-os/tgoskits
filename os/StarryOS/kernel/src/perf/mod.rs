@@ -806,6 +806,13 @@ pub fn perf_event_open(
     let validated_hw = is_hardware
         .then(|| hw::validate_perf_event_open_hw(attr, target.kind()))
         .transpose()?;
+    #[cfg(target_arch = "aarch64")]
+    let direct_system_sampling = validated_hw
+        .as_ref()
+        .is_some_and(|validated| validated.is_sampling)
+        && target.kind() == target::PerfTargetKind::Cpu;
+    #[cfg(not(target_arch = "aarch64"))]
+    let direct_system_sampling = false;
     let probe_args = if is_hardware {
         None
     } else {
@@ -823,10 +830,6 @@ pub fn perf_event_open(
 
     target.with_authorized(attr.sigtrap() != 0, |target| {
         let context = target.context_key()?;
-        let direct_system_sampling = validated_hw
-            .as_ref()
-            .is_some_and(|validated| validated.is_sampling)
-            && target.kind() == PerfTargetKind::Cpu;
         if let Some(leader) = &group_leader
             && (direct_system_sampling || !leader.event.lock().supports_group_link())
         {
