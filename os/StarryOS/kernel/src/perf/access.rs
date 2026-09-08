@@ -107,10 +107,7 @@ impl AuthorizedPerfTarget {
     pub(crate) fn context_key(&self) -> crate::StarryResult<PerfContextKey> {
         match self {
             Self::Task { task, cpu } => Ok(PerfContextKey::Task {
-                scheduler_id: task
-                    .as_thread()
-                    .scheduler_id()
-                    .ok_or(crate::StarryError::NoSuchProcess)?,
+                scheduler_id: task.id(),
                 cpu: *cpu,
             }),
             Self::Cpu(cpu) => Ok(PerfContextKey::Cpu(*cpu)),

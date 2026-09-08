@@ -369,7 +369,7 @@ impl PerfEvent {
     }
 
     fn propagate_members(&self, enable: bool) -> StarryResult<()> {
-        let mut changed = Vec::new();
+        let mut changed: Vec<Arc<PerfEvent>> = Vec::new();
         for member in self.live_members() {
             if let Err(error) = member.set_enabled(enable) {
                 if enable {

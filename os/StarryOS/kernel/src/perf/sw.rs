@@ -13,7 +13,6 @@ use alloc::{
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    task::Context,
 };
 
 use ax_lazyinit::LazyInit;
@@ -24,7 +23,7 @@ use super::{PerfEventOps, PerfReadValues, access::AuthorizedPerfTarget};
 use crate::{
     StarryError, StarryResult,
     sync::IrqMutex,
-    task::{AsThread, PidIdentityId, Thread},
+    task::{PidIdentityId, Thread},
 };
 
 /// Number of live software events. Hot-path hooks return after one atomic load
@@ -316,10 +315,10 @@ impl SwPerTaskCounter {
 
     fn arm_if_current(&self, now: u64) {
         let _guard = crate::sync::PreemptGuard::new();
-        let current = ax_task::current();
-        let Some(thread) = current.try_as_thread() else {
+        let Ok(Some(current)) = crate::task::try_current_user_task() else {
             return;
         };
+        let thread = current.as_thread();
         if thread.pid_identity().id() == self.owner {
             self.start_slice(now, ax_hal::percpu::this_cpu_id());
         }
@@ -725,7 +724,12 @@ impl Pollable for SwPerfEvent {
         IoEvents::IN
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 /// Initializes the CPU-wide registry before userspace can open perf events.

@@ -11,7 +11,6 @@ impl PerfCpuId {
     }
 
     /// Returns the CPU id as an array index.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) const fn as_usize(self) -> usize {
         self.0
     }
