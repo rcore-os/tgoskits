@@ -1,0 +1,5 @@
+error: Self is not supported in interface signatures; use a concrete type
+ --> tests/ui/self_type.rs:2:36
+  |
+2 | pub trait Interface { fn read() -> Self; }
+  |                                    ^^^^

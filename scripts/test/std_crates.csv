@@ -56,3 +56,4 @@ sdmmc-protocol
 axbuild
 ax-fs-ng
 some-serial
+trait-ffi

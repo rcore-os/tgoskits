@@ -17,7 +17,7 @@ dma-api = { workspace = true }
 irq-framework = { workspace = true }
 mbarrier = "0.1"
 mmio-api = { workspace = true }
-trait-ffi = "0.2"
+trait-ffi.workspace = true
 thiserror.workspace = true
 
 [features]

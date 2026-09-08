@@ -15,7 +15,7 @@ use core::{ptr::NonNull, time::Duration};
 use ax_memory_addr::MemoryAddr;
 use axklib::{
     BoxedIrqHandler, ConcurrentBoxedIrqHandler, DmaCoherentMappingOutcome, IrqCpuId, IrqCpuMask,
-    IrqError, IrqHandle, IrqId, Klib, KlibError, KlibResult, PhysAddr, VirtAddr, impl_trait,
+    IrqError, IrqHandle, IrqId, KlibError, KlibResult, PhysAddr, VirtAddr, klib::impl_trait,
 };
 
 struct KlibImpl;
@@ -350,6 +350,8 @@ impl_trait! {
 
 #[cfg(all(test, not(feature = "paging")))]
 mod tests {
+    use axklib::Klib;
+
     use super::*;
 
     #[test]

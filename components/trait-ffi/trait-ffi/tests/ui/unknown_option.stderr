@@ -1,0 +1,5 @@
+error: unknown trait-ffi option; expected abi, mod_path, namespace or impl_macro
+ --> tests/ui/unknown_option.rs:1:31
+  |
+1 | #[trait_ffi::def_extern_trait(abii = "C")]
+  |                               ^^^^
