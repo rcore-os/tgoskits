@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+<title id="title">RK3588 DWC3 平台资源与初始化</title>
+<desc id="desc">资源描述取自实际 FDT；寄存器映射、PHY 端口身份与 IRQ 域必须分别保留。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/></marker></defs>
+<rect width="1200" height="900" rx="16" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<text x="40" y="49" font-size="26" font-weight="700" fill="#0f172a">RK3588 DWC3 平台资源与初始化</text>
+<text x="40" y="80" font-size="15" fill="#475569">资源描述取自实际 FDT；寄存器映射、PHY 端口身份与 IRQ 域必须分别保留。</text>
+<rect x="40" y="110" width="340" height="150" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="141" font-size="19" font-weight="700" fill="#0f172a">DWC3 节点与父节点</text>
+<text x="58" y="171" font-size="15" fill="#334155">compatible = snps,dwc3</text>
+<text x="58" y="196" font-size="15" fill="#334155">dr_mode = host，reg 与 interrupts</text>
+<text x="58" y="221" font-size="15" fill="#334155">父节点时钟 / assigned clocks</text>
+<text x="58" y="246" font-size="15" fill="#334155">示例 usb@fc400000 不是硬编码</text>
+<rect x="430" y="110" width="340" height="150" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="141" font-size="19" font-weight="700" fill="#0f172a">USB2 PHY 端口</text>
+<text x="448" y="171" font-size="15" fill="#334155">phys[0] → 端口 → PHY</text>
+<text x="448" y="196" font-size="15" fill="#334155">PHY 父 GRF 与子总线 reg</text>
+<text x="448" y="221" font-size="15" fill="#334155">端口名、clock、named reset</text>
+<text x="448" y="246" font-size="15" fill="#334155">Usb2PhyResources</text>
+<rect x="820" y="110" width="340" height="150" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="838" y="141" font-size="19" font-weight="700" fill="#0f172a">USBDP PHY 端口</text>
+<text x="838" y="171" font-size="15" fill="#334155">phys[1] → u3-port → PHY</text>
+<text x="838" y="196" font-size="15" fill="#334155">usbdpN alias / 实例识别</text>
+<text x="838" y="221" font-size="15" fill="#334155">lane mux、clock、named reset</text>
+<text x="838" y="246" font-size="15" fill="#334155">UsbdpPhyResources</text>
+<rect x="40" y="345" width="340" height="160" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="376" font-size="19" font-weight="700" fill="#0f172a">时钟、复位与 IRQ 提供者</text>
+<text x="58" y="406" font-size="15" fill="#334155">clock_lines / enable_clocks</text>
+<text x="58" y="431" font-size="15" fill="#334155">reset_lines → NamedResetLine</text>
+<text x="58" y="456" font-size="15" fill="#334155">FDT specifier 保留控制器</text>
+<text x="58" y="481" font-size="15" fill="#334155">原始 IRQ 单元不等于 IrqId</text>
+<rect x="430" y="345" width="340" height="160" rx="12" fill="#f1f5f9" stroke="#94a3b8"/>
+<text x="448" y="376" font-size="19" font-weight="700" fill="#0f172a">资源聚合与映射</text>
+<text x="448" y="406" font-size="15" fill="#334155">collect_resources → DwcResources</text>
+<text x="448" y="431" font-size="15" fill="#334155">map_reg / map_phandle_reg</text>
+<text x="448" y="456" font-size="15" fill="#334155">控制器、PHY 与 GRF 独立映射</text>
+<text x="448" y="481" font-size="15" fill="#334155">DwcNewParams → USBHost</text>
+<rect x="820" y="345" width="340" height="160" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="376" font-size="19" font-weight="700" fill="#0f172a">USBDP 的四类 GRF</text>
+<text x="838" y="406" font-size="15" fill="#334155">rockchip,u2phy-grf</text>
+<text x="838" y="431" font-size="15" fill="#334155">rockchip,usb-grf</text>
+<text x="838" y="456" font-size="15" fill="#334155">rockchip,usbdpphy-grf</text>
+<text x="838" y="481" font-size="15" fill="#334155">rockchip,vo-grf</text>
+<rect x="40" y="590" width="340" height="160" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="621" font-size="19" font-weight="700" fill="#0f172a">平台主机包装</text>
+<text x="58" y="651" font-size="15" fill="#334155">PlatformUsbHost + BindingInfo</text>
+<text x="58" y="676" font-size="15" fill="#334155">注册身份与事件 handler</text>
+<text x="58" y="701" font-size="15" fill="#334155">系统调用主机 init 与枚举</text>
+<text x="58" y="726" font-size="15" fill="#334155">probe 成功不等于已发现外设</text>
+<rect x="430" y="590" width="340" height="160" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="621" font-size="19" font-weight="700" fill="#0f172a">PHY 与 DWC3 初始化</text>
+<text x="448" y="651" font-size="15" fill="#334155">assert reset → USB2 → USBDP</text>
+<text x="448" y="676" font-size="15" fill="#334155">deassert reset → dwc3_init</text>
+<text x="448" y="701" font-size="15" fill="#334155">core_init 内含 phy_setup</text>
+<text x="448" y="726" font-size="15" fill="#334155">PHY 锁定检查有独立等待语义</text>
+<rect x="820" y="590" width="340" height="160" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="621" font-size="19" font-weight="700" fill="#0f172a">xHCI 与总线设备</text>
+<text x="838" y="651" font-size="15" fill="#334155">xhci.init 建立主机运行状态</text>
+<text x="838" y="676" font-size="15" fill="#334155">Core 创建根 hub 并扫描变化</text>
+<text x="838" y="701" font-size="15" fill="#334155">寻址、描述符及外部 hub</text>
+<text x="838" y="726" font-size="15" fill="#334155">完成经 Event Ring 返回任务</text>
+<polyline points="210,260 210,300 500,300 500,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="240" y="289" font-size="14" fill="#1d4ed8">控制器资源</text>
+<polyline points="600,260 600,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="614" y="302" font-size="14" fill="#1d4ed8">PHY 资源</text>
+<polyline points="990,260 990,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1004" y="302" font-size="14" fill="#1d4ed8">phandle</text>
+<polyline points="380,425 430,425" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="385" y="408" font-size="14" fill="#1d4ed8">能力</text>
+<polyline points="820,425 770,425" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="777" y="408" font-size="14" fill="#1d4ed8">映射</text>
+<polyline points="600,505 600,548 210,548 210,590" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="337" y="537" font-size="14" fill="#1d4ed8">构造并注册</text>
+<polyline points="380,670 430,670" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="389" y="653" font-size="14" fill="#1d4ed8">init</text>
+<polyline points="770,670 820,670" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="776" y="653" font-size="14" fill="#1d4ed8">随后</text>
+<text x="40" y="835" font-size="15" fill="#475569">当前 dwc3_init 先于 xhci.init；图示记录函数体，不将历史调试建议写成硬件规范。</text>
+<text x="40" y="860" font-size="15" fill="#475569">USB2 GRF 与 DWC3 PHY 接口寄存器不是同一寄存器空间。</text>
+</g>
+</svg>

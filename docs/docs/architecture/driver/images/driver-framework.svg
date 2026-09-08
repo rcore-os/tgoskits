@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+<title id="title">驱动框架：公共机制与领域执行</title>
+<desc id="desc">发现、身份、能力与资源形成公共边界；设备类别不决定章节或统一线程模型。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/></marker></defs>
+<rect width="1200" height="900" rx="16" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<text x="40" y="49" font-size="26" font-weight="700" fill="#0f172a">驱动框架：公共机制与领域执行</text>
+<text x="40" y="80" font-size="15" fill="#475569">发现、身份、能力与资源形成公共边界；设备类别不决定章节或统一线程模型。</text>
+<rect x="40" y="110" width="340" height="150" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="141" font-size="19" font-weight="700" fill="#0f172a">发现来源</text>
+<text x="58" y="171" font-size="15" fill="#334155">Static / FDT / ACPI</text>
+<text x="58" y="196" font-size="15" fill="#334155">PCI endpoint 依赖主控制器</text>
+<text x="58" y="221" font-size="15" fill="#334155">DriverRegister 与后端状态</text>
+<text x="58" y="246" font-size="15" fill="#334155">ProbeLevel / ProbePriority</text>
+<rect x="430" y="110" width="340" height="150" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="141" font-size="19" font-weight="700" fill="#0f172a">能力合同与硬件核心</text>
+<text x="448" y="171" font-size="15" fill="#334155">rdif-* / USB 后端合同</text>
+<text x="448" y="196" font-size="15" fill="#334155">操作、错误与资源所有权</text>
+<text x="448" y="221" font-size="15" fill="#334155">核心解释寄存器及设备协议</text>
+<text x="448" y="246" font-size="15" fill="#334155">不管理挂载、路由或用户 ABI</text>
+<rect x="820" y="110" width="340" height="150" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="141" font-size="19" font-weight="700" fill="#0f172a">平台资源能力</text>
+<text x="838" y="171" font-size="15" fill="#334155">MMIO 映射与地址窗口</text>
+<text x="838" y="196" font-size="15" fill="#334155">DeviceDma 与缓存同步</text>
+<text x="838" y="221" font-size="15" fill="#334155">clock / reset / pinctrl / PHY</text>
+<text x="838" y="246" font-size="15" fill="#334155">IRQ 来源与控制器身份</text>
+<rect x="40" y="345" width="340" height="155" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="376" font-size="19" font-weight="700" fill="#0f172a">匹配与绑定</text>
+<text x="58" y="406" font-size="15" fill="#334155">ax-driver / 平台适配</text>
+<text x="58" y="431" font-size="15" fill="#334155">解析设备需要的资源</text>
+<text x="58" y="456" font-size="15" fill="#334155">构造核心与领域包装</text>
+<text x="58" y="481" font-size="15" fill="#334155">不是所有设备都需要 DMA</text>
+<rect x="430" y="345" width="340" height="155" rx="12" fill="#f1f5f9" stroke="#94a3b8"/>
+<text x="448" y="376" font-size="19" font-weight="700" fill="#0f172a">rdrive 注册身份</text>
+<text x="448" y="406" font-size="15" fill="#334155">DeviceId → 多种外层类型</text>
+<text x="448" y="431" font-size="15" fill="#334155">DeviceOwner 保持包装存活</text>
+<text x="448" y="456" font-size="15" fill="#334155">Device 弱句柄与访问守卫</text>
+<text x="448" y="481" font-size="15" fill="#334155">注册成功不等于领域就绪</text>
+<rect x="820" y="345" width="340" height="155" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="838" y="376" font-size="19" font-weight="700" fill="#0f172a">查询与交付</text>
+<text x="838" y="406" font-size="15" fill="#334155">provider 持续借用</text>
+<text x="838" y="431" font-size="15" fill="#334155">领域 Option take / 端点交付</text>
+<text x="838" y="456" font-size="15" fill="#334155">USB 保留主机并接管事件入口</text>
+<text x="838" y="481" font-size="15" fill="#334155">不统一为网络 parts</text>
+<rect x="40" y="590" width="340" height="160" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="621" font-size="19" font-weight="700" fill="#0f172a">直接控制与领域接口</text>
+<text x="58" y="651" font-size="15" fill="#334155">时钟、复位、IRQ、PCIe provider</text>
+<text x="58" y="676" font-size="15" fill="#334155">显示、输入、vsock 领域操作</text>
+<text x="58" y="701" font-size="15" fill="#334155">调用、借用、事件或连接状态</text>
+<text x="58" y="726" font-size="15" fill="#334155">不是每种设备都创建 worker</text>
+<rect x="430" y="590" width="340" height="160" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="621" font-size="19" font-weight="700" fill="#0f172a">队列与维护者实例</text>
+<text x="448" y="651" font-size="15" fill="#334155">块：控制器 / hctx / 请求完成</text>
+<text x="448" y="676" font-size="15" fill="#334155">串口：SerialWorker 与字节队列</text>
+<text x="448" y="701" font-size="15" fill="#334155">网络：固定 CPU poll group</text>
+<text x="448" y="726" font-size="15" fill="#334155">预算与轮询合同分别定义</text>
+<rect x="820" y="590" width="340" height="160" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="621" font-size="19" font-weight="700" fill="#0f172a">总线与异步实例</text>
+<text x="838" y="651" font-size="15" fill="#334155">USB Core：hub 与外设拓扑</text>
+<text x="838" y="676" font-size="15" fill="#334155">命令 / TRB / 端点请求</text>
+<text x="838" y="701" font-size="15" fill="#334155">EventHandler → 完成与 waker</text>
+<text x="838" y="726" font-size="15" fill="#334155">future 不等于独立 OS 任务</text>
+<polyline points="210,260 210,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="225" y="304" font-size="14" fill="#1d4ed8">匹配</text>
+<polyline points="600,260 600,305 330,305 330,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="409" y="329" font-size="14" fill="#1d4ed8">实现与合同</text>
+<polyline points="990,260 990,286 130,286 130,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1020" y="300" font-size="14" fill="#1d4ed8">资源输入</text>
+<polyline points="380,425 430,425" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="385" y="408" font-size="14" fill="#1d4ed8">发布</text>
+<polyline points="770,425 820,425" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="775" y="408" font-size="14" fill="#1d4ed8">查询</text>
+<polyline points="990,500 990,555 210,555 210,590" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="352" y="541" font-size="14" fill="#1d4ed8">按实际合同进入不同执行形态</text>
+<polyline points="600,555 600,590" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="990,555 990,590" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="40" y="835" font-size="15" fill="#475569">领域服务交付块区域、字节、帧、显示输入事件、连接和设备树；系统层维护使用策略。</text>
+<text x="40" y="860" font-size="15" fill="#475569">生命周期横跨构造、发布、执行与撤销，没有覆盖全部设备的统一 DeviceState。</text>
+</g>
+</svg>

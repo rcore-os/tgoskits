@@ -1,145 +1,123 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 sidebar_label: "探测与初始化"
 ---
 
 # 探测与初始化
 
-本文描述 `rdrive + rdif` 驱动框架从平台初始化到设备 probe 完成的完整时序。初始化顺序固定，分两个 probe level：内核前（PreKernel）初始化平台基础设施，内核后（PostKernel）初始化普通设备和 PCI endpoint。
+设备探测把平台资源描述转换为可由领域消费的注册对象。`rdrive` 调度匹配与发布，驱动回调构建具体硬件对象；队列任务、协议状态和文件系统挂载不属于 probe 完成条件。阶段调度实现位于 `drivers/rdrive/src/lib.rs`，发现后端位于 `drivers/rdrive/src/probe/`。
 
-## 初始化时序
+## 1. 启动阶段
 
-初始化顺序固定为：
+平台基础设施需要先于普通设备可用，但“优先级靠前”不能替代时钟、IRQ 域和内存映射实际初始化。平台负责选择发现来源，运行时负责在平台就绪后启动普通设备探测及领域初始化。
 
-1. `ax_hal::init_early(cpu_id, arg)` 只记录 boot arg / DTB，初始化 early trap、console、time 等最低层能力，不 probe 宿主设备。
-2. allocator 和 paging 初始化完成后，`ax_hal::init_later(cpu_id, arg)` 或平台 post-paging 阶段执行 `rdrive::init(...)`、`rdrive::register_append(...)`、`rdrive::probe_pre_kernel()`。
-3. `probe_pre_kernel()` 只初始化后续平台依赖：interrupt controller、clock、timer、systick、pinmux、PCIe root complex。
-4. 平台 later init 完成后，`ax-runtime` 调用 `rdrive::probe_all(false)`。
-5. FS、NET、display、input、vsock、StarryOS、Axvisor 通过领域 service 或 `rdif-*` 能力接口消费设备。
+### 1.1 平台准备
+
+`init()` 将单个 `Platform` 转为 `init_sources()` 输入。FDT 来源携带映射后的树地址，ACPI 来源携带根表信息，Static 来源用于没有可枚举固件节点的显式回调。平台地址的有效性必须在进入解析器前满足，不能把任意物理地址直接视为可解引用指针。
+
+`os/arceos/modules/axruntime/src/registers.rs` 的 `append_linker_registers()` 读取 `__sdriver_register` 与 `__edriver_register` 之间的注册项，构造 `DriverRegisterSlice` 并调用 `register_append()`。feature 控制哪些回调进入最终镜像，平台来源控制哪些回调有匹配对象，两者是不同条件。
+
+### 1.2 探测与运行时启动
+
+`probe_pre_kernel_until()` 对注册项快照筛选 `PreKernel` 和优先级上限；`probe_pre_kernel()` 使用 `LAST` 与遇错停止策略。`probe_all()` 则取得全部注册项快照，执行平台后端，然后执行 PCI 枚举，并不是仅筛选 `PostKernel`。
 
 ```mermaid
 sequenceDiagram
-    participant Runtime as ax-runtime
-    participant Hal as ax-hal / platform
+    participant Platform as 平台初始化
     participant Rdrive as rdrive
-    participant Driver as driver probe
-    participant Registry as typed registry
-    participant Service as domain service
-    participant Upper as upper modules
-
-    Runtime->>Hal: init_early(cpu_id, arg)
-    Runtime->>Runtime: alloc + paging
-    Runtime->>Hal: init_later(cpu_id, arg)
-    Hal->>Rdrive: init(PlatformSource...)
-    Hal->>Rdrive: register_append(linker section)
-    Hal->>Rdrive: probe_pre_kernel()
-    Rdrive->>Driver: PreKernel Static/FDT/ACPI probe
-    Driver->>Registry: register rdif platform devices
+    participant Backend as 发现后端
+    participant Glue as 驱动绑定
+    participant Runtime as ax-runtime
+    Platform->>Rdrive: init_sources 与注册项装载
+    Platform->>Rdrive: probe_pre_kernel
+    Rdrive->>Backend: PreKernel 按优先级分组
+    Backend->>Glue: 平台资源匹配与发布
     Runtime->>Rdrive: probe_all(false)
-    Rdrive->>Driver: Static/FDT/ACPI/Pci probe
-    Driver->>Registry: register rdif data devices
-    Upper->>Service: init from domain service
-    Service->>Registry: query typed rdif/rd devices
+    Rdrive->>Backend: 全部注册项的平台探测
+    Backend->>Backend: 根据完成记录跳过已处理对象
+    Rdrive->>Backend: PCI 控制器与端点枚举
+    Backend->>Glue: 构建设备并注册
+    Runtime->>Runtime: 接管设备并建立领域运行时
 ```
 
-`ax-runtime` 不再拆 `AllDevices.block/net/display/input/vsock` 后逐个传给模块。它只触发 probe 和领域 service 初始化。
+`probe_all()` 再次包含早期注册项，不代表已成功设备一定被重复创建。跳过规则保存在后端状态中；失败对象与成功对象的完成记录不能混为一谈。
 
-## Probe Level 与 Priority
+## 2. 调度与匹配顺序
 
-| Level | 时机 | 典型设备 |
+`Manager::unregistered()` 生成并排序注册项快照，`probe_system()` 按相同 `level` 和 `priority` 组成执行组。组内顺序直接影响资源提供者何时可被后续回调查询。
+
+### 2.1 阶段和优先级
+
+`ProbePriority` 是 `usize` 的包装类型，并非仅允许固定枚举值。`drivers/rdrive/src/register/mod.rs` 提供的常量表达常见平台依赖顺序。
+
+| 常量 | 数值 | 用途 |
 | --- | --- | --- |
-| `PreKernel` | allocator/paging 就绪后、runtime 设备初始化前 | intc、clk、timer、systick、pinctrl、PCIe RC |
-| `PostKernel` | `probe_all()` 阶段 | block、net、display、input、vsock、PCI endpoint |
+| `CLK` | 6 | 时钟资源提供者 |
+| `INTC` | 10 | 中断控制器 |
+| `TIMER` | 20 | 定时能力 |
+| `MSI` | 30 | 消息中断资源 |
+| `EARLY_DEVICE` | 128 | 早期设备 |
+| `DEFAULT` | 256 | 普通设备默认优先级 |
+| `LAST` | `usize::MAX` | 早期阶段的无额外上限筛选 |
 
-同 level 内按 `ProbePriority` 升序排列，值小者优先：
+优先级只决定回调调度，不自动计算任意资源依赖图，也不保证跨不同平台的相同数字对应相同硬件初始化过程。依赖资源不存在时，回调仍需返回匹配或初始化错误。
 
-- `ProbePriority::CLK(6)`：时钟控制器最优先，几乎所有其它设备都需要 clk。
-- `ProbePriority::INTC(10)`：中断控制器次优先，IRQ 解析依赖 intc 已注册。
-- `ProbePriority::DEFAULT(256)`：普通设备默认优先级。
+### 2.2 同组后端顺序
 
-`probe_pre_kernel()` 只运行 `ProbeLevel::PreKernel` 注册的驱动。`probe_all(stop_if_fail)` 运行 `PostKernel` 注册的驱动，再执行 PCI endpoint 枚举。`stop_if_fail = false` 表示单个设备 probe 失败不中断整体流程，便于在多设备平台上尽力初始化可用设备。
-
-## Static backend
-
-外部自定义平台应优先提供 FDT、ACPI 或 PCI 可发现的设备描述，再通过对应 probe 注册驱动或设备。没有固件描述的板级 glue 仍可使用 `rdrive::Platform::Static` / `PlatformSource::Static` 和 `ProbeKind::Static` 显式注册设备：
-
-```rust
-rdrive::init(rdrive::Platform::Static).expect("rdrive init");
-rdrive::register_add(DriverRegister {
-    name: "my-platform-device",
-    level: ProbeLevel::PostKernel,
-    priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static { on_probe: my_probe }],
-});
-```
-
-probe 回调里可以直接构造硬件对象并调用 `PlatformDevice::register(...)`、领域 adapter 的 `*_with_info(...)`，或 `ax-driver` 暴露的显式 `register_transport*()` helper。
-
-这里的 `Static` 只是驱动 probe 来源，不等同于旧的 `myplat` / `defplat` Cargo feature 平台选择路径。`ax-driver` 本身不再提供旧式平台私有自动注册 feature。仓库默认的设备发现驱动器 `somehal` 走 FDT/ACPI 自动发现，详见[设备发现](../platform/devices.md)。
-
-## FDT backend
-
-`probe::fdt` 从 Flattened Device Tree 解析设备并按 `compatible` 字符串匹配驱动。FDT backend 拥有独立 `System`：
-
-```rust
-struct System {
-    fdt: Fdt,
-    phandle_map: ...,
-    probed: ...,
-}
-```
-
-FDT probe 流程：
-
-1. 遍历 device tree node，读取 `compatible`、`status`、`reg`、`interrupts`、`interrupt-parent`、`clocks`、`resets`、`pinctrl-*` 等属性。
-2. 按 `compatible` 匹配已注册 `DriverRegister` 的 `ProbeKind::Fdt { compatibles }`。
-3. 匹配成功的 node 构造 `FdtInfo`（携带 node 引用、reg、interrupts 等），传入 probe 回调。
-4. probe 回调构造硬件实例，解析 IRQ/clock/pinctrl 依赖后注册设备。
-
-FDT 不是唯一或默认平台抽象，而是与 Static、ACPI 并列的来源。
-
-## ACPI backend
-
-`probe::acpi` 处理 ACPI 平台。ACPI 第一版提供 MCFG、GSI controller routing、PCI `_PRT` 和普通设备 IRQ metadata。ACPI backend 的 `System`：
-
-```rust
-struct System {
-    root: AcpiRoot,
-    routing: ...,   // GSI controller routing
-    pci: ...,       // MCFG + _PRT
-    probed: ...,
-}
-```
-
-ACPI probe 按 HID/CID（Hardware ID / Compatible ID）匹配驱动。ACPI source 初始化解析 MCFG 表定位 PCIe config space，建立 GSI controller routing，解析 PCI `_PRT` 映射 INTx 到 GSI。
-
-仓库尚无 Linux-style ACPI pinctrl state parser 时，probe glue 必须返回明确的 `PinctrlError::UnsupportedFirmware(FirmwareKind::Acpi)`，不能静默 fallback 或保留“以后补”的占位路径。
-
-## PCI backend
-
-`probe::pci` 是二阶段枚举：
-
-1. **第一阶段**：PCIe controller（root complex）在 PreKernel 阶段通过 FDT 或 Static 注册为 `rdif-pcie::PcieController`。
-2. **第二阶段**：`probe_all()` 触发 PCI endpoint 枚举。PCI backend 遍历所有已注册 controller，扫描 bus/device/function，读取 vendor/device/class，按已注册 `ProbeKind::Pci` 匹配驱动。
-
-PCI endpoint 依赖 controller 已注册，因此不能在 PreKernel 阶段触发。PCI endpoint 的 INTx IRQ 解析见 [IRQ 解析与注册](irq.md)。
-
-## 设备依赖解析
-
-某些设备 probe 时需要查询已注册的其它设备。例如：
-
-- SD 卡驱动 probe 时需要查询 `rdif-clk` 获取时钟频率。
-- GPIO 外设 probe 时需要查询 `rdif-pinctrl` 配置 pin mux。
-- PCI endpoint probe 时需要查询 `rdif-pcie` 获取 BAR 资源。
-
-这种依赖通过 `ProbePriority` 和 `ProbeLevel` 显式表达：被依赖设备（clk、intc、pcie controller）使用更小的 priority 或 PreKernel level，保证在依赖方 probe 前已注册。probe 回调内部可以通过 `rdrive::get_device::<T>(id)` 查询已注册设备。
+`probe_priority_group()` 先逐注册项执行 Static，再以 FDT 节点顺序处理整个注册项组，最后逐注册项执行 ACPI。FDT 不是逐驱动完整遍历整棵树后再处理下一个驱动的简单模型。
 
 ```mermaid
 flowchart LR
-    Clk["rdif-clk<br/>priority=6"] --> Sd["SD card driver<br/>PostKernel"]
-    Intc["rdif-intc<br/>priority=10"] --> Net["NIC driver<br/>PostKernel"]
-    PcieRC["rdif-pcie<br/>PreKernel"] --> PciEp["PCI endpoint<br/>probe_all"]
-    Pinctrl["rdif-pinctrl<br/>PreKernel"] --> Gpio["GPIO consumer<br/>PostKernel"]
+    Snapshot[注册项快照] --> Sort[按 level 和 priority 排序]
+    Sort --> Group[同阶段同优先级分组]
+    Group --> Static[Static 回调]
+    Static --> FDT[FDT 节点顺序匹配]
+    FDT --> ACPI[ACPI 回调]
+    ACPI --> Next{还有执行组}
+    Next -->|是| Group
+    Next -->|否且 probe_all| PCI[PCI 枚举]
 ```
 
-如果 probe 回调查询的设备尚未注册，返回 `GetDeviceError::NotFound`，probe 应返回明确的错误而不是 panic。
+同组排序、节点占用记录和子设备发布共同影响实际匹配结果。将同一节点交给多个驱动时，必须检查 FDT 后端的已发布状态，而不是假定每个 compatible 都会生成一个实例。
+
+## 3. 发现后端
+
+各后端提供不同的定位方式，但回调最终都需要构建平台设备描述并注册领域对象。硬件专属的寄存器、DMA 和 IRQ 绑定由 `ax-driver` 等适配层完成。
+
+### 3.1 Static 与 FDT
+
+`ProbeKind::Static` 保存无固件节点匹配表的回调。Static 后端只在回调成功后记录注册名，适合显式板级设备，不能用它推导任意 FDT phandle 或 PCI 地址。
+
+`ProbeKind::Fdt` 保存 `compatibles` 和回调。`FdtInfo` 携带实际节点；回调通过节点属性及 `probe::fdt` 的资源辅助函数处理寄存器、时钟、复位、中断和关联节点。不是每个 FDT 属性都由框架自动应用。
+
+例如 `drivers/ax-driver/src/usb/dwc.rs` 的 `probe()` 明确检查 `dr_mode` 为 `host`，随后由 `collect_resources()` 解析 PHY、时钟和复位。即使 compatible 匹配 `snps,dwc3`，缺少 host 模式或所需资源也不会自动得到可用 USB 主机。
+
+### 3.2 ACPI 与 PCI
+
+ACPI 注册项通过 `ids` 和回调匹配设备。`AcpiWithoutAml` 与普通 ACPI 来源的能力边界不同，不能把无需 AML 的描述查询等同于完整 AML 方法执行。
+
+PCI 路径在平台探测之后执行，因为枚举需要先取得 `rdif-pcie` 控制器。`drivers/rdrive/src/probe/pci/mod.rs` 的 `PcieEnumterator` 保存控制器句柄和 `probed` 地址集合；`ProbeKind::Pci` 本身没有 FDT 式 compatible 列表，厂商、设备及 class 筛选在回调中完成。
+
+## 4. 资源发布与错误
+
+匹配失败、驱动初始化失败、发现后端失败是不同结果。`stop_if_fail = false` 只控制部分错误的处理，不是忽略所有失败的总开关。
+
+### 4.1 错误传播
+
+`probe_backend_results()` 先解包后端结果，再逐项处理回调结果。外层 `ProbeError` 会直接通过 `?` 返回；内层 `OnProbeError::NotMatch` 始终忽略，其他内层错误才根据 `stop_if_fail` 返回或记录警告。
+
+| 结果 | 处理 | 对调用方的意义 |
+| --- | --- | --- |
+| 后端未启用或不适用 | 跳过 | 不表示设备硬件错误 |
+| `OnProbeError::NotMatch` | 继续匹配或探测 | 当前回调不接管对象 |
+| 回调其他错误且停止策略开启 | 返回失败 | 当前阶段没有完整完成 |
+| 回调其他错误且停止策略关闭 | 警告后继续 | 其余设备仍可尝试初始化 |
+| 后端外层 `ProbeError` | 直接返回 | 不能由 `false` 屏蔽 |
+
+`os/arceos/modules/axruntime/src/devices.rs` 的 `probe_all_devices()` 使用 `probe_all(false)`，但仍会处理其返回错误。文档和日志必须区分“个别设备不可用”和“全局探测阶段返回失败”。
+
+### 4.2 发布边界
+
+FDT 资源引用通过 phandle 或节点身份关联注册对象；依赖提供者没有发布时，不能以默认 IRQ、虚构时钟频率或固定映射地址替代缺失资源。`register_with_fdt_child()` 在发布复合设备前校验子节点，避免形成半发布状态。
+
+probe 成功只证明回调返回并完成其注册工作。网络设备仍需 `prepare_device()`、IRQ 注册和队列启动；USB 主机还需异步初始化及设备枚举；块控制器还需运行时推进其控制状态。资源来源位于[平台资源](resources.md)，执行与交付边界分别位于[运行时与完成](runtime.md)、[领域服务](services.md)和[系统集成](integration.md)。

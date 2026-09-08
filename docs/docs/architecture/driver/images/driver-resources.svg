@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+<title id="title">平台资源：来源、能力化与设备交付</title>
+<desc id="desc">资源由具体绑定按需解析；来源存在、能力取得与硬件状态就绪是不同条件。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/></marker></defs>
+<rect width="1200" height="900" rx="16" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<text x="40" y="49" font-size="26" font-weight="700" fill="#0f172a">平台资源：来源、能力化与设备交付</text>
+<text x="40" y="80" font-size="15" fill="#475569">资源由具体绑定按需解析；来源存在、能力取得与硬件状态就绪是不同条件。</text>
+<rect x="40" y="110" width="340" height="150" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="141" font-size="19" font-weight="700" fill="#0f172a">固件与总线来源</text>
+<text x="58" y="171" font-size="15" fill="#334155">FDT reg / clocks / resets / phys</text>
+<text x="58" y="196" font-size="15" fill="#334155">ACPI 资源与完整 IRQ route</text>
+<text x="58" y="221" font-size="15" fill="#334155">PCI BAR 与中断路由</text>
+<text x="58" y="246" font-size="15" fill="#334155">Static 显式提供等价资源</text>
+<rect x="430" y="110" width="340" height="150" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="141" font-size="19" font-weight="700" fill="#0f172a">平台 provider</text>
+<text x="448" y="171" font-size="15" fill="#334155">rdif-clk / reset / power</text>
+<text x="448" y="196" font-size="15" fill="#334155">pinctrl / GPIO / PHY</text>
+<text x="448" y="221" font-size="15" fill="#334155">rdif-intc / rdif-pcie</text>
+<text x="448" y="246" font-size="15" fill="#334155">资源 ID 属于对应 provider</text>
+<rect x="820" y="110" width="340" height="150" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="141" font-size="19" font-weight="700" fill="#0f172a">内核资源后端</text>
+<text x="838" y="171" font-size="15" fill="#334155">axklib MMIO / DMA / IRQ</text>
+<text x="838" y="196" font-size="15" fill="#334155">实际映射与缓存同步</text>
+<text x="838" y="221" font-size="15" fill="#334155">分配约束、域和地址转换</text>
+<text x="838" y="246" font-size="15" fill="#334155">时序与失败需要实际实现</text>
+<rect x="40" y="345" width="340" height="165" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="376" font-size="19" font-weight="700" fill="#0f172a">寄存器窗口</text>
+<text x="58" y="406" font-size="15" fill="#334155">iomap → ioremap_raw</text>
+<text x="58" y="431" font-size="15" fill="#334155">长度、对齐及设备偏移</text>
+<text x="58" y="456" font-size="15" fill="#334155">CPU 映射不是 BusAddr</text>
+<text x="58" y="481" font-size="15" fill="#334155">多窗口：控制器 / PHY / GRF</text>
+<rect x="430" y="345" width="340" height="165" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="376" font-size="19" font-weight="700" fill="#0f172a">DeviceDma</text>
+<text x="448" y="406" font-size="15" fill="#334155">DmaDeviceInfo + DmaOp</text>
+<text x="448" y="431" font-size="15" fill="#334155">Direct / Translated domain</text>
+<text x="448" y="456" font-size="15" fill="#334155">mask / align / boundary / segment</text>
+<text x="448" y="481" font-size="15" fill="#334155">分配、streaming 映射与同步</text>
+<rect x="820" y="345" width="340" height="165" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="376" font-size="19" font-weight="700" fill="#0f172a">绑定与控制资源</text>
+<text x="838" y="406" font-size="15" fill="#334155">BindingInfo 保存 IRQ 映射</text>
+<text x="838" y="431" font-size="15" fill="#334155">clock / reset 保留 provider</text>
+<text x="838" y="456" font-size="15" fill="#334155">引脚状态与 PHY 端口配置</text>
+<text x="838" y="481" font-size="15" fill="#334155">IRQ 来源还不是 action</text>
+<rect x="40" y="600" width="340" height="155" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="631" font-size="19" font-weight="700" fill="#0f172a">硬件核心输入</text>
+<text x="58" y="661" font-size="15" fill="#334155">映射和设备资源能力</text>
+<text x="58" y="686" font-size="15" fill="#334155">按设备协议写寄存器</text>
+<text x="58" y="711" font-size="15" fill="#334155">驱动不猜测另一套平台事实</text>
+<text x="58" y="736" font-size="15" fill="#334155">芯片专属条件留在实现中</text>
+<rect x="430" y="600" width="340" height="155" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="631" font-size="19" font-weight="700" fill="#0f172a">领域资源准备</text>
+<text x="448" y="661" font-size="15" fill="#334155">块请求与 DMA backing</text>
+<text x="448" y="686" font-size="15" fill="#334155">USB 环、上下文、数据缓冲</text>
+<text x="448" y="711" font-size="15" fill="#334155">网络 TX / RX pool</text>
+<text x="448" y="736" font-size="15" fill="#334155">各领域容量与约束不同</text>
+<rect x="820" y="600" width="340" height="155" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="631" font-size="19" font-weight="700" fill="#0f172a">后续生命周期</text>
+<text x="838" y="661" font-size="15" fill="#334155">解析来源后申请 IRQ action</text>
+<text x="838" y="686" font-size="15" fill="#334155">发布、接管与运行时启动</text>
+<text x="838" y="711" font-size="15" fill="#334155">失败按已取得资源处理</text>
+<text x="838" y="736" font-size="15" fill="#334155">共享 provider 不随意关闭</text>
+<polyline points="210,260 210,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="225" y="305" font-size="14" fill="#1d4ed8">窗口描述</text>
+<polyline points="600,260 600,290 990,290 990,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="714" y="282" font-size="14" fill="#1d4ed8">provider 能力</text>
+<polyline points="1100,260 1100,318 600,318 600,345" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="711" y="310" font-size="14" fill="#1d4ed8">DMA 后端</text>
+<polyline points="210,510 210,600" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="225" y="560" font-size="14" fill="#1d4ed8">映射</text>
+<polyline points="600,510 600,600" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="614" y="560" font-size="14" fill="#1d4ed8">上下文</text>
+<polyline points="990,510 990,600" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1000" y="560" font-size="14" fill="#1d4ed8">来源及控制</text>
+<text x="40" y="835" font-size="15" fill="#475569">绑定层负责资源来源，核心负责硬件机制，运行时负责资源何时投入使用和何时停止。</text>
+<text x="40" y="860" font-size="15" fill="#475569">DWC3 的 PHY phandle 顺序、网络 ring 保留槽等是具体约束，不是全框架常量。</text>
+</g>
+</svg>

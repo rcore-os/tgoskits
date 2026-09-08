@@ -1,15 +1,19 @@
 ---
-sidebar_position: 6
-sidebar_label: "IRQ 解析"
+sidebar_position: 8
+sidebar_label: "中断与事件"
 ---
 
-# IRQ 解析与注册
+# 中断来源、注册与事件交付
 
 IRQ 路径使用 domain 化的 `IrqId` 作为运行时注册标识。`ax-driver::BindingInfo` 保存驱动局部 source ID 与平台 IRQ 的映射；映射值可以是已解析的 `IrqId`，也可以是等待平台解析的固件来源。probe 注册设备时保留来源语义，运行时完成解析后再申请 HAL action。
 
 ## 1. 中断源模型
 
 平台中断号、固件 specifier 和设备局部 source ID 具有不同作用域。`BindingIrqBinding` 将局部身份与平台来源关联，`NetHardIrqEndpoint` 等设备端点只引用自己的局部身份，不通过算术推导控制器线号。
+
+平台来源、设备局部 source 与运行时 action 在不同阶段建立。设备事件由各领域解释，不能把网络 group 调度定义成所有驱动的中断模型。
+
+![中断来源与不同领域的事件交付](images/driver-execution.svg)
 
 ### 1.1 多源绑定
 
@@ -49,7 +53,7 @@ pub enum BindingIrq {
 | `irq_for_source(source_id)` | 按明确 source 查询 |
 | `irq()` | 优先 source 0，否则取第一项，仅供单源便利查询 |
 
-`irq_num()` 只在 binding 可表示为 legacy number 时返回数字，不能代替 `irq_sources()` 或 `IrqId` 注册。`BindingInfo::empty()` 表示没有来源，不意味着需要中断的物理设备可以自动切换到轮询。
+`irq_num()` 只在 binding 可表示为 legacy number 时返回数字，不能代替 `irq_sources()` 或 `IrqId` 注册。`BindingInfo::empty()` 表示没有来源，能否工作由领域合同决定；网络和块完成路径的约束不能替代串口或输入已有的轮询策略。
 
 ## 2. 平台来源解析
 
@@ -81,91 +85,96 @@ ACPI PCI INTx 同样保留 `AcpiGsiRoute` 中的触发方式和极性。将 rout
 
 静态来源和 legacy 入口不放宽网络的固定亲和要求。一个 `Optional` 来源能注册进设备 registry，并不保证 `NetworkRuntimeBuilder` 会接受缺失 endpoint 映射的物理网卡。
 
-### 2.4 解析时序
 
-网络初始化消费全部 source 映射，再按设备端点将来源解析结果交给 builder。`IrqSource` 的解析与 `IrqRequest` 的 action 注册是两个阶段，不能在图中合并成单一裸 IRQ 注册调用。
+### 2.4 解析与注册时序
+
+来源解析解决“哪一个域中的中断”，注册解决“哪一个 callback 在什么上下文执行”。二者之间还有领域端点校验，不能解析成功后就直接宣称设备可运行。
 
 ```mermaid
 sequenceDiagram
-    participant Probe as ax-driver probe
-    participant Resolver as binding_resolver
-    participant Registry as rdrive registry
-    participant Runtime as ax-runtime
-    participant HAL as ax-hal IRQ
-    participant Builder as NetworkRuntimeBuilder
-    Probe->>Resolver: FDT / ACPI / PCI 元数据
-    Resolver-->>Probe: BindingInfo：source_id 到 BindingIrq
-    Probe->>Registry: register_net_with_info(device, dma, info)
-    Runtime->>Registry: take_net_device
-    Registry-->>Runtime: 设备、DMA 与完整 irq_sources
-    loop 每个 source
-        Runtime->>Runtime: 检查 source ID 范围
-        alt 已解析 BindingIrq::Id
-            Runtime->>Runtime: 保留 IrqId
-        else 固件 BindingIrq::Source
-            Runtime->>HAL: resolve_irq_source
-            HAL-->>Runtime: domain IrqId
-        end
+    participant Probe as 平台绑定
+    participant Registry as 注册包装
+    participant Consumer as 领域接入
+    participant HAL as HAL resolver 与 IRQ
+    Probe->>Registry: 发布 BindingInfo 与设备能力
+    Consumer->>Registry: 查询或接管设备
+    Registry-->>Consumer: 设备端点与来源集合
+    loop 每个实际使用的 source
+        Consumer->>HAL: 解析固件来源或使用已有 IrqId
+        HAL-->>Consumer: 域 IrqId
     end
-    Runtime->>Builder: NetworkDeviceInput + ResolvedNetIrqSource
-    Builder->>Builder: 校验拓扑并合并共享 IRQ 亲和域
-    Builder->>Runtime: PinnedNetIrqRegistrar::register
-    Runtime->>HAL: request_irq：Fixed CPU、禁用、不可重入
-    HAL-->>Runtime: registration handle
-    Runtime-->>Builder: PinnedNetIrqRegistration
+    Consumer->>Consumer: 校验源与端点及执行条件
+    Consumer->>HAL: 申请领域所需 action
+    HAL-->>Consumer: 注册 handle
+    Consumer->>Consumer: 完成领域启动与使能协议
 ```
 
-平台 namespace 解析保留在 resolver 边界。网络只用 `NetIrqSourceId` 连接 driver endpoint 与已解析映射，用 `IrqId` 合并物理亲和域；FDT cells、ACPI route 和 PCI 配置空间不进入队列执行器。
+这里不规定所有 action 都必须固定 CPU、共享或初始禁用。实际请求选项由消费者和 HAL 能力决定；网络固定 CPU builder 是其中一种具体实现。
 
-## 3. 网络 action 与生命周期
+## 3. 硬件事件与任务工作
 
-`net/ax-net/src/queue_runtime/mod.rs` 定义网络注册契约，`os/arceos/modules/axruntime/src/irq.rs` 实现 HAL 适配。网络 runtime 负责指定 action 所有者、注册顺序与失败回滚，HAL 适配负责申请、使能、同步和释放平台中断。
+callback 的操作范围由设备合同决定。公共限制是不能进入不满足 IRQ 上下文要求的操作，而不是禁止所有读取或完成处理。
 
-### 3.1 固定 CPU 注册
+### 3.1 块队列事件
 
-`PinnedNetIrqAction` 持有只能移动的 `FnMut() -> PinnedNetIrqOutcome`。`PinnedNetIrqRegistrar::register()` 接收 `name`、`IrqId`、`owner_cpu` 和 action，返回初始禁用的 `PinnedNetIrqRegistration`。HAL 请求配置为 `IrqExecution::NonReentrant`、`ShareMode::Shared`、`AutoEnable::No`、`IrqAffinity::Fixed(CpuId(owner_cpu))`。
+`drivers/interface/rdif-block/src/irq.rs` 定义 `HardIrqHandler::ack()`、`IrqAck` 和队列掩码。`fs/ax-fs-ng/src/block/runtime/irq.rs` 根据 `Spurious`、`Cleared`、`MaskedNeedsRearm` 及控制事件发布 latch，再通过 IRQ-safe notify 唤醒维护者。
 
-`assign_affinity_domains()` 将共享物理 IRQ 的轮询组归入同一 CPU。Builder 创建并确认固定 CPU worker 后注册全部 action，再逐项使能；不支持固定路由、共享 action affinity 冲突或 worker 固定失败时拒绝正常交付。不同组可以共享同一个 CPU 执行器，但硬中断只发布自身目标组。
+callback 不持有 `HardwareQueue`，队列维护者在已确认事件后调用 `drain_completions()`。存在队列目标时由目标完成 drain 再 rearm，避免控制器路径同时提前解除屏蔽；控制器专属事件使用对应回退目标。
 
-### 3.2 硬中断返回
+### 3.2 串口事件
 
-`NetHardIrqHandler::handle_irq()` 只执行有界 mask、ack 和状态快照。Builder 将端点移入 callback，不通过整机互斥锁调用收发接口。
+`rdif-serial::UartIrq::handle()` 返回有界 `SerialIrqReport`，包括事件和接收样本。IRQ 端点可以按合同取得硬件 RX 样本，但不调用运行时业务代码或写 TX FIFO；因此不能用网络“硬 IRQ 不复制帧”的规则禁止串口的有界接收报告。
 
-| 端点返回 | 网络 action 结果与副作用 |
-| --- | --- |
-| `NetHardIrqResult::Spurious` | `Unhandled`，增加伪中断统计 |
-| `NetHardIrqResult::Schedule(snapshot)` | 发布目标组调度状态并返回 `Wake` |
-| `NetHardIrqResult::ProbeDeferred` | 记录延后检查并调度目标组，返回 `Wake` |
+IRQ 端点的 `mask()` 只处理 UART 局部源，不能关闭共享控制器线。任务侧 `UartPort::rearm()` 返回启用后已就绪的源，交给 `SerialWorker` 继续处理。
 
-`RuntimeNetIrqRegistrar` 将网络 `Unhandled/Handled/Wake` 映射成 HAL `IrqReturn`。硬中断不能访问 DMA payload、排空队列、分配帧或运行协议代码。`NetPollIrqControl::rearm_and_check()` 在所有者 CPU 上重新使能并检查窗口内事件；具体队列状态与 deadline 行为由[网络驱动](network.md)定义。
+### 3.3 USB 与显示输入
 
-### 3.3 同步与清理
+xHCI `drivers/usb/usb-host/src/backend/kmod/xhci/host.rs` 的 `EventHandler` 使用锁保护 Event Ring 消费，更新 ERDP 并分发命令、传输和端口事件。事件消费是该 handler 的职责，不应写成“所有硬 IRQ 只能设置一个标志”。
 
-`PinnedNetIrqRegistration` 提供 `owner_cpu()`、`enable()` 和 `disable_and_synchronize()`。`RuntimeNetIrqRegistration` 的同步操作调用 HAL disable 与 synchronize，析构调用 `free_irq()`。网络 builder 在中间失败或 runtime 停止时逆序处理已经取得的 registration。
+显示的 `handled/changed` 与输入的 `handled/input_ready` 保存不同事件语义。`RdifDisplayDevice` 和 `RdifInputDevice` 由系统模块包装，是否有 IRQ、如何推进事件由各消费方决定，不自动构建块 hctx 或网络 group。
 
-`release_registrations()` 只有在全部 callback 同步成功后才释放 lease；失败时保留它们及关联运行时资源。同步成功后，固定 CPU 执行器取消事务并调用组的 `shutdown()`，确认 DMA 不再访问队列内存后才释放 backing。`IrqId`、注册 handle 和驱动 source ID 分别代表路由、一次注册和局部来源，生命周期不能互相替代。
+### 3.4 网络组事件
 
-## 4. 领域事件与平台来源
+`NetHardIrqHandler::handle_irq()` 执行有界 mask、ack 和快照，返回 `Spurious`、`Schedule(snapshot)` 或 `ProbeDeferred`。当前 builder 对 Schedule 使用 group 级调度，不按 RX/TX 位进入不同协议路径；ProbeDeferred 交给 owner 后续检查。
 
-设备中断的业务事件不等于平台 IRQ 映射。`rdif-eth::NetIrqSnapshot` 和 `rdif-block::IrqAck` 描述设备内部工作，`BindingInfo` 描述端点从何处接收中断；两者不能共用一个未经解释的数字字段。
+callback 不排空网络 DMA 队列、不复制包、不执行 smoltcp，也不查全局注册表。`RuntimeNetIrqRegistrar` 将 `Unhandled/Handled/Wake` 转换为 HAL `IrqReturn`，队列预算和 rearm 位于[运行时与完成](runtime.md)。
 
-### 4.1 网络组事件
+## 4. 注册与共享
 
-网络 `NetIrqSnapshot` 包含 RX、TX、ERROR 位。硬端点以 `NetIrqSourceId` 关联平台来源，返回 snapshot 后由运行时调度组；当前 callback 不将这些位解释为 socket 或协议层事件。`PollGroupState` 与队列局部状态负责保存后续任务所需的可观察条件。
+多个设备或端点可以映射到同一个物理中断，但局部 source、域 IRQ 和一次注册的 handle 仍是三种身份。共享还需要匹配执行与亲和条件。
 
-### 4.2 块队列事件
+### 4.1 请求条件
 
-块设备使用独立 boxed `HardIrqHandler::ack()`，返回 `Spurious`、`Cleared` 或 `MaskedNeedsRearm` 及 queue mask、控制事件。HAL callback 将已确认事件合并进预分配 latch，通过 IRQ-safe notify 激活维护线程；维护线程独占 `drain_completions()`，再发布完成订阅。
+网络 `PinnedNetIrqRegistrar` 接收明确 `owner_cpu` 和可移动 action，HAL 适配使用 `NonReentrant`、`Shared`、`AutoEnable::No` 与固定亲和。builder 确认 worker 固定后注册全部 action，随后整体使能；不支持固定路由时拒绝交付。
 
-```mermaid
-flowchart LR
-    Source[平台 IrqId] --> Callback[HAL callback]
-    Callback --> Ack[HardIrqHandler::ack]
-    Ack --> Latch[原子 latch / queue mask]
-    Latch --> Notify[IRQ-safe notify]
-    Notify --> Owner[hctx 维护线程]
-    Owner --> Drain[drain_completions]
-    Drain --> Completion[发布完成订阅]
-```
+块设备使用自己的 IRQ action 与目标集合，USB 的 `PlatformUsbHost` 提供 `take_binding_irq_handler()`，串口具有独立 IRQ bridge。它们的注册对象和状态不能替换成网络 lease 类型。
 
-queue mask 表示 source 影响的硬件队列，不是 FDT interrupt specifier 或 PCI IRQ 编号。网络轮询组和块设备 hctx 都把硬中断限制为确认与通知，但各自的队列推进、预算和重新使能合同由领域接口定义，不能直接互换。
+### 4.2 源与设备局部状态
+
+共享线路触发不代表每个设备都有工作。Spurious 表示不属于当前端点或没有对应事件；Handled 和 Wake 也需要结合领域状态判断，不能把任意一次硬件中断记为请求完成。
+
+| 身份 | 保存内容 | 不等同于 |
+| --- | --- | --- |
+| `source_id` | 驱动局部端点映射 | 硬件控制器输入线号 |
+| FDT cells / ACPI route | 固件路由与属性 | 已申请 action |
+| `IrqId` | 域化中断身份 | 独占使用权 |
+| 注册 handle | 一次 callback 注册 | 设备完整生命周期 |
+| 领域事件 | queue mask、字节、端口或 group 状态 | 上层操作已经终态完成 |
+
+多源 helper 要保留完整映射，不能对最终 IRQ 数字去重后丢失设备局部端点关系。
+
+## 5. 停止与故障定位
+
+IRQ 撤销需要处理使能状态与正在执行的 callback；硬件停止还需处理 DMA、FIFO 或端点协议。同步完成不自动代表硬件已停止访问内存。
+
+### 5.1 callback 生命周期
+
+网络 `disable_and_synchronize()` 与 lease 析构分别处理同步和释放，失败时保留相关资源。其他领域需要依据各自 action 与任务状态确认撤销，不推导出全框架已有相同隔离实现。
+
+`rdrive::get_list()` 会分配和获取全局锁，硬 IRQ 所需端点应在注册前发布。设备关闭时不能先释放 callback 引用的状态，再尝试禁用中断。完整资源关系见[生命周期](lifecycle.md)。
+
+### 5.2 失败层次
+
+日志需要区分 provider 未发布、命名中断缺失、源 ID 转换失败、路由不支持、注册亲和冲突以及同步失败。例如 FDT `<0x00 0xdd 0x04>` 需保留父控制器及全部单元，不能直接把 `0xdd` 当作最终 HAL 注册编号。
+
+物理网络的 IRQ 缺失不能以轮询后备掩盖，块完成不得由周期扫描替代，输入和串口则有自己明确限定的推进策略。故障处理以领域合同为准，不能把任一设备类别的策略泛化到所有驱动。
