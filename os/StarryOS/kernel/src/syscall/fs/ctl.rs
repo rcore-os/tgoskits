@@ -23,7 +23,10 @@ use linux_raw_sys::{
 
 use crate::{
     Errno, StarryError, StarryResult,
-    file::{Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at, with_fs},
+    file::{
+        Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at,
+        resolve_at_with_boundary, with_fs,
+    },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
     task::UserTaskRef,
     time::TimeValueLike,
@@ -357,7 +360,12 @@ pub fn sys_mkdirat(
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
 
-    let result = with_fs(dirfd, |fs| match fs.create_dir(&path, mode, uid, gid, &mutation_cred) {
+    let resolve_dirfd = if path.starts_with('/') {
+        AT_FDCWD
+    } else {
+        dirfd
+    };
+    let result = with_fs(resolve_dirfd, |fs| match fs.create_dir(&path, mode, uid, gid, &mutation_cred) {
         Ok(_) => Ok(0),
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
@@ -410,7 +418,12 @@ pub fn sys_mknodat(
     let uid = cred.fsuid;
     let gid = cred.fsgid;
     let mutation_cred = mutation_credentials(&cred);
-    let res = with_fs(dirfd, |fs| {
+    let resolve_dirfd = if path.starts_with('/') {
+        AT_FDCWD
+    } else {
+        dirfd
+    };
+    let res = with_fs(resolve_dirfd, |fs| {
         let loc = fs.create_node(
             Path::new(&path),
             node_type,
@@ -574,12 +587,28 @@ pub fn sys_linkat(
 
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
-    let old = resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?
+    let (old, old_boundary) = resolve_at_with_boundary(old_dirfd, old_path.as_deref(), resolve_flags)?;
+    let old = old
         .into_file()
         .ok_or(StarryError::BadFileDescriptor)?;
-    with_fs(new_dirfd, |fs| {
+    let new_dirfd = if new_path.starts_with('/') {
+        AT_FDCWD
+    } else {
+        new_dirfd
+    };
+    let (new_dir, new_name, new_boundary) = with_fs(new_dirfd, |fs| {
         let (new_dir, new_name) = fs.resolve_parent(Path::new(&new_path))?;
-        fs.link_locations(&old, &new_dir, &new_name, &mutation_cred)?;
+        Ok((new_dir, new_name, fs.permission_boundary().cloned()))
+    })?;
+    with_fs(AT_FDCWD, |fs| {
+        fs.link_locations_with_boundaries(
+            &old,
+            &new_dir,
+            &new_name,
+            old_boundary.as_ref(),
+            new_boundary.as_ref(),
+            &mutation_cred,
+        )?;
         Ok(())
     })?;
     Ok(0)
@@ -619,7 +648,12 @@ pub fn sys_unlinkat(
     }
 
     let deleted = path_info_at(dirfd, &path).ok();
-    let result = with_fs(dirfd, |fs| {
+    let resolve_dirfd = if path.starts_with('/') {
+        AT_FDCWD
+    } else {
+        dirfd
+    };
+    let result = with_fs(resolve_dirfd, |fs| {
         if flags & AT_REMOVEDIR as i32 != 0 {
             fs.remove_dir(&path, &mutation_cred)?;
         } else {
@@ -684,7 +718,12 @@ pub fn sys_symlinkat(
     let uid = cred.fsuid;
     let gid = cred.fsgid;
     let mutation_cred = mutation_credentials(&cred);
-    with_fs(new_dirfd, |fs| {
+    let resolve_dirfd = if linkpath.starts_with('/') {
+        AT_FDCWD
+    } else {
+        new_dirfd
+    };
+    with_fs(resolve_dirfd, |fs| {
         fs.symlink(target, linkpath, uid, gid, &mutation_cred)?;
         Ok(0)
     })
@@ -1105,21 +1144,34 @@ pub fn sys_renameat2(
          new_path: {new_path}, flags: {flags}"
     );
 
-    let (old_dir, old_name) =
-        with_fs(old_dirfd, |fs| Ok(fs.resolve_parent(Path::new(&old_path))?))?;
-    let (new_dir, new_name) =
-        with_fs(new_dirfd, |fs| Ok(fs.resolve_parent(Path::new(&new_path))?))?;
+    let old_dirfd = if old_path.starts_with('/') {
+        AT_FDCWD
+    } else {
+        old_dirfd
+    };
+    let new_dirfd = if new_path.starts_with('/') {
+        AT_FDCWD
+    } else {
+        new_dirfd
+    };
+    let (old_dir, old_name, old_boundary) = with_fs(old_dirfd, |fs| {
+        let (old_dir, old_name) = fs.resolve_parent(Path::new(&old_path))?;
+        Ok((old_dir, old_name, fs.permission_boundary().cloned()))
+    })?;
+    let (new_dir, new_name, new_boundary) = with_fs(new_dirfd, |fs| {
+        let (new_dir, new_name) = fs.resolve_parent(Path::new(&new_path))?;
+        Ok((new_dir, new_name, fs.permission_boundary().cloned()))
+    })?;
 
     // Propagate the filesystem errno directly to match renameat2 callers.
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
     with_fs(AT_FDCWD, |fs| {
-        Ok(fs.rename_locations(
-            &old_dir,
-            &old_name,
-            &new_dir,
-            &new_name,
+        Ok(fs.rename_locations_with_boundaries(
+            (&old_dir, &old_name),
+            (&new_dir, &new_name),
             options,
+            (old_boundary.as_ref(), new_boundary.as_ref()),
             &mutation_cred,
         )?)
     })?;

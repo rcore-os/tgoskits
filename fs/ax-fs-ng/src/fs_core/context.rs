@@ -172,6 +172,12 @@ pub struct FsContext {
     mnt_ns: Arc<MountNamespace>,
     root_dir: Location,
     current_dir: Location,
+    /// The directory at which relative-path permission checks must stop.
+    ///
+    /// A context created for an `*at` call carries its directory fd here. This
+    /// is deliberately separate from `root_dir`: the fd supplies a path-walk
+    /// starting point, not a process root or a `..`-containment boundary.
+    permission_root: Option<Location>,
 }
 
 impl FsContext {
@@ -198,6 +204,7 @@ impl FsContext {
             Self {
                 root_dir: root_dir.clone(),
                 current_dir: root_dir,
+                permission_root: None,
             }
         }
     }
@@ -207,6 +214,7 @@ impl FsContext {
         Self {
             root_dir: root_dir.clone(),
             current_dir: root_dir,
+            permission_root: None,
             mnt_ns,
         }
     }
@@ -246,9 +254,23 @@ impl FsContext {
         Ok(Self {
             root_dir: self.root_dir.clone(),
             current_dir,
+            permission_root: self.permission_root.clone(),
             #[cfg(feature = "vfs")]
             mnt_ns: self.mnt_ns.clone(),
         })
+    }
+
+    /// Returns a context whose relative paths and permission checks start at
+    /// an already opened directory.
+    pub fn with_dirfd(&self, dirfd: Location) -> VfsResult<Self> {
+        let mut context = self.with_current_dir(dirfd.clone())?;
+        context.permission_root = Some(dirfd);
+        Ok(context)
+    }
+
+    /// Returns the directory boundary used for relative-path permissions.
+    pub fn permission_boundary(&self) -> Option<&Location> {
+        self.permission_root.as_ref()
     }
 
     /// Rebind this context to a freshly cloned mount namespace.
@@ -603,16 +625,19 @@ impl FsContext {
         }
     }
 
-    /// Check execute/search permission on the directory and every ancestor.
+    /// Check execute/search permission up to the selected path boundary.
     fn check_search_path(
         &self,
         directory: &Location,
+        boundary: Option<&Location>,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<()> {
         let mut current = directory.clone();
         loop {
             Self::check_permission(&current, credentials, NodePermission::OTHER_EXEC)?;
-            if current.ptr_eq(&self.root_dir) {
+            if boundary.is_some_and(|boundary| current.ptr_eq(boundary))
+                || current.ptr_eq(&self.root_dir)
+            {
                 return Ok(());
             }
             current = current.parent().ok_or(VfsError::InvalidInput)?;
@@ -625,7 +650,20 @@ impl FsContext {
         directory: &Location,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<()> {
-        self.check_search_path(directory, credentials)?;
+        self.check_mutation_parent_with_boundary(
+            directory,
+            self.permission_root.as_ref(),
+            credentials,
+        )
+    }
+
+    fn check_mutation_parent_with_boundary(
+        &self,
+        directory: &Location,
+        boundary: Option<&Location>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        self.check_search_path(directory, boundary, credentials)?;
         Self::check_permission(directory, credentials, NodePermission::OTHER_WRITE)
     }
 
@@ -747,8 +785,30 @@ impl FsContext {
         options: RenameOptions,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<()> {
-        self.check_mutation_parent(src_dir, credentials)?;
-        self.check_mutation_parent(dst_dir, credentials)?;
+        self.rename_locations_with_boundaries(
+            (src_dir, src_name),
+            (dst_dir, dst_name),
+            options,
+            (self.permission_root.as_ref(), self.permission_root.as_ref()),
+            credentials,
+        )
+    }
+
+    /// Rename resolved entries with independent source and destination path
+    /// permission boundaries.
+    pub fn rename_locations_with_boundaries(
+        &self,
+        source: (&Location, &str),
+        destination: (&Location, &str),
+        options: RenameOptions,
+        boundaries: (Option<&Location>, Option<&Location>),
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        let (src_dir, src_name) = source;
+        let (dst_dir, dst_name) = destination;
+        let (src_boundary, dst_boundary) = boundaries;
+        self.check_mutation_parent_with_boundary(src_dir, src_boundary, credentials)?;
+        self.check_mutation_parent_with_boundary(dst_dir, dst_boundary, credentials)?;
 
         let source = src_dir.lookup_no_follow(src_name)?;
         let destination = match dst_dir.lookup_no_follow(dst_name) {
@@ -764,6 +824,7 @@ impl FsContext {
         // Match the VFS no-op result before applying sticky-directory removal
         // rules to an unchanged ordinary rename.
         if options == RenameOptions::REPLACE
+            && Arc::ptr_eq(src_dir.mountpoint(), dst_dir.mountpoint())
             && destination
                 .as_ref()
                 .is_some_and(|destination| destination.inode() == source.inode())
@@ -823,10 +884,31 @@ impl FsContext {
         new_name: &str,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
+        self.link_locations_with_boundaries(
+            old,
+            new_dir,
+            new_name,
+            self.permission_root.as_ref(),
+            self.permission_root.as_ref(),
+            credentials,
+        )
+    }
+
+    /// Create a hard link with independent source and destination path
+    /// permission boundaries.
+    pub fn link_locations_with_boundaries(
+        &self,
+        old: &Location,
+        new_dir: &Location,
+        new_name: &str,
+        old_boundary: Option<&Location>,
+        new_boundary: Option<&Location>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<Location> {
         if let Some(old_dir) = old.parent() {
-            self.check_search_path(&old_dir, credentials)?;
+            self.check_search_path(&old_dir, old_boundary, credentials)?;
         }
-        self.check_mutation_parent(new_dir, credentials)?;
+        self.check_mutation_parent_with_boundary(new_dir, new_boundary, credentials)?;
         if old.is_dir() {
             return Err(VfsError::OperationNotPermitted);
         }
@@ -847,10 +929,12 @@ impl FsContext {
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
         let (dir, name) = self.resolve_parent(link_path.as_ref())?;
-        self.check_mutation_parent(&dir, credentials)?;
-        if dir.lookup_no_follow(&name).is_ok() {
-            return Err(VfsError::AlreadyExists);
+        match dir.lookup_no_follow(&name) {
+            Ok(_) => return Err(VfsError::AlreadyExists),
+            Err(VfsError::NotFound) => {}
+            Err(error) => return Err(error),
         }
+        self.check_mutation_parent(&dir, credentials)?;
         dir.create_symlink(&name, target.as_ref(), NodePermission::default(), uid, gid)
     }
 
@@ -865,10 +949,12 @@ impl FsContext {
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
         let (dir, name) = self.resolve_parent(path.as_ref())?;
-        self.check_mutation_parent(&dir, credentials)?;
-        if dir.lookup_no_follow(&name).is_ok() {
-            return Err(VfsError::AlreadyExists);
+        match dir.lookup_no_follow(&name) {
+            Ok(_) => return Err(VfsError::AlreadyExists),
+            Err(VfsError::NotFound) => {}
+            Err(error) => return Err(error),
         }
+        self.check_mutation_parent(&dir, credentials)?;
         dir.create(&name, node_type, permission, uid, gid)
     }
 

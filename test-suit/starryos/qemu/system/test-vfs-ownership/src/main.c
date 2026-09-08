@@ -76,6 +76,8 @@ int main(void) {
         perror("mkdtemp");
         return 1;
     }
+    CHECK_RET(chmod(dir_template, 0777), 0,
+              "make tmpfs ownership test directory writable");
 
     snprintf(path_buf, sizeof(path_buf), "%s/root_file", dir_template);
     FILE *f = fopen(path_buf, "w");
@@ -88,14 +90,16 @@ int main(void) {
     CHECK_RET(check_owner(path_buf, 0, 0), 0, "root dir uid/gid (tmpfs)");
 
     /* ── Root-created files on ext4 rootfs ───────────────── */
-    const char *root_test_dir = "/root/vfs-owner-ext4-test";
+    const char *root_test_dir = "/vfs-owner-ext4-test";
     rmdir(root_test_dir);
     snprintf(path_buf, sizeof(path_buf), "%s/ext4_dir", root_test_dir);
     rmdir(path_buf);
     snprintf(path_buf, sizeof(path_buf), "%s/ext4_file", root_test_dir);
     unlink(path_buf);
 
-    CHECK_RET(mkdir(root_test_dir, 0755), 0, "create ext4 test dir");
+    CHECK_RET(mkdir(root_test_dir, 0777), 0, "create ext4 test dir");
+    CHECK_RET(chmod(root_test_dir, 0777), 0,
+              "make ext4 ownership test directory writable");
 
     snprintf(path_buf, sizeof(path_buf), "%s/ext4_file", root_test_dir);
     fd = open(path_buf, O_CREAT | O_WRONLY, 0644);
