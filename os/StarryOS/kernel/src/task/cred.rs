@@ -120,6 +120,18 @@ impl Cred {
         }
     }
 
+    /// Builds the subjective credential used by access checks with real IDs.
+    /// The live credential is never changed while resolving a path.
+    pub fn for_real_id_access(&self) -> Self {
+        let mut access = self.clone();
+        access.fsuid = self.uid;
+        access.fsgid = self.gid;
+        if self.securebits & SECBIT_NO_SETUID_FIXUP == 0 {
+            access.cap_effective = if self.uid == 0 { self.cap_permitted } else { 0 };
+        }
+        access
+    }
+
     /// Check whether a capability is present in the effective set.
     pub fn has_cap(&self, cap: u32) -> bool {
         self.cap_effective & cap_bit(cap) != 0
@@ -412,6 +424,33 @@ fn credential_capability_rules_hold_for_test() -> bool {
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
+    use super::{Cred, SECBIT_NO_SETUID_FIXUP};
+
+    #[test]
+    fn real_id_access_applies_identity_and_capability_fixups() {
+        let mut setuid_root = Cred::root();
+        setuid_root.uid = 1000;
+        setuid_root.gid = 100;
+        let access = setuid_root.for_real_id_access();
+        assert_eq!((access.fsuid, access.fsgid), (1000, 100));
+        assert_eq!(access.cap_effective, 0);
+
+        let mut dropped_effective = Cred::root();
+        dropped_effective.euid = 1000;
+        dropped_effective.fsuid = 1000;
+        dropped_effective.egid = 100;
+        dropped_effective.fsgid = 100;
+        dropped_effective.cap_effective = 0;
+        let access = dropped_effective.for_real_id_access();
+        assert_eq!((access.fsuid, access.fsgid), (0, 0));
+        assert_eq!(access.cap_effective, access.cap_permitted);
+
+        setuid_root.securebits = SECBIT_NO_SETUID_FIXUP;
+        let access = setuid_root.for_real_id_access();
+        assert_eq!((access.fsuid, access.fsgid), (1000, 100));
+        assert_eq!(access.cap_effective, setuid_root.cap_effective);
+    }
+
     #[test]
     fn credential_capability_rules_hold() {
         assert!(super::credential_capability_rules_hold_for_test());

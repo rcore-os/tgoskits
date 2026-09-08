@@ -7,7 +7,7 @@ use bytemuck::AnyBitPattern;
 use super::clone::{CloneArgs, CloneFlags};
 use crate::{
     StarryError, StarryResult,
-    file::{ResolveAtResult, resolve_at},
+    file::{ResolveAtResult, resolve_fd},
     mm::{vm_load, vm_read_slice},
 };
 
@@ -115,7 +115,7 @@ pub fn sys_clone3(
     let clone_args = CloneArgs::try_from(clone3_args)?;
     let requested_cgroup = if clone_args.flags.contains(CloneFlags::INTO_CGROUP) {
         let cgroup_fd = i32::try_from(clone3_args.cgroup).map_err(|_| StarryError::InvalidInput)?;
-        let location = match resolve_at(cgroup_fd, None, linux_raw_sys::general::AT_EMPTY_PATH)? {
+        let location = match resolve_fd(cgroup_fd)? {
             ResolveAtResult::File(location) => location,
             ResolveAtResult::Other(_) => return Err(StarryError::InvalidInput),
         };

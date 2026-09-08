@@ -665,6 +665,9 @@ pub fn sys_mount(
             return Err(StarryError::InvalidInput);
         }
         let mp = target.mountpoint();
+        if flags & MS_BIND == 0 {
+            mp.set_filesystem_readonly(flags & MS_RDONLY != 0);
+        }
         mp.set_readonly((flags & MS_RDONLY) != 0);
         mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         crate::file::notify_mount_namespace_changed(&mount_namespace);
@@ -695,6 +698,9 @@ pub fn sys_mount(
         "proc" => {
             let fs = crate::pseudofs::proc::new_procfs(current.as_thread().active_pid_namespace());
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            if flags & MS_RDONLY != 0 {
+                fs.set_readonly(true);
+            }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -704,6 +710,9 @@ pub fn sys_mount(
         "sysfs" | "devtmpfs" | "tmpfs" => {
             let fs = MemoryFs::new();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            if flags & MS_RDONLY != 0 {
+                fs.set_readonly(true);
+            }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -716,6 +725,9 @@ pub fn sys_mount(
             // machinery here, but must not inherit tmpfs's visible identity.
             let fs = MemoryFs::new_ramfs();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            if flags & MS_RDONLY != 0 {
+                fs.set_readonly(true);
+            }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -725,6 +737,9 @@ pub fn sys_mount(
         "devpts" => {
             let fs = new_devptsfs(parse_devpts_options(current, data)?);
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            if flags & MS_RDONLY != 0 {
+                fs.set_readonly(true);
+            }
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -740,6 +755,9 @@ pub fn sys_mount(
             };
             let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            if flags & MS_RDONLY != 0 {
+                fs.set_readonly(true);
+            }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
@@ -768,10 +786,10 @@ pub fn sys_mount(
                 work_dir,
             })?;
             let target = ctx.resolve(target)?;
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
-            if readonly || (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+            if readonly || flags & MS_RDONLY != 0 {
+                fs.set_readonly(true);
             }
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         _ => return Err(StarryError::NoSuchDevice),
@@ -826,7 +844,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     // No filesystem-context lock is held during superblock or backing-file I/O.
     let fs = new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)?;
     let mount = target_location.mount_with_source(&fs, source)?;
-    mount.set_readonly(readonly);
+    mount.set_readonly(readonly || fs.is_readonly());
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
     Ok(())
 }

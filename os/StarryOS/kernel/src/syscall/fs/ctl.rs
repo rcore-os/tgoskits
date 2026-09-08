@@ -753,6 +753,9 @@ pub fn sys_lchown(
 }
 
 pub fn sys_fchown(current: &UserTaskRef, fd: i32, uid: i32, gid: i32) -> StarryResult<isize> {
+    if fd < 0 {
+        return Err(StarryError::BadFileDescriptor);
+    }
     sys_fchownat(current, fd, core::ptr::null(), uid, gid, AT_EMPTY_PATH)
 }
 
@@ -837,6 +840,9 @@ pub fn sys_chmod(current: &UserTaskRef, path: *const c_char, mode: u32) -> Starr
 }
 
 pub fn sys_fchmod(current: &UserTaskRef, fd: i32, mode: u32) -> StarryResult<isize> {
+    if fd < 0 {
+        return Err(StarryError::BadFileDescriptor);
+    }
     sys_fchmodat(current, fd, core::ptr::null(), mode, AT_EMPTY_PATH)
 }
 
@@ -986,7 +992,7 @@ pub fn sys_utimensat(
     if flags & !UTIMENSAT_VALID_FLAGS != 0 {
         return Err(StarryError::InvalidInput);
     }
-    if path.is_null() {
+    if path.is_null() && dirfd != AT_FDCWD {
         flags |= AT_EMPTY_PATH;
     }
     fn utime_to_duration(time: &timespec) -> Option<StarryResult<Duration>> {
@@ -1017,6 +1023,9 @@ pub fn sys_utimensat(
     }
 
     // Resolve file and check permissions.
+    if path.is_null() && dirfd == AT_FDCWD && flags & AT_EMPTY_PATH == 0 {
+        return Err(StarryError::BadAddress);
+    }
     let path = path
         .nullable()
         .map(|path| vm_load_path_string(current, path))

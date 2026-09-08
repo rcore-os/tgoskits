@@ -18,7 +18,7 @@ use starry_vm::VmError;
 
 use crate::{
     StarryError, StarryResult,
-    file::{ResolveAtResult, memfd::Memfd, resolve_at},
+    file::{ResolveAtResult, memfd::Memfd, resolve_at, resolve_fd},
     mm::{
         MAX_EXEC_ARG_BYTES, MmHandle, load_user_app, new_user_image_builder,
         validate_exec_arg_size, vm_load_string, vm_load_until_nul,
@@ -97,7 +97,7 @@ pub fn sys_execve(
 ) -> crate::StarryResult<isize> {
     let path = vm_load_string(current, path)?;
     let loc = if let Some(fd) = self_fd_number(&path) {
-        match resolve_at(fd, Some(""), AT_EMPTY_PATH)? {
+        match resolve_fd(fd)? {
             ResolveAtResult::File(loc) => loc,
             ResolveAtResult::Other(file) => file
                 .downcast_ref::<Memfd>()

@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use inherit_methods_macro::inherit_methods;
 
@@ -58,16 +59,37 @@ pub trait FilesystemOps: Send + Sync {
     }
 }
 
+/// VFS superblock flags shared by every mount of a filesystem instance.
+#[derive(Debug)]
+pub(crate) struct FilesystemMountState {
+    readonly: AtomicBool,
+}
+
+impl FilesystemMountState {
+    pub(crate) fn new(readonly: bool) -> Self {
+        Self {
+            readonly: AtomicBool::new(readonly),
+        }
+    }
+
+    pub(crate) fn is_readonly(&self) -> bool {
+        self.readonly.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_readonly(&self, readonly: bool) {
+        self.readonly.store(readonly, Ordering::Release);
+    }
+}
+
 #[derive(Clone)]
 pub struct Filesystem {
     ops: Arc<dyn FilesystemOps>,
+    pub(crate) mount_state: Arc<FilesystemMountState>,
 }
 
 #[inherit_methods(from = "self.ops")]
 impl Filesystem {
     pub fn name(&self) -> &str;
-
-    pub fn is_readonly(&self) -> bool;
 
     pub fn root_dir(&self) -> DirEntry;
 
@@ -77,7 +99,20 @@ impl Filesystem {
 }
 
 impl Filesystem {
+    /// Creates a filesystem instance. Clone this handle to share its mounts.
     pub fn new(ops: Arc<dyn FilesystemOps>) -> Self {
-        Self { ops }
+        let mount_state = Arc::new(FilesystemMountState::new(ops.is_readonly()));
+        Self { ops, mount_state }
+    }
+
+    /// Returns the VFS read-only state shared by all mounts of this instance.
+    pub fn is_readonly(&self) -> bool {
+        self.mount_state.is_readonly()
+    }
+
+    /// Configures VFS write protection before publishing a new mount.
+    /// This does not change the capabilities of the backing device.
+    pub fn set_readonly(&self, readonly: bool) {
+        self.mount_state.set_readonly(readonly);
     }
 }

@@ -7,6 +7,11 @@ add_executable(ltp-isolation-exit-fs src/exit_fs_context.c)
 target_compile_options(ltp-isolation-exit-fs PRIVATE -Wall -Wextra -Werror)
 install(TARGETS ltp-isolation-exit-fs RUNTIME DESTINATION usr/bin/starry-test-suit)
 
+# Access must distinguish real credentials, mount flags and shared filesystem state.
+add_executable(ltp-isolation-access-context src/access_context.c)
+target_compile_options(ltp-isolation-access-context PRIVATE -Wall -Wextra -Werror)
+install(TARGETS ltp-isolation-access-context RUNTIME DESTINATION usr/bin/starry-test-suit)
+
 if(NOT DEFINED STARRY_STAGING_ROOT)
     message(FATAL_ERROR "STARRY_STAGING_ROOT must be provided by axbuild")
 endif()

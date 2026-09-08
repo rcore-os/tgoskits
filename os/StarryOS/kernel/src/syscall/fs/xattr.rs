@@ -90,7 +90,7 @@ fn resolve_fd(fd: i32) -> StarryResult<Location> {
     if fd_is_path(fd) {
         return Err(StarryError::BadFileDescriptor);
     }
-    resolve_at(fd, None, AT_EMPTY_PATH)?
+    crate::file::resolve_fd(fd)?
         .into_file()
         .ok_or(StarryError::BadFileDescriptor)
 }

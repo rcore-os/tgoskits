@@ -1,4 +1,5 @@
 # LTP 20260529 cases returning zero without TCONF/TBROK/TFAIL on all four architectures.
+access04
 alarm02
 alarm05
 alarm06
@@ -22,6 +23,8 @@ execve01
 execve03
 execve06
 execveat01
+faccessat201
+faccessat202
 futex_wait01
 futex_wait02
 futex_wait03

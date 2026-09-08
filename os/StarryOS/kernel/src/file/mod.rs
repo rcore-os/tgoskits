@@ -54,7 +54,10 @@ pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_change
 #[cfg(feature = "qperf-metrics")]
 pub(crate) use self::pipe::qperf_metrics_snapshot as pipe_qperf_metrics_snapshot;
 pub use self::{
-    fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
+    fs::{
+        Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, resolve_at_checked,
+        resolve_fd, with_fs,
+    },
     io_uring::IoUring,
     net::Socket,
     nsfd::NsFd,

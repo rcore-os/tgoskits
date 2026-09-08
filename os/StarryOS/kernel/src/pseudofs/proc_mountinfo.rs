@@ -30,6 +30,7 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
         let dev = DeviceId(mp.device());
 
         let options = render_options(mp.is_readonly(), mp.mount_flags());
+        let super_options = render_options(mp.is_filesystem_readonly(), 0);
 
         let optional_fields = if mp.is_shared() {
             let gid = mp.peer_group_id();
@@ -53,7 +54,7 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
         let _ = writeln!(
             &mut buf,
             "{mount_id} {parent_id} {}:{} / {mount_point} {options}{optional_fields} - {fstype} \
-             {source} {options}",
+             {source} {super_options}",
             dev.major(),
             dev.minor(),
         );
@@ -74,7 +75,7 @@ pub fn render_mounts(fs_context: &FsContext) -> String {
 
         let fstype = root_loc.filesystem().name();
         let source = mp.source();
-        let options = render_options(mp.is_readonly(), mp.mount_flags());
+        let options = render_options(root_loc.is_readonly(), mp.mount_flags());
 
         let _ = writeln!(&mut buf, "{source} {mount_point} {fstype} {options} 0 0",);
     }

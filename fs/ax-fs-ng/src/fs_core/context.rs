@@ -28,6 +28,8 @@ use crate::{
     os::sync::{IrqMutex, SleepMutex as Mutex},
 };
 
+type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
+
 /// Maximum number of symlinks that will be followed during path resolution.
 pub const SYMLINKS_MAX: usize = 40;
 
@@ -278,6 +280,15 @@ impl FsContext {
         loc: Location,
         follow_count: &mut usize,
     ) -> VfsResult<Location> {
+        self.try_resolve_symlink_using(loc, follow_count, None)
+    }
+
+    fn try_resolve_symlink_using(
+        &self,
+        loc: Location,
+        follow_count: &mut usize,
+        search: SearchCheck<'_>,
+    ) -> VfsResult<Location> {
         if loc.node_type() != NodeType::Symlink {
             return Ok(loc);
         }
@@ -289,25 +300,66 @@ impl FsContext {
         if target.is_empty() {
             return Err(VfsError::NotFound);
         }
-        self.resolve_components(PathBuf::from(target).components(), follow_count)
+        let target = PathBuf::from(target);
+        let resolved = self.resolve_components(target.components(), follow_count, search)?;
+        Self::finish_checked_path(&target, resolved, search)
     }
 
-    fn lookup(&self, dir: &Location, name: &str, follow_count: &mut usize) -> VfsResult<Location> {
+    fn check_search(dir: &Location, search: SearchCheck<'_>) -> VfsResult<()> {
+        if let Some(check) = search {
+            dir.check_is_dir()?;
+            check(dir)?;
+        }
+        Ok(())
+    }
+
+    fn ends_in_dot(path: &Path) -> bool {
+        let path = path.as_str().trim_end_matches('/');
+        path == "." || path.ends_with("/.")
+    }
+
+    fn finish_checked_path(
+        path: &Path,
+        resolved: Location,
+        search: SearchCheck<'_>,
+    ) -> VfsResult<Location> {
+        if search.is_some() {
+            // Components removes non-leading dots. Preserve the search that
+            // an explicit final dot requires, including in symlink targets.
+            if Self::ends_in_dot(path) {
+                Self::check_search(&resolved, search)?;
+            } else if path.as_str().ends_with('/') {
+                resolved.check_is_dir()?;
+            }
+        }
+        Ok(resolved)
+    }
+
+    fn lookup(
+        &self,
+        dir: &Location,
+        name: &str,
+        follow_count: &mut usize,
+        search: SearchCheck<'_>,
+    ) -> VfsResult<Location> {
+        Self::check_search(dir, search)?;
         let loc = dir.lookup_no_follow(name)?;
         self.with_current_dir(dir.clone())?
-            .try_resolve_symlink(loc, follow_count)
+            .try_resolve_symlink_using(loc, follow_count, search)
     }
 
     fn resolve_components(
         &self,
         components: Components,
         follow_count: &mut usize,
+        search: SearchCheck<'_>,
     ) -> VfsResult<Location> {
         let mut dir = self.current_dir.clone();
         for comp in components {
             match comp {
                 Component::CurDir => {}
                 Component::ParentDir => {
+                    Self::check_search(&dir, search)?;
                     if !dir.ptr_eq(&self.root_dir) {
                         dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
                     }
@@ -316,7 +368,7 @@ impl FsContext {
                     dir = self.root_dir.clone();
                 }
                 Component::Normal(name) => {
-                    dir = self.lookup(&dir, name, follow_count)?;
+                    dir = self.lookup(&dir, name, follow_count, search)?;
                 }
             }
         }
@@ -327,34 +379,69 @@ impl FsContext {
         &self,
         path: &'a Path,
         follow_count: &mut usize,
+        search: SearchCheck<'_>,
     ) -> VfsResult<(Location, Option<&'a str>)> {
         let entry_name = path.file_name();
         let mut components = path.components();
         if entry_name.is_some() {
             components.next_back();
         }
-        let dir = self.resolve_components(components, follow_count)?;
+        let dir = self.resolve_components(components, follow_count, search)?;
         dir.check_is_dir()?;
         Ok((dir, entry_name))
     }
 
+    fn resolve_using(
+        &self,
+        path: &Path,
+        follow_final: bool,
+        search: SearchCheck<'_>,
+    ) -> VfsResult<Location> {
+        let mut follow_count = 0;
+        let (dir, name) = self.resolve_inner(path, &mut follow_count, search)?;
+        let requires_directory =
+            search.is_some() && (path.as_str().ends_with('/') || Self::ends_in_dot(path));
+        let resolved = match name {
+            Some(name) if follow_final || requires_directory => {
+                self.lookup(&dir, name, &mut follow_count, search)?
+            }
+            Some(name) => {
+                Self::check_search(&dir, search)?;
+                dir.lookup_no_follow(name)?
+            }
+            None => dir,
+        };
+        Self::finish_checked_path(path, resolved, search)
+    }
+
     /// Resolves a path starting from `current_dir`.
     pub fn resolve(&self, path: impl AsRef<Path>) -> VfsResult<Location> {
-        let mut follow_count = 0;
-        let (dir, name) = self.resolve_inner(path.as_ref(), &mut follow_count)?;
-        match name {
-            Some(name) => self.lookup(&dir, name, &mut follow_count),
-            None => Ok(dir),
-        }
+        self.resolve_using(path.as_ref(), true, None)
     }
 
     /// Resolves a path starting from `current_dir` not following symlinks.
     pub fn resolve_no_follow(&self, path: impl AsRef<Path>) -> VfsResult<Location> {
-        let (dir, name) = self.resolve_inner(path.as_ref(), &mut 0)?;
-        match name {
-            Some(name) => dir.lookup_no_follow(name),
-            None => Ok(dir),
-        }
+        self.resolve_using(path.as_ref(), false, None)
+    }
+
+    /// Resolves a path, checking each searched directory before traversal.
+    /// The check also applies inside symbolic-link targets and before `..`.
+    pub fn resolve_checked(
+        &self,
+        path: impl AsRef<Path>,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<Location> {
+        self.resolve_using(path.as_ref(), true, Some(&check_search))
+    }
+
+    /// Resolves with directory search checks, without following the final link.
+    /// A trailing slash or dot still requires traversal into a directory.
+    pub fn resolve_no_follow_checked(
+        &self,
+        path: impl AsRef<Path>,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<Location> {
+        self.resolve_using(path.as_ref(), false, Some(&check_search))
     }
 
     /// Resolves a relative path's parent without following intermediate
@@ -416,7 +503,7 @@ impl FsContext {
     /// Returns `(parent_dir, entry_name)`, where `entry_name` is the name of
     /// the entry.
     pub fn resolve_parent<'a>(&self, path: &'a Path) -> VfsResult<(Location, Cow<'a, str>)> {
-        let (dir, name) = self.resolve_inner(path, &mut 0)?;
+        let (dir, name) = self.resolve_inner(path, &mut 0, None)?;
         if let Some(name) = name {
             Ok((dir, Cow::Borrowed(name)))
         } else {
@@ -438,7 +525,7 @@ impl FsContext {
     /// entry's non-existence. It simply raises an error if the entry name is
     /// not present in the path.
     pub fn resolve_nonexistent<'a>(&self, path: &'a Path) -> VfsResult<(Location, &'a str)> {
-        let (dir, name) = self.resolve_inner(path, &mut 0)?;
+        let (dir, name) = self.resolve_inner(path, &mut 0, None)?;
         if let Some(name) = name {
             Ok((dir, name))
         } else {

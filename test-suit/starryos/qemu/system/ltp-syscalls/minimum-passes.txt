@@ -23,3 +23,8 @@ epoll_wait06 9
 # rmdir02.c: nine errno cases; rename03.c: eight replacement/inode assertions per filesystem.
 rmdir02 9
 rename03 8
+# faccessat201/202.c: seven success paths and six errno cases.
+faccessat201 7
+faccessat202 6
+# access04.c: six errno cases for root and nobody.
+access04 12

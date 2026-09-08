@@ -7,7 +7,7 @@ use core::{
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
-use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
@@ -65,25 +65,56 @@ impl ResolveAtResult {
     }
 }
 
+/// Resolves an actual file descriptor without interpreting AT_FDCWD.
+pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
+    let file_like = get_file_like(fd)?;
+    let f = file_like.clone();
+    Ok(if let Some(file) = f.downcast_ref::<File>() {
+        // Use location() directly: backend() rejects PATH-only fds
+        // (BadFileDescriptor) which would break fstat(O_PATH-fd).
+        // man "O_PATH": fstat(2) is in the allowed-operations list.
+        // Fixes bug-open-path-fstat-ebadf.
+        ResolveAtResult::File(file.inner().location().clone())
+    } else if let Some(dir) = f.downcast_ref::<Directory>() {
+        ResolveAtResult::File(dir.inner().clone())
+    } else {
+        ResolveAtResult::Other(file_like)
+    })
+}
+
 pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_search(dirfd, path, flags, None)
+}
+
+/// Resolves the same dirfd/empty-path contract with directory search admission.
+pub fn resolve_at_checked(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+    check_search: impl Fn(&Location) -> VfsResult<()>,
+) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_search(dirfd, path, flags, Some(&check_search))
+}
+
+type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
+
+fn resolve_at_with_search(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+    search: SearchCheck<'_>,
+) -> StarryResult<ResolveAtResult> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
                 return Err(StarryError::NotFound);
             }
-            let file_like = get_file_like(dirfd)?;
-            let f = file_like.clone();
-            Ok(if let Some(file) = f.downcast_ref::<File>() {
-                // Use location() directly: backend() rejects PATH-only fds
-                // (BadFileDescriptor) which would break fstat(O_PATH-fd).
-                // man "O_PATH": fstat(2) is in the allowed-operations list.
-                // Fixes bug-open-path-fstat-ebadf.
-                ResolveAtResult::File(file.inner().location().clone())
-            } else if let Some(dir) = f.downcast_ref::<Directory>() {
-                ResolveAtResult::File(dir.inner().clone())
-            } else {
-                ResolveAtResult::Other(file_like)
-            })
+            if dirfd == AT_FDCWD {
+                return with_fs(dirfd, |fs| {
+                    Ok(ResolveAtResult::File(fs.current_dir().clone()))
+                });
+            }
+            resolve_fd(dirfd)
         }
         Some(path) => {
             let dirfd = if path.starts_with('/') {
@@ -92,12 +123,13 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<
                 dirfd
             };
             with_fs(dirfd, |fs| {
-                Ok(if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                    fs.resolve_no_follow(path)
-                } else {
-                    fs.resolve(path)
-                }
-                .map(ResolveAtResult::File)?)
+                let location = match (search, flags & AT_SYMLINK_NOFOLLOW != 0) {
+                    (Some(check), true) => fs.resolve_no_follow_checked(path, check),
+                    (Some(check), false) => fs.resolve_checked(path, check),
+                    (None, true) => fs.resolve_no_follow(path),
+                    (None, false) => fs.resolve(path),
+                }?;
+                Ok(ResolveAtResult::File(location))
             })
         }
     }

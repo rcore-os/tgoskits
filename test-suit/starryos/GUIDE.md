@@ -178,6 +178,9 @@ LTP 分组还安装 `ltp-isolation-exit-fs`，在 native 阶段验证活跃 cwd 
 退出通知前释放 cwd，以及 loop 挂载、bind 别名和 lazy detach 的最终释放。
 回归还在最后关闭时留下脏页，再重新挂载核对写回结果。这些是运行设施的配套回归，
 不是上游 LTP 用例，不计入 `cases.txt` 或共同集数量。
+`ltp-isolation-access-context` 同样属于 native 配套回归：验证访问检查中的真实／有效
+凭据、目录搜索及空路径，以及 bind 别名和命名空间副本中的共享只读状态。
+它同时核对 `statfs`、`/proc/self/mountinfo` 和 `/proc/mounts` 的实际报告。
 仅特定体系结构存在的 syscall 用 `cases-<arch>.txt` 补充共同清单，CMake 根据
 `CMAKE_C_COMPILER_TARGET` 的架构前缀加载。`cases-x86_64.txt` 中旧 `epoll_create`
 入口用例只在 x86_64 执行，不能把其他架构不存在该入口的 `TCONF` 放行。

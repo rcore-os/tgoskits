@@ -4,15 +4,19 @@ use core::{
 };
 
 use ax_fs_ng::vfs::current_fs_context;
-use axfs_ng_vfs::{Location, NodePermission};
+use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
-    AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, R_OK, STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
+    AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, CAP_DAC_READ_SEARCH, R_OK, S_IFBLK, S_IFCHR, S_IFDIR,
+    S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK, STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
 };
 
 use crate::{
     Errno, StarryError, StarryResult,
-    file::{Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, resolve_at},
+    file::{
+        Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, metadata_to_kstat,
+        resolve_at, resolve_at_checked, resolve_fd,
+    },
     mm::{UserPtr, VmMutPtr, VmPtr, vm_load_path_string},
 };
 
@@ -63,7 +67,8 @@ pub fn sys_fstat(
     fd: i32,
     statbuf: *mut stat,
 ) -> crate::StarryResult<isize> {
-    sys_fstatat(current, fd, core::ptr::null(), statbuf, AT_EMPTY_PATH)
+    write_stat(current, statbuf, resolve_fd(fd)?.stat()?.into())?;
+    Ok(0)
 }
 
 /// Get the metadata of the symbolic link and write into `buf`.
@@ -187,9 +192,6 @@ pub fn sys_access(
     sys_faccessat2(current, AT_FDCWD, path, mode, 0)
 }
 
-// Note: AT_EACCESS is not explicitly handled. This is functionally correct
-// because fsuid/fsgid track euid/egid by default in our credential model,
-// so the real-ID vs effective-ID distinction AT_EACCESS controls is a no-op.
 pub fn sys_faccessat2(
     current: &crate::task::UserTaskRef,
     dirfd: c_int,
@@ -212,54 +214,73 @@ pub fn sys_faccessat2(
         .transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
-    let file = resolve_at(dirfd, path.as_deref(), flags)?;
-
+    let current_cred = current.as_thread().cred();
+    let cred = if flags & AT_EACCESS != 0 {
+        (*current_cred).clone()
+    } else {
+        current_cred.for_real_id_access()
+    };
+    let file = resolve_at_checked(dirfd, path.as_deref(), flags, |directory| {
+        let metadata = metadata_to_kstat(&directory.metadata()?);
+        check_dac_access(&cred, &metadata, X_OK).map_err(axfs_ng_vfs::VfsError::from)
+    })?;
     if mode == 0 {
         return Ok(0);
     }
-
-    let cred = current.as_thread().cred();
-
-    // Root (fsuid == 0) bypasses R_OK and W_OK checks.
-    // For X_OK, at least one execute bit must be set (owner, group, or other).
-    if cred.fsuid == 0 {
-        if mode & X_OK != 0 {
-            let perm_bits = file.stat()?.mode as u16;
-            let any_exec = NodePermission::OWNER_EXEC.bits()
-                | NodePermission::GROUP_EXEC.bits()
-                | NodePermission::OTHER_EXEC.bits();
-            if perm_bits & any_exec == 0 {
-                return Err(StarryError::PermissionDenied);
-            }
+    let metadata = file.stat()?;
+    let node_type = metadata.mode & S_IFMT;
+    if let ResolveAtResult::File(location) = &file {
+        if mode & X_OK != 0
+            && node_type == S_IFREG
+            && location.mountpoint().mount_flags() & MS_NOEXEC != 0
+        {
+            return Err(StarryError::PermissionDenied);
         }
-        return Ok(0);
+        // Linux sb_permission precedes DAC; a bind-only restriction does not.
+        if mode & W_OK != 0
+            && matches!(node_type, S_IFREG | S_IFDIR | S_IFLNK)
+            && location.mountpoint().is_filesystem_readonly()
+        {
+            return Err(StarryError::ReadOnlyFilesystem);
+        }
     }
-
-    let kstat = file.stat()?;
-    let file_uid = kstat.uid;
-    let file_gid = kstat.gid;
-    let file_mode = kstat.mode;
-
-    // Select effective permission bits based on owner/group/other matching.
-    let effective_bits = if cred.fsuid == file_uid {
-        (file_mode >> 6) & 0o7
-    } else if cred.fsgid == file_gid || cred.groups.contains(&file_gid) {
-        (file_mode >> 3) & 0o7
-    } else {
-        file_mode & 0o7
-    };
-
-    if (mode & R_OK != 0) && (effective_bits & 4 == 0) {
-        return Err(StarryError::PermissionDenied);
+    check_dac_access(&cred, &metadata, mode)?;
+    if mode & W_OK != 0
+        && !matches!(node_type, S_IFBLK | S_IFCHR | S_IFIFO | S_IFSOCK)
+        && let ResolveAtResult::File(location) = &file
+        && location.is_readonly()
+    {
+        return Err(StarryError::ReadOnlyFilesystem);
     }
-    if (mode & W_OK != 0) && (effective_bits & 2 == 0) {
-        return Err(StarryError::PermissionDenied);
-    }
-    if (mode & X_OK != 0) && (effective_bits & 1 == 0) {
-        return Err(StarryError::PermissionDenied);
-    }
-
     Ok(0)
+}
+
+fn check_dac_access(
+    cred: &crate::task::Cred,
+    kstat: &crate::file::Kstat,
+    mode: u32,
+) -> StarryResult<()> {
+    let permission = if cred.fsuid == kstat.uid {
+        (kstat.mode >> 6) & 0o7
+    } else if cred.in_group(kstat.gid) {
+        (kstat.mode >> 3) & 0o7
+    } else {
+        kstat.mode & 0o7
+    };
+    if mode & !permission == 0 {
+        return Ok(());
+    }
+    let read_search = cred.has_cap(CAP_DAC_READ_SEARCH);
+    if kstat.mode & S_IFMT == S_IFDIR {
+        if cred.has_cap_dac_override() || (mode & W_OK == 0 && read_search) {
+            return Ok(());
+        }
+    } else if (mode == R_OK && read_search)
+        || (cred.has_cap_dac_override() && (mode & X_OK == 0 || kstat.mode & 0o111 != 0))
+    {
+        return Ok(());
+    }
+    Err(StarryError::PermissionDenied)
 }
 
 fn statfs(loc: &Location) -> StarryResult<statfs> {
@@ -287,7 +308,7 @@ fn statfs_mount_flags(loc: &Location) -> u32 {
     let mountpoint = loc.mountpoint();
     let mount_flags = mountpoint.mount_flags();
     let mut statfs_flags = mount_flags & (MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME);
-    if mountpoint.is_readonly() {
+    if loc.is_readonly() {
         statfs_flags |= ST_RDONLY;
     }
     if mount_flags & MS_RELATIME != 0 {
@@ -567,4 +588,58 @@ pub fn sys_name_to_handle_at(
         .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;
     (mount_id as *mut c_int).vm_write(current, resolved_mount_id)?;
     Ok(0)
+}
+
+#[cfg(all(test, not(axtest)))]
+mod access_tests {
+    use linux_raw_sys::general::{CAP_DAC_READ_SEARCH, R_OK, S_IFDIR, S_IFREG, X_OK};
+
+    use super::check_dac_access;
+    use crate::{StarryError, file::Kstat, task::Cred};
+
+    #[test]
+    fn uid_zero_without_dac_capability_obeys_file_mode() {
+        let mut cred = Cred::root();
+        cred.cap_effective = 0;
+        let target = Kstat {
+            mode: S_IFREG,
+            uid: 1000,
+            ..Kstat::default()
+        };
+        assert!(matches!(
+            check_dac_access(&cred, &target, R_OK),
+            Err(StarryError::PermissionDenied)
+        ));
+    }
+
+    #[test]
+    fn directory_search_capability_does_not_require_execute_bits() {
+        let mut cred = Cred::root();
+        cred.fsuid = 1000;
+        cred.cap_effective = 1 << CAP_DAC_READ_SEARCH;
+        let target = Kstat {
+            mode: S_IFDIR,
+            uid: 2000,
+            ..Kstat::default()
+        };
+        assert!(check_dac_access(&cred, &target, X_OK).is_ok());
+        assert!(check_dac_access(&Cred::root(), &target, X_OK).is_ok());
+    }
+
+    #[test]
+    fn file_read_search_capability_only_overrides_read_access() {
+        let mut cred = Cred::root();
+        cred.fsuid = 1000;
+        cred.cap_effective = 1 << CAP_DAC_READ_SEARCH;
+        let target = Kstat {
+            mode: S_IFREG,
+            uid: 2000,
+            ..Kstat::default()
+        };
+        assert!(check_dac_access(&cred, &target, R_OK).is_ok());
+        assert!(matches!(
+            check_dac_access(&cred, &target, X_OK),
+            Err(StarryError::PermissionDenied)
+        ));
+    }
 }
