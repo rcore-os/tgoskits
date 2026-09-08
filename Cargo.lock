@@ -1559,6 +1559,7 @@ name = "axvirtio-blk"
 version = "0.2.0"
 dependencies = [
  "ax-memory-addr",
+ "ax-runtime",
  "ax-sync",
  "axaddrspace",
  "axdevice_base",
@@ -1667,6 +1668,7 @@ dependencies = [
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
+ "rsext4",
  "serde",
  "thiserror 2.0.20",
  "toml 1.1.4+spec-1.1.0",

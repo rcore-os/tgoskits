@@ -10,7 +10,7 @@ keywords = ["vm", "hypervisor", "arceos"]
 license = "Apache-2.0"
 
 [features]
-fs = ["ax-std/fs", "dep:ax-api", "ax-api/fs"]
+fs = ["ax-std/fs", "dep:ax-api", "ax-api/fs", "dep:rsext4"]
 host-fs = ["fs", "dep:ax-driver"]
 host-test = [
     "ax-std/host-test",
@@ -48,6 +48,7 @@ ax-std = { workspace = true, default-features = false, features = [
 ] }
 irq-framework = { workspace = true }
 ax-api = { workspace = true, optional = true }
+rsext4 = { workspace = true, optional = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axaddrspace = { workspace = true }
 axvm-types = { workspace = true }

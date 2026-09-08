@@ -5,6 +5,8 @@
 
 use std::sync::{Arc, RwLock};
 
+extern crate ax_runtime as _;
+
 use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpaceError, AddrSpaceResult, GuestMemoryAccessor};
 use axdevice_base::{
@@ -289,8 +291,9 @@ mod mmio_device_tests {
     fn test_queue_ready_requires_scoped_memory_with_placeholder_accessor() {
         // axvisor constructs the block device with `NoGuestMemoryAccessor` and
         // holds real guest memory only as a scoped capability at MMIO access
-        // time (`os/axvisor/src/virtio_blk.rs`). The `QUEUE_READY` layout
-        // validation must be screened against that scoped memory: the
+        // time (`virtualization/axvm/src/configured/devices/virtio_blk/device.rs`). The
+        // `QUEUE_READY`
+        // layout validation must be screened against that scoped memory: the
         // accessor-based fallback cannot translate any guest address, while
         // the scoped path validates the same layout against the real backing
         // and must make the queue ready.

@@ -149,6 +149,7 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
                 // A transport reset invalidates every in-flight descriptor,
                 // including a deferred request that was removed from avail.
                 self.pending_head.lock().take();
+                self.backend.reset();
                 Ok(BlockDeviceEvent::Reset)
             }
             MmioWriteAction::InterruptPending => Ok(BlockDeviceEvent::InterruptPending),
@@ -190,6 +191,9 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
         }
         let mut notify = false;
         let mut pending_head = self.pending_head.lock();
+        if pending_head.is_some() && !self.backend.pending_request_ready() {
+            return Ok(BlockDeviceEvent::QueuePending(queue_index));
+        }
         loop {
             let head = if let Some(head) = pending_head.take() {
                 head
@@ -206,6 +210,11 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
                 }
                 Ok(None) => {
                     *pending_head = Some(head);
+                    // Earlier completions may already have crossed used_event.
+                    // A later retry cannot reconstruct that notification edge.
+                    if notify {
+                        self.trigger_interrupt();
+                    }
                     return Ok(BlockDeviceEvent::QueuePending(queue_index));
                 }
                 Err(error) => {
@@ -223,6 +232,21 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
     }
 
     fn process_request(
+        &self,
+        queue: &VirtioQueue<T>,
+        head: u16,
+        memory: &mut dyn axvirtio_common::GuestMemory,
+    ) -> VirtioResult<Option<u32>> {
+        let result = self.process_request_inner(queue, head, memory);
+        // A retry may fail before calling the backend (allocation, descriptor,
+        // or guest-memory failure). Retire any old I/O before returning the head.
+        if !matches!(result, Ok(None)) {
+            self.backend.cancel_pending_request();
+        }
+        result
+    }
+
+    fn process_request_inner(
         &self,
         queue: &VirtioQueue<T>,
         head: u16,
@@ -472,9 +496,12 @@ mod tests {
         }
     }
 
-    struct TestBackend;
+    struct TestBackend(core::sync::atomic::AtomicBool);
 
     impl BlockBackend for TestBackend {
+        fn reset(&self) {
+            self.0.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
         fn read(&self, sector: u64, buffer: &mut [u8]) -> VirtioResult<usize> {
             if sector >= 8 {
                 return Err(VirtioError::InvalidSector);
@@ -484,6 +511,9 @@ mod tests {
         }
 
         fn write(&self, sector: u64, buffer: &[u8]) -> VirtioResult<usize> {
+            if sector == 1 {
+                return Err(VirtioError::WouldBlock);
+            }
             if sector >= 8 {
                 return Err(VirtioError::InvalidSector);
             }
@@ -512,7 +542,7 @@ mod tests {
         let device = VirtioMmioBlockDevice::new(
             GuestPhysAddr::from(0x0a00_0000),
             0x200,
-            TestBackend,
+            TestBackend(core::sync::atomic::AtomicBool::new(false)),
             config,
             NoGuestMemoryAccessor,
         )
@@ -561,6 +591,57 @@ mod tests {
 
         assert_eq!(event, Ok(BlockDeviceEvent::Reset));
         assert_eq!(*device.pending_head.lock(), None);
+        assert!(device.backend.0.load(core::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn completed_request_interrupt_survives_a_later_blocked_request() {
+        let (mut device, _queue, mut memory) = fixture(512, 0);
+        device.block_config.size_max = 512;
+        device.set_status(crate::constants::VIRTIO_STATUS_DRIVER_OK);
+        {
+            let mut queues = device.state.queues_lock();
+            let queue = &mut queues[0];
+            queue.set_size(8).unwrap();
+            queue
+                .set_desc_table_addr(GuestPhysAddr::from(DESC_TABLE))
+                .unwrap();
+            queue
+                .set_avail_ring_addr(GuestPhysAddr::from(AVAIL_RING))
+                .unwrap();
+            queue
+                .set_used_ring_addr(GuestPhysAddr::from(USED_RING))
+                .unwrap();
+            queue.set_ready(true);
+            queue.event_idx_enabled = true;
+        }
+        memory.set_descriptor(
+            3,
+            HEADER + 32,
+            VirtioBlockHeader::SIZE,
+            VIRTQ_DESC_F_NEXT,
+            4,
+        );
+        memory.set_descriptor(4, DATA + 512, 512, VIRTQ_DESC_F_NEXT, 5);
+        memory.set_descriptor(5, STATUS + 1, 1, VIRTQ_DESC_F_WRITE, 0);
+        memory.0[HEADER + 32..HEADER + 36].copy_from_slice(&VIRTIO_BLK_T_OUT.to_le_bytes());
+        memory.0[HEADER + 40..HEADER + 48].copy_from_slice(&1_u64.to_le_bytes());
+        memory.0[AVAIL_RING + 2..AVAIL_RING + 4].copy_from_slice(&2_u16.to_le_bytes());
+        memory.0[AVAIL_RING + 6..AVAIL_RING + 8].copy_from_slice(&3_u16.to_le_bytes());
+        assert_eq!(
+            device.handle_queue_notify(0, &mut memory),
+            Ok(BlockDeviceEvent::QueuePending(0))
+        );
+        assert_eq!(*device.pending_head.lock(), Some(3));
+        assert_eq!(
+            u16::from_le_bytes(memory.0[USED_RING + 2..USED_RING + 4].try_into().unwrap()),
+            1
+        );
+        assert_ne!(
+            device.interrupt_status(),
+            0,
+            "the completed head still requires its EVENT_IDX interrupt"
+        );
     }
 
     #[test]

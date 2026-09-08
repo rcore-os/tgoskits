@@ -57,6 +57,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate ax_runtime as _;
 
 extern crate log;
 

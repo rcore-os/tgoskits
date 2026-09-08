@@ -93,6 +93,28 @@ const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePro
     expected_tests: &[],
 }];
 
+const AXVM_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    HOST_TEST_FEATURE_PROFILES[0],
+    PackageFeatureProfile {
+        name: "fs+host-test",
+        no_default_features: false,
+        features: &["fs", "host-test"],
+        name_filter: None,
+        expected_tests: &[
+            "configured::devices::virtio_blk::image::tests::existing_ext4_image_is_loaded_without_modification",
+            "configured::devices::virtio_blk::image::tests::empty_ext4_file_is_rejected",
+            "configured::devices::virtio_blk::image::tests::non_ext4_backing_file_is_rejected",
+            "configured::devices::virtio_blk::image::tests::configured_capacity_must_match_existing_image",
+            "configured::devices::virtio_blk::image::tests::backing_file_length_must_be_sector_aligned",
+            "configured::devices::virtio_blk::image::tests::read_failure_is_reported_without_modifying_the_image",
+            "configured::devices::virtio_blk::image::tests::short_read_is_rejected",
+            "configured::devices::virtio_blk::image::tests::large_image_initialization_reads_only_superblock",
+            "configured::devices::virtio_blk::file::tests::sparse_large_file_roundtrip_uses_real_worker_and_flush",
+            "configured::devices::virtio_blk::file::tests::reset_drains_old_io_without_reusing_its_completion",
+        ],
+    },
+];
+
 const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "alloc",
     no_default_features: false,
@@ -496,7 +518,6 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "rsext4"
         | "scope-local"
         | "ax-sync"
-        | "axvm"
         | "ax-display"
         | "ax-input"
         | "ax-ipi"
@@ -507,6 +528,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-net"
         | "dma-api"
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
+        "axvm" => Some(AXVM_FEATURE_PROFILES),
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
