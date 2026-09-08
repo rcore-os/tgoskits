@@ -173,28 +173,29 @@ impl AicDevice {
         response: SdioResponse,
     ) -> Result<(), AicError> {
         let receive_data = expect_data(response)?;
-        let frames = parse_fifo(&receive_data).map_err(|error| {
-            let header_length = receive_data.len().min(24);
-            let mut header = [0; 24];
-            header[..header_length].copy_from_slice(&receive_data[..header_length]);
-            let header_words = [
-                u64::from_le_bytes(header[0..8].try_into().expect("fixed header word")),
-                u64::from_le_bytes(header[8..16].try_into().expect("fixed header word")),
-                u64::from_le_bytes(header[16..24].try_into().expect("fixed header word")),
-            ];
-            log::error!(
-                "malformed AIC RX frame on {path:?}: transfer={} header={:02x?}",
-                receive_data.len(),
-                &receive_data[..header_length]
-            );
-            AicError::MalformedRxFrame {
-                offset: error.offset,
-                packet_type: error.packet_type,
-                declared_length: error.declared_length,
-                available_length: error.available_length,
-                header_words,
-            }
-        })?;
+        let frames =
+            parse_fifo(&receive_data, self.mailbox_confirmation_id()).map_err(|error| {
+                let header_length = receive_data.len().min(24);
+                let mut header = [0; 24];
+                header[..header_length].copy_from_slice(&receive_data[..header_length]);
+                let header_words = [
+                    u64::from_le_bytes(header[0..8].try_into().expect("fixed header word")),
+                    u64::from_le_bytes(header[8..16].try_into().expect("fixed header word")),
+                    u64::from_le_bytes(header[16..24].try_into().expect("fixed header word")),
+                ];
+                log::error!(
+                    "malformed AIC RX frame on {path:?}: transfer={} header={:02x?}",
+                    receive_data.len(),
+                    &receive_data[..header_length]
+                );
+                AicError::MalformedRxFrame {
+                    offset: error.offset,
+                    packet_type: error.packet_type,
+                    declared_length: error.declared_length,
+                    available_length: error.available_length,
+                    header_words,
+                }
+            })?;
         for frame in frames {
             match frame {
                 ParsedFrame::Data {
@@ -561,7 +562,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        common::{ChipVariant, SDIO_TYPE_CFG_CMD_RSP, SDIO_TYPE_DATA},
+        common::{ChipVariant, SDIO_TYPE_CFG_CMD_RSP, SDIO_TYPE_CFG_PRINT, SDIO_TYPE_DATA},
         rx::{RX_BYTE_CAPACITY, RX_CAPACITY},
     };
 
@@ -668,6 +669,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(device.data.link.peer(), None);
+    }
+
+    #[test]
+    fn mailbox_confirmation_survives_control_budget_exhaustion() {
+        const PRINT_PACKET_LENGTH: usize = 8;
+        const PRINT_AGGREGATE_LENGTH: usize = 4 + PRINT_PACKET_LENGTH;
+        const RESPONSE_PACKET_LENGTH: usize = 12;
+        const RESPONSE_AGGREGATE_LENGTH: usize = 4 + RESPONSE_PACKET_LENGTH;
+        const EXPECTED_MESSAGE_ID: u16 = 2;
+
+        let response_offset = crate::rx::CONTROL_RX_CAPACITY * PRINT_AGGREGATE_LENGTH;
+        let mut fifo = vec![0; response_offset + RESPONSE_AGGREGATE_LENGTH];
+        for index in 0..crate::rx::CONTROL_RX_CAPACITY {
+            let offset = index * PRINT_AGGREGATE_LENGTH;
+            fifo[offset..offset + 2].copy_from_slice(&(PRINT_PACKET_LENGTH as u16).to_le_bytes());
+            fifo[offset + 2] = SDIO_TYPE_CFG_PRINT;
+        }
+        fifo[response_offset..response_offset + 2]
+            .copy_from_slice(&(RESPONSE_PACKET_LENGTH as u16).to_le_bytes());
+        fifo[response_offset + 2] = SDIO_TYPE_CFG_CMD_RSP;
+        fifo[response_offset + 4..response_offset + 6]
+            .copy_from_slice(&EXPECTED_MESSAGE_ID.to_le_bytes());
+
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.mailbox = Some(MailboxState::confirmation_for_test(
+            MonotonicTime::from_nanos(10),
+        ));
+        device.io.receive.active = true;
+
+        device
+            .consume_receive_data(RxPath::Command, SdioResponse::Data(fifo))
+            .unwrap();
+
+        assert_eq!(device.mailbox_confirmation_id(), None);
+        assert!(!device.mailbox_waiting_for_receive());
     }
 
     #[test]

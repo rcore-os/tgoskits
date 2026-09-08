@@ -75,6 +75,12 @@ impl AicDevice {
         })
     }
 
+    pub(super) fn mailbox_confirmation_id(&self) -> Option<u16> {
+        self.lifecycle.mailbox.as_ref().and_then(|mailbox| {
+            (mailbox.phase == MailboxPhase::Confirmation).then_some(mailbox.expected_message_id)
+        })
+    }
+
     pub(super) fn mailbox_timed_out(&self, now: MonotonicTime) -> bool {
         self.lifecycle.mailbox.as_ref().is_some_and(|mailbox| {
             mailbox.phase != MailboxPhase::Complete && now >= mailbox.deadline
