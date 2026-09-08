@@ -19,6 +19,15 @@ impl Pid {
 pub trait Osal: Sync + Send + 'static {
     /// Get the current process ID.
     fn get_pid(&self) -> Pid;
+
+    /// Called on every iteration of a contended blocking `lock()`.
+    ///
+    /// The default just hints the CPU that this is a spin-wait. An OS
+    /// integration should override this to yield the current task to the
+    /// scheduler instead of hard-spinning.
+    fn relax(&self) {
+        core::hint::spin_loop();
+    }
 }
 
 struct OsalImplEmplty;
@@ -38,4 +47,8 @@ pub fn set_osal(osal: &'static dyn Osal) {
 
 pub(crate) fn get_pid() -> Pid {
     OSAL.read().get_pid()
+}
+
+pub(crate) fn relax() {
+    OSAL.read().relax();
 }
