@@ -56,6 +56,12 @@ pub(super) struct DataPlaneState {
     pub active_tx: Option<ActiveTx>,
     pub internal_tx: VecDeque<InternalTx>,
     pub link: LinkState,
+    #[cfg(feature = "rdif")]
+    pub diagnostic_last_flow: Option<u8>,
+    #[cfg(feature = "rdif")]
+    pub diagnostic_flow_reads: u64,
+    #[cfg(feature = "rdif")]
+    pub diagnostic_tx_completions: u64,
 }
 
 /// Sole owner of all AIC protocol and data-plane state.
@@ -102,6 +108,12 @@ impl AicDevice {
                 active_tx: None,
                 internal_tx: VecDeque::new(),
                 link: LinkState::new(),
+                #[cfg(feature = "rdif")]
+                diagnostic_last_flow: None,
+                #[cfg(feature = "rdif")]
+                diagnostic_flow_reads: 0,
+                #[cfg(feature = "rdif")]
+                diagnostic_tx_completions: 0,
             },
         })
     }
@@ -131,6 +143,37 @@ impl AicDevice {
     #[cfg(any(feature = "rdif", test))]
     pub(crate) fn card_irq_needed(&self) -> bool {
         self.lifecycle.state == AicState::Ready || self.startup_confirmation_waiting()
+    }
+
+    #[cfg(feature = "rdif")]
+    pub(crate) fn log_tx_diagnostic(&self, sample: u8) {
+        let pending = self
+            .io
+            .pending
+            .as_ref()
+            .map(|pending| (pending.id, pending.purpose));
+        let next = self.io.next.as_ref().map(|(purpose, _)| purpose);
+        let active_tx = self.data.active_tx.as_ref().map(|active| {
+            let token = match &active.completion {
+                TxCompletion::User(token) => Some(token.get()),
+                TxCompletion::Internal(_) => None,
+            };
+            (token, active.wire_frame.len())
+        });
+        log::info!(
+            "[wifi-diag] core sample={sample} state={:?} io={pending:?} next={next:?} \
+             rx_scan={}/{} events={} tx={active_tx:?} flow={:?} flow_reads={} tx_done={} \
+             retry={:?} peer={:?}",
+            self.lifecycle.state,
+            self.io.receive.active,
+            self.io.receive.next_path,
+            self.data.events.len(),
+            self.data.diagnostic_last_flow,
+            self.data.diagnostic_flow_reads,
+            self.data.diagnostic_tx_completions,
+            self.lifecycle.retry_at.map(MonotonicTime::as_nanos),
+            self.data.link.tx_indices(),
+        );
     }
 }
 

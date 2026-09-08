@@ -56,6 +56,8 @@ pub(crate) struct AicOwner<H: CompletionIrqRearmHost + 'static> {
     mac: Arc<MacAddressState>,
     started: bool,
     card_irq_wait: CardIrqWait,
+    diagnostic_last_nanos: u64,
+    diagnostic_samples: u8,
 }
 
 impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
@@ -87,6 +89,8 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
             mac,
             started: false,
             card_irq_wait: CardIrqWait::Masked,
+            diagnostic_last_nanos: 0,
+            diagnostic_samples: 0,
         };
         (owner, wifi.requests_tx, wifi.progress_rx)
     }
@@ -110,6 +114,7 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
         now_nanos: u64,
         rearm_after_step: bool,
     ) -> Result<OwnerProgress, AicRdifError> {
+        self.log_tx_diagnostic(now_nanos);
         if !self.outputs.flush()? {
             return self.finish_progress(
                 OwnerProgress::Wait(OwnerWait::Interrupt),
@@ -141,6 +146,38 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
             }
         }
         self.advance_with_cause(now_nanos, cause, rearm_after_step)
+    }
+
+    fn log_tx_diagnostic(&mut self, now_nanos: u64) {
+        // Observe existing owner progress only; diagnostics never schedule work.
+        // Reserve the three samples for bulk TX rather than startup ARP traffic.
+        if self.diagnostic_samples >= 3
+            || now_nanos.saturating_sub(self.diagnostic_last_nanos) < 1_000_000_000
+            || !self.outputs.has_bulk_tx_backlog()
+        {
+            return;
+        }
+        self.diagnostic_last_nanos = now_nanos;
+        self.diagnostic_samples += 1;
+        let sample = self.diagnostic_samples;
+        let active = self.active.as_ref().map(|active| match active {
+            ActiveOperation::Direct { .. } => "direct",
+            ActiveOperation::Enable { .. } => "enable",
+            ActiveOperation::BlockSize { .. } => "block-size",
+            ActiveOperation::Interrupt { .. } => "interrupt",
+            ActiveOperation::Dma { .. } => "dma",
+            ActiveOperation::Bus { .. } => "bus",
+        });
+        let (irq_sequence, irq_pending) = self.irq_latch.diagnostic();
+        log::info!(
+            "[wifi-diag] owner sample={sample} ns={now_nanos} active={active:?} card_wait={:?} \
+             irq_seq={irq_sequence} irq_pending={irq_pending}",
+            self.card_irq_wait,
+        );
+        self.outputs.log_tx_diagnostic(sample);
+        if let Some(device) = &self.device {
+            device.log_tx_diagnostic(sample);
+        }
     }
 
     pub(crate) fn quiesce(&mut self) -> Result<(), AicRdifError> {

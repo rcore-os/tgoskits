@@ -318,7 +318,13 @@ impl AicDevice {
         response: SdioResponse,
         now: MonotonicTime,
     ) -> Result<(), AicError> {
-        let credits = flow_credits(expect_byte(response)?);
+        let raw_credits = expect_byte(response)?;
+        #[cfg(feature = "rdif")]
+        {
+            self.data.diagnostic_last_flow = Some(raw_credits);
+            self.data.diagnostic_flow_reads = self.data.diagnostic_flow_reads.saturating_add(1);
+        }
+        let credits = flow_credits(raw_credits);
         let active = self
             .data
             .active_tx
@@ -354,6 +360,11 @@ impl AicDevice {
             .active_tx
             .take()
             .ok_or(AicError::CompletionMismatch)?;
+        #[cfg(feature = "rdif")]
+        {
+            self.data.diagnostic_tx_completions =
+                self.data.diagnostic_tx_completions.saturating_add(1);
+        }
         match active.completion {
             super::owner::TxCompletion::User(token) => self
                 .data

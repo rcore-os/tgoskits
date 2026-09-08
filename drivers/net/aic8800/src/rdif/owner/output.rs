@@ -58,6 +58,28 @@ impl OwnerOutputs {
         }
     }
 
+    pub(super) fn has_bulk_tx_backlog(&self) -> bool {
+        self.tx_tokens.len() + self.queues.tx_submit.occupied_len() >= 8
+    }
+
+    pub(super) fn log_tx_diagnostic(&self, sample: u8) {
+        log::info!(
+            "[wifi-diag] queues sample={sample} tx_submit={} tx_owned={} tx_complete={} \
+             rx_submit={} rx_complete={} pending_tx={} pending_rx_frame={} pending_rx_complete={} \
+             pending_wifi={} queue_progress={}",
+            self.queues.tx_submit.occupied_len(),
+            self.tx_tokens.len(),
+            self.queues.tx_complete.occupied_len(),
+            self.queues.rx_submit.occupied_len(),
+            self.queues.rx_complete.occupied_len(),
+            self.pending_tx_completion.is_some(),
+            self.pending_rx_frame.is_some(),
+            self.pending_rx_completion.is_some(),
+            self.pending_wifi_progress.is_some(),
+            self.queue_progress,
+        );
+    }
+
     pub(super) fn take_tx_frame(&mut self) -> Option<(TxToken, Vec<u8>)> {
         let buffer = self.queues.tx_submit.try_pop()?;
         let length = buffer.len();

@@ -63,6 +63,9 @@ use crate::{
 };
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
+static IPERF_RX_PACKETS: AtomicU64 = AtomicU64::new(0);
+static IPERF_RX_BAD_CHECKSUM: AtomicU64 = AtomicU64::new(0);
+static IPERF_RX_LAST_ACK: AtomicU64 = AtomicU64::new(0);
 
 /// Per-interface cumulative RX/TX byte and packet counters.
 ///
@@ -471,6 +474,8 @@ pub struct Router {
     ready_rx: VecDeque<OwnedRxPacket>,
     devices: Vec<DeviceHandle>,
     table: SharedRouteTable,
+    trace_reports: u8,
+    trace_next_millis: i64,
 }
 impl Router {
     /// Creates the virtual multi-device endpoint used by smoltcp.
@@ -493,6 +498,8 @@ impl Router {
             ready_rx: VecDeque::with_capacity(SOCKET_BUFFER_SIZE),
             devices: Vec::new(),
             table,
+            trace_reports: 0,
+            trace_next_millis: 0,
         }
     }
 
@@ -580,10 +587,11 @@ impl Router {
     /// Moves device-produced packets into the smoltcp RX buffer.
     pub fn poll(
         &mut self,
-        _timestamp: Instant,
+        timestamp: Instant,
         sockets: &mut SocketSet<'_>,
         mut snoop: impl FnMut(InterfaceId, &[u8]),
     ) -> bool {
+        self.trace_iperf_queues(timestamp, sockets);
         let mut moved_rx = false;
         let Router {
             rx_buffer,
@@ -811,6 +819,50 @@ impl Router {
         }
         poll_next
     }
+
+    fn trace_iperf_queues(&mut self, timestamp: Instant, sockets: &SocketSet<'_>) {
+        if self.trace_reports >= 3 || timestamp.total_millis() < self.trace_next_millis {
+            return;
+        }
+        let active = sockets.iter().any(|(_, socket)| {
+            matches!(socket, smoltcp::socket::Socket::Tcp(tcp)
+                if tcp.remote_endpoint().is_some_and(|peer| peer.port == 5201)
+                    && tcp.send_queue() >= 64 * 1024)
+        });
+        if !active {
+            return;
+        }
+        self.trace_reports += 1;
+        self.trace_next_millis = timestamp.total_millis().saturating_add(1000);
+        warn!(
+            "IPERF_ROUTER_TRACE tx={} owned_rx={} copied_rx={} fanout={}",
+            self.tx_buffer.len(),
+            self.ready_rx.len(),
+            self.rx_buffer.payload_bytes_count(),
+            self.pending_fanout.len()
+        );
+        warn!(
+            "IPERF_ACK_TRACE packets={} bad_checksum={} last_ack={}",
+            IPERF_RX_PACKETS.load(Ordering::Relaxed),
+            IPERF_RX_BAD_CHECKSUM.load(Ordering::Relaxed),
+            IPERF_RX_LAST_ACK.load(Ordering::Relaxed)
+        );
+        for (_, socket) in sockets.iter() {
+            if let smoltcp::socket::Socket::Tcp(tcp) = socket
+                && tcp.remote_endpoint().is_some_and(|peer| peer.port == 5201)
+            {
+                warn!(
+                    "IPERF_TCP_TRACE local={:?} state={:?} tx={} rx={} can_send={} can_recv={}",
+                    tcp.local_endpoint(),
+                    tcp.state(),
+                    tcp.send_queue(),
+                    tcp.recv_queue(),
+                    tcp.can_send(),
+                    tcp.can_recv()
+                );
+            }
+        }
+    }
 }
 
 fn dispatch_link_local_fanout(
@@ -991,6 +1043,13 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
     let Ok(tcp_packet) = TcpPacket::new_checked(payload) else {
         return;
     };
+    if tcp_packet.src_port() == 5201 {
+        IPERF_RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+        if !tcp_packet.verify_checksum(&src_addr, &dst_addr) {
+            IPERF_RX_BAD_CHECKSUM.fetch_add(1, Ordering::Relaxed);
+        }
+        IPERF_RX_LAST_ACK.store(tcp_packet.ack_number().0 as u32 as u64, Ordering::Relaxed);
+    }
     let src_addr = (src_addr, tcp_packet.src_port()).into();
     let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
     let is_first = tcp_packet.syn() && !tcp_packet.ack();
