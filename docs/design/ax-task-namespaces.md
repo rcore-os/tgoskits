@@ -80,4 +80,6 @@ hard/soft timer 共用 `time::queue::kernel` 的登记、取消和队列所有�
 
 ### 3.2 性能约束
 
-本轮验收的是接口、模块与实现收敛及行为保持，不宣称完成 Linux RT 性能追赶。使用已保存的 OrangePi Linux RT 历史基线，后续性能工作由议题 [#2308](https://github.com/rcore-os/tgoskits/issues/2308) 跟踪，不为本次命名空间迁移重复测量 Linux RT。
+重构后在同一台 OrangePi 上配对运行最新 dev 与 PR 分支，覆盖全部 20 项调度/唤醒场景（10 项 × OTHER/FIFO80）。使用相同构建配置、DTB、CPU 亲和性和冻结基准二进制，多轮核对实际样本数、结果数量及退出状态，报告原始分位数与扣除取时成本后的辅助值。延迟性能百分比使用参考 p50 除以 PR p50，避免把延迟增长误写成性能提升。
+
+Linux RT 只引用议题 [#2308](https://github.com/rcore-os/tgoskits/issues/2308) 保存的 OrangePi 历史基线，不重复测量。PR 正文记录两个实际被测提交、板卡与构建信息、逐项 PR/dev 和 PR/Linux RT 百分比及可比性限制；接口与模块收敛本身不代表完成 Linux RT 性能追赶。
